@@ -113,8 +113,9 @@ func scanOwnedFiles(ctx context.Context, d *db.DB, files []TranscriptFile, wb *d
 	deadline time.Time, now func() time.Time, res *Result) (map[string]bool, error) {
 	owned := map[string]bool{} // session uuid → owned by this workbench
 	sessions := map[string]bool{}
+	stop := func() bool { return ctx.Err() != nil || (!deadline.IsZero() && now().After(deadline)) }
 	for _, tf := range files {
-		if ctx.Err() != nil || (!deadline.IsZero() && now().After(deadline)) {
+		if res.Incomplete || stop() {
 			res.Incomplete = true
 			break
 		}
@@ -126,7 +127,7 @@ func scanOwnedFiles(ctx context.Context, d *db.DB, files []TranscriptFile, wb *d
 			continue
 		}
 		sessions[tf.SessionUUID] = true
-		if err := scanFile(d, tf, wb, res); err != nil {
+		if err := scanFile(d, tf, wb, stop, res); err != nil {
 			res.FailedFiles++
 			if res.FirstFailure == nil {
 				res.FirstFailure = err
@@ -215,7 +216,16 @@ func ownsSession(d *db.DB, tf TranscriptFile, owned map[string]bool, folders []s
 	return owned[tf.SessionUUID], nil
 }
 
-func scanFile(d *db.DB, tf TranscriptFile, wb *db.Workbench, res *Result) error {
+// batchRows bounds one write transaction: a transcript is stored in slices of
+// at most this many events plus tool results, each committed with its own
+// offset compare-and-set, so the session hooks (0.5–1 s lock budgets) never
+// wait behind a whole transcript.
+var batchRows = 1000
+
+// scanFile reads tf from its stored offset in slices of batchRows, commits
+// each slice, and stops between slices when stop says the scan is out of
+// time (res.Incomplete; the next scan resumes from the last committed slice).
+func scanFile(d *db.DB, tf TranscriptFile, wb *db.Workbench, stop func() bool, res *Result) error {
 	stored, err := d.GetAgentLogFile(tf.Path)
 	if err != nil {
 		return err
@@ -230,37 +240,67 @@ func scanFile(d *db.DB, tf TranscriptFile, wb *db.Workbench, res *Result) error 
 		return nil // vanished between listing and open: the missing sweep catches it
 	}
 	defer fh.Close()
-	var known []string
-	if start > 0 {
-		if known, err = listedSkills(fh, start); err != nil {
-			return fmt.Errorf("reading %s: %w", tf.Path, err)
+	o := ParseOptions{Path: tf.Path, Folder: wb.FolderPath, Subagent: tf.Subagent, AgentID: tf.AgentID, MaxRows: batchRows}
+	if prefix := start; prefix > 0 {
+		o.PriorSkills = func() ([]string, error) { return listedSkills(io.NewSectionReader(fh, 0, prefix), prefix) }
+	}
+	for first := true; ; first = false {
+		if _, err := fh.Seek(start, io.SeekStart); err != nil {
+			return err
+		}
+		pr, err := ParseClaude(fh, start, o)
+		if err != nil {
+			return err
+		}
+		o.KnownSkills = pr.Skills // the next slice starts where this one ended
+		if pr.PriorLoaded {
+			o.PriorSkills = nil // already in Skills; otherwise a later slice may still need them
+		}
+		next, applied, err := storeSlice(d, tf, wb, pr, start, expect)
+		if err != nil {
+			return err
+		}
+		if first {
+			res.FilesScanned++
+		}
+		res.addSlice(pr, applied)
+		if !applied || !pr.More {
+			return nil // done, or another writer moved the offset and reads the rest
+		}
+		start, expect = next, next
+		if stop() {
+			res.Incomplete = true
+			return nil
 		}
 	}
-	if _, err := fh.Seek(start, io.SeekStart); err != nil {
-		return err
+}
+
+// storeSlice writes one parsed slice of tf with the offset compare-and-set
+// and returns the new offset and whether the slice was applied.
+func storeSlice(d *db.DB, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, start, expect int64) (int64, bool, error) {
+	f := db.AgentLogFile{Path: tf.Path, Agent: "claude", Size: tf.Size, MTime: tf.MTime,
+		ReadOffset: start + pr.Consumed, ParserVersion: ParserVersion}
+	if pr.More {
+		// Not the whole file yet: no mtime, so a stop here never reads as "unchanged".
+		f.Size, f.MTime = f.ReadOffset, ""
 	}
-	pr, err := ParseClaude(fh, start, ParseOptions{Path: tf.Path, Folder: wb.FolderPath, Subagent: tf.Subagent,
-		AgentID: tf.AgentID, KnownSkills: known})
+	applied, err := d.ApplyAgentLogBatch(db.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events,
+		ToolResults: pr.ToolResults, Sessions: ownedSessions(pr.Sessions, tf, wb)})
 	if err != nil {
-		return err
+		return 0, false, fmt.Errorf("storing %s: %w", tf.Path, err)
 	}
-	b := db.AgentLogBatch{File: db.AgentLogFile{Path: tf.Path, Agent: "claude", Size: tf.Size, MTime: tf.MTime,
-		ReadOffset: start + pr.Consumed, ParserVersion: ParserVersion}, ExpectOffset: expect,
-		Events: pr.Events, ToolResults: pr.ToolResults}
-	b.Sessions = ownedSessions(pr.Sessions, tf, wb)
-	applied, err := d.ApplyAgentLogBatch(b)
-	if err != nil {
-		return fmt.Errorf("storing %s: %w", tf.Path, err)
-	}
-	res.FilesScanned++
-	if applied {
-		res.EventsWritten += len(pr.Events)
-	}
+	return f.ReadOffset, applied, nil
+}
+
+// addSlice counts one stored slice's records into the scan result.
+func (res *Result) addSlice(pr *ParseResult, applied bool) {
 	for k, v := range pr.Unknown {
 		res.UnknownRecords[k] += v
 	}
 	res.LongLines += pr.LongLines
-	return nil
+	if applied {
+		res.EventsWritten += len(pr.Events)
+	}
 }
 
 // resumePoint decides where to read a transcript from: the stored offset
@@ -303,7 +343,7 @@ func listedSkills(r io.Reader, limit int64) ([]string, error) {
 	seen := map[string]bool{}
 	var out []string
 	for {
-		raw, _, complete, err := nextLine(br, maxLineBytes)
+		raw, _, complete, err := NextLine(br, maxLineBytes)
 		if !complete {
 			if err != nil && !errors.Is(err, io.EOF) {
 				return nil, err
@@ -341,8 +381,8 @@ func firstCWD(path string) string {
 	}
 	defer fh.Close()
 	br := bufio.NewReaderSize(fh, 64<<10)
-	for i := 0; i < 200; i++ {
-		raw, _, complete, _ := nextLine(br, maxLineBytes)
+	for range 200 {
+		raw, _, complete, _ := NextLine(br, maxLineBytes)
 		if !complete {
 			return ""
 		}

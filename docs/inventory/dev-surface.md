@@ -17,7 +17,7 @@ from a developer's coding agent. Design:
 `docs/superpowers/specs/2026-08-09-dev-knowledge-base-design.md`.
 
 **Module:** `internal/mcp/` (`get_task_context`, `find_experts`) +
-`internal/devpack/` + `cmd/integrate.go` + `cmd/mcp.go` (`--workbench`, legacy `--project`, DEV-06) +
+`internal/devpack/` + `cmd/integrate.go` + `cmd/mcp.go` (`--workbench`, DEV-06) +
 `internal/tools/{workbenches,workbench_targets,workbench_docs,workbench_images,workbench_scope,workbench_names}.go`
 **Last full audit:** 2026-08-09
 
@@ -25,9 +25,9 @@ from a developer's coding agent. Design:
 
 **Status:** Enforced
 
-**Scope (amended 2026-09-29, spec `docs/superpowers/specs/2026-09-29-project-board-poc-design.md` D5; flag renamed 2026-10-02):**
+**Scope (amended 2026-09-29, spec `docs/superpowers/specs/2026-09-29-project-board-poc-design.md` D5; flag renamed 2026-10-02, legacy spelling removed 2026-10-15):**
 "read-only forever" is a promise about `watchtower mcp` **without**
-`--workbench` (or its legacy spelling `--project`) — the server plain
+`--workbench` — the server plain
 `integrate claude-code` registers for any coding agent. `watchtower mcp
 --workbench N` is the one writable mode of this surface and has its own
 contract, DEV-06; `--chat` is governed by AGENT-01/02/06
@@ -121,7 +121,7 @@ a way for an external agent session to mutate the product's data.
 - `internal/db/db_test.go::TestSetReadOnlyBlocksWrites`
 - `internal/mcp/server_test.go::TestAllToolsAreReadOnly` (naming lint only)
 - `internal/mcp/server_test.go::TestNoToolMutatesDatabase` (the real guard)
-- `cmd/mcp_test.go::TestDev06_PlainMCPStaysReadOnly` (the `cmd` wiring: no `--chat`/`--workbench`/`--project` → `query_only` on, no write/workbench tool, no `get_action`)
+- `cmd/mcp_test.go::TestDev06_PlainMCPStaysReadOnly` (the `cmd` wiring: no `--chat`/`--workbench` → `query_only` on, no write/workbench tool, no `get_action`)
 
 **Locked since:** 2026-08-09
 
@@ -196,7 +196,7 @@ follows the same rules, and so does the removal of the pre-rename
 `watchtower-project` skill when a workbench folder is resynced
 (`removeSkill`: only a marked, un-edited copy is deleted).
 
-Since 2026-10-15 (board #266) the workbench install ships two skills under these rules — the v10 core and the watchtower-flow preset; the upgrade fixtures cover v1..v9 → v10 core + preset (an edited pre-v10 copy is kept as a single file, with no preset).
+Since 2026-10-15 (board #266) the workbench install ships two skills under these rules — the core (v13 since board #558) and the watchtower-flow preset; the upgrade fixtures cover v1..v12 → v13 core + preset (an edited pre-v10 copy is kept as a single file, with no preset).
 
 **Test guards:**
 - `internal/devpack/install_test.go::TestInstallWritesThePackAndIsIdempotent`
@@ -204,7 +204,7 @@ Since 2026-10-15 (board #266) the workbench install ships two skills under these
 - `internal/devpack/install_test.go::TestRemoveDeletesOnlyMarkedFiles`
 - `internal/devpack/install_test.go::TestStatusReportsMissingWithoutWriting`
 - supporting (the workbench skill): `internal/devpack/workbench_test.go::TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne` — each shipped earlier text (`internal/devpack/testdata/watchtower-workbench-v1.md` … `-v5.md`; v4 and v5 added 2026-10-11 with pack v6) is replaced when un-edited and kept byte-identical when edited
-- supporting (2026-10-15, v1..v9 → v10 core + preset): `internal/devpack/workbench_test.go::TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne`
+- supporting (2026-10-15, now v1..v12 → v13 core + preset): `internal/devpack/workbench_test.go::TestWorkbenchSkill_UpgradesAnUneditedPreviousVersionAndKeepsAnEditedOne`
 
 **Why locked:** `watchtower integrate` writes into a directory
 (`~/.claude/skills` by default) the user may also hand-edit or fill with
@@ -244,10 +244,14 @@ folder's `.claude/settings.local.json`, running
 (`workbench check --workbench N --stop-hook`, PROJ-07). They are the
 explicit, CLI-controlled opt-in this contract requires: only that command
 installs them (typed by the owner, or run by the Desktop's Open Folder /
-Re-run Setup flows the owner starts — a folder set up before the rename keeps
-its `project brief --project N` entry until such a resync replaces it in
-place); `integrate remove --workbench N` and `watchtower workbench delete N`
-remove them, either spelling; plain `integrate claude-code` never installs
+Re-run Setup flows the owner starts; a folder set up before the rename keeps
+its `project brief --project N` entry, which serves no brief since
+2026-10-15: since 2026-10-16 (ask #312) it reaches the CLI's hidden `project`
+tombstone, which reads no config or database, exits 0 and prints only one
+line asking the agent to have the owner run Repair install, until such a
+resync — the Desktop's Repair — replaces it in place); `integrate remove --workbench N` and
+`watchtower workbench delete N` remove them, our pre-rename entries included;
+plain `integrate claude-code` never installs
 one; and they run only when the owner's own Claude Code session starts or
 stops in that folder. There is still no
 daemon phase for this surface, and the brief only reads the board. (2026-10-01,
@@ -283,19 +287,26 @@ does not exist or together with `--chat`, keeps the connection writable, and
 mounts the registry (`buildToolRegistry`) on the `project` surface (the
 stored surface value keeps its pre-rename spelling) with
 `tools.Binding{Surface: "project", WorkbenchID: N, DirectApply: true}`: the
-sixteen workbench tools (`internal/tools/workbenches.go`, `workbench_targets.go`,
+eighteen workbench tools (`internal/tools/workbenches.go`, `workbench_targets.go`,
 `workbench_docs.go`, since 2026-10-03 the owner-ask tools `ask_owner`,
-`get_ask`, `list_asks` and `withdraw_ask` in `workbench_asks.go`, `finish_session` in `workbench_finish.go`, and since 2026-10-16 `get_review` in
-`workbench_review.go`) plus every
+`get_ask`, `list_asks` and `withdraw_ask` in `workbench_asks.go`, `finish_session` in `workbench_finish.go`, since 2026-10-16 `get_review` in
+`workbench_review.go`, and the diff reviewer's two writes `annotate_changes`
+(`workbench_review_annotate.go`) and `reply_review_comment`
+(`workbench_review_reply.go`)) plus every
 surface-less read tool and `get_action`; no other write tool is visible
-there. The legacy spelling `--project N` (a
-folder registered as `watchtower-project` before the 2026-10-02 rename and
-not yet resynced) is the same mode with `Binding.LegacyNames` set: the same
-sixteen tools (the four ask tools and `finish_session` under the same names in both), the five renamed ones listed under their old names
-(`project_info`, `project_board`, `update_project`, `add_project_source`,
-`remove_project_source`; `tools.LegacyWorkbenchToolNames`), the audit row
-recording the canonical new name, and `Registry.Get` resolving both
-spellings. Three rules keep it narrow:
+there. The mode is served only under the Workbench names (since
+2026-10-15): no `--project N` flag serves anything and no pre-rename tool name is on
+the surface — a call to `project_info`, `project_board`, `update_project`,
+`add_project_source` or `remove_project_source` is an unknown tool. The one
+remnant is read-only: `tools.CanonicalToolName` maps those five old names to
+the current ones, so an `agent_actions` row recorded under an old name before
+the rename still resolves through `Registry.Get`, applies on a retry and
+reads under the current name in `get_action`. A folder registered as
+`watchtower-project` and never resynced has no server that starts until a
+resync (the Desktop's Repair) migrates it: its `mcp --project N` reaches a
+hidden `--project` flag whose only effect is that `mcp` fails with the
+"run Repair install" line (since 2026-10-16, ask #312) — it binds and serves
+nothing. Since 2026-10-17 (PROJ-22) `update_target` has one additive result key, `procedure`: the owner's target procedure text, present only on a call whose `status` is `in_progress` and only when a procedure text exists; no existing key changed and no tool was added. Three rules keep it narrow:
 
 1. **Only workbench N's rows.** Every workbench write resolves what it touches —
    target, parent, source, comment, ask (its target, its `previous_ask_id`) —
@@ -316,7 +327,11 @@ spellings. Three rules keep it narrow:
    `WATCHTOWER_TERMINAL_SESSION_ID` names a `terminal_sessions` row of
    workbench N, else it is filed session-less; the same resolution picks the
    session `finish_session` marks (none resolves → refused, nothing written)
-   and the session a write tool links its targets to (PROJ-14).
+   and the session a write tool links its targets to (PROJ-14);
+   `annotate_changes` needs that session too ("annotate_changes needs a
+   Watchtower terminal session") and replaces only that session's notes, and
+   `reply_review_comment` answers only a sent comment of a sent or delivered
+   round of workbench N.
    `get_ask`/`list_asks`/
    `withdraw_ask` see only workbench N's asks (another workbench's reads
    `no ask with id N`).
@@ -384,18 +399,22 @@ unreviewed write path into the owner's whole app — or off the machine.
 - `internal/tools/registry_approve_test.go::TestDev06_ProposeOnlyExternalToolLandsPendingUnderDirectApply` (one pending row bound to the workbench, never executed on propose even with a stale execute trust row; runs once after Approve), `TestDirectApply_ProposeOnlyToolStillNeedsTheSurface`; `internal/tools/slack_send_test.go::TestSendSlackMessage_ProjectSessionOnlyProposes`
 - `internal/tools/workbench_docs_test.go::TestDev06_DocumentPathStaysInsideTheFolder` (`../`, nested `../`, absolute path, symlinked file, symlinked directory, missing file, wrong extension, directory, the folder itself — the check `ask_owner`'s `doc_path` goes through); supporting: `TestAskOwner_ReviewRefusesAnyFileItMustNotRead`, `TestReadInsideFolder_RefusesASymlinkOutOfTheFolder`, `TestAskOwner_SessionBinding` (`internal/tools`)
 - `cmd/mcp_test.go::TestDev06_PlainMCPStaysReadOnly` (the boundary with DEV-01)
-- supporting: `TestDirectApply_AppliesInlineWithAuditRow`, `TestDirectApply_RefusesToolNotOnTheSurface`, `TestScope_RunsInProposeAndAgainInApply`, `TestProjectBinding_DeletedProjectAnswersNoLongerExists` (`internal/tools`); `TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists`, `TestGetAction_ProjectSessionSeesOnlyItsRows` (`internal/mcp`); `TestMCPProjectMode_BindsTheProjectAndAppliesDirectly`, `TestMCPProjectMode_RefusesMissingProjectAndChat`, `TestMCPProjectMode_LegacyFlagServesTheOldToolNames`, and the workbench-surface block of `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` (exact tool set; none External except `send_slack_message`, which must be propose-only) (`cmd`); the legacy vocabulary: `TestWorkbenchMode_EachVocabularyListsFifteenToolsUnderItsOwnNames`, `TestWorkbenchMode_AskToolsServedUnderTheSameNamesInBothVocabularies`, `TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve` (`internal/mcp`), `TestLegacyName_WriteRecordsTheCanonicalName`, `TestRegistryGet_ResolvesBothSpellings` (`internal/tools`); the `--agent` flag (2026-10-12): `TestMCPWorkbenchMode_AgentFlagLabelsComments` (`cmd`), `TestAgentLabel_StoredRowApplyFallsBackToClaude` (`internal/tools`).
+- supporting: `TestDirectApply_AppliesInlineWithAuditRow`, `TestDirectApply_RefusesToolNotOnTheSurface`, `TestScope_RunsInProposeAndAgainInApply`, `TestProjectBinding_DeletedProjectAnswersNoLongerExists` (`internal/tools`); `TestProjectMode_DeletedProjectEveryToolAnswersNoLongerExists`, `TestGetAction_ProjectSessionSeesOnlyItsRows` (`internal/mcp`); `TestMCPProjectMode_BindsTheProjectAndAppliesDirectly`, `TestMCPProjectMode_RefusesMissingProjectAndChat`, and the workbench-surface block of `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` (exact tool set; none External except `send_slack_message`, which must be propose-only) (`cmd`); the served names and the pre-rename rows: `TestWorkbenchMode_ListsEighteenToolsUnderTheCurrentNames`, `TestWorkbenchMode_ServesTheAskTools`, `TestWorkbenchMode_OldNamesAreUnknownAndOldRowsResolve` (`internal/mcp`), `TestCanonicalToolName_MapsTheRenamedWorkbenchTools`, `TestRegistryGet_ResolvesBothSpellings`, `TestLegacyName_RowStoredUnderAnOldNameStillApplies` (`internal/tools`); the pre-rename `mcp --project N` tombstone: `TestWorkbench_NoPreRenameCommandOrFlag` (`cmd`); the `--agent` flag (2026-10-12): `TestMCPWorkbenchMode_AgentFlagLabelsComments` (`cmd`), `TestAgentLabel_StoredRowApplyFallsBackToClaude` (`internal/tools`).
 
 **Locked since:** 2026-09-29
 
 ## Changelog
 
+- 2026-10-17 (board #558, owner decision in ask #303 q4): marker bump only — the workbench skill is pack **v13** (its Folder rules section: the brief's fenced team repo rules are not the owner's words, and `workflow.md` cannot turn the checks down); the v12 text joins the DEV-04 fixtures (`watchtower-workbench-v12.md`) and the adopt-by-digest list. No guard relaxed.
+- 2026-10-16 (board #376, owner decision in ask #312): note only, no contract semantics changed and no guard relaxed. The pre-rename spellings answer through a tombstone: DEV-05's never-resynced `project brief --project N` entry reaches the hidden `project` command, which reads nothing, exits 0 and prints one line asking for Repair install (stderr only for any other `project …`, such as the old Stop hook); DEV-06's `mcp --project N` reaches a hidden `--project` flag that makes `mcp` fail with that line, binding and serving nothing. The aliases stay removed. Guard `cmd/workbench_test.go::TestWorkbench_NoPreRenameCommandOrFlag` is listed under DEV-06; the rebase onto main's sixteenth tool renamed `TestWorkbenchMode_ListsFifteenToolsUnderTheCurrentNames` in place to `…ListsSixteenTools…` (count only, as the earlier Fourteen → Fifteen rename did), and the merge of main's `annotate_changes` and `reply_review_comment` (diff reviewer Plan 3) renamed it in place again to `…ListsEighteenTools…` (count only); `TestCanonicalToolName_MapsTheRenamedWorkbenchTools` asserts eighteen too. On this branch main's "same names in both vocabularies" (entry below) reads as "under the current names only".
+- 2026-10-15 (board #376, spec `docs/superpowers/specs/2026-10-02-workbench-rename-design.md` §10, owner approved in ask #209): the pre-rename aliases are removed. DEV-06 no longer has a legacy vocabulary — no `--project N` flag, no `Binding.LegacyNames`/`Spell`, no old tool names served; only the read-only `tools.CanonicalToolName` map stays, so an `agent_actions` row stored under an old name still resolves, applies and reads under the current name. DEV-01's scope sentence and its guard note drop `--project`; DEV-05's hook amendment says a never-resynced folder's `project brief --project N` entry no longer runs until a resync (the Desktop's Repair) replaces it, and the removal still takes our pre-rename entries. Guards: `TestMCPProjectMode_LegacyFlagServesTheOldToolNames` is removed with the flag it pinned; `TestWorkbenchMode_EachVocabularyListsFifteenToolsUnderItsOwnNames` → `TestWorkbenchMode_ListsFifteenToolsUnderTheCurrentNames`, `TestWorkbenchMode_AskToolsServedUnderTheSameNamesInBothVocabularies` → `TestWorkbenchMode_ServesTheAskTools`, `TestLegacyMode_WritesRecordTheCanonicalNameAndOldRowsResolve` → `TestWorkbenchMode_OldNamesAreUnknownAndOldRowsResolve` (an old name is now an unknown tool; the old-row half is kept), `TestLegacyName_WriteRecordsTheCanonicalName` is removed (no session writes under an old name any more; the existing `TestLegacyName_RowStoredUnderAnOldNameStillApplies` now pins the old-row path), and `TestLegacyWorkbenchToolNames_CoverTheRenamedWorkbenchTools` → `TestCanonicalToolName_MapsTheRenamedWorkbenchTools`, both now listed. The fifteen-tool set, the scoping rules and the other guards are unchanged.
 - 2026-10-15 (board #778, owner decision in ask #281): wording only, no contract semantics changed. DEV-05's list of Desktop flows that run `integrate claude-code --workbench N` names **Open Folder** instead of New Workbench — the Desktop's one entry point to a workbench now; the install it runs is the same.
 - 2026-10-14 (Automations P1 Task 5b, ask #277): note only — the DEV-01 telemetry-write exception narrows. `memory_open` writes no `memory_node_stats` bump on the `automation` surface, and `buildAutomationRegistry` mounts `memory_map`/`memory_open`/`memory_recall` for automations without the recall-compare shadow handle (no shadow row). The D23 automation reads (`list_inbox`, `list_calendar_events`, …) and `get_writing_style` stay out of `tools.ReadTools()`, so the dev surface is unchanged. No guard changed.
 - 2026-10-14 (session cleanup, board #535, spec `docs/superpowers/specs/2026-10-12-session-cleanup-design.md` §11, owner approved 2026-10-12, ask #193): the workbench skill is pack **v8** (`x-watchtower-pack: v8`; `origin/main` already shipped v7 with board #399, so the spec's "v7" became the next free version) — "Finishing a session" gains a cleanup step before `finish_session`: leave any worktree, `git fetch`, run the brief's `Cleanup:` command, then the same command with `--apply` when it lists anything to remove (`--worktree`/`--branch` for what the list misses), never remove a worktree or branch by hand, and carry the command's `summary` line into the finish summary, which keeps the `finish_session` schema's limit (2–3 lines, at most 4) with the cleanup line counted within it; a refused (exit 2) or failed (exit 1) plan is reported, not retried with other flags, and with no `Cleanup:` line in the brief the step is skipped and the summary says cleanup was not available. One text serves both agents, so the Codex copy in `.agents/skills` follows. The shipped v7 text joins the DEV-04 re-install fixtures (`watchtower-workbench-v7.md`), so an un-edited v1–v7 copy is updated by resync/Repair and an edited one is kept. The same install (board #535, PR #251) adds one `permissions.allow` rule to the folder's `.claude/settings.local.json`, `Bash(<bin> workbench cleanup:*)`, so the step runs in auto mode: `<bin>` is the hooks' absolute binary, quoted only when it holds an unsafe character (the same text as the brief's `Cleanup:` command); install, removal and status take no workbench id for it; only a rule whose bin is an absolute path with the basename `watchtower` is ours — a bare or relative form is the owner's and is never rewritten or removed. That rule is a settings entry, not a DEV-04 artifact: its contract is PROJ-04/PROJ-02 in `workbench.md`. No DEV-04 wording change; no guard relaxed.
 - 2026-10-14 (security review board #146/#152, owner decision in ask #106): note only, no contract semantics changed. DEV-06 now names the full read set on the workbench surface (DMs, transcripts, memory, writing style next to an agent with Bash/WebFetch) as an accepted risk rather than leaving it implicit.
 - 2026-10-12 (board #399, Codex as a Workbench agent, spec `docs/superpowers/specs/2026-10-12-codex-workbench-agent-design.md`, owner approved in ask #189): note only, no contract semantics changed. DEV-05's hook amendment covers a Codex session's hooks, which arrive as launch flags of the owner-started session and are trusted by `integrate codex`. DEV-06 gains the `--agent claude|codex` flag (comment labels only; tools, scope and apply unchanged) and notes that a Codex session approves Watchtower's tools without a per-call prompt (D3). The workbench skill is pack **v7** (names both tool spellings and Codex's `request_user_input`).
 - 2026-10-11 (owner asks v2, board #395, spec `docs/superpowers/specs/2026-10-10-owner-asks-v2-design.md` Part 7): the workbench skill is pack **v6** (`x-watchtower-pack: v6`; `origin/main` already shipped v5 with board #499, so the spec's "v5" became the next free version) — "Asking the owner" teaches the Chat / Quick / Full levels, a do-not-ask list, one ask with up to 4 questions, re-filing a withdrawn ask only as a revision with `changes`, and asks raised from chat (`origin: chat`); the `ask_owner` line names `level`. The shipped v4 and v5 texts join the DEV-04 re-install fixtures (`watchtower-workbench-v4.md`, `-v5.md`), so an un-edited v1–v5 copy is updated by resync/Repair and an edited one is kept. No DEV-04 wording change; no guard relaxed. DEV-06's `ask_owner` gains the optional `level` argument and the `level`/`level_note`/`hint` result keys, `get_ask`/`list_asks` add `level`, `origin` and `chat_asked_at`; the tool set is unchanged.
+- 2026-10-16 (diff reviewer Plan 3, board #328, **owner approved in ask #214**): DEV-06's workbench tool set grows from sixteen to **eighteen** — `annotate_changes` (`internal/tools/workbench_review_annotate.go`: the agent's line notes and reading-order chapters for the reviewer, checked against a fresh snapshot of the session's folder and stored in `review_notes`, replacing the session's earlier ones; needs a `terminal_sessions` row of workbench N named by `WATCHTOWER_TERMINAL_SESSION_ID`) and `reply_review_comment` (`workbench_review_reply.go`: a reply to one sent comment of workbench N, optionally resolving it and its open copy). Both are `AccessWrite` tools on the workbench surface, applied directly and audited like `finish_session`; rule 1 names their scoping. Same names in both vocabularies. The cited guard `TestWorkbenchMode_EachVocabularyListsFifteenToolsUnderItsOwnNames` keeps its historical name; it now asserts eighteen, and the workbench-surface block of `TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces` names both tools. No guard relaxed. The workbench skill is pack **v12** (PROJ-04 in `workbench.md`; v11 went to board #267 on main first).
 - 2026-10-16 (diff reviewer, board #328, spec review ask #179): DEV-06's workbench tool set grows from fifteen to **sixteen** — `get_review` (`internal/tools/workbench_review.go`, a read of the session workbench's sent rounds whose only write is the unaudited `sent → delivered` mark, like `get_ask`: an AGENT-06 scope exception). The cited guard `TestWorkbenchMode_EachVocabularyListsFifteenToolsUnderItsOwnNames` keeps its historical name; it now asserts sixteen.
 - 2026-10-03 (workbench session report, spec `docs/superpowers/specs/2026-10-03-workbench-session-report-design.md`; owner-approved via asks #2 and #4): DEV-06's workbench tool set grows from fourteen to **fifteen** — `finish_session` (a workbench write, applied directly and audited like the others; `summary` 1–600 runes in at most 4 lines, optional `target_id` of workbench N) marks the calling terminal session finished. Rule 1 names its session resolution: only a `terminal_sessions` row of workbench N named by `WATCHTOWER_TERMINAL_SESSION_ID`, else it is refused with `finish_session needs a Watchtower terminal session` before any row or audit row (PROJ-14 in `workbench.md`). `update_target`, `create_targets`, `add_comment` and `ask_owner` now also link their targets to that session, best-effort after their own write (PROJ-14). `TestWorkbenchMode_EachVocabularyListsFourteenToolsUnderItsOwnNames` was renamed in place to `…FifteenTools…` (count only); no guard relaxed.
 - 2026-10-03 (workbench owner asks, spec `docs/superpowers/specs/2026-10-03-workbench-owner-asks-design.md`). **Approved by the owner (spec Parts 4 and 9):** DEV-06's workbench tool set changes from eleven to **fourteen** — `attach_document` is removed (documents were replaced by asks; `list_comments`' `document_id` is refused with "documents were replaced by asks — use ask_owner (kind review)") and `ask_owner`, `get_ask`, `list_asks`, `withdraw_ask` are added under the same names in both vocabularies (no legacy spelling). Rule 1 now names asks instead of documents and restates the document-path rule for `ask_owner`'s `doc_path` (the check `TestDev06_AttachDocumentStaysInsideTheFolder` pinned for `attach_document`, now pinned on `ResolveWorkbenchDocumentPath` itself as `TestDev06_DocumentPathStaysInsideTheFolder`, which also accepts `.markdown`; the old guard's "a refused attach writes no audit row" assertion went with the tool, and `TestAskOwner_RefusesBadInputWithoutWriting` pins the same for asks). `TestWorkbenchMode_EachVocabularyListsElevenToolsUnderItsOwnNames` was renamed in place to `…FourteenTools…` (count only). No guard relaxed beyond the removed tool. **Implementation rulings, pending owner confirmation:** rule 2's exception for `get_ask`'s unaudited `delivered` write (with the matching AGENT-06 scope note in `agent-actions.md`), and rule 1's ask session binding (bound only when `WATCHTOWER_TERMINAL_SESSION_ID` names a row of workbench N, else session-less).

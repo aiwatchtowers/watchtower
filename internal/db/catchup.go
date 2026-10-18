@@ -120,15 +120,26 @@ func (db *DB) ListCatchupStreams(from, to float64, limit int) ([]CatchupItem, er
 			return nil, fmt.Errorf("scanning catchup stream: %w", err)
 		}
 		it.Area = "streams"
-		it.Title = source
+		name := streamSourceName(source)
+		it.Title = name
 		if scope != "" {
 			it.Title += " · " + scope
 		}
 		it.Body = renderStreamTopics(it.ID, topicsJSON)
-		it.Meta = fmt.Sprintf("%s account %d · to %s", source, accountID, periodTo)
+		it.Meta = fmt.Sprintf("%s account %d · to %s", name, accountID, periodTo)
 		out = append(out, it)
 	}
 	return out, rows.Err()
+}
+
+// streamSourceName names a stream_digests.source for a reader: an
+// IMAP/Outlook mailbox's 'imap' reads "Email" (its scope carries the address);
+// 'gmail' and 'jira' keep their stored names.
+func streamSourceName(source string) string {
+	if source == "imap" {
+		return "Email"
+	}
+	return source
 }
 
 // renderStreamTopics turns stream_digests.topics_json into "Title: summary"
@@ -294,39 +305,78 @@ func (db *DB) ListCatchupDecisions(from, to float64, limit int) ([]CatchupItem, 
 	return out, rows.Err()
 }
 
-// ListCatchupInbox returns actionable, still-open inbox items created inside
-// the window: the things that arrived for the owner while away.
+// ListCatchupInbox returns actionable, still-open inbox items that arrived
+// inside the window: created there, or — for a channel-level item that
+// accumulates messages (#586) — given a new message there (mentioned_at), so
+// a mention folded into an older item still reaches the recap. The ack
+// (AcknowledgeCatchupWindow, Swift CatchUpQueries.acknowledge) uses the same
+// MAX(created_at, mentioned_at) instant.
 func (db *DB) ListCatchupInbox(from, to float64, limit int) ([]CatchupItem, error) {
 	rows, err := db.Query(`
 		SELECT i.id, i.trigger_type, i.snippet, i.channel_id, i.sender_user_id,
 		       COALESCE(NULLIF(u.display_name, ''), NULLIF(u.real_name, ''), u.name, i.sender_user_id),
-		       COALESCE(c.name, '')
+		       COALESCE(c.name, ''), i.mentions, i.mentions_earlier
 		FROM inbox_items i
 		LEFT JOIN users u ON u.id = i.sender_user_id
 		LEFT JOIN channels c ON c.id = i.channel_id
 		WHERE i.item_class = 'actionable' AND i.status IN ('pending','snoozed')
-		  AND i.created_at > ? AND i.created_at <= ?
-		ORDER BY CASE i.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, i.created_at DESC
+		  AND MAX(i.created_at, i.mentioned_at) > ? AND MAX(i.created_at, i.mentioned_at) <= ?
+		ORDER BY CASE i.priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END, MAX(i.created_at, i.mentioned_at) DESC
 		LIMIT ?`, unixToISO(from), unixToISO(to), limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing catchup inbox: %w", err)
 	}
 	defer rows.Close()
+	type listed struct {
+		raw, channel string
+		earlier      int
+	}
 	var out []CatchupItem
+	var lists []listed
 	for rows.Next() {
 		var it CatchupItem
-		var sender, channel string
-		if err := rows.Scan(&it.ID, &it.Title, &it.Body, &it.ChannelID, &it.SenderID, &sender, &channel); err != nil {
+		var sender string
+		var l listed
+		if err := rows.Scan(&it.ID, &it.Title, &it.Body, &it.ChannelID, &it.SenderID, &sender, &l.channel, &l.raw, &l.earlier); err != nil {
 			return nil, fmt.Errorf("scanning catchup inbox item: %w", err)
 		}
 		it.Area = "inbox"
 		it.Meta = "from " + sender
-		if channel != "" {
-			it.Meta += " in #" + channel
+		if l.channel != "" {
+			it.Meta += " in #" + l.channel
 		}
 		out = append(out, it)
+		lists = append(lists, l)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	_ = rows.Close() // before the name lookup below, which needs the one connection
+
+	// An accumulated channel item (#586): who wrote, how many, and every
+	// message — the senders resolved in one query for the whole gather.
+	raws := make([]string, len(lists))
+	for i, l := range lists {
+		raws[i] = l.raw
+	}
+	names, err := db.InboxMentionSenderNames(raws...)
+	if err != nil {
+		return nil, err
+	}
+	for i, l := range lists {
+		lines := InboxMentionLines(l.raw, l.earlier, names, false)
+		if lines == nil {
+			continue
+		}
+		list, _ := ParseInboxMentions(l.raw)
+		out[i].Meta = "from " + InboxMentionSenders(list, names)
+		if l.channel != "" {
+			out[i].Meta += " in #" + l.channel
+		}
+		out[i].Meta += " · " + InboxMentionCountLabel(list, l.earlier)
+		out[i].Body = strings.Join(lines, "\n")
+	}
+	return out, nil
 }
 
 // ListCatchupTracks returns non-dismissed tracks updated inside the window.

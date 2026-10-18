@@ -439,7 +439,7 @@ func insertCodeQuestion(t *testing.T, d *DB, contextID, question string) int64 {
 // I3 (docs/superpowers/sdd/2026-09-29-projects-poc/final-review.md): a plain
 // rowid PK hands out max(rowid)+1, so deleting the newest project and
 // creating another would reuse its id — silently rebinding the old folder's
-// hook, MCP registration ("watchtower mcp --project N") and any
+// hook, MCP registration ("watchtower mcp --workbench N") and any
 // comment_id the agent still holds to the new project's board.
 // AUTOINCREMENT on projects/project_comments (migration 00081) must make that
 // impossible.

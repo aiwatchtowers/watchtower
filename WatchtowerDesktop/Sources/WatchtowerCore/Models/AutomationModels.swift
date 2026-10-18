@@ -69,6 +69,9 @@ package struct Automation: FetchableRecord, Identifiable, Equatable, Sendable {
     package let lastScheduledFor: Date?
     package let nextRunAt: Date?
     package let removedAt: Date?
+    /// The daemon turned it off by itself (a runaway script, #584); "" / nil otherwise.
+    package let disabledReason: String
+    package let disabledAt: Date?
 
     package init(
         id: Int64,
@@ -94,7 +97,9 @@ package struct Automation: FetchableRecord, Identifiable, Equatable, Sendable {
         enabled: Bool = false,
         lastScheduledFor: Date? = nil,
         nextRunAt: Date? = nil,
-        removedAt: Date? = nil
+        removedAt: Date? = nil,
+        disabledReason: String = "",
+        disabledAt: Date? = nil
     ) {
         self.id = id
         self.slug = slug
@@ -120,6 +125,8 @@ package struct Automation: FetchableRecord, Identifiable, Equatable, Sendable {
         self.lastScheduledFor = lastScheduledFor
         self.nextRunAt = nextRunAt
         self.removedAt = removedAt
+        self.disabledReason = disabledReason
+        self.disabledAt = disabledAt
     }
 
     package init(row: Row) throws {
@@ -148,6 +155,8 @@ package struct Automation: FetchableRecord, Identifiable, Equatable, Sendable {
         lastScheduledFor = AutomationDates.parse(row["last_scheduled_for"])
         nextRunAt = AutomationDates.parse(row["next_run_at"])
         removedAt = AutomationDates.parse(row["removed_at"])
+        disabledReason = row["disabled_reason"] ?? ""
+        disabledAt = AutomationDates.parse(row["disabled_at"])
     }
 
     /// "Needs your confirmation" (spec §2.5): a parsed, present recipe whose
@@ -531,5 +540,75 @@ package struct AutomationListItem: Identifiable, Equatable, Sendable {
         if grants.contains(where: { !$0.isActive(approvalHash: automation.approvalHash) }) { out.append(.autoPaused) }
         if !automation.enabled { out.append(.disabled) }
         return out
+    }
+}
+
+// MARK: - Workbench automations (P5)
+
+/// A `session()` step waiting for the Desktop to launch its session (spec
+/// §13.1): its run waits for the app. `title` is the step's resolved title
+/// (Go's `⚙ <title or name> · run #N`), `agent` the resolved agent.
+package struct PendingSessionRequest: Equatable, Sendable {
+    package let stepID: Int64
+    package let runID: Int64
+    package let automationID: Int64
+    package let projectID: Int64
+    package let automationName: String
+    package let prompt: String
+    package let title: String
+    package let agent: AgentKind
+
+    package init(
+        stepID: Int64,
+        runID: Int64,
+        automationID: Int64,
+        projectID: Int64,
+        automationName: String,
+        prompt: String,
+        title: String,
+        agent: AgentKind
+    ) {
+        self.stepID = stepID
+        self.runID = runID
+        self.automationID = automationID
+        self.projectID = projectID
+        self.automationName = automationName
+        self.prompt = prompt
+        self.title = title
+        self.agent = agent
+    }
+}
+
+/// One `trigger.button` recipe of a workbench, as its header shows it (spec
+/// §12.4). `activeRunID`: the newest queued, running or waiting run.
+package struct AutomationHeaderButton: Identifiable, Equatable, Sendable {
+    package enum State: Equatable, Sendable {
+        case runnable, needsConfirmation, disabled, parseError
+    }
+
+    package let automationID: Int64
+    package let slug: String
+    package let label: String
+    package let confirm: Bool
+    package let state: State
+    package let activeRunID: Int64?
+
+    package var id: Int64 { automationID }
+
+    package init(automationID: Int64, slug: String, label: String, confirm: Bool, state: State, activeRunID: Int64?) {
+        self.automationID = automationID
+        self.slug = slug
+        self.label = label
+        self.confirm = confirm
+        self.state = state
+        self.activeRunID = activeRunID
+    }
+
+    /// A parse error first (nothing else about the recipe is known), then
+    /// needs confirmation, then disabled — the list badges' order.
+    package static func state(of automation: Automation) -> State {
+        if !automation.parseError.isEmpty { return .parseError }
+        if automation.needsConfirmation { return .needsConfirmation }
+        return automation.isRunnable ? .runnable : .disabled
     }
 }

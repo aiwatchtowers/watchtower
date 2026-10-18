@@ -174,7 +174,7 @@ func TestUpdateMultipleTimes(t *testing.T) {
 	_ = store.Seed()
 
 	seedVer := DefaultVersions[DigestChannel]
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		text := fmt.Sprintf("version %d text", seedVer+i+1)
 		require.NoError(t, store.Update(DigestChannel, text, fmt.Sprintf("edit %d", i+1)))
 	}
@@ -656,10 +656,10 @@ func TestSuggest_MixedFeedback(t *testing.T) {
 	database, store := seedStoreWithFeedback(t)
 
 	// Multiple good and bad feedback entries
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		addFeedback(t, database, "digest", fmt.Sprintf("good-%d", i), 1, fmt.Sprintf("good example %d", i))
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		addFeedback(t, database, "digest", fmt.Sprintf("bad-%d", i), -1, fmt.Sprintf("bad example %d", i))
 	}
 

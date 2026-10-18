@@ -119,7 +119,7 @@ func (db *DB) ListLearnedRulesByScope(scopeKeys []string, limit int) ([]InboxLea
 		return nil, nil
 	}
 	placeholders := make([]string, len(scopeKeys))
-	args := make([]interface{}, len(scopeKeys)+1)
+	args := make([]any, len(scopeKeys)+1)
 	for i, k := range scopeKeys {
 		placeholders[i] = "?"
 		args[i] = k

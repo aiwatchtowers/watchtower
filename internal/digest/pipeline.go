@@ -201,7 +201,7 @@ type backfillScope struct {
 	mu         sync.Mutex
 	considered map[string]float64
 	failed     map[string]bool
-	lastErr    error
+	errs       []error // every failure of the call, in order
 }
 
 // inBackfill reports whether the pipeline is writing a backfill digest or
@@ -224,7 +224,7 @@ func (p *Pipeline) markBackfillFailed(err error, channelIDs ...string) {
 	for _, id := range channelIDs {
 		b.failed[id] = true
 	}
-	b.lastErr = err
+	b.errs = append(b.errs, err)
 }
 
 // SetJiraKeyDetector sets an optional Jira key detector for linking digest decisions to Jira issues.
@@ -292,27 +292,27 @@ func (p *Pipeline) getPrompt(id string) (string, int) {
 var ErrDigestLocked = errors.New("another digest pipeline is already running")
 
 // acquireDigestLock acquires an exclusive file lock to prevent concurrent digest runs.
-// Returns the lock file (caller must defer Close) and unlock func, or
-// ErrDigestLocked if already locked, or another error if the lock file cannot
-// be set up.
-func (p *Pipeline) acquireDigestLock() (*os.File, func(), error) {
+// Returns the unlock func (caller must defer it; it also closes the lock
+// file), or ErrDigestLocked if already locked, or another error if the lock
+// file cannot be set up.
+func (p *Pipeline) acquireDigestLock() (func(), error) {
 	lockPath := filepath.Join(p.cfg.WorkspaceDir(), "digest.lock")
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
-		return nil, nil, fmt.Errorf("creating lock dir: %w", err)
+		return nil, fmt.Errorf("creating lock dir: %w", err)
 	}
 	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		return nil, nil, fmt.Errorf("opening digest lock: %w", err)
+		return nil, fmt.Errorf("opening digest lock: %w", err)
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
-		return nil, nil, ErrDigestLocked
+		return nil, ErrDigestLocked
 	}
 	unlock := func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		f.Close()
 	}
-	return f, unlock, nil
+	return unlock, nil
 }
 
 // Run executes the full digest pipeline: channel digests, then daily rollup.
@@ -327,7 +327,7 @@ func (p *Pipeline) Run(ctx context.Context) (int, *Usage, error) {
 		return 0, nil, nil
 	}
 
-	_, unlock, err := p.acquireDigestLock()
+	unlock, err := p.acquireDigestLock()
 	if err != nil {
 		p.logger.Printf("digest: skipping — %v", err)
 		return 0, nil, nil
@@ -388,7 +388,7 @@ func (p *Pipeline) RunChannelDigestsOnly(ctx context.Context) (int, *Usage, erro
 		return 0, nil, nil
 	}
 
-	_, unlock, err := p.acquireDigestLock()
+	unlock, err := p.acquireDigestLock()
 	if err != nil {
 		p.logger.Printf("digest: skipping — %v", err)
 		return 0, nil, nil
@@ -458,7 +458,7 @@ func (p *Pipeline) RunRollups(ctx context.Context) error {
 		return nil
 	}
 
-	_, unlock, err := p.acquireDigestLock()
+	unlock, err := p.acquireDigestLock()
 	if err != nil {
 		p.logger.Printf("digest: skipping rollups — %v", err)
 		return nil
@@ -1078,9 +1078,7 @@ func (p *Pipeline) dispatchChannelBatches(ctx context.Context, batches [][]batch
 	agg := &batchAggregator{}
 	var wg sync.WaitGroup
 	for range min(workers, len(batches)) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			for batch := range batchCh {
 				if ctx.Err() != nil {
 					return
@@ -1091,7 +1089,7 @@ func (p *Pipeline) dispatchChannelBatches(ctx context.Context, batches [][]batch
 					p.processBatchEntry(ctx, batch, total, agg, nowUnix)
 				}
 			}
-		}()
+		})
 	}
 	wg.Wait()
 
@@ -2021,13 +2019,13 @@ func groupIntoBatches(entries []batchEntry, maxChannels, maxMessages int) [][]ba
 // Filters out entries with empty ChannelID or Summary.
 func parseBatchDigestResult(raw string) ([]BatchChannelResult, error) {
 	cleaned := raw
-	if idx := strings.Index(raw, "```json"); idx >= 0 {
-		cleaned = raw[idx+7:]
+	if _, after, ok := strings.Cut(raw, "```json"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
-	} else if idx := strings.Index(raw, "```"); idx >= 0 {
-		cleaned = raw[idx+3:]
+	} else if _, after, ok := strings.Cut(raw, "```"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
@@ -2152,12 +2150,6 @@ func (p *Pipeline) generateBatchDigest(ctx context.Context, entries []batchEntry
 		return nil, err
 	}
 	return &batchDigestOutput{results: results, rendered: rendered, usage: usage, promptVersion: pv}, nil
-}
-
-// isFirstRun checks if there are any existing channel digests in the DB.
-func (p *Pipeline) isFirstRun() bool {
-	digests, err := p.db.GetDigests(db.DigestFilter{Type: "channel", Limit: 1})
-	return err != nil || len(digests) == 0
 }
 
 // formatMessages renders messages for a digest prompt. Every line carries the
@@ -2383,7 +2375,7 @@ func (p *Pipeline) loadCaches() {
 			p.channelTypes[ch.ID] = ch.Type
 			// For DMs, show the other user's display name instead of raw ID
 			if ch.Type == "dm" || ch.Type == "im" {
-				uid := ""
+				var uid string
 				if ch.DMUserID.Valid {
 					uid = ch.DMUserID.String
 				} else {
@@ -2532,13 +2524,13 @@ func blankInventedMessageRefs(topics []Topic, msgs []db.Message) int {
 func parseDigestResult(raw string) (*DigestResult, error) {
 	// Try to extract JSON from markdown fences
 	cleaned := raw
-	if idx := strings.Index(raw, "```json"); idx >= 0 {
-		cleaned = raw[idx+7:]
+	if _, after, ok := strings.Cut(raw, "```json"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
-	} else if idx := strings.Index(raw, "```"); idx >= 0 {
-		cleaned = raw[idx+3:]
+	} else if _, after, ok := strings.Cut(raw, "```"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}

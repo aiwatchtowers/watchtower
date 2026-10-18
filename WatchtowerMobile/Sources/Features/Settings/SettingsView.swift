@@ -134,6 +134,10 @@ struct SettingsView: View {
                 get: { settings.startSessions },
                 set: { value in Task { await settings.setStartSessions(value) } }
             ))
+            Toggle("Answer permission prompts from this phone", isOn: Binding(
+                get: { settings.permissionsRequested },
+                set: { value in Task { await settings.setPermissionsRequested(value) } }
+            ))
         } header: {
             Text("Workbench")
         } footer: {
@@ -145,14 +149,37 @@ struct SettingsView: View {
     private func workbenchFooter(_ settings: DeviceSettings) -> some View {
         if let error = settings.lastError {
             Text(error).foregroundStyle(.red)
-        } else if settings.typingRequested {
-            Text(Self.typingCaption(grant: model.snapshot.grant))
+        } else {
+            let lines = [
+                settings.typingRequested ? "Typing: \(Self.typingCaption(grant: model.snapshot.grant))" : nil,
+                settings.startSessions ? "Starting sessions: \(Self.startSessionsCaption(grant: model.snapshot.grant))" : nil,
+                settings.permissionsRequested ? "Permission prompts: \(Self.permissionsCaption(grant: model.snapshot.grant))" : nil
+            ].compactMap { $0 }
+            if !lines.isEmpty {
+                Text(lines.joined(separator: "\n"))
+            }
         }
     }
 
     /// The typing request's answer from the Mac (spec §4.13).
     static func typingCaption(grant: DeviceGrant?) -> String {
         grant?.typingAllowed == true
+            ? "Allowed"
+            : "Waiting for your Mac to confirm"
+    }
+
+    /// Whether the Mac lets this phone start sessions (#565): the owner
+    /// allows it on the Mac, after typing.
+    static func startSessionsCaption(grant: DeviceGrant?) -> String {
+        grant?.mayStartSessions == true
+            ? "Allowed"
+            : "Allow it on your Mac: Watchtower → Settings → Mobile, after typing"
+    }
+
+    /// The permission-prompt request's answer from the Mac (#517): its own
+    /// grant, never the typing one.
+    static func permissionsCaption(grant: DeviceGrant?) -> String {
+        grant?.permissionsAllowed == true
             ? "Allowed"
             : "Waiting for your Mac to confirm"
     }

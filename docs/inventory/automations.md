@@ -18,17 +18,19 @@ of these entries; decisions §20, §20.1).
 `internal/db/migrations/00117_automation_tool_grants.sql`,
 `cmd/automations*.go` (incl. `cmd/automations_auto.go`), `cmd/automations_registry.go`,
 `internal/briefing/automations.go` (the FROM YOUR AUTOMATIONS block),
-`internal/daemon/automation_wake.go`, `internal/tools/emails.go`,
+`internal/daemon/automation_wake.go`, `internal/automations/bus.go`,
+`internal/automations/eventsrc*.go`, `internal/daemon/automation_events.go`,
+`internal/db/automation_event_sources.go` (P4 event bus and sources),
+`internal/tools/emails.go`,
 `internal/tools/automation_reads.go`, `internal/automations/authoring/` (`draft_automation`,
 `save_automation`, P3), the Desktop's automation views and Core services
 (`WatchtowerDesktop/Sources/Views/Automations/`,
 `WatchtowerDesktop/Sources/WatchtowerCore/Services/Automations/`, P3)
 **Last full audit:** 2026-10-16 (Automations P3)
 
-Phases: P1 (core) and P2 (writes) are in code. P3 (authoring + Desktop), P4
-(events), P5 (workbench) and P6 (mcp, agent, templates) each flip their
-**Planned** part in the same commit as its code; exactly one plan flips each
-part. Guard tests are named `TestAutoNN_…` (Go) and `testAutoNN_…` (Swift);
+Phases: P1 (core), P2 (writes), P3 (authoring + Desktop), P4 (events), P5
+(workbench) and P6 (mcp, agent, templates) are all in code; each flipped its
+**Planned** part in the same commit as its code, exactly one plan per part. Guard tests are named `TestAutoNN_…` (Go) and `testAutoNN_…` (Swift);
 the other guards listed are pinned by name too.
 
 ## AUTO-01 — The manifest is the only source of permissions
@@ -179,7 +181,9 @@ no longer active with `ErrRunNotActive`). Any other terminal status —
 `failed`, `timed_out`, `budget_exceeded`, `cancelled`, `expired`, an
 interrupted run — leaves `automation_state` and `automation_outputs`
 byte-identical. Reads see the committed state plus the run's own sets. A dry
-run never commits.
+run never commits. A succeeded script whose journal lost a write still commits
+(its writes already happened; failing it would make the next run repeat them),
+and the run's error notes the incomplete journal (board #562).
 
 **Why locked:** A run that dies halfway must be safe to rerun; a half-written
 cursor in `state` would silently skip or repeat work.
@@ -189,6 +193,7 @@ cursor in `state` would silently skip or repeat work.
 - `internal/automations/executor_test.go` — `TestAuto04_FailedRunLeavesStateAndOutputsUnchanged` (failed, timed out, over budget, cancelled), `TestAuto04_SucceededCommitsStateAndOutputsAtomically`
 - `internal/automations/sdk_test.go` — `TestState_ReadsCommittedPlusOwnSets`, `TestState_RejectsUnserialisableValues`
 - `internal/automations/sdk_output_p2_test.go` — `TestOutput_BriefingBufferedAndCommittedOnSuccess` (P2: `output.briefing` is buffered like `report` and committed only with `succeeded`)
+- `internal/automations/run_limits_test.go` — `TestAuto04_JournalErrorAfterSuccessStillCommits` (board #562)
 
 **Locked since:** 2026-10-14
 
@@ -299,7 +304,9 @@ code or permissions the owner did not see.
 **Observable:** One fresh goja runtime per run. No `require`, `console`,
 filesystem, network, timers or promises: `async`/`await`/`Promise`/
 `setTimeout`/`setInterval` are refused before the run ("the script API is
-synchronous"); `eval`, `Function` and every function prototype's
+synchronous"), and so is a BigInt literal ("BigInt is not available in
+automations"; `BigInt`, the BigInt typed arrays and DataView's BigInt
+accessors are absent, ask #331); `eval`, `Function` and every function prototype's
 `.constructor` are unavailable (no code from strings); a script that breaks
 out of its wrapper function is a parse error. SDK results reach the script as
 plain JSON values (never a Go object), and no SDK result carries a token, a
@@ -311,8 +318,9 @@ the script outside it.
 
 **Test guards:**
 - `internal/automations/sandbox_test.go` — `TestAuto07_NoRequireFsNetTimers`, `TestRecipe_AsyncScriptRefused`, `TestSandbox_PreParseRefusesAsync`
+- `internal/automations/sandbox_bombs_test.go` — `TestSandbox_BigIntNotAvailable` (ask #331)
 - `internal/automations/sandbox_hardening_test.go` — `TestAuto07_NoCodeFromStrings`, `TestSandbox_WrapperBreakoutRefused`, `TestSandbox_SDKResultsArePlainJSValues`
-- P6: `cmd/automations_agent_test.go` — `TestAgent_CLIChildEnvHasRunMarkerAndNoSecrets` (an `agent()` CLI child gets only PATH, HOME, LANG, USER, the run marker and, when the daemon has them set, the proxy variables (`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`/`ALL_PROXY` and lowercase forms), `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR` and `TMPDIR` (ask #185), plus a scrubbed `CODEX_HOME` on codex; no API key, token, secret or Quick Connection reaches it); `cmd/mcp_automation_test.go` — `TestAgentMCPServer_RefusesWithoutMatchingMarkerOrRunningRun`
+- P6: `cmd/automations_agent_test.go` — `TestAgent_CLIChildEnvHasRunMarkerAndNoSecrets` (an `agent()` CLI child gets only PATH, HOME, LANG, USER, the run marker and, when the daemon has them set, the proxy variables (`HTTPS_PROXY`/`HTTP_PROXY`/`NO_PROXY`/`ALL_PROXY` and lowercase forms), `NODE_EXTRA_CA_CERTS`, `SSL_CERT_FILE`, `SSL_CERT_DIR` and `TMPDIR` (ask #185), plus a scrubbed `CODEX_HOME` on codex; no API key, token, secret or Quick Connection reaches it); `cmd/mcp_automation_test.go` — `TestAgentMCPServer_RefusesWithoutMatchingMarkerOrRunningRun`, `TestAgentMCPServer_RefusedInsideATerminalSession` (refused with `WATCHTOWER_TERMINAL_SESSION_ID` set)
 
 **Locked since:** 2026-10-14
 
@@ -328,11 +336,33 @@ waits ≤ `pause_timeout_hours` (→ `expired`). There is no token cap across ru
 cancel interrupts cannot be caught by the script's `catch`. A script stuck in
 a native builtin past `AbandonGrace` (2 s) after an interrupt is abandoned:
 its run ends, and its automation is disabled ("runaway script — check and
-re-enable"). Every run reaches exactly one terminal status, including after a
+re-enable"). Deep or huge data cannot end the daemon process through the
+builtins the sandbox caps (the Hardening list in `docs/features/automations.md`:
+nesting deeper than 1000 in `JSON.parse`, `JSON.stringify` and `flat`, a bound
+name past 10 000 characters, and one capped call past 16 Mi characters or
+elements): each throws a
+`RangeError` the script can catch, and nothing is disabled for it. A run
+whose live heap grows past `RunHeapBudget` (1 GiB over its baseline; not
+read while it waits, re-based when it resumes or another run starts or ends,
+by at most one budget in all, so never more than 2 GiB past its start)
+ends with "the automation used too much memory", failed, also without a
+disable; it is stopped within about one 10 ms poll of its live heap passing
+that limit (a GC is forced when the heap's objects pass it first), plus one
+native step still running.
+Every run reaches exactly one terminal status, including after a
 daemon restart: on start the executor ends every `running`/`waiting` run
 `failed`/`interrupted` — except a live CLI dry run, which is swept only past
 its deadline plus one minute; a stop mid-run ends it `failed`/`interrupted`.
 Ending a run closes its still-open steps in the same transaction.
+A finish the database refuses is retried three times, then the run is ended
+`failed`/`backend` without its commit, so it never holds its slots until the
+next restart (board #562). A run makes at most 2000 SDK calls (the call past
+it is an error step, then the run ends `failed`/`script`, uncatchably), files
+at most 50 buffered outputs and starts at most 10 sessions with `session()`
+(a refused or invalid call does not count; each call past either cap is a
+catchable `ValidationError`). A finish without a commit keeps its own
+status and error; a deterministic refusal (`db.ErrInvalidRunFinish`) is not
+retried, nor is any finish once the daemon is stopping.
 
 **Why locked:** An automation runs unattended; a run that never ends holds a
 concurrency slot forever, and one that never stops spending burns the owner's
@@ -341,18 +371,20 @@ model quota.
 **Test guards:**
 - `internal/automations/sandbox_test.go` — `TestAuto08_InterruptOnTimeout`, `TestSandbox_InterruptIsNotCatchable`
 - `internal/automations/sandbox_hardening_test.go` — `TestSandbox_CatastrophicRegexEndsWithinDeadline`, `TestSandbox_StuckNativeIsAbandonedAfterGrace`
+- `internal/automations/sandbox_bombs_test.go` — `TestSandbox_NativeBombsEndTheRunNotTheProcess` (each bomb of security review #5 runs in the test process: Go-stack recursion in `JSON.parse`/reviver/`flat`, unbounded `replace`/`replaceAll`/`@@replace`/`JSON.stringify`/`toLocaleString`/`flat`/`flatMap` results, `bind` chains)
 - `internal/automations/executor_test.go` — `TestAuto08_InterruptOnBudget`, `TestAuto08_CatchAllLoopStillEndsOnBudget`, `TestAuto08_NoDailyCapAcrossRuns`, `TestAuto08_RestartMarksInterrupted`, `TestBudget_EstimatesTokensWhenUsageMissing`, `TestWaiter_PauseTimeoutExpires`, `TestExecutor_DaemonStopMidRunEndsInterrupted`, `TestExecutor_AbandonedRunDisablesAutomation`, `TestExecutor_SweepsStaleDryRuns`, `TestExecutor_StartSparesLiveCLIDryRun`
 - `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_BudgetBound`
 - P6 (`agent()`): `internal/automations/sdk_agent_test.go` — `TestAgent_BudgetCarvedFromRun`, `TestAgent_CarvedDeadlineThrowsCatchableBudgetExceeded` (a spent carved minutes deadline throws a catchable `BudgetExceeded`; the run's own deadline stays uncatchable), `TestAgent_ResultUsageDebitedOnce`; `cmd/automations_agent_test.go` — `TestAgent_RunBudgetCrossedInterruptsRun`, `TestAgent_LocalBudgetSpentThrowsCatchable`, `TestAgent_IterationsCapped12`, `TestAgent_CLIUsageDebitedOrEstimated`, `TestAgent_CancelKillsCLIChild` (the whole process group dies); `internal/ai/client_child_test.go` — `TestCLIAgent_SIGINTIgnoringGroupKilledWithinGrace` (`ai.GroupKillGrace` = 1 s, inside the 2 s `AbandonGrace`)
 - `internal/db/automation_runs_test.go` — `TestAuto08_RestartMarksInterrupted`, `TestAuto08_RestartSparesLiveDryRun`, `TestRunEnd_ClosesOpenSteps`
+- `internal/automations/run_limits_test.go` — `TestAuto08_StepCapEndsTheRun`, `TestAuto08_FinishFailureRetries`, `TestAuto08_FinishFailureEndsTheRunFailed`, `TestAuto08_FinishFailureWithoutCommitKeepsItsEnd`, `TestAuto08_FinishSkipsRetriesWhenStopping`, `TestAuto08_FinishDoesNotRetryAnInvalidFinish`, `TestOutputs_CapPerRun`, `TestSession_CapPerRun` (board #562); `internal/automations/workbench_e2e_test.go` — `TestPRReviewRounds_MorePRsThanTheSessionCap`
 
 **Locked since:** 2026-10-14
 
 ## AUTO-09 — Triggers only queue
 
-**Status:** Enforced (P1: scheduler and CLI `run`) · Planned (P4: the event
-bus). The Desktop buttons (P3's Run now, P5's header buttons) add guards
-without a status change.
+**Status:** Enforced (P1: scheduler and CLI `run`; P4: the event bus). The
+Desktop buttons (P3's Run now, P5's header buttons) add guards without a
+status change.
 
 **Observable:** The scheduler, the event bus, CLI `run` and the Desktop
 buttons only insert `queued` rows (`db.EnqueueAutomationRun`, the only way to
@@ -361,7 +393,9 @@ coalesced onto it); only the daemon's executor runs them. The one exception
 is `automations dry-run`, which executes its own `trigger='dry_run'` row in
 the CLI process and writes nothing outside its journal; the daemon never
 picks up a dry-run row. The automation wake is `SIGUSR2`; it never starts a
-sync cycle.
+sync cycle. The event bus's `Flush` only inserts `queued` rows (one per
+automation per cycle) and merges into a still-queued event run; event runs
+carry ids, labels, enums and counts only.
 
 **Why locked:** One executor in one process is what makes concurrency
 (AUTO-05), budgets (AUTO-08) and restarts (AUTO-08) hold; a trigger that ran
@@ -372,7 +406,9 @@ a script inline would escape all three.
 - `cmd/automations_test.go` — `TestAuto09_RunCommandOnlyQueues`
 - `internal/db/automation_runs_test.go` — `TestRun_CoalescesSecondTrigger`, `TestNextQueued_SkipsDryRun`
 - `internal/daemon/automation_wake_test.go` — `TestDaemon_AutomationWakeSignalDoesNotStartSync`
-- P4 adds the bus guard (plan `2026-10-14-automations-p4.md`) and flips that half.
+- `WatchtowerDesktop/Tests/Core/WorkbenchHeaderAutomationButtonsTests.swift` — `testAuto09_HeaderButtonOnlyQueues` (a workbench header button's click is exactly `automations run <id> --json`; Swift writes no run)
+- `internal/automations/bus_test.go` — `TestAuto09_FlushOnlyQueues`, `TestBus_OneRunPerAutomationPerCycle` (P4)
+- `internal/automations/events_test.go` — `TestBus_EventsCarryNoContent` (P4)
 
 **Locked since:** 2026-10-14
 
@@ -414,7 +450,9 @@ report, not two and not zero; a restart must not produce a third.
 duration; `args_json` and `result_summary` are clipped to 4 KiB. A step whose
 result cannot be encoded is re-closed as an error, never left `ok`. `log` is
 capped at 200 ok steps plus one cap-error step per run, even when getters log
-while their arguments are converted.
+while their arguments are converted. A run's SDK calls are capped at 2000
+steps plus one cap-error step, after which the run ends (AUTO-08), so no call
+goes unjournaled.
 
 **Why locked:** The journal is the owner's only view of what an unattended
 script did; a call missing from it is an action nobody can audit.
@@ -430,14 +468,24 @@ script did; a call missing from it is an action nobody can audit.
 ## AUTO-12 — Dry run writes nothing outside its journal
 
 **Status:** Enforced (P1: no `agent_actions` row, no output, no state
-change; P5: no `shell()` process, no session, no ask)
+change; P5: no `shell()` process, no session, no ask; ask #326: a draft calls
+no Quick Connection)
 
 **Observable:** A dry run makes no `agent_actions` row, no output, no state
 change, starts no session and runs no `shell()`: `output.*` and `state.set`
 steps record `status='dry_run'` and nothing is committed; `llm` and read
 tools run for real and their tokens count on the run. The in-memory dry run (`DryRunInMemory`, P3's `draft_automation`)
 writes no row of any table, not even a run row, and does not execute
-`agent()` (its step closes `dry_run` with a note, no child, no tokens). The
+`agent()` (its step closes `dry_run` with a note, no child, no tokens) or
+call a Quick Connection through `mcp()`: after the manifest check (a tool the
+draft does not declare is still `PermissionDenied`) the first `mcp()` call
+closes its step `dry_run` with a note and ends the draft with status
+`stopped` (`automations.DryRunStopped`, not a failure; the steps before it
+are kept) — the server is never reached, because a draft's script is
+chat-written and a read tool's arguments still carry data out (ask #326).
+`automations.Env.InMemoryDraft` is the one test for "this is a draft" that
+`agent()` and `mcp()` share. A dry run of a saved recipe (the card's **Dry run**) calls `mcp()` for
+real, QC-02 reads only. The
 editor's draft cache (`<workspace>/automation-drafts/<conversation id>.jsonl`,
 P3) is a UI cache of the tool's own result written by `draft_automation`
 itself, not by the script, and no database row.
@@ -452,8 +500,8 @@ would make checking as dangerous as running.
 - `internal/automations/sdk_output_p2_test.go` — `TestOutput_P2KindsDryRun` (P2: `output.briefing`/`target`/`slack` in a dry run commit nothing and propose nothing)
 - `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_WritesNoRows`
 - `internal/automations/sdk_test.go` — `TestOutput_DryRunWritesAreDryRunSteps`
-- P3: `internal/automations/authoring/draft_test.go` — `TestDraftAutomation_WritesNothing` (a draft whose script calls `output.*`, `state.set` and a write tool writes no row); `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_AgentIsNotRun`
-- P6: `cmd/automations_agent_test.go` — `TestAgent_DryRunRemovesWriteTools` (a dry-run `agent()` is offered no write tool; `mcp()` is real in a dry run, QC-02 reads only); `cmd/mcp_automation_test.go` — `TestAgentMCPServer_DryRunMountsNoWrites`
+- P3: `internal/automations/authoring/draft_test.go` — `TestDraftAutomation_WritesNothing` (a draft whose script calls `output.*`, `state.set` and a write tool writes no row); `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_AgentIsNotRun`, `TestDryRunInMemory_MCPIsNotCalled` (ask #326: a draft's `mcp()` never reaches the caller and stops the draft cleanly), `TestDryRunInMemory_MCPOutsideManifestIsDenied` (the manifest check precedes the stop)
+- P6: `cmd/automations_agent_test.go` — `TestAgent_DryRunRemovesWriteTools` (a dry-run `agent()` is offered no write tool; `mcp()` is real in a saved recipe's dry run, QC-02 reads only, and never called in a draft); `cmd/mcp_automation_test.go` — `TestAgentMCPServer_DryRunMountsNoWrites`
 - `internal/automations/sdk_shell_test.go` — `TestShell_DryRunStartsNoProcess` (P5: a dry-run `shell()` returns `{status:"dry_run"}`, journals a `dry_run` step and starts no process)
 - `internal/automations/sdk_session_test.go` — `TestSession_DryRunWaitsForNothing` (P5: a dry-run `session()` returns `{status:"dry_run"}` and asks the Desktop for nothing); `internal/automations/sdk_ask_test.go` — `TestAsk_DryRunCreatesNoRow`
 - `internal/automations/templates_e2e_test.go` — `TestTemplates_DryRunE2E` (P6: every gallery template — the personal ones and each workbench recipe — installed and dry-run, journals its outputs, state writes, `shell()` and `session()` calls `dry_run` while reads and `llm()` run for real; each recipe's journal is pinned step by step, so an empty journal fails)
@@ -510,12 +558,20 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-18 (board #562, **owner decision ask #304 q4**; security review A5, tech review E1–E3): strengthening. **AUTO-08:** per-run caps — 2000 SDK calls (`MaxStepsPerRun`; the call past it is an error step and ends the run `failed`/`script`, uncatchably), 50 buffered outputs (`MaxOutputsPerRun`) and 10 sessions started by `session()` (`MaxSessionCalls`; refused or invalid calls do not count), each past its cap a catchable `ValidationError`. The session cap is 10, not the 3 first proposed, because the shipped `pr-review-rounds` template starts one session per changed pull request: it now starts at most 10 per round and moves its `last_round` mark (to the round's start) only after a round that left none, with state `reviewed` holding when each open pull request's review ended, so every pull request still gets one session and a retry after an error or a failed launch; its pinned dry-run journal in `TestTemplates_DryRunE2E` (AUTO-12) gains the second `state.get`/`state.set` — a template change, not a relaxed guard. A refused run finish with a commit is retried 3 times (not after the daemon's ctx ended, not for a deterministic `db.ErrInvalidRunFinish`), then written `failed`/`backend` without its commit, so a busy database no longer leaves a run holding its slots until restart; a finish without a commit keeps its own status and error. **AUTO-04:** a succeeded script whose journal lost a write commits (no repeated writes on the next run) and notes the incomplete journal in the run's error. **AUTO-11:** the step cap adds one cap-error step, like `log`'s. Guard `TestSandbox_InterruptIsNotCatchable`'s external-interrupt case paces its SDK loop (a busy loop after each `echo`, still inside the `try`) so the new step cap does not end it before the interrupt; its assertion (an uncatchable `budget` interrupt) is unchanged. Guards added: `TestAuto08_StepCapEndsTheRun`, `TestAuto08_FinishFailureRetries`, `TestAuto08_FinishFailureEndsTheRunFailed`, `TestAuto08_FinishFailureWithoutCommitKeepsItsEnd`, `TestAuto08_FinishSkipsRetriesWhenStopping`, `TestAuto08_FinishDoesNotRetryAnInvalidFinish`, `TestOutputs_CapPerRun`, `TestSession_CapPerRun`, `TestPRReviewRounds_MorePRsThanTheSessionCap`, `TestPRReviewRounds_CarryOverEdgeCases`, `TestAuto04_JournalErrorAfterSuccessStillCommits`. `TestPRReviewRounds_E2E` (not an inventory guard) now expects `last_round` to stay when a review session ended with an error, since that pull request is retried. No guard relaxed.
+
+- 2026-10-17 (board #561, **owner decision ask #331**): **AUTO-07 narrowed — BigInt is removed from the sandbox.** Its `**` and `<<` operators computed results of any size in one native step (an OOM kill of the daemon no wrapper can prevent). A BigInt literal is refused when the script compiles (an AST walk, so no lexical trick hides one) with "BigInt is not available in automations"; `BigInt`, `BigInt64Array`, `BigUint64Array` and DataView's BigInt accessors are deleted. Guard `TestState_RejectsUnserialisableValues` (AUTO-04) loses its `10n` case, which can no longer run, and instead asserts that `state.set("k", 10n)` is refused by `PreParse` — the guarantee (no BigInt reaches state) is unchanged. Guard added: `TestSandbox_BigIntNotAvailable`.
+- 2026-10-17 (board #561, security review #5; owner decision ask #304 q3 — "a clear error instead of a daemon crash"): **AUTO-08 strengthened** — deep or huge data can no longer end the daemon through the capped builtins (goja's `JSON.parse`/`flat` overflowed the Go stack, an unrecoverable fatal error, and several builtins allocated without bound, so the abandon net never ran and the daemon crash-looped). Each limit throws a catchable `RangeError`, like the caps before it; no automation is disabled for it. Guards added: `TestSandbox_NativeBombsEndTheRunNotTheProcess`, `TestSandbox_HeapBudgetStopsTheRun`, `TestSandbox_HeapBudgetSparesSiblingRuns`, `TestSandbox_HeapBudgetSparesAWaitingRun`, `TestSandbox_MemoryStopThenStuckIsAbandoned` (the per-run memory budget), `TestSandbox_HeapBudgetForgivenessIsCapped`, `TestSandbox_ExecCallsAreTimed`, `TestSandbox_ExecRewriteSkipsSuperAndOptionalChains`, `TestSandbox_DeletedExecIsATypeError`. No guard relaxed.
+- 2026-10-17 (**owner decision, ask #326**; board #557, security review F4): strengthening, no guard relaxed. AUTO-12: `draft_automation`'s in-memory dry run (run id 0) no longer calls a Quick Connection — after the manifest check the first `mcp()` call closes its step `dry_run` with the note "Stopped at mcp(): external calls are not made in a draft; dry-run the saved recipe from its card to see the rest" and ends the draft with status `stopped` (not a failure, earlier steps kept; the Desktop Draft panel shows the note). Closes a no-click exfiltration path: a chat-written draft could pass synced text as a QC-02 read tool's arguments. A saved recipe's card dry run and real runs are unchanged. Guards added: `TestDryRunInMemory_MCPIsNotCalled`, `TestDryRunInMemory_MCPOutsideManifestIsDenied`.
+- 2026-10-17 (Automations P4, board #753; spec §8): **the event half of AUTO-09 flips from Planned to Enforced** — the one P4 status flip. Observable gains the event bus: `Flush` (once per sync cycle, cycle id = `syncStart` in RFC 3339 UTC, called right after `phaseExternalSync`) only inserts `queued` rows, one per automation per cycle, and merges into a still-queued event run; event runs carry ids, labels, enums and counts only. Guards added: `TestAuto09_FlushOnlyQueues`, `TestBus_OneRunPerAutomationPerCycle` (`internal/automations/bus_test.go`), `TestBus_EventsCarryNoContent` (`internal/automations/events_test.go`). Module list gains `internal/automations/bus.go`, `internal/automations/eventsrc*.go`, `internal/daemon/automation_events.go`, `internal/db/automation_event_sources.go`. No new AUTO number; no AGENT/STRIP/REACT entry touched (reaction commands are not an event source). No guard relaxed.
+- 2026-10-16 (Automations P5 part 2, board #753; spec §12.4, §13.1, §13.3, §13.4, §14.6): P5 part 2 — workbench saves (PROJ-03 amended, ask #272, `docs/inventory/workbench.md`), the Desktop session launch center (`AutomationSessionCenter`), header buttons, automation asks in the Desktop, rescans on page open and on recipe-folder changes. **AUTO-09's Desktop guard for the header buttons is in place** (`testAuto09_HeaderButtonOnlyQueues`, Task 11, listed under AUTO-09); no status flip — the event half stays Planned for P4. Change in words is on for workbench recipes (R-P3-5 lifted for the editor chat too); an automation's closed asks get their own "⚙ Automations" line instead of "Outside the app". No guard relaxed.
 - 2026-10-16 — agent() child env adds proxy, CA and TMPDIR variables (owner, ask #185). AUTO-07's guard `TestAgent_CLIChildEnvHasRunMarkerAndNoSecrets` is extended, not relaxed: it still proves no API key, token or `CLAUDECODE` reaches the child. `shell()`'s env is unchanged.
 - 2026-10-16 (Automations P3 final review, fix wave 1): AUTO-06 records that the `save_automation` card shows every hashed field and the whole text of a new recipe (J1). Strengthening only; no guard touched.
 - 2026-10-16 (Automations P3, board #753 group #353; spec §11, §12, §14.3–§14.5): **the `draft_automation` half of AUTO-06 flips from Planned to Enforced (ask #271)** — the one P3 status flip; every other AUTO entry P3 touches was already Enforced. Strengthening, no guard relaxed. AUTO-06 records `draft_automation`'s refusal (compared within the draft's scope), `save_automation` as the third `ConfirmAutomation` caller (AlwaysAsk, pinned hash and content hash), the Desktop's hash binding (`--confirm-hash` from `validate`, `--expect-content-hash`, the confirmation sheet's shown hash and **Changed** block, D26) and the quick-run pins (a dimmed row never runs; `confirm: true` runs only after **Run**); AUTO-03 records that the Desktop's Save sheet keeps every "Keep auto" box unchecked and that `save_automation` carries no grant over; AUTO-12 records that a draft writes nothing (`TestDraftAutomation_WritesNothing`, also in AGENT-06's chat-mode guard) and does not execute `agent()` (Ruling K). Guards added as listed under AUTO-03, AUTO-06 and AUTO-12. Related: AGENT-04 amended for the `automation_editor` surface (D11) and AGENT-06 extended (`agent-actions.md`); STRIP-01 amended for automation outputs (D10, `reaction-commands.md`). A P1 journal bug was fixed on the way: a generic step's `result_summary` is now its JSON, no longer the base64 of it (`TestDryRunInMemory_StepResultIsJSON`; AUTO-11 unchanged).
 - 2026-10-16 (Automations P6 part 2 final-review fixes, board #753): strengthening and one narrowing, no guard relaxed. **AUTO-01 narrowing:** a manifest `@scope` holding `<` or `>` is refused (`checkScopePresence`: an installed template placeholder such as `jira:read@<PROJECT>` must be replaced before the recipe parses; no real account, project or space name carries those characters). **AUTO-12:** `TestTemplates_DryRunE2E` now pins every workbench recipe's dry-run journal too (it formerly checked only the step statuses, so an empty journal passed). Tool contracts: `list_jira_issues` returns lean rows on every surface (no `RawJSON`/`CustomFieldsJSON`, description clipped at 512 bytes — `TestListJiraIssues_LeanRows`; `get_jira_issue` unchanged) and `list_emails` gains an exclusive `before` (`TestListEmails_BeforePagesOlder`). `install-template` rolls back on any failure after its first write and, with `save`, refuses a workbench recipe folder behind a symlink; `templates`/`install-template` carry template `notes`.
 - 2026-10-16 (Automations P6 part 2, board #753; spec §10, §12.3, §15): P6 part 2 — template gallery, `install-template`; the four P5 workbench fixtures moved from `internal/automations/testdata/workbench/` into `internal/automations/templates/`. Guards added: AUTO-12 `TestTemplates_DryRunE2E`, AUTO-06 `TestInstallTemplate_InstalledUnconfirmedAndDisabled`. No guard relaxed.
 - 2026-10-16 (Automations P5 part 1 final-review fixes, board #753): strengthening, no guard relaxed. A workbench folder path whose folder or any ancestor is a symlink is never followed: the daemon's rescan skips it and `shell()` refuses it with `NotAvailable` before any stat or process (`fsutil.NoSymlinkComponents`; guards `TestScheduler_NeverFollowsAnAncestorLink`, `TestShell_RefusedWhenTheFolderPathHasALink`). `shell()`'s PATH is the daemon's resolved rich PATH (`claude.RichPATH`), not launchd's minimal one; the env keys are unchanged. `automations session-launched`/`session-ended` are refused under AGENT-07's markers. Guards renamed to say what they pin, assertions unchanged: `TestWorkbenchAutomation_WritesNotAvailable` → `TestWorkbenchAutomation_WritesAreProposals` (and the three `internal/tools` ones listed in agent-actions.md).
+- 2026-10-16 (Automations P5 Task 11, board #753; spec §12.4): the Desktop half of AUTO-09 for the workbench header buttons — guard `testAuto09_HeaderButtonOnlyQueues` added (a runnable button's click issues exactly `automations run <id> --json` through `AutomationsViewModel.runNow`, no other CLI call and no row written from Swift). No status flip, no guard relaxed.
 - 2026-10-16 (Automations P5 part 1, board #753; spec §6.1, §13, §15): P5 part 1 — workbench recipes indexed by the daemon, shell(), session(), ask(), workbench writes. **AUTO-12 and AUTO-13 are Enforced** with the guards listed on them (Tasks 4 and 7); the Desktop half of AUTO-09 (header buttons) and the Swift launch guards follow in part 2. Fail-closed fix: a stored `automation_run` row whose context id does not parse (or is 0) is refused with `ErrAutomationRunGone` at Propose, Approve and Apply instead of applying with no workbench check (`internal/tools/registry_automation_test.go::TestWorkbenchAutomation_UnparsableRunContextFailsClosed`). The workbench fixtures' failure path no longer files an `output.report` before its `throw` (a failed run commits no outputs, AUTO-04); the failure is the run's error, which carries the stderr tail. No guard relaxed.
 - 2026-10-16 (Automations P5 Task 7, board #753; spec §6.1, §13, §15 #2/#5): **AUTO-12 is Enforced in full** — its session half joins with `TestAuto12_DryRunStartsNoSessionOrShell` over the four workbench recipes (`internal/automations/testdata/workbench/`, since moved into `internal/automations/templates/`), `TestSession_DryRunWaitsForNothing` and `TestAsk_DryRunCreatesNoRow`. **AUTO-02:** the P2 workbench write gate is lifted (spec §13): a workbench automation's run writes through `Registry.Propose` like a personal one, and the registry resolves its workbench from the run at Propose, Approve and Apply (AGENT-01 amended in `agent-actions.md`); `TestWorkbenchAutomation_WritesNotAvailable` keeps its name and now pins that a live run's writes are proposals, a dry run records none, and Apply after the workbench was deleted fails. No other guard relaxed.
 - 2026-10-16 (Automations P5 Task 4, board #753; spec §5, §13.2, §20.1 D19): **AUTO-13 flips from Planned to Enforced** with the `shell()` guards listed there; **AUTO-12's `shell()` half is Enforced** (`TestShell_DryRunStartsNoProcess`), its session half stays Planned. `NewProcessShellRunner` is wired as `Backends.Shell`. Oversized `shell()` output is cut to fit, never `ResultTooLarge` (owner decision ask #272, replacing R-P5-1). No guard relaxed.

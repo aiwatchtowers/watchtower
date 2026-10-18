@@ -6,7 +6,8 @@ import WatchtowerCore
 /// (N)", every open ask of the workbench oldest first — kind, title,
 /// next step, session and age. A click puts the ask's session on screen and opens the
 /// drawer on it (`WorkbenchesViewModel.showAsk`). The closed asks filed
-/// from outside the app have no session row: their "N closed" sits here.
+/// from outside the app, and those of automation runs, have no session
+/// row: their "N closed" sits here.
 /// A or ⌃⌘A on the page (board #412) gives the oldest card the keyboard; a
 /// card holding it — its title part, never its Reply field — takes
 /// `OwnerAskCardKeys`. A click never gives a card the keyboard (the
@@ -25,8 +26,10 @@ struct OwnerAskStackSection: View {
         let asks = vm.asks
         let stack = asks.stack(projectID: project.id)
         let outsideClosed = asks.closedCounts[project.id]?[nil] ?? 0
+        let automationClosed = asks.closedAutomationCounts[project.id] ?? 0
         let notices = asks.quickNotices(projectID: project.id)
-        if !stack.asks.isEmpty || !notices.isEmpty || outsideClosed > 0 || asks.loadErrors[project.id] != nil {
+        if !stack.asks.isEmpty || !notices.isEmpty || outsideClosed > 0 || automationClosed > 0
+            || asks.loadErrors[project.id] != nil {
             VStack(alignment: .leading, spacing: 2) {
                 if !stack.asks.isEmpty {
                     Text("Waiting for you (\(stack.count))")
@@ -60,6 +63,14 @@ struct OwnerAskStackSection: View {
                     HStack(spacing: 4) {
                         Text(OwnerAskStack.outsideTheAppTitle).font(.caption2).foregroundStyle(.secondary)
                         OwnerAskClosedButton(vm: vm, projectID: project.id, sessionID: nil, count: outsideClosed)
+                    }
+                    .padding(.horizontal, 12)
+                }
+                if automationClosed > 0 {
+                    HStack(spacing: 4) {
+                        Text(OwnerAskStack.automationsTitle).font(.caption2).foregroundStyle(.secondary)
+                        OwnerAskClosedButton(vm: vm, projectID: project.id, sessionID: nil, automations: true,
+                                             count: automationClosed)
                     }
                     .padding(.horizontal, 12)
                 }

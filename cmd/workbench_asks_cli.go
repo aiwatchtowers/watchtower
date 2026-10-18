@@ -40,8 +40,8 @@ var (
 
 func init() {
 	c := workbenchAsksCmd
-	addWorkbenchIDFlag(c, &workbenchAsksFlagWorkbench, "workbench id (default: every workbench)")
 	fs := c.Flags()
+	fs.Int64Var(&workbenchAsksFlagWorkbench, workbenchFlag, 0, "workbench id (default: every workbench)")
 	fs.BoolVar(&workbenchAsksFlagOpen, "open", false, "only the open asks")
 	fs.BoolVar(&workbenchAsksFlagJSON, "json", false, "output JSON (required: the only output)")
 	_ = c.MarkFlagRequired("json")
@@ -98,14 +98,10 @@ type askOptionJSON struct {
 
 func runWorkbenchAsks(cmd *cobra.Command, _ []string) error {
 	out := cmd.OutOrStdout()
-	if err := checkWorkbenchIDFlags(cmd); err != nil {
-		return writeJSON(out, asksListFailure{OK: false, Error: err.Error()})
-	}
 	// An id flag given is a workbench to filter by: 0 there is a mistake,
 	// never "every workbench".
-	fs := cmd.Flags()
-	if legacy := fs.Changed(legacyWorkbenchFlag); (legacy || fs.Changed(workbenchFlag)) && workbenchAsksFlagWorkbench <= 0 {
-		return writeJSON(out, asksListFailure{OK: false, Error: workbenchFlagName(legacy) + " takes a positive id"})
+	if cmd.Flags().Changed(workbenchFlag) && workbenchAsksFlagWorkbench <= 0 {
+		return writeJSON(out, asksListFailure{OK: false, Error: "--" + workbenchFlag + " takes a positive id"})
 	}
 	list, err := listAsksForClients(workbenchAsksFlagWorkbench, workbenchAsksFlagOpen)
 	if err != nil {

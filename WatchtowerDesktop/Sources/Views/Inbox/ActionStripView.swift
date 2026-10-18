@@ -54,7 +54,12 @@ struct ActionStripView: View {
                             appState.openAutomationRun(automationID: output.automationID, runID: output.runID)
                         },
                         onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
-                        emptyState: appState.emptyStateContext
+                        emptyState: appState.emptyStateContext,
+                        onOpenConnections: {
+                            appState.settingsTab = .connections
+                            openSettings()
+                        },
+                        ownerKnown: appState.owner.isKnown
                     )
                 } else {
                     ProgressView()
@@ -79,6 +84,7 @@ struct ActionStripView: View {
             // The cheat sheet reads the dictionary through this VM, so a
             // Settings edit made while the Inbox was out of view shows up.
             appState.reactionDictionaryViewModel?.refresh()
+            await appState.refreshOwner()
         }
     }
 
@@ -96,7 +102,7 @@ struct ActionStripView: View {
         let manager = appState.featureManager
         Task {
             await manager.enableNow(ReactionCheatSheetView.reactionCommandsFeatureID) {
-                try await DaemonManager.restart()
+                try await appState.restartOnChain(appState.daemonControl)
             }
         }
     }
@@ -149,6 +155,11 @@ struct ActionStripActionsView: View {
     var onReconnectSlack: ((Int64) async -> String?)?
     /// The empty strip's readiness and actions (`AppState.emptyStateContext`).
     var emptyState: EmptyStateContext = .neutral
+    /// With no owner identity the daemon skips the inbox (OWNER-02), so the
+    /// empty strip says why and points at Connections, as Briefings and Day
+    /// Plan do.
+    var onOpenConnections: () -> Void = {}
+    var ownerKnown = true
 
     @State private var showsCheatSheet = false
 
@@ -160,6 +171,9 @@ struct ActionStripActionsView: View {
             if vm.actionRows.isEmpty && vm.reminderRows.isEmpty && vm.outputRows.isEmpty {
                 ScrollView {
                     TabEmptyState(.inbox, context: emptyState) {
+                        if !ownerKnown {
+                            NoOwnerEmptyState(openConnections: onOpenConnections)
+                        }
                         ReactionCheatSheetView(
                             rows: cheatSheetRows,
                             feature: feature,

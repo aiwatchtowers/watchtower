@@ -135,29 +135,16 @@ RunChannelDigests(ctx)
     │    ├─ channelNames: map[channelID → name]
     │    └─ profile: UserProfile (for personalization)
     │
-    ├─ isFirstRun()? (no channel digests in DB)
-    │    │
-    │    ├─ YES → runInitialDayByDay()
-    │    │         for d = historyDays..1:
-    │    │           dayStart = midnight(now - d days)
-    │    │           dayEnd = dayStart + 24h
-    │    │           RunChannelDigestsForWindow(dayStart, dayEnd)
-    │    │           RunDailyRollupForDate(dayStart)
-    │    │         process today (partial)
-    │    │         RunWeeklyTrends()
-    │    │
-    │    └─ NO → standard incremental flow ↓
-    │
-    ├─ Determine time window
-    │    since = latest channel digest's period_to
+    ├─ Resolve one window per channel (resolveChannelWindows)
+    │    since = that channel's own last digest period_to
+    │            (first run: now - InitialHistoryDays; never before the
+    │             FEAT-03 fast-forward floor)
     │    now = time.Now()
-    │
-    ├─ Find channels with new messages since `since`
-    │    SELECT DISTINCT channel_id FROM messages WHERE ts_unix > since
+    │    `digest generate --since` overrides every window with one range
     │
     ├─ For each channel: filter by threshold
     │    │
-    │    │  msgs = GetMessagesByTimeRange(channelID, since, now)
+    │    │  msgs = GetOldestMessagesByTimeRange(channelID, since, now, limit)
     │    │  visible = count(msgs where text != "" && !isDeleted)
     │    │
     │    ├─ visible < MinMessages (default 5)? → SKIP
@@ -359,15 +346,10 @@ Run(ctx)
     │    │  UpsertPeriodSummary()
     │    │
     │
-    └─ PHASE: Social Graph (pure SQL, NO AI)
-         │
-         │  ComputeUserInteractions(currentUserID, from, to)
-         │    ├─ Shared channels (both users posted)
-         │    ├─ Messages to/from (by channel overlap)
-         │    ├─ Thread replies to/from
-         │    └─ Top 50 by volume
-         │
-         └─ UpsertUserInteractions()
+    └─ (Social graph phase: no production caller even before 2026-10-17, so
+        `user_interactions` was already not being filled. Its dead function
+        `ComputeUserInteractions` was removed 2026-10-17; `UpsertUserInteractions`
+        remains in internal/db. See docs/backlog/2026-09-26-people-connections-view-and-meeting-prep-read-tables-that.md.)
 ```
 
 ### Output classification

@@ -263,7 +263,7 @@ func runSyncStop(cfg *config.Config, force bool) error {
 
 	fmt.Printf("Stopping daemon (PID %d)...\n", pid)
 	if err := signalStop(pid, syscall.SIGTERM); err != nil {
-		if err == errProcessGone {
+		if errors.Is(err, errProcessGone) {
 			reapPIDFile(pidPath)
 			fmt.Println("Daemon stopped.")
 			return nil
@@ -311,7 +311,7 @@ func forceStopSync(pidPath string, pid int) error {
 	}
 	fmt.Printf("Daemon (PID %d) still running; sending a second SIGTERM...\n", pid)
 	if err := signalStop(pid, syscall.SIGTERM); err != nil {
-		if err == errProcessGone {
+		if errors.Is(err, errProcessGone) {
 			reapPIDFile(pidPath)
 			fmt.Printf("Daemon (PID %d) stopped (SIGTERM).\n", pid)
 			return nil
@@ -330,7 +330,7 @@ func forceStopSync(pidPath string, pid int) error {
 	}
 	fmt.Printf("Daemon (PID %d) still running; sending SIGKILL...\n", pid)
 	if err := signalStop(pid, syscall.SIGKILL); err != nil {
-		if err == errProcessGone {
+		if errors.Is(err, errProcessGone) {
 			reapPIDFile(pidPath)
 			fmt.Printf("Daemon (PID %d) stopped (SIGKILL).\n", pid)
 			return nil
@@ -853,6 +853,10 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	}
 
 	cfg = migrateJiraFeatureKeys(cfg, logger)
+	// Board #558: carry the pre-upgrade workflow.md checks into the owner's
+	// settings, once per workbench; the app restarts the daemon on an update,
+	// so sessions kept by the session host pick the values up.
+	carryOverWorkflowChecks(database, logger.Writer())
 
 	d := daemon.New(cfg)
 	d.SetOrchestrators(orchestrators)
@@ -864,7 +868,7 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	// cheap struct, and the daemon's own phase methods gate execution on
 	// their own feature's config flag (internal/daemon/daemon.go), not on
 	// whether it was wired here.
-	gen, cleanupPool := cliPooledGenerator(cfg, logger)
+	gen, cleanupPool := cliPooledGenerator(cfg)
 	defer cleanupPool()
 	tracksPipe := tracks.New(database, cfg, gen, logger)
 	tracksPipe.SetPromptStore(prompts.New(database, nil))
@@ -1399,7 +1403,7 @@ func runPostSyncPipelines(ctx context.Context, database *db.DB, cfg *config.Conf
 	}
 
 	out := os.Stdout
-	gen, cleanup := cliPooledGenerator(cfg, logger)
+	gen, cleanup := cliPooledGenerator(cfg)
 	defer cleanup()
 
 	// Digests (with tracks linked between channel digests and rollups)

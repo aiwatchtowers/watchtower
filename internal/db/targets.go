@@ -443,13 +443,27 @@ func (db *DB) UpdateTargetStatusAsTx(tx *sql.Tx, id int, newStatus, actor string
 }
 
 func updateTargetStatusOn(q targetsQuerier, id int, newStatus, actor string) error {
+	return setTargetStatusOn(q, id, newStatus, actor, nil)
+}
+
+// setTargetStatusOn writes newStatus (and, when column is non-nil, the board
+// column in the same statement — SetTargetColumnTx, PROJ-19), then runs the
+// status follow-ups.
+func setTargetStatusOn(q targetsQuerier, id int, newStatus, actor string, column *sql.NullInt64) error {
 	// Fetch parent_id before updating.
 	var parentID sql.NullInt64
 	_ = q.QueryRow(`SELECT parent_id FROM targets WHERE id = ?`, id).Scan(&parentID)
 
-	_, err := q.Exec(`UPDATE targets SET status = ?, status_actor = ?,
-		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-		WHERE id = ?`, newStatus, nullableActor(actor), id)
+	var err error
+	if column == nil {
+		_, err = q.Exec(`UPDATE targets SET status = ?, status_actor = ?,
+			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+			WHERE id = ?`, newStatus, nullableActor(actor), id)
+	} else {
+		_, err = q.Exec(`UPDATE targets SET status = ?, board_column_id = ?, status_actor = ?,
+			updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+			WHERE id = ?`, newStatus, *column, nullableActor(actor), id)
+	}
 	if err != nil {
 		return fmt.Errorf("updating target %d status: %w", id, err)
 	}
@@ -588,7 +602,7 @@ func recomputeParentProgressOn(q targetsQuerier, parentID int64) error {
 	visited := make(map[int64]bool)
 	current := parentID
 
-	for depth := 0; depth < recomputeParentProgressMaxDepth; depth++ {
+	for range recomputeParentProgressMaxDepth {
 		if visited[current] {
 			log.Printf("db: RecomputeParentProgress detected cycle at target %d — stopping", current)
 			return nil

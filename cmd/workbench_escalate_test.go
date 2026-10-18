@@ -61,7 +61,7 @@ func (f escalateFixture) escalate(t *testing.T, reason string) escalateResult {
 // and prints one JSON object.
 func runEscalate(t *testing.T, args ...string) escalateResult {
 	t.Helper()
-	out, _, err := runWorkbenchAs(t, "workbench", append([]string{"escalate-question"}, args...)...)
+	out, _, err := runWorkbench(t, append([]string{"escalate-question"}, args...)...)
 	require.NoError(t, err, "the verb always exits 0")
 	var res escalateResult
 	dec := json.NewDecoder(strings.NewReader(out))
@@ -210,12 +210,10 @@ func TestEscalationRaceFilesOneAsk(t *testing.T) {
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for i, h := range handles {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			results[i], errs[i] = escalateQuestion(h, a, time.Now())
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()
@@ -304,8 +302,7 @@ func TestEscalateAtTheOpenCapKeepsTheQuestion(t *testing.T) {
 
 // The envelope: one JSON object and exit 0 always; not_found for a missing
 // workbench or session or one of another workbench, bad_args for bad flags,
-// busy for a locked database, internal for a broken config; the legacy
-// --project spelling works.
+// busy for a locked database, internal for a broken config.
 func TestEscalateEnvelopeShape(t *testing.T) {
 	f := newEscalateFixture(t, twoOptions())
 	pid, row := strconv.FormatInt(f.pid, 10), strconv.FormatInt(f.row, 10)
@@ -334,7 +331,6 @@ func TestEscalateEnvelopeShape(t *testing.T) {
 		{"an unknown flag", []string{"--workbench", pid, "--session", row, "--at", f.at, "--reason", "timeout", "--force"}, escalateErrBadArgs},
 		{"a flag without its value", []string{"--workbench", pid, "--session", row, "--at", f.at, "--reason"}, escalateErrBadArgs},
 		{"a positional argument", []string{"--workbench", pid, "--session", row, "--at", f.at, "--reason", "timeout", "extra"}, escalateErrBadArgs},
-		{"both workbench flags", []string{"--workbench", pid, "--project", pid, "--session", row, "--at", f.at, "--reason", "timeout"}, escalateErrBadArgs},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res := runEscalate(t, tc.args...)
@@ -346,11 +342,6 @@ func TestEscalateEnvelopeShape(t *testing.T) {
 	}
 	assert.Zero(t, countAsks(t, f.database, f.pid), "no failure wrote")
 
-	t.Run("the legacy --project spelling", func(t *testing.T) {
-		res := runEscalate(t, "--project", pid, "--session", row, "--at", f.at, "--reason", "timeout")
-		assert.True(t, res.OK)
-		assert.Equal(t, escalateFiled, res.Outcome)
-	})
 	t.Run("a locked database is busy", func(t *testing.T) {
 		g := newEscalateFixture(t, twoOptions())
 		lockDatabase(t, g.database)

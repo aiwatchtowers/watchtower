@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -20,7 +21,6 @@ import (
 	"unicode/utf8"
 
 	"watchtower/internal/claude"
-	"watchtower/internal/digest"
 	"watchtower/internal/fsutil"
 )
 
@@ -117,6 +117,7 @@ func envelopeMessage(result string) string {
 // shape of db.ExternalConnection without importing internal/db, keeping
 // internal/ai free of a DB dependency.
 type ExternalMCPServer struct {
+	ID      int64  // the external_connections row (codex names its header variables after it)
 	Name    string // becomes the mcpServers key and the mcp__<Name>__ tool prefix
 	Kind    string // "stdio" | "http"
 	Command string
@@ -151,12 +152,6 @@ type Client struct {
 	// written to this 0600 temp file instead of argv, and the caller (Query/
 	// QuerySync) removes it once the subprocess has been reaped.
 	mcpConfigTempPath string
-	// systemPromptTempPath is set by buildArgs when the system prompt is
-	// larger than digest.StdinThreshold: it then travels as a 0600
-	// --system-prompt-file instead of argv, and Query/QuerySync remove the
-	// file once the subprocess has been reaped (the mcpConfigTempPath
-	// lifecycle).
-	systemPromptTempPath string
 	// readFolder, when set (SetReadFolder), runs the CLI in that folder
 	// with its file-read tools allowed and unhidden and no settings files
 	// loaded. Empty = today's run in os.TempDir().
@@ -297,35 +292,19 @@ func NewClient(model, dbPath, claudePath string) *Client {
 	}
 }
 
-// promptFlagAndStdin builds the "-p" flag (and its inline value, when safe)
-// for buildArgs, plus the same message again as stdin content when it must
-// travel that way instead of via argv: either it exceeds
-// digest.StdinThreshold (ARG_MAX safety — the digest.generateArgs precedent,
-// hour-long meeting transcripts run to hundreds of KB) or it begins with
-// '-', which a bare positional right after "-p" would then be parsed as a
-// new flag rather than consumed as -p's value — claude's --print takes an
-// OPTIONAL value, so a following dash-led token is never taken as it. A bare
-// "-p" with no following value makes claude read the prompt from stdin.
-func promptFlagAndStdin(userMessage string) (flagArgs []string, stdin string) {
-	if len(userMessage) > digest.StdinThreshold || strings.HasPrefix(userMessage, "-") {
-		return []string{"-p"}, userMessage
-	}
-	return []string{"-p", userMessage}, ""
-}
-
-// buildArgs constructs the common CLI arguments, plus stdin content when
-// userMessage must travel that way instead of inline (see
-// promptFlagAndStdin). When sessionID is non-empty, --resume is used instead
-// of --system-prompt (the system prompt is already baked into the existing
-// session).
-func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) ([]string, string, error) {
-	c.systemPromptTempPath = "" // set again below only if this call writes one
-	promptArgs, stdin := promptFlagAndStdin(userMessage)
-	// slices.Concat always allocates a fresh backing array, so the append
-	// calls below can never alias (and corrupt) promptFlagAndStdin's slice —
-	// unlike a plain append(promptArgs, tail...), which happens to be safe
-	// today only because promptFlagAndStdin returns full-capacity literals.
-	args := slices.Concat(promptArgs, []string{
+// buildArgs constructs the common CLI arguments, plus the stdin content: the
+// user message always travels on stdin (a bare "-p" makes claude read the
+// prompt from there), never on argv, where every local process could read
+// it through `ps` and a large one would hit ARG_MAX. When sessionID is
+// non-empty, --resume is used instead of the system prompt (the system
+// prompt is already baked into the existing session). promptFile is the
+// 0600 system-prompt file this call wrote ("" when none), which the caller
+// removes once the subprocess has been reaped — returned rather than kept on
+// the Client, so concurrent calls never share or race on it.
+func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) (args []string, stdin, promptFile string, err error) {
+	stdin = userMessage
+	args = slices.Concat([]string{
+		"-p",
 		"--output-format", outputFormat,
 		"--model", c.model,
 		// Allowlist: the watchtower MCP server — read-only in dev mode; in
@@ -403,14 +382,31 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	}
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
+		// No fence is added here: the claude CLI replays the session's
+		// recorded system prompt on --resume (--system-prompt-snapshot), so
+		// an appended one would be ignored. Known limit: a connection enabled
+		// after the session's first turn is mounted but not named in the
+		// fence until a new session starts.
 	} else {
-		promptArgs, err := c.systemPromptArgs(systemPrompt)
-		if err != nil {
-			return nil, "", err
+		// Mounted Quick Connections' texts are fenced as external data.
+		systemPrompt = WithExternalDataRule(systemPrompt, c.externalServers)
+		if systemPrompt == "" {
+			// An empty prompt still replaces claude's default one and
+			// carries nothing.
+			args = append(args, "--system-prompt", "")
+		} else {
+			// The prompt carries the owner's data (a pipeline's whole
+			// payload, a chat's context): on argv it would be readable in
+			// `ps` for the process lifetime and could hit ARG_MAX. A failed
+			// write fails the call rather than falling back to argv.
+			promptFile, err = fsutil.WritePrivateTemp(fsutil.SystemPromptTempPrefix+"*.txt", systemPrompt)
+			if err != nil {
+				return nil, "", "", fmt.Errorf("writing system prompt file: %w", err)
+			}
+			args = append(args, "--system-prompt-file", promptFile)
 		}
-		args = append(args, promptArgs...)
 	}
-	return args, stdin, nil
+	return args, stdin, promptFile, nil
 }
 
 // builtinTools is the --tools allowlist: ReadFolderBuiltinTools for a
@@ -449,25 +445,6 @@ func (c *Client) workDir() string {
 		return c.readFolder
 	}
 	return os.TempDir()
-}
-
-// systemPromptArgs passes the system prompt inline when it is small and as a
-// 0600 --system-prompt-file when it exceeds digest.StdinThreshold: pipelines
-// that put their whole data payload in the system prompt (briefing, target
-// extract) would otherwise hit ARG_MAX ("argument list too long") and leave
-// that payload readable in `ps` for the process lifetime. A failed file write
-// fails the call rather than falling back to argv (the digest.ClaudeGenerator
-// policy).
-func (c *Client) systemPromptArgs(systemPrompt string) ([]string, error) {
-	if len(systemPrompt) <= digest.StdinThreshold {
-		return []string{"--system-prompt", systemPrompt}, nil
-	}
-	path, err := fsutil.WritePrivateTemp("wt-system-prompt-*.txt", systemPrompt)
-	if err != nil {
-		return nil, fmt.Errorf("writing system prompt file: %w", err)
-	}
-	c.systemPromptTempPath = path
-	return []string{"--system-prompt-file", path}, nil
 }
 
 // hasSecret reports whether any external server carries a non-empty Env or
@@ -702,7 +679,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		defer close(errCh)
 		defer close(sidCh)
 
-		args, promptStdin, buildErr := c.buildArgs(systemPrompt, userMessage, "stream-json", sessionID)
+		args, promptStdin, promptFile, buildErr := c.buildArgs(systemPrompt, userMessage, "stream-json", sessionID)
 		// buildArgs may have written the mcp-config to a 0600 temp file
 		// (secret present) and recorded its path — clean it up once this
 		// goroutine returns. Every path below reaches its return only after
@@ -712,8 +689,8 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		if c.mcpConfigTempPath != "" {
 			defer os.Remove(c.mcpConfigTempPath)
 		}
-		if c.systemPromptTempPath != "" {
-			defer os.Remove(c.systemPromptTempPath)
+		if promptFile != "" {
+			defer os.Remove(promptFile)
 		}
 		if buildErr != nil {
 			errCh <- buildErr
@@ -833,7 +810,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 // the full response text and token usage. Pass a non-empty sessionID to resume
 // an existing session.
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, error) {
-	args, promptStdin, buildErr := c.buildArgs(systemPrompt, userMessage, "json", sessionID)
+	args, promptStdin, promptFile, buildErr := c.buildArgs(systemPrompt, userMessage, "json", sessionID)
 	// buildArgs may have written the mcp-config to a 0600 temp file (secret
 	// present) and recorded its path — clean it up on every return path.
 	// cmd.Output() below blocks until the subprocess exits, so by the time
@@ -841,8 +818,8 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 	if c.mcpConfigTempPath != "" {
 		defer os.Remove(c.mcpConfigTempPath)
 	}
-	if c.systemPromptTempPath != "" {
-		defer os.Remove(c.systemPromptTempPath)
+	if promptFile != "" {
+		defer os.Remove(promptFile)
 	}
 	if buildErr != nil {
 		return "", nil, buildErr
@@ -867,7 +844,8 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 		// telemetry — and with stderr empty. Parse it first so that message
 		// survives instead of a bare "exit code 1" (the digest generator's
 		// errorEnvelopeMessage precedent, internal/digest/generator.go).
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			if resp, perr := parseCLIOutput(output); perr == nil && resp.IsError {
 				return "", nil, fmt.Errorf("claude CLI failed (exit %d, subtype=%s): %s",
 					exitErr.ExitCode(), resp.Subtype, envelopeMessage(resp.Result))
@@ -879,7 +857,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 	resp, err := parseCLIOutput(output)
 	if err != nil {
 		// Fallback: treat as plain text if JSON parsing fails (e.g. old CLI version)
-		return strings.TrimRight(string(output), "\n"), nil, nil //nolint:nilerr // intentional fallback to plain text
+		return strings.TrimRight(string(output), "\n"), nil, nil // intentional fallback to plain text
 	}
 
 	if resp.IsError {
@@ -977,14 +955,13 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 // classifyError wraps CLI errors with user-friendly messages.
 func classifyError(err error, stderr string) error {
 	// Check if claude binary is not found
-	if execErr, ok := err.(*exec.Error); ok {
-		if execErr.Err == exec.ErrNotFound {
-			return fmt.Errorf("claude CLI not found — install Claude Code first: https://docs.anthropic.com/en/docs/claude-code")
-		}
+	if errors.Is(err, exec.ErrNotFound) {
+		return fmt.Errorf("claude CLI not found — install Claude Code first: https://docs.anthropic.com/en/docs/claude-code")
 	}
 
 	// Check exit error for details
-	if exitErr, ok := err.(*exec.ExitError); ok {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
 		code := exitErr.ExitCode()
 		stderrMsg := strings.TrimSpace(stderr)
 		if stderrMsg == "" {

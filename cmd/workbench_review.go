@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -11,7 +12,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/reviewdiff"
-	"watchtower/internal/workbenchgit"
+	"watchtower/internal/tools"
 )
 
 const workbenchReviewBudget = 30 * time.Second
@@ -42,7 +43,7 @@ var (
 func init() {
 	for _, c := range []*cobra.Command{workbenchReviewStartCmd, workbenchReviewDiffCmd, workbenchReviewFileCmd,
 		workbenchReviewSendCmd, workbenchReviewContextCmd} {
-		addWorkbenchIDFlag(c, &reviewFlagWorkbench, "workbench id")
+		c.Flags().Int64Var(&reviewFlagWorkbench, workbenchFlag, 0, "workbench id")
 		c.Flags().BoolVar(&reviewFlagJSON, "json", false, "output JSON")
 		workbenchReviewCmd.AddCommand(c)
 	}
@@ -61,16 +62,19 @@ func init() {
 }
 
 type reviewRoundJSON struct {
-	ID           int64  `json:"id"`
-	Status       string `json:"status"`
-	Mode         string `json:"mode"`
-	FolderRoot   string `json:"folder_root"`
-	BaseSHA      string `json:"base_sha"`
-	BaseLabel    string `json:"base_label"`
-	TreeSHA      string `json:"tree_sha"`
-	PrevRoundID  int64  `json:"prev_round_id"`
-	PrevTreeSHA  string `json:"prev_tree_sha"`
-	PrevTreeLost bool   `json:"prev_tree_lost"`
+	ID            int64  `json:"id"`
+	Status        string `json:"status"`
+	Mode          string `json:"mode"`
+	FolderRoot    string `json:"folder_root"`
+	BaseSHA       string `json:"base_sha"`
+	BaseLabel     string `json:"base_label"`
+	TreeSHA       string `json:"tree_sha"`
+	PrevRoundID   int64  `json:"prev_round_id"`
+	PrevTreeSHA   string `json:"prev_tree_sha"`
+	PrevTreeLost  bool   `json:"prev_tree_lost"`
+	Phase         string `json:"phase"`
+	ChapterKey    string `json:"chapter_key"`
+	ActiveSeconds int    `json:"active_seconds"`
 }
 
 type reviewEnvelope struct {
@@ -87,14 +91,31 @@ type reviewEnvelope struct {
 	Comments         int                 `json:"comments,omitempty"`
 	Line             string              `json:"line,omitempty"`
 	Items            []reviewContextItem `json:"items,omitempty"`
+	Lenses           []reviewdiff.Lens   `json:"lenses,omitempty"`
+	LensNotes        []string            `json:"lens_notes,omitempty"`
+	Revert           *reviewRevertJSON   `json:"revert,omitempty"`
+	Overview         json.RawMessage     `json:"overview,omitempty"`
+	OverviewCached   bool                `json:"overview_cached,omitempty"`
+	Lessons          *[]reviewLessonJSON `json:"lessons,omitempty"`
+	Written          string              `json:"written,omitempty"`
+}
+
+type reviewRevertJSON struct {
+	HunkID string `json:"hunk_id"`
+	Path   string `json:"path"`
+}
+
+type reviewLessonJSON struct {
+	ID               int64   `json:"id"`
+	Lens             string  `json:"lens"`
+	Text             string  `json:"text"`
+	SourceCommentIDs []int64 `json:"source_comment_ids"`
+	Status           string  `json:"status"`
 }
 
 // reviewTarget resolves --workbench to its row and an open DB; a bad id or a
 // missing workbench is a command error (non-zero exit).
-func reviewTarget(cmd *cobra.Command) (*db.DB, *db.Workbench, error) {
-	if err := checkWorkbenchIDFlags(cmd); err != nil {
-		return nil, nil, err
-	}
+func reviewTarget() (*db.DB, *db.Workbench, error) {
 	if reviewFlagWorkbench <= 0 {
 		return nil, nil, fmt.Errorf("--workbench is required")
 	}
@@ -127,7 +148,8 @@ func failReview(cmd *cobra.Command, err error) error {
 
 func roundJSON(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *db.ReviewRound) (*reviewRoundJSON, error) {
 	out := &reviewRoundJSON{ID: r.ID, Status: r.Status, Mode: r.Mode, FolderRoot: r.FolderRoot, BaseSHA: r.BaseSHA,
-		BaseLabel: r.BaseLabel, TreeSHA: r.TreeSHA}
+		BaseLabel: r.BaseLabel, TreeSHA: r.TreeSHA, Phase: r.Phase, ChapterKey: r.ChapterKey,
+		ActiveSeconds: r.ActiveSeconds}
 	if r.PrevRoundID.Valid {
 		out.PrevRoundID = r.PrevRoundID.Int64
 		if prev, err := database.GetReviewRound(r.ProjectID, r.PrevRoundID.Int64); err == nil {
@@ -151,39 +173,8 @@ func writeRound(ctx context.Context, cmd *cobra.Command, repo *reviewdiff.Repo, 
 	return writeReview(cmd, reviewEnvelope{OK: true, Round: out})
 }
 
-// checkSessionOnWorkbench refuses a session of another workbench.
-func checkSessionOnWorkbench(database *db.DB, p *db.Workbench, sessionID int64) error {
-	row, err := database.GetTerminalSession(sessionID)
-	if err != nil {
-		return err
-	}
-	if !row.WorkbenchID.Valid || row.WorkbenchID.Int64 != p.ID {
-		return fmt.Errorf("session %d is not on workbench %d", sessionID, p.ID)
-	}
-	return nil
-}
-
-// sessionFolder: the root of the folder the session's agent works in.
-func sessionFolder(ctx context.Context, database *db.DB, p *db.Workbench, sessionID int64) (string, error) {
-	if err := checkSessionOnWorkbench(database, p, sessionID); err != nil {
-		return "", err
-	}
-	cwd, err := database.TerminalAgentCwd(sessionID)
-	if err != nil {
-		return "", err
-	}
-	folder, err := workbenchgit.ResolveFolder(ctx, workbenchgit.Options{Folder: p.FolderPath}, cwd.Path)
-	if err != nil {
-		return "", err
-	}
-	if folder.Root == "" {
-		return p.FolderPath, nil
-	}
-	return folder.Root, nil
-}
-
 func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
-	database, p, err := reviewTarget(cmd)
+	database, p, err := reviewTarget()
 	if err != nil {
 		return err
 	}
@@ -196,10 +187,10 @@ func runWorkbenchReviewStart(cmd *cobra.Command, _ []string) error {
 	if open == nil && reviewFlagRefresh {
 		return failReview(cmd, errNoOpenReviewRound)
 	}
-	folder := ""
+	var folder string
 	if open != nil {
 		folder = open.FolderRoot
-	} else if folder, err = sessionFolder(ctx, database, p, reviewFlagSession); err != nil {
+	} else if folder, err = tools.ReviewSessionFolder(ctx, database, p, reviewFlagSession); err != nil {
 		return failReview(cmd, err)
 	}
 	repo, err := reviewdiff.Open(folder, nil)
@@ -236,8 +227,13 @@ func createReviewRound(ctx context.Context, repo *reviewdiff.Repo, database *db.
 	}
 	r := db.ReviewRound{ProjectID: p.ID, SessionID: sql.NullInt64{Int64: reviewFlagSession, Valid: true},
 		FolderRoot: folder, BaseSHA: base.SHA, BaseLabel: base.Label, TreeSHA: tree}
-	if last, err := database.LastSentReviewRound(p.ID, reviewFlagSession); err == nil && last != nil {
+	last, err := database.LastSentReviewRound(p.ID, reviewFlagSession)
+	if err != nil {
+		return nil, fmt.Errorf("last sent review round: %w", err)
+	}
+	if last != nil {
 		r.PrevRoundID = sql.NullInt64{Int64: last.ID, Valid: true}
+		r.Mode = last.Mode
 	}
 	id, err := database.CreateReviewRound(r)
 	if err != nil {
@@ -268,11 +264,19 @@ func roundRange(ctx context.Context, repo *reviewdiff.Repo, database *db.DB, r *
 }
 
 func loadRound(cmd *cobra.Command) (*db.DB, *db.ReviewRound, *reviewdiff.Repo, context.Context, context.CancelFunc, error) {
-	database, p, err := reviewTarget(cmd)
+	return loadRoundIn(cmd, cmd.Context())
+}
+
+// loadRoundIn is loadRound with the git budget taken under parent.
+func loadRoundIn(cmd *cobra.Command, parent context.Context) (*db.DB, *db.ReviewRound, *reviewdiff.Repo, context.Context, context.CancelFunc, error) {
+	database, p, err := reviewTarget()
 	if err != nil {
 		return nil, nil, nil, nil, nil, err
 	}
-	ctx, cancel := workbenchGitContext(cmd, workbenchReviewBudget)
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, workbenchReviewBudget)
 	r, err := database.GetReviewRound(p.ID, reviewFlagRound)
 	if err != nil {
 		cancel()
@@ -329,7 +333,7 @@ func runWorkbenchReviewFile(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkbenchReviewSend(cmd *cobra.Command, _ []string) error {
-	database, p, err := reviewTarget(cmd)
+	database, p, err := reviewTarget()
 	if err != nil {
 		return err
 	}

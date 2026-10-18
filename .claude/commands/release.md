@@ -36,11 +36,30 @@ Group commits by type. Skip merge commits. Write in English. Be concise — one 
 
 Show the release notes to the user and ask for confirmation.
 
-## Step 3: Update Version in Code
+## Step 3: Check the user guide is current
+
+Find PRs merged since the previous tag that changed user-facing code but not the guide:
+
+```bash
+prev=$(git tag -l 'v*' --sort=-v:refname | head -1)
+for n in $(gh pr list --state merged --base main --limit 200 \
+    --search "merged:>=$(git log -1 --format=%cI $prev)" --json number --jq '.[].number'); do
+  files=$(gh pr view $n --json files --jq '.files[].path')
+  echo "$files" | grep -qE '^(WatchtowerDesktop/Sources/Views/|cmd/|.*[Ss]ettings)' || continue
+  echo "$files" | grep -q '^docs/guide/' && continue
+  gh pr view $n --json number,title --jq '"#\(.number) \(.title)"'
+done
+```
+
+Show the list to the user with a one-line "does the guide need an update?" for each PR (what changed on screen, which page would cover it). For the ones the user marks, propose guide edits following `docs/guide/WRITING.md` and apply them in a separate commit before the version bump. This step never blocks the release: if the user says skip, or the list is empty, continue.
+
+Then run `go test ./docs/guide/ ./internal/kb/ ./internal/chat/` (guide links, catalogue, page size, the guide knowledge source, the prompt golden). If the guide's catalogue changed (a page added, renamed or re-titled), regenerate the chat prompt golden with `go test ./internal/chat -run TestBuildSystemPrompt_Golden -update` and commit it with the guide edits. Any other failure halts the release.
+
+## Step 4: Update Version in Code
 
 Update the `Version` variable in `cmd/version.go` to the new version.
 
-## Step 4: Pre-release gate
+## Step 5: Pre-release gate
 
 Run the pre-release checks. This runs sentrux quality (rules + structural
 regression), periphery dead-code check (vs baseline), Go tests, and Swift tests.
@@ -54,7 +73,7 @@ If `periphery-check` fails (dead-code count above baseline), either clean up
 the new dead code or — only after a deliberate review — refresh the baseline
 with `make periphery-baseline` and explain in the release notes why.
 
-## Step 5: Build
+## Step 6: Build
 
 Run the build via Makefile (this ensures `.env` is loaded and OAuth credentials are injected via ldflags):
 ```bash
@@ -63,7 +82,7 @@ make app VERSION=<version>
 
 Wait for it to complete. If it fails, show the error and stop.
 
-## Step 6: Commit & Tag
+## Step 7: Commit & Tag
 
 1. Stage and commit the version bump: `git add cmd/version.go && git commit -m "release: v<version>"`
 2. Verify build artifacts exist:
@@ -71,7 +90,7 @@ Wait for it to complete. If it fails, show the error and stop.
    - `build/Watchtower-<version>-arm64.zip` (auto-update)
    - `build/checksums.txt` (SHA-256 verification)
 
-## Step 7: Push & Create Release
+## Step 8: Push & Create Release
 
 1. Push the commit and let gh create the tag: `git push origin`
 2. Create the GitHub release with all artifacts attached:
@@ -85,7 +104,7 @@ gh release create "v<version>" \
 ```
 3. Show the release URL to the user.
 
-## Step 8: Publish the iPhone app to TestFlight
+## Step 9: Publish the iPhone app to TestFlight
 
 Every release also ships the iPhone app (`WatchtowerMobile`) to TestFlight
 under the same version as the Mac app:
@@ -115,6 +134,36 @@ and stays as is. Never pass `SKIP_CLOUDKIT_CHECK=1` without the user's go-ahead.
 On success, tell the user the uploaded version and build number; the build
 appears in TestFlight after Apple finishes processing it.
 
+## Step 10: Reply on the GitHub issues this release ships
+
+Issue fixes reference their issue with `Refs #N` (not `Closes`), so the
+issue stays open until the fix reaches a release. Close the loop here:
+
+1. List the PRs merged since the previous tag and the issues they name:
+   ```bash
+   gh pr list --state merged --base main --limit 200 \
+       --search "merged:>=$(git log -1 --format=%cI <previous_tag>)" \
+       --json number,title,body \
+       --jq '.[] | select(.body | test("(?i)(refs|closes|fixes) #[0-9]+")) | "\(.number) \(.title)"'
+   ```
+   Pull the `#N` numbers out of each body. Keep only issues that are still
+   open, and skip PR numbers.
+2. For each issue, read its thread (`gh issue view N --comments`) — the triage
+   comment says what was accepted — and every PR in this release that names it.
+   Decide:
+   - **Done:** everything the triage comment accepted has shipped → reply and
+     close.
+   - **Partly done:** some accepted parts are still pending → reply with what
+     shipped and what is still coming, and leave it open.
+3. Draft each reply in English, short, addressed to the author: what shipped
+   in `v<version>`, with the PR links, and a thank-you. Show all drafts with
+   the close / keep-open decision to the user and wait for confirmation —
+   these comments are public.
+4. Post them: `gh issue comment N --body "..."`, then for the done ones
+   `gh issue close N --reason completed`. List the issue URLs to the user.
+
+If no PR in the range names an issue, say so and skip this step.
+
 ## Important
 
 - Always confirm version and release notes with user before proceeding
@@ -124,5 +173,7 @@ appears in TestFlight after Apple finishes processing it.
 - **ZIP** = required for in-app auto-update (`UpdateService` looks for `.zip` asset)
 - **checksums.txt** = SHA-256 verification for install script
 - All three artifacts MUST be attached to every release
-- The iPhone app goes to TestFlight with the same version (Step 8); a failure
+- The iPhone app goes to TestFlight with the same version (Step 9); a failure
   there does not undo the Mac release — report it and leave the rest as is
+- Issues shipped in the release get a reply and are closed (Step 10); post
+  only after the user confirms the drafts

@@ -71,7 +71,6 @@ final class PersistedInspectorWidthTests: XCTestCase {
         )
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: root)
-        window.orderFront(nil)
         defer { window.close() }
         let hosted = window.contentView
         let split = try XCTUnwrap(

@@ -73,9 +73,11 @@ final class DigestWatcher {
         // notifyDecisions defaults to true — AppStorage default is true, but UserDefaults returns false
         // if the key was never set. Check if key exists; if not, treat as enabled.
         let decisionsEnabled = UserDefaults.standard.object(forKey: "notifyDecisions") == nil || notifyDecisions
-        let quietHours = UserDefaults.standard.bool(forKey: "quietHoursEnabled")
+        let briefingsEnabled = NotificationPreferences.briefingEnabled(.standard)
 
-        guard !quietHours else { return }
+        // A pause holds both kinds back (the watermarks stay put), so what
+        // arrived meanwhile is announced once notifications are back on.
+        guard !NotificationPreferences.isPaused(.standard) else { return }
 
         do {
             let newDecisions = try dbPool.read { db in
@@ -104,9 +106,12 @@ final class DigestWatcher {
                 try BriefingQueries.fetchNewSince(db, afterID: lastCheckedBriefingID)
             }
             for briefing in newBriefings {
-                notificationService.sendBriefingNotification(
-                    attentionCount: briefing.parsedAttention.count
-                )
+                // Off = consumed without a banner, like decisions.
+                if briefingsEnabled {
+                    notificationService.sendBriefingNotification(
+                        attentionCount: briefing.parsedAttention.count
+                    )
+                }
                 lastCheckedBriefingID = briefing.id
             }
             if lastCheckedBriefingID > 0 {

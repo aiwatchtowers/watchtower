@@ -177,7 +177,7 @@ func TestAutomationsGenerator_ChildEnvHasNoAgentMarkers(t *testing.T) {
 	assert.Equal(t, "ok", out)
 	env, err := os.ReadFile(filepath.Join(dir, "env"))
 	require.NoError(t, err)
-	for _, line := range strings.Split(string(env), "\n") {
+	for line := range strings.SplitSeq(string(env), "\n") {
 		name, _, _ := strings.Cut(line, "=")
 		assert.NotContains(t, markers, name, "the generator's child carries %s", name)
 	}

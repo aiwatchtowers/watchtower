@@ -487,7 +487,7 @@ func TestExtSyncOptions_WiresTheExtractor(t *testing.T) {
 func TestExtSyncOptions_WiresTheOCRHelper(t *testing.T) {
 	env := setupConfluenceEnv(t, jira.OAuthScopes)
 	helper := filepath.Join(t.TempDir(), "watchtower-ocr")
-	require.NoError(t, os.WriteFile(helper, []byte("#!/bin/sh\n"), 0o700)) //nolint:gosec // a test helper must be executable
+	require.NoError(t, os.WriteFile(helper, []byte("#!/bin/sh\n"), 0o700)) // a test helper must be executable
 	t.Setenv("WATCHTOWER_OCR_HELPER", helper)
 	x, ok := extSyncOptions(env.cfg, log.New(io.Discard, "", 0), 0).Extractor.(*extract.Extractor)
 	require.True(t, ok)

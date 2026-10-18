@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"watchtower/internal/db"
 )
@@ -19,6 +20,7 @@ type boardNodeView struct {
 	Text           string   `json:"text"`
 	Intent         string   `json:"intent,omitempty"`
 	Status         string   `json:"status"`
+	Column         string   `json:"column,omitempty"` // the leaf's board column, when the board defines columns (PROJ-19)
 	Priority       string   `json:"priority,omitempty"`
 	Progress       *float64 `json:"progress,omitempty"`
 	StatusSince    string   `json:"status_since,omitempty"` // when it entered its current status (UTC)
@@ -119,7 +121,7 @@ func (b *boardViewer) openView(n db.BoardNode) boardNodeView {
 	progress := t.Progress
 	children := b.views(n.Children)
 	return boardNodeView{
-		ID: t.ID, Text: t.Text, Intent: t.Intent, Status: t.Status, Priority: t.Priority, Progress: &progress,
+		ID: t.ID, Text: t.Text, Intent: t.Intent, Status: t.Status, Column: n.Column, Priority: t.Priority, Progress: &progress,
 		StatusSince: n.StatusSince, Branch: t.Branch, PR: t.PR, NewForAgent: n.NewForAgent, UnreadForOwner: n.UnreadForOwner,
 		Archived: n.Archived, ClosedChildren: len(n.Children) - len(children), ArchivedChildren: n.ArchivedChildren,
 		Children: children,
@@ -133,7 +135,7 @@ func closedView(n db.BoardNode) boardNodeView {
 	for _, c := range n.Children {
 		children = append(children, closedView(c))
 	}
-	return boardNodeView{ID: n.Target.ID, Text: n.Target.Text, Status: n.Target.Status, StatusSince: n.StatusSince,
+	return boardNodeView{ID: n.Target.ID, Text: n.Target.Text, Status: n.Target.Status, Column: n.Column, StatusSince: n.StatusSince,
 		Archived: n.Archived, ArchivedChildren: n.ArchivedChildren, Children: children}
 }
 
@@ -143,12 +145,7 @@ func hasOpenWork(n db.BoardNode) bool {
 	if !closedStatus(n.Target.Status) {
 		return true
 	}
-	for _, c := range n.Children {
-		if hasOpenWork(c) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(n.Children, hasOpenWork)
 }
 
 func closedStatus(status string) bool { return status == "done" || status == "dismissed" }

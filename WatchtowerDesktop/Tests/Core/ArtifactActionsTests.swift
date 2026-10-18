@@ -112,6 +112,20 @@ final class ArtifactActionsTests: XCTestCase {
     /// produce is a copy or an open of a compose/deep-link URL; there is no
     /// action value that could perform a network or CLI write.
     /// BEHAVIOR CHAT-05 — see docs/inventory/chat.md
+    /// An html artifact (#535) gets no kind action at all: the panel's Copy
+    /// and Export… plus its view-only Reload / Open in Window / Present —
+    /// nothing opens a URL or hands the page to another app.
+    func testHTMLArtifactHasOnlyCopyExportAndView() {
+        let draft = ArtifactDraft(key: "deck", kind: "html", title: "Launch deck",
+                                  meta: ["to": "a@x.com", "channel": "1:C1", "start": "2026-09-30T10:00:00Z"],
+                                  content: "<h1>Hi</h1>", isComplete: true)
+        for gmail in [true, false] {
+            XCTAssertEqual(ArtifactActions.kindActions(for: draft, gmailConnected: gmail, slackLinks: nil), [])
+        }
+        XCTAssertEqual(ArtifactActions.exportFile(for: draft).name, "launch-deck.html")
+        XCTAssertEqual(ArtifactActions.exportFile(for: draft).contents, "<h1>Hi</h1>")
+    }
+
     func testChat05ArtifactActionsOnlyOpenOrCopy() {
         let rich: [String: String] = [
             "to": "a@x.com", "cc": "b@x.com", "subject": "S", "channel": "1:C1", "thread_ts": "1.2",

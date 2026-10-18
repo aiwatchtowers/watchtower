@@ -73,9 +73,11 @@ func ReadArgsIn(ctx context.Context, bin, dir string, args ...string) ([]string,
 
 // contentReads are the subcommands that can run a filter driver on the
 // folder's files (add runs clean filters while it stages, write-tree when it
-// re-checks a racy index entry); log, show and
+// re-checks a racy index entry, hash-object while it hashes, apply while it
+// reads and writes the work-tree file — the reviewer's Undo); log, show and
 // diff-tree only with a patch.
-var contentReads = []string{"status", "ls-files", "check-ignore", "diff", "diff-files", "diff-index", "add", "write-tree"}
+var contentReads = []string{"status", "ls-files", "check-ignore", "diff", "diff-files", "diff-index", "add", "write-tree",
+	"apply", "hash-object"}
 
 // readsContent: args (subcommand first) may run a filter driver.
 func readsContent(args []string) bool {

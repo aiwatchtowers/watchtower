@@ -115,7 +115,7 @@ func TestLoad_MigratedInstallTakesDefaultsForDroppedArtifacts(t *testing.T) {
 // registered under any other spelling would be as invisible as the writes
 // this repair removed.
 func TestJiraFeatureDefaults_CoversEveryToggle(t *testing.T) {
-	typ := reflect.TypeOf(JiraFeatureToggles{})
+	typ := reflect.TypeFor[JiraFeatureToggles]()
 	defaults := jiraFeatureDefaults(DefaultJiraFeaturesRole)
 	require.Len(t, defaults, typ.NumField(), "every toggle needs a default")
 

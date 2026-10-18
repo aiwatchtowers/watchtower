@@ -37,13 +37,13 @@ func briefSessionFixture(t *testing.T) (database *db.DB, workbenchID, rowID int6
 	return database, workbenchID, rowID
 }
 
-// runBriefHook runs `project brief --project N` the way the SessionStart hook
+// runBriefHook runs `workbench brief --workbench N` the way the SessionStart hook
 // does: the payload on stdin.
 func runBriefHook(t *testing.T, workbenchID int64, stdin string) (stdout, stderr string) {
 	t.Helper()
 	rootCmd.SetIn(strings.NewReader(stdin))
 	t.Cleanup(func() { rootCmd.SetIn(nil) })
-	out, errOut, err := runWorkbench(t, "brief", "--project", strconv.FormatInt(workbenchID, 10))
+	out, errOut, err := runWorkbench(t, "brief", "--workbench", strconv.FormatInt(workbenchID, 10))
 	require.NoError(t, err, "the hook always exits 0")
 	return out, errOut
 }
@@ -361,7 +361,7 @@ func TestProjectBrief_HookNeverStallsOnAnOpenStdin(t *testing.T) {
 	t.Cleanup(func() { rootCmd.SetIn(nil) })
 
 	start := time.Now()
-	out, errOut, err := runWorkbench(t, "brief", "--project", strconv.FormatInt(pid, 10))
+	out, errOut, err := runWorkbench(t, "brief", "--workbench", strconv.FormatInt(pid, 10))
 
 	require.NoError(t, err)
 	assert.Less(t, time.Since(start), 5*time.Second)

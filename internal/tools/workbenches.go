@@ -40,6 +40,7 @@ func workbenchTools(files workbenchfiles.Store, sessionEnv func() string) []*Too
 		NewCreateTargets(files, sessionEnv), NewUpdateTarget(files, sessionEnv),
 		NewListComments(), NewAddComment(sessionEnv), NewResolveComment(sessionEnv),
 		NewAskOwner(sessionEnv), NewGetAsk(), NewGetReview(),
+		NewAnnotateChanges(sessionEnv), NewReplyReviewComment(),
 		NewListAsks(sessionEnv), NewWithdrawAsk(),
 		NewFinishSession(sessionEnv),
 	}
@@ -80,16 +81,17 @@ func workbenchScope(ctx context.Context, d *db.DB, _ json.RawMessage, b Binding)
 	return err
 }
 
-// requireText trims s and checks it is non-empty and at most limit runes.
-func requireText(field, s string, limit int) (string, error) {
+// requireText checks s, trimmed, is non-empty and at most limit runes. The
+// tool's Execute stores that trimmed value.
+func requireText(field, s string, limit int) error {
 	s = strings.TrimSpace(s)
 	switch {
 	case s == "":
-		return "", &ValidationError{Msg: field + " is required"}
+		return &ValidationError{Msg: field + " is required"}
 	case len([]rune(s)) > limit:
-		return "", &ValidationError{Msg: fmt.Sprintf("%s must be at most %d characters", field, limit)}
+		return &ValidationError{Msg: fmt.Sprintf("%s must be at most %d characters", field, limit)}
 	}
-	return s, nil
+	return nil
 }
 
 type emptyArgs struct{}
@@ -144,6 +146,10 @@ type workbenchInfoView struct {
 	// Methodology is what this workbench's sessions run under (spec
 	// 2026-10-15 §8), read-only: no tool changes the agent's own checks.
 	Methodology methodologyView `json:"methodology"`
+	// Columns and HiddenStatuses are the owner's board columns (PROJ-19),
+	// left out when the board defines none and hides nothing.
+	Columns        []db.BoardColumn `json:"columns,omitempty"`
+	HiddenStatuses []string         `json:"hidden_statuses,omitempty"`
 }
 
 // NewWorkbenchInfo describes the bound workbench: what it is, its sources and
@@ -154,7 +160,9 @@ func NewWorkbenchInfo() *Tool {
 		Description: "Describe this Watchtower workbench: name, folder, description, board language, sources, target counts by " +
 			"status (the whole board), how many targets are archived and owner comments waiting for you. An empty description means the " +
 			"workbench is not set up yet (run the setup of the Watchtower skill in this folder). It also shows the methodology this " +
-			"workbench runs under (preset, ask guard, finish check and where each comes from); only the owner changes it.",
+			"workbench runs under (preset, ask guard, finish check and where each comes from); only the owner changes it. When the " +
+			"owner defined board columns, it lists them (columns, each with the description of when a card goes there) and the " +
+			"statuses turned off on this board (hidden_statuses).",
 		InputSchema: mustSchema[emptyArgs](WorkbenchInfoTool),
 		Access:      AccessRead,
 		Surfaces:    workbenchSurfaces,
@@ -192,6 +200,11 @@ func buildWorkbenchInfo(d *db.DB, p *db.Workbench) (*workbenchInfoView, error) {
 		v.Sources = append(v.Sources, sourceView{ID: s.ID, Kind: s.Kind, Ref: s.Ref, Label: s.Label})
 	}
 	countStatuses(board, v.Targets)
+	columns, err := d.GetBoardColumns(p.ID)
+	if err != nil {
+		return nil, fmt.Errorf("reading board columns: %w", err)
+	}
+	v.Columns, v.HiddenStatuses = columns.Columns, columns.Hidden // empty ones are left out
 	return v, nil
 }
 
@@ -222,8 +235,7 @@ func NewUpdateWorkbench() *Tool {
 			if err := decodeStrict(raw, &a); err != nil {
 				return err
 			}
-			_, err := requireText("description", a.Description, 4000)
-			return err
+			return requireText("description", a.Description, 4000)
 		},
 		Scope: workbenchScope,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
@@ -277,8 +289,7 @@ func NewAddWorkbenchSource() *Tool {
 			if err := validateEnum("kind", a.Kind, "slack_channel", "jira_project", "confluence_space", "person", "link"); err != nil {
 				return err
 			}
-			_, err := requireText("ref", a.Ref, 500)
-			return err
+			return requireText("ref", a.Ref, 500)
 		},
 		Scope: workbenchScope,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {

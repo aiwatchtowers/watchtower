@@ -28,7 +28,7 @@ final class EmailAccountsViewModel {
     // MARK: - Refresh
 
     /// Called after every successful reload. Injected by AppState, which
-    /// re-reads the connected sources the sidebar gates on.
+    /// re-resolves the owner and re-reads the connected sources the sidebar gates on.
     var onAccountsChanged: (() async -> Void)?
 
     /// Cross-process writes (the CLI subprocess, or the daemon's IMAP/Outlook
@@ -94,7 +94,7 @@ final class EmailAccountsViewModel {
             error = nil
             refresh()
             // Re-wire the daemon so the new mailbox's first sync + AI cycle runs now.
-            Task { await DaemonManager.restartLogging() }
+            Task { await DaemonManager.restartLoggingQueued() }
             return true
         } else {
             error = result.stderr.isEmpty
@@ -125,11 +125,14 @@ final class EmailAccountsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = args
-        process.environment = Constants.resolvedEnvironment()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
 
         Task.detached {
+            // The login environment is awaited here, off the main actor; a
+            // Cancel (or a newer attempt) while it resolves drops this launch.
+            process.environment = await Constants.resolvedEnvironmentAsync()
+            guard await MainActor.run(body: { self.authProcess === process }) else { return }
             let result = await Self.runProcess(process)
             await MainActor.run {
                 self.authProcess = nil
@@ -138,7 +141,7 @@ final class EmailAccountsViewModel {
                     self.error = nil
                     self.refresh()
                     // Re-wire the daemon so the new account's first sync runs now.
-                    Task { await DaemonManager.restartLogging() }
+                    Task { await DaemonManager.restartLoggingQueued() }
                 } else if result.exitCode == 15 || result.exitCode == 9 {
                     // SIGTERM/SIGKILL — user cancelled
                     self.error = nil
@@ -208,7 +211,7 @@ final class EmailAccountsViewModel {
             error = nil
             refresh()
             // Restart so the daemon drops the removed account's syncer.
-            Task { await DaemonManager.restartLogging() }
+            Task { await DaemonManager.restartLoggingQueued() }
         } else {
             error = result.stderr.isEmpty
                 ? "Remove failed (exit \(result.exitCode))"
@@ -226,7 +229,7 @@ final class EmailAccountsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         if stdin != nil {
             process.standardInput = Pipe()

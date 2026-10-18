@@ -449,6 +449,42 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(try lastFake().turns.last?.text, "q2")
     }
 
+    /// The CURRENT SCREEN block goes to the provider only; the stored owner
+    /// message is what was typed, and a regenerate re-sends the typed text.
+    func testScreenBlockIsSentButNotStored() async throws {
+        let vm = try makeViewModel()
+        _ = vm.newConversation()
+        let screen = ScreenContext(tab: "Inbox", status: nil, selected: nil)
+        vm.send(text: "how do I snooze?", screen: screen)
+        let sent = try XCTUnwrap(lastFake().turns.last?.text)
+        XCTAssertTrue(sent.hasPrefix("=== CURRENT SCREEN ==="))
+        XCTAssertTrue(sent.hasSuffix("how do I snooze?"))
+        XCTAssertEqual(vm.thread.first?.message.text, "how do I snooze?")
+    }
+
+    /// The popup sends through the tab's own `sendDraft`: the screen block is
+    /// sent, the typed draft is stored, and the draft is cleared.
+    func testSendDraftWithScreenSendsBlockAndStoresTypedText() async throws {
+        let vm = try makeViewModel()
+        _ = vm.newConversation()
+        vm.draft = "where is my plan?"
+        vm.sendDraft(screen: ScreenContext(tab: "Day Plan"))
+        let sent = try XCTUnwrap(lastFake().turns.last?.text)
+        XCTAssertTrue(sent.hasPrefix("=== CURRENT SCREEN ==="))
+        XCTAssertTrue(sent.hasSuffix("where is my plan?"))
+        XCTAssertEqual(vm.thread.first?.message.text, "where is my plan?")
+        XCTAssertEqual(vm.draft, "")
+    }
+
+    func testRegenerateDoesNotResendScreen() async throws {
+        let vm = try makeViewModel()
+        _ = vm.newConversation()
+        vm.send(text: "q", screen: ScreenContext(tab: "Inbox"))
+        try await complete(vm, turn: "turn-1", text: "a1")
+        vm.regenerate(messageID: try XCTUnwrap(vm.thread.last?.id))
+        XCTAssertEqual(try lastFake().turns.last?.text, "q")
+    }
+
     func testRegenerateMakesASiblingReplaysAndVariantsSwitch() async throws {
         let vm = try makeViewModel()
         _ = vm.newConversation()
@@ -842,7 +878,6 @@ final class ChatViewModelTests: XCTestCase {
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: ChatLiveArtifactFeed(turn: turn) { received.append($0) })
-        window.orderFront(nil)
         defer { window.close() }
 
         spin { !received.isEmpty }
@@ -1302,6 +1337,20 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(vm.pendingQuotes.map(\.comment), ["Thursday?"])
     }
 
+    /// "Ask about this": each added quote asks for the composer anew, so the
+    /// owner types the follow-up; an ignored one does not.
+    func testAddingAQuoteRequestsComposerFocus() throws {
+        let vm = try makeViewModel()
+        _ = try XCTUnwrap(vm.newConversation())
+        XCTAssertNil(vm.composerFocusRequest)
+        vm.addQuote("retry budget", comment: "")
+        let first = try XCTUnwrap(vm.composerFocusRequest)
+        vm.addQuote("  ", comment: "")
+        XCTAssertEqual(vm.composerFocusRequest, first)
+        vm.addQuote("Ship on Friday", comment: "")
+        XCTAssertNotEqual(vm.composerFocusRequest, first)
+    }
+
     func testSendDraftSendsEveryQuoteAndTheTypedTextAsOneTurn() throws {
         let vm = try makeViewModel()
         _ = try XCTUnwrap(vm.newConversation())
@@ -1517,7 +1566,7 @@ final class ChatLandingViewModelTests: XCTestCase {
 
     func testAttachingOnTheLandingStaysOnTheLanding() throws {
         let vm = makeViewModel()
-        vm.attachPastedImage(Data([0x89, 0x50, 0x4E, 0x47]))
+        vm.attachPasted(Data([0x89, 0x50, 0x4E, 0x47]), name: "Pasted image.png")
         XCTAssertTrue(vm.isOnLanding)
     }
 

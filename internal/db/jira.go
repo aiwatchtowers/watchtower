@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -326,7 +327,7 @@ func (db *DB) GetJiraIssueByKey(key string) (*JiraIssue, error) {
 	row := db.QueryRow(`SELECT `+jiraIssueColumns+` FROM jira_issues WHERE key = ?`, key)
 
 	issue, err := scanJiraIssue(row)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -658,6 +659,36 @@ func (db *DB) OldestFailingJiraProjectSync(accountID int64) (string, error) {
 	return oldest.String, nil
 }
 
+// OwnerActiveJiraProjects returns, sorted and distinct, the keys of the
+// synced Jira projects (a full-sync watermark or a selected board) of every
+// enabled, not removed Jira account holding an open (not done, not deleted)
+// issue that account's own connecting person (owner_account_id) is assigned
+// to or reported.
+func (db *DB) OwnerActiveJiraProjects() ([]string, error) {
+	rows, err := db.Query(`SELECT DISTINCT i.project_key FROM jira_issues i
+		JOIN jira_accounts a ON a.id = i.account_id
+		WHERE a.enabled = 1 AND a.status != 'removed' AND a.owner_account_id != ''
+		  AND i.is_deleted = 0 AND i.status_category != 'done' AND i.project_key != ''
+		  AND (i.assignee_account_id = a.owner_account_id OR i.reporter_account_id = a.owner_account_id)
+		  AND (EXISTS (SELECT 1 FROM jira_sync_state s WHERE s.account_id = i.account_id AND s.project_key = i.project_key)
+		    OR EXISTS (SELECT 1 FROM jira_boards b
+		      WHERE b.account_id = i.account_id AND b.project_key = i.project_key AND b.is_selected = 1))
+		ORDER BY i.project_key`)
+	if err != nil {
+		return nil, fmt.Errorf("querying the owner's active jira projects: %w", err)
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, fmt.Errorf("scanning jira project key: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	return keys, rows.Err()
+}
+
 // GetJiraSyncStates returns all Jira sync states across every account.
 func (db *DB) GetJiraSyncStates() ([]JiraSyncState, error) {
 	rows, err := db.Query(`SELECT account_id, project_key, last_synced_at, issues_synced, last_error, last_error_at FROM jira_sync_state ORDER BY account_id, project_key`)
@@ -925,7 +956,7 @@ func (db *DB) GetJiraIssuesForTracks(trackIDs []int) (map[int][]JiraIssue, error
 
 	// Step 1: Get track_id → issue_key mappings
 	placeholders := make([]string, len(trackIDs))
-	args := make([]interface{}, len(trackIDs))
+	args := make([]any, len(trackIDs))
 	for i, id := range trackIDs {
 		placeholders[i] = "?"
 		args[i] = id
@@ -1140,7 +1171,7 @@ func (db *DB) GetJiraActiveSprintStats(accountID int64, boardID int) (*SprintSta
 	err := db.QueryRow(`SELECT id, name, end_date FROM jira_sprints
 		WHERE account_id = ? AND board_id = ? AND state = 'active' ORDER BY start_date LIMIT 1`, accountID, boardID).
 		Scan(&sprintID, &sprintName, &endDate)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
@@ -1189,10 +1220,7 @@ func (db *DB) GetJiraActiveSprintStats(accountID int64, boardID int) (*SprintSta
 		}
 		if !endTime.IsZero() {
 			days := time.Until(endTime).Hours() / 24
-			stats.DaysLeft = int(math.Ceil(days))
-			if stats.DaysLeft < 0 {
-				stats.DaysLeft = 0
-			}
+			stats.DaysLeft = max(int(math.Ceil(days)), 0)
 		}
 	}
 

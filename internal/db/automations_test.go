@@ -487,7 +487,7 @@ func TestMigration00113_PartialUniqueIndexes(t *testing.T) {
 	if _, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger, event_cycle) VALUES (?, 'event', ?)`, id, cycle); err == nil {
 		t.Error("second run of one event cycle accepted; want unique error")
 	}
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		if _, err := d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status) VALUES (?, 'event', 'failed')`, id); err != nil {
 			t.Errorf("event run %d without a cycle refused: %v", i, err)
 		}
@@ -751,5 +751,32 @@ func TestLatestAppliedAutomationSave_Filters(t *testing.T) {
 		if got, err := d.LatestAppliedAutomationSave("/p/a.md", "personal", hash); err != nil || got != nil {
 			t.Errorf("hash %q: got %+v, %v; want none", hash, got, err)
 		}
+	}
+}
+
+// #584: the daemon's own disable records why and when; the owner's next
+// enable or disable clears both.
+func TestAutomationIndex_DisableRunawayRecordsReason(t *testing.T) {
+	d := openTestDB(t)
+	id := seedAutomationRow(t, d, "digest", filepath.Join(t.TempDir(), "digest.md"), "h1")
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := d.SetAutomationEnabled(id, true, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DisableRunawayAutomation(id, "runaway script", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	a := mustGetAutomation(t, d, id)
+	if a.Enabled || a.DisabledReason != "runaway script" || a.DisabledAt == nil || !a.DisabledAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("after runaway disable: enabled=%v reason=%q at=%v", a.Enabled, a.DisabledReason, a.DisabledAt)
+	}
+	if err := d.SetAutomationEnabled(id, true, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if a = mustGetAutomation(t, d, id); a.DisabledReason != "" || a.DisabledAt != nil {
+		t.Errorf("enable kept reason=%q at=%v", a.DisabledReason, a.DisabledAt)
+	}
+	if err := d.DisableRunawayAutomation(id+100, "x", now); !errors.Is(err, ErrAutomationNotFound) {
+		t.Errorf("DisableRunawayAutomation(missing) = %v, want ErrAutomationNotFound", err)
 	}
 }

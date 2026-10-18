@@ -217,7 +217,7 @@ func (p *Pipeline) situationSubjects(situationID string) ([]string, error) {
 	if convErr != nil {
 		// A non-numeric context_id is not a situation id — a normal no-entity
 		// case, deliberately not an error (the turn is consumed, nothing staged).
-		return nil, nil //nolint:nilerr
+		return nil, nil //nolint:nilerr // a non-numeric id is a no-entity case
 	}
 	signals, err := p.db.ListSituationSignals(sid)
 	if err != nil {
@@ -240,7 +240,7 @@ func (p *Pipeline) situationSubjects(situationID string) ([]string, error) {
 func (p *Pipeline) trackSubjects(trackID string) ([]string, error) {
 	tid, convErr := strconv.Atoi(strings.TrimSpace(trackID))
 	if convErr != nil {
-		return nil, nil //nolint:nilerr
+		return nil, nil //nolint:nilerr // a non-numeric id is a no-entity case
 	}
 	refs, err := p.db.TrackSubjectRefs(tid)
 	if err != nil {
@@ -261,7 +261,7 @@ func (p *Pipeline) trackSubjects(trackID string) ([]string, error) {
 func (p *Pipeline) targetSubjects(targetID string) ([]string, error) {
 	tid, convErr := strconv.Atoi(strings.TrimSpace(targetID))
 	if convErr != nil {
-		return nil, nil //nolint:nilerr
+		return nil, nil //nolint:nilerr // a non-numeric id is a no-entity case
 	}
 	trackIDs, err := p.db.TrackIDsForTarget(tid)
 	if err != nil {

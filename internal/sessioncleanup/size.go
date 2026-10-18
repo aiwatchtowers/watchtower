@@ -80,7 +80,7 @@ func (w *sizeWalk) readDir(dir string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close() //nolint:errcheck // read-only directory handle
+	defer f.Close() // read-only directory handle
 	var subdirs []string
 	for {
 		if err := w.inBudget(); err != nil {
@@ -132,7 +132,7 @@ func allocatedBytes(d fs.DirEntry, seen map[[2]uint64]bool) (int64, error) {
 		return 0, errors.New("no stat data")
 	}
 	if !info.IsDir() && st.Nlink > 1 {
-		key := [2]uint64{uint64(st.Dev), uint64(st.Ino)} //nolint:gosec,unconvert // dev/ino widths differ per platform
+		key := [2]uint64{uint64(st.Dev), uint64(st.Ino)} //nolint:unconvert // dev/ino widths differ per platform
 		if seen[key] {
 			return 0, nil
 		}

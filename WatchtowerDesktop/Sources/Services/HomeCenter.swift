@@ -9,6 +9,8 @@ protocol HomeEnvironment: AnyObject {
     var now: Date { get }
     var calendar: Calendar { get }
     var ownerKnown: Bool { get }
+    /// `AppState.ownerPendingSource`.
+    var ownerPendingSource: String? { get }
     /// `AppState.firstSyncLine`.
     var firstSync: FirstSyncLine? { get }
     /// `AppState.homeTodayCardsAllowed`.
@@ -76,6 +78,8 @@ final class HomeCenter {
     @ObservationIgnored private let store: GettingReadyStore
     @ObservationIgnored private let tickInterval: Duration
     @ObservationIgnored private var data: HomeTodayData?
+    /// The pool `beginReading` reads, for `rereadNow`; nil while stopped.
+    @ObservationIgnored private var pool: DatabasePool?
     /// The zone showed unready cards during this launch (`GettingReadyPolicy`).
     @ObservationIgnored private var sawUnready = false
     /// Today reads issued; tests check a rebuild did not read.
@@ -107,6 +111,7 @@ final class HomeCenter {
     /// and starts the tick. A second call restarts both.
     func beginReading(pool: DatabasePool) {
         endReading()
+        self.pool = pool
         let current = generation
         observationTask = Task { [weak self] in
             do {
@@ -163,9 +168,17 @@ final class HomeCenter {
         rebuildSnapshot()
     }
 
+    /// One Today read now, for a write from another process (a CLI call)
+    /// the observation never sees; a no-op while stopped.
+    func rereadNow() async {
+        guard let pool else { return }
+        await reread(pool, generation: generation)
+    }
+
     /// Stops the observation and the tick; the last snapshot stays.
     func endReading() {
         generation += 1
+        pool = nil
         observationTask?.cancel()
         observationTask = nil
         tickTask?.cancel()
@@ -186,6 +199,7 @@ final class HomeCenter {
                 briefingHour: readiness.briefingHour,
                 dayPlanHour: readiness.dayPlanHour,
                 ownerKnown: environment.ownerKnown,
+                ownerPendingSource: environment.ownerPendingSource,
                 firstSync: environment.firstSync,
                 allowed: environment.allowedTodayCards
             )
@@ -212,6 +226,7 @@ final class HomeCenter {
         let briefingHour: Int
         let dayPlanHour: Int
         let ownerKnown: Bool
+        let ownerPendingSource: String?
         let firstSync: FirstSyncLine?
         let allowed: Set<TodayCardKind>
     }
@@ -221,7 +236,8 @@ final class HomeCenter {
     private func makeSnapshot(_ data: HomeTodayData, _ inputs: Inputs, now: Date, calendar: Calendar) -> HomeSnapshot {
         let memory = store.memory
         let step = GettingReadyPolicy.step(
-            readiness: inputs.readiness, ownerKnown: inputs.ownerKnown, memory: memory, sawUnready: sawUnready,
+            readiness: inputs.readiness, ownerKnown: inputs.ownerKnown, ownerPendingSource: inputs.ownerPendingSource,
+            memory: memory, sawUnready: sawUnready,
             now: now, briefingHour: inputs.briefingHour, dayPlanHour: inputs.dayPlanHour)
         sawUnready = step.sawUnready
         if step.memory != memory { store.memory = step.memory }
@@ -249,6 +265,7 @@ final class LiveHomeEnvironment: HomeEnvironment {
     var now: Date { Date() }
     var calendar: Calendar { .current }
     var ownerKnown: Bool { appState?.owner.isKnown ?? false }
+    var ownerPendingSource: String? { appState?.ownerPendingSource }
     var firstSync: FirstSyncLine? { appState?.firstSyncLine }
     var allowedTodayCards: Set<TodayCardKind> { appState?.homeTodayCardsAllowed ?? AppState.homeAlwaysAllowed }
 }

@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"watchtower/docs/guide"
 	"watchtower/internal/chat/blocks"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -27,21 +28,27 @@ const memoryMapMaxRunes = 4000
 const noToolsBlock = `=== TOOLS ===
 No tools are connected in this session. Answer from the conversation only, and say so plainly when the owner asks you to look something up or to create something.`
 
-// appGuide is the short, current app guide (spec §4.1 item 9) — reviewed
-// against WatchtowerDesktop/Sources/App/SidebarDestination.swift.
-const appGuide = `=== WATCHTOWER APP (answer questions about the app from this) ===
-Watchtower is a macOS app that mirrors the owner's Slack, Google (Gmail, Calendar), Jira and recorded meetings into a local database and runs AI pipelines over it. Sidebar:
-- AI Chat — this chat: history on the left, projects, attachments, artifacts in a side panel, proposals the owner approves.
-- Catch Up — a recap of everything since the owner last caught up.
-- Briefings — the daily briefing; Day Plan — today's time-blocked plan.
-- Inbox — the action strip: proposals awaiting approval and due reminders.
-- Ideas — ideas and notes mined from conversations; Digests — Slack/mail/Jira digests and the Decisions journal.
-- Calendar — events with meeting prep, and Recordings (transcripts, recaps, notes).
-- Targets — the owner's goals and tasks; Tracks — narratives of ongoing work.
-- People — people cards; Memory — the assistant's long-term memory.
-- Workload, Blockers, Project Map, Releases, Boards — Jira views.
-- Statistics, Search (full-text over Slack), Usage (AI cost), MCP Server (connect Watchtower to coding agents).
-Settings hold the connected accounts (Slack, Google, Jira, Quick Connections), features, the AI provider and models, prompts and skills.`
+// appGuideSection is the prompt's app map: the user guide's catalogue plus the
+// instruction to search the guide (docs/guide, indexed as the "guide" source).
+// A session without tools cannot search, so it gets the catalogue to link
+// only (noToolsBlock's rule: no promise the session cannot keep). The main
+// surface (AI Chat and its ⌘/ popup) also gets the screen-link rule: the
+// Desktop renders watchtower-nav://<screen> as an in-app link there.
+func appGuideSection(o PromptOptions) string {
+	lead := "For any question about how Watchtower works, link the guide section that covers it; a page lives at " + guide.BaseURL(guide.Version) + "<path>. The guide's pages:\n"
+	if o.ToolsAvailable {
+		lead = "For any question about how Watchtower works, search the user guide first: search_knowledge with sources [\"guide\"]. " +
+			"Answer from what you find and link the section you used as the hit's link + \"#\" + its chunk_anchor; if the guide has nothing on it, say so instead of guessing. The guide's pages:\n"
+	}
+	out := "=== WATCHTOWER APP ===\n" + lead + guide.Map()
+	if o.Surface == "main" {
+		out += "\n\n" + appGuideNavRule
+	}
+	return out + "\n==="
+}
+
+// appGuideNavRule lists WatchtowerDesktop's SidebarDestination raw values.
+const appGuideNavRule = "To link a screen of the app write watchtower-nav://<screen> with one of: home, chat, catchUp, briefings, dayPlan, inbox, ideas, calendar, targets, tracks, projects (Workbench), automations, digests, people, memory, workload, blockers, projectMap, releases, statistics, search, boards, usage, mcpServer. Only a screen shown in the sidebar becomes a link; any other shows as plain text."
 
 const responseStyle = `=== RESPONSE STYLE ===
 - Give the answer first and keep it short. Do not narrate your search steps — the app already shows them.
@@ -72,9 +79,9 @@ func identityBlock(d *db.DB, cfg *config.Config, now time.Time) (string, error) 
 		"and you show where each fact came from.\n\n")
 	fmt.Fprintf(&b, "Current time: %s when this session started. Each owner message begins with a newer "+
 		"%q line: always use the latest one.\n", formatCurrentTime(now), "[Current time: …]")
-	name := oneLine(owner.DisplayName, maxFieldRunes)
-	email := oneLine(owner.Email, maxFieldRunes)
-	id := oneLine(owner.ID, maxFieldRunes)
+	name := oneLine(owner.DisplayName)
+	email := oneLine(owner.Email)
+	id := oneLine(owner.ID)
 	switch {
 	case name != "" && email != "":
 		fmt.Fprintf(&b, "Owner: %s (%s)\n", name, email)
@@ -85,7 +92,7 @@ func identityBlock(d *db.DB, cfg *config.Config, now time.Time) (string, error) 
 	case owner.Known():
 		fmt.Fprintf(&b, "Owner: %s\n", id)
 	default:
-		b.WriteString("Owner: unknown — no Slack, Google, Jira or Linear identity is connected yet.\n")
+		b.WriteString("Owner: unknown — no Slack, Google, Jira, Linear or email identity is connected yet.\n")
 	}
 	b.WriteString("\n" + prompts.ChatDirective(cfg.Digest.Language))
 	return b.String(), nil
@@ -146,7 +153,7 @@ func splitSlackAccounts(accts []db.SlackAccount) ([]db.SlackAccount, []blocks.Sl
 		if name == "" {
 			name = a.TeamName
 		}
-		teams = append(teams, blocks.SlackTeam{AccountID: a.ID, TeamID: a.TeamID, Name: oneLine(name, maxFieldRunes)})
+		teams = append(teams, blocks.SlackTeam{AccountID: a.ID, TeamID: a.TeamID, Name: oneLine(name)})
 	}
 	return active, teams
 }
@@ -182,9 +189,9 @@ func slackSourceEntries(active []db.SlackAccount) []string {
 	}
 	sanitized := make([]db.SlackAccount, len(active))
 	for i, a := range active {
-		a.Label = oneLine(a.Label, maxFieldRunes)
-		a.TeamName = oneLine(a.TeamName, maxFieldRunes)
-		a.TeamDomain = oneLine(a.TeamDomain, maxFieldRunes)
+		a.Label = oneLine(a.Label)
+		a.TeamName = oneLine(a.TeamName)
+		a.TeamDomain = oneLine(a.TeamDomain)
 		sanitized[i] = a
 	}
 	return []string{db.FormatConnectedWorkspaces(sanitized)}
@@ -200,7 +207,7 @@ func googleSourceEntries(google []db.GoogleAccount) []string {
 		if g.GmailEnabled {
 			parts = append(parts, "Gmail")
 		}
-		entry := oneLine(g.Email, maxFieldRunes) + " (" + strings.Join(parts, ", ") + ")"
+		entry := oneLine(g.Email) + " (" + strings.Join(parts, ", ") + ")"
 		if g.Status == "revoked" || g.Status == "error" {
 			entry += " — needs re-login"
 		}
@@ -219,7 +226,7 @@ func jiraSourceEntries(jira []db.JiraAccount) []string {
 		if name == "" {
 			name = j.SiteName
 		}
-		jl = append(jl, oneLine(name, maxFieldRunes)+" ("+oneLine(j.SiteURL, maxFieldRunes)+")")
+		jl = append(jl, oneLine(name)+" ("+oneLine(j.SiteURL)+")")
 	}
 	return jl
 }
@@ -237,7 +244,7 @@ func skillsBlock(dir string) (string, error) {
 	var lines []string
 	for _, s := range list {
 		if s.Enabled {
-			lines = append(lines, "- "+oneLine(s.Name, maxFieldRunes)+" — "+oneLine(s.Description, maxFieldRunes))
+			lines = append(lines, "- "+oneLine(s.Name)+" — "+oneLine(s.Description))
 		}
 	}
 	if len(lines) == 0 {
@@ -277,7 +284,7 @@ func projectBlock(d *db.DB, projectID int64, provider string) (string, error) {
 		return "", err
 	}
 	var b strings.Builder
-	b.WriteString("=== PROJECT: " + oneLine(pc.Name, maxFieldRunes) + " ===\n")
+	b.WriteString("=== PROJECT: " + oneLine(pc.Name) + " ===\n")
 	// Instructions are the owner's own words, entered in this chat's Settings
 	// — they stay verbatim (unlike every field below, which a third party
 	// can set). The begin/end markers still bound them explicitly so their
@@ -299,9 +306,9 @@ func writePinnedSources(b *strings.Builder, sources []db.ChatProjectSource) {
 	b.WriteString("Pinned sources (prefer these when relevant):\n")
 	searchable := false
 	for _, s := range sources {
-		line := "- " + oneLine(s.Kind, maxFieldRunes) + ": " + oneLine(s.Ref, maxFieldRunes)
+		line := "- " + oneLine(s.Kind) + ": " + oneLine(s.Ref)
 		if s.Label != "" {
-			line += " (" + oneLine(s.Label, maxFieldRunes) + ")"
+			line += " (" + oneLine(s.Label) + ")"
 		}
 		b.WriteString(line + "\n")
 		searchable = searchable || slices.Contains(tools.ScopedSourceKinds, s.Kind)

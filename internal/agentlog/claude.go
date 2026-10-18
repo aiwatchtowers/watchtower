@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -14,7 +15,7 @@ import (
 
 // ParserVersion is stamped on agent_log_files; bump it when parsing changes
 // so present files are reparsed from 0 (idempotent keys, AGENTLOG-03).
-const ParserVersion = 1
+const ParserVersion = 2
 
 const maxLineBytes = 8 << 20
 
@@ -75,6 +76,15 @@ type ParseOptions struct {
 	// attachments before the parse's start offset (Claude Code writes the
 	// listing once near the start of a session).
 	KnownSkills []string
+	// PriorSkills, when set, returns the skill_listing names before the
+	// parse's start offset. It is called at most once, on the first slash
+	// command whose name is not already known, so an incremental read does
+	// not reread the file's prefix every scan.
+	PriorSkills func() ([]string, error)
+	// MaxRows stops the parse after the line that brings the produced events
+	// plus tool results to MaxRows (0 = read to the end); More then says the
+	// input may hold further complete lines.
+	MaxRows int
 }
 
 type ParseResult struct {
@@ -84,6 +94,9 @@ type ParseResult struct {
 	Unknown     map[string]int
 	LongLines   int
 	Consumed    int64
+	More        bool     // stopped at MaxRows, not at the end of the input
+	Skills      []string // every skill name known at the end of the parse (seed for the next slice)
+	PriorLoaded bool     // PriorSkills was called: Skills includes the listings before the start
 }
 
 // knownTypes are record types the core reads or deliberately ignores; any
@@ -109,7 +122,7 @@ func ParseClaude(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, 
 	br := bufio.NewReaderSize(r, 64<<10)
 	off := startOffset
 	for {
-		raw, n, complete, err := nextLine(br, maxLineBytes)
+		raw, n, complete, err := NextLine(br, maxLineBytes)
 		if !complete {
 			break // EOF mid-line, or plain EOF: the rest waits for the next scan
 		}
@@ -121,20 +134,31 @@ func ParseClaude(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, 
 		} else {
 			p.handle(raw, lineOff)
 		}
+		if p.priorErr != nil {
+			return nil, fmt.Errorf("reading skill listings of %s: %w", o.Path, p.priorErr)
+		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				break
 			}
 			return nil, fmt.Errorf("reading %s: %w", o.Path, err)
 		}
+		if o.MaxRows > 0 && len(p.res.Events)+len(p.res.ToolResults) >= o.MaxRows {
+			p.res.More = true
+			break
+		}
 	}
+	for n := range p.skills {
+		p.res.Skills = append(p.res.Skills, n)
+	}
+	sort.Strings(p.res.Skills)
 	return p.res, nil
 }
 
-// nextLine returns one '\n'-terminated line without the newline, the bytes
+// NextLine returns one '\n'-terminated line without the newline, the bytes
 // consumed, and complete=false when the input ended before a newline. A line
 // longer than limit comes back as nil (consumed and complete).
-func nextLine(br *bufio.Reader, limit int) ([]byte, int64, bool, error) {
+func NextLine(br *bufio.Reader, limit int) ([]byte, int64, bool, error) {
 	var buf []byte
 	var n int64
 	tooLong := false
@@ -166,6 +190,21 @@ type claudeParser struct {
 	callIdx map[string]int  // api_call key → index in res.Events
 	toolIdx map[string]int  // tool_use_id → index in res.Events
 	skills  map[string]bool // KnownSkills plus every skill_listing attachment seen
+
+	priorErr error // PriorSkills failed: the parse fails, the file is retried next scan
+}
+
+// knowsSkill reports whether name is a listed skill, loading the listings
+// before the start offset (PriorSkills) the first time a name is unknown.
+func (p *claudeParser) knowsSkill(name string) bool {
+	if !p.skills[name] && p.o.PriorSkills != nil {
+		prior, err := p.o.PriorSkills()
+		p.o.PriorSkills, p.priorErr, p.res.PriorLoaded = nil, err, true
+		for _, n := range prior {
+			p.skills[n] = true
+		}
+	}
+	return p.skills[name]
 }
 
 // readTypes are the record types that produce sessions or events; one
@@ -306,27 +345,45 @@ func (p *claudeParser) user(rec claudeRecord, off int64) {
 		if strings.HasPrefix(text, "<local-command") || strings.HasPrefix(text, "[Request interrupted by user") {
 			return
 		}
-		p.add(rec, off, db.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn"})
+		p.add(rec, off, db.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn", Trigger: turnTrigger(text)})
 		p.slashSkill(rec, off, text) // Task 4
 		return
 	}
 	var blocks []struct {
 		Type string `json:"type"`
+		Text string `json:"text"`
 	}
 	if json.Unmarshal(rec.Message.Content, &blocks) != nil {
 		return
 	}
-	hasResult := false
+	hasResult, firstText := false, ""
 	for _, b := range blocks {
 		if b.Type == "tool_result" {
 			hasResult = true
+		}
+		if b.Type == "text" && firstText == "" {
+			firstText = b.Text
 		}
 	}
 	if hasResult {
 		p.toolResults(rec) // Task 4
 		return
 	}
-	p.add(rec, off, db.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn"})
+	p.add(rec, off, db.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn", Trigger: turnTrigger(firstText)})
+}
+
+// turnTrigger tells the owner's own turn from a system-injected one: a task or
+// sub-agent notification, or a hook / reminder block. Leading whitespace is
+// ignored.
+func turnTrigger(text string) string {
+	text = strings.TrimLeft(text, " \t\r\n")
+	switch {
+	case strings.HasPrefix(text, "<task-notification>"), strings.HasPrefix(text, "<agent-message"):
+		return "notification"
+	case strings.HasPrefix(text, "<system-reminder>"), strings.HasPrefix(text, "Stop hook feedback:"):
+		return "hook"
+	}
+	return "owner"
 }
 
 func (p *claudeParser) attachment(rec claudeRecord) {

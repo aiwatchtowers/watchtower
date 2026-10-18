@@ -63,7 +63,7 @@ func BuildSystemPrompt(ctx context.Context, d *db.DB, cfg *config.Config, o Prom
 		return "", err
 	}
 	sections = append(sections, extra...)
-	sections = append(sections, appGuide, responseStyle)
+	sections = append(sections, appGuideSection(o), responseStyle)
 	return joinSections(sections), nil
 }
 

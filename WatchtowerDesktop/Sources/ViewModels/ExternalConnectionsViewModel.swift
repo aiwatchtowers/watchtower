@@ -25,14 +25,30 @@ final class ExternalConnectionsViewModel {
     /// The last tools command's failure, per connection (cleared on success).
     private(set) var toolsErrors: [Int: String] = [:]
 
+    /// The import sheet's list of servers found in ~/.codex and ~/.claude.
+    private(set) var importList: ExternalConnectionImportList?
+    /// The import sheet's last failure (listing, or names not imported).
+    private(set) var importError: String?
+    /// A `connections import` of names is running.
+    private(set) var isImporting = false
+
     private let dbPool: DatabasePool
     private let makeRunner: () -> (any CLIRunnerProtocol)?
+    /// The OAuth sign-in an import runs for a server that needs one; nil =
+    /// `signIn` (tests replace it: the real flow opens a browser).
+    private let importSignIn: ((ExternalConnection) async -> Void)?
+    /// Set by `cancelImport()`: the import stops before its next sign-in.
+    private var importCancelled = false
+    /// The running `connections import` command (`cancelImport()` cancels it).
+    private var importTask: Task<Data, Error>?
     private var authProcess: Process?
 
     init(dbPool: DatabasePool,
-         makeRunner: @escaping () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() }) {
+         makeRunner: @escaping () -> (any CLIRunnerProtocol)? = { ProcessCLIRunner.makeDefault() },
+         importSignIn: ((ExternalConnection) async -> Void)? = nil) {
         self.dbPool = dbPool
         self.makeRunner = makeRunner
+        self.importSignIn = importSignIn
     }
 
     // MARK: - Refresh
@@ -304,6 +320,97 @@ final class ExternalConnectionsViewModel {
         return error.localizedDescription
     }
 
+    // MARK: - Import from ~/.codex and ~/.claude
+
+    /// Loads what the owner's codex and Claude Code configs offer
+    /// (`connections import --json`) into `importList`; nil while loading or
+    /// after a failure (`importError`).
+    func loadImportCandidates() async {
+        importList = nil
+        importError = nil
+        guard let runner = makeRunner() else {
+            importError = "Watchtower CLI not found"
+            return
+        }
+        do {
+            let data = try await runner.run(args: ExternalConnectionImportList.listArgs)
+            importList = try JSONDecoder().decode(ExternalConnectionImportList.self, from: data)
+        } catch {
+            importError = Self.toolsErrorText(error)
+        }
+    }
+
+    /// Imports `names` (`connections import --json -- <name>…`): each becomes
+    /// a connection, enabled (its tools listed) unless its config turned it
+    /// off. An imported http server that could not list its tools without
+    /// headers then gets the OAuth sign-in the Add sheet runs, one at a time;
+    /// a failed sign-in is reported here, not in the Settings pane. True when
+    /// every name was imported and signed in; otherwise `importError` says
+    /// which were not. `cancelImport()` stops it.
+    func importConnections(_ names: [String]) async -> Bool {
+        guard !names.isEmpty, !isImporting else { return false }
+        guard let runner = makeRunner() else {
+            importError = "Watchtower CLI not found"
+            return false
+        }
+        isImporting = true
+        importCancelled = false
+        importError = nil
+        defer { isImporting = false }
+        let results = await runImportCommand(runner, names: names)
+        await refreshAsync()
+        guard let results else { return false }
+        let failures = results.compactMap(\.failure) + (await signInImported(results))
+        if !failures.isEmpty, !importCancelled {
+            // The sheet stays open: list again, so what was imported reads
+            // "already exists" and drops out of the selection.
+            await loadImportCandidates()
+        }
+        importError = failures.isEmpty ? nil : failures.joined(separator: "\n")
+        return failures.isEmpty && !importCancelled
+    }
+
+    /// The `connections import` run, cancellable by `cancelImport()` (the
+    /// child is terminated); nil after a failure (`importError`) or a cancel.
+    private func runImportCommand(
+        _ runner: any CLIRunnerProtocol, names: [String]
+    ) async -> [ExternalConnectionImportResult]? {
+        let task = Task { try await runner.run(args: ExternalConnectionImportList.importArgs(names: names)) }
+        importTask = task
+        defer { importTask = nil }
+        do {
+            return try JSONDecoder().decode([ExternalConnectionImportResult].self, from: try await task.value)
+        } catch {
+            if !importCancelled { importError = Self.toolsErrorText(error) }
+            return nil
+        }
+    }
+
+    /// Runs the OAuth sign-in of each imported row that needs one, in turn,
+    /// until `cancelImport()`; the failures, by name. The Settings pane's own
+    /// error is left as it was.
+    private func signInImported(_ results: [ExternalConnectionImportResult]) async -> [String] {
+        var failures: [String] = []
+        let paneError = error
+        for result in results where result.signIn && !importCancelled {
+            guard let id = result.id, let row = connections.first(where: { Int64($0.id) == id }) else { continue }
+            error = nil
+            await (importSignIn ?? signIn)(row)
+            if let signInError = error { failures.append("\(result.name): sign-in failed: \(signInError)") }
+        }
+        error = paneError
+        return failures
+    }
+
+    /// Stops a running import: the `connections import` child or the
+    /// sign-in in progress is terminated and no further one starts.
+    /// Connections already added stay.
+    func cancelImport() {
+        importCancelled = true
+        importTask?.cancel()
+        cancelSignIn()
+    }
+
     // MARK: - Flow helpers
 
     /// Browser-consent flow (`oauth`) — holds the detached Process in
@@ -325,9 +432,14 @@ final class ExternalConnectionsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = args
-        process.environment = Constants.resolvedEnvironment()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
+
+        // The login environment is awaited with the flow already shown as
+        // running (Cancel visible); a Cancel or a newer attempt meanwhile
+        // drops this launch.
+        process.environment = await Constants.resolvedEnvironmentAsync()
+        guard authProcess === process else { return }
 
         let result = await Self.runProcess(process)
         authProcess = nil
@@ -385,7 +497,7 @@ final class ExternalConnectionsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         if stdin != nil {
             process.standardInput = Pipe()

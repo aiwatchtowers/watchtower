@@ -20,6 +20,17 @@ var ZoneNameFromLink = zoneNameFromLink
 // SetExecutorAbandoned replaces the executor's AbandonedRuns count (tests).
 func SetExecutorAbandoned(e *Executor, count func() int) { e.abandoned = count }
 
+// SetExecutorFinishPause replaces the pause before each retry of a failed
+// run finish (tests).
+func SetExecutorFinishPause(e *Executor, pause func(ctx context.Context, attempt int)) {
+	e.finishPause = pause
+}
+
+// ExecutorWriteFinish exposes writeFinish (tests).
+func ExecutorWriteFinish(ctx context.Context, e *Executor, runID int64, f db.RunFinish, c *db.RunCommit) error {
+	return e.writeFinish(ctx, runID, f, c)
+}
+
 // ExecutorReadyWaits is how many ready waits wait for a running slot (tests).
 func ExecutorReadyWaits(e *Executor) int64 { return e.readyWaits.Load() }
 
@@ -37,3 +48,7 @@ func SessionReady(d *db.DB, runID, stepID int64) (bool, error) {
 	w := &sessionWait{db: d, runID: runID, stepID: stepID}
 	return w.ready(context.Background())
 }
+
+// SetBusBeforeMerge installs a hook run between Flush's enqueue and its merge
+// into the coalesced run (tests claim the run there).
+func SetBusBeforeMerge(b *Bus, hook func(runID int64)) { b.beforeMerge = hook }

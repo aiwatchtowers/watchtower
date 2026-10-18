@@ -16,6 +16,10 @@ struct AutomationsTabActions {
     var onConfirm: ((Int64) -> Void)?
     /// A step's proposal → the Inbox.
     var onOpenInbox: ((Int64) -> Void)?
+    /// A workbench run's step session → that session on its workbench page.
+    var onOpenSession: ((_ projectID: Int64, _ sessionID: Int64) -> Void)?
+    /// A workbench run's step ask → that ask's drawer on its workbench page.
+    var onOpenAsk: ((_ projectID: Int64, _ askID: Int64) -> Void)?
 }
 
 /// How the tab opens the editor chats ("Change in words", the "New
@@ -41,6 +45,8 @@ struct AutomationsView: View {
     @Bindable var vm: AutomationsViewModel
     var actions = AutomationsTabActions()
     var workbenchName: (Int64) -> String? = { _ in nil }
+    /// The workbenches a workbench template can install into.
+    var workbenches: [AutomationTemplateGallery.InstallTarget] = []
     var emptyStateContext: EmptyStateContext = .neutral
     var editor: AutomationEditorCenter?
     var chats: AutomationEditorChatHooks?
@@ -162,7 +168,7 @@ struct AutomationsView: View {
             }
         }
         .sheet(isPresented: $browsingTemplates, onDismiss: openPendingSheet) {
-            AutomationTemplateGalleryView(vm: vm, onDescribeInWords: {
+            AutomationTemplateGalleryView(vm: vm, workbenches: workbenches, onDescribeInWords: {
                 pendingSheet = .newAutomation
                 browsingTemplates = false
             }, onClose: { browsingTemplates = false })

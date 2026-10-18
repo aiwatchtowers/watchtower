@@ -81,7 +81,7 @@ final class CalendarAccountsViewModel {
             error = nil
             refresh()
             // Re-wire the daemon so the new calendar's first sync runs now.
-            Task { await DaemonManager.restartLogging() }
+            Task { await DaemonManager.restartLoggingQueued() }
             return true
         } else {
             error = result.stderr.isEmpty
@@ -118,7 +118,7 @@ final class CalendarAccountsViewModel {
             error = nil
             refresh()
             // Re-wire the daemon so the new feed's first sync runs now.
-            Task { await DaemonManager.restartLogging() }
+            Task { await DaemonManager.restartLoggingQueued() }
             return true
         } else {
             error = result.stderr.isEmpty
@@ -173,7 +173,7 @@ final class CalendarAccountsViewModel {
             error = nil
             refresh()
             // Restart so the daemon drops the removed account's syncer.
-            Task { await DaemonManager.restartLogging() }
+            Task { await DaemonManager.restartLoggingQueued() }
         } else {
             error = result.stderr.isEmpty
                 ? "Remove failed (exit \(result.exitCode))"
@@ -191,7 +191,7 @@ final class CalendarAccountsViewModel {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         if stdin != nil {
             process.standardInput = Pipe()

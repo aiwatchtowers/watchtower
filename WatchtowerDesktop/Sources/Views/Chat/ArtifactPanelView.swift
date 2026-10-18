@@ -13,6 +13,8 @@ struct ArtifactPanelView: View {
     var onClose: () -> Void
 
     @State private var notice: String?
+    /// Bumped by Reload on an html artifact.
+    @State private var htmlReload = 0
     /// The comment list is open. Survives new comments, versions and
     /// launches; a click on a highlight opens it on that thread.
     @AppStorage("chat.artifact.commentsVisible") private var showComments = true
@@ -43,7 +45,7 @@ struct ArtifactPanelView: View {
                 Text("edited").font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
-            if model.canComment {
+            if model.canComment && !isHTML {
                 Toggle(isOn: $showComments) {
                     Label(commentsLabel, systemImage: "sidebar.right")
                 }
@@ -72,6 +74,9 @@ struct ArtifactPanelView: View {
         .padding(10)
     }
 
+    /// An html artifact renders as a page: no passage comments on it.
+    private var isHTML: Bool { model.displayed?.kind == "html" }
+
     /// The threads the list shows outside its Outdated/Resolved groups.
     private var commentCount: Int {
         model.comments.unsent.count + model.comments.sent.count
@@ -92,6 +97,9 @@ struct ArtifactPanelView: View {
             TextEditor(text: $model.editText)
                 .font(.system(.body, design: .monospaced))
                 .padding(6)
+        } else if let draft = model.displayed, draft.kind == "html", draft.isComplete {
+            // Sandboxed: no network, no bridge, links open nothing (#535).
+            SandboxedHTMLView(content: .page(draft.content), reloadToken: htmlReload)
         } else if model.canComment, let rendered = model.comments.rendered, !rendered.text.isEmpty, let draft = model.displayed {
             // The latest version: one view to read and to comment on.
             ArtifactCommentsView(
@@ -125,10 +133,30 @@ struct ArtifactPanelView: View {
                     Button { run(item.action) } label: { Label(item.title, systemImage: item.systemImage) }
                 }
                 .disabled(!draft.isComplete)
+                if draft.kind == "html" {
+                    htmlActions(draft)
+                }
             }
             Spacer()
         }
         .padding(10)
+    }
+
+    /// View-only: Reload and a big window (Present = full screen at once).
+    /// The page never goes to a browser or any networked app (CHAT-05).
+    private func htmlActions(_ draft: ArtifactDraft) -> some View {
+        Group {
+            Button { htmlReload += 1 } label: { Label("Reload", systemImage: "arrow.clockwise") }
+                .help("Load the page again")
+            Button {
+                HTMLPreviewWindow.show(.page(draft.content), title: draft.title, fullScreen: false)
+            } label: { Label("Open in Window", systemImage: "macwindow") }
+            Button {
+                HTMLPreviewWindow.show(.page(draft.content), title: draft.title, fullScreen: true)
+            } label: { Label("Present", systemImage: "play.rectangle") }
+                .help("Full screen; the arrow keys page through a deck, Esc leaves")
+        }
+        .disabled(!draft.isComplete)
     }
 
     private func run(_ action: ArtifactAction) {
@@ -152,6 +180,9 @@ private struct ArtifactContentView: View {
             CSVGridView(rows: CSVTable.parse(draft.content))
         case "code":
             MarkdownView(text: "````\(draft.meta["language"] ?? "")\n\(draft.content)\n````")
+        case "html":
+            // Still being written: its source; the page renders once complete.
+            MarkdownView(text: "````html\n\(draft.content)\n````")
         case "email", "slack", "event":
             VStack(alignment: .leading, spacing: 8) {
                 let header = ArtifactField.fields(of: draft)

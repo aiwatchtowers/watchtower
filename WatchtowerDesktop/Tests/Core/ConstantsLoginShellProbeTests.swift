@@ -93,3 +93,15 @@ private final class ProbeAnswers: @unchecked Sendable {
         }
     }
 }
+
+/// Board #592: the async variant is the resolved environment itself, never
+/// the app's own fallback, and once it returns the non-blocking variant agrees.
+final class ConstantsResolvedEnvironmentAsyncTests: XCTestCase {
+    func testAsyncVariantMatchesTheResolvedEnvironment() async {
+        let awaited = await Constants.resolvedEnvironmentAsync()
+        XCTAssertEqual(Constants.resolvedEnvironmentIfReady(), awaited, "resolved, so IfReady has it too")
+        let again = await Constants.resolvedEnvironmentAsync()
+        XCTAssertEqual(again, awaited, "the cached value")
+        XCTAssertEqual(Constants.resolvedEnvironment(), awaited, "the same resolve")
+    }
+}

@@ -15,7 +15,6 @@ struct ChatRowActions {
     var cancelEdit: () -> Void = {}
     var openArtifact: (String) -> Void = { _ in }
     var openSources: (Int64, [ChatSource]) -> Void = { _, _ in }
-    var quote: ((Int64, String) -> Void)? = { _, _ in }
     /// Sends a question card's answers as the owner's next message; nil
     /// while the card cannot be answered (an older reply, a turn running).
     var answerQuestion: ((String) -> Void)?
@@ -29,7 +28,7 @@ struct ChatRowActions {
         answerQuestion: ((String) -> Void)? = nil
     ) -> Self {
         Self(copy: copy, regenerate: nil, retry: retry, continueStopped: nil, showVariant: nil,
-             beginEdit: nil, quote: nil, answerQuestion: answerQuestion)
+             beginEdit: nil, answerQuestion: answerQuestion)
     }
 }
 
@@ -125,7 +124,7 @@ struct ChatMessageRow: View, Equatable {
     /// user message.
     private var userDisplayBody: String { ChatTurnComposer.displayParts(item.message.text).body }
 
-    /// A reply without its raw question-card JSON — what Copy and Quote take.
+    /// A reply without its raw question-card JSON — what Copy takes.
     private var assistantReadableText: String { ChatQuestionParser.readableText(item.message.text) }
 
     private var editor: some View {
@@ -154,17 +153,10 @@ struct ChatMessageRow: View, Equatable {
                 Button { beginEdit(item.id) } label: { Image(systemName: "pencil") }
                     .help("Edit")
                     .accessibilityLabel("Edit")
-            } else if item.message.isAssistant {
-                if let quote = actions.quote {
-                    Button { quote(item.id, assistantReadableText) } label: { Image(systemName: "text.quote") }
-                        .help("Quote in reply")
-                        .accessibilityLabel("Quote in reply")
-                }
-                if let regenerate = actions.regenerate {
-                    Button { regenerate(item.id) } label: { Image(systemName: "arrow.clockwise") }
-                        .help("Regenerate")
-                        .accessibilityLabel("Regenerate")
-                }
+            } else if item.message.isAssistant, let regenerate = actions.regenerate {
+                Button { regenerate(item.id) } label: { Image(systemName: "arrow.clockwise") }
+                    .help("Regenerate")
+                    .accessibilityLabel("Regenerate")
             }
             if item.siblingCount > 1, let showVariant = actions.showVariant {
                 Button { showVariant(item.id, -1) } label: { Image(systemName: "chevron.left") }
@@ -230,6 +222,9 @@ struct AssistantMessageBody: View {
     /// A question card's answer (the next owner message) and its sender.
     var questionAnswer: String?
     var onAnswerQuestion: ((String) -> Void)?
+    /// Set by a feed with "Ask about this": a finished answer's text is
+    /// where a selection may be quoted from.
+    @Environment(\.chatAnswerRegions) private var answerRegions
 
     var body: some View {
         // A question card leaves the text; while streaming its open block is
@@ -241,14 +236,19 @@ struct AssistantMessageBody: View {
                 StreamingIndicator()
             } else {
                 let parsed = ArtifactParser.parse(question.text, final: !isRunning)
-                ForEach(Array(parsed.segments.enumerated()), id: \.offset) { _, segment in
-                    switch segment {
-                    case .markdown(let markdown):
-                        MarkdownView(text: markdown)
-                    case .artifact(let draft):
-                        ArtifactCardView(draft: draft, isWriting: isRunning && !draft.isComplete,
-                                         version: versions[draft.key]) { onOpenArtifact(draft.key) }
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(Array(parsed.segments.enumerated()), id: \.offset) { _, segment in
+                        switch segment {
+                        case .markdown(let markdown):
+                            MarkdownView(text: markdown)
+                        case .artifact(let draft):
+                            ArtifactCardView(draft: draft, isWriting: isRunning && !draft.isComplete,
+                                             version: versions[draft.key]) { onOpenArtifact(draft.key) }
+                        }
                     }
+                }
+                .background {
+                    if !isRunning, let answerRegions { ChatAnswerRegionMarker(tracker: answerRegions) }
                 }
             }
             if let card = question.card {

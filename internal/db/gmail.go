@@ -2,7 +2,6 @@ package db
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -228,28 +227,4 @@ func (db *DB) GmailMessagesSyncedAfter(accountID int64, sinceISO string) ([]Gmai
 		out = append(out, m)
 	}
 	return out, rows.Err()
-}
-
-// GetGmailBody returns the body_text of accountID's gmail_messages row with
-// the given Gmail message id. The lookup is scoped to the account because a
-// Gmail message id is unique per mailbox, not globally — that is why the
-// table's primary key is (account_id, id) since migration 00043. An unscoped
-// lookup can return a row belonging to another connected account, which for
-// mail bodies means one mailbox's content surfacing under another's.
-//
-// A missing row is not an error: it returns ("", nil), since a signal's
-// underlying gmail message may have been synced by a different pipeline path
-// or since removed — callers should just fall back to the snippet in that
-// case.
-func (db *DB) GetGmailBody(accountID int64, id string) (string, error) {
-	var body string
-	err := db.QueryRow(`SELECT body_text FROM gmail_messages WHERE account_id = ? AND id = ?`,
-		accountID, id).Scan(&body)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", nil
-		}
-		return "", fmt.Errorf("getting gmail body for %d/%s: %w", accountID, id, err)
-	}
-	return body, nil
 }

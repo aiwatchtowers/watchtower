@@ -23,6 +23,9 @@ type hookEvent struct {
 	// TurnID is Codex's turn id; Claude Code sends none.
 	TurnID   string `json:"turn_id"`
 	ToolName string `json:"tool_name"`
+	// ToolInput is the tool call's input; the PermissionRequest hook
+	// summarises it (permissionSummary).
+	ToolInput json.RawMessage `json:"tool_input"`
 	// ToolUseID with TranscriptPath places a PostToolUse against the last
 	// Stop (board #368).
 	ToolUseID string `json:"tool_use_id"`

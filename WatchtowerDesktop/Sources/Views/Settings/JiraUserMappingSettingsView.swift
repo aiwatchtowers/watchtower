@@ -174,7 +174,7 @@ struct JiraUserMappingSettingsView: View {
                 "jira", "users", "map",
                 mapping.jiraAccountId, slackUserId
             ]
-            process.environment = Constants.resolvedEnvironment()
+            process.environment = await Constants.resolvedEnvironmentAsync()
             process.currentDirectoryURL =
                 Constants.processWorkingDirectory()
             let output = await ProcessPipes.run(process)
@@ -191,7 +191,7 @@ struct JiraUserMappingSettingsView: View {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: cliPath)
             process.arguments = ["jira", "users", "resolve"]
-            process.environment = Constants.resolvedEnvironment()
+            process.environment = await Constants.resolvedEnvironmentAsync()
             process.currentDirectoryURL = Constants.processWorkingDirectory()
             let output = await ProcessPipes.run(process)
             if output.exitCode != 0 {

@@ -122,27 +122,32 @@ private struct AutomationFormContent: View {
     private var saveState: AutomationEditorCenter.SaveState? { editor.saving[id] }
     private var isBusy: Bool { saveState == .saving || saveState == .validating }
     /// The controls write the frontmatter only while the form describes it.
-    private var controlsEnabled: Bool { form.isEditable && !form.frontmatterEditedInRecipe }
+    private var controlsEnabled: Bool { !form.paused }
+    /// The script section's scroll id: "Open in editor" scrolls there.
+    private static let recipeEditorID = "recipe-editor"
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    header
-                    notes
-                    Group {
-                        nameField
-                        runsSection
-                        spendSection
-                        mayDoSection
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        header
+                        notes(proxy)
+                        Group {
+                            nameField
+                            runsSection
+                            spendSection
+                            mayDoSection
+                        }
+                        .disabled(!controlsEnabled || isBusy)
+                        if !form.detail.isNewRecipe { stateSection }
+                        scriptSection
+                            .id(Self.recipeEditorID)
+                        messages
                     }
-                    .disabled(!controlsEnabled || isBusy)
-                    if !form.detail.isNewRecipe { stateSection }
-                    scriptSection
-                    messages
+                    .padding(24)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(24)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
             Divider()
             footer
@@ -150,6 +155,13 @@ private struct AutomationFormContent: View {
         }
         .frame(width: 760, height: 820)
         .onAppear(perform: syncSchedule)
+        .task(id: form.recipeUnparsed ? form.buffer.text : "") {
+            // A paused, unreadable recipe: re-check it once typing pauses.
+            guard form.recipeUnparsed else { return }
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled else { return }
+            await editor.recheckParse(id)
+        }
         .onChange(of: schedule) { old, new in
             // Only the owner's picks write: the picker reading the recipe's
             // cron (on appear) must not rewrite it.
@@ -182,12 +194,17 @@ private struct AutomationFormContent: View {
         }
     }
 
-    @ViewBuilder private var notes: some View {
-        if !form.isEditable {
-            Label("Workbench automations are edited in their folder for now; this form only shows it.",
-                  systemImage: "info.circle")
+    @ViewBuilder private func notes(_ proxy: ScrollViewProxy) -> some View {
+        if let coverage = vm.installCoverage[id] {
+            Label(coverage, systemImage: "checklist")
                 .foregroundStyle(.secondary)
-        } else if form.lostFormEdit {
+        }
+        if form.recipeUnparsed {
+            // #582: the fields are column defaults, not the file's settings;
+            // the form stays off so it never writes them over the recipe.
+            unparsedNote(proxy)
+        }
+        if form.lostFormEdit {
             Label("Your last change in the form did not land: the recipe below was edited at the same moment. The "
                 + "form is paused; save, or discard to use the form again.", systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.orange)
@@ -195,6 +212,26 @@ private struct AutomationFormContent: View {
             Label("The settings were changed in the recipe below, so the form is paused. Save, or discard to use "
                 + "the form again.", systemImage: "info.circle")
                 .foregroundStyle(.orange)
+        }
+    }
+
+    /// The loaded recipe does not parse: its error as re-checked now, or that
+    /// the fixed text reads (the form stays off until it is saved).
+    @ViewBuilder private func unparsedNote(_ proxy: ScrollViewProxy) -> some View {
+        if form.currentParseError.isEmpty {
+            Label("The recipe reads now. Save it; the form's controls stay off until then.",
+                  systemImage: "checkmark.circle")
+                .foregroundStyle(.secondary)
+        } else {
+            VStack(alignment: .leading, spacing: 6) {
+                Label("The recipe can't be read, so the form is off: \(form.currentParseError)",
+                      systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .textSelection(.enabled)
+                Button("Open in editor") {
+                    withAnimation { proxy.scrollTo(Self.recipeEditorID, anchor: .top) }
+                }
+            }
         }
     }
 
@@ -215,7 +252,7 @@ private struct AutomationFormContent: View {
             case .schedule: "On a schedule"
             case .button: "When I press a button"
             case .manual: "Only when I run it"
-            case .event: "On new mail / message (soon)"
+            case .event: "On an event"
             }
         }
     }
@@ -235,7 +272,7 @@ private struct AutomationFormContent: View {
         case .schedule: form.fields.trigger = .schedule(schedule.cron)
         case .button: form.fields.trigger = .button(label: "Run", confirm: false)
         case .manual: form.fields.trigger = .manual
-        case .event: break
+        case .event: form.fields.trigger = AutomationFormModel.defaultEventTrigger
         }
     }
 
@@ -249,7 +286,6 @@ private struct AutomationFormContent: View {
                     } else {
                         Button(choice.title) { choose(choice) }
                             .buttonStyle(.bordered)
-                            .disabled(choice == .event)
                     }
                 }
             }
@@ -334,7 +370,7 @@ private struct AutomationFormContent: View {
         VStack(alignment: .leading, spacing: 6) {
             Picker("Event", selection: Binding(
                 get: { type },
-                set: { form.fields.trigger = .event(type: $0, where: filter) }
+                set: { form.fields.trigger = AutomationFormModel.eventTrigger(type: $0, keeping: filter) }
             )) {
                 ForEach(AutomationFormModel.eventTypes, id: \.self) { Text($0).tag($0) }
             }
@@ -362,7 +398,8 @@ private struct AutomationFormContent: View {
                     .accessibilityLabel("Remove filter \(key)")
                 }
             }
-            Text("Event triggers start working in a later version.")
+            Text("Runs after a sync brings something new, at most once per sync cycle. "
+                + "Narrow it with a where filter in the recipe text.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -503,6 +540,12 @@ private struct AutomationFormContent: View {
                     .disabled(form.detail.needsConfirmation)
                     .help(form.detail.needsConfirmation ? "Confirm the recipe first" : "")
                 }
+                if let line = AutomationLLMWarning.line(
+                    feedsSourcesToLLM: form.detail.feedsSourcesToLLM,
+                    tools: form.detail.autoTools.filter { $0.external && !$0.alwaysAsks }.map(\.tool)
+                ) {
+                    LLMWarningLabel(text: line)
+                }
                 if let error = editor.autoErrors[id] {
                     Text(error).font(.caption).foregroundStyle(.red)
                 }
@@ -518,7 +561,7 @@ private struct AutomationFormContent: View {
                 Text("Script")
                     .font(.headline)
                 Spacer()
-                if let onChangeInWords, form.isEditable {
+                if let onChangeInWords {
                     Button("Change it in words instead") { onChangeInWords(id) }
                         .buttonStyle(.link)
                 }
@@ -528,7 +571,7 @@ private struct AutomationFormContent: View {
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
-            RecipeEditorView(buffer: form.buffer, readOnly: !form.isEditable, slug: form.detail.slug)
+            RecipeEditorView(buffer: form.buffer, readOnly: false, slug: form.detail.slug)
                 .frame(height: 300)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
         }
@@ -601,7 +644,7 @@ private struct AutomationFormContent: View {
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
                 // A new recipe saves as it is too: there is no file yet.
-                .disabled(!form.isEditable || !(form.buffer.isDirty || form.detail.isNewRecipe)
+                .disabled(!(form.buffer.isDirty || form.detail.isNewRecipe)
                     || !form.problems.isEmpty || isBusy)
         }
     }

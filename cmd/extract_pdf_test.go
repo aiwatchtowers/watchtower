@@ -73,7 +73,7 @@ func TestPDFHelperArgvServedByTestBinary(t *testing.T) {
 	argv := append(pdfHelperArgv(), filepath.Join("..", "internal", "extract", "testdata", "sample.pdf"))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // the test binary itself
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // the test binary itself
 	cmd.Env = append(os.Environ(), "WATCHTOWER_PDF_HELPER_REEXEC=1")
 	start := time.Now()
 	out, err := cmd.Output()

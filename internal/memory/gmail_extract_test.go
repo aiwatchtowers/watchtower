@@ -127,14 +127,14 @@ func TestGmailExtract_ExtraEpisodeForOneThreadKeepsTheOthers(t *testing.T) {
 	require.NoError(t, err)
 	ids := liveEpisodeNodes(t, d)
 	require.Len(t, ids, 2, "one episode node per thread")
-	var bodies string
+	var bodies strings.Builder
 	for _, id := range ids {
 		node, rerr := v.ReadNode(id)
 		require.NoError(t, rerr)
-		bodies += node.Body
+		bodies.WriteString(node.Body)
 	}
-	assert.Contains(t, bodies, "mail:m3", "the second thread's episode is not cut")
-	assert.Contains(t, bodies, "mail:m2", "the extra first-thread episode folds into its node")
+	assert.Contains(t, bodies.String(), "mail:m3", "the second thread's episode is not cut")
+	assert.Contains(t, bodies.String(), "mail:m2", "the extra first-thread episode folds into its node")
 
 	wm, err := d.MemoryGmailWatermark(gmailTestAccountID)
 	require.NoError(t, err)
@@ -320,12 +320,12 @@ func liveEpisodeNodes(t *testing.T, d *db.DB) []string {
 func gmailReplyFor(title string) func(string) (string, error) {
 	return func(user string) (string, error) {
 		var refs [][2]string
-		for _, line := range strings.Split(user, "\n") {
-			i := strings.Index(line, "(mail:")
-			if i < 0 {
+		for line := range strings.SplitSeq(user, "\n") {
+			_, after, ok := strings.Cut(line, "(mail:")
+			if !ok {
 				continue
 			}
-			rest := line[i+len("(mail:"):]
+			rest := after
 			id := rest[:strings.IndexByte(rest, ')')]
 			tsStart := strings.IndexByte(line, '[') + 1
 			ts := line[tsStart:strings.IndexByte(line, ']')]
@@ -425,7 +425,7 @@ func TestMemory_GmailPoisonThreadTruncated(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	seedWorkspaceRow(t, d)
 	const total = 5
-	for i := 0; i < total; i++ {
+	for i := range total {
 		iso, _ := gmailMsgTime(i * 10)
 		seedGmailMessage(t, d, fmt.Sprintf("m%d", i), "thr-1", "a@example.com", "Ann", "Big thread", "line", iso)
 	}

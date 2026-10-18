@@ -48,7 +48,7 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, 
 		return BackfillWindowResult{Complete: true}, &Usage{}, nil
 	}
 
-	_, unlock, err := p.acquireDigestLock()
+	unlock, err := p.acquireDigestLock()
 	if errors.Is(err, ErrDigestLocked) {
 		p.logger.Printf("digest backfill: skipping — %v", err)
 		return BackfillWindowResult{}, &Usage{}, nil
@@ -102,7 +102,7 @@ func (p *Pipeline) RunBackfillWindow(ctx context.Context, slackAccountID int64, 
 			return res, usage, ctxErr
 		}
 		if err != nil {
-			return res, usage, fmt.Errorf("digest backfill [%.0f,%.0f]: %w", from, to, err)
+			return res, usage, scope.chunkErrors(fmt.Sprintf("digest backfill [%.0f,%.0f]: %v", from, to, err), err)
 		}
 	}
 	p.logger.Printf("digest backfill: [%.0f,%.0f] still has work after %d passes — resuming next cycle", from, to, maxBackfillPasses)
@@ -116,9 +116,38 @@ func (b *backfillScope) failure(from, to float64) error {
 	if len(b.failed) == 0 {
 		return nil
 	}
-	return fmt.Errorf("digest backfill [%.0f,%.0f]: %d channel(s) failed: %w",
-		from, to, len(b.failed), b.lastErr)
+	var last error
+	if len(b.errs) > 0 {
+		last = b.errs[len(b.errs)-1]
+	}
+	return b.chunkErrors(fmt.Sprintf("digest backfill [%.0f,%.0f]: %d channel(s) failed: %v",
+		from, to, len(b.failed), last), last)
 }
+
+// chunkErrors is the call's failure with msg as its message, carrying every
+// channel failure of the call (fallback when none was recorded).
+func (b *backfillScope) chunkErrors(msg string, fallback error) error {
+	b.mu.Lock()
+	errs := append([]error(nil), b.errs...)
+	b.mu.Unlock()
+	if len(errs) == 0 && fallback != nil {
+		errs = []error{fallback}
+	}
+	return &ChunkErrors{Msg: msg, Errs: errs}
+}
+
+// ChunkErrors is a backfill chunk's failure made of several errors (every
+// failed channel or rollup day of the call): errors.Is and errors.As see
+// each of them, and a caller that must tell a data error from a transient
+// one inspects Errs (the history backfill strikes the chunk when any is a
+// data error, #580).
+type ChunkErrors struct {
+	Msg  string
+	Errs []error
+}
+
+func (e *ChunkErrors) Error() string   { return e.Msg }
+func (e *ChunkErrors) Unwrap() []error { return e.Errs }
 
 // addBackfillUsage adds one pass's token usage to the call's own sum.
 func addBackfillUsage(sum, u *Usage) {
@@ -174,7 +203,7 @@ func backfillProgressed(prev map[string]float64, windows []channelWindow) bool {
 }
 
 // RunBackfillRollups generates the daily rollup of every UTC day the backfill
-// chunk [from, to) touches. Every day is tried; the first error is returned.
+// chunk [from, to) touches. Every day is tried; one failed day returns its error, several return a *ChunkErrors with the first one's message.
 // It does not touch the daemon's forward rollup attempt budget, and its
 // prompts carry no previous context and no track context (see inBackfill).
 // Lock contention returns an error wrapping ErrDigestLocked, so the caller
@@ -184,7 +213,7 @@ func (p *Pipeline) RunBackfillRollups(ctx context.Context, from, to float64) err
 		return nil
 	}
 
-	_, unlock, err := p.acquireDigestLock()
+	unlock, err := p.acquireDigestLock()
 	if err != nil {
 		return fmt.Errorf("digest backfill rollups: %w", err)
 	}
@@ -194,20 +223,25 @@ func (p *Pipeline) RunBackfillRollups(ctx context.Context, from, to float64) err
 	p.backfillRollups = true
 	defer func() { p.backfillRollups = false }()
 
-	var firstErr error
+	var errs []error
 	end := time.Unix(int64(to), 0).UTC()
 	for d := utcDayStart(time.Unix(int64(from), 0)); d.Before(end); d = d.Add(24 * time.Hour) {
 		if err := ctx.Err(); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
+			errs = append(errs, err)
 			break
 		}
-		if err := p.runDailyRollupForDate(ctx, d); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("digest backfill rollup %s: %w", d.Format("2006-01-02"), err)
-		} else if err != nil {
-			p.logger.Printf("digest backfill rollup %s: %v", d.Format("2006-01-02"), err)
+		if err := p.runDailyRollupForDate(ctx, d); err != nil {
+			if len(errs) > 0 {
+				p.logger.Printf("digest backfill rollup %s: %v", d.Format("2006-01-02"), err)
+			}
+			errs = append(errs, fmt.Errorf("digest backfill rollup %s: %w", d.Format("2006-01-02"), err))
 		}
 	}
-	return firstErr
+	switch len(errs) {
+	case 0:
+		return nil
+	case 1:
+		return errs[0]
+	}
+	return &ChunkErrors{Msg: errs[0].Error(), Errs: errs}
 }

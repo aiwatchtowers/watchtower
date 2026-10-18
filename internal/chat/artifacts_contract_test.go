@@ -15,7 +15,7 @@ func TestChat05_ContractSaysArtifactsNeverSend(t *testing.T) {
 	c := ArtifactsContract()
 	for _, want := range []string{
 		`:::artifact key="`, "\n:::\n",
-		"document", "table", "email", "slack", "event", "code",
+		"document", "table", "email", "slack", "event", "code", "html —",
 		`to="`, `subject="`, `channel="`, `thread_ts="`, `permalink="`, `start="`, `attendees="`, `language="`,
 		`\"`, "SAME key", "Never say or imply", "outside any ``` code block", "never send",
 	} {
@@ -27,7 +27,7 @@ func TestArtifactsContract_EmbedsTheSharedExamples(t *testing.T) {
 	c := ArtifactsContract()
 	assert.Contains(t, c, strings.TrimSpace(artifactExamples))
 	openers, closers := 0, 0
-	for _, line := range strings.Split(artifactExamples, "\n") {
+	for line := range strings.SplitSeq(artifactExamples, "\n") {
 		if strings.HasPrefix(line, ":::artifact ") {
 			openers++
 		}
@@ -35,8 +35,8 @@ func TestArtifactsContract_EmbedsTheSharedExamples(t *testing.T) {
 			closers++
 		}
 	}
-	assert.Equal(t, 3, openers)
-	assert.Equal(t, 3, closers, "every example must be closed")
+	assert.Equal(t, 4, openers)
+	assert.Equal(t, 4, closers, "every example must be closed")
 }
 
 func TestArtifactsContract_StaysSmall(t *testing.T) {

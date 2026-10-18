@@ -24,10 +24,21 @@ linters:
     - exhaustive
     - nilerr
     - predeclared
+    - errorlint
+    - durationcheck
+    - makezero
+    - fatcontext
+    - copyloopvar
+    - bidichk
+    - reassign
 
     # Code quality
     - unconvert
     - ineffassign
+    - unused
+    - wastedassign
+    - nolintlint
+    - unparam
 
     # Style & consistency
     - misspell
@@ -63,6 +74,15 @@ linters:
     exhaustive:
       default-signifies-exhaustive: true
 
+    errorlint:
+      # Only == / type assertions on errors. "%w: %v" (wrap a sentinel, keep
+      # the cause as text) is a deliberate choice here, not a lint finding.
+      errorf: false
+
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
     gosec:
       excludes:
         - G104 # covered by errcheck
@@ -93,6 +113,16 @@ linters:
       - path: internal/mcp/
         linters:
           - nilerr
+      # unparam: test fixtures keep knobs a single test happens to pin.
+      - path: _test\.go
+        linters:
+          - unparam
+      # unparam: the code index refiners share one dispatch-table signature,
+      # so a refiner that never renames still returns the empty name.
+      - path: internal/codeindex/
+        text: 'result 1 \(string\) is always ""'
+        linters:
+          - unparam
 
 issues:
   max-issues-per-linter: 0

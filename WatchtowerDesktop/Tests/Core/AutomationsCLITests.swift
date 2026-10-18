@@ -130,6 +130,8 @@ final class AutomationsCLITests: XCTestCase {
         XCTAssertEqual(detail.changedAt, AutomationDates.parse("2026-10-15T08:30:00Z"))
         XCTAssertEqual(detail.projectID, 3)
         XCTAssertEqual(detail.autoTools, [], "an older CLI without auto_tools decodes as []")
+        XCTAssertEqual(detail.llmAutoWrites, [], "an older CLI without llm_auto_writes decodes as []")
+        XCTAssertFalse(detail.feedsSourcesToLLM)
     }
 
     func testDecodesShowAutoTools() async throws {
@@ -139,6 +141,20 @@ final class AutomationsCLITests: XCTestCase {
         let detail = try await cli(show).0.show(2)
         XCTAssertEqual(detail.autoTools, [AutomationAutoTool(tool: "create_idea", alwaysAsks: false),
                                           AutomationAutoTool(tool: "bulk_dismiss", alwaysAsks: true)])
+    }
+
+    func testDecodesShowLLMAutoWrites() async throws {
+        let show = #"{"id":2,"slug":"s","scope":"personal","path":"/p","name":"N","enabled":true,"runnable":true,"#
+            + #""needs_confirmation":true,"llm_auto_writes":["send_slack_message"],"feeds_sources_to_llm":true,"#
+            + #""auto_tools":[{"tool":"send_slack_message","always_asks":false,"external":true}]}"#
+        let detail = try await cli(show).0.show(2)
+        XCTAssertEqual(detail.llmAutoWrites, ["send_slack_message"])
+        XCTAssertTrue(detail.feedsSourcesToLLM)
+        XCTAssertEqual(detail.autoTools, [AutomationAutoTool(tool: "send_slack_message", alwaysAsks: false, external: true)])
+
+        let validate = #"{"ok":true,"feeds_sources_to_llm":true}"#
+        let v = try await cli(validate).0.validate(file: URL(fileURLWithPath: "/tmp/x.md"), against: nil)
+        XCTAssertTrue(v.feedsSourcesToLLM)
     }
 
     func testIgnoresUnknownKeys() async throws {
@@ -165,5 +181,32 @@ final class AutomationsCLITests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("automation 7 cannot run: it is disabled"),
                           error.localizedDescription)
         }
+    }
+    func testSessionLaunchedArgs() async throws {
+        let (cli, runner) = cli(#"{"attached":true}"#)
+        let attached = try await cli.sessionLaunched(step: 9, session: 4)
+        XCTAssertEqual(runner.invocations, [["automations", "session-launched", "--step", "9", "--session", "4", "--json"]])
+        XCTAssertTrue(attached)
+        let refused = try await self.cli(#"{"attached":false}"#).0.sessionLaunched(step: 9, session: 4)
+        XCTAssertFalse(refused)
+    }
+
+    func testSessionEndedArgs() async throws {
+        let (cli, runner) = cli(#"{"ended":true}"#)
+        let ended = try await cli.sessionEnded(step: 9, status: .launchFailed, error: "Codex was not found.")
+        XCTAssertTrue(ended)
+        let (stopped, stoppedRunner) = self.cli(#"{"ended":false}"#)
+        let notWaiting = try await stopped.sessionEnded(step: 9, status: .stopped, error: nil)
+        XCTAssertFalse(notWaiting)
+        XCTAssertEqual(runner.invocations, [["automations", "session-ended", "--step", "9", "--status", "launch_failed",
+                                             "--error", "Codex was not found.", "--json"]])
+        XCTAssertEqual(stoppedRunner.invocations, [["automations", "session-ended", "--step", "9", "--status", "stopped",
+                                                    "--json"]])
+    }
+
+    func testRescanWorkbenchArgs() async throws {
+        let (cli, runner) = cli("[]")
+        try await cli.rescan(workbenchID: 3)
+        XCTAssertEqual(runner.invocations, [["automations", "rescan", "--workbench", "3"]])
     }
 }

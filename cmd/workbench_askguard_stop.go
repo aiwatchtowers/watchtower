@@ -439,12 +439,10 @@ func recordedQuestion(d stopDecision, v *askGuardVerdict, message string) db.Cha
 // askGuardGeneratorFactory builds the classifier's model client; the seam
 // tests replace (no test calls a real model). The child gets its own process
 // group (killed whole on the budget or a signal) and never the Desktop
-// terminal's session variable, and the message travels on stdin.
+// terminal's session variable, and the message travels on stdin (as every
+// CLI generator's does).
 var askGuardGeneratorFactory = func(cfg *config.Config) digest.Generator {
 	gen := cliGenerator(cfg)
-	if s, ok := gen.(interface{ SetStdinOnly(bool) }); ok {
-		s.SetStdinOnly(true)
-	}
 	if s, ok := gen.(interface{ SetIsolatedChild(...string) }); ok {
 		s.SetIsolatedChild(terminalSessionEnv)
 	}

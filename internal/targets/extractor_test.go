@@ -70,7 +70,7 @@ func TestParseExtractResponse_TruncatesTargetTextInLogs(t *testing.T) {
 	require.Greater(t, len([]rune(sensitive)), 80)
 
 	var subs []string
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		subs = append(subs, fmt.Sprintf(`{"text": "sub %d"}`, i))
 	}
 	raw := fmt.Sprintf(`{

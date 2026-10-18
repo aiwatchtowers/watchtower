@@ -14,7 +14,7 @@ created: 2026-09-26
 `user_interactions`, `user_analyses` and `period_summaries` have 0 rows on the live install and no
 production writer: `UpsertUserAnalysis`, `UpsertUserInteractions`, `UpsertPeriodSummary`,
 `ComputeUserInteractions`, `GetUserAnalysesForWindow`, `DeleteUserAnalysesOlderThan`,
-`ActiveUsersInWindow` have zero non-test callers (the writers died with the v1 people pipeline). Yet the
+`ActiveUsersInWindow` have zero non-test callers (the writers died with the v1 people pipeline). Update 2026-10-17: `ComputeUserInteractions` was removed; the table is still read by the Desktop but never written. Yet the
 People tab's `ConnectionsView` is fed from `InteractionQueries.fetchForUser` (always empty — a visible, dead
 UI section), and meeting prep's attendee block still calls `GetLatestUserAnalysis` (always nil) right after
 reading the same fields from `people_cards`. Also `CLAUDE.md` still names "the reactions_to/from pairs in

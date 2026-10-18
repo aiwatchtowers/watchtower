@@ -15,7 +15,7 @@ import (
 
 type searchKnowledgeArgs struct {
 	Queries []string `json:"queries" jsonschema:"1-5 search queries: the key terms, synonyms, both Russian and English variants, and word stems ending in * for Russian word forms (e.g. договор*)"`
-	Sources []string `json:"sources,omitempty" jsonschema:"optional filter: slack, gmail, imap, jira, confluence, calendar, transcript, recap, digest, stream_digest, idea, project_doc (this workbench folder's .md/.markdown/.txt files; workbench sessions only)"`
+	Sources []string `json:"sources,omitempty" jsonschema:"optional filter: slack, gmail, imap, jira, confluence, calendar, transcript, recap, digest, stream_digest, idea, guide (the Watchtower user guide — use it for questions about the app itself), project_doc (this workbench folder's .md/.markdown/.txt files; workbench sessions only)"`
 	From    string   `json:"from,omitempty" jsonschema:"only documents active on/after this date (YYYY-MM-DD)"`
 	To      string   `json:"to,omitempty" jsonschema:"only documents active on/before this date (YYYY-MM-DD)"`
 	Limit   int      `json:"limit,omitempty" jsonschema:"max documents, 0 = default (10), capped at 25"`
@@ -23,24 +23,6 @@ type searchKnowledgeArgs struct {
 	// --workbench N) or a chat project's chat (--chat-project N); elsewhere a
 	// value is refused rather than ignored.
 	WorkbenchScope string `json:"workbench_scope,omitempty" jsonschema:"workbench sessions and chat-project chats only: boost (default) ranks hits from the workbench's or chat project's Slack channels, Jira projects and Confluence spaces first (marked in_scope) and drops nothing; only returns just those; off ignores them"`
-	// ProjectScope is WorkbenchScope's pre-rename name, still sent by the
-	// skill of a folder set up before the Workbench rename. It must stay in
-	// the schema — the MCP SDK refuses an argument the schema does not name.
-	ProjectScope string `json:"project_scope,omitempty" jsonschema:"deprecated alias of workbench_scope"`
-}
-
-// scope is the workbench scope mode the call asked for, under either
-// spelling, and the argument name it used (for a message that names it
-// back). Both at once is refused: the two could disagree.
-func (a searchKnowledgeArgs) scope() (mode, arg string, err error) {
-	switch {
-	case a.WorkbenchScope != "" && a.ProjectScope != "":
-		return "", "", &ValidationError{Msg: "project_scope is the old name of workbench_scope; pass one"}
-	case a.ProjectScope != "":
-		return a.ProjectScope, "project_scope", nil
-	default:
-		return a.WorkbenchScope, "workbench_scope", nil
-	}
 }
 
 type getKnowledgeDocumentArgs struct {
@@ -82,11 +64,7 @@ func NewSearchKnowledge() *Tool {
 			if req.To, err = parseDay(a.To, true); err != nil {
 				return nil, &ValidationError{Msg: "to must be YYYY-MM-DD"}
 			}
-			mode, arg, err := a.scope()
-			if err != nil {
-				return nil, err
-			}
-			scopeNote, err := applyWorkbenchScope(ctx, d, call.Binding, mode, arg, &req)
+			scopeNote, err := applyWorkbenchScope(ctx, d, call.Binding, a.WorkbenchScope, &req)
 			if err != nil {
 				return nil, err
 			}
@@ -111,10 +89,9 @@ var scopeSources = []string{"slack", "jira", "confluence"}
 // its workbench's, or its chat project's: boost by default, only/off on
 // request. An explicit sources filter still applies on top (kb.Search
 // honours it in the scoped retrieval too). The returned note names the
-// sources that matched no synced data. arg is the argument name the mode
-// came under (workbench_scope or its alias project_scope), named back in
-// every refusal.
-func applyWorkbenchScope(ctx context.Context, d *db.DB, b Binding, mode, arg string, req *kb.Request) (string, error) {
+// sources that matched no synced data.
+func applyWorkbenchScope(ctx context.Context, d *db.DB, b Binding, mode string, req *kb.Request) (string, error) {
+	const arg = "workbench_scope" // named back in every refusal
 	mode = strings.TrimSpace(mode)
 	if b.WorkbenchID == 0 && b.ChatProjectID == 0 {
 		if mode != "" {

@@ -33,6 +33,9 @@ type validateJSON struct {
 	Permissions  []string `json:"permissions"`
 	Outputs      []string `json:"outputs"`
 	Widening     []string `json:"widening"`
+	// FeedsSourcesToLLM is Manifest.FeedsSourcesToLLM of the validated text
+	// (#559): the Save sheet warns next to "Keep auto for <tool>".
+	FeedsSourcesToLLM bool `json:"feeds_sources_to_llm"`
 }
 
 // validateRecipe parses data as the recipe slug in scope. A parse error is a
@@ -56,6 +59,7 @@ func validateRecipe(slug string, data []byte, contentHash string, scope automati
 	v.Permissions = append(v.Permissions, m.Normalized()...)
 	v.Outputs = append(v.Outputs, slices.Compact(slices.Sorted(slices.Values(r.Outputs)))...)
 	v.Widening = automations.Covers(baseline, v.Permissions)
+	v.FeedsSourcesToLLM = m.FeedsSourcesToLLM()
 	return v
 }
 
@@ -310,7 +314,7 @@ func resolveSaveTarget(cfg *config.Config, database *db.DB, file, target string)
 		if err != nil {
 			return saveTarget{}, err
 		}
-		if err := refuseLinkedRecipeDir(automations.WorkbenchDir(w.FolderPath)); err != nil {
+		if err := automations.RefuseLinkedRecipeDir(automations.WorkbenchDir(w.FolderPath)); err != nil {
 			return saveTarget{}, fmt.Errorf("cannot save to %s: %w", target, err)
 		}
 	}

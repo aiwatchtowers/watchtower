@@ -67,7 +67,7 @@ func (x *Extractor) runPDFHelper(ctx context.Context, path string) ([]pdfPage, b
 	defer cancel()
 	argv := x.PDFHelper
 	args := append(append([]string(nil), argv[1:]...), path)
-	cmd := exec.CommandContext(cctx, argv[0], args...) //nolint:gosec // argv is our own executable, set by the caller
+	cmd := exec.CommandContext(cctx, argv[0], args...) // argv is our own executable, set by the caller
 	out := &cappedBuffer{max: maxPDFHelperOutput}
 	stderr := &cappedBuffer{max: maxPDFHelperStderr, truncate: true}
 	cmd.Stdout, cmd.Stderr = out, stderr
@@ -85,29 +85,30 @@ func (x *Extractor) runPDFHelper(ctx context.Context, path string) ([]pdfPage, b
 	if diag != "" {
 		x.logf("pdf helper: %s", diag)
 	}
-	return x.decodePDFHelper(out)
+	pages, ok := x.decodePDFHelper(out)
+	return pages, ok, nil
 }
 
 // decodePDFHelper reads a clean helper run's stdout; oversized or
 // malformed output is an unreadable PDF, logged.
-func (x *Extractor) decodePDFHelper(out *cappedBuffer) ([]pdfPage, bool, error) {
+func (x *Extractor) decodePDFHelper(out *cappedBuffer) ([]pdfPage, bool) {
 	if out.overflow {
 		x.logf("pdf helper: output exceeds %d bytes; recording the PDF failed", maxPDFHelperOutput)
-		return nil, false, nil
+		return nil, false
 	}
 	var res pdfHelperResult
 	if err := json.Unmarshal(out.buf.Bytes(), &res); err != nil {
 		x.logf("pdf helper: malformed output (%v); recording the PDF failed", err)
-		return nil, false, nil
+		return nil, false
 	}
 	if !res.OK {
-		return nil, false, nil // the helper's verdict: an unreadable PDF
+		return nil, false // the helper's verdict: an unreadable PDF
 	}
 	if !validPages(res.Pages) {
 		x.logf("pdf helper: invalid page list (%d pages); recording the PDF failed", len(res.Pages))
-		return nil, false, nil
+		return nil, false
 	}
-	return res.Pages, true, nil
+	return res.Pages, true
 }
 
 // validPages checks the helper's pages are 0..n-1 in order (pdfStatus

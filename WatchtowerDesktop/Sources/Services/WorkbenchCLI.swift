@@ -236,7 +236,7 @@ struct WorkbenchResynced: Decodable, Equatable {
     }
 
     private var integrationLines: [Line] {
-        let skillName = WorkbenchVocabulary.current.skillName
+        let skillName = WorkbenchNames.skill
         var lines: [Line] = []
         switch skill {
         case "installed": lines.append(Line(text: "Installed the \(skillName) skill", problem: false))
@@ -265,7 +265,7 @@ struct WorkbenchResynced: Decodable, Equatable {
     /// it never makes the Claude Code part read as failed.
     private var codexLines: [Line] {
         guard let codex else { return [] }
-        let skillName = WorkbenchVocabulary.current.skillName
+        let skillName = WorkbenchNames.skill
         var lines: [Line] = []
         switch codex.skill {
         case "installed": lines.append(Line(text: "Installed the \(skillName) skill for Codex", problem: false))
@@ -293,21 +293,23 @@ struct WorkbenchResynced: Decodable, Equatable {
     /// first letter capitalised like every summary line here; `--json`
     /// carries only the states, so change both sides together.
     private var legacyLines: [Line] {
-        let legacy = WorkbenchVocabulary.legacy
+        // The skill and MCP server's name before the rename (Go
+        // `devpack.LegacySkillName` / `LegacyMCPServerName`).
+        let oldName = "watchtower-project"
         var lines: [Line] = []
         switch legacySkill {
-        case "removed": lines.append(Line(text: "Removed the old \(legacy.skillName) skill", problem: false))
+        case "removed": lines.append(Line(text: "Removed the old \(oldName) skill", problem: false))
         case "drifted", "foreign":
-            lines.append(Line(text: "Your own copy of the old \(legacy.skillName) skill was kept — delete "
-                              + ".claude/skills/\(legacy.skillName) yourself once you no longer need it; "
-                              + "until then Claude Code sees both skills.", problem: true))
+            lines.append(Line(text: "Your own copy of the old \(oldName) skill was kept — it names tools "
+                              + "that no longer exist, so delete .claude/skills/\(oldName) once its edits "
+                              + "are carried over; until then Claude Code sees both skills.", problem: true))
         default: break
         }
         if legacyHooksReplaced {
             lines.append(Line(text: "Replaced the old hook commands", problem: false))
         }
         if legacyMCPRemoved {
-            lines.append(Line(text: "Removed the old \(legacy.mcpServerName) MCP server", problem: false))
+            lines.append(Line(text: "Removed the old \(oldName) MCP server", problem: false))
         }
         return lines
     }
@@ -337,6 +339,10 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// them until a Repair.
     let askGuard: Bool
     let askToolBlock: Bool
+    /// The `PermissionRequest` hook holding a permission dialog for an
+    /// answer from the phone (#517). A workbench installed before it lacks
+    /// it until a Repair; an older CLI without the key has nothing to install.
+    let permissionWait: Bool
     /// The `permissions.allow` entry letting the session's agent run
     /// `watchtower workbench cleanup` (board #535, PROJ-04). A folder set
     /// up before it lacks it until a Repair; a CLI that does not send the
@@ -348,7 +354,9 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// something Re-run Setup migrates — the old MCP registration, an old
     /// hook command, or the old skill as shipped (spec 2026-10-02 §5.4). Its
     /// old hooks count in `hook`/`stopHook` and its old registration in
-    /// `mcp`, so it reads as working; only the new skill reads `missing`.
+    /// `mcp`, but the CLI no longer serves the old `project …` commands they
+    /// call, so the folder needs Repair (`claudeNeedsRepair`), which runs
+    /// the migrating resync.
     let legacy: Bool
     /// The old skill's state: empty when absent, `unchanged`, `drifted` or
     /// `foreign`.
@@ -357,6 +365,10 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// old one. A CLI that does not send the key gets `mcp`, which keeps the
     /// pre-`current_mcp` repair rule.
     let currentMCP: Bool
+    /// The skill a Claude Code session here reads names the group first
+    /// prompt (`group_prompt`, board #476), checked by its content. A CLI
+    /// that does not send the key ships a skill that knows it: true.
+    let groupPrompt: Bool
     /// The codex part (board #399, spec §4.5); nil from a CLI older than
     /// Codex support, which has no codex part to repair.
     let codex: Codex?
@@ -380,6 +392,9 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         /// answer, did not list every hook, or could not be resolved); nil
         /// when it could, or from a CLI that does not send the key.
         let trustError: String?
+        /// The skill copy names the group first prompt (`group_prompt`);
+        /// true from a CLI that does not send the key.
+        let groupPrompt: Bool
 
         init(
             found: Bool,
@@ -387,8 +402,10 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
             hooksTrusted: Bool?, // swiftlint:disable:this discouraged_optional_boolean
             importedDuplicates: Bool = false,
             trustError: String? = nil,
-            skillState: String? = nil
+            skillState: String? = nil,
+            groupPrompt: Bool = true
         ) {
+            self.groupPrompt = groupPrompt
             self.found = found
             self.skill = skill
             self.skillState = skillState
@@ -403,6 +420,18 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
             case hooksTrusted = "hooks_trusted"
             case importedDuplicates = "imported_duplicates"
             case trustError = "trust_error"
+            case groupPrompt = "group_prompt"
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            found = try c.decode(Bool.self, forKey: .found)
+            skill = try c.decode(Bool.self, forKey: .skill)
+            skillState = try c.decodeIfPresent(String.self, forKey: .skillState)
+            hooksTrusted = try c.decodeIfPresent(Bool.self, forKey: .hooksTrusted)
+            importedDuplicates = try c.decode(Bool.self, forKey: .importedDuplicates)
+            trustError = try c.decodeIfPresent(String.self, forKey: .trustError)
+            groupPrompt = try c.decodeIfPresent(Bool.self, forKey: .groupPrompt) ?? true
         }
 
         /// The Codex part's state, for the page header: nothing without
@@ -451,10 +480,12 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         case stateHooks = "state_hooks"
         case askGuard = "ask_guard"
         case askToolBlock = "ask_tool_block"
+        case permissionWait = "permission_wait"
         case cleanupPermission = "cleanup_permission"
         case claudeFound = "claude_found"
         case legacySkill = "legacy_skill"
         case currentMCP = "current_mcp"
+        case groupPrompt = "group_prompt"
     }
 
     /// Without `currentMCP`: the current registration is taken to be `mcp`,
@@ -466,16 +497,19 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         stateHooks: Bool = true,
         askGuard: Bool = true,
         askToolBlock: Bool = true,
+        permissionWait: Bool = true,
         cleanupPermission: Bool = true,
         mcp: Bool,
         claudeFound: Bool = true,
         legacy: Bool = false,
         legacySkill: String = "",
+        groupPrompt: Bool = true,
         codex: Codex? = nil
     ) {
         self.init(skill: skill, hook: hook, stopHook: stopHook, stateHooks: stateHooks,
-                  askGuard: askGuard, askToolBlock: askToolBlock, cleanupPermission: cleanupPermission, mcp: mcp,
-                  claudeFound: claudeFound, legacy: legacy, legacySkill: legacySkill, currentMCP: mcp, codex: codex)
+                  askGuard: askGuard, askToolBlock: askToolBlock, permissionWait: permissionWait, cleanupPermission: cleanupPermission, mcp: mcp,
+                  claudeFound: claudeFound, legacy: legacy, legacySkill: legacySkill, currentMCP: mcp,
+                  groupPrompt: groupPrompt, codex: codex)
     }
 
     init(
@@ -485,15 +519,18 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         stateHooks: Bool = true,
         askGuard: Bool = true,
         askToolBlock: Bool = true,
+        permissionWait: Bool = true,
         cleanupPermission: Bool = true,
         mcp: Bool,
         claudeFound: Bool = true,
         legacy: Bool = false,
         legacySkill: String = "",
         currentMCP: Bool,
+        groupPrompt: Bool = true,
         codex: Codex? = nil
     ) {
         self.codex = codex
+        self.groupPrompt = groupPrompt
         self.legacy = legacy
         self.currentMCP = currentMCP
         self.legacySkill = legacySkill
@@ -503,6 +540,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         self.stateHooks = stateHooks
         self.askGuard = askGuard
         self.askToolBlock = askToolBlock
+        self.permissionWait = permissionWait
         self.cleanupPermission = cleanupPermission
         self.mcp = mcp
         self.claudeFound = claudeFound
@@ -519,6 +557,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         // Nor one without the ask guard.
         askGuard = try c.decodeIfPresent(Bool.self, forKey: .askGuard) ?? true
         askToolBlock = try c.decodeIfPresent(Bool.self, forKey: .askToolBlock) ?? true
+        permissionWait = try c.decodeIfPresent(Bool.self, forKey: .permissionWait) ?? true
         // Nor one without the cleanup permission (board #535).
         cleanupPermission = try c.decodeIfPresent(Bool.self, forKey: .cleanupPermission) ?? true
         mcp = try c.decode(Bool.self, forKey: .mcp)
@@ -529,6 +568,8 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         legacySkill = try c.decodeIfPresent(String.self, forKey: .legacySkill) ?? ""
         // A CLI older than `current_mcp`: fall back to `mcp`, so needsRepair keeps the old rule.
         currentMCP = try c.decodeIfPresent(Bool.self, forKey: .currentMCP) ?? mcp
+        // A CLI older than the key ships a skill that knows the group prompt.
+        groupPrompt = try c.decodeIfPresent(Bool.self, forKey: .groupPrompt) ?? true
         // A CLI older than Codex support has no codex part.
         codex = try c.decodeIfPresent(Codex.self, forKey: .codex)
     }
@@ -553,6 +594,16 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         codex?.state == .notSetUp
     }
 
+    /// Whether the skill the agent's session reads knows the group first
+    /// prompt (board #476): Claude Code's `group_prompt`, or the codex
+    /// part's; a CLI without a codex part ships a skill that knows it.
+    func skillKnowsGroupPrompt(_ agent: AgentKind) -> Bool {
+        switch agent {
+        case .claude: groupPrompt
+        case .codex: codex?.groupPrompt ?? true
+        }
+    }
+
     /// Whether the agent's CLI is there to launch: `claude_found`, or the
     /// codex part's `found` (a CLI without a codex part cannot launch Codex).
     func agentFound(_ agent: AgentKind) -> Bool {
@@ -571,7 +622,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
             return CodexSetupNotice(
                 title: "Codex: not set up",
                 help: "Codex is installed but this folder is not set up for it yet. Set up Codex adds the "
-                    + "\(WorkbenchVocabulary.current.skillName) skill for Codex and trusts Watchtower's hooks, "
+                    + "\(WorkbenchNames.skill) skill for Codex and trusts Watchtower's hooks, "
                     + "so Codex sessions here get the board tools.",
                 isWarning: false
             )
@@ -580,10 +631,13 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     }
 
     /// The Claude Code part. Without `claude` an unregistered MCP server is
-    /// not repairable from here — see `manualMCPCommand`.
+    /// not repairable from here — see `manualMCPCommand`. `legacy` and a
+    /// missing skill are: the resync Repair runs migrates the files whether
+    /// or not the registration goes in (ask #312), and without `claude`
+    /// `legacy` sees only those files, so one Repair settles them.
     var claudeNeedsRepair: Bool {
-        (skill == "missing" && !runsOnLegacySkill) || skill == "updated" || !hook || !stopHook || !stateHooks
-            || !askGuard || !askToolBlock || !cleanupPermission
+        legacy || skill == "missing" || skill == "updated" || !hook || !stopHook || !stateHooks
+            || !askGuard || !askToolBlock || !permissionWait || !cleanupPermission
             || (claudeFound && (!mcp || missesCurrentMCP))
     }
 
@@ -594,33 +648,6 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
         skill != "missing" && !currentMCP
     }
 
-    /// The install icon's tooltip for a folder set up before the Workbench
-    /// rename (spec 2026-10-02 A10), or nil for any other.
-    var legacyNotice: String? {
-        legacy ? "Set up by an older Watchtower — Re-run Setup to update" : nil
-    }
-
-    /// A legacy folder whose new skill is `missing` but whose old one is still
-    /// there: the agent works through the old skill, so the missing new one
-    /// is no repair — the "older setup" nudge covers it (spec 2026-10-02 A10,
-    /// §5.4) and the owner decides when to Re-run Setup (O6). With no skill
-    /// at all, Repair stays on: there is nothing for the agent to read.
-    var runsOnLegacySkill: Bool {
-        legacy && !legacySkill.isEmpty
-    }
-
-    /// The skill the folder's agent reads, for the prompts the Desktop types
-    /// (spec 2026-10-02 §5.3): the old one only while it is all there is.
-    var vocabulary: WorkbenchVocabulary {
-        runsOnLegacySkill && skill == "missing" ? .legacy : .current
-    }
-
-    /// The skill state the tooltip shows: a legacy folder's new skill is
-    /// `missing` only because it still runs on the old one.
-    var skillDisplay: String {
-        vocabulary == .legacy ? "\(WorkbenchVocabulary.legacy.skillName) (older setup)" : skill
-    }
-
     /// The command the owner runs once Claude Code is installed, mirroring
     /// what `integrate claude-code --workbench` registers. It starts with
     /// `cd <folder> &&` because a local-scope registration is keyed on the
@@ -628,7 +655,7 @@ struct WorkbenchInstallStatus: Decodable, Equatable {
     /// (`internal/devpack/workbench.go`) — same text, pinned by one shared
     /// fixture on both sides.
     static func manualMCPCommand(projectID: Int64, folder: String, cliPath: String) -> String {
-        "cd \(shellQuote(folder)) && claude mcp add --scope local \(WorkbenchVocabulary.current.mcpServerName) -- "
+        "cd \(shellQuote(folder)) && claude mcp add --scope local \(WorkbenchNames.mcpServer) -- "
             + "\(shellQuote(cliPath)) mcp --workbench \(projectID)"
     }
 
@@ -745,6 +772,69 @@ struct WorkbenchCLI {
         return try JSONDecoder().decode(WorkbenchMethodologyState.self, from: data)
     }
 
+    // MARK: - Owner instructions (agent instructions, Task 9)
+
+    /// `watchtower instructions show --json`: the owner's texts, the limit and
+    /// the open "you keep saying this" suggestions. `workbenchID` adds that
+    /// workbench's own texts.
+    func instructions(workbenchID: Int64?) async throws -> OwnerInstructionsState {
+        try await instructionsCall(["show"], workbenchID: workbenchID)
+    }
+
+    /// Saves one field (empty clears it). The text goes over stdin, never
+    /// argv; a refusal (over the limit) throws `OwnerInstructionsError`.
+    func setInstruction(field: InstructionField, workbenchID: Int64?, body: String) async throws -> OwnerInstructionsState {
+        try await instructionsCall(["set", "--field", field.rawValue, "--stdin"], workbenchID: workbenchID, stdin: Data(body.utf8))
+    }
+
+    /// Adds (to the matching instructions) or dismisses one suggestion.
+    func decideSuggestion(id: Int64, add: Bool) async throws -> OwnerInstructionsState {
+        try await instructionsCall(["suggestion", add ? "add" : "dismiss", String(id)], workbenchID: nil)
+    }
+
+    /// The exact brief slot and target procedure the agent receives.
+    func instructionsPreview(workbenchID: Int64?) async throws -> (briefSlot: String, procedure: String) {
+        let data = try await instructionsRun(["preview"], workbenchID: workbenchID, stdin: nil)
+        let p = try OwnerInstructionsPreview.decode(data)
+        return (p.briefSlot, p.procedure)
+    }
+
+    private func instructionsCall(_ sub: [String], workbenchID: Int64?, stdin: Data? = nil) async throws -> OwnerInstructionsState {
+        try OwnerInstructionsState.decode(try await instructionsRun(sub, workbenchID: workbenchID, stdin: stdin))
+    }
+
+    /// A refusal exits non-zero with Go's message on stderr (and
+    /// `{"ok":false,…}` on stdout, which the runner does not return): surface
+    /// that message as an `OwnerInstructionsError`.
+    private func instructionsRun(_ sub: [String], workbenchID: Int64?, stdin: Data?) async throws -> Data {
+        var args = ["instructions"] + sub
+        if let workbenchID, sub.first != "suggestion" { args += ["--workbench", String(workbenchID)] }
+        args.append("--json")
+        do {
+            if let stdin { return try await runner.run(args: args, stdin: stdin) }
+            return try await runner.run(args: args)
+        } catch CLIRunnerError.nonZeroExit(_, let stderr) where !stderr.isEmpty {
+            throw OwnerInstructionsError(message: stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+    }
+
+    /// The workbench's board column definition (board #267, PROJ-19) as
+    /// `watchtower workbench columns <id> --json` prints it.
+    func boardColumns(projectID: Int64) async throws -> WorkbenchBoardColumns {
+        let data = try await runner.run(args: ["workbench", "columns", String(projectID), "--json"])
+        return try JSONDecoder().decode(WorkbenchBoardColumns.self, from: data)
+    }
+
+    /// Replaces the whole definition (`--set -`, the JSON on stdin) and
+    /// returns the stored one. A refused definition exits 1 with Go's
+    /// message on stderr (`CLIRunnerError.nonZeroExit`); nothing is written.
+    func setBoardColumns(projectID: Int64, _ def: WorkbenchBoardColumns) async throws -> WorkbenchBoardColumns {
+        let data = try await runner.run(
+            args: ["workbench", "columns", String(projectID), "--set", "-", "--json"], stdin: try JSONEncoder().encode(def)
+        )
+        return try JSONDecoder().decode(WorkbenchBoardColumns.self, from: data)
+    }
+
     /// The folder's branch, upstream counters and dirty state (#233). Go runs
     /// git (never the `/usr/bin/git` shim, never outside a repository); the
     /// Desktop never does. `folder` (absolute) asks about that folder instead
@@ -763,8 +853,14 @@ struct WorkbenchCLI {
 
     /// Every review call prints one envelope; a refusal is `ok: false` with
     /// `error` at exit 0, not a throw.
-    private func review(_ args: [String]) async throws -> ReviewEnvelope {
-        let data = try await runner.run(args: ["workbench", "review"] + args + ["--json"])
+    private func review(_ args: [String], timeout: TimeInterval? = nil) async throws -> ReviewEnvelope {
+        let full = ["workbench", "review"] + args + ["--json"]
+        let data: Data
+        if let timeout {
+            data = try await runner.run(args: full, timeout: timeout)
+        } else {
+            data = try await runner.run(args: full)
+        }
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(ReviewEnvelope.self, from: data)
@@ -793,6 +889,40 @@ struct WorkbenchCLI {
 
     func reviewContext(projectID: Int64, sessionID: Int64) async throws -> ReviewEnvelope {
         try await review(["context", "--workbench", String(projectID), "--session", String(sessionID)])
+    }
+
+    /// The two LLM calls (overview, lessons) run under Go's 5-minute budget; the Desktop waits a little longer.
+    static let reviewAITimeout: TimeInterval = 330
+
+    /// `cachedOnly` reads only a cached overview and never calls the model (Quick mode, board #585).
+    func reviewOverview(projectID: Int64, roundID: Int64, cachedOnly: Bool = false) async throws -> ReviewEnvelope {
+        let args = ["overview", "--workbench", String(projectID), "--round", String(roundID)]
+        if cachedOnly { return try await review(args + ["--cached-only"]) }
+        return try await review(args, timeout: Self.reviewAITimeout)
+    }
+
+    /// Undoes one hunk of the round's diff in the working tree (never the index).
+    func reviewRevertHunk(projectID: Int64, roundID: Int64, hunkID: String, since: Bool) async throws -> ReviewEnvelope {
+        try await review(["revert-hunk", "--workbench", String(projectID), "--round", String(roundID), "--hunk", hunkID]
+            + (since ? ["--since"] : []))
+    }
+
+    enum LessonAction: Equatable {
+        case propose
+        case accept(Int64)
+        case dismiss(Int64)
+    }
+
+    func reviewLessons(projectID: Int64, action: LessonAction) async throws -> ReviewEnvelope {
+        let workbench = ["--workbench", String(projectID)]
+        switch action {
+        case .propose:
+            return try await review(["lessons", "propose"] + workbench, timeout: Self.reviewAITimeout)
+        case .accept(let id):
+            return try await review(["lessons", "accept"] + workbench + ["--lesson", String(id)])
+        case .dismiss(let id):
+            return try await review(["lessons", "dismiss"] + workbench + ["--lesson", String(id)])
+        }
     }
 
     /// Makes a session worktree named `name` (Go slugs it and cuts `wt/<slug>`).

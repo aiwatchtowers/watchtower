@@ -35,7 +35,7 @@ func addHookAgentFlag(cmd *cobra.Command, v *string) {
 // hookAgentFor is the agent a hook invocation runs for: Claude Code without
 // --agent (today's hooks, which take --workbench N), Codex for `--agent
 // codex` without an id flag. Any other --agent value, or --agent next to
-// --workbench or --project, is a usage error.
+// --workbench, is a usage error.
 func hookAgentFor(cmd *cobra.Command, raw string) (agentkind.Kind, error) {
 	fs := cmd.Flags()
 	if !fs.Changed(hookAgentFlag) {
@@ -44,7 +44,7 @@ func hookAgentFor(cmd *cobra.Command, raw string) (agentkind.Kind, error) {
 	if k, _ := agentkind.Parse(raw); k != agentkind.Codex {
 		return "", fmt.Errorf("unsupported --%s %q (only codex)", hookAgentFlag, briefClip(raw, 40))
 	}
-	if fs.Changed(workbenchFlag) || fs.Changed(legacyWorkbenchFlag) {
+	if fs.Changed(workbenchFlag) {
 		return "", errAgentWithWorkbench
 	}
 	return agentkind.Codex, nil

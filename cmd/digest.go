@@ -333,7 +333,7 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
-	gen, savePool := cliPooledGenerator(cfg, logger)
+	gen, savePool := cliPooledGenerator(cfg)
 	defer savePool()
 	pipe := digest.New(database, cfg, gen, logger)
 	pipe.SetPromptStore(prompts.New(database, nil))
@@ -344,7 +344,7 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Only set SinceOverride when --since was explicitly passed.
-	// Without it, Run() uses isFirstRun() → runInitialDayByDay() for full history.
+	// Without it, Run() uses each channel's own window since its last digest.
 	if cmd.Flags().Changed("since") {
 		sinceUnix := float64(time.Now().Add(-time.Duration(days) * 24 * time.Hour).Unix())
 		pipe.SinceOverride = sinceUnix
@@ -635,7 +635,7 @@ func runDigestSummary(cmd *cobra.Command, args []string) error {
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
-	gen, savePool := cliPooledGenerator(cfg, logger)
+	gen, savePool := cliPooledGenerator(cfg)
 	defer savePool()
 	pipe := digest.New(database, cfg, gen, logger)
 	pipe.SetPromptStore(prompts.New(database, nil))

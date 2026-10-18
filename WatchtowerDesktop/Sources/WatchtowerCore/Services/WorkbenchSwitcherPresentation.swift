@@ -50,13 +50,15 @@ package enum WorkbenchSwitcherPresentation {
     }
 
     /// The row's state, left to right, each only when non-zero: new
-    /// comments (`newComments` — the unread agent comments), blocked
-    /// targets; then, with a session running, the sessions with the live
-    /// ones, else the age of the last session activity (or nothing).
+    /// comments (`newComments` — the unread agent comments on open
+    /// targets), blocked targets; then the sessions whose agent works now
+    /// (`workingCount`), else the age of the last session activity (or
+    /// nothing). A live session waiting at its prompt is not counted: it
+    /// does nothing until the owner types.
     package static func stateSegments(
         summary: WorkbenchSwitcherSummary,
         newComments: Int,
-        liveCount: Int,
+        workingCount: Int,
         now: Date
     ) -> [Segment] {
         var out: [Segment] = []
@@ -66,13 +68,8 @@ package enum WorkbenchSwitcherPresentation {
         if summary.blockedTargets > 0 {
             out.append(Segment(text: "\(summary.blockedTargets) blocked", tone: .blocked))
         }
-        if liveCount > 0 {
-            var sessions: [String] = []
-            if summary.sessionCount > 0 {
-                sessions.append("\(summary.sessionCount) \(summary.sessionCount == 1 ? "session" : "sessions")")
-            }
-            sessions.append("\(liveCount) running")
-            out.append(Segment(text: sessions.joined(separator: " · "), tone: .sessions))
+        if workingCount > 0 {
+            out.append(Segment(text: "\(workingCount) working", tone: .sessions))
         } else if let age = TimeFormatting.shortAge(from: summary.lastSessionActivity, now: now) {
             out.append(Segment(text: age, tone: .age))
         }

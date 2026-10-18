@@ -37,7 +37,7 @@ struct StreamDigestInline: View {
     }
 
     private var caption: String {
-        digest.scope.isEmpty ? digest.source.capitalized : "\(digest.source.capitalized) · \(digest.scope)"
+        digest.scope.isEmpty ? digest.sourceLabel : "\(digest.sourceLabel) · \(digest.scope)"
     }
 }
 
@@ -131,16 +131,41 @@ struct DecisionInline: View {
 }
 
 /// An actionable inbox item: what was said, who said it and where, and a way out
-/// to Slack. `origin` is resolved by the ViewModel — the row itself carries only
-/// namespaced Slack ids.
+/// to Slack. `origin` and `senderNames` are resolved by the ViewModel — the row
+/// itself carries only namespaced Slack ids.
 struct InboxItemInline: View {
     let item: InboxItem
     let origin: String
     let url: URL?
+    /// Display names of an accumulated item's senders, keyed by namespaced id.
+    var senderNames: [String: String] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if !item.snippet.isEmpty {
+            if item.isAccumulated {
+                // A channel-level item that accumulated several messages (#586):
+                // every listed one with its sender and own link, oldest first.
+                Text(item.mentionCountTitle)
+                    .font(.caption)
+                    .fontWeight(.medium)
+                if item.mentionsEarlier > 0 {
+                    Text("+\(item.mentionsEarlier) earlier")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(item.mentionList, id: \.ts) { mention in
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(Self.mentionLine(mention, senderNames: senderNames))
+                            .font(.caption)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        if let link = CatchUpViewModel.slackMessageURL(for: mention, channelID: item.channelID) {
+                            Link("Open", destination: link)
+                                .font(.caption2)
+                        }
+                    }
+                }
+            } else if !item.snippet.isEmpty {
                 Text(item.snippet)
                     .font(.caption)
                     .textSelection(.enabled)
@@ -149,7 +174,7 @@ struct InboxItemInline: View {
             Text(caption)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            if let url {
+            if !item.isAccumulated, let url {
                 Link("Open in Slack", destination: url)
                     .font(.caption2)
             }
@@ -161,6 +186,13 @@ struct InboxItemInline: View {
 
     private var caption: String {
         [item.triggerType, origin].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// "Ann: text" — the bare text when the sender does not resolve (a raw
+    /// namespaced id would read as noise).
+    nonisolated static func mentionLine(_ mention: InboxItem.Mention, senderNames: [String: String]) -> String {
+        guard let name = senderNames[mention.sender], !name.isEmpty else { return mention.text }
+        return "\(name): \(mention.text)"
     }
 }
 

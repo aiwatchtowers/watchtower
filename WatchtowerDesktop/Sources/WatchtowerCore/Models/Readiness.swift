@@ -54,14 +54,32 @@ package enum ReadinessFeature: String, CaseIterable, Sendable {
         }
     }
 
+    /// Whether the daemon runs the feature only while Slack Digests is on too.
+    /// Dual path with the compound gates in `internal/daemon/daemon.go`
+    /// (`phaseTracksAndRollups`, `phaseCustomTrackScan`, `phasePeopleCards`:
+    /// `Tracks.Enabled && Digest.Enabled`, `People.Enabled && Digest.Enabled`) —
+    /// tracks and people cards mine what the digests produce (#575).
+    package var runsOnlyWithDigests: Bool { self == .tracks || self == .peopleCards }
+
     /// Whether the feature has nothing to work on until the first Slack sync
     /// finishes (when Slack is connected). Slack sync is that sync itself.
     package var readsSyncedData: Bool { self != .slackSync }
 }
 
 /// The source a feature reads.
-package enum ReadinessSource: Equatable, Sendable {
+package enum ReadinessSource: Hashable, Sendable {
     case none, slack, anySource, calendar, jira, jiraOrMail
+    /// A source that tells Watchtower who the owner is (the OWNER-01 ladder).
+    /// No feature reads it; Home names it on an owner-gated card while the
+    /// owner is unknown.
+    case ownerIdentity
+    /// The named connected source ("Jira", "Linear") will identify the owner
+    /// once it reports who connected it; Home waits on it instead of asking
+    /// to connect something.
+    case ownerIdentityPending(String)
+    /// Jira is connected but no board is selected: the daemon's Jira sync
+    /// has nothing to fetch until the owner picks boards (#572).
+    case jiraBoards
 
     /// What a "Connect …" line or button names.
     package var displayName: String {
@@ -69,18 +87,39 @@ package enum ReadinessSource: Equatable, Sendable {
         case .slack: "Slack"
         case .calendar: "a calendar"
         case .jira: "Jira"
+        case .jiraBoards: "Jira boards"
         case .jiraOrMail: "Jira or mail"
+        case .ownerIdentity: "Slack, Google, Jira, Linear or an email account"
+        case .ownerIdentityPending(let name): "your \(name) identity"
         case .anySource, .none: "a source"
+        }
+    }
+
+    /// The button title and the start of the "… to get" line: "Connect
+    /// Slack", or "Choose Jira boards" when the source is there but its
+    /// boards are not picked.
+    package var actionTitle: String {
+        switch self {
+        case .jiraBoards: "Choose Jira boards"
+        default: "Connect \(displayName)"
+        }
+    }
+
+    /// The owner gate's sources: shown on the feature's card, never as a Connect row.
+    package var isOwnerIdentity: Bool {
+        switch self {
+        case .ownerIdentity, .ownerIdentityPending: true
+        default: false
         }
     }
 
     package func isConnected(in connected: ConnectedSources) -> Bool {
         switch self {
-        case .none: true
+        case .none, .ownerIdentity, .ownerIdentityPending: true
         case .slack: connected.slack
         case .anySource: connected.slack || connected.mail || connected.calendar || connected.jira
         case .calendar: connected.calendar
-        case .jira: connected.jira
+        case .jira, .jiraBoards: connected.jira
         case .jiraOrMail: connected.jira || connected.mail
         }
     }
@@ -99,6 +138,8 @@ package enum Eta: Equatable, Sendable {
     case inAboutADay
     /// The ideas/streams interval, rounded up to whole hours.
     case inHours(Int)
+    /// Memory waits for a running history backfill (#578).
+    case afterHistoryLoads
 }
 
 /// One feature's readiness, in evaluation precedence order.
@@ -106,6 +147,13 @@ package enum Readiness: Equatable, Sendable {
     case off
     case needsSource(ReadinessSource)
     case ready
+    /// On, with no content yet, and the daemon skips it while Slack Digests
+    /// is off (`ReadinessFeature.runsOnlyWithDigests`, #575).
+    case needsDigests
+    /// The daemon has been down for `FeatureReadiness.daemonDownGrace`:
+    /// nothing scheduled will happen until it is started (from the app-wide
+    /// banner; the state itself carries no button).
+    case daemonStopped
     case preparing(detail: String?)
     case error(message: String)
     case waitingForSync(detail: String?)
@@ -148,6 +196,9 @@ package struct ReadinessInputs: Equatable {
     package var disabledFeatureIDs: Set<String>
     package var connected: ConnectedSources
     package var daemonRunning: Bool
+    /// Since when the daemon has been seen down (`DaemonManager.notRunningSince`);
+    /// nil while it runs or before the first status read.
+    package var daemonNotRunningSince: Date?
     package var syncProgress: SyncProgress?
     /// When the last Slack sync finished (`last_sync.json`, written only by
     /// the daemon's Slack sync phase); nil = the first Slack sync hasn't
@@ -161,12 +212,25 @@ package struct ReadinessInputs: Equatable {
     package var briefingHour: Int
     package var dayPlanHour: Int
     package var pollIntervalMinutes: Int
+    /// `started_at` of every `history_backfill` row with status `running`
+    /// (a held row included), for memory's backfill wait (#578).
+    package var runningBackfillStarts: [Date]
+    /// A `memory` pipeline run finished `done` at least once: memory's
+    /// backfill wait is over for good (#578).
+    package var memoryHasRun: Bool
+    /// `sync.backfill_days <= 0` (the backfill kill switch).
+    package var backfillOff: Bool
+    /// At least one Jira board is selected on a connected site. Without one
+    /// the daemon's Jira sync fetches nothing (`internal/jira/sync.go`), so a
+    /// connected Jira with no content reads `.needsSource(.jiraBoards)`.
+    package var jiraBoardsSelected: Bool
 
     package init(
         now: Date,
         disabledFeatureIDs: Set<String> = [],
         connected: ConnectedSources = .none,
         daemonRunning: Bool = false,
+        daemonNotRunningSince: Date? = nil,
         syncProgress: SyncProgress? = nil,
         lastSyncTime: Date? = nil,
         latestRuns: [String: RunSnapshot] = [:],
@@ -174,12 +238,17 @@ package struct ReadinessInputs: Equatable {
         stamps: ReadinessStamps = ReadinessStamps(),
         briefingHour: Int = 8,
         dayPlanHour: Int = 8,
-        pollIntervalMinutes: Int = 15
+        pollIntervalMinutes: Int = 15,
+        runningBackfillStarts: [Date] = [],
+        memoryHasRun: Bool = false,
+        backfillOff: Bool = false,
+        jiraBoardsSelected: Bool = true
     ) {
         self.now = now
         self.disabledFeatureIDs = disabledFeatureIDs
         self.connected = connected
         self.daemonRunning = daemonRunning
+        self.daemonNotRunningSince = daemonNotRunningSince
         self.syncProgress = syncProgress
         self.lastSyncTime = lastSyncTime
         self.latestRuns = latestRuns
@@ -188,5 +257,9 @@ package struct ReadinessInputs: Equatable {
         self.briefingHour = briefingHour
         self.dayPlanHour = dayPlanHour
         self.pollIntervalMinutes = pollIntervalMinutes
+        self.runningBackfillStarts = runningBackfillStarts
+        self.memoryHasRun = memoryHasRun
+        self.backfillOff = backfillOff
+        self.jiraBoardsSelected = jiraBoardsSelected
     }
 }

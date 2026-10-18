@@ -226,6 +226,38 @@ final class CatchUpQueriesTests: XCTestCase {
 
     // BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
     //
+    // A channel item created before the window but given a new mention inside
+    // it (#586, `mentioned_at`) is acknowledged with that window, exactly as Go
+    // `AcknowledgeCatchupWindow` does; one with no fold in the window is not.
+    func testAcknowledgeMarksItemByNewestMention() throws {
+        let dbQueue = try TestDatabase.create()
+        let (foldedID, staleID, recapID) = try dbQueue.write { db -> (Int64, Int64, Int64) in
+            let folded = try TestDatabase.insertInboxItem(db)
+            try db.execute(
+                sql: "UPDATE inbox_items SET created_at = ?, mentioned_at = ? WHERE id = ?",
+                arguments: ["2027-01-15T11:00:00Z", "2027-01-15T12:25:00Z", folded]
+            )
+            let stale = try TestDatabase.insertInboxItem(db, messageTS: "2.000000")
+            try db.execute(
+                sql: "UPDATE inbox_items SET created_at = ? WHERE id = ?",
+                arguments: ["2027-01-15T11:00:00Z", stale]
+            )
+            return (folded, stale, try insertRecap(db, from: base + 1000, to: base + 2000))
+        }
+
+        let recap = try fetchRecap(dbQueue, recapID)
+        try dbQueue.write { db in try CatchUpQueries.acknowledge(db, recap: recap) }
+
+        try dbQueue.read { db in
+            let folded = try String.fetchOne(db, sql: "SELECT read_at FROM inbox_items WHERE id = ?", arguments: [foldedID])
+            XCTAssertNotNil(folded, "a mention folded in inside the window is acknowledged")
+            let stale = try String.fetchOne(db, sql: "SELECT read_at FROM inbox_items WHERE id = ?", arguments: [staleID])
+            XCTAssertNil(stale, "an item with nothing new in the window stays unread")
+        }
+    }
+
+    // BEHAVIOR CATCHUP-01 — see docs/inventory/catchup.md
+    //
     // `to` is an EXCLUSIVE instant, so a window ending exactly on a local
     // midnight (what the `yesterday` preset resolves to) covers the day BEFORE
     // it: the briefing dated the day the window ends on must stay unread.

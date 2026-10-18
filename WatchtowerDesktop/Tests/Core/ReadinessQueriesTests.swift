@@ -64,6 +64,18 @@ final class ReadinessQueriesTests: XCTestCase {
 
     // MARK: - Content presence
 
+    func testGuideRowsDoNotCountAsKnowledgeIndex() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO kb_documents (id, source) VALUES ('guide:a.md', 'guide')")
+        }
+        XCTAssertFalse(try queue.read(ReadinessQueries.contentPresent).contains(.knowledgeIndex))
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO kb_documents (id, source) VALUES ('slack:1', 'slack')")
+        }
+        XCTAssertTrue(try queue.read(ReadinessQueries.contentPresent).contains(.knowledgeIndex))
+    }
+
     func testEmptyDatabaseHasNoContent() throws {
         let queue = try TestDatabase.create()
         XCTAssertEqual(try queue.read(ReadinessQueries.contentPresent), [])
@@ -71,7 +83,7 @@ final class ReadinessQueriesTests: XCTestCase {
 
     func testEachTableFlipsItsFeature() throws {
         XCTAssertEqual(Set(tables.map(\.0)), Set(ReadinessFeature.allCases))
-        XCTAssertEqual(Set(ReadinessQueries.observedTables), Set(tables.map(\.1) + ["pipeline_runs"]))
+        XCTAssertEqual(Set(ReadinessQueries.observedTables), Set(tables.map(\.1) + ["pipeline_runs", "jira_boards"]))
         for (feature, table) in tables {
             let queue = try TestDatabase.create()
             try insertMinimalRow(queue, into: table)
@@ -124,5 +136,85 @@ final class ReadinessQueriesTests: XCTestCase {
         let people = try XCTUnwrap(runs["people"]).startedAt
         XCTAssertEqual(tracks.timeIntervalSince1970, now.timeIntervalSince1970, accuracy: 1)
         XCTAssertEqual(people.timeIntervalSince1970, now.timeIntervalSince1970, accuracy: 0.01)
+    }
+
+    // MARK: - Running backfill rows (#578)
+
+    func testRunningBackfillStartsReadsOnlyRunningRows() throws {
+        let queue = try TestDatabase.create()
+        XCTAssertEqual(try queue.read(ReadinessQueries.runningBackfillStarts), [])
+        try queue.write { db in
+            for (account, status) in [(1, "running"), (2, "paused"), (3, "done"), (4, "off")] {
+                try db.execute(
+                    sql: """
+                        INSERT INTO history_backfill (source_kind, account_id, floor_ts, upper_ts, reached_ts,
+                            status, started_at, updated_at)
+                        VALUES ('slack', ?, 0, 100, 100, ?, '2026-10-15T12:00:00Z', '2026-10-15T12:00:00Z')
+                        """,
+                    arguments: [account, status])
+            }
+        }
+        let starts = try queue.read(ReadinessQueries.runningBackfillStarts)
+        XCTAssertEqual(starts, [try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-15T12:00:00Z"))])
+    }
+
+    func testRunningBackfillStartsSkipsUndecodableStart() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO history_backfill (source_kind, account_id, floor_ts, upper_ts, reached_ts,
+                    status, started_at, updated_at)
+                VALUES ('slack', 1, 0, 100, 100, 'running', 'not a time', 'not a time')
+                """)
+        }
+        XCTAssertEqual(try queue.read(ReadinessQueries.runningBackfillStarts), [])
+    }
+
+    func testMemoryHasRunNeedsADoneMemoryRun() throws {
+        let queue = try TestDatabase.create()
+        let iso = ISO8601DateFormatter().string(from: Date())
+        XCTAssertFalse(try queue.read(ReadinessQueries.memoryHasRun))
+        try insertRun(queue, pipeline: "memory", status: "error", startedAt: iso, error: "boom")
+        try insertRun(queue, pipeline: "digests", status: "done", startedAt: iso)
+        XCTAssertFalse(try queue.read(ReadinessQueries.memoryHasRun))
+        try insertRun(queue, pipeline: "memory", status: "done", startedAt: iso)
+        XCTAssertTrue(try queue.read(ReadinessQueries.memoryHasRun))
+    }
+
+    func testRunningBackfillStartsWithoutTableIsEmpty() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in try db.execute(sql: "DROP TABLE history_backfill") }
+        XCTAssertEqual(try queue.read(ReadinessQueries.runningBackfillStarts), [])
+    }
+
+    // MARK: - Jira boards selected (#572)
+
+    func testJiraBoardsSelectedNeedsASelectedBoardOnAConnectedSite() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO jira_accounts (id, status) VALUES (10, 'ok'), (11, 'removed')")
+            try db.execute(sql: "INSERT INTO jira_boards (account_id, id, name, is_selected) VALUES (10, 1, 'A', 0)")
+        }
+        // Connected with an unselected board: nothing syncs.
+        XCTAssertFalse(try queue.read(ReadinessQueries.jiraBoardsSelected))
+        // A selected board on a removed site doesn't count.
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO jira_boards (account_id, id, name, is_selected) VALUES (11, 2, 'B', 1)")
+        }
+        XCTAssertFalse(try queue.read(ReadinessQueries.jiraBoardsSelected))
+        try queue.write { db in try db.execute(sql: "UPDATE jira_boards SET is_selected = 1 WHERE account_id = 10") }
+        XCTAssertTrue(try queue.read(ReadinessQueries.jiraBoardsSelected))
+        // A paused (disabled) site syncs nothing either.
+        try queue.write { db in try db.execute(sql: "UPDATE jira_accounts SET enabled = 0 WHERE id = 10") }
+        XCTAssertFalse(try queue.read(ReadinessQueries.jiraBoardsSelected))
+    }
+
+    func testJiraBoardsSelectedWithoutTheTableReadsTrue() throws {
+        let queue = try TestDatabase.create()
+        try queue.writeWithoutTransaction { db in
+            try db.execute(sql: "PRAGMA foreign_keys = OFF")
+            try db.execute(sql: "DROP TABLE jira_boards")
+        }
+        XCTAssertTrue(try queue.read(ReadinessQueries.jiraBoardsSelected))
     }
 }

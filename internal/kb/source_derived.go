@@ -75,7 +75,7 @@ type transcriptSegment struct {
 func (transcriptSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error) {
 	id, ok := splitRef(key, "transcript:")
 	if !ok {
-		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
+		return nil, nil // malformed ref: treat as missing doc, not an error
 	}
 	var title, createdAt, text, segmentsJSON string
 	err := q.QueryRowContext(ctx, `SELECT title, created_at, transcript_text, COALESCE(segments_json, '')
@@ -116,7 +116,7 @@ func (transcriptSource) Build(ctx context.Context, q Queryer, key string) (*Doc,
 	// indexed by its title; only a NULL/invalid/empty list falls back to the
 	// flat text.
 	if len(segments) == 0 {
-		for _, line := range strings.Split(text, "\n") {
+		for line := range strings.SplitSeq(text, "\n") {
 			if line = strings.TrimSpace(line); line != "" {
 				doc.Sections = append(doc.Sections, Section{Text: line})
 			}
@@ -146,7 +146,7 @@ func (recapSource) Keys(ctx context.Context, q Queryer) ([]string, error) {
 func (recapSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error) {
 	id, ok := splitRef(key, "recap:")
 	if !ok {
-		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
+		return nil, nil // malformed ref: treat as missing doc, not an error
 	}
 	var recapJSON, createdAt, eventID, eventTitle string
 	err := q.QueryRowContext(ctx, `SELECT r.recap_json, r.created_at, COALESCE(r.event_id,''), COALESCE(e.title,'')
@@ -228,11 +228,11 @@ func (digestSource) Keys(ctx context.Context, q Queryer) ([]string, error) {
 func (digestSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error) {
 	rest, ok := splitRef(key, "digest:")
 	if !ok {
-		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
+		return nil, nil // malformed ref: treat as missing doc, not an error
 	}
 	digestID, idx, ok := splitIDIdx(rest)
 	if !ok {
-		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
+		return nil, nil // malformed ref: treat as missing doc, not an error
 	}
 	var title, summary, decisions, actions, typ, channelID string
 	var periodTo float64
@@ -357,11 +357,11 @@ func (streamDigestSource) Keys(ctx context.Context, q Queryer) ([]string, error)
 func (streamDigestSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error) {
 	rest, ok := splitRef(key, "stream_digest:")
 	if !ok {
-		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
+		return nil, nil // malformed ref: treat as missing doc, not an error
 	}
 	id, idxStr, ok := splitIDIdx(rest)
 	if !ok {
-		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
+		return nil, nil // malformed ref: treat as missing doc, not an error
 	}
 	idx, err := strconv.Atoi(idxStr)
 	if err != nil {
@@ -386,17 +386,21 @@ func (streamDigestSource) Build(ctx context.Context, q Queryer, key string) (*Do
 	}
 	_ = json.Unmarshal(entry, &head) // a non-object entry simply has no title
 	title := strings.TrimSpace(head.Title)
+	name := source
+	if source == "imap" { // an IMAP/Outlook mailbox; scope carries its address
+		name = "Email"
+	}
 
 	doc := &Doc{
 		ID:     key,
 		Source: "stream_digest",
 		Title:  title,
-		Meta:   strings.TrimSpace(source + " " + scope),
+		Meta:   strings.TrimSpace(name + " " + scope),
 		Time:   parseTime(periodTo),
 		Anchor: map[string]string{"stream_digest_id": id, "idx": idxStr, "source": source},
 	}
 	if doc.Title == "" {
-		doc.Title = source + " digest"
+		doc.Title = name + " digest"
 	}
 	skippedTitle := title == ""
 	for _, s := range jsonTexts(string(entry)) {
@@ -452,7 +456,7 @@ func loadIdeaMentions(ctx context.Context, q Queryer, ideaID string) ([]ideaMent
 func (ideaSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error) {
 	id, ok := splitRef(key, "idea:")
 	if !ok {
-		return nil, nil //nolint:nilerr // malformed ref: treat as missing doc, not an error
+		return nil, nil // malformed ref: treat as missing doc, not an error
 	}
 	var kind, status, title, essence, lastMention, updatedAt string
 	err := q.QueryRowContext(ctx, `SELECT kind, status, title, essence, last_mention_at, updated_at FROM ideas WHERE id = ?`, id).

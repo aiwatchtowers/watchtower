@@ -7,8 +7,8 @@ import (
 	watchtowerslack "watchtower/internal/slack"
 )
 
-// slackAccountCache is a per-builder/renderer cache of Slack account lookups
-// by id, shared by ContextBuilder and ResponseRenderer's resolveLinkTarget so
+// slackAccountCache is a per-renderer cache of Slack account lookups
+// by id, used by ResponseRenderer's resolveLinkTarget so
 // a message-formatting loop over hundreds of messages does one DB round-trip
 // per connected account, not one per message (the channelNameCache/userCache
 // pattern already used elsewhere in this package).

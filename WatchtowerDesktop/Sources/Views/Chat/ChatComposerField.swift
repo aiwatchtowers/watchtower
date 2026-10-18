@@ -23,7 +23,9 @@ struct ChatComposerField: View {
     var attachments: [ChatAttachment] = []
     var attachmentError: String?
     var onAttachFiles: (([URL]) -> Void)?
-    var onPasteImage: ((Data) -> Void)?
+    /// A paste that became a file (screenshot, PDF data, long text) with its
+    /// name; true once attached (board #534). nil → ⌘V always inserts text.
+    var onPasteData: ((Data, String) -> Bool)?
     var onRemoveAttachment: ((Int64) -> Void)?
     /// Called with the full text and the caret (UTF-16 offset) on every edit
     /// or caret move — the @/ pickers' input. nil for a surface with no
@@ -37,6 +39,10 @@ struct ChatComposerField: View {
     /// quote batch): enables Send with an empty field. Defaults to none, so
     /// every other call site is unchanged.
     var hasPendingContent = false
+    /// Focus the input when it is created (the ⌘/ popup).
+    var autoFocus = false
+    /// Each new value puts the keyboard in the field, caret at the end.
+    var focusRequest: UUID?
     @Environment(\.dictationCenter) private var dictationCenter
 
     var body: some View {
@@ -54,11 +60,13 @@ struct ChatComposerField: View {
             attachments: attachments,
             attachmentError: attachmentError,
             onAttachFiles: onAttachFiles,
-            onPasteImage: onPasteImage,
+            onPasteData: onPasteData,
             onRemoveAttachment: onRemoveAttachment,
             onCursorChange: onCursorChange,
             onPickerKey: onPickerKey,
-            hasPendingContent: hasPendingContent
+            hasPendingContent: hasPendingContent,
+            autoFocus: autoFocus,
+            focusRequest: focusRequest
         )
     }
 }
@@ -81,12 +89,17 @@ struct ChatComposerFieldContent: View {
     var attachments: [ChatAttachment] = []
     var attachmentError: String?
     var onAttachFiles: (([URL]) -> Void)?
-    var onPasteImage: ((Data) -> Void)?
+    var onPasteData: ((Data, String) -> Bool)?
     var onRemoveAttachment: ((Int64) -> Void)?
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
     var hasPendingContent = false
+    var autoFocus = false
+    var focusRequest: UUID?
     @State private var inputHeight: CGFloat = 22
+    /// The text of a long paste the field offers to attach as a file
+    /// instead; nil once acted on, or once the field no longer holds it.
+    @State private var longPaste: LongPaste?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -100,7 +113,14 @@ struct ChatComposerFieldContent: View {
                 AttachmentChipsView(attachments: attachments, onRemove: onRemoveAttachment)
                     .padding(.horizontal, 12)
             }
+            if let longPaste, onPasteData != nil {
+                LongPasteOffer(characterCount: longPaste.text.count, onAttach: attachLongPaste) { self.longPaste = nil }
+                    .padding(.horizontal, 16)
+            }
             row
+        }
+        .onChange(of: text) {
+            if let longPaste, !longPaste.isIntact() { self.longPaste = nil }
         }
         .dropDestination(for: URL.self) { urls, _ in
             guard let onAttachFiles else { return false }
@@ -142,9 +162,13 @@ struct ChatComposerFieldContent: View {
                     maxHeight: maxHeight,
                     onEscape: onEscape,
                     onArrowUpWhenEmpty: onArrowUpWhenEmpty,
-                    onPasteImage: onPasteImage,
+                    onPasteData: onPasteData,
+                    onAttachFiles: onAttachFiles,
+                    onLongTextPaste: offerLongPaste,
                     onCursorChange: onCursorChange,
-                    onPickerKey: onPickerKey
+                    onPickerKey: onPickerKey,
+                    autoFocus: autoFocus,
+                    focusRequest: focusRequest
                 ) {
                     guard canSend else { return }
                     onSend()
@@ -200,6 +224,16 @@ struct ChatComposerFieldContent: View {
         }
     }
 
+    private func offerLongPaste(_ paste: LongPaste) {
+        longPaste = paste
+    }
+
+    private func attachLongPaste() {
+        defer { longPaste = nil }
+        guard let longPaste, let onPasteData else { return }
+        longPaste.attach(using: onPasteData)
+    }
+
     /// A message may carry only attachments, or only pending quotes (no text).
     private var canSend: Bool {
         !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty || hasPendingContent
@@ -219,14 +253,22 @@ struct ExpandingTextInput: NSViewRepresentable {
     var maxHeight: CGFloat = 120
     var onEscape: (() -> Void)?
     var onArrowUpWhenEmpty: (() -> Void)?
-    /// A user-initiated paste of an image-only pasteboard: consumed here
-    /// instead of inserted as text. nil → paste always inserts text (or is a
-    /// no-op for an image-only pasteboard), unchanged from before Task 21.
-    var onPasteImage: ((Data) -> Void)?
+    /// A user-initiated paste that `PasteClassifier` turns into an
+    /// attachment is consumed here instead of inserted as text. nil → paste
+    /// always inserts text, unchanged from before Task 21.
+    var onPasteData: ((Data, String) -> Bool)?
+    /// Files copied in Finder (the drop/paperclip path).
+    var onAttachFiles: (([URL]) -> Void)?
+    /// A long text paste, after it was inserted: the inserted text.
+    var onLongTextPaste: ((LongPaste) -> Void)?
     /// The @/ pickers' input (Task 25/26): full text + caret on every change.
     var onCursorChange: ((String, Int) -> Void)?
     /// Offered Up/Down/Enter/Tab/Esc first while a picker may be open.
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
+    /// Makes the text view first responder once it is in its window.
+    var autoFocus = false
+    /// Each new value makes the text view first responder, caret at the end.
+    var focusRequest: UUID?
     var onSubmit: () -> Void
 
     private let minHeight: CGFloat = 20
@@ -252,7 +294,9 @@ struct ExpandingTextInput: NSViewRepresentable {
         textView.textContainerInset = NSSize(width: 0, height: 2)
         textView.textContainer?.lineFragmentPadding = 4
         textView.drawsBackground = false
-        textView.onPasteImage = onPasteImage
+        textView.onPasteData = onPasteData
+        textView.onAttachFiles = onAttachFiles
+        textView.onLongTextPaste = onLongTextPaste
 
         scrollView.documentView = textView
         scrollView.hasVerticalScroller = true
@@ -268,18 +312,35 @@ struct ExpandingTextInput: NSViewRepresentable {
             object: textView
         )
 
+        if autoFocus { Self.focus(textView) }
         return scrollView
+    }
+
+    /// Next run-loop turn (the view is in its window by then): first
+    /// responder, caret at the end.
+    private static func focus(_ textView: NSTextView) {
+        DispatchQueue.main.async { [weak textView] in
+            guard let textView, let window = textView.window else { return }
+            window.makeFirstResponder(textView)
+            textView.setSelectedRange(NSRange(location: textView.string.utf16.count, length: 0))
+        }
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let textView = scrollView.documentView as? PastingTextView else { return }
-        textView.onPasteImage = onPasteImage
+        textView.onPasteData = onPasteData
+        textView.onAttachFiles = onAttachFiles
+        textView.onLongTextPaste = onLongTextPaste
         if textView.string != text {
             textView.string = text
             DispatchQueue.main.async {
                 context.coordinator.recalculateHeight(textView)
             }
+        }
+        if focusRequest != context.coordinator.focusRequest {
+            context.coordinator.focusRequest = focusRequest
+            if focusRequest != nil { Self.focus(textView) }
         }
     }
 
@@ -289,9 +350,13 @@ struct ExpandingTextInput: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: ExpandingTextInput
+        /// The last `focusRequest` seen: only one made after the field
+        /// appeared moves the keyboard.
+        var focusRequest: UUID?
 
         init(_ parent: ExpandingTextInput) {
             self.parent = parent
+            focusRequest = parent.focusRequest
         }
 
         deinit {
@@ -381,19 +446,5 @@ struct ExpandingTextInput: NSViewRepresentable {
             guard let textView = notification.object as? NSTextView else { return }
             recalculateHeight(textView)
         }
-    }
-}
-
-/// Intercepts an image-only paste (Task 21 / preflight A40): text pastes and
-/// mixed pasteboards fall through to the normal insert.
-private final class PastingTextView: NSTextView {
-    var onPasteImage: ((Data) -> Void)?
-
-    override func paste(_ sender: Any?) {
-        if let onPasteImage, let png = PastedImage.pngData(from: .general) {
-            onPasteImage(png)
-            return
-        }
-        super.paste(sender)
     }
 }

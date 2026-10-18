@@ -52,9 +52,7 @@ func NewWorkerPool(workers int, cancel context.CancelFunc) *WorkerPool {
 // Workers run until the task channel is closed or the context is canceled.
 func (wp *WorkerPool) Start(ctx context.Context, handler func(ctx context.Context, task SyncTask) error) {
 	for i := 0; i < wp.workers; i++ {
-		wp.wg.Add(1)
-		go func() {
-			defer wp.wg.Done()
+		wp.wg.Go(func() {
 			for {
 				select {
 				case <-ctx.Done():
@@ -73,7 +71,7 @@ func (wp *WorkerPool) Start(ctx context.Context, handler func(ctx context.Contex
 					}
 				}
 			}
-		}()
+		})
 	}
 }
 

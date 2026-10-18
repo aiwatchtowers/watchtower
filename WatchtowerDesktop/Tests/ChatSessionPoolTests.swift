@@ -56,6 +56,22 @@ final class ChatSessionPoolTests: XCTestCase {
                         assistantMessageID: row)
     }
 
+    /// Board #592: while the login environment resolves, a requested session
+    /// stays pending (no process is built without it) and launches once the
+    /// wait returns.
+    func testHeldAdmissionLaunchesOnlyAfterTheWait() async {
+        let gate = AsyncGate()
+        pool.holdAdmissionUntil { await gate.wait() }
+        let client = pool.session(for: 1, config: config(1))
+        await Task.yield()
+        XCTAssertTrue(client.isPending, "no spawn while the environment resolves")
+        XCTAssertTrue(fakes.isEmpty)
+        gate.release()
+        let launched = await waitForCondition { self.fakes.count == 1 }
+        XCTAssertTrue(launched)
+        XCTAssertFalse(client.isPending)
+    }
+
     /// BEHAVIOR CHAT-03 — see docs/inventory/chat.md
     func testChat03PoolNeverRunsMoreThanThreeSessions() async {
         for id: Int64 in 1...4 {

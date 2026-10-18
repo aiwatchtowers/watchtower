@@ -13,13 +13,17 @@ import (
 )
 
 // v8CoreSHA256 and v9CoreSHA256 are the digests of the single-file v8 and v9
-// watchtower-workbench skills we shipped (testdata/watchtower-workbench-v8.md
-// and -v9.md, pinned by TestShippedCoreDigestsAreTheFixtures). A copy with
-// these exact bytes and no sidecar (a crash between the write and the
-// sidecar) is ours: spec 2026-10-15 §4.3 "the shipped bytes".
+// watchtower-workbench skills we shipped, v10CoreSHA256 … v12CoreSHA256 of
+// the v10, v11 and v12 cores (testdata/watchtower-workbench-v8.md … -v12.md, pinned by
+// TestShippedCoreDigestsAreTheFixtures). A copy with these exact bytes and no
+// sidecar (a crash between the write and the sidecar) is ours: spec
+// 2026-10-15 §4.3 "the shipped bytes".
 const (
-	v8CoreSHA256 = "256a8b31f413d260716c305c677df2681da8a3d7778f3ba93aeb52bd051f9085"
-	v9CoreSHA256 = "f9e35071f4298bb9ebeb19bc09c4aaba1e2a79877a919da537d84cc2d821254b"
+	v8CoreSHA256  = "256a8b31f413d260716c305c677df2681da8a3d7778f3ba93aeb52bd051f9085"
+	v9CoreSHA256  = "f9e35071f4298bb9ebeb19bc09c4aaba1e2a79877a919da537d84cc2d821254b"
+	v10CoreSHA256 = "9c37beda27a06454cca13b588a5e6573e235ce7ea2e56fffcb183ff2ef33903e"
+	v11CoreSHA256 = "4efb50d95ff2c5ce02b5ac25d661d558221f593efaf55d94ad98a9e007b8dc79"
+	v12CoreSHA256 = "f37cab5712a2237264746d827631f2b1ae769c1038a93ac795feea2d7498b466"
 )
 
 // The exclude lines of the preset in each agent's skills directory.
@@ -29,7 +33,7 @@ const (
 )
 
 // adoptShippedSingleFile records the digest beside a core skill in skillsDir
-// that is byte-identical to the v8 or v9 we shipped but has no sidecar, so
+// that is byte-identical to the v8, v9, v10, v11 or v12 we shipped but has no sidecar, so
 // the upgrade takes it as ours.
 func adoptShippedSingleFile(skillsDir string) error {
 	dir := filepath.Join(skillsDir, WorkbenchSkillName)
@@ -45,7 +49,8 @@ func adoptShippedSingleFile(skillsDir string) error {
 		return fmt.Errorf("reading %s: %w", filepath.Join(dir, "SKILL.md"), err)
 	}
 	sum := sha256.Sum256(b)
-	if digest := hex.EncodeToString(sum[:]); digest == v8CoreSHA256 || digest == v9CoreSHA256 {
+	if digest := hex.EncodeToString(sum[:]); digest == v8CoreSHA256 || digest == v9CoreSHA256 ||
+		digest == v10CoreSHA256 || digest == v11CoreSHA256 || digest == v12CoreSHA256 {
 		return writeShippedDigest(dir, digest)
 	}
 	return nil
@@ -110,7 +115,7 @@ func packVersion(content string) (int, bool) {
 	}
 	rest := strings.TrimPrefix(content, "---\n")
 	frontmatter := rest[:strings.Index(rest, "\n---")]
-	for _, line := range strings.Split(frontmatter, "\n") {
+	for line := range strings.SplitSeq(frontmatter, "\n") {
 		if v, ok := strings.CutPrefix(strings.TrimSpace(line), MarkerKey+": v"); ok {
 			n, err := strconv.Atoi(strings.TrimSpace(v))
 			return n, err == nil

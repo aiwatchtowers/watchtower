@@ -91,10 +91,11 @@ final class WorkbenchNotificationCenter {
     private var sending: Bool { Self.sending(defaults) }
 
     /// Workbench notifications are on (the Settings toggle, absent = on) and
-    /// quiet hours are off — shared with the session notices.
+    /// not paused — shared with the session notices. What happens meanwhile
+    /// is consumed, never replayed.
     static func sending(_ defaults: UserDefaults) -> Bool {
         let enabled = defaults.object(forKey: enabledKey) == nil || defaults.bool(forKey: enabledKey)
-        return enabled && !defaults.bool(forKey: "quietHoursEnabled")
+        return enabled && !NotificationPreferences.isPaused(defaults)
     }
 
     func poll() async {

@@ -111,7 +111,7 @@ func init() {
 		workbenchGitStatusCmd, workbenchGitBranchesCmd, workbenchGitSwitchCmd, workbenchGitCreateCmd,
 		workbenchGitFetchCmd, workbenchGitCheckoutCmd,
 	} {
-		addWorkbenchIDFlag(c, &workbenchGitFlagWorkbench, "workbench id")
+		c.Flags().Int64Var(&workbenchGitFlagWorkbench, workbenchFlag, 0, "workbench id")
 		c.Flags().BoolVar(&workbenchGitFlagJSON, "json", false, "output JSON")
 		c.Flags().StringVar(&workbenchGitFlagFolder, "folder", "",
 			"an absolute folder in one of the repository's worktrees (a session's); default the workbench folder")
@@ -135,16 +135,12 @@ func init() {
 // resolveErr is git failing to list the worktrees or the requested folder
 // failing to resolve (workbenchgit.ErrFolderUnreadable), which the caller
 // turns into its envelope.
-func workbenchGitTarget(ctx context.Context, cmd *cobra.Command) (
+func workbenchGitTarget(ctx context.Context) (
 	id int64, o workbenchgit.Options, folder workbenchgit.ResolvedFolder, resolveErr, err error,
 ) {
-	if err = checkWorkbenchIDFlags(cmd); err != nil {
-		return 0, o, folder, nil, err
-	}
 	id = workbenchGitFlagWorkbench
 	if id <= 0 {
-		return 0, o, folder, nil, fmt.Errorf("%s: a positive workbench id is required",
-			workbenchFlagName(cmd.Flags().Changed(legacyWorkbenchFlag)))
+		return 0, o, folder, nil, fmt.Errorf("--%s: a positive workbench id is required", workbenchFlag)
 	}
 	_, database, err := openJiraCmdDB()
 	if err != nil {
@@ -194,7 +190,7 @@ func workbenchGitContext(cmd *cobra.Command, budget time.Duration) (context.Cont
 func runWorkbenchGitStatus(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitReadBudget)
 	defer cancel()
-	id, o, folder, resolveErr, err := workbenchGitTarget(ctx, cmd)
+	id, o, folder, resolveErr, err := workbenchGitTarget(ctx)
 	if err != nil {
 		return err
 	}
@@ -213,7 +209,7 @@ func runWorkbenchGitStatus(cmd *cobra.Command, _ []string) error {
 func runWorkbenchGitBranches(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitReadBudget)
 	defer cancel()
-	id, o, folder, resolveErr, err := workbenchGitTarget(ctx, cmd)
+	id, o, folder, resolveErr, err := workbenchGitTarget(ctx)
 	if err != nil {
 		return err
 	}
@@ -262,7 +258,7 @@ func printGitBranches(w io.Writer, l workbenchgit.BranchList) {
 func runWorkbenchGitSwitch(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
 	defer cancel()
-	id, o, folder, resolveErr, err := workbenchGitTarget(ctx, cmd)
+	id, o, folder, resolveErr, err := workbenchGitTarget(ctx)
 	if err != nil {
 		return err
 	}
@@ -282,7 +278,7 @@ func runWorkbenchGitSwitch(cmd *cobra.Command, _ []string) error {
 func runWorkbenchGitCheckout(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
 	defer cancel()
-	id, o, folder, resolveErr, err := workbenchGitTarget(ctx, cmd)
+	id, o, folder, resolveErr, err := workbenchGitTarget(ctx)
 	if err != nil {
 		return err
 	}
@@ -302,7 +298,7 @@ func runWorkbenchGitCheckout(cmd *cobra.Command, _ []string) error {
 func runWorkbenchGitFetch(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitFetchBudget)
 	defer cancel()
-	id, o, folder, resolveErr, err := workbenchGitTarget(ctx, cmd)
+	id, o, folder, resolveErr, err := workbenchGitTarget(ctx)
 	if err != nil {
 		return err
 	}
@@ -335,7 +331,7 @@ func runWorkbenchGitFetch(cmd *cobra.Command, _ []string) error {
 func runWorkbenchGitCreate(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
 	defer cancel()
-	id, o, folder, resolveErr, err := workbenchGitTarget(ctx, cmd)
+	id, o, folder, resolveErr, err := workbenchGitTarget(ctx)
 	if err != nil {
 		return err
 	}

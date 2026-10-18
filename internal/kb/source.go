@@ -32,6 +32,7 @@ type progressReporter interface {
 // whole-space backfill can be large), Slack (the backfill giant) last.
 func allSources() []Source {
 	return []Source{
+		guideSource{},
 		calendarSource{},
 		newWorkbenchDocSource(),
 		ideaSource{},
@@ -53,15 +54,6 @@ func sourceNames() []string {
 		out = append(out, s.Name())
 	}
 	return out
-}
-
-func sourceByName(name string) Source {
-	for _, s := range allSources() {
-		if s.Name() == name {
-			return s
-		}
-	}
-	return nil
 }
 
 // splitRef splits "<prefix><rest>" and reports whether prefix matched.

@@ -30,11 +30,19 @@ package final class AutomationsViewModel {
     nonisolated package static let reportLimit = 5
 
     package private(set) var items: [AutomationListItem] = []
-    /// The sidebar badge: automations needing confirmation + runs waiting on the owner.
+    /// Automations needing confirmation + runs waiting on the owner.
     package private(set) var attentionCount = 0
+    /// Automations whose newest run failed and whose card was not opened
+    /// since (`AutomationFailureWatch`); 0 without a watch.
+    package private(set) var unseenFailureCount = 0
+    /// The sidebar badge.
+    package var badgeCount: Int { attentionCount + unseenFailureCount }
     /// Unread inbox outputs — the Inbox badge's automation share. The daemon
     /// writes them from another process, so this poll is what notices them.
     package private(set) var inboxOutputCount = 0
+    /// The workbench headers' `trigger.button` recipes, keyed by workbench
+    /// id (spec §12.4); read with the list, so the poll keeps them current.
+    private var headerButtonsByProject: [Int64: [AutomationHeaderButton]] = [:]
     /// Runs when `inboxOutputCount` changes, so the Inbox sidebar badge
     /// (`SidebarCountsViewModel`, which sees only this process's writes)
     /// re-reads.
@@ -86,6 +94,9 @@ package final class AutomationsViewModel {
     /// the form is up; held here so an install finishing while the tab is
     /// off screen still opens the form on return.
     package var pendingEditID: Int64?
+    /// What a template copy installed in this session covers ("Covers: PAY,
+    /// OPS"), keyed by automation id; the edit form shows it (#582).
+    package private(set) var installCoverage: [Int64: String] = [:]
     /// An unconfirmed recipe picked in the "Run Automation…" palette: the
     /// tab opens its confirmation sheet and clears this (held here so the
     /// sheet opens when the tab appears).
@@ -96,6 +107,10 @@ package final class AutomationsViewModel {
 
     @ObservationIgnored private let dbPool: DatabasePool
     @ObservationIgnored private let cli: AutomationsCLI
+    @ObservationIgnored private let failureWatch: AutomationFailureWatch?
+    /// The app is active with a visible key window: only then does an open
+    /// card count as seen.
+    @ObservationIgnored private let isOwnerLooking: () -> Bool
     @ObservationIgnored private let now: () -> Date
     @ObservationIgnored private let sleep: (Duration) async -> Void
     @ObservationIgnored private var pollTask: Task<Void, Never>?
@@ -106,11 +121,15 @@ package final class AutomationsViewModel {
     package init(
         dbPool: DatabasePool,
         cli: AutomationsCLI,
+        failureWatch: AutomationFailureWatch? = nil,
+        isOwnerLooking: @escaping () -> Bool = { true },
         now: @escaping () -> Date = Date.init,
         sleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
         self.dbPool = dbPool
         self.cli = cli
+        self.failureWatch = failureWatch
+        self.isOwnerLooking = isOwnerLooking
         self.now = now
         self.sleep = sleep
     }
@@ -181,8 +200,9 @@ package final class AutomationsViewModel {
             let selected = selectedID
             let expanded = expandedRuns
             let date = now()
+            let failures = failureWatch != nil
             let snapshot = try dbPool.read { db in
-                try Snapshot.read(db, now: date, selected: selected, expanded: expanded)
+                try Snapshot.read(db, now: date, selected: selected, expanded: expanded, failures: failures)
             }
             apply(snapshot)
             if lastErrorIsRead {
@@ -199,6 +219,10 @@ package final class AutomationsViewModel {
         var items: [AutomationListItem]
         var attentionCount: Int
         var inboxOutputCount: Int
+        var headerButtons: [Int64: [AutomationHeaderButton]]
+        /// `AutomationQueries.newestEndedRuns` and `allIDs`, read only with a failure watch.
+        var endedRuns: [Int64: AutomationRun]
+        var allIDs: Set<Int64>
         var card: Card?
         var steps: [Int64: [AutomationRunStep]]
 
@@ -209,7 +233,7 @@ package final class AutomationsViewModel {
             let grants: [AutomationToolGrant]
         }
 
-        static func read(_ db: Database, now: Date, selected: Int64?, expanded: Set<Int64>) throws -> Self {
+        static func read(_ db: Database, now: Date, selected: Int64?, expanded: Set<Int64>, failures: Bool) throws -> Self {
             var card: Card?
             if let selected {
                 card = Card(
@@ -223,10 +247,14 @@ package final class AutomationsViewModel {
             for runID in expanded {
                 steps[runID] = try AutomationQueries.fetchSteps(db, runID: runID)
             }
+            let items = try AutomationQueries.fetchList(db, now: now)
             return Self(
-                items: try AutomationQueries.fetchList(db, now: now),
+                items: items,
                 attentionCount: try AutomationQueries.attentionCount(db),
                 inboxOutputCount: try AutomationQueries.inboxOutputCount(db),
+                headerButtons: AutomationQueries.headerButtonsByProject(items),
+                endedRuns: failures ? try AutomationQueries.newestEndedRuns(db) : [:],
+                allIDs: failures ? try AutomationQueries.allIDs(db) : [],
                 card: card,
                 steps: steps
             )
@@ -236,17 +264,35 @@ package final class AutomationsViewModel {
     private func apply(_ snapshot: Snapshot) {
         items = snapshot.items
         attentionCount = snapshot.attentionCount
+        headerButtonsByProject = snapshot.headerButtons
         if snapshot.inboxOutputCount != inboxOutputCount {
             inboxOutputCount = snapshot.inboxOutputCount
             onInboxOutputCountChanged?()
         }
         for (runID, runSteps) in snapshot.steps { steps[runID] = runSteps }
+        applyFailures(snapshot.endedRuns, existing: snapshot.allIDs)
         // The selection may have moved while the read ran; keep only what matches it.
         if let card = snapshot.card, card.automationID == selectedID {
             runs[card.automationID] = card.runs
             reports[card.automationID] = card.reports
             grants[card.automationID] = card.grants
         }
+    }
+
+    /// The open card on a visible tab of an active app is seen; then new
+    /// failures notify and the badge's failure share is counted.
+    private func applyFailures(_ runs: [Int64: AutomationRun], existing: Set<Int64>) {
+        guard let failureWatch else { return }
+        if tabVisible, let selectedID, isOwnerLooking() {
+            failureWatch.markSeen(selectedID, runs: runs)
+        }
+        failureWatch.notify(items, runs: runs, existing: existing, now: now())
+        unseenFailureCount = failureWatch.unseenCount(items, runs: runs)
+    }
+
+    /// Workbench `projectID`'s header buttons, in slug order.
+    package func headerButtons(projectID: Int64) -> [AutomationHeaderButton] {
+        headerButtonsByProject[projectID] ?? []
     }
 
     // MARK: - Selection
@@ -329,6 +375,7 @@ package final class AutomationsViewModel {
         defer { installingTemplate = nil }
         do {
             let result = try await cli.installTemplate(template.name, workbenchID: workbenchID)
+            installCoverage[result.automationID] = AutomationTemplateGallery.coverageLine(result.params)
             refresh()
             select(result.automationID)
             pendingEditID = result.automationID
@@ -341,7 +388,9 @@ package final class AutomationsViewModel {
 
     // MARK: - CLI operations
 
-    package func runNow(_ id: Int64) async {
+    /// False when the call failed (`lastError` says why) or another call on `id` is in flight.
+    @discardableResult
+    package func runNow(_ id: Int64) async -> Bool {
         await perform(.running, on: id) { cli in _ = try await cli.run(id) }
     }
 

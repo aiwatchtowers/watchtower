@@ -67,6 +67,7 @@ struct SplashView: View {
 
 struct MainNavigationView: View {
     @Environment(AppState.self) private var appState
+    @Environment(\.openWindow) private var openWindow
     /// The full menu (true) or the icon rail ⌘B folds it into, kept across launches.
     @AppStorage("sidebar.menuExpanded") private var showMenu = true
     /// Reuses `GoogleConnectFlow.shared.calendar` (rather than a locally-
@@ -133,17 +134,13 @@ struct MainNavigationView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .detailBackground()
                     .safeAreaInset(edge: .top, spacing: 0) {
-                        if let failure = appState.daemonStartFailure {
-                            HStack(spacing: 8) {
-                                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                                Text(failure).font(.callout).lineLimit(2)
-                                Spacer()
-                                Button("Dismiss") { appState.dismissDaemonStartFailure() }
-                                    .buttonStyle(.borderless)
-                            }
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background(Color.orange.opacity(0.12))
+                        if let banner = appState.daemonBanner {
+                            DaemonBannerView(
+                                banner: banner,
+                                onStart: { appState.startDaemonFromBanner() },
+                                onOpenLogs: { openWindow(id: "logs") },
+                                onDismiss: { appState.dismissDaemonBanner() }
+                            )
                         }
                     }
             }
@@ -151,6 +148,12 @@ struct MainNavigationView: View {
             StatusBarView()
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .overlay(alignment: .topTrailing) {
+            if appState.isHelpChatShown, let chatVM = appState.chatViewModel {
+                HelpChatPanel(chatVM: chatVM)
+                    .padding(12)
+            }
+        }
         .alert(
             "Google Calendar disconnected",
             isPresented: Binding(
@@ -165,7 +168,7 @@ struct MainNavigationView: View {
         ) {
             Button("Reconnect") {
                 appState.selectedDestination = .calendar
-                reconnectAndRestartDaemon()
+                reconnectGoogleCalendar()
             }
             Button("Later", role: .cancel) {}
         } message: {
@@ -176,7 +179,11 @@ struct MainNavigationView: View {
         .onChange(of: appState.featureVisibility.connectedSources) { _, _ in applyFeatureFallback() }
         // Direct writes (deep links, Day Plan, the action strip, Catch-Up
         // cards) must not land on a hidden tab either.
-        .onChange(of: appState.selectedDestination) { _, _ in applyFeatureFallback() }
+        .onChange(of: appState.selectedDestination) { _, new in
+            applyFeatureFallback()
+            // The AI Chat tab shows the same thread; one view of it at a time.
+            if new == .chat { appState.isHelpChatShown = false }
+        }
     }
 
     /// Redirects away from the current tab when it becomes hidden — a
@@ -191,6 +198,16 @@ struct MainNavigationView: View {
     private var automationsTabActions: AutomationsTabActions {
         var actions = AutomationsTabActions()
         actions.onOpenInbox = { _ in appState.selectedDestination = .inbox }
+        actions.onOpenSession = { projectID, sessionID in
+            guard let vm = appState.workbenchesViewModel else { return }
+            appState.selectedDestination = .workbench
+            Task { await vm.showAutomationSession(sessionID, projectID: projectID) }
+        }
+        actions.onOpenAsk = { projectID, askID in
+            guard let vm = appState.workbenchesViewModel else { return }
+            appState.selectedDestination = .workbench
+            Task { await vm.showAsk(askID, projectID: projectID) }
+        }
         return actions
     }
 
@@ -222,20 +239,10 @@ struct MainNavigationView: View {
     /// `connect()` falls back to the CLI's generic "account #1" alias, which
     /// in a multi-account workspace may be a completely different, healthy
     /// account, leaving the actually-broken one (and the alert) stuck forever.
-    private func reconnectAndRestartDaemon() {
+    private func reconnectGoogleCalendar() {
+        // A successful connect restarts the daemon itself
+        // (`GoogleAuthService`, on the start queue).
         googleAuth.connect(accountID: appState.calendarViewModel?.authState?.accountID)
-        Task {
-            while googleAuth.isAuthenticating {
-                try? await Task.sleep(for: .milliseconds(250))
-            }
-            guard googleAuth.isConnected else { return }
-            let daemon = DaemonManager()
-            daemon.resolvePathIfNeeded()
-            guard DaemonManager.checkDaemonRunning() else { return }
-            await daemon.stopDaemon()
-            try? await Task.sleep(for: .milliseconds(500))
-            await daemon.startDaemon()
-        }
     }
 
     @ViewBuilder
@@ -300,6 +307,9 @@ struct MainNavigationView: View {
                     actions: automationsTabActions,
                     workbenchName: { id in
                         appState.workbenchesViewModel?.summaries.first { $0.project.id == id }?.project.name
+                    },
+                    workbenches: (appState.workbenchesViewModel?.summaries ?? []).map {
+                        AutomationTemplateGallery.InstallTarget(id: $0.project.id, name: $0.project.name)
                     },
                     emptyStateContext: appState.emptyStateContext,
                     editor: appState.automationEditorCenter,

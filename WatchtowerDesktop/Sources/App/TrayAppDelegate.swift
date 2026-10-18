@@ -223,13 +223,28 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
     /// sheet-carrying windows first removes the veto; termination then runs
     /// the normal daemon-stop flow below. Closing (not `endSheet`) is
     /// deliberate: Quit tears the window down anyway, and `close()` drops the
-    /// scene synchronously.
-    static func requestQuit() {
+    /// scene synchronously. An update's relaunch passes `forUpdate`: that
+    /// quit never asks about sessions and leaves the hosted ones running
+    /// (PROJ-20). `stoppingSessions` (removing all data) never offers to
+    /// keep them: kept sessions of a wiped workspace could never be
+    /// reattached.
+    static func requestQuit(forUpdate: Bool = false, stoppingSessions: Bool = false) {
         for window in windowsBlockingTermination(NSApp.windows) {
             window.close()
         }
+        quitIsForUpdate = forUpdate
+        quitStopsSessions = stoppingSessions
         NSApp.terminate(nil)
+        // Still running: the quit was cancelled, so the next one is a plain
+        // quit unless it says otherwise.
+        quitIsForUpdate = false
+        quitStopsSessions = false
     }
+
+    /// The quit `NSApp.terminate` is running now came from an update.
+    private static var quitIsForUpdate = false
+    /// The quit `NSApp.terminate` is running now stops every session.
+    private static var quitStopsSessions = false
 
     /// Filter half of `requestQuit`, split out for tests: the windows whose
     /// presented sheets make SwiftUI cancel termination.
@@ -237,20 +252,57 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         windows.filter { $0.attachedSheet != nil }
     }
 
+    /// Runs on every termination, whichever quit path led here (sessions
+    /// closed or kept, a duplicate instance quitting at once): the html
+    /// preview's loopback server (#535), if it ever started, stops.
+    func applicationWillTerminate(_ notification: Notification) {
+        LocalPreviewServer.shared.stop()
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let prompt = Self.quitPrompt(
-            recording: AppState.shared.meetingRecorderCenter.isBusy,
-            askDrafts: AppState.shared.workbenchesViewModel?.asks.drafts.count ?? 0
+        let app = AppState.shared
+        let plan = Self.quitPlan(
+            forUpdate: Self.quitIsForUpdate,
+            stopsSessions: Self.quitStopsSessions,
+            quitReason: Self.currentQuitReason(),
+            recording: app.meetingRecorderCenter.isBusy,
+            askDrafts: app.workbenchesViewModel?.asks.drafts.count ?? 0,
+            liveSessions: app.terminalCenter.liveHostedCount,
+            unprotectedSessions: app.terminalCenter.liveIDs.intersection(app.terminalCenter.unprotected).count
         )
         return Self.terminateDecision(
             managesLifecycle: managesLifecycle,
-            hasBlockingWork: prompt != nil,
-            confirmQuit: { prompt.map(Self.confirmQuit) ?? true },
-            closeChatSessions: { await AppState.shared.chatSessionPool?.closeAll() },
-            closeTerminals: { await AppState.shared.terminalCenter.closeAll() },
+            hasBlockingWork: plan.prompt != nil,
+            keepsSessions: plan.keepsSessions,
+            confirmQuit: { plan.prompt.map { plan.choice(button: Self.runQuitAlert($0)) } ?? .cancel },
+            closeChatSessions: { await app.chatSessionPool?.closeAll() },
+            closeTerminals: {
+                // Not reported stopped: the next launch reconciles them.
+                app.automationSessionCenter?.stop()
+                await app.terminalCenter.closeAll()
+            },
+            detachTerminals: {
+                app.automationSessionCenter?.stop()
+                await app.terminalCenter.detachAll()
+            },
             stopDaemon: { await DaemonManager.stopDaemonBounded() },
+            finishPendingDeletes: { await Self.finishPendingDeletes(app.workbenchesViewModel) },
             reply: { ok in sender.reply(toApplicationShouldTerminate: ok) }
         )
+    }
+
+    /// The quit's PROJ-17 step (board #588): the Undo batch is committed,
+    /// with the progress panel if it takes a moment. `present` is a seam for
+    /// tests.
+    @MainActor
+    static func finishPendingDeletes(
+        _ workbenches: WorkbenchesViewModel?,
+        present: @escaping @MainActor (String) -> () -> Void = QuitProgressPanel.present
+    ) async {
+        guard let workbenches else { return }
+        await QuitProgressPanel.showing("Finishing session deletes…", present: present) {
+            _ = await workbenches.commitPendingDeletesForQuit()
+        }
     }
 
     /// The terminate decision, extracted from `applicationShouldTerminate` so
@@ -261,19 +313,25 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
     static func terminateDecision(
         managesLifecycle: Bool,
         hasBlockingWork: Bool,
-        confirmQuit: () -> Bool,
+        keepsSessions: Bool = false,
+        confirmQuit: () -> QuitChoice,
         closeChatSessions: @escaping () async -> Void = {},
         closeTerminals: @escaping () async -> Void = {},
+        detachTerminals: @escaping () async -> Void = {},
         stopDaemon: @escaping () async -> Void,
+        finishPendingDeletes: @escaping () async -> Void = {},
         reply: @escaping (Bool) -> Void
     ) -> NSApplication.TerminateReply {
         guard managesLifecycle else { return .terminateNow }
         return QuitCoordinator.shouldTerminate(
             hasBlockingWork: hasBlockingWork,
             confirmQuit: confirmQuit,
+            keepsSessions: keepsSessions,
             closeChatSessions: closeChatSessions,
             closeTerminals: closeTerminals,
+            detachTerminals: detachTerminals,
             stopDaemon: stopDaemon,
+            finishPendingDeletes: finishPendingDeletes,
             reply: reply
         )
     }
@@ -306,41 +364,143 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// What a quit asks before it drops work: a recording in progress, or
-    /// unsent ask answers (in memory only, spec 2026-10-03 Part 8). nil =
-    /// nothing to lose, quit without asking.
+    /// What a quit asks before it drops work: a recording in progress,
+    /// unsent ask answers (in memory only, spec 2026-10-03 Part 8), or live
+    /// hosted workbench sessions (board #496) — one alert for all of them.
+    /// nil = nothing to lose, quit without asking.
     struct QuitPrompt: Equatable {
         let message: String
         let informative: String
         let quitTitle: String
+        /// The button that quits leaving the hosted sessions running; nil
+        /// when no hosted session is live.
+        var keepSessionsTitle: String?
+
+        /// The alert's buttons, in order.
+        var buttons: [String] {
+            (keepSessionsTitle.map { [$0] } ?? []) + [quitTitle, "Cancel"]
+        }
     }
 
-    static func quitPrompt(recording: Bool, askDrafts: Int) -> QuitPrompt? {
+    /// `unprotectedSessions` (live local-fallback sessions, which stop on
+    /// any quit) is mentioned only next to the hosted sessions' choice.
+    static func quitPrompt(
+        recording: Bool, askDrafts: Int, liveSessions: Int = 0, unprotectedSessions: Int = 0
+    ) -> QuitPrompt? {
         let drafts = askDrafts == 1 ? "1 unsent ask answer" : "\(askDrafts) unsent ask answers"
+        let sessions = liveSessions == 1
+            ? "1 workbench session is running"
+            : "\(liveSessions) workbench sessions are running"
+        let unprotected = switch unprotectedSessions {
+        case 0: ""
+        case 1: " 1 unprotected session will stop."
+        default: " \(unprotectedSessions) unprotected sessions will stop."
+        }
+        let sessionsChoice = (liveSessions == 1
+            ? "Keep it running and Watchtower reattaches when you open it again, or stop it now."
+            : "Keep them running and Watchtower reattaches when you open it again, or stop them now.")
+            + unprotected
+        let base: QuitPrompt
         if recording {
-            return QuitPrompt(
+            base = QuitPrompt(
                 message: "A recording or transcription is in progress",
                 informative: "Quitting stops the capture and drops any transcription still running. "
                     + "The audio recorded so far is kept and offered again on next launch."
                     + (askDrafts > 0 ? " Your \(drafts) will be lost." : ""),
                 quitTitle: "Stop & Quit"
             )
+        } else if askDrafts > 0 {
+            base = QuitPrompt(
+                message: "You have \(drafts)",
+                informative: "Drafts are kept only while Watchtower runs. Answer them from the workbench first, "
+                    + "or quit and lose them.",
+                quitTitle: "Quit"
+            )
+        } else if liveSessions > 0 {
+            return QuitPrompt(
+                message: sessions,
+                informative: sessionsChoice,
+                quitTitle: "Stop Sessions and Quit",
+                keepSessionsTitle: "Keep Sessions and Quit"
+            )
+        } else {
+            return nil
         }
-        guard askDrafts > 0 else { return nil }
+        guard liveSessions > 0 else { return base }
         return QuitPrompt(
-            message: "You have \(drafts)",
-            informative: "Drafts are kept only while Watchtower runs. Answer them from the workbench first, "
-                + "or quit and lose them.",
-            quitTitle: "Quit"
+            message: base.message,
+            informative: base.informative + " \(sessions). " + sessionsChoice,
+            quitTitle: "Stop Sessions and Quit",
+            keepSessionsTitle: "Keep Sessions and Quit"
         )
     }
 
-    private static func confirmQuit(_ prompt: QuitPrompt) -> Bool {
+    /// What one quit asks and does when it goes ahead unasked.
+    struct QuitPlan: Equatable {
+        let prompt: QuitPrompt?
+        /// The quit leaves the hosted sessions running without asking: an
+        /// update's, or the system ending the login session.
+        let keepsSessions: Bool
+
+        /// The choice behind the prompt's button at `index`
+        /// (`QuitPrompt.buttons`). Without a Keep button, quitting keeps the
+        /// sessions only when this quit keeps them anyway.
+        func choice(button index: Int) -> QuitChoice {
+            let choices: [QuitChoice] = prompt?.keepSessionsTitle != nil
+                ? [.quitKeepingSessions, .quitStoppingSessions, .cancel]
+                : [keepsSessions ? .quitKeepingSessions : .quitStoppingSessions, .cancel]
+            return choices.indices.contains(index) ? choices[index] : .cancel
+        }
+    }
+
+    /// An update's quit and a logout, restart or shutdown never ask about
+    /// sessions and leave the hosted ones running (PROJ-20, spec §4.4); a
+    /// recording or unsent answers still ask. Any other quit with a live
+    /// hosted session asks Keep or Stop. `quitReason` is the quitting Apple
+    /// event's `kAEQuitReason` (`currentQuitReason`), nil when there is none.
+    /// A `stopsSessions` quit (removing all data) never asks about sessions
+    /// either and stops them all.
+    static func quitPlan(
+        forUpdate: Bool,
+        stopsSessions: Bool = false,
+        quitReason: OSType?,
+        recording: Bool,
+        askDrafts: Int,
+        liveSessions: Int,
+        unprotectedSessions: Int = 0
+    ) -> QuitPlan {
+        let keeps = !stopsSessions && (forUpdate || quitReason.map(systemSessionEndReasons.contains) == true)
+        let asksAboutSessions = !keeps && !stopsSessions
+        return QuitPlan(
+            prompt: quitPrompt(
+                recording: recording, askDrafts: askDrafts,
+                liveSessions: asksAboutSessions ? liveSessions : 0,
+                unprotectedSessions: unprotectedSessions
+            ),
+            keepsSessions: keeps
+        )
+    }
+
+    /// The `kAEQuitReason` values of a logout, restart or shutdown.
+    static let systemSessionEndReasons: Set<OSType> = [
+        OSType(kAELogOut), OSType(kAEReallyLogOut), OSType(kAEShowRestartDialog),
+        OSType(kAERestart), OSType(kAEShowShutdownDialog), OSType(kAEShutDown)
+    ]
+
+    /// The quit reason of the Apple event being handled, if any.
+    private static func currentQuitReason() -> OSType? {
+        NSAppleEventManager.shared().currentAppleEvent?
+            .attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason))?.enumCodeValue
+    }
+
+    /// Shows `prompt` and returns the index of the button pressed.
+    private static func runQuitAlert(_ prompt: QuitPrompt) -> Int {
         let alert = NSAlert()
         alert.messageText = prompt.message
         alert.informativeText = prompt.informative
-        alert.addButton(withTitle: prompt.quitTitle)
-        alert.addButton(withTitle: "Cancel")
-        return alert.runModal() == .alertFirstButtonReturn
+        for title in prompt.buttons {
+            alert.addButton(withTitle: title)
+        }
+        return alert.runModal().rawValue - NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
     }
 }

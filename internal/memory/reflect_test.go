@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/digest"
 )
 
@@ -26,7 +27,7 @@ func reflectConfig() config.MemoryConfig {
 // commit (at real time.Now()) falls inside the pass's 7-day lookback.
 func reflectDueDay(key string) time.Time {
 	base := time.Now().UTC().Truncate(24 * time.Hour).Add(12 * time.Hour)
-	for i := 0; i < reflectStaggerDays; i++ {
+	for i := range reflectStaggerDays {
 		d := base.AddDate(0, 0, i)
 		if dueForReflect(key, d) {
 			return d
@@ -38,7 +39,7 @@ func reflectDueDay(key string) time.Time {
 // reflectNotDueDay returns a day on which reflection is NOT due for key.
 func reflectNotDueDay(key string) time.Time {
 	base := time.Now().UTC().Truncate(24 * time.Hour).Add(12 * time.Hour)
-	for i := 0; i < reflectStaggerDays; i++ {
+	for i := range reflectStaggerDays {
 		d := base.AddDate(0, 0, i)
 		if !dueForReflect(key, d) {
 			return d
@@ -53,7 +54,7 @@ func reflectNotDueDay(key string) time.Time {
 func churnNode(t *testing.T, v *Vault, n Node, op string, times int, day time.Time) {
 	t.Helper()
 	rev := n
-	for i := 0; i < times; i++ {
+	for i := range times {
 		rev.Body = appendHistory(rev.Body, fmt.Sprintf("- %s: %s rev %d\n", day.Format("2006-01-02"), op, i))
 		_, err := v.WriteNodes([]Node{rev}, CommitMsg{Op: op, Summary: "revised", Cause: op, NodeIDs: []string{n.ID}})
 		require.NoError(t, err)
@@ -249,7 +250,7 @@ func TestReflectCapsObservations(t *testing.T) {
 	day := reflectDueDay("T1")
 
 	var obs []string
-	for i := 0; i < reflectMaxObservations+2; i++ {
+	for i := range reflectMaxObservations + 2 {
 		id := fmt.Sprintf("bel_0000000000000000000000000%d", i+1)
 		bel := beliefTestNode(id, fmt.Sprintf("belief %d", i), "ent_x", 0.5, 1, "active")
 		writeAndIndex(t, v, d, bel)
@@ -292,7 +293,7 @@ func TestReflectBudgetSkipsInPipeline(t *testing.T) {
 	}
 	assert.Equal(t, "skipped", byName["reflect"], "over budget, reflection records a skipped row")
 	for _, c := range gen.calls {
-		assert.NotContains(t, c, "Memory activity over the last seven days", "no reflection AI call over budget")
+		assert.NotContains(t, c, "Memory activity since ", "no reflection AI call over budget")
 	}
 }
 
@@ -451,4 +452,21 @@ func sectionText(body, heading string) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+// TestBuildReflectPromptNamesItsWindow: the churn digest names the period it
+// covers from since, not a hardcoded "this week".
+func TestBuildReflectPromptNamesItsWindow(t *testing.T) {
+	rows := []db.MemoryNodeRow{{ID: "bel_a", Title: "A", Type: "belief"}, {ID: "ent_b", Title: "B", Type: "entity"}}
+	churn := map[string]nodeChurn{
+		"bel_a": {commits: 3, historyLines: 2},
+		"ent_b": {commits: 4, byOp: map[string]int{"rewrite": 4}},
+	}
+	since := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+	_, user := buildReflectPrompt("%s", "", rows, churn, since)
+
+	assert.Contains(t, user, "Memory activity since 2026-10-11.")
+	assert.Contains(t, user, `- bel_a "A": 3 revisions, 2 history entries since 2026-10-11`)
+	assert.Contains(t, user, `- ent_b "B": 4 page revisions since 2026-10-11 (rewrite x4)`)
+	assert.NotContains(t, user, "this week")
 }

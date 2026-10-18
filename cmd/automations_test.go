@@ -52,8 +52,15 @@ func newAutoCLI(t *testing.T) *autoCLI {
 
 func runAutomations(t *testing.T, args ...string) (string, error) {
 	t.Helper()
-	// stdout only: --json output must decode on its own, as the Desktop reads
-	// it; notes and warnings go to stderr.
+	out, _, err := runAutomationsStreams(t, args...)
+	return out, err
+}
+
+// runAutomationsStreams runs an automations command and returns stdout and
+// stderr apart: --json output must decode on its own, as the Desktop reads
+// it; notes and warnings go to stderr.
+func runAutomationsStreams(t *testing.T, args ...string) (string, string, error) {
+	t.Helper()
 	var out, errOut bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&errOut)
@@ -64,7 +71,7 @@ func runAutomations(t *testing.T, args ...string) (string, error) {
 	for _, c := range automationsCmd.Commands() {
 		c.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
 	}
-	return out.String(), err
+	return out.String(), errOut.String(), err
 }
 
 // runAutomationsJSON runs a --json command and decodes its output.
@@ -445,8 +452,9 @@ func TestAutomationsCLI_ShowJSONKeys(t *testing.T) {
 	wantKeys(t, runAutomationsJSON(t, "show", idArg(a.ID)), "id", "slug", "scope", "project_id", "path", "name",
 		"description", "script", "recipe_text", "trigger_kind", "trigger_spec", "permissions", "outputs",
 		"budget_tokens", "budget_minutes", "concurrency", "missed_policy", "pause_timeout_hours", "enabled",
+		"disabled_reason", "disabled_at",
 		"runnable", "needs_confirmation", "parse_error", "content_hash", "approval_hash", "confirmed_hash", "widening", "grants",
-		"changes", "changes_known", "changed_by", "changed_at", "auto_tools")
+		"changes", "changes_known", "changed_by", "changed_at", "auto_tools", "llm_auto_writes", "feeds_sources_to_llm")
 }
 
 func TestAutomationsCLI_ValidateJSONKeys(t *testing.T) {
@@ -454,7 +462,7 @@ func TestAutomationsCLI_ValidateJSONKeys(t *testing.T) {
 	for _, text := range []string{autoCLIRecipeText(`return 1`), "broken"} {
 		path := writeRecipe(t, t.TempDir(), "digest", text)
 		wantKeys(t, runAutomationsJSON(t, "validate", path), "ok", "errors", "slug", "name", "scope",
-			"approval_hash", "content_hash", "permissions", "outputs", "widening")
+			"approval_hash", "content_hash", "permissions", "outputs", "widening", "feeds_sources_to_llm")
 	}
 }
 
@@ -765,6 +773,36 @@ func TestAutomationsCLI_SaveAndDeleteInWorkbenchFolder(t *testing.T) {
 	out, err := runAutomations(t, "delete", idArg(a.ID))
 	require.NoError(t, err, out)
 	assert.NoFileExists(t, target)
+}
+
+// PROJ-03 (amended, ask #272): in a workbench folder, save writes only
+// <folder>/.watchtower/automations/<slug>.md — any other path of the folder
+// is refused before anything is written.
+func TestAutomationsCLI_SavePathOutsideWorkbenchAutomationsRefused(t *testing.T) {
+	c := newAutoCLI(t)
+	folder, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	_, err = c.d.CreateWorkbench("beta", folder)
+	require.NoError(t, err)
+	src := writeRecipe(t, t.TempDir(), "draft", autoCLIRecipeText(`return 1`))
+	for _, rel := range []string{
+		filepath.Join("src", "x.md"),
+		"x.md",
+		filepath.Join(".watchtower", "x.md"),
+		filepath.Join(".watchtower", "automations", "nested", "x.md"),
+	} {
+		target := filepath.Join(folder, rel)
+		out, err := runAutomations(t, "save", "--file", src, "--path", target, "--json")
+		require.Error(t, err, "save --path %s: %s", rel, out)
+		assert.Contains(t, err.Error(), "cannot save to")
+		assert.NoFileExists(t, target)
+	}
+	entries, err := os.ReadDir(folder)
+	require.NoError(t, err)
+	assert.Empty(t, entries, "nothing was written in the workbench folder")
+	rows, err := c.d.ListAutomations(db.AutomationFilter{})
+	require.NoError(t, err)
+	assert.Empty(t, rows)
 }
 
 // autoCLIRecipeWith is a recipe with the given trigger block (indented

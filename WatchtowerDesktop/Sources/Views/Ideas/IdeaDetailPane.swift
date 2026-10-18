@@ -99,9 +99,6 @@ struct IdeaDetailPane: View {
             Divider()
             actionBar
         }
-        // Below the action bar — the pane's bottom-most content, under the
-        // Discuss input.
-        .clearsRecordingIndicator()
         .task(id: idea.id) { await loadMentions() }
         .task { jiraSiteURL = JiraConfigHelper.readSiteURL() }
         .sheet(isPresented: $showMergeSheet) {
@@ -266,7 +263,7 @@ struct IdeaDetailPane: View {
     private func mentionBubble(_ mention: IdeaMention) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
-                Text(mention.author.isEmpty ? mention.sourceKind.rawValue.capitalized : mention.author)
+                Text(mention.author.isEmpty ? mention.sourceKind.label : mention.author)
                     .font(.caption2)
                     .fontWeight(.semibold)
                     .foregroundStyle(.secondary)
@@ -295,9 +292,9 @@ struct IdeaDetailPane: View {
                 Image(systemName: "arrow.up.right.square")
             }
             .foregroundStyle(.secondary)
-            .help("Open in \(mention.sourceKind.rawValue.capitalized)")
+            .help("Open in \(mention.sourceKind.label)")
         } else {
-            Text(mention.sourceKind.rawValue.capitalized)
+            Text(mention.sourceKind.label)
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
         }
@@ -310,7 +307,7 @@ struct IdeaDetailPane: View {
     /// A wrong link is worse than no link — only the two sources with a
     /// well-established, easy-to-build URL (Slack's generic archives host, no
     /// workspace domain needed; Jira via the resolved site) get a Link.
-    /// Gmail and meeting mentions render a plain source label.
+    /// Gmail, IMAP and meeting mentions render a plain source label.
     ///
     /// Static so the URL-building rules are testable without a view.
     static func mentionURL(_ mention: IdeaMention, jiraSiteURL: String?) -> URL? {
@@ -322,7 +319,7 @@ struct IdeaDetailPane: View {
         case .jira:
             guard let jiraSiteURL, !jiraSiteURL.isEmpty else { return nil }
             return URL(string: "\(jiraSiteURL)/browse/\(mention.ref)")
-        case .meeting, .gmail, .owner:
+        case .meeting, .gmail, .imap, .owner:
             return nil
         }
     }

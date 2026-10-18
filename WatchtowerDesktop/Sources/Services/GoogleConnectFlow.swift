@@ -116,8 +116,11 @@ final class GoogleConnectFlow {
                 accounts = []
             }
 
-            // cancel() may also have fired during the DB read above — its
-            // only await point before the process launches. Re-check here,
+            let environment = await Constants.resolvedEnvironmentAsync()
+
+            // cancel() may also have fired during the DB read or the
+            // environment await above — the only await points before the
+            // process launches. Re-check here,
             // before constructing/launching the subprocess: MainActor's
             // serial executor can't interleave a cancel() call between this
             // check and `self.loginProcess = process` right below (no
@@ -131,7 +134,7 @@ final class GoogleConnectFlow {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: cliPath)
             process.arguments = args
-            process.environment = Constants.resolvedEnvironment()
+            process.environment = environment
             process.currentDirectoryURL = Constants.processWorkingDirectory()
             self.loginProcess = process
 
@@ -190,7 +193,7 @@ final class GoogleConnectFlow {
         // syncers are wired only at daemon startup, and a restart runs an
         // immediate sync + AI pipeline cycle so data shows up right away.
         if (wantCalendar && calendar.isConnected) || (wantGmail && gmail.isConnected) {
-            Task { await DaemonManager.restartLogging() }
+            Task { await DaemonManager.restartLoggingQueued() }
         }
         isRunning = false
     }

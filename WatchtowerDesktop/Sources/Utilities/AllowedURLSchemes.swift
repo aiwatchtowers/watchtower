@@ -46,6 +46,16 @@ enum AllowedURLSchemes {
         OpenURLAction { url in permits(url) ? .systemAction : .discarded }
     }
 
+    /// The main window's gate: an in-app screen link goes to `navigate`
+    /// (which ignores a hidden or unknown screen), the rest as `openURLAction`.
+    static func openURLAction(navigate: @escaping @MainActor (URL) -> Void) -> OpenURLAction {
+        OpenURLAction { url in
+            guard url.scheme?.lowercased() == NavLink.scheme else { return permits(url) ? .systemAction : .discarded }
+            MainActor.assumeIsolated { navigate(url) }
+            return .handled
+        }
+    }
+
     /// Defence in depth for rendered markdown: removes the `.link` attribute
     /// from every run pointing at a disallowed scheme, so the link text stays
     /// visible but is not clickable at all. Only the attribute goes — the
@@ -56,11 +66,20 @@ enum AllowedURLSchemes {
     /// itself and never hands to the system (a code answer's
     /// `watchtower-code` links in the code question popover); `permits`
     /// never includes them.
-    static func strippingDisallowedLinks(_ attributed: AttributedString, renderOnly: Set<String> = []) -> AttributedString {
+    ///
+    /// `navScreens` keeps an in-app screen link (`watchtower-nav://<screen>`,
+    /// Ask Watchtower) only when its screen is listed — the screens visible
+    /// in the main window's sidebar, which alone opens them
+    /// (`openURLAction(navigate:)`). An unknown or hidden screen's link is
+    /// stripped like a disallowed scheme: plain text, never a dead link.
+    static func strippingDisallowedLinks(
+        _ attributed: AttributedString, renderOnly: Set<String> = [], navScreens: Set<String> = []
+    ) -> AttributedString {
         var result = attributed
         let disallowed = result.runs.compactMap { run -> Range<AttributedString.Index>? in
             guard let link = run.link, !permits(link),
-                  !renderOnly.contains(link.scheme?.lowercased() ?? "") else { return nil }
+                  !renderOnly.contains(link.scheme?.lowercased() ?? ""),
+                  NavLink.destination(from: link, allowed: navScreens) == nil else { return nil }
             return run.range
         }
         for range in disallowed {

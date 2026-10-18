@@ -90,14 +90,17 @@ final class CatchUpViewModelTests: XCTestCase {
     }
 
     /// A run that dies while the app is open leaves a `building` row nobody
-    /// writes again; the VM must re-read it once it passes the threshold.
+    /// writes again; the VM must re-read it once it passes the threshold. The
+    /// clock and the recheck's sleep are the test's, so a slow runner cannot
+    /// carry the first load past the threshold.
     func testBuildingRowFlipsToFailedOnceItGoesStaleWithoutAWrite() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let pool = manager.dbPool
 
-        let created = ISO8601DateFormatter().string(
-            from: Date().addingTimeInterval(-CatchUpRecap.staleBuildingAfter + 1))
+        let created = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-600))
+        let due = try XCTUnwrap(ISO8601DateFormatter().date(from: created))
+            .addingTimeInterval(CatchUpRecap.staleBuildingAfter)
         try await pool.write { db in
             try db.execute(
                 sql: """
@@ -108,14 +111,52 @@ final class CatchUpViewModelTests: XCTestCase {
             )
         }
 
-        let vm = CatchUpViewModel(dbPool: pool)
+        let clock = ManualClock(due.addingTimeInterval(-1))
+        let held = HeldSleep()
+        defer { held.releaseAll() }
+        let vm = CatchUpViewModel(dbPool: pool, now: { clock.now }, sleep: { await held.sleep($0) })
         vm.startObserving()
-        await waitFor { vm.recaps.count == 1 }
+        // The selection lands a tick after the recaps (and the recheck's request).
+        await waitFor { vm.recaps.count == 1 && vm.selected != nil && !held.requests.isEmpty }
         XCTAssertEqual(vm.selected?.isBuilding, true, "still inside the threshold on first load")
+        XCTAssertEqual(held.requests.last, .seconds(2), "the recheck waits until one second past the threshold")
 
-        await waitFor({ vm.selected?.isFailed == true }, timeout: 6)
+        clock.now = due.addingTimeInterval(1)
+        held.releaseAll()
+        await waitFor { vm.selected?.isFailed == true }
         XCTAssertEqual(vm.selected?.isFailed, true, "re-read past the threshold, no DB write needed")
         XCTAssertEqual(vm.selected?.error, CatchUpRecap.staleBuildingError)
+    }
+
+    /// A `building` row already past the threshold reads as failed on the
+    /// first observed value, from the injected clock, and asks for no recheck.
+    func testBuildingRowPastTheThresholdReadsFailedOnTheFirstLoad() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let pool = manager.dbPool
+
+        let created = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-600))
+        let due = try XCTUnwrap(ISO8601DateFormatter().date(from: created))
+            .addingTimeInterval(CatchUpRecap.staleBuildingAfter)
+        try await pool.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO catchup_recaps (period_from, period_to, status, created_at)
+                    VALUES (1000, 2000, 'building', ?)
+                    """,
+                arguments: [created]
+            )
+        }
+
+        let clock = ManualClock(due.addingTimeInterval(1))
+        let held = HeldSleep()
+        defer { held.releaseAll() }
+        let vm = CatchUpViewModel(dbPool: pool, now: { clock.now }, sleep: { await held.sleep($0) })
+        vm.startObserving()
+        await waitFor { vm.selected != nil }
+        XCTAssertEqual(vm.selected?.isFailed, true, "the observation reads the injected clock")
+        XCTAssertEqual(vm.selected?.error, CatchUpRecap.staleBuildingError)
+        XCTAssertTrue(held.requests.isEmpty, "a failed row needs no recheck")
     }
 
     // MARK: - CLI failure classification
@@ -370,5 +411,45 @@ final class CatchUpViewModelTests: XCTestCase {
 
         XCTAssertEqual(vm.autoWindowStart, Date(timeIntervalSince1970: 2000),
                        "the next auto window starts where the acknowledged one ended")
+    }
+}
+
+/// A clock a test moves by hand.
+private final class ManualClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+
+    init(_ value: Date) { self.value = value }
+
+    var now: Date {
+        get { lock.withLock { value } }
+        set { lock.withLock { value = newValue } }
+    }
+}
+
+/// A sleep that records what it was asked for and returns only when the test
+/// releases it.
+private final class HeldSleep: @unchecked Sendable {
+    private let lock = NSLock()
+    private var asked: [Duration] = []
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    var requests: [Duration] { lock.withLock { asked } }
+
+    func sleep(_ duration: Duration) async {
+        await withCheckedContinuation { continuation in
+            lock.withLock {
+                asked.append(duration)
+                waiters.append(continuation)
+            }
+        }
+    }
+
+    func releaseAll() {
+        let released = lock.withLock {
+            defer { waiters = [] }
+            return waiters
+        }
+        released.forEach { $0.resume() }
     }
 }

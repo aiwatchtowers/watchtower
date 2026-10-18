@@ -227,6 +227,68 @@ func TestBackfill_CoverageSkip_LeavesCoveredAccountsAlone(t *testing.T) {
 	assert.Equal(t, priorJiraFloor, jiraFloor, "a covered jira account's floor must be untouched by backfill")
 }
 
+// TestBackfill_NeverLowersTheStoredFloors pins #581: Backfill works from
+// in-memory lowered floors and never writes a lowered one to the DB. At every
+// AI call — any moment a kill could land — the stored workspace and
+// per-account floors still read their pre-backfill values, so a killed run
+// leaves the forward run exactly where it was instead of weeks back.
+func TestBackfill_NeverLowersTheStoredFloors(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	now := time.Now()
+	from, to := now.Add(-72*time.Hour), now.Add(-24*time.Hour)
+
+	seedDigestTopicIdeasAt(t, d, "CMID", "mid-window",
+		[]digest.IdeaCandidate{{Text: "try X", By: "Ann", MessageTS: "1.1"}}, nil,
+		float64(from.Add(24*time.Hour).Unix()))
+	postTo := seedDigestTopicIdeasAt(t, d, "CAFTER", "after-window",
+		[]digest.IdeaCandidate{{Text: "later", By: "Bob", MessageTS: "9.9"}}, nil,
+		float64(to.Add(time.Hour).Unix()))
+	require.NoError(t, d.SetIdeasFloors(postTo, 0, 0))
+
+	gmailAcct := seedGoogleAccount(t, d, float64(now.Unix()))
+	savedEmail := float64(now.Add(-time.Hour).Unix())
+	setIdeasEmailFloorRaw(t, d, gmailAcct, savedEmail)
+	seedGmailMessageIdeas(t, d, gmailAcct, "m1", "thr-1", "a@example.com", "Ann", "Subj", "we should try X",
+		from.Add(time.Hour).UTC().Format(time.RFC3339))
+	jiraAcct := seedJiraAccount(t, d)
+	savedJira := db.FormatJiraTime(now.Add(-time.Hour))
+	setIdeasJiraFloorRaw(t, d, jiraAcct, savedJira)
+	seedJiraIssueIdeas(t, d, jiraAcct, "WT-1", "WT", "Add caching layer", "Open", "new",
+		"We should add a caching layer.", db.FormatJiraTime(from.Add(2*time.Hour)))
+
+	type snapshot struct {
+		digest, stream, transcript int64
+		email                      float64
+		jira                       string
+	}
+	var seen []snapshot
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		var s snapshot
+		var err error
+		s.digest, s.stream, s.transcript, err = d.GetIdeasFloors()
+		require.NoError(t, err)
+		s.email, err = d.IdeasEmailFloor(gmailAcct)
+		require.NoError(t, err)
+		s.jira, err = d.IdeasJiraFloor(jiraAcct)
+		require.NoError(t, err)
+		seen = append(seen, s)
+		if strings.Contains(user, "=== REGISTRY ===") {
+			return `{"ops":[{"op":"new_idea","title":"Try X","essence":"e",
+				"mentions":[{"source":"slack","ref":"CMID|1.1","quote":"try X","author":"Ann","said_at":"2026-08-01T00:00:00Z"}]}]}`, nil
+		}
+		return `{"topics":[{"title":"t","summary":"s","ideas":[],"decisions":[{"text":"d","author":"Ann","ref":"x"}]}]}`, nil
+	}}
+
+	_, err := New(d, backfillCfg(), gen, testLogger()).Backfill(context.Background(), from, to, nil)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(seen), 3, "stage-1 email, stage-1 jira and the consolidator all ran")
+	want := snapshot{digest: postTo, email: savedEmail, jira: savedJira}
+	for i, s := range seen {
+		assert.Equal(t, want, s, "AI call %d: the stored floors must keep their pre-backfill values", i)
+	}
+}
+
 // TestBackfill_UncoveredAccounts_ConsumeAndRestoreReachedWins is Phase 1's
 // dedicated consumption test — every other account-touching test in this
 // file (TestBackfill_CoverageSkip_LeavesCoveredAccountsAlone) asserts ZERO
@@ -365,7 +427,7 @@ func TestGB2_Backfill_ConsolidateStillRunsAfterStage1Caps(t *testing.T) {
 	base := from.Add(time.Hour).Unix()
 	tx, err := d.Begin()
 	require.NoError(t, err)
-	for i := 0; i < 501; i++ {
+	for i := range 501 {
 		ts := time.Unix(base+int64(i), 0).UTC().Format(time.RFC3339)
 		_, ierr := tx.Exec(`INSERT INTO gmail_messages (account_id, id, thread_id, from_email, from_name, subject, body_text, internal_date)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -551,7 +613,7 @@ func TestD10_BoundedBackfillDoesNotStrandUnconsolidatedStreamRows(t *testing.T) 
 	// take the LOWER ids — the ordinary daemon produced them but has not yet
 	// consolidated them.
 	var pendingIDs []int64
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		id, err := d.InsertStreamDigest(db.StreamDigest{
 			Source: "gmail", AccountID: 1, Scope: "acct",
 			PeriodFrom: now.Add(-2 * time.Hour).UTC().Format(time.RFC3339),
@@ -564,7 +626,7 @@ func TestD10_BoundedBackfillDoesNotStrandUnconsolidatedStreamRows(t *testing.T) 
 	// In-window rows: period_to INSIDE [from, to], inserted SECOND so they take
 	// the HIGHER ids — the material the bounded backfill actually consolidates.
 	var inWindowIDs []int64
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		id, err := d.InsertStreamDigest(db.StreamDigest{
 			Source: "gmail", AccountID: 1, Scope: "acct",
 			PeriodFrom: from.UTC().Format(time.RFC3339),

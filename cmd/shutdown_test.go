@@ -3,6 +3,7 @@ package cmd
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -169,8 +170,8 @@ func TestShutdownContext_SecondSignalTerminates(t *testing.T) {
 
 func assertKilledBySIGTERM(t *testing.T, err error) {
 	t.Helper()
-	exitErr, ok := err.(*exec.ExitError)
-	if !ok {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
 		t.Fatalf("expected the helper to die by signal, got err=%v", err)
 	}
 	status, ok := exitErr.Sys().(syscall.WaitStatus)

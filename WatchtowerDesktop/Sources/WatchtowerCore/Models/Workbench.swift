@@ -216,6 +216,10 @@ package struct WorkbenchBoardNode: Identifiable, Equatable {
     package var archived = false
 
     package var id: Int { target.id }
+    /// The target's stored board column (PROJ-19); nil or a column the
+    /// definition no longer shows = its status's first column
+    /// (`BoardColumnLayout.slotKey`). Readers ignore it on a parent.
+    package var boardColumnID: Int64? { target.boardColumnID }
 }
 
 /// A project list row.
@@ -245,7 +249,6 @@ package struct WorkbenchSwitcherSummary: Identifiable, Equatable, Sendable {
     package let summary: WorkbenchSummary
     /// `blocked` targets on the workbench's own board.
     package let blockedTargets: Int
-    package let sessionCount: Int
     /// `MAX(last_active_at)` of its sessions; empty when it has none.
     package let lastSessionActivity: String
 

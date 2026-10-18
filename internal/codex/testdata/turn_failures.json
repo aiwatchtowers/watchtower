@@ -1,0 +1,44 @@
+[
+  {
+    "name": "CLI too old for the model (codex-cli 0.145)",
+    "model": "gpt-6-astra",
+    "jsonl": "{\"type\":\"thread.started\",\"thread_id\":\"00000000-0000-0000-0000-000000000000\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"error\",\"message\":\"Model metadata for `gpt-6-astra` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\"}}\n{\"type\":\"turn.started\"}\n{\"type\":\"error\",\"message\":\"{\\\"type\\\":\\\"error\\\",\\\"status\\\":400,\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.\\\"}}\"}\n{\"type\":\"turn.failed\",\"error\":{\"message\":\"{\\\"type\\\":\\\"error\\\",\\\"status\\\":400,\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.\\\"}}\"}}\n",
+    "want": "Codex needs an update to use gpt-6-astra: run `codex update`, or pick another model in Settings → System → AI"
+  },
+  {
+    "name": "model not offered on ChatGPT sign-in",
+    "model": "gpt-5.4",
+    "jsonl": "{\"type\":\"thread.started\",\"thread_id\":\"00000000-0000-0000-0000-000000000000\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"error\",\"message\":\"Model metadata for `gpt-5.4` not found. Defaulting to fallback metadata; this can degrade performance and cause issues.\"}}\n{\"type\":\"turn.started\"}\n{\"type\":\"error\",\"message\":\"{\\\"type\\\":\\\"error\\\",\\\"status\\\":400,\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account.\\\"}}\"}\n{\"type\":\"turn.failed\",\"error\":{\"message\":\"{\\\"type\\\":\\\"error\\\",\\\"status\\\":400,\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"The 'gpt-5.4' model is not supported when using Codex with a ChatGPT account.\\\"}}\"}}\n",
+    "want": "gpt-5.4 isn't available on your Codex account: pick another model in Settings → System → AI"
+  },
+  {
+    "name": "unknown model on an API key",
+    "model": "gpt-x",
+    "jsonl": "{\"type\":\"turn.failed\",\"error\":{\"message\":\"{\\\"type\\\":\\\"error\\\",\\\"status\\\":404,\\\"error\\\":{\\\"type\\\":\\\"invalid_request_error\\\",\\\"message\\\":\\\"The model `gpt-x` does not exist or you do not have access to it.\\\"}}\"}}\n",
+    "want": "gpt-x isn't available on your Codex account: pick another model in Settings → System → AI"
+  },
+  {
+    "name": "rate limit keeps the envelope's type and status",
+    "model": "gpt-5.6-sol",
+    "jsonl": "{\"type\":\"turn.failed\",\"error\":{\"message\":\"{\\\"type\\\":\\\"error\\\",\\\"status\\\":429,\\\"error\\\":{\\\"type\\\":\\\"rate_limit_error\\\",\\\"message\\\":\\\"slow down\\\"}}\"}}\n",
+    "want": "codex error (rate_limit_error, status code 429): slow down"
+  },
+  {
+    "name": "turn.failed wins over an earlier top-level error",
+    "model": "gpt-5.6-sol",
+    "jsonl": "{\"type\":\"error\",\"message\":\"Reconnecting... 1/5\"}\n{\"type\":\"turn.failed\",\"error\":{\"message\":\"stream closed\"}}\n",
+    "want": "codex error: stream closed"
+  },
+  {
+    "name": "a top-level error alone explains a failed run",
+    "model": "gpt-5.6-sol",
+    "jsonl": "{\"type\":\"error\",\"message\":\"stream disconnected before completion\"}\n",
+    "want": "codex error: stream disconnected before completion"
+  },
+  {
+    "name": "an answer carries no failure",
+    "model": "gpt-5.6-sol",
+    "jsonl": "{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"OK\"}}\n",
+    "want": ""
+  }
+]

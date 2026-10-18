@@ -37,7 +37,7 @@ final class WorkbenchSwitcherSummaryTests: XCTestCase {
         }
     }
 
-    func testSessionCountAndLastActivityWithZeroOneSeveralSessions() throws {
+    func testLastActivityWithZeroOneSeveralSessions() throws {
         try db.write { d in
             let none = try TestDatabase.insertWorkbench(d, name: "none", folder: "/tmp/none")
             let one = try TestDatabase.insertWorkbench(d, name: "one", folder: "/tmp/one")
@@ -50,11 +50,8 @@ final class WorkbenchSwitcherSummaryTests: XCTestCase {
 
             let rows = try WorkbenchQueries.switcherSummaries(d)
             let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
-            XCTAssertEqual(byID[none]?.sessionCount, 0)
             XCTAssertEqual(byID[none]?.lastSessionActivity, "")
-            XCTAssertEqual(byID[one]?.sessionCount, 1)
             XCTAssertEqual(byID[one]?.lastSessionActivity, "2026-09-30T08:00:00Z")
-            XCTAssertEqual(byID[many]?.sessionCount, 3)
             XCTAssertEqual(byID[many]?.lastSessionActivity, "2026-10-01T09:30:00Z", "a standalone session is not counted")
             XCTAssertEqual(rows.count, 3)
         }

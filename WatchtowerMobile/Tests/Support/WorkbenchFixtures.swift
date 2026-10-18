@@ -25,3 +25,16 @@ func demoSnapshot(now: Date) throws -> WorkbenchReplicaSnapshot {
     }
     return snapshot
 }
+
+/// A hub-shaped `permission_request` payload (#517): a pending prompt of
+/// `session`.
+func permissionRequestJSON(
+    _ id: Int64, session: Int64, workbench: Int64 = DemoSeed.acmeID, _ overrides: [String: Any] = [:]
+) -> [String: Any] {
+    var json: [String: Any] = [
+        "id": id, "session_id": session, "workbench_id": workbench, "tool_name": "Bash",
+        "summary": "go test ./...\nRun the tests", "created_at": DemoSeed.JSON.stamp(Date())
+    ]
+    json.merge(overrides) { _, new in new }
+    return json
+}

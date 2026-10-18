@@ -153,7 +153,7 @@ func readBranches(ctx context.Context, g gitCmd, folder string) ([]branchRef, er
 		return nil, fmt.Errorf("listing branches: %w", err)
 	}
 	var list []branchRef
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(out)), "\n") {
 		if name, sha, ok := strings.Cut(line, "\x00"); ok && name != "" {
 			list = append(list, branchRef{Name: name, Sha: sha})
 		}

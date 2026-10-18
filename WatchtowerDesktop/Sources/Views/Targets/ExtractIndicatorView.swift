@@ -15,9 +15,9 @@ struct ExtractIndicatorView: View {
     var body: some View {
         let center = appState.targetExtractCenter
         renderPhase(center)
-            // Sit above the recording indicator when both are visible.
+            // The root lifts it above the recording indicator when both
+            // share the bottom-trailing corner.
             .padding(16)
-            .padding(.bottom, 72)
             .sheet(isPresented: $showPreview) {
                 if let result = center.result {
                     ExtractPreviewSheet(

@@ -50,7 +50,7 @@ func knownBuiltins(t *testing.T) []string {
 	raw, err := os.ReadFile(builtinsSnapshot)
 	require.NoError(t, err)
 	var names []string
-	for _, line := range strings.Split(string(raw), "\n") {
+	for line := range strings.SplitSeq(string(raw), "\n") {
 		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
 			names = append(names, line)
 		}
@@ -80,7 +80,7 @@ func exposedBuiltins(names []string, tools, deny string) []string {
 func TestChatBuiltins_OnlyApprovedNamesExposed(t *testing.T) {
 	known := knownBuiltins(t)
 	for run, r := range chatBuiltinRuns {
-		for _, n := range strings.Split(r.tools, ",") {
+		for n := range strings.SplitSeq(r.tools, ",") {
 			assert.Contains(t, known, n, "%s: --tools names %q, which is not a known built-in", run, n)
 			assert.Contains(t, approvedChatBuiltins[run], n, "%s: --tools names unapproved %q", run, n)
 		}
@@ -124,7 +124,7 @@ func TestBuildArgs_ToolsAllowlist(t *testing.T) {
 			cl.SetExternalMCPServers([]ExternalMCPServer{{Name: "acme", Kind: "stdio", Command: "x",
 				AllowTools: []string{"getIssue"}, DenyTools: []string{"createIssue"}}})
 		}
-		args, _, err := cl.buildArgs("sys", c.msg, "stream-json", c.session)
+		args, _, err := buildArgsT(t, cl, "sys", c.msg, "stream-json", c.session)
 		require.NoError(t, err, name)
 		assertFlagValue(t, args, "--tools", ChatBuiltinTools)
 		n := 0
@@ -173,7 +173,7 @@ func TestChatBuiltins_LiveCLI(t *testing.T) {
 	}
 
 	cl := NewClient("haiku", "", "")
-	base, _, err := cl.buildArgs("sys", "ok", "stream-json", "")
+	base, _, err := buildArgsT(t, cl, "sys", "ok", "stream-json", "")
 	require.NoError(t, err)
 	for run, r := range chatBuiltinRuns {
 		args := slices.Clone(base)
@@ -194,7 +194,7 @@ func addToSnapshot(t *testing.T, names []string) {
 	raw, err := os.ReadFile(builtinsSnapshot)
 	require.NoError(t, err)
 	var header []string
-	for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimRight(string(raw), "\n"), "\n") {
 		if strings.HasPrefix(line, "#") {
 			header = append(header, line)
 		}

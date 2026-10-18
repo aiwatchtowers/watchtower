@@ -60,6 +60,10 @@ func (m *automationMCPCaller) Call(ctx context.Context, server, tool string, arg
 		return nil, fmt.Errorf("%w: no enabled connection named %q", automations.ErrMCPNotAvailable, server)
 	}
 	c := conns[i]
+	if externalmcp.ReservedName(c.Name) {
+		recordReservedName(m.database, c)
+		return nil, fmt.Errorf("%w: %q: %w", automations.ErrMCPNotAvailable, server, errReservedName)
+	}
 	if !c.ToolsListed {
 		return nil, fmt.Errorf("%w: %q's tools were never listed — `watchtower connections tools %d --refresh`",
 			automations.ErrMCPNotAvailable, server, c.ID)
@@ -92,11 +96,18 @@ func automationBackends(cfg *config.Config, database *db.DB, gen digest.Generato
 		Generator: gen,
 		Registry:  buildAutomationRegistry(cfg, database),
 		Clock:     automations.RealClock{},
-		Workbench: automations.NewWorkbenchResolver(database, func() string { return cfg.Workbench.DefaultAgent }, fsutil.PrivacyProtected),
+		Workbench: automationWorkbenchResolver(cfg, database),
 		Shell:     automations.NewProcessShellRunner(),
 		MCP:       newAutomationMCPCaller(cfg, database),
 		Agent:     newAutomationAgentRunner(cfg, flagConfig, cfg.DBPath(), database),
 	}
+}
+
+// automationWorkbenchResolver is the workbench lookup of the executors and
+// of save_automation: the workbench rows, fsutil.PrivacyProtected and
+// workbench.default_agent.
+func automationWorkbenchResolver(cfg *config.Config, database *db.DB) automations.WorkbenchResolver {
+	return automations.NewWorkbenchResolver(database, func() string { return cfg.Workbench.DefaultAgent }, fsutil.PrivacyProtected)
 }
 
 // automationAgentMaxTurns bounds an agent() loop's model calls (spec §6.5).
@@ -176,6 +187,7 @@ func (r *cliAgentRunner) Run(ctx context.Context, req automations.AgentRequest) 
 		// codex only: CODEX_HOME joins the env allowlist, pointing at the
 		// scrubbed per-run home (codexAgentHome) instead of ~/.codex.
 		c.SetChildEnv(append(env, "CODEX_HOME="+home))
+		c.SetServersFromHome()
 		c.SetProcessGroup(true)
 		client = c
 	} else {

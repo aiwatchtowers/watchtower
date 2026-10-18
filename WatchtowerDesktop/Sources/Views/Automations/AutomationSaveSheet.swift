@@ -62,6 +62,10 @@ struct AutomationSaveSheet: View {
                         Toggle("Keep auto for \(tool)", isOn: keepBinding(tool))
                             .toggleStyle(.checkbox)
                     }
+                    if let line = AutomationLLMWarning.line(feedsSourcesToLLM: plan.validated.feedsSourcesToLLM,
+                                                            tools: plan.llmWarningTools) {
+                        LLMWarningLabel(text: line)
+                    }
                 }
             }
 
@@ -85,5 +89,17 @@ struct AutomationSaveSheet: View {
                 if on { plan.keepAuto.insert(tool) } else { plan.keepAuto.remove(tool) }
             }
         )
+    }
+}
+
+/// The orange #559 warning line (`AutomationLLMWarning.line`), shared by the
+/// confirmation sheet, the Save sheet and the edit form.
+struct LLMWarningLabel: View {
+    let text: String
+
+    var body: some View {
+        Label(text, systemImage: "exclamationmark.triangle")
+            .foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }

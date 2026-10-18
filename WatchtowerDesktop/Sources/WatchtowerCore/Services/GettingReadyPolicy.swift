@@ -10,9 +10,12 @@ package enum GettingReadyPolicy {
 
     /// `readiness` is P1's map; empty = not evaluated yet. A ready card stays
     /// in the zone until every card is ready or error (owner, ask #304).
+    /// `ownerPendingSource` names the connected source ("Jira", "Linear")
+    /// still to report who the owner is, when the owner is unknown.
     package static func step(
         readiness: [ReadinessFeature: Readiness],
         ownerKnown: Bool,
+        ownerPendingSource: String? = nil,
         memory: GettingReadyMemory,
         sawUnready: Bool,
         now: Date,
@@ -28,8 +31,10 @@ package enum GettingReadyPolicy {
         }
         if let firstShownAt = memory.firstShownAt, now.timeIntervalSince(firstShownAt) > foldAfter { return hidden }
 
+        let ownerGap: ReadinessSource = ownerPendingSource.map { .ownerIdentityPending($0) } ?? .ownerIdentity
         let (cards, sourceRows) = entries(
-            readiness: readiness, ownerKnown: ownerKnown, briefingHour: briefingHour, dayPlanHour: dayPlanHour)
+            readiness: readiness, ownerKnown: ownerKnown, ownerGap: ownerGap,
+            briefingHour: briefingHour, dayPlanHour: dayPlanHour)
         // The zone opens on a card that reads a source, or on a Connect row a
         // feature the owner's goals switched on waits for (goals picked,
         // Connect skipped). Always-on features (Inbox) do not count, so a
@@ -63,17 +68,26 @@ package enum GettingReadyPolicy {
     private static func entries(
         readiness: [ReadinessFeature: Readiness],
         ownerKnown: Bool,
+        ownerGap: ReadinessSource,
         briefingHour: Int,
         dayPlanHour: Int
     ) -> ([GettingReadyCard], [GettingReadySourceRow]) {
         var cards: [GettingReadyCard] = []
         var sourceRows: [GettingReadySourceRow] = []
         for feature in ReadinessFeature.allCases {
-            let state = FeatureReadiness.honoringOwner(readiness[feature], of: feature, ownerKnown: ownerKnown)
+            let honored = FeatureReadiness.honoringOwner(readiness[feature], of: feature, ownerKnown: ownerKnown)
+            // The owner gate dropped the promise: the card names what to
+            // connect (or the source still to report the owner) instead of
+            // showing no line. It stays a card, not a Connect row, so the
+            // zone stays open until the owner is known.
+            let state = honored == nil && readiness[feature] != nil ? .needsSource(ownerGap) : honored
             switch state {
             case .off:
                 continue
-            case .needsSource(let source):
+            // Jira connected with no board picked (#572) stays a waiting
+            // card: a row never holds the zone open, and nothing syncs until
+            // the owner picks boards.
+            case .needsSource(let source) where !source.isOwnerIdentity && source != .jiraBoards:
                 if let index = sourceRows.firstIndex(where: { $0.source == source }) {
                     sourceRows[index] = GettingReadySourceRow(
                         source: source, features: sourceRows[index].features + [feature])

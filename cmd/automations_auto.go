@@ -108,6 +108,9 @@ func automationsAutoOn(cmd *cobra.Command, arg, toolName string) error {
 		}
 		return err
 	}
+	if t.External && m.FeedsSourcesToLLM() {
+		fmt.Fprintln(cmd.ErrOrStderr(), "Warning: "+llmAutoWarning([]string{t.Name}))
+	}
 	return writeAutomationAuto(cmd, automationAutoJSON{AutomationID: a.ID, Tool: t.Name, Auto: true, Changed: true})
 }
 

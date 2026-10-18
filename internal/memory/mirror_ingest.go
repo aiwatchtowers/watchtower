@@ -59,8 +59,8 @@ func trackMirrorAlias(id int) string  { return fmt.Sprintf("track:%d", id) }
 // changed ones as ONE vault commit, and records one pipeline_steps row named
 // "mirror" at stepOffset+1. A read/resolve DB error fails the step (logged,
 // RunStats.MirrorsFailed) but is never fatal to the run (the calendar-step
-// isolation contract). Returns the number of step rows recorded (always 1).
-func (p *Pipeline) runOperationalMirrors(runID int64, stepOffset int, stats *RunStats) (int, error) {
+// isolation contract). It always records exactly that one step row.
+func (p *Pipeline) runOperationalMirrors(runID int64, stepOffset int, stats *RunStats) error {
 	start := time.Now()
 	step := stepOffset + 1
 
@@ -68,13 +68,13 @@ func (p *Pipeline) runOperationalMirrors(runID int64, stepOffset int, stats *Run
 	if err != nil {
 		stats.MirrorsFailed++
 		p.recordSemanticStep(runID, &step, "mirror", "error", nil, start)
-		return 1, err
+		return err
 	}
 	tracks, err := p.db.ListTracksForMirror()
 	if err != nil {
 		stats.MirrorsFailed++
 		p.recordSemanticStep(runID, &step, "mirror", "error", nil, start)
-		return 1, err
+		return err
 	}
 
 	built, berr := p.buildOperationalMirrors(runID, targets, tracks)
@@ -87,7 +87,7 @@ func (p *Pipeline) runOperationalMirrors(runID int64, stepOffset int, stats *Run
 		stats.Mirrored += built
 	}
 	p.recordSemanticStep(runID, &step, "mirror", stepStatus(berr), nil, start)
-	return 1, nil
+	return nil
 }
 
 // buildOperationalMirrors rebuilds every candidate target/track mirror and
@@ -382,7 +382,7 @@ func writeMirrorSection(b *strings.Builder, heading, content string, last bool) 
 func mirrorSectionContent(body, heading string) string {
 	var out []string
 	in := false
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		if strings.HasPrefix(line, "## ") {
 			if strings.TrimRight(line, " \t") == heading {
 				in, out = true, nil

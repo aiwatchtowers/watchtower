@@ -40,7 +40,7 @@ func runSessionState(t *testing.T, workbenchID int64, stdin io.Reader, extra ...
 	rootCmd.SetIn(stdin)
 	t.Cleanup(func() { rootCmd.SetIn(nil) })
 	args := append([]string{"session-state", "--workbench", strconv.FormatInt(workbenchID, 10)}, extra...)
-	return runWorkbenchAs(t, "workbench", args...)
+	return runWorkbench(t, args...)
 }
 
 // stepClock makes every hook event one second later than the previous one,
@@ -80,28 +80,27 @@ func unsetTerminalEnv(t *testing.T) {
 func TestSessionState_AgentStateFor(t *testing.T) {
 	for _, tc := range []struct {
 		event, notification string
-		state, onlyFrom     string
+		state               string
 		ok                  bool
 	}{
-		{"UserPromptSubmit", "", "working", "", true},
-		{"Stop", "", "waiting", "", true},
-		{"StopFailure", "", "waiting", "", true},
-		{"PostToolUse", "", "working", "", true},
-		{"SubagentStop", "", "", "", true},
-		{"Notification", "permission_prompt", "approval", "", true},
-		{"Notification", "elicitation_dialog", "approval", "", true},
-		{"Notification", "idle_prompt", "waiting", "", true},
-		{"Notification", "auth_success", "", "", false},
-		{"Notification", "agent_completed", "", "", false},
-		{"Notification", "", "", "", false},
-		{"SessionStart", "", "", "", false},
-		{"PreToolUse", "", "", "", false},
-		{"", "", "", "", false},
+		{"UserPromptSubmit", "", "working", true},
+		{"Stop", "", "waiting", true},
+		{"StopFailure", "", "waiting", true},
+		{"PostToolUse", "", "working", true},
+		{"SubagentStop", "", "", true},
+		{"Notification", "permission_prompt", "approval", true},
+		{"Notification", "elicitation_dialog", "approval", true},
+		{"Notification", "idle_prompt", "waiting", true},
+		{"Notification", "auth_success", "", false},
+		{"Notification", "agent_completed", "", false},
+		{"Notification", "", "", false},
+		{"SessionStart", "", "", false},
+		{"PreToolUse", "", "", false},
+		{"", "", "", false},
 	} {
-		state, onlyFrom, ok := agentStateFor(tc.event, tc.notification)
+		state, ok := agentStateFor(tc.event, tc.notification)
 		assert.Equal(t, tc.ok, ok, "%s/%s", tc.event, tc.notification)
 		assert.Equal(t, tc.state, state, "%s/%s", tc.event, tc.notification)
-		assert.Equal(t, tc.onlyFrom, onlyFrom, "%s/%s", tc.event, tc.notification)
 	}
 }
 
@@ -519,21 +518,6 @@ func TestSessionState_StopHookLostStateIsOneLine(t *testing.T) {
 	}
 }
 
-// A folder still on the legacy Stop entry (`project check --project N`)
-// records the state like the new one once it has the state hooks.
-func TestSessionState_LegacyStopHookRecordsWaiting(t *testing.T) {
-	database, pid, row := stopStateFixture(t, "open")
-	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
-	var out, errOut bytes.Buffer
-
-	runStopHook(context.Background(), strings.NewReader(statePayload("Stop", briefLaunchID, "")), &out, &errOut,
-		strconv.FormatInt(pid, 10), legacyWorkbenchVocabulary)
-
-	assert.Empty(t, out.String())
-	assert.Empty(t, errOut.String())
-	assert.Equal(t, "waiting", storedAgentState(t, database, row))
-}
-
 // A failed state write on the Stop path is one stderr line; stdout stays
 // empty and the drift decision is unchanged.
 func TestSessionState_StopHookStateFailureIsOneLine(t *testing.T) {
@@ -683,8 +667,8 @@ func storedFailure(t *testing.T, database *db.DB, rowID int64) (failure *db.Agen
 func TestProj11_StopFailureRecordsErrorOtherWritesClearIt(t *testing.T) {
 	stopHookWaiting := func(t *testing.T, database *db.DB, pid, row int64) {
 		// The Stop hook's write (writeStopAgentState) after its settings check.
-		state, onlyFrom, _ := agentStateFor("Stop", "")
-		require.NoError(t, recordAgentState(database, row, pid, briefLaunchID, state, onlyFrom, nil, false, hookNow(), hookTurn{}))
+		state, _ := agentStateFor("Stop", "")
+		require.NoError(t, recordAgentState(database, row, pid, briefLaunchID, state, "", nil, false, hookNow(), hookTurn{}))
 	}
 	hookEvent := func(event, notification string) func(*testing.T, *db.DB, int64, int64) {
 		return func(t *testing.T, _ *db.DB, pid, _ int64) {
@@ -1347,9 +1331,9 @@ func subagentStart(agentID, agentType string) string {
 // withTeammates is the background_tasks array list with n running teammate
 // entries in front, ids that are never a hook agent_id (spec Appendix C).
 func withTeammates(n int, list string) string {
-	entries := make([]string, n)
-	for i := range entries {
-		entries[i] = `{"id":"tm` + strconv.Itoa(i) + `","type":"teammate","status":"running"}`
+	entries := make([]string, 0, n+1)
+	for i := range n {
+		entries = append(entries, `{"id":"tm`+strconv.Itoa(i)+`","type":"teammate","status":"running"}`)
 	}
 	rest := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(list, "["), "]"))
 	if rest != "" {

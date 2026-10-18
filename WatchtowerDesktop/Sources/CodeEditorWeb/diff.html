@@ -5,13 +5,20 @@
   (or the previous round's tree) on the left, the session's tree on the right.
 
   Swift → page (window.wt):
-    showDiff({path, language, original, modified, inline, comments})
+    showDiff({path, language, original, modified, inline, comments, notes, hunks})
         put a file's two sides on screen; the language follows `path` (the
         page's file associations) unless `language` names one; `inline`
-        = one column instead of side by side; `comments` as in setComments
+        = one column instead of side by side; `comments`, `notes` and `hunks`
+        as in setComments / setNotes / setHunks (the previous ones are cleared)
     setComments([{id, startLine, endLine, body, status, reply}])
         the new side's comments, each shown under its last line; text is
         set as text only, never as HTML
+    setNotes([{startLine, endLine, text}])
+        the agent's notes as read-only zones above `startLine` of the new
+        side (class wt-note, label "Agent note"), replacing the last set
+    setHunks([{id, newStart, canUndo, reason}])
+        a one-line zone above each hunk (`newStart`) with an Undo button; a
+        disabled one (canUndo false) shows `reason` as its title
     focus()                                    the keyboard into the new side
   page → Swift (webkit.messageHandlers.wt):
     ready
@@ -19,6 +26,8 @@
                                                (context menu or Cmd+Alt+M)
                                                on a selection; side = "old"
                                                or "new"
+    undo    {hunkId}                           the owner pressed Undo on a
+                                               hunk (Swift checks the id)
     error   {message}
 -->
 <html>
@@ -29,7 +38,7 @@
      bootstrap (worker-src). What a worker then loads with importScripts
      from wtcode:// runs under the worker's own policy, not this one.
      Monaco injects its own <style> elements, hence the inline styles. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; worker-src 'self' blob:; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <style>
   html, body, #diff { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }
   body { background: #ffffff; }
@@ -41,6 +50,14 @@
   .wt-reply { margin-top: 2px; color: #888; }
   .wt-carried { border-left-color: #bf5af2; background: rgba(191, 90, 242, 0.08); }
   .wt-outdated { border-left-color: #8e8e93; background: rgba(142, 142, 147, 0.08); color: #8e8e93; }
+  .wt-note { box-sizing: border-box; margin: 2px 8px; padding: 4px 8px; border-left: 3px solid #ff9f0a;
+    background: rgba(255, 159, 10, 0.1); font: 12px -apple-system, sans-serif; color: #333;
+    white-space: pre-wrap; overflow: hidden; }
+  @media (prefers-color-scheme: dark) { .wt-note { color: #ddd; } }
+  .wt-note-label { font-weight: 600; color: #b36b00; }
+  .wt-hunk { box-sizing: border-box; padding: 1px 8px; text-align: right; }
+  .wt-undo { font: 11px -apple-system, sans-serif; padding: 0 8px; cursor: pointer; }
+  .wt-undo:disabled { cursor: default; opacity: 0.5; }
   #missing { display: none; font: 13px -apple-system, sans-serif; color: #888; padding: 16px; }
 </style>
 </head>
@@ -49,6 +66,7 @@
 <div id="missing">Monaco is not installed. Run <code>scripts/fetch-monaco.sh</code> and rebuild.</div>
 <script src="boot.js"></script>
 <script src="languages.js"></script>
+<script src="textmate.js"></script>
 <script src="vs/loader.js"></script>
 <script src="diff.js"></script>
 </body>

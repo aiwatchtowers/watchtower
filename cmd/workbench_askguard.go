@@ -94,9 +94,6 @@ var workbenchAskGuardCmd = &cobra.Command{
 			runCodexAskGuard(cmd)
 			return nil
 		}
-		if checkWorkbenchIDFlags(cmd) != nil {
-			return nil // never refuse the tool or block the turn over our own flags
-		}
 		if workbenchAskGuardFlagStop {
 			ctx := cmd.Context()
 			if ctx == nil {
@@ -118,7 +115,7 @@ var (
 )
 
 func init() {
-	addWorkbenchIDFlag(workbenchAskGuardCmd, &workbenchAskGuardFlagWorkbench, "workbench id")
+	workbenchAskGuardCmd.Flags().StringVar(&workbenchAskGuardFlagWorkbench, workbenchFlag, "", "workbench id")
 	addHookAgentFlag(workbenchAskGuardCmd, &workbenchAskGuardFlagAgent)
 	workbenchAskGuardCmd.Flags().BoolVar(&workbenchAskGuardFlagPreToolUse, "pre-tool-use", false,
 		"run as the Claude Code PreToolUse hook (always exit 0)")

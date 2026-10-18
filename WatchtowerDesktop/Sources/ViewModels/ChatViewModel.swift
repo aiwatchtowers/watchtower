@@ -61,10 +61,14 @@ final class ChatViewModel {
     /// delta — the live message is `liveTurn` (render isolation).
     private(set) var thread: [ChatThreadItem] = []
     var draft = ""
-    /// "Quote in reply" batches, per conversation: quotes wait here (with the
+    /// Quote batches ("Ask about this" on a selection in the feed), per
+    /// conversation: quotes wait here (with the
     /// owner's comments) and go out together with the typed text as ONE owner
     /// turn in `sendDraft` — never one by one (owner rule).
     private(set) var quoteBatches: [Int64: [ChatQuoteDraft]] = [:]
+    /// A new value puts the keyboard in the composer (a quote was just
+    /// added: the owner types the follow-up next).
+    private(set) var composerFocusRequest: UUID?
     /// Shown by the thread view only, so an error steps an expanded panel
     /// aside (#786).
     var errorMessage: String? {
@@ -87,7 +91,7 @@ final class ChatViewModel {
     let actionFeed: AgentActionFeed
     let pool: ChatSessionPool
     /// The composer's not-yet-sent attachments (Task 21). nil `store` (no
-    /// active workspace) still renders — `add`/`addPastedImage` just report
+    /// active workspace) still renders — `add`/`addPasted` just report
     /// "Attachments need an active workspace".
     let composerAttachments: ComposerAttachments
     /// The composer's @-picker and the current draft's picked mentions
@@ -592,12 +596,14 @@ final class ChatViewModel {
 
     /// Sends the composer text + the pending quote batch + any pending
     /// attachments as one owner turn; clears them only when the turn really
-    /// started (a failed send keeps them for retry).
-    func sendDraft() {
+    /// started (a failed send keeps them for retry). `screen` is the help
+    /// popup's per-turn screen block: sent with the turn, never stored.
+    func sendDraft(screen: ScreenContext? = nil) {
         let attachments = composerAttachments.pending
         let batchID = conversationID
         let text = ChatQuoteReply.compose(quotes: pendingQuotes, typed: draft) ?? draft
-        if send(text: text, attachments: attachments, mentions: composer.mentions, skill: composer.skill) {
+        if send(text: text, attachments: attachments, mentions: composer.mentions, skill: composer.skill,
+                screen: screen) {
             draft = ""
             _ = composerAttachments.takeForSend()
             if let batchID { quoteBatches[batchID] = nil }
@@ -609,11 +615,18 @@ final class ChatViewModel {
         conversationID.flatMap { quoteBatches[$0] } ?? []
     }
 
-    /// "Add to reply" in the quote sheet: one more quote in the batch.
-    /// Nothing is sent or stored until the owner sends the draft.
+    /// "Ask about this" on a selected passage: one more quote in the batch,
+    /// and the composer takes the keyboard. Nothing is sent or stored until
+    /// the owner sends the draft.
     func addQuote(_ quote: String, comment: String) {
         guard let id = conversationID, !quote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         quoteBatches[id, default: []].append(ChatQuoteDraft(quote: quote, comment: comment))
+        requestComposerFocus()
+    }
+
+    /// The composer takes the keyboard (a quote added, ⌘/ on the AI Chat tab).
+    func requestComposerFocus() {
+        composerFocusRequest = UUID()
     }
 
     func updateQuoteComment(id quoteID: UUID, comment: String) {
@@ -632,9 +645,12 @@ final class ChatViewModel {
         composerAttachments.add(urls: urls, conversationID: id)
     }
 
-    func attachPastedImage(_ png: Data) {
-        guard let id = conversationIDCreatingIfNeeded() else { return }
-        composerAttachments.addPastedImage(png, conversationID: id)
+    /// A paste the composer turned into a file (screenshot, PDF data, long
+    /// text — board #534); true once attached.
+    @discardableResult
+    func attachPasted(_ data: Data, name: String) -> Bool {
+        guard let id = conversationIDCreatingIfNeeded() else { return false }
+        return composerAttachments.addPasted(data, name: name, conversationID: id)
     }
 
     /// `mentions` are the composer's picked candidates (Task 25); only those
@@ -651,7 +667,8 @@ final class ChatViewModel {
         mentions: [MentionCandidate] = [],
         skill: String? = nil,
         keepsComposer: Bool = false,
-        alsoWrite: ((Database) throws -> Void)? = nil
+        alsoWrite: ((Database) throws -> Void)? = nil,
+        screen: ScreenContext? = nil
     ) -> Bool {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let live = MentionTokenizer.liveMentions(text: text, mentions: mentions)
@@ -666,7 +683,7 @@ final class ChatViewModel {
         let outcomes = actionFeed.outcomesBlock(after: thread.last { $0.message.isUser }?.message.createdDate)
         let started = startTurn(TurnPlan(conversationID: id, historyTipID: thread.last?.message.id, userText: turnText,
                                          reuseUserMessageID: nil, attachments: attachments, outcomes: outcomes,
-                                         forceReplay: false, titleText: trimmed, alsoWrite: alsoWrite))
+                                         screen: screen, forceReplay: false, titleText: trimmed, alsoWrite: alsoWrite))
         if started, fromLanding {
             // The landing's first turn: its draft is a real chat now.
             landingDraft = nil
@@ -735,7 +752,7 @@ final class ChatViewModel {
         let owner = thread[index - 1]
         startTurn(TurnPlan(conversationID: id, historyTipID: owner.message.parentID, userText: owner.message.text,
                            reuseUserMessageID: owner.message.id, attachments: owner.attachments, outcomes: nil,
-                           forceReplay: true))
+                           screen: nil, forceReplay: true))
     }
 
     /// A new owner sibling under the original's parent, then a fresh reply.
@@ -751,7 +768,8 @@ final class ChatViewModel {
         editingMessageID = nil
         let turnText = ChatTurnComposer.recompose(stored: item.message.text, newBody: trimmed)
         startTurn(TurnPlan(conversationID: id, historyTipID: item.message.parentID, userText: turnText,
-                           reuseUserMessageID: nil, attachments: item.attachments, outcomes: nil, forceReplay: true))
+                           reuseUserMessageID: nil, attachments: item.attachments, outcomes: nil, screen: nil,
+                           forceReplay: true))
     }
 
     /// ↑ in an empty composer (spec §3.5).
@@ -810,6 +828,9 @@ final class ChatViewModel {
         let attachments: [ChatAttachment]
         /// The actions-outcome block, prefixed at send time only (never stored).
         let outcomes: String?
+        /// The current-screen block, prefixed at send time only (never stored);
+        /// regenerate/edit/replay leave it nil.
+        let screen: ScreenContext?
         /// Regenerate/edit branch away from what the provider session saw.
         let forceReplay: Bool
         /// The prefix-title source: the owner's own words, without the
@@ -855,7 +876,7 @@ final class ChatViewModel {
             || ChatContinuity.replayNeeded(historyTipID: persisted.historyTipID, continuousLeafID: client.continuousLeafID)
         let command = ChatTurnCommand(
             turnID: turnID,
-            text: ChatTurnText.compose(userText: plan.userText, outcomes: plan.outcomes),
+            text: ChatTurnText.compose(userText: plan.userText, outcomes: plan.outcomes, screen: plan.screen),
             attachments: plan.attachments.map { ChatCommandAttachment(path: $0.path, mime: $0.mime, name: $0.name) },
             replay: replay)
         client.startTurn(ChatTurnRequest(command: command, assistantMessageID: persisted.assistant.id))

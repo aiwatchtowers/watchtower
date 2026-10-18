@@ -452,7 +452,7 @@ func (p *Pipeline) extractFromDigests(ctx context.Context, owner db.Owner, fresh
 	case res.succeeded == 0 && res.failed > 0:
 		return res.stored, res, fmt.Errorf("all %d track batch(es) failed, last error: %w", res.failed, res.lastErr)
 	}
-	return res.stored, res, nil //nolint:nilerr // partial success only: at least one batch stored tracks; the failed batches' digests go to the retry set
+	return res.stored, res, nil // partial success only: at least one batch stored tracks; the failed batches' digests go to the retry set
 }
 
 // relevantEntries groups digests per channel, drops the entries the relevance
@@ -735,10 +735,7 @@ func (p *Pipeline) contextBudget() int {
 func (p *Pipeline) planTrackBatches(entries []digestEntry) [][]digestEntry {
 	const tokensPerTopic = 700
 	const promptOverhead = 20000
-	maxTopicsPerBatch := (p.contextBudget() - promptOverhead) / tokensPerTopic
-	if maxTopicsPerBatch < 20 {
-		maxTopicsPerBatch = 20
-	}
+	maxTopicsPerBatch := max((p.contextBudget()-promptOverhead)/tokensPerTopic, 20)
 	return groupDigestBatches(entries, 15, maxTopicsPerBatch)
 }
 
@@ -1074,13 +1071,13 @@ func groupDigestBatches(entries []digestEntry, maxChannels, maxTopics int) [][]d
 // parseBatchTracksResult parses the JSON array returned by a batch tracks LLM call.
 func parseBatchTracksResult(raw string) ([]batchChannelResult, error) {
 	cleaned := raw
-	if idx := strings.Index(raw, "```json"); idx >= 0 {
-		cleaned = raw[idx+7:]
+	if _, after, ok := strings.Cut(raw, "```json"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
-	} else if idx := strings.Index(raw, "```"); idx >= 0 {
-		cleaned = raw[idx+3:]
+	} else if _, after, ok := strings.Cut(raw, "```"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
@@ -1165,7 +1162,7 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 	}
 
 	// Show ALL existing tracks (including from batch channels) to prevent duplicates.
-	crossChannelSection := p.formatExistingTracks(userID)
+	crossChannelSection := p.formatExistingTracks()
 	profileSection := p.formatProfileContext()
 	roleRules := p.formatRoleRules()
 
@@ -1312,47 +1309,6 @@ func (p *Pipeline) FormatActiveTracksForPrompt() (string, error) {
 
 // --- helpers: prompt sections ---
 
-// maxExistingTracksPerChannel is the maximum number of existing tracks shown per channel.
-const maxExistingTracksPerChannel = 15
-
-// formatExistingItems loads tracks for this channel and formats for AI dedup.
-func (p *Pipeline) formatExistingItems(channelID, userID string) string {
-	tracks, err := p.db.GetTracks(db.TrackFilter{ChannelID: channelID})
-	if err != nil {
-		p.logger.Printf("tracks: warning: failed to load existing tracks for %s: %v", channelID, err)
-		return ""
-	}
-	if len(tracks) == 0 {
-		return ""
-	}
-
-	// Sort by updated_at DESC, limit to top N.
-	sort.Slice(tracks, func(i, j int) bool {
-		return tracks[i].UpdatedAt > tracks[j].UpdatedAt
-	})
-	totalCount := len(tracks)
-	if len(tracks) > maxExistingTracksPerChannel {
-		tracks = tracks[:maxExistingTracksPerChannel]
-	}
-
-	var sb strings.Builder
-	sb.WriteString("=== EXISTING TRACKS FOR THIS CHANNEL ===\n")
-	if totalCount > maxExistingTracksPerChannel {
-		fmt.Fprintf(&sb, "Showing %d of %d total.\n", maxExistingTracksPerChannel, totalCount)
-	}
-	for _, track := range tracks {
-		tagsStr := ""
-		if track.Tags != "" && track.Tags != "[]" {
-			tagsStr = " tags:" + track.Tags
-		}
-		fmt.Fprintf(&sb, "#%d [%s] %q%s\n", track.ID, track.Ownership, sanitize(track.Text), tagsStr)
-		if track.Context != "" {
-			fmt.Fprintf(&sb, "    context: %s\n", sanitize(truncate(track.Context, 100)))
-		}
-	}
-	return sb.String()
-}
-
 // maxExistingTracks is the maximum number of existing tracks included in prompts.
 const maxExistingTracks = 30
 
@@ -1371,7 +1327,7 @@ func priorityOrder(p string) int {
 // formatExistingTracks formats ALL active tracks for deduplication and merge.
 // Uses cached allActiveTracksRef if available, otherwise loads from DB.
 // Includes tracks from batch channels — this is critical to avoid duplicates.
-func (p *Pipeline) formatExistingTracks(userID string) string {
+func (p *Pipeline) formatExistingTracks() string {
 	p.cacheMu.RLock()
 	allTracks := p.allActiveTracksRef
 	p.cacheMu.RUnlock()
@@ -2096,13 +2052,13 @@ func sanitize(text string) string {
 
 func cleanJSON(raw string) string {
 	cleaned := raw
-	if idx := strings.Index(raw, "```json"); idx >= 0 {
-		cleaned = raw[idx+7:]
+	if _, after, ok := strings.Cut(raw, "```json"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
-	} else if idx := strings.Index(raw, "```"); idx >= 0 {
-		cleaned = raw[idx+3:]
+	} else if _, after, ok := strings.Cut(raw, "```"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}

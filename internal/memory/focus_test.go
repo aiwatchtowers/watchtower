@@ -282,7 +282,7 @@ func TestRunFocusSweepOnFingerprintChange(t *testing.T) {
 
 	p := NewPipeline(d, v, nil, pipelineTestConfig(), t.Logf)
 	var stats RunStats
-	n, err := p.runFocus(1, 0, &stats)
+	n, err := p.runFocus(1, &stats)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 	assert.Equal(t, 1, stats.FocusMatched)
@@ -327,13 +327,13 @@ func TestRunFocusUnchangedFingerprintNoSweep(t *testing.T) {
 
 	p := NewPipeline(d, v, nil, pipelineTestConfig(), t.Logf)
 	var stats RunStats
-	n, err := p.runFocus(1, 0, &stats)
+	n, err := p.runFocus(1, &stats)
 	require.NoError(t, err)
 	require.Equal(t, 1, n, "first call with a changed fingerprint does the work")
 
 	require.NoError(t, d.UpdateMemoryNodeImportanceScore(entID, 12345))
 
-	n2, err := p.runFocus(1, 0, &stats)
+	n2, err := p.runFocus(1, &stats)
 	require.NoError(t, err)
 	assert.Equal(t, 0, n2, "unchanged fingerprint → no sweep, 0 steps")
 
@@ -354,7 +354,7 @@ func TestRunFocusMatchesNodeCreatedLater(t *testing.T) {
 
 	p := NewPipeline(d, v, nil, pipelineTestConfig(), t.Logf)
 	var stats RunStats
-	n, err := p.runFocus(1, 0, &stats)
+	n, err := p.runFocus(1, &stats)
 	require.NoError(t, err)
 	require.Equal(t, 1, n, "first run applies the (empty) resolved set — no node named CEX exists yet")
 	assert.Zero(t, stats.FocusMatched)
@@ -369,7 +369,7 @@ func TestRunFocusMatchesNodeCreatedLater(t *testing.T) {
 		Title: "CEX Exchange", Aliases: []string{"CEX", "situation:1"}, Body: "# CEX Exchange\n",
 	})
 
-	n2, err := p.runFocus(1, 0, &stats)
+	n2, err := p.runFocus(1, &stats)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n2, "resolved set changed (∅ → {entID}) even though focus.md itself did not")
 
@@ -401,7 +401,7 @@ func TestRunFocusSweepErrorFreezesFingerprint(t *testing.T) {
 
 	p := NewPipeline(d, v, nil, pipelineTestConfig(), t.Logf)
 	var stats RunStats
-	n, err := p.runFocus(1, 0, &stats)
+	n, err := p.runFocus(1, &stats)
 	require.Error(t, err)
 	assert.Equal(t, 1, n)
 
@@ -440,7 +440,7 @@ func TestRunFocusSweepPerNodeFailureFreezesFingerprint(t *testing.T) {
 
 	p := NewPipeline(d, v, nil, pipelineTestConfig(), t.Logf)
 	var stats RunStats
-	n, err := p.runFocus(runID, 0, &stats)
+	n, err := p.runFocus(runID, &stats)
 	require.NoError(t, err, "a quarantined per-node failure does not fail the whole step")
 	assert.Equal(t, 1, n)
 	assert.Equal(t, 1, stats.FocusSwept, "the healthy node was still swept")
@@ -482,7 +482,7 @@ func TestRunFocusDisablePerNodeFailureHoldsFingerprint(t *testing.T) {
 
 	p := NewPipeline(d, v, nil, pipelineTestConfig(), t.Logf)
 	var stats RunStats
-	n, err := p.runFocusDisable(1, 0, &stats)
+	n, err := p.runFocusDisable(1, &stats)
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 	assert.Equal(t, 1, stats.FocusFailed)

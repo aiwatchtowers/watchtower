@@ -87,6 +87,10 @@ func (s *Sandbox) compile(script string) (*goja.Program, error) {
 	if !wrapperIntact(parsed, src) {
 		return nil, &ScriptError{Name: "SyntaxError", Message: errWrapperBroken}
 	}
+	if err := bigIntRefusal(parsed); err != nil {
+		return nil, err
+	}
+	rewriteExecCalls(parsed)
 	prog, err := goja.CompileAST(parsed, false)
 	if err != nil {
 		return nil, s.syntaxError(err)
@@ -244,6 +248,10 @@ func (s *Sandbox) wrap(path string, fn SDKFunc) func(goja.FunctionCall) goja.Val
 		}
 		if errors.Is(err, ErrSDKContract) {
 			s.abort(fmt.Errorf("%s: %w", path, err))
+			return goja.Undefined()
+		}
+		if errors.Is(err, errStepCap) { // the run's step cap: it ends here
+			s.abort(errTooManySteps())
 			return goja.Undefined()
 		}
 		if err != nil {

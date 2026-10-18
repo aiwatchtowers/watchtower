@@ -17,6 +17,8 @@ final class AppState {
     static let shared = AppState()
 
     var selectedDestination: SidebarDestination = .home
+    /// The ⌘/ chat popup over the current tab (in-app help).
+    var isHelpChatShown = false
 
     /// Which feature ids are currently disabled — drives sidebar visibility,
     /// navigation fallback, and the Dashboard banner. Populated by the
@@ -43,6 +45,7 @@ final class AppState {
     /// AppState). Its path lookup is deliberately deferred until after the CLI
     /// binary store has been synced — see `initialize()`.
     let daemonManager = DaemonManager()
+    let uiVisibility = UIVisibilityCenter() // board #731, `applyUIVisibility`
     var isDBAvailable: Bool { databaseManager != nil }
 
     /// Live per-feature readiness behind the tabs' empty states, here so a
@@ -68,12 +71,11 @@ final class AppState {
         store: GettingReadyStore(defaults: homeDefaultsOverride ?? .standard)
     )
 
-    /// The install's owner identity (`OwnerQueries.resolve`, OWNER-01). While
-    /// it is unknown, Day Plan and Briefings show `NoOwnerEmptyState` instead
-    /// of Generate (OWNER-02). Resolved on DB open, after every Slack/Google/
-    /// Jira account reload, and whenever either screen appears — the daemon
-    /// fills a Jira owner cross-process, which no GRDB observation sees.
+    /// The owner (`OwnerQueries.resolve`, OWNER-01); unknown → `NoOwnerEmptyState` (OWNER-02). Re-read on
+    /// DB open, account reloads and Day Plan/Briefings/Inbox appear (the daemon fills Jira's cross-process).
     private(set) var owner: Owner = .unknown
+    /// With the owner unknown, the source still to report it (`OwnerQueries.pendingIdentitySource`).
+    private(set) var ownerPendingSource: String?
 
     /// The Settings window's selected tab, so an in-app link can open
     /// Settings on a given tab (the no-owner empty state → Connections).
@@ -314,8 +316,15 @@ final class AppState {
     private(set) var automationEditorCenter: AutomationEditorCenter?
     /// Quick run's rows and finish watch (spec §12.7); built with `automationsViewModel`.
     private(set) var quickRunCenter: QuickRunCenter?
+    /// Launches the sessions automation runs request (spec §13.1); built
+    /// once with the Workbench wiring, polling while the feature is on.
+    private(set) var automationSessionCenter: AutomationSessionCenter?
     /// The "Run Automation…" palette (⌃⌘R) is up.
     var isRunAutomationPaletteShown = false
+    /// The main window's link gate (`AllowedURLSchemes` + screen links); one instance across re-renders.
+    @ObservationIgnored private(set) lazy var mainWindowOpenURL = AllowedURLSchemes.openURLAction { [weak self] url in
+        self?.openNavLink(url)
+    }
     /// Owner notifications for project activity; polls every 30 s.
     private(set) var workbenchNotificationCenter: WorkbenchNotificationCenter?
     /// Claude plan limits (menu bar text, tray rows, Usage tab); nil until the database is open.
@@ -330,6 +339,8 @@ final class AppState {
     /// The session rows' report lines and the shown session's full report
     /// (session report spec, Part 7), kept across navigation.
     private(set) var sessionReportCenter: SessionReportCenter?
+    /// The Analytics pane's `agents report` runs and Turn On (#298).
+    private(set) var agentAnalyticsCenter: AgentAnalyticsCenter?
     /// Which workbench session the owner is in (owner asks v2, Part 2),
     /// written for Go's Stop guard and read by the chat question escalation.
     private(set) var ownerPresenceCenter: OwnerPresenceCenter?
@@ -452,8 +463,11 @@ final class AppState {
         self.openDatabase = openDatabase
         // A daemon that came up after all (a later poll, a Settings start)
         // takes the "did not start" banner with it.
+        wireDaemonStartQueue()
         daemonManager.onRunningChanged = { [weak self] running in
-            if running { self?.daemonStartFailure = nil }
+            guard running else { return }
+            self?.daemonStartFailure = nil
+            self?.clearRestartFailedTurnOnErrors()
         }
     }
 
@@ -487,8 +501,8 @@ final class AppState {
     func ensureChatSessionPool(_ db: DatabaseManager) -> ChatSessionPool {
         if let chatSessionPool { return chatSessionPool }
         let pool = ChatSessionPool(dbPool: db.dbPool)
-        // CHAT-03: an idle session dies within TTL + one 30 s poll.
-        pool.startPolicy()
+        pool.holdAdmissionUntil { _ = await Constants.resolvedEnvironmentAsync() }
+        pool.startPolicy() // CHAT-03: an idle session dies within TTL + one 30 s poll.
         chatSessionPool = pool
         return pool
     }
@@ -687,6 +701,7 @@ final class AppState {
     /// (reinitializeAfterOnboarding), which must not stack observers.
     private func installLifecycleHooks() {
         targetAssistantCenter.embeddedChats = embeddedChatCenter
+        startUIVisibility()
         if terminateObserver == nil {
             terminateObserver = NotificationCenter.default.addObserver(
                 forName: NSApplication.willTerminateNotification,
@@ -708,14 +723,17 @@ final class AppState {
                     self?.sessionAgentStateCenter?.stop()
                     // A session-report child gets SIGTERM.
                     self?.sessionReportCenter?.stop()
+                    // An agents report / enable child gets SIGTERM.
+                    self?.agentAnalyticsCenter?.stop()
                     // The owner is in no session once the app is gone.
                     self?.ownerPresenceCenter?.clearForQuit()
                     // An escalate-question child gets SIGTERM.
                     self?.chatQuestionEscalator?.stop()
-                    // Sessions waiting in the Undo batch are deleted now (PROJ-17).
-                    self?.workbenchesViewModel?.commitPendingDeletesForQuit()
+                    // Sessions waiting in the Undo batch were deleted in the
+                    // quit's async phase (PROJ-17, `QuitCoordinator`).
                     self?.mobileHub?.stop()
                     self?.automationsViewModel?.stop()
+                    self?.automationSessionCenter?.stop()
                     self?.homeCenter.endReading()
                     self?.readinessCenter.stop()
                 }
@@ -793,7 +811,7 @@ final class AppState {
                 // Skipped when onboarding is needed — the onboarding view replaces the sidebar entirely.
                 if !needsOnboarding {
                     initAutomations(dbPool: manager.dbPool)
-                    await initSidebarCounts(dbPool: manager.dbPool)
+                    sidebarCountsViewModel = await SidebarCountsViewModel.started(dbPool: manager.dbPool)
                 }
                 isLoading = false
                 // During onboarding only the account view models run (above):
@@ -831,10 +849,18 @@ final class AppState {
         // Every successful service load (launch, post-apply, failure-path
         // reload) pushes the fresh disabled set into the visibility store
         // the sidebar/navigation/banner read.
-        featureManager.onDisabledChanged = { [featureVisibility] ids in
-            featureVisibility.disabledFeatureIDs = ids
-        }
+        wireFeatureVisibility()
         Task { await featureManager.load() }
+    }
+
+    /// Every successful Feature Manager load pushes the disabled set into
+    /// the visibility store and marks it loaded; a failed one changes nothing.
+    func wireFeatureVisibility() {
+        featureManager.onDisabledChanged = { [weak self, featureVisibility] ids in
+            featureVisibility.disabledFeatureIDs = ids
+            featureVisibility.isLoaded = true
+            self?.syncAutomationSessionCenter()
+        }
     }
 
     /// Sync the out-of-bundle CLI copy before anything spawns the CLI, so
@@ -1057,40 +1083,20 @@ final class AppState {
         }
     }
 
-    /// Finish's daemon bring-up, held so tests can await it.
-    @ObservationIgnored private(set) var onboardingDaemonStart: Task<Void, Never>?
-
-    /// Starts (or, with `startOnly` false, restarts) the daemon in the
-    /// background, after any earlier bring-up still running: two restarts
-    /// overlapping would read as a failed start.
-    private func bringUpDaemonInBackground(startOnly: Bool) {
-        let daemon = daemonControl
-        let previous = onboardingDaemonStart
-        onboardingDaemonStart = Task {
-            await previous?.value
-            let up = startOnly && daemon.daemonIsRunning()
-                ? true
-                : await OnboardingFinishPlan.bringUpDaemon(daemon)
-            if up {
-                daemonStartFailure = nil
-            } else {
-                daemonStartFailure = Self.daemonStartFailureText(daemonManager.errorMessage)
-            }
-        }
+    /// Every daemon start or restart the app makes runs on this queue
+    /// (`enqueueDaemonStart`, AppState+DaemonStart.swift); tests get their own.
+    @ObservationIgnored var daemonStartQueue = DaemonStartQueue.shared {
+        didSet { wireDaemonStartQueue() }
     }
-
-    /// The background sync did not come up after setup: shown over the tab
-    /// setup landed on, not only in the tray.
-    private(set) var daemonStartFailure: String?
-
-    func dismissDaemonStartFailure() {
-        daemonStartFailure = nil
-    }
-
-    static func daemonStartFailureText(_ detail: String?) -> String {
-        let reason = detail.map { ": \($0)." } ?? "."
-        return "The background sync did not start\(reason) Open Settings → System to retry."
-    }
+    /// How long the banner's Start waits for the daemon to show up, and how
+    /// often it looks (a first start after an update runs migrations first).
+    @ObservationIgnored var daemonStartWaitBound: Duration = .seconds(60)
+    @ObservationIgnored var daemonStartPollInterval: Duration = .seconds(1)
+    /// The banner's Start is waiting for the daemon (no second Start).
+    var isStartingDaemon = false
+    /// The down stretch (`DaemonManager.notRunningSince`) whose "isn't
+    /// running" banner the owner dismissed.
+    var stoppedBannerDismissedFor: Date?
 
     // MARK: - Features for a source connected from Settings
 
@@ -1174,7 +1180,7 @@ final class AppState {
         // The connect that raised the offer may still be restarting the
         // daemon itself: one restart at a time.
         await awaitAccountDaemonRestarts()
-        let result = await featureManager.enableNow(ids) { try await daemon.restartWaiting() }
+        let result = await featureManager.enableNow(ids) { try await self.restartOnChain(daemon) }
         if result.busy {
             // Settings → Features is applying its own batch.
             featureSuggestionError = Self.featureChangesBusy
@@ -1185,7 +1191,7 @@ final class AppState {
             // Everything is on already (a retry after a failed restart): the
             // daemon still has to pick it up.
             do {
-                try await daemon.restartWaiting()
+                try await restartOnChain(daemon)
                 featureManager.loadError = nil
             } catch {
                 featureSuggestionError = error.localizedDescription
@@ -1231,7 +1237,7 @@ final class AppState {
         onboardingGoals.wroteChanges || accountFingerprint != rerunAccountsAtStart
     }
 
-    private var daemonControl: any DaemonControl { daemonControlOverride ?? daemonManager }
+    var daemonControl: any DaemonControl { daemonControlOverride ?? daemonManager }
 
     /// Why the last Turn on from a tab's empty state didn't work, per feature
     /// id, so one tab's error never shows under another's Turn on; cleared
@@ -1251,6 +1257,9 @@ final class AppState {
         return error.featureWasOn || !nowOn ? error.message : nil
     }
 
+    /// A later successful start or restart picked the feature up: drop its Try again.
+    func clearRestartFailedTurnOnErrors() { emptyStateTurnOnErrors = emptyStateTurnOnErrors.filter { !$0.value.featureWasOn } }
+
     private func recordTurnOnError(_ featureID: String, _ message: String, featureWasOn: Bool = false) {
         emptyStateTurnOnErrors[featureID] = (message, featureWasOn)
     }
@@ -1269,7 +1278,7 @@ final class AppState {
         defer { turningOnFeatureID = nil }
         let daemon = daemonControl
         await awaitAccountDaemonRestarts()
-        let result = await featureManager.enableNow([featureID]) { try await daemon.restartWaiting() }
+        let result = await featureManager.enableNow([featureID]) { try await self.restartOnChain(daemon) }
         if result.busy {
             recordTurnOnError(featureID, Self.featureChangesBusy)
             return
@@ -1290,13 +1299,13 @@ final class AppState {
                 return
             }
             do {
-                try await daemon.restartWaiting()
+                try await restartOnChain(daemon)
             } catch {
                 recordTurnOnError(featureID, error.localizedDescription, featureWasOn: true)
                 return
             }
         }
-        emptyStateTurnOnErrors[featureID] = nil
+        emptyStateTurnOnErrors = emptyStateTurnOnErrors.filter { $0.key != featureID && !$0.value.featureWasOn }
     }
 
     /// A first run of onboarding opens Home, whatever the goals.
@@ -1315,8 +1324,8 @@ final class AppState {
         }
         // The initialize() path skips sidebar counts while onboarding is pending, so build
         // them now — otherwise the first run shows all-zero badges (incl. Catch-Up) until restart.
-        if sidebarCountsViewModel == nil, let pool = databaseManager?.dbPool {
-            Task { await initSidebarCounts(dbPool: pool) }
+        if sidebarCountsViewModel == nil, sidebarCountsSetup == nil, let pool = databaseManager?.dbPool {
+            sidebarCountsSetup = Task { sidebarCountsViewModel = await SidebarCountsViewModel.started(dbPool: pool) }
         }
         if let pool = databaseManager?.dbPool {
             initAutomations(dbPool: pool)
@@ -1352,16 +1361,18 @@ final class AppState {
         guard automationsViewModel == nil else { return }
         let runner: any CLIRunnerProtocol = ProcessCLIRunner.makeDefault() ?? UnresolvedCLIRunner()
         let cli = AutomationsCLI(runner: runner)
-        let vm = AutomationsViewModel(dbPool: dbPool, cli: cli)
-        // Daemon-written inbox outputs never fire the counts VM's observation.
-        // Resolved at call time: the counts VM may be built after this one.
+        let notifier = AutomationRunNotifier()
+        let watch = AutomationFailureWatch(defaults: .standard, workspace: dbPool.path, notifier: notifier)
+        let looking = { NSApp.isActive && NSApp.keyWindow?.isVisible == true }
+        let vm = AutomationsViewModel(dbPool: dbPool, cli: cli, failureWatch: watch, isOwnerLooking: looking)
+        // Daemon-written inbox outputs never fire the counts VM's observation; resolved at call time.
         vm.onInboxOutputCountChanged = { [weak self] in
             Task { await self?.sidebarCountsViewModel?.refresh() }
         }
         vm.start()
         automationsViewModel = vm
         let quickRun = QuickRunCenter(dbPool: dbPool, viewModel: vm, cli: cli,
-                                      notifier: AutomationRunNotifier()) { [weak self] in
+                                      notifier: notifier) { [weak self] in
             self?.isAutomationsFeatureEnabled ?? false
         }
         quickRun.showAutomationsTab = { [weak self] in self?.selectedDestination = .automations }
@@ -1374,14 +1385,6 @@ final class AppState {
                 await vm?.loadDetail(id)
             }
         )
-    }
-
-    /// Builds the sidebar counts view model, pre-loads counts, and starts observing.
-    private func initSidebarCounts(dbPool: DatabasePool) async {
-        let countsVM = SidebarCountsViewModel(dbPool: dbPool)
-        await countsVM.loadInitial()
-        countsVM.startObserving()
-        sidebarCountsViewModel = countsVM
     }
 
     /// The onboarding on screen was started from Settings: it can be
@@ -1460,12 +1463,20 @@ final class AppState {
     /// A failed restart is thrown for the Settings error line.
     func resetLLMData(workspaceDir: String? = Constants.activeWorkspaceDir()) async throws {
         guard let db = databaseManager else { return }
-
-        // 1. Stop the daemon so nothing writes while the tables are wiped —
-        // after a finish still bringing one up, and only once its process is
-        // really gone (a timeout wipes nothing).
-        await onboardingDaemonStart?.value
         let daemon = daemonControl
+        // One item on the start queue: no other start lands mid-wipe.
+        let failure = await enqueueDaemonStart { () -> (any Error)? in
+            await Self.stopWipeRestart(daemon: daemon, db: db, workspaceDir: workspaceDir)
+        }.value
+        if let failure { throw failure }
+        daemonStartQueue.succeeded()
+    }
+
+    private static func stopWipeRestart(
+        daemon: any DaemonControl, db: DatabaseManager, workspaceDir: String?
+    ) async -> (any Error)? {
+        // 1. Stop the daemon so nothing writes while the tables are wiped —
+        // only once its process is really gone (a timeout wipes nothing).
         if daemon.daemonIsRunning() {
             await daemon.stopDaemonNow()
         }
@@ -1488,23 +1499,33 @@ final class AppState {
         } catch {
             failure = failure ?? error
         }
-        if let failure { throw failure }
+        return failure
     }
 
     /// Ensure the daemon is running against the current CLI binary.
     /// If an old instance is already running (e.g. from a stale dev rebuild), stop it first,
     /// then start a fresh one. Paired with the QuitCoordinator daemon stop on app terminate
-    /// so UI quit/launch cycles the daemon lifecycle.
-    private func ensureDaemonRunning() {
+    /// so UI quit/launch cycles the daemon lifecycle. On the one start chain.
+    func ensureDaemonRunning() {
         let daemon = daemonControl
-        ensureDaemonTask = Task {
-            daemonManager.resolvePathIfNeeded()
+        let manager = daemonManager
+        let item = enqueueDaemonStart {
+            manager.resolvePathIfNeeded()
             if daemon.daemonIsRunning() {
                 await daemon.stopDaemonNow()
                 try? await Task.sleep(for: .milliseconds(500))
             }
-            _ = await daemon.startDetached()
+            if await daemon.startDetached() {
+                self.daemonStartQueue.succeeded()
+            } else if daemon.daemonIsRunning() {
+                // The old daemon is still there (still exiting, or it did not
+                // stop): the new one never came up. Retry restarts it.
+                self.daemonStartFailure = Self.daemonOldStillRunningText(manager.errorMessage)
+            } else {
+                self.daemonStartFailure = Self.daemonStartFailureText(manager.errorMessage)
+            }
         }
+        ensureDaemonTask = Task { _ = await item.value }
     }
 
     /// What onboarding's steps need once the database is open: the database
@@ -1558,7 +1579,10 @@ final class AppState {
         initExternalConnections(dbPool: manager.dbPool)
         initReactionDictionary(dbPool: manager.dbPool)
         initActionStrip(dbPool: manager.dbPool)
+        startSessionHost() // before the workbenches: their reattach waits for it
         initWorkbenches(dbPool: manager.dbPool)
+        if let vm = workbenchesViewModel { replaceAgentAnalytics(cliRunner: ProcessCLIRunner.makeDefault(), workbenches: vm) }
+        applyUIVisibility(uiVisibility.isOnScreen)
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
@@ -1630,7 +1654,7 @@ final class AppState {
 
     func initEmailAccounts(dbPool: DatabasePool) {
         let vm = EmailAccountsViewModel(dbPool: dbPool)
-        vm.onAccountsChanged = { [weak self] in await self?.refreshConnectedSources() }
+        vm.onAccountsChanged = { [weak self] in await self?.accountsChanged() }
         vm.refresh()
         emailAccountsViewModel = vm
     }
@@ -1787,35 +1811,10 @@ final class AppState {
             dbPool: dbPool, cli: cliRunner.map { WorkbenchCLI(runner: $0) }, defaults: workbenchDefaults,
             terminalCenter: terminalCenter, agentStates: agentStates, lineDelivery: lineDelivery
         )
-        vm.codeFiles.codeIndex = codeIndexCenter
         // Settings → Workbench → Default agent (board #399, D1), read at each launch.
         vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() }
-        openQuicklyCenter.workbenches = vm
-        codeNavigationCenter.workbenches = vm
-        vm.codeFiles.navigation = codeNavigationCenter
-        codeUsagesCenter.useWorkspace(dbPool.path)
-        codeUsagesCenter.workbenches = vm
-        codeUsagesCenter.navigation = codeNavigationCenter
-        codeNavigationCenter.usages = codeUsagesCenter
-        vm.codeFiles.usages = codeUsagesCenter
-        codeQuestionCenter.workbenches = vm
-        codeQuestionCenter.navigation = codeNavigationCenter
-        codeQuestionCenter.codeIndex = codeIndexCenter
-        codeQuestionCenter.embeddedChats = embeddedChatCenter
-        codeQuestionCenter.dbPool = dbPool
-        codeQuestionCenter.dictation = dictationCenter
-        codeQuestionCenter.modelSuggestions = { [aiModelCatalog] in aiModelCatalog.suggestions(for: $0.rawValue) }
-        codeQuestionCenter.usages = codeUsagesCenter
-        openQuicklyCenter.questions = codeQuestionCenter
-        vm.codeFiles.questions = codeQuestionCenter
-        codeHandoffCenter.workbenches = vm
-        codeHandoffCenter.terminalCenter = terminalCenter
-        codeHandoffCenter.dbPool = dbPool
-        codeQuestionCenter.handoff = codeHandoffCenter
-        openQuicklyCenter.onHandToClaude = { [weak self] query, project, root in
-            guard let self else { return }
-            codeHandoffCenter.handQuery(query, project: project, origin: codeQuestionCenter.openFileOrigin(root))
-        }
+        vm.isAutomationsFeatureOn = { [weak self] in self?.isAutomationsFeatureLoadedOn ?? false }
+        wireCodeViewer(vm, dbPool: dbPool)
         vm.onWorkbenchRemoved = { [weak codeQuestionCenter, weak codeUsagesCenter] in
             codeQuestionCenter?.workbenchRemoved($0)
             codeUsagesCenter?.workbenchRemoved($0)
@@ -1826,9 +1825,7 @@ final class AppState {
             await center.closeAll { ids.contains($0) }
         }
         let notices = WorkbenchNotificationCenter(dbPool: dbPool, notifier: notifier)
-        vm.onWorkbenchCreated = { [weak notices] project, _ in
-            notices?.seedBaseline(project: project)
-        }
+        vm.onWorkbenchCreated = { [weak notices] project, _ in notices?.seedBaseline(project: project) }
         vm.onOwnerWrite = { [weak notices] projectID, subject in
             notices?.recordOwnerWrite(projectID: projectID, subject: subject)
         }
@@ -1852,7 +1849,7 @@ final class AppState {
         sessionReportCenter?.stop()
         sessionReportCenter = reports
         replaceOwnerPresence(dbPool: dbPool, cliRunner: cliRunner, workbenches: vm, agentStates: agentStates)
-        // The first poll also loads the list (onPolled → reload).
+        // The first poll also loads the list (onPolled → reload; off screen, once a window shows).
         notices.start()
         vm.startTitleRefresh()
         vm.asks.start()
@@ -1860,7 +1857,21 @@ final class AppState {
         reports.start()
         ownerPresenceCenter?.start()
         chatQuestionEscalator?.start()
+        vm.startHostReattach()
         initMobileHub(dbPool: dbPool)
+        // Once: a setup re-run keeps the center and its launches in flight.
+        if automationSessionCenter == nil {
+            automationSessionCenter = makeAutomationSessionCenter(dbPool: dbPool, cliRunner: cliRunner)
+        }
+        syncAutomationSessionCenter()
+    }
+
+    /// Agent analytics (#298): the previous center stopped, a new one built.
+    private func replaceAgentAnalytics(cliRunner: (any CLIRunnerProtocol)?, workbenches vm: WorkbenchesViewModel) {
+        let analytics = AgentAnalyticsCenter(runner: cliRunner ?? UnresolvedCLIRunner())
+        analytics.isTabOnScreen = { [weak vm] in vm?.isTabOnScreen() ?? false }
+        agentAnalyticsCenter?.stop()
+        (agentAnalyticsCenter, vm.agentAnalytics) = (analytics, analytics)
     }
 
     /// Claude plan limits: the previous center stopped, a new one polling.
@@ -2006,8 +2017,10 @@ final class AppState {
     /// The refresh `completeOnboarding()` kicked off — held so tests can
     /// await it.
     @ObservationIgnored private(set) var connectedSourcesRefresh: Task<Void, Never>?
+    /// The sidebar counts' build `completeOnboarding()` kicked off (tests cancel it).
+    @ObservationIgnored private(set) var sidebarCountsSetup: Task<Void, Never>?
 
-    /// A Slack/Google/Jira account-list reload: re-resolves the owner
+    /// A Slack/Google/Jira/email account-list reload: re-resolves the owner
     /// (OWNER-02) and the connected sources the sidebar gates on.
     private func accountsChanged() async {
         await refreshOwner()
@@ -2046,13 +2059,12 @@ final class AppState {
         }
     }
 
-    /// Re-resolves `owner` off the main thread. A failed read keeps the last
-    /// known value (logged): flipping a known owner to unknown on a transient
-    /// error would hide Generate for no reason.
+    /// Re-resolves `owner` off the main thread. A failed read keeps the last value (logged):
+    /// a transient error must not flip a known owner to unknown and hide Generate.
     func refreshOwner() async {
         guard let pool = databaseManager?.dbPool else { return }
         do {
-            owner = try await pool.read { db in try OwnerQueries.resolve(db) }
+            (owner, ownerPendingSource) = try await pool.read { db in try OwnerQueries.resolveWithPending(db) }
         } catch {
             print("[AppState] owner resolve failed, keeping the last value: \(error.localizedDescription)")
         }

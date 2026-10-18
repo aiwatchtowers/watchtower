@@ -61,7 +61,7 @@ func fakeStarts(t *testing.T, path string) []int {
 	}
 	require.NoError(t, err)
 	var pids []int
-	for _, line := range strings.Fields(string(data)) {
+	for line := range strings.FieldsSeq(string(data)) {
 		pid, err := strconv.Atoi(line)
 		require.NoError(t, err)
 		pids = append(pids, pid)
@@ -262,4 +262,32 @@ func TestMCPCaller_ErrorsKeepTheirCause(t *testing.T) {
 	_, err = newAutomationMCPCaller(cfg, database).Call(context.Background(), "acme", "get_item", nil)
 	require.ErrorContains(t, err, "listing Quick Connections")
 	assert.NotErrorIs(t, err, automations.ErrMCPNotAvailable, "a read failure is not an absent connection")
+}
+
+// mcp() never calls a connection under a reserved name: not available, and
+// its row says why, as a chat launch would (board #556).
+func TestMCPCaller_ReservedNameNotCalled(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id, err := database.InsertExternalConnection(db.ExternalConnection{
+		Name: "watchtower__x", Kind: "http", URL: "https://example.com/mcp", Enabled: true,
+	})
+	require.NoError(t, err)
+	cacheReadOnlyTool(t, database, id)
+	original := callServerTool
+	callServerTool = func(context.Context, externalmcp.ServerSpec, string, json.RawMessage) (json.RawMessage, error) {
+		t.Error("a reserved connection must not be called")
+		return nil, nil
+	}
+	t.Cleanup(func() { callServerTool = original })
+
+	_, err = newAutomationMCPCaller(cfg, database).Call(context.Background(), "watchtower__x", "get_item", nil)
+	require.ErrorIs(t, err, automations.ErrMCPNotAvailable)
+	assert.ErrorContains(t, err, "reserved")
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	assert.Equal(t, "error", conn.Status)
+	assert.Equal(t, reservedReasonPrefix+reservedNameReason(conn), conn.Error)
 }

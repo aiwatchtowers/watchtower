@@ -22,6 +22,16 @@ package struct AutomationsCLI {
         case wake
         case templates
         case installTemplate(name: String, workbenchID: Int64?)
+        case sessionLaunched(step: Int64, session: Int64)
+        case sessionEnded(step: Int64, status: SessionEnd, error: String?)
+        case rescan(workbenchID: Int64)
+    }
+
+    /// How a `session()` step's session ended, as `session-ended --status`
+    /// takes it: its process ended unfinished, or it never launched.
+    package enum SessionEnd: String, Equatable, Sendable {
+        case stopped
+        case launchFailed = "launch_failed"
     }
 
     private let runner: any CLIRunnerProtocol
@@ -69,6 +79,15 @@ package struct AutomationsCLI {
             var out = ["automations", "install-template", name]
             if let workbenchID { out += ["--workbench", String(workbenchID)] }
             return out + ["--json"]
+        case let .sessionLaunched(step, session):
+            return ["automations", "session-launched", "--step", String(step), "--session", String(session), "--json"]
+        case let .sessionEnded(step, status, error):
+            var out = ["automations", "session-ended", "--step", String(step), "--status", status.rawValue]
+            if let error, !error.isEmpty { out += ["--error", error] }
+            return out + ["--json"]
+        case let .rescan(workbenchID):
+            // The personal folder and this workbench's (spec §13.4).
+            return ["automations", "rescan", "--workbench", String(workbenchID)]
         }
     }
 
@@ -127,6 +146,26 @@ package struct AutomationsCLI {
         try await decode(.installTemplate(name: name, workbenchID: workbenchID))
     }
 
+    /// Attaches the session the app launched to its waiting step; false when
+    /// the step no longer waits for one (nothing attached).
+    package func sessionLaunched(step: Int64, session: Int64) async throws -> Bool {
+        let result: Attached = try await decode(.sessionLaunched(step: step, session: session))
+        return result.attached
+    }
+
+    /// Reports a step's session ended (or never launched); false when the
+    /// step no longer waits for a session.
+    package func sessionEnded(step: Int64, status: SessionEnd, error: String?) async throws -> Bool {
+        let result: Ended = try await decode(.sessionEnded(step: step, status: status, error: error))
+        return result.ended
+    }
+
+    /// Indexes the personal folder and workbench `workbenchID`'s (a protected
+    /// folder the daemon never reads, spec §13.4).
+    package func rescan(workbenchID: Int64) async throws {
+        _ = try await runner.run(args: Self.args(.rescan(workbenchID: workbenchID)))
+    }
+
     private func decode<T: Decodable>(_ op: Op) async throws -> T {
         let data = try await runner.run(args: Self.args(op))
         return try JSONDecoder().decode(T.self, from: data)
@@ -136,6 +175,10 @@ package struct AutomationsCLI {
 // MARK: - Results
 
 extension AutomationsCLI {
+    /// `session-launched --json` / `session-ended --json`: `{attached}` / `{ended}`.
+    private struct Attached: Decodable { let attached: Bool }
+    private struct Ended: Decodable { let ended: Bool }
+
     /// `run --json`.
     package struct RunResult: Decodable, Equatable, Sendable {
         package let runID: Int64
@@ -172,10 +215,14 @@ extension AutomationsCLI {
         package let permissions: [String]
         package let outputs: [String]
         package let widening: [String]
+        /// Whether the validated text feeds its sources to `llm()`
+        /// (`feeds_sources_to_llm`, #559); false from an older CLI.
+        package let feedsSourcesToLLM: Bool
 
         enum CodingKeys: String, CodingKey {
             case ok, errors, slug, name, scope, permissions, outputs, widening
             case approvalHash = "approval_hash", contentHash = "content_hash"
+            case feedsSourcesToLLM = "feeds_sources_to_llm"
         }
 
         package init(from decoder: Decoder) throws {
@@ -190,6 +237,7 @@ extension AutomationsCLI {
             permissions = try c.decodeIfPresent([String].self, forKey: .permissions) ?? []
             outputs = try c.decodeIfPresent([String].self, forKey: .outputs) ?? []
             widening = try c.decodeIfPresent([String].self, forKey: .widening) ?? []
+            feedsSourcesToLLM = try c.decodeIfPresent(Bool.self, forKey: .feedsSourcesToLLM) ?? false
         }
     }
 
@@ -209,9 +257,19 @@ extension AutomationsCLI {
     package struct InstallResult: Decodable, Equatable, Sendable {
         package let automationID: Int64
         package let path: String
+        /// Each param's values as installed, given or chosen by the CLI
+        /// (#582); empty from an older CLI.
+        package let params: [String: [String]]
 
         enum CodingKeys: String, CodingKey {
-            case automationID = "automation_id", path
+            case automationID = "automation_id", path, params
+        }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            automationID = try c.decode(Int64.self, forKey: .automationID)
+            path = try c.decode(String.self, forKey: .path)
+            params = try c.decodeIfPresent([String: [String]].self, forKey: .params) ?? [:]
         }
     }
 }
@@ -231,18 +289,28 @@ package struct AutomationChange: Decodable, Equatable, Sendable {
 }
 
 /// One write tool the recipe's manifest admits (`show --json` `auto_tools`):
-/// the edit form's Auto toggle, or an "Always asks" row when `alwaysAsks`.
+/// the edit form's Auto toggle, or an "Always asks" row when `alwaysAsks`;
+/// `external` marks a write outside Watchtower (#559, false from an older CLI).
 package struct AutomationAutoTool: Decodable, Equatable, Sendable {
     package let tool: String
     package let alwaysAsks: Bool
+    package let external: Bool
 
-    package init(tool: String, alwaysAsks: Bool) {
+    package init(tool: String, alwaysAsks: Bool, external: Bool = false) {
         self.tool = tool
         self.alwaysAsks = alwaysAsks
+        self.external = external
     }
 
     enum CodingKeys: String, CodingKey {
-        case tool, alwaysAsks = "always_asks"
+        case tool, external, alwaysAsks = "always_asks"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        tool = try c.decode(String.self, forKey: .tool)
+        alwaysAsks = try c.decode(Bool.self, forKey: .alwaysAsks)
+        external = try c.decodeIfPresent(Bool.self, forKey: .external) ?? false
     }
 }
 
@@ -280,6 +348,13 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
     package let changedBy: String
     package let changedAt: Date?
     package let autoTools: [AutomationAutoTool]
+    /// External tools with an auto grant (active or paused) of a recipe that
+    /// feeds its sources to `llm()` (`llm_auto_writes`, #559): the
+    /// confirmation sheet warns about them. `[]` from an older CLI.
+    package let llmAutoWrites: [String]
+    /// Whether the indexed recipe feeds its sources to `llm()`
+    /// (`feeds_sources_to_llm`, #559): the edit form's Auto warning.
+    package let feedsSourcesToLLM: Bool
 
     enum CodingKeys: String, CodingKey {
         case id, slug, scope, path, name, description, script, permissions, outputs, concurrency, enabled
@@ -290,6 +365,7 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
         case needsConfirmation = "needs_confirmation", parseError = "parse_error", contentHash = "content_hash"
         case approvalHash = "approval_hash", confirmedHash = "confirmed_hash", changesKnown = "changes_known"
         case changedBy = "changed_by", changedAt = "changed_at", autoTools = "auto_tools"
+        case llmAutoWrites = "llm_auto_writes", feedsSourcesToLLM = "feeds_sources_to_llm"
     }
 
     package init(from decoder: Decoder) throws {
@@ -324,6 +400,8 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
         changesKnown = try c.decodeIfPresent(Bool.self, forKey: .changesKnown) ?? false
         changedBy = try c.decodeIfPresent(String.self, forKey: .changedBy) ?? ""
         autoTools = try c.decodeIfPresent([AutomationAutoTool].self, forKey: .autoTools) ?? []
+        llmAutoWrites = try c.decodeIfPresent([String].self, forKey: .llmAutoWrites) ?? []
+        feedsSourcesToLLM = try c.decodeIfPresent(Bool.self, forKey: .feedsSourcesToLLM) ?? false
         if let text = try c.decodeIfPresent(String.self, forKey: .changedAt) {
             guard let date = AutomationDates.parse(text) else {
                 throw DecodingError.dataCorruptedError(forKey: .changedAt, in: c,

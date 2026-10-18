@@ -38,13 +38,17 @@ type AgentLogEvent struct {
 	SrcPath                                                                            string
 	SrcOffset                                                                          int64
 	MessageID                                                                          string // api_call only, not stored
-	SubagentReplayCheck                                                                bool   // skip when the session already has this message.id under another key
+	SpawnedAgentID                                                                     string // Agent tool call: the sub-agent's id, set when the result pairs
+	Background                                                                         bool
+	SubagentReplayCheck                                                                bool // skip when the session already has this message.id under another key
 }
 
 // AgentToolResult pairs a tool_result with its stored `tool:<ToolUseID>` event.
 type AgentToolResult struct {
 	ToolUseID, TS, Outcome, ErrorClass string
 	LinesAdded, LinesRemoved           int
+	SpawnedAgentID                     string
+	Background                         bool
 }
 
 // AgentLogBatch is what one parse of one file writes in one transaction.
@@ -155,8 +159,8 @@ func (db *DB) MarkAgentLogFileMissing(path, at string) error {
 	return err
 }
 
-// ApplyAgentLogBatch writes one parsed slice of a transcript in a single
-// transaction and advances the file's offset with a compare-and-set. It
+// ApplyAgentLogBatch writes one parsed slice of a transcript (the scanner
+// keeps slices small, see agentlog.batchRows) in a single short transaction and advances the file's offset with a compare-and-set. It
 // returns applied=false (nothing written) when another writer moved the
 // offset first.
 func (db *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
@@ -196,6 +200,16 @@ func (db *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 				WHERE key = ?`, r.Outcome, r.ErrorClass, r.LinesAdded, r.LinesRemoved, r.TS, "tool:"+r.ToolUseID); err != nil {
 				return fmt.Errorf("pairing tool result: %w", err)
 			}
+			if r.SpawnedAgentID != "" {
+				if _, err := tx.Exec(`UPDATE agent_log_events SET spawned_agent_id = ?, background = ? WHERE key = ?`,
+					r.SpawnedAgentID, r.Background, "tool:"+r.ToolUseID); err != nil {
+					return fmt.Errorf("pairing spawned agent: %w", err)
+				}
+			} else if r.Background {
+				if _, err := tx.Exec(`UPDATE agent_log_events SET background = 1 WHERE key = ?`, "tool:"+r.ToolUseID); err != nil {
+					return fmt.Errorf("pairing background flag: %w", err)
+				}
+			}
 		}
 		applied = true
 		return nil
@@ -216,7 +230,9 @@ func upsertAgentLogSession(tx *sql.Tx, s AgentLogSession) error {
 		ON CONFLICT(session_uuid) DO UPDATE SET
 		  model = CASE WHEN excluded.model <> '' AND excluded.ended_at >= agent_log_sessions.ended_at
 		               THEN excluded.model ELSE agent_log_sessions.model END,
-		  started_at = MIN(agent_log_sessions.started_at, excluded.started_at),
+		  started_at = CASE WHEN excluded.started_at = '' THEN agent_log_sessions.started_at
+		                    WHEN agent_log_sessions.started_at = '' THEN excluded.started_at
+		                    ELSE MIN(agent_log_sessions.started_at, excluded.started_at) END,
 		  ended_at = MAX(agent_log_sessions.ended_at, excluded.ended_at),
 		  git_branch = CASE WHEN agent_log_sessions.git_branch = '' THEN excluded.git_branch ELSE agent_log_sessions.git_branch END,
 		  project_id = COALESCE(agent_log_sessions.project_id, excluded.project_id),
@@ -246,8 +262,8 @@ func upsertAgentLogEvent(tx *sql.Tx, e AgentLogEvent) error {
 	_, err := tx.Exec(`INSERT INTO agent_log_events (session_uuid, key, kind, ts, uuid, parent_uuid, prompt_id, agent_id,
 		is_sidechain, name, target, trigger, outcome, error_class, skill, input_tokens, output_tokens, cache_read_tokens,
 		cache_write_5m_tokens, cache_write_1h_tokens, speed, service_tier, cost_usd, price_version, cost_estimated,
-		lines_added, lines_removed, src_path, src_offset)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		lines_added, lines_removed, src_path, src_offset, spawned_agent_id, background)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(key) DO UPDATE SET
 		  session_uuid = CASE WHEN (SELECT started_at FROM agent_log_sessions WHERE session_uuid = excluded.session_uuid)
 		                           < (SELECT started_at FROM agent_log_sessions WHERE session_uuid = agent_log_events.session_uuid)
@@ -261,11 +277,14 @@ func upsertAgentLogEvent(tx *sql.Tx, e AgentLogEvent) error {
 		  cache_write_1h_tokens = CASE WHEN excluded.output_tokens >= agent_log_events.output_tokens THEN excluded.cache_write_1h_tokens ELSE agent_log_events.cache_write_1h_tokens END,
 		  cost_usd = CASE WHEN excluded.output_tokens >= agent_log_events.output_tokens THEN excluded.cost_usd ELSE agent_log_events.cost_usd END,
 		  output_tokens = MAX(agent_log_events.output_tokens, excluded.output_tokens),
+		  trigger = CASE WHEN excluded.trigger <> '' THEN excluded.trigger ELSE agent_log_events.trigger END,
+		  target = CASE WHEN excluded.target <> '' THEN excluded.target ELSE agent_log_events.target END,
+		  background = MAX(agent_log_events.background, excluded.background),
 		  outcome = CASE WHEN agent_log_events.outcome IN ('', 'pending') THEN excluded.outcome ELSE agent_log_events.outcome END`,
 		e.SessionUUID, e.Key, e.Kind, e.TS, e.UUID, e.ParentUUID, e.PromptID, e.AgentID, e.IsSidechain,
 		e.Name, e.Target, e.Trigger, e.Outcome, e.ErrorClass, e.Skill, e.InputTokens, e.OutputTokens, e.CacheReadTokens,
 		e.CacheWrite5mTokens, e.CacheWrite1hTokens, e.Speed, e.ServiceTier, e.CostUSD, e.PriceVersion, e.CostEstimated,
-		e.LinesAdded, e.LinesRemoved, e.SrcPath, e.SrcOffset)
+		e.LinesAdded, e.LinesRemoved, e.SrcPath, e.SrcOffset, e.SpawnedAgentID, e.Background)
 	if err != nil {
 		return fmt.Errorf("upserting agent log event: %w", err)
 	}
@@ -352,18 +371,34 @@ func (db *DB) RepriceAgentLogEvents(version int, price func(model, speed string,
 	if err != nil {
 		return 0, err
 	}
-	err = db.WithTx(func(tx *sql.Tx) error {
-		for _, r := range todo {
-			usd, known := price(r.model, r.speed, r.in, r.out, r.cr, r.cw5, r.cw1h)
-			if _, err := tx.Exec(`UPDATE agent_log_events SET cost_usd = ?, cost_estimated = ?, price_version = ? WHERE id = ?`,
-				usd, !known, version, r.id); err != nil {
-				return err
+	// One short transaction per slice, so a price bump never holds the write
+	// lock for every outdated row at once; a failed slice leaves its rows at
+	// the old version for the next scan.
+	done := 0
+	for len(todo) > 0 {
+		n := min(len(todo), agentLogRepriceSlice)
+		err = db.WithTx(func(tx *sql.Tx) error {
+			for _, r := range todo[:n] {
+				usd, known := price(r.model, r.speed, r.in, r.out, r.cr, r.cw5, r.cw1h)
+				if _, err := tx.Exec(`UPDATE agent_log_events SET cost_usd = ?, cost_estimated = ?, price_version = ? WHERE id = ?`,
+					usd, !known, version, r.id); err != nil {
+					return err
+				}
 			}
+			return nil
+		})
+		if err != nil {
+			return done, err
 		}
-		return nil
-	})
-	return len(todo), err
+		done += n
+		todo = todo[n:]
+	}
+	return done, nil
 }
+
+// agentLogRepriceSlice is how many rows one reprice transaction updates
+// (a variable so tests can force several slices).
+var agentLogRepriceSlice = 1000
 
 // AgentLogStats aggregates the stored analytics of one workbench.
 func (db *DB) AgentLogStats(projectID int64) (*AgentLogStats, error) {

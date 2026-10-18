@@ -11,11 +11,11 @@ import (
 func seedSearchMessages(t *testing.T, db *DB) {
 	t.Helper()
 	msgs := []Message{
-		{ChannelID: "C001", TS: "1700000001.000001", UserID: "U001", Text: "deployment to production successful", RawJSON: "{}"},
-		{ChannelID: "C001", TS: "1700000002.000001", UserID: "U002", Text: "the bug in login flow is fixed", RawJSON: "{}"},
-		{ChannelID: "C002", TS: "1700000003.000001", UserID: "U001", Text: "deploying new feature to staging", RawJSON: "{}"},
-		{ChannelID: "C002", TS: "1700000500.000001", UserID: "U003", Text: "database migration completed", RawJSON: "{}"},
-		{ChannelID: "C003", TS: "1700001000.000001", UserID: "U002", Text: "production deployment rollback needed", RawJSON: "{}"},
+		{ChannelID: "C001", TS: "1700000001.000001", UserID: "U001", Text: "deployment to production successful"},
+		{ChannelID: "C001", TS: "1700000002.000001", UserID: "U002", Text: "the bug in login flow is fixed"},
+		{ChannelID: "C002", TS: "1700000003.000001", UserID: "U001", Text: "deploying new feature to staging"},
+		{ChannelID: "C002", TS: "1700000500.000001", UserID: "U003", Text: "database migration completed"},
+		{ChannelID: "C003", TS: "1700001000.000001", UserID: "U002", Text: "production deployment rollback needed"},
 	}
 	for _, msg := range msgs {
 		require.NoError(t, db.UpsertMessage(msg))
@@ -228,7 +228,7 @@ func TestSearchMessagesUnicode(t *testing.T) {
 
 	require.NoError(t, db.UpsertMessage(Message{
 		ChannelID: "C001", TS: "1700000001.000001", UserID: "U001",
-		Text: "café deployment naïve approach", RawJSON: "{}",
+		Text: "café deployment naïve approach",
 	}))
 
 	results, err := db.SearchMessages("deployment", SearchOpts{})
@@ -243,11 +243,11 @@ func TestSearchMessagesDefaultLimit(t *testing.T) {
 	defer db.Close()
 
 	// Insert more messages than default limit (50)
-	for i := 0; i < 60; i++ {
+	for i := range 60 {
 		ts := fmt.Sprintf("17000%05d.000001", i)
 		require.NoError(t, db.UpsertMessage(Message{
 			ChannelID: "C001", TS: ts, UserID: "U001",
-			Text: "searchable keyword here", RawJSON: "{}",
+			Text: "searchable keyword here",
 		}))
 	}
 

@@ -169,14 +169,18 @@ struct SlackConnectionDetail: View {
             // removed, then restart it — without a token it skips the Slack
             // phase. Synced data is kept (non-destructive, matches `slack
             // remove` / `auth logout` semantics).
-            await flow.daemonManager.stopDaemon()
-            if await slackAuth.disconnect() {
-                config.reload()
-                flow.reconnectResult = nil
-                // `auth logout` removed a row: reload the Workspaces list too.
-                await appState.slackAccountsViewModel?.refreshAsync()
-            }
-            await flow.daemonManager.startDaemon()
+            // Stop, disconnect and start as one item on the app's start queue.
+            let daemon = flow.daemonManager
+            let disconnected = await appState.disconnectSlackOnQueue(
+                stop: { await daemon.stopDaemon() },
+                disconnect: { await slackAuth.disconnect() },
+                start: { await daemon.startDaemon() }
+            )
+            // Either way the config and the Workspaces list are re-read, so
+            // a failed or partial disconnect never leaves them stale.
+            config.reload()
+            if disconnected { flow.reconnectResult = nil }
+            await appState.slackAccountsViewModel?.refreshAsync()
             flow.disconnecting = false
         }
     }
@@ -430,7 +434,7 @@ struct SlackConnectionDetail: View {
             // --app-return: the CLI brings the app back to the front once the
             // browser consent is done, and the page links back to it.
             process.arguments = ["auth", "login", "--app-return"]
-            process.environment = Constants.resolvedEnvironment()
+            process.environment = await Constants.resolvedEnvironmentAsync()
 
             // Published before launch so Cancel can reach it; cancelling
             // checks `isRunning`, so an unlaunched process is left alone —
@@ -509,7 +513,7 @@ struct SlackConnectionDetail: View {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-        process.environment = Constants.resolvedEnvironment()
+        process.environment = await Constants.resolvedEnvironmentAsync()
         return await ProcessPipes.run(process).trimmed
     }
 }

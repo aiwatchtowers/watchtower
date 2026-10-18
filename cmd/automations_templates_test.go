@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ type installJSONOut struct {
 		Path         string `json:"path"`
 		ParseError   string `json:"parse_error"`
 	} `json:"installed"`
+	Params map[string][]string `json:"params"`
 }
 
 func installTemplate(t *testing.T, args ...string) installJSONOut {
@@ -48,27 +50,35 @@ func templateWorkbench(t *testing.T, c *autoCLI) (int64, string) {
 }
 
 func TestInstallTemplate_PlaceholdersAndParams(t *testing.T) {
+	// #582: without --param (the Desktop gallery) <PROJECT> is chosen from
+	// the owner's data; with no active project the install is refused and
+	// writes nothing.
 	c := newAutoCLI(t)
-	got := installTemplate(t, "jira-state-report")
-	require.Len(t, got.Installed, 1)
-	assert.Contains(t, got.Installed[0].ParseError, "<PROJECT>")
-	a, err := c.d.GetAutomation(got.AutomationID)
-	require.NoError(t, err)
-	assert.False(t, a.Runnable())
-	text, err := os.ReadFile(got.Path)
-	require.NoError(t, err)
-	assert.Contains(t, string(text), "jira:read@<PROJECT>", "the placeholder is installed as written")
+	out, err := runAutomations(t, "install-template", "jira-state-report", "--json")
+	require.Error(t, err, out)
+	assert.Contains(t, err.Error(), "assignee or reporter")
+	assert.Contains(t, err.Error(), "Connect Jira, let it sync, and try again.", "#665: the gallery says what to do next")
+	assert.NotContains(t, err.Error(), "--param", "the gallery (--json) gets the app's words only")
+	out, err = runAutomations(t, "install-template", "jira-state-report")
+	require.Error(t, err, out)
+	assert.True(t, strings.HasSuffix(err.Error(), "try again. Or pass --param PROJECT=<KEY>."),
+		"the CLI text output adds the flag hint as its own sentence: %s", err)
+	assert.NoFileExists(t, filepath.Join(c.personal, "jira-state-report.md"))
 
 	c2 := newAutoCLI(t)
-	got = installTemplate(t, "jira-state-report", "--param", "PROJECT=PAY")
+	got := installTemplate(t, "jira-state-report", "--param", "PROJECT=PAY,OPS,PAY")
 	require.Len(t, got.Installed, 1)
 	assert.Empty(t, got.Installed[0].ParseError)
-	a, err = c2.d.GetAutomation(got.AutomationID)
+	assert.Equal(t, map[string][]string{"PROJECT": {"PAY", "OPS"}}, got.Params)
+	a, err := c2.d.GetAutomation(got.AutomationID)
 	require.NoError(t, err)
+	assert.False(t, a.Runnable(), "installed unconfirmed")
 	assert.Contains(t, a.PermissionsJSON, "jira:read@PAY")
+	assert.Contains(t, a.PermissionsJSON, "jira:read@OPS")
 
 	c3 := newAutoCLI(t)
-	for _, param := range []string{"PROJECT=a b", "X=1", "PROJECT", "PROJECT=PAY:", `PROJECT=PAY\`} {
+	for _, param := range []string{"PROJECT=a b", "X=1", "PROJECT", "PROJECT=PAY:", `PROJECT=PAY\`, "PROJECT=PA*", "PROJECT=*",
+		"PROJECT=PAY,"} {
 		out, err := runAutomations(t, "install-template", "jira-state-report", "--param", param)
 		require.Error(t, err, "--param %s: %s", param, out)
 	}
@@ -76,6 +86,41 @@ func TestInstallTemplate_PlaceholdersAndParams(t *testing.T) {
 	rows, err := c3.d.ListAutomations(db.AutomationFilter{})
 	require.NoError(t, err)
 	assert.Empty(t, rows)
+}
+
+// #582: the owner's active Jira projects become <PROJECT>: one grant and one
+// script entry per project, reported in --json params.
+func TestInstallTemplate_JiraProjectFromOwnerData(t *testing.T) {
+	c := newAutoCLI(t)
+	acct := db.SeedTestJiraAccount(t, c.d)
+	_, err := c.d.Exec(`UPDATE jira_accounts SET owner_account_id = 'me' WHERE id = ?`, acct)
+	require.NoError(t, err)
+	for _, p := range []string{"PAY", "OPS"} {
+		require.NoError(t, c.d.UpdateJiraSyncState(acct, p, "now", 1))
+	}
+	open := func(key, project string) {
+		require.NoError(t, c.d.UpsertJiraIssue(db.JiraIssue{AccountID: acct, Key: key, ProjectKey: project, Summary: "S",
+			Status: "Open", StatusCategory: "new", AssigneeAccountID: "me", CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now"}))
+	}
+	open("PAY-1", "PAY")
+	got := installTemplate(t, "jira-state-report")
+	require.Empty(t, got.Installed[0].ParseError)
+	assert.Equal(t, map[string][]string{"PROJECT": {"PAY"}}, got.Params)
+	a, err := c.d.GetAutomation(got.AutomationID)
+	require.NoError(t, err)
+	assert.Contains(t, a.PermissionsJSON, "jira:read@PAY")
+	assert.NotContains(t, a.PermissionsJSON, "OPS")
+
+	require.NoError(t, os.Remove(got.Path))
+	require.NoError(t, c.d.DeleteAutomation(got.AutomationID))
+	open("OPS-1", "OPS")
+	got = installTemplate(t, "jira-state-report")
+	require.Empty(t, got.Installed[0].ParseError)
+	assert.Equal(t, map[string][]string{"PROJECT": {"OPS", "PAY"}}, got.Params)
+	text, err := os.ReadFile(got.Path)
+	require.NoError(t, err)
+	assert.Contains(t, string(text), "  - jira:read@OPS\n  - jira:read@PAY\n")
+	assert.Contains(t, string(text), `const projects = ["OPS", "PAY"];`)
 }
 
 func TestInstallTemplate_FailedWriteRollsBack(t *testing.T) {
@@ -282,8 +327,8 @@ func TestInstallTemplate_RefusesLinkedWorkbenchDir(t *testing.T) {
 	assert.Empty(t, rows)
 }
 
-// new-mail-summary's note (its event trigger fires once P4 ships) is in the
-// gallery and in install-template's text and JSON output.
+// new-mail-summary's note (a run without a sync event reads scheduledAccounts)
+// is in the gallery and in install-template's text and JSON output.
 func TestInstallTemplate_PrintsTemplateNotes(t *testing.T) {
 	newAutoCLI(t)
 	out, err := runAutomations(t, "templates", "--json")
@@ -292,8 +337,8 @@ func TestInstallTemplate_PrintsTemplateNotes(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &entries), out)
 	require.Equal(t, "new-mail-summary", entries[0].Name)
 	require.Len(t, entries[0].Notes, 1)
-	assert.Contains(t, entries[0].Notes[0], "event triggers ship (P4)")
-	assert.Contains(t, entries[0].Description, "event triggers ship (P4)")
+	assert.Contains(t, entries[0].Notes[0], "scheduledAccounts")
+	assert.NotContains(t, entries[0].Description, "P4")
 	assert.NotNil(t, entries[1].Notes, "notes is [] when a template has none")
 
 	raw, err := runAutomations(t, "install-template", "new-mail-summary", "--json")
@@ -301,10 +346,10 @@ func TestInstallTemplate_PrintsTemplateNotes(t *testing.T) {
 	var got installJSON
 	require.NoError(t, json.Unmarshal([]byte(raw), &got), raw)
 	require.Len(t, got.Notes, 1)
-	assert.Contains(t, got.Notes[0], "event triggers ship (P4)")
+	assert.Contains(t, got.Notes[0], "scheduledAccounts")
 
 	newAutoCLI(t)
 	text, err := runAutomations(t, "install-template", "new-mail-summary")
 	require.NoError(t, err, text)
-	assert.Contains(t, text, "Note: Its mail-sync event trigger fires once event triggers ship (P4).")
+	assert.Contains(t, text, "Note: A run by hand or on a schedule has no mail-sync event: list your mailboxes in scheduledAccounts in the script first.")
 }

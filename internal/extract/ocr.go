@@ -114,7 +114,7 @@ func (h *helperOCR) Recognize(ctx context.Context, path string, pages []int) (ma
 func (h *helperOCR) run(ctx context.Context, path string, pages []int) ([]byte, error) {
 	cctx, cancel := context.WithTimeout(ctx, h.timeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, h.path, helperArgs(path, pages)...) //nolint:gosec // the helper path is resolved by us, the file is our own temp file
+	cmd := exec.CommandContext(cctx, h.path, helperArgs(path, pages)...) // the helper path is resolved by us, the file is our own temp file
 	stdout := &cappedBuffer{max: maxOCROutput}
 	stderr := &cappedBuffer{max: maxOCRStderr, truncate: true} // more stderr must not fail a good batch
 	cmd.Stdout, cmd.Stderr = stdout, stderr

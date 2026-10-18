@@ -20,12 +20,45 @@ concurrency:
 jobs:
   # Skips the push-triggered run when the branch has an open PR — the
   # pull_request-triggered run of the same commit does the work instead.
+  # On a pull request it also says which jobs the change can affect:
+  #   code   — anything but docs: Go and Swift test each other (Swift Test
+  #            builds the CLI, Go tests read Swift sources and the generated
+  #            test schema), so one switch covers both, the linters and Sentrux;
+  #            docs/guide/reference/keyboard-shortcuts.md counts as code, since
+  #            KeyboardShortcutCatalogTests reads it.
+  #   mobile — the iPhone app, the Kit it builds on, the Makefile or this file.
+  # A push (main included) and workflow_dispatch always run everything.
   gate:
     name: Dedupe gate
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       run: ${{ steps.check.outputs.run }}
+      code: ${{ github.event_name != 'pull_request' || steps.filter.outputs.code == 'true' || steps.filter.outputs.guide_input == 'true' }}
+      mobile: ${{ github.event_name != 'pull_request' || steps.filter.outputs.mobile == 'true' }}
+      guide: ${{ github.event_name != 'pull_request' || steps.filter.outputs.guide == 'true' }}
     steps:
+      # every: a file counts for a filter only when it matches all of its
+      # patterns, which is what the `!` exclusions need.
+      - id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@v3
+        with:
+          predicate-quantifier: every
+          filters: |
+            code:
+              - '**'
+              - '!docs/**'
+              - '!*.md'
+            guide_input:
+              - 'docs/guide/reference/keyboard-shortcuts.md'
+            mobile:
+              - '{WatchtowerMobile/**,WatchtowerKit/**,Makefile,.github/workflows/ci.yml}'
+            guide:
+              - 'docs/guide/**'
+
       - id: check
         env:
           GH_TOKEN: ${{ github.token }}
@@ -40,10 +73,30 @@ jobs:
           fi
           echo "run=true" >> "$GITHUB_OUTPUT"
 
+  # The user guide is a Go package (docs/guide): its links, anchors and page
+  # sizes are checked by its tests. Runs on its own, so a guide-only PR gets
+  # just this and the leak check.
+  guide-check:
+    name: Guide Check
+    needs: gate
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.guide == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.9"
+
+      - name: Guide check
+        # internal/chat pins guide.Map() in the prompt golden and internal/kb
+        # searches every guide page, so a guide-only PR must run both.
+        run: go test ./docs/guide/ ./internal/kb/ ./internal/chat/
+
   go-lint:
     name: Go Lint
     needs: gate
-    if: needs.gate.outputs.run == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -119,7 +172,7 @@ jobs:
   go-test:
     name: Go Test
     needs: gate
-    if: needs.gate.outputs.run == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
     runs-on: ubuntu-latest
     # A hang must fail the job, not run to GitHub's 6 h default. Measured
     # 2026-10-02: ~7 min on a PR, up to ~36 min on main with the race pass.
@@ -167,7 +220,7 @@ jobs:
   codeindex-changes:
     name: Code index changes
     needs: gate
-    if: needs.gate.outputs.run == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -218,7 +271,7 @@ jobs:
   swift-lint:
     name: Swift Lint + Kit Test
     needs: gate
-    if: needs.gate.outputs.run == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
     # macos-26 + Xcode 26.4.1: the Kit tests run on Swift Test's toolchain.
     runs-on: macos-26
     timeout-minutes: 30
@@ -257,7 +310,7 @@ jobs:
   swift-test:
     name: Swift Test
     needs: gate
-    if: needs.gate.outputs.run == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
     # macos-26: its image carries Xcode 26.4+ (Swift 6.3). The pinned mlx-swift
     # 0.31.6 (via speech-swift) declares swift-tools-version 6.3, which Xcode
     # 26.3 (Swift 6.2.4, the newest on macos-15) cannot load on a cold SPM
@@ -390,7 +443,7 @@ jobs:
   mobile-app:
     name: Mobile App
     needs: gate
-    if: needs.gate.outputs.run == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.mobile == 'true'
     runs-on: macos-26
     # A cold SPM resolve plus the simulator boot; the suite itself is minutes.
     timeout-minutes: 45
@@ -420,7 +473,7 @@ jobs:
   sentrux-quality:
     name: Sentrux Quality Gate
     needs: gate
-    if: needs.gate.outputs.run == 'true'
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
     runs-on: ubuntu-latest
     # The job only reads the checked-out tree and downloads a public release
     # asset (no token needed), so the job token gets nothing beyond checkout.

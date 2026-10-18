@@ -44,10 +44,12 @@ extension WorkbenchesViewModel {
         return true
     }
 
-    /// A stack row's session caption: the session's title; for a
+    /// A stack row's session caption: the session's title; for an
+    /// automation's ask "⚙ <automation> · run #N" (spec §13.3); for a
     /// session-less ask "Session deleted" when the app saw its session go
     /// (board #542), else "Outside the app".
     func askSessionTitle(_ ask: OwnerAsk) -> String {
+        if let label = asks.automationLabel(ask) { return label }
         guard let id = ask.sessionID else {
             let deleted = asks.sessionDeletedAskIDs[ask.projectID]?.contains(ask.id) == true
             return deleted ? OwnerAskStack.sessionDeletedTitle : OwnerAskStack.outsideTheAppTitle
@@ -128,14 +130,14 @@ extension WorkbenchesViewModel {
 
     /// The workbench whose stack A / ⌃⌘A would go to: the one on the page,
     /// drilled into, with an ask waiting; nil otherwise (the key is left
-    /// alone, Navigate › Show Waiting for You is off).
+    /// alone, Workbench › Show Waiting for You is off).
     var stackKeyboardWorkbench: Int64? {
         guard hasWorkbenchPage, let projectID = selectedWorkbenchID, drilledWorkbenchID == projectID,
               !asks.stack(projectID: projectID).asks.isEmpty else { return nil }
         return projectID
     }
 
-    /// Whether Navigate › Show Waiting for You acts for `shownID`, the
+    /// Whether Workbench › Show Waiting for You acts for `shownID`, the
     /// workbench of the key window (`OpenQuicklyCenter.keyWorkbench`).
     func canShowWaitingStack(shownID: Int64?) -> Bool {
         shownID != nil && stackKeyboardWorkbench == shownID

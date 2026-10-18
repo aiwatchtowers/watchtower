@@ -2,11 +2,15 @@ import Foundation
 
 /// Per-feature readiness, pure: every input (the clock included) comes in
 /// `ReadinessInputs`. Precedence is fixed: off > needsSource > ready >
-/// preparing > error > waitingForSync > scheduled.
+/// needsSource(.jiraBoards) > needsDigests > daemonStopped > preparing > error >
+/// waitingForSync > scheduled.
 package enum FeatureReadiness {
     /// A `running` row older than this is a dead process's leftover
     /// (`reapStalePipelineRuns` only reaps it after 24 h), not a run.
     package static let preparingMaxAge: TimeInterval = 2 * 60 * 60
+    /// How long the daemon must be seen down before features say so: a
+    /// restart (stop, then start) stays well under it, so it never flickers.
+    package static let daemonDownGrace: TimeInterval = 30
 
     /// `config.DefaultPollInterval` in Go, in minutes.
     static let defaultPollMinutes = 15
@@ -15,6 +19,9 @@ package enum FeatureReadiness {
     /// `DefaultIdeasMineIntervalHours` / `DefaultStreamsIntervalHours` in Go.
     static let ideasIntervalHours = 6
     static let streamsIntervalHours = 6
+    /// `memoryBackfillWaitMax` in Go: the longest memory waits for a running
+    /// history backfill row, from its `started_at` (#578).
+    package static let memoryBackfillWaitMax: TimeInterval = 24 * 60 * 60
 
     package static func evaluate(_ inputs: ReadinessInputs) -> [ReadinessFeature: Readiness] {
         Dictionary(uniqueKeysWithValues: ReadinessFeature.allCases.map { ($0, readiness(of: $0, inputs)) })
@@ -25,13 +32,14 @@ package enum FeatureReadiness {
     package static let ownerGated: Set<ReadinessFeature> = [.briefing, .dayPlan, .inbox]
 
     /// With the owner unknown, an owner-gated feature promises no run: a
-    /// scheduled or waiting state reads nil, so no line (Briefings and Day
-    /// Plan say why in their no-owner box; Inbox just shows none). The other
-    /// states are facts and stay.
+    /// scheduled, waiting or daemon-stopped state reads nil (the owner gap is
+    /// the fix to name, even with the daemon down), so no line (Briefings, Day Plan
+    /// and Inbox say why in their no-owner box; Home's card names
+    /// `.ownerIdentity` instead). The other states are facts and stay.
     package static func honoringOwner(_ readiness: Readiness?, of feature: ReadinessFeature, ownerKnown: Bool) -> Readiness? {
         guard !ownerKnown, ownerGated.contains(feature) else { return readiness }
         switch readiness {
-        case .scheduled, .waitingForSync: return nil
+        case .scheduled, .waitingForSync, .daemonStopped: return nil
         default: return readiness
         }
     }
@@ -40,6 +48,19 @@ package enum FeatureReadiness {
         if let id = feature.featureID, inputs.disabledFeatureIDs.contains(id) { return .off }
         if !feature.source.isConnected(in: inputs.connected) { return .needsSource(feature.source) }
         if inputs.contentPresent.contains(feature) { return .ready }
+        // Jira with no board picked never syncs: say so instead of an ETA
+        // (#572) — for Jira's features, and for Jira-or-mail ones while Jira
+        // is their only connected source.
+        if !inputs.jiraBoardsSelected, waitsOnJiraBoards(feature, inputs.connected) {
+            return .needsSource(.jiraBoards)
+        }
+        if feature.runsOnlyWithDigests, let digests = ReadinessFeature.digests.featureID,
+           inputs.disabledFeatureIDs.contains(digests) {
+            return .needsDigests
+        }
+        if isDaemonDown(running: inputs.daemonRunning, since: inputs.daemonNotRunningSince, now: inputs.now) {
+            return .daemonStopped
+        }
 
         let syncing = inputs.syncProgress?.isSyncing(now: inputs.now) == true
         let syncDetail = syncing ? inputs.syncProgress?.summary : nil
@@ -48,12 +69,32 @@ package enum FeatureReadiness {
                inputs.now.timeIntervalSince(run.startedAt) < preparingMaxAge {
                 return .preparing(detail: syncDetail)
             }
-            if run.status == "error" { return .error(message: run.errorMessage) }
+            // While memory waits for the history backfill, an older failed
+            // run is not what holds it (#578): the wait line wins.
+            if run.status == "error", !(feature == .memory && memoryWaitsForHistory(inputs)) {
+                return .error(message: run.errorMessage)
+            }
         }
         if feature.readsSyncedData, inputs.connected.slack, inputs.lastSyncTime == nil {
             return .waitingForSync(detail: syncDetail)
         }
         return .scheduled(eta(of: feature, inputs, syncing: syncing))
+    }
+
+    private static func waitsOnJiraBoards(_ feature: ReadinessFeature, _ connected: ConnectedSources) -> Bool {
+        switch feature.source {
+        case .jira: true
+        case .jiraOrMail: !connected.mail
+        default: false
+        }
+    }
+
+    /// Down for the grace period: every "preparing", "retries" or ETA would
+    /// be a promise nothing keeps until the daemon is started. Also the
+    /// app-wide banner's rule (`ReadinessCenter.daemonDown`).
+    package static func isDaemonDown(running: Bool, since: Date?, now: Date) -> Bool {
+        guard !running, let since else { return false }
+        return now.timeIntervalSince(since) >= daemonDownGrace
     }
 
     private static func eta(of feature: ReadinessFeature, _ inputs: ReadinessInputs, syncing: Bool) -> Eta {
@@ -80,9 +121,21 @@ package enum FeatureReadiness {
             return interval(last: inputs.stamps.lastIdeas, hours: ideasIntervalHours, now: now) ?? cycle
         case .streamDigests:
             return interval(last: inputs.stamps.lastStreams, hours: streamsIntervalHours, now: now) ?? cycle
-        case .slackSync, .digests, .tracks, .memory, .inbox, .knowledgeIndex, .calendar, .jira:
+        case .memory:
+            return memoryWaitsForHistory(inputs) ? .afterHistoryLoads : cycle
+        case .slackSync, .digests, .tracks, .inbox, .knowledgeIndex, .calendar, .jira:
             return cycle
         }
+    }
+
+    /// Dual path with Go's `memoryWaitsForBackfill` (internal/daemon/daemon.go):
+    /// only before memory's first successful run, never under the kill switch
+    /// (`sync.backfill_days <= 0`), and only while a backfill row is running
+    /// and started less than `memoryBackfillWaitMax` ago; paused, done and off
+    /// rows never hold it.
+    private static func memoryWaitsForHistory(_ inputs: ReadinessInputs) -> Bool {
+        guard !inputs.backfillOff, !inputs.memoryHasRun else { return false }
+        return inputs.runningBackfillStarts.contains { inputs.now.timeIntervalSince($0) < memoryBackfillWaitMax }
     }
 
     /// A once-a-day pipeline's gate, as Go's `shouldRunBriefing`: already ran
@@ -105,6 +158,19 @@ package enum FeatureReadiness {
         return .inHours(min(hours, Int((left / 3600).rounded(.up))))
     }
 
+    /// The feature a Turn on for `feature` switches on, which also keys its
+    /// progress and error: Slack Digests while `feature` waits on it, and
+    /// while a Slack Digests Turn on failed (`digestsTurnOnFailed`: an
+    /// enable whose restart failed leaves Digests on, the state moves on,
+    /// and only its retry restarts, #575); otherwise the feature's own id.
+    package static func turnOnFeatureID(
+        for feature: ReadinessFeature, readiness: Readiness?, digestsTurnOnFailed: Bool
+    ) -> String? {
+        guard feature.runsOnlyWithDigests, readiness != .off else { return feature.featureID }
+        if readiness == .needsDigests || digestsTurnOnFailed { return ReadinessFeature.digests.featureID }
+        return feature.featureID
+    }
+
     // MARK: - Wording
 
     package static func phrase(_ eta: Eta) -> String {
@@ -114,6 +180,7 @@ package enum FeatureReadiness {
         case let .at(hour, tomorrow): "\(tomorrow ? "tomorrow" : "today") at \(String(format: "%02d:00", hour))"
         case .inAboutADay: "in about a day"
         case .inHours(let hours): "in about \(hours) h"
+        case .afterHistoryLoads: "waiting for history to load"
         }
     }
 
@@ -121,8 +188,12 @@ package enum FeatureReadiness {
     package static func line(_ readiness: Readiness) -> String {
         switch readiness {
         case .off: "Off — Turn on"
-        case .needsSource(let source): "Connect \(source.displayName) to get this"
+        case .needsSource(.ownerIdentityPending(let name)): "Waiting for your \(name) identity…"
+        case .needsSource(let source): "\(source.actionTitle) to get this"
+        // Every place that shows it follows it with a Turn on Slack Digests button.
+        case .needsDigests: "Needs Slack Digests"
         case .ready: "Ready — Open"
+        case .daemonStopped: "Watchtower isn't running"
         case .preparing(let detail): withDetail("Preparing now", detail)
         case .error(let message): withDetail("Didn't work yet — retries automatically", shortError(message))
         case .waitingForSync(let detail): withDetail("Starts after the first sync", detail)

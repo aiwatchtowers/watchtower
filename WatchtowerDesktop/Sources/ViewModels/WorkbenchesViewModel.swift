@@ -70,6 +70,10 @@ final class WorkbenchesViewModel {
     /// Each workbench's latest methodology call: an older call's answer
     /// (a sheet's load still in flight when a picker changed) is dropped.
     @ObservationIgnored private var methodologyCallSeq: [Int64: Int] = [:]
+    /// Agent Settings → "Your instructions": the owner's texts per workbench,
+    /// and the last refusal per field (the sheet keeps its draft on one).
+    private(set) var instructions: [Int64: OwnerInstructionsState] = [:]
+    private(set) var instructionErrors: [Int64: [InstructionField: String]] = [:]
     private(set) var installStatus: [Int64: WorkbenchInstallStatus] = [:]
     /// The default agent (Settings → Workbench → Default agent, D1) as last
     /// read: menus label themselves with it. A launch reads it afresh
@@ -114,6 +118,14 @@ final class WorkbenchesViewModel {
     /// 2026-10-03-workbench-session-report Part 7). AppState wires its own;
     /// nil = rows without a report line, a Session view with nothing to show.
     @ObservationIgnored weak var sessionReports: SessionReportCenter?
+    /// Agent analytics (#298): the Analytics pane's reports. AppState wires
+    /// its own; nil = a pane with nothing to show.
+    @ObservationIgnored weak var agentAnalytics: AgentAnalyticsCenter?
+    /// The Analytics pane's period per workbench (7 days until picked).
+    var analyticsPeriod: [Int64: AgentAnalyticsCenter.Period] = [:]
+    /// The session (its uuid) whose detail the Analytics pane shows per
+    /// workbench; none = the overview.
+    var analyticsSession: [Int64: String] = [:]
     /// Session cleanup (board #535): the Delete dialog's plan and apply, the
     /// Clean Up… sheet. Held here, on the AppState-owned view model, so a
     /// run survives navigating away. AppState wires its own; nil = Delete
@@ -255,6 +267,10 @@ final class WorkbenchesViewModel {
     @ObservationIgnored var notYetTitledStreak: [Int64: Int] = [:]
     /// When each running resume launched, until its process exits.
     @ObservationIgnored var resumeStarts: [Int64: Date] = [:]
+    /// The launch-time reattach (`startHostReattach`, board #496): a launch
+    /// waits for it, so a row whose run the host still holds is adopted,
+    /// not relaunched beside it.
+    @ObservationIgnored var hostReattach: Task<Void, Never>?
     /// Projects an `openMostRecentSession` is running for, and targets a
     /// `workOn` is running for: a double click must not create two rows.
     @ObservationIgnored var openingSession: Set<Int64> = []
@@ -320,14 +336,16 @@ final class WorkbenchesViewModel {
     /// Every deferred DELETE write in flight (the timer's and the quit's):
     /// the quit waits on it, bounded by `quitDeleteWait`.
     @ObservationIgnored let deleteWrites = DispatchGroup()
-    /// How long the quit commit of the Undo batch may hold the quit. A seam
-    /// for tests.
-    @ObservationIgnored var quitDeleteWait: TimeInterval = 2
+    /// How long the quit commit of the Undo batch may hold the quit: the
+    /// write's busy budget plus 3 s, so a write that waited the whole budget
+    /// still lands (board #588).
+    nonisolated static let defaultQuitDeleteWait = TimeInterval(DBLockInstrumentation.busyTimeoutMS) / 1000 + 3
+    /// `defaultQuitDeleteWait`; a seam for tests.
+    @ObservationIgnored var quitDeleteWait: TimeInterval = WorkbenchesViewModel.defaultQuitDeleteWait
     /// The Undo window's wait. A seam for tests.
     @ObservationIgnored var deleteSleep: (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     /// Runs deferred DELETEs in one write — the only DELETE path of the
-    /// deferred delete, the timer's and the quit's. Off the main actor, so
-    /// the quit can wait for it while it holds the main thread. A seam for
+    /// deferred delete, the timer's and the quit's. Off the main actor. A seam for
     /// tests (a failing or a slow write).
     @ObservationIgnored lazy var commitSessionDeletes: @Sendable ([Int64]) async throws -> Void = { [dbPool] ids in
         try await dbPool.write { db in
@@ -351,6 +369,10 @@ final class WorkbenchesViewModel {
     /// sidebar on Projects, main window visible). The git status refresh
     /// runs only then. Unwired = never on screen.
     var isTabOnScreen: () -> Bool = { false }
+    /// `refreshOnPoll`'s visibility gate (board #731).
+    @ObservationIgnored private var pollRefreshGate = ForegroundRefreshGate()
+    /// The reload `setOnScreen` started — held so tests can await it.
+    @ObservationIgnored private(set) var onScreenRefresh: Task<Void, Never>?
     /// The project a delete is running for; the page disables Delete meanwhile.
     private(set) var deletingWorkbenchID: Int64?
     /// Why the last delete failed; the page shows it in an alert.
@@ -446,6 +468,26 @@ final class WorkbenchesViewModel {
     /// when the session is deleted (`forgetProcessState`). Created during a
     /// view's body, hence not observed.
     @ObservationIgnored var reviewModels: [Int64: ReviewChangesModel] = [:]
+    /// Find Repeats' model per workbench, made on first use.
+    @ObservationIgnored var reviewLessonModels: [Int64: ReviewLessonsModel] = [:]
+
+    /// `automations rescan --workbench N` (spec §13.4); nil without a CLI.
+    /// A seam for tests.
+    @ObservationIgnored var rescanAutomations: ((_ workbenchID: Int64) async throws -> Void)?
+    /// How long recipe-folder changes settle before one rescan runs.
+    @ObservationIgnored var automationRescanDelay: Duration = .seconds(1)
+    /// The debounced rescan waiting per workbench (`automationRecipesChanged`).
+    @ObservationIgnored var automationRescanTimers: [Int64: Task<Void, Never>] = [:]
+    /// The workbenches with a rescan running, and those asked for again
+    /// meanwhile (one follow-up rescan, not one per ask).
+    @ObservationIgnored var automationRescansInFlight: Set<Int64> = []
+    @ObservationIgnored var automationRescansAgain: Set<Int64> = []
+    /// The workbenches asked for a rescan while the feature was not on
+    /// (or its state not loaded yet): rescanned once it comes on.
+    @ObservationIgnored var automationRescansDeferred: Set<Int64> = []
+    /// The `automations` feature is on per a successful Feature Manager
+    /// load (`AppState.isAutomationsFeatureLoadedOn`); off, no rescan runs.
+    @ObservationIgnored var isAutomationsFeatureOn: () -> Bool = { false }
 
     let dbPool: DatabasePool
     /// Not private: WorkbenchesViewModel+Git.swift runs the `workbench git` calls.
@@ -475,7 +517,11 @@ final class WorkbenchesViewModel {
             let service = TerminalTitleService(runner: cli.runner)
             titleService = { try await service.title(sessionID: $0) }
             terminalCenter?.codexLaunchArgs = { try await cli.launchArgs(agent: .codex, workbenchID: $0) }
+            let automations = AutomationsCLI(runner: cli.runner)
+            asks.wakeAutomations = { try await automations.wake() }
+            rescanAutomations = { try await automations.rescan(workbenchID: $0) }
         }
+        codeFiles.onAutomationRecipesChanged = { [weak self] in self?.automationRecipesChanged(workbenchID: $0) }
         terminalCenter?.onSessionExit = { [weak self] id, code, closedByApp in
             self?.sessionExited(id, code: code, closedByApp: closedByApp)
         }
@@ -644,9 +690,31 @@ final class WorkbenchesViewModel {
     }
 
     /// The notification center's 30 s poll. The agent writes comments and
-    /// asks from another process (DB only), so the list — and the badge — reloads.
+    /// asks from another process (DB only), so the list — and the badge —
+    /// reloads, while the UI is on screen (board #731; the notices
+    /// themselves go out either way). Off screen only the workbench ids are
+    /// read: one deleted elsewhere (the CLI) still has its terminals closed
+    /// and its state dropped by a full reload at once.
     func refreshOnPoll() async {
-        await reload()
+        if pollRefreshGate.tick() {
+            await reload()
+            return
+        }
+        let ids: [Int64]
+        do {
+            ids = try await dbPool.read { try WorkbenchQueries.fetchAll($0).map(\.id) }
+        } catch {
+            print("[Workbenches] off-screen poll read failed: \(error.localizedDescription)")
+            return
+        }
+        if !Self.vanished(previous: summaries.map(\.id), current: ids).isEmpty { await reload() }
+    }
+
+    /// The UI went on or off screen: back on screen after a skipped poll,
+    /// the list reloads at once.
+    func setOnScreen(_ onScreen: Bool) {
+        guard pollRefreshGate.setOnScreen(onScreen) else { return }
+        onScreenRefresh = Task { _ = await reload() }
     }
 
     nonisolated static func vanished(previous: [Int64], current: [Int64]) -> [Int64] {
@@ -862,7 +930,7 @@ final class WorkbenchesViewModel {
         // and MCP server it relies on, so no first-run session.
         if installed {
             await startNewSession(project: project, title: TerminalSessionNaming.setupTitle,
-                                  prompt: TerminalLaunch.firstRunPrompt(vocabulary(projectID: project.id)),
+                                  prompt: TerminalLaunch.firstRunPrompt,
                                   agent: setupAgent(projectID: project.id))
         }
     }
@@ -900,11 +968,11 @@ final class WorkbenchesViewModel {
         await refreshInstallStatus(projectID: projectID)
     }
 
-    /// The skill and server names the workbench's folder answers to
-    /// (`WorkbenchInstallStatus.vocabulary`); the current ones while its status
-    /// is unknown — not read yet, or the read failed (spec 2026-10-02 §5.3).
-    func vocabulary(projectID: Int64) -> WorkbenchVocabulary {
-        installStatus[projectID]?.vocabulary ?? .current
+    /// Whether the skill the agent's session reads knows the group first
+    /// prompt (`WorkbenchInstallStatus.skillKnowsGroupPrompt`); yes while the
+    /// status is unknown, as the shipped skill does.
+    func skillKnowsGroupPrompt(projectID: Int64, agent: AgentKind) -> Bool {
+        installStatus[projectID]?.skillKnowsGroupPrompt(agent) ?? true
     }
 
     /// Reads `integrate status` for one project. The page runs this in
@@ -1051,6 +1119,53 @@ final class WorkbenchesViewModel {
         return true
     }
 
+    func loadInstructions(projectID: Int64) async {
+        await runInstructions(projectID: projectID, field: nil) { try await $0.instructions(workbenchID: projectID) }
+    }
+
+    /// Saves this workbench's text for one field; false = refused or failed
+    /// (the message is in `instructionErrors`, nothing was stored).
+    @discardableResult
+    func saveInstruction(projectID: Int64, field: InstructionField, body: String) async -> Bool {
+        await runInstructions(projectID: projectID, field: field) {
+            try await $0.setInstruction(field: field, workbenchID: projectID, body: body)
+        }
+    }
+
+    /// Adds or dismisses one suggestion; the answer carries this workbench's texts.
+    func decideSuggestion(projectID: Int64, field: InstructionField, id: Int64, add: Bool) async {
+        await runInstructions(projectID: projectID, field: field) { cli in
+            _ = try await cli.decideSuggestion(id: id, add: add)
+            return try await cli.instructions(workbenchID: projectID)
+        }
+    }
+
+    @discardableResult
+    private func runInstructions(
+        projectID: Int64,
+        field: InstructionField?,
+        _ call: (WorkbenchCLI) async throws -> OwnerInstructionsState
+    ) async -> Bool {
+        guard let cli else {
+            setInstructionError("The watchtower command-line tool is not available.", projectID: projectID, field: field)
+            return false
+        }
+        do {
+            instructions[projectID] = try await call(cli)
+            instructionErrors[projectID] = nil
+            return true
+        } catch is CancellationError {
+            return false
+        } catch {
+            setInstructionError(error.localizedDescription, projectID: projectID, field: field)
+            return false
+        }
+    }
+
+    private func setInstructionError(_ message: String, projectID: Int64, field: InstructionField?) {
+        instructionErrors[projectID, default: [:]][field ?? .session] = message
+    }
+
     /// The Agent settings sheet's read (spec 2026-10-15 §8).
     func loadMethodology(projectID: Int64) async {
         await runMethodology(projectID: projectID) { try await $0.methodology(projectID: projectID) }
@@ -1097,6 +1212,34 @@ final class WorkbenchesViewModel {
         }
     }
 
+    /// The Board Columns… sheet's read (board #267): the stored definition
+    /// through `watchtower workbench columns` and, per defined column, the
+    /// cards that show in it (what deleting it moves).
+    func loadBoardColumns(projectID: Int64) async throws -> (WorkbenchBoardColumns, [Int64: Int]) {
+        guard let cli else { throw WorkbenchBoardColumnsError.cliUnavailable }
+        let def = try await cli.boardColumns(projectID: projectID)
+        let counts = try await dbPool.read { try WorkbenchQueries.boardColumnCardCounts($0, projectID: projectID) }
+        return (def, counts)
+    }
+
+    /// The sheet's Save: Go replaces the whole definition or refuses it
+    /// (nothing written). The board picks a saved definition up through its
+    /// fingerprint.
+    func saveBoardColumns(_ def: WorkbenchBoardColumns, projectID: Int64) async throws -> WorkbenchBoardColumns {
+        guard let cli else { throw WorkbenchBoardColumnsError.cliUnavailable }
+        return try await cli.setBoardColumns(projectID: projectID, def)
+    }
+
+    /// A refused definition's own message (Go prints it alone on stderr);
+    /// anything else as the error describes itself.
+    static func boardColumnsMessage(_ error: Error) -> String {
+        if case let CLIRunnerError.nonZeroExit(code, stderr) = error {
+            let text = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? "watchtower exited with code \(code)" : text
+        }
+        return error.localizedDescription
+    }
+
     /// The header menu's "Archive Closed Targets Now" (board #415): every
     /// target closed by now leaves the board. The board picks the stamp up
     /// through its fingerprint; the reload shows "Undo Archive Now".
@@ -1127,5 +1270,14 @@ final class WorkbenchesViewModel {
     func dismissResync(projectID: Int64) {
         resyncResults[projectID] = nil
         resyncErrors[projectID] = nil
+    }
+}
+
+/// Why the Board Columns… sheet could not run its CLI call.
+enum WorkbenchBoardColumnsError: LocalizedError {
+    case cliUnavailable
+
+    var errorDescription: String? {
+        "The watchtower command-line tool is not available."
     }
 }

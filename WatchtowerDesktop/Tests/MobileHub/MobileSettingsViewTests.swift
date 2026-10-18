@@ -127,6 +127,30 @@ final class MobileSettingsViewTests: XCTestCase {
         XCTAssertFalse(try XCTUnwrap(fixture.sidecar.linkedDevice("phone-b")).typingAllowed)
     }
 
+    /// #517: each phone row has a second Allow… / Revoke for answering
+    /// permission prompts, next to its own label.
+    func testThePhoneRowHasItsOwnPermissionPromptsButtons() async throws {
+        await fixture.tearDown()
+        fixture = try MobileSettingsFixture(phones: [("phone-a", .private, "_owner-acme")])
+        let model = fixture.makeModel()
+        let view = MobileSettingsView(model: model)
+
+        XCTAssertNoThrow(try view.inspect().find(text: "Permission prompts off"))
+        let allows = try view.inspect().findAll(ViewType.Button.self) { try $0.labelView().text().string() == "Allow…" }
+        XCTAssertEqual(allows.count, 3, "typing, starting sessions and permission prompts")
+        XCTAssertNoThrow(try view.inspect().find(text: "Starting sessions needs typing"))
+        XCTAssertThrowsError(try allows[1].tap(), "starting sessions waits for typing (#565)")
+        try allows[2].tap()
+        XCTAssertEqual(model.pendingPermissionsAllow?.deviceID, "phone-a")
+        XCTAssertNil(model.pendingAllow)
+
+        try fixture.center.setPermissionsAllowed(true, deviceID: "phone-a")
+        let allowed = MobileSettingsView(model: model)
+        XCTAssertNoThrow(try allowed.inspect().find(text: "Permission prompts allowed"))
+        try allowed.inspect().find(button: "Revoke").tap()
+        XCTAssertFalse(try XCTUnwrap(fixture.sidecar.linkedDevice("phone-a")).permissionsAllowed)
+    }
+
     // MARK: - The QR sheet
 
     func testTheSheetAtZeroShowsShowANewCode() async throws {

@@ -24,8 +24,7 @@ var workbenchSessionReportCmd = &cobra.Command{
 		"agent session (Claude Code or Codex) of the workbench from the cache only, never\n" +
 		"running git or gh.\n" +
 		"Exits non-zero only when the workbench or the session does not resolve; a git or gh\n" +
-		"failure is reported in pr_note. The pre-rename `project session-report --project N`\n" +
-		"works too.",
+		"failure is reported in pr_note.",
 	Args: cobra.NoArgs,
 	RunE: runWorkbenchSessionReport,
 }
@@ -40,7 +39,7 @@ var (
 
 func init() {
 	c := workbenchSessionReportCmd
-	addWorkbenchIDFlag(c, &workbenchSessionReportFlagWorkbench, "workbench id")
+	c.Flags().Int64Var(&workbenchSessionReportFlagWorkbench, workbenchFlag, 0, "workbench id")
 	fs := c.Flags()
 	fs.Int64Var(&workbenchSessionReportFlagSession, "session", 0, "terminal session id: print its report")
 	fs.BoolVar(&workbenchSessionReportFlagSummary, "summary", false, "print every agent session's row line (cache only)")
@@ -52,13 +51,9 @@ func init() {
 }
 
 func runWorkbenchSessionReport(cmd *cobra.Command, _ []string) error {
-	if err := checkWorkbenchIDFlags(cmd); err != nil {
-		return err
-	}
 	id := workbenchSessionReportFlagWorkbench
 	if id <= 0 {
-		return fmt.Errorf("%s: a positive workbench id is required",
-			workbenchFlagName(cmd.Flags().Changed(legacyWorkbenchFlag)))
+		return fmt.Errorf("--%s: a positive workbench id is required", workbenchFlag)
 	}
 	_, database, err := openJiraCmdDB()
 	if err != nil {
@@ -212,7 +207,7 @@ func printReportLastWord(w io.Writer, s sessionreport.Session) {
 		fmt.Fprintln(w, "  (the agent has not finished)")
 		return
 	}
-	for _, line := range strings.Split(s.FinishSummary, "\n") {
+	for line := range strings.SplitSeq(s.FinishSummary, "\n") {
 		fmt.Fprintln(w, "  "+line)
 	}
 }

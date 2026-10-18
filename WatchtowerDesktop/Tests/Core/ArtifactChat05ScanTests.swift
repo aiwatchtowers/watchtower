@@ -39,15 +39,42 @@ final class ArtifactChat05ScanTests: XCTestCase {
             "Views/Comments/DocumentTextView.swift",
             // Split out of / added beside them by #178–#181.
             "Views/Comments/DocumentAttributedString.swift",
-            "Views/Comments/CommentTextEditor.swift"
+            "Views/Comments/CommentTextEditor.swift",
+            // The sandboxed web view an html artifact renders in (#535): its
+            // controls are view-only, and it never reaches the loopback
+            // server (workbench files only) or any socket.
+            "Views/Common/SandboxedHTMLView.swift",
+            "WatchtowerCore/Services/LocalPreview/HTMLPreviewPolicy.swift",
+            // The in-app preview's file scheme handler (#563): read-only
+            // from disk, no socket or URL loading of its own.
+            "Views/Common/SandboxedHTMLSchemeHandler.swift"
         ]
         let forbidden = ["Process(", "CLIRunner", "URLSession", "findCLIPath", "WatchtowerAIService", "ChatSessionPool",
-                         ".send(", "sendDraft", "startTurn"]
+                         ".send(", "sendDraft", "startTurn",
+                         // Nothing on the artifact side hands content to the
+                         // loopback server or opens a socket (#535).
+                         "LocalPreviewServer", "HTMLBrowserOpener", "NWConnection", "NWListener"]
         for file in files {
             let text = try String(contentsOf: sources.appendingPathComponent(file), encoding: .utf8)
             for token in forbidden {
                 XCTAssertFalse(text.contains(token), "\(file) must not reference \(token) (CHAT-05)")
             }
+        }
+    }
+
+    /// CHAT-05 on the loopback server's own path (#535): it answers local
+    /// requests on connections it accepted and never opens one — no
+    /// outbound connection, no URL loading, no process.
+    /// BEHAVIOR CHAT-05 — see docs/inventory/chat.md
+    func testChat05LoopbackServerNeverConnectsOut() throws {
+        let file = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Core
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .appendingPathComponent("Sources/WatchtowerCore/Services/LocalPreview/LocalPreviewServer.swift")
+        let text = try String(contentsOf: file, encoding: .utf8)
+        for token in ["URLSession", "NWConnection(to:", "NWConnection(host:", "NWConnection(", "Process(", "CLIRunner"] {
+            XCTAssertFalse(text.contains(token), "LocalPreviewServer.swift must not reference \(token) (CHAT-05)")
         }
     }
 }

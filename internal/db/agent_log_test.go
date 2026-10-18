@@ -119,3 +119,118 @@ func TestAgentLog_SurvivesWorkbenchDeleteAndIsAdopted(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int64(1), adopted)
 }
+
+func TestAgentLogStats_OwnerTurnsSkipNotifications(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	var evs []AgentLogEvent
+	for i, trig := range []string{"owner", "notification", "hook"} {
+		evs = append(evs, AgentLogEvent{SessionUUID: "s1", Key: "owner_turn:" + trig, Kind: "owner_turn", Trigger: trig,
+			TS: "2026-10-01T10:00:0" + string(rune('0'+i)) + "Z", SrcPath: "/x/a.jsonl"})
+	}
+	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 10}, ExpectOffset: -1,
+		Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", pid)}, Events: evs})
+	require.NoError(t, err)
+	st, err := d.AgentLogStats(pid)
+	require.NoError(t, err)
+	assert.Equal(t, 1, st.OwnerTurns)
+}
+
+func TestApplyAgentLogBatch_ToolResultSetsSpawnedAgent(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	use := AgentLogEvent{SessionUUID: "s1", Key: "tool:t1", Kind: "tool", TS: "2026-10-01T10:00:00Z", Name: "Agent", Outcome: "pending", SrcPath: "/x/a.jsonl"}
+	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 10}, ExpectOffset: -1,
+		Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", pid)}, Events: []AgentLogEvent{use}})
+	require.NoError(t, err)
+	_, err = d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 20}, ExpectOffset: 10,
+		ToolResults: []AgentToolResult{{ToolUseID: "t1", TS: "2026-10-01T10:00:02Z", Outcome: "ok", SpawnedAgentID: "a1", Background: true}}})
+	require.NoError(t, err)
+	var id string
+	var bg bool
+	require.NoError(t, d.QueryRow(`SELECT spawned_agent_id, background FROM agent_log_events WHERE key='tool:t1'`).Scan(&id, &bg))
+	assert.Equal(t, "a1", id)
+	assert.True(t, bg)
+}
+
+func TestApplyAgentLogBatch_AsyncResultWithoutAgentIDSetsBackground(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	use := AgentLogEvent{SessionUUID: "s1", Key: "tool:t1", Kind: "tool", TS: "2026-10-01T10:00:00Z", Name: "Agent", Outcome: "pending", SrcPath: "/x/a.jsonl"}
+	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 10}, ExpectOffset: -1,
+		Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", pid)}, Events: []AgentLogEvent{use}})
+	require.NoError(t, err)
+	_, err = d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 20}, ExpectOffset: 10,
+		ToolResults: []AgentToolResult{{ToolUseID: "t1", TS: "2026-10-01T10:00:02Z", Outcome: "ok", Background: true}}})
+	require.NoError(t, err)
+	var id string
+	var bg bool
+	require.NoError(t, d.QueryRow(`SELECT spawned_agent_id, background FROM agent_log_events WHERE key='tool:t1'`).Scan(&id, &bg))
+	assert.Equal(t, "", id)
+	assert.True(t, bg)
+}
+
+// #571 review: a slice whose records carry no timestamp never blanks a
+// session's stored start, and a blank start is filled by a later slice.
+func TestApplyAgentLogBatch_EmptyStartNeverOverwritesSessionStart(t *testing.T) {
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	apply := func(off, expect int64, s AgentLogSession) {
+		t.Helper()
+		ok, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: off},
+			ExpectOffset: expect, Sessions: []AgentLogSession{s}})
+		require.NoError(t, err)
+		require.True(t, ok)
+	}
+	read := func(uuid string) (started, ended string) {
+		t.Helper()
+		require.NoError(t, d.QueryRow(`SELECT started_at, ended_at FROM agent_log_sessions WHERE session_uuid = ?`, uuid).Scan(&started, &ended))
+		return
+	}
+	apply(1, -1, agentSession("s1", "2026-10-01T10:00:00Z", pid))
+	apply(2, 1, agentSession("s1", "", pid))
+	started, ended := read("s1")
+	assert.Equal(t, "2026-10-01T10:00:00Z", started)
+	assert.Equal(t, "2026-10-01T10:00:00Z", ended)
+
+	apply(3, 2, agentSession("s2", "", pid))
+	apply(4, 3, agentSession("s2", "2026-10-01T11:00:00Z", pid))
+	started, ended = read("s2")
+	assert.Equal(t, "2026-10-01T11:00:00Z", started)
+	assert.Equal(t, "2026-10-01T11:00:00Z", ended)
+}
+
+// #571: reprice commits slice by slice; a failed slice leaves its rows (and
+// the rest) at the old version for the next scan, earlier slices stay done.
+func TestRepriceAgentLogEvents_SlicesAndPartialFailure(t *testing.T) {
+	old := agentLogRepriceSlice
+	agentLogRepriceSlice = 2
+	t.Cleanup(func() { agentLogRepriceSlice = old })
+	d := openTestDB(t)
+	pid := newTestWorkbench(t, d)
+	var evs []AgentLogEvent
+	for i := range 5 {
+		evs = append(evs, apiCall("s1", "m"+string(rune('a'+i))+":r", 3))
+	}
+	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 1}, ExpectOffset: -1,
+		Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", pid)}, Events: evs})
+	require.NoError(t, err)
+	price := func(string, string, int64, int64, int64, int64, int64) (float64, bool) { return 1, true }
+	_, err = d.Exec(`CREATE TRIGGER test_fail_reprice BEFORE UPDATE OF price_version ON agent_log_events
+		WHEN NEW.key = 'md:r' BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END`)
+	require.NoError(t, err)
+	n, err := d.RepriceAgentLogEvents(9, price)
+	require.Error(t, err)
+	assert.Equal(t, 2, n)
+	var done int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM agent_log_events WHERE price_version = 9`).Scan(&done))
+	assert.Equal(t, 2, done, "the first slice is committed, the failing one rolled back")
+
+	_, err = d.Exec(`DROP TRIGGER test_fail_reprice`)
+	require.NoError(t, err)
+	n, err = d.RepriceAgentLogEvents(9, price)
+	require.NoError(t, err)
+	assert.Equal(t, 3, n)
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM agent_log_events WHERE price_version = 9`).Scan(&done))
+	assert.Equal(t, 5, done)
+}

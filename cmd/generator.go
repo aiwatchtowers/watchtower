@@ -5,7 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
+	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"watchtower/internal/agentloop"
@@ -75,7 +78,7 @@ var cliBoundedGenerator = func(cfg *config.Config) digest.Generator {
 // terminal than in the daemon. cliGenerator (interactive commands like
 // ask/chat) deliberately does NOT get this wrapper: those calls are already
 // bounded by the user.
-func cliPooledGenerator(cfg *config.Config, logger *log.Logger) (digest.Generator, func()) {
+func cliPooledGenerator(cfg *config.Config) (digest.Generator, func()) {
 	rawGen := digest.WithCallTimeout(cliGenerator(cfg), digest.DaemonAICallTimeout)
 	poolSize := cfg.AI.Workers
 	if poolSize <= 0 {
@@ -154,7 +157,11 @@ func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), err
 		// The editor chat carries only draft/save and read tools (spec
 		// 2026-10-14 §14.5, D11); an external server may expose writes.
 		if c, ok := client.(externalMCPConfigurable); ok && aiFlagSurface != tools.AutomationEditorSurface {
-			c.SetExternalMCPServers(loadExternalMCPServers(cfg, dbPath))
+			var codexEnv []string
+			if _, isCodex := client.(*codex.Client); isCodex {
+				codexEnv = os.Environ() // the codex child's environment
+			}
+			c.SetExternalMCPServers(loadExternalMCPServersWith(cfg, dbPath, codexEnv))
 		}
 	}
 	return client, noop, nil
@@ -176,26 +183,74 @@ func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), err
 // external tools, and the owner sees the row surfaced rather than a silently
 // missing tool.
 func loadExternalMCPServers(cfg *config.Config, dbPath string) []ai.ExternalMCPServer {
+	return loadExternalMCPServersWith(cfg, dbPath, nil)
+}
+
+// loadExternalMCPServersWith is loadExternalMCPServers for a codex launch
+// whose environment is codexEnv (nil = not codex).
+func loadExternalMCPServersWith(cfg *config.Config, dbPath string, codexEnv []string) []ai.ExternalMCPServer {
 	database, err := db.Open(dbPath)
 	if err != nil {
 		log.Printf("external MCP: opening database: %v", err)
 		return nil
 	}
 	defer func() { _ = database.Close() }()
+	return loadExternalMCPServersFrom(cfg, database, codexEnv)
+}
 
+// loadExternalMCPServersFrom is loadExternalMCPServersWith on an open
+// database (the chat session's, reused on every codex launch). For codex
+// (codexEnv non-nil), a connection whose env codex cannot carry
+// (codex.EnvConflicts) is left out before its credentials or tools are
+// touched, and its row says why (markCodexSkipped).
+func loadExternalMCPServersFrom(cfg *config.Config, database *db.DB, codexEnv []string) []ai.ExternalMCPServer {
 	conns, err := database.ListEnabledExternalConnections()
 	if err != nil {
 		log.Printf("external MCP: listing enabled connections: %v", err)
 		return nil
 	}
-
+	// A reserved name is refused first: before the codex env probe reads its
+	// secret, and before any listing could start its server.
+	conns = slices.DeleteFunc(conns, func(c db.ExternalConnection) bool {
+		if !externalmcp.ReservedName(c.Name) {
+			return false
+		}
+		recordReservedName(database, c)
+		return true
+	})
+	var skipped map[int64]string
+	if codexEnv != nil {
+		skipped = codexEnvSkips(cfg, conns, codexEnv)
+	}
 	var servers []ai.ExternalMCPServer
 	for _, c := range conns {
+		if reason, skip := skipped[c.ID]; skip {
+			markCodexSkipped(database, c, reason)
+			continue
+		}
 		if server, ok := mountConnection(cfg, database, c); ok {
 			servers = append(servers, server)
 		}
 	}
 	return servers
+}
+
+// codexEnvSkips are the stdio connections whose secret env a codex launch
+// with env cannot carry (id → reason). An http connection's headers travel
+// in variables of Watchtower's own naming and never conflict.
+func codexEnvSkips(cfg *config.Config, conns []db.ExternalConnection, env []string) map[int64]string {
+	var probe []ai.ExternalMCPServer
+	for _, c := range conns {
+		if c.Kind == "http" {
+			continue
+		}
+		secret, err := externalmcp.NewSecretStore(cfg.WorkspaceDir(), c.ID).Load()
+		if err != nil || secret == nil {
+			continue // mountConnection reports an unreadable secret
+		}
+		probe = append(probe, ai.ExternalMCPServer{ID: c.ID, Name: c.Name, Kind: c.Kind, Env: secret.Env})
+	}
+	return codex.EnvConflicts(probe, env)
 }
 
 // toolsListRetryAfter is how long a chat launch waits before listing a
@@ -277,6 +332,7 @@ func connectionUnmounted(database *db.DB, c db.ExternalConnection, reason string
 // http to a remote host.
 func connectionServer(cfg *config.Config, database *db.DB, c db.ExternalConnection) (ai.ExternalMCPServer, error) {
 	server := ai.ExternalMCPServer{
+		ID:      c.ID,
 		Name:    c.Name,
 		Kind:    c.Kind,
 		Command: c.Command,
@@ -326,6 +382,35 @@ func recordInsecureTransport(database *db.DB, c db.ExternalConnection, err error
 	log.Printf("external connection %d (%s): not mounted: %v", c.ID, c.Name, err)
 	if serr := database.SetExternalConnectionStatus(c.ID, "error", transportReasonPrefix+insecureTransportReason); serr != nil {
 		log.Printf("external connection %d (%s): recording error status: %v", c.ID, c.Name, serr)
+	}
+}
+
+// errReservedName: the connection's name is reserved for the built-in
+// server (externalmcp.ReservedName); the row says so (reservedReasonPrefix).
+var errReservedName = errors.New("its name is reserved for Watchtower's own tools")
+
+// reservedReasonPrefix marks the row error recordReservedName writes. Like
+// transportReasonPrefix it is not toolsReasonPrefix: no tool-policy change,
+// listing, sign-in or launch clears it — only removing the connection.
+const reservedReasonPrefix = "reserved: "
+
+// reservedNameReason is the row's copy, for the owner, after the prefix.
+func reservedNameReason(c db.ExternalConnection) string {
+	return fmt.Sprintf("The name %q is reserved for Watchtower's own tools, so none of its tools is available — "+
+		"remove it (`watchtower connections remove %d`) and add it again under another name.", c.Name, c.ID)
+}
+
+// recordReservedName marks a connection stored under a reserved name before
+// add refused it (QC-02): never mounted, never listed, never called. The row
+// is written only when it does not say so already.
+func recordReservedName(database *db.DB, c db.ExternalConnection) {
+	msg := reservedReasonPrefix + reservedNameReason(c)
+	if c.Status == "error" && c.Error == msg {
+		return
+	}
+	log.Printf("external connection %d (%s): not mounted: %v", c.ID, c.Name, errReservedName)
+	if err := database.SetExternalConnectionStatus(c.ID, "error", msg); err != nil {
+		log.Printf("external connection %d (%s): recording error status: %v", c.ID, c.Name, err)
 	}
 }
 
@@ -433,9 +518,7 @@ func applyOAuthCredentials(
 	}
 
 	headers := make(map[string]string, len(secret.Headers)+1)
-	for k, v := range secret.Headers {
-		headers[k] = v
-	}
+	maps.Copy(headers, secret.Headers)
 	headers["Authorization"] = "Bearer " + secret.OAuth.AccessToken
 
 	if changed {
@@ -466,6 +549,17 @@ func refreshFailureStatus(err error) string {
 // markConnectionOK flips a mounted connection's row back to ok — only while
 // the row still holds the status this launch read at its start (c), so a
 // newer "revoked"/"error" a parallel launch recorded meanwhile stands.
+// markCodexSkipped records on c's row why a codex launch does not mount it
+// (codex.EnvConflicts), so Settings shows it instead of a green dot —
+// written only when the row does not say so already.
+func markCodexSkipped(database *db.DB, c db.ExternalConnection, reason string) {
+	reason = "not available in the codex chat: " + reason
+	if c.Status == "error" && c.Error == toolsReasonPrefix+reason {
+		return
+	}
+	connectionUnmounted(database, c, reason)
+}
+
 func markConnectionOK(database *db.DB, c db.ExternalConnection) {
 	if c.Status == "ok" {
 		return

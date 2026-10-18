@@ -195,6 +195,14 @@ package enum AutomationCardPresentation {
             ?? permission
     }
 
+    /// Shown in the confirm sheet when the recipe has `shell:` entries (board #560, ask #304): the
+    /// confirmation covers the command text only, not the files the command runs. nil without `shell:`.
+    package static func shellWarning(permissions: [String]) -> String? {
+        guard permissions.contains(where: { $0.hasPrefix("shell:") }) else { return nil }
+        return "Confirming approves the command text only. The scripts or Makefile it runs can change "
+            + "later (for example when the repository is updated) and will then run unattended without asking again."
+    }
+
     /// `tool:`, `mcp:` and `shell:` entries.
     private static func prefixedLine(_ permission: String) -> String? {
         if permission.hasPrefix("tool:") {
@@ -259,19 +267,6 @@ package enum AutomationCardPresentation {
         case "slack": "Send Slack messages"
         default: "Write \(output)"
         }
-    }
-
-    package static let workbenchChangeInWordsHelp =
-        "Workbench automations are changed in words from the workbench (coming in a later update)"
-
-    /// Why **Change in words** is off for `automation`; nil when it is on.
-    /// A workbench recipe cannot be saved by the assistant yet
-    /// (`save_automation` refuses `workbench_id`, R-P3-5, until P5 part 2), so
-    /// its chat would only end in a refusal — gated like the edit form. The
-    /// provider's own reason (`providerHelp`, ollama) applies to every recipe.
-    package static func changeInWordsHelp(for automation: Automation, providerHelp: String?) -> String? {
-        if automation.scope == .workbench { return workbenchChangeInWordsHelp }
-        return providerHelp
     }
 
     /// Run now and Dry run for the card. Run now follows Go's `Runnable()`

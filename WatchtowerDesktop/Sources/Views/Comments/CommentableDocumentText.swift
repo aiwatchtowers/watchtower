@@ -158,8 +158,9 @@ struct CommentableDocumentText: View {
 }
 
 /// The floating Comment button (#165): an opaque, shadowed chip — the default
-/// translucent bezel let the document's text show through it.
-private struct FloatingCommentButtonStyle: ButtonStyle {
+/// translucent bezel let the document's text show through it. The chat
+/// feed's "Ask about this" chip shares it.
+struct FloatingCommentButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(Color.primary)

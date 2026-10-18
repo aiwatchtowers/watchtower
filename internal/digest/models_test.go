@@ -9,7 +9,7 @@ import (
 )
 
 func TestTierForSource(t *testing.T) {
-	light := []string{SourceLight, "digest.period", "digest.channel_batch", "people.batch", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", prompts.MemoryRenderChannelDigest, prompts.MeetingFollowup, prompts.DictationClean, prompts.ReactionCommand, "catchup.learn", "automation.llm"}
+	light := []string{SourceLight, "digest.period", "digest.channel_batch", "people.batch", "memory.extract_episodes", "memory.extract_episodes_batch", "memory.extract_email_episodes", prompts.MemoryRenderChannelDigest, prompts.MeetingFollowup, prompts.DictationClean, prompts.ReactionCommand, "catchup.learn", "automation.llm", "instructions.suggest"}
 	for _, src := range light {
 		if got := TierForSource(src); got != TierLight {
 			t.Errorf("TierForSource(%q) = %q, want %q", src, got, TierLight)
@@ -29,6 +29,8 @@ func TestTierForSource(t *testing.T) {
 		prompts.MeetingChapters,
 		// An automation's llm() with tier: strong.
 		"automation.llm.strong",
+		// The diff reviewer's overview: strong by absence from the light switch.
+		"workbench.review_overview", "workbench.review_lessons",
 	}
 	for _, src := range strong {
 		if got := TierForSource(src); got != TierStrong {

@@ -2,12 +2,16 @@
 package claude
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 )
 
 var (
@@ -99,7 +103,7 @@ func mergePATH(paths ...string) string {
 	seen := make(map[string]bool)
 	var parts []string
 	for _, ps := range paths {
-		for _, p := range strings.Split(ps, ":") {
+		for p := range strings.SplitSeq(ps, ":") {
 			if p == "" || seen[p] {
 				continue
 			}
@@ -133,7 +137,7 @@ func fallbackPATH() string {
 	}
 
 	seen := make(map[string]bool)
-	for _, p := range strings.Split(existing, ":") {
+	for p := range strings.SplitSeq(existing, ":") {
 		seen[p] = true
 	}
 	var parts []string
@@ -198,4 +202,55 @@ func loginShellPATH() string {
 		return ""
 	}
 	return p
+}
+
+var (
+	loginEnvOnce sync.Once
+	loginEnv     map[string]string
+)
+
+// LoginShellEnv is the owner's login shell environment (`$SHELL -l -c env
+// -0`, the loginShellPATH precedent), read once per process and cached: a
+// process the Desktop starts has a reduced environment. A shell that fails
+// or takes over 5 s yields none; its process group is killed.
+func LoginShellEnv() map[string]string {
+	loginEnvOnce.Do(func() { loginEnv = readLoginShellEnv(loginShell(), 5*time.Second) })
+	return loginEnv
+}
+
+// loginEnvMarker separates what the shell's startup files print from the
+// environment dump.
+const loginEnvMarker = "__WATCHTOWER_ENV__"
+
+// readLoginShellEnv runs shell as a login shell that prints its
+// environment; nil when it fails or takes longer than timeout (its whole
+// process group is then killed).
+func readLoginShellEnv(shell string, timeout time.Duration) map[string]string {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, shell, "-l", "-c", "printf '\\n"+loginEnvMarker+"\\n'; env -0")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	cmd.WaitDelay = time.Second
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	return parseLoginShellEnv(out)
+}
+
+// parseLoginShellEnv reads the NUL-separated `env -0` dump after the
+// marker line; nil without the marker.
+func parseLoginShellEnv(out []byte) map[string]string {
+	_, after, ok := bytes.Cut(out, []byte("\n"+loginEnvMarker+"\n"))
+	if !ok {
+		return nil
+	}
+	env := map[string]string{}
+	for _, kv := range bytes.Split(after, []byte{0}) {
+		if k, v, ok := strings.Cut(string(kv), "="); ok && k != "" {
+			env[k] = v
+		}
+	}
+	return env
 }

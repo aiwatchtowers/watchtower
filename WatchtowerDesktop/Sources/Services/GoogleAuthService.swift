@@ -58,11 +58,14 @@ final class GoogleAuthService {
         } else {
             process.arguments = ["calendar", "login", "--app-return"]
         }
-        process.environment = Constants.resolvedEnvironment()
         process.currentDirectoryURL = Constants.processWorkingDirectory()
         authProcess = process
 
         Task.detached {
+            // The login environment is awaited here, off the main actor; a
+            // Cancel (or a newer attempt) while it resolves drops this launch.
+            process.environment = await Constants.resolvedEnvironmentAsync()
+            guard await MainActor.run(body: { self.authProcess === process }) else { return }
             let result = await Self.runProcess(process)
             await MainActor.run {
                 self.authProcess = nil
@@ -74,7 +77,7 @@ final class GoogleAuthService {
                     // reflects exactly what got granted.
                     Task { await self.checkStatusAsync() }
                     // Re-wire the daemon so the first sync + AI cycle runs now.
-                    Task { await DaemonManager.restartLogging() }
+                    Task { await DaemonManager.restartLoggingQueued() }
                 } else if result.exitCode == 15 || result.exitCode == 9 {
                     // SIGTERM/SIGKILL — user cancelled
                     self.error = nil

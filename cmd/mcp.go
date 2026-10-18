@@ -38,7 +38,22 @@ workbench tools (board, documents, comments) apply directly to that workbench
 only, and nothing else becomes writable. 'watchtower integrate claude-code
 --workbench N' registers this mode in the workbench folder; never register it
 by hand for an unrelated client.`,
-	RunE: runMCP,
+	PersistentPreRunE: mcpPreRun,
+	RunE:              runMCP,
+}
+
+// mcpPreRun refuses a pre-rename registration (`mcp --project N`) before any
+// config or schema work, so a broken or stale config can neither hide the
+// Repair line nor be rewritten on the way to the refusal: no session is bound
+// or served, and Claude Code shows the server failed with that line (ask
+// #312). Any other mcp run gets the root's ensureSchemaFormat — cobra runs
+// only the CLOSEST PersistentPreRunE (EnableTraverseRunHooks is unset), so
+// declaring this one replaces the root's unless it calls it.
+func mcpPreRun(cmd *cobra.Command, args []string) error {
+	if cmd.Flags().Changed("project") {
+		return errors.New(preRenameSetupLine(preRenameWorkbenchID([]string{"--project", mcpFlagPreRename})))
+	}
+	return ensureSchemaFormat(cmd, args)
 }
 
 var (
@@ -61,10 +76,6 @@ var (
 	// mcpFlagAutomationReadyFile is touched once the automation server
 	// accepted its binding and serves (the agent() runner's startup record).
 	mcpFlagAutomationReadyFile string
-	// mcpFlagWorkbenchLegacy reports an `mcp --project N` invocation: the
-	// registration a pre-rename install wrote, whose session lists the
-	// renamed workbench tools under their old names (spec 2026-10-02 §5.2).
-	mcpFlagWorkbenchLegacy func() bool
 )
 
 func init() {
@@ -82,7 +93,7 @@ func init() {
 	mcpCmd.Flags().StringVar(&mcpFlagAutomationReadyFile, "automation-ready-file", "", "--surface automation: a file created once the server accepted the run's binding and serves")
 	mcpCmd.Flags().StringSliceVar(&mcpFlagAutomationTools, "automation-tools", nil, "--surface automation: the tools the agent() call asked for (comma-separated)")
 	mcpCmd.Flags().StringVar(&mcpFlagAgent, "agent", "", "workbench mode: the coding agent of the session (claude|codex); labels its comments when no terminal session names it")
-	mcpFlagWorkbenchLegacy = addWorkbenchIDFlag(mcpCmd, &mcpFlagWorkbench, "workbench mode: bind to workbench N and apply its workbench tools directly (installed by 'integrate claude-code --workbench N')")
+	mcpCmd.Flags().Int64Var(&mcpFlagWorkbench, workbenchFlag, 0, "workbench mode: bind to workbench N and apply its workbench tools directly (installed by 'integrate claude-code --workbench N')")
 }
 
 // mcpTurnBinding resolves the turn a chat-mode proposal attaches to: a fixed
@@ -121,7 +132,7 @@ func mcpModeOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 		return nil, err
 	}
 	if mcpFlagWorkbench != 0 {
-		return mcpWorkbenchOptions(cfg, database, mcpFlagWorkbench, mcpFlagWorkbenchLegacy())
+		return mcpWorkbenchOptions(cfg, database, mcpFlagWorkbench)
 	}
 	// Chat mode: the connection stays writable ONLY so the registry can
 	// record proposals (agent_actions) — the tools themselves still never
@@ -187,10 +198,10 @@ func mcpChatOptions(cfg *config.Config, database *db.DB, turn string, turnFunc f
 // mcpAutomationOptions is `watchtower mcp --chat --surface automation
 // --automation-run N --automation-tools a,b,c` (spec 2026-10-14 §6.5): the
 // server an automation's agent() claude/codex child talks to. It starts only
-// in that run's own child (RunEnvMarker = N, never a borrowed binding) while
-// run N is running. It mounts EffectiveAgentTools — the flag's tools ∩ what
-// the run's manifest admits ∩ the automation surface, no writes in a dry run
-// — plus get_action, shows get_action only the run's own rows, and passes
+// in that run's own child (RunEnvMarker = N, never a borrowed binding, and
+// no WATCHTOWER_TERMINAL_SESSION_ID) while run N is running. It mounts
+// EffectiveAgentTools — the flag's tools ∩ what the run's manifest admits ∩
+// the automation surface, no writes in a dry run — plus get_action, shows get_action only the run's own rows, and passes
 // every call through GateAgentCall and every result through
 // CheckAgentResult. A write is a proposal stamped with the run, always
 // pending (AutomationAgent). The chat flags (--conversation, --turn,
@@ -204,6 +215,10 @@ func mcpAutomationOptions(cfg *config.Config, database *db.DB) ([]internalmcp.Se
 		return nil, errors.New("--surface automation requires --automation-run N")
 	case os.Getenv(automations.RunEnvMarker) != strconv.FormatInt(runID, 10):
 		return nil, fmt.Errorf("--automation-run %d serves only that run's own agent (%s=%d)", runID, automations.RunEnvMarker, runID)
+	case os.Getenv(terminalSessionEnv) != "":
+		// agent() children get an allowlisted env that never carries it; a
+		// Desktop terminal session's agent does, marker copied or not.
+		return nil, fmt.Errorf("--automation-run %d is refused inside a terminal session (%s is set)", runID, terminalSessionEnv)
 	}
 	run, err := database.GetAutomationRun(runID)
 	if err != nil {
@@ -256,15 +271,12 @@ func mcpAutomationOptions(cfg *config.Config, database *db.DB) ([]internalmcp.Se
 // (send_slack_message) is recorded pending for the owner's Approve (DEV-06).
 // The workbench must exist when the server starts; if it is deleted later,
 // every tool answers "workbench N no longer exists".
-// legacy is the pre-rename `--project N` spelling: the same session, listing
-// the renamed tools under their old names (Binding.LegacyNames).
-func mcpWorkbenchOptions(cfg *config.Config, database *db.DB, workbenchID int64, legacy bool) ([]internalmcp.ServerOption, error) {
-	flag := workbenchFlagName(legacy)
+func mcpWorkbenchOptions(cfg *config.Config, database *db.DB, workbenchID int64) ([]internalmcp.ServerOption, error) {
 	if mcpFlagChat {
-		return nil, fmt.Errorf("%s and --chat are mutually exclusive", flag)
+		return nil, errors.New("--workbench and --chat are mutually exclusive")
 	}
 	if workbenchID < 0 {
-		return nil, fmt.Errorf("%s must be a workbench id, got %d", flag, workbenchID)
+		return nil, fmt.Errorf("--workbench must be a workbench id, got %d", workbenchID)
 	}
 	agent, err := mcpAgent(mcpFlagAgent)
 	if err != nil {
@@ -274,8 +286,7 @@ func mcpWorkbenchOptions(cfg *config.Config, database *db.DB, workbenchID int64,
 		return nil, fmt.Errorf("workbench %d: %w", workbenchID, err)
 	}
 	return []internalmcp.ServerOption{internalmcp.WithRegistry(buildToolRegistry(cfg, database), tools.Binding{
-		Surface: tools.WorkbenchSurface, WorkbenchID: workbenchID, DirectApply: true, LegacyNames: legacy,
-		Agent: agent,
+		Surface: tools.WorkbenchSurface, WorkbenchID: workbenchID, DirectApply: true, Agent: agent,
 	})}, nil
 }
 
@@ -293,9 +304,6 @@ func mcpAgent(raw string) (agentkind.Kind, error) {
 }
 
 func runMCP(cmd *cobra.Command, args []string) error {
-	if err := checkWorkbenchIDFlags(cmd); err != nil {
-		return err
-	}
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)

@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,7 +85,7 @@ func stopHook(t *testing.T, id int64, input string) string {
 func stopHookIO(t *testing.T, rawID, input string) (stdout, stderr string) {
 	t.Helper()
 	var out, errOut bytes.Buffer
-	runStopHook(context.Background(), strings.NewReader(input), &out, &errOut, rawID, workbenchVocabulary)
+	runStopHook(context.Background(), strings.NewReader(input), &out, &errOut, rawID)
 	return out.String(), errOut.String()
 }
 
@@ -99,9 +100,20 @@ func TestProj07_StopHookBlocksOnceWithTheDrift(t *testing.T) {
 	assert.Equal(t, "block", got.Decision)
 	assert.Contains(t, got.Reason, "#"+strconv.FormatInt(tid, 10))
 	assert.Contains(t, got.Reason, "branch merged is merged into main")
+	assert.Contains(t, got.Reason, `the watchtower-workbench skill's "Keeping the board in step with git"`)
+	assert.NotContains(t, got.Reason, "watchtower-project")
 
 	// Claude Code is already continuing because of this hook: never block again.
 	assert.Empty(t, stopHook(t, pid, `{"hook_event_name":"Stop","stop_hook_active":true}`))
+
+	// The installed hook's argv, through cobra: one decision JSON naming the skill.
+	stdout, _, err := runWorkbenchCheckCmd(t, strings.NewReader(`{"hook_event_name":"Stop","stop_hook_active":false}`),
+		"check", "--workbench", strconv.FormatInt(pid, 10), "--stop-hook")
+	require.NoError(t, err)
+	var viaCobra stopHookOutput
+	require.NoError(t, json.Unmarshal([]byte(stdout), &viaCobra), "one decision JSON object: %q", stdout)
+	assert.Equal(t, "block", viaCobra.Decision)
+	assert.Contains(t, viaCobra.Reason, "the watchtower-workbench skill's")
 
 	// Fixed board: silent.
 	require.NoError(t, database.UpdateTargetStatus(int(tid), "done"))
@@ -136,11 +148,6 @@ func TestProj07_StopHookFailuresAreSilent(t *testing.T) {
 	out, errOut := stopHookIO(t, "abc", `{}`)
 	assert.Empty(t, out)
 	assert.Contains(t, errOut, "invalid --workbench", "a real failure names itself on stderr")
-	// The pre-rename install's hook (--project, legacy vocabulary) too.
-	var legacyOut, legacyErr bytes.Buffer
-	runStopHook(context.Background(), strings.NewReader(`{}`), &legacyOut, &legacyErr, "abc", legacyWorkbenchVocabulary)
-	assert.Empty(t, legacyOut.String())
-	assert.Contains(t, legacyErr.String(), "invalid --project", "a real failure names itself on stderr")
 
 	require.NoError(t, database.DeleteWorkbench(pid))
 	out, errOut = stopHookIO(t, strconv.FormatInt(pid, 10), `{"stop_hook_active":false}`)
@@ -152,7 +159,7 @@ func TestProj07_StopHookFailuresAreSilent(t *testing.T) {
 	assert.Empty(t, stopHook(t, pid2, `{"stop_hook_active":false}`), "no repository: nothing to check")
 
 	// Through cobra: exit 0, even with an unknown flag and a bad id.
-	stdout, _, err := runWorkbenchCheckCmd(t, strings.NewReader(`{}`), "check", "--project", "nope", "--stop-hook", "--future-flag")
+	stdout, _, err := runWorkbenchCheckCmd(t, strings.NewReader(`{}`), "check", "--workbench", "nope", "--stop-hook", "--future-flag")
 	require.NoError(t, err)
 	assert.Empty(t, stdout)
 }
@@ -174,7 +181,7 @@ func TestProjectCheck_JSONReportsTheDrift(t *testing.T) {
 	folder := driftRepo(t)
 	pid, tid := driftWorkbench(t, database, folder, "merged")
 
-	stdout, _, err := runWorkbenchCheckCmd(t, strings.NewReader(""), "check", "--project", strconv.FormatInt(pid, 10), "--json", "--no-network")
+	stdout, _, err := runWorkbenchCheckCmd(t, strings.NewReader(""), "check", "--workbench", strconv.FormatInt(pid, 10), "--json", "--no-network")
 	require.NoError(t, err)
 	var rep workbenchcheck.Report
 	require.NoError(t, json.Unmarshal([]byte(stdout), &rep), stdout)
@@ -183,7 +190,7 @@ func TestProjectCheck_JSONReportsTheDrift(t *testing.T) {
 	assert.Equal(t, int(tid), rep.Findings[0].TargetID)
 	assert.Equal(t, "main", rep.Base)
 
-	_, _, err = runWorkbenchCheckCmd(t, strings.NewReader(""), "check", "--project", "999", "--no-network")
+	_, _, err = runWorkbenchCheckCmd(t, strings.NewReader(""), "check", "--workbench", "999", "--no-network")
 	assert.Error(t, err, "outside the hook an unknown project is an error")
 }
 
@@ -191,7 +198,7 @@ func TestProjectBrief_ShowsTheBoardDrift(t *testing.T) {
 	database := writeActionsConfig(t)
 	folder := driftRepo(t)
 	pid, tid := driftWorkbench(t, database, folder, "merged")
-	brief := loadWorkbenchBrief(pid, workbenchVocabulary)
+	brief := loadWorkbenchBrief(pid, io.Discard)
 	assert.Contains(t, brief, "Board drift")
 	assert.Contains(t, brief, "#"+strconv.FormatInt(tid, 10)+` "Feature" [in_progress]: branch merged is merged into main`)
 	assert.LessOrEqual(t, len([]rune(brief)), briefMaxChars)
@@ -239,11 +246,11 @@ func TestProj02_ProjectDeleteLeavesNoHookOfTheProject(t *testing.T) {
 
 func TestStopHookReason_CapsAndClips(t *testing.T) {
 	var findings []workbenchcheck.Finding
-	for i := 0; i < stopHookMaxFindings+5; i++ {
+	for i := range stopHookMaxFindings + 5 {
 		findings = append(findings, workbenchcheck.Finding{TargetID: i + 1, Title: strings.Repeat("x", 600), Status: "in_progress",
 			Kind: workbenchcheck.KindMergedOpen, Detail: "d", Fix: "f"})
 	}
-	reason := stopHookReason(3, findings, workbenchVocabulary)
+	reason := stopHookReason(3, findings)
 	lines := strings.Split(reason, "\n")
 	require.Len(t, lines, 1+stopHookMaxFindings+1, "header, the capped findings, one overflow line")
 	assert.Equal(t, "- … 5 more (watchtower workbench check --workbench 3)", lines[len(lines)-1])

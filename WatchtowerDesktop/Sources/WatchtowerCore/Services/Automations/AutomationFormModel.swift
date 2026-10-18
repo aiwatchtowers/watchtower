@@ -21,15 +21,38 @@ package final class AutomationFormModel {
     nonisolated package static let budgetMinutesRange = 1...60
     nonisolated package static let concurrencyRange = 1...4
     nonisolated package static let pauseTimeoutRange = 1...168
+    /// Go's `automations.EventTypes`, in its order.
     nonisolated package static let eventTypes = [
-        "gmail.new_messages", "slack.new_messages", "jira.issue_changed", "calendar.event_changed",
+        "slack.new_messages", "gmail.new_messages", "jira.issue_changed", "calendar.event_changed",
         "confluence.page_changed"
     ]
+    /// Go's `automations.EventFields`: per event type, the fields a `where`
+    /// may match.
+    nonisolated package static let eventFields: [String: [String]] = [
+        "slack.new_messages": ["account", "channel", "channel_id"],
+        "gmail.new_messages": ["account", "provider"],
+        "jira.issue_changed": ["account", "key", "project", "field"],
+        "calendar.event_changed": ["account", "event_id", "change"],
+        "confluence.page_changed": ["space", "page_id"]
+    ]
+
+    /// The trigger the form's **On an event** choice starts from.
+    nonisolated package static let defaultEventTrigger = RecipeFrontmatter.Trigger.event(
+        type: eventTypes[0], where: [:]
+    )
+
+    /// An event trigger of `type` keeping only the `where` keys that type has
+    /// (Go's parser refuses any other).
+    nonisolated package static func eventTrigger(type: String, keeping filter: [String: String])
+        -> RecipeFrontmatter.Trigger {
+        let fields = Set(eventFields[type] ?? [])
+        return .event(type: type, where: filter.filter { fields.contains($0.key) })
+    }
     nonisolated package static let outputKinds = ["inbox", "briefing", "report", "target", "slack"]
 
     package var fields: RecipeFrontmatter {
         didSet {
-            guard fields != oldValue, isEditable, !frontmatterEditedInRecipe else { return }
+            guard fields != oldValue, !paused else { return }
             writeFields()
         }
     }
@@ -53,6 +76,7 @@ package final class AutomationFormModel {
 
     package init(detail: AutomationDetail) {
         self.detail = detail
+        currentParseError = detail.parseError
         fields = RecipeFrontmatter(detail: detail)
         buffer = RecipeBufferModel(automationID: detail.id, text: detail.recipeText, contentHash: detail.contentHash)
         formBlock = RecipeFrontmatter.block(in: detail.recipeText).map(String.init)
@@ -73,7 +97,7 @@ package final class AutomationFormModel {
     /// script (its settings block is one the form wrote earlier), the form's
     /// fields are spliced in again; otherwise the form pauses and says so.
     private func pageSent(base: Int) {
-        guard isEditable, base < spliceRevision else { return }
+        guard base < spliceRevision else { return }
         let block = RecipeFrontmatter.block(in: buffer.text).map(String.init)
         guard block != formBlock else { return }
         if let block, formBlocks.contains(block) {
@@ -83,17 +107,27 @@ package final class AutomationFormModel {
         }
     }
 
-    /// Workbench recipes are edited in their folder in P3 (R-P3-5); the form
-    /// shows them read-only.
-    package var isEditable: Bool {
-        detail.scope == "personal"
-    }
-
     /// The owner changed the frontmatter in the Monaco pane: the form's
     /// fields no longer describe the text, so the form stops writing.
     package var frontmatterEditedInRecipe: Bool {
         RecipeFrontmatter.block(in: buffer.text).map(String.init) != formBlock
     }
+
+    /// The recipe as loaded does not parse (`parse_error`): its index row
+    /// holds column defaults, not the file's settings, so the form's fields
+    /// do not describe it and must never be spliced over it (#582). The
+    /// owner fixes it in the recipe editor.
+    package var recipeUnparsed: Bool { !detail.parseError.isEmpty }
+
+    /// Why the text as it is now does not parse ("" once it does): starts as
+    /// the loaded `parse_error`, re-checked by
+    /// `AutomationEditorCenter.recheckParse` as the owner fixes the recipe.
+    /// The form stays paused either way: its fields never described the file.
+    package var currentParseError: String
+
+    /// The form neither writes nor checks its fields: the recipe does not
+    /// parse, or its settings were edited in the Monaco pane.
+    package var paused: Bool { recipeUnparsed || frontmatterEditedInRecipe }
 
     /// The text a Save writes: the buffer, which holds the form's fields and
     /// the owner's edits in the Monaco pane.
@@ -103,7 +137,7 @@ package final class AutomationFormModel {
 
     /// Out-of-range values, blocked in the form before `validate` runs.
     package var problems: [String] {
-        guard !frontmatterEditedInRecipe else { return [] }
+        guard !paused else { return [] }
         var out: [String] = []
         let name = fields.name.trimmingCharacters(in: .whitespacesAndNewlines)
         if !Self.nameRunes.contains(name.unicodeScalars.count) { out.append("Name must be 1–80 characters.") }

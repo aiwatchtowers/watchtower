@@ -30,7 +30,7 @@ func (t *Token) HasScope(scope string) bool {
 	if t == nil {
 		return false
 	}
-	for _, s := range strings.Split(t.Scope, ",") {
+	for s := range strings.SplitSeq(t.Scope, ",") {
 		if strings.TrimSpace(s) == scope {
 			return true
 		}

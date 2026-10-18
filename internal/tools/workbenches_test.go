@@ -57,7 +57,7 @@ func workbenchRegistry(t *testing.T, d *db.DB) *Registry {
 	return reg
 }
 
-// proposeIn runs a write tool the way `mcp --project` does: DirectApply,
+// proposeIn runs a write tool the way `mcp --workbench` does: DirectApply,
 // bound to workbenchID.
 func proposeIn(t *testing.T, reg *Registry, workbenchID int64, name, args string) (Receipt, error) {
 	t.Helper()
@@ -121,6 +121,19 @@ func TestProjectInfo_BoardAlwaysFollowsTheSessionLanguage(t *testing.T) {
 	got := callReadIn(t, reg, fx.a, "workbench_info", `{}`)
 	assert.Contains(t, got, "Board language: follow the session language")
 	assert.NotContains(t, got, "Russian")
+}
+
+// TestUpdateProject_StoresTheTrimmedDescription: the value stored is the
+// trimmed text requireText validated (UpdateWorkbenchDescription trims), not
+// the raw argument.
+func TestUpdateProject_StoresTheTrimmedDescription(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	reg := workbenchRegistry(t, fx.d)
+	mustApply(t, reg, fx.a, "update_workbench", `{"description":"  A test project.\n","reason":"setup"}`)
+
+	p, err := fx.d.GetWorkbench(fx.a)
+	require.NoError(t, err)
+	assert.Equal(t, "A test project.", p.Description)
 }
 
 func TestUpdateProject_RefusesBadInputWithoutWriting(t *testing.T) {

@@ -22,7 +22,7 @@ func recordHint(t *testing.T, d *db.DB, hint, episodeID string) {
 func TestPromoteConceptsCreatesEntityAtThreshold(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	var epIDs []string
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		ep := fmt.Sprintf("ep_01ARZ3NDEKTSV4RRFFQ69G5H0%d", i)
 		epIDs = append(epIDs, ep)
 		recordHint(t, d, "hsm", ep)
@@ -48,7 +48,7 @@ func TestPromoteConceptsCreatesEntityAtThreshold(t *testing.T) {
 // threshold of 5 → nothing promoted.
 func TestPromoteConceptsBelowThreshold(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		recordHint(t, d, "phishing", fmt.Sprintf("ep_01ARZ3NDEKTSV4RRFFQ69G5H1%d", i))
 	}
 
@@ -64,7 +64,7 @@ func TestPromoteConceptsBelowThreshold(t *testing.T) {
 // stamped promoted_to on the hint rows).
 func TestPromoteConceptsIdempotent(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		recordHint(t, d, "hsm", fmt.Sprintf("ep_01ARZ3NDEKTSV4RRFFQ69G5H2%d", i))
 	}
 
@@ -86,7 +86,7 @@ func TestPromoteConceptsAliasCollision(t *testing.T) {
 	existing.Aliases = []string{"hsm"}
 	writeAndIndex(t, v, d, existing)
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		recordHint(t, d, "hsm", fmt.Sprintf("ep_01ARZ3NDEKTSV4RRFFQ69G5H3%d", i+1))
 	}
 
@@ -110,7 +110,7 @@ func TestPromoteConceptsAliasCollision(t *testing.T) {
 func TestPromoteConceptsCapRespected(t *testing.T) {
 	v, d := newTestVault(t), newTestDB(t)
 	for _, hint := range []string{"alpha", "bravo", "charlie"} {
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			recordHint(t, d, hint, fmt.Sprintf("ep_%s_%d", hint, i))
 		}
 	}

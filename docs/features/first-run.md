@@ -26,29 +26,99 @@ until the next morning's hour.
      (`ReadinessSource.isConnected`, `Readiness.swift:77`);
   3. `ready` — the feature's content table has any row; content wins even while
      a new run is going;
-  4. `preparing(detail)` — the newest `pipeline_runs` row is `running`, the
+  3a. `needsSource(.jiraBoards)` — Jira's features only (`source == .jira`):
+     a site is connected but no board is selected on a non-removed site
+     (`ReadinessQueries.jiraBoardsSelected`, `jira_boards` is in the observed
+     region). The daemon's Jira sync skips an account with no selected board
+     (`internal/jira/sync.go`), so an ETA would never come true (#572). The
+     line is "Choose Jira boards to get this" (`ReadinessSource.actionTitle`),
+     and the action (`performEmptyStateAction(.connect(.jiraBoards))`, Home's
+     Getting ready card) opens the **Boards** tab, not Settings. Stream
+     Digests (`jiraOrMail`) waits on boards only while mail is not connected.
+     Only enabled, not removed sites count, and v1 is install-wide (one
+     site with a picked board counts for all; Go skips per account). On Home
+     it is a waiting card, never a source row, so it keeps the Getting ready
+     zone open (`GettingReadyPolicy.entries`);
+  3b. `needsDigests` (#575, after 3a; the two never meet: their features are disjoint) — no content, the feature `runsOnlyWithDigests`
+     (tracks, people cards) and `slack-digests` is in `disabledFeatureIDs`.
+     Dual path with the daemon's compound gates (`phaseTracksAndRollups`,
+     `phaseCustomTrackScan`, `phasePeopleCards` in `internal/daemon/daemon.go`,
+     the people backfill hook in `history_backfill.go`); the Go guard rows
+     `tracks_starved_without_digest` / `people_starved_without_digest` pin the
+     gates, and `FeatureReadinessTests.testRunsOnlyWithDigestsMatchesTheDaemonGates`
+     scans every non-test `internal/daemon/*.go` file (any line joining
+     `Digest.Enabled` with another `X.Enabled` by `&&`/`||`) and fails when
+     such a gate appears or goes without a matching `runsOnlyWithDigests`
+     entry. Content beats it so
+     a tab with data keeps showing it and Home keeps "Ready — Open". Line
+     "Needs Slack Digests" (every place that shows it follows it with a
+     **Turn on Slack Digests** button, named because it starts a heavy,
+     different feature). `FeatureReadiness.turnOnFeatureID` picks what Turn on
+     switches on and keys its progress/error by: `slack-digests` while the
+     feature waits on it **and** while a Slack Digests Turn on has an error
+     (an enable whose restart failed leaves Digests on, the state moves on to
+     `scheduled`, and only the retry restarts — the tab and the Home card keep
+     the error and **Try again**). A failed restart's error
+     (`featureWasOn`) is cleared by any later successful restart or start:
+     `AppState.clearRestartFailedTurnOnErrors` runs from the start queue's
+     `DaemonStartQueue.onSuccess` (every successful `restart`, so
+     `restartOnChain` and the account-change `restartLogging` too, and every
+     start the app reports with `succeeded()`: the banner's Start/Retry, the
+     background bring-up, `ensureDaemonRunning`, the LLM-data reset), from
+     `DaemonManager.onRunningChanged(true)`, and after a successful empty-state
+     Turn on — so a stop timeout (old daemon still running, no flip) clears on
+     the next successful restart too. Home shows that error and its
+     **Try again** once, on the first card it concerns
+     (`GettingReadyZoneView.digestsOfferingCards`). Home's card button goes through
+     `HomeLink.turnOn` → `performEmptyStateAction(.turnOn)` with the same busy,
+     progress and error (`AppState.digestsTurnOnState`). Onboarding's Customize
+     row of a feature on while Slack Digests is off shows **Needs Slack
+     Digests** with a **Turn on Slack Digests** button
+     (`OnboardingFeatureSelection.waitsOnSlackDigests`) — an offer, never a
+     silent switch. Settings → Features' cascade dialog for Slack Digests adds
+     "Tracks and People Cards stop running too while Slack Digests is off"
+     (`FeatureManagerSection.cascadeMessage`). The launch is not decoupled
+     (owner, ask #307), so token spend changes only when the owner turns Slack
+     Digests on;
+  4. `daemonStopped` (#577, owner ask #307 q4) — the daemon is not running and
+     has been seen down for `daemonDownGrace` (30 s) or longer
+     (`ReadinessInputs.daemonNotRunningSince` = `DaemonManager.notRunningSince`,
+     set by the first status read or stop that finds it down, cleared when it
+     runs, nil before the first read). Every later state is a promise a stopped
+     daemon does not keep, so it wins over all of them; the grace keeps a
+     restart (stop, then start) from flickering. The 30 s readiness tick
+     re-evaluates the clock, so it shows 30–60 s after the daemon went down.
+     The state is a line only ("Watchtower isn't running"); the one Start
+     control is the app-wide banner (below). With the owner unknown,
+     `honoringOwner` drops it for the owner-gated features like any promise,
+     so the owner gap is what Home names;
+  5. `preparing(detail)` — the newest `pipeline_runs` row is `running`, the
      daemon is running and `started_at` is under `preparingMaxAge` (2 h,
      `FeatureReadiness.swift:9`). An older `running` row is a dead process's
      leftover (`reapStalePipelineRuns` only reaps after 24 h) and falls through;
-  5. `error(message)` — the newest run is `error` and there is no content;
-  6. `waitingForSync(detail)` — the feature reads synced data, **Slack is
+  6. `error(message)` — the newest run is `error` and there is no content;
+  7. `waitingForSync(detail)` — the feature reads synced data, **Slack is
      connected** and `lastSyncTime == nil` (R7);
-  7. `scheduled(Eta)` — the next run time from the feature's gate.
+  8. `scheduled(Eta)` — the next run time from the feature's gate.
 - **`lastSyncTime` means "the first Slack sync finished".** It is the mtime of
   `last_sync.json` (`DaemonManager.readLastSyncTime`,
   `WatchtowerDesktop/Sources/WatchtowerCore/Services/DaemonManager.swift:95`), which only the Slack sync paths
   write: the daemon's Slack sync phase (`internal/daemon/daemon.go:631`) and
   a foreground `watchtower sync` (`cmd/sync.go:608`, `:628`). Without Slack it stays nil for ever,
-  so rule 6 applies only while Slack is connected (`FeatureReadiness.swift:37`);
+  so rule 7 applies only while Slack is connected (`FeatureReadiness.swift:37`);
   a mail/Jira-only install goes straight to `scheduled`.
 - **`Eta` is a vocabulary, not a duration** (`Readiness.swift:91`):
   `afterCurrentSync`, `nextCycle(minutes:)` from `sync.poll_interval`
   (`parsePollInterval`, garbage → 15), `at(hour:tomorrow:)`, `inAboutADay` (the
   people 24 h throttle from `last_people.txt`), `inHours(n)` (ideas/streams 6 h
-  from `last_ideas.txt`/`last_streams.txt`, rounded up). No countdowns. Phrases
+  from `last_ideas.txt`/`last_streams.txt`, rounded up), `afterHistoryLoads`
+  (memory only, "Waiting for history to load": before memory's first `done`
+  run, a `running` history-backfill row started < 24 h ago and the backfill not
+  switched off; beats an older memory error; dual path with Go's memory gate, see
+  `history-backfill.md` § Memory gate, #578). No countdowns. Phrases
   and the one-line state wording live in `FeatureReadiness.phrase`/`line`
   (`FeatureReadiness.swift:94-115`): "Off — Turn on", "Connect Slack to get
-  this", "Preparing now", "Didn't work yet — retries automatically · <first line
+  this", "Watchtower isn't running", "Preparing now", "Didn't work yet — retries automatically · <first line
   of error_msg, ≤ 80 chars>", "Starts after the first sync", "Within ~15 min",
   "Today at 08:00", "In about a day". The spec's "link to Usage → Pipelines" on
   `error` is not built.
@@ -77,6 +147,81 @@ until the next morning's hour.
   readiness through `FeatureReadiness.honoringOwner`: a `scheduled` or
   `waitingForSync` state reads nil then (no line); off, needs-source, error,
   preparing and ready stay.
+
+### The daemon banner (#577)
+
+One banner over every tab (`MainNavigationView`'s top inset,
+`DaemonBannerView`, `AppState.daemonBanner` → `DaemonBanner.current`), first
+match wins:
+
+- `starting` — the banner's Start is waiting for the daemon
+  (`AppState.isStartingDaemon`): "Starting Watchtower…" with a spinner, no
+  buttons; a second Start meanwhile is ignored.
+- `failed(reason)` — `AppState.daemonStartFailure`, stored on the start queue
+  (`DaemonStartQueue.failure`) so restarts made outside AppState land here too:
+  a start that exited non-zero ("The background sync did not start:
+  <reason>."), a detach that exited 0 but no daemon within
+  `daemonStartWaitBound` (60 s, polled every second — a first start after an
+  update runs migrations first; `daemonDiedAfterStartText`), a background
+  restart that failed (`DaemonStartQueue.restartLogging`, the Calendar tab's
+  restart), the launch start failing (with a daemon still running after it —
+  the old one, still exiting or not stopped — it reads as a restart failure,
+  `daemonOldStillRunningText`), or a `watchtower` call stopped at its bound. **Retry**, **Open
+  Logs** (the Logs window), **Dismiss**. Only a successful start or restart
+  clears it (`DaemonStartQueue.restart`, the banner's Start, a bring-up, the
+  Calendar restart, Reset LLM data), or a daemon newly up
+  (`DaemonManager.onRunningChanged` fires on a flip only): a poll that merely
+  sees the old daemon still running after a failed restart leaves it.
+- `stopped` — `ReadinessCenter.daemonDown`, the same
+  `FeatureReadiness.isDaemonDown` rule as the readiness state (30 s grace):
+  "Watchtower isn't running, so nothing new arrives." with **Start** and
+  **Dismiss**.
+
+Dismiss hides both at once: it clears the failure and records this down
+stretch (`stoppedBannerDismissedFor` = `DaemonManager.notRunningSince`); a
+start and a new stop bring "isn't running" back. That is also how an owner who
+stopped sync on purpose (`watchtower sync stop`) keeps it away; there is no
+separate "stopped on purpose" state.
+
+Start and Retry run `AppState.startDaemonFromBanner`. With a daemon running
+and a failure on the banner, the failure is a restart that did not take (the
+old daemon kept running, so a new account or feature is not wired in): Retry
+runs a real restart (`restartWaiting`) and clears only on success. A running
+daemon with nothing on the banner needs nothing. With no daemon,
+`startDetached`, then the wait above.
+
+**One start queue.** Every daemon start, stop-then-start and restart the app
+makes runs on `DaemonStartQueue`, one item at a time. The entry point is
+`AppState.enqueueDaemonStart` (and `restartOnChain` for a plain restart)
+wherever `AppState` is at hand; the account view models and Google sign-in,
+which have no `AppState`, use `LiveDaemonRestarter` /
+`DaemonManager.restartLoggingQueued` on `DaemonStartQueue.shared`, the queue
+`AppState` uses in production. Items:
+the launch `ensureDaemonRunning`, onboarding's and Run setup again's
+`bringUpDaemonInBackground`, the banner, a tab's Turn on and the feature offer
+(`restartOnChain`), the Calendar tab's restart, every account and grant change
+(`LiveDaemonRestarter`, Email/Calendar accounts, `GoogleAuthService`,
+`GoogleConnectFlow`), Settings → Features and Confluence spaces, the Inbox
+action strip, Reset LLM data (stop, wait for the exit, wipe and restart as one
+item), Settings → Slack disconnect (stop, disconnect, start as one item; the
+config and the Workspaces list are re-read whatever the outcome) and the full
+reset (`AppState.stopDaemonAndRemoveEverything`: stop through `daemonControl`,
+wait for the exit, and only then delete — a daemon that did not stop deletes
+nothing and Settings shows `resetDaemonDidNotStopText`).
+
+Items have no timeout of their own, so they never overlap. Every `watchtower`
+call inside one is bounded where it runs (`DaemonManager.cliCallTimeout`,
+60 s: past it the CLI process gets SIGTERM, SIGKILL 2 s later, and is reaped
+before the call throws `.timedOut`; a daemon already handed off by `--detach`
+is not touched), and the pid waits are bounded too (`restartStopGrace`,
+`daemonStartWaitBound`), so an item always ends; Reset LLM data and the full
+reset include the 60 s stop wait. Non-CLI work inside an item (the Slack
+disconnect's `auth logout` runner) is not bounded here. An item never enqueues
+onto the queue and awaits it. Outside it:
+the launch-time CLI-store stop and the quit stop. The Google reconnect alert
+no longer restarts on its own (a successful connect already does). The
+Calendar tab has no message of its own while the daemon is down or after a failed restart (its restart goes through `restartOnChain`): the app-wide
+banner says it.
 
 ### Fresh-install rule — Go ↔ Swift dual path
 
@@ -294,6 +439,9 @@ the zone and the memory to persist out. Rules, first match wins:
    Neither → hidden: a Development-only install (the knowledge-index card,
    Connect rows for the bare Slack/Calendar/Jira sources) does not open it.
 6. Some card with a source, and every card terminal (ready or error) →
+   (`daemonStopped` is not terminal — tone `waiting` — so a stopped daemon
+   never completes the zone; its cards only carry the line, Start is the
+   app-wide banner's)
    `completedAt = now`; "Everything's ready" if the zone showed unready cards
    during this launch, else hidden. A zone of Connect rows only (perhaps with
    the knowledge-index card) is never complete: it stays until a source

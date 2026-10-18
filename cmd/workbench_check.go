@@ -57,10 +57,6 @@ var workbenchCheckCmd = &cobra.Command{
 	RunE:               runWorkbenchCheck,
 }
 
-// workbenchCheckLegacy says the hook passed the pre-rename --project: the
-// folder is still on its old install (spec 2026-10-02 §5.2).
-var workbenchCheckLegacy func() bool
-
 var (
 	workbenchCheckFlagWorkbench string
 	workbenchCheckFlagJSON      bool
@@ -71,7 +67,7 @@ var (
 )
 
 func init() {
-	workbenchCheckLegacy = addWorkbenchIDFlag(workbenchCheckCmd, &workbenchCheckFlagWorkbench, "workbench id")
+	workbenchCheckCmd.Flags().StringVar(&workbenchCheckFlagWorkbench, workbenchFlag, "", "workbench id")
 	workbenchCheckCmd.Flags().BoolVar(&workbenchCheckFlagJSON, "json", false, "output JSON")
 	workbenchCheckCmd.Flags().IntVar(&workbenchCheckFlagStaleDays, "stale-days", int(workbenchcheck.DefaultStaleAfter/(24*time.Hour)),
 		"days without movement before an in-progress target counts as stale")
@@ -87,10 +83,6 @@ func runWorkbenchCheck(cmd *cobra.Command, _ []string) error {
 		ctx = context.Background()
 	}
 	agent, flagErr := hookAgentFor(cmd, workbenchCheckFlagAgent)
-	if flagErr == nil {
-		flagErr = checkWorkbenchIDFlags(cmd)
-	}
-	legacy := workbenchCheckLegacy()
 	if workbenchCheckFlagStopHook {
 		if flagErr == nil && agent == agentkind.Codex {
 			runCodexStopHook(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr())
@@ -101,7 +93,7 @@ func runWorkbenchCheck(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintf(cmd.ErrOrStderr(), "watchtower: board drift check skipped: %v\n", flagErr)
 			return nil
 		}
-		runStopHook(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), workbenchCheckFlagWorkbench, vocabularyFor(legacy))
+		runStopHook(ctx, cmd.InOrStdin(), cmd.OutOrStdout(), cmd.ErrOrStderr(), workbenchCheckFlagWorkbench)
 		return nil
 	}
 	if flagErr != nil {
@@ -112,7 +104,7 @@ func runWorkbenchCheck(cmd *cobra.Command, _ []string) error {
 	}
 	id, err := parseWorkbenchID(strings.TrimSpace(workbenchCheckFlagWorkbench))
 	if err != nil {
-		return fmt.Errorf("%s: %w", workbenchFlagName(legacy), err)
+		return fmt.Errorf("--%s: %w", workbenchFlag, err)
 	}
 	if workbenchCheckFlagStaleDays <= 0 {
 		return errors.New("--stale-days must be positive")
@@ -286,8 +278,7 @@ type stopHookOutput struct {
 // a real failure (Claude Code shows it in its hook log, never to the model).
 // stop_hook_active means Claude Code is already continuing because a Stop
 // hook blocked this stop, so this one never blocks again: the agent gets one
-// chance to fix the board, never an endless loop. vocab names the skill the
-// folder's install has (the reason points the agent at it).
+// chance to fix the board, never an endless loop.
 //
 // In a Desktop terminal (the terminal env var set) and a folder with the
 // session state hooks, the hook also records "waiting" on the session's row
@@ -295,7 +286,7 @@ type stopHookOutput struct {
 // parallel, so only the process that decides the block knows whether the
 // turn really ended. That write comes after the
 // drift output, never changes stdout, and a failure is one stderr line.
-func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, rawID string, vocab vocabulary) {
+func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer, rawID string) {
 	defer func() {
 		// A panic would exit 2, which for a Stop hook means "block and feed
 		// stderr to the model" — the opposite of this hook's contract.
@@ -317,7 +308,7 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 	}
 	id, err := strconv.ParseInt(strings.TrimSpace(rawID), 10, 64)
 	if err != nil || id <= 0 {
-		stopHookInvalidID(stderr, in, rawID, vocab)
+		stopHookInvalidID(stderr, in, rawID)
 		return
 	}
 	// database is nil until opened; the state write opens its own then.
@@ -336,7 +327,7 @@ func runStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Writer,
 			return
 		}
 		turnEndErr := markStopTurnEnd(database, id, in)
-		if blocked := stopHookDrift(ctx, stdout, stderr, database, id, vocab); blocked {
+		if blocked := stopHookDrift(ctx, stdout, stderr, database, id); blocked {
 			// No state write follows to record it again and report it.
 			if turnEndErr != nil {
 				fmt.Fprintf(stderr, "watchtower: turn end not recorded: %v\n", turnEndErr)
@@ -373,7 +364,7 @@ func runCodexStopHook(ctx context.Context, stdin io.Reader, stdout, stderr io.Wr
 		return
 	}
 	defer database.Close()
-	if !in.StopHookActive && stopHookDrift(ctx, stdout, stderr, database, row.WorkbenchID.Int64, vocabularyFor(false)) {
+	if !in.StopHookActive && stopHookDrift(ctx, stdout, stderr, database, row.WorkbenchID.Int64) {
 		return
 	}
 	if err := recordCodexStopState(database, row, in, at); err != nil {
@@ -397,8 +388,8 @@ func recordCodexStopState(database *db.DB, row db.TerminalSession, in hookEvent,
 	if n := codexBackgroundCount(turns); n > 0 {
 		turn.background = sql.NullInt64{Int64: n, Valid: true}
 	}
-	state, onlyFrom, _ := agentStateFor("Stop", "")
-	return recordAgentState(database, row.ID, row.WorkbenchID.Int64, in.SessionID, state, onlyFrom, nil, false, at, turn)
+	state, _ := agentStateFor("Stop", "")
+	return recordAgentState(database, row.ID, row.WorkbenchID.Int64, in.SessionID, state, "", nil, false, at, turn)
 }
 
 // markStopTurnEnd records the turn end before the drift check, which can
@@ -457,7 +448,7 @@ var setTerminalTurnEnd = (*db.DB).SetTerminalTurnEnd
 
 // stopHookDrift runs the drift check and prints the block JSON when git
 // certainly disagrees with the board; true when it blocked the stop.
-func stopHookDrift(ctx context.Context, stdout, stderr io.Writer, database *db.DB, id int64, vocab vocabulary) bool {
+func stopHookDrift(ctx context.Context, stdout, stderr io.Writer, database *db.DB, id int64) bool {
 	ctx, cancel := context.WithTimeout(ctx, stopHookBudget)
 	defer cancel()
 	rep, err := checkWorkbench(ctx, database, id, workbenchcheck.Options{})
@@ -474,20 +465,19 @@ func stopHookDrift(ctx context.Context, stdout, stderr io.Writer, database *db.D
 	if len(findings) == 0 {
 		return false
 	}
-	_ = json.NewEncoder(stdout).Encode(stopHookOutput{Decision: "block", Reason: stopHookReason(id, findings, vocab)})
+	_ = json.NewEncoder(stdout).Encode(stopHookOutput{Decision: "block", Reason: stopHookReason(id, findings)})
 	return true
 }
 
 // stopHookInvalidID reports a bad --workbench: the drift check it skips
 // (never on the continued turn, which checks nothing) and the state write it
 // loses in a Desktop terminal.
-func stopHookInvalidID(stderr io.Writer, in stopHookInput, rawID string, vocab vocabulary) {
-	flag := workbenchFlagName(vocab.Legacy)
+func stopHookInvalidID(stderr io.Writer, in stopHookInput, rawID string) {
 	switch {
 	case !in.StopHookActive:
-		fmt.Fprintf(stderr, "watchtower: board drift check skipped%s: invalid %s %q\n", stopStateLost(in.SessionID), flag, rawID)
+		fmt.Fprintf(stderr, "watchtower: board drift check skipped%s: invalid --%s %q\n", stopStateLost(in.SessionID), workbenchFlag, rawID)
 	case stopStateExpected(in.SessionID):
-		fmt.Fprintf(stderr, "watchtower: session state not recorded: invalid %s %q\n", flag, rawID)
+		fmt.Fprintf(stderr, "watchtower: session state not recorded: invalid --%s %q\n", workbenchFlag, rawID)
 	}
 }
 
@@ -546,9 +536,9 @@ func writeStopAgentState(stderr io.Writer, database *db.DB, rowID, workbenchID i
 	if err := recordStopTurnEnd(database, rowID, workbenchID, in); err != nil {
 		fmt.Fprintf(stderr, "watchtower: turn end not recorded: %v\n", err)
 	}
-	state, onlyFrom, _ := agentStateFor("Stop", "")
+	state, _ := agentStateFor("Stop", "")
 	turn := hookTurn{stop: true, tasks: in.BackgroundTasks, cwd: hookCwd("Stop", "", in.Cwd)}
-	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, onlyFrom, nil, false, at, turn)
+	return recordAgentState(database, rowID, workbenchID, in.SessionID, state, "", nil, false, at, turn)
 }
 
 // workbenchHasStateHooks reports whether workbench id's folder has its core
@@ -569,13 +559,9 @@ func workbenchHasStateHooks(database *db.DB, id int64) (bool, error) {
 	return has, nil
 }
 
-// readHookInput decodes a hook's JSON input from stdin, giving up at ctx's
-// deadline (a run from a terminal may never send one).
-func readHookInput[T any](ctx context.Context, stdin io.Reader) (T, error) {
-	return readHookInputLimit[T](ctx, stdin, hookStdinLimit)
-}
-
-// readHookInputLimit is readHookInput reading at most limit bytes.
+// readHookInputLimit decodes a hook's JSON input from stdin, reading at most
+// limit bytes and giving up at ctx's deadline (a run from a terminal may never
+// send one).
 func readHookInputLimit[T any](ctx context.Context, stdin io.Reader, limit int64) (T, error) {
 	type result struct {
 		in  T
@@ -596,9 +582,9 @@ func readHookInputLimit[T any](ctx context.Context, stdin io.Reader, limit int64
 	}
 }
 
-func stopHookReason(id int64, findings []workbenchcheck.Finding, vocab vocabulary) string {
+func stopHookReason(id int64, findings []workbenchcheck.Finding) string {
 	lines := []string{fmt.Sprintf("Watchtower: the board of workbench %d disagrees with git. Fix the board before you finish "+
-		"(update_target; the %s skill's \"Keeping the board in step with git\"):", id, vocab.SkillName)}
+		"(update_target; the %s skill's \"Keeping the board in step with git\"):", id, devpack.WorkbenchSkillName)}
 	for i, f := range findings {
 		if i == stopHookMaxFindings {
 			lines = append(lines, fmt.Sprintf("- … %d more (watchtower workbench check --workbench %d)", len(findings)-i, id))

@@ -505,11 +505,7 @@ final class SessionInputHandlers: HubCompanion {
     /// A live or stopped `claude` session of a workbench: the phone sees
     /// nothing else.
     private func isBoardSession(_ sessionID: Int64) async throws -> Bool {
-        try await dbPool.read { db in
-            guard let row = try TerminalSessionQueries.fetch(db, id: sessionID),
-                  row.kind == .claude, let projectID = row.projectID else { return false }
-            return try WorkbenchQueries.fetch(db, id: projectID) != nil
-        }
+        try await dbPool.read { try TerminalSessionQueries.fetchBoardSession($0, id: sessionID)?.kind == .claude }
     }
 }
 

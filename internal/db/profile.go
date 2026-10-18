@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -120,6 +121,9 @@ func (db *DB) UpsertOwnerProfile(o Owner, p UserProfile) error {
 	if err := rekeyOwnerProfile(tx, o.ID); err != nil {
 		return err
 	}
+	if err := rekeyOwnerDailyRows(tx, o.ID); err != nil {
+		return err
+	}
 	p.SlackUserID = o.ID
 	if _, err := tx.Exec(upsertUserProfileSQL, upsertUserProfileArgs(p)...); err != nil {
 		return fmt.Errorf("upserting owner profile: %w", err)
@@ -151,6 +155,72 @@ func rekeyOwnerProfile(tx *sql.Tx, ownerID string) error {
 	return nil
 }
 
+// AdoptOwnerRows re-keys the owner-scoped rows written under an earlier owner
+// id (the owner switched rungs, e.g. "email:…" → "jira:…") onto ownerID: the
+// profile (rekeyOwnerProfile) and every briefing and day plan. The app has
+// one owner, so any other user_id in those tables is the same person. A row
+// whose date ownerID already has stays where it is (the owner's own row
+// wins). Called before a briefing or day plan run checks for today's row, so
+// a rung switch never regenerates it. Reads first: a no-op takes no write
+// lock. An empty ownerID (no owner) adopts nothing.
+func (db *DB) AdoptOwnerRows(ownerID string) error {
+	if ownerID == "" {
+		return nil
+	}
+	movable, err := db.ownerRowsToAdopt(ownerID)
+	if err != nil || !movable {
+		return err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning owner row adoption: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := rekeyOwnerProfile(tx, ownerID); err != nil {
+		return err
+	}
+	if err := rekeyOwnerDailyRows(tx, ownerID); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing owner row adoption: %w", err)
+	}
+	return nil
+}
+
+// ownerRowsToAdopt reports whether AdoptOwnerRows would move anything: a
+// briefing or day plan under another id on a date ownerID does not have yet,
+// or a profile when none is keyed ownerID. A leftover row on a date the owner
+// already has never moves (OR IGNORE), so it never counts — otherwise it
+// would open a write transaction every daemon cycle.
+func (db *DB) ownerRowsToAdopt(ownerID string) (bool, error) {
+	var movable bool
+	err := db.QueryRow(`SELECT
+		EXISTS(SELECT 1 FROM briefings b WHERE b.user_id != ?1
+			AND NOT EXISTS(SELECT 1 FROM briefings o WHERE o.user_id = ?1 AND o.date = b.date))
+		OR EXISTS(SELECT 1 FROM day_plans p WHERE p.user_id != ?1
+			AND NOT EXISTS(SELECT 1 FROM day_plans o WHERE o.user_id = ?1 AND o.plan_date = p.plan_date))
+		OR (EXISTS(SELECT 1 FROM user_profile) AND NOT EXISTS(SELECT 1 FROM user_profile WHERE slack_user_id = ?1))`,
+		ownerID).Scan(&movable)
+	if err != nil {
+		return false, fmt.Errorf("checking owner rows to adopt: %w", err)
+	}
+	return movable, nil
+}
+
+// rekeyOwnerDailyRows moves every briefing and day plan keyed under another
+// id onto ownerID, skipping a date ownerID already has (OR IGNORE on the
+// (user_id, date) unique keys).
+func rekeyOwnerDailyRows(tx *sql.Tx, ownerID string) error {
+	if _, err := tx.Exec(`UPDATE OR IGNORE briefings SET user_id = ?1 WHERE user_id != ?1`, ownerID); err != nil {
+		return fmt.Errorf("re-keying owner briefings: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE OR IGNORE day_plans SET user_id = ?1 WHERE user_id != ?1`, ownerID); err != nil {
+		return fmt.Errorf("re-keying owner day plans: %w", err)
+	}
+	return nil
+}
+
 // AddStarredChannel adds a channel to the user's starred channels list.
 func (db *DB) AddStarredChannel(slackUserID, channelID string) error {
 	profile, err := db.GetUserProfile(slackUserID)
@@ -169,10 +239,8 @@ func (db *DB) AddStarredChannel(slackUserID, channelID string) error {
 	}
 
 	// Check if already starred
-	for _, ch := range channels {
-		if ch == channelID {
-			return nil // Already starred, idempotent
-		}
+	if slices.Contains(channels, channelID) {
+		return nil // Already starred, idempotent
 	}
 
 	channels = append(channels, channelID)
@@ -237,10 +305,8 @@ func (db *DB) AddStarredPerson(slackUserID, personUserID string) error {
 	}
 
 	// Check if already starred
-	for _, p := range people {
-		if p == personUserID {
-			return nil // Already starred, idempotent
-		}
+	if slices.Contains(people, personUserID) {
+		return nil // Already starred, idempotent
 	}
 
 	people = append(people, personUserID)

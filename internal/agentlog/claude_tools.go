@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"watchtower/internal/db"
@@ -33,7 +34,8 @@ func (p *claudeParser) toolUses(rec claudeRecord, off int64) {
 			continue
 		}
 		p.toolIdx[b.ID] = p.add(rec, off, db.AgentLogEvent{Key: "tool:" + b.ID, Kind: "tool", Name: b.Name,
-			Target: toolTarget(b.Name, b.Input, p.o.Folder), Outcome: "pending", Skill: rec.AttributionSkill})
+			Target: toolTarget(b.Name, b.Input, p.o.Folder), Outcome: "pending", Skill: rec.AttributionSkill,
+			Background: isAgentTool(b.Name) && runInBackground(b.Input)})
 		switch {
 		case b.Name == "Skill":
 			var in struct {
@@ -58,7 +60,7 @@ var commandNameRe = regexp.MustCompile(`<command-name>/?([^<\s]+)</command-name>
 
 func (p *claudeParser) slashSkill(rec claudeRecord, off int64, text string) {
 	m := commandNameRe.FindStringSubmatch(text)
-	if m == nil || !p.skills[m[1]] {
+	if m == nil || !p.knowsSkill(m[1]) {
 		return
 	}
 	p.add(rec, off, db.AgentLogEvent{Key: p.recKey("skill", rec, off) + ":0", Kind: "skill", Name: m[1], Trigger: "slash"})
@@ -75,7 +77,10 @@ func (p *claudeParser) toolResults(rec claudeRecord) {
 		return
 	}
 	var tur struct {
-		Interrupted     bool `json:"interrupted"`
+		Interrupted     bool   `json:"interrupted"`
+		IsAsync         bool   `json:"isAsync"`
+		Status          string `json:"status"`
+		AgentID         string `json:"agentId"`
 		StructuredPatch []struct {
 			Lines []string `json:"lines"`
 		} `json:"structuredPatch"`
@@ -86,7 +91,8 @@ func (p *claudeParser) toolResults(rec claudeRecord) {
 			continue
 		}
 		text := resultText(b.Content)
-		r := db.AgentToolResult{ToolUseID: b.ToolUseID, TS: rec.Timestamp, Outcome: "ok"}
+		r := db.AgentToolResult{ToolUseID: b.ToolUseID, TS: rec.Timestamp, Outcome: "ok",
+			SpawnedAgentID: tur.AgentID, Background: tur.IsAsync || tur.Status == "async_launched"}
 		switch {
 		case tur.Interrupted || strings.HasPrefix(text, "[Request interrupted by user"):
 			r.Outcome = "interrupted"
@@ -139,9 +145,74 @@ func errorClass(text string) string {
 	}
 }
 
+func isAgentTool(name string) bool { return name == "Agent" || name == "Task" }
+
+func runInBackground(input json.RawMessage) bool {
+	var in struct {
+		Background bool `json:"run_in_background"`
+	}
+	return json.Unmarshal(input, &in) == nil && in.Background
+}
+
+// workbenchTargetTools take a board target id; the MCP server name is spelled
+// with a hyphen (Claude) or an underscore (Codex).
+var workbenchTargetTools = map[string]bool{"update_target": true, "add_comment": true, "ask_owner": true,
+	"get_target": true, "list_comments": true, "finish_session": true}
+
+func workbenchTool(name string) (string, bool) {
+	for _, pre := range []string{"mcp__watchtower-workbench__", "mcp__watchtower_workbench__"} {
+		if t, ok := strings.CutPrefix(name, pre); ok {
+			return t, true
+		}
+	}
+	return "", false
+}
+
+// workbenchTarget is "#<id>" of the board target an MCP call is about; no
+// other input field is read.
+func workbenchTarget(tool string, input json.RawMessage) string {
+	var in struct {
+		TargetID *int64 `json:"target_id"`
+		Items    []struct {
+			ParentID *int64 `json:"parent_id"`
+		} `json:"items"`
+	}
+	if json.Unmarshal(input, &in) != nil {
+		return ""
+	}
+	id := in.TargetID
+	if tool == "create_targets" {
+		id = nil
+		for _, it := range in.Items {
+			if it.ParentID != nil {
+				id = it.ParentID
+				break
+			}
+		}
+	} else if !workbenchTargetTools[tool] {
+		return ""
+	}
+	if id == nil {
+		return ""
+	}
+	return "#" + strconv.FormatInt(*id, 10)
+}
+
 // toolTarget is the content-free description of what a tool touched
 // (AGENTLOG-01): a folder-relative path, or a shell program (+ subcommand).
 func toolTarget(name string, input json.RawMessage, folder string) string {
+	if t, ok := workbenchTool(name); ok {
+		return workbenchTarget(t, input)
+	}
+	if isAgentTool(name) {
+		var in struct {
+			SubagentType string `json:"subagent_type"`
+		}
+		if json.Unmarshal(input, &in) != nil || in.SubagentType == "" || !progRe.MatchString(in.SubagentType) {
+			return "general-purpose"
+		}
+		return in.SubagentType
+	}
 	var in struct {
 		FilePath     string `json:"file_path"`
 		NotebookPath string `json:"notebook_path"`
@@ -201,29 +272,81 @@ func skipEnvAssign(s string) (string, bool) {
 	return strings.TrimLeft(rest, " \t"), true
 }
 
-func shellTarget(cmd string) string {
-	cmd = strings.TrimSpace(cmd)
+// skippedPrograms only move or configure the shell; the next command is the
+// real one.
+var skippedPrograms = map[string]bool{"cd": true, "pushd": true, "popd": true, "export": true, "set": true, "source": true, ".": true}
+
+var segmentSplitRe = regexp.MustCompile(`&&|\|\||;|\n`)
+
+// stripWrappers drops leading env assignments and the timeout/env/time/nice
+// wrappers (with their numeric argument) from a command segment.
+func stripWrappers(s string) string {
 	for {
-		var ok bool
-		if cmd, ok = skipEnvAssign(cmd); !ok {
-			break
+		s = strings.TrimSpace(s)
+		if rest, ok := skipEnvAssign(s); ok {
+			s = rest
+			continue
+		}
+		fields := strings.Fields(s)
+		if len(fields) == 0 {
+			return ""
+		}
+		var drop int
+		switch fields[0] {
+		case "env", "time":
+			drop = 1
+		case "timeout":
+			drop = 1
+			if len(fields) > 1 && !strings.HasPrefix(fields[1], "-") {
+				drop = 2
+			}
+		case "nice":
+			drop = 1
+			if len(fields) > 2 && fields[1] == "-n" {
+				drop = 3
+			}
+		default:
+			return s
+		}
+		s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(s), fields[0]))
+		for i := 1; i < drop; i++ {
+			s = strings.TrimSpace(strings.TrimPrefix(s, fields[i]))
 		}
 	}
-	if i := strings.IndexAny(cmd, "&|;\n"); i >= 0 {
-		cmd = cmd[:i]
+}
+
+// shellTarget returns the program and at most one subcommand of the first
+// real command in a shell line, skipping cd/export-style segments, env
+// assignments and wrappers. Nothing else from the line is ever kept.
+func shellTarget(cmd string) string {
+	for _, seg := range segmentSplitRe.Split(cmd, -1) {
+		if i := strings.IndexByte(seg, '|'); i >= 0 {
+			seg = seg[:i]
+		}
+		fields := strings.Fields(stripWrappers(seg))
+		if len(fields) == 0 {
+			continue
+		}
+		prog := filepath.Base(fields[0])
+		if skippedPrograms[prog] {
+			continue
+		}
+		if !progRe.MatchString(prog) {
+			return ""
+		}
+		if len(fields) > 1 {
+			switch {
+			case prog == "bash" || prog == "sh" || prog == "zsh":
+				if script := filepath.Base(fields[1]); !strings.HasPrefix(fields[1], "-") && progRe.MatchString(script) {
+					return prog + " " + script
+				}
+			case subcommandPrograms[prog] && subcmdRe.MatchString(fields[1]) && !strings.HasPrefix(fields[1], "-"):
+				return prog + " " + fields[1]
+			}
+		}
+		return prog
 	}
-	fields := strings.Fields(cmd)
-	if len(fields) == 0 {
-		return ""
-	}
-	prog := filepath.Base(fields[0])
-	if !progRe.MatchString(prog) {
-		return ""
-	}
-	if subcommandPrograms[prog] && len(fields) > 1 && subcmdRe.MatchString(fields[1]) && !strings.HasPrefix(fields[1], "-") {
-		return prog + " " + fields[1]
-	}
-	return prog
+	return ""
 }
 
 // rejected reports an owner "reject" permission decision (an object on real

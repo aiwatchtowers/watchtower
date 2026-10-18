@@ -2,7 +2,9 @@
 package db
 
 import (
+	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pressly/goose/v3"
@@ -17,11 +20,90 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 
 	"watchtower/internal/db/lockmetrics"
+	"watchtower/internal/fsutil"
 )
 
 // DB wraps a *sql.DB connection to the watchtower SQLite database.
 type DB struct {
 	*sql.DB
+	// connector opens every pool connection of a handle from Open or
+	// OpenExisting*; nil on the test-only in-memory clones.
+	connector *pragmaConnector
+}
+
+// pragmaConnector opens each pool connection from dsn — the driver runs the
+// DSN's _pragma params on it — and then re-runs the pragmas SetBusyTimeout
+// and SetReadOnly set on the handle. database/sql drops a connection after a
+// context-cancelled statement (modernc reports it bad while interrupted) and
+// opens a fresh one; a pragma run once with Exec would be lost there for the
+// rest of the process.
+type pragmaConnector struct {
+	dsn string
+
+	mu    sync.Mutex
+	state connState
+}
+
+// connState is what SetBusyTimeout and SetReadOnly set on a handle.
+type connState struct {
+	busyTimeoutSet bool // false: the DSN's busy_timeout
+	busyTimeoutMS  int64
+	queryOnly      bool
+}
+
+func (c *pragmaConnector) Connect(ctx context.Context) (driver.Conn, error) {
+	conn, err := metricsDriver.Open(c.dsn)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	st := c.state
+	c.mu.Unlock()
+	var pragmas []string
+	if st.busyTimeoutSet {
+		pragmas = append(pragmas, fmt.Sprintf("PRAGMA busy_timeout=%d", st.busyTimeoutMS))
+	}
+	if st.queryOnly {
+		pragmas = append(pragmas, "PRAGMA query_only=ON")
+	}
+	if len(pragmas) == 0 {
+		return conn, nil
+	}
+	ex, ok := conn.(driver.ExecerContext)
+	if !ok {
+		_ = conn.Close()
+		return nil, errors.New("sqlite connection cannot execute pragmas")
+	}
+	for _, p := range pragmas {
+		if _, err := ex.ExecContext(ctx, p, nil); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("executing %q: %w", p, err)
+		}
+	}
+	return conn, nil
+}
+
+func (c *pragmaConnector) Driver() driver.Driver { return metricsDriver }
+
+// metricsDriver is the registered lock-metrics driver every handle opens
+// through (sql.Open never connects; it only resolves the name).
+var metricsDriver = func() driver.Driver {
+	probe, err := sql.Open(lockmetrics.DriverName, "")
+	if err != nil {
+		panic("db: lock-metrics driver not registered: " + err.Error())
+	}
+	defer probe.Close()
+	return probe.Driver()
+}()
+
+// openPool opens dsn as a one-connection pool through pragmaConnector.
+// One connection: an in-memory database is private to its connection, and
+// SQLite serializes writes anyway.
+func openPool(dsn string) *DB {
+	c := &pragmaConnector{dsn: dsn}
+	sqlDB := sql.OpenDB(c)
+	sqlDB.SetMaxOpenConns(1)
+	return &DB{DB: sqlDB, connector: c}
 }
 
 // IsForeignKeyViolation reports whether err (or an error it wraps) is SQLite's
@@ -52,6 +134,26 @@ var seedNewFileHook func(dbPath string) error
 // busy_timeout never covers that upgrade. The driver cuts the query off a
 // plain path before opening the file (see sqliteDSN).
 const immediateTxDSN = "?_txlock=immediate"
+
+// connPragmas are the per-connection pragmas of a writing handle (Open,
+// OpenExistingRW) besides busy_timeout, which each opener sets itself; in
+// the "name(value)" form both a DSN _pragma param and a PRAGMA statement take.
+var connPragmas = []string{"foreign_keys(1)", "synchronous(NORMAL)"}
+
+// connPragmaParams is connPragmas as DSN params ("_pragma=…").
+func connPragmaParams() []string {
+	out := make([]string, len(connPragmas))
+	for i, p := range connPragmas {
+		out[i] = "_pragma=" + p
+	}
+	return out
+}
+
+// openDSN is Open's DSN params: the tx lock mode plus the per-connection
+// pragmas, which the driver runs on every new pool connection (journal_mode
+// WAL is stored in the file, so setPragmas runs it once).
+var openDSN = fmt.Sprintf("%s&_pragma=busy_timeout(%d)&%s",
+	immediateTxDSN, busyTimeoutMS, strings.Join(connPragmaParams(), "&"))
 
 // busyTimeoutMS is how long a connection waits for another process's write
 // lock before failing with SQLITE_BUSY — Open's default (SetBusyTimeout
@@ -103,37 +205,11 @@ func Open(dbPath string) (*DB, error) {
 		}
 	}
 
-	sqlDB, err := sql.Open(lockmetrics.DriverName, sqliteDSN(dbPath, immediateTxDSN))
-	if err != nil {
-		return nil, fmt.Errorf("opening database: %w", err)
-	}
+	db := openPool(sqliteDSN(dbPath, openDSN))
 
-	// Limit to 1 connection: for :memory: databases each connection gets
-	// its own independent database, and for file databases per-connection
-	// pragmas (busy_timeout, foreign_keys, synchronous) would not apply
-	// to new pooled connections. SQLite serializes writes anyway, so a
-	// single connection avoids both issues with no performance loss.
-	sqlDB.SetMaxOpenConns(1)
-
-	db := &DB{DB: sqlDB}
-
-	if err := db.setPragmas(); err != nil {
-		sqlDB.Close()
-		return nil, fmt.Errorf("setting pragmas: %w: %w", ErrSchemaSetup, err)
-	}
-
-	// The lock-metrics sink sits next to the file. It is pointed there only
-	// once the connection works (a failed open must not re-point this
-	// process's sink) and before the migrations, so a slow one is recorded.
-	// An in-memory open is never measured and must not unset the sink
-	// another open configured.
-	if dbPath != ":memory:" {
-		lockmetrics.Configure(dbPath)
-	}
-
-	if err := db.migrate(); err != nil {
-		sqlDB.Close()
-		return nil, fmt.Errorf("running migrations: %w: %w", ErrSchemaSetup, err)
+	if err := db.setupSchema(dbPath); err != nil {
+		db.Close()
+		return nil, err
 	}
 
 	// Logged, not returned: a database missing one feature's table must still
@@ -172,18 +248,14 @@ func existingDSN(dbPath string, busy time.Duration, params ...string) string {
 
 // openExistingDSN opens dsn on one connection and checks the file is there.
 func openExistingDSN(dbPath, dsn string) (*DB, error) {
-	sqlDB, err := sql.Open(lockmetrics.DriverName, dsn)
-	if err != nil {
-		return nil, fmt.Errorf("opening database: %w", err)
-	}
-	sqlDB.SetMaxOpenConns(1)
-	if err := sqlDB.Ping(); err != nil {
-		sqlDB.Close()
+	d := openPool(dsn)
+	if err := d.Ping(); err != nil {
+		d.Close()
 		return nil, fmt.Errorf("opening database %s: %w", dbPath, err)
 	}
 	// Only an open that worked points the lock-metrics sink at its file.
 	lockmetrics.Configure(dbPath)
-	return &DB{DB: sqlDB}, nil
+	return d, nil
 }
 
 // OpenExistingRW opens the database at dbPath for a hook on a hard time
@@ -197,8 +269,8 @@ func openExistingDSN(dbPath, dsn string) (*DB, error) {
 // caller needs is found with HasColumns, never by the goose version (a
 // crossed migration line is possible).
 func OpenExistingRW(dbPath string, busy time.Duration) (*DB, error) {
-	d, err := openExistingDSN(dbPath, existingDSN(dbPath, busy, strings.TrimPrefix(immediateTxDSN, "?"),
-		"_pragma=foreign_keys(1)", "_pragma=synchronous(NORMAL)"))
+	params := append([]string{strings.TrimPrefix(immediateTxDSN, "?")}, connPragmaParams()...)
+	d, err := openExistingDSN(dbPath, existingDSN(dbPath, busy, params...))
 	if err != nil {
 		return nil, err
 	}
@@ -255,12 +327,15 @@ func tightenDBFilePerms(dbPath string) {
 	}
 }
 
+// setPragmas switches the file to WAL (stored in the file) and sets the
+// per-connection pragmas on the current connection. On Open's handles the
+// latter repeat openDSN, which is what carries them to a later pool
+// connection; the test-only in-memory clone needs them here because
+// deserializing its snapshot resets synchronous.
 func (db *DB) setPragmas() error {
-	pragmas := []string{
-		"PRAGMA journal_mode=WAL",
-		fmt.Sprintf("PRAGMA busy_timeout=%d", busyTimeoutMS),
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA synchronous=NORMAL",
+	pragmas := []string{"PRAGMA journal_mode=WAL", fmt.Sprintf("PRAGMA busy_timeout=%d", busyTimeoutMS)}
+	for _, p := range connPragmas {
+		pragmas = append(pragmas, "PRAGMA "+p)
 	}
 	for _, p := range pragmas {
 		if _, err := db.Exec(p); err != nil {
@@ -268,6 +343,121 @@ func (db *DB) setPragmas() error {
 		}
 	}
 	return nil
+}
+
+// migrateLockWait bounds how long Open waits for another process's
+// migration run; past it the Open fails with ErrMigrationInProgress. A var
+// so a test can shorten it.
+var migrateLockWait = 2 * time.Minute
+
+// ErrMigrationInProgress marks an Open that gave up waiting for another
+// process's migrations: a temporary condition, to be retried, unlike
+// ErrSchemaSetup.
+var ErrMigrationInProgress = errors.New("another Watchtower process is updating the database; try again in a moment")
+
+// setupSchema is Open's pragmas and migrations. When the file is not yet
+// current (schemaCurrent) they run under an exclusive flock on
+// <dbPath>.migrate.lock, so two processes opening the database right after
+// an update (the CLI, MCP servers, the session host's children) never apply
+// the same pending migration at once: goose reads the applied versions once
+// and then applies each pending one without re-checking, so a second runner
+// would re-run DDL ("table already exists") or interleave a NO TRANSACTION
+// table recreation. The waiter runs goose once the holder is done and finds
+// nothing pending. The WAL switch is under the lock too: on a new file two
+// concurrent switches fail one opener with SQLITE_BUSY. A current file takes
+// no lock and runs no goose. The hooks on a hard time budget never get here:
+// they open with OpenExisting*, which runs no migration; the Desktop's GRDB
+// pool never takes this lock either.
+func (db *DB) setupSchema(dbPath string) error {
+	current := false
+	if dbPath != ":memory:" {
+		current = db.schemaCurrent()
+	}
+	if dbPath != ":memory:" && !current {
+		ctx, cancel := context.WithTimeout(context.Background(), migrateLockWait)
+		defer cancel()
+		unlock, err := fsutil.LockFile(ctx, dbPath+".migrate.lock")
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			return fmt.Errorf("%w: %w", ErrMigrationInProgress, err)
+		case err != nil:
+			return fmt.Errorf("taking the migration lock: %w: %w", ErrSchemaSetup, err)
+		}
+		defer unlock()
+	}
+
+	if err := db.setPragmas(); err != nil {
+		return fmt.Errorf("setting pragmas: %w: %w", ErrSchemaSetup, err)
+	}
+
+	// The lock-metrics sink sits next to the file. It is pointed there only
+	// once the connection works (a failed open must not re-point this
+	// process's sink) and before the migrations, so a slow one is recorded.
+	// An in-memory open is never measured and must not unset the sink
+	// another open configured.
+	if dbPath != ":memory:" {
+		lockmetrics.Configure(dbPath)
+	}
+
+	if current {
+		return nil
+	}
+	if err := db.migrate(); err != nil {
+		return fmt.Errorf("running migrations: %w: %w", ErrSchemaSetup, err)
+	}
+	return nil
+}
+
+// embeddedMigrationVersions is the version of every migration in this
+// binary — the embedded SQL files and the registered Go migrations, as
+// goose collects them — read once.
+var embeddedMigrationVersions = sync.OnceValues(func() ([]int64, error) {
+	migrations, err := goose.CollectMigrations("migrations", 0, goose.MaxVersion)
+	if err != nil {
+		return nil, fmt.Errorf("collecting embedded migrations: %w", err)
+	}
+	out := make([]int64, len(migrations))
+	for i, m := range migrations {
+		out[i] = m.Version
+	}
+	return out, nil
+})
+
+// schemaCurrent reports, by reads only and without the migration lock,
+// whether the file is already in WAL mode and records every embedded
+// migration as applied — so goose.Up would have nothing to do. A failed read
+// reads false: the locked path then decides, as before.
+func (db *DB) schemaCurrent() bool {
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil || !strings.EqualFold(mode, "wal") {
+		return false
+	}
+	want, err := embeddedMigrationVersions()
+	if err != nil {
+		return false
+	}
+	rows, err := db.Query(`SELECT version_id FROM goose_db_version WHERE is_applied = 1`)
+	if err != nil {
+		return false // no version table yet: a new file
+	}
+	defer rows.Close()
+	applied := map[int64]bool{}
+	for rows.Next() {
+		var v int64
+		if err := rows.Scan(&v); err != nil {
+			return false
+		}
+		applied[v] = true
+	}
+	if rows.Err() != nil {
+		return false
+	}
+	for _, v := range want {
+		if !applied[v] {
+			return false
+		}
+	}
+	return true
 }
 
 func (db *DB) migrate() error {
@@ -283,8 +473,13 @@ func (db *DB) migrate() error {
 // a write waits for another process's write lock before failing with
 // SQLITE_BUSY. The owner-click write paths (approving an action, recording a
 // chat proposal) raise it so a background daemon transaction cannot fail them.
+// It holds for every later pool connection of the handle too.
 func (db *DB) SetBusyTimeout(d time.Duration) error {
-	if _, err := db.Exec(fmt.Sprintf("PRAGMA busy_timeout=%d", d.Milliseconds())); err != nil {
+	ms := d.Milliseconds()
+	err := db.setConnPragma(fmt.Sprintf("PRAGMA busy_timeout=%d", ms), func(st *connState) {
+		st.busyTimeoutSet, st.busyTimeoutMS = true, ms
+	})
+	if err != nil {
 		return fmt.Errorf("setting busy_timeout: %w", err)
 	}
 	return nil
@@ -295,9 +490,34 @@ func (db *DB) SetBusyTimeout(d time.Duration) error {
 // read-only consumers (the MCP server) after Open has run migrations.
 // Because Begin is immediate (see Open), Begin() itself fails on such a
 // handle; a transaction there must be opened with sql.TxOptions{ReadOnly: true}.
+// It holds for every later pool connection of the handle too, so the fence
+// survives a connection the pool replaced after a cancelled query.
 func (db *DB) SetReadOnly() error {
-	if _, err := db.Exec("PRAGMA query_only=ON"); err != nil {
+	if err := db.setConnPragma("PRAGMA query_only=ON", func(st *connState) { st.queryOnly = true }); err != nil {
 		return fmt.Errorf("setting query_only: %w", err)
+	}
+	return nil
+}
+
+// setConnPragma records change on the handle's connector before running
+// pragma on the current connection, so a connection the pool opens in
+// between already gets it; a failed pragma restores the previous state.
+func (db *DB) setConnPragma(pragma string, change func(*connState)) error {
+	c := db.connector
+	var prev connState
+	if c != nil {
+		c.mu.Lock()
+		prev = c.state
+		change(&c.state)
+		c.mu.Unlock()
+	}
+	if _, err := db.Exec(pragma); err != nil {
+		if c != nil {
+			c.mu.Lock()
+			c.state = prev
+			c.mu.Unlock()
+		}
+		return err
 	}
 	return nil
 }

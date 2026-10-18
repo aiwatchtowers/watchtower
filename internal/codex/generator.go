@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -19,9 +20,6 @@ type CodexGenerator struct {
 	modelLight  string
 	modelStrong string
 	codexPath   string
-	// stdinOnly routes every user message through stdin regardless of its
-	// size (see SetStdinOnly).
-	stdinOnly bool
 	// isolated runs the child in its own process group without the
 	// variables in dropEnv (see SetIsolatedChild).
 	isolated bool
@@ -34,12 +32,6 @@ type CodexGenerator struct {
 func NewCodexGenerator(modelLight, modelStrong, codexPath string) *CodexGenerator {
 	return &CodexGenerator{modelLight: modelLight, modelStrong: modelStrong, codexPath: codexPath}
 }
-
-// SetStdinOnly makes every subsequent Generate pass the user message on
-// stdin ("-" positional), never as a positional argv value, whatever its
-// size. Callers whose user message carries the owner's chat text set it
-// (CHAT-04: `chat title`); every other caller keeps the size-based routing.
-func (g *CodexGenerator) SetStdinOnly(v bool) { g.stdinOnly = v }
 
 // SetIsolatedChild makes every subsequent Generate run codex through
 // digest.IsolateChild: its own process group, killed whole on cancel, and
@@ -58,12 +50,16 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 
 	codexBin := FindBinary(g.codexPath)
 
-	args, stdin := buildArgs(model, systemPrompt, userMessage, g.stdinOnly)
+	args, stdin, promptFile, err := buildArgs(codexBin, model, systemPrompt, userMessage)
+	if err != nil {
+		return "", nil, "", err
+	}
+	if promptFile != "" {
+		defer os.Remove(promptFile)
+	}
 
 	cmd := exec.CommandContext(ctx, codexBin, args...)
-	if stdin != "" {
-		cmd.Stdin = strings.NewReader(stdin)
-	}
+	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(os.Interrupt)
 	}
@@ -88,7 +84,7 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 
 	output, err := cmd.Output()
 	if err != nil {
-		return "", nil, "", classifyError(err, stderrBuf.String(), codexBin)
+		return "", nil, "", runError(model, output, err, stderrBuf.String(), codexBin)
 	}
 
 	// Parse JSONL output — find last item.completed with agent_message
@@ -121,8 +117,11 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 // gates unified exec; view_image reads local files; computer_use and the
 // browser_use pair drive the screen and a browser (their own TCC prompts);
 // apps/plugins would expose the owner's ChatGPT connectors — an
-// exfiltration channel for an injected prompt. Not covered here: MCP servers
-// and web search configured in the owner's own ~/.codex/config.toml. An
+// exfiltration channel for an injected prompt. MCP servers configured in
+// the owner's own codex config are disabled by a -c override in a run that
+// mounts the watchtower server or runs tool-less (Client.mount); web search
+// follows the owner's codex setting except where Client.execArgs turns it
+// off; the generators here keep the owner's codex setup. An
 // unknown features.* key is ignored by older codex builds.
 func execArgs(model string) []string {
 	return []string{
@@ -144,29 +143,18 @@ func execArgs(model string) []string {
 	}
 }
 
-// buildArgs builds the `codex exec` CLI args; when userMessage exceeds
-// digest.StdinThreshold (or stdinOnly is set) the final positional arg is "-" (codex reads the
-// prompt from stdin) and the message is returned as stdin content instead,
-// to stay clear of ARG_MAX on very large inputs (e.g. meeting transcripts),
-// and likewise when it begins with '-' (promptPositionalOrStdin).
-// A system prompt above the same threshold cannot ride -c
-// developer_instructions (codex has no file form of it), so the whole turn
-// moves to stdin as codexStdinContent — the CHAT-04 stdin-only layout.
-func buildArgs(model, systemPrompt, userMessage string, stdinOnly bool) ([]string, string) {
-	args := execArgs(model)
-	if len(systemPrompt) > digest.StdinThreshold {
-		return append(args, "-"), codexStdinContent(systemPrompt, userMessage)
+// buildArgs builds the `codex exec` CLI args and their stdin content. The
+// args carry no prompt text — on argv the owner's data would be readable by
+// every local process through `ps`, and a large input (a meeting transcript)
+// would hit ARG_MAX: the prompts travel as promptArgs lays them out for the
+// codex binary bin (the Client.buildArgs layout), behind the "-" positional.
+// promptFile is the system-prompt file to remove once the child has exited.
+func buildArgs(bin, model, systemPrompt, userMessage string) (args []string, stdin, promptFile string, err error) {
+	instr, stdin, promptFile, err := promptArgs(bin, systemPrompt, userMessage)
+	if err != nil {
+		return nil, "", "", err
 	}
-	if systemPrompt != "" {
-		args = append(args, "-c", fmt.Sprintf("developer_instructions=%s", systemPrompt))
-	}
-	if stdinOnly {
-		return append(args, "-"), userMessage
-	}
-	// Large or '-'-leading messages go through stdin (a leading '-' would be
-	// parsed as a flag, e.g. -c as a config override).
-	positional, stdin := promptPositionalOrStdin(userMessage)
-	return append(args, positional), stdin
+	return append(append(execArgs(model), instr...), "-"), stdin, promptFile, nil
 }
 
 // parseJSONLOutput parses Codex JSONL output and extracts the final agent_message
@@ -179,7 +167,7 @@ func parseJSONLOutput(output []byte) (string, *CodexUsage, error) {
 	// bufio.Scanner: a command_execution / mcp_tool_call item can exceed any
 	// scanner buffer, and a scanner stopping there silently returned the
 	// pre-tool preamble as the answer.
-	for _, line := range bytes.Split(output, []byte("\n")) {
+	for line := range bytes.SplitSeq(output, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
@@ -237,20 +225,19 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 
 // classifyError wraps CLI errors with user-friendly messages.
 func classifyError(err error, stderr, codexBin string) error {
-	if execErr, ok := err.(*exec.Error); ok {
-		if execErr.Err == exec.ErrNotFound {
-			return fmt.Errorf("codex CLI not found at %q — install Codex CLI first", codexBin)
-		}
+	if errors.Is(err, exec.ErrNotFound) {
+		return digest.WithCause(fmt.Errorf("codex CLI not found at %q — install Codex CLI first", codexBin), err)
 	}
-	if exitErr, ok := err.(*exec.ExitError); ok {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
 		stderrMsg := strings.TrimSpace(stderr)
 		if stderrMsg == "" {
 			stderrMsg = strings.TrimSpace(string(exitErr.Stderr))
 		}
 		if stderrMsg != "" {
-			return fmt.Errorf("codex CLI failed (exit %d): %s", exitErr.ExitCode(), stderrMsg)
+			return digest.WithCause(fmt.Errorf("codex CLI failed (exit %d): %s", exitErr.ExitCode(), stderrMsg), exitErr)
 		}
-		return fmt.Errorf("codex CLI failed with exit code %d", exitErr.ExitCode())
+		return digest.WithCause(fmt.Errorf("codex CLI failed with exit code %d", exitErr.ExitCode()), exitErr)
 	}
 	return fmt.Errorf("codex CLI error: %w", err)
 }

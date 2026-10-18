@@ -1,6 +1,10 @@
 package cmd
 
 import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +15,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/db"
+	"watchtower/internal/reviewdiff"
+	"watchtower/internal/tools"
 )
 
 type reviewContextItem struct {
@@ -32,26 +38,43 @@ var (
 const maxPlanBytes = 1 << 20
 
 func runWorkbenchReviewContext(cmd *cobra.Command, _ []string) error {
-	database, p, err := reviewTarget(cmd)
+	database, p, err := reviewTarget()
 	if err != nil {
 		return err
 	}
-	if err := checkSessionOnWorkbench(database, p, reviewFlagSession); err != nil {
+	if err := tools.CheckSessionOnWorkbench(database, p, reviewFlagSession); err != nil {
 		return failReview(cmd, err)
 	}
-	ids, err := database.SessionLinkedTargets(reviewFlagSession)
+	items, err := reviewContextItems(cmd.Context(), database, p, reviewFlagSession)
 	if err != nil {
 		return failReview(cmd, err)
+	}
+	lenses, notes := reviewdiff.LoadLenses(p.FolderPath)
+	return writeReview(cmd, reviewEnvelope{OK: true, Items: items, Lenses: lenses, LensNotes: notes})
+}
+
+// reviewContextItems: the session's linked targets that belong to workbench p,
+// each with its plan task when the intent names one.
+func reviewContextItems(_ context.Context, database *db.DB, p *db.Workbench, sessionID int64) ([]reviewContextItem, error) {
+	ids, err := database.SessionLinkedTargets(sessionID)
+	if err != nil {
+		return nil, err
 	}
 	items := []reviewContextItem{}
 	for _, id := range ids {
 		t, err := database.GetTargetByID(int(id))
-		if err != nil || t == nil || !t.WorkbenchID.Valid || t.WorkbenchID.Int64 != p.ID {
+		if errors.Is(err, sql.ErrNoRows) {
+			continue // deleted between the two reads
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reading linked target %d: %w", id, err)
+		}
+		if t == nil || !t.WorkbenchID.Valid || t.WorkbenchID.Int64 != p.ID {
 			continue
 		}
 		items = append(items, contextItem(p.FolderPath, t))
 	}
-	return writeReview(cmd, reviewEnvelope{OK: true, Items: items})
+	return items, nil
 }
 
 func contextItem(folder string, t *db.Target) reviewContextItem {
@@ -111,11 +134,11 @@ func readPlainFile(folder, path string) (string, bool) {
 // taskSection: from "### Task N:" to the next "### " heading.
 func taskSection(body string, n int) string {
 	head := "### Task " + strconv.Itoa(n) + ":"
-	start := strings.Index(body, head)
-	if start < 0 {
+	_, after, ok := strings.Cut(body, head)
+	if !ok {
 		return ""
 	}
-	rest := body[start+len(head):]
+	rest := after
 	if end := strings.Index(rest, "\n### "); end >= 0 {
 		rest = rest[:end]
 	}

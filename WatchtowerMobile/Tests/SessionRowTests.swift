@@ -70,6 +70,22 @@ final class SessionRowTests: XCTestCase {
         XCTAssertNil(stopped.glyph, "an empty glyph draws none")
     }
 
+    /// Board #516: a live session says how long it has been in its state, so
+    /// a session stuck at a prompt reads as stuck; no stamp, no age.
+    func testALiveRowAddsTheTimeInItsState() throws {
+        let now = Date()
+        let approval = SessionRowModel(try session([
+            "state_kind": "needs_approval", "state_caption": "Needs approval", "state_tone": "orange",
+            "state_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-40 * 60 - 5)),
+            "last_active_at": DemoSeed.JSON.stamp(now.addingTimeInterval(-3 * 3_600))
+        ]), now: now)
+        XCTAssertEqual(approval.caption, "Needs approval · 40m", "the state's age, not the last activity")
+        XCTAssertEqual(approval.metaItems.first?.text, approval.caption)
+
+        let unknown = SessionRowModel(try session(["state_kind": "running", "state_caption": "Running"]), now: now)
+        XCTAssertEqual(unknown.caption, "Running")
+    }
+
     func testOpenAndClosedAskCounts() throws {
         let row = SessionRowModel(try session(["open_asks": 2, "closed_asks": 3]), now: Date())
         XCTAssertEqual(row.openAsks, 2)

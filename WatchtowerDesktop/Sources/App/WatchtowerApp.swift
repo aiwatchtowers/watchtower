@@ -310,9 +310,6 @@ struct WatchtowerApp: App {
     /// never mounts one), and a singleton is what makes "the SwiftUI-managed
     /// state" and "the state the delegate initialized" provably identical.
     @State private var appState = AppState.shared
-    /// Bottom space the recorder pills need, handed to every composer so the
-    /// pills never cover what the owner is typing.
-    @State private var recordingIndicatorInset: CGFloat = 0
     /// Settings → Claude plan toggle for the menu bar text; absent = on.
     @AppStorage(PlanUsageCenter.menuBarKey) private var showPlanUsageInMenuBar = true
     /// Read here — not inside `TrayMenuView`, which has its own copy for the
@@ -371,20 +368,10 @@ struct WatchtowerApp: App {
     }
 
     private var rootContent: some View {
-        NavigationRoot()
-            .environment(\.recordingIndicatorInset, recordingIndicatorInset)
+        // The recorder pills, the extract pill and the meeting banner over
+        // every screen, with a band kept free for the pills (#397).
+        RecordingIndicatorHost { NavigationRoot() }
             .frame(minWidth: 800, minHeight: 600)
-            .overlay(alignment: .bottomTrailing) {
-                RecordingIndicatorView { recordingIndicatorInset = $0 }
-            }
-            .overlay(alignment: .bottomTrailing) {
-                ExtractIndicatorView()
-            }
-            // Separate alignment from the recording/extract indicators'
-            // corner, so the banner and the pills never overlap.
-            .overlay(alignment: .top) {
-                UpcomingMeetingBannerView()
-            }
             // "Run Automation…" (⌃⌘R) over every destination, never per tab.
             .modifier(RunAutomationPaletteHost(appState: appState))
             .background(OpaqueWindowBackground())
@@ -396,7 +383,11 @@ struct WatchtowerApp: App {
             // Same outermost placement, same reason: link surfaces live
             // inside the overlays too (the recording indicator's panel,
             // the meeting banner), so the scheme gate has to wrap them.
-            .environment(\.openURL, AllowedURLSchemes.openURLAction)
+            // It also opens in-app screen links (`watchtower-nav://`) from
+            // AI Chat and its ⌘/ popup.
+            .environment(\.openURL, appState.mainWindowOpenURL)
+            // Screen links render only for the screens visible right now.
+            .environment(\.markdownNavScreens, appState.visibleHelpScreenIDs)
             .environment(\.dictationCenter, appState.dictationCenter)
             .onAppear {
                 // Both lines are duplicates of the delegate's launch bootstrap
@@ -479,6 +470,8 @@ struct WatchtowerApp: App {
                                           modifiers: RunAutomationCommand.modifiers)
                 }
             }
+            // Issue #288: the workbench page's chords, before Navigate.
+            WorkbenchCommands(appState: appState)
             // Only while a workbench window is key (spec §10, ruling R36):
             // `keyWorkbench` is the workbench on screen while its window (or
             // its Open Quickly panel) is key. Inside Monaco these chords reach
@@ -522,14 +515,14 @@ struct WatchtowerApp: App {
                 Button("Forward") { if let shownRoot { navigation.goForward(root: shownRoot) } }
                     .keyboardShortcut(.rightArrow, modifiers: [.control, .command])
                     .disabled(!navigation.canGoForward(root: shownRoot))
-                Divider()
-                // Board #412: the one key that may take the keyboard from
-                // the terminal — the owner's explicit chord, not a bare key.
-                Button("Show Waiting for You") { _ = appState.workbenchesViewModel?.openStackFromKeyboard() }
-                    .keyboardShortcut("a", modifiers: [.control, .command])
-                    .disabled(appState.workbenchesViewModel?.canShowWaitingStack(shownID: shown?.id) != true)
             }
+            HelpCommands(appState: appState)
         }
+
+        Window("Keyboard Shortcuts", id: KeyboardShortcutsView.sceneID) {
+            KeyboardShortcutsView()
+        }
+        .defaultSize(width: 620, height: 720)
 
         Window("Logs", id: "logs") {
             LogsSettings()

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -100,7 +101,7 @@ type personalDryRun struct {
 var personalDryRuns = []personalDryRun{
 	{
 		name: "new-mail-summary", event: true,
-		steps:   "state(get):ok,tool(list_emails):ok,llm(light):ok,output(inbox):dry_run,state(set):dry_run",
+		steps:   "state(get):ok,tool(list_emails):ok,tool(list_emails):ok,llm(light):ok,output(inbox):dry_run,state(set):dry_run",
 		toolArg: map[string]string{"list_emails": `"account":"work"`},
 		read:    []string{"Deploy window", "Lunch", "Contract review"},
 	},
@@ -180,7 +181,9 @@ func runPersonalDryRun(t *testing.T, c personalDryRun) {
 // shell() returns no output, so pr-review-rounds lists no pull request and
 // starts no session step.
 var workbenchDryRunSteps = map[string]string{
-	"pr-review-rounds": "shell(shell):dry_run,state(get):ok,state(set):dry_run,output(report):dry_run",
+	// last_round and reviewed are read, then set (board #562: a round
+	// starts at most MaxSessionCalls sessions and keeps the rest).
+	"pr-review-rounds": "shell(shell):dry_run,state(get):ok,state(get):ok,state(set):dry_run,state(set):dry_run,output(report):dry_run",
 	"release":          "shell(shell):dry_run,session(claude):dry_run,output(report):dry_run",
 	"deploy-test":      "shell(shell):dry_run,session(claude):dry_run,output(report):dry_run",
 	"deploy-stage":     "shell(shell):dry_run,session(claude):dry_run,output(report):dry_run",
@@ -229,10 +232,8 @@ func runWorkbenchDryRun(t *testing.T, slug string) {
 func templateOf(t *testing.T, slug string) string {
 	t.Helper()
 	for _, tpl := range automations.Templates() {
-		for _, f := range tpl.Files {
-			if f == slug {
-				return tpl.Name
-			}
+		if slices.Contains(tpl.Files, slug) {
+			return tpl.Name
 		}
 	}
 	t.Fatalf("no template installs %s", slug)

@@ -67,15 +67,13 @@ struct WorkbenchSwitcherPopover: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 1) {
                     ForEach(rows) { row in
-                        let live = vm.liveSessionCount(workbenchID: row.id)
                         WorkbenchSwitcherRow(
                             row: row,
                             isCurrent: row.id == currentID,
                             segments: WorkbenchSwitcherPresentation.stateSegments(
                                 summary: row, newComments: row.summary.unreadAgentComments,
-                                liveCount: live, now: now
-                            ),
-                            isLive: live > 0
+                                workingCount: vm.workingSessionCount(workbenchID: row.id), now: now
+                            )
                         ) {
                             onSelect(row.id)
                         }
@@ -89,13 +87,12 @@ struct WorkbenchSwitcherPopover: View {
 }
 
 /// One workbench: a check on the current one (the row highlighted), the
-/// name over the folder, the state segments, a green dot while one of its
-/// sessions runs.
+/// name on the full width over the state segments; the folder is the
+/// row's tooltip, so the state never squeezes the name.
 struct WorkbenchSwitcherRow: View {
     let row: WorkbenchSwitcherSummary
     let isCurrent: Bool
     let segments: [WorkbenchSwitcherPresentation.Segment]
-    let isLive: Bool
     let onSelect: () -> Void
 
     var body: some View {
@@ -105,28 +102,21 @@ struct WorkbenchSwitcherRow: View {
                     .font(.caption)
                     .opacity(isCurrent ? 1 : 0)
                     .accessibilityHidden(!isCurrent)
-                VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(row.project.name)
                         .font(.callout.weight(isCurrent ? .semibold : .regular))
                         .lineLimit(1)
                         .truncationMode(.tail)
-                    Text(row.project.folderPath)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+                    if !segments.isEmpty {
+                        HStack(spacing: 6) {
+                            WorkbenchStateSegments(segments: segments)
+                        }
+                    }
                 }
-                Spacer(minLength: 4)
-                WorkbenchStateSegments(segments: segments)
-                if isLive {
-                    Circle()
-                        .fill(.green)
-                        .frame(width: 6, height: 6)
-                        .accessibilityLabel("Running")
-                }
+                Spacer(minLength: 0)
             }
             .padding(.horizontal, 6)
-            .frame(height: 40)
+            .frame(minHeight: 32)
             .background(
                 RoundedRectangle(cornerRadius: 4)
                     .fill(isCurrent ? Color.accentColor.opacity(0.12) : .clear)

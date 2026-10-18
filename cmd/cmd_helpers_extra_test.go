@@ -30,7 +30,7 @@ func TestValidateModel_AlwaysOK(t *testing.T) {
 func TestEmitError_WritesErrorAndDoneEvents(t *testing.T) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
-	require.NoError(t, emitError(enc, "boom"))
+	emitError(enc, "boom")
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	require.Len(t, lines, 2)
@@ -108,7 +108,7 @@ func TestPrintCalendarEvents_GroupsByDate(t *testing.T) {
 
 	// Two distinct date headers (one per day).
 	dateLines := 0
-	for _, line := range strings.Split(out, "\n") {
+	for line := range strings.SplitSeq(out, "\n") {
 		if strings.HasPrefix(line, "Thu, Apr 2") || strings.HasPrefix(line, "Fri, Apr 3") {
 			dateLines++
 		}

@@ -194,14 +194,22 @@ error ("the script API is synchronous"). Use `log(...)` for notes.
 | `trigger` | none | Read-only: `{kind, run_id, scheduled_for?, button?, events?, dry_run}` |
 
 Limits: a tool result larger than 256 KiB fails with `ResultTooLarge`; a title
-is at most 200 characters, a body at most 64 KiB. A refused call throws
+is at most 200 characters, a body at most 64 KiB. One run makes at most 2000
+SDK calls (all kinds together; the call past it ends the run, uncatchably),
+files at most 50 outputs (`output.inbox`/`report`/`briefing`) and starts at
+most 10 sessions with `session()`; the output and session calls past their
+cap throw a `ValidationError`. Work through long lists over several runs:
+keep what is done in `state` and leave the rest for the next run. A refused call throws
 `PermissionDenied` with the permission it needed; read that message when a
 dry run fails and fix the manifest, do not widen it blindly. In a dry run,
 writes, `output.*` and `state.set` touch nothing; `llm` and read tools run for
 real.
 
 Write scripts that fetch, filter in code, then call `llm` once over the
-reduced data. Keep a cursor in `state` (a timestamp) so the next run reads only
+reduced data. Pass mail, messages, tickets and other source text as `input`,
+never concatenated into the prompt: `llm` marks `input` as data written by
+other people that the model must not obey. The owner's own rules, rubrics and
+wording belong in the prompt, not in `input`. Keep a cursor in `state` (a timestamp) so the next run reads only
 what is new. Never put secrets in a recipe.
 
 ## Templates
@@ -246,29 +254,47 @@ name: PR review rounds
 trigger:
   schedule: "0 10,16 * * 1-5"
 permissions:
-  - shell:"gh pr list --state open --json number,title,url,author,updatedAt"
+  - shell:"gh pr list --state open --limit 200 --json number,title,url,author,updatedAt"
   - session:start
   - llm:light
 outputs: [report]
 budget: { tokens: 60000, minutes: 15 }
 ---
 Twice a day, starts one agent session per open pull request updated since the
-last round. Each session reviews the PR and files its findings as asks.
+last round. Each session reviews the PR and files its findings as asks. A run
+starts at most 10 sessions; the rest wait for the next round.
 
 ```js
-const out = shell("gh pr list --state open --json number,title,url,author,updatedAt");
+const start = new Date().toISOString();
+const out = shell("gh pr list --state open --limit 200 --json number,title,url,author,updatedAt");
 const prs = JSON.parse(out.stdout || "[]");
 const last = state.get("last") || "";
-const fresh = prs.filter(function (p) { return p.updatedAt > last; });
-fresh.forEach(function (p) {
-  session({
-    title: "Review PR #" + p.number,
-    prompt: "Review pull request " + p.url + " (" + p.title + "). File each finding as an ask to the owner.",
-    wait: "none"
-  });
+// done: PR number -> when its review session ended (a review's own comments
+// are older than that, so they never bring the PR back).
+const done = state.get("done") || {};
+const fresh = prs.filter(function (p) {
+  const mark = done[p.number] || last;
+  return !mark || Date.parse(p.updatedAt) > Date.parse(mark);
 });
-output.report({ title: "PR round", body: fresh.length + " pull requests reviewed of " + prs.length + " open." });
-state.set("last", new Date().toISOString());
+let started = 0, left = 0;
+fresh.forEach(function (p) {
+  if (started >= 10) { left++; return; } // session() starts at most 10 sessions per run
+  let s;
+  try {
+    s = session({ title: "Review PR #" + p.number, prompt: "Review pull request " + p.url + " (" + p.title + "). File each finding as an ask to the owner, then call finish_session." });
+    started++;
+  } catch (e) {
+    s = { status: "not started" };
+  }
+  if (s.status === "not started" || s.status === "error") left++; // retried next round
+  else done[p.number] = new Date().toISOString();
+});
+if (left === 0) state.set("last", start); // else "last" stays, so the next round sees the rest
+const mark = left > 0 ? last : start;
+const kept = {};
+prs.forEach(function (p) { if (done[p.number] && (!mark || Date.parse(done[p.number]) > Date.parse(mark))) kept[p.number] = done[p.number]; });
+state.set("done", kept);
+output.report({ title: "PR round", body: started + " pull requests reviewed of " + prs.length + " open; " + left + " left for the next round." });
 ```
 ````
 
@@ -368,7 +394,8 @@ if (res.exit_code !== 0) {
 2. Read the result WITH the owner: `errors` (fix them and draft again),
    `manifest` (what it may do), `widening` (what an edit newly allows), and the
    `dry_run`: the steps, the outputs it would produce, the tokens used. The
-   dry run is real for reads and `llm` and touches nothing else. Say what you
+   dry run is real for reads (`tool()`) and `llm` and touches nothing else;
+   `agent()` and `mcp()` are never called in a draft. Say what you
    see, including a result that looks wrong.
 3. Iterate until the owner is satisfied. Always `draft_automation` and read
    its dry run with the owner before `save_automation`.
@@ -376,11 +403,17 @@ if (res.exit_code !== 0) {
    dry run's summary into `dry_run_summary`. Never call `save_automation` with
    text you did not draft: the owner approves the bytes you send. `slug` is
    required (lowercase letters, digits and hyphens, at most 64 characters; for
-   an edit, the existing automation's slug) and `reason` says why. Pass
-   `workbench_id` for a workbench recipe once workbench saves are available.
+   an edit, the existing automation's slug) and `reason` says why. For a
+   workbench recipe pass `workbench_id`: on Approve the recipe is written to
+   that workbench folder's `.watchtower/automations/<slug>.md` (it travels
+   with the repository) and nowhere else in the folder.
 5. If `draft_automation` answers `dry_run.status: "refused"`, say so: a recipe
    that is not confirmed yet can only be dry-run by the owner, from its card.
    Point the owner to **Dry run** on the card.
+6. If it answers `dry_run.status: "stopped"`, the draft reached an `mcp()`
+   call: a draft never calls a Quick Connection, so the dry run ends there
+   (the steps before it are real; this is not a failure). Tell the owner the
+   rest shows once the recipe is saved and dry-run from its card.
 
 ## What Save does
 

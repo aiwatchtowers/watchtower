@@ -466,7 +466,7 @@ func loadSourceContext(database *db.DB, sourceType, sourceID string) string {
 			return ""
 		}
 		d, err := database.GetDigestByID(id)
-		if err != nil {
+		if err != nil || d == nil { // nil, nil = no digest with this id
 			return ""
 		}
 		return fmt.Sprintf("Digest #%d: %s", d.ID, d.Summary)
@@ -623,7 +623,7 @@ func runTargetsPromoteSubItem(cmd *cobra.Command, args []string) error {
 		// Comma-separated input → JSON array. Empty input → empty array (clears tags).
 		parts := []string{}
 		if trimmed := strings.TrimSpace(targetsFlagPromoteTags); trimmed != "" {
-			for _, p := range strings.Split(targetsFlagPromoteTags, ",") {
+			for p := range strings.SplitSeq(targetsFlagPromoteTags, ",") {
 				p = strings.TrimSpace(p)
 				if p != "" {
 					parts = append(parts, p)

@@ -102,19 +102,17 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
     /// the CLI-flag mapping (in particular `--provider`) can be unit tested
     /// without spawning a process.
     ///
-    /// The prompt is always passed after an unconditional `--` separator, with
-    /// every flag ahead of it — never only when the prompt happens to start
-    /// with a dash. Without the separator, a prompt like "-v looks wrong" is
-    /// parsed by cobra as flags, not as the positional argument. This mirrors
-    /// the Go-side cobra test added alongside it (`cmd/ai_test.go`) — the two
-    /// orderings (flags, `--`, prompt) must match.
+    /// The argv carries ids and flags only: `--prompt-stdin` makes the CLI
+    /// read the owner's message and the chat's system prompt from stdin
+    /// (`stdinPayload`, board #566) — on argv any local process could read
+    /// them through `ps`, and a long one would hit ARG_MAX. With no
+    /// positional prompt, a message that starts with a dash needs no `--`
+    /// separator either.
     ///
     /// `readFolder` adds `--read-folder DIR` (a workbench folder the CLI
     /// resolves, or refuses with exit 2); it never comes with a tool mode —
     /// the CLI refuses the pair.
     package static func buildArgs(
-        prompt: String,
-        systemPrompt: String?,
         sessionID: String?,
         dbPath: String?,
         model: String?,
@@ -122,13 +120,8 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         toolMode: ChatToolMode?,
         readFolder: String? = nil
     ) -> [String] {
-        var args = ["ai", "query"]
+        var args = ["ai", "query", "--prompt-stdin"]
 
-        // The system prompt itself goes to stdin (see `run`): it carries the
-        // chat's private context, which must not sit on argv (`ps`, ARG_MAX).
-        if let systemPrompt, !systemPrompt.isEmpty {
-            args += ["--system-prompt-stdin"]
-        }
         if let sessionID, !sessionID.isEmpty {
             args += ["--session-id", sessionID]
         }
@@ -147,15 +140,29 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         if let readFolder, !readFolder.isEmpty {
             args += ["--read-folder", readFolder]
         }
-        args += ["--", prompt]
         return args
     }
 
-    /// The bytes `run` writes to the CLI's stdin: the system prompt that
-    /// `buildArgs` announced with `--system-prompt-stdin`, or nil.
-    package static func stdinPayload(systemPrompt: String?) -> Data? {
-        guard let systemPrompt, !systemPrompt.isEmpty else { return nil }
-        return Data(systemPrompt.utf8)
+    /// The `--prompt-stdin` query object (`cmd/ai.go` `stdinQuery`).
+    private struct StdinQuery: Encodable {
+        let prompt: String
+        let systemPrompt: String?
+
+        enum CodingKeys: String, CodingKey {
+            case prompt
+            case systemPrompt = "system_prompt"
+        }
+    }
+
+    /// The bytes `run` writes to the CLI's stdin for `--prompt-stdin`: one
+    /// JSON object `{"prompt": …, "system_prompt": …}`, the system prompt
+    /// left out when there is none.
+    package static func stdinPayload(prompt: String, systemPrompt: String?) -> Data {
+        let system = systemPrompt.flatMap { $0.isEmpty ? nil : $0 }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        // Two strings never fail to encode.
+        return (try? encoder.encode(StdinQuery(prompt: prompt, systemPrompt: system))) ?? Data()
     }
 
     /// Writes `payload` to the CLI's stdin pipe and closes it. The write end
@@ -188,8 +195,6 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         let cliPath = try Self.findCLI()
 
         let args = Self.buildArgs(
-            prompt: prompt,
-            systemPrompt: systemPrompt,
             sessionID: sessionID,
             dbPath: dbPath,
             model: model,
@@ -207,7 +212,7 @@ package final class WatchtowerAIService: AIServiceProtocol, Sendable {
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
-        let stdinPrompt = Self.stdinPayload(systemPrompt: systemPrompt)
+        let stdinPrompt = Self.stdinPayload(prompt: prompt, systemPrompt: systemPrompt)
         let stdin = Pipe()
         process.standardInput = stdin
 
