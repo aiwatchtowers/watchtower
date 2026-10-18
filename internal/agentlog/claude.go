@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"watchtower/internal/db"
+	"watchtower/internal/agentlogdb"
 )
 
 // ParserVersion is stamped on agent_log_files; bump it when parsing changes
@@ -88,9 +88,9 @@ type ParseOptions struct {
 }
 
 type ParseResult struct {
-	Sessions    map[string]*db.AgentLogSession
-	Events      []db.AgentLogEvent
-	ToolResults []db.AgentToolResult
+	Sessions    map[string]*agentlogdb.AgentLogSession
+	Events      []agentlogdb.AgentLogEvent
+	ToolResults []agentlogdb.AgentToolResult
 	Unknown     map[string]int
 	LongLines   int
 	Consumed    int64
@@ -114,7 +114,7 @@ var knownTypes = map[string]bool{
 // returns the rows they produce. A final line without '\n' is left for the
 // next scan; a bad line never fails the file.
 func ParseClaude(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, error) {
-	p := &claudeParser{o: o, res: &ParseResult{Sessions: map[string]*db.AgentLogSession{}, Unknown: map[string]int{}},
+	p := &claudeParser{o: o, res: &ParseResult{Sessions: map[string]*agentlogdb.AgentLogSession{}, Unknown: map[string]int{}},
 		callIdx: map[string]int{}, toolIdx: map[string]int{}, skills: map[string]bool{}}
 	for _, n := range o.KnownSkills {
 		p.skills[n] = true
@@ -237,11 +237,11 @@ func (p *claudeParser) handle(raw []byte, off int64) {
 		p.user(rec, off)
 	case "system":
 		if rec.Subtype == "compact_boundary" {
-			p.add(rec, off, db.AgentLogEvent{Key: p.recKey("compaction", rec, off), Kind: "compaction"})
+			p.add(rec, off, agentlogdb.AgentLogEvent{Key: p.recKey("compaction", rec, off), Kind: "compaction"})
 		}
 	case "pr-link":
 		if rec.PRURL != "" {
-			p.add(rec, off, db.AgentLogEvent{Key: "pr_link:" + rec.SessionID + ":" + rec.PRURL, Kind: "pr_link", Target: rec.PRURL})
+			p.add(rec, off, agentlogdb.AgentLogEvent{Key: "pr_link:" + rec.SessionID + ":" + rec.PRURL, Kind: "pr_link", Target: rec.PRURL})
 		}
 	case "cost-state":
 		if s := p.res.Sessions[rec.SessionID]; s != nil && rec.TotalCostUSD != nil {
@@ -256,7 +256,7 @@ func (p *claudeParser) handle(raw []byte, off int64) {
 func (p *claudeParser) touchSession(rec claudeRecord) {
 	s := p.res.Sessions[rec.SessionID]
 	if s == nil {
-		s = &db.AgentLogSession{SessionUUID: rec.SessionID, Agent: "claude", SourcePath: p.o.Path,
+		s = &agentlogdb.AgentLogSession{SessionUUID: rec.SessionID, Agent: "claude", SourcePath: p.o.Path,
 			StartedAt: rec.Timestamp, EndedAt: rec.Timestamp}
 		p.res.Sessions[rec.SessionID] = s
 	}
@@ -286,7 +286,7 @@ func (p *claudeParser) recKey(kind string, rec claudeRecord, off int64) string {
 }
 
 // add fills the common columns of e from rec and appends it.
-func (p *claudeParser) add(rec claudeRecord, off int64, e db.AgentLogEvent) int {
+func (p *claudeParser) add(rec claudeRecord, off int64, e agentlogdb.AgentLogEvent) int {
 	e.SessionUUID, e.TS, e.UUID, e.ParentUUID, e.PromptID = rec.SessionID, rec.Timestamp, rec.UUID, rec.ParentUUID, rec.PromptID
 	e.AgentID, e.IsSidechain = p.o.AgentID, rec.IsSidechain || p.o.Subagent
 	e.SrcPath, e.SrcOffset = p.o.Path, off
@@ -296,7 +296,7 @@ func (p *claudeParser) add(rec claudeRecord, off int64, e db.AgentLogEvent) int 
 
 func (p *claudeParser) assistant(rec claudeRecord, off int64) {
 	if rec.IsAPIError {
-		p.add(rec, off, db.AgentLogEvent{Key: p.recKey("api_error", rec, off), Kind: "api_error"})
+		p.add(rec, off, agentlogdb.AgentLogEvent{Key: p.recKey("api_error", rec, off), Kind: "api_error"})
 		return
 	}
 	m := rec.Message
@@ -317,7 +317,7 @@ func (p *claudeParser) apiCall(rec claudeRecord, off int64) {
 		cw5, cw1h = u.CacheBreakdown.FiveMin, u.CacheBreakdown.OneHour
 	}
 	usd, known := Cost(m.Model, u.Speed, u.Input, u.Output, u.CacheRead, cw5, cw1h)
-	e := db.AgentLogEvent{Key: key, Kind: "api_call", Name: m.Model, Skill: rec.AttributionSkill,
+	e := agentlogdb.AgentLogEvent{Key: key, Kind: "api_call", Name: m.Model, Skill: rec.AttributionSkill,
 		InputTokens: u.Input, OutputTokens: u.Output, CacheReadTokens: u.CacheRead,
 		CacheWrite5mTokens: cw5, CacheWrite1hTokens: cw1h, Speed: u.Speed, ServiceTier: u.ServiceTier,
 		CostUSD: usd, CostEstimated: !known, PriceVersion: PriceVersion,
@@ -345,7 +345,7 @@ func (p *claudeParser) user(rec claudeRecord, off int64) {
 		if strings.HasPrefix(text, "<local-command") || strings.HasPrefix(text, "[Request interrupted by user") {
 			return
 		}
-		p.add(rec, off, db.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn", Trigger: turnTrigger(text)})
+		p.add(rec, off, agentlogdb.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn", Trigger: turnTrigger(text)})
 		p.slashSkill(rec, off, text) // Task 4
 		return
 	}
@@ -369,7 +369,7 @@ func (p *claudeParser) user(rec claudeRecord, off int64) {
 		p.toolResults(rec) // Task 4
 		return
 	}
-	p.add(rec, off, db.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn", Trigger: turnTrigger(firstText)})
+	p.add(rec, off, agentlogdb.AgentLogEvent{Key: p.recKey("owner_turn", rec, off), Kind: "owner_turn", Trigger: turnTrigger(firstText)})
 }
 
 // turnTrigger tells the owner's own turn from a system-injected one: a task or

@@ -2,20 +2,19 @@ package agentreport
 
 import (
 	"testing"
+	"watchtower/internal/agentlogdb"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"watchtower/internal/db"
 )
 
-func apiEv(agentID, model string, cost float64, in, read, w5, w1 int64) db.AgentReportEvent {
-	return db.AgentReportEvent{Kind: "api_call", AgentID: agentID, Name: model, Model: model, CostUSD: cost,
+func apiEv(agentID, model string, cost float64, in, read, w5, w1 int64) agentlogdb.AgentReportEvent {
+	return agentlogdb.AgentReportEvent{Kind: "api_call", AgentID: agentID, Name: model, Model: model, CostUSD: cost,
 		InputTokens: in, OutputTokens: 10, CacheReadTokens: read, CacheWrite5mTokens: w5, CacheWrite1hTokens: w1}
 }
 
 func TestModels_MainVsSub(t *testing.T) {
-	evs := []db.AgentReportEvent{
+	evs := []agentlogdb.AgentReportEvent{
 		apiEv("", "claude-opus-5-5", 2, 100, 600, 200, 100),
 		apiEv("a1", "claude-opus-5-5", 1, 0, 0, 0, 0),
 		apiEv("a1", "claude-haiku-4-5", 0.5, 50, 0, 0, 0),
@@ -32,7 +31,7 @@ func TestModels_MainVsSub(t *testing.T) {
 	assert.NotNil(t, Models(nil))
 
 	// no input at all: share 0, not NaN
-	z := Models([]db.AgentReportEvent{apiEv("", "m", 0, 0, 0, 0, 0)})
+	z := Models([]agentlogdb.AgentReportEvent{apiEv("", "m", 0, 0, 0, 0, 0)})
 	assert.Zero(t, z[0].CacheReadShare)
 }
 

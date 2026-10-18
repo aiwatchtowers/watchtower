@@ -8,11 +8,10 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+	"watchtower/internal/agentlogdb"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"watchtower/internal/db"
 )
 
 // updateFixtures regenerates the Desktop decoding fixtures. Run with:
@@ -27,8 +26,9 @@ const (
 
 // seedFixtureDB stores one v2 session that exercises every time category, a
 // background subagent, repeated `make test` runs inside two open board
-// targets (so they share the stretch) and a PR link, plus one old-format session. Placeholders only.
-func seedFixtureDB(t *testing.T) (*db.DB, int64) {
+// targets (so they share the stretch) and a PR link, plus one old-format session and
+// an import still loading. Placeholders only.
+func seedFixtureDB(t *testing.T) (testDBs, int64) {
 	t.Helper()
 	d, wb := buildDB(t)
 	require.NoError(t, d.SetWorkbenchAgentAnalytics(wb, true))
@@ -55,9 +55,9 @@ func seedFixtureDB(t *testing.T) (*db.DB, int64) {
 	require.NoError(t, err)
 
 	path := "/tmp/x/" + fixtureSession + ".jsonl"
-	var evs []db.AgentLogEvent
-	var results []db.AgentToolResult
-	add := func(e db.AgentLogEvent, v time.Duration) {
+	var evs []agentlogdb.AgentLogEvent
+	var results []agentlogdb.AgentToolResult
+	add := func(e agentlogdb.AgentLogEvent, v time.Duration) {
 		e.SessionUUID, e.TS, e.SrcPath, e.SrcOffset = fixtureSession, at(v), path, int64(len(evs))
 		if e.Key == "" {
 			e.Key = fmt.Sprintf("%s:%d", e.Kind, len(evs))
@@ -65,15 +65,15 @@ func seedFixtureDB(t *testing.T) (*db.DB, int64) {
 		evs = append(evs, e)
 	}
 	api := func(v time.Duration, agent string) {
-		add(db.AgentLogEvent{Kind: "api_call", Name: "claude-opus-5-5", AgentID: agent, InputTokens: 100, OutputTokens: 50,
+		add(agentlogdb.AgentLogEvent{Kind: "api_call", Name: "claude-opus-5-5", AgentID: agent, InputTokens: 100, OutputTokens: 50,
 			CacheReadTokens: 40, CostUSD: 1.5}, v)
 	}
 	tool := func(id string, v, dur time.Duration, name, target, outcome, agent string) {
-		add(db.AgentLogEvent{Key: "tool:" + id, Kind: "tool", Name: name, Target: target, Outcome: "pending", AgentID: agent}, v)
-		results = append(results, db.AgentToolResult{ToolUseID: id, TS: at(v + dur), Outcome: outcome})
+		add(agentlogdb.AgentLogEvent{Key: "tool:" + id, Kind: "tool", Name: name, Target: target, Outcome: "pending", AgentID: agent}, v)
+		results = append(results, agentlogdb.AgentToolResult{ToolUseID: id, TS: at(v + dur), Outcome: outcome})
 	}
 	sec, mn := time.Second, time.Minute
-	add(db.AgentLogEvent{Kind: "owner_turn", Trigger: "owner"}, 0)
+	add(agentlogdb.AgentLogEvent{Kind: "owner_turn", Trigger: "owner"}, 0)
 	api(10*sec, "")
 	tool("t1", 10*sec, 1*sec, "mcp__watchtower-workbench__update_target", fmt.Sprintf("#%d", tid), "ok", "")
 	tool("t1b", 15*sec, 1*sec, "mcp__watchtower-workbench__update_target", fmt.Sprintf("#%d", tid2), "ok", "")
@@ -90,30 +90,31 @@ func seedFixtureDB(t *testing.T) (*db.DB, int64) {
 	api(7*mn+5*sec, "agent-1")
 	tool("t6", 7*mn+10*sec, 5*sec, "Read", "main.go", "ok", "agent-1")
 	api(20*mn, "agent-1")
-	add(db.AgentLogEvent{Kind: "owner_turn", Trigger: "notification"}, 20*mn+5*sec)
+	add(agentlogdb.AgentLogEvent{Kind: "owner_turn", Trigger: "notification"}, 20*mn+5*sec)
 	api(20*mn+15*sec, "")
-	add(db.AgentLogEvent{Kind: "pr_link", Target: "https://example.com/acme/app/pull/1"}, 20*mn+16*sec)
-	add(db.AgentLogEvent{Kind: "owner_turn", Trigger: "owner"}, 60*mn+15*sec)
+	add(agentlogdb.AgentLogEvent{Kind: "pr_link", Target: "https://example.com/acme/app/pull/1"}, 20*mn+16*sec)
+	add(agentlogdb.AgentLogEvent{Kind: "owner_turn", Trigger: "owner"}, 60*mn+15*sec)
 	api(60*mn+30*sec, "")
 	evs[1].CostEstimated = true
 
-	_, err = d.ApplyAgentLogBatch(db.AgentLogBatch{
-		File: db.AgentLogFile{Path: path, Agent: "claude", ReadOffset: 10, ParserVersion: 2}, ExpectOffset: -1,
-		Sessions: []db.AgentLogSession{{SessionUUID: fixtureSession, Agent: "claude", ProjectID: &wb, FolderPath: "/w", HomeCWD: "/w",
+	_, err = d.al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{
+		File: agentlogdb.AgentLogFile{Path: path, Agent: "claude", ReadOffset: 10, ParserVersion: 2}, ExpectOffset: -1,
+		Sessions: []agentlogdb.AgentLogSession{{SessionUUID: fixtureSession, Agent: "claude", ProjectID: &wb, FolderPath: "/w", HomeCWD: "/w",
 			SourcePath: path, StartedAt: at(0), EndedAt: at(60*mn + 30*sec), Model: "claude-opus-5-5", GitBranch: "feature/widget"}},
 		Events: evs, ToolResults: results,
 	})
 	require.NoError(t, err)
 
 	oldPath := "/tmp/x/" + fixtureOldSession + ".jsonl"
-	_, err = d.ApplyAgentLogBatch(db.AgentLogBatch{
-		File: db.AgentLogFile{Path: oldPath, Agent: "claude", ReadOffset: 10, ParserVersion: 1}, ExpectOffset: -1,
-		Sessions: []db.AgentLogSession{{SessionUUID: fixtureOldSession, Agent: "claude", ProjectID: &wb, FolderPath: "/w", HomeCWD: "/w",
+	_, err = d.al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{
+		File: agentlogdb.AgentLogFile{Path: oldPath, Agent: "claude", ReadOffset: 10, ParserVersion: 1}, ExpectOffset: -1,
+		Sessions: []agentlogdb.AgentLogSession{{SessionUUID: fixtureOldSession, Agent: "claude", ProjectID: &wb, FolderPath: "/w", HomeCWD: "/w",
 			SourcePath: oldPath, StartedAt: at(-2 * time.Hour), EndedAt: at(-2*time.Hour + 5*mn), Model: "claude-opus-5-5"}},
-		Events: []db.AgentLogEvent{{SessionUUID: fixtureOldSession, Key: "old:0", Kind: "api_call", Name: "claude-opus-5-5",
+		Events: []agentlogdb.AgentLogEvent{{SessionUUID: fixtureOldSession, Key: "old:0", Kind: "api_call", Name: "claude-opus-5-5",
 			TS: at(-2 * time.Hour), InputTokens: 10, OutputTokens: 5, CostUSD: 0.5, SrcPath: oldPath}},
 	})
 	require.NoError(t, err)
+	require.NoError(t, d.al.SetImportProgress(wb, false, 2, day.Add(2*time.Hour)))
 	return d, wb
 }
 
@@ -123,9 +124,9 @@ func seedFixtureDB(t *testing.T) (*db.DB, int64) {
 func TestDesktopReportFixtures(t *testing.T) {
 	d, wb := seedFixtureDB(t)
 	now := time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC)
-	ov, err := BuildOverview(d, wb, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), now)
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), now)
 	require.NoError(t, err)
-	det, err := BuildSession(d, wb, fixtureSession, now)
+	det, err := BuildSession(d.DB, d.al, wb, fixtureSession, now)
 	require.NoError(t, err)
 
 	dir := filepath.Join("..", "..", "WatchtowerDesktop", "Tests", "Core", "Fixtures")

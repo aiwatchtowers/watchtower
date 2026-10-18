@@ -206,7 +206,6 @@ func TestAllTablesExist(t *testing.T) {
 		"linear_accounts", "linear_teams", "linear_sync_state", "linear_issues", "linear_comments",
 		"linear_issue_history", "linear_cycles", "linear_projects", "linear_relations", "linear_user_map",
 		"plan_usage_samples", "plan_usage_status", "history_backfill",
-		"agent_log_files", "agent_log_sessions", "agent_log_events",
 		"automation_tool_grants", "linear_workflow_states", "linear_labels",
 	}
 

@@ -1,10 +1,12 @@
-package db
+package agentlogdb
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // AgentLogFile is one agent_log_files row: a transcript's scan state.
@@ -18,9 +20,12 @@ type AgentLogFile struct {
 }
 
 // AgentLogSession is one agent_log_sessions row (upserted per batch).
+// TerminalSessionID is resolved by the caller from watchtower.db (the column
+// has no foreign key across the two files; a stale id after a terminal
+// session delete is accepted).
 type AgentLogSession struct {
 	SessionUUID, Agent, FolderPath, HomeCWD, SourcePath, GitBranch, Model, StartedAt, EndedAt string
-	ProjectID                                                                                 *int64
+	ProjectID, TerminalSessionID                                                              *int64
 	ReportedCostUSD                                                                           *float64
 }
 
@@ -121,8 +126,8 @@ func scanAgentLogFile(row interface{ Scan(...any) error }) (*AgentLogFile, error
 
 // GetAgentLogFile returns the stored scan state of path, or nil when the file
 // was never scanned.
-func (db *DB) GetAgentLogFile(path string) (*AgentLogFile, error) {
-	f, err := scanAgentLogFile(db.QueryRow(`SELECT `+agentLogFileCols+` FROM agent_log_files WHERE path = ?`, path))
+func (d *DB) GetAgentLogFile(path string) (*AgentLogFile, error) {
+	f, err := scanAgentLogFile(d.QueryRow(`SELECT `+agentLogFileCols+` FROM agent_log_files WHERE path = ?`, path))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -133,11 +138,11 @@ func (db *DB) GetAgentLogFile(path string) (*AgentLogFile, error) {
 }
 
 // AgentLogFilesUnder lists stored files whose path lies under one of dirs.
-func (db *DB) AgentLogFilesUnder(dirs []string) ([]AgentLogFile, error) {
+func (d *DB) AgentLogFilesUnder(dirs []string) ([]AgentLogFile, error) {
 	var out []AgentLogFile
 	for _, dir := range dirs {
 		prefix := strings.TrimSuffix(dir, "/") + "/"
-		err := db.agentLogRows(`SELECT `+agentLogFileCols+` FROM agent_log_files WHERE path >= ? AND path < ?`,
+		err := d.agentLogRows(`SELECT `+agentLogFileCols+` FROM agent_log_files WHERE path >= ? AND path < ?`,
 			[]any{prefix, prefix + "\uffff"}, func(r *sql.Rows) error {
 				f, err := scanAgentLogFile(r)
 				if err != nil {
@@ -154,8 +159,8 @@ func (db *DB) AgentLogFilesUnder(dirs []string) ([]AgentLogFile, error) {
 }
 
 // MarkAgentLogFileMissing records that path is gone; its rows stay (AGENTLOG-03).
-func (db *DB) MarkAgentLogFileMissing(path, at string) error {
-	_, err := db.Exec(`UPDATE agent_log_files SET missing_at = ? WHERE path = ? AND missing_at IS NULL`, at, path)
+func (d *DB) MarkAgentLogFileMissing(path, at string) error {
+	_, err := d.Exec(`UPDATE agent_log_files SET missing_at = ? WHERE path = ? AND missing_at IS NULL`, at, path)
 	return err
 }
 
@@ -163,9 +168,9 @@ func (db *DB) MarkAgentLogFileMissing(path, at string) error {
 // keeps slices small, see agentlog.batchRows) in a single short transaction and advances the file's offset with a compare-and-set. It
 // returns applied=false (nothing written) when another writer moved the
 // offset first.
-func (db *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
+func (d *DB) ApplyAgentLogBatch(b AgentLogBatch) (bool, error) {
 	applied := false
-	err := db.WithTx(func(tx *sql.Tx) error {
+	err := d.withTx(func(tx *sql.Tx) error {
 		var res sql.Result
 		var err error
 		if b.ExpectOffset < 0 {
@@ -225,8 +230,7 @@ var errCASLost = errors.New("agent log offset moved by another writer")
 func upsertAgentLogSession(tx *sql.Tx, s AgentLogSession) error {
 	_, err := tx.Exec(`INSERT INTO agent_log_sessions (session_uuid, agent, project_id, folder_path, home_cwd,
 		terminal_session_id, source_path, git_branch, model, started_at, ended_at, reported_cost_usd)
-		VALUES (?, ?, ?, ?, ?, (SELECT id FROM terminal_sessions WHERE claude_session_id = ? AND kind = 'claude' LIMIT 1),
-		        ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(session_uuid) DO UPDATE SET
 		  model = CASE WHEN excluded.model <> '' AND excluded.ended_at >= agent_log_sessions.ended_at
 		               THEN excluded.model ELSE agent_log_sessions.model END,
@@ -238,7 +242,7 @@ func upsertAgentLogSession(tx *sql.Tx, s AgentLogSession) error {
 		  project_id = COALESCE(agent_log_sessions.project_id, excluded.project_id),
 		  terminal_session_id = COALESCE(agent_log_sessions.terminal_session_id, excluded.terminal_session_id),
 		  reported_cost_usd = COALESCE(excluded.reported_cost_usd, agent_log_sessions.reported_cost_usd)`,
-		s.SessionUUID, s.Agent, s.ProjectID, s.FolderPath, s.HomeCWD, s.SessionUUID,
+		s.SessionUUID, s.Agent, s.ProjectID, s.FolderPath, s.HomeCWD, s.TerminalSessionID,
 		s.SourcePath, s.GitBranch, s.Model, s.StartedAt, s.EndedAt, s.ReportedCostUSD)
 	if err != nil {
 		return fmt.Errorf("upserting agent log session: %w", err)
@@ -246,12 +250,19 @@ func upsertAgentLogSession(tx *sql.Tx, s AgentLogSession) error {
 	return nil
 }
 
+// agentLogReplayCheckQuery counts the session's api_calls already stored under
+// a message id. The unary + keeps session_uuid and kind off their indexes so
+// the planner seeks the narrow unique key range: through idx_agent_log_events_kind
+// it walked every api_call per subagent row, holding the import's write lock
+// for seconds per batch.
+const agentLogReplayCheckQuery = `SELECT COUNT(*) FROM agent_log_events WHERE +session_uuid = ? AND +kind = 'api_call'
+	AND key >= ? AND key < ? AND key <> ?`
+
 func upsertAgentLogEvent(tx *sql.Tx, e AgentLogEvent) error {
 	if e.SubagentReplayCheck && e.MessageID != "" {
 		var n int
 		prefix := e.MessageID + ":"
-		if err := tx.QueryRow(`SELECT COUNT(*) FROM agent_log_events WHERE session_uuid = ? AND kind = 'api_call'
-			AND key >= ? AND key < ? AND key <> ?`, e.SessionUUID, prefix, prefix+"￿", e.Key).Scan(&n); err != nil {
+		if err := tx.QueryRow(agentLogReplayCheckQuery, e.SessionUUID, prefix, prefix+"￿", e.Key).Scan(&n); err != nil {
 			return err
 		}
 		if n > 0 {
@@ -291,48 +302,23 @@ func upsertAgentLogEvent(tx *sql.Tx, e AgentLogEvent) error {
 	return nil
 }
 
-// SetWorkbenchAgentAnalytics turns analytics on or off for a workbench.
-func (db *DB) SetWorkbenchAgentAnalytics(id int64, on bool) error {
-	res, err := db.Exec(`UPDATE projects SET agent_analytics = ? WHERE id = ?`, on, id)
+// AdoptAgentLogSessions links orphaned sessions to a workbench bound to the
+// same folder (PROJ-02 exception: the rows outlive their workbench). A
+// session is orphaned when its project_id is NULL or not among liveIDs, the
+// workbench ids watchtower.db holds now: no foreign key reaches across the
+// two files, and projects ids are never reused (AUTOINCREMENT). liveIDs is
+// the caller's snapshot: a second workbench on the same folder created
+// between that snapshot and this update looks orphaned here, so its rows
+// change owner to projectID. Nothing is lost: the rows stay, counted under
+// projectID instead.
+func (d *DB) AdoptAgentLogSessions(projectID int64, folder string, liveIDs []int64) (int64, error) {
+	live, err := json.Marshal(append([]int64{}, liveIDs...)) // never "null"
 	if err != nil {
-		return err
+		return 0, err
 	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("workbench %d: %w", id, ErrWorkbenchNotFound)
-	}
-	return nil
-}
-
-func (db *DB) WorkbenchAgentAnalytics(id int64) (bool, error) {
-	var on bool
-	err := db.QueryRow(`SELECT agent_analytics FROM projects WHERE id = ?`, id).Scan(&on)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, fmt.Errorf("workbench %d: %w", id, ErrWorkbenchNotFound)
-	}
-	return on, err
-}
-
-func (db *DB) AgentAnalyticsWorkbenchIDs() ([]int64, error) {
-	rows, err := db.Query(`SELECT id FROM projects WHERE agent_analytics = 1 ORDER BY id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
-
-// AdoptAgentLogSessions links orphaned sessions (their workbench was
-// deleted, PROJ-02 exception) to a workbench bound to the same folder.
-func (db *DB) AdoptAgentLogSessions(projectID int64, folder string) (int64, error) {
-	res, err := db.Exec(`UPDATE agent_log_sessions SET project_id = ? WHERE project_id IS NULL AND folder_path = ? COLLATE NOCASE`, projectID, folder)
+	res, err := d.Exec(`UPDATE agent_log_sessions SET project_id = ?
+		WHERE folder_path = ? COLLATE NOCASE
+		  AND (project_id IS NULL OR project_id NOT IN (SELECT value FROM json_each(?)))`, projectID, folder, string(live))
 	if err != nil {
 		return 0, err
 	}
@@ -340,9 +326,9 @@ func (db *DB) AdoptAgentLogSessions(projectID int64, folder string) (int64, erro
 }
 
 // AgentLogSessionFolder returns the folder a stored session was matched to.
-func (db *DB) AgentLogSessionFolder(sessionUUID string) (string, bool, error) {
+func (d *DB) AgentLogSessionFolder(sessionUUID string) (string, bool, error) {
 	var folder string
-	err := db.QueryRow(`SELECT folder_path FROM agent_log_sessions WHERE session_uuid = ?`, sessionUUID).Scan(&folder)
+	err := d.QueryRow(`SELECT folder_path FROM agent_log_sessions WHERE session_uuid = ?`, sessionUUID).Scan(&folder)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
@@ -351,14 +337,14 @@ func (db *DB) AgentLogSessionFolder(sessionUUID string) (string, bool, error) {
 
 // RepriceAgentLogEvents recomputes cost for api_call rows priced with an
 // older table version, from their stored tokens.
-func (db *DB) RepriceAgentLogEvents(version int, price func(model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, bool)) (int, error) {
+func (d *DB) RepriceAgentLogEvents(version int, price func(model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, bool)) (int, error) {
 	type row struct {
 		id                     int64
 		model, speed           string
 		in, out, cr, cw5, cw1h int64
 	}
 	var todo []row
-	err := db.agentLogRows(`SELECT id, name, speed, input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens,
+	err := d.agentLogRows(`SELECT id, name, speed, input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens,
 		cache_write_1h_tokens FROM agent_log_events WHERE kind = 'api_call' AND price_version < ?`, []any{version},
 		func(rs *sql.Rows) error {
 			var r row
@@ -377,7 +363,7 @@ func (db *DB) RepriceAgentLogEvents(version int, price func(model, speed string,
 	done := 0
 	for len(todo) > 0 {
 		n := min(len(todo), agentLogRepriceSlice)
-		err = db.WithTx(func(tx *sql.Tx) error {
+		err = d.withTx(func(tx *sql.Tx) error {
 			for _, r := range todo[:n] {
 				usd, known := price(r.model, r.speed, r.in, r.out, r.cr, r.cw5, r.cw1h)
 				if _, err := tx.Exec(`UPDATE agent_log_events SET cost_usd = ?, cost_estimated = ?, price_version = ? WHERE id = ?`,
@@ -401,9 +387,9 @@ func (db *DB) RepriceAgentLogEvents(version int, price func(model, speed string,
 var agentLogRepriceSlice = 1000
 
 // AgentLogStats aggregates the stored analytics of one workbench.
-func (db *DB) AgentLogStats(projectID int64) (*AgentLogStats, error) {
+func (d *DB) AgentLogStats(projectID int64) (*AgentLogStats, error) {
 	st := &AgentLogStats{Tools: []AgentLogCount{}, Outcomes: map[string]int{}, Skills: []AgentLogSkill{}, PerSession: []AgentLogSessionStat{}}
-	err := db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(t.input_tokens),0), COALESCE(SUM(t.output_tokens),0),
+	err := d.QueryRow(`SELECT COUNT(*), COALESCE(SUM(t.input_tokens),0), COALESCE(SUM(t.output_tokens),0),
 		COALESCE(SUM(t.cache_read_tokens),0), COALESCE(SUM(t.cache_write_5m_tokens),0), COALESCE(SUM(t.cache_write_1h_tokens),0),
 		COALESCE(SUM(t.cost_usd),0), COALESCE(SUM(t.cost_estimated_calls),0), COALESCE(SUM(t.owner_turns),0),
 		COALESCE(SUM(s.reported_cost_usd),0)
@@ -413,7 +399,7 @@ func (db *DB) AgentLogStats(projectID int64) (*AgentLogStats, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agent log totals: %w", err)
 	}
-	if err := db.agentLogRows(`SELECT e.name, COUNT(*) FROM agent_log_events e JOIN agent_log_sessions s ON s.session_uuid = e.session_uuid
+	if err := d.agentLogRows(`SELECT e.name, COUNT(*) FROM agent_log_events e JOIN agent_log_sessions s ON s.session_uuid = e.session_uuid
 		WHERE s.project_id = ? AND e.kind = 'tool' GROUP BY e.name ORDER BY COUNT(*) DESC, e.name LIMIT 20`, []any{projectID},
 		func(r *sql.Rows) error {
 			var c AgentLogCount
@@ -425,7 +411,7 @@ func (db *DB) AgentLogStats(projectID int64) (*AgentLogStats, error) {
 		}); err != nil {
 		return nil, fmt.Errorf("agent log tools: %w", err)
 	}
-	if err := db.agentLogRows(`SELECT e.outcome, COUNT(*) FROM agent_log_events e JOIN agent_log_sessions s ON s.session_uuid = e.session_uuid
+	if err := d.agentLogRows(`SELECT e.outcome, COUNT(*) FROM agent_log_events e JOIN agent_log_sessions s ON s.session_uuid = e.session_uuid
 		WHERE s.project_id = ? AND e.kind = 'tool' GROUP BY e.outcome`, []any{projectID},
 		func(r *sql.Rows) error {
 			var o string
@@ -438,7 +424,7 @@ func (db *DB) AgentLogStats(projectID int64) (*AgentLogStats, error) {
 		}); err != nil {
 		return nil, fmt.Errorf("agent log outcomes: %w", err)
 	}
-	if err := db.agentLogRows(`SELECT e.name, COALESCE(SUM(e.trigger = 'proactive'),0), COALESCE(SUM(e.trigger = 'slash'),0),
+	if err := d.agentLogRows(`SELECT e.name, COALESCE(SUM(e.trigger = 'proactive'),0), COALESCE(SUM(e.trigger = 'slash'),0),
 		COALESCE(SUM(e.trigger = 'read'),0)
 		FROM agent_log_events e JOIN agent_log_sessions s ON s.session_uuid = e.session_uuid
 		WHERE s.project_id = ? AND e.kind = 'skill' GROUP BY e.name ORDER BY COUNT(*) DESC, e.name`, []any{projectID},
@@ -452,7 +438,7 @@ func (db *DB) AgentLogStats(projectID int64) (*AgentLogStats, error) {
 		}); err != nil {
 		return nil, fmt.Errorf("agent log skills: %w", err)
 	}
-	if err := db.agentLogRows(`SELECT s.session_uuid, s.started_at, s.ended_at, s.model, COALESCE(t.api_calls,0),
+	if err := d.agentLogRows(`SELECT s.session_uuid, s.started_at, s.ended_at, s.model, COALESCE(t.api_calls,0),
 		COALESCE(t.cost_usd,0), s.reported_cost_usd, COALESCE(t.tool_errors,0)
 		FROM agent_log_sessions s LEFT JOIN agent_log_session_totals t ON t.session_uuid = s.session_uuid
 		WHERE s.project_id = ? ORDER BY s.started_at DESC LIMIT 50`, []any{projectID},
@@ -469,8 +455,8 @@ func (db *DB) AgentLogStats(projectID int64) (*AgentLogStats, error) {
 	return st, nil
 }
 
-func (db *DB) agentLogRows(q string, args []any, each func(*sql.Rows) error) error {
-	rows, err := db.Query(q, args...)
+func (d *DB) agentLogRows(q string, args []any, each func(*sql.Rows) error) error {
+	rows, err := d.Query(q, args...)
 	if err != nil {
 		return err
 	}
@@ -481,4 +467,49 @@ func (db *DB) agentLogRows(q string, args []any, each func(*sql.Rows) error) err
 		}
 	}
 	return rows.Err()
+}
+
+// ImportProgress is a workbench's agent_log_import row: how far its history
+// import got as of its last scan (spec D6).
+type ImportProgress struct {
+	Complete    bool   // the last scan finished its listing without a budget stop
+	FilesStored int    // the workbench's transcripts stored so far
+	UpdatedAt   string // RFC 3339 UTC
+}
+
+// SetImportProgress upserts the workbench's import progress row.
+func (d *DB) SetImportProgress(projectID int64, complete bool, filesStored int, now time.Time) error {
+	_, err := d.Exec(`INSERT INTO agent_log_import (project_id, complete, files_stored, updated_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT (project_id) DO UPDATE SET complete = excluded.complete, files_stored = excluded.files_stored,
+		updated_at = excluded.updated_at`, projectID, complete, filesStored, now.UTC().Format(time.RFC3339))
+	if err != nil {
+		return fmt.Errorf("upserting agent_log_import: %w", err)
+	}
+	return nil
+}
+
+// ImportProgress returns the workbench's import progress, nil when no scan
+// recorded any yet.
+func (d *DB) ImportProgress(projectID int64) (*ImportProgress, error) {
+	var p ImportProgress
+	err := d.QueryRow(`SELECT complete, files_stored, updated_at FROM agent_log_import WHERE project_id = ?`, projectID).
+		Scan(&p.Complete, &p.FilesStored, &p.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading import progress: %w", err)
+	}
+	return &p, nil
+}
+
+// StoredTranscripts counts the workbench's stored main transcripts: the
+// distinct source files of its sessions (a subagent's session row points at
+// its parent's transcript).
+func (d *DB) StoredTranscripts(projectID int64) (int, error) {
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(DISTINCT source_path) FROM agent_log_sessions WHERE project_id = ?`, projectID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting stored transcripts: %w", err)
+	}
+	return n, nil
 }

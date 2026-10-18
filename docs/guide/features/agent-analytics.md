@@ -18,7 +18,7 @@ When the table changes, older rows are re-priced from their stored tokens. Claud
 
 Once on, the background daemon keeps the numbers current: each cycle it reads only new lines, for up to 30 seconds. It stores them in small portions, so live sessions on the board keep their states while a long history loads. A very long session can show partly until the next cycle reads the rest.
 
-The history already on disk is loaded when you turn the feature on. Turning it off keeps what was stored. Deleting the workbench keeps it too, and a new workbench on the same folder picks it up again.
+Turning the feature on returns at once. The daemon then loads the history already on disk in the background, a little each cycle, and the **Analytics** view shows **Loading history — N files so far** until it is done. Turning it off keeps what was stored. Deleting the workbench keeps it too, and a new workbench on the same folder picks it up again.
 
 Only Claude Code transcripts in `~/.claude` are read. Codex sessions are not.
 
@@ -30,7 +30,7 @@ watchtower agents stats --workbench 3 --json
 watchtower agents disable --workbench 3
 ```
 
-- `enable` turns it on and reads the folder's history now.
+- `enable` turns it on and nudges the daemon to start loading the folder's history. With no daemon running it says so; the history loads once the daemon starts.
 - `scan` reads new lines on demand and reports `unknown_records` and `failed_files`.
 - `stats` prints totals and a per-session breakdown: tokens, `cost_usd`, `tools` and `outcomes` (separate keys), skills and owner turns.
 - `report` prints the time, cost, task and hint breakdown the **Analytics** view shows.
@@ -43,6 +43,7 @@ Find a workbench's number with `watchtower workbench list`, or use the id in its
 - **`stats` shows `"enabled": false`.** Run `enable` first.
 - **No sessions.** Nothing in `~/.claude/projects/` matched the folder. Sessions run before the folder moved are not found.
 - **Cost is 0 for a model.** The price table does not know it yet. The calls are counted as estimated.
+- **History not moved yet — restart the daemon or run watchtower agents scan.** Analytics from an older version still sit in the main database and moving them failed. Nothing loads until the move succeeds; the daemon retries it every cycle, and the daemon log says why it failed.
 - **`unknown_records` is not 0.** Claude Code writes record types Watchtower does not read. They are skipped and counted, and the totals are unaffected.
 
 ## Related

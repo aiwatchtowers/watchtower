@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"encoding/json"
+	"watchtower/internal/agentlogdb"
 	"watchtower/internal/briefing"
 	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
@@ -378,22 +379,35 @@ func waitForProcessExit(pid int, grace time.Duration) bool {
 // flock on sync.lock, so a local sync would fail on the lock anyway, and a
 // second syncer racing the daemon is exactly what that lock exists to prevent.
 func runSyncNow(cfg *config.Config) error {
-	pidPath := pidFilePath(cfg)
-	pid, err := daemon.FindConfirmedProcess(pidPath)
+	pid, err := signalSyncNow(cfg)
 	if err != nil {
-		if errors.Is(err, daemon.ErrIdentityUnconfirmed) {
-			return fmt.Errorf("cannot confirm PID %d is the watchtower daemon (its identity could not be verified); refusing to signal it — check manually, e.g. `ps -p %d`", pid, pid)
-		}
-		return fmt.Errorf("reading pid file: %w", err)
+		return err
 	}
 	if pid == 0 {
 		return errors.New("no daemon is running (start one with: watchtower sync --daemon --detach)")
 	}
-	if err := syscall.Kill(pid, daemon.TriggerSignal); err != nil {
-		return fmt.Errorf("signalling daemon (PID %d): %w", pid, err)
-	}
 	fmt.Printf("Sync requested (daemon PID %d).\n", pid)
 	return nil
+}
+
+// signalSyncNow sends a running daemon daemon.TriggerSignal and returns its
+// PID, or 0 (and no error) when no daemon is running.
+func signalSyncNow(cfg *config.Config) (int, error) {
+	pidPath := pidFilePath(cfg)
+	pid, err := daemon.FindConfirmedProcess(pidPath)
+	if err != nil {
+		if errors.Is(err, daemon.ErrIdentityUnconfirmed) {
+			return 0, fmt.Errorf("cannot confirm PID %d is the watchtower daemon (its identity could not be verified); refusing to signal it — check manually, e.g. `ps -p %d`", pid, pid)
+		}
+		return 0, fmt.Errorf("reading pid file: %w", err)
+	}
+	if pid == 0 {
+		return 0, nil
+	}
+	if err := syscall.Kill(pid, daemon.TriggerSignal); err != nil {
+		return 0, fmt.Errorf("signalling daemon (PID %d): %w", pid, err)
+	}
+	return pid, nil
 }
 
 func runSyncDetach(cfg *config.Config) error {
@@ -860,11 +874,18 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	// settings, once per workbench; the app restarts the daemon on an update,
 	// so sessions kept by the session host pick the values up.
 	carryOverWorkflowChecks(database, logger.Writer())
+	// Board #849: agent analytics live in agentlog.db; their rows move out
+	// of watchtower.db once, before the daemon can scan.
+	al := openAgentLog(ctx, cfg, database, logger)
 
 	d := daemon.New(cfg)
 	d.SetOrchestrators(orchestrators)
 	d.SetLogger(logger)
 	d.SetDB(database)
+	if al != nil {
+		defer al.Close()
+		d.SetAgentLogDB(al, agentlogdb.PathFor(cfg.DBPath()))
+	}
 	d.SetPIDPath(pidFilePath(cfg))
 	// Every pipeline is constructed unconditionally now (Task 3 demoted
 	// digest.enabled from a master switch to a per-phase gate) — each is a
@@ -945,6 +966,29 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	// directory we cannot write is not a reason to refuse to run the daemon.
 	deployShippedSkills(cfg, logger)
 	return d.Run(ctx)
+}
+
+// openAgentLog opens the agentlog.db beside database's file and runs the
+// one-time move of its rows out of watchtower.db (agentlogdb.MoveFromMain).
+// A failed open returns nil: the analytics phase stays off for this run and
+// everything else syncs. A failed move is logged and does not stop the
+// daemon: the marker stays unset and the analytics phase retries the move
+// every cycle, as do the next start and `agents enable`/`scan`.
+func openAgentLog(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger) *agentlogdb.DB {
+	path := agentlogdb.PathFor(cfg.DBPath())
+	al, err := agentlogdb.Open(path)
+	if err != nil {
+		logger.Printf("agent analytics: %v; analytics are skipped until the next start", err)
+		return nil
+	}
+	res, err := agentlogdb.MoveFromMain(ctx, database, al, agentlogdb.MoveLockPath(path))
+	switch {
+	case err != nil:
+		logger.Printf("agent analytics: moving rows out of watchtower.db: %v; retried on the next start or agents enable/scan", err)
+	case res != nil:
+		logger.Print(res)
+	}
+	return al
 }
 
 // wireSlackSyncers builds one sync.Orchestrator per connected, enabled Slack

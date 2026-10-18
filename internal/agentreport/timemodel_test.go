@@ -4,19 +4,18 @@ import (
 	"slices"
 	"testing"
 	"time"
+	"watchtower/internal/agentlogdb"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"watchtower/internal/db"
 )
 
 var t0 = time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
 
 // fixture builds one session's events; offsets keep the order stable on ties.
-type fixture struct{ evs []db.AgentReportEvent }
+type fixture struct{ evs []agentlogdb.AgentReportEvent }
 
-func (f *fixture) add(e db.AgentReportEvent, at time.Duration) *db.AgentReportEvent {
+func (f *fixture) add(e agentlogdb.AgentReportEvent, at time.Duration) *agentlogdb.AgentReportEvent {
 	e.SessionUUID = "s1"
 	e.TS = t0.Add(at).Format(tsLayout)
 	if e.SrcPath == "" {
@@ -28,14 +27,14 @@ func (f *fixture) add(e db.AgentReportEvent, at time.Duration) *db.AgentReportEv
 }
 
 func (f *fixture) owner(at time.Duration) {
-	f.add(db.AgentReportEvent{Kind: "owner_turn", Trigger: "owner"}, at)
+	f.add(agentlogdb.AgentReportEvent{Kind: "owner_turn", Trigger: "owner"}, at)
 }
 func (f *fixture) api(at time.Duration) {
-	f.add(db.AgentReportEvent{Kind: "api_call", Name: "claude-opus-5-5"}, at)
+	f.add(agentlogdb.AgentReportEvent{Kind: "api_call", Name: "claude-opus-5-5"}, at)
 }
 
-func (f *fixture) tool(at time.Duration, name, target string, dur *time.Duration) *db.AgentReportEvent {
-	e := db.AgentReportEvent{Kind: "tool", Name: name, Target: target, Outcome: "pending"}
+func (f *fixture) tool(at time.Duration, name, target string, dur *time.Duration) *agentlogdb.AgentReportEvent {
+	e := agentlogdb.AgentReportEvent{Kind: "tool", Name: name, Target: target, Outcome: "pending"}
 	if dur != nil {
 		ms := dur.Milliseconds()
 		e.DurationMS, e.Outcome = &ms, "ok"
@@ -44,7 +43,7 @@ func (f *fixture) tool(at time.Duration, name, target string, dur *time.Duration
 }
 
 func (f *fixture) sub(agentID string, at time.Duration) {
-	f.add(db.AgentReportEvent{Kind: "api_call", Name: "claude-opus-5-5", AgentID: agentID}, at)
+	f.add(agentlogdb.AgentReportEvent{Kind: "api_call", Name: "claude-opus-5-5", AgentID: agentID}, at)
 }
 
 func sum(ts TimeSplit) int64 {
@@ -126,11 +125,11 @@ func TestTimeModel_WaitClosedByTrigger(t *testing.T) {
 	var f fixture
 	f.owner(0)
 	f.api(10 * sec)
-	f.add(db.AgentReportEvent{Kind: "owner_turn", Trigger: "notification"}, 10*sec+5*mn)
+	f.add(agentlogdb.AgentReportEvent{Kind: "owner_turn", Trigger: "notification"}, 10*sec+5*mn)
 	f.api(20*sec + 5*mn)
-	f.add(db.AgentReportEvent{Kind: "owner_turn", Trigger: "hook"}, 50*sec+5*mn)
+	f.add(agentlogdb.AgentReportEvent{Kind: "owner_turn", Trigger: "hook"}, 50*sec+5*mn)
 	f.api(6 * mn)
-	f.add(db.AgentReportEvent{Kind: "owner_turn", Trigger: ""}, 6*mn+40*mn)
+	f.add(agentlogdb.AgentReportEvent{Kind: "owner_turn", Trigger: ""}, 6*mn+40*mn)
 	f.api(46*mn + 5*sec)
 
 	split, segs := SessionTime(f.evs)
@@ -191,21 +190,21 @@ func TestTimeModel_WaitEndsOnAPIErrorAndSeesThrough(t *testing.T) {
 	}{
 		{"api_error ends the turn", func(f *fixture) {
 			f.owner(0)
-			f.add(db.AgentReportEvent{Kind: "api_error"}, 10*sec)
+			f.add(agentlogdb.AgentReportEvent{Kind: "api_error"}, 10*sec)
 			f.owner(10*sec + 40*mn)
 			f.api(10*sec + 40*mn + 5*sec)
 		}, 30 * mn, 10 * mn, 15 * sec},
 		{"compaction inside a wait", func(f *fixture) {
 			f.owner(0)
 			f.api(10 * sec)
-			f.add(db.AgentReportEvent{Kind: "compaction"}, 10*sec+20*mn)
+			f.add(agentlogdb.AgentReportEvent{Kind: "compaction"}, 10*sec+20*mn)
 			f.owner(10*sec + 50*mn)
 			f.api(10*sec + 50*mn + 5*sec)
 		}, 30 * mn, 20 * mn, 15 * sec},
 		{"pr_link inside a wait", func(f *fixture) {
 			f.owner(0)
 			f.api(10 * sec)
-			f.add(db.AgentReportEvent{Kind: "pr_link"}, 11*sec)
+			f.add(agentlogdb.AgentReportEvent{Kind: "pr_link"}, 11*sec)
 			f.owner(10*sec + 10*mn)
 			f.api(10*sec + 10*mn + 5*sec)
 		}, 10 * mn, 0, 15 * sec},
@@ -226,7 +225,7 @@ func TestTimeModel_WaitEndsOnAPIErrorAndSeesThrough(t *testing.T) {
 func TestTimeModel_SingleEvent(t *testing.T) {
 	var f fixture
 	f.owner(0)
-	for _, evs := range [][]db.AgentReportEvent{nil, f.evs} {
+	for _, evs := range [][]agentlogdb.AgentReportEvent{nil, f.evs} {
 		split, segs := SessionTime(evs)
 		assert.Equal(t, TimeSplit{}, split)
 		assert.Empty(t, segs)
@@ -239,7 +238,7 @@ func TestTimeModel_SingleEvent(t *testing.T) {
 func TestTimeModel_TiesAndOrder(t *testing.T) {
 	var f fixture
 	f.owner(0)
-	f.add(db.AgentReportEvent{Kind: "api_call", SrcPath: "/tmp/x/b.jsonl"}, 10*sec)
+	f.add(agentlogdb.AgentReportEvent{Kind: "api_call", SrcPath: "/tmp/x/b.jsonl"}, 10*sec)
 	tool := f.tool(10*sec, "Bash", "ls", new(time.Second))
 	tool.SrcPath = "/tmp/x/a.jsonl"
 	tool.TS = "2026-10-01T10:00:10Z" // a stored ts without milliseconds
