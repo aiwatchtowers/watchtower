@@ -86,6 +86,17 @@ func TestApplyAgentLogBatch_SubagentReplaySkipped(t *testing.T) {
 	assert.Equal(t, 1, n)
 }
 
+// The replay check runs once per subagent api_call inside the import's write
+// transaction: it must seek the unique key range, never walk every api_call
+// through idx_agent_log_events_kind (that held the lock for seconds per batch).
+func TestApplyAgentLogBatch_ReplayCheckSeeksKey(t *testing.T) {
+	d := openTestDB(t)
+	plan := explainDetails(t, d, agentLogReplayCheckQuery, "s1", "m1:", "m1:￿", "m1:r2")
+	assert.Contains(t, plan, "USING INDEX sqlite_autoindex_agent_log_events_1 (key>? AND key<?)")
+	assert.NotContains(t, plan, "idx_agent_log_events_kind")
+	assert.NotContains(t, plan, "idx_agent_log_events_session")
+}
+
 func TestApplyAgentLogBatch_ToolResultPairsLater(t *testing.T) {
 	d := openTestDB(t)
 	pid := newTestWorkbench(t, d)
