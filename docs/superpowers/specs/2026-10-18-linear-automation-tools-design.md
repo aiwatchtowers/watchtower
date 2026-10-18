@@ -27,11 +27,11 @@ tool shapes, the same approval path, the same capability grammar, named
 3. **Write tools** that mirror the Jira write set: create, comment, change
    state, assign, update fields.
 4. **Automation capability** `linear:read|write@<TEAM-KEY>|*`.
-5. **A workbench template** `linear-triage` that is the owner's use case,
-   installable from the gallery.
 
 ## 3. Non-goals
 
+- No automation template. The owner builds the triage recipe on top
+  (ask #385: the use case is context, the task is "Linear works like Jira").
 - No `linear.issue_changed` event (owner: cron + `list_linear_issues` is
   enough). The recipe polls the local mirror.
 - No neutral `*_issue` tools and no consumer moves to `tracker_*` (that stays
@@ -196,38 +196,14 @@ this slice). Not on the workbench surface (DEV-06 unchanged).
 - `AutomationCardPresentation`: the `linear` capability's label.
 - No new screens.
 
-## 7. Template `linear-triage`
-
-A workbench template in the P6 gallery (`internal/automations/templates/`):
-
-- Trigger: cron every 15 minutes (`*/15 * * * *`), `run_once`.
-- Param `TEAM` (allowlist rule as `PROJECT`), defaulting from owner data the
-  way `jira-state-report` picks `PROJECT`
-  (`TestInstallTemplate_JiraProjectFromOwnerData`): the selected team with the
-  most issues assigned to the owner, else the first selected team by key. With
-  no Linear team selected the gallery install is refused with "connect Linear
-  and select a team first"; a key shared by two accounts is still one scope
-  value (scopes are team keys, as Jira's are project keys).
-- Permissions: `linear:read@<TEAM>`, `linear:write@<TEAM>`, `ask:owner`,
-  `session`, `llm:light`.
-- Script: `list_linear_issues({team, state_type: "triage"})`, skip keys already
-  in `state.seen`; for each new issue (at most 5 per run) a light `llm()`
-  summary and a suggested priority, then one `ask({kind: "question"})` with
-  options *Take it now* / *Backlog* / *Skip*. *Take it now* →
-  `transition_linear_issue {state_type: "started"}` +
-  `assign_linear_issue me` + `session({prompt})` with the issue key, title and
-  url; *Backlog* → `transition_linear_issue {state_type: "backlog"}`;
-  *Skip* → remembered, nothing written.
-- Installed unconfirmed and disabled, as every template.
-
-## 8. Freshness
+## 7. Freshness
 
 The recipe reads the local mirror, so a new Linear issue reaches it after the
 next `phaseLinearSync` (`linear.sync_interval_mins`, default 15) plus the next
 cron tick. A Linear account added while the daemon runs is picked up on the
 daemon's next start (current v1 limit of the connector; the guide says so).
 
-## 9. Testing
+## 8. Testing
 
 - `internal/linear`: API-key client header and no-refresh path; 401 on a key →
   `ErrAuthRevoked`; token-file round trip with `token_type: "api_key"`.
@@ -236,23 +212,22 @@ daemon's next start (current v1 limit of the connector; the guide says so).
 - `internal/tools`: each tool against a fake Linear client and a seeded DB —
   account resolution, `previous_keys`, Normalize pinning, name resolution
   misses, upsert after Execute, revoked marking.
-- `internal/automations`: the capability table and scope extraction;
-  `TestTemplates_*` pick up `linear-triage` (parse, dry run E2E).
+- `internal/automations`: the capability table and scope extraction.
 - `cmd/actions_registry_test.go`: the new tools' surfaces pinned next to
   `automationWriteSurfaces`; the chat actions-contract goldens regenerated.
 - Desktop: catalog entries in `ChatToolCatalogTests`.
 
-## 10. Contracts and docs
+## 9. Contracts and docs
 
 - LINEAR-02 gets a note: an API-key token never refreshes. LINEAR-03 covers
   key auth failures. AGENT-03: the five Linear writes are External.
   AUTO-01: the `linear` capability. New guard tests named in
   `docs/inventory/linear.md`.
 - `docs/features/linear.md` (API key, tools, v1 limits),
-  `docs/features/automations.md` (capability, template),
+  `docs/features/automations.md` (capability),
   `docs/guide/` Linear and Automations pages.
 
-## 11. Decisions
+## 10. Decisions
 
 From the owner (ask #384): both API key and OAuth; separate `*_linear_*`
 tools; cron + list instead of an event; the same writes as Jira.
@@ -269,8 +244,6 @@ My calls (check while reading):
   migration for auth).
 - Workflow states and labels get two small mirror tables (one migration), so
   recipes and validation read names locally; `transition_linear_issue` also
-  takes a `state_type`, so the template never hardcodes state names.
+  takes a `state_type`, so a recipe never hardcodes state names.
 - A moved issue is scoped by its current team, not by the key's old prefix.
 - The write upsert reuses the syncer's upsert and never moves a watermark.
-- The `linear-triage` template is in scope: it is the owner's use case and the
-  proof the tools fit together.
