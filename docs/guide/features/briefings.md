@@ -27,6 +27,8 @@ A briefing has up to five sections, plus today's calendar:
 - **Team Pulse**: people signals such as activity spikes or drops and new red flags.
 - **Coaching Corner**: communication and process tips.
 
+Your Jira and Linear issues feed these sections when that tracker is switched on: issues assigned to you, open issues you reported, blocked, stale (in progress for more than 7 days) and overdue ones, and sprint or cycle progress. The **Jira Features** switches decide which of these the briefing reads, for both trackers.
+
 Rules you teach through [Catch Up](catch-up.md) feedback are applied to the briefing too.
 
 ## Using it

@@ -23,7 +23,7 @@ The **Jira Features** switches (role preset plus one switch per signal) decide w
 - **Connect:** `watchtower linear add` signs in with Linear, then `watchtower linear teams` and `select` pick the teams. Connecting (or signing in again) switches `linear.enabled` on for you.
 - **Sync:** the daemon syncs the selected teams every 15 minutes (`linear.sync_interval_mins`). The first pass loads every open issue and everything updated in the last 90 days.
 - **API key instead of the browser:** `watchtower linear add --api-key` asks for a personal API key (create one in Linear under Settings, Security & access) and reads it from standard input. A key never expires and is not refreshed. If Linear rejects it, the account shows **revoked**: run `watchtower linear login --api-key` with a new key. Removing the account does not delete the key at Linear; revoke it there. `watchtower linear accounts` shows `oauth` or `api_key` in the `auth` column (`error` if the saved credential cannot be read: sign in again with `watchtower linear login`).
-- **What reads it:** the data is stored next to Jira's in a shared form, but no tab, briefing or inbox card reads it. Two things use it: the assistant, and automations (below). A connected Linear workspace can also identify you for the briefing and the day plan.
+- **What reads it:** no tab yet. Your Linear issues feed the briefing (**MY LINEAR ISSUES**, **CYCLE PROGRESS**, stale and overdue, under the same **Jira Features** switches), the day plan, and the inbox (an issue assigned to you, a comment that mentions you; your own comment closes it). A target made from a Linear issue follows its status. The assistant and automations read it too (below).
 
 ### Linear in the assistant
 

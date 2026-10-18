@@ -49,6 +49,16 @@ Writes (`internal/tools/linear_write.go`; `External`, surfaces main, target and 
 
 Automations: capability `linear:read|write@<TEAM>|*` (AUTO-01); issue tools are scoped by the issue's current team, a list call without `team` is the absent scope. Desktop: chat catalog entries, approval-card summary lines and the automation card's "Linear" source.
 
+## Consumers — core (Plan 2, 2026-10-18, #687)
+
+Briefing, day plan, inbox and targets read Linear through `tracker_*` and the Go API in `internal/db/tracker.go` (`ListTrackerIssues` with `TrackerIssueFilter`, `OwnerAssignedTrackerIssues`, `OwnerReportedActiveTrackerIssues`, `UnambiguousTrackerIssue`, `ActiveTrackerIterationStats`, `OwnerLinearIDs`, `LinearCommentsMentioning`, `LinearOwnComments`; `TrackerIssue.AsJiraIssue` feeds the shared `jira.BuildIssueContext` formatter). Every hot read is pinned by `TestTrackerConsumerQueries_UseIndexes`. Migration 00143 adds `linear` to `targets.source_type` and `day_plan_items.source_type`, and `linear_assigned` / `linear_comment_mention` to `inbox_items.trigger_type`.
+
+- **Owner identity:** `Owner.TrackerUserIDs(tracker)` — the Jira account id, or every `Owner.LinearUserIDs` (OWNER-01); without one, the Slack id through the `*_slack_id` bridge columns; with neither, nothing (never an empty key). The inbox also counts the ids `linear_user_map` maps to the owner's Slack id (`OwnerLinearIDs`, the Atlassian-id twin).
+- **Briefing** (`internal/briefing/jira.go`): each tracker's sections when its integration is enabled (`jira.enabled`, `linear.enabled`), Jira first. The Jira block is byte-identical to the pre-Linear one (`TestGatherJiraContext_JiraOutputUnchanged`). Linear: `MY LINEAR ISSUES`, `AWAITING MY INPUT (LINEAR)` (reported open issues; blocked = an incoming `blocks` relation from an open issue), `CYCLE PROGRESS` (active cycles from `tracker_iterations`), `STALE/OVERDUE LINEAR ISSUES`. The Jira feature toggles (`my_issues`, `awaiting_input`, `iteration_progress`) govern both (spec §3.5); stale/overdue are always on, as for Jira.
+- **Day plan** (`internal/dayplan`): open assigned issues of Jira (always) and Linear (when `linear.enabled`) share the prompt's issues section (the template is unchanged, so its heading still says Jira). The model names an issue item `jira`; `issueSourceType` stores it under the tracker its key belongs to (a key both trackers carry keeps the model's choice).
+- **Inbox** (`internal/inbox/linear_detector.go`): the Jira rules for Linear — see INBOX-02/09 in `docs/inventory/inbox-pulse.md`. Item `channel_id`/`sender_user_id` is the issue key, as for Jira.
+- **Targets:** `CreateTargetFromTrackerIssue` (dedup per tracker and key; priority from `priority_rank`); `SyncLinearTargetStatuses` after a clean Linear pass (`phaseLinearSync`), with `SyncJiraTargetStatuses`' rules (done → done, started → in_progress for a todo target, an ambiguous key is left alone); a moved key resolves through `previous_keys`. The targets resolver enriches `https://linear.app/<workspace>/issue/<KEY>` URLs from `tracker_issues` (the URL's workspace picks between equal keys; no live fallback) and `linear:` is a valid external ref. `watchtower targets` shows a Linear target's `[KEY Status]` badge.
+
 ## CLI
 
 `watchtower linear add [--label] | login | accounts [--json] | enable|disable|remove <id> | teams [--json] | select|deselect <TEAM-KEY>... | sync | status`, with `--account` to pick a workspace and `--no-open`/`--app-return` on the OAuth commands. `add` revives a removed account for the same org, refuses a non-removed one and cleans up on any failure; `login` refuses a different workspace. Both identify the fresh token's workspace with an in-memory viewer request (`linear.FetchViewerWithToken`: no token file, no refresh); `login` saves the token only after the workspace matches. Both refresh the stored workspace name and URL key, so a renamed workspace shows its new name. `enable`/`disable`/`remove` take the id positionally; an `--account` naming a different id is refused. `remove` revokes (best effort) and deletes the token under the account's token lock, so a daemon refresh in flight cannot write it back. `sync` prints a line per account and exits non-zero when any account failed (the `jira sync` rule).
@@ -59,7 +69,10 @@ Automations: capability `linear:read|write@<TEAM>|*` (AUTO-01); issue tools are 
 - Nested history is capped at 50 per issue per pass (default order unconfirmed), labels and relations at 20.
 - The mention node name `suggestion_userMentions` (`attrs.id`) is unconfirmed against live data.
 - Slack mapping is by email only.
-- Consumers (briefing, inbox, ...) come in Plan 2, Desktop tabs in Plan 3.
+- Briefing, day plan, inbox and targets read Linear (above); the other consumers of spec §6 and the Desktop tabs come in the other Plan 2 lanes and Plan 3.
+- Cycle progress lists every active cycle in `tracker_iterations`, including a team deselected after its cycles synced (its cycles stop refreshing and close by date).
+- The inbox's own-comment read uses `linear_comments.issue_key` as stored; after a team move it is current once the reconcile refetched the issue's comments (the same pass).
+- An inbox item keeps the key it was minted under; after a team move its auto-resolve looks for own comments under that old key.
 - The write tools cannot create labels, move an issue between teams, delete issues or touch cycles, projects, estimates other than whole numbers, or relations; they act through the mirror, so a team that is not selected for sync has no states to choose from.
 - An API key is per person and has no scopes: the workspace permissions of its owner apply.
 - The OAuth app must register the five redirect URIs above; release builds need `LINEAR_ID`.
