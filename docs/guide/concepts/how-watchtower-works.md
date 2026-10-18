@@ -72,7 +72,9 @@ Some updates free a lot of space inside the database file, and the file only shr
 
 From 15 seconds on, **Skip for now** stops it; nothing is lost, and it tries again at the next launch. Quitting the app stops it the same way.
 
-If the disk is short, the app opens normally and says **Watchtower could not optimize its database**, with the free space it needs (twice the file's size) and what is available. Free that much space and relaunch. After three failed tries it waits for the next update and says so. You can also run it yourself with `watchtower db compact` ([Command line](../reference/cli.md)).
+If the disk is short, the app opens normally and says **Watchtower could not optimize its database**, with the free space it needs (twice the file's size) and what is available. Free that much space and relaunch.
+
+After three failed tries it waits for the next update and says so. You can also run it yourself with `watchtower db compact` ([Command line](../reference/cli.md)).
 
 ## Related
 

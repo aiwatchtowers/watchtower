@@ -19,7 +19,7 @@
 - JSON keys verbatim from the spec (snake_case). `db_maintenance` keys: `last_compacted_version`, `compacted_at` (RFC 3339 UTC), `compact_failures`, `compact_failures_version`.
 - UI strings in English, exactly: `Optimizing database — <size>, <m:ss>`, `This happens once after an update.`, `Skip for now`, `Watchtower could not optimize its database: it needs <N> free, <M> available.` (sizes via `ByteCountFormatter`, `.file` style).
 - Skip button appears at 15 s elapsed; SIGKILL 10 s after the SIGTERM if the child is still alive.
-- Public repo: no local absolute paths, no live data (the 3.4 GB / 813k-row numbers stay in the spec only). Repo text in English.
+- Public repo: no local absolute paths, no live data (no sizes or row counts read off a live install, in specs either). Repo text in English.
 - Inner loop only per task (`go test ./internal/db -run …`, `go test ./cmd -run …`, `make test-swift FILTER=…`, `make lint-diff`); the full gate (`make test`, `make test-swift`, `make lint-all`) runs once at the end, by the controller.
 - Tests that spawn processes kill and reap them in `t.Cleanup` / `tearDown` (CLAUDE.md).
 
@@ -203,7 +203,7 @@ Order inside `Compact`: disk rule (unless `Force`) → `skipped:"disk"`, DB not 
   var daemonRunningForCompact = func(cfg *config.Config) bool
   ```
 
-Config: `config.Load(flagConfig)`, `--workspace` override, `ValidateWorkspace()`; DB path `cfg.DBPath()`. Never `openDBFromConfig`. Flow: `--check` (with `--if-due`/`--force` → error exit 1) → print `CompactCheck`, exit 0. Otherwise: if `--if-due`, run the check; not due → `{"compacted":false,"skipped":"not_due"}` exit 0 (also for `schema_pending`/`gave_up` reasons — the check said no); daemon running and no `--force` → `skipped:"daemon_running"` exit 3; `Compact(ctx, …, {Force, Reason: check reason or "manual", Version})`. The JSON goes to stdout on every outcome, including errors; the human message (non-`--json`) is one line: "Compacted watchtower.db: 3.4 GB → 1.0 GB in 41s" style via humanized bytes, or the skip reason. Non-zero exits return `&exitCodeError{…}` so `Execute` prints the message to stderr.
+Config: `config.Load(flagConfig)`, `--workspace` override, `ValidateWorkspace()`; DB path `cfg.DBPath()`. Never `openDBFromConfig`. Flow: `--check` (with `--if-due`/`--force` → error exit 1) → print `CompactCheck`, exit 0. Otherwise: if `--if-due`, run the check; not due → `{"compacted":false,"skipped":"not_due"}` exit 0 (also for `schema_pending`/`gave_up` reasons — the check said no); daemon running and no `--force` → `skipped:"daemon_running"` exit 3; `Compact(ctx, …, {Force, Reason: check reason or "manual", Version})`. The JSON goes to stdout on every outcome, including errors; the human message (non-`--json`) is one line: "Compacted watchtower.db: 2.0 GB → 600.0 MB in 12s" style via humanized bytes, or the skip reason. Non-zero exits return `&exitCodeError{…}` so `Execute` prints the message to stderr.
 
 - [ ] **Step 1: Write the failing tests** (`cmd/db_compact_test.go`, temp config + workspace following the existing `cmd/db_test.go` helpers; run the command through `rootCmd.SetArgs` and capture stdout):
   - `TestDBCompact_CheckJSON`: migrated temp DB → stdout decodes to `due:true`, `reason:"migration:134"`; exit 0; `goose_db_version` and `db_maintenance` unchanged.
@@ -291,8 +291,8 @@ Config: `config.Load(flagConfig)`, `--workspace` override, `ValidateWorkspace()`
 
 - [ ] **Step 1: Write the failing tests** (`FakeCompactionCLI` records calls in order into a shared log with `stopDaemon`; `FakeChild` exits when the test says, records `terminate`/`kill`; fake `sleep` yields and counts):
   - `testNotDueRunsNothing`: check `due:false` → calls == `["check"]`, no stop, `phase == .finished`, `notice == nil`.
-  - `testDiskShortShowsNoticeAndSkips`: `due:true, diskOk:false, needsDiskBytes: 6_800_000_000, freeDiskBytes: 2_000_000_000` → calls `["check"]`; `notice == "Watchtower could not optimize its database: it needs 6.8 GB free, 2 GB available."` (assert against `diskNotice` built with `ByteCountFormatter.string(fromByteCount:countStyle:.file)` for both numbers, plus this literal on an `en_US` formatter).
-  - `testDueStopsDaemonThenCompactsInOrder`: calls == `["check", "stopDaemon", "startCompact"]`; phase passes through `.compacting(dbBytes: 3_400_000_000)`; after child exit 0 → `.finished`.
+  - `testDiskShortShowsNoticeAndSkips`: `due:true, diskOk:false, needsDiskBytes: 4_400_000_000, freeDiskBytes: 2_000_000_000` → calls `["check"]`; `notice == "Watchtower could not optimize its database: it needs 4.4 GB free, 2 GB available."` (assert against `diskNotice` built with `ByteCountFormatter.string(fromByteCount:countStyle:.file)` for both numbers, plus this literal on an `en_US` formatter).
+  - `testDueStopsDaemonThenCompactsInOrder`: calls == `["check", "stopDaemon", "startCompact"]`; phase passes through `.compacting(dbBytes: 2_000_000_000)`; after child exit 0 → `.finished`.
   - `testCheckFailureContinues`: check throws → `.finished`, no stop, one log line containing "compaction check".
   - `testResolveDBPathFailureCallsNoCLI`: resolver throws → calls == `[]`.
   - `testSkipHiddenBefore15Seconds`: after 14 ticks `canSkip == false`; after 15 `canSkip == true`.
@@ -302,7 +302,7 @@ Config: `config.Load(flagConfig)`, `--workspace` override, `ValidateWorkspace()`
   - `testDaemonRunningExitContinues`: exit 3 → `.finished`, `notice == nil`, a log line.
   - `testTerminateForQuit`: during `.compacting`, `terminateForQuit()` → `terminateCount == 1`.
   - `testElapsedText`: `elapsedText(seconds: 42) == "0:42"`, `65 → "1:05"`, `0 → "0:00"`, `600 → "10:00"`.
-  - `testProgressLine`: `progressLine(dbBytes: 3_400_000_000, elapsedSeconds: 42) == "Optimizing database — 3.4 GB, 0:42"`.
+  - `testProgressLine`: `progressLine(dbBytes: 2_000_000_000, elapsedSeconds: 42) == "Optimizing database — 2 GB, 0:42"`.
   - `testDecodesLastJSONLineAfterPreamble` (Review Focus 5): stdout `"schema format upgraded\n{\"due\":false,…}\n\n"` decodes; stdout with no JSON line throws.
 - [ ] **Step 2:** `make test-swift FILTER=DatabaseCompactionStep` → FAIL (does not compile).
 - [ ] **Step 3:** implement both files.

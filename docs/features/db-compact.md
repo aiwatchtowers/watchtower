@@ -24,11 +24,12 @@ A fresh database is due after 00134 like any other; compacting a near-empty file
 watchtower db compact [--check | --if-due] [--force] [--json]
 ```
 
-- `--check` reports and writes nothing; it takes neither `--if-due` nor `--force` (that misuse is exit 1). `--if-due` runs the D1 check first and does nothing when not due (`schema_pending` and `gave_up` included): exit 0, `"skipped": "not_due"`. Without either flag the command compacts unconditionally (`reason: "manual"`). The Desktop always runs `--check`, then `--if-due`.
+- `--check` reports and writes nothing; it takes neither `--if-due` nor `--force` (that misuse is exit 1). `--if-due` runs the D1 check first and does nothing when not due (`schema_pending` and `gave_up` included): exit 0, `"skipped": "not_due"`. Without either flag the command compacts without the due check (`reason: "manual"`; the daemon and disk rules still apply). The Desktop always runs `--check`, then `--if-due`.
 - **Daemon rule:** refuses with exit 3 when the daemon runs — `daemon.FindConfirmedProcess` on `daemon.pid`, the check `sync stop` uses. Only a confirmed live daemon process, or a live pid whose identity cannot be confirmed (`daemon.ErrIdentityUnconfirmed`), counts as running; a missing, stale (dead or reused pid), unreadable or malformed pid file does not, so a broken pid file never blocks compaction at every launch. `--force` overrides.
 - **Disk rule (D3):** `free_disk_bytes >= 2 * db_bytes` on the volume holding `watchtower.db` (`statfs`, `Bavail * Bsize`; `VACUUM` writes a compacted copy, then the pages through the WAL). Short → exit 2 `disk`, before the database is opened. `--force` overrides. `SQLITE_TMPDIR`/`temp_store` are not changed: a system temp on another volume is not counted, and a `VACUUM` that then fails with `SQLITE_FULL` is an ordinary failure (exit 1, nothing lost).
 - **Open:** `db.OpenExistingRW` with a 30 s busy timeout (`compactBusy`) — never `db.Open`, never `openDBFromConfig`. A schema that is not current → exit 5 `schema_pending`: compaction never finishes migrations the Desktop's 30 s `db migrate` did not get through.
-- **Run:** `PRAGMA wal_checkpoint(TRUNCATE)`, `VACUUM`, `PRAGMA wal_checkpoint(TRUNCATE)`. `VACUUM` runs outside any transaction and is atomic: a SIGTERM, crash or power loss leaves the old content. A checkpoint that reports busy (a reader still on an older snapshot) is not an error; the final one waits up to the busy timeout and the file may shrink only at a later checkpoint.
+- **Run:** `PRAGMA wal_checkpoint(TRUNCATE)`, `VACUUM`, `PRAGMA wal_checkpoint(TRUNCATE)`. `VACUUM` runs outside any transaction and is atomic: a SIGTERM, crash or power loss leaves the old content. A checkpoint that reports busy (a reader still on an older snapshot) is not an error; the final one waits up to the busy timeout, and when it still reports busy the result carries `checkpoint_busy: true` — the file shrinks at a later checkpoint (the Desktop logs it).
+- **Busy is not a failure:** a `VACUUM` or checkpoint that gives up on another process's lock (`SQLITE_BUSY`/`SQLITE_LOCKED`, `db.IsBusy`) is exit 1 with `error` saying busy, and is **not** counted against the failure cap — the file is fine and the next launch tries again.
 - **Record:** on success, in one transaction, `last_compacted_version` = the highest applied goose version, `compacted_at` (RFC 3339 UTC), and the failure counter removed.
 - **SIGTERM:** the command installs the shutdown context (`notifyShutdownContext`) before the `--if-due` check, and `VACUUM` runs with `ExecContext`, so a SIGTERM fires `sqlite3_interrupt` → `"skipped": "interrupted"`, exit 4, nothing recorded, due again next launch. The interrupt is honoured while the compacted copy is built, not during VACUUM's final copy-back into the main file (seconds on a large file), so a skip may take a few seconds. An interrupt racing VACUUM's commit can report `interrupted` for a file that was compacted; nothing is recorded, and the next launch re-runs it cheaply.
 
@@ -37,38 +38,39 @@ watchtower db compact [--check | --if-due] [--force] [--json]
 | Exit | `skipped` | Meaning |
 |---|---|---|
 | 0 | — / `not_due` | Compacted, or nothing due |
-| 1 | — | Any other error (`error` filled; flag misuse, config, workspace, `VACUUM` failure) |
+| 1 | — | Any other error (`error` filled; flag misuse, config, workspace, the `--check` read, `VACUUM` failure, busy) |
 | 2 | `disk` | Not enough free disk (D3) |
 | 3 | `daemon_running` | The daemon runs |
 | 4 | `interrupted` | SIGTERM; the database is unchanged |
 | 5 | `schema_pending` | Migrations pending; run `watchtower db migrate` |
 
-With `--json` the result is the **last** stdout line on every outcome, errors included (a line printed before it, such as a schema-format notice, is not part of the contract; the Desktop decodes the last non-empty line). Keys (snake_case, `internal/db/compact.go`):
+With `--json` the result is the **last** stdout line on every outcome, errors included; the Desktop decodes the last non-empty line, so a line printed before it is not part of the contract. `db compact` sets its own no-op `PersistentPreRunE`, so the root's `ensureSchemaFormat` (a schema-format upgrade and a config write) does not run for it: `--check` writes nothing, the config included. Keys (snake_case, `internal/db/compact.go`; `TestDBCompact_WireKeys` pins them):
 
-- `--check`: `due`, `reason` (`migration:<v>`, `freelist`, `schema_pending`, `gave_up` or `""`), `db_bytes`, `wal_bytes`, `free_disk_bytes`, `needs_disk_bytes` (= 2 × `db_bytes`), `disk_ok`.
-- run: `compacted`, then as they apply `skipped`, `reason`, `bytes_before`, `bytes_after`, `duration_ms`, `error`, `failures`, `gave_up`.
+- `--check`: `due`, `reason` (`migration:<v>`, `freelist`, `schema_pending`, `gave_up` or `""`), `db_bytes`, `wal_bytes`, `free_disk_bytes`, `needs_disk_bytes` (= 2 × `db_bytes`, `needsDiskBytes`), `disk_ok`. A `--check` that fails (flag misuse, config, workspace, the read) prints the run shape instead: `{"compacted":false,"error":"…"}`, exit 1.
+- run: `compacted`, then as they apply `skipped`, `reason`, `bytes_before`, `bytes_after`, `duration_ms`, `error`, `failures`, `gave_up`, `checkpoint_busy`.
 
 ## D4. State — `db_maintenance` (migration 00142)
 
 `db_maintenance(key TEXT PRIMARY KEY, value TEXT NOT NULL)`, values as text: `last_compacted_version`, `compacted_at`, `compact_failures`, `compact_failures_version`. Absent key = never compacted / no failures. A value that is not an integer where one is expected is an error, not a zero.
 
-**Failure cap.** A failed compaction (`VACUUM` error, `SQLITE_BUSY` after 30 s, an I/O error after the `VACUUM`) increments `compact_failures` under `compact_failures_version` = the CLI build version (`cmd.Version`; the bundled CLI ships with the app, so this is the app release); a new version restarts the count at 1, and a success removes both keys. At 3 the result carries `gave_up: true` and `--check` reports `gave_up` (not due) until the version changes, so a persistent failure cannot cost every launch.
+**Failure cap.** A failed compaction (`VACUUM` error, an I/O error after the `VACUUM`, a failed record) increments `compact_failures` under `compact_failures_version` = the CLI build version (`cmd.Version`; the bundled CLI ships with the app, so this is the app release); a new version restarts the count at 1, and a success removes both keys. At 3 the result carries `gave_up: true` and `--check` reports `gave_up` (not due) until the version changes, so a persistent failure cannot cost every launch.
 
 ## D5. The Desktop launch step
 
 Launch order: `db migrate` → **compaction step** → `DatabaseManager(path:)` (the pool) → `ensureDaemonRunning` (`AppState.migrateCompactOpen`). The step never fails the launch:
 
-0. `DatabaseManager.resolveDBPath()` fails (fresh install, no workspace) → no CLI call at all.
-1. `db compact --check --json`, 30 s timeout; a spawn failure, timeout, non-zero exit or undecodable line is logged and the launch continues.
+0. `DatabaseManager.resolveDBPath()` fails → no CLI call at all; `databaseNotFound` (a fresh install) is silent, any other error is logged.
+1. `db compact --check --json`, 30 s timeout; a spawn failure, timeout, non-zero exit or undecodable line is logged and the launch continues (a quit during it logs "cancelled by quit").
 2. Not due → continue. Due but `disk_ok` false → continue with a notice: **Watchtower could not optimize its database: it needs <N> free, <M> available.** (sizes via `ByteCountFormatter`, `.file` style).
-3. Due and disk OK → `DaemonManager.stopDaemonBounded()`, then `db compact --if-due --json` with **no** timeout. The splash (`SplashView`, the existing `isLoading` screen) shows **Optimizing database — <size>, <m:ss>** with **This happens once after an update.** under it; the time ticks every second. From 15 s a **Skip for now** button sends SIGTERM; if the child is still alive more than 10 s later, SIGKILL (safe: `VACUUM` is atomic). The launch continues once the child has exited.
-4. Exit 2 shows the disk notice; exit 1 with `gave_up` shows **Watchtower could not optimize its database after 3 attempts. It will try again after the next update.**; exits 3, 4 and 5 and other errors are logged only. Any result → open the pool, then the rest of the launch as before.
+3. Due and disk OK → `DaemonManager.stopDaemonBounded()` — on the daemon-start queue (`serializeDaemonStop`), so a start already running finishes first; the step records `stoppedDaemon` — then `db compact --if-due --json` with **no** timeout. The splash (`SplashView`, the existing `isLoading` screen) shows **Optimizing database — <size>, <m:ss>** with **This happens once after an update.** under it; the time ticks every second. From 15 s a **Skip for now** button sends SIGTERM; if the child is still alive more than 10 s later, SIGKILL (safe: `VACUUM` is atomic). The launch continues once the child has exited.
+4. The exit is read with its termination reason (`CompactionExit.reason`): a child ended by a signal is logged as "killed by signal N" with stderr. Exit 2 shows the disk notice and exits 3, 4 and 5 are logged as their skip only when the result line's `skipped` agrees (`disk`, `daemon_running`, `interrupted`, `schema_pending`); any other combination is logged with the exit status and stderr. Exit 1 with `gave_up` shows **Watchtower could not optimize its database after 3 attempts. It will try again after the next update.**; exit 0 without a result line logs stderr; `checkpoint_busy` is logged ("the space is reclaimed at the next checkpoint"). Any result → open the pool, then the rest of the launch as before.
+5. The database then fails to open after the step stopped the daemon → on a finished install (onboarding complete) the daemon is brought back (`restoreDaemonStoppedForCompaction`, `bringUpDaemonInBackground(startOnly: true)`), which also applies a restart deferred during the step. A launch that lands in onboarding with a database never had onboarding complete (`reconcileOnboarding` keeps a complete step), so it needs no restore.
 
-The notice is non-blocking and shown once per launch, in the main window's detail header (below a daemon banner, which takes precedence); it is not shown in the tray.
+The notice is non-blocking and shown once per launch, in the main window's detail header; it is hidden while a daemon banner shows (the banner takes the slot). It is not shown in the tray.
 
-**Daemon starts are gated** while the step runs (`databaseCompactionInProgress`, `AppState.daemonStartBlocked`): `ensureDaemonRunning`, `bringUpDaemonInBackground`, `startDaemonFromBanner`, `restartOnChain` (Features turn-on and other config changes) and the Slack disconnect restart do nothing, and the tray's **Sync Now** is disabled. Starts queued on the daemon-start queue re-check the gate when they run, not only when enqueued. A restart refused this way needs no retry: the launch's own `ensureDaemonRunning` starts the daemon with the current config.
+**Daemon starts are gated** from before `db migrate` until the open (`launchDatabaseStepsRunning`), and while the step runs (`databaseCompactionInProgress`) — `AppState.daemonStartBlocked`: `ensureDaemonRunning`, `bringUpDaemonInBackground`, `startDaemonFromBanner`, `restartOnChain` (Features turn-on and other config changes) and the Slack disconnect restart do nothing, and the tray's **Sync Now** is disabled. Starts queued on the daemon-start queue re-check the gate when they run, not only when enqueued. A restart refused this way needs no retry: the launch's own `ensureDaemonRunning` (or the D5.5 restore) starts the daemon with the current config. The account view models' `restartLoggingQueued` is not gated: they are built after the database opens.
 
-**Quit during the step** (⌘Q, tray Quit): the quit path calls `terminateDatabaseCompactionForQuit` before it stops the daemon — a running `--check` is cancelled and a running `db compact` child gets SIGTERM (no SIGKILL on quit), so neither outlives the app under launchd; the launch then neither runs the step nor starts the daemon.
+**Quit during the step** (⌘Q, tray Quit): the quit path calls `terminateDatabaseCompactionForQuit` before it stops the daemon — a running `--check` is cancelled and a running `db compact` child gets SIGTERM, then SIGKILL if it has not exited within `DatabaseCompactionStep.quitGrace` (3 s), so neither outlives the app under launchd; the launch then neither runs the step nor starts the daemon.
 
 ## D6. Other processes during the step (accepted effects)
 
@@ -84,5 +86,5 @@ The notice is non-blocking and shown once per launch, in the main window's detai
 
 ## Tests
 
-- Go: `go test ./internal/db -run 'TestCompact|TestCheckCompaction|TestSchemaCurrentErr'`, `go test ./cmd -run 'TestDBCompact|TestDBMigrate'` (`TestDBMigrate_NeverCompacts` keeps `db migrate` within its 30 s contract). Package-level seams (`freeDiskBytes`, `compactBusy`, `compactAfterMigrations`, `compactVacuumHook`, `daemonRunningForCompact`) are mutated by tests: no `t.Parallel` in those tests.
-- Swift: `make test-swift FILTER='DatabaseCompactionStep|DatabaseCompactionLaunch'`.
+- Go: `go test ./internal/db -run 'TestCompact|TestCheckCompaction|TestSchemaCurrentErr'`, `go test ./cmd -run 'TestDBCompact|TestDBMigrate'` (`TestDBMigrate_NeverCompacts` keeps `db migrate` within its 30 s contract). Package-level seams (`freeDiskBytes` — from `cmd` through the test-only `db.SetFreeDiskBytesForTest` —, `compactBusy`, `compactAfterMigrations`, `compactFreelistMinBytes`/`compactFreelistMinRatio`, `compactVacuumHook`, `compactVacuumSQL`, `compactRecord`, `daemonRunningForCompact`) are mutated by tests: no `t.Parallel` in those tests.
+- Swift: `make test-swift FILTER='DatabaseCompactionStep|DatabaseCompactionLaunch|ProcessCompactionCLI'` (the last runs `/bin/sh` stubs and reaps them in `tearDown`).

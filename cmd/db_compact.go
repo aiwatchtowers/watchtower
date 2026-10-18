@@ -208,7 +208,7 @@ func compactSkipMessage(name, skipped string) string {
 }
 
 // humanBytes formats n in decimal units, as the Desktop's ByteCountFormatter
-// .file style does ("3.4 GB").
+// .file style does ("2.0 GB").
 func humanBytes(n int64) string {
 	const unit = 1000
 	if n < unit {

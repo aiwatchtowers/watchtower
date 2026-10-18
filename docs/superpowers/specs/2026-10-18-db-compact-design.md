@@ -4,7 +4,7 @@ Board #850 (group #527). Business spec: `2026-10-18-db-compact-business.md` (the
 
 ## Why
 
-Migration 00134 rewrote `messages.raw_json` to `'{}'` for every row. Rows shrank but stayed one per page: on the owner's install `messages` has 612,932 leaf pages for 813,628 rows, 156 MB of payload and 2.3 GB unused (`dbstat`); `freelist_count` is 0, so the waste is invisible to `PRAGMA freelist_count`. Only `VACUUM` reclaims it. `auto_vacuum` is NONE and nothing runs `VACUUM` today. An earlier review ruled `VACUUM` out of the migration itself (cost; `docs/review/review-lessons.md:1852`), and the Desktop kills `db migrate` after 30 s, so compaction must be its own step.
+Migration 00134 rewrote `messages.raw_json` to `'{}'` for every row. Rows shrank but stayed one per page: on a long-running install `messages` keeps roughly one leaf page per row, so most of a multi-GB file is unused space inside pages (`dbstat`); `freelist_count` is 0, so the waste is invisible to `PRAGMA freelist_count`. Only `VACUUM` reclaims it. `auto_vacuum` is NONE and nothing runs `VACUUM` today. An earlier review ruled `VACUUM` out of the migration itself (cost; `docs/review/review-lessons.md:1852`), and the Desktop kills `db migrate` after 30 s, so compaction must be its own step.
 
 ## Goals
 
@@ -59,7 +59,7 @@ Compaction step (a `DatabaseCompactionStep` in WatchtowerCore with an injected p
 0. If `resolveDBPath` fails (fresh install, no workspace) → skip the step.
 1. Run `db compact --check --json` (timeout 30 s; a failure or timeout skips the step and logs — never blocks the launch).
 2. Not due → continue. Due but `disk_ok` false → continue and show a non-blocking notice once per launch: "Watchtower could not optimize its database: it needs N GB free, M GB available." (sizes via `ByteCountFormatter`).
-3. Due and disk ok → stop the daemon (the existing bounded stop used by `ensureDaemonRunning`; it restarts the daemon after the launch anyway), then run `db compact --if-due --json` with **no** timeout, showing on the launch screen: "Optimizing database — 3.4 GB, 0:42" and below it "This happens once after an update." The elapsed time ticks every second. From 15 s on, a "Skip for now" button sends SIGTERM to the child; if it has not exited 10 s later, SIGKILL (safe: `VACUUM` is atomic, the database stays as it was); the launch continues once it has exited.
+3. Due and disk ok → stop the daemon (the existing bounded stop used by `ensureDaemonRunning`; it restarts the daemon after the launch anyway), then run `db compact --if-due --json` with **no** timeout, showing on the launch screen: "Optimizing database — 2.0 GB, 0:42" and below it "This happens once after an update." The elapsed time ticks every second. From 15 s on, a "Skip for now" button sends SIGTERM to the child; if it has not exited 10 s later, SIGKILL (safe: `VACUUM` is atomic, the database stays as it was); the launch continues once it has exited.
    While the step runs, every Desktop path that can start the daemon (the tray's start/sync-now items, Settings, `ensureDaemonRunning`, onboarding finish) is gated by an `AppState` flag `databaseCompactionInProgress`: they do nothing (the tray item shows disabled) until the step ends.
 4. Exit 3 (`daemon_running`, the stop failed) → continue the launch without compacting; logged.
 5. Any result → continue to `DatabaseManager(path:)`, then the rest of the launch as today (`ensureDaemonRunning` starts the daemon).
