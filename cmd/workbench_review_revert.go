@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/db"
+	"watchtower/internal/reviewdiff"
 )
 
 var (
@@ -67,10 +69,7 @@ func runWorkbenchReviewRevertHunk(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return failReview(cmd, err)
 	}
-	if err := confirmWithOwner("undo a review hunk", hunkConfirmDetail(d, reviewFlagHunk)); err != nil {
-		return failReview(cmd, err)
-	}
-	rev, err := repo.RevertHunk(ctx, d, reviewFlagHunk)
+	rev, err := confirmAndRevertHunk(ctx, repo, d)
 	if err != nil {
 		return failReview(cmd, err)
 	}
@@ -79,4 +78,13 @@ func runWorkbenchReviewRevertHunk(cmd *cobra.Command, _ []string) error {
 		return failReview(cmd, fmt.Errorf("undone, but not recorded: %w", err))
 	}
 	return writeReview(cmd, reviewEnvelope{OK: true, Revert: &reviewRevertJSON{HunkID: rev.HunkID, Path: rev.Path}})
+}
+
+// confirmAndRevertHunk asks the owner (AGENT-07; the window shows the hunk)
+// and then takes the hunk back out of the work tree.
+func confirmAndRevertHunk(ctx context.Context, repo *reviewdiff.Repo, d reviewdiff.Diff) (reviewdiff.Reverted, error) {
+	if err := confirmWithOwner("undo a review hunk", hunkConfirmDetail(d, reviewFlagHunk)); err != nil {
+		return reviewdiff.Reverted{}, err
+	}
+	return repo.RevertHunk(ctx, d, reviewFlagHunk)
 }

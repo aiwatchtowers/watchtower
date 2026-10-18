@@ -150,6 +150,16 @@ func lessonConfirmDetail(database *db.DB, workbenchID int64) string {
 	return "Lesson (" + l.Lens + "):\n\n" + l.Text
 }
 
+// confirmSaveWithOwner asks the owner before `automations save --confirm-hash`
+// writes (the window shows the recipe file); a plain save does not ask.
+func confirmSaveWithOwner(t saveTarget, data []byte) error {
+	if autoFlags.ConfirmHash == "" {
+		return nil
+	}
+	detail := fmt.Sprintf("Recipe file %s (saved to %s):\n\n%s", autoFlags.File, t.path, data)
+	return confirmWithOwner("confirm an automation", detail)
+}
+
 // hunkConfirmDetail is the window's text for an Undo: the file and the hunk.
 func hunkConfirmDetail(d reviewdiff.Diff, hunkID string) string {
 	for _, f := range d.Files {

@@ -363,11 +363,8 @@ func runAutomationsSave(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
-	if autoFlags.ConfirmHash != "" {
-		detail := fmt.Sprintf("Recipe file %s (saved to %s):\n\n%s", autoFlags.File, t.path, data)
-		if err := confirmWithOwner("confirm an automation", detail); err != nil {
-			return err
-		}
+	if err := confirmSaveWithOwner(t, data); err != nil {
+		return err
 	}
 	a, err := writeAndIndexRecipe(cmd.Context(), cfg, database, t, data)
 	if err != nil {
