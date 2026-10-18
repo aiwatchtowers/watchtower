@@ -241,7 +241,9 @@ struct ChatSplitView: View {
     }
 
     private func createNewChat(inProject projectID: Int64) {
-        if let id = chatVM.newConversation(projectID: projectID) { historyVM.selectedConversationID = id }
+        Task {
+            if let id = await chatVM.newConversation(projectID: projectID) { historyVM.selectedConversationID = id }
+        }
     }
 
     private func delete(_ id: Int64) {
@@ -264,7 +266,7 @@ struct ChatSplitView: View {
     }
 
     private func open(_ hit: ChatSearchHit) {
-        chatVM.open(hit)
+        Task { await chatVM.open(hit) }
         historyVM.selectedConversationID = hit.conversationID
     }
 }

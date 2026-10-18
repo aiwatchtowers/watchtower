@@ -473,6 +473,12 @@ package final class EmbeddedChatEngine {
 
     /// Ends the running turn exactly once: cancels its stream and watchdog,
     /// writes its final state, frees its slot, then starts what waits.
+    ///
+    /// A reply that streamed to its end runs the surface's `postTurn`, which
+    /// may await database writes (board #670): until it returns, the turn is
+    /// still live (`isStreaming`, its slot held) but no longer running, so
+    /// Stop, a quit or a late stream event cannot end it a second time. A
+    /// stopped or failed turn ends here and now.
     private func endRunningTurn() {
         guard let current = running else { return }
         running = nil
@@ -484,7 +490,21 @@ package final class EmbeddedChatEngine {
         // it ran or ended (a notice or reload that failed) stays visible.
         let earlierBanner = bannerError
         bannerError = nil
-        let outcome = finalize(current)
+        switch endNow(current) {
+        case .ended(let outcome):
+            settle(current, outcome: outcome, earlierBanner: earlierBanner)
+        case .completed(let reply):
+            // Its own task: the stream's task that got here is cancelled.
+            Task { [self] in
+                let outcome = await finalizeCompleted(current, reply: reply)
+                settle(current, outcome: outcome, earlierBanner: earlierBanner)
+            }
+        }
+    }
+
+    /// The turn's end once its final state is written: the slot freed and
+    /// what waits started.
+    private func settle(_ current: RunningTurn, outcome: TurnOutcome, earlierBanner: String?) {
         liveTurn = nil
         gate.release(current.request.slot)
         refreshRows()
@@ -508,28 +528,40 @@ package final class EmbeddedChatEngine {
         onTurnFinished?(outcome)
     }
 
-    private func finalize(_ current: RunningTurn) -> TurnOutcome {
+    /// How a turn ends: now (stopped, failed, or a reply that could not be
+    /// saved), or through `postTurn` with the reply on disk.
+    private enum TurnEnd {
+        case ended(TurnOutcome)
+        case completed(reply: String)
+    }
+
+    private func endNow(_ current: RunningTurn) -> TurnEnd {
         let turn = current.turn
         let text = turn.fullText
         if current.stopRequested {
             turn.finish(.interrupted, at: clock())
             persistFinal(turn, text: text, status: "partial", failure: nil)
-            return .stopped(messageID: turn.messageID)
+            return .ended(.stopped(messageID: turn.messageID))
         }
         if let failure = current.failure {
-            return failTurn(turn, text: text, failure: failure)
+            return .ended(failTurn(turn, text: text, failure: failure))
         }
         // The reply must be on disk before postTurn acts on it.
         do {
             try store.saveProgress(messageID: turn.messageID, text: text)
         } catch {
             report(error, prefix: "Couldn't save the reply")
-            return failTurn(turn, text: text, failure: .init(
+            return .ended(failTurn(turn, text: text, failure: .init(
                 code: .internalError, message: "Couldn't save the reply: \(error.localizedDescription)", retryable: false),
-                persist: false)
+                persist: false))
         }
-        let result = spec.postTurn(ChatPostTurnInput(reply: text, turnID: turn.turnID, messageID: turn.messageID,
-                                                     alreadyApplied: current.request.alreadyApplied))
+        return .completed(reply: text)
+    }
+
+    private func finalizeCompleted(_ current: RunningTurn, reply text: String) async -> TurnOutcome {
+        let turn = current.turn
+        let result = await spec.postTurn(ChatPostTurnInput(reply: text, turnID: turn.turnID, messageID: turn.messageID,
+                                                           alreadyApplied: current.request.alreadyApplied))
         // An action surface may answer with tool proposals only and show a
         // placeholder; a reply that still has nothing to show is an error.
         if result.displayText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

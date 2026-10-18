@@ -118,7 +118,7 @@ struct ChatSidebarView: View {
         sectionLabel(Text("PROJECTS")) {
             Button {
                 historyVM.selectedConversationID = nil
-                chatVM.createProject(name: "")
+                Task { await chatVM.createProject(name: "") }
             } label: {
                 Image(systemName: "plus").imageScale(.small)
             }
@@ -179,10 +179,10 @@ struct ChatSidebarView: View {
             .disabled(historyVM.pendingWrites.isPending("pin:\(conv.id)"))
         if !chatVM.projects.isEmpty || conv.projectID != nil {
             Menu("Move to Project") {
-                Button("None") { chatVM.moveConversation(conv.id, toProject: nil) }
+                Button("None") { Task { await chatVM.moveConversation(conv.id, toProject: nil) } }
                     .disabled(conv.projectID == nil)
                 ForEach(chatVM.projects) { project in
-                    Button(project.name) { chatVM.moveConversation(conv.id, toProject: project.id) }
+                    Button(project.name) { Task { await chatVM.moveConversation(conv.id, toProject: project.id) } }
                         .disabled(conv.projectID == project.id)
                 }
             }

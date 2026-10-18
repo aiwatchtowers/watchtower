@@ -129,6 +129,11 @@ final class TargetChatViewModel {
     /// not. Never fires an AI call by itself; nil by default.
     var onUserMessage: ((String) -> Void)?
 
+    /// Cards whose write is under way (an Approve, Approve all, or an
+    /// execute-mode auto-apply waiting for the database, board #670): still
+    /// `.pending`, but their Approve and Reject do nothing and are disabled.
+    private(set) var applyingCardIDs: Set<UUID> = []
+
     /// Cards still awaiting a decision — drives the "Approve all" affordance.
     var pendingActionCount: Int {
         actionCards.filter { $0.state == .pending }.count
@@ -245,8 +250,11 @@ final class TargetChatViewModel {
             },
             turnPrompt: { [weak self] input in self?.turnPrompt(input) ?? Self.closedChat("turn prompt", input.text) },
             postTurn: { [weak self] input in
-                self?.surfaceActions(input) ?? Self.closedChat("reply", ChatPostTurnResult(
-                    displayText: input.reply, failure: "This chat was closed before its reply could be read."))
+                guard let self else {
+                    return Self.closedChat("reply", ChatPostTurnResult(
+                        displayText: input.reply, failure: "This chat was closed before its reply could be read."))
+                }
+                return await self.surfaceActions(input)
             },
             willSend: { [weak self] text in self?.willSend(text) ?? Self.closedChat("send", false) },
             mayContinue: { [weak self] in
@@ -383,7 +391,7 @@ final class TargetChatViewModel {
     /// texts (one apply-run summary + a warning per malformed block), which
     /// the engine stores AFTER the reply, keeping the transcript in
     /// assistant-then-system order.
-    private func surfaceActions(_ input: ChatPostTurnInput) -> ChatPostTurnResult {
+    private func surfaceActions(_ input: ChatPostTurnInput) async -> ChatPostTurnResult {
         let parsed = TargetActionParser.parse(input.reply)
         // When the AI emits only an action block, visible prose is empty; show a
         // placeholder so the turn isn't blank and gets persisted into the transcript.
@@ -411,9 +419,8 @@ final class TargetChatViewModel {
         var failedSummaries: [String] = []
         var heldForApproval = 0
         for action in parsed.actions {
-            actionCards.append(TargetActionCard(
-                messageID: assistantMessageID, action: action, state: .pending
-            ))
+            let card = TargetActionCard(messageID: assistantMessageID, action: action, state: .pending)
+            actionCards.append(card)
             if action.isExecute && !action.autoApplies(inChatFor: target.id) {
                 heldForApproval += 1
             }
@@ -421,10 +428,10 @@ final class TargetChatViewModel {
             let key = action.changeKey
             if let done = alreadyApplied.firstIndex(where: { $0.key == key }) {
                 appliedChanges.append(alreadyApplied.remove(at: done))
-                actionCards[actionCards.count - 1].state = .applied("already applied before the retry")
+                setState(.applied("already applied before the retry"), of: card.id)
                 continue
             }
-            switch applyAction(action, cardIndex: actionCards.count - 1) {
+            switch await applyAction(action, cardID: card.id) {
             case .success(let summary):
                 appliedChanges.append(ChatAppliedChange(key: key, summary: summary))
                 appliedSummaries.append(summary)
@@ -485,11 +492,10 @@ final class TargetChatViewModel {
     /// Approve a proposed action. `kind` lets the user override what gets created
     /// for the interchangeable add_sub_item / create_child_target proposals
     /// (checkpoint vs sub-task); nil keeps the AI's proposed kind.
-    func approve(_ card: TargetActionCard, as kind: TargetActionKind? = nil) {
-        guard let idx = actionCards.firstIndex(where: { $0.id == card.id }),
-              actionCards[idx].state == .pending else { return }
+    func approve(_ card: TargetActionCard, as kind: TargetActionKind? = nil) async {
+        guard isDecidable(card.id) else { return }
         let action = Self.resolved(card.action, overrideKind: kind)
-        switch applyAction(action, cardIndex: idx) {
+        switch await applyAction(action, cardID: card.id) {
         case .success(let summary):
             sendFollowUp("Action applied: \(summary). Continue with the task.")
         case .failure(let error):
@@ -503,23 +509,48 @@ final class TargetChatViewModel {
 
     /// Shared apply core for the Approve button and execute-mode auto-apply:
     /// reload the target (so the executor sees fresh state), apply through
-    /// TargetActionExecutor, transition the card at `idx` to .applied/.failed,
-    /// and reload again so the chat context stays current. The caller decides
-    /// what (if anything) is fed back into the conversation.
-    private func applyAction(_ action: ProposedAction, cardIndex idx: Int) -> Result<String, Error> {
+    /// TargetActionExecutor, transition the card to .applied/.failed, and
+    /// reload again so the chat context stays current. The card counts as
+    /// applying while the write waits. The caller decides what (if anything)
+    /// is fed back into the conversation.
+    private func applyAction(_ action: ProposedAction, cardID: UUID) async -> Result<String, Error> {
+        applyingCardIDs.insert(cardID)
+        defer { applyingCardIDs.remove(cardID) }
         reloadTarget()
         do {
-            try requireLiveTarget()
-            let applyTarget = try resolveActionTarget(action)
-            var summary = try TargetActionExecutor.apply(action, target: applyTarget, viewModel: viewModel)
-            if applyTarget.id != target.id { summary += " [in task #\(applyTarget.id)]" }
-            actionCards[idx].state = .applied(summary)
+            let summary = try await applyLive(action)
+            setState(.applied(summary), of: cardID)
             reloadTarget()
             return .success(summary)
         } catch {
-            actionCards[idx].state = .failed(error.localizedDescription)
+            setState(.failed(error.localizedDescription), of: cardID)
             return .failure(error)
         }
+    }
+
+    /// One action on the live task (or the task of its tree it addresses).
+    private func applyLive(_ action: ProposedAction) async throws -> String {
+        try requireLiveTarget()
+        let applyTarget = try resolveActionTarget(action)
+        var summary = try await TargetActionExecutor.apply(action, target: applyTarget, viewModel: viewModel)
+        if applyTarget.id != target.id { summary += " [in task #\(applyTarget.id)]" }
+        return summary
+    }
+
+    /// A card the owner may still decide: pending, and no write of it under way.
+    private func isDecidable(_ cardID: UUID) -> Bool {
+        !applyingCardIDs.contains(cardID) && actionCards.contains { $0.id == cardID && $0.state == .pending }
+    }
+
+    /// Whether the card's write is under way (its buttons are disabled).
+    func isApplying(_ card: TargetActionCard) -> Bool {
+        applyingCardIDs.contains(card.id)
+    }
+
+    /// Cards are found by id after an await: the list may have grown meanwhile.
+    private func setState(_ state: TargetActionCard.State, of cardID: UUID) {
+        guard let idx = actionCards.firstIndex(where: { $0.id == cardID }) else { return }
+        actionCards[idx].state = state
     }
 
     /// Approve every pending card in one pass. Approving them one by one costs a
@@ -533,28 +564,26 @@ final class TargetChatViewModel {
     /// list to a bare count (failures stay itemized).
     nonisolated static let compactBatchThreshold = 8
 
-    func approveAll(messageID: UUID? = nil) {
-        let pendingIDs = actionCards
-            .filter { $0.state == .pending && (messageID == nil || $0.messageID == messageID) }
-            .map(\.id)
-        guard !pendingIDs.isEmpty else { return }
+    func approveAll(messageID: UUID? = nil) async {
+        let pending = actionCards
+            .filter { isDecidable($0.id) && (messageID == nil || $0.messageID == messageID) }
+        guard !pending.isEmpty else { return }
+        let pendingIDs = pending.map(\.id)
+        // The whole batch is applying from the start: a second Approve all,
+        // or a card's own Approve, adds nothing while it runs.
+        applyingCardIDs.formUnion(pendingIDs)
+        defer { applyingCardIDs.subtract(pendingIDs) }
         reloadTarget()
 
         var applied: [String] = []
         var failed: [String] = []
-        for cardID in pendingIDs {
-            guard let idx = actionCards.firstIndex(where: { $0.id == cardID }) else { continue }
+        for card in pending {
             do {
-                try requireLiveTarget()
-                let applyTarget = try resolveActionTarget(actionCards[idx].action)
-                var summary = try TargetActionExecutor.apply(
-                    actionCards[idx].action, target: applyTarget, viewModel: viewModel
-                )
-                if applyTarget.id != target.id { summary += " [in task #\(applyTarget.id)]" }
-                actionCards[idx].state = .applied(summary)
+                let summary = try await applyLive(card.action)
+                setState(.applied(summary), of: card.id)
                 applied.append(summary)
             } catch {
-                actionCards[idx].state = .failed(error.localizedDescription)
+                setState(.failed(error.localizedDescription), of: card.id)
                 failed.append(error.localizedDescription)
             }
             // Unconditionally: the actions rewrite whole JSON columns (sub-items),
@@ -582,9 +611,8 @@ final class TargetChatViewModel {
     }
 
     func reject(_ card: TargetActionCard) {
-        guard let idx = actionCards.firstIndex(where: { $0.id == card.id }),
-              actionCards[idx].state == .pending else { return }
-        actionCards[idx].state = .rejected
+        guard isDecidable(card.id) else { return }
+        setState(.rejected, of: card.id)
         sendFollowUp("User rejected the action (reason given: \(card.action.reason)). " +
                      "Suggest an alternative or ask what to do.")
     }

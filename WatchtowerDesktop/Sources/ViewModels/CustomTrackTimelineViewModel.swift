@@ -225,7 +225,7 @@ final class CustomTrackTimelineViewModel {
                 errorMessage = RowNotFoundError(kind: "track event", id: event.id).localizedDescription
                 return
             }
-            _ = try TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
+            _ = try await TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
             try await chained { db in
                 try TrackEventQueries.setActionStatus(db, id: event.id, status: "applied")
             }

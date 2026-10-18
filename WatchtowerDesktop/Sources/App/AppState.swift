@@ -633,7 +633,7 @@ final class AppState {
                 viewModel: TargetsViewModel(dbManager: manager),
                 dbManager: manager
             )
-            return container.activeChat
+            return await container.readyChat()
         }
         targetBriefCenter.targetExists = { [weak self] id in
             guard let manager = self?.databaseManager else { return true }

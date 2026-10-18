@@ -38,8 +38,8 @@ struct ChatComposerView: View {
             )
             ChatComposerBar(input: ChatComposerField(
                 text: $chatVM.draft,
-                isStreaming: chatVM.isStreaming,
-                onSend: { chatVM.sendDraft() },
+                isStreaming: chatVM.isBusy,
+                onSend: { Task { await chatVM.sendDraft() } },
                 onStop: { chatVM.stop() },
                 placeholder: "Ask about your work…",
                 dictationTargetID: "chat.workspace",

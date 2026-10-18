@@ -90,6 +90,7 @@ struct TargetDetailView: View {
                     Button("Delete…", role: .destructive) {
                         showDeleteConfirm = true
                     }
+                    .disabled(viewModel.pendingWrites.isPending(TargetsViewModel.deleteKey(target.id)))
                 } label: {
                     Image(systemName: "ellipsis.circle")
                         .foregroundStyle(.secondary)
@@ -224,16 +225,26 @@ struct TargetDetailView: View {
             titleVisibility: .visible
         ) {
             Button("Delete", role: .destructive) {
-                // A failed delete keeps everything: the task, its chat and a
-                // reply still streaming in it (the failure is reported).
-                guard viewModel.deleteTarget(target) else { return }
-                // The target's conversations go with it; drop its container so
-                // the center never hands out tabs for a row that is gone.
-                appState.targetAssistantCenter.drop(targetID: target.id)
-                // … and forget any brief still waiting for it.
-                appState.targetBriefCenter.drop(targetID: target.id)
-                assistant = nil
-                onClose?()
+                let deleting = target
+                Task {
+                    // A failed delete keeps everything: the task, its chat and a
+                    // reply still streaming in it (the failure is reported). One
+                    // delete at a time (the button is disabled meanwhile).
+                    let deleted = await viewModel.pendingWrites.run(TargetsViewModel.deleteKey(deleting.id)) {
+                        await viewModel.deleteTarget(deleting)
+                    }
+                    guard deleted == true else { return }
+                    // The target's conversations go with it; drop its container so
+                    // the center never hands out tabs for a row that is gone.
+                    appState.targetAssistantCenter.drop(targetID: deleting.id)
+                    // … and forget any brief still waiting for it.
+                    appState.targetBriefCenter.drop(targetID: deleting.id)
+                    // The detail may show another target by now: only its own
+                    // delete closes it.
+                    guard target.id == deleting.id else { return }
+                    assistant = nil
+                    onClose?()
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -353,7 +364,9 @@ struct TargetDetailView: View {
         if let vm = watchesVM {
             TargetWatchTabView(viewModel: vm) { seed in
                 selectedTab = .assistant
-                ensureAssistant()?.activeChat?.inputText = seed
+                guard let container = ensureAssistant() else { return }
+                // A first tab may still be being written (board #670).
+                Task { await container.readyChat()?.inputText = seed }
             }
         }
     }
@@ -506,7 +519,7 @@ struct TargetDetailView: View {
         let isSelected = target.status == status
         let color = statusButtonColor(status)
         return Button {
-            viewModel.updateStatus(target, to: status)
+            Task { await viewModel.updateStatus(target, to: status) }
         } label: {
             Text(statusDisplayName(status))
                 .font(.callout)
@@ -787,7 +800,7 @@ struct TargetDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             Toggle("Has due date", isOn: $hasDueDate)
                 .onChange(of: hasDueDate) { _, newValue in
-                    if newValue { commitDueDate() } else { viewModel.updateDueDate(target, to: "") }
+                    if newValue { commitDueDate() } else { Task { await viewModel.updateDueDate(target, to: "") } }
                 }
             if hasDueDate {
                 DatePicker("", selection: $dueDate, displayedComponents: [.date, .hourAndMinute])
@@ -830,13 +843,31 @@ struct TargetDetailView: View {
                     .font(.callout)
                     .textFieldStyle(.plain)
                     .onSubmit {
-                        if viewModel.addSubItem(target, text: newSubItemText) {
-                            newSubItemText = ""
+                        let text = newSubItemText
+                        Task {
+                            // Cleared only if it still holds what was submitted.
+                            if await checklistWrite({ await viewModel.addSubItem(target, text: text) }),
+                               newSubItemText == text {
+                                newSubItemText = ""
+                            }
                         }
                     }
             }
             .padding(.top, 2)
         }
+        .disabled(checklistBusy)
+    }
+
+    /// A checklist write is under way: the checklist takes no other edit
+    /// until it lands (board #670), so a second press never adds twice or
+    /// edits a row the first write is moving.
+    private var checklistBusy: Bool {
+        viewModel.pendingWrites.isPending(TargetsViewModel.subItemsKey(target.id))
+    }
+
+    /// One checklist write at a time (`checklistBusy`).
+    private func checklistWrite(_ body: @MainActor () async -> Bool) async -> Bool {
+        await viewModel.pendingWrites.run(TargetsViewModel.subItemsKey(target.id), body) ?? false
     }
 
     @ViewBuilder
@@ -846,7 +877,7 @@ struct TargetDetailView: View {
         // the checkbox and the "stuck" badge stay on the first line.
         HStack(alignment: .top, spacing: 8) {
             Button {
-                viewModel.toggleSubItem(target, index: index)
+                Task { await checklistWrite { await viewModel.toggleSubItem(target, index: index) } }
             } label: {
                 Image(systemName: item.done ? "checkmark.square.fill" : "square")
                     .foregroundStyle(item.done ? .green : .secondary)
@@ -859,8 +890,14 @@ struct TargetDetailView: View {
                     .textFieldStyle(.plain)
                     .lineLimit(1...6)
                     .onSubmit {
-                        viewModel.editSubItem(target, index: index, newText: editingSubItemText)
-                        editingSubItemIndex = nil
+                        let text = editingSubItemText
+                        Task {
+                            // A failed edit keeps the editor open with the text.
+                            if await checklistWrite({ await viewModel.editSubItem(target, index: index, newText: text) }),
+                               editingSubItemIndex == index {
+                                editingSubItemIndex = nil
+                            }
+                        }
                     }
                     .onExitCommand { editingSubItemIndex = nil }
             } else {
@@ -916,7 +953,7 @@ struct TargetDetailView: View {
                 promotingSubItem = PromotingSubItemContext(index: index, item: item)
             }
             Button("Remove", role: .destructive) {
-                viewModel.removeSubItem(target, index: index)
+                Task { await checklistWrite { await viewModel.removeSubItem(target, index: index) } }
             }
         }
     }
@@ -933,9 +970,10 @@ struct TargetDetailView: View {
               ),
               let offset = TargetSubItemDrag.moveOffset(from: source, to: index)
         else { return false }
+        guard !checklistBusy else { return false }
         // The inline editor addresses a row by index, which the move invalidates.
         editingSubItemIndex = nil
-        viewModel.moveSubItem(target, from: IndexSet(integer: source), to: offset)
+        Task { await checklistWrite { await viewModel.moveSubItem(target, from: IndexSet(integer: source), to: offset) } }
         return true
     }
 
@@ -966,7 +1004,7 @@ struct TargetDetailView: View {
         HStack(spacing: 8) {
             if target.isActive {
                 Button {
-                    viewModel.dismiss(target)
+                    Task { await viewModel.dismiss(target) }
                 } label: {
                     Label("Dismiss", systemImage: "xmark")
                 }
@@ -1119,9 +1157,9 @@ struct TargetDetailView: View {
         case "open_links":
             selectedTab = .links
         case "mark_done":
-            viewModel.markDone(target)
+            Task { await viewModel.markDone(target) }
         case "dismiss":
-            viewModel.dismiss(target)
+            Task { await viewModel.dismiss(target) }
         default:
             break
         }
@@ -1153,11 +1191,16 @@ struct TargetDetailView: View {
 
     /// Routes a prompt into the ACTIVE assistant tab, creating the container if
     /// needed, and switches to the Assistant tab so the user sees the reply.
+    /// A target's first tab is written on first use: the prompt goes out once
+    /// it landed (board #670).
     private func sendToAssistant(_ prompt: String) {
-        guard let chat = ensureAssistant()?.activeChat else { return }
-        selectedTab = .assistant
-        chat.inputText = prompt
-        chat.send()
+        guard let container = ensureAssistant() else { return }
+        Task {
+            guard let chat = await container.readyChat() else { return }
+            selectedTab = .assistant
+            chat.inputText = prompt
+            chat.send()
+        }
     }
 
     private func urgencyLabel(_ ns: TargetNextStep) -> String? {
@@ -1312,7 +1355,7 @@ struct TargetDetailView: View {
                         }
                         Spacer()
                         Button {
-                            viewModel.removeNote(target, index: index)
+                            Task { await notesWrite { await viewModel.removeNote(target, index: index) } }
                         } label: {
                             Image(systemName: "xmark.circle")
                                 .font(.caption)
@@ -1332,12 +1375,22 @@ struct TargetDetailView: View {
                     .font(.callout)
                     .textFieldStyle(.plain)
                     .onSubmit {
-                        if viewModel.addNote(target, text: newNoteText) {
-                            newNoteText = ""
+                        let text = newNoteText
+                        Task {
+                            // Cleared only if it still holds what was submitted.
+                            if await notesWrite({ await viewModel.addNote(target, text: text) }), newNoteText == text {
+                                newNoteText = ""
+                            }
                         }
                     }
             }
         }
+        .disabled(viewModel.pendingWrites.isPending(TargetsViewModel.notesKey(target.id)))
+    }
+
+    /// One notes write at a time; the section is disabled meanwhile.
+    private func notesWrite(_ body: @MainActor () async -> Bool) async -> Bool {
+        await viewModel.pendingWrites.run(TargetsViewModel.notesKey(target.id), body) ?? false
     }
 
     // MARK: - About (metadata moved off the old Activity tab)
@@ -1365,7 +1418,11 @@ struct TargetDetailView: View {
                         Text(tag)
                             .font(.caption)
                         Button {
-                            viewModel.removeTag(target, tag: tag)
+                            Task {
+                                await viewModel.pendingWrites.run(TargetsViewModel.tagsKey(target.id)) {
+                                    await viewModel.removeTag(target, tag: tag)
+                                }
+                            }
                         } label: {
                             Image(systemName: "xmark.circle.fill")
                                 .font(.caption2)
@@ -1403,6 +1460,7 @@ struct TargetDetailView: View {
                 .help("Add an existing label")
             }
         }
+        .disabled(viewModel.pendingWrites.isPending(TargetsViewModel.tagsKey(target.id)))
     }
 
     private func addTag(_ raw: String) {
@@ -1410,9 +1468,14 @@ struct TargetDetailView: View {
         // typed text so it never looks like a silent success.
         let tag = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !tag.isEmpty, !target.decodedTags.contains(tag) else { return }
-        // A failed write keeps the draft too (`errorMessage` says why).
-        if viewModel.addTag(target, tag: tag) {
-            newTagText = ""
+        // A failed write keeps the draft too (`errorMessage` says why); a
+        // landed one clears it only if it still holds what was submitted.
+        let submitted = newTagText
+        Task {
+            let added = await viewModel.pendingWrites.run(TargetsViewModel.tagsKey(target.id)) {
+                await viewModel.addTag(target, tag: tag)
+            }
+            if added == true, newTagText == submitted { newTagText = "" }
         }
     }
 
@@ -1444,7 +1507,8 @@ struct TargetDetailView: View {
             DatePicker("Pick date", selection: $snoozeCustomDate, displayedComponents: [.date, .hourAndMinute])
                 .labelsHidden()
             Button("Snooze to selected date") {
-                viewModel.snooze(target, until: snoozeCustomDate)
+                let until = snoozeCustomDate
+                Task { await viewModel.snooze(target, until: until) }
                 showSnoozePopover = false
             }
             .buttonStyle(.popoverPrimary)
@@ -1607,7 +1671,7 @@ struct TargetDetailView: View {
         Menu {
             ForEach(["high", "medium", "low"], id: \.self) { p in
                 Button {
-                    viewModel.updatePriority(target, to: p)
+                    Task { await viewModel.updatePriority(target, to: p) }
                 } label: {
                     HStack {
                         Text(p.capitalized)
@@ -1710,7 +1774,7 @@ struct TargetDetailView: View {
 
     private func snoozeFor(days: Int) {
         let date = Calendar.current.date(byAdding: .day, value: days, to: Date()) ?? Date()
-        viewModel.snooze(target, until: date)
+        Task { await viewModel.snooze(target, until: date) }
         showSnoozePopover = false
     }
 
@@ -1719,25 +1783,25 @@ struct TargetDetailView: View {
     private func commitIntent() {
         let trimmed = editingIntent.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed != target.intent else { return }
-        viewModel.updateIntent(target, to: trimmed)
+        Task { await viewModel.updateIntent(target, to: trimmed) }
     }
 
     private func commitDueDate() {
         let dateStr = Target.formatDueDate(dueDate)
         guard dateStr != target.dueDate else { return }
-        viewModel.updateDueDate(target, to: dateStr)
+        Task { await viewModel.updateDueDate(target, to: dateStr) }
     }
 
     private func commitBlocking() {
         let trimmed = editingBlocking.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed != target.blocking else { return }
-        viewModel.updateBlocking(target, to: trimmed)
+        Task { await viewModel.updateBlocking(target, to: trimmed) }
     }
 
     private func commitBallOn() {
         let trimmed = editingBallOn.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed != target.ballOn else { return }
-        viewModel.updateBallOn(target, to: trimmed)
+        Task { await viewModel.updateBallOn(target, to: trimmed) }
     }
 
     // MARK: - Actions

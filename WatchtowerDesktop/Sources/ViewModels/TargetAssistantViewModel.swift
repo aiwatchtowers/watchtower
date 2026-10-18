@@ -41,6 +41,17 @@ final class TargetAssistantViewModel {
     private let makeChat: ChatFactory
     private let firstTabTitle: String
     private var chats: [Int64: TargetChatViewModel] = [:]
+    /// Every tab write, one after another (board #670): they await the
+    /// writer, never block the main thread.
+    @ObservationIgnored private let writes = SerialWrites()
+    /// The tab being created, if any: one at a time, so a second `+` (or a
+    /// `load` meanwhile) never opens two; `readyChat()` awaits it.
+    private var creating: Task<Int64?, Never>?
+    /// Tabs whose close is under way: their Close does nothing meanwhile.
+    private(set) var closingIDs: Set<Int64> = []
+    @ObservationIgnored private var isStopped = false
+    /// A tab is being created: `+` and Start a chat are disabled meanwhile.
+    var isCreating: Bool { creating != nil }
 
     /// `embeddedChats` hands each tab its engine (the app-wide turn limit);
     /// nil in tests, where every tab runs its own.
@@ -72,7 +83,9 @@ final class TargetAssistantViewModel {
     /// Reads the tab list and selects the conversation the user last worked in —
     /// the row the pre-tabs `fetchByContext` would have returned — so a target
     /// with a single conversation behaves exactly as it did before tabs. A target
-    /// that has never been chatted with gets its one tab here, on first use.
+    /// that has never been chatted with gets its one tab here, on first use:
+    /// its write awaits the writer, so the tab (and `activeChat`) shows once it
+    /// landed — `readyChat()` waits for it.
     func load() {
         do {
             conversations = try dbManager.dbPool.read { db in
@@ -91,8 +104,15 @@ final class TargetAssistantViewModel {
         if let newest = mostRecentlyUpdated() {
             select(newest.id)
         } else {
-            createConversation(title: firstTabTitle)
+            startCreating(title: firstTabTitle)
         }
+    }
+
+    /// The active tab's chat once a first tab being created has landed; nil
+    /// when there is none (a failed read or create, `errorMessage` says why).
+    func readyChat() async -> TargetChatViewModel? {
+        if activeChat == nil, let creating { _ = await creating.value }
+        return activeChat
     }
 
     /// Newest by `updated_at`, ties resolved toward the earlier tab (the list is
@@ -142,24 +162,40 @@ final class TargetAssistantViewModel {
         chats.values.contains { $0.hasPendingWork }
     }
 
-    /// Opens a fresh tab and makes it active. Titled "New chat" until its first
-    /// user message names it.
+    /// Opens a fresh tab and makes it active once its row is written. Titled
+    /// "New chat" until its first user message names it. Nil while another
+    /// tab is being created, or when the write failed.
     @discardableResult
-    func newConversation() -> Int64? {
-        createConversation(title: Self.newChatTitle)
+    func newConversation() async -> Int64? {
+        guard creating == nil else { return nil }
+        return await startCreating(title: Self.newChatTitle).value
     }
 
     @discardableResult
-    private func createConversation(title: String) -> Int64? {
+    private func startCreating(title: String) -> Task<Int64?, Never> {
+        if let creating { return creating }
+        let task = Task { [self] in
+            defer { creating = nil }
+            return await createConversation(title: title)
+        }
+        creating = task
+        return task
+    }
+
+    private func createConversation(title: String) async -> Int64? {
+        let pool = dbManager.dbPool
+        let contextID = String(targetID)
         do {
-            let conversation = try dbManager.dbPool.write { db in
-                try ChatConversationQueries.create(
-                    db, title: title, contextType: "target", contextID: String(targetID)
-                )
+            let conversation = try await writes.runThrowing {
+                try await pool.write { db in
+                    try ChatConversationQueries.create(db, title: title, contextType: "target", contextID: contextID)
+                }
             }
-            // Appending keeps the list in creation order — the new tab is newest.
-            conversations.append(conversation)
-            select(conversation.id)
+            // A `load` meanwhile may have read the new row already. Appending
+            // keeps the list in creation order — the new tab is newest.
+            if !conversations.contains(where: { $0.id == conversation.id }) { conversations.append(conversation) }
+            // A container stopped meanwhile (the center dropped it) opens no tab.
+            if !isStopped { select(conversation.id) }
             return conversation.id
         } catch {
             errorMessage = "Failed to open a new chat: \(error.localizedDescription)"
@@ -167,13 +203,16 @@ final class TargetAssistantViewModel {
         }
     }
 
-    func rename(_ conversationID: Int64, to title: String) {
+    func rename(_ conversationID: Int64, to title: String) async {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
               conversations.contains(where: { $0.id == conversationID }) else { return }
+        let pool = dbManager.dbPool
         do {
-            try dbManager.dbPool.write { db in
-                try ChatConversationQueries.updateTitle(db, id: conversationID, title: trimmed)
+            try await writes.runThrowing {
+                try await pool.write { db in
+                    try ChatConversationQueries.updateTitle(db, id: conversationID, title: trimmed)
+                }
             }
         } catch {
             errorMessage = "Failed to rename the chat: \(error.localizedDescription)"
@@ -185,33 +224,40 @@ final class TargetAssistantViewModel {
     /// Closes a tab: the conversation AND its messages are deleted. The last
     /// remaining tab cannot be closed — a target always keeps one assistant
     /// thread.
-    func close(_ conversationID: Int64) {
-        guard conversations.count > 1,
-              let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
+    func close(_ conversationID: Int64) async {
+        guard conversations.count > 1, !closingIDs.contains(conversationID),
+              conversations.contains(where: { $0.id == conversationID }) else { return }
+        closingIDs.insert(conversationID)
+        defer { closingIDs.remove(conversationID) }
         // Stop the turn BEFORE the rows go: cancelling persists whatever the
         // assistant had already streamed, and that write must land in the
         // conversation while it still exists (afterwards it would either fail or
         // orphan a row that the delete below can no longer take with it).
         chats[conversationID]?.cancelStream()
+        let pool = dbManager.dbPool
         do {
-            try dbManager.dbPool.write { db in
-                // Messages are deleted explicitly rather than left to the FK
-                // cascade: `PRAGMA foreign_keys` is per-connection, so a closed
-                // tab must never be able to leave orphaned rows behind.
-                try ChatMessageQueries.deleteByConversation(db, conversationID: conversationID)
-                try ChatConversationQueries.delete(db, id: conversationID)
+            try await writes.runThrowing {
+                try await pool.write { db in
+                    // Messages are deleted explicitly rather than left to the FK
+                    // cascade: `PRAGMA foreign_keys` is per-connection, so a closed
+                    // tab must never be able to leave orphaned rows behind.
+                    try ChatMessageQueries.deleteByConversation(db, conversationID: conversationID)
+                    try ChatConversationQueries.delete(db, id: conversationID)
+                }
             }
         } catch {
             errorMessage = "Failed to close the chat: \(error.localizedDescription)"
             return
         }
+        // Found again: the list may have changed while the delete waited.
+        guard let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
         if let chat = chats[conversationID] {
             chat.stop()
             embeddedChats?.release(chat.engine.spec.key)
         }
         chats[conversationID] = nil
         conversations.remove(at: index)
-        if activeConversationID == conversationID {
+        if activeConversationID == conversationID, !conversations.isEmpty {
             let fallback = conversations[min(index, conversations.count - 1)]
             select(fallback.id)
         }
@@ -221,6 +267,7 @@ final class TargetAssistantViewModel {
     /// container so no evicted tab keeps a GRDB observation running. Only ever
     /// called for an idle container (`isAnyWorking == false`).
     func stop() {
+        isStopped = true
         for chat in chats.values {
             chat.stop()
             embeddedChats?.release(chat.engine.spec.key)
@@ -237,7 +284,7 @@ final class TargetAssistantViewModel {
     private func autoTitle(conversationID: Int64, from text: String) {
         guard let conversation = conversations.first(where: { $0.id == conversationID }),
               Self.isPlaceholderTitle(conversation.title) else { return }
-        rename(conversationID, to: Self.autoTitle(from: text))
+        Task { await rename(conversationID, to: Self.autoTitle(from: text)) }
     }
 
     static func isPlaceholderTitle(_ title: String) -> Bool {

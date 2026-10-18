@@ -193,6 +193,12 @@ final class WorkbenchBoardViewModel {
     private(set) var isCreatingTarget = false
 
     private let dbPool: DatabasePool
+    /// Every owner write, one after another (board #670, see Edits).
+    @ObservationIgnored private let writes = SerialWrites()
+    /// The comment composers' one-send-at-a-time guard.
+    let pendingWrites = PendingWrites()
+    /// Targets whose description save waits for the writer.
+    private var savingDescriptions: Set<Int> = []
     private let preferences: WorkbenchBoardPreferences
     private var fingerprint = ""
     private var pollTask: Task<Void, Never>?
@@ -381,23 +387,30 @@ final class WorkbenchBoardViewModel {
     /// Every panel navigation: the new path, the description editor of the
     /// target left behind saved (a focus loss), a fresh read, and the open
     /// target's agent comments marked read. The error row starts empty, so
-    /// only the target just left can put an error under the next one.
+    /// only the target just left can put an error under the next one. Both
+    /// writes are queued, never awaited: the panel moves at once.
     private func open(_ path: [Int]) {
         let leaving = selectedTargetID
         panelPath = path
         errorMessage = nil
-        if let leaving, leaving != path.last { saveDescription(for: leaving) }
+        if let leaving, leaving != path.last { descriptionWrite(for: leaving) }
         load()
         guard let node = selectedNode, node.unreadForOwner > 0 else { return }
-        do {
-            let pid = projectID
-            try dbPool.write { db in
-                try WorkbenchQueries.markAgentCommentsRead(db, projectID: pid, targetID: Int64(node.target.id))
+        let pid = projectID
+        let id = node.target.id
+        let pool = dbPool
+        writes.start { [weak self] in
+            do {
+                try await pool.write { db in
+                    try WorkbenchQueries.markAgentCommentsRead(db, projectID: pid, targetID: Int64(id))
+                }
+                self?.load()
+            } catch {
+                // The badge stays: roots were not reloaded, so unreadForOwner is
+                // unchanged. Said only under the target it was for.
+                guard let self, self.selectedTargetID == id else { return }
+                self.errorMessage = "Could not mark comments read: \(error.localizedDescription)"
             }
-            load()
-        } catch {
-            // The badge stays: roots were not reloaded, so unreadForOwner is unchanged.
-            errorMessage = "Could not mark comments read: \(error.localizedDescription)"
         }
     }
 
@@ -405,7 +418,7 @@ final class WorkbenchBoardViewModel {
     /// a failed write from the panel (rename, status, comment) moves to the
     /// board's banner instead of vanishing with the panel.
     func closeDetail() {
-        if let id = selectedTargetID { saveDescription(for: id) }
+        if let id = selectedTargetID { descriptionWrite(for: id) }
         panelPath = []
         selectedComments = []
         selectedImages = []
@@ -507,12 +520,20 @@ final class WorkbenchBoardViewModel {
     }
 
     // MARK: - Edits
+    //
+    // Every owner write awaits the writer in this view model's one chain
+    // (board #670): the board never freezes while the daemon holds the
+    // database, two edits land in the order they were made, and the board
+    // reloads only once a write landed. The `…Write` functions queue a write
+    // synchronously and hand back its task (nil when nothing is written), so
+    // a drop handler or a panel move can start one without awaiting it; the
+    // async functions await it and answer whether it was written.
 
     /// The panel's status menu: the selected task. A group's status follows
     /// its sub-tasks (PROJ-05) and is never written from the panel.
     func setStatus(_ status: String) {
         guard let node = selectedNode, node.children.isEmpty else { return }
-        setStatus(status, for: node.target.id)
+        statusWrite(status, for: node.target.id)
     }
 
     /// A kanban card dropped into another lane's column: refused, and said
@@ -528,17 +549,20 @@ final class WorkbenchBoardViewModel {
     /// write nothing.
     /// - Returns: whether a status was written (a failed write sets `errorMessage`).
     @discardableResult
-    func setStatus(_ status: String, for id: Int) -> Bool {
+    func setStatus(_ status: String, for id: Int) async -> Bool {
+        await statusWrite(status, for: id)?.value ?? false
+    }
+
+    @discardableResult
+    private func statusWrite(_ status: String, for id: Int) -> Task<Bool, Never>? {
         guard WorkbenchBoardCard.editableStatuses.contains(status),
               let current = WorkbenchBoardOutline.find(id, in: roots),
-              current.target.status != status else { return false }
+              current.target.status != status else { return nil }
         // The rollup (PROJ-05) may move the target's parents in the same
         // write; they are the owner's doing too, so they never notify.
-        var rolledUp: [Int64] = []
-        let body: (Database) throws -> Void = { db in
-            rolledUp = try WorkbenchOwnerWrites.setStatus(db, targetID: Int64(id), status: status).rolledUp
+        return startWrite("change the status", target: id) { db in
+            try WorkbenchOwnerWrites.setStatus(db, targetID: Int64(id), status: status).rolledUp
         }
-        return write("change the status", target: id, alsoTouched: { rolledUp }, body)
     }
 
     /// A Kanban drop on `column`, or the panel's column menu (board #267):
@@ -548,26 +572,32 @@ final class WorkbenchBoardViewModel {
     /// write nothing.
     /// - Returns: whether the card moved (a failed write sets `errorMessage`).
     @discardableResult
-    func moveCard(_ id: Int, to column: WorkbenchBoardKanban.Column) -> Bool {
-        moveCard(id, status: column.status, columnID: column.columnID)
+    func moveCard(_ id: Int, to column: WorkbenchBoardKanban.Column) async -> Bool {
+        await moveCard(id, status: column.status, columnID: column.columnID)
     }
 
     @discardableResult
-    func moveCard(_ id: Int, status: String, columnID: Int64?) -> Bool {
-        guard let columnID else { return setStatus(status, for: id) }
+    func moveCard(_ id: Int, status: String, columnID: Int64?) async -> Bool {
+        await cardWrite(id, status: status, columnID: columnID)?.value ?? false
+    }
+
+    /// A Kanban drop: true when the card's move was started (the drop is
+    /// accepted); the write lands after it, a failure says why.
+    func dropCard(_ id: Int, on column: WorkbenchBoardKanban.Column) -> Bool {
+        cardWrite(id, status: column.status, columnID: column.columnID) != nil
+    }
+
+    private func cardWrite(_ id: Int, status: String, columnID: Int64?) -> Task<Bool, Never>? {
+        guard let columnID else { return statusWrite(status, for: id) }
         guard WorkbenchBoardCard.editableStatuses.contains(status),
-              let current = WorkbenchBoardOutline.find(id, in: roots), current.children.isEmpty else { return false }
+              let current = WorkbenchBoardOutline.find(id, in: roots), current.children.isEmpty else { return nil }
         let shown = BoardColumnLayout.effectiveColumn(
             status: current.target.status, columnID: current.boardColumnID, def: boardColumns
         )
-        guard current.target.status != status || shown?.id != columnID else { return false }
-        var rolledUp: [Int64] = []
-        let body: (Database) throws -> Void = { db in
-            rolledUp = try WorkbenchOwnerWrites.moveToColumn(
-                db, targetID: Int64(id), status: status, columnID: columnID
-            ).rolledUp
+        guard current.target.status != status || shown?.id != columnID else { return nil }
+        return startWrite("move the card", target: id) { db in
+            try WorkbenchOwnerWrites.moveToColumn(db, targetID: Int64(id), status: status, columnID: columnID).rolledUp
         }
-        return write("move the card", target: id, alsoTouched: { rolledUp }, body)
     }
 
     /// The defined column `node` shows in, nil for its status's implicit
@@ -579,10 +609,20 @@ final class WorkbenchBoardViewModel {
     /// Nests a target under another one, or moves it to the top level when
     /// `parentID` is nil (board #186) — the list's drag and drop and the
     /// "Move to…" menu. A move the board does not allow (`canMove`) writes
-    /// nothing. The new parent is expanded so the moved target stays in view.
+    /// nothing. The new parent is expanded once the move landed, so the
+    /// moved target stays in view.
     /// - Returns: whether the target moved (a failed write sets `errorMessage`).
     @discardableResult
-    func move(_ id: Int, under parentID: Int?) -> Bool {
+    func move(_ id: Int, under parentID: Int?) async -> Bool {
+        await moveWrite(id, under: parentID)?.value ?? false
+    }
+
+    /// The list's drop: true when the move was started.
+    func dropTarget(_ id: Int, under parentID: Int?) -> Bool {
+        moveWrite(id, under: parentID) != nil
+    }
+
+    private func moveWrite(_ id: Int, under parentID: Int?) -> Task<Bool, Never>? {
         guard WorkbenchBoardOutline.canMove(id, under: parentID, in: roots) else {
             // A drop onto its own sub-target is a refusal worth saying; a drop
             // onto itself or its current parent is a quiet no-op.
@@ -590,21 +630,19 @@ final class WorkbenchBoardViewModel {
                WorkbenchBoardOutline.find(parentID, in: [node]) != nil {
                 errorMessage = TargetParentCycleError(id: Int64(id), parentID: Int64(parentID)).errorDescription
             }
-            return false
+            return nil
         }
         let pid = projectID
         // Both the old and the new parent chain may roll up (PROJ-05); those
         // are the owner's doing too, so they never notify.
-        var rolledUp: [Int64] = []
-        let body: (Database) throws -> Void = { db in
+        return startWrite("move the target", target: id, onSuccess: { [weak self] in
+            if let parentID { self?.collapsed.remove(parentID) }
+        }) { db in
             let before = try WorkbenchQueries.statuses(db, projectID: pid)
             try WorkbenchQueries.moveTarget(db, projectID: pid, targetID: Int64(id), parentID: parentID.map(Int64.init))
             let after = try WorkbenchQueries.statuses(db, projectID: pid)
-            rolledUp = after.filter { before[$0.key] != $0.value }.map(\.key).sorted()
+            return after.filter { before[$0.key] != $0.value }.map(\.key).sorted()
         }
-        let moved = write("move the target", target: id, alsoTouched: { rolledUp }, body)
-        if moved, let parentID { collapsed.remove(parentID) }
-        return moved
     }
 
     // MARK: - New target
@@ -679,15 +717,19 @@ final class WorkbenchBoardViewModel {
 
     func setPriority(_ priority: String) {
         guard let id = selectedTargetID, WorkbenchBoardCard.editablePriorities.contains(priority) else { return }
-        write("change the priority") { db in
+        startWrite("change the priority") { db in
             _ = try WorkbenchOwnerWrites.setPriority(db, targetID: Int64(id), priority: priority)
+            return []
         }
     }
 
     func rename(_ text: String) {
         let title = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let id = selectedTargetID, !title.isEmpty else { return }
-        write("rename the target") { db in try TargetQueries.updateText(db, id: id, text: title) }
+        startWrite("rename the target") { db in
+            try TargetQueries.updateText(db, id: id, text: title)
+            return []
+        }
     }
 
     /// The description write behind the panel's editor
@@ -708,26 +750,42 @@ final class WorkbenchBoardViewModel {
     /// - Returns: whether the description is saved, so the editor keeps the
     ///   owner's draft on a failure (`errorMessage` says why).
     @discardableResult
-    func saveIntent(_ text: String, original: String, for id: Int? = nil) -> Bool {
+    func saveIntent(_ text: String, original: String, for id: Int? = nil) async -> Bool {
+        switch intentWrite(text, original: original, for: id) {
+        case .saved: return true
+        case .refused: return false
+        case .writing(let task): return await task.value
+        }
+    }
+
+    /// What `intentWrite` made of a save: nothing left to write, refused
+    /// before writing (`errorMessage` says why), or a write under way.
+    private enum IntentSave {
+        case saved
+        case refused
+        case writing(Task<Bool, Never>)
+    }
+
+    private func intentWrite(_ text: String, original: String, for id: Int?) -> IntentSave {
         let intent = text.trimmingCharacters(in: .whitespacesAndNewlines)
         // Nothing open and no editor's target: nothing to save, nothing to say.
-        guard let id = id ?? selectedTargetID else { return false }
+        guard let id = id ?? selectedTargetID else { return .refused }
         let label = WorkbenchTargetNumber.label(id)
         guard let node = WorkbenchBoardOutline.find(id, in: roots) else {
             errorMessage = "Could not save the description of \(label): it is no longer on this board."
-            return false
+            return .refused
         }
-        if intent == original.trimmingCharacters(in: .whitespacesAndNewlines) { return true }
-        guard node.target.intent != intent else { return true }
+        if intent == original.trimmingCharacters(in: .whitespacesAndNewlines) { return .saved }
+        guard node.target.intent != intent else { return .saved }
         let conflict: (Error) -> String? = { error in
             guard error is TargetIntentConflictError else { return nil }
             return "The description of \(label) changed while you were editing. "
                 + "Copy your text, press Esc and edit again."
         }
-        let body: (Database) throws -> Void = { db in
+        return .writing(startWrite("save the description of \(label)", target: id, failure: conflict) { db in
             try TargetQueries.updateIntent(db, id: id, intent: intent, ifUnchangedFrom: original)
-        }
-        return write("save the description of \(label)", target: id, failure: conflict, body)
+            return []
+        })
     }
 
     /// The open editor on `id`, nil when its description is not being edited.
@@ -757,14 +815,52 @@ final class WorkbenchBoardViewModel {
     /// (`open`, `closeDetail`): `saveIntent` with the text the editor
     /// opened with. A saved draft closes the editor; a failed one stays on
     /// its own target (`errorMessage` says why), unless the target is gone
-    /// and there is nothing left to save it to.
+    /// and there is nothing left to save it to. One save per editor at a
+    /// time: while one waits for the writer, another does nothing. Text
+    /// typed while it waited stays in the editor, over the description just
+    /// saved.
     /// - Returns: whether nothing is left unsaved — true with no editor open.
     @discardableResult
-    func saveDescription(for id: Int) -> Bool {
-        guard let draft = descriptionDrafts[id] else { return true }
-        let saved = saveIntent(draft.text, original: draft.original, for: id)
-        if saved || WorkbenchBoardOutline.find(id, in: roots) == nil { descriptionDrafts[id] = nil }
-        return saved
+    func saveDescription(for id: Int) async -> Bool {
+        await descriptionWrite(for: id).value
+    }
+
+    @discardableResult
+    private func descriptionWrite(for id: Int) -> Task<Bool, Never> {
+        guard let draft = descriptionDrafts[id] else { return Task { true } }
+        guard !savingDescriptions.contains(id) else { return Task { false } }
+        let write: Task<Bool, Never>
+        switch intentWrite(draft.text, original: draft.original, for: id) {
+        case .saved:
+            descriptionDrafts[id] = nil
+            return Task { true }
+        case .refused:
+            if WorkbenchBoardOutline.find(id, in: roots) == nil { descriptionDrafts[id] = nil }
+            return Task { false }
+        case .writing(let task):
+            write = task
+        }
+        savingDescriptions.insert(id)
+        return Task { [self] in
+            let saved = await write.value
+            savingDescriptions.remove(id)
+            settleDescriptionDraft(id, sent: draft, saved: saved)
+            return saved && descriptionDrafts[id] == nil
+        }
+    }
+
+    /// After a save of `sent`: a landed one closes the editor, unless the
+    /// owner typed on meanwhile — that text stays, now over the description
+    /// just stored. A failed one keeps the draft, unless its target is gone.
+    private func settleDescriptionDraft(_ id: Int, sent: DescriptionDraft, saved: Bool) {
+        guard let current = descriptionDrafts[id] else { return }
+        if saved {
+            let stored = sent.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            descriptionDrafts[id] = current.text == sent.text
+                ? nil : DescriptionDraft(text: current.text, original: stored)
+        } else if WorkbenchBoardOutline.find(id, in: roots) == nil {
+            descriptionDrafts[id] = nil
+        }
     }
 
     /// The editor's focus loss and the pane leaving the screen: saves `id`
@@ -773,7 +869,7 @@ final class WorkbenchBoardViewModel {
     /// end-of-editing must not retry a failed save behind the error row.
     func saveDescriptionOnFocusLoss(for id: Int) {
         guard id == selectedTargetID else { return }
-        saveDescription(for: id)
+        descriptionWrite(for: id)
     }
 
     /// An Asks row in the panel: `show` is `WorkbenchesViewModel.showAsk`,
@@ -793,74 +889,105 @@ final class WorkbenchBoardViewModel {
     }
 
     /// The composer's send: the open target's own draft, cleared once the
-    /// comment is saved; a failed write keeps it (`errorMessage` says why).
+    /// comment is saved — and only if it still holds the text that went
+    /// out; a failed write keeps it (`errorMessage` says why). One comment
+    /// per target at a time (`isSendingComment`).
     /// - Returns: whether the comment was written.
     @discardableResult
-    func sendCommentDraft() -> Bool {
-        guard let id = selectedTargetID, addComment(commentDraft) else { return false }
-        commentDrafts[id] = nil
+    func sendCommentDraft() async -> Bool {
+        guard let id = selectedTargetID else { return false }
+        let sent = commentDraft
+        guard await addComment(sent) else { return false }
+        if commentDrafts[id] == sent { commentDrafts[id] = nil }
         return true
     }
+
+    /// A comment on the open target is being written: its send is disabled.
+    var isSendingComment: Bool {
+        selectedTargetID.map { pendingWrites.isPending(Self.commentKey($0)) } ?? false
+    }
+
+    private static func commentKey(_ id: Int) -> String { "comment:\(id)" }
 
     /// - Returns: whether the comment was written, so the composer keeps the
     ///   owner's draft on a failure (`errorMessage` says why).
     @discardableResult
-    func addComment(_ body: String) -> Bool {
+    func addComment(_ body: String) async -> Bool {
         let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let id = selectedTargetID, !text.isEmpty else { return false }
         let pid = projectID
-        return write("add the comment") { db in
-            _ = try WorkbenchOwnerWrites.addComment(db, projectID: pid, targetID: Int64(id), body: text)
+        let written = await pendingWrites.run(Self.commentKey(id)) {
+            await startWrite("add the comment", target: id) { db in
+                _ = try WorkbenchOwnerWrites.addComment(db, projectID: pid, targetID: Int64(id), body: text)
+                return []
+            }.value
         }
+        return written ?? false
     }
 
     /// - Returns: whether the reply was written, so the thread keeps the
     ///   owner's draft on a failure (`errorMessage` says why).
     @discardableResult
-    func reply(to rootID: Int64, body: String) -> Bool {
+    func reply(to rootID: Int64, body: String) async -> Bool {
         let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return false }
-        return write("reply") { db in _ = try WorkbenchOwnerWrites.reply(db, to: rootID, body: text) }
+        return await startWrite("reply") { db in
+            _ = try WorkbenchOwnerWrites.reply(db, to: rootID, body: text)
+            return []
+        }.value
     }
 
     func setThreadStatus(rootID: Int64, status: String) {
-        write("update the thread") { db in try WorkbenchQueries.setStatus(db, commentID: rootID, status: status) }
+        startWrite("update the thread") { db in
+            try WorkbenchQueries.setStatus(db, commentID: rootID, status: status)
+            return []
+        }
     }
 
-    /// Every owner write goes through here: the write, then the hook, then a
-    /// reload. The hook fires only after the write succeeded — for the target
-    /// the write touched (`target`, the selected one unless the caller names
-    /// another, e.g. a kanban drop) and for every target `alsoTouched` names.
-    /// `failure` may word an error itself; nil falls back to "Could not …".
+    /// Returns once every write queued so far has landed or failed, its
+    /// reload and hooks done (tests; a synchronous caller queued it).
+    func writesSettled() async {
+        await writes.idle()
+    }
+
+    /// Every owner write goes through here, queued in the chain right away:
+    /// the write, then the hook, then a reload, all once it landed. The hook
+    /// fires only after the write succeeded — for the target the write
+    /// touched (`target`, the one selected when it was asked for unless the
+    /// caller names another, e.g. a kanban drop) and for every target the
+    /// body returns (the parents a rollup moved). `failure` may word an
+    /// error itself; nil falls back to "Could not …".
     @discardableResult
-    private func write(
+    private func startWrite(
         _ what: String,
         target: Int? = nil,
-        alsoTouched: () -> [Int64] = { [] },
-        failure: (Error) -> String? = { _ in nil },
-        _ body: (Database) throws -> Void
-    ) -> Bool {
+        failure: @escaping (Error) -> String? = { _ in nil },
+        onSuccess: @escaping () -> Void = {},
+        _ body: @escaping @Sendable (Database) throws -> [Int64]
+    ) -> Task<Bool, Never> {
         let touched = target ?? selectedTargetID
-        do {
-            try dbPool.write { db in try body(db) }
-            errorMessage = nil
-            if let id = touched {
-                onOwnerWrite?(projectID, .target(Int64(id)))
+        let pool = dbPool
+        return writes.start { [weak self] () async -> Bool in
+            do {
+                let rolledUp = try await pool.write(body)
+                guard let self else { return true }
+                self.errorMessage = nil
+                if let id = touched { self.onOwnerWrite?(self.projectID, .target(Int64(id))) }
+                for id in rolledUp { self.onOwnerWrite?(self.projectID, .target(id)) }
+                onSuccess()
+                self.load()
+                return true
+            } catch {
+                guard let self else { return false }
+                self.errorMessage = failure(error) ?? "Could not \(what): \(error.localizedDescription)"
+                // Drop a card deleted elsewhere now rather than on the next poll
+                // (this `load()` keeps `errorMessage`); from this board a
+                // `wrongWorkbench` means a row that is gone. A refused
+                // description shows the newer text the same way.
+                if error is TargetNotFoundError || error is TargetIntentConflictError
+                    || (error as? WorkbenchQueryError) == .wrongWorkbench { self.load() }
+                return false
             }
-            for id in alsoTouched() {
-                onOwnerWrite?(projectID, .target(id))
-            }
-            load()
-            return true
-        } catch {
-            errorMessage = failure(error) ?? "Could not \(what): \(error.localizedDescription)"
-            // Drop a card deleted elsewhere now rather than on the next poll
-            // (this `load()` keeps `errorMessage`); from this board a
-            // `wrongWorkbench` means a row that is gone. A refused
-            // description shows the newer text the same way.
-            if error is TargetNotFoundError || error is TargetIntentConflictError
-                || (error as? WorkbenchQueryError) == .wrongWorkbench { load() }
-            return false
         }
     }
 }

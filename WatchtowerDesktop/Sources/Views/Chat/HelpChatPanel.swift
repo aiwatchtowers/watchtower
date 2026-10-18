@@ -16,7 +16,7 @@ struct HelpChatPanel: View {
             ChatThreadView(chatVM: chatVM, ownerName: appState.owner.displayName)
             ChatComposerBar(input: ChatComposerField(
                 text: $chatVM.draft,
-                isStreaming: chatVM.isStreaming,
+                isStreaming: chatVM.isBusy,
                 onSend: send,
                 onStop: { chatVM.stop() },
                 placeholder: "Ask how Watchtower works…",
@@ -66,6 +66,7 @@ struct HelpChatPanel: View {
 
     /// The typed words are stored as they are; the screen block rides along.
     private func send() {
-        chatVM.sendDraft(screen: appState.currentScreenContext())
+        let screen = appState.currentScreenContext()
+        Task { await chatVM.sendDraft(screen: screen) }
     }
 }

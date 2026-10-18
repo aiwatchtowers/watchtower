@@ -163,7 +163,7 @@ struct WorkbenchPanelDescription: View {
     /// close arrives late, for a target no longer open, and saves nothing
     /// (`saveDescriptionOnFocusLoss`): the move already saved it.
     private func save() {
-        vm.saveDescription(for: targetID)
+        Task { await vm.saveDescription(for: targetID) }
     }
 
     /// Focus loss: saves only while this target is the open one.
