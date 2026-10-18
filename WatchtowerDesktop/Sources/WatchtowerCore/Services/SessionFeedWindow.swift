@@ -13,7 +13,7 @@ package struct SessionFeedWindow: Equatable, Sendable {
     private var pinnedStart: Int?
 
     /// True while the owner is at the bottom.
-    package var following = true
+    package private(set) var following = true
 
     package init(step: Int = Self.step) {
         self.step = step
@@ -31,14 +31,12 @@ package struct SessionFeedWindow: Equatable, Sendable {
         range(total: total).lowerBound > 0
     }
 
-    /// Call when the feed or `following` changes: pins the start while the
-    /// owner is scrolled up, releases it at the bottom.
-    package mutating func sync(total: Int) {
-        if following {
-            pinnedStart = nil
-        } else if pinnedStart == nil {
-            pinnedStart = max(0, total - count)
-        }
+    /// Pins the absolute start when the owner leaves the bottom, releases the
+    /// pin when they return, so no other call is needed to stay anchored.
+    package mutating func setFollowing(_ value: Bool, total: Int) {
+        guard value != following else { return }
+        pinnedStart = value ? nil : range(total: total).lowerBound
+        following = value
     }
 
     /// Grows by `step`; returns the id to keep anchored (the first entry shown

@@ -28,16 +28,19 @@ final class SessionFeedWindowTests: XCTestCase {
 
     func testAppendWhileScrolledUpKeepsAnchor() {
         var w = SessionFeedWindow()
-        w.following = false
-        w.sync(total: 700)
+        w.setFollowing(false, total: 700)
         XCTAssertEqual(w.range(total: 700), 580..<700)
-        w.sync(total: 705)
         XCTAssertEqual(w.range(total: 705), 580..<705)
         let anchor = w.grow(entries: entries(705))
         XCTAssertEqual(anchor, "e580")
         XCTAssertEqual(w.range(total: 705), 460..<705)
-        w.following = true
-        w.sync(total: 710)
+        w.setFollowing(true, total: 705)
         XCTAssertEqual(w.range(total: 710), 470..<710)
+    }
+
+    func testLeavingFollowPinsWithoutSync() {
+        var w = SessionFeedWindow()
+        w.setFollowing(false, total: 700)
+        XCTAssertEqual(w.range(total: 705).lowerBound, 580)
     }
 }
