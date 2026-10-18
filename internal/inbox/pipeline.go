@@ -341,17 +341,17 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 	// failure freezes the watermark below so no window is skipped).
 	p.progress(1, "detecting")
 	stepStart := time.Now()
-	// The owner's Jira identity and own comments are read once per cycle and
-	// shared by the Jira detector and Jira auto-resolve.
-	jiraOwn := newOwnJiraComments(p.db, owner)
-	createdSlack, createdJira, createdCalendar, createdGmail, createdImap, createdWatchtower, detectErr := p.detectAll(ctx, owner, jiraOwn, lastTS, sinceTime)
-	created := createdSlack + createdJira + createdCalendar + createdGmail + createdImap + createdWatchtower
+	// The owner's Jira and Linear identities and own comments are read once
+	// per cycle and shared by each tracker's detector and auto-resolve.
+	own := trackerOwn{jira: newOwnJiraComments(p.db, owner), linear: newOwnLinearComments(p.db, owner)}
+	createdSlack, createdJira, createdLinear, createdCalendar, createdGmail, createdImap, createdWatchtower, detectErr := p.detectAll(ctx, owner, own, lastTS, sinceTime)
+	created := createdSlack + createdJira + createdLinear + createdCalendar + createdGmail + createdImap + createdWatchtower
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 
 	// Phase 2: Auto-resolve — rule-based resolution for all source types (INBOX-02).
 	p.progress(2, "auto-resolving")
 	stepStart = time.Now()
-	resolved := p.autoResolveByRules(ctx, owner, jiraOwn)
+	resolved := p.autoResolveByRules(ctx, owner, own)
 	p.LastStepDurationSeconds = time.Since(stepStart).Seconds()
 
 	// Phase 3: Auto-archive expired/stale items and unsnooze expired snoozes.
@@ -374,8 +374,8 @@ func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
 
 	p.progress(totalSteps, "done")
 
-	p.logger.Printf("inbox: +%d new (S%d J%d C%d G%d M%d T%d), %d auto-resolved, %d auto-archived",
-		created, createdSlack, createdJira, createdCalendar, createdGmail, createdImap, createdWatchtower,
+	p.logger.Printf("inbox: +%d new (S%d J%d L%d C%d G%d M%d T%d), %d auto-resolved, %d auto-archived",
+		created, createdSlack, createdJira, createdLinear, createdCalendar, createdGmail, createdImap, createdWatchtower,
 		resolved, archived)
 
 	return created, resolved, detectErr
@@ -396,7 +396,7 @@ func (p *Pipeline) advanceWatermark(ts, lastTS float64) {
 // The returned error is non-nil if any detector failed; callers use it to gate
 // the watermark advance so a failed pass does not skip its message window. A
 // failing detector's count still counts the items it did create.
-func (p *Pipeline) detectAll(ctx context.Context, owner db.Owner, jiraOwn *ownJiraComments, lastTS float64, sinceTime time.Time) (slack, jira, cal, gmail, imapCount, wt int, err error) {
+func (p *Pipeline) detectAll(ctx context.Context, owner db.Owner, own trackerOwn, lastTS float64, sinceTime time.Time) (slack, jira, linear, cal, gmail, imapCount, wt int, err error) {
 	var errs []error
 	record := func(source string, e error) {
 		if e != nil {
@@ -407,8 +407,10 @@ func (p *Pipeline) detectAll(ctx context.Context, owner db.Owner, jiraOwn *ownJi
 	var e error
 	slack, e = p.detectSlackAccounts(lastTS)
 	record("slack", e)
-	jira, e = detectJira(ctx, p.db, owner, jiraOwn, sinceTime)
+	jira, e = detectJira(ctx, p.db, owner, own.jira, sinceTime)
 	record("jira", e)
+	linear, e = detectLinear(ctx, p.db, owner, own.linear, sinceTime)
+	record("linear", e)
 	cal, e = DetectCalendar(ctx, p.db, owner.Email, sinceTime)
 	record("calendar", e)
 	gmail, e = DetectGmailAccounts(ctx, p.db, sinceTime)
@@ -417,7 +419,7 @@ func (p *Pipeline) detectAll(ctx context.Context, owner db.Owner, jiraOwn *ownJi
 	record("imap", e)
 	wt, e = DetectWatchtowerInternal(ctx, p.db, sinceTime)
 	record("watchtower", e)
-	return slack, jira, cal, gmail, imapCount, wt, errors.Join(errs...)
+	return slack, jira, linear, cal, gmail, imapCount, wt, errors.Join(errs...)
 }
 
 // detectSlackAccounts runs detectSlackTriggers once per enabled, connected
@@ -749,12 +751,18 @@ func (p *Pipeline) progress(done int, status string) {
 	}
 }
 
+// trackerOwn is one cycle's view of the owner's own comments on each tracker.
+type trackerOwn struct {
+	jira, linear *ownJiraComments
+}
+
 // autoResolveByRules runs all rule-based auto-resolve checks across Slack,
-// Jira, and Calendar sources. Returns the total number of items resolved.
-func (p *Pipeline) autoResolveByRules(ctx context.Context, owner db.Owner, jiraOwn *ownJiraComments) int {
+// Jira, Linear and Calendar sources. Returns the total number of items resolved.
+func (p *Pipeline) autoResolveByRules(ctx context.Context, owner db.Owner, own trackerOwn) int {
 	resolved := 0
 	resolved += p.autoResolveSlack()
-	resolved += p.autoResolveJira(ctx, jiraOwn)
+	resolved += p.autoResolveJira(ctx, own.jira)
+	resolved += p.autoResolveLinear(own.linear)
 	resolved += p.autoResolveCalendar(ctx, owner.Email)
 	return resolved
 }
@@ -830,15 +838,28 @@ func (p *Pipeline) autoResolveSlack() int {
 // comment's creation counts here — an edit of an older comment is not an
 // answer to an item that arrived after it.
 func (p *Pipeline) autoResolveJira(_ context.Context, jiraOwn *ownJiraComments) int {
-	if len(jiraOwn.ids) == 0 {
+	return p.autoResolveIssueComments("autoResolveJira", jiraOwn, "jira_comment_mention", "jira_assigned")
+}
+
+// autoResolveLinear is autoResolveJira for linear_comment_mention and
+// linear_assigned items, against the owner's own Linear comments (INBOX-02).
+func (p *Pipeline) autoResolveLinear(linearOwn *ownJiraComments) int {
+	return p.autoResolveIssueComments("autoResolveLinear", linearOwn, triggerLinearCommentMention, triggerLinearAssigned)
+}
+
+// autoResolveIssueComments resolves the pending items of the two trigger
+// types whose issue (channel_id) carries an own comment created at or after
+// the item; label names the caller in its log lines.
+func (p *Pipeline) autoResolveIssueComments(label string, own *ownJiraComments, mentionTrigger, assignedTrigger string) int {
+	if len(own.ids) == 0 {
 		return 0
 	}
 
 	// Drain cursor before any secondary queries (SQLite single-connection deadlock).
 	rows, err := p.db.Query(`SELECT id, channel_id, created_at FROM inbox_items
-		WHERE trigger_type IN ('jira_comment_mention','jira_assigned') AND status='pending'`)
+		WHERE trigger_type IN (?, ?) AND status='pending'`, mentionTrigger, assignedTrigger)
 	if err != nil {
-		p.logger.Printf("inbox: autoResolveJira: query: %v", err)
+		p.logger.Printf("inbox: %s: query: %v", label, err)
 		return 0
 	}
 	defer rows.Close()
@@ -851,7 +872,7 @@ func (p *Pipeline) autoResolveJira(_ context.Context, jiraOwn *ownJiraComments) 
 	for rows.Next() {
 		var c candidate
 		if err := rows.Scan(&c.id, &c.issueKey, &c.createdAt); err != nil {
-			p.logger.Printf("inbox: autoResolveJira: scan: %v", err)
+			p.logger.Printf("inbox: %s: scan: %v", label, err)
 			return 0
 		}
 		candidates = append(candidates, c)
@@ -867,9 +888,9 @@ func (p *Pipeline) autoResolveJira(_ context.Context, jiraOwn *ownJiraComments) 
 	for i, c := range candidates {
 		keys[i] = c.issueKey
 	}
-	latestByIssue, err := jiraOwn.latestFor(keys)
+	latestByIssue, err := own.latestFor(keys)
 	if err != nil {
-		p.logger.Printf("inbox: autoResolveJira: %v", err)
+		p.logger.Printf("inbox: %s: %v", label, err)
 	}
 
 	resolved := 0
@@ -878,12 +899,12 @@ func (p *Pipeline) autoResolveJira(_ context.Context, jiraOwn *ownJiraComments) 
 		if !ok {
 			continue
 		}
-		if own, found := latestByIssue[c.issueKey]; !found || own.created < itemTS {
+		if mine, found := latestByIssue[c.issueKey]; !found || mine.created < itemTS {
 			continue
 		}
 		if _, err := p.db.Exec(`UPDATE inbox_items SET status='resolved', resolved_reason='User commented on issue', updated_at=? WHERE id=?`,
 			time.Now().UTC().Format(time.RFC3339), c.id); err != nil {
-			p.logger.Printf("inbox: autoResolveJira: update item %d: %v", c.id, err)
+			p.logger.Printf("inbox: %s: update item %d: %v", label, c.id, err)
 			continue
 		}
 		resolved++
