@@ -24,6 +24,9 @@
 # Every mode answers an mcp_status control request with the k-th line of the
 # file $FAKE_MCP_STATUS (an mcpServers JSON list; the last line repeats; no
 # file = []).
+# An interrupt with no turn open (the turn already ended — e.g. a gate turn
+# finished on a deny that reached it before the interrupt) is answered with
+# its control_response only, no result, as the real CLI does (2.1.302).
 # The error results carry $FAKE_ERROR (default "request too large").
 # With $FAKE_INIT_SID set, every user message is first answered by a
 # system/init line carrying that session id (as the real CLI does), and
@@ -150,6 +153,7 @@ reply() {
 }
 
 n=0
+open=no # a turn was left unfinished (slow, ignore_interrupt)
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$FAKE_STDIN"
   case "$line" in
@@ -158,7 +162,8 @@ while IFS= read -r line; do
     *'"subtype":"interrupt"'*)
       [ "$FAKE_MODE" = "ignore_interrupt" ] && continue
       printf '%s\n' '{"type":"control_response","response":{"subtype":"success"}}'
-      printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"sess-fake","usage":{"input_tokens":1,"output_tokens":0}}'
+      [ "$open" = yes ] && printf '%s\n' '{"type":"result","subtype":"error_during_execution","is_error":true,"session_id":"sess-fake","usage":{"input_tokens":1,"output_tokens":0}}'
+      open=no
       ;;
     *'"type":"user"'*)
       n=$((n+1))
@@ -183,6 +188,7 @@ while IFS= read -r line; do
         slow|ignore_interrupt)
           if first_time; then
             printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"partial"}}}'
+            open=yes
             continue
           fi ;;
       esac

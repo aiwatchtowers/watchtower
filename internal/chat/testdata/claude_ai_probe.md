@@ -78,5 +78,6 @@ TCC-specific answers come from `TestClaudeAISandboxLive_ProtectedFoldersStayUnre
 ## Also observed
 
 - **Interrupt while a request waits:** the CLI sends `{"type":"control_cancel_request","request_id":"<the can_use_tool id>"}`, answers the interrupt with `{"still_queued":[]}`, gives the model a rejected `tool_result` ("The user doesn't want to proceed…"), and ends the turn `error_during_execution` (`terminal_reason` varied between runs: `aborted_tools`, `aborted_streaming`). The cancelled call is listed in `result.permission_denials` like a deny. The tool never ran. A late allow sent for the cancelled id produced no tool run (exploratory run).
+- **Interrupt with no turn running** *(observed 2026-10-18, exploratory)*: the CLI answers `{"subtype":"success","request_id":"<id>","response":{"still_queued":[]}}` and emits no `result`, so a late interrupt (Stop landing just after the turn ended, e.g. on a gate deny) never ends the next turn. `fake_claude.sh` does the same.
 - `ENABLE_CLAUDEAI_MCP_SERVERS=0`: `mcp_status` and `init.mcp_servers` are empty.
 - `--tools …,Artifact` also exposes `ArtifactComments` and `ArtifactData` (spec F5); `ToolSearch` runs with no request.
