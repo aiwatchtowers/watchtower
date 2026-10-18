@@ -924,11 +924,9 @@ Since 2026-10-16 (board #563, owner approved 2026-10-12, ask #175):
   a local branch tracking it reads `upstream_gone`); the work tree, the
   index, the stash and every local branch stay as they are, and no pull,
   merge or push ever runs. It is bounded at 20 s (`timed_out`) and killed
-  with its whole process group (git's ssh or remote-http child included),
-  also when the CLI is interrupted or terminated (SIGINT/SIGTERM cancel its
-  context); a stalled HTTP transfer gives up on its own
-  (`http.lowSpeedLimit=1`, `http.lowSpeedTime=20`). No prompt or dialog can
-  come from git, ssh or a credential helper: `GIT_TERMINAL_PROMPT=0`,
+  with its whole process group (git's ssh or remote-http child included).
+  No prompt or dialog can come from git, ssh or a credential helper:
+  `GIT_TERMINAL_PROMPT=0`,
   `GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10`, empty
   `GIT_ASKPASS`/`SSH_ASKPASS` with `SSH_ASKPASS_REQUIRE=never` (an empty
   `GIT_ASKPASS` outranks `core.askPass`), and `-c credential.helper=`, which
@@ -944,9 +942,10 @@ Since 2026-10-16 (board #563, owner approved 2026-10-12, ask #175):
   `insteadOf` rewrites to a path, could read any folder on the Mac, and one
   macOS guards would raise a privacy prompt attributed to Watchtower). A
   custom `core.sshCommand` is therefore not used by this fetch
-  (`~/.ssh/config` still is). Limit: an ssh agent the owner configured to
-  approve each use (a password manager's agent, `ssh-add -c`) is the owner's
-  own program and may still ask; Watchtower never starts or asks it to. A remote that needs a password, a locked key or
+  (`~/.ssh/config` still is). Limit: ssh still uses the owner's ssh agent
+  (`SSH_AUTH_SOCK`), so an agent set up to approve each use (a password
+  manager's agent, `ssh-add -c`) may show its own approval prompt when the
+  fetch asks it to sign; that prompt is the agent's, not git's or macOS's. A remote that needs a password, a locked key or
   a host-key confirmation fails with git's words in `error`; the Desktop
   shows a quiet "Couldn't fetch origin: …" in the popover and the branch list
   keeps working on the local refs. A repository without an origin remote

@@ -79,10 +79,7 @@ package enum WorkbenchFetchPresentation {
         } else if !result.refused.isEmpty {
             detail = WorkbenchBranchPresentation.refusalText(refused: result.refused, detail: result.refusedDetail)
         } else if !result.error.isEmpty {
-            detail = firstLine(result.error)
-                + (needsCredentials(result.error)
-                    ? " — Watchtower's fetch never asks for a password or key and does not use a custom core.sshCommand"
-                    : "")
+            detail = firstLine(result.error) + credentialsHint(result.error)
         } else if !result.note.isEmpty {
             detail = result.note
         } else {
@@ -96,10 +93,17 @@ package enum WorkbenchFetchPresentation {
         "Couldn't fetch origin: \(text)"
     }
 
-    /// git's words for a remote that wanted a password, a key passphrase
-    /// or a host key confirmation the fetch was not allowed to ask for.
-    private static func needsCredentials(_ error: String) -> Bool {
-        ["terminal prompts disabled", "Permission denied", "Host key verification failed"].contains { error.contains($0) }
+    /// Why a remote that wanted credentials failed, in git's words: an https
+    /// login the fetch may not ask for (no prompt, no credential helper), or
+    /// an ssh key or host key it may not confirm.
+    private static func credentialsHint(_ error: String) -> String {
+        if error.contains("terminal prompts disabled") {
+            return " — Watchtower's fetch uses no credential helper and never asks for a password"
+        }
+        if ["Permission denied", "Host key verification failed"].contains(where: { error.contains($0) }) {
+            return " — Watchtower's fetch never asks for a key passphrase and does not use a custom core.sshCommand"
+        }
+        return ""
     }
 
     private static func firstLine(_ error: String) -> String {

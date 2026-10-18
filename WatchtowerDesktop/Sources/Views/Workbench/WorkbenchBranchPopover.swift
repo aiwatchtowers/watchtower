@@ -133,23 +133,23 @@ struct WorkbenchBranchPopover: View {
             let state = vm.gitFetchState(key)
             TimelineView(.periodic(from: .now, by: 30)) { context in
                 HStack(spacing: 4) {
-                        Text(WorkbenchFetchPresentation.caption(state, now: context.date))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                        Spacer(minLength: 0)
-                        if state?.running == true {
-                            ProgressView().controlSize(.mini)
-                        } else {
-                            Button {
-                                vm.fetchOrigin(project: project, root: root)
-                            } label: {
-                                Image(systemName: "arrow.clockwise")
-                                    .font(.caption)
-                            }
-                            .buttonStyle(.borderless)
-                            .help("Fetch origin (git fetch --prune origin) — never asks for a password")
-                            .accessibilityLabel("Fetch origin")
+                    Text(WorkbenchFetchPresentation.caption(state, now: context.date))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Spacer(minLength: 0)
+                    if state?.running == true {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Button {
+                            vm.fetchOrigin(project: project, root: root)
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                                .font(.caption)
                         }
+                        .buttonStyle(.borderless)
+                        .help("Fetch origin (git fetch --prune origin) — never asks for a password")
+                        .accessibilityLabel("Fetch origin")
+                    }
                 }
             }
             if let failure = state?.failure { caption(failure, color: .secondary) }

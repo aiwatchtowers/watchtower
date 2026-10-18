@@ -107,7 +107,10 @@ final class WorkbenchFetchTests: XCTestCase {
         let auth = Pres.failure(WorkbenchGitFetchResult(
             error: "fatal: could not read Username for 'https://example.com': terminal prompts disabled"))
         XCTAssertEqual(auth, "Couldn't fetch origin: could not read Username for 'https://example.com': terminal prompts disabled"
-            + " — Watchtower's fetch never asks for a password or key and does not use a custom core.sshCommand")
+            + " — Watchtower's fetch uses no credential helper and never asks for a password")
+        XCTAssertEqual(Pres.failure(WorkbenchGitFetchResult(error: "git@example.com: Permission denied (publickey).\nfatal: Could not read")),
+                       "Couldn't fetch origin: git@example.com: Permission denied (publickey)."
+                        + " — Watchtower's fetch never asks for a key passphrase and does not use a custom core.sshCommand")
         XCTAssertNil(Pres.failure(WorkbenchGitFetchResult(noRemote: true)), "no origin is no failure")
         XCTAssertEqual(Pres.failure(WorkbenchGitFetchResult(refused: "folder_not_a_worktree", refusedDetail: "missing")),
                        "Couldn't fetch origin: " + WorkbenchBranchPresentation.folderNotAWorktreeText)

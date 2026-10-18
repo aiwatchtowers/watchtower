@@ -63,9 +63,10 @@ func Fetch(ctx context.Context, o Options) FetchResult {
 	fetchCtx, cancel := context.WithTimeout(ctx, FetchTimeout)
 	defer cancel()
 	// No submodule repositories (their own config), no gc or maintenance
-	// run afterwards, and git's own upload-pack: for a path remote it runs
-	// here, and a remote.origin.uploadpack the folder names would win over
-	// a -c.
+	// run afterwards, and git's own upload-pack name for the remote side:
+	// the folder's remote.origin.uploadpack would win over a -c. (A path
+	// remote, whose upload-pack would run here, is refused outright:
+	// gitbin's GIT_ALLOW_PROTOCOL has no file.)
 	if _, err := r.git(fetchCtx, "fetch", "--prune", "--quiet", "--no-recurse-submodules", "--no-auto-maintenance",
 		"--upload-pack=git-upload-pack", Remote); err != nil {
 		res.TimedOut = errors.Is(err, context.DeadlineExceeded)

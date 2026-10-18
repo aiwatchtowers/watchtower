@@ -239,17 +239,6 @@ func TestFetch_AuthenticationRunsNoHelperOrPrompt(t *testing.T) {
 	assertNotRan(t, askpassRan)
 }
 
-// A path remote's upload-pack is git's own, never one the folder names.
-func TestFetch_PathRemoteRunsNoFolderUploadPack(t *testing.T) {
-	dir := newRepo(t)
-	withOrigin(t, dir)
-	pack, packRan := marker(t, "upload-pack")
-	gitIn(t, dir, "config", "remote.origin.uploadpack", pack)
-	res := Fetch(context.Background(), Options{Folder: dir})
-	assert.True(t, res.Fetched, "%+v", res)
-	assertNotRan(t, packRan)
-}
-
 // A remote that never answers is cut off at the deadline as timed out.
 func TestFetch_TimeoutIsReported(t *testing.T) {
 	release := make(chan struct{})

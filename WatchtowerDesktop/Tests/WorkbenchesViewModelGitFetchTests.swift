@@ -18,7 +18,8 @@ final class WorkbenchesViewModelGitFetchTests: XCTestCase {
     private var project: Workbench!
 
     /// Answers each `workbench git <command>` with its scripted envelope and
-    /// records the calls. A held fetch waits until `releaseFetch()`.
+    /// records the calls; a call with `--folder` takes `<command>@wt` when
+    /// scripted. A held fetch waits until `releaseFetch()`.
     final class GitRunner: CLIRunnerProtocol, @unchecked Sendable {
         private let lock = NSLock()
         private var replies: [String: Data]
@@ -64,7 +65,8 @@ final class WorkbenchesViewModelGitFetchTests: XCTestCase {
                     if resumeNow { continuation.resume() }
                 }
             }
-            guard let data = lock.withLock({ replies[command] }) else {
+            let worktree = args.contains("--folder")
+            guard let data = lock.withLock({ (worktree ? replies[command + "@wt"] : nil) ?? replies[command] }) else {
                 throw CLIRunnerError.nonZeroExit(code: 1, stderr: "no reply scripted for \(command)")
             }
             return data
@@ -182,6 +184,33 @@ final class WorkbenchesViewModelGitFetchTests: XCTestCase {
         XCTAssertEqual(runner.calls("fetch").count, 2)
     }
 
+    /// The page shows a session's worktree of the same repository: a fetch
+    /// started from the main folder refreshes that worktree's counters and
+    /// remote-only list too.
+    func testAFetchRefreshesTheWorkbenchsOtherRootsOnTheRepository() async throws {
+        let worktree = folder.appendingPathComponent("wt-a", isDirectory: true)
+        try FileManager.default.createDirectory(at: worktree, withIntermediateDirectories: true)
+        let worktreeStatus = Data(#"""
+            {"workbench_id":\#(project.id),"git":true,"branch":"wt/a","head":"a1b2c3d","git_dir":"/r/.git/worktrees/a",
+             "common_dir":"/r/.git","status_ok":true,"folder_scope":"worktree","folder_root":"\#(worktree.path)"}
+            """#.utf8)
+        let runner = GitRunner(["status": status, "status@wt": worktreeStatus, "branches": branches(), "fetch": fetched])
+        let vm = await placedVM(runner) { Date() }
+        let wtRoot = CodeRoot(workbenchID: project.id, worktree: worktree)
+        await vm.refreshGitStatus(root: wtRoot)
+        XCTAssertEqual(vm.gitFetchRepository(GitRootKey(wtRoot)), vm.gitFetchRepository(key), "one repository")
+        await vm.loadBranches(project: project, root: wtRoot)
+        runner.reply("branches", branches(behind: 3, remoteOnly: ["topic"]))
+
+        vm.fetchOrigin(project: project, root: project.mainCodeRoot)
+        await settle(vm)
+        let folderCalls = runner.invocations.filter { $0.contains("--folder") }.map { $0[2] }
+        XCTAssertEqual(folderCalls.filter { $0 == "status" }.count, 2, "the worktree's status is read again")
+        XCTAssertEqual(folderCalls.filter { $0 == "branches" }.count, 2, "and its list")
+        XCTAssertEqual(vm.gitBranches[GitRootKey(wtRoot)]?.remoteOnly.map(\.name), ["topic"])
+        XCTAssertEqual(vm.gitBranches[GitRootKey(wtRoot)]?.branches.first?.behind, 3)
+    }
+
     // MARK: - One at a time, outliving the popover
 
     func testOneFetchAtATimePerRepositoryAndItOutlivesThePopover() async {
@@ -215,7 +244,7 @@ final class WorkbenchesViewModelGitFetchTests: XCTestCase {
         await openPopover(vm)
         let state = vm.gitFetchState(key)
         XCTAssertEqual(state?.failure, "Couldn't fetch origin: could not read Username for 'https://example.com': "
-            + "terminal prompts disabled — Watchtower's fetch never asks for a password or key and does not use a custom core.sshCommand")
+            + "terminal prompts disabled — Watchtower's fetch uses no credential helper and never asks for a password")
         XCTAssertNil(state?.lastFetchedAt)
         XCTAssertEqual(WorkbenchFetchPresentation.caption(state, now: now), "Not fetched yet")
         XCTAssertEqual(vm.branchListStates[key], .loaded, "the list works on the local refs")

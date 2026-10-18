@@ -161,7 +161,7 @@ func Exec(ctx context.Context, dir string, stdin []byte, name string, args ...st
 var fetchConfig = []string{
 	"-c", "credential.helper=",
 	"-c", "core.alternateRefsCommand=true",
-	"-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=20",
+	"-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=10",
 }
 
 // FetchArgs is a background `git fetch` argv: ReadArgs plus fetchConfig.
