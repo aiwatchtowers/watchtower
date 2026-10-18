@@ -47,6 +47,7 @@ package enum ReactionToolCatalog {
             destination: "Jira",
             alwaysAsks: true
         ),
+        // Exists for approval-card titles, not the reaction dictionary.
         "create_linear_issue": ReactionToolInfo(
             title: "Create a Linear issue",
             summary: "Drafts a Linear issue",
