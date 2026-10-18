@@ -23,6 +23,7 @@ struct DesignSystemGalleryContent: View {
             GallerySection(title: "Section header") { GallerySectionHeaders() }
             GallerySection(title: "Card") { GalleryCards() }
             GallerySection(title: "Floating button") { GalleryFloatingButton() }
+            GalleryNewComponents()
         }
         .padding(Spacing.page)
         .frame(maxWidth: .infinity, alignment: .leading)
