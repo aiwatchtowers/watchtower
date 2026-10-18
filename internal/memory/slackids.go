@@ -351,11 +351,12 @@ func singleSlackAccountID(database *db.DB) (int64, error) {
 	}
 }
 
-// jiraProjectKeySet returns the Jira project keys the database knows, as they
-// are stored — the exclusion set for alias rewrites (seedJiraProjects aliases
-// each of them bare, and a long uppercase key matches the bare-Slack-id shape).
+// jiraProjectKeySet returns the tracker project keys the database knows (Jira
+// project keys and Linear team keys), as they are stored — the exclusion set
+// for alias rewrites (seedJiraProjects aliases each of them bare, and a long
+// uppercase key matches the bare-Slack-id shape).
 func jiraProjectKeySet(database *db.DB) (map[string]bool, error) {
-	keys, err := database.ListJiraProjectKeys()
+	keys, err := trackerProjectKeys(database)
 	if err != nil {
 		return nil, fmt.Errorf("memory: migrate: %w", err)
 	}

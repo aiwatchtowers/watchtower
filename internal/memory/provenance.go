@@ -274,6 +274,29 @@ func (j jiraResolver) Validate(ref episodeRef) (bool, error) {
 	return j.db.JiraIssueExists(strings.TrimPrefix(ref.ChannelID, jiraRefPrefix))
 }
 
+// linearChecker is the write-time linear-ref lookup seam. *db.DB satisfies it;
+// tests inject an erroring fake to exercise the freeze path.
+type linearChecker interface {
+	LinearIssueExists(key string) (bool, error)
+}
+
+// linearResolver is the scheme-"linear" resolver (MEM-12 extension, Linear
+// plan 2): a linear:<KEY> ref resolves iff a non-deleted linear_issues row
+// carries that key now or carried it before a team move (previous_keys), so a
+// ref minted under an old key keeps resolving. Like jira:, identity is the key
+// and the ts is not re-validated; a lookup failure is a genuine error.
+type linearResolver struct{ db linearChecker }
+
+// linearRefPrefix marks an evidence/episode channel_id as a Linear issue
+// reference ("linear:<KEY>").
+const linearRefPrefix = "linear:"
+
+func (linearResolver) Scheme() string { return strings.TrimSuffix(linearRefPrefix, ":") }
+
+func (l linearResolver) Validate(ref episodeRef) (bool, error) {
+	return l.db.LinearIssueExists(strings.TrimPrefix(ref.ChannelID, linearRefPrefix))
+}
+
 // interactionChecker is the write-time owner-interaction existence lookup behind
 // the act: scheme (MEM-15). *db.DB satisfies it; the whitelist of source tables
 // lives in InteractionExists.

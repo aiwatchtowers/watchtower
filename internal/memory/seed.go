@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -422,11 +423,12 @@ func seedChannels(database *db.DB, _ SeedConfig, since float64) ([]seedCandidate
 	return out, rows.Err()
 }
 
-// seedJiraProjects returns one candidate per distinct Jira project key —
-// seeded even while Jira sync is dead so the aliases are ready when it
+// seedJiraProjects returns one candidate per distinct tracker project key —
+// every Jira project key and every Linear team key (trackerProjectKeys) —
+// seeded even while a tracker sync is dead so the aliases are ready when it
 // revives. No activity window: project keys are few and stable.
 func seedJiraProjects(database *db.DB, _ SeedConfig, _ float64) ([]seedCandidate, error) {
-	keys, err := database.ListJiraProjectKeys()
+	keys, err := trackerProjectKeys(database)
 	if err != nil {
 		return nil, fmt.Errorf("memory: seed jira projects: %w", err)
 	}
@@ -434,6 +436,30 @@ func seedJiraProjects(database *db.DB, _ SeedConfig, _ float64) ([]seedCandidate
 	for _, key := range keys {
 		out = append(out, seedCandidate{title: key, aliases: []string{key}})
 	}
+	return out, nil
+}
+
+// trackerProjectKeys returns the Jira project keys and the Linear team keys
+// the database knows, distinct and sorted: a key known to both trackers is one
+// project entity (one bare alias can name one page only).
+func trackerProjectKeys(database *db.DB) ([]string, error) {
+	jiraKeys, err := database.ListJiraProjectKeys()
+	if err != nil {
+		return nil, err
+	}
+	linearKeys, err := database.GetKnownLinearTeamKeys()
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(jiraKeys)+len(linearKeys))
+	var out []string
+	for _, k := range append(jiraKeys, linearKeys...) {
+		if !seen[k] {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
 	return out, nil
 }
 
