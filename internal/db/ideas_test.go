@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIdeas_CreateGetListRoundTrip(t *testing.T) {
@@ -1429,4 +1432,32 @@ func TestCreateManualIdea_ActiveOwner(t *testing.T) {
 	if got.Status != "active" || got.Source != "owner" {
 		t.Fatalf("want active/owner, got %s/%s", got.Status, got.Source)
 	}
+}
+
+func TestReplaceJiraIssueComments_RemovesAbsentAndEmptyClears(t *testing.T) {
+	d := openTestDB(t)
+	acct := mustCreateJiraAccount(t, d)
+	mk := func(key, id, body string) JiraComment {
+		return JiraComment{AccountID: acct, IssueKey: key, ID: id, Author: "alice", BodyText: body, CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z"}
+	}
+	require.NoError(t, d.UpsertJiraComments([]JiraComment{mk("PROJ-1", "c1", "one"), mk("PROJ-1", "c2", "two"), mk("PROJ-2", "c3", "three")}))
+
+	removed, err := d.ReplaceJiraIssueComments(acct, "PROJ-1", []JiraComment{mk("PROJ-1", "c2", "two edited")})
+	require.NoError(t, err)
+	assert.Equal(t, 1, removed)
+	got, err := d.ListJiraCommentsSince(acct, []string{"PROJ-1", "PROJ-2"}, "2020-01-01T00:00:00Z")
+	require.NoError(t, err)
+	bodies := map[string]string{}
+	for _, c := range got {
+		bodies[c.ID] = c.BodyText
+	}
+	assert.Equal(t, map[string]string{"c2": "two edited", "c3": "three"}, bodies)
+
+	removed, err = d.ReplaceJiraIssueComments(acct, "PROJ-1", nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, removed)
+	got, err = d.ListJiraCommentsSince(acct, []string{"PROJ-1", "PROJ-2"}, "2020-01-01T00:00:00Z")
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	assert.Equal(t, "c3", got[0].ID)
 }

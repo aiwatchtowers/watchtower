@@ -49,6 +49,17 @@ Records are sealed with keys held only by your Mac and your paired phones, so iC
 
 A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink** or **Forget** on the phone (Settings → Macs) deletes that Mac's data from the phone. Removing the phone on the Mac freezes it there: what it already synced stays readable until you tap **Forget**.
 
+## When something is deleted at the source
+
+A message, mail or comment you delete at its source disappears from Watchtower too, and from search.
+
+- **Slack:** a message deleted today disappears within a sync cycle or two (the newest two hours are not checked yet). Older days are checked one stored day per sync cycle, so a deletion in an older message can take longer to show. If Slack still returns the message later, it comes back.
+- **Gmail:** mail you delete or trash disappears within a day. Archived mail stays.
+- **IMAP:** mail you delete or move out of the synced folder disappears on the next sync.
+- **Jira:** a deleted comment disappears the next time that issue is synced.
+
+Inbox items made from a deleted message or mail stay, with their text removed. If you leave a Slack channel or lose access to it, its messages stay in Watchtower: only a deletion counts. Summaries, memory notes, ideas and briefings already written from the text are kept as they are. A safety check skips a deletion when the source returns an empty or suspiciously short list, so nothing vanishes because of a bad response.
+
 ## Related
 
 - [Sources and accounts](sources-and-accounts.md)

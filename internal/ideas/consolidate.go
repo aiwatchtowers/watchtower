@@ -288,8 +288,7 @@ func (p *Pipeline) gatherConsolidateInput(maxChars int, from, to time.Time, mem 
 // [from, to] time.Time window (GB3: from matters only for
 // ListDigestTopicIdeasAfter's lower bound) into the unix/ISO forms its
 // three listing calls each need — split out to keep gatherConsolidateInput
-// itself down to "read floors, list, delegate, done" (sentrux's complexity
-// gate: this conversion was inline there before GB3 added the from half).
+// itself down to "read floors, list, delegate, done".
 func consolidateWindowBounds(from, to time.Time) (fromUnix, toUnix int64, toISO string) {
 	if !from.IsZero() {
 		fromUnix = from.Unix()

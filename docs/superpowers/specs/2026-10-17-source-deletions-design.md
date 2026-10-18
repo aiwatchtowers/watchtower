@@ -77,3 +77,5 @@ Deliberately left out: `conversations.history` re-reads (Tier 1 makes them impra
 4. **What counts as deleted.** Should losing access (leaving a Slack channel, moving an IMAP message to another folder) purge local copies too? (a) Yes, treat it like a deletion. This is the simplest option and is what the diff does naturally. (b) No: this needs per-channel and per-folder exceptions in the diff.
 
 Owner approved the note on 2026-10-17 (ask #324) with the recommended options: 1a, 2a, 3a, 4a.
+
+Amended 2026-10-18 (ask #363): for Slack, 4a no longer holds. A channel the listing returns nothing from is skipped for safety, so losing access to a Slack channel keeps its rows; a mail moved out of the synced IMAP folder still counts as deleted. The inbox items made from deleted Gmail and IMAP mail have their text copies blanked, as for Slack.

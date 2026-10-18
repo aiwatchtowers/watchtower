@@ -19,8 +19,7 @@ private let ideaCleanedEnvelope = Data(#"{"mode":"idea","body":"cleaned"}"#.utf8
 /// seam and the Feature Manager ML-residency toggle — the config-only half
 /// of MARK 23 plus MARK 25 of the original suite. The live-text-replacement
 /// half of MARK 23 and the Apple lane (MARK 24) live in
-/// `DictationCenterAppleLaneTests` (kept apart because together they push
-/// this file's fan-out over sentrux's god-file threshold).
+/// `DictationCenterAppleLaneTests`.
 @MainActor
 final class DictationCenterRealtimeTests: MeetingRecorderTestCase {
 

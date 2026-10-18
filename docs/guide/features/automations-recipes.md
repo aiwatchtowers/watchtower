@@ -25,8 +25,11 @@ An event trigger runs the recipe after a sync brings something new. For example,
 | `jira.issue_changed` | an issue changed; `field` says which: `status`, `assignee`, `priority`, `comment` or `other` | `account`, `key`, `project`, `field` |
 | `calendar.event_changed` | an event was created, updated or cancelled | `account`, `event_id`, `change` |
 | `confluence.page_changed` | a page is new or has a new version | `space`, `page_id` |
+| `slack.reaction_added` | you put an emoji on a Slack message | `account`, `channel_id`, `emoji` |
 
 Every `where` key must match. A value matches regardless of case, either exactly or as a wildcard such as `PAY-*` (a `*` stops at `/`). Leave `where` out to match every event of the type. `where` only filters: the recipe still needs permissions for whatever it reads.
+
+The reaction event carries the account, the channel id, the message timestamp (`message_ts`) and the emoji name without colons (`emoji: alarm_clock`), never the message. To read the message, the recipe needs `slack:read@*` or `tool:list_messages`. It fires only for messages posted after the recipe first sees your account: a reaction on an older message never fires, even a new one, and only once per message and emoji: removing and adding a reaction again does nothing. It needs **Reaction commands** on (Settings, Features). If Watchtower stops between noticing a reaction and starting the run, that reaction is lost, not replayed.
 
 A recipe runs at most once per sync cycle, however many events it matched; it gets up to 100 events, and `trigger.truncated` is true when there were more. A source's first sync, its history backfill and your own Slack messages never fire a trigger. In **Edit**, **On an event** picks the type; write a `where` filter in the recipe text, or ask **Change in words**.
 

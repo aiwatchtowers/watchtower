@@ -618,15 +618,12 @@ func (s *Syncer) syncComments(ctx context.Context, changedKeys []string) error {
 
 	var storeErr error // the first failed comment write
 	for _, key := range keys {
-		comments, err := s.client.GetIssueComments(ctx, key)
+		comments, complete, total, err := s.client.getIssueComments(ctx, key)
 		if err != nil {
 			if errors.Is(err, ErrAuthRevoked) {
 				return err
 			}
 			s.logger.Printf("comment sync: fetching comments for %s: %v", key, err)
-			continue
-		}
-		if len(comments) == 0 {
 			continue
 		}
 
@@ -643,7 +640,24 @@ func (s *Syncer) syncComments(ctx context.Context, changedKeys []string) error {
 				UpdatedAt:       s.normalizeTime(key, "comment updated", c.Updated),
 			})
 		}
-		if err := s.db.UpsertJiraComments(dbComments); err != nil {
+		var storeFailure error
+		if complete {
+			// A complete listing is the issue's whole set: comments deleted
+			// at the source (an empty listing included) leave the store.
+			var removed int
+			removed, storeFailure = s.db.ReplaceJiraIssueComments(s.accountID, key, dbComments)
+			if storeFailure == nil && removed > 0 {
+				s.logger.Printf("comment sync: %s: removed %d comments deleted at the source", key, removed)
+			}
+		} else {
+			totalText := "unknown"
+			if total >= 0 {
+				totalText = fmt.Sprint(total)
+			}
+			s.logger.Printf("comment sync: %s listing incomplete (%d of %s), keeping stored comments", key, len(comments), totalText)
+			storeFailure = s.db.UpsertJiraComments(dbComments)
+		}
+		if err := storeFailure; err != nil {
 			s.logger.Printf("comment sync: storing comments for %s: %v", key, err)
 			if storeErr == nil {
 				storeErr = fmt.Errorf("storing comments for %s: %w", key, err)
