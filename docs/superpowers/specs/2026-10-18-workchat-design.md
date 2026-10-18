@@ -1,6 +1,6 @@
 # Workchat — drive a workbench session from its chat (board #711)
 
-Mockups: [2026-10-18-workchat-mockups.html](2026-10-18-workchat-mockups.html) (open it in the code viewer's **Preview**). The numbers below refer to its four states.
+Mockups: [2026-10-18-workchat-mockups.html](2026-10-18-workchat-mockups.html) (open it in the code viewer's **Preview**). Sections A–C show Workchat in the app window and how you switch to it; states 1–4 show the pane.
 
 Builds on the session chat feed (`docs/features/session-chat-feed.md`, FEED-01..05).
 
@@ -131,7 +131,18 @@ The owner at the Mac needs no grant. PROJ-16's grants are for the phone.
 
 **Finished or stopped session.** No composer and no Stop. A line instead: "Session finished. The history stays readable." (state 4, callout 3).
 
-### 5. Header
+### 5. Switching between Terminal and Workchat (mockups A–C)
+
+Today the Chat opens only as a second pane beside its session's terminal: the header's **Chat** view button, the pane picker or the row's **Show Chat**. Workchat is a way to drive the session, so it becomes **the session's second mode** in the same slot.
+
+- **Header (A, proposed):** the Terminal segment becomes a twin switch **Terminal | Workchat** with the existing ▾ session menu shared by both halves. Clicking the other half swaps the session pane in place: same session, same slot, no split. The terminal keeps running while hidden, as a hidden pane does today. The separate **Chat** view button goes away. The alternatives B (own header button) and C (switch on the pane's bar) are in the mockups for the decision.
+- **Split (B):** with the split on, both halves can be lit: Terminal left, Workchat of the same session right, the way today's Chat opens. The split pane pickers list **Workchat** in place of **Chat**.
+- **Remembered mode:** each session remembers the mode it was last shown in, stored with the workbench's layout state (`WorkspaceLayout`), not in SQLite. A new session opens in the Terminal, because a fresh agent may stop at trust or login prompts the Workchat cannot show.
+- **Shortcut:** `⌃\`` toggles Terminal and Workchat for the session on screen. The View menu has **Show Terminal** and **Show Workchat**.
+- **Session rows:** a small glyph shows the mode the session opens in. The context menu has **Open in Terminal** and **Open in Workchat**, replacing **Show Chat**.
+- `WorkspaceView.chat`/`WorkspacePane.sessionChat` keep their raw values. Only titles and the switch change, so saved layouts stay valid.
+
+### 6. Header
 
 The bar shows the session title, a status pill from `SessionAgentStateCenter` (Working, Needs approval, Waiting on you, Agents working, Ready to check, Finished, Stopped, Error; the same words and colours as the sessions panel), and the **Terminal | Workchat** switch that exists today as the pane picker.
 
