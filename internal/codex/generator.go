@@ -20,9 +20,6 @@ type CodexGenerator struct {
 	modelLight  string
 	modelStrong string
 	codexPath   string
-	// stdinOnly routes every user message through stdin regardless of its
-	// size (see SetStdinOnly).
-	stdinOnly bool
 	// isolated runs the child in its own process group without the
 	// variables in dropEnv (see SetIsolatedChild).
 	isolated bool
@@ -35,12 +32,6 @@ type CodexGenerator struct {
 func NewCodexGenerator(modelLight, modelStrong, codexPath string) *CodexGenerator {
 	return &CodexGenerator{modelLight: modelLight, modelStrong: modelStrong, codexPath: codexPath}
 }
-
-// SetStdinOnly makes every subsequent Generate pass the user message on
-// stdin ("-" positional), never as a positional argv value, whatever its
-// size. Callers whose user message carries the owner's chat text set it
-// (CHAT-04: `chat title`); every other caller keeps the size-based routing.
-func (g *CodexGenerator) SetStdinOnly(v bool) { g.stdinOnly = v }
 
 // SetIsolatedChild makes every subsequent Generate run codex through
 // digest.IsolateChild: its own process group, killed whole on cancel, and
@@ -59,12 +50,16 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 
 	codexBin := FindBinary(g.codexPath)
 
-	args, stdin := buildArgs(model, systemPrompt, userMessage, g.stdinOnly)
+	args, stdin, promptFile, err := buildArgs(codexBin, model, systemPrompt, userMessage)
+	if err != nil {
+		return "", nil, "", err
+	}
+	if promptFile != "" {
+		defer os.Remove(promptFile)
+	}
 
 	cmd := exec.CommandContext(ctx, codexBin, args...)
-	if stdin != "" {
-		cmd.Stdin = strings.NewReader(stdin)
-	}
+	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(os.Interrupt)
 	}
@@ -145,29 +140,18 @@ func execArgs(model string) []string {
 	}
 }
 
-// buildArgs builds the `codex exec` CLI args; when userMessage exceeds
-// digest.StdinThreshold (or stdinOnly is set) the final positional arg is "-" (codex reads the
-// prompt from stdin) and the message is returned as stdin content instead,
-// to stay clear of ARG_MAX on very large inputs (e.g. meeting transcripts),
-// and likewise when it begins with '-' (promptPositionalOrStdin).
-// A system prompt above the same threshold cannot ride -c
-// developer_instructions (codex has no file form of it), so the whole turn
-// moves to stdin as codexStdinContent — the CHAT-04 stdin-only layout.
-func buildArgs(model, systemPrompt, userMessage string, stdinOnly bool) ([]string, string) {
-	args := execArgs(model)
-	if len(systemPrompt) > digest.StdinThreshold {
-		return append(args, "-"), codexStdinContent(systemPrompt, userMessage)
+// buildArgs builds the `codex exec` CLI args and their stdin content. The
+// args carry no prompt text — on argv the owner's data would be readable by
+// every local process through `ps`, and a large input (a meeting transcript)
+// would hit ARG_MAX: the prompts travel as promptArgs lays them out for the
+// codex binary bin (the Client.buildArgs layout), behind the "-" positional.
+// promptFile is the system-prompt file to remove once the child has exited.
+func buildArgs(bin, model, systemPrompt, userMessage string) (args []string, stdin, promptFile string, err error) {
+	instr, stdin, promptFile, err := promptArgs(bin, systemPrompt, userMessage)
+	if err != nil {
+		return nil, "", "", err
 	}
-	if systemPrompt != "" {
-		args = append(args, "-c", fmt.Sprintf("developer_instructions=%s", systemPrompt))
-	}
-	if stdinOnly {
-		return append(args, "-"), userMessage
-	}
-	// Large or '-'-leading messages go through stdin (a leading '-' would be
-	// parsed as a flag, e.g. -c as a config override).
-	positional, stdin := promptPositionalOrStdin(userMessage)
-	return append(args, positional), stdin
+	return append(append(execArgs(model), instr...), "-"), stdin, promptFile, nil
 }
 
 // parseJSONLOutput parses Codex JSONL output and extracts the final agent_message

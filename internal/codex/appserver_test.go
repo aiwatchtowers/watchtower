@@ -30,6 +30,10 @@ func TestMain(m *testing.M) {
 	if mode := os.Getenv(fakeModeEnv); mode != "" {
 		os.Exit(runFakeAppServer(mode))
 	}
+	// No test runs a real `codex --version`: every binary counts as one
+	// with model_instructions_file, except where a test restores the real
+	// probe against a fake codex (instructions_test.go).
+	probeCodexVersion = func(string) ([3]int, error) { return minInstructionsFileVersion, nil }
 	os.Exit(m.Run())
 }
 

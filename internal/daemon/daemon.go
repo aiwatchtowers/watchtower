@@ -25,6 +25,7 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/doclinks/linkscan"
 	"watchtower/internal/extsync"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/ideas"
@@ -404,6 +405,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.loadRollupAttempts()
 	d.loadPeopleAttempts()
 	d.reapStalePipelineRuns()
+	d.sweepStaleSystemPrompts()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
@@ -654,6 +656,24 @@ const stalePipelineRunAfter = 24 * time.Hour
 
 // stalePipelineRunError is the error_msg a reaped run carries.
 const stalePipelineRunError = "interrupted: the process running it exited before it finished"
+
+// staleSystemPromptAge is how old a system-prompt temp file must be before
+// the startup sweep removes it: a live claude/codex call deletes its own file
+// as soon as the child exits, well within this.
+const staleSystemPromptAge = 10 * time.Minute
+
+// sweepStaleSystemPrompts removes the 0600 system-prompt files a killed
+// process left in the temp dir (they hold the owner's data). Best-effort:
+// a failure is logged and never keeps the daemon from starting.
+func (d *Daemon) sweepStaleSystemPrompts() {
+	n, err := fsutil.SweepStalePrivateTemp(fsutil.SystemPromptTempPrefix, staleSystemPromptAge, time.Now())
+	if n > 0 {
+		d.logger.Printf("removed %d stale system prompt temp file(s)", n)
+	}
+	if err != nil {
+		d.logger.Printf("sweeping system prompt temp files: %v", err)
+	}
+}
 
 // reapStalePipelineRuns fails every pipeline_runs row a killed process left in
 // 'running' (the catchup reapStaleRecaps precedent), so the Pipeline Progress

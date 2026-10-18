@@ -17,8 +17,9 @@ import (
 // for byte: the read-folder option must not move a flag of an ordinary run.
 func TestClient_BuildArgs_WithoutReadFolderIsUnchanged(t *testing.T) {
 	c := NewClient("gpt-5.4", "", "codex")
-	args, stdin := c.buildArgs("sys", "hello", "/tmp/wd")
-	assert.Empty(t, stdin)
+	args, stdin := clientArgsT(t, c, "sys", "hello", "/tmp/wd")
+	assert.Equal(t, "hello", stdin)
+	assert.Equal(t, "sys", readInstructions(t, args))
 	assert.Equal(t, []string{
 		"exec",
 		"--model", "gpt-5.4",
@@ -36,8 +37,8 @@ func TestClient_BuildArgs_WithoutReadFolderIsUnchanged(t *testing.T) {
 		"-c", "features.apps=false",
 		"-c", "features.plugins=false",
 		"--cd", "/tmp/wd",
-		"-c", "developer_instructions=sys",
-		"hello",
+		"-c", "model_instructions_file=" + strconv.Quote(instructionsFileOf(t, args)),
+		"-",
 	}, args)
 }
 
@@ -58,7 +59,7 @@ func configValues(args []string) []string {
 func TestClient_BuildArgs_ReadFolder(t *testing.T) {
 	c := NewClient("gpt-5.4", "/data/wt.db", "codex")
 	c.SetReadFolder("/work/acme")
-	args, _ := c.buildArgs("sys", "hello", c.readFolder)
+	args, _ := clientArgsT(t, c, "sys", "hello", c.readFolder)
 
 	cd := slices.Index(args, "--cd")
 	require.GreaterOrEqual(t, cd, 0)
@@ -86,14 +87,14 @@ func TestClient_BuildArgs_ReadFolder(t *testing.T) {
 	// working root, so the temp .codex/config.toml route is not available).
 	assert.Contains(t, cfg, "mcp_servers.watchtower.command="+strconv.Quote(watchtowerBinary()))
 	assert.Contains(t, cfg, `mcp_servers.watchtower.args=["mcp", "--db-path", "/data/wt.db"]`)
-	assert.Equal(t, "hello", args[len(args)-1])
+	assert.Equal(t, "-", args[len(args)-1], "the turn travels on stdin")
 }
 
 // No database path → no watchtower server, as on an ordinary run.
 func TestClient_BuildArgs_ReadFolderWithoutDBMountsNoServer(t *testing.T) {
 	c := NewClient("gpt-5.4", "", "codex")
 	c.SetReadFolder("/work/acme")
-	args, _ := c.buildArgs("sys", "hello", c.readFolder)
+	args, _ := clientArgsT(t, c, "sys", "hello", c.readFolder)
 	for _, v := range configValues(args) {
 		assert.False(t, strings.HasPrefix(v, "mcp_servers."), "unexpected %s", v)
 	}

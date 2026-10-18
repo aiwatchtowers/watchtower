@@ -20,15 +20,10 @@ import (
 )
 
 // terminalTitleGeneratorFactory is the seam tests override to inject a mock
-// generator. The user message is the owner's own typed text, so the CLI
-// generators are switched to their stdin-only mode (CHAT-04: owner text is
-// never on argv).
+// generator. The user message is the owner's own typed text, which the CLI
+// generators always pass on stdin (CHAT-04: owner text is never on argv).
 var terminalTitleGeneratorFactory = func(cfg *config.Config) digest.Generator {
-	gen := cliGenerator(cfg)
-	if s, ok := gen.(interface{ SetStdinOnly(bool) }); ok {
-		s.SetStdinOnly(true)
-	}
-	return gen
+	return cliGenerator(cfg)
 }
 
 // terminalClaudeDir is the seam tests point at a temp dir: Claude Code's

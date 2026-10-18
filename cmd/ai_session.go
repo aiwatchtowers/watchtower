@@ -219,11 +219,8 @@ func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 		// The MCP server reads the running turn from the turn file.
 		c := codex.NewClient(w.model, w.dbPath, w.cfg.CodexPath)
 		c.SetMCPArgs(w.mcpArgs)
-		// CHAT-04 (spec §9): the chat session's system prompt and replayed
-		// history must never sit on this process's argv — route the whole
-		// turn through stdin instead of -c developer_instructions=... and a
-		// positional prompt.
-		c.SetStdinOnly(true)
+		// CHAT-04 (spec §9): the client always routes the system prompt and
+		// replayed history through stdin, never this process's argv.
 		return chat.NewTurnBackend(c, w.database, w.conv.ID, chat.WithSystemPrompt(w.prompt)), nil
 	case "ollama":
 		// Ollama ships no default model: without one every turn would fail
