@@ -14,7 +14,7 @@ func fetchedRepo(t *testing.T) string {
 	t.Helper()
 	dir := newRepo(t)
 	elsewhere(t, withOrigin(t, dir))
-	require.True(t, Fetch(context.Background(), Options{Folder: dir}).Fetched)
+	require.True(t, Fetch(context.Background(), Options{Folder: dir}, false).Fetched)
 	return dir
 }
 

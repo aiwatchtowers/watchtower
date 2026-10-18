@@ -74,8 +74,10 @@ var workbenchGitFetchCmd = &cobra.Command{
 	Short: "Fetch origin (git fetch --prune origin); the work tree and local branches stay as they are",
 	Long: "Updates origin's remote-tracking refs only, within 20 s. Never asks for anything: no\n" +
 		"credential helper, askpass or ssh prompt runs (ssh in batch mode), so a remote that needs\n" +
-		"a password or an unlocked key fails with git's words in `error`. A repository without an\n" +
-		"origin remote answers `no_remote`. Exit 0 once the workbench resolves.",
+		"a password or an unlocked key fails with git's words in `error`. Network remotes only: a\n" +
+		"path origin is refused. --unattended (a fetch nobody asked for just now) also keeps ssh\n" +
+		"off the ssh agent and the Keychain. A repository without an origin remote answers\n" +
+		"`no_remote`. Exit 0 once the workbench resolves.",
 	Args: cobra.NoArgs,
 	RunE: runWorkbenchGitFetch,
 }
@@ -107,6 +109,7 @@ var (
 	workbenchGitFlagConfirmAgent bool
 	workbenchGitFlagName         string
 	workbenchGitFlagFolder       string
+	workbenchGitFlagUnattended   bool
 )
 
 func init() {
@@ -128,6 +131,8 @@ func init() {
 		sw.BoolVar(&workbenchGitFlagConfirmAgent, "confirm-agent", false, "switch even though an agent session (Claude Code or Codex) is working in the folder")
 	}
 	workbenchGitCreateCmd.Flags().StringVar(&workbenchGitFlagName, "name", "", "the new branch's name")
+	workbenchGitFetchCmd.Flags().BoolVar(&workbenchGitFlagUnattended, "unattended", false,
+		"a fetch nobody asked for just now (the Desktop's automatic one): ssh uses no ssh agent and no Keychain")
 	workbenchCmd.AddCommand(workbenchGitCmd)
 }
 
@@ -312,7 +317,7 @@ func runWorkbenchGitFetch(cmd *cobra.Command, _ []string) error {
 	}
 	res := workbenchgit.FetchResult{Remote: workbenchgit.Remote}
 	if res.Refused, res.RefusedDetail = folderRefusal(folder, resolveErr); res.Refused == "" {
-		res = workbenchgit.Fetch(ctx, o)
+		res = workbenchgit.Fetch(ctx, o, workbenchGitFlagUnattended)
 	}
 	res.WorkbenchID = id
 	if workbenchGitFlagJSON {

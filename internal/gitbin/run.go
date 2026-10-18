@@ -184,11 +184,28 @@ var fetchEnv = []string{
 	"GIT_ALLOW_PROTOCOL=git:http:https:ssh",
 }
 
-// ExecFetch runs a background fetch argv (FetchArgs) like Exec, with
-// fetchEnv on top, in its own process group: when ctx ends the whole group
-// is killed — git's ssh or remote-http child included — not git alone.
-func ExecFetch(ctx context.Context, dir, name string, args ...string) (stdout, stderr []byte, err error) {
-	return run(ctx, dir, fetchEnv, nil, true, name, args...)
+// unattendedSSH is the ssh of a fetch nobody asked for (the Desktop's
+// automatic one): no ssh agent — a password manager's agent or `ssh-add -c`
+// shows its own approval prompt when asked to sign — and, on Apple's ssh,
+// no Keychain lookup of a key's passphrase. Only an unencrypted key on disk
+// can sign in.
+var unattendedSSH = []string{
+	"GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10 -o IdentityAgent=none" +
+		" -o IgnoreUnknown=UseKeychain -o UseKeychain=no",
+	"SSH_AUTH_SOCK=",
+}
+
+// ExecFetch runs a fetch argv (FetchArgs) like Exec, with fetchEnv on top,
+// in its own process group: when ctx ends the whole group is killed — git's
+// ssh or remote-http child included — not git alone. unattended (a fetch
+// the owner did not ask for just now) also keeps ssh away from the ssh
+// agent and the Keychain (unattendedSSH).
+func ExecFetch(ctx context.Context, dir string, unattended bool, name string, args ...string) (stdout, stderr []byte, err error) {
+	env := fetchEnv
+	if unattended {
+		env = append(slices.Clone(fetchEnv), unattendedSSH...)
+	}
+	return run(ctx, dir, env, nil, true, name, args...)
 }
 
 // ExecEnv is Exec with extraEnv appended after the inherited repository

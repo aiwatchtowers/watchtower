@@ -34,13 +34,26 @@ type FetchResult struct {
 	RefusedDetail string `json:"refused_detail"`
 }
 
+// unattendedKey marks a context whose fetch nobody asked for just now.
+type unattendedKey struct{}
+
+// isUnattended: ctx carries a fetch the owner did not start (Fetch's
+// unattended), which keeps ssh off the ssh agent and the Keychain.
+func isUnattended(ctx context.Context) bool {
+	v, _ := ctx.Value(unattendedKey{}).(bool)
+	return v
+}
+
 // Fetch runs `git fetch --prune origin`: it updates origin's remote-tracking
 // refs (one deleted on origin goes, so a branch tracking it reads
 // upstream_gone) and never touches the work tree, the index or a local
 // branch. No credential helper, askpass or ssh prompt can run (execRunner);
 // a remote that needs one fails with git's words in Error. It never fails
 // itself: the outcome is in the envelope. FetchTimeout bounds the fetch.
-func Fetch(ctx context.Context, o Options) FetchResult {
+// unattended is a fetch the owner did not start just now (the Desktop's
+// automatic one): ssh then signs in without the ssh agent or the Keychain,
+// so an agent that approves each use never shows its prompt.
+func Fetch(ctx context.Context, o Options, unattended bool) FetchResult {
 	res := FetchResult{Remote: Remote}
 	r, _, available, note, err := probe(ctx, o)
 	res.GitAvailable, res.Note = available, note
@@ -60,7 +73,7 @@ func Fetch(ctx context.Context, o Options) FetchResult {
 		res.Error = gitError(err)
 		return res
 	}
-	fetchCtx, cancel := context.WithTimeout(ctx, FetchTimeout)
+	fetchCtx, cancel := context.WithTimeout(context.WithValue(ctx, unattendedKey{}, unattended), FetchTimeout)
 	defer cancel()
 	// No submodule repositories (their own config), no gc or maintenance
 	// run afterwards, and git's own upload-pack name for the remote side:

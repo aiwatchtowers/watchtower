@@ -91,7 +91,7 @@ func TestFetch_UpdatesTheCountersAndNeverTheWorkTree(t *testing.T) {
 	assert.Empty(t, l.RemoteOnly)
 
 	start := time.Now().UTC()
-	res := Fetch(context.Background(), Options{Folder: dir})
+	res := Fetch(context.Background(), Options{Folder: dir}, false)
 	require.True(t, res.Fetched, "%+v", res)
 	assert.Empty(t, res.Error)
 	assert.Equal(t, "origin", res.Remote)
@@ -112,7 +112,7 @@ func TestFetch_UpdatesTheCountersAndNeverTheWorkTree(t *testing.T) {
 func TestFetch_NoOriginRunsNoFetch(t *testing.T) {
 	dir := newRepo(t)
 	rec := &recorder{}
-	res := Fetch(context.Background(), options(dir, rec))
+	res := Fetch(context.Background(), options(dir, rec), false)
 	assert.True(t, res.Git)
 	assert.True(t, res.NoRemote)
 	assert.False(t, res.Fetched)
@@ -123,7 +123,7 @@ func TestFetch_NoOriginRunsNoFetch(t *testing.T) {
 func TestFetch_OutsideARepositoryRunsNoGit(t *testing.T) {
 	gitBin(t)
 	rec := &recorder{}
-	res := Fetch(context.Background(), options(t.TempDir(), rec))
+	res := Fetch(context.Background(), options(t.TempDir(), rec), false)
 	assert.False(t, res.Git)
 	assert.NotEmpty(t, res.Note)
 	assert.Empty(t, rec.argv())
@@ -134,10 +134,11 @@ func TestFetch_OutsideARepositoryRunsNoGit(t *testing.T) {
 func TestFetch_UnreachableRemoteRunsNoFolderCommand(t *testing.T) {
 	dir := newRepo(t)
 	gitIn(t, dir, "remote", "add", "origin", "ssh://127.0.0.1:1/repo.git")
+	t.Setenv("HOME", t.TempDir()) // no ~/.ssh of the developer's
 	ssh, sshRan := marker(t, "ssh")
 	gitIn(t, dir, "config", "core.sshCommand", ssh)
 
-	res := Fetch(context.Background(), Options{Folder: dir})
+	res := Fetch(context.Background(), Options{Folder: dir}, false)
 	assert.False(t, res.Fetched)
 	assert.False(t, res.TimedOut)
 	assert.NotEmpty(t, res.Error)
@@ -146,29 +147,45 @@ func TestFetch_UnreachableRemoteRunsNoFolderCommand(t *testing.T) {
 }
 
 // ssh runs in batch mode with no askpass program: a stand-in ssh first on
-// PATH records its argv and runs $SSH_ASKPASS when it is set, as ssh would
-// for a passphrase.
+// PATH records its argv and agent socket and runs $SSH_ASKPASS when it is
+// set, as ssh would for a passphrase. The owner's fetch may use the ssh
+// agent; an unattended one may not (an agent that approves each use would
+// show its prompt).
 func TestFetch_SSHRunsInBatchModeWithNoAskpass(t *testing.T) {
 	dir := newRepo(t)
 	gitIn(t, dir, "remote", "add", "origin", "ssh://example.invalid/repo.git")
 	askpass, askpassRan := marker(t, "askpass")
 	gitIn(t, dir, "config", "core.askPass", askpass)
+	t.Setenv("HOME", t.TempDir()) // no ~/.ssh of the developer's
 	t.Setenv("SSH_ASKPASS", askpass)
 	t.Setenv("GIT_ASKPASS", askpass)
+	t.Setenv("SSH_AUTH_SOCK", "/tmp/agent.sock")
 	bin := t.TempDir()
-	argv := filepath.Join(t.TempDir(), "argv")
+	record := filepath.Join(t.TempDir(), "ssh-ran")
 	require.NoError(t, os.WriteFile(filepath.Join(bin, "ssh"), []byte("#!/bin/sh\n"+
-		"echo \"$@\" > '"+argv+"'\n"+
+		"echo \"$@|$SSH_AUTH_SOCK\" > '"+record+"'\n"+
 		"for a in \"$GIT_ASKPASS\" \"$SSH_ASKPASS\"; do [ -n \"$a\" ] && \"$a\"; done\n"+
 		"exit 255\n"), 0o755))
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	res := Fetch(context.Background(), Options{Folder: dir})
-	assert.False(t, res.Fetched)
-	assert.NotEmpty(t, res.Error)
-	got, err := os.ReadFile(argv)
-	require.NoError(t, err, "the stand-in ssh ran")
-	assert.Contains(t, string(got), "-o BatchMode=yes")
+	for _, unattended := range []bool{false, true} {
+		require.NoError(t, os.RemoveAll(record))
+		res := Fetch(context.Background(), Options{Folder: dir}, unattended)
+		assert.False(t, res.Fetched)
+		assert.NotEmpty(t, res.Error)
+		b, err := os.ReadFile(record)
+		require.NoError(t, err, "the stand-in ssh ran")
+		got := string(b)
+		assert.Contains(t, got, "-o BatchMode=yes")
+		if unattended {
+			assert.Contains(t, got, "-o IdentityAgent=none")
+			assert.Contains(t, got, "-o UseKeychain=no")
+			assert.Contains(t, got, "|\n", "no agent socket")
+		} else {
+			assert.NotContains(t, got, "IdentityAgent")
+			assert.Contains(t, got, "|/tmp/agent.sock\n", "the owner's fetch may use the agent")
+		}
+	}
 	assertNotRan(t, askpassRan)
 }
 
@@ -180,7 +197,7 @@ func TestFetch_PathRemoteIsRefused(t *testing.T) {
 	gitIn(t, dir, "remote", "set-url", "origin", origin)
 	pack, packRan := marker(t, "upload-pack")
 	gitIn(t, dir, "config", "remote.origin.uploadpack", pack)
-	res := Fetch(context.Background(), Options{Folder: dir})
+	res := Fetch(context.Background(), Options{Folder: dir}, false)
 	assert.False(t, res.Fetched)
 	assert.Contains(t, res.Error, "transport 'file' not allowed")
 	assertNotRan(t, packRan)
@@ -196,7 +213,7 @@ func TestFetch_RunsNoAlternateRefsCommand(t *testing.T) {
 		[]byte(filepath.Join(other, ".git", "objects")+"\n"), 0o644))
 	cmd, cmdRan := marker(t, "alternate-refs")
 	gitIn(t, dir, "config", "core.alternateRefsCommand", cmd)
-	res := Fetch(context.Background(), Options{Folder: dir})
+	res := Fetch(context.Background(), Options{Folder: dir}, false)
 	assert.True(t, res.Fetched, "%+v", res)
 	assertNotRan(t, cmdRan)
 }
@@ -221,6 +238,7 @@ func TestFetch_AuthenticationRunsNoHelperOrPrompt(t *testing.T) {
 	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
 	require.NoError(t, os.WriteFile(globalConfig, []byte("[credential]\n\thelper = "+global+"\n"), 0o644))
 	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
+	t.Setenv("HOME", t.TempDir())
 	// The system config is where Homebrew's and the Command Line Tools'
 	// git name osxkeychain.
 	systemConfig := filepath.Join(t.TempDir(), "gitconfig")
@@ -230,7 +248,7 @@ func TestFetch_AuthenticationRunsNoHelperOrPrompt(t *testing.T) {
 	require.NoError(t, os.Unsetenv("GIT_CONFIG_NOSYSTEM"))
 	t.Setenv("GIT_ASKPASS", askpass)
 
-	res := Fetch(context.Background(), Options{Folder: dir})
+	res := Fetch(context.Background(), Options{Folder: dir}, false)
 	assert.False(t, res.Fetched)
 	assert.Contains(t, res.Error, "terminal prompts disabled")
 	assertNotRan(t, localRan)
@@ -256,7 +274,7 @@ func TestFetch_TimeoutIsReported(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	start := time.Now()
-	res := Fetch(ctx, Options{Folder: dir})
+	res := Fetch(ctx, Options{Folder: dir}, false)
 	assert.Less(t, time.Since(start), 5*time.Second, "the whole process group is killed at the deadline")
 	assert.True(t, res.TimedOut, "%+v", res)
 	assert.False(t, res.Fetched)

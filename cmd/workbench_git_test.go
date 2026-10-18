@@ -288,6 +288,7 @@ func TestWorkbenchGit_EverySubcommandTakesWorkbenchAndJSON(t *testing.T) {
 		assert.NotNil(t, workbenchGitCheckoutCmd.Flags().Lookup(f), f)
 	}
 	assert.NotNil(t, workbenchGitCreateCmd.Flags().Lookup("name"))
+	assert.NotNil(t, workbenchGitFetchCmd.Flags().Lookup("unattended"))
 }
 
 func TestWorkbenchGit_TextStatusLeadsWithTheError(t *testing.T) {

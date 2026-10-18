@@ -71,7 +71,9 @@ package enum WorkbenchFetchPresentation {
     /// The quiet note of a fetch that did not happen, nil for a success or
     /// a repository without origin. git's first line, without its
     /// `fatal: ` — the branch list still works on the local data.
-    package static func failure(_ result: WorkbenchGitFetchResult) -> String? {
+    /// `unattended`: the automatic fetch, which uses no ssh agent; an ssh
+    /// key it could not use is then the agent's, and ↻ fetches with it.
+    package static func failure(_ result: WorkbenchGitFetchResult, unattended: Bool = false) -> String? {
         guard !result.fetched, !result.noRemote else { return nil }
         let detail: String
         if result.timedOut {
@@ -79,7 +81,7 @@ package enum WorkbenchFetchPresentation {
         } else if !result.refused.isEmpty {
             detail = WorkbenchBranchPresentation.refusalText(refused: result.refused, detail: result.refusedDetail)
         } else if !result.error.isEmpty {
-            detail = firstLine(result.error) + credentialsHint(result.error)
+            detail = firstLine(result.error) + credentialsHint(result.error, unattended: unattended)
         } else if !result.note.isEmpty {
             detail = result.note
         } else {
@@ -96,9 +98,12 @@ package enum WorkbenchFetchPresentation {
     /// Why a remote that wanted credentials failed, in git's words: an https
     /// login the fetch may not ask for (no prompt, no credential helper), or
     /// an ssh key or host key it may not confirm.
-    private static func credentialsHint(_ error: String) -> String {
+    private static func credentialsHint(_ error: String, unattended: Bool) -> String {
         if error.contains("terminal prompts disabled") {
             return " — Watchtower's fetch uses no credential helper and never asks for a password"
+        }
+        if unattended, error.contains("Permission denied") {
+            return " — the automatic fetch uses no ssh agent; press ↻ to fetch with it"
         }
         if ["Permission denied", "Host key verification failed"].contains(where: { error.contains($0) }) {
             return " — Watchtower's fetch never asks for a key passphrase and does not use a custom core.sshCommand"

@@ -73,7 +73,7 @@ func execRunner(ctx context.Context, dir string, stdin []byte, name string, args
 	var stdout, stderr []byte
 	var err error
 	if len(args) > 0 && args[0] == "fetch" { // the network: never a prompt (gitbin.ExecFetch)
-		stdout, stderr, err = gitbin.ExecFetch(ctx, dir, name, gitbin.FetchArgs(args...)...)
+		stdout, stderr, err = gitbin.ExecFetch(ctx, dir, isUnattended(ctx), name, gitbin.FetchArgs(args...)...)
 	} else {
 		argv := gitbin.OwnerArgs(args...)
 		if !ownerWrite(args) {

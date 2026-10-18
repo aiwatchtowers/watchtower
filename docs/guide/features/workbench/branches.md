@@ -22,7 +22,7 @@ The stash is never popped or deleted. The popover names the entry and the comman
 
 Opening the menu fetches origin in the background when the last fetch attempt for that repository was over five minutes ago. The list shows at once and updates when the fetch is done, so `↓1` and **upstream gone** match what was pushed or deleted elsewhere. A fetch only updates origin's branches: your files, local branches and stash are never touched, and it never pulls.
 
-Watchtower's fetch never asks you for a password or key passphrase, and never touches the Keychain. It uses network remotes only (https, ssh, git), not a folder path, and not a custom `core.sshCommand`. When origin needs a password or an unloaded key, or there is no network, a quiet **Couldn't fetch origin: …** note appears and the list keeps working on what is already there. An ssh agent you set up to approve each use, such as a password manager's, may still show its own approval.
+Watchtower's fetch never asks you for a password or key passphrase, and never touches the Keychain. It uses network remotes only (https, ssh, git), not a folder path, and not a custom `core.sshCommand`. When origin needs a password or an unloaded key, or there is no network, a quiet **Couldn't fetch origin: …** note appears and the list keeps working on what is already there. The automatic fetch also leaves your ssh agent alone, so an agent that approves each use, such as a password manager's, never asks; only the ↻ button uses your agent.
 
 ## Using it
 
@@ -34,6 +34,7 @@ Watchtower's fetch never asks you for a password or key passphrase, and never to
 
 ## When it's empty or wrong
 
+- **"Couldn't fetch origin: … the automatic fetch uses no ssh agent".** Your ssh key lives in your agent. Press ↻ to fetch with it.
 - **"Couldn't fetch origin: … never asks for a key passphrase".** Origin's ssh wants a key that is not in your ssh agent, or a host key confirmation. Add the key with `ssh-add`, or connect once from a terminal to accept the host key.
 - **"Couldn't fetch origin: … uses no credential helper".** Origin is https and needs a login, which Watchtower's fetch never asks for. Fetch from a terminal, or switch origin to an ssh URL.
 - **"Couldn't fetch origin: … transport 'file' not allowed".** Origin is a folder path. Watchtower fetches network remotes only.

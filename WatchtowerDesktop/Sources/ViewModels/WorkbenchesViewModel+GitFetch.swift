@@ -26,19 +26,20 @@ extension WorkbenchesViewModel {
         let root = root ?? activeCodeRoot(project: project)
         guard let repo = gitFetchRepository(GitRootKey(root)),
               WorkbenchFetchPresentation.isBackgroundFetchDue(gitFetchStates[repo], now: gitFetchNow()) else { return }
-        startFetch(project: project, root: root, repository: repo)
+        startFetch(project: project, root: root, repository: repo, unattended: true)
     }
 
-    /// The Fetch button: fetch now unless one is running.
+    /// The Fetch button: fetch now unless one is running. The owner asked
+    /// for it, so ssh may use their ssh agent.
     func fetchOrigin(project: Workbench, root: CodeRoot? = nil) {
         let root = root ?? activeCodeRoot(project: project)
         guard let repo = gitFetchRepository(GitRootKey(root)) else { return }
-        startFetch(project: project, root: root, repository: repo)
+        startFetch(project: project, root: root, repository: repo, unattended: false)
     }
 
     // MARK: - Private
 
-    private func startFetch(project: Workbench, root: CodeRoot, repository repo: String) {
+    private func startFetch(project: Workbench, root: CodeRoot, repository repo: String, unattended: Bool) {
         guard let cli, gitFetchStates[repo]?.running != true else { return }
         var state = gitFetchStates[repo] ?? GitFetchState()
         state.running = true
@@ -48,16 +49,20 @@ extension WorkbenchesViewModel {
         gitFetchTasks[repo] = Task { [weak self] in
             let outcome: Result<WorkbenchGitFetchResult, Error>
             do {
-                outcome = .success(try await cli.gitFetch(projectID: project.id, folder: key.worktreeFolder))
+                outcome = .success(try await cli.gitFetch(projectID: project.id, folder: key.worktreeFolder, unattended: unattended))
             } catch {
                 outcome = .failure(error)
             }
-            await self?.finishFetch(outcome, project: project, root: root, repository: repo)
+            await self?.finishFetch(outcome, project: project, root: root, repository: repo, unattended: unattended)
         }
     }
 
     private func finishFetch(
-        _ outcome: Result<WorkbenchGitFetchResult, Error>, project: Workbench, root: CodeRoot, repository repo: String
+        _ outcome: Result<WorkbenchGitFetchResult, Error>,
+        project: Workbench,
+        root: CodeRoot,
+        repository repo: String,
+        unattended: Bool
     ) async {
         defer { gitFetchTasks[repo] = nil }
         var state = gitFetchStates[repo] ?? GitFetchState()
@@ -65,7 +70,7 @@ extension WorkbenchesViewModel {
         switch outcome {
         case let .success(result):
             state.noRemote = result.noRemote
-            state.failure = WorkbenchFetchPresentation.failure(result)
+            state.failure = WorkbenchFetchPresentation.failure(result, unattended: unattended)
             if result.fetched { state.lastFetchedAt = gitFetchNow() } // the app's clock, as the rarity's
         case let .failure(error):
             print("[WorkbenchGit] workbench git fetch for workbench \(project.id) failed: \(error)")

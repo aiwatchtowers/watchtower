@@ -111,6 +111,9 @@ final class WorkbenchFetchTests: XCTestCase {
         XCTAssertEqual(Pres.failure(WorkbenchGitFetchResult(error: "git@example.com: Permission denied (publickey).\nfatal: Could not read")),
                        "Couldn't fetch origin: git@example.com: Permission denied (publickey)."
                         + " — Watchtower's fetch never asks for a key passphrase and does not use a custom core.sshCommand")
+        XCTAssertEqual(Pres.failure(WorkbenchGitFetchResult(error: "git@example.com: Permission denied (publickey)."), unattended: true),
+                       "Couldn't fetch origin: git@example.com: Permission denied (publickey)."
+                        + " — the automatic fetch uses no ssh agent; press ↻ to fetch with it")
         XCTAssertNil(Pres.failure(WorkbenchGitFetchResult(noRemote: true)), "no origin is no failure")
         XCTAssertEqual(Pres.failure(WorkbenchGitFetchResult(refused: "folder_not_a_worktree", refusedDetail: "missing")),
                        "Couldn't fetch origin: " + WorkbenchBranchPresentation.folderNotAWorktreeText)

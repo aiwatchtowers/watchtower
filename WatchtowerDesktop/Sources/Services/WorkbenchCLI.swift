@@ -1006,9 +1006,12 @@ struct WorkbenchCLI {
     /// `git fetch --prune origin` (board #563): only origin's remote-tracking
     /// refs move. Go never lets it prompt; every outcome is an exit-0
     /// envelope. `folder`: in a session's worktree (board #565).
-    func gitFetch(projectID: Int64, folder: String? = nil) async throws -> WorkbenchGitFetchResult {
+    /// `unattended`: the automatic fetch, which keeps ssh off the ssh agent
+    /// and the Keychain (an agent that approves each use never asks).
+    func gitFetch(projectID: Int64, folder: String? = nil, unattended: Bool = false) async throws -> WorkbenchGitFetchResult {
         var args = ["workbench", "git", "fetch", "--workbench", String(projectID)]
         if let folder { args += ["--folder", folder] }
+        if unattended { args.append("--unattended") }
         args.append("--json")
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorkbenchGitFetchResult.self, from: data)

@@ -151,7 +151,8 @@ final class WorkbenchesViewModelGitFetchTests: XCTestCase {
         XCTAssertEqual(vm.gitFetchState(key)?.running, true)
         await settle(vm)
 
-        XCTAssertEqual(runner.calls("fetch"), [["workbench", "git", "fetch", "--workbench", String(project.id), "--json"]])
+        XCTAssertEqual(runner.calls("fetch"), [["workbench", "git", "fetch", "--workbench", String(project.id), "--unattended", "--json"]],
+                       "the automatic fetch keeps ssh off the ssh agent")
         let state = vm.gitFetchState(key)
         XCTAssertEqual(state?.running, false)
         XCTAssertEqual(state?.lastFetchedAt, start)
@@ -182,6 +183,8 @@ final class WorkbenchesViewModelGitFetchTests: XCTestCase {
         vm.fetchOrigin(project: project, root: project.mainCodeRoot)
         await settle(vm)
         XCTAssertEqual(runner.calls("fetch").count, 2)
+        XCTAssertEqual(runner.calls("fetch").last, ["workbench", "git", "fetch", "--workbench", String(project.id), "--json"],
+                       "the owner's fetch may use their ssh agent")
     }
 
     /// The page shows a session's worktree of the same repository: a fetch
