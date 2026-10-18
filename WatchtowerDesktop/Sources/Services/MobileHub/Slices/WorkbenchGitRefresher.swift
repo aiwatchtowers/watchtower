@@ -106,14 +106,14 @@ final class WorkbenchGitRefresher: HubCompanion, Sendable {
     }
 
     /// A session of `workbenchID` changed state: wakes the loop, which
-    /// refreshes it no sooner than `minSpacing` after its last run.
+    /// refreshes it no sooner than `minSpacing` after its last run (a
+    /// workbench not listed yet runs as new on that pass).
     func sessionStateChanged(workbenchID: Int64) {
-        let known = state.withLock { state -> Bool in
-            guard state.entries[workbenchID] != nil else { return false }
+        state.withLock { state in
+            guard state.entries[workbenchID] != nil else { return }
             state.entries[workbenchID]?.requested = true
-            return true
         }
-        if known { wake.signal() }
+        wake.signal()
     }
 
     /// One pass: runs every due workbench, one after the other. A `stop()`

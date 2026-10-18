@@ -150,9 +150,13 @@ final class SessionReportRunner: HubCompanion, Sendable {
     /// The fast lane saw a session state change: wakes the loop, whose pass
     /// resolves the window's states.
     func sessionStatesChanged() {
+        markStatesChanged()
+        wake.signal()
+    }
+
+    private func markStatesChanged() {
         let stamp = now()
         state.withLock { $0.statesChangedAt = $0.statesChangedAt ?? stamp }
-        wake.signal()
     }
 
     /// The phone's `session_report_request`: a run with the network at the
@@ -188,8 +192,9 @@ final class SessionReportRunner: HubCompanion, Sendable {
 
     func start() {
         generation.withLock { $0 += 1 }
-        // States may have changed while the hub was off.
-        sessionStatesChanged()
+        // States may have changed while the hub was off; the loop's first
+        // pass resolves them, so no wake is needed.
+        markStatesChanged()
         let task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
