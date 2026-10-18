@@ -7,11 +7,13 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -94,14 +96,49 @@ func TestAgentsEnable_ReturnsWithoutScanning(t *testing.T) {
 // No daemon to nudge is not an error: it imports when it starts.
 func TestAgentsEnable_NoDaemonStillSucceeds(t *testing.T) {
 	wb := agentsFixture(t)
-	t.Cleanup(func() { flagAgentsWorkbench = 0; rootCmd.SetArgs(nil) })
+	t.Cleanup(func() { flagAgentsWorkbench, flagAgentsJSON = 0, false; rootCmd.SetArgs(nil) })
 	var out, errOut bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&errOut)
-	rootCmd.SetArgs([]string{"agents", "enable", "--workbench", strconv.FormatInt(wb, 10)})
+	rootCmd.SetArgs([]string{"agents", "enable", "--workbench", strconv.FormatInt(wb, 10), "--json"})
 	require.NoError(t, rootCmd.Execute())
-	assert.Contains(t, out.String(), "Agent analytics is on for workbench")
 	assert.NotContains(t, errOut.String(), "warning")
+	// stdout is exactly one JSON object: nothing else is printed around it.
+	dec := json.NewDecoder(&out)
+	var obj map[string]json.RawMessage
+	require.NoError(t, dec.Decode(&obj))
+	assert.Contains(t, obj, "workbench_id")
+	assert.False(t, dec.More(), "stdout holds more than one JSON value")
+	rest, err := io.ReadAll(dec.Buffered())
+	require.NoError(t, err)
+	assert.Empty(t, strings.TrimSpace(string(rest)))
+}
+
+// A move that fails after the switch is set says analytics stays on and
+// when the move is retried.
+func TestAgentsEnable_MoveFailureSaysAnalyticsStaysOn(t *testing.T) {
+	wb := agentsFixture(t)
+	var mainPath string
+	main := openAgentsTestMain(t, &mainPath)
+	seedMainAgentLog(t, main, wb)
+	_, err := main.Exec(`CREATE TRIGGER fail_move BEFORE DELETE ON agent_log_files BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+	require.NoError(t, err)
+	rootCmd.SetArgs([]string{"agents", "enable", "--workbench", strconv.FormatInt(wb, 10)})
+	t.Cleanup(func() { flagAgentsWorkbench = 0; rootCmd.SetArgs(nil) })
+
+	err = rootCmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "analytics stays on")
+	assert.Contains(t, err.Error(), "retries on the next daemon start or agents scan")
+	on, err := main.WorkbenchAgentAnalytics(wb)
+	require.NoError(t, err)
+	assert.True(t, on)
+}
+
+func TestImportStateText(t *testing.T) {
+	for token, want := range map[string]string{"loading": "loading history", "done": "history loaded", "not_started": "not started", "other": "other"} {
+		assert.Equal(t, want, importStateText(token), token)
+	}
 }
 
 func TestAgentsStatsJSON_PinnedKeys(t *testing.T) {

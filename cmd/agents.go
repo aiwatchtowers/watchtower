@@ -110,7 +110,8 @@ func runAgentsEnable(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	if err := moveAgentLogRows(cmd, database, al, path); err != nil {
-		return err
+		return fmt.Errorf("%w; analytics stays on for workbench %d and the move retries on the next daemon start or agents scan",
+			err, flagAgentsWorkbench)
 	}
 	nudgeDaemon(cmd)
 	progress, err := al.ImportProgress(flagAgentsWorkbench)
@@ -122,8 +123,21 @@ func runAgentsEnable(cmd *cobra.Command, _ []string) error {
 		return writeJSON(cmd.OutOrStdout(), agentsEnableJSON{WorkbenchID: flagAgentsWorkbench, Enabled: true, Import: imp})
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "Agent analytics is on for workbench %d; the daemon loads its history in the background (%s, %d files so far).\n",
-		flagAgentsWorkbench, imp.State, imp.FilesStored)
+		flagAgentsWorkbench, importStateText(imp.State), imp.FilesStored)
 	return nil
+}
+
+// importStateText is an agentreport.ImportState token for the human line.
+func importStateText(state string) string {
+	switch state {
+	case "loading":
+		return "loading history"
+	case "done":
+		return "history loaded"
+	case "not_started":
+		return "not started"
+	}
+	return state
 }
 
 // nudgeDaemon asks a running daemon to start a sync cycle now. No daemon is
@@ -175,6 +189,9 @@ func runAgentsScan(cmd *cobra.Command, _ []string) error {
 func printAgentsScan(cmd *cobra.Command, database *db.DB, al *agentlogdb.DB) error {
 	res, err := agentlog.Scan(cmd.Context(), database, al, flagAgentsWorkbench, agentlog.Options{ClaudeDir: agentsClaudeDir()})
 	if err != nil {
+		if res != nil && res.FailedFiles > 0 { // a failed progress write still returns what the scan did
+			fmt.Fprintf(cmd.ErrOrStderr(), "%d files failed (retried next scan); first: %v\n", res.FailedFiles, res.FirstFailure)
+		}
 		return err
 	}
 	if flagAgentsJSON {

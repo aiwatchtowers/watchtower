@@ -3,6 +3,7 @@ package agentlog
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -555,12 +556,32 @@ func TestScan_ImportProgressLoadingThenDone(t *testing.T) {
 	require.True(t, r.Incomplete)
 	p := f.importProgress()
 	assert.False(t, p.Complete)
+	assert.Less(t, p.FilesStored, 2, "a budget stop records the files stored so far")
 	assert.Equal(t, clock.Format(time.RFC3339), p.UpdatedAt)
 
 	f.scan()
 	p = f.importProgress()
 	assert.True(t, p.Complete)
 	assert.Equal(t, 2, p.FilesStored)
+}
+
+// A failed import-progress write still hands back what the scan did, so the
+// caller reports it (and its failed files) next to the error.
+func TestScan_ImportProgressWriteFailureReturnsResult(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.folder, "s1.jsonl", call(t, "s1", f.folder, "u1", "m1", "r1", 5))
+	_, err := f.al.Exec(`CREATE TRIGGER fail_import BEFORE INSERT ON agent_log_import BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+	require.NoError(t, err)
+
+	r, err := Scan(context.Background(), f.d, f.al, f.wb, Options{ClaudeDir: f.claude})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), fmt.Sprintf("recording import progress for workbench %d: ", f.wb))
+	require.NotNil(t, r)
+	assert.Equal(t, 1, r.FilesScanned)
+	assert.Equal(t, 1, r.EventsWritten)
+	p, err := f.al.ImportProgress(f.wb)
+	require.NoError(t, err)
+	assert.Nil(t, p)
 }
 
 // A transcript that keeps failing is retried every scan; it never holds the

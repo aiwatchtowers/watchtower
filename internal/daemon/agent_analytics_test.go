@@ -78,6 +78,8 @@ func TestPhaseAgentAnalytics_NilAgentlogSkips(t *testing.T) {
 	d, database := newAgentAnalyticsTestDaemon(t)
 	d.SetAgentLogDB(nil)
 	enableAgentAnalyticsWorkbench(t, database)
+	var logBuf bytes.Buffer
+	d.SetLogger(log.New(&logBuf, "", 0))
 
 	d.phaseAgentAnalytics(context.Background())
 
@@ -85,6 +87,34 @@ func TestPhaseAgentAnalytics_NilAgentlogSkips(t *testing.T) {
 	var n int
 	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM agent_log_events`).Scan(&n))
 	assert.Zero(t, n)
+	assert.Contains(t, logBuf.String(), "agentlog.db is not open; skipped")
+
+	// Logged once per daemon run, not every cycle.
+	logBuf.Reset()
+	d.phaseAgentAnalytics(context.Background())
+	assert.Empty(t, logBuf.String())
+	assert.Equal(t, 0, countPipelineRuns(t, database, "agent-analytics"))
+}
+
+// A failed import-progress write is the cycle's error, but the scan's work
+// still counts and its failures are still logged.
+func TestPhaseAgentAnalytics_ProgressWriteFailureKeepsResult(t *testing.T) {
+	d, database := newAgentAnalyticsTestDaemon(t)
+	enableAgentAnalyticsWorkbench(t, database)
+	_, err := d.agentLog.Exec(`CREATE TRIGGER fail_import BEFORE INSERT ON agent_log_import BEGIN SELECT RAISE(ABORT, 'boom'); END`)
+	require.NoError(t, err)
+	var logBuf bytes.Buffer
+	d.SetLogger(log.New(&logBuf, "", 0))
+
+	d.phaseAgentAnalytics(context.Background())
+
+	assert.Contains(t, logBuf.String(), "recording import progress for workbench")
+	var items int
+	var errText string
+	require.NoError(t, database.QueryRow(`SELECT items_found, error_msg FROM pipeline_runs WHERE pipeline = 'agent-analytics'`).
+		Scan(&items, &errText))
+	assert.Equal(t, 1, items)
+	assert.Contains(t, errText, "recording import progress")
 }
 
 // Spec D4: before the one-time move the phase skips (logged), with no

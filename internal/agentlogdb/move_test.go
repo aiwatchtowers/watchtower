@@ -225,7 +225,9 @@ func TestMoveFromMain_InterruptedBeforeDeleteResumes(t *testing.T) {
 
 func TestMoveFromMain_FreshInstall(t *testing.T) {
 	f := newMoveFixture(t)
-	require.NoError(t, f.move(t))
+	res, err := MoveFromMain(context.Background(), f.main, f.al, f.lockPath())
+	require.NoError(t, err)
+	assert.Nil(t, res, "a move with every count zero has nothing to log")
 	f.assertMoved(t)
 	assert.Equal(t, []int{0, 0, 0}, f.counts(t, f.al))
 	f.assertMainEmpty(t)

@@ -103,8 +103,8 @@ func (d *DB) Moved() (bool, error) {
 // transaction — the only analytics write to watchtower.db. The tables stay,
 // empty: an older binary on the same data directory still declares them.
 // Interrupted anywhere, the next call resumes (keys are unique; a marked
-// move skips straight to the delete). The result is nil when there was
-// nothing to do: already marked and watchtower.db's tables already empty.
+// move skips straight to the delete). The result is nil when it moved
+// nothing (every count zero), so a fresh install logs nothing.
 func MoveFromMain(ctx context.Context, main *db.DB, al *DB, lockPath string) (*MoveResult, error) {
 	start := time.Now()
 	lockCtx, cancel := context.WithTimeout(ctx, moveLockWait)
@@ -146,7 +146,7 @@ func MoveFromMain(ctx context.Context, main *db.DB, al *DB, lockPath string) (*M
 			}
 		}
 	}
-	if moved && res.Deleted == (MoveCounts{}) {
+	if res.Copied == (MoveCounts{}) && res.Deleted == (MoveCounts{}) && res.OrphanEvents == 0 {
 		return nil, nil
 	}
 	res.Elapsed = time.Since(start)

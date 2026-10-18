@@ -21,8 +21,9 @@ var agentAnalyticsClaudeDir = agentlog.DefaultClaudeDir
 // phaseAgentAnalytics keeps agentlog.db current for every workbench with
 // agent_analytics = 1. Inert (no pipeline_runs row) when none is enabled —
 // gated by the workbench column, not a config key (FEAT-01 note) — and when
-// agentlog.db did not open or the one-time move out of watchtower.db has not
-// completed (both logged here every cycle; never a fallback to watchtower.db).
+// agentlog.db did not open (logged once per daemon run) or the one-time move
+// out of watchtower.db has not completed (logged every cycle); never a
+// fallback to watchtower.db.
 func (d *Daemon) phaseAgentAnalytics(ctx context.Context) {
 	if d.db == nil || ctx.Err() != nil {
 		return
@@ -36,7 +37,9 @@ func (d *Daemon) phaseAgentAnalytics(ctx context.Context) {
 		return
 	}
 	if d.agentLog == nil {
-		d.logger.Printf("agent analytics: agentlog.db is not open; skipped (%d workbench(es) enabled)", len(ids))
+		if d.agentLogSkipLogged.CompareAndSwap(false, true) {
+			d.logger.Printf("agent analytics: agentlog.db is not open; skipped until the next start (%d workbench(es) enabled)", len(ids))
+		}
 		return
 	}
 	switch moved, err := d.agentLog.Moved(); {
@@ -59,6 +62,8 @@ func (d *Daemon) phaseAgentAnalytics(ctx context.Context) {
 				}
 				d.logger.Printf("agent analytics: workbench %d: %v", id, err)
 				errs = append(errs, err)
+			}
+			if res == nil { // a failed progress write still returns what the scan did
 				continue
 			}
 			items += res.EventsWritten

@@ -55,7 +55,8 @@ func DefaultClaudeDir() string {
 // One file that fails to read or store is counted in FailedFiles and the scan
 // goes on; Scan returns an error only for setup and bookkeeping failures.
 // It ends by recording the workbench's import progress (agent_log_import),
-// also after a budget stop.
+// also after a budget stop; a failure there returns the result together with
+// the error, so the caller still reports the failed files.
 // It only reads main (watchtower.db: workbenches, the worktree ledger,
 // terminal sessions) and writes al (agentlog.db). Until agentlogdb.MoveFromMain
 // completed it refuses with agentlogdb.ErrNotMoved and writes nothing.
@@ -125,7 +126,7 @@ func Scan(ctx context.Context, main *db.DB, al *agentlogdb.DB, id int64, o Optio
 		return nil, fmt.Errorf("repricing: %w", err)
 	}
 	if err := recordImportProgress(al, id, res, o.Now()); err != nil {
-		return nil, err
+		return res, fmt.Errorf("recording import progress for workbench %d: %w", id, err)
 	}
 	return res, nil
 }

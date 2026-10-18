@@ -186,6 +186,7 @@ type Daemon struct {
 	noOwnerLoggedDay map[string]string
 
 	heartbeatErrLogged atomic.Bool // one-shot latch for sync_progress.json write failures
+	agentLogSkipLogged atomic.Bool // one-shot latch for the analytics phase's nil-agentlog.db skip line
 
 	lockStats sql.DBStats // pool stats at the last cycle's lock sample (sampleLockStats)
 }

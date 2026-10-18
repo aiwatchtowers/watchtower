@@ -49,9 +49,15 @@ func TestOpen_SchemaAndPerms(t *testing.T) {
 	require.NoError(t, d.QueryRow(`PRAGMA foreign_keys`).Scan(&fkOn))
 	assert.Equal(t, 1, fkOn)
 
-	info, err := os.Stat(path)
+	// A write while the handle is open makes SQLite create -wal and -shm,
+	// which must be as private as the database itself.
+	_, err = d.Exec(`INSERT INTO agent_log_meta (key, value) VALUES ('perm_probe', 'x')`)
 	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		info, err := os.Stat(p)
+		require.NoError(t, err, p)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), p)
+	}
 
 	// A second open of the current file runs no migration and still works.
 	require.NoError(t, d.Close())

@@ -306,7 +306,11 @@ func upsertAgentLogEvent(tx *sql.Tx, e AgentLogEvent) error {
 // same folder (PROJ-02 exception: the rows outlive their workbench). A
 // session is orphaned when its project_id is NULL or not among liveIDs, the
 // workbench ids watchtower.db holds now: no foreign key reaches across the
-// two files, and projects ids are never reused (AUTOINCREMENT).
+// two files, and projects ids are never reused (AUTOINCREMENT). liveIDs is
+// the caller's snapshot: a second workbench on the same folder created
+// between that snapshot and this update looks orphaned here, so its rows
+// change owner to projectID. Nothing is lost: the rows stay, counted under
+// projectID instead.
 func (d *DB) AdoptAgentLogSessions(projectID int64, folder string, liveIDs []int64) (int64, error) {
 	live, err := json.Marshal(append([]int64{}, liveIDs...)) // never "null"
 	if err != nil {
@@ -479,7 +483,7 @@ func (d *DB) SetImportProgress(projectID int64, complete bool, filesStored int, 
 		ON CONFLICT (project_id) DO UPDATE SET complete = excluded.complete, files_stored = excluded.files_stored,
 		updated_at = excluded.updated_at`, projectID, complete, filesStored, now.UTC().Format(time.RFC3339))
 	if err != nil {
-		return fmt.Errorf("recording import progress: %w", err)
+		return fmt.Errorf("upserting agent_log_import: %w", err)
 	}
 	return nil
 }
