@@ -160,9 +160,16 @@ final class ChatViewModel {
     /// An owner turn's rows are being written (board #670): the composer's
     /// send is refused meanwhile, so one Enter never sends twice.
     private(set) var isStartingTurn = false
-    /// A send waits for the files dropped or pasted just before it (board
-    /// #670): the composer says so.
-    private(set) var isWaitingForAttachments = false
+    /// Sends waiting for the files dropped or pasted just before them
+    /// (board #670), each with the chat it was pressed in.
+    private var attachmentWaits: [UUID: (conversationID: Int64?, fromLanding: Bool)] = [:]
+    /// The shown chat's send waits for its files: the composer says so, and
+    /// a second Enter there does nothing. Another chat is not affected.
+    var isWaitingForAttachments: Bool {
+        attachmentWaits.values.contains { wait in
+            wait.conversationID == conversationID || (wait.fromLanding && isOnLanding)
+        }
+    }
     /// A turn is running or about to: what the composer and the actions
     /// that start a turn wait for.
     var isBusy: Bool { isStreaming || isStartingTurn || isFinishingTurn }
@@ -667,10 +674,11 @@ final class ChatViewModel {
         // Files dropped, pasted or removed just before Enter land first
         // (board #670); the composer says the send waits for them.
         if composerAttachments.isBusy || !pastesInFlight.isEmpty {
-            isWaitingForAttachments = true
+            let wait = UUID()
+            attachmentWaits[wait] = (shown, fromLanding)
             for paste in pastesInFlight.values { _ = await paste.value }
             await composerAttachments.settled()
-            isWaitingForAttachments = false
+            attachmentWaits[wait] = nil
         }
         // The owner opened another chat meanwhile: nothing goes out, and the
         // text stays where the switch left it, as for a switch before Enter.

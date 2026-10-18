@@ -20,8 +20,10 @@ final class InboxLearnedRulesViewModel {
         boosts = all.filter { $0.weight > 0 }
     }
 
-    /// A write that failed, shown over the list (board #670: no more `try?`).
+    /// A removal that failed, shown over the list (board #670: no more `try?`).
     var errorMessage: String?
+    /// An add that failed, shown in the add sheet (which stays open over it).
+    var addError: String?
     /// One write per rule at a time; its controls wait meanwhile.
     let pendingWrites = PendingWrites()
 
@@ -32,10 +34,10 @@ final class InboxLearnedRulesViewModel {
         let stored = await pendingWrites.run("add") { () -> Bool in
             do {
                 try await queries.upsertManual(ruleType: ruleType, scopeKey: scopeKey, weight: weight)
-                errorMessage = nil
+                addError = nil
                 return true
             } catch {
-                errorMessage = "Couldn't save the rule: \(error.localizedDescription)"
+                addError = "Couldn't save the rule: \(error.localizedDescription)"
                 return false
             }
         } ?? false

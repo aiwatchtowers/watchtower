@@ -98,6 +98,10 @@ final class ChatViewModelAsyncWriteTests: XCTestCase {
         let waiting = await eventually { vm.isWaitingForAttachments }
         XCTAssertTrue(waiting, "the composer says the send waits")
         vm.select(conversationID: chatB)
+        XCTAssertFalse(vm.isWaitingForAttachments, "the wait belongs to A: B's composer neither says it nor blocks Enter")
+        vm.select(conversationID: chatA)
+        XCTAssertTrue(vm.isWaitingForAttachments, "back on A it does")
+        vm.select(conversationID: chatB)
         held.release()
         await sending.value
 
