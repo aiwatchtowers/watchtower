@@ -3,6 +3,7 @@ package chat
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,16 +36,8 @@ import (
 // probe's own temp dir; --setting-sources project,local as in production (TCC
 // guard); the whole process group is reaped in t.Cleanup.
 func TestClaudeAILive_Probe(t *testing.T) {
-	if os.Getenv("WATCHTOWER_LIVE_CLAUDE") != "1" {
-		t.Skip("live claude.ai probe: set WATCHTOWER_LIVE_CLAUDE=1 (needs a logged-in claude CLI)")
-	}
-	for _, k := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK",
-		"CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"} {
-		if os.Getenv(k) != "" {
-			t.Skipf("live claude.ai probe: %s is set, claude.ai tools are off", k)
-		}
-	}
-	rec := newProbeRecorder(t)
+	skipUnlessLiveClaudeAI(t)
+	rec := newProbeRecorder(t, "claude_ai_raw.jsonl")
 
 	p := startLiveProbe(t, rec, "main", nil, nil)
 	servers := p.settledMCPStatus("status", 15*time.Second)
@@ -79,6 +72,106 @@ func TestClaudeAILive_Probe(t *testing.T) {
 	if init == nil || len(probeList(init["mcp_servers"])) != 0 {
 		t.Errorf("ENABLE_CLAUDEAI_MCP_SERVERS=0: init = %v, want one with no mcp_servers", init)
 	}
+}
+
+// TestClaudeAISandboxLive_ProtectedFoldersStayUnread drives the real CLI
+// under the production file sandbox (ChildSandbox) and shows the CLI reads a
+// model-chosen path before it asks the gate — and that inside the sandbox it
+// cannot read one in a protected folder. The protected folders are the
+// probe's stand-in home (<temp>/home/Documents, …/Desktop), never the real
+// ones, so a missed denial reads a canary instead of raising a privacy
+// prompt; the real home's protected folders are denied too, as in
+// production. Same gating and safety as TestClaudeAILive_Probe (every
+// request is denied); its own name keeps it out of record_fixtures.sh, and
+// WATCHTOWER_LIVE_CLAUDE_OUT gets its transcript as claude_ai_sandbox_raw.jsonl.
+func TestClaudeAISandboxLive_ProtectedFoldersStayUnread(t *testing.T) {
+	skipUnlessLiveClaudeAI(t)
+	p := startLiveProbe(t, newProbeRecorder(t, "claude_ai_sandbox_raw.jsonl"), "sandbox", nil, nil)
+	publish := func(path string) *probeTurn {
+		return p.turn("Call the Artifact tool once to publish the file "+path+
+			" (action publish, icon code). Do not try anything else. If it fails or is refused, reply with the error text.",
+			probeDeny, "Artifact")
+	}
+
+	// Control: outside the protected folders the CLI inspects the source
+	// before it asks — the request's pin says it is a file (a sha256, when
+	// present, is the file's).
+	open := filepath.Join(p.home, "open", "page.html")
+	if r := probeRequire(t, publish(open), "Artifact", "sandbox: publish outside the protected folders"); r != nil {
+		pin := probePublishPin(r)
+		if pin["kind"] != "file" {
+			t.Errorf("sandbox: publish pin = %v, want kind file", pin)
+		}
+		if sum, ok := pin["sha256"]; ok && sum != probeSHA256(t, open) {
+			t.Errorf("sandbox: publish pin sha256 = %v, want the source's", sum)
+		}
+	}
+
+	// A protected folder: the CLI cannot even stat the source (it refuses
+	// the call itself, observed with 2.1.302), and no line carries the
+	// file's content or hash.
+	for _, dir := range []string{"Documents", "Desktop"} {
+		path := filepath.Join(p.home, dir, "page.html")
+		canary := probeSHA256(t, path)
+		turn := publish(path)
+		for _, d := range turn.lines {
+			b, _ := json.Marshal(d)
+			if bytes.Contains(b, []byte(canary)) || bytes.Contains(b, []byte(probeCanary)) {
+				t.Errorf("sandbox: the CLI read %s: %s", path, b)
+			}
+		}
+		for _, r := range turn.requests("Artifact") {
+			if pin := probePublishPin(r); pin["kind"] == "file" {
+				t.Errorf("sandbox: the CLI saw %s as a file: %v", path, pin)
+			}
+		}
+		if d := turn.find("system", "permission_denied"); d != nil {
+			t.Logf("sandbox: publish from %s refused by the CLI: %v", dir, d["message"])
+		}
+	}
+
+	// Write into a protected folder never lands, whether or not it asks.
+	target := filepath.Join(p.home, "Desktop", "new.md")
+	turn := p.turn("Use the Write tool once to create "+target+" containing x. Do not try anything else. Then reply done.", probeDeny, "Write")
+	t.Logf("sandbox: Write into Desktop: %d request(s)", len(turn.requests("Write")))
+	if _, err := os.Lstat(target); !os.IsNotExist(err) {
+		t.Errorf("sandbox: a Write into the protected Desktop landed (lstat: %v)", err)
+	}
+}
+
+// skipUnlessLiveClaudeAI skips unless WATCHTOWER_LIVE_CLAUDE=1 and nothing
+// in the environment switches claude.ai mode off.
+func skipUnlessLiveClaudeAI(t *testing.T) {
+	t.Helper()
+	if os.Getenv("WATCHTOWER_LIVE_CLAUDE") != "1" {
+		t.Skip("live claude.ai probe: set WATCHTOWER_LIVE_CLAUDE=1 (needs a logged-in claude CLI)")
+	}
+	for _, k := range []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK",
+		"CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"} {
+		if os.Getenv(k) != "" {
+			t.Skipf("live claude.ai probe: %s is set, claude.ai tools are off", k)
+		}
+	}
+}
+
+// probeCanary is the content of the files in the stand-in home's protected
+// folders: no line from the CLI may ever carry it.
+const probeCanary = "SECRET-CANARY-737"
+
+// probePublishPin is an Artifact request's __artifactPublishSourcePin.
+func probePublishPin(r map[string]any) map[string]any {
+	in, _ := r["input"].(map[string]any)
+	pin, _ := in["__artifactPublishSourcePin"].(map[string]any)
+	return pin
+}
+
+func probeSHA256(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(b))
 }
 
 const (
@@ -417,6 +510,17 @@ func (pt *probeTurn) request(tool string) map[string]any {
 	return r
 }
 
+// requests is every can_use_tool request of the turn for tool.
+func (pt *probeTurn) requests(tool string) []map[string]any {
+	var out []map[string]any
+	for _, d := range pt.lines {
+		if r, _ := d["request"].(map[string]any); probeIsCanUseTool(d) && r["tool_name"] == tool {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 func (pt *probeTurn) toolRan(tool string) bool {
 	for _, id := range pt.toolUseIDs(tool) {
 		if res := pt.toolResult(id); res != nil && res["is_error"] != true {
@@ -512,12 +616,12 @@ type probeRecorder struct {
 	err   error // the first write error, reported at cleanup
 }
 
-func newProbeRecorder(t *testing.T) *probeRecorder {
+func newProbeRecorder(t *testing.T, name string) *probeRecorder {
 	dir := os.Getenv("WATCHTOWER_LIVE_CLAUDE_OUT")
 	if dir == "" {
 		dir = t.TempDir()
 	}
-	f, err := os.Create(filepath.Join(dir, "claude_ai_raw.jsonl"))
+	f, err := os.Create(filepath.Join(dir, name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,6 +670,7 @@ type liveProbe struct {
 	base     string // the temp root every allowed file tool must stay in
 	cwd      string
 	outside  string
+	home     string // a stand-in home whose protected folders the sandbox denies
 	stdin    io.WriteCloser
 	lines    chan map[string]any
 }
@@ -582,7 +687,18 @@ func startLiveProbe(t *testing.T, rec *probeRecorder, scenario string, extraArgs
 	args := append([]string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
 		"--verbose", "--setting-sources", "project,local", "--permission-prompt-tool", "stdio",
 		"--model", "haiku", "--tools", "ToolSearch,WebSearch,Artifact,Write,Edit,Read"}, extraArgs...)
-	cmd := exec.Command(bin, args...)
+	// Under the production file sandbox, over the real home and the
+	// stand-in one.
+	homes := []string{p.home}
+	if h, err := os.UserHomeDir(); err == nil {
+		homes = append(homes, h)
+	}
+	sandbox, err := NewChildSandboxAt(sandboxExecPath, homes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, argv := sandbox.command(bin, args)
+	cmd := exec.Command(name, argv...)
 	cmd.Dir = p.cwd
 	cmd.Env = append(append(os.Environ(), "PATH="+claude.RichPATH(),
 		"CLAUDE_CODE_ARTIFACT=1", "CLAUDE_CODE_ARTIFACT_AUTO_OPEN=0"), extraEnv...)
@@ -590,7 +706,6 @@ func startLiveProbe(t *testing.T, rec *probeRecorder, scenario string, extraArgs
 	cmd.WaitDelay = 5 * time.Second // bounds the stderr copy if a grandchild keeps it open
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	var err error
 	if p.stdin, err = cmd.StdinPipe(); err != nil {
 		t.Fatal(err)
 	}
@@ -643,17 +758,25 @@ func newProbeDirs(t *testing.T, rec *probeRecorder, scenario string) *liveProbe 
 	}
 	rec.addRoot(base, link)
 	p := &liveProbe{t: t, scenario: scenario, rec: rec, base: base,
-		cwd: filepath.Join(base, "cwd"), outside: filepath.Join(base, "outside"),
+		cwd: filepath.Join(base, "cwd"), outside: filepath.Join(base, "outside"), home: filepath.Join(base, "home"),
 		lines: make(chan map[string]any, 1024)}
-	for _, d := range []string{p.cwd, p.outside} {
+	for _, d := range []string{p.cwd, p.outside, p.home} {
 		if err := os.Mkdir(d, 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
+	for _, d := range []string{"Documents", "Desktop", "open"} {
+		if err := os.Mkdir(filepath.Join(p.home, d), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	files := map[string]string{
-		filepath.Join(p.cwd, "inside.txt"):      "inside file\n",
-		filepath.Join(p.cwd, "page.html"):       "<h1>Probe</h1>\n",
-		filepath.Join(p.outside, "outside.txt"): "outside file\n",
+		filepath.Join(p.cwd, "inside.txt"):              "inside file\n",
+		filepath.Join(p.cwd, "page.html"):               "<h1>Probe</h1>\n",
+		filepath.Join(p.outside, "outside.txt"):         "outside file\n",
+		filepath.Join(p.home, "open", "page.html"):      "<h1>Open</h1>\n",
+		filepath.Join(p.home, "Documents", "page.html"): "<h1>" + probeCanary + " documents</h1>\n",
+		filepath.Join(p.home, "Desktop", "page.html"):   "<h1>" + probeCanary + " desktop</h1>\n",
 	}
 	for path, body := range files {
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {

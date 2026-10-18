@@ -36,6 +36,41 @@ Claude Docs to `claude.ai Connector A…`; connector ids to `mcpsrv_fixture_N`.
 8. **Deny path.** The model gets a `tool_result` with `is_error:true` and `content` = the deny message **verbatim**; `tool_result_meta` says `non_execution_kind:"permission-rule"`, `source:"user_reject"`; the turn's `result.permission_denials` lists `{tool_name, tool_use_id, tool_input}`; the turn still ends `success`.
 9. **Auth field.** `init.apiKeySource` is `"none"` under the claude.ai login; no other auth field in `init` *(observed)*.
 
+## Sandbox (2026-10-18, the TCC guard)
+
+Both live tests now run the CLI under the production file sandbox
+(`ChildSandbox`, `internal/chat/sandbox.go`) over the real home and a stand-in
+one (`<temp>/home` with `Documents/`, `Desktop/`, `open/`).
+`TestClaudeAILive_Probe` passes unchanged under it (login, connectors,
+`mcp_status`, Docs, Read/Edit/Write, interrupt). The
+TCC-specific answers come from `TestClaudeAISandboxLive_ProtectedFoldersStayUnread`
+(not part of the recording; `WATCHTOWER_LIVE_CLAUDE_OUT` gets its transcript as
+`claude_ai_sandbox_raw.jsonl`):
+
+- **The CLI touches a model-chosen path before it asks.** A `publish` of
+  `home/open/page.html` reaches `can_use_tool` with
+  `__artifactPublishSourcePin.kind:"file"` (outside the cwd there was no
+  `sha256` this time; inside it, line 8 of the fixtures has one). A `Write` to
+  `home/Desktop/new.md` reaches `can_use_tool` only after the CLI tried to
+  stat and list `home/Desktop` (`decision_reason_type:"safetyCheck"`, "a
+  sensitive file"). On the real `~/Documents` or `~/Desktop` either touch
+  would come from a Watchtower-spawned process.
+- **Under the sandbox, nothing in a protected folder is touched.** A
+  `publish` of `home/Documents/page.html` or `home/Desktop/page.html` never
+  reaches `can_use_tool`: the CLI refuses it itself (`system`/
+  `permission_denied`, "file_path: this source cannot be safely verified —
+  publish the file by its resolved path"), and no line carries the file's
+  content or hash. The kernel log shows only denials for the CLI's pid
+  (`Sandbox: 2.1.302(<pid>) deny(1) file-read-metadata …/home/Documents/page.html`,
+  `deny(1) file-read-data …/home/Documents`), and `tccd` logs nothing for
+  it. The denied `Write` creates nothing.
+- **A sandbox denial never reaches TCC** *(observed on macOS 26.7)*: reading
+  an FDA-guarded file (`~/Library/Application Support/com.apple.TCC/TCC.db`)
+  unsandboxed logs a `tccd` `AUTHREQ_ATTRIBUTION` naming the responsible app
+  and `System Policy: … deny(1)`; the same read under a profile that denies
+  the folder logs `Sandbox: … deny(1)` and no `tccd` request. The process
+  profile is evaluated first, so a denied path never prompts.
+
 ## Also observed
 
 - **Interrupt while a request waits:** the CLI sends `{"type":"control_cancel_request","request_id":"<the can_use_tool id>"}`, answers the interrupt with `{"still_queued":[]}`, gives the model a rejected `tool_result` ("The user doesn't want to proceed…"), and ends the turn `error_during_execution` (`terminal_reason` varied between runs: `aborted_tools`, `aborted_streaming`). The cancelled call is listed in `result.permission_denials` like a deny. The tool never ran. A late allow sent for the cancelled id produced no tool run (exploratory run).

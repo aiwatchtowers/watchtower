@@ -113,8 +113,7 @@ func TestPublishDir_CheckAcceptsTheResolvedSpelling(t *testing.T) {
 	assert.ErrorIs(t, d.Check(filepath.Join(realRoot, "cwd", "deck.html")), ErrOutsidePublishDir)
 }
 
-// An outside path is decided from its text: Check never stats it (no TCC
-// prompt), so even an unreadable parent yields the outside error, and the
+// An outside path is decided from its text: Check never stats it, so even an unreadable parent yields the outside error, and the
 // only paths ever handed to lstat are inside the publish dir.
 func TestPublishDir_NeverTouchesOutsidePaths(t *testing.T) {
 	_, d := newTestPublishDir(t)

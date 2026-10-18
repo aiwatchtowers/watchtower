@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -29,14 +30,22 @@ import (
 var claudeAIOffEnv = []string{"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
 	"CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"}
 
-// claudeAILoginEnv makes the test process look like a claude.ai login and
-// gives the session a private temp dir (its work and publish dirs).
+// claudeAILoginEnv makes the test process look like a claude.ai login, gives
+// the session a private temp dir (its work and publish dirs) and a file
+// sandbox over a stand-in sandbox-exec that runs the CLI unconfined (the CI
+// is Linux; internal/chat tests the real one).
 func claudeAILoginEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range claudeAIOffEnv {
 		t.Setenv(k, "")
 	}
 	t.Setenv("TMPDIR", t.TempDir())
+	bin := filepath.Join(t.TempDir(), "sandbox-exec")
+	require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n"), 0o700))
+	home := t.TempDir()
+	prev := aiSessionSandbox
+	aiSessionSandbox = func() (*chat.ChildSandbox, error) { return chat.NewChildSandboxAt(bin, []string{home}) }
+	t.Cleanup(func() { aiSessionSandbox = prev })
 }
 
 // One availability answer decides the prompt section, the mode and the
@@ -55,6 +64,7 @@ func TestAISession_PromptOptionsClaudeAIByProvider(t *testing.T) {
 	assert.Equal(t, chat.ClaudeAIPromptOn, on.prompt.Kind)
 	assert.True(t, on.mode.On)
 	assert.True(t, on.mode.Connectors)
+	assert.NotNil(t, on.mode.Sandbox, "an On session always gets its file sandbox")
 	assert.True(t, on.prompt.Connectors)
 	require.NotNil(t, on.publish)
 	assert.Equal(t, on.publish.Path(), on.prompt.PublishDir)
@@ -93,6 +103,17 @@ func TestAISession_PromptOptionsClaudeAIByProvider(t *testing.T) {
 	assert.False(t, broken.mode.On)
 	assert.Nil(t, broken.publish)
 	assert.Empty(t, broken.reason)
+
+	// No file sandbox on this machine: the tools stay off and Settings is
+	// told why (the cause is not this conversation's).
+	aiSessionSandbox = func() (*chat.ChildSandbox, error) { return nil, errors.New("no sandbox-exec") }
+	bare := resolveClaudeAI(cfgFor("claude"), "main", 7, os.Environ(), io.Discard)
+	assert.Equal(t, chat.ClaudeAIPromptUnavailable, bare.prompt.Kind)
+	assert.False(t, bare.mode.On)
+	assert.Nil(t, bare.mode.Sandbox)
+	assert.Nil(t, bare.publish)
+	assert.Contains(t, bare.reason, "sandbox")
+	assert.Equal(t, bare.prompt.Reason, bare.reason)
 
 	// The prompt options carry exactly the resolved section.
 	assert.Equal(t, on.prompt, sessionPromptOptions(cfgFor("claude"), "main", 0, time.Now(), on.prompt).ClaudeAI)

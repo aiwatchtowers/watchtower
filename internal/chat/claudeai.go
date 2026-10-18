@@ -14,6 +14,9 @@ type ClaudeAIMode struct {
 	// Connectors is the owner's ai.claude_ai.connectors switch; false keeps
 	// publishing and loads no connector (ENABLE_CLAUDEAI_MCP_SERVERS=0).
 	Connectors bool
+	// Sandbox keeps the child out of the TCC-guarded folders. On requires
+	// it: the backend refuses to spawn an On child without one.
+	Sandbox *ChildSandbox
 }
 
 // claudeAIOffMarkers are the child environment variables under which the CLI

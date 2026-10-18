@@ -32,6 +32,10 @@ var (
 	aiSessionGatePoll        time.Duration
 )
 
+// aiSessionSandbox builds the claude.ai-mode child's file sandbox; tests
+// substitute a stand-in for macOS's sandbox-exec.
+var aiSessionSandbox = chat.NewChildSandbox
+
 // claudeAISetup is the main chat's claude.ai mode, decided once per `ai
 // session` process from one chat.ClaudeAIAvailability answer: the backend's
 // mode, the prompt's section and the publish dir always agree.
@@ -52,7 +56,8 @@ type claudeAISetup struct {
 // claudeSessionOptions adds nothing), so an API key the app inherited turns
 // the mode off. Embedded surfaces get nothing (decision Q2); a Codex or
 // Ollama main chat gets the prompt's one line; a Claude main chat gets the
-// tools, or the reason it cannot have them.
+// tools and the file sandbox its child runs in, or the reason it cannot have
+// them (no sandbox, no tools).
 func resolveClaudeAI(cfg *config.Config, surface string, convID int64, env []string, warn io.Writer) claudeAISetup {
 	if surface != "main" {
 		return claudeAISetup{}
@@ -67,13 +72,20 @@ func resolveClaudeAI(cfg *config.Config, surface string, convID int64, env []str
 	case !on:
 		return claudeAISetup{prompt: chat.ClaudeAIPrompt{Kind: chat.ClaudeAIPromptUnavailable, Reason: reason}, reason: reason}
 	}
+	sandbox, err := aiSessionSandbox()
+	if err != nil {
+		// The machine's, not this conversation's: Settings is told.
+		fmt.Fprintf(warn, "claude.ai tools are off: %v\n", err)
+		reason := "claude.ai tools are off: the file sandbox that keeps the chat out of protected folders is not available."
+		return claudeAISetup{prompt: chat.ClaudeAIPrompt{Kind: chat.ClaudeAIPromptUnavailable, Reason: reason}, reason: reason}
+	}
 	publish, err := chat.NewPublishDir(chat.NeutralWorkDir(), convID)
 	if err != nil {
 		fmt.Fprintf(warn, "claude.ai tools are off: %v\n", err)
 		return claudeAISetup{prompt: chat.ClaudeAIPrompt{Kind: chat.ClaudeAIPromptUnavailable,
 			Reason: "claude.ai tools are off: the chat's publish folder could not be prepared."}}
 	}
-	mode := chat.ClaudeAIMode{On: true, Connectors: cfg.AI.ClaudeAI.Connectors}
+	mode := chat.ClaudeAIMode{On: true, Connectors: cfg.AI.ClaudeAI.Connectors, Sandbox: sandbox}
 	return claudeAISetup{mode: mode, publish: publish, prompt: chat.ClaudeAIPrompt{
 		Kind: chat.ClaudeAIPromptOn, PublishDir: publish.Path(), Connectors: mode.Connectors}}
 }

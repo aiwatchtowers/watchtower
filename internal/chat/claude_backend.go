@@ -542,7 +542,22 @@ func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(b.opts.Binary, claudeArgs(b.opts, b.promptFile, b.mcpFile, resume)...)
+	name, args := b.opts.Binary, claudeArgs(b.opts, b.promptFile, b.mcpFile, resume)
+	if b.opts.ClaudeAI.On {
+		// claude.ai mode exposes Write and Artifact, whose paths the CLI
+		// touches before the gate decides: never without the sandbox.
+		if b.opts.ClaudeAI.Sandbox == nil {
+			return nil, errors.New("claude.ai mode needs its file sandbox")
+		}
+		// Resolved here, as exec.Command would: sandbox-exec searches the
+		// child's PATH instead.
+		bin, err := exec.LookPath(name)
+		if err != nil {
+			return nil, fmt.Errorf("starting claude: %w", err)
+		}
+		name, args = b.opts.ClaudeAI.Sandbox.command(bin, args)
+	}
+	cmd := exec.Command(name, args...)
 	// A TCC-neutral, empty cwd: never inherit one inside ~/Documents or
 	// ~/Desktop, and never one holding a project CLAUDE.md (see WorkDir).
 	cmd.Dir = dir
