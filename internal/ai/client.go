@@ -383,6 +383,8 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
 	} else {
+		// Mounted Quick Connections' texts are fenced as external data.
+		systemPrompt = WithExternalDataRule(systemPrompt, c.externalServers)
 		if systemPrompt == "" {
 			// An empty prompt still replaces claude's default one and
 			// carries nothing.

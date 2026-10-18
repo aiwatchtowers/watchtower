@@ -562,3 +562,34 @@ func TestLoadExternalMCPServers_StaticHeadersOverRemoteHTTPNotMounted(t *testing
 	require.Contains(t, err.Error(), "must use https")
 	require.NotContains(t, err.Error(), "sign in again")
 }
+
+// A connection stored under a reserved name before add refused it is never
+// mounted — the mcp__watchtower allow token would cover its tools (QC-02,
+// board #556) — and its row tells the owner to add it again under another
+// name; other connections still mount.
+func TestLoadExternalMCPServers_ReservedNameNotMounted(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+
+	bad, err := database.InsertExternalConnection(db.ExternalConnection{
+		Name: "watchtower__x", Kind: "stdio", Command: "srv", Enabled: true,
+	})
+	require.NoError(t, err)
+	cacheReadOnlyTool(t, database, bad)
+	good, err := database.InsertExternalConnection(db.ExternalConnection{
+		Name: "tracker", Kind: "stdio", Command: "srv", Enabled: true,
+	})
+	require.NoError(t, err)
+	cacheReadOnlyTool(t, database, good)
+
+	servers := loadExternalMCPServers(cfg, cfg.DBPath())
+	require.Len(t, servers, 1)
+	require.Equal(t, "tracker", servers[0].Name)
+	conn, err := database.GetExternalConnection(bad)
+	require.NoError(t, err)
+	require.Equal(t, "error", conn.Status)
+	require.Contains(t, conn.Error, `the name "watchtower__x" is reserved`)
+	require.Contains(t, conn.Error, "add it again under another name")
+}

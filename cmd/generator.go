@@ -253,6 +253,13 @@ const toolsListRetryAfter = time.Hour
 // logged and, unless it is a credential problem applyOAuthCredentials already
 // recorded, written to the row ("error") so Settings shows it.
 func mountConnection(cfg *config.Config, database *db.DB, c db.ExternalConnection) (ai.ExternalMCPServer, bool) {
+	if reservedConnectionName(c.Name) {
+		// Added before add refused the name: never mounted, since the
+		// mcp__watchtower allow token would cover its tools (QC-02).
+		return ai.ExternalMCPServer{}, connectionUnmounted(database, c, fmt.Sprintf(
+			"the name %q is reserved for Watchtower's own tools, so none of its tools is available to the chat — remove it (`watchtower connections remove %d`) and add it again under another name",
+			c.Name, c.ID))
+	}
 	server, err := connectionServer(cfg, database, c)
 	if err != nil {
 		return server, false

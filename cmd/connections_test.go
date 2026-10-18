@@ -364,6 +364,30 @@ func TestConnections_AddRejectsReservedName(t *testing.T) {
 	assert.Empty(t, conns, "a rejected reserved name must create no row")
 }
 
+// A name starting with "watchtower_" would give the connection tools named
+// mcp__watchtower_..., which the whole-server mcp__watchtower allow token
+// covers — past QC-02 (board #556). Rejected case-insensitively; a name
+// merely containing "watchtower" is fine.
+func TestConnections_AddRejectsWatchtowerPrefix(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	for _, name := range []string{"watchtower__x", "watchtower_", "Watchtower_Tools"} {
+		_, err := runConnections(t, "", "add", "--name", name, "--kind", "stdio", "--command", "npx")
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "reserved", name)
+		assert.Contains(t, err.Error(), name, "the message names the refused name")
+	}
+	for _, name := range []string{"watchtowerx", "my-watchtower", "watchtower-x"} {
+		_, err := runConnections(t, "", "add", "--name", name, "--kind", "stdio", "--command", "npx")
+		require.NoError(t, err, name)
+	}
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	conns, err := database.ListExternalConnections()
+	require.NoError(t, err)
+	assert.Len(t, conns, 3, "only the allowed names created a row")
+}
+
 // TestConnectionsEnable_WarnsUnderNonClaudeProvider covers the provider-
 // honesty warning: ollama chats never wire external connections (they route
 // through runtime B), so enabling a connection there is inert; claude and
