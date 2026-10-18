@@ -150,6 +150,24 @@
   .prog i { display:inline-block; width:60px; height:3px; border-radius:2px; background:var(--chip); vertical-align:middle; margin-left:6px; position:relative; overflow:hidden; }
   .prog i b { position:absolute; top:0; bottom:0; left:0; background:var(--accent); }
   @media (max-width:860px) { .learn { grid-template-columns:1fr; } }
+  .sheet { background:var(--win); border:1px solid var(--line2); border-radius:12px; box-shadow:0 20px 60px rgba(0,0,0,.45); max-width:820px; margin:0 auto; overflow:hidden; }
+  .sh-h { display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid var(--line); }
+  .sh-h b { font-size:16px; } .sh-h span { color:var(--text3); }
+  .filters { display:flex; gap:6px; flex-wrap:wrap; padding:10px 20px; border-bottom:1px solid var(--line); }
+  .pill { border:1px solid var(--line2); border-radius:999px; padding:2px 10px; font-size:12px; color:var(--text2); }
+  .pill.on { background:var(--sel); color:var(--text); border-color:transparent; }
+  .sh-b { padding:6px 20px 16px; max-height:none; }
+  .area { margin-top:14px; }
+  .area-h { display:flex; justify-content:space-between; align-items:baseline; font-weight:650; margin-bottom:4px; }
+  .area-h span { color:var(--text3); font-weight:500; font-size:12px; }
+  .area-h small { color:var(--text3); font-weight:400; font-size:11.5px; margin-left:8px; }
+  .lr { display:grid; grid-template-columns:22px minmax(0,1fr) auto auto; gap:10px; align-items:center; padding:6px 0; border-top:1px solid var(--line); }
+  .lr .ic { color:var(--accent); text-align:center; }
+  .lr .t { font-weight:600; } .lr .t span { color:var(--text2); font-weight:400; margin-left:6px; }
+  .lr .lv { font-size:10.5px; color:var(--text3); border:1px solid var(--line2); border-radius:4px; padding:0 5px; }
+  .lr .ac { color:var(--accent); font-size:12px; white-space:nowrap; }
+  .lr.seen .t, .lr.seen .ic { color:var(--text3); } .lr.seen .t span { color:var(--text3); }
+  .lr.seen .ac { color:var(--text3); }
   .help { color:var(--text3); margin-top:22px; font-size:12px; }
   .help a { color:var(--accent); text-decoration:none; }
 
@@ -253,7 +271,7 @@
             </div>
           </div>
           <div class="zone lz">
-            <div class="zh"><span class="t">Learn Watchtower<span class="prog">14 of 42 seen<i><b style="width:33%"></b></i></span></span><span class="a">See all →</span></div>
+            <div class="zh"><span class="t">Learn Watchtower<span class="prog">34 of 186 seen<i><b style="width:18%"></b></i></span></span><span class="a">See all →</span></div>
             <div class="learn">
               <div class="lc"><div class="h"><span class="ic">◐</span></div><div class="tt">Automations <span class="new">NEW IN 0.22</span></div><div class="ds">Recipes the daemon runs for you: a weekly report, a Slack digest to a channel.</div><div class="ft"><span class="btn p">Templates</span><span class="g">Got it</span></div></div>
               <div class="lc"><div class="h"><span class="ic">⌘</span></div><div class="tt">Ask from anywhere</div><div class="ds">Press ⌘/ on any screen to ask the assistant about what you see.</div><div class="ft"><span class="btn p">Try ⌘/</span><span class="g">Got it</span></div></div>
@@ -271,7 +289,7 @@
       <li>Hover a row: <b>Open</b> · <b>✓ Done</b> · <b>Hide</b>. A proposal only opens, because it needs its review in Inbox.</li>
       <li>Below NOW: the rest of today by time, the next meeting in bold. Then <b>Tomorrow</b>, meetings only.</li>
       <li>On the right: Workbench (only live sessions and open asks), links with a short status, and today's numbers in muted text.</li>
-      <li><b>Learn Watchtower</b> at the end of the right column (the columns can differ in height; the page scrolls as a whole): 3 features at a time, picked from about 40, with features new in this version first. Got it, or trying a feature, marks it seen in the database and the next one takes its place. See all opens the full list. Built in #718.</li>
+      <li><b>Learn Watchtower</b> at the end of the right column (the columns can differ in height; the page scrolls as a whole): 3 features at a time, picked from about 190 cards written in the user guide, with cards new in this version first. Got it, or trying a feature, marks it seen in the database and the next one takes its place. See all opens the full list. Built in #718.</li>
       <li>Every zone uses the same card and the same header style.</li>
     </ul></div>
 
@@ -320,7 +338,7 @@
             </div>
           </div>
           <div class="zone lz">
-            <div class="zh"><span class="t">Learn Watchtower<span class="prog">2 of 42 seen<i><b style="width:4%"></b></i></span></span><span class="a">See all →</span></div>
+            <div class="zh"><span class="t">Learn Watchtower<span class="prog">2 of 186 seen<i><b style="width:4%"></b></i></span></span><span class="a">See all →</span></div>
             <div class="learn">
               <div class="lc"><div class="h"><span class="ic">☀︎</span></div><div class="tt">Morning briefing</div><div class="ds">Every day at 08:00: what needs you, your meetings, what happened.</div><div class="ft"><span class="btn p">Open Briefings</span><span class="g">Got it</span></div></div>
               <div class="lc"><div class="h"><span class="ic">↺</span></div><div class="tt">Catch-Up</div><div class="ds">Back from a day off? One recap of what you missed, with links.</div><div class="ft"><span class="btn p">Open Catch-Up</span><span class="g">Got it</span></div></div>
@@ -407,6 +425,40 @@
       </div>
     </div></div>
   </div>
+
+  <!-- ============ 5 ============ -->
+  <h2>5. Learn → See all</h2>
+  <p class="when">A sheet over Home. New in this version on top, then one section per area with its own progress. Filters for level and kind. Seen cards stay in the list, dimmed, with Show again.</p>
+  <div class="sheet">
+    <div class="sh-h"><b>Learn Watchtower</b><span>34 of 186 seen · Done</span></div>
+    <div class="filters">
+      <span class="pill on">All levels</span><span class="pill">Basics</span><span class="pill">Next</span><span class="pill">Power</span>
+      <span style="width:14px"></span>
+      <span class="pill on">All kinds</span><span class="pill">Features</span><span class="pill">Tips</span><span class="pill">Shortcuts</span>
+    </div>
+    <div class="sh-b">
+      <div class="area"><div class="area-h">New in 0.22 <span>3 of 5</span></div>
+        <div class="lr"><span class="ic">◐</span><span class="t">Automations<span>Recipes the daemon runs for you.</span></span><span class="lv">basics</span><span class="ac">Templates</span></div>
+        <div class="lr"><span class="ic">◇</span><span class="t">Linear boards<span>Your Linear issues next to Jira.</span></span><span class="lv">next</span><span class="ac">Connect</span></div>
+        <div class="lr seen"><span class="ic">⌘</span><span class="t">Ask from anywhere<span>⌘/ on any screen.</span></span><span class="lv">basics</span><span class="ac">Show again</span></div>
+        <div class="lr"><span class="ic">♫</span><span class="t">Dictation <span class="new" style="font-size:10px;font-weight:700;color:var(--yellow);background:color-mix(in srgb,var(--yellow) 15%,transparent);padding:1px 6px;border-radius:4px;margin-left:4px">UPDATED IN 0.22</span><span>Now one key for dictation and Quick Capture.</span></span><span class="lv">next</span><span class="ac">Show the key</span></div>
+      </div>
+      <div class="area"><div class="area-h">Communication<small>your goal</small> <span>9 of 31</span></div>
+        <div class="lr"><span class="ic">↺</span><span class="t">Catch-Up after a day off<span>One recap of what you missed.</span></span><span class="lv">basics</span><span class="ac">Open Catch-Up</span></div>
+        <div class="lr"><span class="ic">✉</span><span class="t">Mail in the briefing<span>Connect Gmail or IMAP.</span></span><span class="lv">next</span><span class="ac">Connect</span></div>
+        <div class="lr seen"><span class="ic">≡</span><span class="t">Channel digests<span>A summary per channel after each sync.</span></span><span class="lv">basics</span><span class="ac">Show again</span></div>
+      </div>
+      <div class="area"><div class="area-h">Meetings<small>your goal</small> <span>6 of 24</span></div>
+        <div class="lr"><span class="ic">●</span><span class="t">Record a meeting<span>Transcribed on this Mac.</span></span><span class="lv">basics</span><span class="ac">Start recording</span></div>
+        <div class="lr"><span class="ic">♪</span><span class="t">Teach it voices<span>Name speakers once, they're known next time.</span></span><span class="lv">power</span><span class="ac">Read more</span></div>
+      </div>
+      <div class="area"><div class="area-h">Development <span>12 of 38</span></div>
+        <div class="lr"><span class="ic">⌥</span><span class="t">Review a session's diff<span>Guided review with chapters.</span></span><span class="lv">next</span><span class="ac">Read more</span></div>
+      </div>
+      <div class="area"><div class="area-h" style="color:var(--text2)">Tasks · Assistant · Planning · Automations · iPhone · Setup <span>7 of 93</span></div></div>
+    </div>
+  </div>
+  <div class="ann">The cards live in the user guide as small hidden blocks under the heading they teach (id, title, one line, area, level, kind, since, action). A release stamps <code>since</code> on new cards, so after an update they come first with a NEW badge. A card can replace an older one: if you had seen the old card, the new one shows as UPDATED with what changed; if you had not, you only get the current card. "Seen" is stored in the database: Got it, the button pressed, or the feature already in use.</div>
 </div>
 <script>
   (function () {
