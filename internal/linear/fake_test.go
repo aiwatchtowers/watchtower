@@ -35,7 +35,9 @@ type fakeLinear struct {
 	failComments       bool // every comments call answers a GraphQL error
 	failPlanning       bool // every planning (team cycles/projects) call answers a GraphQL error
 	alwaysUnauthorized bool
-	failIssueIDs       bool // every moved-issue id lookup answers a GraphQL error
+	failIssueIDs       bool                        // every moved-issue id lookup answers a GraphQL error
+	states             map[string][]map[string]any // team id -> workflow states
+	labels             []map[string]any            // team + workspace labels
 }
 
 type fakeRequest struct {
@@ -53,7 +55,7 @@ func newFakeLinear(t *testing.T) *fakeLinear {
 
 func fakeKind(query string) string {
 	for _, k := range []struct{ marker, kind string }{
-		{"viewer {", "viewer"}, {"LinearIssueIDs", "issueIDs"}, {"issues(", "issues"}, {"comments(", "comments"},
+		{"viewer {", "viewer"}, {"LinearTeamStates", "states"}, {"issueLabels(", "labels"}, {"LinearIssueIDs", "issueIDs"}, {"issues(", "issues"}, {"comments(", "comments"},
 		{"users(", "users"}, {"team(id:", "planning"}, {"teams(", "teams"},
 	} {
 		if strings.Contains(query, k.marker) {
@@ -126,6 +128,11 @@ func (f *fakeLinear) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		data = map[string]any{"comments": pageAt(f.commentPages, req.Variables["after"])}
+	case "states":
+		team, _ := req.Variables["team"].(string)
+		data = map[string]any{"team": map[string]any{"states": map[string]any{"nodes": orEmpty(f.states[team])}}}
+	case "labels":
+		data = map[string]any{"issueLabels": onePage(f.labels)}
 	case "planning":
 		if f.failPlanning {
 			writeGraphQLError(w, "planning unavailable")
@@ -169,6 +176,9 @@ func filterIssuePages(pages [][]map[string]any, filter any) [][]map[string]any {
 				continue
 			}
 			if nin, ok := teamID["nin"]; ok && in(nin, tid) {
+				continue
+			}
+			if eq, ok := idCmp["eq"]; ok && eq != id {
 				continue
 			}
 			if ids, ok := idCmp["in"]; ok && !in(ids, id) {
@@ -283,4 +293,17 @@ func newTestSyncer(t *testing.T, f *fakeLinear) (*db.DB, *Syncer) {
 	s := NewSyncer(c, d, accountID, 30)
 	s.now = func() time.Time { return testNow }
 	return d, s
+}
+
+// stateRequestTeams lists the team ids the workflow-state query was sent for.
+func (f *fakeLinear) stateRequestTeams() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, r := range f.requests {
+		if r.Kind == "states" {
+			out = append(out, r.Vars["team"].(string))
+		}
+	}
+	return out
 }

@@ -443,7 +443,64 @@ func (s *Syncer) syncPlanning(ctx context.Context, t db.LinearTeam) error {
 	for _, p := range out.Team.Projects.Nodes {
 		projects = append(projects, mapProject(s.accountID, p))
 	}
-	return s.db.UpsertLinearProjects(projects)
+	if err := s.db.UpsertLinearProjects(projects); err != nil {
+		return err
+	}
+	return s.syncStatesAndLabels(ctx, t)
+}
+
+// syncStatesAndLabels mirrors the team's workflow states and labels; workspace
+// labels (no team) are stored with team_id ”.
+func (s *Syncer) syncStatesAndLabels(ctx context.Context, t db.LinearTeam) error {
+	states, err := s.client.FetchTeamStates(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	rows := make([]db.LinearWorkflowState, 0, len(states))
+	for _, st := range states {
+		rows = append(rows, db.LinearWorkflowState{AccountID: s.accountID, TeamID: t.ID, ID: st.ID,
+			Name: st.Name, Type: st.Type, Position: st.Position})
+	}
+	if err := s.db.ReplaceLinearTeamStates(s.accountID, t.ID, rows); err != nil {
+		return err
+	}
+	labels, err := s.client.FetchLabels(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	var team, workspace []db.LinearLabel
+	for _, l := range labels {
+		row := db.LinearLabel{AccountID: s.accountID, ID: l.ID, TeamID: l.TeamID, Name: l.Name}
+		if l.TeamID == "" {
+			workspace = append(workspace, row)
+		} else if l.TeamID == t.ID {
+			team = append(team, row)
+		}
+	}
+	if err := s.db.ReplaceLinearLabels(s.accountID, t.ID, team); err != nil {
+		return err
+	}
+	return s.db.ReplaceLinearLabels(s.accountID, "", workspace)
+}
+
+// RefreshIssue re-reads one issue and its comments after a write so the mirror
+// shows the change at once. It moves no watermark: the regular sync still sees
+// the issue's update.
+func (s *Syncer) RefreshIssue(ctx context.Context, issueID string) error {
+	// The cursor of keepMax is thrown away; nothing records it.
+	var ignored string
+	n, err := s.syncIssues(ctx, map[string]any{"id": map[string]any{"eq": issueID}}, &ignored)
+	if err != nil {
+		return fmt.Errorf("refreshing linear issue %s: %w", issueID, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("refreshing linear issue %s: not found", issueID)
+	}
+	filter := map[string]any{"issue": map[string]any{"id": map[string]any{"eq": issueID}}}
+	if err := s.syncCommentsMatching(ctx, filter); err != nil {
+		return fmt.Errorf("refreshing comments of linear issue %s: %w", issueID, err)
+	}
+	return nil
 }
 
 func (s *Syncer) syncUsers(ctx context.Context) error {
