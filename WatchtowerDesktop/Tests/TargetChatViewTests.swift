@@ -39,14 +39,15 @@ final class TargetChatViewTests: XCTestCase {
 
     /// The section is now the tab bar plus the active tab's pane; both must
     /// construct from a real container.
-    func testChatSectionConstructsFromAnAssistantContainer() throws {
+    func testChatSectionConstructsFromAnAssistantContainer() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let id = try manager.dbPool.write { db in
+        let id = try await manager.dbPool.write { db in
             try TargetQueries.create(db, text: "ship feature", intent: "x",
                                      periodStart: "2026-06-01", periodEnd: "2026-06-30")
         }
-        let target = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) })
+        let fetchByIDResult = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) }
+        let target = try XCTUnwrap(fetchByIDResult)
         let targets = TargetsViewModel(dbManager: manager)
         let assistant = TargetAssistantViewModel(
             target: target, viewModel: targets, dbManager: manager
@@ -56,9 +57,10 @@ final class TargetChatViewTests: XCTestCase {
                                 aiService: MockClaudeService())
         }
 
+        let ready = await assistant.readyChat()
         XCTAssertEqual(assistant.conversations.count, 1)
         _ = TargetChatSection(assistant: assistant)
-        _ = TargetChatPane(chatVM: try XCTUnwrap(assistant.activeChat))
+        _ = TargetChatPane(chatVM: try XCTUnwrap(ready))
     }
 
     // MARK: - Proposals under a reply
@@ -90,13 +92,14 @@ final class TargetChatViewTests: XCTestCase {
         })
     }
 
-    func testTwoPendingCardsUnderAReplyOfferApproveAll() throws {
+    func testTwoPendingCardsUnderAReplyOfferApproveAll() async throws {
         let (chat, item, cleanup) = try chatWithReply(cards: 2)
         defer { cleanup() }
         let view = TargetChatProposals(chatVM: chat, item: item)
         XCTAssertNoThrow(try view.inspect().find(text: "2 proposals"))
         try view.inspect().find(ViewType.Button.self) { try $0.accessibilityIdentifier() == "chat.approveAll" }.tap()
-        XCTAssertEqual(chat.pendingActionCount, 0, "Approve all applied the reply's batch")
+        let applied = await eventually { chat.pendingActionCount == 0 }
+        XCTAssertTrue(applied, "Approve all applied the reply's batch")
     }
 
     func testABigBatchCollapsesIntoOneBlock() throws {

@@ -78,15 +78,18 @@ final class TargetBriefCenter {
     /// The job the drain is currently streaming; nil when the queue is parked.
     private(set) var activeBriefID: BriefJob.ID?
 
-    /// The running job's completion watcher. Internal (not private) so tests
-    /// can await it (the `TargetExtractCenter.task` precedent).
+    /// The running job, from its VM's resolution to its completion. Internal
+    /// (not private) so tests can await it (the `TargetExtractCenter.task`
+    /// precedent).
     var task: Task<Void, Never>?
 
     /// Factory for the target chat VM — wired by AppState once the DB pool
     /// opens (centers are constructed before the DB). nil (no DB yet) fails
     /// the brief cleanly; the target row itself already exists (mechanical
-    /// create, TGT-BRIEF-02).
-    var makeChatVM: ((Target) -> TargetChatViewModel?)?
+    /// create, TGT-BRIEF-02). Async: a target's first chat tab is written on
+    /// first use, awaiting the writer (board #670); a nil result fails the
+    /// brief the same way.
+    var makeChatVM: ((Target) async -> TargetChatViewModel?)?
 
     /// Whether the target row still exists — wired by AppState next to
     /// `makeChatVM`. Asked when a queued brief falls due, so a target deleted
@@ -158,10 +161,10 @@ final class TargetBriefCenter {
         drain()
     }
 
-    /// Start the next queued brief, if the slot is free. Everything up to the
-    /// first suspension runs synchronously, so a caller that enqueues into an
-    /// idle queue observes `.briefing` and can adopt the VM on the very next
-    /// line (the composer's hand-off relies on that).
+    /// Start the next queued brief, if the slot is free. The job turns
+    /// `.briefing` at once, so a caller that enqueues into an idle queue
+    /// observes it on the very next line; its VM is adoptable once
+    /// `makeChatVM` returned it (a first chat tab may still be being written).
     private func drain() {
         guard activeBriefID == nil, let next = nextQueuedBrief() else { return }
         guard targetExists?(next.request.target.id) ?? true else {
@@ -173,7 +176,20 @@ final class TargetBriefCenter {
         }
         setPhase(.briefing, for: next.id)
         activeBriefID = next.id
-        guard let chatVM = makeChatVM?(next.request.target) else {
+        guard let makeChatVM else {
+            failToStart(next.id, message: "Database not available")
+            return
+        }
+        task = Task { [weak self] in
+            let chatVM = await makeChatVM(next.request.target)
+            await self?.run(next, chatVM: chatVM)
+        }
+    }
+
+    /// The started job once its VM is known: sent, watched to its end, then
+    /// the queue drains on.
+    private func run(_ next: (id: BriefJob.ID, request: BriefJob.Request), chatVM: TargetChatViewModel?) async {
+        guard let chatVM else {
             failToStart(next.id, message: "Database not available")
             return
         }
@@ -195,7 +211,7 @@ final class TargetBriefCenter {
                 + (returned ? Self.backInTheBox : " — re-ask here."))
             return
         }
-        watch(next.id, chatVM: chatVM)
+        await watch(next.id, chatVM: chatVM)
     }
 
     /// Send the brief through the VM's input field and report whether a
@@ -229,19 +245,16 @@ final class TargetBriefCenter {
 
     /// Poll until `isStreaming` clears, which observes the whole run (stream
     /// + execute-mode auto-apply), then settle the job and drain.
-    private func watch(_ jobID: BriefJob.ID, chatVM: TargetChatViewModel) {
-        task = Task { [weak self] in
-            while chatVM.isStreaming, !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 50_000_000)
-            }
-            // A cancelled watcher still settles its job and drains, so it can
-            // never strand the queue — but it stops its stream first, or the
-            // next brief would start while this one still runs unobserved.
-            if Task.isCancelled { chatVM.cancelStream() }
-            guard let self else { return }
-            self.finish(jobID, vm: chatVM)
-            self.drain()
+    private func watch(_ jobID: BriefJob.ID, chatVM: TargetChatViewModel) async {
+        while chatVM.isStreaming, !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 50_000_000)
         }
+        // A cancelled watcher still settles its job and drains, so it can
+        // never strand the queue — but it stops its stream first, or the
+        // next brief would start while this one still runs unobserved.
+        if Task.isCancelled { chatVM.cancelStream() }
+        finish(jobID, vm: chatVM)
+        drain()
     }
 
     /// A job that could not start fails on its own target's banner and frees

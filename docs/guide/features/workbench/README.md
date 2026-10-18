@@ -56,6 +56,7 @@ Session or ask stuck? See [A Workbench session or ask is stuck](../../troublesho
 - [Sessions](sessions.md): states, the sessions panel, reports, starting and resuming.
 - [Asks](asks.md): reviews, checks and questions, and how answers reach the agent.
 - [Code viewer](code-viewer.md): the Files pane, Open Quickly and go to definition.
+- [Branches in the header](branches.md): switch, fetch and check out branches safely.
 - [Worktrees and cleanup](worktrees-and-cleanup.md): own worktree per session, cleaning up after a session.
 - [Diff review](diff-review.md): guided review of a session's changes.
 - [Methodology](methodology.md): the workflow file and **Agent Settings…**.

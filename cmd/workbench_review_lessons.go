@@ -55,7 +55,7 @@ func lessonsJSON(ls []db.ReviewLesson) []reviewLessonJSON {
 }
 
 func runWorkbenchReviewLessonsPropose(cmd *cobra.Command, _ []string) error {
-	if err := refuseUnderAgent("propose review lessons"); err != nil {
+	if err := requireOwner("propose review lessons"); err != nil {
 		return err
 	}
 	ctx, cancel := reviewAIContext(cmd)
@@ -110,6 +110,9 @@ func runWorkbenchReviewLessonsAccept(cmd *cobra.Command, _ []string) error {
 	if l == nil {
 		return failReview(cmd, fmt.Errorf("lesson %d is not on this workbench", reviewFlagLesson))
 	}
+	if err := confirmWithOwner("accept a review lesson", "Rule to add to .watchtower/review.md ("+l.Lens+"):\n\n"+l.Text); err != nil {
+		return failReview(cmd, err)
+	}
 	// Decide first: of two Accepts racing on one lesson only the one that
 	// moved it writes the rule.
 	ok, err := database.DecideReviewLesson(p.ID, l.ID, "accepted")
@@ -143,6 +146,9 @@ func runWorkbenchReviewLessonsDismiss(cmd *cobra.Command, _ []string) error {
 	database, p, err := reviewTarget()
 	if err != nil {
 		return err
+	}
+	if err := confirmWithOwner("dismiss a review lesson", lessonConfirmDetail(database, p.ID)); err != nil {
+		return failReview(cmd, err)
 	}
 	ok, err := database.DecideReviewLesson(p.ID, reviewFlagLesson, "dismissed")
 	if err != nil {

@@ -628,6 +628,21 @@ extension WorkbenchesViewModel {
         titleTask = nil
     }
 
+    /// A setup re-run replaces this view model (`AppState.initWorkbenches`):
+    /// its loops and watchers end now instead of whenever the object is
+    /// released — the title poll, the asks poll, every page's git poll,
+    /// refs watchers and app-activation observer, and the code viewer's
+    /// FSEvents streams. One-shot work (an Undo window's delete, a
+    /// cleanup, a host reattach) still finishes: it does what the owner
+    /// asked for.
+    func stop() {
+        isStopped = true
+        stopTitleRefresh()
+        asks.stop()
+        for id in gitWatching { stopGitWatching(projectID: id) }
+        codeFiles.stopWatchingFolders()
+    }
+
     /// Asks for an AI title for every live session that still needs one.
     func refreshTitles() async {
         guard let center = terminalCenter else { return }

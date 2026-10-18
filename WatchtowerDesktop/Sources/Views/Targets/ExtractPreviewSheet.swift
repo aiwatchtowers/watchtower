@@ -1,4 +1,5 @@
 import SwiftUI
+import GRDB
 import WatchtowerCore
 
 // MARK: - Proposed Target (input model for the preview)
@@ -37,6 +38,7 @@ struct ExtractPreviewSheet: View {
 
     @State private var items: [ProposedTarget]
     @State private var errorMessage: String?
+    @State private var isSaving = false
     let onCreateSelected: ([ProposedTarget]) -> Void
 
     // Footer info (set by US-002 extractor caller)
@@ -84,6 +86,7 @@ struct ExtractPreviewSheet: View {
             footer
         }
         .frame(width: 620, height: 640)
+        .interactiveDismissDisabled(isSaving)
     }
 
     // MARK: - Header
@@ -98,6 +101,7 @@ struct ExtractPreviewSheet: View {
             Spacer()
             Button("Cancel") { dismiss() }
                 .keyboardShortcut(.cancelAction)
+                .disabled(isSaving)
         }
         .padding()
     }
@@ -154,7 +158,7 @@ struct ExtractPreviewSheet: View {
                     createSelected()
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(selectedItems.isEmpty)
+                .disabled(selectedItems.isEmpty || isSaving)
                 .keyboardShortcut(.defaultAction)
             }
             .padding()
@@ -169,53 +173,63 @@ struct ExtractPreviewSheet: View {
             return
         }
         let toCreate = selectedItems
-        do {
-            try db.dbPool.write { dbConn in
-                for item in toCreate {
-                    do {
-                        let today = dateFormatter.string(from: Date())
-                        let start = item.periodStart.isEmpty ? today : item.periodStart
-                        let end = item.periodEnd.isEmpty ? today : item.periodEnd
-                        let subItemsJSON = Self.encodeSubItems(item.subItems)
-                        let newID = try TargetQueries.create(
-                            dbConn,
-                            text: item.text,
-                            intent: item.intent,
-                            level: item.level,
-                            customLabel: item.customLabel,
-                            periodStart: start,
-                            periodEnd: end,
-                            parentId: item.parentId,
-                            priority: item.priority,
-                            subItems: subItemsJSON,
-                            sourceType: "extract",
-                            aiLevelConfidence: item.levelConfidence
+        let today = dateFormatter.string(from: Date())
+        // Off the main thread: a busy database never freezes the sheet. Create,
+        // Cancel and Esc wait while the write is pending, so nothing is created
+        // twice and the sheet never closes on a write still in flight.
+        Task {
+            await ViewWrite.run(db.dbPool, pending: $isSaving, { dbConn in
+                try Self.create(toCreate, today: today, in: dbConn)
+            }, onSuccess: {
+                onCreateSelected(toCreate)
+                dismiss()
+            }, onFailure: { error in
+                // The write rolled back as a whole, so nothing was created: keep
+                // the sheet open with the reason (e.g. a parent deleted meanwhile).
+                errorMessage = error.localizedDescription
+            })
+        }
+    }
+
+    /// Creates the picked targets and their links; the caller's ONE write
+    /// transaction rolls all of them back on any failure.
+    nonisolated private static func create(_ toCreate: [ProposedTarget], today: String, in dbConn: Database) throws {
+        for item in toCreate {
+            do {
+                let start = item.periodStart.isEmpty ? today : item.periodStart
+                let end = item.periodEnd.isEmpty ? today : item.periodEnd
+                let subItemsJSON = Self.encodeSubItems(item.subItems)
+                let newID = try TargetQueries.create(
+                    dbConn,
+                    text: item.text,
+                    intent: item.intent,
+                    level: item.level,
+                    customLabel: item.customLabel,
+                    periodStart: start,
+                    periodEnd: end,
+                    parentId: item.parentId,
+                    priority: item.priority,
+                    subItems: subItemsJSON,
+                    sourceType: "extract",
+                    aiLevelConfidence: item.levelConfidence
+                )
+                for link in item.secondaryLinks {
+                    if link.targetId != nil || !link.externalRef.isEmpty {
+                        try TargetQueries.createLink(
+                            dbConn, sourceID: newID, targetID: link.targetId,
+                            externalRef: link.externalRef, relation: link.relation, createdBy: "ai"
                         )
-                        for link in item.secondaryLinks {
-                            if link.targetId != nil || !link.externalRef.isEmpty {
-                                try TargetQueries.createLink(
-                                    dbConn, sourceID: newID, targetID: link.targetId,
-                                    externalRef: link.externalRef, relation: link.relation, createdBy: "ai"
-                                )
-                            }
-                        }
-                    } catch {
-                        throw ExtractCreateError(itemText: item.text, underlying: error)
                     }
                 }
+            } catch {
+                throw ExtractCreateError(itemText: item.text, underlying: error)
             }
-            onCreateSelected(toCreate)
-            dismiss()
-        } catch {
-            // The write rolled back as a whole, so nothing was created: keep
-            // the sheet open with the reason (e.g. a parent deleted meanwhile).
-            errorMessage = error.localizedDescription
         }
     }
 
     // Serialize `[TargetSubItem]` into the JSON shape persisted in targets.sub_items.
     // Mirrors `storedSubItem` in internal/targets/store.go — `{text, done}` per item.
-    static func encodeSubItems(_ items: [TargetSubItem]) -> String {
+    nonisolated static func encodeSubItems(_ items: [TargetSubItem]) -> String {
         guard !items.isEmpty else { return "[]" }
         if let data = try? JSONEncoder().encode(items),
            let json = String(data: data, encoding: .utf8) {

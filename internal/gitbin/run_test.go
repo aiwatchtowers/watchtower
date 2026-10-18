@@ -6,8 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // Exec drops the inherited repository variables, keeps the process
@@ -230,5 +233,65 @@ func TestExecEnv_KeepsCallerIndexDropsInherited(t *testing.T) {
 	}
 	if string(out) != "unset" {
 		t.Fatalf("Exec leaked the inherited GIT_INDEX_FILE: %q", out)
+	}
+}
+
+// ExecFetch keeps the network side of a fetch from asking anyone, on top of
+// Exec's environment, and FetchArgs clears every credential helper.
+func TestExecFetch_NoPromptEnvironment(t *testing.T) {
+	t.Setenv("GIT_ASKPASS", "/inherited/askpass")
+	t.Setenv("SSH_AUTH_SOCK", "/inherited/agent")
+	t.Setenv("SSH_ASKPASS", "/inherited/askpass")
+	t.Setenv("GIT_DIR", "/elsewhere")
+	script := `printf '%s|%s|%s|%s|%s|%s|%s|%s' "$GIT_SSH_COMMAND" "${GIT_ASKPASS-unset}" "${SSH_ASKPASS-unset}" ` +
+		`"$SSH_ASKPASS_REQUIRE" "${GIT_PROXY_COMMAND-unset}" "$GIT_ALLOW_PROTOCOL" "$GIT_TERMINAL_PROMPT" "${GIT_DIR-unset}"`
+	out, _, err := ExecFetch(context.Background(), t.TempDir(), false, "/bin/sh", "-c", script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "ssh -o BatchMode=yes -o ConnectTimeout=10|||never||git:http:https:ssh|0|unset"
+	if got := string(out); got != want {
+		t.Fatalf("env = %q, want %q", got, want)
+	}
+	out, _, err = ExecFetch(context.Background(), t.TempDir(), true, "/bin/sh", "-c", `printf '%s|%s' "$GIT_SSH_COMMAND" "${SSH_AUTH_SOCK-unset}"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = "ssh -o BatchMode=yes -o ConnectTimeout=10 -o IdentityAgent=none -o ProxyJump=none -o ProxyCommand=none" +
+		" -o 'IgnoreUnknown=*' -o UseKeychain=no|"
+	if got := string(out); got != want {
+		t.Fatalf("unattended env = %q, want %q (no ssh agent, no Keychain)", got, want)
+	}
+	args := FetchArgs("fetch", "origin")
+	if got := strings.Join(args, " "); !strings.Contains(got, "-c credential.helper= ") || !strings.Contains(got, "-c core.alternateRefsCommand=true ") || !strings.HasSuffix(got, " fetch origin") {
+		t.Fatalf("FetchArgs = %q", got)
+	}
+}
+
+// A fetch cut off by its context is killed with its whole process group:
+// a child it started does not outlive it.
+func TestExecFetch_KillsTheProcessGroup(t *testing.T) {
+	pidFile := filepath.Join(t.TempDir(), "child")
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_, _, err := ExecFetch(ctx, t.TempDir(), false, "/bin/sh", "-c", `sleep 30 & echo $! > '`+pidFile+`'; wait`)
+	if err == nil {
+		t.Fatal("want the cut-off run to fail")
+	}
+	b, err := os.ReadFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	deadline := time.Now().Add(2 * time.Second)
+	for syscall.Kill(pid, 0) == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("child %d outlived the fetch", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }

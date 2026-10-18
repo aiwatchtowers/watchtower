@@ -68,7 +68,7 @@ struct ChatLandingView: View {
 
     private func usePrompt(_ prompt: ChatStarterPrompt) {
         if prompt.sendsImmediately {
-            chatVM.send(text: prompt.text)
+            Task { await chatVM.send(text: prompt.text) }
         } else {
             chatVM.draft = prompt.text
         }

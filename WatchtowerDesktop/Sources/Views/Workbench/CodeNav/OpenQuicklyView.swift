@@ -134,6 +134,9 @@ struct OpenQuicklyView: View {
         HStack(spacing: 8) {
             Text(model.askAIEnabled ? "↩ Open · ⌥↩ Open Beside · ⌘↩ Ask AI" : "↩ Open · ⌥↩ Open Beside")
             Spacer(minLength: 8)
+            if session.isAsking {
+                ProgressView().controlSize(.mini)
+            }
             if let status = statusText(model) {
                 Text(status)
                     .lineLimit(1)
@@ -153,6 +156,7 @@ struct OpenQuicklyView: View {
     /// The index's state (spec §7: its failure shows here) and the text
     /// search's.
     private func statusText(_ model: OpenQuicklyModel) -> String? {
+        if session.isAsking { return "Starting the question…" }
         if let askError = session.askError { return askError }
         switch session.index.state {
         case let .failed(message): return "Index: \(message)"

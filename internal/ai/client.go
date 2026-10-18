@@ -382,7 +382,14 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	}
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
+		// No fence is added here: the claude CLI replays the session's
+		// recorded system prompt on --resume (--system-prompt-snapshot), so
+		// an appended one would be ignored. Known limit: a connection enabled
+		// after the session's first turn is mounted but not named in the
+		// fence until a new session starts.
 	} else {
+		// Mounted Quick Connections' texts are fenced as external data.
+		systemPrompt = WithExternalDataRule(systemPrompt, c.externalServers)
 		if systemPrompt == "" {
 			// An empty prompt still replaces claude's default one and
 			// carries nothing.

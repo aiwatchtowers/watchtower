@@ -119,3 +119,17 @@ func ResolveTools(c db.ExternalConnection) (allowed, denied []string) {
 	}
 	return allowed, denied
 }
+
+// ReservedName reports a connection name the built-in watchtower server
+// owns: "watchtower" itself (its mcpServers key) and any name starting with
+// "watchtower_", any case. Claude Code reads a tool name
+// mcp__<server>__<tool> by splitting on "__" and compares the server part
+// exactly, so only a name starting with "watchtower__" (or "watchtower_"
+// itself) actually reads as server "watchtower", whose tools the
+// whole-server mcp__watchtower allow token covers — past QC-02's per-tool
+// allowlist. The wider rule (every "watchtower_" prefix, any case) is
+// defence in depth against a different split or comparison.
+func ReservedName(name string) bool {
+	lower := strings.ToLower(name)
+	return lower == "watchtower" || strings.HasPrefix(lower, "watchtower_")
+}

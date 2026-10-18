@@ -143,6 +143,10 @@ type searchContent struct {
 		ID    string `json:"id"`
 		Title string `json:"title"`
 	} `json:"ancestors"`
+	// Space is filled with expand=space (RecentSpaceKeys only).
+	Space struct {
+		Key string `json:"key"`
+	} `json:"space"`
 }
 
 // --- v2 (/wiki/api/v2/...) ---

@@ -36,58 +36,94 @@ final class QuickCaptureViewModelTests: MeetingRecorderTestCase {
 
     // MARK: - save()
 
-    func testSaveHappyPathInsertsIdeaAndMention() throws {
+    func testSaveHappyPathInsertsIdeaAndMention() async throws {
         let vm = QuickCaptureViewModel()
         vm.result = DictationCleanResult(title: "Ship a weekly digest", text: "we should ship a weekly digest email")
 
-        vm.save(dbPool: dbManager.dbPool)
+        await vm.save(dbPool: dbManager.dbPool)
 
         let ideaID = try XCTUnwrap(vm.savedIdeaID)
         XCTAssertNil(vm.error)
-        let idea = try dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) }
+        let idea = try await dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) }
         XCTAssertEqual(idea?.title, "Ship a weekly digest")
         XCTAssertEqual(idea?.essence, "we should ship a weekly digest email")
         XCTAssertEqual(idea?.statusRaw, "active")
         XCTAssertEqual(idea?.source, "owner")
 
-        let mentions = try dbManager.dbPool.read { try IdeaQueries.fetchMentions($0, ideaID: Int(ideaID)) }
+        let mentions = try await dbManager.dbPool.read { try IdeaQueries.fetchMentions($0, ideaID: Int(ideaID)) }
         XCTAssertEqual(mentions.map(\.quote), ["we should ship a weekly digest email"])
     }
 
-    func testSaveWithEmptyResultInsertsNothingAndSetsError() throws {
+    func testSaveWithEmptyResultInsertsNothingAndSetsError() async throws {
         let vm = QuickCaptureViewModel()
         vm.result = DictationCleanResult(title: nil, text: "")
 
-        vm.save(dbPool: dbManager.dbPool)
+        await vm.save(dbPool: dbManager.dbPool)
 
         XCTAssertNil(vm.savedIdeaID)
         XCTAssertNotNil(vm.error)
-        let ideas = try dbManager.dbPool.read { try IdeaQueries.fetchList($0, kind: nil, status: nil, query: nil, limit: 10) }
+        let ideas = try await dbManager.dbPool.read { try IdeaQueries.fetchList($0, kind: nil, status: nil, query: nil, limit: 10) }
         XCTAssertTrue(ideas.isEmpty)
     }
 
-    func testSaveWithNoResultYetSetsErrorWithoutInserting() throws {
+    func testSaveWithNoResultYetSetsErrorWithoutInserting() async throws {
         let vm = QuickCaptureViewModel()
 
-        vm.save(dbPool: dbManager.dbPool)
+        await vm.save(dbPool: dbManager.dbPool)
 
         XCTAssertNil(vm.savedIdeaID)
         XCTAssertNotNil(vm.error)
-        let ideas = try dbManager.dbPool.read { try IdeaQueries.fetchList($0, kind: nil, status: nil, query: nil, limit: 10) }
+        let ideas = try await dbManager.dbPool.read { try IdeaQueries.fetchList($0, kind: nil, status: nil, query: nil, limit: 10) }
         XCTAssertTrue(ideas.isEmpty)
     }
 
-    func testSaveFallsBackToTextPrefixWhenCleanupReturnedNoTitle() throws {
+    func testSaveFallsBackToTextPrefixWhenCleanupReturnedNoTitle() async throws {
         let vm = QuickCaptureViewModel()
         let longText = String(repeating: "a", count: 120)
         vm.result = DictationCleanResult(title: nil, text: longText)
 
-        vm.save(dbPool: dbManager.dbPool)
+        await vm.save(dbPool: dbManager.dbPool)
 
         let ideaID = try XCTUnwrap(vm.savedIdeaID)
-        let idea = try dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) }
+        let idea = try await dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) }
         XCTAssertEqual(idea?.title, String(longText.prefix(80)))
         XCTAssertEqual(idea?.essence, longText)
+    }
+
+    /// Board #590: while another process holds the write lock, the save waits
+    /// on the writer queue, not on the main thread — the main actor keeps
+    /// running — and a second Save pressed meanwhile adds no second idea.
+    func testSaveWaitsForALockedDatabaseOffTheMainThread() async throws {
+        let (seedPool, path) = try TestDatabase.createPool()
+        try seedPool.close()
+        defer { TestDatabase.cleanup(path: path) }
+        let manager = try DatabaseManager(path: path)
+        var holderConfig = Configuration()
+        holderConfig.allowsUnsafeTransactions = true
+        let holder = try DatabaseQueue(path: path, configuration: holderConfig)
+        try await holder.writeWithoutTransaction { try $0.execute(sql: "BEGIN IMMEDIATE") }
+
+        let vm = QuickCaptureViewModel()
+        vm.result = DictationCleanResult(title: "Locked", text: "saved while the daemon writes")
+        let first = Task { await vm.save(dbPool: manager.dbPool) }
+        let second = Task { await vm.save(dbPool: manager.dbPool) }
+
+        // A blocked main thread would hold this hop back for the 5 s busy wait.
+        let start = Date()
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1.5, "the main actor kept running while the write waited")
+        XCTAssertTrue(vm.isSaving)
+        XCTAssertNil(vm.savedIdeaID, "nothing lands before the lock is released")
+
+        try await holder.writeWithoutTransaction { try $0.execute(sql: "ROLLBACK") }
+        await first.value
+        await second.value
+
+        XCTAssertNil(vm.error)
+        XCTAssertNotNil(vm.savedIdeaID)
+        XCTAssertFalse(vm.isSaving)
+        let count = try await manager.dbPool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM ideas") }
+        XCTAssertEqual(count, 1, "the second Save during the pending write added nothing")
     }
 
     // MARK: - saveRaw() (M2 fix round: the failed-state "never lose the speech" fallback)
@@ -115,7 +151,7 @@ final class QuickCaptureViewModelTests: MeetingRecorderTestCase {
             return false
         }
 
-        vm.saveRaw(dbPool: dbManager.dbPool)
+        await vm.saveRaw(dbPool: dbManager.dbPool)
 
         let ideaID = try XCTUnwrap(vm.savedIdeaID)
         let idea = try await dbManager.dbPool.read { try IdeaQueries.fetchOne($0, id: Int(ideaID)) }
@@ -123,10 +159,10 @@ final class QuickCaptureViewModelTests: MeetingRecorderTestCase {
         XCTAssertEqual(idea?.title, String("said something before it failed".prefix(80)))
     }
 
-    func testSaveRawWithNothingCapturedSetsErrorWithoutInserting() throws {
+    func testSaveRawWithNothingCapturedSetsErrorWithoutInserting() async throws {
         let vm = QuickCaptureViewModel()
 
-        vm.saveRaw(dbPool: dbManager.dbPool)
+        await vm.saveRaw(dbPool: dbManager.dbPool)
 
         XCTAssertNil(vm.savedIdeaID)
         XCTAssertNotNil(vm.error)

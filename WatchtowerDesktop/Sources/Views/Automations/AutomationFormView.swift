@@ -375,6 +375,9 @@ private struct AutomationFormContent: View {
                 ForEach(AutomationFormModel.eventTypes, id: \.self) { Text($0).tag($0) }
             }
             .frame(width: 320)
+            if type == "slack.reaction_added" {
+                ReactionCommandsOffNote(text: "Reaction events need Reaction commands on")
+            }
             ForEach(filter.keys.sorted(), id: \.self) { key in
                 HStack {
                     Text(key).font(.callout.monospaced())
@@ -398,7 +401,10 @@ private struct AutomationFormContent: View {
                     .accessibilityLabel("Remove filter \(key)")
                 }
             }
-            Text("Runs after a sync brings something new, at most once per sync cycle. "
+            Text(type == "slack.reaction_added"
+                ? "Runs after you react to a Slack message, at most once per sync cycle. "
+                + "Narrow it with a where filter in the recipe text."
+                : "Runs after a sync brings something new, at most once per sync cycle. "
                 + "Narrow it with a where filter in the recipe text.")
                 .font(.caption)
                 .foregroundStyle(.secondary)

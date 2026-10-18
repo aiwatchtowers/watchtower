@@ -23,7 +23,7 @@ Reacting to a Slack message with an emoji from your dictionary makes the assista
 | :white_check_mark: | Turns the message into a target | Targets | Asks first |
 | :ticket: | Drafts a Jira issue | Jira | Always asks |
 
-You edit the dictionary in Settings → Connections → Slack. Reactions you had placed before the first check are recorded as history, never acted on, and removing then re-adding the same emoji on the same message doesn't trigger it again. React on a different message instead.
+You edit the dictionary in Automations → Reactions. A recipe can also run on a reaction; see [Reactions and tracks in Automations](automations-rules.md). Reactions you had placed before the first check are recorded as history, never acted on, and removing then re-adding the same emoji on the same message doesn't trigger it again. React on a different message instead.
 
 ### Proposals from everywhere
 

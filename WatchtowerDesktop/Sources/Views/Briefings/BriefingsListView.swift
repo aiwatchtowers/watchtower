@@ -37,7 +37,7 @@ struct BriefingsListView: View {
         }
         .onChange(of: selectedBriefingID) { _, newID in
             if let id = newID {
-                vm.markAsRead(id)
+                Task { await vm.markAsRead(id) }
             }
         }
     }

@@ -25,10 +25,15 @@ An event trigger runs the recipe after a sync brings something new. For example,
 | `jira.issue_changed` | an issue changed; `field` says which: `status`, `assignee`, `priority`, `comment` or `other` | `account`, `key`, `project`, `field` |
 | `calendar.event_changed` | an event was created, updated or cancelled | `account`, `event_id`, `change` |
 | `confluence.page_changed` | a page is new or has a new version | `space`, `page_id` |
+| `slack.reaction_added` | you put an emoji on a Slack message | `account`, `channel_id`, `emoji` |
 
 Every `where` key must match. A value matches regardless of case, either exactly or as a wildcard such as `PAY-*` (a `*` stops at `/`). Leave `where` out to match every event of the type. `where` only filters: the recipe still needs permissions for whatever it reads.
 
+The reaction event carries the account, the channel id, the message timestamp (`message_ts`) and the emoji name without colons (`emoji: alarm_clock`), never the message. To read the message, the recipe needs `slack:read@*` or `tool:list_messages`. It fires only for messages posted after the recipe first sees your account: a reaction on an older message never fires, even a new one, and only once per message and emoji: removing and adding a reaction again does nothing. It needs **Reaction commands** on (Settings, Features). If Watchtower stops between noticing a reaction and starting the run, that reaction is lost, not replayed.
+
 A recipe runs at most once per sync cycle, however many events it matched; it gets up to 100 events, and `trigger.truncated` is true when there were more. A source's first sync, its history backfill and your own Slack messages never fire a trigger. In **Edit**, **On an event** picks the type; write a `where` filter in the recipe text, or ask **Change in words**.
+
+In the Automations list, an event recipe's line names its event and filter, then when it last ran ("no runs yet" before the first), or a running or failed run's state instead.
 
 ### Where recipes live
 Personal recipes sit in the `automations` folder inside Watchtower's workspace folder. The file name is the recipe's id: lower-case letters, digits and dashes. Shortcuts (symlinks) are never read; put the real file there.
@@ -49,7 +54,7 @@ Because the file belongs to the repository, it can arrive with a `git pull` or b
 | `new-mail-summary` | personal | after a mail sync brings new mail | summarises new mail, at most 600 messages per mailbox per run |
 | `jira-state-report` | personal | Mondays 09:00 | weekly Jira report to reports and the briefing, on your active projects |
 | `team-performance-report` | personal | Fridays 17:00 | report from Jira, people cards and Slack |
-| `pr-review-rounds` | workbench | weekdays 10:00 and 16:00 | lists open pull requests with `gh` |
+| `pr-review-rounds` | workbench | weekdays 10:00 and 16:00 | lists open pull requests with `gh` and opens a review session for each changed one, at most 10 per round; the rest wait for the next round |
 | `release-buttons` | workbench | by hand | three recipes (release, deploy to test, deploy to stage), each running one `make` target and asking before it acts |
 
 `new-mail-summary` runs on its own after a Gmail or IMAP sync brings new mail. A run by hand or on a schedule has no mail event, so first put your mailboxes' labels or addresses in `scheduledAccounts` in the script. Each mailbox picks up where its last run stopped, whether you name it by label or by address.

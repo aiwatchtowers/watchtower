@@ -544,8 +544,8 @@ final class TracksViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testMarkRead() throws {
-        try dbManager.dbPool.write { db in
+    func testMarkRead() async throws {
+        try await dbManager.dbPool.write { db in
             try TestDatabase.insertWorkspace(db)
             try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U001')")
             try TestDatabase.insertTrack(db, text: "Fix it", hasUpdates: true)
@@ -557,7 +557,7 @@ final class TracksViewModelTests: XCTestCase {
         XCTAssertEqual(vm.updatedTracks.count, 1)
 
         let item = vm.updatedTracks[0]
-        vm.markRead(item)
+        await vm.markRead(item)
 
         // After markRead, the track moves from updatedTracks to allTracks
         XCTAssertTrue(vm.updatedTracks.isEmpty)
@@ -630,9 +630,9 @@ final class ChatHistoryViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testCreateConversation() {
+    func testCreateConversation() async {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
-        let conv = vm.createConversation()
+        let conv = await vm.createConversation()
 
         XCTAssertNotNil(conv)
         XCTAssertEqual(vm.conversations.count, 1)
@@ -640,36 +640,39 @@ final class ChatHistoryViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testDeleteConversation() throws {
+    func testDeleteConversation() async throws {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
-        let conv = try XCTUnwrap(vm.createConversation())
+        let convRow = await vm.createConversation()
+        let conv = try XCTUnwrap(convRow)
         XCTAssertEqual(vm.conversations.count, 1)
 
-        vm.deleteConversation(conv.id)
+        await vm.deleteConversation(conv.id)
         XCTAssertTrue(vm.conversations.isEmpty)
         XCTAssertNil(vm.selectedConversationID)
     }
 
     @MainActor
-    func testDeleteSelectedSwitchesToFirst() throws {
+    func testDeleteSelectedSwitchesToFirst() async throws {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
-        let conv1 = try XCTUnwrap(vm.createConversation())
-        let conv2 = try XCTUnwrap(vm.createConversation())
+        let conv1Row = await vm.createConversation()
+        let conv1 = try XCTUnwrap(conv1Row)
+        let conv2Row = await vm.createConversation()
+        let conv2 = try XCTUnwrap(conv2Row)
         vm.selectedConversationID = conv2.id
 
-        vm.deleteConversation(conv2.id)
+        await vm.deleteConversation(conv2.id)
 
         XCTAssertEqual(vm.conversations.count, 1)
         XCTAssertEqual(vm.selectedConversationID, conv1.id)
     }
 
     @MainActor
-    func testFilteredConversations() {
+    func testFilteredConversations() async {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
-        _ = vm.createConversation()
-        vm.updateTitle(vm.conversations[0].id, title: "Slack discussion")
-        _ = vm.createConversation()
-        vm.updateTitle(vm.conversations[0].id, title: "Meeting notes")
+        _ = await vm.createConversation()
+        await vm.updateTitle(vm.conversations[0].id, title: "Slack discussion")
+        _ = await vm.createConversation()
+        await vm.updateTitle(vm.conversations[0].id, title: "Meeting notes")
 
         vm.searchText = "slack"
         XCTAssertEqual(vm.filteredConversations.count, 1)
@@ -677,21 +680,22 @@ final class ChatHistoryViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testFilteredConversationsEmptySearch() {
+    func testFilteredConversationsEmptySearch() async {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
-        _ = vm.createConversation()
-        _ = vm.createConversation()
+        _ = await vm.createConversation()
+        _ = await vm.createConversation()
 
         vm.searchText = ""
         XCTAssertEqual(vm.filteredConversations.count, 2)
     }
 
     @MainActor
-    func testUpdateSessionID() throws {
+    func testUpdateSessionID() async throws {
         let vm = ChatHistoryViewModel(dbManager: dbManager)
-        let conv = try XCTUnwrap(vm.createConversation())
+        let convRow = await vm.createConversation()
+        let conv = try XCTUnwrap(convRow)
 
-        vm.updateSessionID(conv.id, sessionID: "sess-abc")
+        await vm.updateSessionID(conv.id, sessionID: "sess-abc")
 
         let updated = vm.conversations.first { $0.id == conv.id }
         XCTAssertEqual(updated?.sessionID, "sess-abc")
@@ -741,8 +745,8 @@ final class DigestViewModelAdditionalTests: XCTestCase {
     }
 
     @MainActor
-    func testMarkDigestRead() throws {
-        try dbManager.dbPool.write { db in
+    func testMarkDigestRead() async throws {
+        try await dbManager.dbPool.write { db in
             try TestDatabase.insertDigest(db, channelID: "C001", summary: "Test")
         }
 
@@ -752,15 +756,15 @@ final class DigestViewModelAdditionalTests: XCTestCase {
         XCTAssertEqual(vm.unreadDigestCount, 1)
         XCTAssertFalse(vm.digests[0].isRead)
 
-        vm.markDigestRead(vm.digests[0].id)
+        await vm.markDigestRead(vm.digests[0].id)
 
         XCTAssertEqual(vm.unreadDigestCount, 0)
         XCTAssertTrue(vm.digests[0].isRead)
     }
 
     @MainActor
-    func testUnreadDigestCountMultiple() throws {
-        try dbManager.dbPool.write { db in
+    func testUnreadDigestCountMultiple() async throws {
+        try await dbManager.dbPool.write { db in
             try TestDatabase.insertDigest(db, channelID: "C001", periodFrom: 100, periodTo: 200, summary: "D1")
             try TestDatabase.insertDigest(db, channelID: "C002", periodFrom: 100, periodTo: 200, summary: "D2")
             try TestDatabase.insertDigest(db, channelID: "C003", periodFrom: 100, periodTo: 200, summary: "D3")
@@ -771,10 +775,10 @@ final class DigestViewModelAdditionalTests: XCTestCase {
 
         XCTAssertEqual(vm.unreadDigestCount, 3)
 
-        vm.markDigestRead(vm.digests[0].id)
+        await vm.markDigestRead(vm.digests[0].id)
         XCTAssertEqual(vm.unreadDigestCount, 2)
 
-        vm.markDigestRead(vm.digests[1].id)
+        await vm.markDigestRead(vm.digests[1].id)
         XCTAssertEqual(vm.unreadDigestCount, 1)
     }
 

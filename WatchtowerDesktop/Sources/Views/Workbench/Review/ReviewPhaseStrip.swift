@@ -13,7 +13,7 @@ struct ReviewPhaseStrip: View {
     var body: some View {
         HStack(spacing: 6) {
             ForEach(ReviewPhase.allCases, id: \.self) { phase in
-                Button(Self.titles[phase] ?? phase.rawValue) { try? model.setPhase(phase) } // a failure lands in lastError
+                Button(Self.titles[phase] ?? phase.rawValue) { Task { try? await model.setPhase(phase) } } // a failure lands in lastError
                     .buttonStyle(.plain)
                     .fontWeight(phase == model.phase ? .semibold : .regular)
                     .foregroundStyle(phase == model.phase ? Color.accentColor : Color.secondary)
@@ -25,7 +25,7 @@ struct ReviewPhaseStrip: View {
             }
             Spacer()
             if let next {
-                Button("Next") { try? model.setPhase(next) }
+                Button("Next") { Task { try? await model.setPhase(next) } }
             } else {
                 Button("Send") { Task { await model.send() } }
                     .disabled(!ReviewChangesHeader.canSend(model))

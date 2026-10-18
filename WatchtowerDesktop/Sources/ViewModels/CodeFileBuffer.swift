@@ -209,7 +209,7 @@ final class CodeFileBuffer {
         guard problemAllowsWrite(explicit: explicit, overwrite: overwrite),
               diskAllowsWrite(explicit: explicit, overwrite: overwrite) else { return false }
         do {
-            try Self.write(text, to: url)
+            try Self.writeText(text, to: url)
             diskText = text
             problem = nil
             deletedOnDisk = false
@@ -300,7 +300,7 @@ final class CodeFileBuffer {
 
     /// Writes atomically to the real file behind any symlink, keeping its
     /// POSIX permissions (an executable script stays executable).
-    nonisolated static func write(_ text: String, to url: URL) throws {
+    nonisolated static func writeText(_ text: String, to url: URL) throws {
         let target = URL(fileURLWithPath: FolderWatcher.realPath(url.path))
         let permissions = try? FileManager.default.attributesOfItem(atPath: target.path)[.posixPermissions]
         try Data(text.utf8).write(to: target, options: .atomic)

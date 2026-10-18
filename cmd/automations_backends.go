@@ -60,6 +60,10 @@ func (m *automationMCPCaller) Call(ctx context.Context, server, tool string, arg
 		return nil, fmt.Errorf("%w: no enabled connection named %q", automations.ErrMCPNotAvailable, server)
 	}
 	c := conns[i]
+	if externalmcp.ReservedName(c.Name) {
+		recordReservedName(m.database, c)
+		return nil, fmt.Errorf("%w: %q: %w", automations.ErrMCPNotAvailable, server, errReservedName)
+	}
 	if !c.ToolsListed {
 		return nil, fmt.Errorf("%w: %q's tools were never listed — `watchtower connections tools %d --refresh`",
 			automations.ErrMCPNotAvailable, server, c.ID)

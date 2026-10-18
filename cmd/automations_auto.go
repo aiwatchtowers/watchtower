@@ -102,6 +102,10 @@ func automationsAutoOn(cmd *cobra.Command, arg, toolName string) error {
 		return fmt.Errorf("automation #%d's permissions and outputs do not admit %s as a write; "+
 			"add its permission to the recipe, confirm it, then turn auto on", a.ID, t.Name)
 	}
+	if err := confirmWithOwner("turn on auto for an automation's tool",
+		"Tool: "+t.Name+" — applied without your Approve on this automation's runs\n\n"+recipeConfirmDetail(a)); err != nil {
+		return err
+	}
 	if err := database.SetAutomationToolGrant(a.ID, t.Name, autoFlags.Hash, time.Now()); err != nil {
 		if errors.Is(err, db.ErrHashMismatch) {
 			return fmt.Errorf("the recipe changed; reload and confirm again (`watchtower automations show %d`): %w", a.ID, err)

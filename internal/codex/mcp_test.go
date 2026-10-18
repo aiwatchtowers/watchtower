@@ -397,3 +397,33 @@ func toStrings(v any) []string {
 	}
 	return out
 }
+
+// The run's system prompt fences the Quick Connections it mounts as
+// external server data (board #556), naming only the mounted ones; a run
+// with none keeps the prompt as given.
+func TestMount_FencesMountedConnectionsInThePrompt(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CODEX_HOME", t.TempDir())
+	c := NewClient("gpt-5.4", "/tmp/w.db", "codex")
+	c.SetMCPArgs([]string{"--chat", "--surface", "main"})
+	if m, err := c.mount(); err != nil || m.prompt("sys") != "sys" {
+		t.Fatalf("no connections: prompt = %q, err = %v", m.prompt("sys"), err)
+	}
+	c.SetExternalMCPLoader(func() []ai.ExternalMCPServer {
+		return []ai.ExternalMCPServer{
+			{ID: 1, Name: "tracker", Kind: "stdio", Command: "npx", AllowTools: []string{"list_items"}},
+			{ID: 2, Name: "clash", Kind: "stdio", Command: "srv", Env: map[string]string{"HOME": "/elsewhere"}, AllowTools: []string{"get_x"}},
+		}
+	})
+	m, err := c.mount()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := m.prompt("sys")
+	if !strings.HasPrefix(got, "sys\n\n=== EXTERNAL SERVER DATA") || !strings.Contains(got, "`tracker`") {
+		t.Errorf("prompt = %q", got)
+	}
+	if strings.Contains(got, "clash") {
+		t.Errorf("a connection the run does not mount is named: %q", got)
+	}
+}

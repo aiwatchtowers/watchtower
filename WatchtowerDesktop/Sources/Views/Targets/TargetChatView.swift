@@ -30,7 +30,8 @@ struct TargetChatSection: View {
             Button("Cancel", role: .cancel) {}
             Button("Rename") {
                 if let id = renamingConversationID {
-                    assistant.rename(id, to: renameText)
+                    let title = renameText
+                    Task { await assistant.rename(id, to: title) }
                 }
             }
         }
@@ -49,12 +50,13 @@ struct TargetChatSection: View {
                 .padding(.vertical, 1)
             }
             Button {
-                assistant.newConversation()
+                Task { await assistant.newConversation() }
             } label: {
                 Image(systemName: "plus")
                     .font(.caption.weight(.semibold))
             }
             .buttonStyle(.borderless)
+            .disabled(assistant.isCreating)
             .help("Start another chat on this task")
             .accessibilityIdentifier("chat.newTab")
         }
@@ -103,9 +105,9 @@ struct TargetChatSection: View {
                 showRename = true
             }
             Button("Close", role: .destructive) {
-                assistant.close(conversation.id)
+                Task { await assistant.close(conversation.id) }
             }
-            .disabled(assistant.conversations.count <= 1)
+            .disabled(assistant.conversations.count <= 1 || assistant.closingIDs.contains(conversation.id))
         }
     }
 
@@ -115,7 +117,8 @@ struct TargetChatSection: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button("Start a chat") { assistant.newConversation() }
+            Button("Start a chat") { Task { await assistant.newConversation() } }
+                .disabled(assistant.isCreating)
                 .buttonStyle(.bordered)
                 .controlSize(.small)
         }
@@ -254,7 +257,8 @@ struct TargetChatProposals: View {
         TargetActionCardView(
             card: card,
             currentTargetID: chatVM.targetID,
-            onApprove: { kind in chatVM.approve(card, as: kind) },
+            isApplying: chatVM.isApplying(card),
+            onApprove: { kind in Task { await chatVM.approve(card, as: kind) } },
             onReject: { chatVM.reject(card) }
         )
     }
@@ -286,7 +290,7 @@ struct TargetChatProposals: View {
                 }
                 Spacer()
                 if pending > 0 {
-                    Button { chatVM.approveAll(messageID: messageID) } label: {
+                    Button { Task { await chatVM.approveAll(messageID: messageID) } } label: {
                         Label("Approve all", systemImage: "checkmark.circle")
                     }
                     .buttonStyle(.borderedProminent)
@@ -334,7 +338,7 @@ struct TargetChatProposals: View {
                 Text("\(pending) proposals")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Button { chatVM.approveAll(messageID: messageID) } label: {
+                Button { Task { await chatVM.approveAll(messageID: messageID) } } label: {
                     Label("Approve all", systemImage: "checkmark.circle")
                 }
                 .buttonStyle(.borderedProminent)
@@ -383,6 +387,9 @@ struct TargetActionCardView: View {
     /// The chat's own target — an action addressing any OTHER task (target_id)
     /// gets an explicit "→ in task #N" line so the user sees where it will land.
     let currentTargetID: Int
+    /// The card's write is under way (board #670): Approve and Reject are
+    /// disabled until it lands.
+    let isApplying: Bool
     /// `kind` is the user's chosen create-kind for checkpoint/sub-task proposals (nil otherwise).
     let onApprove: (TargetActionKind?) -> Void
     let onReject: () -> Void
@@ -393,11 +400,13 @@ struct TargetActionCardView: View {
     init(
         card: TargetActionCard,
         currentTargetID: Int,
+        isApplying: Bool = false,
         onApprove: @escaping (TargetActionKind?) -> Void,
         onReject: @escaping () -> Void
     ) {
         self.card = card
         self.currentTargetID = currentTargetID
+        self.isApplying = isApplying
         self.onApprove = onApprove
         self.onReject = onReject
         _createKind = State(initialValue: card.action.type)
@@ -461,7 +470,9 @@ struct TargetActionCardView: View {
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
+                    if isApplying { ProgressView().controlSize(.small) }
                 }
+                .disabled(isApplying)
             case .applied(let summary):
                 Label(summary, systemImage: "checkmark.circle.fill")
                     .font(.caption).foregroundStyle(.green)

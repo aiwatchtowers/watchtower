@@ -29,7 +29,7 @@ struct ReviewChangesPaneView: View {
         /// Show the lens picker (None + the round's lenses).
         var lensChoice = false
         var allowsEmpty = false
-        let submit: (_ body: String, _ lens: String) throws -> Void
+        let submit: (_ body: String, _ lens: String) async throws -> Void
     }
 
     var body: some View {
@@ -43,7 +43,7 @@ struct ReviewChangesPaneView: View {
             .onDisappear {
                 onScreen = false
                 pace.stop()
-                model.flushState()
+                Task { await model.flushState() }
             }
             .onChange(of: agentStateKind) { old, new in
                 // Into a turn-over kind only: .finished → .stopped is the same turn's end.
@@ -160,7 +160,7 @@ struct ReviewChangesPaneView: View {
         let lines = start == end ? "line \(start)" : "lines \(start)–\(end)"
         let title = "Comment on \(side == "old" ? "removed " : "")\(lines) of \((path as NSString).lastPathComponent)"
         return ComposeRequest(title: title, lensChoice: model.mode == .deep) { body, lens in
-            try model.addComment(path: path, side: side, startLine: start, endLine: end, body: body, lens: lens)
+            try await model.addComment(path: path, side: side, startLine: start, endLine: end, body: body, lens: lens)
         }
     }
 
@@ -221,6 +221,8 @@ private struct ReviewNewCommentSheet: View {
     @State private var text = ""
     @State private var lens = ""
     @State private var error: String?
+    /// The comment is being written (board #670): Add, Cancel and Esc wait.
+    @State private var isSaving = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -243,20 +245,31 @@ private struct ReviewNewCommentSheet: View {
                 Spacer()
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Add") {
-                    do {
-                        try request.submit(text, lens)
-                        dismiss()
-                    } catch {
-                        self.error = error.localizedDescription
-                    }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!request.allowsEmpty && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .disabled(isSaving)
+                Button("Add", action: add)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(isSaving || !request.allowsEmpty && text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
         .padding(16)
+        .interactiveDismissDisabled(isSaving)
         .onAppear { text = request.prefill }
+    }
+
+    /// The sheet closes once the comment is written; a failure keeps it open
+    /// with the text and says why.
+    private func add() {
+        guard !isSaving else { return }
+        isSaving = true
+        Task {
+            defer { isSaving = false }
+            do {
+                try await request.submit(text, lens)
+                dismiss()
+            } catch {
+                self.error = error.localizedDescription
+            }
+        }
     }
 }
 
@@ -308,7 +321,7 @@ final class ReviewPaceWiring {
     func start(model: ReviewChangesModel) {
         stop()
         timer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { model.tick(isKey: self?.window?.isKeyWindow ?? false) }
+            MainActor.assumeIsolated { _ = model.tick(isKey: self?.window?.isKeyWindow ?? false) }
         }
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .scrollWheel]) { [weak self] event in
             MainActor.assumeIsolated {

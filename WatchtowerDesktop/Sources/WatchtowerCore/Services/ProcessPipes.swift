@@ -49,6 +49,23 @@ package enum ProcessPipes {
         return Task { await read.value }
     }
 
+    /// `drain` that also hands each chunk to `onChunk` as it arrives (on the
+    /// reading thread), for a caller that shows a child's progress live.
+    package static func drain(_ pipe: Pipe, onChunk: @escaping @Sendable (Data) -> Void) -> Task<Data, Never> {
+        let handle = pipe.fileHandleForReading
+        let read = BlockingCall {
+            var all = Data()
+            while true {
+                let chunk = handle.availableData
+                if chunk.isEmpty { break }
+                all.append(chunk)
+                onChunk(chunk)
+            }
+            return all
+        }
+        return Task { await read.value }
+    }
+
     /// Writes `data` to a launched child's stdin `pipe` and closes it, on a
     /// thread of its own. Not awaited: the child may answer before reading
     /// its input. A child that exits unread must not SIGPIPE the app, and a
@@ -86,10 +103,13 @@ package enum ProcessPipes {
     /// `onLaunch` runs synchronously right after a successful launch: a
     /// caller whose Cancel may land before the child is running (when
     /// `terminate()` is not allowed yet) re-checks its cancel flag there.
+    ///
+    /// `onStdout`, when given, receives stdout chunks as they arrive.
     package static func run(
         _ process: Process,
         stdin: String? = nil,
-        onLaunch: (@Sendable (Process) -> Void)? = nil
+        onLaunch: (@Sendable (Process) -> Void)? = nil,
+        onStdout: (@Sendable (Data) -> Void)? = nil
     ) async -> ProcessOutput {
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
@@ -103,7 +123,7 @@ package enum ProcessPipes {
         }
         onLaunch?(process)
 
-        let stdoutRead = drain(stdoutPipe)
+        let stdoutRead = onStdout.map { drain(stdoutPipe, onChunk: $0) } ?? drain(stdoutPipe)
         let stderrRead = drain(stderrPipe)
 
         if let stdin, let inputPipe = process.standardInput as? Pipe {

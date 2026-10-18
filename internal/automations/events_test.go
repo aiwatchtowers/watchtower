@@ -66,7 +66,7 @@ func TestEvent_MarshalsFlat(t *testing.T) {
 // enums and counts — never message text, subject, summary, title or body.
 var contentFreeNames = []string{
 	"type", "account", "provider", "channel", "channel_id", "key", "project",
-	"field", "event_id", "change", "space", "page_id", "count",
+	"field", "event_id", "change", "space", "page_id", "count", "message_ts", "emoji",
 }
 
 // contentMarker is planted in every source fixture's text, subject, summary,
@@ -83,6 +83,9 @@ var noContentCases = []struct {
 		return []Event{{Type: "slack.new_messages", Fields: map[string]any{"account": "work", "channel": "releases", "channel_id": "C1", "count": 2}}}
 	}},
 	{"slack", slackContentEvents},
+	{"reaction", func(*testing.T) []Event {
+		return []Event{ReactionEvent("acme", "1:C1", "1700000000.000100", "eyes")}
+	}},
 	{"mail", mailContentEvents},
 	{"jira", jiraContentEvents},
 	{"calendar", calendarContentEvents},
@@ -133,5 +136,36 @@ func assertEventContentFree(t *testing.T, source string, e Event) {
 		if !slices.Contains(contentFreeNames, name) {
 			t.Errorf("%s: %s field %q is not on the content-free allowlist", source, e.Type, name)
 		}
+	}
+}
+
+func TestReactionEvent_FieldsAndWhere(t *testing.T) {
+	e := ReactionEvent("acme", "1:C1", "1700000000.000100", "eyes")
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"account":"acme","channel_id":"1:C1","emoji":"eyes","message_ts":"1700000000.000100","type":"slack.reaction_added"}`
+	if string(data) != want {
+		t.Errorf("marshalled %s, want %s", data, want)
+	}
+	if len(e.Fields) != 4 {
+		t.Errorf("event carries %d fields, want 4 (plus type)", len(e.Fields))
+	}
+	for where, match := range map[string]bool{"eyes": true, "EYES": true, "white_*": false} {
+		if got := MatchWhere(map[string]string{"emoji": where}, e); got != match {
+			t.Errorf("where emoji %q = %v, want %v", where, got, match)
+		}
+	}
+	frontmatter := "name: T\ntrigger:\n  event:\n    type: slack.reaction_added\n    where: {message_ts: x}\n"
+	wantParseError(t, recipeWith(frontmatter, "x\n"), "message_ts")
+}
+
+func TestReactionEvent_WhereEmojiColonsNormalised(t *testing.T) {
+	frontmatter := "name: T\ntrigger:\n  event:\n    type: slack.reaction_added\n    where: {emoji: \":eyes:\"}\n"
+	r := mustParse(t, recipeWith(frontmatter, "x\n"), Scope{Kind: ScopePersonal})
+	e := ReactionEvent("acme", "1:C1", "1700000000.000100", "eyes")
+	if !MatchWhere(r.Trigger.Event.Where, e) {
+		t.Errorf("where %v does not match the eyes event", r.Trigger.Event.Where)
 	}
 }

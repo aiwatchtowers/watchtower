@@ -10,6 +10,8 @@ struct MeetingNotesView: View {
     @State private var newNoteText = ""
     @State private var creatingTaskForID: Int64?
     @State private var errorMessage: String?
+    /// A note, topic or action-item insert is in flight (`saveMeetingNote`).
+    @State private var isSavingNote = false
     @State private var showExtractSheet = false
     @State private var recap: MeetingRecap?
     @State private var showRecapSheet = false
@@ -338,6 +340,7 @@ struct MeetingNotesView: View {
                                 .font(.caption2)
                         }
                         .buttonStyle(.borderless)
+                        .disabled(isSavingNote)
                     }
                 }
             }
@@ -352,23 +355,16 @@ struct MeetingNotesView: View {
         return rel.localizedString(for: date, relativeTo: Date())
     }
 
+    // Every write below runs off the main thread (`await dbPool.write`): a
+    // database busy with the daemon never freezes the meeting pane, and the
+    // list reloads once the write lands.
+
     private func addActionItemToNotes(idx: Int, text: String) {
-        guard let db = appState.databaseManager else { return }
-        do {
-            let nextSort = (freeformNotes.last?.sortOrder ?? -1) + 1
-            _ = try db.dbPool.write { dbConn in
-                try MeetingNoteQueries.create(
-                    dbConn,
-                    eventID: eventID,
-                    type: .note,
-                    text: text,
-                    sortOrder: nextSort
-                )
-            }
+        let nextSort = (freeformNotes.last?.sortOrder ?? -1) + 1
+        Task {
+            guard await saveMeetingNote(asQuestion: false, text: text, sortOrder: nextSort) else { return }
             addedActionItems.insert(idx)
             loadNotes()
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 
@@ -392,95 +388,110 @@ struct MeetingNotesView: View {
     private func addQuestion() {
         let trimmed = newQuestionText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard let db = appState.databaseManager else { return }
-        do {
-            let sortOrder = (questions.last?.sortOrder ?? -1) + 1
-            _ = try db.dbPool.write { dbConn in
-                try MeetingNoteQueries.create(
-                    dbConn, eventID: eventID, type: .question,
-                    text: trimmed, sortOrder: sortOrder
-                )
-            }
-            newQuestionText = ""
+        let submittedDraft = newQuestionText
+        let sortOrder = (questions.last?.sortOrder ?? -1) + 1
+        // The text stays in the field until the row exists: a failed write
+        // loses nothing, and text entered meanwhile is never wiped.
+        Task {
+            guard await saveMeetingNote(asQuestion: true, text: trimmed, sortOrder: sortOrder) else { return }
+            if newQuestionText == submittedDraft { newQuestionText = "" }
             loadNotes()
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 
     private func addNote() {
         let trimmed = newNoteText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        guard let db = appState.databaseManager else { return }
-        do {
-            let sortOrder = (freeformNotes.last?.sortOrder ?? -1) + 1
-            _ = try db.dbPool.write { dbConn in
-                try MeetingNoteQueries.create(
-                    dbConn, eventID: eventID, type: .note,
-                    text: trimmed, sortOrder: sortOrder
-                )
-            }
-            newNoteText = ""
+        let submittedDraft = newNoteText
+        let sortOrder = (freeformNotes.last?.sortOrder ?? -1) + 1
+        // As in `addQuestion`: cleared only once the row exists.
+        Task {
+            guard await saveMeetingNote(asQuestion: false, text: trimmed, sortOrder: sortOrder) else { return }
+            if newNoteText == submittedDraft { newNoteText = "" }
             loadNotes()
+        }
+    }
+
+    /// One pending insert at a time (`isSavingNote`): a second Enter while
+    /// the first waits adds nothing twice, and the next sort order is read
+    /// only after the previous row is on the list. True once the row exists;
+    /// the caller then updates the screen.
+    private func saveMeetingNote(asQuestion: Bool, text: String, sortOrder: Int) async -> Bool {
+        guard !isSavingNote, let db = appState.databaseManager else { return false }
+        let eventID = eventID
+        isSavingNote = true
+        defer { isSavingNote = false }
+        do {
+            try await db.dbPool.write { dbConn in
+                _ = try MeetingNoteQueries.create(
+                    dbConn, eventID: eventID, type: asQuestion ? .question : .note, text: text, sortOrder: sortOrder)
+            }
+            return true
         } catch {
             errorMessage = error.localizedDescription
+            return false
         }
     }
 
     private func toggleChecked(_ note: MeetingNote) {
         guard let id = note.id else { return }
         guard let db = appState.databaseManager else { return }
-        do {
-            try db.dbPool.write { dbConn in
-                try MeetingNoteQueries.toggleChecked(dbConn, id: id)
+        Task {
+            do {
+                try await db.dbPool.write { dbConn in
+                    try MeetingNoteQueries.toggleChecked(dbConn, id: id)
+                }
+                loadNotes()
+            } catch {
+                // A note deleted elsewhere leaves the list instead of failing again.
+                if error is RowNotFoundError { loadNotes() }
+                errorMessage = error.localizedDescription
             }
-            loadNotes()
-        } catch {
-            // A note deleted elsewhere leaves the list instead of failing again.
-            if error is RowNotFoundError { loadNotes() }
-            errorMessage = error.localizedDescription
         }
     }
 
     private func deleteNote(_ note: MeetingNote) {
         guard let id = note.id else { return }
         guard let db = appState.databaseManager else { return }
-        do {
-            try db.dbPool.write { dbConn in
-                try MeetingNoteQueries.delete(dbConn, id: id)
+        Task {
+            do {
+                try await db.dbPool.write { dbConn in
+                    try MeetingNoteQueries.delete(dbConn, id: id)
+                }
+                loadNotes()
+            } catch {
+                errorMessage = error.localizedDescription
             }
-            loadNotes()
-        } catch {
-            errorMessage = error.localizedDescription
         }
     }
 
     private func createTask(from note: MeetingNote) {
-        guard let noteID = note.id else { return }
+        guard let noteID = note.id, creatingTaskForID != noteID else { return }
         guard let db = appState.databaseManager else { return }
+        let text = note.text
 
         creatingTaskForID = noteID
-        do {
-            let taskID = try db.dbPool.write { dbConn in
-                let today = TargetQueries.todayDateString()
-                let id = try TargetQueries.create(
-                    dbConn,
-                    text: note.text,
-                    level: "day",
-                    periodStart: today,
-                    periodEnd: today,
-                    sourceType: "manual",
-                    sourceID: "meeting_note:\(noteID)"
-                )
-                try MeetingNoteQueries.setTaskID(dbConn, noteID: noteID, taskID: Int64(id))
-                return id
+        Task {
+            defer { creatingTaskForID = nil }
+            do {
+                try await db.dbPool.write { dbConn in
+                    let today = TargetQueries.todayDateString()
+                    let id = try TargetQueries.create(
+                        dbConn,
+                        text: text,
+                        level: "day",
+                        periodStart: today,
+                        periodEnd: today,
+                        sourceType: "manual",
+                        sourceID: "meeting_note:\(noteID)"
+                    )
+                    try MeetingNoteQueries.setTaskID(dbConn, noteID: noteID, taskID: Int64(id))
+                }
+                loadNotes()
+            } catch {
+                if error is RowNotFoundError { loadNotes() }
+                errorMessage = error.localizedDescription
             }
-            _ = taskID
-            loadNotes()
-        } catch {
-            if error is RowNotFoundError { loadNotes() }
-            errorMessage = error.localizedDescription
         }
-        creatingTaskForID = nil
     }
 }

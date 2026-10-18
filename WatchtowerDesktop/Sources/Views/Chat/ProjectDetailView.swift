@@ -66,7 +66,7 @@ struct ProjectDetailView: View {
                             Image(systemName: file.mime.hasPrefix("image/") ? "photo" : "doc")
                             Text(file.name)
                             Spacer()
-                            Button { vm.removeFile(file) } label: { Image(systemName: "xmark.circle") }
+                            Button { Task { await vm.removeFile(file) } } label: { Image(systemName: "xmark.circle") }
                                 .buttonStyle(.borderless)
                                 .help("Remove file")
                                 .accessibilityLabel("Remove file")
@@ -87,7 +87,7 @@ struct ProjectDetailView: View {
                             Text(source.kind.replacingOccurrences(of: "_", with: " "))
                                 .font(.caption).foregroundStyle(.secondary)
                             Spacer()
-                            Button { vm.removeSource(source) } label: { Image(systemName: "xmark.circle") }
+                            Button { Task { await vm.removeSource(source) } } label: { Image(systemName: "xmark.circle") }
                                 .buttonStyle(.borderless)
                                 .help("Unpin")
                                 .accessibilityLabel("Unpin")
@@ -116,11 +116,11 @@ struct ProjectDetailView: View {
             Task { await vm.flush() }
         }
         .sheet(isPresented: $showSourcePicker) {
-            ProjectSourcePickerSheet(dbPool: dbPool) { vm.addSource($0) }
+            ProjectSourcePickerSheet(dbPool: dbPool) { hit in Task { await vm.addSource(hit) } }
         }
         .confirmationDialog("Delete this project?", isPresented: $confirmDelete) {
             Button("Delete project and its files", role: .destructive) {
-                if vm.deleteProject() { onDeleted(vm.projectID) }
+                Task { if await vm.deleteProject() { onDeleted(vm.projectID) } }
             }
         } message: {
             Text("Its chats are kept and move out of the project.")
@@ -140,8 +140,11 @@ struct ProjectDetailView: View {
     /// A name typed but never submitted is kept when the page goes away.
     private func commitName() {
         guard vm.draftsLoaded, let project = vm.project, vm.nameDraft != project.name else { return }
-        vm.rename(vm.nameDraft)
-        onRenamed()
+        let name = vm.nameDraft
+        Task {
+            await vm.rename(name)
+            onRenamed()
+        }
     }
 
     private func pickFiles() {
