@@ -123,7 +123,9 @@ struct LinearConnectionDetail: View {
                     .disabled(vm.isBusy)
                 if vm.isBusy, !showAddSheet {
                     ProgressView().controlSize(.small)
-                    Button("Cancel") { vm.cancelConnect() }
+                    if vm.isAuthorizing {
+                        Button("Cancel") { vm.cancelConnect() }
+                    }
                 }
             }
         }

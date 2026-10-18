@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 struct BlockerCardView: View {
     let entry: BlockerMapViewModel.BlockerEntry
@@ -130,7 +131,7 @@ struct BlockerCardView: View {
     /// falls back to a Jira link.
     private func link(for key: String, own: URL?) -> URL? {
         if let own { return own }
-        guard entry.trackerName == "Jira" else { return nil }
+        guard entry.tracker == .jira else { return nil }
         return JiraHelpers.browseURL(siteURL: siteURL, issueKey: key)
     }
 

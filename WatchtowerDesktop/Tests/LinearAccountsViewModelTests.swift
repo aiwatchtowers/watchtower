@@ -169,6 +169,56 @@ final class LinearAccountsViewModelTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: cli.argv.path))
     }
 
+    // MARK: - Cancel
+
+    /// A stand-in CLI that sleeps (`exec`, so a terminate reaches sleep itself).
+    private func sleepingCLI(seconds: Int, readsStdin: Bool = false) throws -> String {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let cli = dir.appendingPathComponent("watchtower")
+        try "#!/bin/sh\n\(readsStdin ? "cat > /dev/null\n" : "")exec sleep \(seconds)\n".write(to: cli, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
+        return cli.path
+    }
+
+    func testCancelStopsABrowserConsent() async throws {
+        let path = try sleepingCLI(seconds: 30)
+        let vm = LinearAccountsViewModel(daemon: FakeDaemonRestarter()) { path }
+        let connect = Task { await vm.addWithOAuth() }
+        for _ in 0..<500 where !vm.isAuthorizing { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(vm.isAuthorizing)
+        let started = ContinuousClock.now
+        vm.cancelConnect()
+        XCTAssertFalse(vm.isBusy)
+        XCTAssertFalse(vm.isAuthorizing)
+        await connect.value
+        XCTAssertLessThan(started.duration(to: .now), .seconds(10), "the CLI must not run on")
+        XCTAssertNil(vm.error)
+    }
+
+    /// An API-key command offers no Cancel and keeps its busy guard until it ends.
+    func testCancelLeavesAnAPIKeyCommandBusy() async throws {
+        let path = try sleepingCLI(seconds: 1, readsStdin: true)
+        let vm = LinearAccountsViewModel(daemon: FakeDaemonRestarter()) { path }
+        let add = Task { await vm.addWithAPIKey("lin_api_x", daemonPolicy: .deferred) }
+        for _ in 0..<500 where !vm.isBusy { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(vm.isBusy)
+        XCTAssertFalse(vm.isAuthorizing)
+        vm.cancelConnect()
+        XCTAssertTrue(vm.isBusy, "a non-OAuth command keeps its guard")
+        _ = await add.value
+        XCTAssertFalse(vm.isBusy)
+    }
+
+    func testTeamChangeWhileBusySaysSo() async throws {
+        let cli = try stubCLI()
+        let (vm, _) = makeVM(cli)
+        vm.isBusy = true
+        await vm.setTeam(LinearTeam(key: "ENG", name: "Engineering", selected: false), selected: true, for: LinearAccount(id: 4))
+        XCTAssertEqual(vm.error, "Another Linear change is still running — try again in a moment.")
+    }
+
     // MARK: - Teams
 
     func testTeamsLoadAndSelectionScopesToTheAccount() async throws {

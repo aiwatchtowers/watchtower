@@ -18,6 +18,7 @@ final class TargetQueriesCreateLinksTests: XCTestCase {
                 secondaryLinks: [
                     TargetPrefillLink(externalRef: "slack:Cabc/p1", relation: "related"),
                     TargetPrefillLink(externalRef: "jira:PROJ-42", relation: "blocks"),
+                    TargetPrefillLink(externalRef: "linear:ENG-7", relation: "related"),
                     TargetPrefillLink(externalRef: "http://invalid", relation: "related"),  // dropped
                     TargetPrefillLink(externalRef: "", relation: "related")                 // dropped (empty)
                 ]
@@ -31,11 +32,12 @@ final class TargetQueriesCreateLinksTests: XCTestCase {
                 arguments: [newID]
             )
         }
-        XCTAssertEqual(links.count, 2)
+        XCTAssertEqual(links.count, 3)
         XCTAssertEqual(links[0].externalRef, "slack:Cabc/p1")
         XCTAssertEqual(links[0].relation, "related")
         XCTAssertEqual(links[1].externalRef, "jira:PROJ-42")
         XCTAssertEqual(links[1].relation, "blocks")
+        XCTAssertEqual(links[2].externalRef, "linear:ENG-7", "Go's IsValidExternalRef allows linear: too")
     }
 
     func testCreate_NoLinks_DefaultBehaviour() throws {

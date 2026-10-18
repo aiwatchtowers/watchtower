@@ -132,7 +132,7 @@ package enum ChatEntitySearch {
         let rows = try Row.fetchAll(
             db,
             sql: """
-                SELECT tracker, key, MAX(title) AS title, MAX(updated_at) AS newest FROM tracker_issues
+                SELECT tracker, key, title, MAX(updated_at) AS newest FROM tracker_issues
                 WHERE is_deleted = 0 AND (key LIKE ? ESCAPE '\\' OR \(title.sql))\(trackerFilter)
                 GROUP BY tracker, key
                 ORDER BY newest DESC, key, tracker

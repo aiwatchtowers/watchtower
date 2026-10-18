@@ -444,7 +444,18 @@ struct DigestDetailView: View {
     /// Jira (config) or a Linear workspace: the progress section reads both
     /// through the tracker views.
     private var trackerConnected: Bool {
-        jiraConnected || appState.featureVisibility.connectedSources.linear
+        Self.showsTrackerProgress(jiraConnected: jiraConnected, connected: appState.featureVisibility.connectedSources)
+    }
+
+    /// A weekly digest's progress section shows with Jira or Linear.
+    static func showsTrackerProgress(jiraConnected: Bool, connected: ConnectedSources) -> Bool {
+        jiraConnected || connected.linear
+    }
+
+    /// The "without Jira" warning is about Jira alone: never on a
+    /// Linear-only install.
+    static func showsWithoutJiraWarning(jiraConnected: Bool, detectionEnabled: Bool) -> Bool {
+        jiraConnected && detectionEnabled
     }
 
     @ViewBuilder
@@ -452,7 +463,7 @@ struct DigestDetailView: View {
         if digest.type == "weekly", trackerConnected, let vm = epicProgressVM {
             EpicProgressSection(viewModel: vm)
 
-            if jiraConnected, withoutJiraEnabled {
+            if Self.showsWithoutJiraWarning(jiraConnected: jiraConnected, detectionEnabled: withoutJiraEnabled) {
                 WithoutJiraWarningView(warnings: vm.withoutJiraWarnings)
             }
         }

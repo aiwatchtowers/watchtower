@@ -97,7 +97,7 @@ struct AddLinearAccountView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    if method == .oauth {
+                    if vm?.isAuthorizing == true {
                         Button("Cancel") { vm?.cancelConnect() }
                     }
                 } else {
@@ -111,7 +111,7 @@ struct AddLinearAccountView: View {
         .padding(20)
         .frame(width: 420, height: 300)
         // No browser sign-in outlives its sheet.
-        .onDisappear { if method == .oauth, vm?.isBusy == true { vm?.cancelConnect() } }
+        .onDisappear { vm?.cancelConnect() }
     }
 
     private func connect() {

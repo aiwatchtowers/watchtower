@@ -2,6 +2,7 @@ import XCTest
 import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
+import WatchtowerCore
 
 @MainActor
 final class BlockerCardViewTests: XCTestCase {
@@ -10,7 +11,7 @@ final class BlockerCardViewTests: XCTestCase {
 
     private func makeEntry(
         issueKey: String = "PROJ-100",
-        trackerName: String = "Jira",
+        tracker: TrackerIssue.Tracker = .jira,
         issueURL: URL? = nil,
         summary: String = "Login broken",
         status: String = "Blocked",
@@ -25,8 +26,9 @@ final class BlockerCardViewTests: XCTestCase {
         urgency: BlockerMapViewModel.BlockerUrgency = .red
     ) -> BlockerMapViewModel.BlockerEntry {
         BlockerMapViewModel.BlockerEntry(
+            tracker: tracker,
+            accountID: 1,
             issueKey: issueKey,
-            trackerName: trackerName,
             issueURL: issueURL,
             summary: summary,
             status: status,
@@ -59,14 +61,14 @@ final class BlockerCardViewTests: XCTestCase {
     /// A Linear card links to the issue's own page from the tracker view.
     func testLinearCardLinksToItsIssuePage() throws {
         let url = try XCTUnwrap(URL(string: "https://linear.app/acme/issue/ENG-7"))
-        let view = BlockerCardView(entry: makeEntry(issueKey: "ENG-7", trackerName: "Linear", issueURL: url))
+        let view = BlockerCardView(entry: makeEntry(issueKey: "ENG-7", tracker: .linear, issueURL: url))
         let link = try view.inspect().find(ViewType.Link.self)
         XCTAssertEqual(try link.url(), url)
     }
 
     /// Without a link of its own, a Linear card never borrows a Jira one.
     func testLinearCardWithoutURLHasNoLink() throws {
-        let view = BlockerCardView(entry: makeEntry(issueKey: "ENG-7", trackerName: "Linear"))
+        let view = BlockerCardView(entry: makeEntry(issueKey: "ENG-7", tracker: .linear))
         XCTAssertThrowsError(try view.inspect().find(ViewType.Link.self))
         XCTAssertNoThrow(try view.inspect().find(text: "ENG-7"))
     }

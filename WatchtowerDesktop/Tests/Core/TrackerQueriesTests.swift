@@ -52,9 +52,9 @@ final class TrackerQueriesTests: XCTestCase {
         XCTAssertEqual(stale.map(\.key), ["PROJ-1", "ENG-1"], "oldest change first")
     }
 
-    func testBlockLinksJoinJiraLinksAndLinearRelationsByKey() throws {
+    func testBlockLinksJoinJiraLinksAndLinearRelationsPerAccount() throws {
         let queue = try TestDatabase.create()
-        try queue.write { db in
+        let (jira, linear) = try queue.write { db -> (Int64, Int64) in
             let jira = try TestDatabase.insertJiraAccount(db)
             let linear = try TestDatabase.insertLinearAccount(db)
             try db.execute(sql: """
@@ -68,13 +68,42 @@ final class TrackerQueriesTests: XCTestCase {
                 INSERT INTO linear_relations (account_id, id, issue_id, related_issue_id, type)
                 VALUES (?, 'r2', 'l1', 'l2', 'related')
                 """, arguments: [linear])
+            // A finished or deleted blocker blocks nothing (the view's is_blocked rule).
+            try TestDatabase.insertLinearIssue(db, account: linear, id: "l3", key: "ENG-3") { $0.category = "done" }
+            try TestDatabase.insertLinearIssue(db, account: linear, id: "l4", key: "ENG-4") { $0.deleted = true }
+            try TestDatabase.insertLinearBlocks(db, account: linear, id: "r3", blocker: "l3", blocked: "l2")
+            try TestDatabase.insertLinearBlocks(db, account: linear, id: "r4", blocker: "l4", blocked: "l2")
+            return (jira, linear)
         }
-        let links = try queue.read { db in try TrackerQueries.fetchBlockLinks(db, keys: ["PROJ-2", "ENG-2"]) }
+        let proj2 = TrackerIssueRef(tracker: .jira, accountID: jira, key: "PROJ-2")
+        let eng2 = TrackerIssueRef(tracker: .linear, accountID: linear, key: "ENG-2")
+        let links = try queue.read { db in try TrackerQueries.fetchBlockLinks(db, issues: [proj2, eng2]) }
         XCTAssertEqual(links, [
-            TrackerBlockLink(blocker: "PROJ-1", blocked: "PROJ-2"),
-            TrackerBlockLink(blocker: "ENG-1", blocked: "ENG-2")
+            TrackerBlockLink(blocker: TrackerIssueRef(tracker: .jira, accountID: jira, key: "PROJ-1"), blocked: proj2),
+            TrackerBlockLink(blocker: TrackerIssueRef(tracker: .linear, accountID: linear, key: "ENG-1"), blocked: eng2)
         ])
-        XCTAssertTrue(try queue.read { db in try TrackerQueries.fetchBlockLinks(db, keys: []) }.isEmpty)
+        XCTAssertTrue(try queue.read { db in try TrackerQueries.fetchBlockLinks(db, issues: []) }.isEmpty)
+        // A Jira issue asked by key is not answered with the Linear issue of the same key.
+        let jiraOnly = try queue.read { db in
+            try TrackerQueries.fetchBlockLinks(db, issues: [TrackerIssueRef(tracker: .jira, accountID: jira, key: "ENG-2")])
+        }
+        XCTAssertTrue(jiraOnly.isEmpty)
+    }
+
+    func testFetchIssuesResolvesRefsNotBareKeys() throws {
+        let queue = try TestDatabase.create()
+        let (jira, linear) = try queue.write { db -> (Int64, Int64) in
+            let jira = try TestDatabase.insertJiraAccount(db)
+            let linear = try TestDatabase.insertLinearAccount(db)
+            try TestDatabase.insertJiraIssue(db, account: jira, key: "ENG-1") { $0.summary = "Jira side" }
+            try TestDatabase.insertLinearIssue(db, account: linear, id: "l1", key: "ENG-1") { $0.title = "Linear side" }
+            return (jira, linear)
+        }
+        let linearRef = TrackerIssueRef(tracker: .linear, accountID: linear, key: "ENG-1")
+        let missing = TrackerIssueRef(tracker: .jira, accountID: jira + 9, key: "ENG-1")
+        let issues = try queue.read { db in try TrackerQueries.fetchIssues(db, refs: [linearRef, missing]) }
+        XCTAssertEqual(issues.count, 1)
+        XCTAssertEqual(issues[linearRef]?.title, "Linear side")
     }
 
     func testIssueByKeyCarriesTheTrackerLink() throws {
@@ -146,6 +175,66 @@ final class TrackerQueriesTests: XCTestCase {
         let epic = try XCTUnwrap(rows.last)
         XCTAssertEqual(epic.kind, "epic")
         XCTAssertEqual(epic.weeklyResolvedCount, 1)
+    }
+
+    // MARK: - Jira cases (ported from the retired JiraQueries reads)
+
+    func testJiraBlockedMatchesTheStatusNameAndSkipsDone() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let acct = try TestDatabase.insertJiraAccount(db)
+            try TestDatabase.insertJiraIssue(db, account: acct, key: "PROJ-1") { $0.status = "Blocked"; $0.category = "in_progress" }
+            try TestDatabase.insertJiraIssue(db, account: acct, key: "PROJ-2") { $0.status = "Waiting (blocker)" }
+            try TestDatabase.insertJiraIssue(db, account: acct, key: "PROJ-3") { $0.status = "Blocked"; $0.category = "done" }
+            try TestDatabase.insertJiraIssue(db, account: acct, key: "PROJ-4") { $0.status = "In Progress"; $0.category = "in_progress" }
+        }
+        let blocked = try queue.read { db in try TrackerQueries.fetchBlockedIssues(db) }
+        XCTAssertEqual(Set(blocked.map(\.key)), ["PROJ-1", "PROJ-2"])
+    }
+
+    func testJiraStaleIsInProgressPastTheThresholdOldestFirst() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let acct = try TestDatabase.insertJiraAccount(db)
+            try TestDatabase.insertJiraIssue(db, account: acct, key: "PROJ-1") { $0.category = "in_progress"; $0.categoryChanged = self.daysAgo(10) }
+            try TestDatabase.insertJiraIssue(db, account: acct, key: "PROJ-2") { $0.category = "in_progress"; $0.categoryChanged = self.daysAgo(20) }
+            try TestDatabase.insertJiraIssue(db, account: acct, key: "PROJ-3") { $0.category = "in_progress"; $0.categoryChanged = self.daysAgo(3) }
+            try TestDatabase.insertJiraIssue(db, account: acct, key: "PROJ-4") { $0.category = "in_progress" }
+            try TestDatabase.insertJiraIssue(db, account: acct, key: "PROJ-5") { $0.category = "done"; $0.categoryChanged = self.daysAgo(30) }
+        }
+        let stale = try queue.read { db in try TrackerQueries.fetchStaleIssues(db, staleDays: 7) }
+        XCTAssertEqual(stale.map(\.key), ["PROJ-2", "PROJ-1"])
+    }
+
+    func testEpicWithoutItsOwnRowIsNamedByKey() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let acct = try TestDatabase.insertJiraAccount(db)
+            for n in 1...3 { try TestDatabase.insertJiraIssue(db, account: acct, key: "PROJ-\(n)") { $0.epicKey = "PROJ-300" } }
+        }
+        let rows = try queue.read { db in try TrackerQueries.fetchContainerProgress(db) }
+        XCTAssertEqual(rows.first?.name, "PROJ-300")
+        XCTAssertEqual(rows.first?.progressPct, 0)
+    }
+
+    func testFetchIssueByTrackerPicksThatTracker() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let jira = try TestDatabase.insertJiraAccount(db)
+            let linear = try TestDatabase.insertLinearAccount(db)
+            try TestDatabase.insertJiraIssue(db, account: jira, key: "ENG-1")
+            try TestDatabase.insertLinearIssue(db, account: linear, id: "l1", key: "ENG-1") {
+                $0.url = "https://linear.app/acme/issue/ENG-1"
+            }
+        }
+        let issue = try queue.read { db in try TrackerQueries.fetchIssue(db, tracker: .linear, key: "ENG-1") }
+        XCTAssertEqual(issue?.tracker, .linear)
+        XCTAssertEqual(issue?.browseURL?.absoluteString, "https://linear.app/acme/issue/ENG-1")
+        XCTAssertNil(try queue.read { db in try TrackerQueries.fetchIssue(db, tracker: .linear, key: "ENG-9") })
+    }
+
+    func testDayPlanLinearSourceTypeDecodes() {
+        XCTAssertEqual(DayPlanItemSourceType(rawValue: "linear"), .linear)
     }
 
     // MARK: - Iteration progress

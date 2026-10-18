@@ -1,12 +1,30 @@
 import Foundation
 import GRDB
 
-/// A "blocks" edge between two issue keys: `blocker` blocks `blocked`.
-package struct TrackerBlockLink: Equatable, Sendable {
-    package let blocker: String
-    package let blocked: String
+/// One issue's identity across trackers: a bare key can exist on two
+/// trackers, or on two sites of one tracker.
+package struct TrackerIssueRef: Hashable, Sendable {
+    package let tracker: TrackerIssue.Tracker
+    package let accountID: Int64
+    package let key: String
 
-    package init(blocker: String, blocked: String) {
+    package init(tracker: TrackerIssue.Tracker, accountID: Int64, key: String) {
+        self.tracker = tracker
+        self.accountID = accountID
+        self.key = key
+    }
+}
+
+extension TrackerIssue {
+    package var ref: TrackerIssueRef { TrackerIssueRef(tracker: tracker, accountID: accountID, key: key) }
+}
+
+/// A "blocks" edge inside one tracker account: `blocker` blocks `blocked`.
+package struct TrackerBlockLink: Equatable, Sendable {
+    package let blocker: TrackerIssueRef
+    package let blocked: TrackerIssueRef
+
+    package init(blocker: TrackerIssueRef, blocked: TrackerIssueRef) {
         self.blocker = blocker
         self.blocked = blocked
     }
@@ -141,28 +159,52 @@ package enum TrackerQueries {
         )
     }
 
-    /// The "blocks" edges touching `keys`: Jira links whose type names a
-    /// block (source blocks target), and Linear `blocks` relations (issue
-    /// blocks related issue), both by current key.
-    package static func fetchBlockLinks(_ db: Database, keys: [String]) throws -> [TrackerBlockLink] {
-        guard !keys.isEmpty else { return [] }
+    /// The "blocks" edges touching `issues`, each inside its own tracker
+    /// account: Jira links whose type names a block (source blocks target),
+    /// and Linear `blocks` relations (issue blocks related issue) by current
+    /// key. A Linear edge counts only while its blocker is open and not
+    /// deleted, the rule of the view's `is_blocked` (migration 00120).
+    package static func fetchBlockLinks(_ db: Database, issues: Set<TrackerIssueRef>) throws -> [TrackerBlockLink] {
+        guard !issues.isEmpty else { return [] }
+        let keys = Array(Set(issues.map(\.key)))
         let placeholders = keys.map { _ in "?" }.joined(separator: ",")
         let rows = try Row.fetchAll(
             db,
             sql: """
-                SELECT source_key AS blocker, target_key AS blocked FROM jira_issue_links
+                SELECT 'jira' AS tracker, account_id, source_key AS blocker, target_key AS blocked
+                FROM jira_issue_links
                 WHERE LOWER(link_type) LIKE '%block%'
                   AND (source_key IN (\(placeholders)) OR target_key IN (\(placeholders)))
                 UNION ALL
-                SELECT b.key, d.key FROM linear_relations r
+                SELECT 'linear', r.account_id, b.key, d.key FROM linear_relations r
                 JOIN linear_issues b ON b.account_id = r.account_id AND b.id = r.issue_id
                 JOIN linear_issues d ON d.account_id = r.account_id AND d.id = r.related_issue_id
-                WHERE r.type = 'blocks'
+                WHERE r.type = 'blocks' AND b.is_deleted = 0 AND b.status_category != 'done'
                   AND (b.key IN (\(placeholders)) OR d.key IN (\(placeholders)))
                 """,
             arguments: StatementArguments(keys + keys + keys + keys)
         )
-        return rows.map { TrackerBlockLink(blocker: $0["blocker"], blocked: $0["blocked"]) }
+        return rows.compactMap { row in
+            let tracker = TrackerIssue.Tracker(rawValue: row["tracker"]) ?? .jira
+            let account: Int64 = row["account_id"]
+            let link = TrackerBlockLink(
+                blocker: TrackerIssueRef(tracker: tracker, accountID: account, key: row["blocker"]),
+                blocked: TrackerIssueRef(tracker: tracker, accountID: account, key: row["blocked"]))
+            // The key filter is bare; keep only edges of the asked issues.
+            return issues.contains(link.blocker) || issues.contains(link.blocked) ? link : nil
+        }
+    }
+
+    /// The issues behind `refs`, in one read; a ref with no row is absent.
+    package static func fetchIssues(_ db: Database, refs: Set<TrackerIssueRef>) throws -> [TrackerIssueRef: TrackerIssue] {
+        guard !refs.isEmpty else { return [:] }
+        let keys = Array(Set(refs.map(\.key)))
+        let placeholders = keys.map { _ in "?" }.joined(separator: ",")
+        let issues = try TrackerIssue.fetchAll(
+            db, sql: "SELECT * FROM tracker_issues WHERE key IN (\(placeholders))", arguments: StatementArguments(keys))
+        var result: [TrackerIssueRef: TrackerIssue] = [:]
+        for issue in issues where refs.contains(issue.ref) { result[issue.ref] = issue }
+        return result
     }
 
     /// One issue by key. A key two trackers share resolves to Jira first,
@@ -172,6 +214,17 @@ package enum TrackerQueries {
             db,
             sql: "SELECT * FROM tracker_issues WHERE key = ? ORDER BY tracker, account_id LIMIT 1",
             arguments: [key]
+        )
+    }
+
+    /// One issue by tracker and key (the lowest account when two sites of
+    /// that tracker share the key) — for a target or day-plan item that
+    /// names its tracker.
+    package static func fetchIssue(_ db: Database, tracker: TrackerIssue.Tracker, key: String) throws -> TrackerIssue? {
+        try TrackerIssue.fetchOne(
+            db,
+            sql: "SELECT * FROM tracker_issues WHERE tracker = ? AND key = ? ORDER BY account_id LIMIT 1",
+            arguments: [tracker.rawValue, key]
         )
     }
 

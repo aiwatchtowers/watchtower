@@ -21,15 +21,7 @@ The **Jira Features** switches (role preset plus one switch per signal) decide w
 
 ### Linear
 
-- **Connect:** **Settings** → **Connections** → **Linear** → **Add Linear Workspace**, with **Sign in with Linear** (browser) or **API key**. Setup's Linear card opens the same sheet. Connecting switches `linear.enabled` on for you.
-- **Teams:** tick the teams to sync under **Teams** in that pane. They appear after the first sync.
-- **Sync:** the daemon syncs the selected teams every 15 minutes (`linear.sync_interval_mins`). The first pass loads every open issue and everything updated in the last 90 days.
-- **API key:** create one in Linear under Settings, Security & access. It never expires. If Linear rejects it, the workspace shows **Re-login**, which asks for a new key. **Remove** does not delete the key at Linear; revoke it there.
-- **What reads it:** the data is stored next to Jira's in a shared form, but no tab, briefing or inbox card reads it. Two things use it: the assistant, and automations (below). A connected Linear workspace can also identify you for the briefing and the day plan.
-
-### Linear in the assistant
-
-In **AI Chat** you can ask the assistant to list teams and issues, read an issue with its comments and status history, or change Linear: create an issue, add a comment, move an issue to another state, assign it, or edit its title, priority, labels, due date and estimate. Every change is a proposal: it waits in the chat's action card until you press Approve, and Linear changes only then. If you press Retry after a failed create, no second issue is made. The assistant can only choose a state, label or person that Linear knows for that team; a label that does not exist is refused, not created. Teams you did not select for sync have no states to choose from, so select the team first.
+Linear workspaces connect in **Settings** → **Connections** → **Linear**; their issues show in **Blockers** and the weekly digest next to Jira's, and the assistant can read and change them. See [Linear](linear.md).
 
 ## Using it
 
@@ -52,12 +44,12 @@ An issue or epic key on any tab opens in Jira.
 - **A comment deleted in Jira is still shown.** It disappears the next time that issue is synced.
 - **A Jira site row shows a Re-login button.** Atlassian revoked the grant, so that site stops syncing until you press **Re-login** in **Settings** → **Connections** → **Jira**.
 - **Blockers misses an issue you call blocked.** A Jira issue is listed as blocked only when its status name contains "block"; a flag or label is not read. A Linear issue needs an open "blocked by" relation. Links only build the chain shown under a listed issue.
-- **A Linear workspace shows no teams.** Its first sync has not finished yet; the list fills after it.
 
 Site needs **Re-login**? See [An account needs attention](../troubleshooting/account-needs-attention.md).
 
 ## Related
 
+- [Linear](linear.md): connecting Linear workspaces and what reads them.
 - [Search and knowledge](search-and-knowledge.md): Jira issues and comments are searchable by the assistant.
 
 For developers: [docs/features/jira-multi-account.md](../../features/jira-multi-account.md), [docs/features/jira-changelog.md](../../features/jira-changelog.md), [docs/features/linear.md](../../features/linear.md)

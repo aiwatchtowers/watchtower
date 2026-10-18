@@ -578,4 +578,29 @@ final class FeatureReadinessTests: XCTestCase {
         XCTAssertEqual(FeatureReadiness.trackerReadiness(jira: .needsSource(.jiraBoards), linear: soon), .needsSource(.jiraBoards))
         XCTAssertNil(FeatureReadiness.trackerReadiness(jira: nil, linear: nil))
     }
+
+    /// The combinations a Jira-plus-Linear install meets on Blockers.
+    func testTrackerReadinessCombinations() {
+        let soon = Readiness.scheduled(.nextCycle(minutes: 15))
+        // Jira's own gap wins over Linear's promise (the owner's fix is to
+        // pick boards), but never over Linear content.
+        XCTAssertEqual(FeatureReadiness.trackerReadiness(jira: .needsSource(.jiraBoards), linear: .ready), .ready)
+        XCTAssertEqual(
+            FeatureReadiness.trackerReadiness(jira: .needsSource(.jiraBoards), linear: .needsSource(.linear)),
+            .needsSource(.jiraBoards))
+        XCTAssertEqual(
+            FeatureReadiness.trackerReadiness(jira: .needsSource(.jiraBoards), linear: .error(message: "x")),
+            .needsSource(.jiraBoards))
+        // Linear alone speaks for a Linear-only install, whatever its state.
+        XCTAssertEqual(
+            FeatureReadiness.trackerReadiness(jira: .needsSource(.jira), linear: .error(message: "boom")),
+            .error(message: "boom"))
+        XCTAssertEqual(
+            FeatureReadiness.trackerReadiness(jira: .needsSource(.jira), linear: .waitingForSync(detail: nil)),
+            .waitingForSync(detail: nil))
+        XCTAssertEqual(FeatureReadiness.trackerReadiness(jira: .needsSource(.jira), linear: .daemonStopped), .daemonStopped)
+        // Both connected, neither with content: Jira first.
+        XCTAssertEqual(FeatureReadiness.trackerReadiness(jira: soon, linear: .waitingForSync(detail: nil)), soon)
+        XCTAssertEqual(FeatureReadiness.trackerReadiness(jira: .needsSource(.jira), linear: nil), .needsSource(.jira))
+    }
 }

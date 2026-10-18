@@ -32,7 +32,14 @@ final class LinearAccountsViewModel {
     private let daemon: any DaemonRestarting
     /// Resolves the CLI binary; injectable so tests can run a stand-in.
     private let cliPath: () -> String?
-    private var authProcess: Process?
+    /// The running browser consent; only it can be cancelled.
+    @ObservationIgnored private var authProcess: Process? {
+        didSet { isAuthorizing = authProcess != nil }
+    }
+    /// A browser consent (`add`/`login --app-return`) is running: the one
+    /// command Cancel may stop. An API-key, team or management command keeps
+    /// `isBusy` until it finishes and offers no Cancel.
+    private(set) var isAuthorizing = false
 
     init(daemon: any DaemonRestarting = LiveDaemonRestarter(), cliPath: @escaping () -> String? = Constants.findCLIPath) {
         self.daemon = daemon
@@ -132,8 +139,11 @@ final class LinearAccountsViewModel {
             failurePrefix: "Re-login failed", daemonPolicy: .restart)
     }
 
+    /// Stops a running browser consent. Does nothing for any other command,
+    /// so a non-OAuth command never loses its busy guard mid-run.
     func cancelConnect() {
-        if let process = authProcess, process.isRunning { process.terminate() }
+        guard let process = authProcess else { return }
+        if process.isRunning { process.terminate() }
         authProcess = nil
         isBusy = false
     }
@@ -180,7 +190,7 @@ final class LinearAccountsViewModel {
     /// selection on its next pass, so no restart.
     func setTeam(_ team: LinearTeam, selected: Bool, for account: LinearAccount) async {
         guard !isBusy else {
-            error = "Another connection is already in progress."
+            error = "Another Linear change is still running — try again in a moment."
             return
         }
         guard let path = cliPath() else {
