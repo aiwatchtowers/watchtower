@@ -61,6 +61,96 @@ final class AgentReportDecodingTests: XCTestCase {
         XCTAssertNil(try overview(import: nil).importState)
     }
 
+    func testOverviewDecodesV2Blocks() throws {
+        let ov = try JSONDecoder().decode(AgentReportOverview.self, from: fixture("agent-report-overview"))
+        XCTAssertEqual(ov.hints[0].action?.isEmpty, false)
+        XCTAssertEqual(ov.hints[0].fix, AgentHintFix(kind: "open_asks", ref: nil, rules: nil))
+        XCTAssertEqual(ov.hints[0].moreEvidence, 0)
+        XCTAssertEqual(ov.hints[0].estimateTokens, 0)
+        let ctx = try XCTUnwrap(ov.context)
+        XCTAssertNotNil(ctx.factsSessions)
+        XCTAssertNotNil(ctx.baseline)
+        XCTAssertNotNil(ctx.disk)
+        let skills = try XCTUnwrap(ov.skills)
+        XCTAssertNotNil(skills.listed)
+        XCTAssertNotNil(skills.rows)
+    }
+
+    func testContextSkillsAndTroubleFieldsDecode() throws {
+        let json = #"""
+        {"workbench_id":1,"enabled":true,"since":"a","until":"b",
+         "totals":{"sessions":0,"active_ms":0,"away_ms":0,"cost_usd":0,"cost_estimated_calls":0,
+                   "tokens":{"input":0,"output":0,"cache_read":0,"cache_write_5m":0,"cache_write_1h":0}},
+         "time":{"model_ms":0,"tools":{"build_test":0,"git":0,"read_search":0,"edit":0,"mcp":0,"subagents_fg":0,"other":0},
+                 "background_ms":0,"owner_ms":0,"away_ms":0,"active_ms":0,"wall_ms":0},
+         "subagents":{"count":0,"foreground":0,"background":0,"peak":0,"serial":0,"busy_ms":0,"union_ms":0,"blocked_ms":0,"avg_parallel":0},
+         "commands":[],"models":[],
+         "hints":[{"id":"S1","finding":"f","action":"a","fix":{"kind":"allow_rule","ref":"make","rules":["Bash(make:*)"]},
+                   "estimate_ms":0,"estimate_usd":0,"estimate_tokens":1200,"evidence":[],"more_evidence":3}],
+         "tasks":[],"sessions":[],"old_format_sessions":0,
+         "context":{"facts_sessions":2,"sessions":3,
+           "baseline":{"tokens":9000,"parts":[{"part":"skills","tokens":900,"share":0.1}]},
+           "subagent_baseline":{"tokens":100,"parts":[]},
+           "growth":[{"source":"Bash","tokens":50,"share":0.5}],
+           "top_sources":[{"tool":"Read","target":"a.go","tokens":70,"calls":4,"sessions":2}],
+           "repeated_reads":[{"target":"a.go","reads":5,"session_uuid":"s1","tokens":40}],
+           "compactions":{"count":1,"median_pre_tokens":800,"median_post_tokens":100,"sessions":1},
+           "disk":{"claude_md_bytes":2048,"claude_md_lines":60,"rules_bytes":10}},
+         "skills":{"facts_sessions":2,"listed":5,"used":1,"listing_tokens":300,
+           "rows":[{"name":"x","invocations":2,"by_trigger":{"slash":2},"cost_usd":1.5,"sessions":1}],
+           "never_used":[{"name":"y","listing_tokens":60}]},
+         "trouble":{"classes":[{"class":"timeout","tool":"Bash","count":3,"sessions":[{"session_uuid":"s1","count":3}]}],
+           "denials":[{"kind":"permission-rule","tool":"Bash","target":"make","count":2}],
+           "interrupts":4,"rejections":1,"interrupt_sessions":[{"session_uuid":"s2","count":4}],
+           "unfinished_subagents":1,"rate_limited":2,"facts_sessions":2}}
+        """#
+        let ov = try JSONDecoder().decode(AgentReportOverview.self, from: Data(json.utf8))
+        XCTAssertEqual(ov.hints[0].fix, AgentHintFix(kind: "allow_rule", ref: "make", rules: ["Bash(make:*)"]))
+        XCTAssertEqual(ov.hints[0].moreEvidence, 3)
+        XCTAssertEqual(ov.hints[0].estimateTokens, 1200)
+        let ctx = try XCTUnwrap(ov.context)
+        XCTAssertEqual(ctx.factsSessions, 2)
+        XCTAssertEqual(ctx.sessions, 3)
+        XCTAssertEqual(ctx.baseline?.tokens, 9000)
+        XCTAssertEqual(ctx.baseline?.parts?.first, AgentPartShare(part: "skills", tokens: 900, share: 0.1))
+        XCTAssertEqual(ctx.subagentBaseline?.parts, [])
+        XCTAssertEqual(ctx.growth?.first, AgentGrowthRow(source: "Bash", tokens: 50, share: 0.5))
+        XCTAssertEqual(ctx.topSources?.first, AgentSourceRow(tool: "Read", target: "a.go", tokens: 70, calls: 4, sessions: 2))
+        XCTAssertEqual(ctx.repeatedReads?.first, AgentRepeatRow(target: "a.go", reads: 5, sessionUUID: "s1", tokens: 40))
+        XCTAssertEqual(ctx.compactions, AgentCompactionStats(count: 1, medianPreTokens: 800, medianPostTokens: 100, sessions: 1))
+        XCTAssertEqual(ctx.disk, AgentDiskSizes(claudeMDBytes: 2048, claudeMDLines: 60, rulesBytes: 10))
+        let sk = try XCTUnwrap(ov.skills)
+        XCTAssertEqual(sk.listed, 5)
+        XCTAssertEqual(sk.listingTokens, 300)
+        XCTAssertEqual(sk.rows?.first, AgentSkillRow(name: "x", invocations: 2, byTrigger: ["slash": 2], costUSD: 1.5, sessions: 1))
+        XCTAssertEqual(sk.neverUsed?.first, AgentUnusedSkill(name: "y", listingTokens: 60))
+        let tr = try XCTUnwrap(ov.trouble)
+        XCTAssertEqual(tr.classes?.first,
+                       AgentErrorClassRow(class: "timeout", tool: "Bash", count: 3,
+                                          sessions: [AgentSessionCount(sessionUUID: "s1", count: 3)]))
+        XCTAssertEqual(tr.denials?.first, AgentDenialRow(kind: "permission-rule", tool: "Bash", target: "make", count: 2))
+        XCTAssertEqual(tr.interrupts, 4)
+        XCTAssertEqual(tr.rejections, 1)
+        XCTAssertEqual(tr.interruptSessions?.first?.sessionUUID, "s2")
+        XCTAssertEqual(tr.unfinishedSubagents, 1)
+        XCTAssertEqual(tr.rateLimited, 2)
+        XCTAssertEqual(tr.factsSessions, 2)
+    }
+
+    func testOverviewWithoutV2BlocksStillDecodes() throws {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture("agent-report-overview")) as? [String: Any])
+        for k in ["context", "skills", "trouble"] { json[k] = nil }
+        json["hints"] = [["id": "H4", "finding": "f", "estimate_ms": 1, "estimate_usd": 0, "evidence": []]]
+        let ov = try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertNil(ov.context)
+        XCTAssertNil(ov.skills)
+        XCTAssertNil(ov.trouble)
+        XCTAssertNil(ov.hints[0].action)
+        XCTAssertNil(ov.hints[0].fix)
+        XCTAssertNil(ov.hints[0].moreEvidence)
+        XCTAssertNil(ov.hints[0].estimateTokens)
+    }
+
     func testSessionDetailDecodes() throws {
         let d = try JSONDecoder().decode(AgentSessionDetail.self, from: fixture("agent-report-session"))
         XCTAssertEqual(d.session.uuid, "11111111-aaaa-bbbb-cccc-000000000001")

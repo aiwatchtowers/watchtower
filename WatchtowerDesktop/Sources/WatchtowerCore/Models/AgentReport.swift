@@ -129,11 +129,24 @@ package struct AgentHint: Decodable, Equatable, Sendable {
     package let estimateMS: Int64
     package let estimateUSD: Double
     package let evidence: [AgentHintEvidence]
+    /// What to change; absent from a CLI older than v2.
+    package let action: String?
+    package let fix: AgentHintFix?
+    package let moreEvidence: Int?
+    package let estimateTokens: Int64?
 
     enum CodingKeys: String, CodingKey {
-        case id, finding, evidence
+        case id, finding, evidence, action, fix
         case estimateMS = "estimate_ms", estimateUSD = "estimate_usd"
+        case moreEvidence = "more_evidence", estimateTokens = "estimate_tokens"
     }
+}
+
+/// The change the app can make for a hint (`Fix` in `hints.go`).
+package struct AgentHintFix: Decodable, Equatable, Sendable {
+    package let kind: String
+    package let ref: String?
+    package let rules: [String]?
 }
 
 package struct AgentTaskRow: Decodable, Equatable, Sendable {
@@ -235,9 +248,14 @@ package struct AgentReportOverview: Decodable, Equatable, Sendable {
     package let oldFormatSessions: Int
     /// Absent from a CLI older than #849: no loading line.
     package let importState: AgentImportState?
+    /// The v2 blocks; absent from an older CLI.
+    package let context: AgentContextReport?
+    package let skills: AgentSkillsReport?
+    package let trouble: AgentTroubleReport?
 
     enum CodingKeys: String, CodingKey {
         case enabled, since, until, totals, time, subagents, commands, models, hints, tasks, sessions
+        case context, skills, trouble
         case workbenchID = "workbench_id", oldFormatSessions = "old_format_sessions"
         case importState = "import"
     }
@@ -251,4 +269,169 @@ package struct AgentSessionDetail: Decodable, Equatable, Sendable {
     package let hints: [AgentHint]
     package let lanes: [AgentLane]
     package let commands: [AgentCommandRow]
+}
+
+// MARK: - Context (`internal/agentreport/context.go`)
+
+package struct AgentContextReport: Decodable, Equatable, Sendable {
+    package let factsSessions: Int?
+    package let sessions: Int?
+    package let baseline: AgentBaselineSplit?
+    package let subagentBaseline: AgentBaselineSplit?
+    package let growth: [AgentGrowthRow]?
+    package let topSources: [AgentSourceRow]?
+    package let repeatedReads: [AgentRepeatRow]?
+    package let compactions: AgentCompactionStats?
+    package let disk: AgentDiskSizes?
+
+    enum CodingKeys: String, CodingKey {
+        case sessions, baseline, growth, compactions, disk
+        case factsSessions = "facts_sessions", subagentBaseline = "subagent_baseline"
+        case topSources = "top_sources", repeatedReads = "repeated_reads"
+    }
+}
+
+package struct AgentBaselineSplit: Decodable, Equatable, Sendable {
+    package let tokens: Int64?
+    package let parts: [AgentPartShare]?
+}
+
+package struct AgentPartShare: Decodable, Equatable, Sendable {
+    package let part: String
+    package let tokens: Int64
+    package let share: Double
+}
+
+package struct AgentGrowthRow: Decodable, Equatable, Sendable {
+    package let source: String
+    package let tokens: Int64
+    package let share: Double
+}
+
+package struct AgentSourceRow: Decodable, Equatable, Sendable {
+    package let tool: String
+    package let target: String
+    package let tokens: Int64
+    package let calls: Int
+    package let sessions: Int
+}
+
+package struct AgentRepeatRow: Decodable, Equatable, Sendable {
+    package let target: String
+    package let reads: Int
+    package let sessionUUID: String
+    package let tokens: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case target, reads, tokens
+        case sessionUUID = "session_uuid"
+    }
+}
+
+package struct AgentCompactionStats: Decodable, Equatable, Sendable {
+    package let count: Int
+    package let medianPreTokens: Int64
+    package let medianPostTokens: Int64
+    package let sessions: Int
+
+    enum CodingKeys: String, CodingKey {
+        case count, sessions
+        case medianPreTokens = "median_pre_tokens", medianPostTokens = "median_post_tokens"
+    }
+}
+
+package struct AgentDiskSizes: Decodable, Equatable, Sendable {
+    package let claudeMDBytes: Int64
+    package let claudeMDLines: Int
+    package let rulesBytes: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case claudeMDBytes = "claude_md_bytes", claudeMDLines = "claude_md_lines"
+        case rulesBytes = "rules_bytes"
+    }
+}
+
+// MARK: - Skills (`internal/agentreport/skills.go`)
+
+package struct AgentSkillsReport: Decodable, Equatable, Sendable {
+    package let factsSessions: Int?
+    package let listed: Int?
+    package let used: Int?
+    package let listingTokens: Int64?
+    package let rows: [AgentSkillRow]?
+    package let neverUsed: [AgentUnusedSkill]?
+
+    enum CodingKeys: String, CodingKey {
+        case listed, used, rows
+        case factsSessions = "facts_sessions", listingTokens = "listing_tokens"
+        case neverUsed = "never_used"
+    }
+}
+
+package struct AgentSkillRow: Decodable, Equatable, Sendable {
+    package let name: String
+    package let invocations: Int
+    /// `proactive`, `slash`, `read`.
+    package let byTrigger: [String: Int]
+    package let costUSD: Double
+    package let sessions: Int
+
+    enum CodingKeys: String, CodingKey {
+        case name, invocations, sessions
+        case byTrigger = "by_trigger", costUSD = "cost_usd"
+    }
+}
+
+package struct AgentUnusedSkill: Decodable, Equatable, Sendable {
+    package let name: String
+    package let listingTokens: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case listingTokens = "listing_tokens"
+    }
+}
+
+// MARK: - Trouble (`internal/agentreport/trouble.go`)
+
+package struct AgentTroubleReport: Decodable, Equatable, Sendable {
+    package let classes: [AgentErrorClassRow]?
+    package let denials: [AgentDenialRow]?
+    package let interrupts: Int?
+    package let rejections: Int?
+    package let interruptSessions: [AgentSessionCount]?
+    package let unfinishedSubagents: Int?
+    package let rateLimited: Int?
+    package let factsSessions: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case classes, denials, interrupts, rejections
+        case interruptSessions = "interrupt_sessions", unfinishedSubagents = "unfinished_subagents"
+        case rateLimited = "rate_limited", factsSessions = "facts_sessions"
+    }
+}
+
+package struct AgentErrorClassRow: Decodable, Equatable, Sendable {
+    package let `class`: String
+    package let tool: String
+    package let count: Int
+    package let sessions: [AgentSessionCount]
+}
+
+package struct AgentSessionCount: Decodable, Equatable, Sendable {
+    package let sessionUUID: String
+    package let count: Int
+
+    enum CodingKeys: String, CodingKey {
+        case count
+        case sessionUUID = "session_uuid"
+    }
+}
+
+package struct AgentDenialRow: Decodable, Equatable, Sendable {
+    /// `automode-blocked`, `permission-rule`, `user-rejected`.
+    package let kind: String
+    package let tool: String
+    package let target: String
+    package let count: Int
 }
