@@ -227,7 +227,44 @@ func loadMigrations() ([]migration, error) {
 			blocks:  strings.Contains(rawUp, "+goose StatementBegin"),
 		})
 	}
+	out, err = appendGoMigrations(out)
+	if err != nil {
+		return nil, err
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].version < out[j].version })
+	return out, nil
+}
+
+// appendGoMigrations adds each registered Go migration (goose collects them
+// with the SQL files) as a migration whose Up names the tables and views
+// goMigrationTouches declares for it, so migratedPastBinary sees the real
+// newest version and laterMigrationTouches knows what it changes. A Go
+// migration is never replayed.
+func appendGoMigrations(sqlMigrations []migration) ([]migration, error) {
+	all, err := goose.CollectMigrations("migrations", 0, goose.MaxVersion)
+	if err != nil {
+		return nil, fmt.Errorf("collecting embedded migrations: %w", err)
+	}
+	seen := map[int64]bool{}
+	for _, m := range sqlMigrations {
+		seen[m.version] = true
+	}
+	out := sqlMigrations
+	for _, m := range all {
+		if seen[m.Version] {
+			continue
+		}
+		touches, ok := goMigrationTouches[m.Version]
+		if !ok {
+			return nil, fmt.Errorf("go migration %s declares no tables in goMigrationTouches", m.Source)
+		}
+		out = append(out, migration{
+			file:    path.Base(m.Source),
+			version: m.Version,
+			up:      strings.Join(touches, "\n"),
+			blocks:  true,
+		})
+	}
 	return out, nil
 }
 
