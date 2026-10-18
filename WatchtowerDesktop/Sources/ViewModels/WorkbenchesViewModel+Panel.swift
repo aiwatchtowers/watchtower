@@ -272,6 +272,16 @@ extension WorkbenchesViewModel {
         return model
     }
 
+    /// The session's Workchat composer, made once per session; nil without
+    /// the app's `SessionControl` (a test VM).
+    func workchat(sessionID: Int64) -> WorkchatModel? {
+        if let model = workchatModels[sessionID] { return model }
+        guard let sessionControl else { return nil }
+        let model = WorkchatModel(sessionID: sessionID, control: sessionControl, lineDelivery: lineDelivery)
+        workchatModels[sessionID] = model
+        return model
+    }
+
     /// The workbench's Find Repeats model, made once; nil without the watchtower CLI.
     func reviewLessonsModel(projectID: Int64) -> ReviewLessonsModel? {
         if let model = reviewLessonModels[projectID] { return model }

@@ -1098,6 +1098,9 @@ extension WorkbenchesViewModel {
         resumeStarts[sessionID] = nil
         resumeFailed.remove(sessionID)
         reviewModels[sessionID] = nil
+        if workchatModels.removeValue(forKey: sessionID) != nil {
+            lineDelivery.dropHeld(sessionID: sessionID) { if case .workchat = $0 { true } else { false } }
+        }
     }
 
     func setSessionError(_ message: String?, projectID: Int64?) {
