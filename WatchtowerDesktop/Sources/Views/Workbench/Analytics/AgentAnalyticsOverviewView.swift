@@ -53,6 +53,12 @@ struct AgentAnalyticsOverviewView: View {
 
     private func content(_ overview: AgentReportOverview, staleError: String?) -> some View {
         VStack(alignment: .leading, spacing: 20) {
+            if let line = overview.importState.flatMap(AgentAnalyticsFormat.importLine) {
+                Label(line, systemImage: "arrow.down.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help("The daemon imports this folder's session history in the background; the numbers grow as it goes.")
+            }
             header(overview)
             if let staleError {
                 Label(staleError, systemImage: "exclamationmark.triangle")

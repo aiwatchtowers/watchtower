@@ -37,6 +37,28 @@ final class AgentReportDecodingTests: XCTestCase {
         XCTAssertEqual(ov.oldFormatSessions, 1)
     }
 
+    /// The fixture with `import` set to `value`, or without the key for nil.
+    private func overview(import value: String?) throws -> AgentReportOverview {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture("agent-report-overview")) as? [String: Any])
+        json["import"] = nil
+        if let value {
+            json["import"] = try JSONSerialization.jsonObject(with: Data(value.utf8))
+        }
+        return try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+    }
+
+    func testOverviewDecodesTheImportState() throws {
+        let ov = try overview(import: #"{"state": "loading", "files_stored": 2125, "updated_at": "2026-10-18T17:00:00Z"}"#)
+        XCTAssertEqual(ov.importState, AgentImportState(state: "loading", filesStored: 2125, updatedAt: "2026-10-18T17:00:00Z"))
+        let notStarted = try overview(import: #"{"state": "not_started", "files_stored": 0}"#)
+        XCTAssertEqual(notStarted.importState?.state, "not_started")
+        XCTAssertNil(notStarted.importState?.updatedAt)
+    }
+
+    func testOverviewWithoutImportDecodes() throws {
+        XCTAssertNil(try overview(import: nil).importState)
+    }
+
     func testSessionDetailDecodes() throws {
         let d = try JSONDecoder().decode(AgentSessionDetail.self, from: fixture("agent-report-session"))
         XCTAssertEqual(d.session.uuid, "11111111-aaaa-bbbb-cccc-000000000001")
