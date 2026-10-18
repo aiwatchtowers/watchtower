@@ -51,7 +51,8 @@ final class HomeCenterTests: XCTestCase {
     ) -> HomeCenter {
         HomeCenter(readiness: readiness ?? ReadinessCenter(environment: FakeReadinessEnvironment()),
                    environment: environment ?? FakeHomeEnvironment(),
-                   store: GettingReadyStore(defaults: defaults), tickInterval: tickInterval)
+                   store: GettingReadyStore(defaults: defaults), performer: FakeHomeFeedPerformer(),
+                   tickInterval: tickInterval)
     }
 
     /// Waits (bounded) until `condition` holds for the center's snapshot,

@@ -68,17 +68,31 @@ final class GettingReadyStore {
 /// on a GRDB observation (this process' writes) and on a 30 s tick (the
 /// daemon's writes from another process, which an observation never sees,
 /// and the feed's NOW line); a readiness or environment change rebuilds from
-/// the last read without touching the DB.
+/// the last read without touching the DB. It also runs the feed's Done /
+/// Hide: the row leaves at once and comes back with its error when the
+/// write fails.
 @MainActor
 @Observable
 final class HomeCenter {
     /// nil until the first read.
     private(set) var snapshot: HomeSnapshot?
+    /// The last failed Done / Hide per row, cleared by the next press on it
+    /// or once a read no longer returns the row.
+    private(set) var feedErrors: [FeedRef: String] = [:]
+    /// "N more" pressed: every row above NOW shows.
+    private(set) var feedExpanded = false
 
     @ObservationIgnored private let readiness: ReadinessCenter
     @ObservationIgnored private let environment: any HomeEnvironment
     @ObservationIgnored private let store: GettingReadyStore
     @ObservationIgnored private let tickInterval: Duration
+    @ObservationIgnored private let performer: any HomeFeedPerforming
+    /// Rows the owner pressed Done / Hide on: left out of the feed while the
+    /// write runs, and after it until a read no longer returns them.
+    @ObservationIgnored private(set) var hiddenRefs: Set<FeedRef> = []
+    /// Rows whose write is still running: a second press does nothing, and a
+    /// read landing meanwhile keeps them hidden.
+    @ObservationIgnored private var acting: Set<FeedRef> = []
     @ObservationIgnored private var data: HomeTodayData?
     /// The feed read, landed with `data`.
     @ObservationIgnored private var feedData = HomeFeedData()
@@ -102,11 +116,13 @@ final class HomeCenter {
         readiness: ReadinessCenter,
         environment: any HomeEnvironment,
         store: GettingReadyStore,
+        performer: any HomeFeedPerforming,
         tickInterval: Duration = .seconds(30)
     ) {
         self.readiness = readiness
         self.environment = environment
         self.store = store
+        self.performer = performer
         self.tickInterval = tickInterval
     }
 
@@ -179,6 +195,59 @@ final class HomeCenter {
         guard generation == current, readToken == token else { return }
         data = value
         feedData = feedValue
+        forgetGoneRows()
+        rebuildSnapshot()
+    }
+
+    /// Drops the hidden refs and errors of rows the last read no longer
+    /// returns; a row still being written stays hidden.
+    private func forgetGoneRows() {
+        let hidden = hiddenRefs.filter { acting.contains($0) || Self.contains(feedData, $0) }
+        if hidden != hiddenRefs { hiddenRefs = hidden }
+        let errors = feedErrors.filter { Self.contains(feedData, $0.key) }
+        if errors != feedErrors { feedErrors = errors }
+    }
+
+    private static func contains(_ data: HomeFeedData, _ ref: FeedRef) -> Bool {
+        switch ref {
+        case .inbox(let id): data.inbox.contains { $0.item.id == id }
+        case .reminder(let id): (data.dueReminders + data.laterReminders).contains { $0.id == id }
+        case .proposal(let id): data.proposals.contains { $0.id == id }
+        case .target(let id): data.targets.contains { $0.id == id }
+        case .event(let id): data.events.contains { $0.id == id }
+        }
+    }
+
+    /// Done / Hide on a feed row: the row leaves the feed at once, then the
+    /// performer writes it. A failure brings the row back with the error's
+    /// text; a success re-reads now (an inbox write comes from the CLI, which
+    /// the observation never sees) and the row's hidden mark goes once that
+    /// read no longer returns it. A second press while the write runs does
+    /// nothing.
+    func act(_ action: FeedAction, on ref: FeedRef) async {
+        guard !acting.contains(ref) else { return }
+        acting.insert(ref)
+        hiddenRefs.insert(ref)
+        feedErrors[ref] = nil
+        rebuildSnapshot()
+        do {
+            try await performer.perform(action, on: ref, now: environment.now, calendar: environment.calendar)
+        } catch {
+            NSLog("HomeCenter: %@ on a feed row: %@", "\(action)", error.localizedDescription)
+            acting.remove(ref)
+            hiddenRefs.remove(ref)
+            feedErrors[ref] = error.localizedDescription
+            rebuildSnapshot()
+            return
+        }
+        acting.remove(ref)
+        await rereadNow()
+    }
+
+    /// "N more" / back: every row above NOW, or the first seven.
+    func setFeedExpanded(_ on: Bool) {
+        guard on != feedExpanded else { return }
+        feedExpanded = on
         rebuildSnapshot()
     }
 
@@ -199,6 +268,8 @@ final class HomeCenter {
         tickTask = nil
         data = nil
         feedData = HomeFeedData()
+        hiddenRefs = acting
+        feedErrors = [:]
     }
 
     /// Rebuilds from the last read and the current readiness, owner, allowed
@@ -287,7 +358,7 @@ final class HomeCenter {
             data.prepEventIDs = []
         }
         data.failed.formIntersection(sources)
-        return HomeFeedBuilder.feed(data, now: now, calendar: calendar, expanded: false, hidden: [])
+        return HomeFeedBuilder.feed(data, now: now, calendar: calendar, expanded: feedExpanded, hidden: hiddenRefs)
     }
 }
 

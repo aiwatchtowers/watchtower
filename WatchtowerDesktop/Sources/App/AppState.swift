@@ -68,7 +68,8 @@ final class AppState {
     @ObservationIgnored private(set) lazy var homeCenter = HomeCenter(
         readiness: readinessCenter,
         environment: homeEnvironmentOverride ?? LiveHomeEnvironment(appState: self),
-        store: GettingReadyStore(defaults: homeDefaultsOverride ?? .standard)
+        store: GettingReadyStore(defaults: homeDefaultsOverride ?? .standard),
+        performer: AppHomeFeedPerformer(appState: self)
     )
 
     /// The owner (`OwnerQueries.resolve`, OWNER-01); unknown → `NoOwnerEmptyState` (OWNER-02). Re-read on

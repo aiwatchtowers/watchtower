@@ -134,3 +134,22 @@ extension AppState {
         }
     }
 }
+
+/// Home's feed writes in the app: the pool is the open DB's at the moment
+/// of the press (Home is built before the DB opens) and the CLI is looked up
+/// per press, so a binary installed later is found. AppState is held weakly
+/// (it owns the center that owns this).
+@MainActor
+final class AppHomeFeedPerformer: HomeFeedPerforming {
+    private weak var appState: AppState?
+
+    init(appState: AppState) {
+        self.appState = appState
+    }
+
+    func perform(_ action: FeedAction, on ref: FeedRef, now: Date, calendar: Calendar) async throws {
+        guard let pool = appState?.databaseManager?.dbPool else { throw HomeFeedActionError.databaseUnavailable }
+        try await LiveHomeFeedPerformer(runner: ProcessCLIRunner.makeDefault(), pool: pool)
+            .perform(action, on: ref, now: now, calendar: calendar)
+    }
+}
