@@ -193,6 +193,25 @@ func (db *DB) TransitionAgentAction(id int64, from []string, to, resultJSON, err
 	return n > 0, nil
 }
 
+// DismissAgentAction stamps dismissed_at on row id while it is still `failed`
+// with exactly errMsg and not yet dismissed — the owner's acknowledgement of
+// a failed row that waits on them (the Desktop's Inbox badge reads the
+// column). Status and every other column stay as they are. False means the
+// row is not such a row (or is gone).
+func (db *DB) DismissAgentAction(id int64, errMsg string) (bool, error) {
+	now := time.Now().UTC().Format("2006-01-02T15:04:05Z")
+	res, err := db.Exec(`UPDATE agent_actions SET dismissed_at = ?
+		WHERE id = ? AND status = 'failed' AND error = ? AND dismissed_at = ''`, now, id, errMsg)
+	if err != nil {
+		return false, fmt.Errorf("dismissing agent action %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // ApproveAgentActionWithArgs approves a pending row and replaces its args in
 // one conditional UPDATE: it lands only while the row is still pending AND
 // still holds oldArgs, so an owner edit can never overwrite a decision or

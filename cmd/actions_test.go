@@ -547,6 +547,12 @@ func TestAgent07_CLIApproveRefusedUnderAgent(t *testing.T) {
 			approved, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target",
 				ArgsJSON: `{"text":"y","reason":"r"}`, Reason: "r", Surface: "main", Status: "approved"})
 			require.NoError(t, err)
+			unknown, err := database.InsertAgentAction(db.AgentAction{Tool: tools.ClaudeAIConnectorCallTool,
+				External: true, ArgsJSON: sessionCallArgs, Reason: "r", Surface: "main", Status: "executing"})
+			require.NoError(t, err)
+			_, err = database.TransitionAgentAction(unknown, []string{"executing"}, "failed", "",
+				"session ended while the call ran; outcome unknown")
+			require.NoError(t, err)
 			t.Setenv(marker, "1")
 
 			_, err = runActions(t, "approve", strconv.FormatInt(pending, 10), "--json")
@@ -558,6 +564,12 @@ func TestAgent07_CLIApproveRefusedUnderAgent(t *testing.T) {
 			require.Error(t, err)
 			_, err = runActions(t, "trust", "create_target", "execute")
 			require.Error(t, err)
+			_, err = runActions(t, "dismiss", strconv.FormatInt(unknown, 10), "--json")
+			require.Error(t, err, "only the owner dismisses an unknown outcome")
+			var dismissedAt string
+			require.NoError(t, database.QueryRow(`SELECT dismissed_at FROM agent_actions WHERE id = ?`, unknown).
+				Scan(&dismissedAt))
+			assert.Empty(t, dismissedAt)
 
 			for id, want := range map[int64]string{pending: "pending", approved: "approved"} {
 				row, err := database.GetAgentAction(id)
@@ -690,4 +702,67 @@ func TestActions_ApplySessionCallRefused(t *testing.T) {
 			assert.Equal(t, status, row.Status, args)
 		}
 	}
+}
+
+// A connector call whose session ended while it ran waits on the owner's
+// Inbox badge until `actions dismiss` (ask #342): it stamps dismissed_at,
+// keeps the row failed, is a no-op the second time, and refuses every other
+// row and any caller under an agent (AGENT-07).
+func TestActions_DismissSessionCallWithUnknownOutcome(t *testing.T) {
+	const unknown = "session ended while the call ran; outcome unknown"
+	database := writeActionsConfig(t)
+	insertFailed := func(tool, reason string) int64 {
+		t.Helper()
+		id, err := database.InsertAgentAction(db.AgentAction{Tool: tool, External: true, ArgsJSON: sessionCallArgs,
+			Reason: "r", Surface: "main", ConversationID: 7, Status: "executing"})
+		require.NoError(t, err)
+		ok, err := database.TransitionAgentAction(id, []string{"executing"}, "failed", "", reason)
+		require.NoError(t, err)
+		require.True(t, ok)
+		return id
+	}
+	dismissedAt := func(id int64) string {
+		t.Helper()
+		var at string
+		require.NoError(t, database.QueryRow(`SELECT dismissed_at FROM agent_actions WHERE id = ?`, id).Scan(&at))
+		return at
+	}
+	id := insertFailed(tools.ClaudeAIConnectorCallTool, unknown)
+
+	t.Setenv("CLAUDECODE", "1")
+	_, err := runActions(t, "dismiss", strconv.FormatInt(id, 10), "--json")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CLAUDECODE")
+	assert.Empty(t, dismissedAt(id), "refused under an agent, nothing written")
+	require.NoError(t, os.Unsetenv("CLAUDECODE"))
+
+	out, err := runActions(t, "dismiss", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err, out)
+	var env struct {
+		OK     bool `json:"ok"`
+		Action struct {
+			Status string `json:"status"`
+		} `json:"action"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &env), out)
+	assert.True(t, env.OK)
+	assert.Equal(t, "failed", env.Action.Status, "a dismiss is not a transition")
+	first := dismissedAt(id)
+	assert.NotEmpty(t, first)
+	_, err = runActions(t, "dismiss", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err, "a second dismiss is a no-op")
+	assert.Equal(t, first, dismissedAt(id))
+
+	for _, other := range []int64{
+		insertFailed(tools.ClaudeAIConnectorCallTool, "session ended before approval"),
+		insertFailed(tools.ClaudeAIConnectorCallTool, "stopped"),
+		insertFailed("send_slack_message", unknown),
+	} {
+		_, err := runActions(t, "dismiss", strconv.FormatInt(other, 10), "--json")
+		require.ErrorIs(t, err, tools.ErrBadTransition)
+		assert.Empty(t, dismissedAt(other))
+	}
+	_, err = runActions(t, "dismiss", "999999", "--json")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no action #999999")
 }
