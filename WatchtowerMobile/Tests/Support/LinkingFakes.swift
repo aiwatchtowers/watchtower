@@ -432,10 +432,15 @@ final class FakeLinkHost: LinkHost {
 
 /// A link clock whose sleeps wait for `release()` and whose `now` stands
 /// still: the grant wait polls once, then the test answers for the Mac.
+/// A test waits for the poll with `untilParked()`, a signal rather than a
+/// deadline: a release goes only to a sleep already parked, so a test that
+/// gave up on a timed check before a slow flow parked would release
+/// nothing and leave the flow parked for good (#683).
 final class GateLinkClock: LinkClock, @unchecked Sendable {
     let start = Date()
     private let lock = NSLock()
     private var waiters: [CheckedContinuation<Void, Never>] = []
+    private var parkWatchers: [CheckedContinuation<Void, Never>] = []
 
     var waiting: Int { lock.withLock { waiters.count } }
 
@@ -443,9 +448,28 @@ final class GateLinkClock: LinkClock, @unchecked Sendable {
 
     func sleep(for duration: Duration) async throws {
         await withCheckedContinuation { continuation in
-            lock.withLock { waiters.append(continuation) }
+            let watchers = lock.withLock {
+                waiters.append(continuation)
+                let parked = parkWatchers
+                parkWatchers = []
+                return parked
+            }
+            watchers.forEach { $0.resume() }
         }
         try Task.checkCancellation()
+    }
+
+    /// Returns once a sleep is parked: at once if one already is, else at
+    /// the next one (after a `release()`, the flow's next poll).
+    func untilParked() async {
+        await withCheckedContinuation { continuation in
+            let parked = lock.withLock {
+                if !waiters.isEmpty { return true }
+                parkWatchers.append(continuation)
+                return false
+            }
+            if parked { continuation.resume() }
+        }
     }
 
     func release() {

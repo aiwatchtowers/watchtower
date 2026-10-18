@@ -141,6 +141,24 @@ extension XCTestCase {
         return defaults
     }
 
+    /// Waits until the link flow's grant wait parks on `clock`
+    /// (`GateLinkClock.untilParked`): a signal, so a slow runner only
+    /// delays it; `timeout` fails a flow that never parks instead of
+    /// hanging the suite.
+    @MainActor
+    func waitUntilParked(
+        _ clock: GateLinkClock, timeout: TimeInterval = 10, file: StaticString = #filePath, line: UInt = #line
+    ) async {
+        let parked = XCTestExpectation(description: "the grant wait parked on the clock")
+        let watch = Task {
+            await clock.untilParked()
+            parked.fulfill()
+        }
+        let result = await XCTWaiter().fulfillment(of: [parked], timeout: timeout)
+        watch.cancel()
+        XCTAssertEqual(result, .completed, "the grant wait never parked on the clock", file: file, line: line)
+    }
+
     /// Polls the main run loop until `condition` holds or the timeout
     /// elapses: the environment's bootstrap and the observations deliver
     /// asynchronously, so tests must yield to let them land.

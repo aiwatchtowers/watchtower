@@ -124,7 +124,7 @@ final class AppRootRelinkTests: XCTestCase {
     /// decided at the code's issue: the whole flow over the real host.
     private func link(_ root: AppRoot, _ code: LinkPayload) async throws {
         let flow = Task { await root.open(code.url()) }
-        try await poll { self.linkClock.waiting == 1 }
+        await waitUntilParked(linkClock)
         XCTAssertEqual(root.linking.phase, .waiting(macName: "Acme Mac"))
         let deviceID = TestE2E.deviceID.uuidString
         let linkedAt = Date(timeIntervalSince1970: TimeInterval(code.iat))
@@ -221,6 +221,35 @@ final class AppRootRelinkTests: XCTestCase {
         XCTAssertEqual(hubFilesExist(), [true, true, true], "the hub's folders are made again")
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.replicaPath(hubID)), "the replica at the same path")
         try await assertReadsAndWrites(second, heartbeatAt: Date(timeIntervalSince1970: 1_800_000_600))
+    }
+
+    // MARK: - The test clock (#683)
+
+    /// `link` waits for the grant wait's poll by a signal: a flow that parks
+    /// only after the wait began (a stalled runner) is still seen, and the
+    /// one release reaches it. A wall-clock check that gave up first left the
+    /// flow parked for good and failed the relink on CI.
+    func testTheGateClockSignalsAParkThatComesAfterTheWaitBegan() async throws {
+        let clock = GateLinkClock()
+        addTeardownBlock { clock.release() }
+        let watch = Task { await clock.untilParked() }
+        await Task.yield()
+        let sleeper = Task { try await clock.sleep(for: .seconds(2)) }
+
+        await watch.value
+
+        XCTAssertEqual(clock.waiting, 1)
+        await clock.untilParked()
+        clock.release()
+        try await sleeper.value
+        XCTAssertEqual(clock.waiting, 0)
+        let next = Task { await clock.untilParked() }
+        await Task.yield()
+        let nextSleeper = Task { try await clock.sleep(for: .seconds(2)) }
+        await next.value
+        XCTAssertEqual(clock.waiting, 1, "after a release, the next park")
+        clock.release()
+        try await nextSleeper.value
     }
 
     // MARK: - The kept farewell (#143)
