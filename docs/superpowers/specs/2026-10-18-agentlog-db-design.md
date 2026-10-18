@@ -4,7 +4,7 @@ Board #849 (group #527). Business spec: `2026-10-18-agentlog-db-business.md` (th
 
 ## Why
 
-The analytics import shared `watchtower.db`'s single write lock with every other writer and starved them (`db lockstats`: `cli:agents enable` held the lock 47 min in 24 h, p50 1 s, max 31 s per `ApplyAgentLogBatch`; 34 Desktop `BEGIN IMMEDIATE` failures, automation installs failing). Part of the hold was a bad plan (the replay check walked `idx_agent_log_events_kind`; fixed in PR #410, which this feature carries forward). The rest is structural: a bulk import must not share a lock with interactive writers.
+The analytics import shared `watchtower.db`'s single write lock with every other writer and starved them (`db lockstats`: `cli:agents enable` held the lock for long stretches, single `ApplyAgentLogBatch` holds of tens of seconds; Desktop `BEGIN IMMEDIATE` failures, automation installs failing). Part of the hold was a bad plan (the replay check walked `idx_agent_log_events_kind`; fixed in PR #410, which this feature carries forward). The rest is structural: a bulk import must not share a lock with interactive writers.
 
 ## Goals
 

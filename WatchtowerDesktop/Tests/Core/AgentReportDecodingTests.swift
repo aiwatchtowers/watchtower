@@ -50,8 +50,8 @@ final class AgentReportDecodingTests: XCTestCase {
     }
 
     func testOverviewDecodesTheImportState() throws {
-        let ov = try overview(import: #"{"state": "loading", "files_stored": 2125, "updated_at": "2026-10-18T17:00:00Z"}"#)
-        XCTAssertEqual(ov.importState, AgentImportState(state: "loading", filesStored: 2125, updatedAt: "2026-10-18T17:00:00Z"))
+        let ov = try overview(import: #"{"state": "loading", "files_stored": 1234, "updated_at": "2026-10-18T17:00:00Z"}"#)
+        XCTAssertEqual(ov.importState, AgentImportState(state: "loading", filesStored: 1234, updatedAt: "2026-10-18T17:00:00Z"))
         let notStarted = try overview(import: #"{"state": "not_started", "files_stored": 0}"#)
         XCTAssertEqual(notStarted.importState?.state, "not_started")
         XCTAssertNil(notStarted.importState?.updatedAt)

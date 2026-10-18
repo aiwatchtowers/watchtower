@@ -125,7 +125,7 @@ At the end of this task nothing reads or writes `agent_log_*` in `watchtower.db`
 
 **Interfaces:** `struct AgentImportState: Decodable, Equatable { let state: String; let filesStored: Int; let updatedAt: String? }` on the overview model (`files_stored` / `updated_at` via the existing key-decoding convention); `static func importLine(_ s: AgentImportState) -> String?` in `AgentAnalyticsFormat` — `nil` for `done`, else `"Loading history — \(n) files so far"` (`n` formatted with the existing number formatter; `not_started` shows `0`).
 
-- [ ] **Step 1: Tests** (`make test-swift FILTER='AgentReport|AgentAnalyticsFormat'`): the regenerated fixtures decode with `import`; `importLine` for `done` → nil, `loading` 2125 → `"Loading history — 2,125 files so far"`, `not_started` → `"Loading history — 0 files so far"`.
+- [ ] **Step 1: Tests** (`make test-swift FILTER='AgentReport|AgentAnalyticsFormat'`): the regenerated fixtures decode with `import`; `importLine` for `done` → nil, `loading` 1234 → `"Loading history — 1,234 files so far"`, `not_started` → `"Loading history — 0 files so far"`.
 - [ ] **Step 2: Run** → FAIL. **Step 3: Implement**; show the line above the overview while non-nil. **Step 4: Run** → PASS; `make lint-diff`. **Step 5: Commit** `Analytics pane: show history loading progress (#849)`.
 
 ### Task 6: Schema, guards, inventory, docs

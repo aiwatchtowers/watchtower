@@ -314,10 +314,10 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
             let importState = try XCTUnwrap(Self.importOverview(state: state, files: files).importState)
             return AgentAnalyticsFormat.importLine(importState, locale: Locale(identifier: locale))
         }
-        XCTAssertNil(try line("done", 2125))
-        XCTAssertEqual(try line("loading", 2125), "Loading history — 2,125 files so far")
+        XCTAssertNil(try line("done", 1234))
+        XCTAssertEqual(try line("loading", 1234), "Loading history — 1,234 files so far")
         XCTAssertEqual(try line("not_started", 0), "Loading history — 0 files so far")
-        XCTAssertEqual(try line("loading", 2125, "de_DE"), "Loading history — 2.125 files so far")
+        XCTAssertEqual(try line("loading", 1234, "de_DE"), "Loading history — 1.234 files so far")
     }
 
     /// The loading line sits above the overview until the import is done;
@@ -327,11 +327,11 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
             try texts(overviewView(.overview(overview, staleError: nil)))
         }
         XCTAssertTrue(try lines(Self.overview()).contains("Loading history — 2 files so far"))   // the Go fixture
-        XCTAssertTrue(try lines(Self.importOverview(state: "loading", files: 2125))
-            .contains("Loading history — \(2125.formatted()) files so far"))
+        XCTAssertTrue(try lines(Self.importOverview(state: "loading", files: 1234))
+            .contains("Loading history — \(1234.formatted()) files so far"))
         XCTAssertTrue(try lines(Self.importOverview(state: "not_started")).contains("Loading history — 0 files so far"))
         for state in ["done", nil] as [String?] {
-            let all = try lines(Self.importOverview(state: state, files: 2125))
+            let all = try lines(Self.importOverview(state: state, files: 1234))
             XCTAssertFalse(all.contains { $0.hasPrefix("Loading history") }, "\(String(describing: state)): \(all)")
         }
     }
