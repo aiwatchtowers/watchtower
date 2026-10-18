@@ -166,18 +166,12 @@ func TestLoad_CalendarAndGmailDefaults(t *testing.T) {
 	assert.False(t, off.Gmail.Enabled)
 }
 
-// TestConfig_AutomationsDefaults pins the Automations defaults through the
-// real load path (spec 2026-10-14 §20 D12): an absent block is on, an
-// explicit key is read, and a leftover daily_budget_tokens key (the daily cap
-// retired by D25, ask #294) is ignored.
-func TestConfig_AutomationsDefaults(t *testing.T) {
-	cfg, err := Load(writeTestConfig(t, ""))
+// TestConfig_LeftoverAutomationsKeysLoad pins that the retired automations
+// switch (board #671) and daily cap (D25, ask #294) do not break loading
+// when a config still carries them.
+func TestConfig_LeftoverAutomationsKeysLoad(t *testing.T) {
+	_, err := Load(writeTestConfig(t, "automations:\n  enabled: false\n  daily_budget_tokens: 5000\n"))
 	require.NoError(t, err)
-	assert.True(t, cfg.Automations.Enabled, "absent block = on")
-
-	set, err := Load(writeTestConfig(t, "automations:\n  enabled: false\n  daily_budget_tokens: 5000\n"))
-	require.NoError(t, err)
-	assert.False(t, set.Automations.Enabled)
 }
 
 func TestConfig_PlanUsageDefaults(t *testing.T) {

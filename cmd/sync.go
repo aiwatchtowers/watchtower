@@ -853,6 +853,9 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	}
 
 	cfg = migrateJiraFeatureKeys(cfg, logger)
+	// Board #671: automations have no switch any more; an install that had
+	// them off gets its recipes paused once, before they are wired.
+	automationsOK := runAutomationsUpgradeStep(legacyDigestOff, logger)
 	// Board #558: carry the pre-upgrade workflow.md checks into the owner's
 	// settings, once per workbench; the app restarts the daemon on an update,
 	// so sessions kept by the session host pick the values up.
@@ -931,8 +934,11 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	if err := database.FillEmptyAccountLabels(); err != nil {
 		logger.Printf("accounts: failed to fill empty labels: %v", err)
 	}
-	// Automations: scheduler + executor goroutines, woken by SIGUSR2.
-	wireAutomations(d, cfg, database, gen, logger)
+	// Automations: scheduler + executor goroutines, woken by SIGUSR2 — not
+	// this run when the upgrade step failed (fail closed).
+	if automationsOK {
+		wireAutomations(d, cfg, database, gen, logger)
+	}
 	// Claude plan limits: the usage poller (no AI).
 	wirePlanUsage(d, database, logger)
 	// Refresh the shipped assistant skills in the workspace. Log-only: a skills

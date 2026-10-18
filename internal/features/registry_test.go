@@ -107,7 +107,6 @@ func TestRegistry_EnabledReadsConfig(t *testing.T) {
 		"day-plan":             true,
 		"next-step":            true,
 		"knowledge-connectors": true,
-		"automations":          true, // spec 2026-10-14 §20 D12: on by default
 		"claude-plan-limits":   true,
 	}
 	for id, want := range wantEnabled {
@@ -116,18 +115,6 @@ func TestRegistry_EnabledReadsConfig(t *testing.T) {
 		require.NotNil(t, feat.Enabled, "feature %q has a nil Enabled func", id)
 		assert.Equal(t, want, feat.Enabled(defaults), "feature %q against defaults", id)
 	}
-}
-
-func TestRegistry_AutomationsEntry(t *testing.T) {
-	f, ok := ByID("automations")
-	require.True(t, ok)
-	assert.Equal(t, "automations.enabled", f.ConfigKey)
-	assert.Equal(t, CostMedium, f.Cost)
-	assert.Equal(t, "gearshape.2", f.Icon)
-	assert.False(t, f.Core)
-	assert.Empty(t, f.Parent)
-	assert.Empty(t, f.FeedsInto)
-	assert.False(t, f.Enabled(loadConfig(t, "automations:\n  enabled: false\n")))
 }
 
 func TestRegistry_ClaudePlanLimitsEntry(t *testing.T) {

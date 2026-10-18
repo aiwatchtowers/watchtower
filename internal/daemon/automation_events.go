@@ -19,14 +19,14 @@ type AutomationEvents interface {
 }
 
 // SetAutomationEvents attaches the event bus; nil = no event automations
-// (automations.enabled off).
+// (not wired: the upgrade step failed closed, or a test).
 func (d *Daemon) SetAutomationEvents(ev AutomationEvents) {
 	d.automationEvents = ev
 }
 
 // HasAutomationEvents reports whether an event bus is wired —
-// cmd/automations_daemon.go's wireAutomations attaches one only when
-// automations.enabled is on.
+// cmd/automations_daemon.go's wireAutomations attaches one whenever it wires
+// automations.
 func (d *Daemon) HasAutomationEvents() bool {
 	return d.automationEvents != nil
 }

@@ -3,7 +3,6 @@ package authoring
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -29,7 +28,6 @@ type draftFixture struct {
 	gen     *automationstest.FakeGenerator
 	reg     automations.ToolRegistry
 	fakeReg *automationstest.FakeRegistry
-	enabled bool
 }
 
 // newDraftFixture opens a temp file database with a fake generator replying
@@ -54,7 +52,6 @@ func newDraftFixture(t *testing.T) *draftFixture {
 		gen:     &automationstest.FakeGenerator{Replies: []string{"done"}, Usage: []digest.Usage{{InputTokens: 10, OutputTokens: 5}}},
 		reg:     reg,
 		fakeReg: reg,
-		enabled: true,
 	}
 }
 
@@ -62,7 +59,6 @@ func (f *draftFixture) tool() *tools.Tool {
 	return NewDraftAutomation(Deps{
 		DB:       f.d,
 		Backends: func() automations.Backends { return automations.Backends{Generator: f.gen, Registry: f.reg} },
-		Enabled:  func() bool { return f.enabled },
 		Clock:    automationstest.NewFakeClock(draftNow),
 	})
 }
@@ -296,19 +292,6 @@ func TestDraftAutomation_ApprovalHashMatchesParser(t *testing.T) {
 		if res.Manifest.Scope != scope.String() || res.Manifest.BudgetTokens != 9000 || res.Manifest.BudgetMinutes != 5 {
 			t.Errorf("workbench %d: manifest = %+v", wb, res.Manifest)
 		}
-	}
-}
-
-func TestDraftAutomation_FeatureOffRefused(t *testing.T) {
-	f := newDraftFixture(t)
-	f.enabled = false
-	_, err := f.callErr(map[string]any{"recipe_text": recipeText(nil, "", `return 1`)})
-	var ve *tools.ValidationError
-	if !errors.As(err, &ve) || ve.Msg != "Automations are turned off in Settings → Features" {
-		t.Fatalf("err = %v; want the feature-off ValidationError", err)
-	}
-	if n := f.gen.CallCount(); n != 0 {
-		t.Fatalf("generator calls = %d; want 0", n)
 	}
 }
 

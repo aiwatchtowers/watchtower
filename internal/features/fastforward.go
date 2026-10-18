@@ -38,8 +38,6 @@ func FastForward(id string, database *db.DB, now time.Time, deps Deps) error {
 		return fastForwardMemory(database, now)
 	case "reaction-commands":
 		return fastForwardReactionCommands(database, deps)
-	case "automations":
-		return fastForwardAutomations(database, now)
 	default:
 		return nil
 	}
@@ -71,17 +69,6 @@ func fastForwardReactionCommands(database *db.DB, deps Deps) error {
 	}
 	if err := deps.SeedReactions(database); err != nil {
 		return fmt.Errorf("seeding the reaction ledger: %w", err)
-	}
-	return nil
-}
-
-// fastForwardAutomations restarts every schedule automation from now (no
-// catch-up run for the due times the feature was off) and cancels the runs
-// queued meanwhile (e.g. a CLI `automations run`), so enabling never replays
-// the off period. Queued dry runs belong to a live CLI and are kept.
-func fastForwardAutomations(database *db.DB, now time.Time) error {
-	if _, _, err := database.FastForwardAutomations(now); err != nil {
-		return fmt.Errorf("fast-forwarding automations: %w", err)
 	}
 	return nil
 }

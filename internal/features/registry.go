@@ -284,21 +284,6 @@ var registry = []Feature{
 		Enabled:   func(cfg *config.Config) bool { return cfg.Targets.NextStep.Enabled },
 	},
 	{
-		ID:          "automations",
-		Title:       "Automations",
-		Description: "Small recipes you write or have the assistant draft — a schedule or a button plus a short script — that read your workspace, ask the AI and leave results in your inbox or as reports. Manage them in the Automations tab or with `watchtower automations`. A recipe runs only after you confirm it, within its own token and time budget. Medium AI use, only for the recipes you turn on.",
-		Tagline:     "Your routine checks, done for you",
-		Benefits: []string{
-			"Recurring checks and summaries run on your schedule",
-			"Nothing runs until you confirm the recipe",
-			"Every run has its own token and time budget",
-		},
-		Icon:      "gearshape.2",
-		ConfigKey: "automations.enabled",
-		Cost:      CostMedium,
-		Enabled:   func(cfg *config.Config) bool { return cfg.Automations.Enabled },
-	},
-	{
 		ID:          "claude-plan-limits",
 		Title:       "Claude plan limits",
 		Description: "Shows how much of your Claude plan's 5-hour and weekly limits you have used — chats, Cowork and Claude Code together — and when you will hit them at your current pace. Reads the numbers with your Claude Code sign-in every 5 minutes; no AI, nothing else leaves your Mac.",

@@ -40,7 +40,6 @@ func buildAutomationRegistry(cfg *config.Config, database *db.DB) *tools.Registr
 // around the authoring generator. The agent runner's children get an
 // allowlisted env (automationAgentEnv), so no agent marker reaches them.
 // agent() itself is not previewed in a draft (no run row to bind to).
-// The feature switch is read per call too.
 func automationAuthoringDeps(cfg *config.Config, database *db.DB) authoring.Deps {
 	return authoring.Deps{
 		DB:           database,
@@ -48,7 +47,6 @@ func automationAuthoringDeps(cfg *config.Config, database *db.DB) authoring.Deps
 		Backends: func() automations.Backends {
 			return automationBackends(cfg, database, automationsAuthoringGenerator(cfg))
 		},
-		Enabled:   func() bool { return cfg.Automations.Enabled },
 		Clock:     automations.RealClock{},
 		Workbench: automationWorkbenchResolver(cfg, database),
 	}

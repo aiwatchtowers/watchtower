@@ -565,7 +565,7 @@ func reactionSeeded(t *testing.T, database *db.DB, id int64) bool {
 	return !seeded.IsZero()
 }
 
-// With no event bus (automations off) nobody can listen, so the poll clears
+// With no event bus (automations not wired) nobody can listen, so the poll clears
 // the event seed stamps through a non-nil sink that wants nothing.
 func TestDaemon_ReactionPollWithoutBusResetsEventSeeds(t *testing.T) {
 	d, database, _ := newEventsTestDaemon(t, nil)

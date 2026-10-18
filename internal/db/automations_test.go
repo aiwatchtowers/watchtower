@@ -668,46 +668,52 @@ func TestAutomationIndex_ScopeGenerationChangesOnWrites(t *testing.T) {
 	}
 }
 
-// TestFastForwardAutomations_PrimesSchedulesAndCancelsQueued pins the
-// automations feature's enable hook (FEAT-03): every schedule automation
-// restarts from now and queued non-dry runs left from the off period are
-// cancelled; a queued dry run (a live CLI's) and other automations' schedule
-// columns are left alone.
-func TestFastForwardAutomations_PrimesSchedulesAndCancelsQueued(t *testing.T) {
+// TestPauseAutomationsForUpgrade_PausesEnabledAndCancelsQueued pins board
+// #671's upgrade step (ask #372): every enabled automation is turned off with
+// the reason and time, queued non-dry runs are cancelled with the reason, and
+// an already-disabled row (its own reason kept) and a queued dry run (a live
+// CLI's) are left alone.
+func TestPauseAutomationsForUpgrade_PausesEnabledAndCancelsQueued(t *testing.T) {
 	d := openTestDB(t)
 	now := runTestNow
 	old := now.Add(-72 * time.Hour)
-	sched := seedAutomationRow(t, d, "nightly", "/acme/automations/nightly.md", "h-n")
-	if _, err := d.Exec(`UPDATE automations SET trigger_kind = 'schedule', trigger_spec = '{"schedule":"0 9 * * *"}' WHERE id = ?`, sched); err != nil {
+	const reason = "Paused by the update"
+	on := seedAutomationRow(t, d, "nightly", "/acme/automations/nightly.md", "h-n")
+	if err := d.SetAutomationEnabled(on, true, old); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.SetAutomationSchedule(sched, &old, nil); err != nil {
+	off := seedAutomationRow(t, d, "runaway", "/acme/automations/runaway.md", "h-r")
+	if err := d.DisableRunawayAutomation(off, "too many failures", old); err != nil {
 		t.Fatal(err)
 	}
-	manual := seedAutomationRow(t, d, "by-hand", "/acme/automations/by-hand.md", "h-m")
-	queued, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: manual, Trigger: TriggerManual, Now: old})
-	dry, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: manual, Trigger: TriggerDryRun, Now: old})
+	queued, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: on, Trigger: TriggerManual, Now: old})
+	dry, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: on, Trigger: TriggerDryRun, Now: old})
 
-	primed, cancelled, err := d.FastForwardAutomations(now)
+	paused, cancelled, err := d.PauseAutomationsForUpgrade(reason, now)
 	if err != nil {
-		t.Fatalf("FastForwardAutomations: %v", err)
+		t.Fatalf("PauseAutomationsForUpgrade: %v", err)
 	}
-	if primed != 1 || cancelled != 1 {
-		t.Fatalf("primed, cancelled = %d, %d; want 1, 1", primed, cancelled)
+	if paused != 1 || cancelled != 1 {
+		t.Fatalf("paused, cancelled = %d, %d; want 1, 1", paused, cancelled)
 	}
-	if got := mustGetAutomation(t, d, sched).LastScheduledFor; !sameAutomationTime(got, now) {
-		t.Fatalf("schedule last_scheduled_for = %v, want %v", got, now)
+	a := mustGetAutomation(t, d, on)
+	if a.Enabled || a.DisabledReason != reason || a.DisabledAt == nil || !sameAutomationTime(a.DisabledAt, now) {
+		t.Fatalf("paused row enabled=%v reason=%q at=%v", a.Enabled, a.DisabledReason, a.DisabledAt)
 	}
-	if got := mustGetAutomation(t, d, manual).LastScheduledFor; got != nil {
-		t.Fatalf("manual automation last_scheduled_for = %v, want NULL", got)
+	b := mustGetAutomation(t, d, off)
+	if b.Enabled || b.DisabledReason != "too many failures" || !sameAutomationTime(b.DisabledAt, old) {
+		t.Fatalf("already-disabled row changed: enabled=%v reason=%q at=%v", b.Enabled, b.DisabledReason, b.DisabledAt)
 	}
 	r := wantAutomationRun(t, d, queued, RunCancelled, ErrKindCancelled)
-	if r.Error != automationsFeatureOffError || r.FinishedAt == nil {
+	if r.Error != reason || r.FinishedAt == nil {
 		t.Fatalf("cancelled run error %q finished %v", r.Error, r.FinishedAt)
 	}
 	wantAutomationRun(t, d, dry, RunQueued, "")
 
-	if _, _, err := d.FastForwardAutomations(time.Time{}); err == nil {
+	if p, c, err := d.PauseAutomationsForUpgrade(reason, now); err != nil || p != 0 || c != 0 {
+		t.Fatalf("second call = %d, %d, %v; want 0, 0, nil", p, c, err)
+	}
+	if _, _, err := d.PauseAutomationsForUpgrade(reason, time.Time{}); err == nil {
 		t.Fatal("a zero time must be refused")
 	}
 }

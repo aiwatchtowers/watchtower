@@ -25,7 +25,7 @@ const AutomationWakeSignal = syscall.SIGUSR2
 // AutomationWakeCapability is the line a daemon whose scheduler and executor
 // serve AutomationWakeSignal writes into its capabilities file: it tells the
 // CLI whether this daemon actually runs the automations wake. A daemon built
-// before automations, or one running with automations off, silently ignores
+// before automations, or one that wired none (the upgrade step failed closed), silently ignores
 // SIGUSR2 (the Go runtime catches it and does nothing), so a run would just
 // wait for the next poll; the CLI signals only a daemon that advertises this
 // and otherwise says so.
@@ -99,8 +99,7 @@ type AutomationRunner interface {
 }
 
 // SetAutomations attaches the automations scheduler and executor. Run starts
-// both when both are set and automations.enabled is on, and forwards every
-// AutomationWakeSignal to both.
+// both when both are set, and forwards every AutomationWakeSignal to both.
 func (d *Daemon) SetAutomations(scheduler, executor AutomationRunner) {
 	d.automationScheduler = scheduler
 	d.automationExecutor = executor
@@ -143,9 +142,9 @@ func WatchAutomationWake(ctx context.Context) <-chan struct{} {
 }
 
 // watchAutomationWake installs the AutomationWakeSignal watcher unless a test
-// injected its own channel. It is installed even with automations off; a
-// wake is then dropped (and the daemon does not advertise it, see
-// advertiseCaps).
+// injected its own channel. It is installed even with automations not wired
+// (the upgrade step failed closed, cmd/automations_upgrade.go); a wake is then
+// dropped (and the daemon does not advertise it, see advertiseCaps).
 func (d *Daemon) watchAutomationWake(ctx context.Context) {
 	if d.automationWakeCh == nil {
 		d.automationWakeCh = WatchAutomationWake(ctx)
@@ -153,24 +152,21 @@ func (d *Daemon) watchAutomationWake(ctx context.Context) {
 }
 
 // automationsActive reports whether Run starts the scheduler and executor:
-// both wired and automations.enabled on. Only then does the daemon advertise
+// both wired. Only then does the daemon advertise
 // AutomationWakeCapability — a wake to a daemon with neither would be
 // dropped, and the CLI should say so instead of claiming it woke something.
 func (d *Daemon) automationsActive() bool {
-	return d.automationScheduler != nil && d.automationExecutor != nil && d.config.Automations.Enabled
+	return d.automationScheduler != nil && d.automationExecutor != nil
 }
 
 // startAutomations starts the scheduler, the executor and the wake forwarder
 // as goroutines of their own — never inside the sync loop, so a wake is
-// served while a sync runs and never triggers one. With automations.enabled
-// off (FEAT-01) or nothing wired it starts nothing. The returned stop cancels
+// served while a sync runs and never triggers one. With nothing wired it
+// starts nothing. The returned stop cancels
 // them and waits until all three have returned (the executor finishes or
 // interrupts its in-flight runs first), so no goroutine outlives Run.
 func (d *Daemon) startAutomations(ctx context.Context) (stop func()) {
 	if !d.automationsActive() {
-		if d.automationScheduler != nil && !d.config.Automations.Enabled {
-			d.logger.Println("automations: disabled (automations.enabled=false), scheduler and executor not started")
-		}
 		return func() {}
 	}
 	runCtx, cancel := context.WithCancel(ctx)

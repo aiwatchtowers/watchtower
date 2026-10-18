@@ -114,7 +114,7 @@ func TestLoad_LeavesActiveWorkspaceEmptyWithoutAnyDatabase(t *testing.T) {
 
 func TestWorkspaceDirsWithDatabase_SkipsFilesInvalidNamesAndMissingRoot(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
-	names, err := workspaceDirsWithDatabase(dataRoot(t))
+	names, err := WorkspaceDirsWithDatabase(dataRoot(t))
 	require.NoError(t, err, "missing root is a fresh install, not an error")
 	require.Nil(t, names, "missing root")
 
@@ -125,7 +125,7 @@ func TestWorkspaceDirsWithDatabase_SkipsFilesInvalidNamesAndMissingRoot(t *testi
 	seedWorkspace(t, "bad name", true)
 	require.NoError(t, os.WriteFile(filepath.Join(dataRoot(t), "watchtower.db"), nil, 0o600))
 
-	names, err = workspaceDirsWithDatabase(dataRoot(t))
+	names, err = WorkspaceDirsWithDatabase(dataRoot(t))
 	require.NoError(t, err)
 	require.Equal(t, []string{"alpha", "zenith"}, names)
 }
@@ -153,7 +153,7 @@ func TestWorkspaceDirsWithDatabase_FollowsSymlinks(t *testing.T) {
 	require.NoError(t, os.Symlink(filepath.Join(root, "loop-b"), filepath.Join(root, "loop-a")))
 	require.NoError(t, os.Symlink(filepath.Join(root, "loop-a"), filepath.Join(root, "loop-b")))
 
-	names, err := workspaceDirsWithDatabase(root)
+	names, err := WorkspaceDirsWithDatabase(root)
 	require.NoError(t, err)
 	require.Equal(t, []string{"linked"}, names)
 

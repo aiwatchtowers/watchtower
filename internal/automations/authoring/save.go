@@ -115,9 +115,6 @@ func saveSchema() *jsonschema.Schema {
 // *tools.ValidationError (no row).
 func parseSave(d Deps, raw json.RawMessage) (saveArgs, *automations.Recipe, error) {
 	var a saveArgs
-	if d.Enabled == nil || !d.Enabled() {
-		return a, nil, &tools.ValidationError{Msg: msgFeatureOff}
-	}
 	if err := json.Unmarshal(raw, &a); err != nil {
 		return a, nil, &tools.ValidationError{Msg: "invalid arguments"}
 	}
@@ -252,9 +249,6 @@ func normalizeSave(ctx context.Context, d Deps, raw json.RawMessage) (json.RawMe
 // file on disk is the one the proposal saw. It never touches
 // automation_tool_grants.
 func executeSave(ctx context.Context, d Deps, raw json.RawMessage) (*SaveResult, error) {
-	if d.Enabled == nil || !d.Enabled() {
-		return nil, &tools.ValidationError{Msg: msgFeatureOff}
-	}
 	var p savePinned
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, fmt.Errorf("save_automation: stored args: %w", err)

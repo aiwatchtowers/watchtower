@@ -1749,7 +1749,7 @@ func (d *Daemon) reactionEventsUnheard() bool {
 }
 
 // noReactionBus is the reaction poll's sink when the cycle has no event bus
-// (automations off): it wants nothing and drops everything.
+// (automations not wired): it wants nothing and drops everything.
 type noReactionBus struct{}
 
 func (noReactionBus) Wants(string) bool            { return false }
