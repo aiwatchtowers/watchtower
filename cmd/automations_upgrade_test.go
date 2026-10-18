@@ -191,7 +191,9 @@ func TestPauseAutomationsTurnedOff_NotOffIsNoOp(t *testing.T) {
 
 // A database the step cannot open fails closed: the other workspaces are
 // still paused, the key stays for the next start, and the daemon wires no
-// automations this run. Once the database is fixed, the retry completes.
+// automations this run. The retry pauses the fixed database but skips the
+// workspace already done (its marker), so a recipe the owner turned back on
+// there stays on; once everything is done the key and markers go.
 func TestPauseAutomationsTurnedOff_FailedDatabaseFailsClosedAndRetries(t *testing.T) {
 	root := t.TempDir()
 	acme := seedUpgradeWorkspace(t, root, "acme")
@@ -207,10 +209,52 @@ func TestPauseAutomationsTurnedOff_FailedDatabaseFailsClosedAndRetries(t *testin
 	assert.True(t, keyOff(t, cfgPath), "the key stays so the next start retries")
 	assert.Contains(t, logs.String(), "workspace broken")
 	acme.assertPaused(t)
+	assert.FileExists(t, filepath.Join(root, "acme", automationsUpgradeMarker))
+	assert.NoFileExists(t, filepath.Join(root, "broken", automationsUpgradeMarker))
 
+	// The owner turns acme's recipe back on before the retry.
+	d, err := db.Open(acme.path)
+	require.NoError(t, err)
+	require.NoError(t, d.SetAutomationEnabled(acme.enabled, true, upgradeNow))
+	require.NoError(t, d.Close())
+	// The broken database is fixed: a real one with an enabled recipe.
 	require.NoError(t, os.Remove(broken))
+	fixed := seedUpgradeWorkspace(t, root, "broken")
+
 	require.True(t, pauseAutomationsTurnedOff(cfgPath, root, false, upgradeNow, log.New(&logs, "", 0)), logs.String())
+
 	assert.False(t, keyOff(t, cfgPath))
+	fixed.assertPaused(t)
+	d, err = db.Open(acme.path)
+	require.NoError(t, err)
+	defer d.Close()
+	a, err := d.GetAutomation(acme.enabled)
+	require.NoError(t, err)
+	assert.True(t, a.Enabled, "a workspace already done is not paused again")
+	assert.NoFileExists(t, filepath.Join(root, "acme", automationsUpgradeMarker), "markers go with the key")
+	assert.NoFileExists(t, filepath.Join(root, "broken", automationsUpgradeMarker))
+}
+
+// Every database paused but the key cannot be removed (the config directory
+// is read-only): fail closed and keep the key.
+func TestPauseAutomationsTurnedOff_KeyRemovalFailureFailsClosed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	root := t.TempDir()
+	acme := seedUpgradeWorkspace(t, root, "acme")
+	cfgPath := writeUpgradeConfig(t, "automations:\n  enabled: false\n")
+	cfgDir := filepath.Dir(cfgPath)
+	require.NoError(t, os.Chmod(cfgDir, 0o500))
+	t.Cleanup(func() { _ = os.Chmod(cfgDir, 0o700) })
+	var logs bytes.Buffer
+
+	ok := pauseAutomationsTurnedOff(cfgPath, root, false, upgradeNow, log.New(&logs, "", 0))
+
+	assert.False(t, ok, "fail closed")
+	acme.assertPaused(t)
+	assert.True(t, keyOff(t, cfgPath), "the key stays so the next start retries")
+	assert.Contains(t, logs.String(), "removing "+config.LegacyAutomationsKey)
 }
 
 // A config file that cannot be read fails closed too.
