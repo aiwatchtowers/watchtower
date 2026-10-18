@@ -205,4 +205,59 @@ final class SessionChatRunnerTests: XCTestCase {
         XCTAssertFalse(SlicePublisher.urgentKinds.contains(.sessionChat))
         XCTAssertFalse(RelayProcessor.nonIdempotentKinds.contains(.sessionChatRequest))
     }
+
+    func testUnlinkedPhoneDropsPayloadsForGood() async throws {
+        let active = OSAllocatedUnfairLock(initialState: true)
+        let chat = SessionChatRunner(
+            fetch: { id, _ in try Self.feed(id) },
+            isLive: { _ in false },
+            isActive: { active.withLock { $0 } }
+        )
+        chat.request(sessionID: 7, agentID: nil)
+        await chat.runDue()
+        XCTAssertEqual(chat.payloads().count, 1)
+        active.withLock { $0 = false }
+        XCTAssertTrue(chat.payloads().isEmpty)
+        active.withLock { $0 = true }
+        XCTAssertTrue(chat.payloads().isEmpty, "the old payload is not resurrected")
+    }
+
+    func testNewRequestAfterExpiryRunsAgain() async throws {
+        let calls = Calls()
+        let clock = TestInstant()
+        let chat = runner(calls: calls, clock: clock)
+        chat.request(sessionID: 7, agentID: nil)
+        await chat.runDue()
+        clock.advance(by: .seconds(301))
+        XCTAssertTrue(chat.payloads().isEmpty)
+        chat.request(sessionID: 7, agentID: nil)
+        await chat.runDue()
+        XCTAssertEqual(calls.count, 2)
+        XCTAssertEqual(chat.payloads().count, 1)
+    }
+
+    func testFetchInFlightWhenWatchExpiresStoresNothing() async throws {
+        let clock = TestInstant()
+        let chat = runner(clock: clock) { id, _ in
+            clock.advance(by: .seconds(301))
+            return try Self.feed(id)
+        }
+        chat.request(sessionID: 7, agentID: nil)
+        await chat.runDue()
+        XCTAssertTrue(chat.payloads().isEmpty)
+        XCTAssertTrue(chat.watches.withLock { $0.isEmpty })
+    }
+
+    func testStopDuringFetchStoresNothing() async throws {
+        let box = OSAllocatedUnfairLock<SessionChatRunner?>(initialState: nil)
+        let chat = runner(clock: TestInstant()) { id, _ in
+            box.withLock { $0 }?.stop()
+            return try Self.feed(id)
+        }
+        box.withLock { $0 = chat }
+        chat.request(sessionID: 7, agentID: nil)
+        await chat.runDue()
+        chat.request(sessionID: 7, agentID: nil)
+        XCTAssertTrue(chat.payloads().isEmpty, "the run cut by stop() stored nothing")
+    }
 }

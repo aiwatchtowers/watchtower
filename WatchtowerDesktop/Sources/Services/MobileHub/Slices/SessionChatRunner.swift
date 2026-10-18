@@ -133,7 +133,14 @@ final class SessionChatRunner: HubCompanion, Sendable {
         Dictionary(uniqueKeysWithValues: snapshots().map { (SliceKind.sessionChat.recordName(id: $0.id), $0.payload) })
     }
 
+    /// The watched feeds' payloads. With no linked phone (`isActive` false)
+    /// nothing stays publishable: every watch is dropped, so a phone that
+    /// links later never sees an old payload.
     func snapshots() -> [Snapshot] {
+        guard isActive() else {
+            watches.withLock { $0.removeAll() }
+            return []
+        }
         let stamp = clock()
         return watches.withLock { watches in
             watches = watches.filter { $0.value.expires > stamp }
@@ -229,7 +236,7 @@ final class SessionChatRunner: HubCompanion, Sendable {
         let task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                if self.isActive() { await self.runDue() }
+                if self.isActive() { await self.runDue() } else { self.watches.withLock { $0.removeAll() } }
                 try? await Task.sleep(for: self.timing.wake)
             }
         }

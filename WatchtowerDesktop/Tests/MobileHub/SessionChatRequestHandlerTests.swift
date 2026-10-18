@@ -26,9 +26,9 @@ final class SessionChatRequestHandlerTests: XCTestCase {
 
     @MainActor
     func testUnknownSessionFails() async throws {
-        let (agent, shell) = try await dbPool.write { db -> (Int64, Int64) in
+        let shell = try await dbPool.write { db -> Int64 in
             let project = try TestDatabase.insertWorkbench(db)
-            return (try SliceSeed.insertSession(db, projectID: project), try SliceSeed.insertSession(db, projectID: project, kind: "shell"))
+            return try SliceSeed.insertSession(db, projectID: project, kind: "shell")
         }
         let runner = SessionChatRunner(fetch: { _, _ in throw CocoaError(.fileReadUnknown) }, isLive: { _ in false })
         let sessions = TerminalSessionSlice(liveness: { SessionLiveness() }, reportSummary: { _, _ in nil })
@@ -44,7 +44,6 @@ final class SessionChatRequestHandlerTests: XCTestCase {
         let invalid = try await dispatcher.dispatch(action(nil))
         XCTAssertEqual(invalid?.reason, .invalidParams)
         XCTAssertTrue(runner.watches.withLock { $0.isEmpty }, "a refused request opens no watch")
-        _ = agent
     }
 
     @MainActor
