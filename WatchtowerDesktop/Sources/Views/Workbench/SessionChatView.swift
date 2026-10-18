@@ -61,6 +61,17 @@ struct SessionChatView: View {
         vm.sessionStatuses[sessionID].map(SessionControl.isWorking) ?? false
     }
 
+    /// The session's pending prompt, shown only while the session takes
+    /// lines: a finished one's stale row is not answered from here.
+    private var permission: SessionControl.PermissionPrompt? {
+        composerShown ? workchat?.permission : nil
+    }
+
+    /// This session's open asks, oldest first; one leaves once answered.
+    private var openAsks: [OwnerAsk] {
+        (vm.asks.openAsks[projectID] ?? []).filter { $0.sessionID == sessionID }
+    }
+
     /// A typed or copied line waits for the owner in the terminal.
     private func showInTerminal() {
         Task { await vm.showInPane(.sessionChat(sessionID), item: .session(sessionID), projectID: projectID) }
@@ -75,16 +86,27 @@ struct SessionChatView: View {
             }
             if let subagent = path.stack.last {
                 subagentScreen(subagent)
-            } else if store.entries.isEmpty && (workchat?.outgoing.isEmpty ?? true) {
+            } else if store.entries.isEmpty && (workchat?.outgoing.isEmpty ?? true) && permission == nil && openAsks.isEmpty {
                 emptyState
             } else {
                 feed
             }
-            if path.isRoot, let workchat, composerShown {
+            if path.isRoot && !composerShown {
+                // No composer and no Stop once the session ended.
+                Divider()
+                Text("Session finished. The history stays readable.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+            } else if path.isRoot, let workchat {
                 Divider()
                 WorkchatComposer(model: workchat, working: working)
             }
         }
+        // Each state change of the session reads its permission prompt
+        // again (the hooks write the row and the state together).
+        .task(id: stateKind) { await workchat?.refreshPermission() }
         // The feed shows a sent line: its bubble leaves.
         .onChange(of: store.entries) { _, entries in workchat?.reconcile(with: entries) }
         // The main feed is polled only while it is on screen: an open
@@ -221,6 +243,14 @@ struct SessionChatView: View {
                                 )
                                 .id(line.id)
                             }
+                            if let permission {
+                                WorkchatPermissionCard(model: workchat, prompt: permission, onShowTerminal: showInTerminal)
+                                    .id("permission-\(permission.id)")
+                            }
+                        }
+                        ForEach(openAsks) { ask in
+                            WorkchatAskCard(ask: ask) { vm.asks.openDrawer(ask) }
+                                .id("ask-\(ask.id)")
                         }
                         // The bottom margin: scrolling to it lands at the
                         // content's true bottom (the `ChatFeedView` rule).

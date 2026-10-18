@@ -18,12 +18,25 @@ final class WorkchatModel {
     private(set) var outgoing: [WorkchatOutgoing] = []
     /// Why the last Stop could not be checked; the next Stop clears it.
     private(set) var stopError: String?
+    /// The session's pending permission request, as the card shows it; nil
+    /// when none (always for Codex, whose hooks write no rows).
+    private(set) var permission: SessionControl.PermissionPrompt?
+    /// An Allow or Deny is on its way: the card's buttons wait.
+    private(set) var answering = false
+    /// Why the last permission read or answer failed; the next one clears it.
+    private(set) var permissionError: String?
+
+    /// Who decided a prompt answered in the Workchat (`decided_by`).
+    static let decidedBy = "Mac"
 
     @ObservationIgnored private let control: SessionControl
     @ObservationIgnored private let lineDelivery: SessionLineDelivery
     @ObservationIgnored private let now: () -> Date
     /// Feed entries that stood for a line already: one echo, one line.
     @ObservationIgnored private var claimedEntries: Set<String> = []
+    /// Bumped by each permission read and answer, so a read that finishes
+    /// after a newer one (or an answer) does not bring an old card back.
+    @ObservationIgnored private var permissionReads = 0
 
     init(sessionID: Int64, control: SessionControl, lineDelivery: SessionLineDelivery, now: @escaping () -> Date = Date.init) {
         self.sessionID = sessionID
@@ -92,6 +105,59 @@ final class WorkchatModel {
         } catch {
             stopError = "Could not check for a permission prompt: \(error.localizedDescription)"
             return .notWorking
+        }
+    }
+
+    // MARK: - Permission
+
+    /// Reads the session's pending permission request again. Called on each
+    /// `SessionAgentStateCenter` change for the session (the pane's
+    /// `.task(id:)`) and after an answer; no timer of its own. A read that
+    /// fails keeps the card as it was.
+    func refreshPermission() async {
+        permissionReads += 1
+        let read = permissionReads
+        do {
+            let prompt = try await control.pendingPermission(sessionID)
+            // A newer read or an answer started meanwhile: this one is stale.
+            guard read == permissionReads else { return }
+            permission = prompt
+            permissionError = nil
+        } catch {
+            guard read == permissionReads else { return }
+            permissionError = "Could not read the permission prompt: \(error.localizedDescription)"
+        }
+    }
+
+    /// Allow or Deny on the card, decided by `"Mac"` through the guarded
+    /// update the phone uses. Answered elsewhere → the card leaves; an allow
+    /// that may not be given here keeps the card with Deny only.
+    func answer(allow: Bool) async {
+        guard let prompt = permission, !answering else { return }
+        answering = true
+        defer { answering = false }
+        permissionError = nil
+        // Drops a read that started before this answer.
+        permissionReads += 1
+        let result: SessionControl.PermissionAnswer
+        do {
+            result = try await control.answerPermission(
+                requestID: prompt.id, sessionID: sessionID, allow: allow, decidedBy: Self.decidedBy
+            )
+        } catch {
+            permissionError = "Could not answer the prompt: \(error.localizedDescription)"
+            return
+        }
+        switch result {
+        case .applied, .notPending, .notFound:
+            permission = nil
+            await refreshPermission()
+        case let .allowBlocked(block):
+            permission = SessionControl.PermissionPrompt(
+                id: prompt.id, toolName: prompt.toolName, summary: prompt.summary, allowBlock: block
+            )
+        case .notRunning:
+            permission = nil
         }
     }
 

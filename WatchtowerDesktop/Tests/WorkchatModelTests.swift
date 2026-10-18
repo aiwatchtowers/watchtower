@@ -66,16 +66,19 @@ final class WorkchatModelTests: XCTestCase {
         return WorkchatModel(sessionID: sessionID, control: control, lineDelivery: delivery) { clock.now }
     }
 
-    private func liveSession() async throws -> Int64 {
+    private func liveSession(kind: TerminalSession.Kind = .claude) async throws -> Int64 {
         let acme = folder.path
         let session = try await pool.write { db -> TerminalSession in
             let project = try TestDatabase.insertWorkbench(db, folder: acme)
             return try TerminalSessionQueries.create(db, .init(
-                projectID: project, kind: .claude, title: "Ship it", folderPath: acme,
+                projectID: project, kind: kind, title: "Ship it", folderPath: acme,
                 claudeSessionID: UUID().uuidString.lowercased()
             ))
         }
         workbenchID = try XCTUnwrap(session.projectID)
+        // A Codex session needs its binary to start; the permission read
+        // does not care whether it runs.
+        guard kind == .claude else { return session.id }
         center.start(session, fresh: true)
         XCTAssertTrue(center.liveIDs.contains(session.id))
         return session.id
@@ -298,5 +301,145 @@ final class WorkchatModelTests: XCTestCase {
 
         XCTAssertEqual(result, .sent)
         XCTAssertEqual(processes.flatMap(\.inputs), [[0x1B]])
+    }
+
+    // MARK: - Permission
+
+    @discardableResult
+    private func insertRequest(_ sessionID: Int64, summary: String = "gh pr merge 340 --merge", clipped: Bool = false) async throws -> Int64 {
+        let workbench = workbenchID
+        let created = SessionAgentStatus.formatStamp(clock.now)
+        return try await pool.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO permission_requests
+                        (terminal_session_id, workbench_id, tool_name, summary, summary_clipped, status, created_at)
+                    VALUES (?, ?, 'Bash', ?, ?, 'pending', ?)
+                    """,
+                arguments: [sessionID, workbench, summary, clipped, created]
+            )
+            return db.lastInsertedRowID
+        }
+    }
+
+    private func storedRequest(_ id: Int64) async throws -> (status: String, decidedBy: String?) {
+        try await pool.read { db in
+            let row = try XCTUnwrap(Row.fetchOne(db, sql: "SELECT status, decided_by FROM permission_requests WHERE id = ?", arguments: [id]))
+            return (row["status"], row["decided_by"])
+        }
+    }
+
+    func testPermissionCardShownForPendingRow() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let id = try await insertRequest(session)
+        let model = try makeModel(session)
+        XCTAssertNil(model.permission)
+
+        await model.refreshPermission()
+
+        let card = try XCTUnwrap(model.permission)
+        XCTAssertEqual(card.id, id)
+        XCTAssertEqual(card.toolName, "Bash")
+        XCTAssertEqual(card.summary, "gh pr merge 340 --merge")
+        XCTAssertNil(card.allowBlock, "Allow is offered")
+    }
+
+    func testAllowAppliesAndClears() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let id = try await insertRequest(session)
+        let model = try makeModel(session)
+        await model.refreshPermission()
+
+        await model.answer(allow: true)
+
+        XCTAssertNil(model.permission)
+        XCTAssertNil(model.permissionError)
+        let stored = try await storedRequest(id)
+        XCTAssertEqual(stored.status, "allowed")
+        XCTAssertEqual(stored.decidedBy, "Mac")
+        XCTAssertTrue(processes.flatMap(\.inputs).isEmpty, "only the hook decides: nothing typed")
+    }
+
+    /// Review Focus 5: the phone (or the terminal) answered first. The
+    /// Workchat's answer changes nothing and the card leaves.
+    func testAnsweredElsewhereRemovesCard() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let id = try await insertRequest(session)
+        let model = try makeModel(session)
+        await model.refreshPermission()
+        XCTAssertNotNil(model.permission)
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE permission_requests SET status = 'denied', decided_by = 'iPhone' WHERE id = ?", arguments: [id])
+        }
+
+        await model.answer(allow: true)
+
+        XCTAssertNil(model.permission, "the card leaves")
+        XCTAssertNil(model.permissionError)
+        let stored = try await storedRequest(id)
+        XCTAssertEqual(stored.status, "denied", "the first answer stands")
+        XCTAssertEqual(stored.decidedBy, "iPhone")
+
+        // A state change alone also drops a card answered elsewhere.
+        try await insertRequest(session, summary: "make test")
+        await model.refreshPermission()
+        let next = try XCTUnwrap(model.permission)
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE permission_requests SET status = 'allowed' WHERE id = ?", arguments: [next.id])
+        }
+        await model.refreshPermission()
+        XCTAssertNil(model.permission)
+    }
+
+    func testAllowBlockedKeepsDenyOnly() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let id = try await insertRequest(session, summary: "rm -rf build && …", clipped: true)
+        let model = try makeModel(session)
+        await model.refreshPermission()
+        XCTAssertEqual(model.permission?.allowBlock, .clipped, "Deny and Show in Terminal only")
+
+        await model.answer(allow: true)
+
+        XCTAssertEqual(model.permission?.id, id, "the card stays")
+        XCTAssertEqual(model.permission?.allowBlock, .clipped)
+        let pending = try await storedRequest(id)
+        XCTAssertEqual(pending.status, "pending", "an allow is refused")
+
+        await model.answer(allow: false)
+
+        XCTAssertNil(model.permission)
+        let stored = try await storedRequest(id)
+        XCTAssertEqual(stored.status, "denied", "a deny always may")
+    }
+
+    /// The session ended under the card: it leaves, the row is not written.
+    func testAnswerAfterSessionEndsClears() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let id = try await insertRequest(session)
+        let model = try makeModel(session)
+        await model.refreshPermission()
+        processes[0].onExit?(0)
+
+        await model.answer(allow: true)
+
+        XCTAssertNil(model.permission)
+        let stored = try await storedRequest(id)
+        XCTAssertEqual(stored.status, "pending")
+    }
+
+    /// Codex writes no permission rows: no card.
+    func testNoPermissionCardForCodexSession() async throws {
+        let session = try await liveSession(kind: .codex)
+        setState(session, .working)
+        let model = try makeModel(session)
+
+        await model.refreshPermission()
+
+        XCTAssertNil(model.permission)
     }
 }
