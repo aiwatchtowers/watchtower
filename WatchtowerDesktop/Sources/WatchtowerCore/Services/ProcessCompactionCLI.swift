@@ -18,10 +18,18 @@ package struct ProcessCompactionCLI: CompactionCLI {
 
     package init() {}
 
+    /// Cancelling the calling task terminates the child (a quit during the
+    /// check).
     package func check() async throws -> CompactionCheck {
         let process = try makeProcess(["db", "compact", "--check", "--json"])
         process.environment = await Constants.resolvedEnvironmentAsync()
-        let (output, timedOut) = await ProcessPipes.run(process, timeout: .seconds(30))
+        try Task.checkCancellation()
+        let (output, timedOut) = await withTaskCancellationHandler {
+            await ProcessPipes.run(process, timeout: .seconds(30))
+        } onCancel: {
+            if process.isRunning { process.terminate() }
+        }
+        try Task.checkCancellation()
         if timedOut { throw Failure.timedOut }
         guard output.exitCode == 0 else { throw Failure.exited(output.exitCode, stderr: output.stderr) }
         return try decodeLastJSONLine(CompactionCheck.self, from: Data(output.stdout.utf8))

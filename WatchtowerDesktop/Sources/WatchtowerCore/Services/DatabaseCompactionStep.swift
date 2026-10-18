@@ -169,6 +169,10 @@ package final class DatabaseCompactionStep {
     @ObservationIgnored private let sleep: @Sendable (Duration) async -> Void
     @ObservationIgnored private let log: @Sendable (String) -> Void
     @ObservationIgnored private var child: (any CompactionChild)?
+    /// The running `--check`, cancelled by a quit.
+    @ObservationIgnored private var checkTask: Task<CompactionCheck, any Error>?
+    /// The app quit while the step ran: nothing more is started.
+    @ObservationIgnored private var quitRequested = false
     /// `elapsedSeconds` when Skip sent SIGTERM; nil until then.
     @ObservationIgnored private var skipRequestedAt: Int?
     @ObservationIgnored private var killed = false
@@ -195,12 +199,16 @@ package final class DatabaseCompactionStep {
 
         phase = .checking
         let check: CompactionCheck
+        let checkTask = Task { [cli] in try await cli.check() }
+        self.checkTask = checkTask
+        defer { self.checkTask = nil }
         do {
-            check = try await cli.check()
+            check = try await checkTask.value
         } catch {
             log("DB compaction check failed, skipping: \(error.localizedDescription)")
             return
         }
+        guard !quitRequested else { return }
         guard check.due else { return }
         guard check.diskOk else {
             log("DB compaction skipped: \(check.needsDiskBytes) bytes of free disk needed, \(check.freeDiskBytes) available")
@@ -209,6 +217,7 @@ package final class DatabaseCompactionStep {
         }
 
         await stopDaemon()
+        guard !quitRequested else { return }
         let child: any CompactionChild
         do {
             child = try cli.startCompact()
@@ -234,9 +243,14 @@ package final class DatabaseCompactionStep {
         child.terminate()
     }
 
-    /// The app is quitting: SIGTERM to a running child so it does not outlive
-    /// the app; no-op otherwise.
+    /// The app is quitting: cancels a running `--check` (its child is
+    /// terminated) and SIGTERMs a running compaction child, so neither
+    /// outlives the app, and nothing more is started; no-op when the step
+    /// is not running.
     package func terminateForQuit() {
+        guard isRunning else { return }
+        quitRequested = true
+        checkTask?.cancel()
         child?.terminate()
     }
 

@@ -290,10 +290,22 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
                 app.automationSessionCenter?.stop()
                 await app.terminalCenter.detachAll()
             },
-            stopDaemon: { await DaemonManager.stopDaemonBounded() },
+            stopDaemon: { await Self.stopDaemonForQuit(app) },
             finishPendingDeletes: { await Self.finishPendingDeletes(app.workbenchesViewModel) },
             reply: { ok in sender.reply(toApplicationShouldTerminate: ok) }
         )
+    }
+
+    /// The quit's daemon step: the launch's compaction child goes first
+    /// (#850), so neither it nor a daemon start after it outlives the app.
+    /// `stop` is a seam for tests.
+    @MainActor
+    static func stopDaemonForQuit(
+        _ app: AppState,
+        stop: () async -> Void = { await DaemonManager.stopDaemonBounded() }
+    ) async {
+        app.terminateDatabaseCompactionForQuit()
+        await stop()
     }
 
     /// The quit's PROJ-17 step (board #588): the Undo batch is committed,

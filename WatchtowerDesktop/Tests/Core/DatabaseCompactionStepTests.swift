@@ -179,6 +179,37 @@ final class DatabaseCompactionStepTests: XCTestCase {
         XCTAssertEqual(child.terminateCount, 1, "no-op once the child has exited")
     }
 
+    func testQuitDuringCheckCancelsItAndStartsNothing() async {
+        let parked = ParkedCheck()
+        let step = makeStep(check: .success(.fixture()), parkedCheck: parked)
+        let run = Task { await step.run { "/db" } }
+        await until { parked.isParked }
+        XCTAssertTrue(step.isRunning)
+        step.terminateForQuit()
+        await run.value
+        XCTAssertTrue(parked.wasCancelled, "the check's task is cancelled, which terminates its child")
+        XCTAssertEqual(calls.items, ["check"], "no daemon stop, no compact after a quit")
+        XCTAssertEqual(step.phase, .finished)
+    }
+
+    func testQuitDuringDaemonStopStartsNoCompact() async {
+        let calls = calls
+        let box = StepBox()
+        let step = DatabaseCompactionStep(
+            cli: FakeCompactionCLI(calls: calls, result: .success(.fixture()), child: child, startFails: false),
+            stopDaemon: {
+                calls.append("stopDaemon")
+                await MainActor.run { box.step?.terminateForQuit() }
+            },
+            sleep: { _ in },
+            log: { _ in }
+        )
+        box.step = step
+        await step.run { "/db" }
+        XCTAssertEqual(calls.items, ["check", "stopDaemon"])
+        XCTAssertEqual(step.phase, .finished)
+    }
+
     // MARK: - Strings
 
     func testElapsedText() {
@@ -227,8 +258,14 @@ final class DatabaseCompactionStepTests: XCTestCase {
         bytes.formatted(.byteCount(style: .file).locale(Locale(identifier: "en_US")))
     }
 
-    private func makeStep(check: Result<CompactionCheck, Error>, startFails: Bool = false) -> DatabaseCompactionStep {
-        let cli = FakeCompactionCLI(calls: calls, result: check, child: child, startFails: startFails)
+    private func makeStep(
+        check: Result<CompactionCheck, Error>,
+        startFails: Bool = false,
+        parkedCheck: ParkedCheck? = nil
+    ) -> DatabaseCompactionStep {
+        let cli = FakeCompactionCLI(
+            calls: calls, result: check, child: child, startFails: startFails, parkedCheck: parkedCheck
+        )
         let calls = calls
         let sleeper = sleeper
         let logs = logs
@@ -283,9 +320,14 @@ private struct FakeCompactionCLI: CompactionCLI {
     let result: Result<CompactionCheck, Error>
     let child: FakeChild
     let startFails: Bool
+    var parkedCheck: ParkedCheck?
 
     func check() async throws -> CompactionCheck {
         calls.append("check")
+        if let parkedCheck {
+            await parkedCheck.park()
+            try Task.checkCancellation()
+        }
         return try result.get()
     }
 
@@ -347,6 +389,41 @@ private final class FakeChild: CompactionChild, @unchecked Sendable {
                 waiter = continuation
                 lock.unlock()
             }
+        }
+    }
+}
+
+@MainActor
+private final class StepBox {
+    var step: DatabaseCompactionStep?
+}
+
+/// A `--check` that answers only once its task is cancelled.
+private final class ParkedCheck: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var cancelled = false
+
+    var isParked: Bool { lock.withLock { waiter != nil } }
+    var wasCancelled: Bool { lock.withLock { cancelled } }
+
+    func park() async {
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                let resumeNow = lock.withLock { () -> Bool in
+                    if cancelled { return true }
+                    waiter = continuation
+                    return false
+                }
+                if resumeNow { continuation.resume() }
+            }
+        } onCancel: {
+            let parked = lock.withLock { () -> CheckedContinuation<Void, Never>? in
+                cancelled = true
+                defer { waiter = nil }
+                return waiter
+            }
+            parked?.resume()
         }
     }
 }
