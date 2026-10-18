@@ -44,7 +44,10 @@ type claudeRecord struct {
 	PRURL              string          `json:"prUrl"`
 	TotalCostUSD       *float64        `json:"totalCostUSD"`
 	Attachment         json.RawMessage `json:"attachment"`
-	CompactMetadata    *struct {
+	Rendered           []struct {
+		Content string `json:"content"`
+	} `json:"rendered"` // an attachment record's text as it entered the context (next to attachment)
+	CompactMetadata *struct {
 		Trigger    string `json:"trigger"`
 		PreTokens  *int64 `json:"preTokens"`
 		PostTokens *int64 `json:"postTokens"`
@@ -427,17 +430,14 @@ func turnTrigger(text string) string {
 
 func (p *claudeParser) attachment(rec claudeRecord) {
 	var a struct {
-		Type     string   `json:"type"`
-		Names    []string `json:"names"`
-		Rendered []struct {
-			Content string `json:"content"`
-		} `json:"rendered"`
+		Type  string   `json:"type"`
+		Names []string `json:"names"`
 	}
 	if json.Unmarshal(rec.Attachment, &a) != nil {
 		return
 	}
 	var size int64 // what entered the context; no rendered list = 0, never a guess
-	for _, r := range a.Rendered {
+	for _, r := range rec.Rendered {
 		size += int64(len(r.Content))
 	}
 	p.addPart(rec.SessionID, attachmentPart(a.Type), size)
@@ -511,11 +511,16 @@ func (p *claudeParser) closeLane(sid string) {
 	}
 }
 
-// emitContextParts moves every lane's parts into the result. The lane is
-// this file's agent id ("" for the main transcript).
+// emitContextParts moves the parts of every closed lane into the result; a
+// lane whose first API call is not in this read stores nothing (its baseline
+// is not complete yet). The lane is this file's agent id ("" for the main
+// transcript).
 func (p *claudeParser) emitContextParts() {
 	for _, sid := range p.laneOrder {
 		l := p.lanes[sid]
+		if !l.closed {
+			continue
+		}
 		for _, part := range l.order {
 			p.res.ContextParts = append(p.res.ContextParts, agentlogdb.AgentContextPart{SessionUUID: sid,
 				AgentID: p.o.AgentID, Part: part, Bytes: l.bytes[part]})

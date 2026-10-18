@@ -672,12 +672,19 @@ func TestScan_ImportDoneWithSiblingFolderFiles(t *testing.T) {
 func TestScan_StoresContextPartsAndSkillListing(t *testing.T) {
 	f := newFixture(t)
 	listing := line(t, map[string]any{"type": "attachment", "sessionId": "s1", "cwd": f.folder, "attachment": map[string]any{
-		"type": "skill_listing", "names": []string{"review", "pdf"}, "rendered": []map[string]any{{"content": "0123456789"}}}})
+		"type": "skill_listing", "names": []string{"review", "pdf"}}, "rendered": []map[string]any{{"content": "0123456789"}}})
 	f.write(f.folder, "s1.jsonl", listing+call(t, "s1", f.folder, "u1", "m1", "r1", 5))
 	require.Equal(t, 1, f.scan().FilesScanned)
-	// A grown file is read from its offset: no parts again, the stored ones stay.
-	f.write(f.folder, "s1.jsonl", listing+call(t, "s1", f.folder, "u2", "m2", "r2", 5))
-	f.scan()
+	// A grown file is read from its offset: its attachments add no parts, the
+	// stored ones stay.
+	f.write(f.folder, "s1.jsonl", line(t, map[string]any{"type": "attachment", "sessionId": "s1", "cwd": f.folder,
+		"attachment": map[string]any{"type": "instructions"}, "rendered": []map[string]any{{"content": strings.Repeat("x", 100)}}})+
+		call(t, "s1", f.folder, "u2", "m2", "r2", 5))
+	require.Equal(t, 1, f.scan().FilesScanned)
+
+	var parts int
+	require.NoError(t, f.al.QueryRow(`SELECT COUNT(*) FROM agent_log_context_parts`).Scan(&parts))
+	assert.Equal(t, 1, parts, "the incremental read stored no instructions part")
 
 	var part string
 	var bytes int64

@@ -250,14 +250,23 @@ func TestParseClaude_ResultBytesAndThinking(t *testing.T) {
 	a["message"].(map[string]any)["usage"].(map[string]any)["output_tokens_details"] = map[string]any{"thinking_tokens": 77}
 	s := line(t, a) +
 		toolResultLine(t, "s1", "r1", "t1", "short", false, map[string]any{"toolUseResult": map[string]any{"persistedOutputSize": 123456}}) +
-		toolResultLine(t, "s1", "r2", "t2", "0123456789", false, nil)
+		toolResultLine(t, "s1", "r2", "t2", "0123456789", false, nil) +
+		line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "r3", "message": map[string]any{"role": "user",
+			"content": []map[string]any{{"type": "tool_result", "tool_use_id": "t3", "content": []map[string]any{
+				{"type": "text", "text": "abc"}, {"type": "image", "source": map[string]any{"data": "AAAA"}}, {"type": "text", "text": "de"}}}}}}) +
+		line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "r4", "message": map[string]any{"role": "user",
+			"content": []map[string]any{{"type": "tool_result", "tool_use_id": "t4", "content": []map[string]any{
+				{"type": "image", "source": map[string]any{"data": "AAAA"}}}}}}})
 	r := parse(t, s, ParseOptions{})
 	for _, e := range r.Events {
 		if e.Kind == "api_call" {
 			assert.Equal(t, int64(77), e.ThinkingTokens)
 		}
 	}
-	require.Len(t, r.ToolResults, 2)
+	require.Len(t, r.ToolResults, 4)
+	require.NotNil(t, r.ToolResults[2].ResultBytes)
+	assert.Equal(t, int64(5), *r.ToolResults[2].ResultBytes, "every text block counts")
+	assert.Nil(t, r.ToolResults[3].ResultBytes, "no text: not measured")
 	require.NotNil(t, r.ToolResults[0].ResultBytes)
 	assert.Equal(t, int64(123456), *r.ToolResults[0].ResultBytes)
 	require.NotNil(t, r.ToolResults[1].ResultBytes)

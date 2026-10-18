@@ -92,12 +92,12 @@ func (p *claudeParser) toolResults(rec claudeRecord) {
 			continue
 		}
 		text := resultText(b.Content)
-		size := int64(len(text))
+		size := resultSize(b.Content)
 		if tur.PersistedOutputSize != nil { // the output spilled to disk; the content is a preview
-			size = *tur.PersistedOutputSize
+			size = tur.PersistedOutputSize
 		}
 		r := agentlogdb.AgentToolResult{ToolUseID: b.ToolUseID, TS: rec.Timestamp, Outcome: "ok",
-			SpawnedAgentID: tur.AgentID, Background: tur.IsAsync || tur.Status == "async_launched", ResultBytes: &size}
+			SpawnedAgentID: tur.AgentID, Background: tur.IsAsync || tur.Status == "async_launched", ResultBytes: size}
 		switch {
 		case tur.Interrupted || strings.HasPrefix(text, "[Request interrupted by user"):
 			r.Outcome = "interrupted"
@@ -157,6 +157,35 @@ const (
 
 // errorClass classifies a failed tool result's text; the specific classes are
 // checked before the generic exit_code / not_found / timeout ones.
+// resultSize is the byte length of a tool_result content: a string, or the
+// sum of its text blocks; nil (not measured) when it has no text at all
+// (an image or a tool reference).
+func resultSize(raw json.RawMessage) *int64 {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		n := int64(len(s))
+		return &n
+	}
+	var blocks []struct {
+		Type string  `json:"type"`
+		Text *string `json:"text"`
+	}
+	if json.Unmarshal(raw, &blocks) != nil {
+		return nil
+	}
+	var n int64
+	measured := false
+	for _, b := range blocks {
+		if b.Type == "text" && b.Text != nil {
+			n, measured = n+int64(len(*b.Text)), true
+		}
+	}
+	if !measured {
+		return nil
+	}
+	return &n
+}
+
 func errorClass(text string) string {
 	t := strings.ToLower(text)
 	has := func(subs ...string) bool {

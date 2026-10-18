@@ -119,13 +119,16 @@ func TestParseClaude_StoresNoText(t *testing.T) {
 	s := attachLine(t, "s1", "instructions", nil, "SENTINEL-CLAUDE-MD") +
 		attachLine(t, "s1", "skill_listing", map[string]any{"names": []string{"review"}}, "SENTINEL-SKILL-DESCRIPTION") +
 		attachLine(t, "s1", "hook_blocking_error", nil, "SENTINEL-HOOK") +
+		attachLine(t, "s1", "SENTINEL-TYPE", nil, "x") +
 		shapeLine(t, "s1", []map[string]any{{"type": "text", "text": "SENTINEL-SYSTEM"}}, []map[string]any{{"name": "SENTINEL-TOOL"}}) +
 		line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "o1", "timestamp": "2026-10-01T09:59:00Z", "cwd": "/w",
 			"message": map[string]any{"role": "user", "content": "SENTINEL-PROMPT"}}) + line(t, assistant("s1", "u1", "m1", "r1", 5,
 		toolUse("t1", "Bash", map[string]any{"command": "cd /SENTINEL_DIR && make test SENTINEL_ARG"}))) +
 		toolResultLine(t, "s1", "r1", "t1", "SENTINEL-OUTPUT exit code 1", true, nil) +
 		line(t, map[string]any{"type": "system", "subtype": "compact_boundary", "sessionId": "s1", "uuid": "c1", "content": "SENTINEL-COMPACT",
-			"compactMetadata": map[string]any{"trigger": "manual", "preTokens": 10, "postTokens": 2}}) +
+			"compactMetadata": map[string]any{"trigger": "SENTINEL-TRIGGER", "preTokens": 10, "postTokens": 2}}) +
+		line(t, map[string]any{"type": "assistant", "isApiErrorMessage": true, "apiErrorStatus": "SENTINEL-STATUS", "sessionId": "s1", "uuid": "e2",
+			"message": map[string]any{"model": "<synthetic>", "content": []any{}}}) +
 		line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "cs1", "isCompactSummary": true,
 			"message": map[string]any{"role": "user", "content": "SENTINEL-SUMMARY"}}) +
 		line(t, map[string]any{"type": "assistant", "isApiErrorMessage": true, "apiErrorStatus": 529, "sessionId": "s1", "uuid": "e1",
@@ -133,7 +136,7 @@ func TestParseClaude_StoresNoText(t *testing.T) {
 		line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "i1", "message": map[string]any{"role": "user",
 			"content": "[Request interrupted by user] SENTINEL-INTERRUPT"}})
 	r := parse(t, s, ParseOptions{})
-	require.NotEmpty(t, r.ContextParts)
+	require.Equal(t, int64(len("SENTINEL-CLAUDE-MD")), partsOf(r)["s1//instructions"], "the rendered text was measured")
 	require.NotEmpty(t, r.SkillListing)
 	b, err := json.Marshal(r)
 	require.NoError(t, err)
@@ -199,17 +202,18 @@ func TestParseClaude_OwnerTurnTriggers(t *testing.T) {
 func attachLine(t *testing.T, sid, typ string, extra map[string]any, contents ...string) string {
 	t.Helper()
 	a := map[string]any{"type": typ}
-	if contents != nil {
+	for k, v := range extra {
+		a[k] = v
+	}
+	rec := map[string]any{"type": "attachment", "sessionId": sid, "timestamp": "2026-10-01T09:00:00Z", "attachment": a}
+	if contents != nil { // rendered sits at record level, next to attachment
 		var rendered []map[string]any
 		for _, c := range contents {
 			rendered = append(rendered, map[string]any{"type": "text", "content": c})
 		}
-		a["rendered"] = rendered
+		rec["rendered"] = rendered
 	}
-	for k, v := range extra {
-		a[k] = v
-	}
-	return line(t, map[string]any{"type": "attachment", "sessionId": sid, "timestamp": "2026-10-01T09:00:00Z", "attachment": a})
+	return line(t, rec)
 }
 
 func shapeLine(t *testing.T, sid string, system, tools any) string {
@@ -287,6 +291,9 @@ func TestParseClaude_ContextPartsBeforeFirstCall(t *testing.T) {
 	sub := parse(t, attachLine(t, "s1", "instructions", nil, "1234")+line(t, assistant("s1", "u1", "m9", "r9", 5)),
 		ParseOptions{Path: "/h/.claude/projects/-w/s1/subagents/agent-a1.jsonl", Subagent: true, AgentID: "a1"})
 	assert.Equal(t, map[string]int64{"s1/a1/instructions": 4}, partsOf(sub))
+
+	// A lane whose first call is not in the read stores nothing yet.
+	assert.Empty(t, parse(t, before, ParseOptions{}).ContextParts)
 
 	// An incremental read never emits parts: the read from 0 stored them.
 	inc, err := ParseClaude(strings.NewReader(before), 100, ParseOptions{Path: "/h/.claude/projects/-w/s1.jsonl", Folder: "/w"})
