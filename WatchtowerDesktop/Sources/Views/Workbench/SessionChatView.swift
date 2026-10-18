@@ -5,24 +5,21 @@ import WatchtowerCore
 /// right in a tinted bubble, the agent left without one, Watchtower's own
 /// lines marked "via Watchtower", subagents as cards opening a sheet.
 struct SessionChatView: View {
+    @Environment(AppState.self) private var appState
     let vm: WorkbenchesViewModel
     let sessionID: Int64
     let projectID: Int64
 
     @StateObject private var store: SessionFeedStore
-    @State private var poller: SessionFeedPoller
     @State private var openedSubagent: SessionFeedEntry?
-    private let runnerMissing: Bool
 
     init(vm: WorkbenchesViewModel, sessionID: Int64, projectID: Int64) {
         self.vm = vm
         self.sessionID = sessionID
         self.projectID = projectID
-        let runner = ProcessCLIRunner.makeDefault()
-        runnerMissing = runner == nil
-        let store = SessionFeedStore(sessionID: sessionID, runner: runner ?? UnavailableRunner())
-        _store = StateObject(wrappedValue: store)
-        _poller = State(initialValue: SessionFeedPoller { await store.refresh() })
+        // An autoclosure: the store and its CLI lookup are built once per
+        // pane, not on every render of the parent.
+        _store = StateObject(wrappedValue: SessionFeedStore(sessionID: sessionID, runner: ProcessCLIRunner.makeDefault()))
     }
 
     /// The agent works or has background subagents running: poll every 3 s.
@@ -38,7 +35,7 @@ struct SessionChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if runnerMissing {
+            if store.runnerMissing {
                 errorBar(WorkbenchesViewModel.cliMissingMessage, retry: false)
             } else if let error = store.error {
                 errorBar(error, retry: true)
@@ -49,7 +46,14 @@ struct SessionChatView: View {
                 feed
             }
         }
-        .task(id: stateKind) { await poll() }
+        .task(id: stateKind) {
+            await store.follow(isActive: { isActive }, isOnScreen: { vm.isTabOnScreen() })
+        }
+        // The app's visibility hub (#731): back on screen after a skipped
+        // read, the feed is read at once. Bound to the pane's lifetime.
+        .task(id: appState.uiVisibility.isOnScreen) {
+            await store.screenChanged(appState.uiVisibility.isOnScreen)
+        }
         .sheet(item: $openedSubagent) { entry in
             SessionChatSubagentSheet(store: store, entry: entry)
         }
@@ -69,7 +73,7 @@ struct SessionChatView: View {
 
     @ViewBuilder
     private var emptyState: some View {
-        if store.error == nil && !runnerMissing {
+        if store.error == nil && !store.runnerMissing {
             Text("No messages yet")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -84,30 +88,12 @@ struct SessionChatView: View {
             Text(message).font(.callout).lineLimit(3).textSelection(.enabled)
             Spacer(minLength: 4)
             if retry {
-                Button("Retry") { Task { await poller.refresh() } }
+                Button("Retry") { Task { await store.poller.refresh() } }
             }
         }
         .padding(8)
         .background(Color.orange.opacity(0.1))
     }
-
-    /// One read when the pane (or the session's state) changes; while the
-    /// agent works, one more every 3 s. Cancelled with the pane.
-    private func poll() async {
-        guard !runnerMissing else { return }
-        await poller.refresh()
-        while isActive {
-            try? await Task.sleep(for: .seconds(3))
-            if Task.isCancelled { return }
-            await poller.refresh()
-        }
-    }
-}
-
-/// Stand-in when the CLI binary is missing: the pane shows the error and
-/// never polls, so this is never called.
-private struct UnavailableRunner: CLIRunnerProtocol {
-    func run(args: [String]) async throws -> Data { Data() }
 }
 
 /// One message of the chat, shared by the pane and the subagent sheet.
