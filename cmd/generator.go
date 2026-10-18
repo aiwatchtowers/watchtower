@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"watchtower/internal/agentloop"
@@ -208,6 +209,15 @@ func loadExternalMCPServersFrom(cfg *config.Config, database *db.DB, codexEnv []
 		log.Printf("external MCP: listing enabled connections: %v", err)
 		return nil
 	}
+	// A reserved name is refused first: before the codex env probe reads its
+	// secret, and before any listing could start its server.
+	conns = slices.DeleteFunc(conns, func(c db.ExternalConnection) bool {
+		if !externalmcp.ReservedName(c.Name) {
+			return false
+		}
+		recordReservedName(database, c)
+		return true
+	})
 	var skipped map[int64]string
 	if codexEnv != nil {
 		skipped = codexEnvSkips(cfg, conns, codexEnv)
@@ -253,13 +263,6 @@ const toolsListRetryAfter = time.Hour
 // logged and, unless it is a credential problem applyOAuthCredentials already
 // recorded, written to the row ("error") so Settings shows it.
 func mountConnection(cfg *config.Config, database *db.DB, c db.ExternalConnection) (ai.ExternalMCPServer, bool) {
-	if reservedConnectionName(c.Name) {
-		// Added before add refused the name: never mounted, since the
-		// mcp__watchtower allow token would cover its tools (QC-02).
-		return ai.ExternalMCPServer{}, connectionUnmounted(database, c, fmt.Sprintf(
-			"the name %q is reserved for Watchtower's own tools, so none of its tools is available to the chat — remove it (`watchtower connections remove %d`) and add it again under another name",
-			c.Name, c.ID))
-	}
 	server, err := connectionServer(cfg, database, c)
 	if err != nil {
 		return server, false
@@ -379,6 +382,35 @@ func recordInsecureTransport(database *db.DB, c db.ExternalConnection, err error
 	log.Printf("external connection %d (%s): not mounted: %v", c.ID, c.Name, err)
 	if serr := database.SetExternalConnectionStatus(c.ID, "error", transportReasonPrefix+insecureTransportReason); serr != nil {
 		log.Printf("external connection %d (%s): recording error status: %v", c.ID, c.Name, serr)
+	}
+}
+
+// errReservedName: the connection's name is reserved for the built-in
+// server (externalmcp.ReservedName); the row says so (reservedReasonPrefix).
+var errReservedName = errors.New("its name is reserved for Watchtower's own tools")
+
+// reservedReasonPrefix marks the row error recordReservedName writes. Like
+// transportReasonPrefix it is not toolsReasonPrefix: no tool-policy change,
+// listing, sign-in or launch clears it — only removing the connection.
+const reservedReasonPrefix = "reserved: "
+
+// reservedNameReason is the row's copy, for the owner, after the prefix.
+func reservedNameReason(c db.ExternalConnection) string {
+	return fmt.Sprintf("The name %q is reserved for Watchtower's own tools, so none of its tools is available — "+
+		"remove it (`watchtower connections remove %d`) and add it again under another name.", c.Name, c.ID)
+}
+
+// recordReservedName marks a connection stored under a reserved name before
+// add refused it (QC-02): never mounted, never listed, never called. The row
+// is written only when it does not say so already.
+func recordReservedName(database *db.DB, c db.ExternalConnection) {
+	msg := reservedReasonPrefix + reservedNameReason(c)
+	if c.Status == "error" && c.Error == msg {
+		return
+	}
+	log.Printf("external connection %d (%s): not mounted: %v", c.ID, c.Name, errReservedName)
+	if err := database.SetExternalConnectionStatus(c.ID, "error", msg); err != nil {
+		log.Printf("external connection %d (%s): recording error status: %v", c.ID, c.Name, err)
 	}
 }
 

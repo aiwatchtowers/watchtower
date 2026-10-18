@@ -133,6 +133,10 @@ func applyAllowFlags(warn io.Writer, database *db.DB, conn *db.ExternalConnectio
 // policy: no allowed tool records the tools error; a usable policy clears a
 // tools error this code wrote earlier (never a credential one).
 func reconcileToolsStatus(database *db.DB, conn db.ExternalConnection) {
+	if externalmcp.ReservedName(conn.Name) {
+		recordReservedName(database, conn) // only removing it clears that
+		return
+	}
 	if strings.HasPrefix(conn.Error, transportReasonPrefix) {
 		return // the URL, not the tool policy, keeps it unmounted
 	}
@@ -149,6 +153,11 @@ func reconcileToolsStatus(database *db.DB, conn db.ExternalConnection) {
 // listConnectionTools refreshes conn's cached tools/list from its server,
 // with the same credentials a chat launch would use.
 func listConnectionTools(cfg *config.Config, database *db.DB, conn *db.ExternalConnection) error {
+	if externalmcp.ReservedName(conn.Name) {
+		// Its server is never started, not even to list it.
+		recordReservedName(database, *conn)
+		return fmt.Errorf("%w — remove it and add it again under another name", errReservedName)
+	}
 	server, err := connectionServer(cfg, database, *conn)
 	switch {
 	case errors.Is(err, errNoCredentials):
@@ -174,7 +183,7 @@ func refreshToolsAfterEnable(out, errOut io.Writer, cfg *config.Config, database
 	if err == nil {
 		err = listConnectionTools(cfg, database, &conn)
 	}
-	if errors.Is(err, errNoCredentials) || errors.Is(err, errInsecureTransport) {
+	if errors.Is(err, errNoCredentials) || errors.Is(err, errInsecureTransport) || errors.Is(err, errReservedName) {
 		fmt.Fprintf(errOut, "warning: connection %d: %v; none of its tools is available to the chat\n", id, err)
 		return
 	}

@@ -1094,7 +1094,7 @@ printf '{"type":"result","result":"ok"}'`)
 }
 
 // A launch with Quick Connections fences them in the system prompt as
-// external server data (board #556); a resumed session keeps its prompt and
+// external server data (board #556); a resumed turn appends the fence, and
 // a launch without one is unchanged.
 func TestBuildArgs_ExternalServersFencedInSystemPrompt(t *testing.T) {
 	c := NewClient("sonnet", "/tmp/w.db", "")
@@ -1110,8 +1110,12 @@ func TestBuildArgs_ExternalServersFencedInSystemPrompt(t *testing.T) {
 	args, _, err = buildArgsT(t, c, "sys", "hi", "json", "sess-1")
 	require.NoError(t, err)
 	assert.NotContains(t, args, "--system-prompt-file")
+	assertFlagValue(t, args, "--append-system-prompt", ExternalDataRule(c.externalServers))
 
 	plain := NewClient("sonnet", "/tmp/w.db", "")
+	args, _, err = buildArgsT(t, plain, "sys", "hi", "json", "sess-1")
+	require.NoError(t, err)
+	assert.NotContains(t, args, "--append-system-prompt")
 	args, _, err = buildArgsT(t, plain, "sys", "hi", "json", "")
 	require.NoError(t, err)
 	body, err = os.ReadFile(flagValue(t, args, "--system-prompt-file"))

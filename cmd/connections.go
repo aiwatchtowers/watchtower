@@ -217,16 +217,6 @@ func warnIfProviderIgnoresConnections(w io.Writer, cfg *config.Config, name stri
 	}
 }
 
-// reservedConnectionName reports a name the built-in watchtower server owns:
-// "watchtower" itself (its mcpServers key) and any name starting with
-// "watchtower_", case-insensitively. Such a connection's tools would be named
-// mcp__watchtower_…__<tool>, which the whole-server mcp__watchtower allow
-// token matches — past QC-02's per-tool allowlist.
-func reservedConnectionName(name string) bool {
-	lower := strings.ToLower(name)
-	return lower == "watchtower" || strings.HasPrefix(lower, "watchtower_")
-}
-
 // validateConnectionAddFlags checks `connections add`'s name and kind flags.
 func validateConnectionAddFlags(name, kind, command, url string) error {
 	if name == "" {
@@ -236,7 +226,7 @@ func validateConnectionAddFlags(name, kind, command, url string) error {
 		return fmt.Errorf("--name %q is invalid: must match %s (letters, digits, underscore, hyphen only)",
 			name, connectionNamePattern.String())
 	}
-	if reservedConnectionName(name) {
+	if externalmcp.ReservedName(name) {
 		return fmt.Errorf(`--name %q is reserved: "watchtower" and names starting with "watchtower_" belong to the built-in MCP server; choose another name`, name)
 	}
 	switch kind {
@@ -495,6 +485,10 @@ func runConnectionsOAuth(cmd *cobra.Command, args []string) error {
 	}
 	if conn.Kind != "http" {
 		return fmt.Errorf("connection %d is %q; OAuth sign-in applies to http servers only", id, conn.Kind)
+	}
+	if externalmcp.ReservedName(conn.Name) {
+		recordReservedName(database, conn)
+		return fmt.Errorf("connection %d: %w — remove it and add it again under another name", id, errReservedName)
 	}
 
 	store := externalmcp.NewSecretStore(cfg.WorkspaceDir(), id)

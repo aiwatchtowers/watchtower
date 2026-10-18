@@ -936,3 +936,45 @@ func TestConnections_AddRefusesHeadersOverRemoteHTTP(t *testing.T) {
 	}
 	assert.ElementsMatch(t, []string{"Local", "Secure", "Open"}, names, "the refused add left no row behind")
 }
+
+// The reserved-name error is not a tool-policy error: enabling, a tool
+// policy change, a refresh or a sign-in never clears it, and none of them
+// starts the server to list it (board #556).
+func TestConnections_ReservedNameErrorStands(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	calls := stubToolsList(t, []db.ExternalTool{{Name: "get_item", Annotated: true, ReadOnlyHint: true}}, nil)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id, err := database.InsertExternalConnection(db.ExternalConnection{
+		Name: "watchtower__x", Kind: "http", URL: "https://example.com/mcp",
+	})
+	require.NoError(t, err)
+	cacheReadOnlyTool(t, database, id)
+	idArg := strconv.FormatInt(id, 10)
+
+	assertReserved := func(step string) {
+		t.Helper()
+		conn, err := database.GetExternalConnection(id)
+		require.NoError(t, err)
+		assert.Equal(t, "error", conn.Status, step)
+		assert.True(t, strings.HasPrefix(conn.Error, reservedReasonPrefix), "%s: %s", step, conn.Error)
+	}
+	_, stderr, err := runConnectionsSplit(t, "", "enable", idArg)
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "reserved")
+	assertReserved("enable")
+	_, err = runConnections(t, "", "tools", idArg, "--default")
+	require.NoError(t, err)
+	assertReserved("tools --default")
+	_, err = runConnections(t, "", "tools", idArg, "--allow", "get_item")
+	require.NoError(t, err)
+	assertReserved("tools --allow")
+	_, err = runConnections(t, "", "tools", idArg, "--refresh")
+	require.ErrorContains(t, err, "reserved")
+	assertReserved("tools --refresh")
+	_, err = runConnections(t, "", "oauth", idArg)
+	require.ErrorContains(t, err, "reserved")
+	assertReserved("oauth")
+	assert.Empty(t, *calls, "a reserved connection's server is never started")
+}

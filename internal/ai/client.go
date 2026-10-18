@@ -382,6 +382,12 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	}
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
+		// A resumed turn sends no system prompt of its own, but this
+		// launch's Quick Connections are mounted afresh: append their fence
+		// (connection names only, no owner data, so argv is fine).
+		if rule := ExternalDataRule(c.externalServers); rule != "" {
+			args = append(args, "--append-system-prompt", rule)
+		}
 	} else {
 		// Mounted Quick Connections' texts are fenced as external data.
 		systemPrompt = WithExternalDataRule(systemPrompt, c.externalServers)

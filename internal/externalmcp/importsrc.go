@@ -310,6 +310,13 @@ func finish(c ImportCandidate) ImportCandidate {
 		c.Note = fmt.Sprintf("renamed from %q: names hold only letters, digits, - and _", c.Name)
 		c.Name = safe
 	}
+	// A watchtower_ name is reserved (ReservedName): keep the server under
+	// a prefixed name. "watchtower" itself is Watchtower's own server, which
+	// the cmd layer skips.
+	if !strings.EqualFold(c.Name, "watchtower") && ReservedName(c.Name) {
+		c.Note = joinNote(c.Note, fmt.Sprintf(`renamed from %q: names starting with "watchtower_" are reserved for Watchtower's own tools`, c.Name))
+		c.Name = "ext-" + c.Name
+	}
 	if len(c.Secret.Env) == 0 {
 		c.Secret.Env = nil
 	}
