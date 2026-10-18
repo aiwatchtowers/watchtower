@@ -438,7 +438,7 @@ func TestPRReviewRounds_MorePRsThanTheSessionCap(t *testing.T) {
 		}
 	}
 	st := w.state(t, a)
-	if got, _ := st["last_round"].(string); got == lastRound {
+	if got, _ := st["last_round"].(string); got == "" || !mustParseTime(t, got).After(mustParseTime(t, lastRound)) {
 		t.Fatalf("last_round stayed %s after the round that reviewed the rest; want it advanced", got)
 	}
 	// last_round is round 2's start: only the marks of round 2's reviews
