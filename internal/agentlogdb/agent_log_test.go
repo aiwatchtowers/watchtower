@@ -378,3 +378,30 @@ func TestSessionTotals_InterruptNotAnOwnerTurn(t *testing.T) {
 	assert.Equal(t, 1, turns)
 	assert.Equal(t, 1, interrupts)
 }
+
+func TestUpsertAgentSubagent_WritesOnlyOnChange(t *testing.T) {
+	d := openTestDB(t)
+	fin := true
+	a := AgentSubagent{SessionUUID: "s1", AgentID: "a1", AgentType: "Plan", Depth: 1}
+	wrote, err := d.UpsertAgentSubagent(a)
+	require.NoError(t, err)
+	assert.False(t, wrote, "no session row: nothing written, no FK error")
+
+	ok, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 1}, ExpectOffset: -1,
+		Sessions:  []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", testWorkbenchID)},
+		Subagents: []AgentSubagent{a}})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	wrote, err = d.UpsertAgentSubagent(a)
+	require.NoError(t, err)
+	assert.False(t, wrote, "identical to the stored row: no write")
+
+	a.Finished = &fin
+	wrote, err = d.UpsertAgentSubagent(a)
+	require.NoError(t, err)
+	assert.True(t, wrote)
+	wrote, err = d.UpsertAgentSubagent(a)
+	require.NoError(t, err)
+	assert.False(t, wrote)
+}

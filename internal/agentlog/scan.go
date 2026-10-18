@@ -263,7 +263,8 @@ func scanFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bool, r
 	if unchanged {
 		res.FilesSkipped++
 		if tf.Subagent && tf.AgentID != "" { // the meta file can change without the transcript
-			return st.al.UpsertAgentSubagent(subagentRow(tf))
+			_, err := st.al.UpsertAgentSubagent(subagentRow(tf))
+			return err
 		}
 		return nil
 	}

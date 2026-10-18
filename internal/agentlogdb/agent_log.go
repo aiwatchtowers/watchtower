@@ -569,16 +569,35 @@ func (d *DB) StoredTranscripts(projectID int64) (int, error) {
 }
 
 // UpsertAgentSubagent stores one subagent's meta row on its own, for a
-// transcript that did not change but whose meta file did. A no-op when the
-// session row is absent (the row references it).
-func (d *DB) UpsertAgentSubagent(a AgentSubagent) error {
-	_, err := d.Exec(`INSERT INTO agent_log_subagents (session_uuid, agent_id, agent_type, depth, finished)
-		SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM agent_log_sessions WHERE session_uuid = ?)
+// transcript that did not change but whose meta file might have. It reads
+// first and writes only when the row differs from the stored one; it does
+// nothing when the session row is absent (the row references it). Reports
+// whether it wrote.
+func (d *DB) UpsertAgentSubagent(a AgentSubagent) (bool, error) {
+	var sessions int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM agent_log_sessions WHERE session_uuid = ?`, a.SessionUUID).Scan(&sessions); err != nil {
+		return false, fmt.Errorf("reading session for subagent: %w", err)
+	}
+	if sessions == 0 {
+		return false, nil
+	}
+	var typ string
+	var depth int
+	var finished sql.NullBool
+	err := d.QueryRow(`SELECT agent_type, depth, finished FROM agent_log_subagents WHERE session_uuid = ? AND agent_id = ?`,
+		a.SessionUUID, a.AgentID).Scan(&typ, &depth, &finished)
+	if err == nil && typ == a.AgentType && depth == a.Depth && finished.Valid == (a.Finished != nil) &&
+		(a.Finished == nil || finished.Bool == *a.Finished) {
+		return false, nil
+	}
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return false, fmt.Errorf("reading subagent: %w", err)
+	}
+	if _, err := d.Exec(`INSERT INTO agent_log_subagents (session_uuid, agent_id, agent_type, depth, finished) VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(session_uuid, agent_id) DO UPDATE SET agent_type = excluded.agent_type,
 		depth = excluded.depth, finished = excluded.finished`,
-		a.SessionUUID, a.AgentID, a.AgentType, a.Depth, a.Finished, a.SessionUUID)
-	if err != nil {
-		return fmt.Errorf("upserting subagent: %w", err)
+		a.SessionUUID, a.AgentID, a.AgentType, a.Depth, a.Finished); err != nil {
+		return false, fmt.Errorf("upserting subagent: %w", err)
 	}
-	return nil
+	return true, nil
 }
