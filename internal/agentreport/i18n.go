@@ -93,6 +93,40 @@ var msgs = map[string][2]string{
 		"Повторные чтения %s (%d+ раз в одной сессии) добавили %s; больше всего — %s, прочитан %s в сессии %s"},
 	"c3.action": {"Read the file once and keep notes, or read only the range you need.",
 		"Прочитай файл один раз и запиши заметки или читай только нужный диапазон."},
+
+	"t1.finding": {"%s: %s, mostly in %s, in %s; the failed calls took %s",
+		"%s: %s, чаще всего в %s, в %s; неудачные вызовы заняли %s"},
+	"t1.class.isolation_block":  {"Writes outside the session's worktree were blocked", "Запись вне worktree сессии заблокирована"},
+	"t1.class.unknown_agent":    {"Subagents of an unknown type", "Субагенты неизвестного типа"},
+	"t1.class.no_such_tool":     {"Calls of a tool that does not exist", "Вызовы несуществующего инструмента"},
+	"t1.class.input_invalid":    {"Tool calls with invalid arguments", "Вызовы инструментов с неверными аргументами"},
+	"t1.class.too_large":        {"Files too large to read whole", "Файлы слишком большие для чтения целиком"},
+	"t1.class.edit_no_match":    {"Edit found no match for old_string", "Edit не нашёл old_string"},
+	"t1.class.edit_multi_match": {"Edit found several matches for old_string", "Edit нашёл несколько совпадений old_string"},
+	"t1.class.sleep_blocked":    {"Blocked sleep commands", "Заблокированные команды sleep"},
+	"t1.class.agent_limit":      {"Subagents over the limit of concurrent ones", "Субагенты сверх лимита одновременных"},
+	"t1.action.isolation": {"Add the rule to the folder's workflow so agents stay in their worktree.",
+		"Добавь правило в workflow папки, чтобы агенты оставались в своём worktree."},
+	"t1.action.definition": {"Fix the skill or agent definition that names it.",
+		"Исправь скилл или описание агента, которые его называют."},
+	"t1.action.input": {"The tool's arguments are wrong — check the skill that calls it.",
+		"Аргументы инструмента неверны — проверь скилл, который его вызывает."},
+	"t1.action.large": {"Read large files with offset/limit.", "Читай большие файлы с offset/limit."},
+	"t1.action.edit": {"Re-read before editing; give more context in old_string.",
+		"Перечитывай файл перед правкой; давай больше контекста в old_string."},
+	"t1.action.sleep": {"Use background tasks and notifications instead of sleep.",
+		"Используй фоновые задачи и уведомления вместо sleep."},
+	"t1.action.agents": {"Start fewer subagents at once.", "Запускай меньше субагентов одновременно."},
+
+	"t2.finding": {"Auto mode or a permission rule blocked %s of %s, %s in all: %s",
+		"Auto mode или правило разрешений заблокировали %s %s, всего %s: %s"},
+	"t2.action": {"Allow them in .claude/settings.json.", "Разреши их в .claude/settings.json."},
+
+	"t3.label": {"%s, %s stopped", "%s, остановлено %s"},
+	"t3.finding": {"You stopped or rejected the agent %d+ times in %s (%s in all); the stopped work took %s",
+		"Ты останавливал или отклонял агента %d+ раз в %s (всего %s); остановленная работа заняла %s"},
+	"t3.action": {"Write the expectation into the folder rules or agree a plan before the agent starts.",
+		"Запиши ожидание в правила папки или согласуй план до старта агента."},
 }
 
 // f formats the message key in the language.
@@ -122,6 +156,8 @@ var nouns = map[string]struct {
 	"task.in":    {[2]string{"task", "tasks"}, [3]string{"задаче", "задачах", "задачах"}},
 	"file.of":    {[2]string{"file", "files"}, [3]string{"файла", "файлов", "файлов"}},
 	"token":      {[2]string{"token", "tokens"}, [3]string{"токен", "токена", "токенов"}},
+	"command.of": {[2]string{"command", "commands"}, [3]string{"команды", "команд", "команд"}},
+	"denial":     {[2]string{"denial", "denials"}, [3]string{"отказ", "отказа", "отказов"}},
 }
 
 // count renders "4 runs" / "4 запуска".

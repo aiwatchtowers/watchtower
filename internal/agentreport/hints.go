@@ -33,6 +33,9 @@ const (
 	SourceShareMin       = 0.10            // C2: a source above this share of the growth ...
 	SourceTokensMin      = 50_000          // C2: ... and above this many tokens
 	RepeatTokensMin      = 20_000          // C3: the repeated reads added more than this many tokens
+	ClassMin             = 5               // T1: failed calls of one error class
+	DenialMin            = 3               // T2: denied calls of one command
+	InterruptMin         = 3               // T3: interrupts and rejections in one session
 	evidenceMax          = 5               // evidence items a hint lists; the rest are counted in MoreEvidence
 )
 
@@ -87,10 +90,12 @@ type SessionView struct {
 
 // HintInput is the period the hints judge; Events are keyed by session uuid.
 // Targets (with their status history) and Now give H1 the targets' windows,
-// as in Tasks. Context feeds C1–C3. Lang is the language of the sentences.
+// as in Tasks. Context feeds C1–C3, Trouble T1–T3. Lang is the language of
+// the sentences.
 type HintInput struct {
 	Lang     Lang
 	Context  ContextReport
+	Trouble  TroubleReport
 	Sessions map[string]SessionView
 	Tasks    []TaskRow
 	Targets  []db.AgentReportTarget
@@ -98,7 +103,7 @@ type HintInput struct {
 	Now      time.Time
 }
 
-// Hints runs the rules H1–H7 and C1–C3 over the period and ranks what fired
+// Hints runs the rules H1–H7, C1–C3 and T1–T3 over the period and ranks what fired
 // by the estimate: time, then money, then tokens; a hint with no estimate is
 // dropped.
 func Hints(in HintInput) []Hint {
@@ -121,6 +126,9 @@ func Hints(in HintInput) []Hint {
 	all = append(all, instructionsHeavy(in)...)
 	all = append(all, bigSources(in)...)
 	all = append(all, repeatedReads(in)...)
+	all = append(all, failedClasses(in)...)
+	all = append(all, deniedCalls(in)...)
+	all = append(all, interrupted(in)...)
 
 	out := slices.DeleteFunc(all, func(h Hint) bool { return h.EstimateMS <= 0 && h.EstimateUSD <= 0 && h.EstimateTokens <= 0 })
 	for i := range out {

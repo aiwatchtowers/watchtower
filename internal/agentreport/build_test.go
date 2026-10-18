@@ -266,3 +266,36 @@ func TestBuildOverview_Performance(t *testing.T) {
 	t.Logf("BuildOverview over 150k events: %s", took)
 	assert.Less(t, took, time.Second)
 }
+
+// The overview measures the trouble of the v3 sessions only, with their
+// subagents, and feeds it to the hints.
+func TestBuildOverview_Trouble(t *testing.T) {
+	d, wb := buildDB(t)
+	at := func(s int) string { return t0.Add(time.Duration(s) * time.Second).Format(tsLayout) }
+	extra := []agentlogdb.AgentLogEvent{
+		{Kind: "owner_turn", Trigger: "interrupt", TS: at(41)},
+		{Kind: "owner_turn", Trigger: "interrupt", TS: at(50)},
+		{Kind: "owner_turn", Trigger: "interrupt", TS: at(60)},
+		{Kind: "api_error", ErrorClass: "429", TS: at(61)},
+	}
+	putSessionWith(t, d, wb, "new", 40, 3, extra)
+	putSessionWith(t, d, wb, "v2", 40, 2, extra)
+	no := false
+	for _, sid := range []string{"new", "v2"} {
+		_, err := d.al.UpsertAgentSubagent(agentlogdb.AgentSubagent{SessionUUID: sid, AgentID: "a1", Finished: &no})
+		require.NoError(t, err)
+	}
+
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0.Add(time.Hour), English)
+	require.NoError(t, err)
+	assert.Equal(t, 1, ov.Trouble.FactsSessions)
+	assert.Equal(t, 3, ov.Trouble.Interrupts)
+	assert.Equal(t, 1, ov.Trouble.RateLimited)
+	assert.Equal(t, 1, ov.Trouble.UnfinishedSubagents)
+	assert.Equal(t, []SessionCount{{"new", 3}}, ov.Trouble.InterruptSessions)
+	require.Len(t, hintsOf(ov.Hints, "T3"), 1)
+
+	det, err := BuildSession(d.DB, d.al, wb, "new", t0.Add(time.Hour), English)
+	require.NoError(t, err)
+	assert.Len(t, hintsOf(det.Hints, "T3"), 1, "the session's drill-down has the trouble hints too")
+}
