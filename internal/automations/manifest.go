@@ -53,6 +53,7 @@ var capabilitySpecs = map[string]capabilitySpec{
 	"calendar":    {verbs: readWrite, scope: scopeRequired},
 	"jira":        {verbs: readWrite, scope: scopeRequired, upperScope: true},
 	"confluence":  {verbs: readWrite, scope: scopeRequired, upperScope: true},
+	"linear":      {verbs: readWrite, scope: scopeRequired, upperScope: true},
 	"targets":     {verbs: readWrite},
 	"tracks":      {verbs: readWrite},
 	"ideas":       {verbs: readWrite},

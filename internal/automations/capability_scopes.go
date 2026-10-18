@@ -21,7 +21,7 @@ var errNoDB = errors.New("scope lookup needs the database")
 // could check PAY while the tool reads OPS. decodeScopeArgs refuses any key
 // that equals one of these names ignoring case without being byte-equal.
 var scopeArgNames = []string{
-	"project", "project_key", "key", "keys", "issue_keys", "board_id", "account", "account_id",
+	"project", "project_key", "team", "key", "keys", "issue_keys", "board_id", "account", "account_id",
 }
 
 // decodeArgs decodes a call's args as an object; empty or null is {}.
