@@ -254,7 +254,7 @@ name: PR review rounds
 trigger:
   schedule: "0 10,16 * * 1-5"
 permissions:
-  - shell:"gh pr list --state open --json number,title,url,author,updatedAt"
+  - shell:"gh pr list --state open --limit 200 --json number,title,url,author,updatedAt"
   - session:start
   - llm:light
 outputs: [report]
@@ -265,27 +265,36 @@ last round. Each session reviews the PR and files its findings as asks. A run
 starts at most 10 sessions; the rest wait for the next round.
 
 ```js
-const out = shell("gh pr list --state open --json number,title,url,author,updatedAt");
+const start = new Date().toISOString();
+const out = shell("gh pr list --state open --limit 200 --json number,title,url,author,updatedAt");
 const prs = JSON.parse(out.stdout || "[]");
 const last = state.get("last") || "";
-const done = state.get("done") || {}; // PR number -> when its session started
-const fresh = prs.filter(function (p) { return p.updatedAt > (done[p.number] || last); });
-const now = fresh.slice(0, 10); // session() starts at most 10 sessions per run
-now.forEach(function (p) {
-  session({
-    title: "Review PR #" + p.number,
-    prompt: "Review pull request " + p.url + " (" + p.title + "). File each finding as an ask to the owner.",
-    wait: "none"
-  });
-  done[p.number] = new Date().toISOString();
+// done: PR number -> when its review session ended (a review's own comments
+// are older than that, so they never bring the PR back).
+const done = state.get("done") || {};
+const fresh = prs.filter(function (p) {
+  const mark = done[p.number] || last;
+  return !mark || Date.parse(p.updatedAt) > Date.parse(mark);
 });
-output.report({ title: "PR round", body: now.length + " pull requests reviewed of " + prs.length + " open; " + (fresh.length - now.length) + " left for the next round." });
-if (now.length === fresh.length) {
-  state.set("last", new Date().toISOString());
-  state.set("done", {});
-} else {
-  state.set("done", done); // "last" stays, so the next round sees the rest
-}
+let started = 0, left = 0;
+fresh.forEach(function (p) {
+  if (started >= 10) { left++; return; } // session() starts at most 10 sessions per run
+  let s;
+  try {
+    s = session({ title: "Review PR #" + p.number, prompt: "Review pull request " + p.url + " (" + p.title + "). File each finding as an ask to the owner, then call finish_session." });
+    started++;
+  } catch (e) {
+    s = { status: "not started" };
+  }
+  if (s.status === "not started" || s.status === "error") left++; // retried next round
+  else done[p.number] = new Date().toISOString();
+});
+if (left === 0) state.set("last", start); // else "last" stays, so the next round sees the rest
+const mark = left > 0 ? last : start;
+const kept = {};
+prs.forEach(function (p) { if (done[p.number] && (!mark || Date.parse(done[p.number]) > Date.parse(mark))) kept[p.number] = done[p.number]; });
+state.set("done", kept);
+output.report({ title: "PR round", body: started + " pull requests reviewed of " + prs.length + " open; " + left + " left for the next round." });
 ```
 ````
 

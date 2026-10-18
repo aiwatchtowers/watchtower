@@ -20,7 +20,7 @@ import (
 // to end through the executor: FakeShell answers shell(), FakeSessionDesk
 // plays the Desktop for session().
 
-const prListCmd = "gh pr list --state open --json number,title,url,author,updatedAt"
+const prListCmd = "gh pr list --state open --limit 200 --json number,title,url,author,updatedAt"
 
 // buttonRecipes are the three button recipes: slug, label, command.
 var buttonRecipes = []struct{ slug, label, cmd string }{
@@ -219,9 +219,14 @@ func TestPRReviewRounds_E2E(t *testing.T) {
 		t.Fatalf("session steps = %+v; want two, in launch order", steps)
 	}
 
-	got, _ := w.state(t, a)["last_round"].(string)
-	if prev, _ := time.Parse(time.RFC3339, lastRound); got == "" || !mustParseTime(t, got).After(prev) {
-		t.Fatalf("last_round = %q; want advanced past %s", got, lastRound)
+	// #15's session ended with an error: it is retried next round, so
+	// last_round stays and only #14 is marked reviewed (board #562).
+	st := w.state(t, a)
+	if got, _ := st["last_round"].(string); got != lastRound {
+		t.Fatalf("last_round = %q; want it kept at %s while #15 waits for a retry", got, lastRound)
+	}
+	if rev, _ := st["reviewed"].(map[string]any); len(rev) != 1 || rev["14"] == nil {
+		t.Fatalf("reviewed = %v; want only #14", rev)
 	}
 	rep := w.onlyReport(t)
 	mustContain(t, "report title", rep.Title, "2 pull requests")
@@ -414,7 +419,7 @@ func TestPRReviewRounds_MorePRsThanTheSessionCap(t *testing.T) {
 	if got, _ := w.state(t, a)["last_round"].(string); got != lastRound {
 		t.Fatalf("last_round = %q after a round that left pull requests; want it kept at %s", got, lastRound)
 	}
-	mustContain(t, "round 1 report", w.onlyReport(t).Body, "2 more pull requests left for the next round")
+	mustContain(t, "round 1 report", w.onlyReport(t).Body, "2 pull requests left for the next round")
 
 	second := w.enqueue(t, a, db.TriggerSchedule)
 	if r := w.drive(t, second); r.Status != db.RunSucceeded {
@@ -436,7 +441,98 @@ func TestPRReviewRounds_MorePRsThanTheSessionCap(t *testing.T) {
 	if got, _ := st["last_round"].(string); got == lastRound {
 		t.Fatalf("last_round stayed %s after the round that reviewed the rest; want it advanced", got)
 	}
-	if rev, _ := st["reviewed"].(map[string]any); len(rev) != 0 {
-		t.Fatalf("reviewed = %v; want it cleared once last_round advanced", rev)
+	// last_round is round 2's start: only the marks of round 2's reviews
+	// (#11, #12) are newer, so round 1's are pruned.
+	if rev, _ := st["reviewed"].(map[string]any); len(rev) != 2 || rev["11"] == nil || rev["12"] == nil {
+		t.Fatalf("reviewed = %v; want only #11 and #12 once last_round advanced", rev)
 	}
+}
+
+// prsUpdated is gh's JSON for the pull requests nums, each updated at the
+// time in at (default: after lastRound, before the test runs).
+func prsUpdated(nums []int, at map[int]string) string {
+	items := make([]string, len(nums))
+	for i, n := range nums {
+		num := strconv.Itoa(n)
+		ts := at[n]
+		if ts == "" {
+			ts = "2026-10-14T09:00:00Z"
+		}
+		items[i] = `{"number": ` + num + `, "title": "Change ` + num + `", "url": "https://example.com/acme/pull/` + num +
+			`", "author": {"login": "colleague-a"}, "updatedAt": "` + ts + `"}`
+	}
+	return "[" + strings.Join(items, ",") + "]"
+}
+
+func prRange(from, to int) []int {
+	var out []int
+	for n := from; n <= to; n++ {
+		out = append(out, n)
+	}
+	return out
+}
+
+// sessionsPerPR counts the review sessions launched per pull request title.
+func (w *wbE2E) sessionsPerPR() map[string]int {
+	seen := map[string]int{}
+	for _, l := range w.desk.Launches() {
+		seen[strings.SplitN(strings.TrimPrefix(l.Title, "⚙ "), " review", 2)[0]]++
+	}
+	return seen
+}
+
+// round runs one scheduled round of a over the listed pull requests.
+func (w *wbE2E) round(t *testing.T, a db.Automation, list string) {
+	t.Helper()
+	w.shell.Result = automations.ShellResult{Stdout: list}
+	if r := w.drive(t, w.enqueue(t, a, db.TriggerSchedule)); r.Status != db.RunSucceeded {
+		t.Fatalf("round = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+	}
+}
+
+// TestPRReviewRounds_CarryOverEdgeCases (board #562): while a round leaves
+// pull requests for the next one, a reviewed pull request updated after its
+// review gets a second session, one that closed loses its mark, and one
+// whose session() threw is carried over.
+func TestPRReviewRounds_CarryOverEdgeCases(t *testing.T) {
+	total := 2*automations.MaxSessionCalls + 2
+	t.Run("updated after its review", func(t *testing.T) {
+		w := newWbE2E(t, automations.ShellResult{})
+		a := w.seedRecipe(t, "pr-review-rounds")
+		w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
+		w.round(t, a, prsUpdated(prRange(1, total), nil))
+		w.round(t, a, prsUpdated(prRange(1, total), map[int]string{3: "2099-01-01T00:00:00Z"}))
+		if n := w.sessionsPerPR()["PR #3"]; n != 2 {
+			t.Fatalf("PR #3 got %d sessions; want 2 (it changed after its review)", n)
+		}
+		if n := w.sessionsPerPR()["PR #4"]; n != 1 {
+			t.Fatalf("PR #4 got %d sessions; want 1", n)
+		}
+	})
+	t.Run("closed between rounds", func(t *testing.T) {
+		w := newWbE2E(t, automations.ShellResult{})
+		a := w.seedRecipe(t, "pr-review-rounds")
+		w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
+		w.round(t, a, prsUpdated(prRange(1, total), nil))
+		w.round(t, a, prsUpdated(prRange(2, total), nil)) // #1 closed; #21 and #22 still left over
+		rev, _ := w.state(t, a)["reviewed"].(map[string]any)
+		if rev["1"] != nil || rev["2"] == nil || rev["20"] == nil || len(rev) != 2*automations.MaxSessionCalls-1 {
+			t.Fatalf("reviewed = %v; want #2..#20, without the closed #1", rev)
+		}
+	})
+	t.Run("session() throws", func(t *testing.T) {
+		w := newWbE2E(t, automations.ShellResult{})
+		w.desk.Outcomes = []automationstest.SessionOutcome{{LaunchFailed: "the workbench folder is gone"}}
+		a := w.seedRecipe(t, "pr-review-rounds")
+		w.setState(t, a, `{"last_round":"`+lastRound+`"}`)
+		w.round(t, a, prsUpdated([]int{1, 2}, nil))
+		mustContain(t, "round 1 report", w.onlyReport(t).Body, "#1 Change 1 (https://example.com/acme/pull/1): not started")
+		if got, _ := w.state(t, a)["last_round"].(string); got != lastRound {
+			t.Fatalf("last_round = %q; want it kept while #1 waits for a retry", got)
+		}
+		w.round(t, a, prsUpdated([]int{1, 2}, nil))
+		if seen := w.sessionsPerPR(); seen["PR #1"] != 2 || seen["PR #2"] != 1 {
+			t.Fatalf("sessions = %v; want #1 tried again (2) and #2 once", seen)
+		}
+	})
 }
