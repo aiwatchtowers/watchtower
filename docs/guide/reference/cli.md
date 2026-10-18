@@ -62,6 +62,7 @@ Some commands are yours alone: `actions approve` and `apply`, `actions trust …
 - With the app closed, the command is refused with **open Watchtower to confirm this**.
 - A coding agent's shell (Claude Code, Codex, a workbench terminal) is refused outright, without a window.
 - One window at a time: a second command is refused with **another confirmation is already open**.
+- Only a properly signed Watchtower app is trusted to confirm. An unsigned or self-built app is refused, its own buttons included, unless both it and the CLI are development builds started with `WATCHTOWER_DEV_TRUST_UNSIGNED_DESKTOP=1`; even then the app must carry the identifier `com.watchtower.desktop`.
 
 This keeps an agent that was talked into running such a command from going ahead on its own. It does not stop a malicious program running as you, which could change Watchtower's data directly.
 
