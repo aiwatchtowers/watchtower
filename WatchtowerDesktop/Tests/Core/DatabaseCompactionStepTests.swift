@@ -21,34 +21,36 @@ final class DatabaseCompactionStepTests: XCTestCase {
         let step = makeStep(check: .success(.fixture(due: false)))
         await step.run { "/db" }
         XCTAssertEqual(calls.items, ["check"])
+        XCTAssertFalse(step.stoppedDaemon)
         XCTAssertEqual(step.phase, .finished)
         XCTAssertNil(step.notice)
     }
 
     func testDiskShortShowsNoticeAndSkips() async {
         let step = makeStep(check: .success(.fixture(
-            diskOk: false, freeDiskBytes: 2_000_000_000, needsDiskBytes: 6_800_000_000
+            diskOk: false, freeDiskBytes: 2_000_000_000, needsDiskBytes: 4_400_000_000
         )))
         await step.run { "/db" }
         XCTAssertEqual(calls.items, ["check"])
         XCTAssertEqual(step.phase, .finished)
-        let needs = ByteCountFormatter.string(fromByteCount: 6_800_000_000, countStyle: .file)
+        let needs = ByteCountFormatter.string(fromByteCount: 4_400_000_000, countStyle: .file)
         let available = ByteCountFormatter.string(fromByteCount: 2_000_000_000, countStyle: .file)
         XCTAssertEqual(
             step.notice,
             "Watchtower could not optimize its database: it needs \(needs) free, \(available) available."
         )
         XCTAssertEqual(
-            DatabaseCompactionStep.diskNotice(needs: 6_800_000_000, available: 2_000_000_000, size: enUS),
-            "Watchtower could not optimize its database: it needs 6.8 GB free, 2 GB available."
+            DatabaseCompactionStep.diskNotice(needs: 4_400_000_000, available: 2_000_000_000, size: enUS),
+            "Watchtower could not optimize its database: it needs 4.4 GB free, 2 GB available."
         )
     }
 
     func testDueStopsDaemonThenCompactsInOrder() async {
-        let step = makeStep(check: .success(.fixture(dbBytes: 3_400_000_000)))
+        let step = makeStep(check: .success(.fixture(dbBytes: 2_000_000_000)))
         let run = Task { await step.run { "/db" } }
         await until { step.phase != .idle && step.phase != .checking }
-        XCTAssertEqual(step.phase, .compacting(dbBytes: 3_400_000_000))
+        XCTAssertEqual(step.phase, .compacting(dbBytes: 2_000_000_000))
+        XCTAssertTrue(step.stoppedDaemon)
         XCTAssertTrue(step.isRunning)
         XCTAssertEqual(calls.items, ["check", "stopDaemon", "startCompact"])
         child.exit(status: 0, stdout: #"{"compacted":true,"reason":"migration:134","bytes_before":10,"bytes_after":5,"duration_ms":7}"#)
@@ -194,14 +196,49 @@ final class DatabaseCompactionStepTests: XCTestCase {
 
     func testTerminateForQuit() async {
         let step = makeStep(check: .success(.fixture()))
-        step.terminateForQuit()
+        await step.terminateForQuit()
         let run = await startCompacting(step)
-        step.terminateForQuit()
-        XCTAssertEqual(child.terminateCount, 1)
+        let quit = Task { await step.terminateForQuit() }
+        await until { self.child.terminateCount == 1 }
         child.exit(status: 4)
+        await quit.value
         await run.value
-        step.terminateForQuit()
+        XCTAssertEqual(child.killCount, 0, "the child exited within the grace")
+        await step.terminateForQuit()
         XCTAssertEqual(child.terminateCount, 1, "no-op once the child has exited")
+    }
+
+    /// A child still alive `quitGrace` after the quit's SIGTERM gets SIGKILL,
+    /// and the quit returns.
+    func testQuitKillsChildThatIgnoresTerminate() async {
+        let step = makeStep(check: .success(.fixture()))
+        let run = await startCompacting(step)
+        let quit = Task { await step.terminateForQuit() }
+        // The ticker's sleep and the grace's.
+        await until { self.child.terminateCount == 1 && self.sleeper.pendingCount == 2 }
+        XCTAssertEqual(child.killCount, 0)
+        sleeper.releaseAll()
+        await quit.value
+        XCTAssertEqual(child.killCount, 1)
+        XCTAssertTrue(logs.items.contains { $0.contains("did not exit") }, "\(logs.items)")
+        child.exit(status: 9, reason: .uncaughtSignal)
+        await run.value
+        XCTAssertEqual(step.phase, .finished)
+    }
+
+    /// The daemon stop runs through `serializeDaemonStop` (the app's start
+    /// queue).
+    func testDaemonStopRunsThroughSerializer() async {
+        let step = makeStep(check: .success(.fixture()))
+        let calls = calls
+        step.serializeDaemonStop = { stop in
+            calls.append("queued")
+            await stop()
+        }
+        let run = await startCompacting(step)
+        XCTAssertEqual(calls.items, ["check", "queued", "stopDaemon", "startCompact"])
+        child.exit(status: 0)
+        await run.value
     }
 
     func testQuitDuringCheckCancelsItAndStartsNothing() async {
@@ -210,9 +247,10 @@ final class DatabaseCompactionStepTests: XCTestCase {
         let run = Task { await step.run { "/db" } }
         await until { parked.isParked }
         XCTAssertTrue(step.isRunning)
-        step.terminateForQuit()
+        await step.terminateForQuit()
         await run.value
         XCTAssertTrue(parked.wasCancelled, "the check's task is cancelled, which terminates its child")
+        XCTAssertTrue(logs.items.contains("DB compaction check cancelled by quit"), "\(logs.items)")
         XCTAssertEqual(calls.items, ["check"], "no daemon stop, no compact after a quit")
         XCTAssertEqual(step.phase, .finished)
     }
@@ -222,9 +260,9 @@ final class DatabaseCompactionStepTests: XCTestCase {
         let box = StepBox()
         let step = DatabaseCompactionStep(
             cli: FakeCompactionCLI(calls: calls, result: .success(.fixture()), child: child, startFails: false),
-            stopDaemon: {
+            stopDaemon: { @MainActor in
                 calls.append("stopDaemon")
-                await MainActor.run { box.step?.terminateForQuit() }
+                await box.step?.terminateForQuit()
             },
             sleep: { _ in },
             log: { _ in }
@@ -233,6 +271,51 @@ final class DatabaseCompactionStepTests: XCTestCase {
         await step.run { "/db" }
         XCTAssertEqual(calls.items, ["check", "stopDaemon"])
         XCTAssertEqual(step.phase, .finished)
+    }
+
+    func testSignalExitLogsSignal() async {
+        let step = makeStep(check: .success(.fixture()))
+        let run = await startCompacting(step)
+        child.exit(status: 9, reason: .uncaughtSignal, stderr: "partial")
+        await run.value
+        XCTAssertTrue(logs.items.contains { $0.contains("killed by signal 9") && $0.contains("partial") }, "\(logs.items)")
+        XCTAssertNil(step.notice)
+    }
+
+    /// Exit 2 without a `disk` result line is not the disk skip: no notice,
+    /// stderr logged.
+    func testExit2WithoutDiskSkipShowsNoNotice() async {
+        let step = makeStep(check: .success(.fixture()))
+        let run = await startCompacting(step)
+        child.exit(status: 2, stderr: "flag parse error")
+        await run.value
+        XCTAssertNil(step.notice)
+        XCTAssertTrue(logs.items.contains { $0.contains("exit status 2") && $0.contains("flag parse error") }, "\(logs.items)")
+    }
+
+    func testExit4WithoutInterruptedSkipLogsStderr() async {
+        let step = makeStep(check: .success(.fixture()))
+        let run = await startCompacting(step)
+        child.exit(status: 4, stdout: #"{"compacted":false,"skipped":"disk"}"#, stderr: "odd")
+        await run.value
+        XCTAssertNil(step.notice)
+        XCTAssertTrue(logs.items.contains { $0.contains("exit status 4") && $0.contains("odd") }, "\(logs.items)")
+    }
+
+    func testExit0WithoutResultLineLogsStderr() async {
+        let step = makeStep(check: .success(.fixture()))
+        let run = await startCompacting(step)
+        child.exit(status: 0, stderr: "warning: something")
+        await run.value
+        XCTAssertTrue(logs.items.contains { $0.contains("exit 0 without a result line") && $0.contains("warning: something") })
+    }
+
+    func testCheckpointBusyIsLogged() async {
+        let step = makeStep(check: .success(.fixture()))
+        let run = await startCompacting(step)
+        child.exit(status: 0, stdout: #"{"compacted":true,"bytes_before":10,"bytes_after":9,"checkpoint_busy":true}"#)
+        await run.value
+        XCTAssertTrue(logs.items.contains { $0.contains("reclaimed at the next checkpoint") }, "\(logs.items)")
     }
 
     // MARK: - Strings
@@ -246,12 +329,12 @@ final class DatabaseCompactionStepTests: XCTestCase {
 
     func testProgressLine() {
         XCTAssertEqual(
-            DatabaseCompactionStep.progressLine(dbBytes: 3_400_000_000, elapsedSeconds: 42, size: enUS),
-            "Optimizing database — 3.4 GB, 0:42"
+            DatabaseCompactionStep.progressLine(dbBytes: 2_000_000_000, elapsedSeconds: 42, size: enUS),
+            "Optimizing database — 2 GB, 0:42"
         )
-        let size = ByteCountFormatter.string(fromByteCount: 3_400_000_000, countStyle: .file)
+        let size = ByteCountFormatter.string(fromByteCount: 2_000_000_000, countStyle: .file)
         XCTAssertEqual(
-            DatabaseCompactionStep.progressLine(dbBytes: 3_400_000_000, elapsedSeconds: 42),
+            DatabaseCompactionStep.progressLine(dbBytes: 2_000_000_000, elapsedSeconds: 42),
             "Optimizing database — \(size), 0:42"
         )
     }
@@ -389,9 +472,14 @@ private final class FakeChild: CompactionChild, @unchecked Sendable {
         lock.withLock { kills += 1 }
     }
 
-    func exit(status: Int32, stdout: String = "") {
+    func exit(
+        status: Int32,
+        reason: Process.TerminationReason = .exit,
+        stdout: String = "",
+        stderr: String = ""
+    ) {
         let resume: CheckedContinuation<CompactionExit, Never>?
-        let exit = CompactionExit(status: status, stdout: Data(stdout.utf8), stderr: "")
+        let exit = CompactionExit(status: status, reason: reason, stdout: Data(stdout.utf8), stderr: stderr)
         lock.lock()
         if result != nil {
             lock.unlock()

@@ -7,7 +7,7 @@ import Observation
 /// numbers (`needs_disk_bytes` = 2 × `db_bytes`).
 package struct CompactionCheck: Decodable, Equatable, Sendable {
     package let due: Bool
-    /// `migration:<version>`, `freelist`, `schema_pending` or empty.
+    /// `migration:<version>`, `freelist`, `schema_pending`, `gave_up` or empty.
     package let reason: String
     package let dbBytes: Int64
     package let walBytes: Int64
@@ -58,6 +58,9 @@ package struct CompactionRunOutput: Decodable, Equatable, Sendable {
     /// The failure cap was reached: the CLI skips compaction until the next
     /// app version. Absent on every other result.
     package let gaveUp: Bool
+    /// The final checkpoint could not pass a reader: part of the space is
+    /// reclaimed at the next checkpoint. Absent reads false.
+    package let checkpointBusy: Bool
 
     enum CodingKeys: String, CodingKey {
         case compacted, skipped, reason, error, failures
@@ -65,6 +68,7 @@ package struct CompactionRunOutput: Decodable, Equatable, Sendable {
         case bytesAfter = "bytes_after"
         case durationMs = "duration_ms"
         case gaveUp = "gave_up"
+        case checkpointBusy = "checkpoint_busy"
     }
 
     package init(from decoder: any Decoder) throws {
@@ -78,17 +82,21 @@ package struct CompactionRunOutput: Decodable, Equatable, Sendable {
         error = try container.decodeIfPresent(String.self, forKey: .error)
         failures = try container.decodeIfPresent(Int.self, forKey: .failures)
         gaveUp = try container.decodeIfPresent(Bool.self, forKey: .gaveUp) ?? false
+        checkpointBusy = try container.decodeIfPresent(Bool.self, forKey: .checkpointBusy) ?? false
     }
 }
 
-/// A finished `db compact` child.
+/// A finished `db compact` child. `status` is the exit code, or the signal
+/// number when `reason` is `.uncaughtSignal`.
 package struct CompactionExit: Sendable {
     package let status: Int32
+    package let reason: Process.TerminationReason
     package let stdout: Data
     package let stderr: String
 
-    package init(status: Int32, stdout: Data, stderr: String) {
+    package init(status: Int32, reason: Process.TerminationReason = .exit, stdout: Data, stderr: String) {
         self.status = status
+        self.reason = reason
         self.stdout = stdout
         self.stderr = stderr
     }
@@ -147,6 +155,15 @@ package final class DatabaseCompactionStep {
     package private(set) var elapsedSeconds = 0
     /// A non-blocking notice for the owner, shown once per launch.
     package private(set) var notice: String?
+    /// The step stopped the daemon: a launch that then cannot open the
+    /// database brings it back (`AppState.restoreDaemonStoppedForCompaction`).
+    @ObservationIgnored package private(set) var stoppedDaemon = false
+    /// Runs the daemon stop. The app routes it through its start queue, so a
+    /// start already running finishes before the stop; the default runs it
+    /// directly.
+    @ObservationIgnored package var serializeDaemonStop: @MainActor (
+        _ stop: @escaping @Sendable () async -> Void
+    ) async -> Void = { await $0() }
 
     package var isRunning: Bool {
         switch phase {
@@ -162,6 +179,8 @@ package final class DatabaseCompactionStep {
 
     package static let skipAfterSeconds = 15
     package static let killAfterSkipSeconds = 10
+    /// How long a quit waits for the child to exit on SIGTERM before SIGKILL.
+    package static let quitGrace: Duration = .seconds(3)
     package static let subtitle = "This happens once after an update."
     package static let gaveUpNotice =
         "Watchtower could not optimize its database after 3 attempts. It will try again after the next update."
@@ -178,6 +197,8 @@ package final class DatabaseCompactionStep {
     /// `elapsedSeconds` when Skip sent SIGTERM; nil until then.
     @ObservationIgnored private var skipRequestedAt: Int?
     @ObservationIgnored private var killed = false
+    /// Quits waiting for the running child to exit, by id.
+    @ObservationIgnored private var exitWaiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
 
     package init(
         cli: any CompactionCLI,
@@ -196,7 +217,8 @@ package final class DatabaseCompactionStep {
     package func run(resolveDBPath: () throws -> String) async {
         guard phase == .idle else { return }
         defer { phase = .finished }
-        // No workspace database yet (fresh install): nothing to compact.
+        // No workspace database yet (fresh install): nothing to compact. The
+        // caller logs any other resolve error.
         guard (try? resolveDBPath()) != nil else { return }
 
         phase = .checking
@@ -206,6 +228,9 @@ package final class DatabaseCompactionStep {
         defer { self.checkTask = nil }
         do {
             check = try await checkTask.value
+        } catch is CancellationError {
+            log("DB compaction check cancelled by quit")
+            return
         } catch {
             log("DB compaction check failed, skipping: \(error.localizedDescription)")
             return
@@ -218,7 +243,8 @@ package final class DatabaseCompactionStep {
             return
         }
 
-        await stopDaemon()
+        await serializeDaemonStop(stopDaemon)
+        stoppedDaemon = true
         guard !quitRequested else { return }
         let child: any CompactionChild
         do {
@@ -233,6 +259,7 @@ package final class DatabaseCompactionStep {
         let exit = await child.waitForExit()
         ticker.cancel()
         self.child = nil
+        resumeExitWaiters(exited: true)
         handle(exit, check: check)
     }
 
@@ -250,13 +277,38 @@ package final class DatabaseCompactionStep {
 
     /// The app is quitting: cancels a running `--check` (its child is
     /// terminated) and SIGTERMs a running compaction child, so neither
-    /// outlives the app, and nothing more is started; no-op when the step
-    /// is not running.
-    package func terminateForQuit() {
+    /// outlives the app, and nothing more is started. Returns once the child
+    /// has exited, or SIGKILLs it after `quitGrace`. No-op when the step is
+    /// not running.
+    package func terminateForQuit() async {
         guard isRunning else { return }
         quitRequested = true
         checkTask?.cancel()
-        child?.terminate()
+        guard let child else { return }
+        child.terminate()
+        guard await !childExits(within: Self.quitGrace) else { return }
+        log("DB compaction: the child did not exit within \(Self.quitGrace) of SIGTERM at quit, killing it")
+        child.kill()
+    }
+
+    /// Whether the running child exits before `grace` elapses (the injected
+    /// sleep).
+    private func childExits(within grace: Duration) async -> Bool {
+        guard child != nil else { return true }
+        let id = UUID()
+        return await withCheckedContinuation { continuation in
+            exitWaiters[id] = continuation
+            Task { @MainActor [weak self, sleep] in
+                await sleep(grace)
+                self?.exitWaiters.removeValue(forKey: id)?.resume(returning: false)
+            }
+        }
+    }
+
+    private func resumeExitWaiters(exited: Bool) {
+        let waiters = exitWaiters.values
+        exitWaiters = [:]
+        waiters.forEach { $0.resume(returning: exited) }
     }
 
     package func dismissNotice() {
@@ -273,7 +325,7 @@ package final class DatabaseCompactionStep {
             if let skipAt = skipRequestedAt, !killed,
                elapsedSeconds - skipAt > Self.killAfterSkipSeconds {
                 killed = true
-                log("DB compaction: the child ignored SIGTERM for \(Self.killAfterSkipSeconds) s, killing it")
+                log("DB compaction: the child ignored SIGTERM for more than \(Self.killAfterSkipSeconds) s, killing it")
                 child?.kill()
             }
         }
@@ -290,28 +342,41 @@ package final class DatabaseCompactionStep {
             log("DB compaction: no result line (exit \(exit.status)): \(error.localizedDescription)")
         }
         let stderr = CLILog.detail(exit.stderr)
-        switch exit.status {
-        case 0:
-            if let output, output.compacted {
+        if exit.reason == .uncaughtSignal {
+            log("DB compaction: the child was killed by signal \(exit.status): \(stderr)")
+            return
+        }
+        // Exits 2–5 count only when the result line names the same skip; any
+        // other combination is logged with stderr.
+        switch (exit.status, output?.skipped) {
+        case (0, _):
+            guard let output else {
+                log("DB compaction: exit 0 without a result line: \(stderr)")
+                return
+            }
+            if output.compacted {
                 let sizes = "\(output.bytesBefore ?? 0) → \(output.bytesAfter ?? 0) bytes"
                 log("DB compacted (\(output.reason ?? "")): \(sizes) in \(output.durationMs ?? 0) ms")
+                if output.checkpointBusy {
+                    log("DB compaction: the final checkpoint was busy; the space is reclaimed at the next checkpoint")
+                }
             } else {
-                log("DB compaction: nothing done (\(output?.skipped ?? "no result line"))")
+                log("DB compaction: nothing done (\(output.skipped ?? "no reason given"))")
             }
-        case 1:
+        case (1, _):
             log("DB compaction failed: \(output?.error ?? stderr)")
             if output?.gaveUp ?? false { notice = Self.gaveUpNotice }
-        case 2:
+        case (2, "disk"):
             log("DB compaction skipped for disk space")
             notice = Self.diskNotice(needs: check.needsDiskBytes, available: check.freeDiskBytes)
-        case 3:
+        case (3, "daemon_running"):
             log("DB compaction skipped: the daemon is still running")
-        case 4:
+        case (4, "interrupted"):
             log("DB compaction interrupted; it is due again next launch")
-        case 5:
+        case (5, "schema_pending"):
             log("DB compaction skipped: schema migrations are pending")
         default:
-            log("DB compaction ended with exit status \(exit.status): \(stderr)")
+            log("DB compaction ended with exit status \(exit.status) (\(output?.skipped ?? "no result line")): \(stderr)")
         }
     }
 

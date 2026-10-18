@@ -304,7 +304,7 @@ final class TrayAppDelegate: NSObject, NSApplicationDelegate {
         _ app: AppState,
         stop: () async -> Void = { await DaemonManager.stopDaemonBounded() }
     ) async {
-        app.terminateDatabaseCompactionForQuit()
+        await app.terminateDatabaseCompactionForQuit()
         await stop()
     }
 

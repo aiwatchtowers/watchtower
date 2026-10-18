@@ -91,6 +91,7 @@ private final class ProcessCompactionChild: CompactionChild, @unchecked Sendable
         await ProcessPipes.offPool { [process] in process.waitUntilExit() }
         return CompactionExit(
             status: process.terminationStatus,
+            reason: process.terminationReason,
             stdout: stdout,
             stderr: String(data: stderr, encoding: .utf8) ?? ""
         )

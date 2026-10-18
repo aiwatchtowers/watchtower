@@ -435,12 +435,13 @@ final class AppState {
 
     /// The launch's compaction step between the migration and the open (#850).
     let databaseCompaction: DatabaseCompactionStep
-
     var databaseCompactionInProgress: Bool { databaseCompaction.isRunning }
 
     /// A quit landed before or during the compaction step: the launch skips
     /// the step and starts no daemon (`terminateDatabaseCompactionForQuit`).
     @ObservationIgnored var quitDuringCompaction = false
+    /// The launch's migrate → compact → open steps run (`daemonStartBlocked`).
+    @ObservationIgnored var launchDatabaseStepsRunning = false
 
     /// Test seams for the two steps of finishing onboarding that spawn CLI
     /// children or ask macOS for permissions; nil runs the real thing
@@ -481,15 +482,11 @@ final class AppState {
         peopleRoster = PeopleRosterLoad(run: peopleRosterRun)
         self.migrateDatabase = migrateDatabase
         self.openDatabase = openDatabase
-        self.databaseCompaction = databaseCompaction ?? DatabaseCompactionStep(
-            cli: ProcessCompactionCLI(),
-            stopDaemon: { await DaemonManager.stopDaemonBounded() },
-            sleep: { try? await Task.sleep(for: $0) },
-            log: { NSLog("[Watchtower] %@", $0) }
-        )
+        self.databaseCompaction = databaseCompaction ?? .production()
         // A daemon that came up after all (a later poll, a Settings start)
         // takes the "did not start" banner with it.
         wireDaemonStartQueue()
+        wireDatabaseCompaction()
         daemonManager.onRunningChanged = { [weak self] running in
             guard running else { return }
             self?.daemonStartFailure = nil

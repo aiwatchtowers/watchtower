@@ -98,9 +98,13 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
         await until { appState.daemonStartChain != beforeDisconnect }
         XCTAssertTrue(appState.isStartingDaemon, "the banner Start is queued, not refused")
 
+        // The step's daemon stop queues behind the blocker and the starts.
         let launch = Task { await appState.migrateCompactOpen() }
-        await until { appState.databaseCompactionInProgress && self.calls.items.contains("startCompact") }
+        await until { self.calls.items.contains("check") && appState.databaseCompactionInProgress }
+        XCTAssertFalse(calls.items.contains("stopDaemon"), "the stop waits for the start already running")
         blocker.releaseAll()
+        await until { self.calls.items.contains("startCompact") }
+        XCTAssertEqual(calls.items, ["migrate", "check", "stopDaemon", "startCompact"])
         try await restart.value
         let disconnected = await disconnect.value
         await appState.daemonStartChain?.value
@@ -112,6 +116,61 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
 
         child.exit(status: 0)
         _ = await launch.value
+    }
+
+    /// The gate is up from before the migration: a restart asked for while
+    /// `db migrate` runs starts no daemon during the step either.
+    func testRestartDuringMigrateIsDeferred() async throws {
+        let migrateGate = DispatchSemaphore(value: 0)
+        // Never leave the migrate thread parked, even on a failed assertion.
+        defer { migrateGate.signal() }
+        let made = makeAppState(due: true, migrateGate: migrateGate)
+        let appState = made.appState
+        let launch = Task { await appState.migrateCompactOpen() }
+        await until { self.calls.items.contains("migrate") }
+        XCTAssertTrue(appState.daemonStartBlocked("test"))
+
+        try await appState.restartOnChain(made.daemon)
+        appState.bringUpDaemonInBackground(startOnly: false)
+        migrateGate.signal()
+        await until { appState.databaseCompactionInProgress && self.calls.items.contains("startCompact") }
+        await appState.daemonStartChain?.value
+        XCTAssertEqual(made.daemon.restarts, 0)
+        XCTAssertEqual(made.daemon.starts, 0)
+
+        child.exit(status: 0)
+        _ = await launch.value
+        XCTAssertFalse(appState.daemonStartBlocked("test"), "the gate drops once the steps end")
+    }
+
+    // MARK: - Daemon restore
+
+    /// The step stopped the daemon and the database then did not open: a
+    /// finished install brings the daemon back.
+    func testOpenFailureAfterStopRestoresDaemon() async {
+        let made = makeAppState(due: true)
+        made.appState.onboarding.goTo(.complete)
+        await launchThroughOpenFailure(made.appState)
+        await made.appState.daemonStartChain?.value
+        XCTAssertTrue(made.appState.databaseCompaction.stoppedDaemon)
+        XCTAssertEqual(made.daemon.starts, 1)
+    }
+
+    func testOpenFailureDuringOnboardingDoesNotStartDaemon() async {
+        let made = makeAppState(due: true)
+        await launchThroughOpenFailure(made.appState)
+        await made.appState.daemonStartChain?.value
+        XCTAssertTrue(made.appState.needsOnboarding)
+        XCTAssertEqual(made.daemon.starts, 0)
+    }
+
+    func testOpenFailureWithoutStopDoesNotStartDaemon() async {
+        let made = makeAppState(due: false)
+        made.appState.onboarding.goTo(.complete)
+        await launchThroughOpenFailure(made.appState)
+        await made.appState.daemonStartChain?.value
+        XCTAssertFalse(made.appState.databaseCompaction.stoppedDaemon)
+        XCTAssertEqual(made.daemon.starts, 0)
     }
 
     func testDaemonStartsWorkAgainAfterStep() async {
@@ -172,13 +231,13 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
     // MARK: - Splash and notice
 
     func testSplashShowsProgressAndSkipFrom15Seconds() async throws {
-        let made = makeAppState(due: true, dbBytes: 3_400_000_000)
+        let made = makeAppState(due: true, dbBytes: 2_000_000_000)
         let step = made.appState.databaseCompaction
         let launch = Task { await made.appState.migrateCompactOpen() }
         await until { self.sleeper.pendingCount == 1 }
 
         let splash = SplashView(compaction: step)
-        let line = DatabaseCompactionStep.progressLine(dbBytes: 3_400_000_000, elapsedSeconds: 0)
+        let line = DatabaseCompactionStep.progressLine(dbBytes: 2_000_000_000, elapsedSeconds: 0)
         XCTAssertNoThrow(try splash.inspect().find(text: line))
         XCTAssertNoThrow(try splash.inspect().find(text: "This happens once after an update."))
         XCTAssertThrowsError(try splash.inspect().find(button: "Skip for now"))
@@ -207,10 +266,23 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
 
     // MARK: - Helpers
 
+    /// `initialize()`'s path through `migrateCompactOpen` when the (fake)
+    /// open throws; a due step's child exits 0.
+    private func launchThroughOpenFailure(_ appState: AppState) async {
+        let launch = Task { await appState.migrateCompactOpen() }
+        await until { appState.databaseCompaction.phase == .finished || self.calls.items.contains("startCompact") }
+        child.exit(status: 0)
+        guard case .failure(let error) = await launch.value else {
+            return XCTFail("the fake open throws")
+        }
+        await appState.handleLaunchDatabaseFailure(error)
+    }
+
     private func makeAppState(
         due: Bool,
         dbBytes: Int64 = 1_000,
-        calls: LaunchLog? = nil
+        calls: LaunchLog? = nil,
+        migrateGate: DispatchSemaphore? = nil
     ) -> (appState: AppState, daemon: FakeDaemon) {
         let calls = calls ?? self.calls
         let sleeper = sleeper
@@ -223,7 +295,10 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
             log: { _ in }
         )
         let appState = AppState.isolated(
-            migrateDatabase: { calls.append("migrate") },
+            migrateDatabase: {
+                calls.append("migrate")
+                migrateGate?.wait()
+            },
             openDatabase: {
                 calls.append("open")
                 throw CocoaError(.fileNoSuchFile)
