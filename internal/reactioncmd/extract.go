@@ -70,6 +70,42 @@ func extractOwnerReactions(items []slack.ReactedItem, ownerRawID string, dict ma
 	return out
 }
 
+// ownerMessageReactions reduces a reactions.list result to every ledger key
+// the owner's own reactions on message items occupy, dictionary or not: the
+// same item and owner rules as extractOwnerReactions minus the dictionary
+// filter. The first-poll seed records these as history, and the
+// slack.reaction_added events are published from them. Deliberately separate
+// from extractOwnerReactions rather than a dictionary-optional branch on it:
+// the two want different outputs (bare keys vs dispatchable candidates
+// carrying message context).
+func ownerMessageReactions(items []slack.ReactedItem, ownerRawID string, accountID int64) []db.OwnerReaction {
+	var out []db.OwnerReaction
+	for _, it := range items {
+		if it.Type != "message" || it.Message == nil {
+			continue
+		}
+		ts := it.Message.Timestamp
+		if ts == "" {
+			ts = it.Timestamp
+		}
+		if ts == "" || it.Channel == "" {
+			continue
+		}
+		for _, r := range it.Reactions {
+			if !reactorIsOwner(r.Users, ownerRawID) {
+				continue
+			}
+			out = append(out, db.OwnerReaction{
+				AccountID: accountID,
+				ChannelID: watchtowerslack.Namespace(accountID, it.Channel),
+				MessageTS: ts,
+				Emoji:     r.Name,
+			})
+		}
+	}
+	return out
+}
+
 // reactorIsOwner reports whether the owner is among a reaction's users.
 // ListUserReactions sets Full=true, so the users array is authoritative. An
 // item is returned because the owner reacted to it with SOME emoji, but its

@@ -34,7 +34,7 @@ func init() {
 }
 
 func runAutomationsSessionLaunched(cmd *cobra.Command, _ []string) error {
-	if err := refuseUnderAgent("report a session() step's session"); err != nil {
+	if err := requireOwner("report a session() step's session"); err != nil {
 		return err
 	}
 	if autoFlags.Step <= 0 || autoFlags.Session <= 0 {
@@ -48,7 +48,7 @@ func runAutomationsSessionLaunched(cmd *cobra.Command, _ []string) error {
 }
 
 func runAutomationsSessionEnded(cmd *cobra.Command, _ []string) error {
-	if err := refuseUnderAgent("end a session() step"); err != nil {
+	if err := requireOwner("end a session() step"); err != nil {
 		return err
 	}
 	if autoFlags.Step <= 0 {

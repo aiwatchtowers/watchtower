@@ -9,11 +9,16 @@ import WatchtowerTestSupport
 /// fail again on every retry.
 @MainActor
 final class TargetsViewModelMissingTargetTests: XCTestCase {
+    /// A synchronous read: in an async test GRDB's async `read` overload
+    /// would otherwise win inside an `XCTUnwrap` autoclosure.
+    private func fetchTarget(_ manager: DatabaseManager, id: Int) throws -> Target? {
+        try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: id) }
+    }
 
-    func testEditOfATargetDeletedElsewhere_ReportsIt_AndDropsTheRow() throws {
+    func testEditOfATargetDeletedElsewhere_ReportsIt_AndDropsTheRow() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let id = try manager.dbPool.write { db in
+        let id = try await manager.dbPool.write { db in
             try TargetQueries.create(db, text: "gone soon", periodStart: "2026-09-01", periodEnd: "2026-09-30")
         }
         let vm = TargetsViewModel(dbManager: manager)
@@ -22,9 +27,9 @@ final class TargetsViewModelMissingTargetTests: XCTestCase {
 
         // No `load()` after this delete: the VM's observation never sees
         // another process's write, which is exactly the case under test.
-        try manager.dbPool.write { db in try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [id]) }
+        try await manager.dbPool.write { db in try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [id]) }
 
-        vm.updatePriority(stale, to: "high")
+        await vm.updatePriority(stale, to: "high")
 
         XCTAssertEqual(
             vm.errorMessage,
@@ -35,13 +40,14 @@ final class TargetsViewModelMissingTargetTests: XCTestCase {
 
     // MARK: - Missing parent / link endpoint (#145)
 
-    func testCreateChildUnderAParentDeletedElsewhere_NamesTheParent() throws {
+    func testCreateChildUnderAParentDeletedElsewhere_NamesTheParent() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let parent = try makeStaleTarget(manager, text: "parent")
         let vm = TargetsViewModel(dbManager: manager)
 
-        XCTAssertNil(vm.createChild(parent, text: "child", intent: "", priority: "medium"))
+        let childID = await vm.createChild(parent, text: "child", intent: "", priority: "medium")
+        XCTAssertNil(childID)
 
         XCTAssertEqual(
             vm.errorMessage,
@@ -49,16 +55,16 @@ final class TargetsViewModelMissingTargetTests: XCTestCase {
         )
     }
 
-    func testLinkFromATargetDeletedElsewhere_NamesTheSource() throws {
+    func testLinkFromATargetDeletedElsewhere_NamesTheSource() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let other = try manager.dbPool.write { db in
+        let other = try await manager.dbPool.write { db in
             try TargetQueries.create(db, text: "other", periodStart: "2026-09-01", periodEnd: "2026-09-30")
         }
         let source = try makeStaleTarget(manager, text: "source")
         let vm = TargetsViewModel(dbManager: manager)
 
-        vm.createLink(from: source.id, to: other, relation: "blocks")
+        await vm.createLink(from: source.id, to: other, relation: "blocks")
 
         XCTAssertEqual(
             vm.errorMessage,
@@ -68,33 +74,33 @@ final class TargetsViewModelMissingTargetTests: XCTestCase {
 
     /// The executor's no-op short-circuits ("already done") used to answer
     /// from the caller's stale snapshot and report success for a deleted row.
-    func testExecutorNoOpOnATargetDeletedElsewhere_Fails() throws {
+    func testExecutorNoOpOnATargetDeletedElsewhere_Fails() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let stale = try makeStaleTarget(manager, text: "gone", subItems: #"[{"text":"a","done":true}]"#)
         let vm = TargetsViewModel(dbManager: manager)
         let action = ProposedAction(type: .toggleSubItem, reason: "r", index: 0, match: "a", done: true)
 
-        XCTAssertThrowsError(try TargetActionExecutor.apply(action, target: stale, viewModel: vm)) {
+        await assertThrowsAsync({ try await TargetActionExecutor.apply(action, target: stale, viewModel: vm) }, {
             XCTAssertEqual($0.localizedDescription, TargetNotFoundError(id: stale.id).localizedDescription)
-        }
+        })
     }
 
-    func testTargetChat_OnATargetDeletedElsewhere_FailsTheCard_AndStartsNoTurn() throws {
+    func testTargetChat_OnATargetDeletedElsewhere_FailsTheCard_AndStartsNoTurn() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        let live = try manager.dbPool.write { db in
+        let live = try await manager.dbPool.write { db in
             try TargetQueries.create(
                 db, text: "task", periodStart: "2026-09-01", periodEnd: "2026-09-30",
                 subItems: #"[{"text":"a","done":true}]"#
             )
         }
-        let child = try manager.dbPool.write { db in
+        let child = try await manager.dbPool.write { db in
             try TargetQueries.create(db, text: "sub-task", periodStart: "2026-09-01", periodEnd: "2026-09-30", parentId: live)
         }
-        let target = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: live) })
+        let target = try XCTUnwrap(fetchTarget(manager, id: live))
         let mock = MockClaudeService()
-        let conversationID = try manager.dbPool.write { db -> Int64 in
+        let conversationID = try await manager.dbPool.write { db -> Int64 in
             try ChatConversationQueries.create(
                 db, title: "Task", contextType: "target", contextID: String(target.id)
             ).id
@@ -103,7 +109,7 @@ final class TargetsViewModelMissingTargetTests: XCTestCase {
             target: target, viewModel: TargetsViewModel(dbManager: manager), dbManager: manager,
             conversationID: conversationID, aiService: mock, toolsAvailable: true
         )
-        try manager.dbPool.write { db in try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [live]) }
+        try await manager.dbPool.write { db in try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [live]) }
 
         let card = TargetActionCard(
             messageID: UUID(),
@@ -118,12 +124,13 @@ final class TargetsViewModelMissingTargetTests: XCTestCase {
             state: .pending
         )
         chat.actionCards = [card, childCard]
-        chat.approve(card)
-        chat.approve(childCard)
+        await chat.approve(card)
+        await chat.approve(childCard)
 
         let gone = TargetActionCard.State.failed(TargetNotFoundError(id: live).localizedDescription)
         XCTAssertEqual(chat.actionCards.map(\.state), [gone, gone])
-        XCTAssertEqual(try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: child)?.status }, "todo")
+        let fetchByIDResult = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: child)?.status }
+        XCTAssertEqual(fetchByIDResult, "todo")
         XCTAssertTrue(chat.targetGone)
         XCTAssertEqual(chat.errorMessage, "This task no longer exists — it may have been deleted.")
         XCTAssertFalse(chat.isStreaming, "no follow-up turn about a deleted task")

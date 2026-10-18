@@ -49,6 +49,28 @@ struct CLIRunnerTests {
         #expect(out.contains("hello"))
     }
 
+    /// AGENT-07 (board #568): the Desktop's own launch is the owner's, so its
+    /// owner-only gesture is confirmed without a window — while the child
+    /// runs; the grant goes when it exits (F9).
+    @Test("ProcessCLIRunner registers the child's argv and pid while it runs")
+    func processRunnerRegistersOwnerLaunch() async throws {
+        let pidFile = NSTemporaryDirectory() + "owner-launch-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: pidFile) }
+        let args = ["-c", "echo $$ > \"$1\"; sleep 1", "sh", pidFile]
+        let run = Task { try await ProcessCLIRunner(binaryPath: "/bin/sh").run(args: args) }
+        var pid: Int32?
+        for _ in 0..<100 where pid == nil {
+            try await Task.sleep(for: .milliseconds(20))
+            pid = (try? String(contentsOfFile: pidFile, encoding: .utf8))
+                .flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        }
+        let child = try #require(pid)
+        #expect(OwnerConfirmGrants.shared.hasLive(pid: child))
+        _ = try await run.value
+        #expect(!OwnerConfirmGrants.shared.hasLive(pid: child))
+        #expect(!OwnerConfirmGrants.shared.consume(args, pid: child))
+    }
+
     @Test("ProcessCLIRunner writes stdin to the child and closes it")
     func processRunnerStdin() async throws {
         let runner = ProcessCLIRunner(binaryPath: "/bin/cat")

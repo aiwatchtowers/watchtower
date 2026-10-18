@@ -169,6 +169,9 @@ func runAutomationsDryRun(cmd *cobra.Command, args []string) error {
 		if err := refuseUnderAgent("dry-run a recipe that is not confirmed yet"); err != nil {
 			return fmt.Errorf("%w; %s", err, dryRunUnconfirmedHint)
 		}
+		if err := confirmWithOwner("dry-run a recipe that is not confirmed yet", recipeConfirmDetail(a)); err != nil {
+			return fmt.Errorf("%w; %s", err, dryRunUnconfirmedHint)
+		}
 	}
 	runID, _, err := database.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerDryRun, Now: time.Now()})
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -149,11 +150,86 @@ func Exec(ctx context.Context, dir string, stdin []byte, name string, args ...st
 	return ExecEnv(ctx, dir, nil, stdin, name, args...)
 }
 
+// fetchConfig keeps a background fetch from running a command, on top of
+// readConfig: an empty credential.helper clears every helper configured
+// before it — the folder's, the owner's global osxkeychain or gh, which
+// read the Keychain and can raise a system dialog —, the folder's
+// core.alternateRefsCommand (run through the shell while negotiating when
+// the repository has alternates) becomes `true`, and a stalled HTTP
+// transfer gives up on its own. (A remote's uploadpack is not overridable
+// by -c: the caller passes --upload-pack.)
+var fetchConfig = []string{
+	"-c", "credential.helper=",
+	"-c", "core.alternateRefsCommand=true",
+	"-c", "http.lowSpeedLimit=1", "-c", "http.lowSpeedTime=10",
+}
+
+// FetchArgs is a background `git fetch` argv: ReadArgs plus fetchConfig.
+func FetchArgs(args ...string) []string {
+	return append(append(slices.Clone(readConfig), fetchConfig...), args...)
+}
+
+// fetchEnv keeps the network side of a fetch from ever asking anyone:
+// ssh in batch mode (a key under a passphrase fails instead of prompting)
+// with a connect timeout, no askpass program from anywhere (an empty
+// GIT_ASKPASS outranks core.askPass and SSH_ASKPASS), no proxy command,
+// and only the network transports: an `ext::` URL or a remote helper the
+// folder's config allows would run a command, and a path remote would read
+// any folder on the Mac — one macOS guards would raise a privacy prompt
+// attributed to Watchtower.
+var fetchEnv = []string{
+	"GIT_SSH_COMMAND=" + batchSSH,
+	"GIT_ASKPASS=", "SSH_ASKPASS=", "SSH_ASKPASS_REQUIRE=never",
+	"GIT_PROXY_COMMAND=",
+	"GIT_ALLOW_PROTOCOL=git:http:https:ssh",
+}
+
+// batchSSH is every fetch's ssh: no prompt of its own, a connect timeout.
+const batchSSH = "ssh -o BatchMode=yes -o ConnectTimeout=10"
+
+// unattendedSSH is the ssh of a fetch nobody asked for (the Desktop's
+// automatic one): no ssh agent — a password manager's agent or `ssh-add -c`
+// shows its own approval prompt when asked to sign —, on Apple's ssh no
+// Keychain lookup of a key's passphrase, and no jump host or proxy command
+// from ~/.ssh/config (that hop is a second ssh, or any program, that our
+// options never reach). Only an unencrypted key on disk can sign in, to a
+// directly reachable host. Command-line options win over ~/.ssh/config;
+// IgnoreUnknown=* (quoted: git runs the command through sh) keeps a non-Apple ssh, and a config listing keywords it
+// does not know, working.
+var unattendedSSH = []string{
+	"GIT_SSH_COMMAND=" + batchSSH + " -o IdentityAgent=none -o ProxyJump=none -o ProxyCommand=none" +
+		" -o 'IgnoreUnknown=*' -o UseKeychain=no",
+	"SSH_AUTH_SOCK=",
+}
+
+// ExecFetch runs a fetch argv (FetchArgs) like Exec, with fetchEnv on top,
+// in its own process group: when ctx ends the whole group is killed — git's
+// ssh or remote-http child included — not git alone. unattended (a fetch
+// the owner did not ask for just now) also keeps ssh away from the ssh
+// agent and the Keychain (unattendedSSH).
+func ExecFetch(ctx context.Context, dir string, unattended bool, name string, args ...string) (stdout, stderr []byte, err error) {
+	env := fetchEnv
+	if unattended {
+		env = append(slices.Clone(fetchEnv), unattendedSSH...)
+	}
+	return run(ctx, dir, env, nil, true, name, args...)
+}
+
 // ExecEnv is Exec with extraEnv appended after the inherited repository
 // variables are dropped: a caller's own GIT_INDEX_FILE (the reviewer's
 // temporary index) reaches git, an inherited one never does.
 func ExecEnv(ctx context.Context, dir string, extraEnv []string, stdin []byte, name string, args ...string) (stdout, stderr []byte, err error) {
+	return run(ctx, dir, extraEnv, stdin, false, name, args...)
+}
+
+// run is ExecEnv; group puts the process in its own process group, killed
+// whole when ctx ends.
+func run(ctx context.Context, dir string, extraEnv []string, stdin []byte, group bool, name string, args ...string) (stdout, stderr []byte, err error) {
 	c := exec.CommandContext(ctx, name, args...)
+	if group {
+		c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		c.Cancel = func() error { return syscall.Kill(-c.Process.Pid, syscall.SIGKILL) }
+	}
 	c.Dir = dir
 	env := slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		key, _, _ := strings.Cut(kv, "=")

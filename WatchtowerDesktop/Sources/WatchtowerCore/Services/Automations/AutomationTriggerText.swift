@@ -22,8 +22,17 @@ package enum AutomationTriggerText {
         "slack.new_messages": "On new Slack messages",
         "jira.issue_changed": "On Jira change",
         "calendar.event_changed": "On calendar change",
-        "confluence.page_changed": "On Confluence change"
+        "confluence.page_changed": "On Confluence change",
+        "slack.reaction_added": "On a Slack reaction"
     ]
+
+    /// The event type and `where` map of an event recipe's `trigger_spec`, nil
+    /// when the JSON has no event.
+    package static func eventSpec(specJSON: String) -> (type: String, where: [String: String])? {
+        guard let spec = try? JSONDecoder().decode(Spec.self, from: Data(specJSON.utf8)),
+              let event = spec.event, let type = event.type else { return nil }
+        return (type, event.where ?? [:])
+    }
 
     package static func describe(kind: String, specJSON: String) -> String {
         let spec = try? JSONDecoder().decode(Spec.self, from: Data(specJSON.utf8))
@@ -36,8 +45,13 @@ package enum AutomationTriggerText {
             return "Button: \(label)"
         case "event":
             let type = spec?.event?.type ?? ""
-            let base = eventWords[type] ?? (type.isEmpty ? "On event" : "On \(type)")
-            let filter = (spec?.event?.where ?? [:]).sorted { $0.key < $1.key }.map(\.value).joined(separator: ", ")
+            var filters = spec?.event?.where ?? [:]
+            var base = eventWords[type] ?? (type.isEmpty ? "On event" : "On \(type)")
+            if type == "slack.reaction_added", let raw = filters.removeValue(forKey: "emoji"),
+               case let emoji = raw.trimmingCharacters(in: CharacterSet(charactersIn: ":")), !emoji.isEmpty {
+                base = "On :\(emoji): reactions"
+            }
+            let filter = filters.sorted { $0.key < $1.key }.map(\.value).joined(separator: ", ")
             return filter.isEmpty ? base : "\(base) (\(filter))"
         case "manual":
             return "Manual"

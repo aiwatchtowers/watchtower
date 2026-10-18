@@ -200,7 +200,10 @@ package struct ChatSurfaceSpec {
     package let turnPrompt: @MainActor (ChatTurnInput) -> String
     /// Runs once, only for a turn that streamed to its end (never a stopped
     /// or failed one). A result with no text to show still fails the turn.
-    package let postTurn: @MainActor (ChatPostTurnInput) -> ChatPostTurnResult
+    /// Async, so a surface that writes (the target chat's execute-mode
+    /// actions) awaits the database writer instead of blocking the main
+    /// thread (board #670); the turn stays live until it returns.
+    package let postTurn: @MainActor (ChatPostTurnInput) async -> ChatPostTurnResult
     /// Runs before an owner turn is accepted (composer, starter prompt or
     /// `send`); false refuses it and the text stays in the composer — the
     /// target chat re-reads its task here and refuses once it is deleted.
@@ -221,7 +224,7 @@ package struct ChatSurfaceSpec {
         toolAccess: ToolAccess,
         systemPrompt: @escaping @MainActor () -> String,
         turnPrompt: @escaping @MainActor (ChatTurnInput) -> String = { $0.text },
-        postTurn: @escaping @MainActor (ChatPostTurnInput) -> ChatPostTurnResult = ChatPostTurnResult.identity,
+        postTurn: @escaping @MainActor (ChatPostTurnInput) async -> ChatPostTurnResult = ChatPostTurnResult.identity,
         willSend: @escaping @MainActor (String) -> Bool = { _ in true },
         mayContinue: @escaping @MainActor () -> Bool = { true },
         emptyHint: String,

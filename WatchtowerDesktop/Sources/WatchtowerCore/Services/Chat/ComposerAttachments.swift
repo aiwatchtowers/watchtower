@@ -68,6 +68,14 @@ package final class ComposerAttachments {
         errorMessage = nil
     }
 
+    /// The files a turn just sent leave the composer; one added while that
+    /// turn was being written stays for the next.
+    package func removeSent(_ ids: [Int64]) {
+        let sent = Set(ids)
+        pending.removeAll { sent.contains($0.id) }
+        errorMessage = nil
+    }
+
     /// Hands the pending set to `send` and clears the composer.
     package func takeForSend() -> [ChatAttachment] {
         let taken = pending

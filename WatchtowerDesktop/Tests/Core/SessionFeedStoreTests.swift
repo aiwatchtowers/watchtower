@@ -124,4 +124,78 @@ final class SessionFeedStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls[0], ["workbench", "session-feed", "--session", "7", "--subagent", "tu1", "--json"])
         XCTAssertTrue(store.entries.isEmpty)
     }
+
+    // MARK: - follow (board #589): no CLI while the main window is off screen
+
+    /// `isActive` true for `ticks` more checks, then false.
+    private func activeFor(_ ticks: Int) -> () -> Bool {
+        var left = ticks
+        return {
+            left -= 1
+            return left >= 0
+        }
+    }
+
+    func testFollowReadsEveryTickOnScreen() async {
+        let runner = FakeRunner([])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.follow(interval: .milliseconds(1), isActive: activeFor(3)) { true }
+        XCTAssertEqual(runner.calls.count, 4, "one read at once, one per active tick")
+    }
+
+    func testFollowOffScreenSpawnsNothingAndReadsOnceOnReturn() async {
+        let runner = FakeRunner([])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.follow(interval: .milliseconds(1), isActive: activeFor(3)) { false }
+        XCTAssertEqual(runner.calls.count, 0)
+        await store.screenChanged(false)
+        XCTAssertEqual(runner.calls.count, 0)
+        await store.screenChanged(true)
+        XCTAssertEqual(runner.calls.count, 1, "back on screen after skipped reads: one read now")
+        await store.screenChanged(true)
+        XCTAssertEqual(runner.calls.count, 1, "already on screen: no extra read")
+    }
+
+    func testScreenChangedWithoutSkippedReadDoesNothing() async {
+        let runner = FakeRunner([])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.follow(interval: .milliseconds(1), isActive: activeFor(0)) { true }
+        XCTAssertEqual(runner.calls.count, 1)
+        await store.screenChanged(false)
+        await store.screenChanged(true)
+        XCTAssertEqual(runner.calls.count, 1, "nothing was skipped while hidden")
+    }
+
+    func testFollowWithoutRunnerNeverPolls() async {
+        let store = SessionFeedStore(sessionID: 7, runner: nil)
+        XCTAssertTrue(store.runnerMissing)
+        await store.follow(interval: .milliseconds(1), isActive: activeFor(2)) { true }
+        await store.screenChanged(true)
+        XCTAssertTrue(store.entries.isEmpty)
+        XCTAssertNil(store.error)
+    }
+
+    func testFollowGoesOffScreenAndBackInsideTheLoop() async {
+        let runner = FakeRunner([])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        // Checks: the first read, then ticks 1-4; ticks 2 and 3 are off screen.
+        var check = 0
+        let screen = [true, true, false, false, true]
+        await store.follow(interval: .milliseconds(1), isActive: activeFor(4)) {
+            defer { check += 1 }
+            return screen[check]
+        }
+        XCTAssertEqual(runner.calls.count, 3, "the two off-screen ticks spawn nothing")
+        await store.screenChanged(true)
+        XCTAssertEqual(runner.calls.count, 3, "the on-screen tick already caught up")
+    }
+
+    func testIdlePaneOpenedOffScreenReadsOnceOnReturn() async {
+        let runner = FakeRunner([])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.follow(interval: .milliseconds(1), isActive: activeFor(0)) { false }
+        XCTAssertEqual(runner.calls.count, 0, "the first read is skipped off screen")
+        await store.screenChanged(true)
+        XCTAssertEqual(runner.calls.count, 1)
+    }
 }

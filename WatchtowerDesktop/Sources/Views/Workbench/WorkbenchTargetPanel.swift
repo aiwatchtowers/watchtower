@@ -245,7 +245,7 @@ struct WorkbenchTargetPanel: View {
                             ForEach(defined) { column in
                                 Toggle(column.title, isOn: Binding(
                                     get: { target.status == status && shown?.id == column.id },
-                                    set: { if $0 { vm.moveCard(target.id, status: status, columnID: column.id) } }
+                                    set: { if $0 { Task { await vm.moveCard(target.id, status: status, columnID: column.id) } } }
                                 ))
                                 .help(column.description)
                             }

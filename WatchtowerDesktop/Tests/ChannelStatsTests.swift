@@ -258,10 +258,10 @@ final class ChannelStatsTests: XCTestCase {
     /// a channel that is already muted (a stale recommendation, or one raised
     /// before the rule above) must leave it muted.
     @MainActor
-    func testApplyRecommendationNeverUnmutesOrUnfavorites() throws {
+    func testApplyRecommendationNeverUnmutesOrUnfavorites() async throws {
         let (dbManager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        try dbManager.dbPool.write { db in
+        try await dbManager.dbPool.write { db in
             try TestDatabase.insertChannel(db, id: "C001", name: "muted")
             try ChannelStatsQueries.toggleMuteForLLM(db, channelID: "C001", muted: true)
             try ChannelStatsQueries.toggleFavorite(db, channelID: "C001", favorite: true)
@@ -270,12 +270,13 @@ final class ChannelStatsTests: XCTestCase {
         vm.stats = [makeStat(id: "C001", isMember: true, isMutedForLLM: true, isFavorite: true)]
 
         for action in [ChannelRecommendation.Action.leave, .mute, .favorite] {
-            vm.applyRecommendation(ChannelRecommendation(
+            await vm.applyRecommendation(ChannelRecommendation(
                 channelID: "C001", channelName: "muted", action: action, reason: "test"
             ))
         }
 
-        let settings = try XCTUnwrap(dbManager.dbPool.read { try ChannelSettings.fetchOne($0, key: "C001") })
+        let settingsRow = try await dbManager.dbPool.read { try ChannelSettings.fetchOne($0, key: "C001") }
+        let settings = try XCTUnwrap(settingsRow)
         XCTAssertTrue(settings.isMutedForLLM, "applying a recommendation un-muted the channel")
         XCTAssertTrue(settings.isFavorite, "applying a recommendation un-favorited the channel")
         XCTAssertNil(vm.errorMessage)

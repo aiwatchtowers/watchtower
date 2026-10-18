@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import WatchtowerCore
 
@@ -31,5 +32,35 @@ struct ConnectionTestTests {
         let (ok, message) = ConnectionTest.summary([("haiku", "Network error"), ("sonnet", "Network error")])
         #expect(!ok)
         #expect(message == "haiku: Network error · sonnet: Network error")
+    }
+
+    private struct TurnFailureCase: Decodable {
+        let name: String
+        let model: String
+        let jsonl: String
+        let want: String
+    }
+
+    /// `internal/codex/testdata/turn_failures.json` pins Go's
+    /// `codex.failedTurn` too: the same codex output reads the same in the
+    /// app's errors and in Test Connection (dual path).
+    private static func turnFailureCases() throws -> [TurnFailureCase] {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Core
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("internal/codex/testdata/turn_failures.json")
+        return try JSONDecoder().decode([TurnFailureCase].self, from: Data(contentsOf: url))
+    }
+
+    @Test("codex failures read from stdout JSONL match the Go wording")
+    func codexTurnErrorSharedFixture() throws {
+        let cases = try Self.turnFailureCases()
+        #expect(cases.count >= 7)
+        for tc in cases {
+            let got = ConnectionTest.codexTurnError(stdout: tc.jsonl, model: tc.model) ?? ""
+            #expect(got == tc.want, "\(tc.name)")
+        }
     }
 }

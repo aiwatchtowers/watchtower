@@ -8,39 +8,9 @@ Some chores repeat: a Monday Jira summary, a digest of new mail, a Friday team r
 
 ## How it works
 
-A recipe is one Markdown file: settings (when it runs, what it may touch, where results go, its budget) plus one short script. The daemon runs it, so the Mac must be awake with Watchtower's daemon running. A schedule fires in your local time; if the Mac was asleep, the recipe can run once on wake or skip the slot. An event trigger fires after a sync brings new Slack messages, mail, Jira or calendar changes, or Confluence pages, at most once per sync cycle ([Event triggers](automations-recipes.md#event-triggers)).
+A recipe is one Markdown file: settings (when it runs, what it may touch, where results go, its budget) plus one short script. The daemon runs it, so the Mac must be awake with Watchtower's daemon running. A schedule fires in your local time; if the Mac was asleep, the recipe can run once on wake or skip the slot. An event trigger fires after a sync brings new Slack messages, mail, Jira or calendar changes, or Confluence pages, or when you react to a Slack message, at most once per sync cycle ([Event triggers](automations-recipes.md#event-triggers)).
 
-### Why you must confirm a recipe
-
-A recipe never runs until you confirm it. Watchtower fingerprints everything that decides what a recipe can do: schedule, missed-slot policy, permissions, outputs, budget, runs at a time and the script.
-
-If any of these changes, the fingerprint changes and the recipe stops until you confirm again. Renaming it or editing its description does not count.
-
-This also covers a file that arrives from outside, such as a recipe pulled in with `git pull`: it shows **Needs your confirmation** and waits.
-
-A recipe that runs a shell command (`shell:`) is confirmed by the command text only. The scripts or Makefile the command runs are not part of the fingerprint: if they change later, for example when the repository is updated or an agent edits them, the command still runs unattended without asking again. Confirm such a recipe only if you trust that folder's contents; the confirm sheet says this.
-
-### Budgets
-
-Every run has its own limits in tokens and minutes, never dollars: 50,000 tokens and 5 minutes by default, at most 2,000,000 tokens and 60 minutes. A run that crosses either limit stops. There is no daily cap across runs. At most two runs execute at the same time.
-
-### What a run can write
-
-Reads are free within the recipe's permissions. Writes (a Jira comment, a Slack message, a new target) are proposals. They appear in **Inbox**, **Actions**, labelled with the automation and run number, and wait for your approval.
-
-A run waiting on you pauses and resumes after you decide. After its pause timeout (72 hours by default) it ends as expired.
-
-### Auto grants
-
-You can let one automation apply one kind of write without asking, with that tool's checkbox under the "Auto" caption in the edit form. A grant is tied to the recipe's fingerprint: edit the recipe and the grant pauses (**Auto paused**).
-
-The Save sheet then lists each tool with a "Keep auto for ..." box, unchecked. Tools marked **Always asks** never go automatic.
-
-### Other people's text is data
-
-When a recipe passes mail, messages or tickets to `llm()` as `input`, Watchtower marks that text as written by other people, and the model is told never to follow instructions inside it. Pass such text as `input`, not inside the prompt itself, so it gets this marking.
-
-The marking lowers the risk but does not remove it. Suppose such a recipe also has auto on, or paused, for a tool that writes outside Watchtower, such as sending a Slack message or commenting on a Jira issue. A warning then appears next to the Auto checkboxes in the edit form, next to the "Keep auto for ..." boxes in the Save sheet and in the confirmation sheet: text the model writes from other people's messages could go out without asking you.
+A recipe never runs until you confirm it, every run has its own token and time budget, and writes wait for your approval. The details are in [Confirmation, budgets and writes](automations-safety.md).
 
 ## Using it
 
@@ -75,6 +45,10 @@ The **Automations** badge counts automations whose last run failed, until you op
 - Reports: **Latest reports** on the card.
 - Briefing: notes reach the next daily briefing, from the last 7 days at most.
 
+### Reactions and tracks
+
+The tab also shows your reaction commands and custom tracks next to your recipes: see [Reactions and tracks in Automations](automations-rules.md).
+
 ## When it's empty or wrong
 
 - **Tab missing.** The feature is off (Settings, Features). That also hides **Run Automation…** and the tray submenu.
@@ -82,7 +56,7 @@ The **Automations** badge counts automations whose last run failed, until you op
 - **Needs your confirmation.** Open **Review…**. After an update that changed how the fingerprint is computed, earlier recipes ask once more.
 - **Disabled.** Use **⋯**, then **Enable**.
 - **Nothing ran on schedule.** The recipe must be confirmed and enabled, with the daemon running. Slots missed before you enabled or confirmed it, or before you turned the feature on, are never made up.
-- **Ended on budget or time.** Raise the budget in the form (this needs confirming again) or shorten the work.
+- **Ended on budget or time.** Raise the budget in the form (this needs confirming again) or shorten the work. Calls, outputs and sessions are [capped](../troubleshooting/automation-run-limits.md) too.
 - **Failed with a permission error.** The script touched something outside its permissions. Add it with **+ Add**, or ask the assistant.
 - **Disabled by itself ("runaway script").** A script got stuck. Fix it, then enable.
 - **Failed with a RangeError about nesting or size.** One step of the script would have built something too large: data nested more than 1000 levels deep, more than about 16 million characters or items, or more than 256 000 entries, pieces or matches from one `JSON.parse`, `Object.entries`, `split` or global `match`. The script can catch these; otherwise handle the data in smaller pieces.
@@ -92,5 +66,7 @@ The **Automations** badge counts automations whose last run failed, until you op
 ## Related
 
 - [Recipes and templates](automations-recipes.md)
+- [Reactions and tracks in Automations](automations-rules.md)
+- [Confirmation, budgets and writes](automations-safety.md)
 
 For developers: [docs/features/automations.md](../../features/automations.md)

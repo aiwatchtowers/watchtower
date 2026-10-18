@@ -64,8 +64,8 @@ struct ChatThreadView: View {
         var actions = baseActions
         let rows = chatVM.thread.map(\.message)
         if let index = rows.firstIndex(where: { $0.id == item.id }),
-           ChatQuestionThread.isAnswerable(at: index, in: rows, busy: chatVM.isStreaming) {
-            actions.answerQuestion = { _ = chatVM.send(text: $0, keepsComposer: true) }
+           ChatQuestionThread.isAnswerable(at: index, in: rows, busy: chatVM.isBusy) {
+            actions.answerQuestion = { answer in Task { await chatVM.send(text: answer, keepsComposer: true) } }
         }
         return actions
     }
@@ -84,14 +84,16 @@ struct ChatThreadView: View {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(text, forType: .string)
             },
-            regenerate: { chatVM.regenerate(messageID: $0) },
-            retry: { chatVM.retry(messageID: $0) },
-            continueStopped: { chatVM.continueStopped(messageID: $0) },
+            regenerate: { id in Task { await chatVM.regenerate(messageID: id) } },
+            retry: { id in Task { await chatVM.retry(messageID: id) } },
+            continueStopped: { id in Task { await chatVM.continueStopped(messageID: id) } },
             showVariant: { id, offset in
-                if let target = chatVM.variant(of: id, offset: offset) { chatVM.selectVariant(messageID: target) }
+                if let target = chatVM.variant(of: id, offset: offset) {
+                    Task { await chatVM.selectVariant(messageID: target) }
+                }
             },
             beginEdit: { chatVM.editingMessageID = $0 },
-            submitEdit: { chatVM.edit(messageID: $0, newText: $1) },
+            submitEdit: { id, text in Task { await chatVM.edit(messageID: id, newText: text) } },
             cancelEdit: { chatVM.editingMessageID = nil },
             openArtifact: { chatVM.openArtifact(key: $0) },
             openSources: { chatVM.openSources(messageID: $0, sources: $1) }
@@ -100,7 +102,7 @@ struct ChatThreadView: View {
 
     private func usePrompt(_ prompt: ChatStarterPrompt) {
         if prompt.sendsImmediately {
-            chatVM.send(text: prompt.text)
+            Task { await chatVM.send(text: prompt.text) }
         } else {
             chatVM.draft = prompt.text
         }

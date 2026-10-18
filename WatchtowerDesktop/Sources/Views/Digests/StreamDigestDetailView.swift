@@ -34,7 +34,7 @@ struct StreamDigestDetailView: View {
         .navigationTitle(sourceLabel)
         .task {
             jiraSiteURL = JiraConfigHelper.readSiteURL()
-            viewModel.markStreamRead(id: digest.id)
+            await viewModel.markStreamRead(id: digest.id)
         }
     }
 

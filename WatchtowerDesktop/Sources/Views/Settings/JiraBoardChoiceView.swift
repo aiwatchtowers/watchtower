@@ -13,11 +13,19 @@ import WatchtowerCore
 /// daemon restart here: the sheet's `JiraAccountsViewModel.finishBoardStep`
 /// wires the daemon once, and the daemon syncs the chosen boards (and starts
 /// the site's history backfill) on its own path.
+///
+/// With `confluence` (#573, the connect asked for Confluence too) the step
+/// also selects the new site's recent Confluence spaces once, in the
+/// background (`ConfluenceConnectSelection`), and shows one line naming them
+/// — not a step of its own.
 struct JiraBoardChoiceView: View {
     @Environment(AppState.self) private var appState
 
     /// Account ids read before the connect; nil lists every enabled site.
     let accountIDsBefore: Set<Int>?
+    /// Set when the connect also requested Confluence (`--with-confluence`):
+    /// selects the new site's recent spaces once and holds the line.
+    var confluence: ConfluenceConnectSelection?
     /// Done (after its writes) or Skip.
     let onClose: () -> Void
 
@@ -43,6 +51,13 @@ struct JiraBoardChoiceView: View {
             list
                 .frame(maxHeight: .infinity)
 
+            if let confluenceLine = confluence?.line {
+                Text(confluenceLine)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+
             if let error {
                 Text(error)
                     .font(.caption)
@@ -64,6 +79,7 @@ struct JiraBoardChoiceView: View {
             }
         }
         .task { await load() }
+        .task { await confluence?.run(accountIDsBefore: accountIDsBefore) }
     }
 
     @ViewBuilder

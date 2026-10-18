@@ -25,7 +25,7 @@ struct ChatComposerField: View {
     var onAttachFiles: (([URL]) -> Void)?
     /// A paste that became a file (screenshot, PDF data, long text) with its
     /// name; true once attached (board #534). nil → ⌘V always inserts text.
-    var onPasteData: ((Data, String) -> Bool)?
+    var onPasteData: ((Data, String) async -> Bool)?
     var onRemoveAttachment: ((Int64) -> Void)?
     /// Called with the full text and the caret (UTF-16 offset) on every edit
     /// or caret move — the @/ pickers' input. nil for a surface with no
@@ -89,7 +89,7 @@ struct ChatComposerFieldContent: View {
     var attachments: [ChatAttachment] = []
     var attachmentError: String?
     var onAttachFiles: (([URL]) -> Void)?
-    var onPasteData: ((Data, String) -> Bool)?
+    var onPasteData: ((Data, String) async -> Bool)?
     var onRemoveAttachment: ((Int64) -> Void)?
     var onCursorChange: ((String, Int) -> Void)?
     var onPickerKey: ((ComposerPickerKey, String, Int) -> ComposerKeyResult)?
@@ -231,7 +231,7 @@ struct ChatComposerFieldContent: View {
     private func attachLongPaste() {
         defer { longPaste = nil }
         guard let longPaste, let onPasteData else { return }
-        longPaste.attach(using: onPasteData)
+        Task { await longPaste.attach(using: onPasteData) }
     }
 
     /// A message may carry only attachments, or only pending quotes (no text).
@@ -256,7 +256,7 @@ struct ExpandingTextInput: NSViewRepresentable {
     /// A user-initiated paste that `PasteClassifier` turns into an
     /// attachment is consumed here instead of inserted as text. nil → paste
     /// always inserts text, unchanged from before Task 21.
-    var onPasteData: ((Data, String) -> Bool)?
+    var onPasteData: ((Data, String) async -> Bool)?
     /// Files copied in Finder (the drop/paperclip path).
     var onAttachFiles: (([URL]) -> Void)?
     /// A long text paste, after it was inserted: the inserted text.

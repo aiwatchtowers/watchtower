@@ -289,19 +289,19 @@ final class ReviewChangesModelTests: XCTestCase {
                       "send": #"{"ok":true,"sent":true,"comments":1,"line":"Review round #7 sent (1 comment)."}"#])
         await h.model.open()
         await h.model.select("a.go")
-        try h.model.addComment(path: "a.go", side: "new", startLine: 2, endLine: 2, body: "why two?")
-        try h.model.toggleViewed("a.go")
+        try await h.model.addComment(path: "a.go", side: "new", startLine: 2, endLine: 2, body: "why two?")
+        try await h.model.toggleViewed("a.go")
         await h.model.send()
         XCTAssertEqual(h.model.round?.status, "sent")
 
-        XCTAssertThrowsError(try h.model.addComment(path: "a.go", side: "new", startLine: 1, endLine: 1, body: "late")) {
-            XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .roundNotOpen)
+        await assertThrowsAsync(ReviewChangesModel.ModelError.roundNotOpen) {
+            try await h.model.addComment(path: "a.go", side: "new", startLine: 1, endLine: 1, body: "late")
         }
         XCTAssertNotNil(h.model.lastError)
         let sentRows = try await h.comments(7)
         XCTAssertEqual(sentRows.map(\.body), ["why two?"], "nothing written into the sent round")
-        XCTAssertThrowsError(try h.model.editComment(id: try XCTUnwrap(sentRows.first).id, body: "edited")) {
-            XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .roundNotOpen)
+        await assertThrowsAsync(ReviewChangesModel.ModelError.roundNotOpen) {
+            try await h.model.editComment(id: try XCTUnwrap(sentRows.first).id, body: "edited")
         }
 
         await h.model.refresh()
@@ -313,7 +313,7 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(carried.first?.carriedFrom, sentRows.first?.id)
         XCTAssertEqual(carried.first?.startLine, 2)
         XCTAssertTrue(h.model.isViewed("a.go"), "an unchanged file keeps its Viewed mark")
-        try h.model.addComment(path: "a.go", side: "new", startLine: 1, endLine: 1, body: "next round")
+        try await h.model.addComment(path: "a.go", side: "new", startLine: 1, endLine: 1, body: "next round")
         let next = try await h.comments(8)
         XCTAssertEqual(next.count, 2)
     }
@@ -321,7 +321,7 @@ final class ReviewChangesModelTests: XCTestCase {
     /// The Viewed key follows the file's new blob and mode: a binary file
     /// (no hunks) changed again loses its mark, an unchanged one keeps it.
     func testViewedKeyFollowsTheBlobForBinaryFiles() async throws {
-        func binary(_ blobs: [String: String]) -> String {
+        func binary(_ blobs: [String: String]) async -> String {
             let entries = blobs.keys.sorted().map { path in
                 """
                 {"path":"\(path)","status":"modified","additions":0,"deletions":0,"binary":true,
@@ -333,10 +333,10 @@ final class ReviewChangesModelTests: XCTestCase {
         let h = try harness()
         h.baseScript()
         h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 7, prev: 0, tree: "u")])
-        h.cli.script("diff", [binary(["img.png": "b1", "logo.png": "c1"]), binary(["img.png": "b2", "logo.png": "c1"])])
+        await h.cli.script("diff", [binary(["img.png": "b1", "logo.png": "c1"]), binary(["img.png": "b2", "logo.png": "c1"])])
         await h.model.open()
-        try h.model.toggleViewed("img.png")
-        try h.model.toggleViewed("logo.png")
+        try await h.model.toggleViewed("img.png")
+        try await h.model.toggleViewed("logo.png")
         await h.model.refresh()
         XCTAssertFalse(h.model.isViewed("img.png"))
         XCTAssertTrue(h.model.isViewed("logo.png"))
@@ -425,7 +425,7 @@ final class ReviewChangesModelTests: XCTestCase {
         h.cli.script(["diff-since": diffJSON(["a.go"], hunk: "since")])
         await h.model.open()
         await h.model.setView(.sinceLastRound)
-        try h.model.toggleViewed("a.go")
+        try await h.model.toggleViewed("a.go")
         XCTAssertTrue(h.model.isViewed("a.go"))
         await h.model.setView(.all)
         XCTAssertTrue(h.model.isViewed("a.go"))
@@ -449,7 +449,7 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.open()
         let carried = try XCTUnwrap(h.model.comments.first)
         XCTAssertEqual(carried.status, .carried)
-        try h.model.deleteComment(id: carried.id)
+        try await h.model.deleteComment(id: carried.id)
         await h.model.open()
         let rows = try await h.comments()
         XCTAssertEqual(rows.map(\.status), [.resolved])
@@ -462,8 +462,8 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.open()
         await h.model.select("a.go")
         await h.model.setView(.sinceLastRound)
-        XCTAssertThrowsError(try h.model.addComment(path: "a.go", side: "old", startLine: 1, endLine: 1, body: "x")) {
-            XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .oldSideInSinceView)
+        await assertThrowsAsync(ReviewChangesModel.ModelError.oldSideInSinceView) {
+            try await h.model.addComment(path: "a.go", side: "old", startLine: 1, endLine: 1, body: "x")
         }
         XCTAssertEqual(h.model.lastError, "Switch to All changes to comment on removed lines")
         XCTAssertEqual(h.model.comments, [])
@@ -473,11 +473,11 @@ final class ReviewChangesModelTests: XCTestCase {
         let h = try harness()
         h.baseScript()
         await h.model.open()
-        try h.model.toggleViewed("a.go")
+        try await h.model.toggleViewed("a.go")
         XCTAssertTrue(h.model.isViewed("a.go"))
-        try h.model.toggleViewed("a.go")
+        try await h.model.toggleViewed("a.go")
         XCTAssertFalse(h.model.isViewed("a.go"))
-        XCTAssertThrowsError(try h.model.toggleViewed("nope.go"))
+        await assertThrowsAsync { try await h.model.toggleViewed("nope.go") }
         XCTAssertNotNil(h.model.lastError)
     }
 
@@ -487,7 +487,7 @@ final class ReviewChangesModelTests: XCTestCase {
         h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 7, prev: 0, tree: "u")])
         h.cli.script("diff", [diffJSON(path: "a.go"), diffJSON(["a.go"], hunk: "changed")])
         await h.model.open()
-        try h.model.toggleViewed("a.go")
+        try await h.model.toggleViewed("a.go")
         await h.model.refresh()
         XCTAssertFalse(h.model.isViewed("a.go"))
     }
@@ -499,15 +499,15 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.open()
         await h.model.select("a.go")
         XCTAssertEqual(h.model.sides?.new.text, "one\ntwo\nthree\n")
-        try h.model.addComment(path: "a.go", side: "new", startLine: 2, endLine: 2, body: "why?")
+        try await h.model.addComment(path: "a.go", side: "new", startLine: 2, endLine: 2, body: "why?")
         XCTAssertEqual(h.model.draftCount, 1)
         let first = try await h.comments().first
         let row = try XCTUnwrap(first)
         XCTAssertEqual(row.quote, "two")
         XCTAssertEqual(row.treeSHA, "t7")
-        try h.model.editComment(id: row.id, body: "why not?")
+        try await h.model.editComment(id: row.id, body: "why not?")
         XCTAssertEqual(h.model.comments.first?.body, "why not?")
-        try h.model.deleteComment(id: row.id)
+        try await h.model.deleteComment(id: row.id)
         XCTAssertEqual(h.model.comments, [])
     }
 
@@ -523,8 +523,8 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.cli.waitPending("file")
         XCTAssertEqual(h.model.selectedPath, "b.go")
         XCTAssertNil(h.model.currentSides, "a.go's text must not show as b.go")
-        XCTAssertThrowsError(try h.model.addComment(path: "b.go", side: "new", startLine: 1, endLine: 1, body: "x")) {
-            XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .fileNotLoaded("b.go"))
+        await assertThrowsAsync(ReviewChangesModel.ModelError.fileNotLoaded("b.go")) {
+            try await h.model.addComment(path: "b.go", side: "new", startLine: 1, endLine: 1, body: "x")
         }
         XCTAssertNotNil(h.model.lastError)
         let written = try await h.comments()
@@ -547,7 +547,7 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.cli.waitPending("file")
         XCTAssertEqual(h.model.round?.treeSha, "u7")
         XCTAssertNil(h.model.currentSides)
-        XCTAssertThrowsError(try h.model.addComment(path: "a.go", side: "new", startLine: 1, endLine: 1, body: "x"))
+        await assertThrowsAsync { try await h.model.addComment(path: "a.go", side: "new", startLine: 1, endLine: 1, body: "x") }
         h.cli.release("file")
         await refresh.value
         XCTAssertEqual(h.model.currentSides?.new.text, "new\n")
@@ -592,8 +592,8 @@ final class ReviewChangesModelTests: XCTestCase {
         let h = try harness()
         h.baseScript()
         await h.model.open()
-        XCTAssertThrowsError(try h.model.addComment(path: "a.go", side: "new", startLine: 1, endLine: 1, body: "x")) {
-            XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .fileNotLoaded("a.go"))
+        await assertThrowsAsync(ReviewChangesModel.ModelError.fileNotLoaded("a.go")) {
+            try await h.model.addComment(path: "a.go", side: "new", startLine: 1, endLine: 1, body: "x")
         }
         XCTAssertNotNil(h.model.lastError)
     }
@@ -627,8 +627,8 @@ final class ReviewChangesModelTests: XCTestCase {
         h.cli.script("file", [fileJSON(old: "x\n", new: "keep\ngone\n"), fileJSON(old: "x\n", new: "added\nkeep\n")])
         await h.model.open()
         await h.model.select("a.go")
-        try h.model.addComment(path: "a.go", side: "new", startLine: 1, endLine: 1, body: "moves")
-        try h.model.addComment(path: "a.go", side: "new", startLine: 2, endLine: 2, body: "lost")
+        try await h.model.addComment(path: "a.go", side: "new", startLine: 1, endLine: 1, body: "moves")
+        try await h.model.addComment(path: "a.go", side: "new", startLine: 2, endLine: 2, body: "lost")
         await h.model.refresh()
         let rows = try await h.comments()
         XCTAssertEqual(rows.first { $0.body == "moves" }?.startLine, 2)
@@ -649,10 +649,10 @@ final class ReviewChangesModelTests: XCTestCase {
             try ReviewQueries.markOutdated(db, id: id)
             return id
         }
-        try h.model.resolve(id: id)
+        try await h.model.resolve(id: id)
         let resolved = try await h.comments().first?.status
         XCTAssertEqual(resolved, .resolved)
-        XCTAssertThrowsError(try h.model.resolve(id: id))
+        await assertThrowsAsync { try await h.model.resolve(id: id) }
         XCTAssertNotNil(h.model.lastError)
     }
 
@@ -693,8 +693,8 @@ final class ReviewChangesModelTests: XCTestCase {
         let h = try harness()
         h.baseScript()
         await h.model.open()
-        try h.model.setMode(.deep)
-        try h.model.setPhase(.wrapup)
+        try await h.model.setMode(.deep)
+        try await h.model.setPhase(.wrapup)
         let row = try await h.db.read { try Row.fetchOne($0, sql: "SELECT mode, phase FROM review_rounds WHERE id = 7") }
         XCTAssertEqual(row?["mode"] as String?, "deep")
         XCTAssertEqual(row?["phase"] as String?, "wrapup")
@@ -703,9 +703,9 @@ final class ReviewChangesModelTests: XCTestCase {
         sent.cli.script(["start": deepStartJSON(status: "sent"), "context": deepContextJSON(), "diff": diffJSON(["cmd/x.go"])])
         await sent.model.open()
         try await sent.db.write { try $0.execute(sql: "UPDATE review_rounds SET status = 'sent', mode = 'quick', phase = ''") }
-        XCTAssertThrowsError(try sent.model.setMode(.quick)) { XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .roundClosed) }
+        await assertThrowsAsync(ReviewChangesModel.ModelError.roundClosed) { try await sent.model.setMode(.quick) }
         // A sent round moves the phase on screen and writes nothing.
-        try sent.model.setPhase(.meaning)
+        try await sent.model.setPhase(.meaning)
         XCTAssertEqual(sent.model.phase, .meaning)
         XCTAssertEqual(ReviewChangesModel.ModelError.roundClosed.errorDescription, "This round was already sent, so it cannot change.")
         let after = try await sent.db.read { try Row.fetchOne($0, sql: "SELECT mode, phase FROM review_rounds WHERE id = 7") }
@@ -720,7 +720,7 @@ final class ReviewChangesModelTests: XCTestCase {
         h.cli.script("diff", [diffJSON(["old/a.go", "new/b.go"]), diffJSON(["new/b.go"])])
         await h.model.open()
         try await h.model.selectChapter("dir:old")
-        try h.model.setCheck(chapterKey: "dir:old", lens: "correctness", itemKey: "k1", checked: true)
+        try await h.model.setCheck(chapterKey: "dir:old", lens: "correctness", itemKey: "k1", checked: true)
         XCTAssertEqual(h.model.currentChapterKey, "dir:old")
         await h.model.refresh()
         XCTAssertEqual(h.model.currentChapterKey, "dir:new")
@@ -732,9 +732,9 @@ final class ReviewChangesModelTests: XCTestCase {
     func testSetCheckTicksAndUnticks() async throws {
         let h = try harness()
         await openDeep(h)
-        try h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true)
+        try await h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true)
         XCTAssertEqual(h.model.checks(forChapter: "dir:cmd").map(\.state), [.checked])
-        try h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: false)
+        try await h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: false)
         XCTAssertTrue(h.model.checks.isEmpty)
     }
 
@@ -742,7 +742,7 @@ final class ReviewChangesModelTests: XCTestCase {
         let h = try harness()
         await openDeep(h)
         let item = try XCTUnwrap(h.model.lenses.first?.items.first)
-        try h.model.commentOnCheck(chapterKey: "dir:cmd", lens: "correctness", item: item, body: "What about nil?")
+        try await h.model.commentOnCheck(chapterKey: "dir:cmd", lens: "correctness", item: item, body: "What about nil?")
         let rows = try await h.comments()
         XCTAssertEqual(rows.count, 1)
         XCTAssertNil(rows[0].path)
@@ -757,8 +757,8 @@ final class ReviewChangesModelTests: XCTestCase {
         let h = try harness()
         await openDeep(h)
         let item = try XCTUnwrap(h.model.intentItems.first)
-        try h.model.markIntent(item, state: .notDone, note: "missing")
-        try h.model.markIntent(ReviewIntentItem(key: "target:6", text: "Other"), state: .partial, note: "")
+        try await h.model.markIntent(item, state: .notDone, note: "missing")
+        try await h.model.markIntent(ReviewIntentItem(key: "target:6", text: "Other"), state: .partial, note: "")
         let rows = try await h.comments()
         XCTAssertEqual(rows.map(\.lens), ["intent", "intent"])
         XCTAssertEqual(rows[0].body, ReviewWrapUp.intentCommentBody(partial: false, item: item, note: "missing"))
@@ -771,7 +771,7 @@ final class ReviewChangesModelTests: XCTestCase {
         let h = try harness()
         await openDeep(h)
         let item = try XCTUnwrap(h.model.intentItems.first)
-        try h.model.markIntent(item, state: .done, note: "")
+        try await h.model.markIntent(item, state: .done, note: "")
         let rows = try await h.comments()
         XCTAssertTrue(rows.isEmpty)
         XCTAssertEqual(h.model.checks(forChapter: "wrapup").map(\.state), [.done])
@@ -781,8 +781,8 @@ final class ReviewChangesModelTests: XCTestCase {
         let h = try harness()
         await openDeep(h)
         let item = try XCTUnwrap(h.model.intentItems.first)
-        try h.model.markIntent(item, state: .notDone, note: "missing")
-        try h.model.markIntent(item, state: .partial, note: "half")
+        try await h.model.markIntent(item, state: .notDone, note: "missing")
+        try await h.model.markIntent(item, state: .partial, note: "half")
         let rows = try await h.comments().filter { $0.lens == "intent" && $0.status == .draft }
         XCTAssertEqual(rows.map(\.body), [ReviewWrapUp.intentCommentBody(partial: true, item: item, note: "half")])
     }
@@ -791,8 +791,8 @@ final class ReviewChangesModelTests: XCTestCase {
         let h = try harness()
         await openDeep(h)
         let item = try XCTUnwrap(h.model.intentItems.first)
-        try h.model.markIntent(item, state: .notDone, note: "")
-        try h.model.markIntent(item, state: .done, note: "")
+        try await h.model.markIntent(item, state: .notDone, note: "")
+        try await h.model.markIntent(item, state: .done, note: "")
         let rows = try await h.comments()
         XCTAssertTrue(rows.isEmpty)
         XCTAssertEqual(h.model.comments, rows)
@@ -803,9 +803,9 @@ final class ReviewChangesModelTests: XCTestCase {
         await openDeep(h)
         let item = try XCTUnwrap(h.model.intentItems.first)
         let other = ReviewIntentItem(key: "target:6", text: "Other")
-        try h.model.markIntent(other, state: .notDone, note: "x")
-        try h.model.markIntent(item, state: .notDone, note: "a")
-        try h.model.markIntent(item, state: .partial, note: "b")
+        try await h.model.markIntent(other, state: .notDone, note: "x")
+        try await h.model.markIntent(item, state: .notDone, note: "a")
+        try await h.model.markIntent(item, state: .partial, note: "b")
         let bodies = try await h.comments().filter { $0.status == .draft }.map(\.body)
         XCTAssertEqual(bodies, [
             ReviewWrapUp.intentCommentBody(partial: false, item: other, note: "x"),
@@ -817,7 +817,7 @@ final class ReviewChangesModelTests: XCTestCase {
         let h = try harness()
         await openDeep(h)
         for text in ["Ship 🚀 e\u{301}", "Ship 🚀 e\u{301}"] {
-            try h.model.markIntent(ReviewIntentItem(key: "target:9", text: text), state: .notDone, note: "n")
+            try await h.model.markIntent(ReviewIntentItem(key: "target:9", text: text), state: .notDone, note: "n")
         }
         let drafts = try await h.comments().filter { $0.status == .draft }
         XCTAssertEqual(drafts.count, 1)
@@ -840,7 +840,7 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.open()
         let carried = try await h.comments(8).filter { $0.status == .carried }
         XCTAssertEqual(carried.count, 1)
-        try h.model.markIntent(item, state: .done, note: "")
+        try await h.model.markIntent(item, state: .done, note: "")
         let rows = try await h.comments(8)
         XCTAssertEqual(rows.map(\.status), [.resolved])
     }
@@ -858,21 +858,21 @@ final class ReviewChangesModelTests: XCTestCase {
     }
 
     func testChecklistWritesRollBackWhenTheRowWasSentBehindTheModel() async throws {
-        let actions: [(ReviewChangesModel) throws -> Void] = [
+        let actions: [(ReviewChangesModel) async throws -> Void] = [
             { m in
                 let item = try XCTUnwrap(m.lenses.first?.items.first)
-                try m.commentOnCheck(chapterKey: "dir:cmd", lens: "correctness", item: item, body: "B")
+                try await m.commentOnCheck(chapterKey: "dir:cmd", lens: "correctness", item: item, body: "B")
             },
-            { m in try m.markIntent(try XCTUnwrap(m.intentItems.first), state: .done, note: "") },
-            { m in try m.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true) }
+            { m in try await m.markIntent(try XCTUnwrap(m.intentItems.first), state: .done, note: "") },
+            { m in try await m.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true) }
         ]
         for action in actions {
             let h = try harness()
             await openDeep(h)
             let intent = try XCTUnwrap(h.model.intentItems.first)
-            try h.model.markIntent(intent, state: .notDone, note: "keep")
+            try await h.model.markIntent(intent, state: .notDone, note: "keep")
             try await h.db.write { try $0.execute(sql: "UPDATE review_rounds SET status = 'sent'") }
-            XCTAssertThrowsError(try action(h.model)) { XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .roundClosed) }
+            await assertThrowsAsync(ReviewChangesModel.ModelError.roundClosed) { try await action(h.model) }
             XCTAssertEqual(h.model.round?.status, "sent")
             let rows = try await h.comments()
             XCTAssertEqual(rows.map(\.status), [.draft])
@@ -888,7 +888,7 @@ final class ReviewChangesModelTests: XCTestCase {
         h.baseScript()
         await h.model.open()
         try await h.db.write { try $0.execute(sql: "UPDATE review_rounds SET status = 'sent'") }
-        XCTAssertThrowsError(try h.model.setMode(.deep)) { XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .roundClosed) }
+        await assertThrowsAsync(ReviewChangesModel.ModelError.roundClosed) { try await h.model.setMode(.deep) }
         let mode = try await h.db.read { try String.fetchOne($0, sql: "SELECT mode FROM review_rounds WHERE id = 7") }
         XCTAssertEqual(mode, "quick")
         XCTAssertEqual(h.model.round?.status, "sent")
@@ -902,6 +902,37 @@ final class ReviewChangesModelTests: XCTestCase {
         h.model.breakHintDismissed = true
         await h.model.open()
         XCTAssertFalse(h.model.breakHintDismissed)
+    }
+
+    /// Board #670: a phase pick, a mode switch and a second phase pick while
+    /// the database is busy all persist. Each save writes the pending values
+    /// when its turn comes, so the last save (queued while the mode was still
+    /// quick on screen) does not write the old mode back over the new one.
+    func testModeAndPhasePicksWhileTheWriterIsBusyAllPersist() async throws {
+        let h = try harness()
+        h.baseScript()
+        await h.model.open()
+        let before = h.model.phase
+        XCTAssertEqual(h.model.mode, .quick)
+        XCTAssertNotEqual(before, .wrapup)
+        let held = HeldWriter(h.db)
+        defer { held.release() }
+        let first = Task { _ = try? await h.model.setPhase(.chapters) }
+        let mode = Task { _ = try? await h.model.setMode(.deep) }
+        let last = Task { _ = try? await h.model.setPhase(.wrapup) }
+        let waiting = await boundedValue(Task { (h.model.mode, h.model.phase) }, timeout: .seconds(1))
+        XCTAssertEqual(waiting?.0, .quick, "the main actor runs, and the mode waits for its save")
+        XCTAssertEqual(waiting?.1, before)
+        held.release()
+        for task in [first, mode, last] {
+            let done = await boundedValue(task)
+            XCTAssertNotNil(done)
+        }
+        XCTAssertEqual(h.model.mode, .deep)
+        XCTAssertEqual(h.model.phase, .wrapup)
+        let row = try await h.db.read { try Row.fetchOne($0, sql: "SELECT mode, phase FROM review_rounds WHERE id = 7") }
+        XCTAssertEqual(row?["mode"] as String?, "deep", "a save queued before the switch never writes the old mode")
+        XCTAssertEqual(row?["phase"] as String?, "wrapup", "the newer pick lands last")
     }
 
     private func activeSeconds(_ h: Harness) async throws -> Int? {
@@ -926,12 +957,12 @@ final class ReviewChangesModelTests: XCTestCase {
         let early = try await activeSeconds(h)
         XCTAssertEqual(early, 0)
         h.model.noteInteraction(at: t0.addingTimeInterval(30))
-        h.model.tick(at: t0.addingTimeInterval(30), isKey: true)
+        await h.model.tick(at: t0.addingTimeInterval(30), isKey: true)?.value
         let at30 = try await activeSeconds(h)
         XCTAssertEqual(at30, 30)
         h.model.noteInteraction(at: t0.addingTimeInterval(41))
         h.model.tick(at: t0.addingTimeInterval(41), isKey: true)
-        h.model.flushState()
+        await h.model.flushState()
         let at41 = try await activeSeconds(h)
         XCTAssertEqual(at41, 41)
     }
@@ -1051,7 +1082,7 @@ final class ReviewChangesModelTests: XCTestCase {
         h.cli.hold("overview")
         await openDeep(h)
         XCTAssertEqual(h.model.phase, .chapters)
-        try h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true)
+        try await h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true)
         await h.cli.waitPending("overview")
         h.cli.release("overview")
         await awaitOverview(h)
@@ -1068,8 +1099,8 @@ final class ReviewChangesModelTests: XCTestCase {
         h.cli.script(["overview": overviewJSON()])
         h.cli.hold("overview")
         await openDeep(h)
-        try h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true)
-        try h.model.setPhase(.meaning)
+        try await h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true)
+        try await h.model.setPhase(.meaning)
         await h.cli.waitPending("overview")
         h.cli.release("overview")
         await awaitOverview(h)
@@ -1104,7 +1135,7 @@ final class ReviewChangesModelTests: XCTestCase {
         h.cli.script("start", [deepStartJSON(tree: "u7")])
         await awaitOverview(h)
         let first = try XCTUnwrap(h.model.intentItems.first)
-        try h.model.markIntent(first, state: .notDone, note: "missing")
+        try await h.model.markIntent(first, state: .notDone, note: "missing")
         await h.model.refresh()
         await awaitOverview(h)
         XCTAssertEqual(h.cli.calls("overview").count, 2)
@@ -1113,7 +1144,7 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(second.aiStatus, "done")
         XCTAssertEqual(h.model.checks(forChapter: "wrapup").map(\.itemKey), [first.key], "the mark set under the first overview shows")
         XCTAssertEqual(h.model.checks(forChapter: "wrapup").map(\.state), [.notDone])
-        try h.model.markIntent(second, state: .notDone, note: "still missing")
+        try await h.model.markIntent(second, state: .notDone, note: "still missing")
         let drafts = try await h.comments().filter { $0.lens == "intent" && $0.status == .draft }
         XCTAssertEqual(drafts.map(\.body), [ReviewWrapUp.intentCommentBody(partial: false, item: second, note: "still missing")],
                        "the earlier draft is replaced, not duplicated")
@@ -1267,7 +1298,7 @@ final class ReviewChangesModelTests: XCTestCase {
         h.cli.hold("overview")
         await h.model.open()
         await h.cli.waitPending("overview")
-        try h.model.setMode(.deep)
+        try await h.model.setMode(.deep)
         XCTAssertEqual(h.model.overview, .loading)
         await h.cli.waitPending("overview", count: 2)
         h.cli.release("overview")
@@ -1284,7 +1315,7 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.open()
         await awaitOverview(h)
         XCTAssertEqual(h.model.overview, .onRequest)
-        try h.model.setMode(.deep)
+        try await h.model.setMode(.deep)
         await awaitOverview(h)
         guard case .ready = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
         XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true, false])
@@ -1460,7 +1491,7 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.refresh()
         XCTAssertEqual(h.model.agentResolved.map(\.id), [f.copy])
         XCTAssertEqual(h.model.agentReply(for: h.model.agentResolved[0]), "fixed")
-        try h.model.reopen(f.copy)
+        try await h.model.reopen(f.copy)
         XCTAssertEqual(h.model.agentResolved, [])
         XCTAssertEqual(h.model.comments.first { $0.id == f.copy }?.status, .carried)
         let row = try await h.comments().first { $0.id == f.copy }
@@ -1478,7 +1509,7 @@ final class ReviewChangesModelTests: XCTestCase {
         try await h.db.write { try $0.execute(sql: "UPDATE review_rounds SET status = 'sent' WHERE id = 7") }
         h.cli.script(["send": #"{"ok":true,"sent":false}"#])
         await h.model.send()
-        XCTAssertThrowsError(try h.model.reopen(f.copy)) { XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .roundClosed) }
+        await assertThrowsAsync(ReviewChangesModel.ModelError.roundClosed) { try await h.model.reopen(f.copy) }
     }
 
     func testCarriedCommentShowsSourceReply() async throws {
@@ -1514,10 +1545,10 @@ final class ReviewChangesModelTests: XCTestCase {
         await awaitOverview(h)
         XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
         try await h.model.selectChapter("ai:1")
-        try h.model.setCheck(chapterKey: "ai:1", lens: "correctness", itemKey: "k1", checked: true)
+        try await h.model.setCheck(chapterKey: "ai:1", lens: "correctness", itemKey: "k1", checked: true)
         // A check in the mechanical chapter the AI split leaves over, too.
-        try h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true)
-        h.model.flushState()
+        try await h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true)
+        await h.model.flushState()
 
         // The pane is made again (the app restarted): the round row says ai:1.
         h.cli.script(["start": deepStartJSON(chapterKey: "ai:1")])
@@ -1527,7 +1558,7 @@ final class ReviewChangesModelTests: XCTestCase {
         await again.open()
         await h.cli.waitPending("overview")
         XCTAssertEqual(again.chapters.map(\.key), ["dir:cmd", "dir:pkg"], "mechanical while the overview loads")
-        again.flushState()
+        await again.flushState()
         let waiting = try await h.db.read { try String.fetchOne($0, sql: "SELECT chapter_key FROM review_rounds WHERE id = 7") }
         XCTAssertEqual(waiting, "ai:1", "the fallback chapter is not saved over the waiting ai: one")
         h.cli.release("overview")
@@ -1535,7 +1566,7 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(again.chapters.map(\.key), ["ai:1", "dir:cmd"])
         XCTAssertEqual(again.currentChapterKey, "ai:1")
         XCTAssertFalse(again.aiChaptersPending)
-        again.flushState()
+        await again.flushState()
         let saved = try await h.db.read { try String.fetchOne($0, sql: "SELECT chapter_key FROM review_rounds WHERE id = 7") }
         XCTAssertEqual(saved, "ai:1")
     }
@@ -1550,7 +1581,7 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.refresh()
         XCTAssertEqual(h.model.agentResolved.map(\.id), [f.copy])
         try await h.db.write { try $0.execute(sql: "UPDATE review_rounds SET status = 'sent' WHERE id = 7") }
-        XCTAssertThrowsError(try h.model.reopen(f.copy)) { XCTAssertEqual($0 as? ReviewChangesModel.ModelError, .roundClosed) }
+        await assertThrowsAsync(ReviewChangesModel.ModelError.roundClosed) { try await h.model.reopen(f.copy) }
         XCTAssertEqual(h.model.round?.status, "sent")
         XCTAssertEqual(h.model.lastError, ReviewChangesModel.ModelError.roundClosed.errorDescription)
         let row = try await h.comments().first { $0.id == f.copy }

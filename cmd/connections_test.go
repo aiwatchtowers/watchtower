@@ -372,6 +372,30 @@ func TestConnections_AddRejectsReservedName(t *testing.T) {
 	assert.Empty(t, conns, "a rejected reserved name must create no row")
 }
 
+// A name starting with "watchtower_" would give the connection tools named
+// mcp__watchtower_..., which the whole-server mcp__watchtower allow token
+// covers — past QC-02 (board #556). Rejected case-insensitively; a name
+// merely containing "watchtower" is fine.
+func TestConnections_AddRejectsWatchtowerPrefix(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	for _, name := range []string{"watchtower__x", "watchtower_", "Watchtower_Tools"} {
+		_, err := runConnections(t, "", "add", "--name", name, "--kind", "stdio", "--command", "npx")
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "reserved", name)
+		assert.Contains(t, err.Error(), name, "the message names the refused name")
+	}
+	for _, name := range []string{"watchtowerx", "my-watchtower", "watchtower-x"} {
+		_, err := runConnections(t, "", "add", "--name", name, "--kind", "stdio", "--command", "npx")
+		require.NoError(t, err, name)
+	}
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	conns, err := database.ListExternalConnections()
+	require.NoError(t, err)
+	assert.Len(t, conns, 3, "only the allowed names created a row")
+}
+
 // TestConnectionsEnable_WarnsUnderNonClaudeProvider covers the provider-
 // honesty warning: ollama chats never wire external connections (they route
 // through runtime B), so enabling a connection there is inert; claude and
@@ -919,4 +943,46 @@ func TestConnections_AddRefusesHeadersOverRemoteHTTP(t *testing.T) {
 		names = append(names, c.Name)
 	}
 	assert.ElementsMatch(t, []string{"Local", "Secure", "Open"}, names, "the refused add left no row behind")
+}
+
+// The reserved-name error is not a tool-policy error: enabling, a tool
+// policy change, a refresh or a sign-in never clears it, and none of them
+// starts the server to list it (board #556).
+func TestConnections_ReservedNameErrorStands(t *testing.T) {
+	cfg := writeConnectionsConfig(t)
+	calls := stubToolsList(t, []db.ExternalTool{{Name: "get_item", Annotated: true, ReadOnlyHint: true}}, nil)
+	database, err := db.Open(cfg.DBPath())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	id, err := database.InsertExternalConnection(db.ExternalConnection{
+		Name: "watchtower__x", Kind: "http", URL: "https://example.com/mcp",
+	})
+	require.NoError(t, err)
+	cacheReadOnlyTool(t, database, id)
+	idArg := strconv.FormatInt(id, 10)
+
+	assertReserved := func(step string) {
+		t.Helper()
+		conn, err := database.GetExternalConnection(id)
+		require.NoError(t, err)
+		assert.Equal(t, "error", conn.Status, step)
+		assert.True(t, strings.HasPrefix(conn.Error, reservedReasonPrefix), "%s: %s", step, conn.Error)
+	}
+	_, stderr, err := runConnectionsSplit(t, "", "enable", idArg)
+	require.NoError(t, err)
+	assert.Contains(t, stderr, "reserved")
+	assertReserved("enable")
+	_, err = runConnections(t, "", "tools", idArg, "--default")
+	require.NoError(t, err)
+	assertReserved("tools --default")
+	_, err = runConnections(t, "", "tools", idArg, "--allow", "get_item")
+	require.NoError(t, err)
+	assertReserved("tools --allow")
+	_, err = runConnections(t, "", "tools", idArg, "--refresh")
+	require.ErrorContains(t, err, "reserved")
+	assertReserved("tools --refresh")
+	_, err = runConnections(t, "", "oauth", idArg)
+	require.ErrorContains(t, err, "reserved")
+	assertReserved("oauth")
+	assert.Empty(t, *calls, "a reserved connection's server is never started")
 }

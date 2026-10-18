@@ -159,7 +159,8 @@ struct EmbeddedChatComposer: View {
                 text: $engine.draft,
                 isStreaming: engine.isBusy,
                 onSend: { engine.sendDraft() },
-                onStop: { engine.stop() },
+                // Nothing stops a reply whose changes are being written.
+                onStop: engine.isFinishing ? nil : { engine.stop() },
                 placeholder: placeholder,
                 dictationTargetID: dictationTargetID,
                 maxHeight: density.composerMaxHeight,
@@ -171,6 +172,7 @@ struct EmbeddedChatComposer: View {
 
     private var status: ChatComposerStatus? {
         if engine.isQueued { return .queued }
+        if engine.isFinishing { return .finishing }
         return engine.bannerError.map { .error($0) }
     }
 }

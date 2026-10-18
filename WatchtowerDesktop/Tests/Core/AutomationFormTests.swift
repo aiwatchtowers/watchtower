@@ -239,8 +239,9 @@ final class AutomationFormTests: XCTestCase {
         // internal/automations: EventTypes and EventFields.
         XCTAssertEqual(AutomationFormModel.eventTypes, [
             "slack.new_messages", "gmail.new_messages", "jira.issue_changed", "calendar.event_changed",
-            "confluence.page_changed"
+            "confluence.page_changed", "slack.reaction_added"
         ])
+        XCTAssertEqual(AutomationFormModel.eventFields["slack.reaction_added"], ["account", "channel_id", "emoji"])
         XCTAssertEqual(Set(AutomationFormModel.eventFields.keys), Set(AutomationFormModel.eventTypes))
     }
 

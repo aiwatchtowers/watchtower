@@ -62,7 +62,7 @@ final class TargetAssistantCenterTests: XCTestCase {
         XCTAssertEqual(center.count, 1)
     }
 
-    func testEvictsTheLeastRecentlyUsedContainerBeyondTheLimit() throws {
+    func testEvictsTheLeastRecentlyUsedContainerBeyondTheLimit() async throws {
         let (manager, path) = try makeManager()
         defer { TestDatabase.cleanup(path: path) }
         let targets = TargetsViewModel(dbManager: manager)
@@ -71,8 +71,10 @@ final class TargetAssistantCenterTests: XCTestCase {
         let b = try makeTarget(manager, text: "b")
         let c = try makeTarget(manager, text: "c")
 
-        _ = center.container(for: a, viewModel: targets, dbManager: manager)
-        _ = center.container(for: b, viewModel: targets, dbManager: manager)
+        // Each first tab is written before the next container comes: one
+        // still being created is never evicted (board #670).
+        _ = await center.container(for: a, viewModel: targets, dbManager: manager).readyChat()
+        _ = await center.container(for: b, viewModel: targets, dbManager: manager).readyChat()
         // Re-touch A so B becomes the least recently used one.
         _ = center.container(for: a, viewModel: targets, dbManager: manager)
         _ = center.container(for: c, viewModel: targets, dbManager: manager)
@@ -95,7 +97,8 @@ final class TargetAssistantCenterTests: XCTestCase {
         let third = try makeTarget(manager, text: "third")
 
         let busyContainer = center.container(for: busy, viewModel: targets, dbManager: manager)
-        let chat = try XCTUnwrap(busyContainer.activeChat)
+        let ready = await busyContainer.readyChat()
+        let chat = try XCTUnwrap(ready)
         chat.inputText = "keep working"
         chat.send()
         XCTAssertTrue(busyContainer.isAnyWorking)

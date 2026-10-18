@@ -48,7 +48,7 @@ var specTemplates = []specTemplate{
 	{"pr-review-rounds", automations.ScopeWorkbench, []string{"pr-review-rounds"}, map[string]wantTemplateRecipe{
 		"pr-review-rounds": {
 			trigger:     scheduleTrigger("0 10,16 * * 1-5"),
-			permissions: []string{`shell:"gh pr list --state open --json number,title,url,author,updatedAt"`, "session:start", "llm:light"},
+			permissions: []string{`shell:"gh pr list --state open --limit 200 --json number,title,url,author,updatedAt"`, "session:start", "llm:light"},
 			outputs:     []string{"report"},
 		},
 	}},

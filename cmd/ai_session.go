@@ -283,7 +283,7 @@ func claudeSessionOptions(w sessionWiring, ext []ai.ExternalMCPServer) chat.Clau
 		Binary:          claude.FindBinary(w.cfg.ClaudePath),
 		Model:           w.model,
 		ResumeSessionID: aiSessionFlagResume,
-		SystemPrompt:    w.prompt,
+		SystemPrompt:    ai.WithExternalDataRule(w.prompt, ext),
 		MCPConfig:       ai.ChatMCPConfig(w.dbPath, w.mcpArgs, ext),
 		Tools:           ai.SessionBuiltinTools,
 		AllowedTools:    ai.AllowedTools(ext) + "," + ai.WebSearchTool,

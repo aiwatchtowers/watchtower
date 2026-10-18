@@ -205,7 +205,7 @@ struct WorkbenchBoardView: View {
                     onSelect: { vm.select($0) },
                     onEnter: { id in enterScopeAndFocus(vm, id) { vm.enterLane($0) } },
                     onOpenGroup: { id in enterScopeAndFocus(vm, id) { vm.enterScope($0) } },
-                    onMove: { vm.moveCard($0, to: $1) }
+                    onMove: { vm.dropCard($0, on: $1) }
                 )
             } else {
                 tree(vm)
@@ -315,7 +315,7 @@ struct WorkbenchBoardView: View {
                 // Drop a row onto another to nest it there (board #186).
                 .draggable(WorkbenchTargetDrag.payload(row.id))
                 .dropDestination(for: String.self) { items, _ in
-                    let moved = items.compactMap(WorkbenchTargetDrag.targetID).filter { vm.move($0, under: row.id) }
+                    let moved = items.compactMap(WorkbenchTargetDrag.targetID).filter { vm.dropTarget($0, under: row.id) }
                     return !moved.isEmpty
                 }
                 .listRowSeparator(.hidden)

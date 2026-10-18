@@ -69,9 +69,9 @@ private struct QuestionListView: View {
                 presenting: pendingDelete
             ) { item in
                 Button("Delete", role: .destructive) {
-                    questions.deleteQuestion(
-                        CodeQuestionRef(project: project, root: root, conversationID: item.conversationID, origin: item.origin)
-                    )
+                    let question = CodeQuestionRef(project: project, root: root, conversationID: item.conversationID,
+                                                   origin: item.origin)
+                    Task { await questions.deleteQuestion(question) }
                 }
             } message: { _ in
                 Text("The conversation and its answers are removed.")
@@ -114,11 +114,14 @@ private struct QuestionConversationView: View {
 
     var body: some View {
         let engine = questions.engine(for: question)
+        // Its Delete waits for the writer: nothing more goes to it.
+        let deleting = questions.isDeleting(question.conversationID)
         VStack(spacing: 0) {
-            header(busy: engine?.isBusy ?? false)
+            header(busy: engine?.isBusy ?? false, deleting: deleting)
             Divider()
             if let engine, let chats = questions.embeddedChats {
                 EmbeddedChatView(engine: engine, density: .compact, placeholder: "Ask a follow-up…")
+                    .disabled(deleting)
                     .embeddedChatVisibility(engine.spec.key, in: chats)
             } else {
                 ContentUnavailableView("This question can't be opened", systemImage: "exclamationmark.triangle")
@@ -129,13 +132,13 @@ private struct QuestionConversationView: View {
             Task { await questions.openLink(url, project: question.project, root: question.root) }
         }
         .confirmationDialog("Delete this question?", isPresented: $confirmsDelete) {
-            Button("Delete", role: .destructive) { questions.deleteQuestion(question) }
+            Button("Delete", role: .destructive) { [questions, question] in Task { await questions.deleteQuestion(question) } }
         } message: {
             Text("The conversation and its answers are removed.")
         }
     }
 
-    private func header(busy: Bool) -> some View {
+    private func header(busy: Bool, deleting: Bool) -> some View {
         let conversationID = question.conversationID
         let choice = questions.modelChoice(conversationID: conversationID)
         return HStack(spacing: 6) {
@@ -156,10 +159,14 @@ private struct QuestionConversationView: View {
                 provider: choice.provider,
                 model: choice.model,
                 suggestions: questions.modelSuggestions(choice.provider),
-                onSelectProvider: { questions.setModelChoice(choice.switching(to: $0), conversationID: conversationID) },
-                onSelectModel: { questions.setModelChoice(.init(provider: choice.provider, model: $0), conversationID: conversationID) }
+                onSelectProvider: { provider in
+                    Task { await questions.setModelChoice(choice.switching(to: provider), conversationID: conversationID) }
+                },
+                onSelectModel: { model in
+                    Task { await questions.setModelChoice(.init(provider: choice.provider, model: model), conversationID: conversationID) }
+                }
             )
-            .disabled(busy)
+            .disabled(busy || deleting || questions.storingChoices.contains(conversationID))
             if CodeQuestionActionsFeature.handToClaudeCode {
                 Button {
                     questions.handToClaude(question)
@@ -167,7 +174,7 @@ private struct QuestionConversationView: View {
                     Image(systemName: "terminal")
                 }
                 .keyboardShortcut(.return, modifiers: [.command, .option])
-                .disabled(busy)
+                .disabled(busy || deleting)
                 .help("Hand to Session (⌥⌘↩)")
                 .accessibilityLabel("Hand to Session")
             }
@@ -176,6 +183,7 @@ private struct QuestionConversationView: View {
             } label: {
                 Image(systemName: "trash")
             }
+            .disabled(deleting)
             .help("Delete this question")
             .accessibilityLabel("Delete")
         }
