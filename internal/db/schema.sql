@@ -2464,8 +2464,8 @@ CREATE TABLE IF NOT EXISTS projects (
     methodology_carry_pending INTEGER NOT NULL DEFAULT 0 CHECK (methodology_carry_pending IN (0, 1)), -- 1 = existed at the 00133 upgrade: its folder file's weaker checks are still to be carried into the owner's setting, once (board #558)
     ask_guard_carried_at TEXT NULL, -- when ask_guard_mode was carried over from the folder file; NULL = the owner's pick, or never carried (00133)
     finish_check_carried_at TEXT NULL, -- when finish_check was carried over from the folder file; NULL = the owner's pick, or never carried (00133)
-    session_instructions TEXT NULL, -- the owner's instructions for sessions in this workbench; NULL = none (00136)
-    target_procedure TEXT NULL -- the owner's procedure for working a target in this workbench; NULL = none (00136)
+    session_instructions TEXT NULL, -- the owner's instructions for sessions in this workbench; NULL = none (00137)
+    target_procedure TEXT NULL -- the owner's procedure for working a target in this workbench; NULL = none (00137)
 );
 
 -- Workbench board columns (00125, PROJ-19): named columns inside one status
@@ -3097,7 +3097,7 @@ CREATE TABLE IF NOT EXISTS permission_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_permission_requests_session ON permission_requests(terminal_session_id, status);
 
--- Agent instructions (00136): the owner's global session instructions / target procedure
+-- Agent instructions (00137): the owner's global session instructions / target procedure
 -- (one row per scope; an empty body deletes the row) and mined repeat suggestions.
 CREATE TABLE IF NOT EXISTS owner_instructions (
     scope      TEXT PRIMARY KEY CHECK (scope IN ('session','procedure')),
