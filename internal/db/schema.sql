@@ -413,7 +413,7 @@ CREATE TABLE IF NOT EXISTS targets (
     notes               TEXT NOT NULL DEFAULT '[]',
     progress            REAL NOT NULL DEFAULT 0.0,
     source_type         TEXT NOT NULL DEFAULT 'manual'
-                        CHECK(source_type IN ('extract','track','digest','briefing','manual','chat','inbox','jira','slack','promoted_subitem','idea')),
+                        CHECK(source_type IN ('extract','track','digest','briefing','manual','chat','inbox','jira','linear','slack','promoted_subitem','idea')),
     source_id           TEXT NOT NULL DEFAULT '',
     ai_level_confidence REAL DEFAULT NULL,
     created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
@@ -529,6 +529,7 @@ CREATE TABLE IF NOT EXISTS inbox_items (
     trigger_type    TEXT NOT NULL CHECK(trigger_type IN (
         'mention','dm','thread_reply','reaction',
         'jira_assigned','jira_comment_mention','jira_comment_watching','jira_status_change','jira_priority_change',
+        'linear_assigned','linear_comment_mention',
         'calendar_invite','calendar_time_change','calendar_cancelled',
         'decision_made','briefing_ready',
         'target_due',
@@ -1676,7 +1677,7 @@ CREATE TABLE IF NOT EXISTS day_plan_items (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     day_plan_id  INTEGER NOT NULL,
     kind         TEXT NOT NULL CHECK (kind IN ('timeblock','backlog')),
-    source_type  TEXT NOT NULL CHECK (source_type IN ('task','briefing_attention','jira','calendar','manual','focus')),
+    source_type  TEXT NOT NULL CHECK (source_type IN ('task','briefing_attention','jira','linear','calendar','manual','focus')),
     source_id    TEXT,
     title        TEXT NOT NULL,
     description  TEXT,

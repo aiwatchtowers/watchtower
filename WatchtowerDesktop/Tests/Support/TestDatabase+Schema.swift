@@ -526,26 +526,6 @@ CREATE TABLE IF NOT EXISTS day_plans (
     UNIQUE (user_id, plan_date),
     FOREIGN KEY (briefing_id) REFERENCES briefings(id) ON DELETE SET NULL
 );
-CREATE TABLE IF NOT EXISTS day_plan_items (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    day_plan_id  INTEGER NOT NULL,
-    kind         TEXT NOT NULL CHECK (kind IN ('timeblock','backlog')),
-    source_type  TEXT NOT NULL CHECK (source_type IN ('task','briefing_attention','jira','calendar','manual','focus')),
-    source_id    TEXT,
-    title        TEXT NOT NULL,
-    description  TEXT,
-    rationale    TEXT,
-    start_time   TEXT,
-    end_time     TEXT,
-    duration_min INTEGER,
-    priority     TEXT CHECK (priority IS NULL OR priority IN ('high','medium','low')),
-    status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','done','skipped')),
-    order_index  INTEGER NOT NULL DEFAULT 0,
-    tags         TEXT,
-    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    FOREIGN KEY (day_plan_id) REFERENCES day_plans(id) ON DELETE CASCADE
-);
 CREATE TABLE IF NOT EXISTS track_events (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     track_id        INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
@@ -588,46 +568,6 @@ CREATE TABLE IF NOT EXISTS situation_signals (
     situation_id   INTEGER NOT NULL REFERENCES situations(id) ON DELETE CASCADE,
     inbox_item_id  INTEGER NOT NULL REFERENCES inbox_items(id) ON DELETE CASCADE,
     UNIQUE(situation_id, inbox_item_id)
-);
-CREATE TABLE IF NOT EXISTS "inbox_items" (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    channel_id      TEXT NOT NULL,
-    message_ts      TEXT NOT NULL,
-    thread_ts       TEXT NOT NULL DEFAULT '',
-    sender_user_id  TEXT NOT NULL,
-    trigger_type    TEXT NOT NULL CHECK(trigger_type IN (
-        'mention','dm','thread_reply','reaction',
-        'jira_assigned','jira_comment_mention','jira_comment_watching','jira_status_change','jira_priority_change',
-        'calendar_invite','calendar_time_change','calendar_cancelled',
-        'decision_made','briefing_ready',
-        'target_due',
-        'stream',
-        'email_received','email_cc'
-    )),
-    snippet         TEXT NOT NULL DEFAULT '',
-    context         TEXT NOT NULL DEFAULT '',
-    raw_text        TEXT NOT NULL DEFAULT '',
-    permalink       TEXT NOT NULL DEFAULT '',
-    status          TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','resolved','dismissed','snoozed')),
-    priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
-    ai_reason       TEXT NOT NULL DEFAULT '',
-    resolved_reason TEXT NOT NULL DEFAULT '',
-    snooze_until    TEXT NOT NULL DEFAULT '',
-    waiting_user_ids TEXT NOT NULL DEFAULT '[]',
-    target_id       INTEGER,
-    read_at         TEXT,
-    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    item_class      TEXT NOT NULL DEFAULT 'actionable' CHECK(item_class IN ('actionable','ambient')),
-    archived_at     TEXT,
-    archive_reason  TEXT DEFAULT '' CHECK(archive_reason IN ('','resolved','seen_expired','stale','dismissed')),
-    why_matters     TEXT NOT NULL DEFAULT '',
-    thread_digest   TEXT NOT NULL DEFAULT '',
-    draft_reply     TEXT NOT NULL DEFAULT '',
-    card_status     TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
-    card_generated_at TEXT,
-    composed_at     TEXT, mentions TEXT NOT NULL DEFAULT '[]', mentions_earlier INTEGER NOT NULL DEFAULT 0, mentioned_at TEXT NOT NULL DEFAULT '',
-    UNIQUE(channel_id, message_ts)
 );
 CREATE TABLE IF NOT EXISTS memory_aliases (
     alias    TEXT PRIMARY KEY COLLATE NOCASE,
@@ -1331,46 +1271,6 @@ CREATE TABLE IF NOT EXISTS chat_artifact_comments (
     sent_at          REAL,
     CHECK (anchor_quote != '' AND body != ''),
     CHECK (status != 'sent' OR sent_at IS NOT NULL)
-);
-CREATE TABLE IF NOT EXISTS "targets" (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    text                TEXT NOT NULL,
-    intent              TEXT NOT NULL DEFAULT '',
-    level               TEXT NOT NULL DEFAULT 'day'
-                        CHECK(level IN ('quarter','month','week','day','custom')),
-    custom_label        TEXT NOT NULL DEFAULT '',
-    period_start        TEXT NOT NULL,
-    period_end          TEXT NOT NULL,
-    parent_id           INTEGER REFERENCES targets(id) ON DELETE SET NULL,
-    status              TEXT NOT NULL DEFAULT 'todo'
-                        CHECK(status IN ('todo','in_progress','in_review','blocked','done','dismissed','snoozed')),
-    priority            TEXT NOT NULL DEFAULT 'medium'
-                        CHECK(priority IN ('high','medium','low')),
-    ownership           TEXT NOT NULL DEFAULT 'mine'
-                        CHECK(ownership IN ('mine','delegated','watching')),
-    ball_on             TEXT NOT NULL DEFAULT '',
-    due_date            TEXT NOT NULL DEFAULT '',
-    snooze_until        TEXT NOT NULL DEFAULT '',
-    blocking            TEXT NOT NULL DEFAULT '',
-    tags                TEXT NOT NULL DEFAULT '[]',
-    sub_items           TEXT NOT NULL DEFAULT '[]',
-    notes               TEXT NOT NULL DEFAULT '[]',
-    progress            REAL NOT NULL DEFAULT 0.0,
-    source_type         TEXT NOT NULL DEFAULT 'manual'
-                        CHECK(source_type IN ('extract','track','digest','briefing','manual','chat','inbox','jira','slack','promoted_subitem','idea')),
-    source_id           TEXT NOT NULL DEFAULT '',
-    ai_level_confidence REAL DEFAULT NULL,
-    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    notified_at         TEXT NOT NULL DEFAULT '',
-    next_step           TEXT NOT NULL DEFAULT '',
-    next_step_at        TEXT NOT NULL DEFAULT '',
-    next_step_attempts  INTEGER NOT NULL DEFAULT 0,
-    next_step_attempted_at TEXT NOT NULL DEFAULT '',
-    project_id          INTEGER REFERENCES projects(id) ON DELETE CASCADE,
-    status_actor        TEXT DEFAULT NULL
-                        CHECK(status_actor IS NULL OR status_actor IN ('agent','owner','system')), branch TEXT NOT NULL DEFAULT '', pr TEXT NOT NULL DEFAULT '', board_column_id INTEGER NULL REFERENCES workbench_board_columns(id) ON DELETE SET NULL,
-    CHECK(status != 'in_review' OR project_id IS NOT NULL)
 );
 CREATE TABLE IF NOT EXISTS target_status_history (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2117,34 +2017,107 @@ CREATE TABLE IF NOT EXISTS linear_labels (
     name       TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (account_id, id)
 );
-CREATE VIEW IF NOT EXISTS workbench_target_archive AS
-WITH RECURSIVE
-    node(id, parent_id, project_id, open, closed_at) AS (
-        SELECT t.id, t.parent_id, t.project_id,
-               t.status NOT IN ('done', 'dismissed'),
-               COALESCE((SELECT MAX(h.changed_at) FROM target_status_history h WHERE h.target_id = t.id),
-                        t.updated_at)
-        FROM targets t
-        WHERE t.project_id IS NOT NULL
-    ),
-    up(ancestor, parent_id, project_id, open, closed_at) AS (
-        SELECT id, parent_id, project_id, open, closed_at FROM node
-        UNION
-        SELECT a.id, a.parent_id, up.project_id, up.open, up.closed_at
-        FROM up JOIN targets a ON a.id = up.parent_id AND a.project_id = up.project_id
-    )
-SELECT up.ancestor AS target_id,
-       up.project_id AS project_id,
-       CASE WHEN MAX(up.open) = 0
-             AND COUNT(*) = COUNT(julianday(up.closed_at))
-             AND ((p.archive_after_days > 0
-                   AND julianday('now') - MAX(julianday(up.closed_at)) > p.archive_after_days)
-               OR (p.archived_through IS NOT NULL
-                   AND MAX(julianday(up.closed_at)) <= julianday(p.archived_through)))
-            THEN 1 ELSE 0 END AS archived
-FROM up
-JOIN projects p ON p.id = up.project_id
-GROUP BY up.ancestor;
+CREATE TABLE IF NOT EXISTS "targets" (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    text                TEXT NOT NULL,
+    intent              TEXT NOT NULL DEFAULT '',
+    level               TEXT NOT NULL DEFAULT 'day'
+                        CHECK(level IN ('quarter','month','week','day','custom')),
+    custom_label        TEXT NOT NULL DEFAULT '',
+    period_start        TEXT NOT NULL,
+    period_end          TEXT NOT NULL,
+    parent_id           INTEGER REFERENCES targets(id) ON DELETE SET NULL,
+    status              TEXT NOT NULL DEFAULT 'todo'
+                        CHECK(status IN ('todo','in_progress','in_review','blocked','done','dismissed','snoozed')),
+    priority            TEXT NOT NULL DEFAULT 'medium'
+                        CHECK(priority IN ('high','medium','low')),
+    ownership           TEXT NOT NULL DEFAULT 'mine'
+                        CHECK(ownership IN ('mine','delegated','watching')),
+    ball_on             TEXT NOT NULL DEFAULT '',
+    due_date            TEXT NOT NULL DEFAULT '',
+    snooze_until        TEXT NOT NULL DEFAULT '',
+    blocking            TEXT NOT NULL DEFAULT '',
+    tags                TEXT NOT NULL DEFAULT '[]',
+    sub_items           TEXT NOT NULL DEFAULT '[]',
+    notes               TEXT NOT NULL DEFAULT '[]',
+    progress            REAL NOT NULL DEFAULT 0.0,
+    source_type         TEXT NOT NULL DEFAULT 'manual'
+                        CHECK(source_type IN ('extract','track','digest','briefing','manual','chat','inbox','jira','linear','slack','promoted_subitem','idea')),
+    source_id           TEXT NOT NULL DEFAULT '',
+    ai_level_confidence REAL DEFAULT NULL,
+    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    notified_at         TEXT NOT NULL DEFAULT '',
+    next_step           TEXT NOT NULL DEFAULT '',
+    next_step_at        TEXT NOT NULL DEFAULT '',
+    next_step_attempts  INTEGER NOT NULL DEFAULT 0,
+    next_step_attempted_at TEXT NOT NULL DEFAULT '',
+    project_id          INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+    status_actor        TEXT DEFAULT NULL
+                        CHECK(status_actor IS NULL OR status_actor IN ('agent','owner','system')), branch TEXT NOT NULL DEFAULT '', pr TEXT NOT NULL DEFAULT '', board_column_id INTEGER NULL REFERENCES workbench_board_columns(id) ON DELETE SET NULL,
+    CHECK(status != 'in_review' OR project_id IS NOT NULL)
+);
+CREATE TABLE IF NOT EXISTS "day_plan_items" (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    day_plan_id  INTEGER NOT NULL,
+    kind         TEXT NOT NULL CHECK (kind IN ('timeblock','backlog')),
+    source_type  TEXT NOT NULL CHECK (source_type IN ('task','briefing_attention','jira','linear','calendar','manual','focus')),
+    source_id    TEXT,
+    title        TEXT NOT NULL,
+    description  TEXT,
+    rationale    TEXT,
+    start_time   TEXT,
+    end_time     TEXT,
+    duration_min INTEGER,
+    priority     TEXT CHECK (priority IS NULL OR priority IN ('high','medium','low')),
+    status       TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','done','skipped')),
+    order_index  INTEGER NOT NULL DEFAULT 0,
+    tags         TEXT,
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    FOREIGN KEY (day_plan_id) REFERENCES day_plans(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS "inbox_items" (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id      TEXT NOT NULL,
+    message_ts      TEXT NOT NULL,
+    thread_ts       TEXT NOT NULL DEFAULT '',
+    sender_user_id  TEXT NOT NULL,
+    trigger_type    TEXT NOT NULL CHECK(trigger_type IN (
+        'mention','dm','thread_reply','reaction',
+        'jira_assigned','jira_comment_mention','jira_comment_watching','jira_status_change','jira_priority_change',
+        'linear_assigned','linear_comment_mention',
+        'calendar_invite','calendar_time_change','calendar_cancelled',
+        'decision_made','briefing_ready',
+        'target_due',
+        'stream',
+        'email_received','email_cc'
+    )),
+    snippet         TEXT NOT NULL DEFAULT '',
+    context         TEXT NOT NULL DEFAULT '',
+    raw_text        TEXT NOT NULL DEFAULT '',
+    permalink       TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','resolved','dismissed','snoozed')),
+    priority        TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('high','medium','low')),
+    ai_reason       TEXT NOT NULL DEFAULT '',
+    resolved_reason TEXT NOT NULL DEFAULT '',
+    snooze_until    TEXT NOT NULL DEFAULT '',
+    waiting_user_ids TEXT NOT NULL DEFAULT '[]',
+    target_id       INTEGER,
+    read_at         TEXT,
+    created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    item_class      TEXT NOT NULL DEFAULT 'actionable' CHECK(item_class IN ('actionable','ambient')),
+    archived_at     TEXT,
+    archive_reason  TEXT DEFAULT '' CHECK(archive_reason IN ('','resolved','seen_expired','stale','dismissed')),
+    why_matters     TEXT NOT NULL DEFAULT '',
+    thread_digest   TEXT NOT NULL DEFAULT '',
+    draft_reply     TEXT NOT NULL DEFAULT '',
+    card_status     TEXT NOT NULL DEFAULT 'none' CHECK(card_status IN ('none','ready','failed')),
+    card_generated_at TEXT,
+    composed_at     TEXT, mentions TEXT NOT NULL DEFAULT '[]', mentions_earlier INTEGER NOT NULL DEFAULT 0, mentioned_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(channel_id, message_ts)
+);
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,
@@ -2249,6 +2222,34 @@ SELECT session_uuid,
   SUM(CASE WHEN kind = 'compaction' THEN 1 ELSE 0 END) AS compactions,
   SUM(lines_added) AS lines_added, SUM(lines_removed) AS lines_removed
 FROM agent_log_events GROUP BY session_uuid;
+CREATE VIEW IF NOT EXISTS workbench_target_archive AS
+WITH RECURSIVE
+    node(id, parent_id, project_id, open, closed_at) AS (
+        SELECT t.id, t.parent_id, t.project_id,
+               t.status NOT IN ('done', 'dismissed'),
+               COALESCE((SELECT MAX(h.changed_at) FROM target_status_history h WHERE h.target_id = t.id),
+                        t.updated_at)
+        FROM targets t
+        WHERE t.project_id IS NOT NULL
+    ),
+    up(ancestor, parent_id, project_id, open, closed_at) AS (
+        SELECT id, parent_id, project_id, open, closed_at FROM node
+        UNION
+        SELECT a.id, a.parent_id, up.project_id, up.open, up.closed_at
+        FROM up JOIN targets a ON a.id = up.parent_id AND a.project_id = up.project_id
+    )
+SELECT up.ancestor AS target_id,
+       up.project_id AS project_id,
+       CASE WHEN MAX(up.open) = 0
+             AND COUNT(*) = COUNT(julianday(up.closed_at))
+             AND ((p.archive_after_days > 0
+                   AND julianday('now') - MAX(julianday(up.closed_at)) > p.archive_after_days)
+               OR (p.archived_through IS NOT NULL
+                   AND MAX(julianday(up.closed_at)) <= julianday(p.archived_through)))
+            THEN 1 ELSE 0 END AS archived
+FROM up
+JOIN projects p ON p.id = up.project_id
+GROUP BY up.ancestor;
 CREATE INDEX IF NOT EXISTS idx_users_name ON users(name);
 CREATE INDEX IF NOT EXISTS idx_users_is_bot ON users(is_bot);
 CREATE INDEX IF NOT EXISTS idx_users_is_stub ON users(is_stub);
@@ -2296,8 +2297,6 @@ CREATE INDEX IF NOT EXISTS idx_meeting_prep_cache_generated ON meeting_prep_cach
 CREATE INDEX IF NOT EXISTS idx_meeting_notes_event ON meeting_notes(event_id);
 CREATE INDEX IF NOT EXISTS idx_day_plans_date ON day_plans(plan_date DESC);
 CREATE INDEX IF NOT EXISTS idx_day_plans_user_date ON day_plans(user_id, plan_date DESC);
-CREATE INDEX IF NOT EXISTS idx_day_plan_items_plan ON day_plan_items(day_plan_id);
-CREATE INDEX IF NOT EXISTS idx_day_plan_items_source ON day_plan_items(source_type, source_id);
 CREATE INDEX IF NOT EXISTS idx_tracks_origin ON tracks(origin);
 CREATE INDEX IF NOT EXISTS idx_tracks_custom_enabled ON tracks(origin, enabled)
     WHERE origin = 'custom';
@@ -2305,13 +2304,6 @@ CREATE INDEX IF NOT EXISTS idx_track_events_track ON track_events(track_id, crea
 CREATE INDEX IF NOT EXISTS idx_situations_status_rank ON situations(status, rank DESC);
 CREATE INDEX IF NOT EXISTS idx_situations_updated ON situations(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_situation_signals_item ON situation_signals(inbox_item_id);
-CREATE INDEX IF NOT EXISTS idx_inbox_items_status ON inbox_items(status);
-CREATE INDEX IF NOT EXISTS idx_inbox_items_priority ON inbox_items(priority);
-CREATE INDEX IF NOT EXISTS idx_inbox_items_updated ON inbox_items(updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_inbox_items_sender ON inbox_items(sender_user_id);
-CREATE INDEX IF NOT EXISTS idx_inbox_items_snooze ON inbox_items(snooze_until);
-CREATE INDEX IF NOT EXISTS idx_inbox_items_class_status ON inbox_items(item_class, status);
-CREATE INDEX IF NOT EXISTS idx_inbox_items_archived ON inbox_items(archived_at);
 CREATE INDEX IF NOT EXISTS idx_meeting_transcripts_event ON meeting_transcripts(event_id);
 CREATE INDEX IF NOT EXISTS idx_imap_messages_synced ON imap_messages(synced_at);
 CREATE INDEX IF NOT EXISTS idx_memory_provenance_window ON memory_provenance(channel_id, ts_unix);
@@ -2371,17 +2363,6 @@ CREATE INDEX IF NOT EXISTS idx_voice_samples_transcript ON voice_samples(transcr
 CREATE UNIQUE INDEX IF NOT EXISTS idx_voice_label_queue_open ON voice_label_queue(transcript_id, cluster_label) WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_voice_label_queue_status ON voice_label_queue(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_chat_artifact_comments_key ON chat_artifact_comments(conversation_id, artifact_key);
-CREATE INDEX IF NOT EXISTS idx_targets_level       ON targets(level);
-CREATE INDEX IF NOT EXISTS idx_targets_parent      ON targets(parent_id);
-CREATE INDEX IF NOT EXISTS idx_targets_period      ON targets(period_start, period_end);
-CREATE INDEX IF NOT EXISTS idx_targets_status      ON targets(status);
-CREATE INDEX IF NOT EXISTS idx_targets_priority    ON targets(priority);
-CREATE INDEX IF NOT EXISTS idx_targets_due         ON targets(due_date);
-CREATE INDEX IF NOT EXISTS idx_targets_source      ON targets(source_type, source_id);
-CREATE INDEX IF NOT EXISTS idx_targets_updated     ON targets(updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_targets_due_unfired ON targets(due_date)
-    WHERE notified_at = '' AND due_date != '';
-CREATE INDEX IF NOT EXISTS idx_targets_project     ON targets(project_id);
 CREATE INDEX IF NOT EXISTS idx_target_status_history_target ON target_status_history(target_id, changed_at);
 CREATE INDEX IF NOT EXISTS idx_project_target_images_project ON project_target_images(project_id);
 CREATE INDEX IF NOT EXISTS idx_jira_issue_changelog_issue ON jira_issue_changelog(account_id, issue_key, changed_at);
@@ -2444,6 +2425,26 @@ CREATE INDEX IF NOT EXISTS idx_idea_mentions_ref ON idea_mentions(source, ref);
 CREATE INDEX IF NOT EXISTS idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at);
 CREATE INDEX IF NOT EXISTS idx_linear_states_team ON linear_workflow_states(account_id, team_id, position);
 CREATE INDEX IF NOT EXISTS idx_linear_labels_team ON linear_labels(account_id, team_id);
+CREATE INDEX IF NOT EXISTS idx_targets_due         ON targets(due_date);
+CREATE INDEX IF NOT EXISTS idx_targets_due_unfired ON targets(due_date)
+    WHERE notified_at = '' AND due_date != '';
+CREATE INDEX IF NOT EXISTS idx_targets_level       ON targets(level);
+CREATE INDEX IF NOT EXISTS idx_targets_parent      ON targets(parent_id);
+CREATE INDEX IF NOT EXISTS idx_targets_period      ON targets(period_start, period_end);
+CREATE INDEX IF NOT EXISTS idx_targets_priority    ON targets(priority);
+CREATE INDEX IF NOT EXISTS idx_targets_project     ON targets(project_id);
+CREATE INDEX IF NOT EXISTS idx_targets_source      ON targets(source_type, source_id);
+CREATE INDEX IF NOT EXISTS idx_targets_status      ON targets(status);
+CREATE INDEX IF NOT EXISTS idx_targets_updated     ON targets(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_day_plan_items_plan ON day_plan_items(day_plan_id);
+CREATE INDEX IF NOT EXISTS idx_day_plan_items_source ON day_plan_items(source_type, source_id);
+CREATE INDEX IF NOT EXISTS idx_inbox_items_archived ON inbox_items(archived_at);
+CREATE INDEX IF NOT EXISTS idx_inbox_items_class_status ON inbox_items(item_class, status);
+CREATE INDEX IF NOT EXISTS idx_inbox_items_priority ON inbox_items(priority);
+CREATE INDEX IF NOT EXISTS idx_inbox_items_sender ON inbox_items(sender_user_id);
+CREATE INDEX IF NOT EXISTS idx_inbox_items_snooze ON inbox_items(snooze_until);
+CREATE INDEX IF NOT EXISTS idx_inbox_items_status ON inbox_items(status);
+CREATE INDEX IF NOT EXISTS idx_inbox_items_updated ON inbox_items(updated_at DESC);
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN
@@ -2512,27 +2513,101 @@ CREATE TRIGGER IF NOT EXISTS chat_conversations_fts_au AFTER UPDATE OF title ON 
     INSERT INTO chat_title_fts(chat_title_fts, rowid, title) VALUES ('delete', OLD.id, OLD.title);
     INSERT INTO chat_title_fts(rowid, title) VALUES (NEW.id, NEW.title);
 END;
-CREATE TRIGGER IF NOT EXISTS targets_status_history_ai AFTER INSERT ON targets
-WHEN NEW.project_id IS NOT NULL
+CREATE TRIGGER IF NOT EXISTS terminal_session_agent_sessions_ai AFTER INSERT ON terminal_sessions
+WHEN NEW.claude_session_id IS NOT NULL
 BEGIN
-    INSERT INTO target_status_history (target_id, from_status, to_status, changed_at, actor)
-    VALUES (NEW.id, NULL, NEW.status, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
-            COALESCE(NEW.status_actor, 'owner'));
-    UPDATE targets SET status_actor = NULL WHERE id = NEW.id AND status_actor IS NOT NULL;
+    INSERT OR IGNORE INTO terminal_session_agent_sessions (terminal_session_id, agent_session_id, first_seen_at)
+    VALUES (NEW.id, NEW.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
 END;
-CREATE TRIGGER IF NOT EXISTS targets_status_history_au AFTER UPDATE OF status ON targets
-WHEN NEW.project_id IS NOT NULL AND OLD.status IS NOT NEW.status
+CREATE TRIGGER IF NOT EXISTS terminal_session_agent_sessions_au AFTER UPDATE OF claude_session_id ON terminal_sessions
+WHEN NEW.claude_session_id IS NOT NULL
 BEGIN
-    INSERT INTO target_status_history (target_id, from_status, to_status, changed_at, actor)
-    VALUES (NEW.id, OLD.status, NEW.status, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
-            COALESCE(NEW.status_actor, 'owner'));
-    UPDATE targets SET status_actor = NULL WHERE id = NEW.id AND status_actor IS NOT NULL;
+    INSERT OR IGNORE INTO terminal_session_agent_sessions (terminal_session_id, agent_session_id, first_seen_at)
+    VALUES (NEW.id, NEW.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
 END;
-CREATE TRIGGER IF NOT EXISTS targets_status_actor_reset_au AFTER UPDATE OF status_actor ON targets
-WHEN NEW.status_actor IS NOT NULL
- AND NOT (NEW.project_id IS NOT NULL AND OLD.status IS NOT NEW.status)
+CREATE TRIGGER IF NOT EXISTS messages_kb_dirty AFTER UPDATE OF text, is_deleted ON messages
+WHEN OLD.text != NEW.text OR OLD.is_deleted != NEW.is_deleted
 BEGIN
-    UPDATE targets SET status_actor = NULL WHERE id = NEW.id;
+    INSERT INTO kb_dirty (source, key) VALUES ('slack',
+        CASE WHEN COALESCE(NEW.thread_ts, '') != '' THEN 'slack:thread:' || NEW.channel_id || ':' || NEW.thread_ts
+             ELSE 'slack:day:' || NEW.channel_id || ':' || date(NEW.ts_unix, 'unixepoch') END)
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+    INSERT INTO kb_dirty (source, key) VALUES ('slack',
+        CASE WHEN COALESCE(OLD.thread_ts, '') != '' THEN 'slack:thread:' || OLD.channel_id || ':' || OLD.thread_ts
+             ELSE 'slack:day:' || OLD.channel_id || ':' || date(OLD.ts_unix, 'unixepoch') END)
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS gmail_messages_kb_dirty AFTER DELETE ON gmail_messages
+BEGIN
+    INSERT INTO kb_dirty (source, key) VALUES ('gmail',
+        'gmail:' || OLD.account_id || ':' || CASE WHEN OLD.thread_id = '' THEN 'm:' || OLD.id ELSE OLD.thread_id END)
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS jira_comments_kb_dirty AFTER DELETE ON jira_comments
+BEGIN
+    INSERT INTO kb_dirty (source, key) VALUES ('jira', 'jira:' || OLD.account_id || ':' || OLD.issue_key)
+        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+END;
+CREATE TRIGGER IF NOT EXISTS targets_board_column_check_ai BEFORE INSERT ON targets
+WHEN NEW.board_column_id IS NOT NULL
+ AND NOT EXISTS (SELECT 1 FROM workbench_board_columns c
+                 WHERE c.id = NEW.board_column_id
+                   AND c.project_id IS NEW.project_id
+                   AND c.status = NEW.status)
+BEGIN
+    SELECT RAISE(ABORT, 'board column does not match the target');
+END;
+CREATE TRIGGER IF NOT EXISTS targets_board_column_check_bu BEFORE UPDATE OF board_column_id ON targets
+WHEN NEW.board_column_id IS NOT OLD.board_column_id
+ AND NEW.board_column_id IS NOT NULL
+ AND NOT EXISTS (SELECT 1 FROM workbench_board_columns c
+                 WHERE c.id = NEW.board_column_id
+                   AND c.project_id IS NEW.project_id
+                   AND c.status = NEW.status)
+BEGIN
+    SELECT RAISE(ABORT, 'board column does not match the target');
+END;
+CREATE TRIGGER IF NOT EXISTS targets_board_column_clear_au AFTER UPDATE OF status, project_id ON targets
+WHEN NEW.board_column_id IS NOT NULL
+ AND NOT EXISTS (SELECT 1 FROM workbench_board_columns c
+                 WHERE c.id = NEW.board_column_id
+                   AND c.project_id IS NEW.project_id
+                   AND c.status = NEW.status)
+BEGIN
+    UPDATE targets SET board_column_id = NULL WHERE id = NEW.id;
+END;
+CREATE TRIGGER IF NOT EXISTS targets_project_status_rollup_ad AFTER DELETE ON targets
+WHEN OLD.parent_id IS NOT NULL AND OLD.project_id IS NOT NULL
+BEGIN
+    UPDATE targets
+    SET status = r.st, status_actor = 'system', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    FROM (
+        WITH RECURSIVE chain(id, parent, st, pid, depth) AS (
+            SELECT OLD.id, OLD.parent_id, NULL, OLD.project_id, 0
+            UNION ALL
+            SELECT g.id, g.parent_id, (
+                    SELECT CASE
+                        WHEN COUNT(*) = 0 THEN NULL
+                        WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
+                            THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
+                        WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
+                        WHEN SUM(k.s IN ('in_progress','in_review','done')) > 0 THEN 'in_progress'
+                        ELSE 'todo' END
+                    FROM (SELECT CASE WHEN c.id = chain.id AND chain.depth > 0 THEN chain.st ELSE c.status END AS s
+                          FROM targets c
+                          WHERE c.parent_id = g.id AND c.project_id = g.project_id) AS k),
+                g.project_id, chain.depth + 1
+            FROM chain
+            JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
+                AND g.status != 'dismissed'
+            WHERE chain.depth < 256
+              AND (chain.depth = 0
+                   OR (chain.st IS NOT NULL
+                       AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))
+        )
+        SELECT id, st FROM chain WHERE depth > 0 AND st IS NOT NULL
+    ) AS r
+    WHERE targets.id = r.id AND targets.status != r.st;
 END;
 CREATE TRIGGER IF NOT EXISTS targets_project_status_rollup_ai AFTER INSERT ON targets
 WHEN NEW.parent_id IS NOT NULL AND NEW.project_id IS NOT NULL
@@ -2642,101 +2717,27 @@ BEGIN
     ) AS r
     WHERE targets.id = r.id AND targets.status != r.st;
 END;
-CREATE TRIGGER IF NOT EXISTS targets_project_status_rollup_ad AFTER DELETE ON targets
-WHEN OLD.parent_id IS NOT NULL AND OLD.project_id IS NOT NULL
+CREATE TRIGGER IF NOT EXISTS targets_status_actor_reset_au AFTER UPDATE OF status_actor ON targets
+WHEN NEW.status_actor IS NOT NULL
+ AND NOT (NEW.project_id IS NOT NULL AND OLD.status IS NOT NEW.status)
 BEGIN
-    UPDATE targets
-    SET status = r.st, status_actor = 'system', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-    FROM (
-        WITH RECURSIVE chain(id, parent, st, pid, depth) AS (
-            SELECT OLD.id, OLD.parent_id, NULL, OLD.project_id, 0
-            UNION ALL
-            SELECT g.id, g.parent_id, (
-                    SELECT CASE
-                        WHEN COUNT(*) = 0 THEN NULL
-                        WHEN SUM(k.s IN ('done','dismissed')) = COUNT(*)
-                            THEN CASE WHEN SUM(k.s = 'done') > 0 THEN 'done' ELSE 'dismissed' END
-                        WHEN SUM(k.s = 'blocked') = COUNT(*) - SUM(k.s IN ('done','dismissed')) THEN 'blocked'
-                        WHEN SUM(k.s IN ('in_progress','in_review','done')) > 0 THEN 'in_progress'
-                        ELSE 'todo' END
-                    FROM (SELECT CASE WHEN c.id = chain.id AND chain.depth > 0 THEN chain.st ELSE c.status END AS s
-                          FROM targets c
-                          WHERE c.parent_id = g.id AND c.project_id = g.project_id) AS k),
-                g.project_id, chain.depth + 1
-            FROM chain
-            JOIN targets g ON g.id = chain.parent AND g.project_id = chain.pid
-                AND g.status != 'dismissed'
-            WHERE chain.depth < 256
-              AND (chain.depth = 0
-                   OR (chain.st IS NOT NULL
-                       AND chain.st != (SELECT s.status FROM targets s WHERE s.id = chain.id)))
-        )
-        SELECT id, st FROM chain WHERE depth > 0 AND st IS NOT NULL
-    ) AS r
-    WHERE targets.id = r.id AND targets.status != r.st;
+    UPDATE targets SET status_actor = NULL WHERE id = NEW.id;
 END;
-CREATE TRIGGER IF NOT EXISTS targets_board_column_check_ai BEFORE INSERT ON targets
-WHEN NEW.board_column_id IS NOT NULL
- AND NOT EXISTS (SELECT 1 FROM workbench_board_columns c
-                 WHERE c.id = NEW.board_column_id
-                   AND c.project_id IS NEW.project_id
-                   AND c.status = NEW.status)
+CREATE TRIGGER IF NOT EXISTS targets_status_history_ai AFTER INSERT ON targets
+WHEN NEW.project_id IS NOT NULL
 BEGIN
-    SELECT RAISE(ABORT, 'board column does not match the target');
+    INSERT INTO target_status_history (target_id, from_status, to_status, changed_at, actor)
+    VALUES (NEW.id, NULL, NEW.status, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+            COALESCE(NEW.status_actor, 'owner'));
+    UPDATE targets SET status_actor = NULL WHERE id = NEW.id AND status_actor IS NOT NULL;
 END;
-CREATE TRIGGER IF NOT EXISTS targets_board_column_check_bu BEFORE UPDATE OF board_column_id ON targets
-WHEN NEW.board_column_id IS NOT OLD.board_column_id
- AND NEW.board_column_id IS NOT NULL
- AND NOT EXISTS (SELECT 1 FROM workbench_board_columns c
-                 WHERE c.id = NEW.board_column_id
-                   AND c.project_id IS NEW.project_id
-                   AND c.status = NEW.status)
+CREATE TRIGGER IF NOT EXISTS targets_status_history_au AFTER UPDATE OF status ON targets
+WHEN NEW.project_id IS NOT NULL AND OLD.status IS NOT NEW.status
 BEGIN
-    SELECT RAISE(ABORT, 'board column does not match the target');
-END;
-CREATE TRIGGER IF NOT EXISTS targets_board_column_clear_au AFTER UPDATE OF status, project_id ON targets
-WHEN NEW.board_column_id IS NOT NULL
- AND NOT EXISTS (SELECT 1 FROM workbench_board_columns c
-                 WHERE c.id = NEW.board_column_id
-                   AND c.project_id IS NEW.project_id
-                   AND c.status = NEW.status)
-BEGIN
-    UPDATE targets SET board_column_id = NULL WHERE id = NEW.id;
-END;
-CREATE TRIGGER IF NOT EXISTS terminal_session_agent_sessions_ai AFTER INSERT ON terminal_sessions
-WHEN NEW.claude_session_id IS NOT NULL
-BEGIN
-    INSERT OR IGNORE INTO terminal_session_agent_sessions (terminal_session_id, agent_session_id, first_seen_at)
-    VALUES (NEW.id, NEW.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
-END;
-CREATE TRIGGER IF NOT EXISTS terminal_session_agent_sessions_au AFTER UPDATE OF claude_session_id ON terminal_sessions
-WHEN NEW.claude_session_id IS NOT NULL
-BEGIN
-    INSERT OR IGNORE INTO terminal_session_agent_sessions (terminal_session_id, agent_session_id, first_seen_at)
-    VALUES (NEW.id, NEW.claude_session_id, strftime('%Y-%m-%dT%H:%M:%SZ','now'));
-END;
-CREATE TRIGGER IF NOT EXISTS messages_kb_dirty AFTER UPDATE OF text, is_deleted ON messages
-WHEN OLD.text != NEW.text OR OLD.is_deleted != NEW.is_deleted
-BEGIN
-    INSERT INTO kb_dirty (source, key) VALUES ('slack',
-        CASE WHEN COALESCE(NEW.thread_ts, '') != '' THEN 'slack:thread:' || NEW.channel_id || ':' || NEW.thread_ts
-             ELSE 'slack:day:' || NEW.channel_id || ':' || date(NEW.ts_unix, 'unixepoch') END)
-        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
-    INSERT INTO kb_dirty (source, key) VALUES ('slack',
-        CASE WHEN COALESCE(OLD.thread_ts, '') != '' THEN 'slack:thread:' || OLD.channel_id || ':' || OLD.thread_ts
-             ELSE 'slack:day:' || OLD.channel_id || ':' || date(OLD.ts_unix, 'unixepoch') END)
-        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
-END;
-CREATE TRIGGER IF NOT EXISTS gmail_messages_kb_dirty AFTER DELETE ON gmail_messages
-BEGIN
-    INSERT INTO kb_dirty (source, key) VALUES ('gmail',
-        'gmail:' || OLD.account_id || ':' || CASE WHEN OLD.thread_id = '' THEN 'm:' || OLD.id ELSE OLD.thread_id END)
-        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
-END;
-CREATE TRIGGER IF NOT EXISTS jira_comments_kb_dirty AFTER DELETE ON jira_comments
-BEGIN
-    INSERT INTO kb_dirty (source, key) VALUES ('jira', 'jira:' || OLD.account_id || ':' || OLD.issue_key)
-        ON CONFLICT (source, key) DO UPDATE SET gen = gen + 1;
+    INSERT INTO target_status_history (target_id, from_status, to_status, changed_at, actor)
+    VALUES (NEW.id, OLD.status, NEW.status, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+            COALESCE(NEW.status_actor, 'owner'));
+    UPDATE targets SET status_actor = NULL WHERE id = NEW.id AND status_actor IS NOT NULL;
 END;
 """#
 }
