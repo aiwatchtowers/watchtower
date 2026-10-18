@@ -50,10 +50,16 @@ var sessionOptionKeys = []string{"prompt", "agent", "title", "wait"}
 // becomes session, in the same wait. wait:"none" returns {session_id} then;
 // otherwise the run resumes when the session finished, failed, was deleted
 // or stopped and returns {session_id, status, summary, error?}. A launch the
-// Desktop could not make throws NotAvailable with its reason (R-P5-4).
+// Desktop could not make throws NotAvailable with its reason (R-P5-4). A run
+// makes at most MaxSessionCalls session() calls: every session's wait
+// pauses the minutes budget, so the count bounds them (board #562); the call
+// past it is a ValidationError step.
 func SessionModule(b Backends) Module {
 	return sdkModule{name: "session", fns: map[string]SDKFunc{"session": func(env *Env, call goja.FunctionCall, rt *goja.Runtime) (any, error) {
 		req, reqErr := parseSessionCall(env, rt, call)
+		if reqErr == nil && env.Journal.CountKind(StepKindSession) >= MaxSessionCalls {
+			reqErr = validationf("session() was called more than %d times in this run; the limit is %d", MaxSessionCalls, MaxSessionCalls)
+		}
 		if reqErr == nil {
 			reqErr = req.resolve(env, b)
 		}

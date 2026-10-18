@@ -55,6 +55,9 @@ type Executor struct {
 	// abandoned counts abandoned script goroutines (AbandonedRuns); tests
 	// replace it.
 	abandoned func() int
+	// finishPause waits before finish attempt n+1 (finishRetryPause; tests
+	// replace it).
+	finishPause func(attempt int)
 
 	gated atomic.Bool // claims refused for abandoned goroutines (logged once per change)
 	// readyWaits counts waits whose ready check passed and that wait for a
@@ -77,7 +80,7 @@ func NewExecutor(d *db.DB, b Backends, opts ExecutorOptions) *Executor {
 	}
 	e := &Executor{
 		db: d, b: b, clock: b.Clock, maxConcurrent: opts.MaxConcurrent,
-		modules: opts.Modules, logger: opts.Logger, abandoned: AbandonedRuns,
+		modules: opts.Modules, logger: opts.Logger, abandoned: AbandonedRuns, finishPause: finishRetryPause,
 		wakeCh: make(chan struct{}, 1), nudge: make(chan struct{}),
 	}
 	if e.maxConcurrent <= 0 {

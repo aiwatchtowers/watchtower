@@ -41,6 +41,17 @@ const (
 	MaxLogBytes = 4 * 1024
 	// MaxLogCalls caps log() calls per run.
 	MaxLogCalls = 200
+	// MaxStepsPerRun caps a run's SDK calls (journal steps): the call past it
+	// is journaled as an error step and ends the run, uncatchably (board
+	// #562 — a looping script cannot churn the write lock for its whole
+	// budget).
+	MaxStepsPerRun = 2000
+	// MaxSessionCalls caps session() calls per run: every session's wait
+	// pauses the minutes budget, so the count is the bound (board #562).
+	MaxSessionCalls = 3
+	// MaxOutputsPerRun caps the outputs a run buffers (output.inbox,
+	// output.report, output.briefing); the next one is a ValidationError.
+	MaxOutputsPerRun = 50
 	// StepClipBytes clips a step's args_json and result_summary.
 	StepClipBytes = 4 * 1024
 	// SummaryClipBytes clips a run's summary.

@@ -22,8 +22,10 @@ func failedEnd(kind string, err error) *runEnd {
 }
 
 // runClaimed executes a run this executor claimed and finishes it. Every
-// claimed run reaches a terminal status here, unless the database refuses
-// the finish (logged; the next daemon start ends it as interrupted).
+// claimed run reaches a terminal status here: a finish the database refuses
+// is retried, then written as a plain failed/backend end without the commit
+// (writeFinish); only when that fails too does the run stay active until the
+// next daemon start ends it as interrupted.
 // inline is ExecuteInline's run (the CLI's dry run): a ctx that ends there
 // is the CLI stopping, not the daemon.
 func (e *Executor) runClaimed(ctx context.Context, runID int64, a *db.Automation, inline bool) {
@@ -198,22 +200,25 @@ func (e *Executor) runEnded(runID int64) (bool, error) {
 }
 
 // outcome maps the script's result to the run's finish: success commits the
-// buffer (never for a dry run) unless the journal failed to write; a cancel
+// buffer (never for a dry run), also when the journal failed to write (the
+// run's error then notes the incomplete journal); a cancel
 // that came from the daemon stopping (ctx done) is interrupted, not
 // cancelled.
 func (e *Executor) outcome(ctx context.Context, env *Env, v any, runErr error, inline bool) (db.RunFinish, *db.RunCommit, bool) {
 	f := db.RunFinish{ActiveMS: env.Meter.ActiveMS()}
 	jerr := env.Journal.Err()
-	if runErr == nil && jerr != nil {
-		runErr = fmt.Errorf("writing the run's journal: %w", jerr)
-		f.Status, f.ErrorKind, f.Error = db.RunFailed, db.ErrKindBackend, runErr.Error()
-		return f, nil, false
-	}
 	if jerr != nil {
 		e.logger.Printf("automations: run %d: writing its journal: %v", env.Run.ID, jerr)
 	}
 	if runErr == nil {
 		f.Status, f.Summary = db.RunSucceeded, runSummary(env.Buffer, v)
+		if jerr != nil {
+			// The script's registry writes and shell() commands already
+			// happened: failing the run would drop its state (a cursor) and
+			// make the next run repeat them (board #562). It commits, and
+			// its error says the journal is incomplete.
+			f.Error = clipUTF8(journalIncompleteNote+jerr.Error(), SummaryClipBytes)
+		}
 		if env.DryRun {
 			return f, nil, false
 		}
@@ -292,7 +297,7 @@ func (e *Executor) finish(runID int64, a *db.Automation, f db.RunFinish, commit 
 	if abandoned {
 		f.Error += "; the automation was disabled: " + runawayDisabledReason
 	}
-	err := e.db.FinishAutomationRun(runID, f, commit)
+	err := e.writeFinish(runID, f, commit)
 	switch {
 	case errors.Is(err, db.ErrAutomationRunNotFound):
 		return // deleted with its workbench meanwhile (runGone): nothing to record or disable
@@ -314,4 +319,43 @@ func (e *Executor) finish(runID int64, a *db.Automation, f db.RunFinish, commit 
 	if err := e.db.DisableRunawayAutomation(a.ID, runawayDisabledReason, now); err != nil {
 		e.logger.Printf("automations: disabling runaway automation %q: %v", a.Slug, err)
 	}
+}
+
+// journalIncompleteNote starts the error of a succeeded run whose journal
+// lost a write.
+const journalIncompleteNote = "the run succeeded, but its journal is incomplete: "
+
+// finishRetries is how many times a refused finish is retried before the
+// plain failed end (writeFinish).
+const finishRetries = 3
+
+// finishRetryPause is the pause before retry n (1 s, 2 s, 3 s): a write lock
+// another process held past busy_timeout is usually released by then.
+func finishRetryPause(attempt int) { time.Sleep(time.Duration(attempt) * time.Second) }
+
+// retryableFinish reports whether a finish error may pass on a retry: not a
+// run that is gone or already ended.
+func retryableFinish(err error) bool {
+	return err != nil && !errors.Is(err, db.ErrAutomationRunNotFound) && !errors.Is(err, db.ErrRunNotActive)
+}
+
+// writeFinish writes f (and commit), retrying a refused write finishRetries
+// times. When every attempt failed, the run is ended failed/backend without
+// the commit, so it does not hold its concurrency slots until the daemon
+// restarts (AUTO-08); its state and outputs stay uncommitted (AUTO-04).
+func (e *Executor) writeFinish(runID int64, f db.RunFinish, commit *db.RunCommit) error {
+	err := e.db.FinishAutomationRun(runID, f, commit)
+	for attempt := 1; attempt <= finishRetries && retryableFinish(err); attempt++ {
+		e.logger.Printf("automations: run %d: finishing as %s failed (attempt %d): %v", runID, f.Status, attempt, err)
+		e.finishPause(attempt)
+		err = e.db.FinishAutomationRun(runID, f, commit)
+	}
+	if !retryableFinish(err) {
+		return err
+	}
+	e.logger.Printf("automations: run %d: finishing as %s failed %d times (%v); ending it failed without its commit",
+		runID, f.Status, finishRetries+1, err)
+	fallback := db.RunFinish{Status: db.RunFailed, ErrorKind: db.ErrKindBackend, ActiveMS: f.ActiveMS, Now: f.Now,
+		Error: clipUTF8(fmt.Sprintf("the run could not be finished as %s: %v", f.Status, err), SummaryClipBytes)}
+	return e.db.FinishAutomationRun(runID, fallback, nil)
 }

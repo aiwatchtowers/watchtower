@@ -70,8 +70,17 @@ type encodedResult json.RawMessage
 // size-checks the result, and closes the step — ok, denied for a
 // PermissionDenied, error otherwise — unless fn closed it itself (a dry-run
 // write, a proposal). A result beyond MaxSDKResultBytes fails the call and
-// the step with ResultTooLarge; nothing is truncated.
+// the step with ResultTooLarge; nothing is truncated. A run's call past
+// MaxStepsPerRun is an error step and ends the run (errTooManySteps).
 func (e *Env) Call(kind, name string, args any, fn func(step *Step) (any, error)) (any, error) {
+	if e.Journal.Count() >= MaxStepsPerRun {
+		// The call past the cap is journaled, then ends the run (the
+		// sandbox aborts on the ScriptError): a looping script cannot
+		// write steps for its whole budget (board #562).
+		capErr := errTooManySteps()
+		e.Journal.Begin(kind, name, args).Fail(capErr)
+		return nil, capErr
+	}
 	step := e.Journal.Begin(kind, name, args)
 	step.holdFinish()
 	v, err := fn(step)
@@ -223,4 +232,11 @@ func (t TriggerInfo) jsObject() map[string]any {
 		m["events"] = t.Events
 	}
 	return m
+}
+
+// errTooManySteps ends a run whose script made more than MaxStepsPerRun SDK
+// calls; the sandbox aborts on it, so the script cannot catch it.
+func errTooManySteps() *ScriptError {
+	return &ScriptError{Name: "RangeError",
+		Message: fmt.Sprintf("the run made more than %d SDK calls; the limit is %d per run", MaxStepsPerRun, MaxStepsPerRun)}
 }

@@ -24,6 +24,8 @@ A recipe that runs a shell command (`shell:`) is confirmed by the command text o
 
 Every run has its own limits in tokens and minutes, never dollars: 50,000 tokens and 5 minutes by default, at most 2,000,000 tokens and 60 minutes. A run that crosses either limit stops. There is no daily cap across runs. At most two runs execute at the same time.
 
+One run can also make at most 2,000 calls (`llm`, `tool`, `state`, `output`, `log` and the rest together), file at most 50 outputs to Inbox, reports or the briefing, and start at most 3 sessions with `session()`.
+
 ### What a run can write
 
 Reads are free within the recipe's permissions. Writes (a Jira comment, a Slack message, a new target) are proposals. They appear in **Inbox**, **Actions**, labelled with the automation and run number, and wait for your approval.
@@ -86,6 +88,10 @@ The **Automations** badge counts automations whose last run failed, until you op
 - **Failed with a permission error.** The script touched something outside its permissions. Add it with **+ Add**, or ask the assistant.
 - **Disabled by itself ("runaway script").** A script got stuck. Fix it, then enable.
 - **Failed with a RangeError about nesting or size.** One step of the script would have built something too large: data nested more than 1000 levels deep, more than about 16 million characters or items, or more than 256 000 entries, pieces or matches from one `JSON.parse`, `Object.entries`, `split` or global `match`. The script can catch these; otherwise handle the data in smaller pieces.
+- **Failed with "more than 2000 SDK calls".** The script called the SDK too often, usually in a loop that never ends. The script cannot catch this error; fix the loop or split the work across runs.
+- **"already made 50 outputs" or "session() was called more than 3 times".** The run hit its limit on outputs or sessions. The script can catch these errors. Put several items in one output, or split the work across runs.
+- **Succeeded with "its journal is incomplete".** The run did its work, but Watchtower could not write one or more of its steps to the run history (usually a busy database). Its results were saved, so the next run does not repeat them.
+- **Failed with "could not be finished".** Watchtower could not save the run's end, even after retrying. Its results were not saved; the next run starts from the previous state.
 - **Failed with "the automation used too much memory".** The run used more than about 1 GB of memory. This error ends the run and the script cannot catch it; keep less data in the script at once. The automation stays enabled.
 - **An event recipe didn't run.** It runs only after a sync that brought something new and matched its `where`. A source's first sync, history backfill and your own Slack messages never count. Jira comment changes count only while Stream Digests is on (Settings, Features). In the edit form, **On an event** picks the event type; a `where` filter is written in the recipe text.
 
