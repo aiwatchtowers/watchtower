@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/codex"
 	"watchtower/internal/config"
 )
 
@@ -191,7 +192,7 @@ func TestCodexHookOverrides_Degenerate(t *testing.T) {
 func TestTOMLString_EscapesRoundTrip(t *testing.T) {
 	for _, s := range []string{"", `a"b`, `c:\path`, "tab\there", "nl\nx", "bell\a", "del\x7f", "ünï"} {
 		var got string
-		decodeTOMLValue(t, tomlString(s), &got)
+		decodeTOMLValue(t, codex.TOMLString(s), &got)
 		assert.Equal(t, s, got)
 	}
 }

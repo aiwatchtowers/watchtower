@@ -2460,7 +2460,9 @@ CREATE TABLE IF NOT EXISTS projects (
     board_hidden_statuses TEXT NULL, -- JSON array of statuses hidden on the board, a subset of ["in_review","blocked"]; NULL = none (00125)
     methodology_carry_pending INTEGER NOT NULL DEFAULT 0 CHECK (methodology_carry_pending IN (0, 1)), -- 1 = existed at the 00133 upgrade: its folder file's weaker checks are still to be carried into the owner's setting, once (board #558)
     ask_guard_carried_at TEXT NULL, -- when ask_guard_mode was carried over from the folder file; NULL = the owner's pick, or never carried (00133)
-    finish_check_carried_at TEXT NULL -- when finish_check was carried over from the folder file; NULL = the owner's pick, or never carried (00133)
+    finish_check_carried_at TEXT NULL, -- when finish_check was carried over from the folder file; NULL = the owner's pick, or never carried (00133)
+    session_instructions TEXT NULL, -- the owner's instructions for sessions in this workbench; NULL = none (00137)
+    target_procedure TEXT NULL -- the owner's procedure for working a target in this workbench; NULL = none (00137)
 );
 
 -- Workbench board columns (00125, PROJ-19): named columns inside one status
@@ -3091,3 +3093,25 @@ CREATE TABLE IF NOT EXISTS permission_requests (
     decided_by          TEXT                                 -- the phone's name; NULL otherwise
 );
 CREATE INDEX IF NOT EXISTS idx_permission_requests_session ON permission_requests(terminal_session_id, status);
+
+-- Agent instructions (00137): the owner's global session instructions / target procedure
+-- (one row per scope; an empty body deletes the row) and mined repeat suggestions.
+CREATE TABLE IF NOT EXISTS owner_instructions (
+    scope      TEXT PRIMARY KEY CHECK (scope IN ('session','procedure')),
+    body       TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS instruction_suggestions (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    text            TEXT NOT NULL,
+    field           TEXT NOT NULL CHECK (field IN ('session','procedure')),
+    workbench_id    INTEGER NULL REFERENCES projects(id) ON DELETE CASCADE, -- NULL = global
+    session_count   INTEGER NOT NULL DEFAULT 0,
+    workbench_count INTEGER NOT NULL DEFAULT 0,
+    first_seen_at   TEXT NOT NULL,
+    last_seen_at    TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','added','dismissed')),
+    fingerprint     TEXT NOT NULL UNIQUE,                                   -- normalised direction; a dismissed repeat stays dismissed
+    decided_at      TEXT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at);

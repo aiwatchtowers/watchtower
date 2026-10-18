@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"watchtower/internal/codex"
 	"watchtower/internal/config"
 )
 
@@ -117,11 +118,11 @@ func codexEventGroups(byGroup map[int][]CodexHook) string {
 func codexGroup(handlers []CodexHook) string {
 	hs := make([]string, 0, len(handlers))
 	for _, h := range handlers {
-		hs = append(hs, fmt.Sprintf(`{type="command",command=%s,timeout=%d}`, tomlString(h.Command), h.TimeoutSec))
+		hs = append(hs, fmt.Sprintf(`{type="command",command=%s,timeout=%d}`, codex.TOMLString(h.Command), h.TimeoutSec))
 	}
 	matcher := ""
 	if m := handlers[0].Matcher; m != "" {
-		matcher = "matcher=" + tomlString(m) + ","
+		matcher = "matcher=" + codex.TOMLString(m) + ","
 	}
 	return "{" + matcher + "hooks=[" + strings.Join(hs, ",") + "]}"
 }
@@ -135,10 +136,10 @@ func CodexMCPOverrides(bin string, workbenchID int64) []string {
 	key := "mcp_servers." + CodexMCPServerName + "."
 	args := []string{"mcp", "--workbench", strconv.FormatInt(workbenchID, 10), "--agent", "codex"}
 	return []string{
-		"-c", key + "command=" + tomlString(bin),
-		"-c", key + "args=" + tomlStringArray(args),
+		"-c", key + "command=" + codex.TOMLString(bin),
+		"-c", key + "args=" + codex.TOMLStringArray(args),
 		"-c", key + `default_tools_approval_mode="approve"`,
-		"-c", key + "env_vars=" + tomlStringArray([]string{codexSessionEnvVar}),
+		"-c", key + "env_vars=" + codex.TOMLStringArray([]string{codexSessionEnvVar}),
 	}
 }
 
@@ -193,32 +194,4 @@ func isAbsFile(p string) bool {
 	}
 	info, err := os.Stat(p)
 	return err == nil && !info.IsDir()
-}
-
-func tomlStringArray(ss []string) string {
-	quoted := make([]string, 0, len(ss))
-	for _, s := range ss {
-		quoted = append(quoted, tomlString(s))
-	}
-	return "[" + strings.Join(quoted, ",") + "]"
-}
-
-// tomlString is s as a TOML basic string. strconv.Quote is not one: Go's
-// \x and \a escapes are not TOML.
-func tomlString(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch {
-		case r == '"' || r == '\\':
-			b.WriteByte('\\')
-			b.WriteRune(r)
-		case r < 0x20 || r == 0x7f:
-			fmt.Fprintf(&b, `\u%04X`, r)
-		default:
-			b.WriteRune(r)
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
 }

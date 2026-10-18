@@ -2075,6 +2075,32 @@ owner never saw.
 
 **Locked since:** 2026-10-17
 
+
+## PROJ-22 — the owner's instructions reach the agent in the session brief and in `update_target`'s `procedure`, are read from Watchtower's own storage, and only the owner's Add changes them
+
+**Status:** Enforced (Go and Desktop; spec `docs/superpowers/specs/2026-10-17-agent-instructions-design.md`; owner decisions in asks #270–#272, #320–#322, #327; feature note `docs/features/agent-instructions.md`)
+
+**Observable:** The owner keeps two texts, **session instructions** and **target procedure**, each global (`owner_instructions`) and per workbench (`projects.session_instructions`, `projects.target_procedure`); each text is at most `instructions.MaxRunes` = 1000 runes (surrounding space not counted) and a longer one is refused by `watchtower instructions set` and by Add. (1) The session brief (`renderSessionBrief` and the Codex path `runCodexBrief`) carries, after the board and folder rules, the slot `Owner's instructions (follow in every turn):` + the global session text + `For this workbench:` + the workbench text (that header only when the workbench text is non-empty), plus the line `Target procedure: update_target returns it when a target goes in_progress.` when any procedure text exists; the slot is absent when both session texts and both procedures are empty, is inline in full (never cut to a pointer) and the cap is 4000 + the rendered slot's size and its joining newline (`briefMaxCharsFor`; 4000 with no slot), so the board, comments and asks keep exactly their room. (2) `update_target` returns a `procedure` string (`Owner's target procedure — follow it for #<id>:` + global + `For this workbench:` + workbench) on every call whose `status` argument is `in_progress` — including a target already `in_progress` and a `column` move into an `in_progress` column — and no `procedure` key for any other status, for no status, for `create_targets`, or when both procedure texts are empty; it is read at call time. (3) Every write goes through `watchtower instructions set|suggestion add|dismiss` (text on stdin, never argv); the agent surface has no tool to read or change the texts, and nothing is written into the workbench folder. (4) A suggestion (`instruction_suggestions`, from the daily `phaseInstructionSuggestions`) changes no text by itself: the model's output is validated in Go (session ids must exist in the input, at least 3 distinct sessions recomputed, lines over 200 runes dropped), upserted by fingerprint, and only **Add** appends it; a `dismissed` or `added` row is never reopened by a re-mine.
+
+**Why locked:** The owner's own words are injected as instructions on purpose, so what injects them must stay exact: a brief that silently cuts the slot, a `procedure` that appears on the wrong status or a suggestion that edits text without the owner's press would each change what every agent does with no sign. The `procedure` timing is the point of the feature; a text leaking into the repository would publish personal directions.
+
+**Test guards:**
+- `cmd/workbench_brief_instructions_test.go::TestProj22_BriefCarriesOwnerInstructions`
+- `cmd/workbench_brief_instructions_test.go::TestProj22_BriefOmitsSlotWhenEmpty`
+- `cmd/workbench_brief_instructions_test.go::TestProj22_FullBoardKeepsWholeSlot`
+- `cmd/workbench_brief_instructions_test.go::TestProj22_NoInstructionsKeepsTodaysBudget`
+- `cmd/workbench_brief_instructions_test.go::TestProj22_CodexBriefCarriesSlot`
+- `internal/tools/workbench_targets_procedure_test.go::TestProj22_UpdateTargetInProgressReturnsProcedure`
+- `internal/tools/workbench_targets_procedure_test.go::TestProj22_UpdateTargetAlreadyInProgressStillReturns`
+- `internal/tools/workbench_targets_procedure_test.go::TestProj22_OtherStatusNoProcedure`
+- `internal/tools/workbench_targets_procedure_test.go::TestProj22_ColumnIntoInProgressReturnsProcedure`
+- `internal/tools/workbench_targets_procedure_test.go::TestProj22_NoTextsNoKey`
+- supporting: `internal/instructions/instructions_test.go`, `internal/instructions/suggest_test.go`; the existing `TestProj12_AnsweredAskSurvivesAFullBoard` and brief budget tests stay unchanged
+
+**Limits (accepted):** an edit reaches a running or resumed session only through `procedure` (its brief keeps the text it started with); a status change made on the Desktop or phone delivers no procedure by itself; suggestions need three sessions in 14 days; the texts are not synced to the phone.
+
+**Locked since:** 2026-10-17
+
 ## v1 limits and notes (accepted)
 
 - **Status rollup bounds (PROJ-05).** The ancestor walk stops after 256

@@ -69,6 +69,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Worktrees and cleanup](features/workbench/worktrees-and-cleanup.md) — an own git worktree per parallel session, and safe removal of what a session leaves behind
 - [Diff review](features/workbench/diff-review.md) — review what a session changed, comment on lines and send the round to the agent
 - [Methodology](features/workbench/methodology.md) — the workflow file, **Agent Settings…** and the ask guard that shape how agents work
+- [Your instructions](features/workbench/instructions.md) — standing directions for every agent, a target procedure, and suggestions from what you repeat
 - [Codex](features/workbench/codex.md) — run Codex instead of Claude Code in a workbench
 - [Agent analytics](features/agent-analytics.md) — tokens, cost and tool use of the agent sessions in a workbench, on the Analytics view or from the command line
 
