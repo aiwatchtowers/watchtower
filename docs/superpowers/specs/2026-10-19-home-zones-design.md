@@ -83,13 +83,13 @@ Sources (owner, ask #408):
 | Kind | Source | Included when |
 |---|---|---|
 | Slack mention / DM / thread reply / reaction request | `inbox_items`, `trigger_type` in `mention`, `dm`, `thread_reply`, `reaction` | `status = 'pending'`, `item_class = 'actionable'`, not snoozed, `MAX(created_at, mentioned_at)` within the last **72 h** |
-| Email | `inbox_items`, `email_received`, `email_cc` | same rule |
+| Email | `inbox_items`, `email_received` | same rule (`email_cc` is `ambient` by `DefaultItemClass`, so CC mail never qualifies — intended, my call) |
 | Jira | `inbox_items`, `jira_assigned`, `jira_comment_mention` (the only Jira triggers the detector creates) | same rule |
 | Reminder | `ReminderQueries.fetchDue` | due now or earlier |
 | Agent proposal | `AgentActionQueries.awaitingOwner` (pending/failed, not workbench rows) | always while pending |
 | My target | `TargetQueries.homeSummary` filtered to overdue or due today with no time or a time already past (PROJ-01: no workbench targets) | always while open |
 
-Other trigger types (`briefing_ready`, `target_due`, `calendar_*`,
+Other trigger types (`email_cc`, `briefing_ready`, `target_due`, `calendar_*`,
 `decision_made`, `stream`, Jira ambient types) are not feed rows: briefings
 are a link, targets come from `targets`, calendar items sit below NOW.
 
@@ -97,12 +97,21 @@ are a link, targets come from `targets`, calendar items sit below NOW.
 
 - inbox rows older than 72 h leave the feed and stay in Catch-Up;
 - at most **7 rows** above NOW (my call on the number);
-- order (my call): `high` priority first; then by kind — Slack DM /
-  mention / thread, Jira, proposals, reminders, targets, email; within a
-  kind newest first (`MAX(created_at, mentioned_at)`, reminders by
-  `remind_at`, targets by due date);
-- when more qualify, the last line is "N more → Catch-Up" (N = the ones
-  left out).
+- order (my call): by kind — Slack DM / mention / thread / reaction
+  request, Jira, proposals, reminders, targets, email; within a kind
+  newest first (`MAX(created_at, mentioned_at)`, reminders by
+  `remind_at`, targets by due date). `inbox_items.priority` is not used:
+  no detector writes anything but the default since migration 00070;
+- when more qualify, the last line is "N more"; it expands the list in
+  place to every qualifying row (still the 72 h window) and collapses
+  back (my call — Catch-Up lists only the items its AI recap cited, so it
+  is not where "the rest" lives);
+- an inbox row older than 72 h leaves Home; it stays `pending` in the
+  source and still reaches the briefing's inbox block;
+- `read_at` does not hide a row (my call): acknowledging a Catch-Up recap
+  marks items seen, not answered. A read row is shown in secondary text.
+  Rows leave the feed by being answered at the source (INBOX-02), by
+  Done or Hide, or by the window.
 
 **Row:** kind chip, who (sender names as Catch-Up names them —
 `InboxItem.mentionSendersLabel`) and where (channel, mail subject, Jira
@@ -128,10 +137,11 @@ Sorted by time. When nothing is left today, this part is one line:
 
 ### 4.4 Tomorrow
 
-The next day that has events, within 3 days (my call — so on a Friday
-evening it shows Monday), labelled with its weekday ("Tomorrow" when it is
-tomorrow). At most 3 rows, same rendering as 4.3, never above NOW and
-never under a "today" label (AI-9).
+The next day that has calendar events, within 3 days (my call — so on a
+Friday evening it shows Monday), labelled with its weekday ("Tomorrow"
+when it is tomorrow). Only that day's events, at most 3 rows, rendered as
+in 4.3; targets and reminders of that day are not shown (my call). Never
+above NOW and never under a "today" label (AI-9).
 
 ### 4.5 Empty feed
 
@@ -154,12 +164,15 @@ Owner, ask #408: **open + done + hide** on Home. Per kind:
 
 - Inbox writes go through the Go CLI, not SQL from Swift (my call): Go owns
   `inbox_items` status (`ResolveInboxItem`), and Catch-Up and the briefing
-  then see the item closed. This is a **new writer of inbox status**;
-  `docs/inventory/inbox-pulse.md` asks for owner approval of any new
-  inbox surface — given in ask #408. The inventory file gets a line naming
-  Home as a writer.
+  then see the item closed. This makes Home a **new writer of inbox
+  status** (today only the detectors, auto-resolve and the target cascade
+  write it); the owner approved it in ask #408. The header of
+  `docs/inventory/inbox-pulse.md`, which lists `inbox_items`' readers,
+  gains a line naming Home's Done/Hide as a writer through the CLI.
 - A done or hidden row leaves the feed at once (optimistic), and comes
   back with an error line if the write fails.
+- In-progress targets with no due date are no longer on Home (owner,
+  ask #408: overdue and due today only); they stay in Targets.
 - Hover shows the two buttons; keyboard: the row is focusable, `Return`
   opens, `⌘⏎` done, `⌫` hide (my call).
 
@@ -202,7 +215,7 @@ shows "—". "Today" = local midnight to now.
 
 | Number | Source |
 |---|---|
-| Messages in / sent by me | `messages` with `ts_unix ≥ start of day`, `is_deleted = 0`; "sent by me" = `user_id` in the `current_user_id` of every `slack_accounts` row not removed |
+| Messages to me / sent by me | `messages` with `ts_unix ≥ start of day`, `is_deleted = 0`. "To me" (my call) = from someone else in a DM or group DM, or mentioning the owner (`<@id>` in the text); not every synced message, which is mostly noise. "Sent by me" = `user_id` in the `current_user_id` of every `slack_accounts` row not removed |
 | Meetings / hours | today's `calendar_events` (`CalendarQueries.fetchTodayEvents`), no all-day, no cancelled; hours = the summed durations, rounded to 0.5 h |
 | AI spend | `TokenUsageQueries.fetchUsage(on: today)` total `cost_usd` |
 | Claude plan | `PlanUsageQueries.status`: the 5 h and weekly percentages; left out unless `state = 'ok'` |
