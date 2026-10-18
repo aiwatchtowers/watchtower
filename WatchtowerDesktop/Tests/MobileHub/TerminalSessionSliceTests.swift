@@ -499,7 +499,7 @@ final class TerminalSessionSliceTests: XCTestCase {
                 listings.withLock { $0 += 1 }
                 return .init(live: [7], published: [7])
             },
-            timing: .init(every: .seconds(60), minSpacing: .seconds(5), timeout: .seconds(5), wake: .milliseconds(10)),
+            timing: .init(every: .seconds(60), minSpacing: .seconds(5), timeout: .seconds(5), idle: .milliseconds(10)),
             isActive: isActive
         )
         summaries.start()
@@ -555,7 +555,7 @@ final class TerminalSessionSliceTests: XCTestCase {
                 return [SessionReportSummary(sessionID: 1, done: 9, total: 9)]
             },
             workbenches: { .init(live: [7], published: [7, 9]) },
-            timing: .init(every: .seconds(60), minSpacing: .seconds(5), timeout: .milliseconds(50), wake: .seconds(5))
+            timing: .init(every: .seconds(60), minSpacing: .seconds(5), timeout: .milliseconds(50), idle: .seconds(5))
         )
         await summaries.runDue()
         XCTAssertNil(summaries.summary(workbenchID: 7, sessionID: 1))
