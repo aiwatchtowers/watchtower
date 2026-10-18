@@ -75,7 +75,7 @@ type AgentSkillListed struct {
 // AgentSubagent is one sub-agent lane of a session; Finished nil = unknown.
 type AgentSubagent struct {
 	SessionUUID, AgentID, AgentType string
-	Depth                           int
+	Depth                           int // 0 = unknown (no meta file or no spawnDepth)
 	Finished                        *bool
 }
 
@@ -566,4 +566,19 @@ func (d *DB) StoredTranscripts(projectID int64) (int, error) {
 		return 0, fmt.Errorf("counting stored transcripts: %w", err)
 	}
 	return n, nil
+}
+
+// UpsertAgentSubagent stores one subagent's meta row on its own, for a
+// transcript that did not change but whose meta file did. A no-op when the
+// session row is absent (the row references it).
+func (d *DB) UpsertAgentSubagent(a AgentSubagent) error {
+	_, err := d.Exec(`INSERT INTO agent_log_subagents (session_uuid, agent_id, agent_type, depth, finished)
+		SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM agent_log_sessions WHERE session_uuid = ?)
+		ON CONFLICT(session_uuid, agent_id) DO UPDATE SET agent_type = excluded.agent_type,
+		depth = excluded.depth, finished = excluded.finished`,
+		a.SessionUUID, a.AgentID, a.AgentType, a.Depth, a.Finished, a.SessionUUID)
+	if err != nil {
+		return fmt.Errorf("upserting subagent: %w", err)
+	}
+	return nil
 }

@@ -262,6 +262,9 @@ func scanFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bool, r
 	start, expect, unchanged := resumePoint(stored, tf)
 	if unchanged {
 		res.FilesSkipped++
+		if tf.Subagent && tf.AgentID != "" { // the meta file can change without the transcript
+			return st.al.UpsertAgentSubagent(subagentRow(tf))
+		}
 		return nil
 	}
 	fh, err := os.Open(tf.Path)
@@ -325,14 +328,18 @@ func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, 
 	b := agentlogdb.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events,
 		ToolResults: pr.ToolResults, ContextParts: pr.ContextParts, SkillListing: pr.SkillListing, Sessions: sessions}
 	if tf.Subagent && tf.AgentID != "" && hasSession(sessions, tf.SessionUUID) { // the row references its session
-		b.Subagents = []agentlogdb.AgentSubagent{{SessionUUID: tf.SessionUUID, AgentID: tf.AgentID,
-			AgentType: tf.AgentType, Depth: tf.Depth, Finished: tf.Finished}}
+		b.Subagents = []agentlogdb.AgentSubagent{subagentRow(tf)}
 	}
 	applied, err := st.al.ApplyAgentLogBatch(b)
 	if err != nil {
 		return 0, false, fmt.Errorf("storing %s: %w", tf.Path, err)
 	}
 	return f.ReadOffset, applied, nil
+}
+
+func subagentRow(tf TranscriptFile) agentlogdb.AgentSubagent {
+	return agentlogdb.AgentSubagent{SessionUUID: tf.SessionUUID, AgentID: tf.AgentID,
+		AgentType: tf.AgentType, Depth: tf.Depth, Finished: tf.Finished}
 }
 
 func hasSession(sessions []agentlogdb.AgentLogSession, uuid string) bool {

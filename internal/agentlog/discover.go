@@ -18,7 +18,7 @@ type TranscriptFile struct {
 	Path, SessionUUID, AgentID string // AgentID "" for main files
 	Subagent                   bool
 	AgentType                  string // subagent meta; "" when unknown
-	Depth                      int    // subagent meta spawnDepth; 0 when unknown
+	Depth                      int    // subagent meta spawnDepth; 0 = unknown (no meta or no spawnDepth)
 	Finished                   *bool  // subagent meta; nil when absent
 	Size                       int64
 	MTime                      string

@@ -716,3 +716,33 @@ func TestScan_StoresSubagentMeta(t *testing.T) {
 	require.NoError(t, f.al.QueryRow(`SELECT COUNT(*) FROM agent_log_subagents`).Scan(&n))
 	assert.Equal(t, 1, n)
 }
+
+func TestScan_MetaOnlyChangeUpdatesSubagent(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.folder, "s1.jsonl", call(t, "s1", f.folder, "u1", "m1", "r1", 5))
+	f.write(f.folder, "s1/subagents/agent-a1.jsonl", call(t, "s1", f.folder, "u2", "m2", "r2", 4))
+	meta := f.write(f.folder, "s1/subagents/agent-a1.meta.json", `{"agentType":"Plan","spawnDepth":1}`)
+	f.scan()
+	var finished sql.NullBool
+	require.NoError(t, f.al.QueryRow(`SELECT finished FROM agent_log_subagents WHERE agent_id = 'a1'`).Scan(&finished))
+	assert.False(t, finished.Valid)
+
+	require.NoError(t, os.WriteFile(meta, []byte(`{"agentType":"Plan","spawnDepth":1,"finished":true}`), 0o600))
+	f.scan()
+	require.NoError(t, f.al.QueryRow(`SELECT finished FROM agent_log_subagents WHERE agent_id = 'a1'`).Scan(&finished))
+	assert.True(t, finished.Valid && finished.Bool)
+}
+
+func TestScan_SubagentSessionIDMismatch(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.folder, "s1.jsonl", call(t, "s1", f.folder, "u1", "m1", "r1", 5))
+	f.write(f.folder, "s1/subagents/agent-a1.jsonl", call(t, "other", f.folder, "u2", "m2", "r2", 4))
+	f.write(f.folder, "s1/subagents/agent-a1.meta.json", `{"agentType":"Plan","spawnDepth":1}`)
+	f.scan() // the slice carries session "other", not the directory's "s1": no row, no failure
+	var n int
+	require.NoError(t, f.al.QueryRow(`SELECT COUNT(*) FROM agent_log_subagents`).Scan(&n))
+	assert.Equal(t, 0, n)
+	f.scan() // unchanged transcript: the meta is filed under the directory's existing session
+	require.NoError(t, f.al.QueryRow(`SELECT COUNT(*) FROM agent_log_subagents WHERE session_uuid = 's1'`).Scan(&n))
+	assert.Equal(t, 1, n)
+}
