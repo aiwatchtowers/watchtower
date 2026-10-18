@@ -41,7 +41,7 @@ struct ChatComposerView: View {
                 isStreaming: chatVM.isBusy,
                 onSend: { Task { await chatVM.sendDraft() } },
                 // Nothing to stop while the turn's rows are being written.
-                onStop: chatVM.isStartingTurn ? nil : { chatVM.stop() },
+                onStop: chatVM.canStop ? { chatVM.stop() } : nil,
                 placeholder: "Ask about your work…",
                 dictationTargetID: "chat.workspace",
                 maxHeight: maxHeight,
@@ -52,6 +52,9 @@ struct ChatComposerView: View {
                 onAttachFiles: { chatVM.attachFiles($0) },
                 onPasteData: { await chatVM.attachPasted($0, name: $1) },
                 onRemoveAttachment: { chatVM.composerAttachments.remove(id: $0) },
+                attachmentProgress: AttachmentProgress(importing: chatVM.composerAttachments.importing,
+                                                       removing: chatVM.composerAttachments.removing,
+                                                       sendWaits: chatVM.isWaitingForAttachments),
                 onCursorChange: { text, cursor in
                     lastCursor = cursor
                     chatVM.composer.update(text: text, cursor: cursor)
@@ -76,7 +79,9 @@ struct ChatComposerView: View {
             onSelectProvider: { chatVM.switchProvider($0) },
             onSelectModel: { chatVM.selectedModel = $0 }
         )
-        .disabled(chatVM.isStreaming)
+        // Also while a turn's end is written (board #670): a pick then would
+        // close the session under it.
+        .disabled(chatVM.isStreaming || chatVM.isFinishingTurn)
     }
 }
 

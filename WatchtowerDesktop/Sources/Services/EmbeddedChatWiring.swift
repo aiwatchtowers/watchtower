@@ -91,13 +91,13 @@ private final class UnavailableEmbeddedChatStore: EmbeddedChatStore {
     var dbPath: String? { nil }
     func loadMessages() throws -> [ChatMessageRecord] { throw DatabaseNotOpenError() }
     func loadSessionID() throws -> String? { throw DatabaseNotOpenError() }
-    func beginTurn(ownerText: String?, turnID: String, provider: String?) throws -> (ownerID: Int64?, assistantID: Int64) {
+    func beginTurn(ownerText: String?, turnID: String, provider: String?) async throws -> (ownerID: Int64?, assistantID: Int64) {
         throw DatabaseNotOpenError()
     }
-    func saveProgress(messageID: Int64, text: String) throws { throw DatabaseNotOpenError() }
-    func finalize(messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?) throws {
+    func saveProgress(messageID: Int64, text: String) async throws { throw DatabaseNotOpenError() }
+    func finalize(messageID: Int64, text: String, status: String, errorCode: String?, errorMessage: String?) async throws {
         throw DatabaseNotOpenError()
     }
-    func append(role: String, text: String) throws -> Int64 { throw DatabaseNotOpenError() }
-    func saveSessionID(_ sessionID: String?) throws { throw DatabaseNotOpenError() }
+    func append(role: String, text: String) async throws -> Int64 { throw DatabaseNotOpenError() }
+    func saveSessionID(_ sessionID: String?) async throws { throw DatabaseNotOpenError() }
 }

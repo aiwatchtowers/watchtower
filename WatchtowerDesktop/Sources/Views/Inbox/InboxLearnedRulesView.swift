@@ -10,6 +10,9 @@ struct InboxLearnedRulesView: View {
 
     var body: some View {
         List {
+            if let error = vm.errorMessage {
+                WriteErrorBanner(message: error) { vm.errorMessage = nil }
+            }
             Section("Mutes (\(vm.mutes.count))") {
                 ForEach(vm.mutes) { r in ruleRow(r) }
             }
@@ -17,13 +20,20 @@ struct InboxLearnedRulesView: View {
                 ForEach(vm.boosts) { r in ruleRow(r) }
             }
         }
-        .toolbar { Button { showAdd = true } label: { Image(systemName: "plus") } }
+        .toolbar {
+            Button {
+                vm.addError = nil
+                showAdd = true
+            } label: { Image(systemName: "plus") }
+        }
         .task { await vm.load() }
         .sheet(isPresented: $showAdd) {
-            AddRuleSheet { scope, weight, type in
-                await vm.addRule(ruleType: type, scopeKey: scope, weight: weight)
-                showAdd = false
-            }
+            // The sheet stays (its input kept, the reason shown in it) when
+            // the rule wasn't saved; Cancel and Esc always close it — a save
+            // still under way may land after.
+            AddRuleSheet(error: vm.addError, onCancel: { showAdd = false }, onSave: { scope, weight, type in
+                if await vm.addRule(ruleType: type, scopeKey: scope, weight: weight) { showAdd = false }
+            })
         }
     }
 
@@ -35,16 +45,21 @@ struct InboxLearnedRulesView: View {
             Text(r.source).font(.caption).foregroundStyle(.secondary)
             Button(role: .destructive) { Task { await vm.remove(r) } } label: { Image(systemName: "trash") }
                 .buttonStyle(.plain)
+                .disabled(vm.pendingWrites.isPending(InboxLearnedRulesViewModel.key(r)))
         }
     }
 }
 
 struct AddRuleSheet: View {
+    var error: String?
+    var onCancel: () -> Void = {}
     var onSave: (_ scope: String, _ weight: Double, _ type: String) async -> Void
     @State private var scopeType = "sender"
     @State private var scopeValue = ""
     @State private var weight: Double = -0.8
     @State private var ruleType = "source_mute"
+    /// The rule is being written (board #670): Save waits; the fields stay.
+    @State private var saving = false
 
     var body: some View {
         Form {
@@ -62,8 +77,22 @@ struct AddRuleSheet: View {
                 Text("Boost trigger").tag("trigger_boost")
             }
             Slider(value: $weight, in: -1...1, step: 0.1) { Text(String(format: "Weight: %+.1f", weight)) }
-            Button("Save") {
-                Task { await onSave("\(scopeType):\(scopeValue)", weight, ruleType) }
+            if let error {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            HStack {
+                Button("Cancel", action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    saving = true
+                    Task {
+                        await onSave("\(scopeType):\(scopeValue)", weight, ruleType)
+                        saving = false
+                    }
+                }
+                .disabled(saving)
             }
         }.padding()
     }

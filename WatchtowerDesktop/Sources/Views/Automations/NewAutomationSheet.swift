@@ -18,7 +18,7 @@ struct NewAutomationSheet: View {
 
     @Bindable var vm: AutomationsViewModel
     let editor: AutomationEditorCenter?
-    let makeChat: () throws -> AutomationEditorChat?
+    let makeChat: () async throws -> AutomationEditorChat?
     /// `<workspace>/automations`, where the **Form** tab saves; nil disables it.
     let automationsDir: String?
     let onTemplates: (() -> Void)?

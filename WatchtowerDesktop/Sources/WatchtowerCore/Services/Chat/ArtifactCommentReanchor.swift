@@ -24,6 +24,21 @@ package enum ArtifactCommentReanchor {
         package var isNoOp: Bool { moved.isEmpty && lost.isEmpty }
     }
 
+    /// `comments` as they read once `plan` is stored (`ArtifactCommentQueries
+    /// .apply`): what moved is anchored on `version`, what was lost is
+    /// outdated. Shown while the write is under way (board #670).
+    package static func applied(_ plan: Plan, to comments: [ArtifactComment], version: Int) -> [ArtifactComment] {
+        guard !plan.isNoOp else { return comments }
+        let moved = Set(plan.moved), lost = Set(plan.lost)
+        return comments.map { comment in
+            var comment = comment
+            guard comment.isLive else { return comment }
+            if moved.contains(comment.id) { comment.artifactVersion = version }
+            if lost.contains(comment.id) { comment.status = .outdated }
+            return comment
+        }
+    }
+
     /// `csv`: the artifact is a `table` (see `CommentAnchor.locate`).
     package static func plan(_ comments: [ArtifactComment], text: String, version: Int, csv: Bool = false) -> Plan {
         var plan = Plan()

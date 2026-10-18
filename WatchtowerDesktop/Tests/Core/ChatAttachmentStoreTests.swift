@@ -42,8 +42,8 @@ final class ChatAttachmentStoreTests: XCTestCase {
         }
     }
 
-    func testImportCopiesFileWith0600UnderConversationDir() throws {
-        let att = try store.importFile(url: source("shot.png", AttachmentValidatorTests.png), conversationID: conversationID)
+    func testImportCopiesFileWith0600UnderConversationDir() async throws {
+        let att = try await store.importFile(url: source("shot.png", AttachmentValidatorTests.png), conversationID: conversationID)
         XCTAssertEqual(att.name, "shot.png")
         XCTAssertEqual(att.mime, "image/png")
         XCTAssertEqual(att.size, Int64(AttachmentValidatorTests.png.count))
@@ -57,42 +57,45 @@ final class ChatAttachmentStoreTests: XCTestCase {
         XCTAssertEqual(perms?.intValue, 0o600)
     }
 
-    func testSameFileTwiceSharesStorageButGetsTwoRows() throws {
+    func testSameFileTwiceSharesStorageButGetsTwoRows() async throws {
         let url = try source("shot.png", AttachmentValidatorTests.png)
-        let first = try store.importFile(url: url, conversationID: conversationID)
-        let second = try store.importFile(url: url, conversationID: conversationID)
+        let first = try await store.importFile(url: url, conversationID: conversationID)
+        let second = try await store.importFile(url: url, conversationID: conversationID)
         XCTAssertNotEqual(first.id, second.id)
         XCTAssertEqual(first.path, second.path)
         let files = try FileManager.default.contentsOfDirectory(atPath: store.directory(for: .conversation(conversationID)).path)
         XCTAssertEqual(files.count, 1)
 
-        try store.discard(first)
+        try await store.discard(first)
         XCTAssertTrue(FileManager.default.fileExists(atPath: second.path), "still referenced by the second row")
-        try store.discard(second)
+        try await store.discard(second)
         XCTAssertFalse(FileManager.default.fileExists(atPath: second.path))
     }
 
-    func testRejectedFileLeavesNoRowAndNoFile() throws {
-        XCTAssertThrowsError(try store.importFile(url: source("a.zip", AttachmentValidatorTests.zip), conversationID: conversationID)) { error in
+    func testRejectedFileLeavesNoRowAndNoFile() async throws {
+        do {
+            _ = try await store.importFile(url: source("a.zip", AttachmentValidatorTests.zip), conversationID: conversationID)
+            XCTFail("expected a rejection")
+        } catch {
             XCTAssertEqual(error as? AttachmentRejection, .unsupportedType(fileName: "a.zip"))
         }
-        let count = try dbQueue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_attachments") }
+        let count = try await dbQueue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_attachments") }
         XCTAssertEqual(count, 0)
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
     }
 
-    func testImportDataForPastedImage() throws {
-        let att = try store.importData(AttachmentValidatorTests.png, name: "Pasted image.png", owner: .conversation(conversationID))
+    func testImportDataForPastedImage() async throws {
+        let att = try await store.importData(AttachmentValidatorTests.png, name: "Pasted image.png", owner: .conversation(conversationID))
         XCTAssertEqual(att.name, "Pasted image.png")
         XCTAssertEqual(att.mime, "image/png")
     }
 
-    func testProjectOwnerUsesProjectsDir() throws {
-        let projectID = try dbQueue.write { db -> Int64 in
+    func testProjectOwnerUsesProjectsDir() async throws {
+        let projectID = try await dbQueue.write { db -> Int64 in
             try db.execute(sql: "INSERT INTO chat_projects (name, instructions, created_at, updated_at) VALUES ('P', '', 0, 0)")
             return db.lastInsertedRowID
         }
-        let att = try store.importFile(url: source("n.md", Data("x".utf8)), projectID: projectID)
+        let att = try await store.importFile(url: source("n.md", Data("x".utf8)), projectID: projectID)
         XCTAssertEqual(att.projectID, projectID)
         XCTAssertNil(att.conversationID)
         XCTAssertTrue(att.path.hasPrefix(root.appendingPathComponent("projects/\(projectID)").path))
@@ -101,8 +104,8 @@ final class ChatAttachmentStoreTests: XCTestCase {
     /// A new project file changes what a fresh session attaches or inlines:
     /// the project's chats lose their stored session (a `--resume` would
     /// never see the file); a conversation's own attachment drops nothing.
-    func testProjectFileImportDropsTheProjectsStoredSessions() throws {
-        let (projectID, inProject) = try dbQueue.write { db -> (Int64, Int64) in
+    func testProjectFileImportDropsTheProjectsStoredSessions() async throws {
+        let (projectID, inProject) = try await dbQueue.write { db -> (Int64, Int64) in
             try db.execute(sql: "INSERT INTO chat_projects (name, instructions, created_at, updated_at) VALUES ('P', '', 0, 0)")
             let pid = db.lastInsertedRowID
             try db.execute(sql: """
@@ -113,9 +116,9 @@ final class ChatAttachmentStoreTests: XCTestCase {
             try db.execute(sql: "UPDATE chat_conversations SET session_id = 'sess-c' WHERE id = ?", arguments: [conversationID])
             return (pid, inProject)
         }
-        _ = try store.importFile(url: source("a.md", Data("a".utf8)), conversationID: conversationID)
+        _ = try await store.importFile(url: source("a.md", Data("a".utf8)), conversationID: conversationID)
         XCTAssertEqual(try sessionID(inProject), "sess-p")
-        _ = try store.importFile(url: source("b.md", Data("b".utf8)), projectID: projectID)
+        _ = try await store.importFile(url: source("b.md", Data("b".utf8)), projectID: projectID)
         XCTAssertNil(try sessionID(inProject))
         XCTAssertEqual(try sessionID(conversationID), "sess-c")
     }
@@ -124,24 +127,25 @@ final class ChatAttachmentStoreTests: XCTestCase {
         try dbQueue.read { try String.fetchOne($0, sql: "SELECT session_id FROM chat_conversations WHERE id = ?", arguments: [id]) }
     }
 
-    func testLinkAndFetchByMessages() throws {
-        let att = try store.importFile(url: source("n.md", Data("x".utf8)), conversationID: conversationID)
+    func testLinkAndFetchByMessages() async throws {
+        let att = try await store.importFile(url: source("n.md", Data("x".utf8)), conversationID: conversationID)
         let messageID = try insertUserMessage()
-        try dbQueue.write { try ChatAttachmentQueries.link($0, attachmentIDs: [att.id], messageID: messageID) }
-        let byMessage = try dbQueue.read { try ChatAttachmentQueries.fetchByMessages($0, messageIDs: [messageID]) }
+        try await dbQueue.write { try ChatAttachmentQueries.link($0, attachmentIDs: [att.id], messageID: messageID) }
+        let byMessage = try await dbQueue.read { try ChatAttachmentQueries.fetchByMessages($0, messageIDs: [messageID]) }
         XCTAssertEqual(byMessage[messageID]?.map(\.id), [att.id])
-        XCTAssertEqual(try dbQueue.read { try ChatAttachmentQueries.fetchByMessages($0, messageIDs: []) }, [:])
+        let none = try await dbQueue.read { try ChatAttachmentQueries.fetchByMessages($0, messageIDs: []) }
+        XCTAssertEqual(none, [:])
 
         // Linking never steals a row that already belongs to a message.
         let other = try insertUserMessage()
-        try dbQueue.write { try ChatAttachmentQueries.link($0, attachmentIDs: [att.id], messageID: other) }
-        let again = try dbQueue.read { try ChatAttachmentQueries.fetchByMessages($0, messageIDs: [messageID, other]) }
+        try await dbQueue.write { try ChatAttachmentQueries.link($0, attachmentIDs: [att.id], messageID: other) }
+        let again = try await dbQueue.read { try ChatAttachmentQueries.fetchByMessages($0, messageIDs: [messageID, other]) }
         XCTAssertEqual(again[messageID]?.count, 1)
         XCTAssertNil(again[other])
     }
 
-    func testRemoveFilesDeletesOwnerDirectory() throws {
-        let att = try store.importFile(url: source("shot.png", AttachmentValidatorTests.png), conversationID: conversationID)
+    func testRemoveFilesDeletesOwnerDirectory() async throws {
+        let att = try await store.importFile(url: source("shot.png", AttachmentValidatorTests.png), conversationID: conversationID)
         ChatAttachmentStore.removeFiles(for: .conversation(conversationID), rootDir: root)
         XCTAssertFalse(FileManager.default.fileExists(atPath: att.path))
         // Missing directory is a no-op, not a crash.

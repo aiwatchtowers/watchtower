@@ -23,12 +23,13 @@ final class EmbeddedChatViewTests: XCTestCase {
         return EmbeddedChatEngine(spec: spec, store: MemoryEmbeddedChatStore(), aiService: ai, gate: gate)
     }
 
-    func testEmptyChatShowsTheHintAndStarterPrompts() throws {
+    func testEmptyChatShowsTheHintAndStarterPrompts() async throws {
         let prompt = ChatStarterPrompt(title: "What was decided?", text: "What was decided?", sendsImmediately: true)
         let engine = engine(prompts: [prompt])
         let view = EmbeddedChatRows(engine: engine)
         XCTAssertNoThrow(try view.inspect().find(text: "Ask about this meeting"))
         try view.inspect().find(button: "What was decided?").tap()
+        await engine.finished()
         XCTAssertEqual(ai.calls.first?.prompt, "What was decided?")
         XCTAssertTrue(engine.isStreaming)
     }
@@ -44,6 +45,7 @@ final class EmbeddedChatViewTests: XCTestCase {
     func testRetrySitsOnTheLastFailedReplyOnly() async throws {
         let engine = engine()
         engine.send("first")
+        await engine.finished()
         ai.finish(throwing: WatchtowerAIError.exitCode(1, "first failure"))
         let firstDone = await waitForCondition { !engine.isStreaming }
         XCTAssertTrue(firstDone)
@@ -52,6 +54,7 @@ final class EmbeddedChatViewTests: XCTestCase {
         }.count, 1)
 
         engine.send("second")
+        await engine.finished()
         ai.finish(call: 1, throwing: WatchtowerAIError.exitCode(1, "second failure"))
         let secondDone = await waitForCondition { !engine.isStreaming }
         XCTAssertTrue(secondDone)
@@ -64,33 +67,40 @@ final class EmbeddedChatViewTests: XCTestCase {
     func testRetryHidesWhileATurnWaits() async throws {
         let engine = engine()
         engine.send("first")
+        await engine.finished()
         ai.finish(throwing: WatchtowerAIError.exitCode(1, "boom"))
         let done = await waitForCondition { !engine.isStreaming }
         XCTAssertTrue(done)
         XCTAssertNoThrow(try EmbeddedChatRows(engine: engine).inspect().find(button: "Retry"), "visible while idle")
         let filler = self.engine()
         filler.send("takes the only slot")
+        await filler.finished()
         engine.retry()
+        await engine.finished()
         XCTAssertTrue(engine.isQueued)
         XCTAssertThrowsError(try EmbeddedChatRows(engine: engine).inspect().find(button: "Retry"))
     }
 
-    func testAQueuedMessageShowsAsQueued() throws {
+    func testAQueuedMessageShowsAsQueued() async throws {
         let busy = engine()
         busy.send("holds the only slot")
+        await busy.finished()
         let engine = engine()
         engine.send("waiting")
+        await engine.finished()
         XCTAssertTrue(engine.isQueued)
         XCTAssertNoThrow(try EmbeddedChatRows(engine: engine).inspect().find(text: "Queued"))
         XCTAssertNoThrow(try EmbeddedChatRows(engine: engine).inspect().find(text: "waiting"))
     }
 
-    func testComposerShowsQueuedStatusWithCancel() throws {
+    func testComposerShowsQueuedStatusWithCancel() async throws {
         let busy = engine()
         busy.send("holds the only slot")
+        await busy.finished()
         let engine = engine()
         engine.draft = "waiting"
         engine.sendDraft()
+        await engine.finished()
         let composer = EmbeddedChatComposer(engine: engine, placeholder: "Ask")
         try composer.inspect().find(button: "Cancel").tap()
         XCTAssertFalse(engine.isQueued)
@@ -106,6 +116,7 @@ final class EmbeddedChatViewTests: XCTestCase {
                                   emptyHint: ""),
             store: store, aiService: ai, gate: gate)
         engine.send("q")
+        await engine.finished()
         ai.emit(.text("reply"))
         ai.finish()
         let done = await waitForCondition { !engine.isStreaming }

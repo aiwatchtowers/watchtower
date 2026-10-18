@@ -294,11 +294,14 @@ struct ReminderRow: View {
                 }
             }
             Spacer()
-            Button("Done") { vm.markReminderDone(reminder.id) }
-            Button("Snooze 1h") {
-                let until = ISO8601DateFormatter().string(from: Date().addingTimeInterval(3600))
-                vm.snoozeReminder(reminder.id, until: until)
+            Group {
+                Button("Done") { Task { await vm.markReminderDone(reminder.id) } }
+                Button("Snooze 1h") {
+                    let until = ISO8601DateFormatter().string(from: Date().addingTimeInterval(3600))
+                    Task { await vm.snoozeReminder(reminder.id, until: until) }
+                }
             }
+            .disabled(vm.isWriting(reminder: reminder.id))
         }
         .padding(.vertical, 4)
     }
@@ -328,8 +331,11 @@ struct AutomationOutputRow: View {
                 source
             }
             Spacer()
-            Button("Done") { vm.markOutputDone(output.id) }
-            Button("Dismiss") { vm.dismissOutput(output.id) }
+            Group {
+                Button("Done") { Task { await vm.markOutputDone(output.id) } }
+                Button("Dismiss") { Task { await vm.dismissOutput(output.id) } }
+            }
+            .disabled(vm.isWriting(output: output.id))
         }
         .padding(.vertical, 4)
     }

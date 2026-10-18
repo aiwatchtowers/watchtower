@@ -32,39 +32,40 @@ final class MeetingChatSurfaceTests: XCTestCase {
         })
     }
 
-    private func engine(for transcript: MeetingTranscript, ai: any AIServiceProtocol) throws -> EmbeddedChatEngine {
-        let conv = try MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
+    private func engine(for transcript: MeetingTranscript, ai: any AIServiceProtocol) async throws -> EmbeddedChatEngine {
+        let conv = try await MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
         return makeSurfaceEngine(MeetingChatSurface.spec(transcript: transcript, transcriptID: 7, recapContent: nil,
                                                          conversationID: conv, dbPool: dbManager.dbPool),
                                  dbPool: dbManager.dbPool, ai: ai)
     }
 
-    func testCreatesConversationWithMeetingContext() throws {
+    func testCreatesConversationWithMeetingContext() async throws {
         let transcript = try loadTranscript()
-        _ = try MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
+        _ = try await MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
 
-        let conv = try dbManager.dbPool.read { db in
+        let conv = try await dbManager.dbPool.read { db in
             try ChatConversationQueries.fetchByContext(db, type: "meeting", id: "7")
         }
         let unwrapped = try XCTUnwrap(conv)
         XCTAssertTrue(unwrapped.title.hasPrefix("Meeting:"))
     }
 
-    func testReopensExistingConversationWithHistory() throws {
+    func testReopensExistingConversationWithHistory() async throws {
         let transcript = try loadTranscript()
-        _ = try MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
-        let conv = try XCTUnwrap(dbManager.dbPool.read { db in
+        _ = try await MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
+        let found = try await dbManager.dbPool.read { db in
             try ChatConversationQueries.fetchByContext(db, type: "meeting", id: "7")
-        })
-        try dbManager.dbPool.write { db in
+        }
+        let conv = try XCTUnwrap(found)
+        try await dbManager.dbPool.write { db in
             _ = try ChatMessageQueries.insert(db, conversationID: conv.id, role: "user", text: "earlier question")
         }
 
-        let engine = try engine(for: transcript, ai: MockClaudeService())
+        let engine = try await engine(for: transcript, ai: MockClaudeService())
         XCTAssertEqual(engine.messages.map(\.message.text), ["earlier question"])
     }
 
-    func testSystemPromptCarriesMeetingContextAndCapsTranscript() throws {
+    func testSystemPromptCarriesMeetingContextAndCapsTranscript() async throws {
         let long = String(repeating: "слово ", count: 5_000) // ~30k chars
         let transcript = MeetingTranscript(
             id: 7, eventID: nil, title: "Big meeting", audioPath: nil,
@@ -96,9 +97,10 @@ final class MeetingChatSurfaceTests: XCTestCase {
     func testSendPassesNoToolMode() async throws {
         let transcript = try loadTranscript()
         let mock = MockClaudeService(events: [.text("ok"), .done])
-        let engine = try engine(for: transcript, ai: mock)
+        let engine = try await engine(for: transcript, ai: mock)
 
         engine.send("what did we decide?")
+        await engine.finished()
         let done = await eventually { !engine.isStreaming }
         XCTAssertTrue(done)
 
@@ -110,11 +112,12 @@ final class MeetingChatSurfaceTests: XCTestCase {
     /// meeting block itself.
     func testResumedTurnCarriesTheMeetingContext() async throws {
         let transcript = try loadTranscript()
-        let conv = try MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
+        let conv = try await MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: dbManager.dbPool)
         try await dbManager.dbPool.write { db in try ChatConversationQueries.updateSessionID(db, id: conv, sessionID: "s1") }
         let mock = MockClaudeService(events: [.text("ok"), .done])
-        let engine = try engine(for: transcript, ai: mock)
+        let engine = try await engine(for: transcript, ai: mock)
         engine.send("who owns the launch?")
+        await engine.finished()
         let done = await eventually { !engine.isStreaming }
         XCTAssertTrue(done)
         let prompt = try XCTUnwrap(mock.prompts.first)
@@ -129,11 +132,12 @@ final class MeetingChatSurfaceTests: XCTestCase {
         let mock = MockClaudeService(events: [.text("answer")], thenAwaitsRelease: true)
         let pool = dbManager.dbPool
         let center = EmbeddedChatCenter { spec, _ in makeSurfaceEngine(spec, dbPool: pool, ai: mock) }
-        let conv = try MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: pool)
+        let conv = try await MeetingChatSurface.conversationID(transcriptID: 7, title: transcript.title, dbPool: pool)
         let engine = center.engine(for: MeetingChatSurface.spec(transcript: transcript, transcriptID: 7, recapContent: nil,
                                                                 conversationID: conv, dbPool: pool))
         center.markShown(engine.spec.key)
         engine.send("q")
+        await engine.finished()
         center.markHidden(engine.spec.key)
         mock.release()
         let done = await eventually { !engine.isStreaming }
@@ -143,7 +147,7 @@ final class MeetingChatSurfaceTests: XCTestCase {
     }
 
     /// The question card is taught on this surface too (spec 2026-10-02).
-    func testSystemPromptTeachesTheQuestionCard() throws {
+    func testSystemPromptTeachesTheQuestionCard() async throws {
         let transcript = try loadTranscript()
         let prompt = MeetingChatSurface.buildSystemPrompt(
             transcript: transcript, recapContent: nil, dbPool: dbManager.dbPool,

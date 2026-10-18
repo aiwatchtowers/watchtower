@@ -190,12 +190,13 @@ final class EmailSetupChatViewModelTests: XCTestCase {
 
     // MARK: - Ephemeral chat behavior
 
-    func testGreetingIsLocalAndNeverSentToAI() {
+    func testGreetingIsLocalAndNeverSentToAI() async {
         let mock = MockClaudeService()
         let vm = EmailSetupChatViewModel(aiService: mock)
 
         vm.seedGreetingIfNeeded()
         vm.seedGreetingIfNeeded()
+        _ = await waitForCondition { !vm.messages.isEmpty }
 
         XCTAssertEqual(vm.messages.count, 1, "greeting seeds once")
         XCTAssertEqual(vm.messages.first?.role, .assistant)

@@ -117,12 +117,14 @@ extension SessionReportRunner {
 
     // MARK: - Cadence
 
-    /// Forgets sessions no longer in the window, and stamps the due ones as
-    /// attempted now; phone requests first.
+    /// Forgets sessions no longer in the window, stamps the due ones as
+    /// attempted now (phone requests first), and notes when the earliest
+    /// deferred state-change run is due.
     private func takeDue(_ listed: [SessionReportSlice.Windowed], stored: Set<Int64>, now: ContinuousClock.Instant) -> [Taken] {
         state.withLock { [timing] state in
             let ids = Set(listed.map(\.sessionID))
             state.entries = state.entries.filter { ids.contains($0.key) }
+            state.nextStateRunDue = nil
             var due: [Taken] = []
             for session in listed {
                 let id = session.sessionID
@@ -136,7 +138,12 @@ extension SessionReportRunner {
                     let elapsed = now - last
                     return (session.live && elapsed >= timing.every) || (entry.stateChanged && elapsed >= timing.stateSpacing)
                 }()
-                guard isDue else { continue }
+                guard isDue else {
+                    if entry.stateChanged, let last = entry.lastAttempt {
+                        state.nextStateRunDue = min(state.nextStateRunDue ?? last + timing.stateSpacing, last + timing.stateSpacing)
+                    }
+                    continue
+                }
                 let network = entry.networkRequested
                 entry.lastAttempt = now
                 entry.stateChanged = false

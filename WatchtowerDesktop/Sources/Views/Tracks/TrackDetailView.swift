@@ -11,6 +11,12 @@ struct TrackDetailView: View {
     /// a reply.
     @State private var chatConversationID: Int64?
     @State private var chatError: String?
+    /// The track whose chat the pane shows; a create landing for another
+    /// one is dropped.
+    @State private var chatShownKey: String?
+    /// Tracks whose first chat is being written (board #670): a spinner
+    /// stands in for the chat meanwhile.
+    @State private var chatCreates = ChatCreateGate()
     @State private var showCreateTarget = false
     @State private var targetPrefill: TargetPrefill?
     @State private var targetPrefillError: String?
@@ -64,6 +70,11 @@ struct TrackDetailView: View {
                 TrackChatSection(engine: engine, trackID: track.id)
                     .frame(minHeight: 200, idealHeight: 300)
                     .embeddedChatVisibility(engine.spec.key, in: appState.embeddedChatCenter)
+            } else if chatCreates.isCreating(String(track.id)) {
+                Divider()
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, minHeight: 200)
             } else if let chatError {
                 Divider()
                 Label(chatError, systemImage: "exclamationmark.triangle")
@@ -108,15 +119,44 @@ struct TrackDetailView: View {
 
     // MARK: - Chat
 
+    /// An existing conversation opens at once (a read); a track's first chat
+    /// is created off the main thread (board #670) and shows once written,
+    /// unless the pane moved on to another track meanwhile.
     private func openChat(db: DatabaseManager) {
+        let requested = track
+        let key = String(requested.id)
+        chatShownKey = key
         do {
-            chatConversationID = try TrackChatSurface.conversationID(for: track, dbPool: db.dbPool)
-            chatError = nil
+            if let existing = try TrackChatSurface.existingConversationID(for: requested, dbPool: db.dbPool) {
+                chatConversationID = existing
+                chatError = nil
+                return
+            }
         } catch {
-            chatConversationID = nil
-            NSLog("TrackDetailView: opening the chat of track %d failed: %@", track.id, String(describing: error))
-            chatError = "Couldn't open the chat: \(error.localizedDescription)"
+            chatOpenFailed(error, trackID: requested.id)
+            return
         }
+        chatConversationID = nil
+        // A create already under way for this track shows its chat when it lands.
+        guard chatCreates.begin(key) else { return }
+        Task {
+            defer { chatCreates.end(key) }
+            do {
+                let id = try await TrackChatSurface.conversationID(for: requested, dbPool: db.dbPool)
+                guard chatShownKey == key else { return }
+                chatConversationID = id
+                chatError = nil
+            } catch {
+                guard chatShownKey == key else { return }
+                chatOpenFailed(error, trackID: requested.id)
+            }
+        }
+    }
+
+    private func chatOpenFailed(_ error: Error, trackID: Int) {
+        chatConversationID = nil
+        NSLog("TrackDetailView: opening the chat of track %d failed: %@", trackID, String(describing: error))
+        chatError = "Couldn't open the chat: \(error.localizedDescription)"
     }
 
     /// A finished reply can change what the track shows (the daemon's

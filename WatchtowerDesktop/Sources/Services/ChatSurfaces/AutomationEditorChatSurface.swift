@@ -30,15 +30,15 @@ enum AutomationEditorChatSurface {
     }
 
     /// The automation's conversation, created on first use.
-    static func conversationID(for automation: Automation, dbPool: DatabasePool) throws -> Int64 {
-        try DatabaseEmbeddedChatStore.conversationID(
+    static func conversationID(for automation: Automation, dbPool: DatabasePool) async throws -> Int64 {
+        try await DatabaseEmbeddedChatStore.conversationID(
             dbPool: dbPool, contextType: contextType, contextID: String(automation.id),
             title: "Automation: \(String(automation.name.prefix(60)))")
     }
 
     /// The new draft's conversation, created on first use.
-    static func newConversationID(draftID: String, dbPool: DatabasePool) throws -> Int64 {
-        try DatabaseEmbeddedChatStore.conversationID(
+    static func newConversationID(draftID: String, dbPool: DatabasePool) async throws -> Int64 {
+        try await DatabaseEmbeddedChatStore.conversationID(
             dbPool: dbPool, contextType: draftContextType, contextID: draftID, title: "New automation")
     }
 
