@@ -46,12 +46,15 @@ var moveTables = []moveTable{
 		"terminal_session_id", "source_path", "git_branch", "model", "started_at", "ended_at", "reported_cost_usd"}},
 	// An event whose session is gone (written with foreign keys off) would
 	// fail agentlog.db's foreign key on every retry; no report reaches it.
+	// The unary plus keeps session_uuid's index out of the plan: without it
+	// SQLite seeks that index and sorts every page in a temp B-tree instead of
+	// seeking the rowid past the last page's id.
 	{name: "agent_log_events", cols: []string{"id", "session_uuid", "key", "kind", "ts", "uuid", "parent_uuid", "prompt_id",
 		"agent_id", "is_sidechain", "name", "target", "trigger", "outcome", "error_class", "duration_ms", "skill",
 		"input_tokens", "output_tokens", "cache_read_tokens", "cache_write_5m_tokens", "cache_write_1h_tokens",
 		"speed", "service_tier", "cost_usd", "price_version", "cost_estimated", "lines_added", "lines_removed",
 		"src_path", "src_offset", "spawned_agent_id", "background"},
-		filter: "session_uuid IN (SELECT session_uuid FROM agent_log_sessions)"},
+		filter: "+session_uuid IN (SELECT session_uuid FROM agent_log_sessions)"},
 }
 
 // MoveLockPath is the move's flock beside the agentlog.db at path.
@@ -97,7 +100,8 @@ func (d *DB) Moved() (bool, error) {
 // watchtower.db over to al, once (spec D4). Under an exclusive flock on
 // lockPath (MoveLockPath; a second mover waits, then finds the marker): when
 // al has no marker, it copies files, sessions and events in moveChunk-row
-// INSERT OR IGNORE transactions, reading watchtower.db only in read-only
+// transactions that skip only rows whose key is already there (any other
+// constraint failure aborts the move before the marker, nothing deleted), reading watchtower.db only in read-only
 // transactions, and sets the marker with the last chunk; then it deletes
 // whatever rows watchtower.db's tables still hold, moveChunk rows per write
 // transaction — the only analytics write to watchtower.db. The tables stay,
@@ -166,7 +170,7 @@ func setMoved(tx *sql.Tx) error {
 func copyTable(ctx context.Context, main *db.DB, al *DB, t moveTable, last bool, copied *int64) error {
 	cols := strings.Join(t.cols, ", ")
 	//nolint:gosec // G202: table and column names are moveTables' constants; every value is a bound arg.
-	insert := `INSERT OR IGNORE INTO ` + t.name + ` (` + cols + `) VALUES (?` + strings.Repeat(", ?", len(t.cols)-1) + `)`
+	insert := `INSERT INTO ` + t.name + ` (` + cols + `) VALUES (?` + strings.Repeat(", ?", len(t.cols)-1) + `) ON CONFLICT DO NOTHING`
 	var after any
 	for {
 		rows, err := readChunk(ctx, main, t, after)
@@ -211,14 +215,12 @@ func copyTable(ctx context.Context, main *db.DB, al *DB, t moveTable, last bool,
 	}
 }
 
-// readChunk reads up to moveChunk rows of t from main with a key above after
-// (nil: from the start), in a read-only transaction.
-func readChunk(ctx context.Context, main *db.DB, t moveTable, after any) ([][]any, error) {
+// chunkQuery is readChunk's query on t: the first page, or with paged a
+// page after a bound key; its last argument is the page size.
+func chunkQuery(t moveTable, paged bool) string {
 	var where []string
-	var args []any
-	if after != nil {
+	if paged {
 		where = append(where, t.cols[0]+" > ?")
-		args = append(args, after)
 	}
 	if t.filter != "" {
 		where = append(where, t.filter)
@@ -228,7 +230,17 @@ func readChunk(ctx context.Context, main *db.DB, t moveTable, after any) ([][]an
 	if len(where) > 0 {
 		q += ` WHERE ` + strings.Join(where, " AND ")
 	}
-	q += ` ORDER BY ` + t.cols[0] + ` LIMIT ?`
+	return q + ` ORDER BY ` + t.cols[0] + ` LIMIT ?`
+}
+
+// readChunk reads up to moveChunk rows of t from main with a key above after
+// (nil: from the start), in a read-only transaction.
+func readChunk(ctx context.Context, main *db.DB, t moveTable, after any) ([][]any, error) {
+	q := chunkQuery(t, after != nil)
+	var args []any
+	if after != nil {
+		args = append(args, after)
+	}
 	args = append(args, moveChunk)
 
 	tx, err := main.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})

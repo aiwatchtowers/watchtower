@@ -154,6 +154,7 @@ func TestMoveFromMain_CopiesAllRows(t *testing.T) {
 	wantTotals := dump(t, f.main, totals)
 	wantSessions := dump(t, f.main, `SELECT * FROM agent_log_sessions ORDER BY session_uuid`)
 	wantEvents := dump(t, f.main, `SELECT * FROM agent_log_events ORDER BY id`)
+	wantFiles := dump(t, f.main, `SELECT * FROM agent_log_files ORDER BY path`)
 
 	require.NoError(t, f.move(t))
 
@@ -163,8 +164,52 @@ func TestMoveFromMain_CopiesAllRows(t *testing.T) {
 	assert.Equal(t, wantSessions, dump(t, f.al, `SELECT * FROM agent_log_sessions ORDER BY session_uuid`),
 		"sessions whose transcript is gone are moved as they are")
 	assert.Equal(t, wantEvents, dump(t, f.al, `SELECT * FROM agent_log_events ORDER BY id`))
+	assert.Equal(t, wantFiles, dump(t, f.al, `SELECT * FROM agent_log_files ORDER BY path`),
+		"read offsets, sizes and parser versions come along, so the next scan resumes")
 	f.assertMainEmpty(t)
 	f.assertMoved(t)
+}
+
+// The events copy pages by id: both its first page and an id > ? page walk
+// the rowid, never session_uuid's index with a temp B-tree sort per page
+// (quadratic in the history size, on a path that runs before the daemon).
+func TestMoveFromMain_EventsCopySeeksRowid(t *testing.T) {
+	f := newMoveFixture(t)
+	events := moveTables[len(moveTables)-1]
+	require.Equal(t, "agent_log_events", events.name)
+
+	first := explainDetails(t, f.main, chunkQuery(events, false), moveChunk)
+	assert.Contains(t, first, "SCAN agent_log_events")
+	assert.NotContains(t, first, "idx_agent_log_events_session")
+	assert.NotContains(t, first, "TEMP B-TREE")
+
+	page := explainDetails(t, f.main, chunkQuery(events, true), 5000, moveChunk)
+	assert.Contains(t, page, "USING INTEGER PRIMARY KEY (rowid>?)")
+	assert.NotContains(t, page, "TEMP B-TREE")
+}
+
+// Only a row whose key is already in agentlog.db is skipped: a row agentlog.db
+// rejects for another reason (here a CHECK) aborts the move before the marker,
+// and nothing leaves watchtower.db.
+func TestMoveFromMain_ConstraintViolationAborts(t *testing.T) {
+	f := newMoveFixture(t)
+	f.seed(t, 2, 3)
+	_, err := f.main.Exec(`PRAGMA ignore_check_constraints = ON`)
+	require.NoError(t, err)
+	_, err = f.main.Exec(`INSERT INTO agent_log_events (session_uuid, key, kind, ts, src_path, src_offset)
+		VALUES ('s0', 'bad', 'not_a_kind', '2026-10-01T10:30:00Z', '/gone/s0.jsonl', 999)`)
+	require.NoError(t, err)
+	_, err = f.main.Exec(`PRAGMA ignore_check_constraints = OFF`)
+	require.NoError(t, err)
+	want := f.counts(t, f.main)
+
+	err = f.move(t)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CHECK constraint failed")
+	ok, err := f.al.Moved()
+	require.NoError(t, err)
+	assert.False(t, ok, "no marker after an aborted copy")
+	assert.Equal(t, want, f.counts(t, f.main), "nothing deleted from watchtower.db")
 }
 
 func TestMoveFromMain_InterruptedMidCopyResumes(t *testing.T) {
@@ -253,7 +298,7 @@ func copySteps(t *testing.T) int {
 // Two movers on one data directory, each on its own handles: the flock lets
 // one copy; the other waits, finds the marker and copies nothing. The first
 // mover holds its first chunk until the second reaches a copy chunk or
-// 500 ms pass, so without the lock both would copy (INSERT OR IGNORE would
+// 500 ms pass, so without the lock both would copy (ON CONFLICT DO NOTHING would
 // hide that in the counts; the copy steps do not).
 func TestMoveFromMain_TwoMoversOneCopy(t *testing.T) {
 	setMoveSeams(t, 10, nil)

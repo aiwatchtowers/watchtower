@@ -20,7 +20,7 @@ func openTestDB(t *testing.T) *DB {
 	return d
 }
 
-func explainDetails(t *testing.T, d *DB, query string, args ...any) string {
+func explainDetails(t *testing.T, d querier, query string, args ...any) string {
 	t.Helper()
 	rows, err := d.Query("EXPLAIN QUERY PLAN "+query, args...)
 	require.NoError(t, err)

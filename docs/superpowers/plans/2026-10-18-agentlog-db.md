@@ -16,7 +16,7 @@
 - Connection: one connection, WAL, `synchronous=NORMAL`, `foreign_keys=1`, `busy_timeout=5000`, `_txlock=immediate`; **not** through the lock-metrics driver.
 - Migrations: `internal/agentlogdb/migrations/*.sql` via `goose.NewProvider` only — never the global goose state; flock `agentlog.db.migrate.lock`, 2-minute wait.
 - Analytics code never opens a write transaction on `watchtower.db`, except the move's sliced row delete (5,000 rows per transaction).
-- Move flock: `agentlog.db.move.lock`; marker `agent_log_meta.moved_from_main` (RFC 3339 UTC); copy chunks 5,000 rows, `INSERT OR IGNORE`.
+- Move flock: `agentlog.db.move.lock`; marker `agent_log_meta.moved_from_main` (RFC 3339 UTC); copy chunks 5,000 rows, `INSERT … ON CONFLICT DO NOTHING`.
 - The `agent_log_*` tables stay (empty) in `watchtower.db` this release; `00116`/`00125` are not edited.
 - `agentAnalyticsBudget` stays `30 * time.Second` until the owner picks a value from Task 1's measurement.
 - `agents report` / `agents stats` never run the move and never write `watchtower.db`.
