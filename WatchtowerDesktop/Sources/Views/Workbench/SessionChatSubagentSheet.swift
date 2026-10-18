@@ -11,6 +11,7 @@ struct SessionChatSubagentSheet: View {
     @State private var loading = true
     @State private var error: String?
     @State private var nested: SessionFeedEntry?
+    @State private var markdown = SessionFeedMarkdownCache()
 
     private var subagent: SessionFeedSubagent? { entry.subagent }
 
@@ -53,7 +54,8 @@ struct SessionChatSubagentSheet: View {
                         if let heading = heading(index) {
                             Text(heading).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                         }
-                        SessionChatRow(entry: item) { nested = item }
+                        SessionChatRow(entry: item, blocks: markdown.blocks(for: item)) { nested = item }
+                            .equatable()
                     }
                 }
                 .padding(14)

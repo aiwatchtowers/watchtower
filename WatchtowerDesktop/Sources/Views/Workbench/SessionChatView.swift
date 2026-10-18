@@ -12,6 +12,15 @@ struct SessionChatView: View {
 
     @StateObject private var store: SessionFeedStore
     @State private var openedSubagent: SessionFeedEntry?
+    /// Per pane, never shared across sessions: parsed text per entry, the
+    /// built slice of a long chat, and which events show their body.
+    @State private var markdown = SessionFeedMarkdownCache()
+    @State private var window = SessionFeedWindow()
+    @State private var expandedEvents: Set<String> = []
+    @State private var follow = ChatFollowTrackerBox()
+    @State private var loadingRowVisible = false
+    private static var bottomID: String { "session-chat-bottom" }
+    private static var scrollSpace: String { "session-chat-scroll" }
 
     init(vm: WorkbenchesViewModel, sessionID: Int64, projectID: Int64) {
         self.vm = vm
@@ -59,16 +68,97 @@ struct SessionChatView: View {
         }
     }
 
+    /// The newest `window` of entries; the owner scrolling to the top grows
+    /// it, and following the bottom works as in AI Chat (`ChatFollowTracker`).
     private var feed: some View {
-        ScrollView {
-            LazyVStack(spacing: 10) {
-                ForEach(store.entries) { entry in
-                    SessionChatRow(entry: entry) { openedSubagent = entry }
+        ScrollViewReader { proxy in
+            GeometryReader { viewport in
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        if window.hasEarlier(total: store.entries.count) {
+                            loadingRow
+                                .onAppear {
+                                    loadingRowVisible = true
+                                    loadEarlier(proxy: proxy)
+                                }
+                                .onDisappear { loadingRowVisible = false }
+                        }
+                        ForEach(store.entries[window.range(total: store.entries.count)]) { entry in
+                            row(entry).id(entry.id)
+                        }
+                        // The bottom margin: scrolling to it lands at the
+                        // content's true bottom (the `ChatFeedView` rule).
+                        Color.clear.frame(height: 14).id(Self.bottomID)
+                    }
+                    .padding([.top, .horizontal], 14)
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear.preference(key: ChatContentFramePreferenceKey.self,
+                                                   value: geo.frame(in: .named(Self.scrollSpace)))
+                        }
+                    )
+                }
+                .coordinateSpace(name: Self.scrollSpace)
+                .defaultScrollAnchor(.bottom)
+                .onPreferenceChange(ChatContentFramePreferenceKey.self) { frame in
+                    guard let frame else { return }
+                    measure(.init(contentTop: frame.minY, contentHeight: frame.height,
+                                  viewportHeight: viewport.size.height), proxy: proxy)
+                }
+                // A height-only resize leaves the content frame unchanged in
+                // the scroll space (the `ChatFeedView` rule).
+                .onChange(of: viewport.size.height) { _, height in
+                    guard let last = follow.tracker.lastMetrics else { return }
+                    measure(.init(contentTop: last.contentTop, contentHeight: last.contentHeight,
+                                  viewportHeight: height), proxy: proxy)
                 }
             }
-            .padding(14)
         }
-        .defaultScrollAnchor(.bottom)
+    }
+
+    private func row(_ entry: SessionFeedEntry) -> some View {
+        SessionChatRow(entry: entry, blocks: markdown.blocks(for: entry),
+                       expanded: expandedEvents.contains(entry.id),
+                       onOpenSubagent: { openedSubagent = entry },
+                       onToggle: { toggleEvent(entry.id) })
+            .equatable()
+    }
+
+    private var loadingRow: some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.mini)
+            Text("Loading earlier messages…")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func toggleEvent(_ id: String) {
+        if expandedEvents.contains(id) { expandedEvents.remove(id) } else { expandedEvents.insert(id) }
+    }
+
+    /// Grows the window by one step and keeps the entry that was at the top
+    /// on screen. Only while the owner reads older text: a following view
+    /// stays at the bottom (the loading row can lay out at open).
+    private func loadEarlier(proxy: ScrollViewProxy) {
+        guard !window.following, let anchor = window.grow(entries: store.entries) else { return }
+        // After the grown rows lay out.
+        DispatchQueue.main.async { proxy.scrollTo(anchor, anchor: .top) }
+    }
+
+    /// Feeds one content measurement to the tracker, mirrors its follow bit
+    /// into the window, and pulls a following view down when content grew.
+    private func measure(_ current: ChatAutoScrollPolicy.Metrics, proxy: ScrollViewProxy) {
+        guard current.viewportHeight > 0 else { return }
+        let pull = follow.tracker.observeMeasurement(current)
+        let following = follow.tracker.following
+        if following != window.following {
+            window.setFollowing(following, total: store.entries.count)
+            // The loading row appeared before this scroll registered.
+            if !following && loadingRowVisible { loadEarlier(proxy: proxy) }
+        }
+        if pull { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
     }
 
     @ViewBuilder
@@ -93,173 +183,5 @@ struct SessionChatView: View {
         }
         .padding(8)
         .background(Color.orange.opacity(0.1))
-    }
-}
-
-/// One message of the chat, shared by the pane and the subagent sheet.
-struct SessionChatRow: View {
-    let entry: SessionFeedEntry
-    var openSubagent: (() -> Void)?
-
-    var body: some View {
-        switch entry.kind {
-        case "owner":
-            ownerBubble(label: nil, title: nil, caption: nil)
-        case "ask_answer":
-            ownerBubble(label: entry.askID.map { "Ask #\($0)" } ?? "Ask", title: entry.title, caption: "via Watchtower")
-        case "watchtower":
-            ownerBubble(label: nil, title: nil, caption: "via Watchtower")
-        case "agent":
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    SessionChatText(text: entry.text)
-                    timeCaption
-                }
-                Spacer(minLength: 48)
-            }
-        case "brief":
-            DisclosureGroup {
-                SessionChatText(text: entry.text).padding(.top, 4)
-            } label: {
-                Text("Watchtower: brief").font(.caption).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: 360)
-            .frame(maxWidth: .infinity)
-        case "separator":
-            HStack(spacing: 8) {
-                Rectangle().fill(.quaternary).frame(height: 1)
-                Text("New conversation").font(.caption).foregroundStyle(.secondary)
-                Rectangle().fill(.quaternary).frame(height: 1)
-            }
-        case "subagent":
-            if let subagent = entry.subagent {
-                subagentCard(subagent)
-            }
-        default:
-            EmptyView()
-        }
-    }
-
-    private func ownerBubble(label: String?, title: String?, caption: String?) -> some View {
-        HStack {
-            Spacer(minLength: 48)
-            VStack(alignment: .trailing, spacing: 3) {
-                VStack(alignment: .leading, spacing: 4) {
-                    if let label {
-                        Text(label).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    }
-                    if let title, !title.isEmpty {
-                        Text(title).font(.callout.weight(.semibold))
-                    }
-                    SessionChatText(text: entry.text)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(Color.accentColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                HStack(spacing: 6) {
-                    if let caption { Text(caption) }
-                    if let at = entry.at { Text(at, format: .dateTime.hour().minute()) }
-                }
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var timeCaption: some View {
-        if let at = entry.at {
-            Text(at, format: .dateTime.hour().minute()).font(.caption2).foregroundStyle(.tertiary)
-        }
-    }
-
-    private func subagentCard(_ subagent: SessionFeedSubagent) -> some View {
-        Button {
-            openSubagent?()
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "person.2").foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(subagent.type.isEmpty ? "Subagent" : subagent.type).font(.callout.weight(.semibold))
-                    if !subagent.description.isEmpty {
-                        Text(subagent.description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                    }
-                }
-                Spacer(minLength: 4)
-                Text(subagent.status == "running" ? "Running" : subagent.status == "finished" ? "Finished" : "")
-                    .font(.caption).foregroundStyle(.secondary)
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-            }
-            .padding(10)
-            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5))
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: 420, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-/// Markdown text: fenced code blocks monospaced, the rest inline Markdown
-/// with its line breaks kept. Parsed once per text, not per render.
-struct SessionChatText: View {
-    private enum Segment {
-        case prose(AttributedString)
-        case code(String)
-    }
-
-    private let segments: [Segment]
-
-    init(text: String) {
-        segments = Self.split(text)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
-                switch segment {
-                case let .prose(text):
-                    Text(text).textSelection(.enabled)
-                case let .code(code):
-                    Text(code)
-                        .font(.system(.callout, design: .monospaced))
-                        .textSelection(.enabled)
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-                }
-            }
-        }
-    }
-
-    private static func split(_ text: String) -> [Segment] {
-        var result: [Segment] = []
-        var prose: [Substring] = []
-        var code: [Substring] = []
-        var inCode = false
-        func flushProse() {
-            let joined = prose.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            prose = []
-            guard !joined.isEmpty else { return }
-            let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-            result.append(.prose((try? AttributedString(markdown: joined, options: options)) ?? AttributedString(joined)))
-        }
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
-                if inCode {
-                    result.append(.code(code.joined(separator: "\n")))
-                    code = []
-                } else {
-                    flushProse()
-                }
-                inCode.toggle()
-            } else if inCode {
-                code.append(line)
-            } else {
-                prose.append(line)
-            }
-        }
-        if inCode { result.append(.code(code.joined(separator: "\n"))) } else { flushProse() }
-        return result
     }
 }
