@@ -82,6 +82,9 @@ func uniqueNames(cands []ImportCandidate) []ImportCandidate {
 		if out[i].Source != c.Source && sameServer(out[i], c) {
 			continue
 		}
+		if c.Skip == OwnServerSkip && out[i].Skip == OwnServerSkip {
+			continue // Watchtower's own server in both configs: listed once
+		}
 		base := c.Name
 		for n := 2; taken(c.Name) >= 0; n++ {
 			c.Name = base + "-" + strconv.Itoa(n)
@@ -303,17 +306,24 @@ func readSource(path string) ([]byte, error) {
 	return data, nil
 }
 
-// finish makes c's name Quick-Connection-safe (noting a change) and drops
-// an empty secret.
+// OwnServerSkip is the skip reason of a server named "watchtower": it is
+// Watchtower's own server, which the chat already has.
+const OwnServerSkip = "it is Watchtower's own server"
+
+// finish makes c's name Quick-Connection-safe (noting a change), skips
+// Watchtower's own server (decided on the original name) and drops an empty
+// secret.
 func finish(c ImportCandidate) ImportCandidate {
+	if strings.EqualFold(c.Name, "watchtower") {
+		c.Skip = OwnServerSkip
+	}
 	if safe := strings.Trim(importNameUnsafe.ReplaceAllString(c.Name, "-"), "-"); safe != c.Name {
 		c.Note = fmt.Sprintf("renamed from %q: names hold only letters, digits, - and _", c.Name)
 		c.Name = safe
 	}
 	// A watchtower_ name is reserved (ReservedName): keep the server under
-	// a prefixed name. "watchtower" itself is Watchtower's own server, which
-	// the cmd layer skips.
-	if !strings.EqualFold(c.Name, "watchtower") && ReservedName(c.Name) {
+	// a prefixed name. "watchtower" itself is skipped above.
+	if c.Skip != OwnServerSkip && ReservedName(c.Name) {
 		c.Note = joinNote(c.Note, fmt.Sprintf(`renamed from %q: names starting with "watchtower_" are reserved for Watchtower's own tools`, c.Name))
 		c.Name = "ext-" + c.Name
 	}

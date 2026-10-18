@@ -113,9 +113,7 @@ func importCandidates(database *db.DB) ([]externalmcp.ImportCandidate, []string,
 		if c.Skip != "" {
 			continue
 		}
-		if strings.EqualFold(c.Name, "watchtower") {
-			cands[i].Skip = "it is Watchtower's own server"
-		} else if err := validateImportCandidate(c); err != nil {
+		if err := validateImportCandidate(c); err != nil {
 			cands[i].Skip = err.Error()
 		} else if slices.ContainsFunc(existing, func(e db.ExternalConnection) bool { return strings.EqualFold(e.Name, c.Name) }) {
 			cands[i].Skip = "a Quick Connection with this name already exists"

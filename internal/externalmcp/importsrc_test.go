@@ -3,6 +3,7 @@ package externalmcp
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -102,8 +103,8 @@ func TestDiscoverImports(t *testing.T) {
 
 	assert.Contains(t, byName["needs-var"].Skip, "$UNSET_VAR")
 	assert.Contains(t, byName["in-folder"].Skip, "cwd")
-	// The reserved name is the cmd layer's check (`connections add`).
-	assert.Empty(t, byName["watchtower"].Skip)
+	// Watchtower's own server is offered no import (board #556).
+	assert.Equal(t, OwnServerSkip, byName["watchtower"].Skip)
 	assert.Contains(t, byName["odd"].Skip, "could not be read", "one odd server does not drop the file")
 	assert.Contains(t, byName["broken"].Skip, "could not be read")
 	assert.False(t, byName["paused"].Enabled, "a server the owner turned off imports disabled")
@@ -143,4 +144,29 @@ func TestDiscoverImports_MissingAndBrokenFiles(t *testing.T) {
 	got, warnings = DiscoverImports(codex, broken, importEnv)
 	assert.Len(t, warnings, 1, "a broken Claude config is a warning")
 	assert.Len(t, got, 7, "the codex servers still count")
+}
+
+// A "watchtower" server in both configs is Watchtower's own, skipped and
+// listed once — never renamed watchtower-2 into an importable row; a
+// watchtower_ server is renamed ext-… with a note (board #556).
+func TestDiscoverImports_ReservedNames(t *testing.T) {
+	dir := t.TempDir()
+	codex := filepath.Join(dir, "config.toml")
+	claude := filepath.Join(dir, ".claude.json")
+	require.NoError(t, os.WriteFile(codex, []byte("[mcp_servers.watchtower]\ncommand = \"/opt/watchtower\"\nargs = [\"mcp\"]\n"+
+		"[mcp_servers.watchtower__notes]\ncommand = \"srv\"\n"), 0o600))
+	require.NoError(t, os.WriteFile(claude, []byte(`{"mcpServers":{"Watchtower":{"command":"watchtower","args":["mcp","--chat"]}}}`), 0o600))
+
+	got, warnings := DiscoverImports(codex, claude, importEnv)
+	assert.Empty(t, warnings)
+	var names []string
+	for _, c := range got {
+		names = append(names, c.Name)
+		if strings.EqualFold(c.Name, "watchtower") {
+			assert.Equal(t, OwnServerSkip, c.Skip)
+		}
+	}
+	assert.Equal(t, []string{"watchtower", "ext-watchtower__notes"}, names)
+	assert.Contains(t, got[1].Note, `renamed from "watchtower__notes"`)
+	assert.Empty(t, got[1].Skip)
 }
