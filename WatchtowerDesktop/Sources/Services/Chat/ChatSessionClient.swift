@@ -72,6 +72,8 @@ final class ChatSessionClient {
     var continuousLeafID: Int64?
 
     @ObservationIgnored var onTurnFinished: ((Int64) -> Void)?
+    /// A running turn's step started waiting on an approval card (`tool_wait`).
+    @ObservationIgnored var onActionAwaited: (() -> Void)?
     /// The process ended (or could not be spawned) — the pool re-admits.
     @ObservationIgnored var onEnded: (() -> Void)?
     @ObservationIgnored private var process: (any ChatSessionProcess)?
@@ -103,6 +105,7 @@ final class ChatSessionClient {
         self.driver = ChatTurnDriver(conversationID: config.conversationID, projectID: config.projectID,
                                      store: store, clock: clock)
         driver.onTurnFinished = { [weak self] turn in self?.turnFinished(turn) }
+        driver.onActionAwaited = { [weak self] _ in self?.onActionAwaited?() }
         if launchImmediately { launch() }
     }
 
@@ -236,10 +239,12 @@ final class ChatSessionClient {
     /// The prompt this session was spawned with is stale (its chat project
     /// changed) but a turn is running: let it finish, record no session id,
     /// then stop counting as alive so the pool replaces it (CHAT-03 — a
-    /// running turn is never cut).
-    func retireAfterTurn() {
+    /// running turn is never cut). `keepingSessionID`: the prompt is fine,
+    /// only the process must be replaced (the claude.ai switches changed),
+    /// so the turn's session id is still recorded and the next one resumes it.
+    func retireAfterTurn(keepingSessionID: Bool = false) {
         retiresAfterTurn = true
-        driver.stopRecordingSession()
+        if !keepingSessionID { driver.stopRecordingSession() }
     }
 
     /// Hands back the turn this not-yet-launched session holds, so it can be

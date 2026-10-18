@@ -369,51 +369,54 @@ func TestClaudeBackend_ReplayCommandStartsFreshSession(t *testing.T) {
 // BEHAVIOR CHAT-04 — see docs/inventory/chat.md
 // TestChat04_ClaudeArgvCarriesNoContent: CHAT-04 — the system prompt, the
 // owner's text and attachment paths never appear on any process's argv; the
-// prompt travels in a 0600 file, the text on stdin.
+// prompt travels in a 0600 file, the text on stdin — in claude.ai mode too.
 func TestChat04_ClaudeArgvCarriesNoContent(t *testing.T) {
-	opts, f := fakeClaude(t, "normal")
-	h := startSession(t, NewClaudeBackend(opts), nil)
-	h.next(EventSessionReady)
+	forEachClaudeAIMode(t, func(t *testing.T, mode ClaudeAIMode) {
+		opts, f := fakeClaude(t, "normal")
+		opts.ClaudeAI = mode
+		h := startSession(t, NewClaudeBackend(opts), nil)
+		h.next(EventSessionReady)
 
-	h.send(Command{Type: CommandTurn, TurnID: "t0", Text: "see attached",
-		Attachments: []Attachment{{Path: "/private/ATTACHMENT-PATH-SECRET.png", Mime: "image/png", Name: "x.png"}}})
-	assert.Equal(t, CodeAttachmentUnsupported, h.next(EventError).Code)
+		h.send(Command{Type: CommandTurn, TurnID: "t0", Text: "see attached",
+			Attachments: []Attachment{{Path: "/private/ATTACHMENT-PATH-SECRET.png", Mime: "image/png", Name: "x.png"}}})
+		assert.Equal(t, CodeAttachmentUnsupported, h.next(EventError).Code)
 
-	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "USER-TEXT-SECRET"})
-	h.next(EventTurnDone)
+		h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "USER-TEXT-SECRET"})
+		h.next(EventTurnDone)
 
-	runs := argvRuns(t, f.argv)
-	require.Len(t, runs, 1)
-	argv := strings.Join(runs[0], "\n")
-	for _, secret := range []string{"SYSTEM-PROMPT-SECRET", "USER-TEXT-SECRET", "ATTACHMENT-PATH-SECRET"} {
-		assert.NotContains(t, argv, secret)
-	}
-	i := indexOf(runs[0], "--system-prompt-file")
-	require.GreaterOrEqual(t, i, 0)
-	promptFile := runs[0][i+1]
-	data, err := os.ReadFile(promptFile)
-	require.NoError(t, err)
-	assert.Equal(t, "SYSTEM-PROMPT-SECRET", string(data))
-	info, err := os.Stat(promptFile)
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+		runs := argvRuns(t, f.argv)
+		require.Len(t, runs, 1)
+		argv := strings.Join(runs[0], "\n")
+		for _, secret := range []string{"SYSTEM-PROMPT-SECRET", "USER-TEXT-SECRET", "ATTACHMENT-PATH-SECRET"} {
+			assert.NotContains(t, argv, secret)
+		}
+		i := indexOf(runs[0], "--system-prompt-file")
+		require.GreaterOrEqual(t, i, 0)
+		promptFile := runs[0][i+1]
+		data, err := os.ReadFile(promptFile)
+		require.NoError(t, err)
+		assert.Equal(t, "SYSTEM-PROMPT-SECRET", string(data))
+		info, err := os.Stat(promptFile)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 
-	j := indexOf(runs[0], "--mcp-config")
-	require.GreaterOrEqual(t, j, 0)
-	mcpFile := runs[0][j+1]
-	info, err = os.Stat(mcpFile)
-	require.NoError(t, err)
-	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "the mcp config can hold connection secrets")
+		j := indexOf(runs[0], "--mcp-config")
+		require.GreaterOrEqual(t, j, 0)
+		mcpFile := runs[0][j+1]
+		info, err = os.Stat(mcpFile)
+		require.NoError(t, err)
+		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "the mcp config can hold connection secrets")
 
-	stdin, err := os.ReadFile(f.stdin)
-	require.NoError(t, err)
-	assert.Contains(t, string(stdin), "USER-TEXT-SECRET", "the owner's text travels on stdin")
-	require.NoError(t, h.finish())
+		stdin, err := os.ReadFile(f.stdin)
+		require.NoError(t, err)
+		assert.Contains(t, string(stdin), "USER-TEXT-SECRET", "the owner's text travels on stdin")
+		require.NoError(t, h.finish())
 
-	_, err = os.Stat(promptFile)
-	assert.True(t, os.IsNotExist(err), "the prompt file is deleted when the session exits")
-	_, err = os.Stat(mcpFile)
-	assert.True(t, os.IsNotExist(err), "the mcp config file (secrets) is deleted when the session exits")
+		_, err = os.Stat(promptFile)
+		assert.True(t, os.IsNotExist(err), "the prompt file is deleted when the session exits")
+		_, err = os.Stat(mcpFile)
+		assert.True(t, os.IsNotExist(err), "the mcp config file (secrets) is deleted when the session exits")
+	})
 }
 
 // BEHAVIOR CHAT-04 — see docs/inventory/chat.md
@@ -455,14 +458,31 @@ func TestChat04_ClaudeSendsRealAttachmentAsContentBlock(t *testing.T) {
 
 // BEHAVIOR CHAT-04 — see docs/inventory/chat.md
 func TestChat04_ClaudeArgsOnResume(t *testing.T) {
-	args := claudeArgs(ClaudeOptions{Model: "sonnet", AllowedTools: "mcp__watchtower", DisallowedTools: "Bash"},
-		"/tmp/p", "/tmp/m", "sess-9")
-	assert.True(t, contains(args, "--resume"))
-	assert.False(t, contains(args, "--system-prompt-file"), "a resumed session reuses its recorded prompt")
-	assert.True(t, contains(args, "--input-format"))
-	assert.True(t, contains(args, "--include-partial-messages"))
-	assert.True(t, contains(args, "/tmp/m"), "mcp config travels as a file path")
-	assert.True(t, contains(args, "--strict-mcp-config"), "a resumed session also sees only Watchtower's MCP servers")
+	forEachClaudeAIMode(t, func(t *testing.T, mode ClaudeAIMode) {
+		args := claudeArgs(ClaudeOptions{Model: "sonnet", AllowedTools: "mcp__watchtower", DisallowedTools: "Bash",
+			ClaudeAI: mode}, "/tmp/p", "/tmp/m", "sess-9")
+		assert.True(t, contains(args, "--resume"))
+		assert.False(t, contains(args, "--system-prompt-file"), "a resumed session reuses its recorded prompt")
+		assert.True(t, contains(args, "--input-format"))
+		assert.True(t, contains(args, "--include-partial-messages"))
+		assert.True(t, contains(args, "/tmp/m"), "mcp config travels as a file path")
+		if mode.On {
+			assert.True(t, contains(args, "--permission-prompt-tool"), "a resumed claude.ai session keeps its gate")
+		} else {
+			assert.True(t, contains(args, "--strict-mcp-config"), "a resumed session also sees only Watchtower's MCP servers")
+		}
+	})
+}
+
+// forEachClaudeAIMode runs f as a subtest with claude.ai mode off and on.
+func forEachClaudeAIMode(t *testing.T, f func(t *testing.T, mode ClaudeAIMode)) {
+	t.Helper()
+	for _, c := range []struct {
+		name string
+		mode ClaudeAIMode
+	}{{"off", ClaudeAIMode{}}, {"claude.ai", ClaudeAIMode{On: true, Connectors: true, Sandbox: testSandbox(t)}}} {
+		t.Run(c.name, func(t *testing.T) { f(t, c.mode) })
+	}
 }
 
 // The warm child always carries the --tools built-in allowlist: the value it

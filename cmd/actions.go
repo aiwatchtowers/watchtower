@@ -50,6 +50,8 @@ var actionsListCmd = &cobra.Command{Use: "list", Short: "List proposed actions",
 var actionsShowCmd = &cobra.Command{Use: "show <id>", Short: "Show one action", Args: cobra.ExactArgs(1), RunE: runActionsShow}
 var actionsApproveCmd = &cobra.Command{Use: "approve <id>", Short: "Approve a pending action and execute it", Args: cobra.ExactArgs(1), RunE: runActionsApprove}
 var actionsRejectCmd = &cobra.Command{Use: "reject <id>", Short: "Reject a pending action", Args: cobra.ExactArgs(1), RunE: runActionsReject}
+var actionsDismissCmd = &cobra.Command{Use: "dismiss <id>", Short: "Dismiss a chat-session call whose outcome is unknown",
+	Args: cobra.ExactArgs(1), RunE: runActionsDismiss}
 var actionsApplyCmd = &cobra.Command{Use: "apply <id>", Short: "Retry an approved or failed action", Args: cobra.ExactArgs(1), RunE: runActionsApply}
 var actionsTrustCmd = &cobra.Command{
 	Use:   "trust <tool> ask|execute",
@@ -69,7 +71,7 @@ var actionsToolsCmd = &cobra.Command{Use: "tools", Short: "List the registry's w
 
 func init() {
 	rootCmd.AddCommand(actionsCmd)
-	for _, c := range []*cobra.Command{actionsListCmd, actionsShowCmd, actionsApproveCmd, actionsRejectCmd, actionsApplyCmd, actionsToolsCmd} {
+	for _, c := range []*cobra.Command{actionsListCmd, actionsShowCmd, actionsApproveCmd, actionsRejectCmd, actionsApplyCmd, actionsDismissCmd, actionsToolsCmd} {
 		c.Flags().BoolVar(&actionsFlagJSON, "json", false, "output JSON (the Desktop contract)")
 		actionsCmd.AddCommand(c)
 	}
@@ -105,13 +107,14 @@ type actionJSON struct {
 	CreatedAt      string          `json:"created_at"`
 	DecidedAt      string          `json:"decided_at"`
 	AppliedAt      string          `json:"applied_at"`
+	DismissedAt    string          `json:"dismissed_at"`
 }
 
 func toActionJSON(a db.AgentAction) actionJSON {
 	out := actionJSON{ID: a.ID, Tool: a.Tool, External: a.External, Status: a.Status,
 		Args: json.RawMessage(a.ArgsJSON), Reason: a.Reason, Surface: a.Surface, ConversationID: a.ConversationID,
 		TurnID: a.TurnID, Result: json.RawMessage("null"), Error: a.Error,
-		CreatedAt: a.CreatedAt, DecidedAt: a.DecidedAt, AppliedAt: a.AppliedAt}
+		CreatedAt: a.CreatedAt, DecidedAt: a.DecidedAt, AppliedAt: a.AppliedAt, DismissedAt: a.DismissedAt}
 	if a.ResultJSON != "" {
 		out.Result = json.RawMessage(a.ResultJSON)
 	}
@@ -268,6 +271,23 @@ func prepareApply(database *db.DB, id int64) (string, error) {
 	return "", nil
 }
 
+// decideOrExplain moves the row from one of from to to; a row in another
+// state is an error naming its status.
+func decideOrExplain(reg *tools.Registry, database *db.DB, id int64, from []string, to string) error {
+	ok, err := decide(reg, database, id, from, to)
+	if err != nil || ok {
+		return err
+	}
+	row, err := database.GetAgentAction(id)
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return fmt.Errorf("no action #%d", id)
+	}
+	return fmt.Errorf("action #%d is %s, cannot %s it", id, row.Status, decisionVerb(to))
+}
+
 // decideAndMaybeApply is approve/reject/apply's shared core. The status
 // change is the persisted outcome (exit 0 once it landed); execution is
 // reported separately through applied_ok/error — the recap_ok precedent —
@@ -282,22 +302,18 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 		return err
 	}
 	defer database.Close()
-	env := actionEnvelope{OK: true}
-	switch {
-	case to != "":
-		ok, err := decide(reg, database, id, from, to)
+	if execute {
+		applyHere, err := mayApplyHere(reg, database, id, to)
 		if err != nil {
 			return err
 		}
-		if !ok {
-			row, err := database.GetAgentAction(id)
-			if err != nil {
-				return err
-			}
-			if row == nil {
-				return fmt.Errorf("no action #%d", id)
-			}
-			return fmt.Errorf("action #%d is %s, cannot %s it", id, row.Status, decisionVerb(to))
+		execute = applyHere
+	}
+	env := actionEnvelope{OK: true}
+	switch {
+	case to != "":
+		if err := decideOrExplain(reg, database, id, from, to); err != nil {
+			return err
 		}
 	case execute:
 		if env.Warning, err = prepareApply(database, id); err != nil {
@@ -345,6 +361,29 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 	return nil
 }
 
+// mayApplyHere is whether this command may run row id itself. A
+// session-applied row (claude_ai_connector_call, #737) runs only in the chat
+// session that proposed it: approve stops at `approved` (the session claims
+// it), and a bare apply — --force included — is refused before anything is
+// written, so not even an `executing` row is reclaimed here.
+func mayApplyHere(reg *tools.Registry, database *db.DB, id int64, to string) (bool, error) {
+	row, err := database.GetAgentAction(id)
+	if err != nil {
+		return false, fmt.Errorf("reading action #%d: %w", id, err)
+	}
+	if row == nil {
+		return true, nil // reported as "no action #N" by the usual path
+	}
+	t, ok := reg.Get(row.Tool)
+	if !ok || !t.AppliedBySession {
+		return true, nil
+	}
+	if to == "" {
+		return false, fmt.Errorf("action #%d: %s %w", id, t.Name, tools.ErrSessionApplied)
+	}
+	return false, nil
+}
+
 // agentEnvMarkers are the variables an AI coding agent's shell carries:
 // Claude Code sets CLAUDECODE=1; Codex sets CODEX_THREAD_ID on every command
 // it runs and CODEX_SANDBOX when it runs one sandboxed; a Watchtower
@@ -363,7 +402,8 @@ var agentEnvMarkers = []string{"CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX",
 // that is not confirmed yet (spec 2026-10-14 §14.3, D16); `automations
 // enable` and `automations delete` (D24, ask #293); `automations auto …
 // on` (spec §6.4, P2); `automations session-launched` and `session-ended`
-// (P5). The Desktop's buttons are the path. Reject and the read verbs stay open.
+// (P5); `actions dismiss` (#737, ask #342). The Desktop's buttons are the path.
+// Reject and the read verbs stay open.
 func refuseUnderAgent(verb string) error {
 	for _, name := range agentEnvMarkers {
 		if os.Getenv(name) != "" {
@@ -400,6 +440,47 @@ func runActionsApprove(cmd *cobra.Command, args []string) error {
 
 func runActionsReject(cmd *cobra.Command, args []string) error {
 	return decideAndMaybeApply(cmd, args[0], []string{"pending"}, "rejected", false)
+}
+
+// runActionsDismiss acknowledges a claude.ai connector call whose session
+// ended while it ran (tools.Registry.DismissSessionCall): the row leaves the
+// Desktop's Inbox badge. An owner gesture (AGENT-07): refused under an agent,
+// and otherwise run only on the owner's Confirm in the Desktop — only the
+// owner says they checked whether the call ran.
+func runActionsDismiss(cmd *cobra.Command, args []string) error {
+	if err := refuseUnderAgent("dismiss an action"); err != nil {
+		return err
+	}
+	if err := confirmWithOwner("dismiss an action", actionConfirmDetail(args[0])); err != nil {
+		return err
+	}
+	id, err := parseActionID(args[0])
+	if err != nil {
+		return err
+	}
+	database, reg, err := openActionsCmd()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	if err := reg.DismissSessionCall(id); err != nil {
+		if errors.Is(err, tools.ErrNotFound) {
+			return fmt.Errorf("no action #%d", id)
+		}
+		return fmt.Errorf("dismissing action #%d: %w", id, err)
+	}
+	row, err := database.GetAgentAction(id)
+	if err != nil {
+		return fmt.Errorf("reading action #%d: %w", id, err)
+	}
+	if row == nil {
+		return fmt.Errorf("no action #%d", id)
+	}
+	if actionsFlagJSON {
+		return writeJSON(cmd.OutOrStdout(), actionEnvelope{OK: true, Action: toActionJSON(*row)})
+	}
+	printAction(cmd.OutOrStdout(), *row)
+	return nil
 }
 
 func runActionsApply(cmd *cobra.Command, args []string) error {
@@ -499,8 +580,9 @@ func runActionsTools(cmd *cobra.Command, _ []string) error {
 	out := make([]toolJSON, 0, len(listed))
 	for _, t := range listed {
 		// Settings → Assistant tools draws a trust switch per surface, so
-		// only what trust can act on is listed (CheckTrustable).
-		if tools.CheckTrustable(t) != nil {
+		// only what trust can act on is listed (CheckTrustable); a
+		// session-applied tool is no assistant tool a switch could govern.
+		if tools.CheckTrustable(t) != nil || t.AppliedBySession {
 			continue
 		}
 		// Never nil, so JSON carries []; the automation surface is listed with

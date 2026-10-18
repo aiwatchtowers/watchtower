@@ -85,8 +85,11 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	if model == "" {
 		_, model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)
 	}
+	// One decision drives the prompt, the flags and the gate (#737).
+	claudeAI := resolveClaudeAI(cfg, aiSessionFlagSurface, conv.ID, os.Environ(), cmd.ErrOrStderr())
+	writeUnavailableConnectors(dbPath, claudeAI, cmd.ErrOrStderr())
 	prompt, err := chat.BuildSystemPrompt(ctx, database, cfg,
-		sessionPromptOptions(cfg, aiSessionFlagSurface, aiSessionFlagProjectID, time.Now()))
+		sessionPromptOptions(cfg, aiSessionFlagSurface, aiSessionFlagProjectID, time.Now(), claudeAI.prompt))
 	if err != nil {
 		return fail(chat.CodeInternal, fmt.Sprintf("building the system prompt: %v", err))
 	}
@@ -106,7 +109,7 @@ func runAISession(cmd *cobra.Command, _ []string) error {
 	backend, err := newSessionBackend(sessionWiring{
 		cfg: cfg, database: database, dbPath: dbPath, conv: conv,
 		model: model, prompt: prompt, mcpArgs: mcpArgs, turnFile: turnFile,
-		project: project, chatProjectID: chatProjectID, warn: cmd.ErrOrStderr(),
+		project: project, chatProjectID: chatProjectID, warn: cmd.ErrOrStderr(), claudeAI: claudeAI,
 	})
 	if err != nil {
 		return fail(chat.CodeProviderUnavailable, err.Error())
@@ -185,14 +188,16 @@ func sessionMCPArgs(surface string, conv *db.ChatConversation, turnFile string, 
 }
 
 // sessionPromptOptions selects the session's system-prompt blocks. The memory
-// block follows the owner's memory.surfaces.chat gate (and memory.enabled).
-func sessionPromptOptions(cfg *config.Config, surface string, projectID int64, now time.Time) chat.PromptOptions {
+// block follows the owner's memory.surfaces.chat gate (and memory.enabled);
+// claudeAI is resolveClaudeAI's prompt side.
+func sessionPromptOptions(cfg *config.Config, surface string, projectID int64, now time.Time, claudeAI chat.ClaudeAIPrompt) chat.PromptOptions {
 	return chat.PromptOptions{
 		Surface: surface, ProjectID: projectID, ToolsAvailable: true,
 		Provider: cfg.AI.Provider, SkillsDir: skills.Dir(cfg.WorkspaceDir()), VaultDir: memoryVaultPath(cfg),
 		MemoryChat: cfg.Memory.Enabled && cfg.Memory.Surfaces.Chat, Now: now,
 		// Only the Claude backend unhides WebSearch (newSessionBackend).
 		WebSearch: cfg.AI.Provider != "codex" && cfg.AI.Provider != "ollama",
+		ClaudeAI:  claudeAI,
 	}
 }
 
@@ -209,6 +214,7 @@ type sessionWiring struct {
 	project       *db.ChatProjectContext // nil = not a project chat
 	chatProjectID int64                  // 0 = not a project chat; bound into the ollama registry
 	warn          io.Writer              // skipped project files are named here
+	claudeAI      claudeAISetup          // zero = claude.ai mode off
 }
 
 // newSessionBackend picks the provider backend for `ai session`.
@@ -230,7 +236,13 @@ func newSessionBackend(w sessionWiring) (chat.Backend, error) {
 		loop := agentloop.NewClient(w.model, w.cfg.AI.OllamaURL, buildToolRegistry(w.cfg, w.database), sessionToolBinding(w))
 		return chat.NewTurnBackend(loop, w.database, w.conv.ID, chat.WithSystemPrompt(w.prompt)), nil
 	default:
-		return chat.NewClaudeBackend(claudeSessionOptions(w, loadExternalMCPServers(w.cfg, w.dbPath))), nil
+		ext := loadExternalMCPServers(w.cfg, w.dbPath)
+		opts := claudeSessionOptions(w, ext)
+		if w.claudeAI.mode.On {
+			sink := newRegistrySink(buildToolRegistry(w.cfg, w.database), w.database, w.conv, w.warn)
+			opts = withClaudeAI(opts, w, ext, sink)
+		}
+		return chat.NewClaudeBackend(opts), nil
 	}
 }
 

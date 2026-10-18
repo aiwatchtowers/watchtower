@@ -59,11 +59,16 @@ error. Protocol v2 has no `reset` event: text already streamed before a tool
 call is never wiped — the Claude translator turns a mid-turn `tool_use` into
 a start/end step pair, never into a clear, and every event type the
 translator ever emits for a turn containing a tool call is asserted to
-never be `"reset"`.
+never be `"reset"`. A call the permission gate denies is a red step carrying
+the gate's reason; a call waiting for the owner's approval is a visible
+waiting step until it is approved, rejected or times out.
 
 **Guard:** `TestChat02_ToolCallNeverWipesText`
 (`internal/chat/claude_translate_test.go`);
 `testChat02ToolStepsArePersistedImmediately`
+(`WatchtowerDesktop/Tests/Core/ChatTurnDriverTests.swift`);
+`TestChat02_GateDecisionsAreSteps` (`internal/chat/gate_test.go`);
+`testChat02WaitingStepIsVisibleUntilItEnds`
 (`WatchtowerDesktop/Tests/Core/ChatTurnDriverTests.swift`)
 
 ## CHAT-03 — bounded warm sessions
@@ -102,7 +107,9 @@ misbehaving child.
 `TestChat03_CloseDuringReplayNeverRespawns`,
 `TestChat03_ClosedBackendRefusesToSpawn`,
 `TestChat03_CloseUnblocksAStuckWrite`
-(`internal/chat/claude_backend_test.go`)
+(`internal/chat/claude_backend_test.go`);
+`TestChat03_CloseWhileWaitingForApprovalRejectsAndReaps`
+(`internal/chat/gate_test.go`)
 
 ## CHAT-04 — content stays off argv
 
@@ -174,7 +181,8 @@ The artifact-side source files (`ArtifactParser`, `ArtifactActions`,
 `Process(`, `CLIRunner`, `URLSession`, `findCLIPath`, `WatchtowerAIService`
 or `ChatSessionPool` — a source scan, not just a behavioral test. Every
 external write anywhere in the chat instead goes through the tool
-registry's Propose → Approve path (AGENT-01..06 unchanged).
+registry's Propose → Approve path (AGENT-01..07) — the one
+stated exception, publishing to the owner's own claude.ai account, is below.
 
 The same scan covers the artifact-comment files (`ArtifactCommentsModel`,
 `ArtifactCommentMessage`, `ArtifactCommentReanchor`, `ArtifactCommentText`,
@@ -184,6 +192,37 @@ the assistant only inside the owner's own chat message, sent by the chat
 (`ChatViewModel.sendArtifactComments`) when the owner presses
 **Send N comments**.
 
+The in-app artifact panel is unchanged: every artifact action is a copy, an open or
+a `copyThenOpen`, and the artifact-side files never reference a process, network or
+session entry point. On the Claude provider the assistant itself may publish to the
+owner's own claude.ai account without a per-call approval — `Artifact` `publish`
+of a file inside the session's publish dir, `list`/`open`/`quickstart`, and Claude
+Docs create/update/batch of the owner's own private doc — always as a visible step
+with the resulting link. Every other write through a claude.ai connector, sharing or
+deleting a published page or doc included, goes through the session's permission
+gate: one `agent_actions` row, executed by the session only after the owner's
+Approve and at most once (AGENT-05), denied on Reject, Stop, timeout or a dead
+session. Owner approved 2026-10-13, ask #236.
+The gate never allows a call it cannot classify: an unknown tool of a listed
+connector, a tool without annotations, unparseable input, or a call whose
+proposal cannot be recorded is denied or waits for Approve — never run
+silently — and a refused or failed publish is a red step. `Write`, `Artifact`'s
+sources (relative ones joined with `root`) and `read`'s `out_dir` (and the final
+path the read saves to) are confined to the conversation's publish dir;
+`Artifact` `pin`/`unpin`/`delete`, a publish to a URL this session did not
+publish, and a Claude Docs call that shares, deletes, mentions someone other
+than the owner, answers a comment thread, or comments on or otherwise touches
+anything outside a doc this session created — one such member makes a whole `batch` wait — go to Approve.
+No tool call of the claude.ai-mode child touches a TCC-guarded location in its
+standard place (Desktop, Documents, Downloads, Pictures/Photos, Movies, Music,
+iCloud Drive, cloud storage, other apps' containers and data, removable and network
+volumes under `/Volumes`, `/Network`, `/home`, `/net`): the CLI inspects a
+model-chosen path before it asks the gate, so the child always runs under a macOS
+sandbox profile (`ChildSandbox`) that denies every file access there — read, write,
+stat and existence test — and a sandbox denial never reaches TCC, so no privacy
+prompt appears in Watchtower's name. Without the sandbox the claude.ai tools are off; a claude.ai-mode
+child is never started without it.
+
 **Guard:** `testChat05ArtifactActionsOnlyOpenOrCopy`
 (`WatchtowerDesktop/Tests/Core/ArtifactActionsTests.swift`);
 `testChat05ArtifactSurfacesNeverWrite`
@@ -192,12 +231,23 @@ the assistant only inside the owner's own chat message, sent by the chat
 (`internal/chat/artifacts_contract_test.go`);
 `testArtifactCommentsReachTheAssistantOnlyAsTheOwnersMessage`
 (`WatchtowerDesktop/Tests/ChatViewModelTests.swift`);
+`TestChat05_ConnectorWriteWaitsForApproval`,
+`TestChat05_PublishOnlyFromThePublishDir`,
+`TestChat05_DeadSessionNeverRunsAnApprovedCall`
+(`internal/chat/gate_test.go`);
+`TestChat05_ClaudeAIChildNeverTouchesTCCGuardedFolders`
+(`internal/chat/sandbox_test.go`; its real-sandbox halves run on macOS only);
+`testChat05PublishedLinkCardOnlyOpensOrCopies`
+(`WatchtowerDesktop/Tests/Core/ArtifactChat05ScanTests.swift`)
 
 ## Changelog
 
+- 2026-10-18 (board #737, owner decision ask #342 "guard before the CLI"): **CHAT-05** strengthened, no guard relaxed. The PR #379 review found that the CLI resolves, lists or hashes a model-chosen `Write` target or `Artifact` source before it sends `can_use_tool`, so the gate's lexical publish-dir check could not keep a path in `~/Documents` untouched. The Observable gains the TCC rule: the claude.ai-mode child runs under a macOS sandbox profile denying file reads and writes in the TCC-guarded folders (`internal/chat/sandbox.go`), the tools are off without it, and a claude.ai-mode child never starts without it. New guard `TestChat05_ClaudeAIChildNeverTouchesTCCGuardedFolders`; the live evidence is in `internal/chat/testdata/claude_ai_probe.md` ("Sandbox").
 - 2026-10-18 (fix after #670 phase 2b-2): note only — **no contract or assertion changed**. `testChat01PartialTextSurvivesProcessDeathAndTheNextTurnResumes` waits for `!vm.isBusy` (the turn ended and its terminal write landed) instead of `!vm.isStreaming` before its next send: since 2b-2 a turn stops running before its final write lands, and the send is refused until it does, so the old wait raced the write on CI. `isBusy` includes `isStreaming`, so the wait is strictly stronger; the assertions are unchanged.
 - 2026-10-18 (board #670 phase 2b-2): note only — **no contract or assertion changed**. `ChatTurnStore` and `EmbeddedChatStore` write off the main thread: `ChatTurnDriver` queues every write in order as its event arrives, so a tool step is still written as it happens (CHAT-02), and an ended turn's final write lands before `onTurnFinished`; `ChatSessionClient.close` (quit) waits for it (CHAT-01 partial text survives quit). The guards gained awaits only: `testChat02ToolStepsArePersistedImmediately` awaits `driver.writesSettled()` before each read (and its reads await the pool), and `testChat01PartialTextSurvivesStop` awaits `vm.writesSettled()` after the turn stopped streaming, before the row is read; `testArtifactCommentsReachTheAssistantOnlyAsTheOwnersMessage`'s helper awaits the now-`async` comment add. The assertions are unchanged.
 - 2026-10-18 (board #670 phase 2b-1, PR #398): note only — **no contract or assertion changed**. `ChatViewModel`'s writes are `async`, so the CHAT-01 guards and `testArtifactCommentsReachTheAssistantOnlyAsTheOwnersMessage` gained `async`/`await` only: a call inside an `XCTAssert…`/`XCTUnwrap` is hoisted into an awaited `let` (XCTest autoclosures cannot await) and the same assertion runs on it. CHAT-01's order (owner row on disk before the turn is sent, nothing sent when it cannot be saved) is unchanged; the composer now clears at send and gets the text back on a failed save.
+- 2026-10-17 (board #737, Task 16): the #737 guards landed and lost their `(planned, #737)` marks, each verified by `grep` (`TestChat02_GateDecisionsAreSteps`, `testChat02WaitingStepIsVisibleUntilItEnds`, `TestChat03_CloseWhileWaitingForApprovalRejectsAndReaps`, `TestChat05_ConnectorWriteWaitsForApproval`, `TestChat05_PublishOnlyFromThePublishDir`, `TestChat05_DeadSessionNeverRunsAnApprovedCall`, `testChat05PublishedLinkCardOnlyOpensOrCopies`). **CHAT-05** strengthened, no exception widened: its Observable now states the gate's fail-closed rules (an unclassifiable or unrecorded call is denied or asks, never silently allowed; a failed publish is a red step), the publish-dir confinement of `Write`, `Artifact` sources and `read`'s `out_dir`, and which `Artifact` and Claude Docs calls always go to Approve — all as already implemented and covered by `internal/chat/connectorpolicy/policy_test.go` and `internal/chat/gate_test.go`. Feature note: `docs/features/chat-claude-ai-tools.md`.
+- 2026-10-17 (board #737): amended per spec 2026-10-16-chat-claude-ai-tools-design §4, owner approved 2026-10-13, ask #236 (scope and the CHAT-05 amendment; spec approved ask #325, decisions Q1–Q4 ask #326, plan approved ask #332); strengthening + one stated exception, no guard relaxed. **CHAT-05** gains the one private exception — on the Claude provider the assistant may publish to the owner's own claude.ai account (`Artifact` `publish` from the session's publish dir, `list`/`open`/`quickstart`, the owner's own private Claude Docs doc) as a visible step with its link — while every other claude.ai connector write goes through the session's permission gate as one `agent_actions` row the session alone executes after the owner's Approve (AGENT-05); the in-app artifact panel and its source scan are unchanged. **CHAT-02** gains gate decisions as steps (a denied call is a red step with the gate's reason, a waiting call a visible waiting step). **CHAT-03** gains a guard for `Close` during an approval wait. New guards are marked `(planned, #737)` until they land. The TCC guard stays: user settings are never loaded (`--setting-sources project,local`, private neutral cwd). DEV-06: no change — the workbench terminal is plain Claude Code and already has these tools under the owner's own settings.
 - 2026-10-17 (board #566, owner decision in ask #305): prompts never ride a claude/codex child's argv, whatever their size or caller. `digest.ClaudeGenerator` and `ai.Client` pass the user message on stdin (bare `-p`) and a non-empty system prompt as a 0600 `--system-prompt-file` (an empty one stays `--system-prompt ""`); `codex.CodexGenerator` and `codex.Client` pass a non-empty system prompt as a 0600 `-c model_instructions_file="<path>"` (codex-cli 0.145; it replaces codex's built-in base instructions, MCP tool use verified unchanged) and the user message on stdin (`codex exec -`), never `-c developer_instructions=...` or a positional prompt. A codex older than 0.145 (or whose `--version` cannot be read; probed once per binary and logged) keeps the former delimited one-stdin-payload layout instead, still off argv. The temp files are removed after the call, and the daemon sweeps `wt-system-prompt-*` leftovers older than 10 minutes at startup. `ai query --prompt-stdin` (JSON `{"prompt", "system_prompt"}` on stdin) is what the Desktop now uses, so the owner's message is off the CLI's argv too. `digest.StdinThreshold` and the opt-in `SetStdinOnly` modes are gone. **CHAT-04** strengthened; one guard assertion changed shape: `TestChat04_CodexSessionArgvCarriesNoContent` no longer calls `SetStdinOnly`, asserts that the system prompt arrives in the 0600 `model_instructions_file` (it used to assert that it arrived on stdin, ahead of the user message), and its "a plain client keeps developer_instructions on argv" half now asserts the opposite (a read-folder client keeps the same layout). Its "nothing on argv" assertions are unchanged.
 - 2026-10-17 (board #563): **CHAT-05** strengthened, not changed. `SandboxedHTMLView` now turns WebRTC off in the web view's preferences (`lockDown`: `_setPeerConnectionEnabled:` read back; on a WebKit without it the reason is logged and the document-start script, which stays, removes WebRTC; DNS prefetch off best effort), so a fresh iframe of a chat html artifact cannot get WebRTC back. The workbench preview's https loads narrow to a CDN allowlist, its folder is served by a read-only scheme handler (`SandboxedHTMLSchemeHandler.swift`, no hidden files or links into them), and the loopback server streams files; none of it touches the artifact side. `testChat05ArtifactSurfacesNeverWrite` also scans `SandboxedHTMLSchemeHandler.swift`; both scan tests otherwise pass unchanged.
 - 2026-10-17 (board #535): artifact kind `html` (migration `00129`). An html artifact renders in `SandboxedHTMLView` (no network of any scheme, no bridge, no windows or media capture, WebRTC removed, links open nothing), and its new controls are view-only: **Reload**, **Open in Window** and **Present**. Nothing hands artifact content to a browser or any other networked app; `kindActions` has no `html` case (`testHTMLArtifactHasOnlyCopyExportAndView`), so its actions stay Copy and Export…, and `testChat05ArtifactActionsOnlyOpenOrCopy` covers it unchanged. **CHAT-05** strengthened, not changed: `ArtifactChat05ScanTests` also scans `SandboxedHTMLView.swift` and `HTMLPreviewPolicy.swift` and forbids `LocalPreviewServer`, `HTMLBrowserOpener`, `NWConnection` and `NWListener` on every artifact-side file. The loopback server behind the workbench code viewer's Open in Browser (`LocalPreviewServer.swift`, workbench files only) gets its own scan, `testChat05LoopbackServerNeverConnectsOut` (no `URLSession`, `NWConnection(`, `Process(`, `CLIRunner`).

@@ -1004,7 +1004,7 @@ CREATE TABLE IF NOT EXISTS agent_actions (
     created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     decided_at      TEXT    NOT NULL DEFAULT '',
     applied_at      TEXT    NOT NULL DEFAULT ''
-);
+, session_token TEXT NOT NULL DEFAULT '', dismissed_at TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS reaction_command_map (
     emoji      TEXT PRIMARY KEY,
     kind       TEXT    NOT NULL DEFAULT 'builtin_tool'

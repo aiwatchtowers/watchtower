@@ -52,6 +52,10 @@ package final class LiveTurn {
     /// Throttled copy of `fullText` for rendering.
     package private(set) var text = ""
     package private(set) var steps: [ChatStepDisplay] = []
+    /// The `agent_actions` rows the turn's waiting steps wait on — what the
+    /// thread reads to mark their approval cards, kept apart from `steps`
+    /// so it re-renders only when a wait starts or ends.
+    package private(set) var waitingActionIDs: Set<Int64> = []
     package private(set) var phase: Phase = .running
     package private(set) var endedAt: Date?
     package private(set) var usage: ChatUsage?
@@ -111,10 +115,19 @@ package final class LiveTurn {
     }
 
     /// Returns the step's position (its persisted `seq`); a repeated
-    /// `tool_start` for the same id reuses its step.
+    /// `tool_start` for the same id reuses its step, naming it if a
+    /// `tool_wait` that came first left it nameless.
     @discardableResult
     package func startStep(_ start: ChatToolStart, at date: Date) -> Int {
-        if let index = steps.firstIndex(where: { $0.id == start.id }) { return index }
+        if let index = steps.firstIndex(where: { $0.id == start.id }) {
+            let step = steps[index]
+            if step.name.isEmpty {
+                steps[index] = ChatStepDisplay(id: step.id, name: start.name, argsJSON: start.argsJSON, state: step.state,
+                                               summary: step.summary, sources: step.sources, startedAt: step.startedAt,
+                                               endedAt: step.endedAt)
+            }
+            return index
+        }
         steps.append(ChatStepDisplay(id: start.id, name: start.name, argsJSON: start.argsJSON, state: .running,
                                      summary: "", sources: [], startedAt: date, endedAt: nil))
         return steps.count - 1
@@ -131,6 +144,27 @@ package final class LiveTurn {
         steps[index].summary = end.summary
         steps[index].sources = end.sources
         steps[index].endedAt = date
+        syncWaitingActionIDs()
+    }
+
+    /// `tool_wait`: the step waits for the owner (its message is the step's
+    /// note) until its `tool_end`. A wait for a finished step is late and
+    /// never reopens it; the caller starts the step first if its
+    /// `tool_start` never arrived.
+    package func waitStep(_ wait: ChatToolWait) {
+        guard let index = steps.firstIndex(where: { $0.id == wait.id }) else { return }
+        switch steps[index].state {
+        case .succeeded, .failed: return
+        case .running, .waiting: break
+        }
+        steps[index].state = .waiting(actionID: wait.actionID)
+        steps[index].summary = wait.message
+        syncWaitingActionIDs()
+    }
+
+    private func syncWaitingActionIDs() {
+        let ids = Set(steps.compactMap(\.state.waitingActionID))
+        if ids != waitingActionIDs { waitingActionIDs = ids }
     }
 
     package func setUsage(_ usage: ChatUsage) {
@@ -141,6 +175,13 @@ package final class LiveTurn {
         trailingFlush?.cancel()
         trailingFlush = nil
         text = fullText
+        // A call still waiting when the turn ends never ran: it reads as
+        // stopped, like any unfinished step, not as still waiting.
+        for index in steps.indices where steps[index].state.waitingActionID != nil {
+            steps[index].state = .running
+            steps[index].summary = ""
+        }
+        syncWaitingActionIDs()
         endedAt = date
         self.phase = phase
     }

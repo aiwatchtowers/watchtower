@@ -10,11 +10,6 @@ import XCTest
 final class ArtifactChat05ScanTests: XCTestCase {
     /// BEHAVIOR CHAT-05 — see docs/inventory/chat.md
     func testChat05ArtifactSurfacesNeverWrite() throws {
-        let sources = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent() // Core
-            .deletingLastPathComponent() // Tests
-            .deletingLastPathComponent() // WatchtowerDesktop
-            .appendingPathComponent("Sources")
         let files = [
             "WatchtowerCore/Services/Chat/ArtifactParser.swift",
             "WatchtowerCore/Services/Chat/ArtifactActions.swift",
@@ -49,14 +44,38 @@ final class ArtifactChat05ScanTests: XCTestCase {
             // from disk, no socket or URL loading of its own.
             "Views/Common/SandboxedHTMLSchemeHandler.swift"
         ]
-        let forbidden = ["Process(", "CLIRunner", "URLSession", "findCLIPath", "WatchtowerAIService", "ChatSessionPool",
-                         ".send(", "sendDraft", "startTurn",
-                         // Nothing on the artifact side hands content to the
-                         // loopback server or opens a socket (#535).
-                         "LocalPreviewServer", "HTMLBrowserOpener", "NWConnection", "NWListener"]
+        try assertNeverWrites(files)
+    }
+
+    /// CHAT-05 on the "Published on claude.ai" card (#737): the card and its
+    /// model only open the claude.ai link or copy it — the same forbidden
+    /// list as the artifact side. Publishing itself happens in the session,
+    /// behind the gate; the card never sends.
+    /// BEHAVIOR CHAT-05 — see docs/inventory/chat.md
+    func testChat05PublishedLinkCardOnlyOpensOrCopies() throws {
+        try assertNeverWrites([
+            "WatchtowerCore/Services/Chat/PublishedLink.swift",
+            "Views/Chat/PublishedLinkCardView.swift"
+        ])
+    }
+
+    private static let forbidden = [
+        "Process(", "CLIRunner", "URLSession", "findCLIPath", "WatchtowerAIService", "ChatSessionPool",
+        ".send(", "sendDraft", "startTurn",
+        // Nothing on the artifact side hands content to the
+        // loopback server or opens a socket (#535).
+        "LocalPreviewServer", "HTMLBrowserOpener", "NWConnection", "NWListener"
+    ]
+
+    private func assertNeverWrites(_ files: [String]) throws {
+        let sources = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // Core
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .appendingPathComponent("Sources")
         for file in files {
             let text = try String(contentsOf: sources.appendingPathComponent(file), encoding: .utf8)
-            for token in forbidden {
+            for token in Self.forbidden {
                 XCTAssertFalse(text.contains(token), "\(file) must not reference \(token) (CHAT-05)")
             }
         }

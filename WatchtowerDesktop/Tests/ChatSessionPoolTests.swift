@@ -176,6 +176,66 @@ final class ChatSessionPoolTests: XCTestCase {
         XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
     }
 
+    /// The claude.ai switches changed (#737): idle sessions close now, a busy
+    /// one finishes its turn first (CHAT-03) — its session id still recorded,
+    /// the prompt did not change — and is then replaced.
+    func testChatPoolRetireIdleKeepsBusySessions() async throws {
+        let idle = pool.session(for: 1, config: config(1))
+        let busy = pool.session(for: 2, config: config(2))
+        busy.startTurn(turn("t2", row: try assistantRow()))
+
+        pool.retireIdleSessions()
+        XCTAssertNil(pool.client(for: 1))
+        XCTAssertFalse(idle.isAlive)
+        let closed = await waitForCondition { self.fakes[0].terminated }
+        XCTAssertTrue(closed, "the idle process is closed now")
+        XCTAssertTrue(busy.isBusy, "a running turn is never cut")
+        XCTAssertTrue(busy.isAlive)
+        XCTAssertFalse(fakes[1].terminated)
+
+        fakes[1].emit(.turnDone(turnID: "t2", status: .complete, sessionID: "sess-2"))
+        let ended = await waitForCondition { !busy.isBusy }
+        XCTAssertTrue(ended)
+        XCTAssertEqual(busy.driver.sessionID, "sess-2", "the next session resumes it")
+        XCTAssertFalse(busy.isAlive, "replaced on the next request")
+        XCTAssertFalse(pool.session(for: 2, config: config(2)) === busy)
+        XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
+    }
+
+    /// Only Claude sessions load claude.ai tools: a Codex one stays warm.
+    func testChatPoolRetireIdleLeavesOtherProviders() async {
+        let codex = pool.session(for: 1, config: config(1, provider: "codex"))
+        let claude = pool.session(for: 2, config: config(2))
+        pool.retireIdleSessions()
+        XCTAssertTrue(pool.client(for: 1) === codex)
+        XCTAssertTrue(codex.isAlive)
+        XCTAssertNil(pool.client(for: 2))
+        XCTAssertFalse(claude.isAlive)
+    }
+
+    /// A queued session has not started: it reads the new switches when it
+    /// launches, so it is left alone and keeps its held turn.
+    func testChatPoolRetireIdleLeavesPendingSessions() async throws {
+        for id: Int64 in 1...3 {
+            pool.session(for: id, config: config(id)).startTurn(turn("t\(id)", row: try assistantRow()))
+        }
+        let fourth = pool.session(for: 4, config: config(4))
+        fourth.startTurn(turn("t4", row: try assistantRow()))
+        XCTAssertTrue(fourth.isPending)
+
+        pool.retireIdleSessions()
+        XCTAssertTrue(fourth.isPending)
+        XCTAssertTrue(fourth.isAlive)
+        XCTAssertEqual(fakes.count, 3, "no busy session was cut to make room")
+
+        fakes[1].emit(.turnDone(turnID: "t2", status: .complete, sessionID: nil))
+        let launched = await waitForCondition { self.fakes.count == 4 && !fourth.isPending }
+        XCTAssertTrue(launched)
+        XCTAssertEqual(fakes[3].turns.map(\.turnID), ["t4"])
+        XCTAssertTrue(fourth.isAlive, "the launched session is not retired")
+        XCTAssertLessThanOrEqual(maxAlive, ChatSessionPolicy.maxLive)
+    }
+
     /// A queued session's argv already carries the old `--resume`: it never
     /// launches. Its held turn never reached a provider, so it is re-sent on
     /// a fresh session with the new prompt (owner decision 2026-10-01), not
@@ -438,5 +498,33 @@ final class ChatSessionPoolTests: XCTestCase {
         fakes[0].emit(.turnDone(turnID: "t", status: .complete, sessionID: nil))
         let forwarded = await waitForCondition { finished == [1] }
         XCTAssertTrue(forwarded)
+    }
+
+    /// A connector call is held only inside its session's running turn
+    /// (#737): no session, an idle one, or a dead one runs no turn.
+    func testRunningTurnIDOnlyWhileALiveSessionRunsATurn() async throws {
+        XCTAssertNil(pool.runningTurnID(conversationID: 1), "no session")
+        let client = pool.session(for: 1, config: config(1))
+        XCTAssertNil(pool.runningTurnID(conversationID: 1), "an idle session runs no turn")
+        client.startTurn(turn("t1", row: try assistantRow()))
+        XCTAssertEqual(pool.runningTurnID(conversationID: 1), "t1")
+        XCTAssertNil(pool.runningTurnID(conversationID: 2), "another conversation's session")
+        fakes[0].emit(.turnDone(turnID: "t1", status: .complete, sessionID: nil))
+        let ended = await waitForCondition { self.pool.runningTurnID(conversationID: 1) == nil }
+        XCTAssertTrue(ended, "a finished turn holds nothing")
+        // The next turn starts once the last one's terminal write landed
+        // (board #670): startTurn ignores a busy client.
+        let settled = await waitForCondition { !client.isBusy }
+        XCTAssertTrue(settled)
+        client.startTurn(turn("t2", row: try assistantRow()))
+        XCTAssertEqual(pool.runningTurnID(conversationID: 1), "t2")
+        let row = { (turnID: String) in
+            AgentAction(row: ["id": 1, "tool": ConnectorCallProposal.tool, "conversation_id": 1, "turn_id": turnID])
+        }
+        XCTAssertFalse(pool.holdsSessionCall(row("t1")), "a later turn does not hold an earlier turn's call")
+        XCTAssertTrue(pool.holdsSessionCall(row("t2")))
+        fakes[0].exit(status: 1)
+        let gone = await waitForCondition { self.pool.runningTurnID(conversationID: 1) == nil }
+        XCTAssertTrue(gone, "a dead session holds nothing")
     }
 }

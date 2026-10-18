@@ -7,6 +7,10 @@ import (
 	"github.com/spf13/viper"
 )
 
+// DefaultClaudeAIConnectors loads the account's claude.ai connectors into the
+// main chat unless the owner switches them off (ask #236).
+const DefaultClaudeAIConnectors = true
+
 const (
 	DefaultActiveWorkspace = ""
 	DefaultAIProvider      = "claude"

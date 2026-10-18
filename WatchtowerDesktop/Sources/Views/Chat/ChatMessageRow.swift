@@ -205,7 +205,8 @@ struct LiveAssistantRow: View {
     }
 }
 
-/// Steps → text/artifact cards → sources (spec §3.2, §7.2). The sources row
+/// Steps → text/artifact cards → published-on-claude.ai cards → sources
+/// (spec §3.2, §7.2; #737 `PublishedLink`). The sources row
 /// appears only once the turn is finished (complete/partial) — while it
 /// streams, the steps block is the only progress surface. `:::artifact`
 /// blocks in the text render as `ArtifactCardView` cards instead of markdown
@@ -250,6 +251,10 @@ struct AssistantMessageBody: View {
                 .background {
                     if !isRunning, let answerRegions { ChatAnswerRegionMarker(tracker: answerRegions) }
                 }
+            }
+            // A step's published page shows as soon as its step ends.
+            ForEach(PublishedLink.links(from: steps.flatMap(\.sources)), id: \.url) { link in
+                PublishedLinkCardView(link: link)
             }
             if let card = question.card {
                 ChatQuestionCardView(card: card, answerText: questionAnswer, onAnswer: onAnswerQuestion)

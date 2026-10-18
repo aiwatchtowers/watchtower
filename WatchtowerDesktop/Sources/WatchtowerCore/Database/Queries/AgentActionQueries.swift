@@ -8,6 +8,15 @@ package enum AgentActionQueries {
     /// terminal) that waits for the owner's Approve here.
     private static let notWorkbenchRow = "(context_type IS NOT 'project' OR external = 1)"
 
+    /// A failed session-applied call (`claude_ai_connector_call`, Go
+    /// `Tool.AppliedBySession`) has no Retry: Apply refuses it. It is terminal
+    /// for the badge and the strip — except an unknown outcome the owner has
+    /// not dismissed yet (`ConnectorCallProposal.awaitsDismissal`, ask #342),
+    /// which waits on the owner like a pending proposal. Both constants are
+    /// fixed strings without a quote, so interpolating them is safe.
+    private static let settledSessionCall = "(status = 'failed' AND tool = '\(ConnectorCallProposal.tool)'"
+        + " AND NOT (error = '\(ConnectorCallProposal.sessionEndedWhileRunning)' AND dismissed_at = ''))"
+
     /// Every proposal of one conversation, oldest first — the feed's
     /// observation query.
     package static func fetchByConversation(_ db: Database, conversationID: Int64) throws -> [AgentAction] {
@@ -42,13 +51,15 @@ package enum AgentActionQueries {
     }
 
     /// How many proposals wait on the owner right now: pending ones and failed
-    /// ones (retriable). Drives the Inbox sidebar badge; `approved`/`executing`
-    /// rows are in flight, not decisions, so they are not counted. Project
-    /// rows are excluded like in `fetchStrip` (STRIP-01).
+    /// ones (retriable, or a session call whose unknown outcome is not
+    /// dismissed yet — any other failed session call is settled). Drives the
+    /// Inbox sidebar badge; `approved`/`executing` rows are in flight, not
+    /// decisions, so they are not counted. Project rows are excluded like in
+    /// `fetchStrip` (STRIP-01).
     package static func awaitingOwnerCount(_ db: Database) throws -> Int {
         try Int.fetchOne(db, sql: """
             SELECT COUNT(*) FROM agent_actions
-            WHERE status IN ('pending','failed') AND \(notWorkbenchRow)
+            WHERE status IN ('pending','failed') AND \(notWorkbenchRow) AND NOT \(settledSessionCall)
             """) ?? 0
     }
 
@@ -56,7 +67,7 @@ package enum AgentActionQueries {
     package static func awaitingOwner(_ db: Database, limit: Int) throws -> [AgentAction] {
         try AgentAction.fetchAll(db, sql: """
             SELECT * FROM agent_actions
-            WHERE status IN ('pending','failed') AND \(notWorkbenchRow)
+            WHERE status IN ('pending','failed') AND \(notWorkbenchRow) AND NOT \(settledSessionCall)
             ORDER BY created_at DESC, id DESC
             LIMIT ?
             """, arguments: [limit])
@@ -70,6 +81,11 @@ package enum AgentActionQueries {
     /// vanishing the instant it auto-applies (spec §4.1). Non-terminal rows
     /// sort first, then the terminal tail, newest-first within each group.
     ///
+    /// A settled failed session call (no Retry) belongs to the terminal tail,
+    /// by the time it failed (`applied_at`) or was dismissed (`dismissed_at`,
+    /// so a Dismiss does not make an old row vanish at once); an undismissed
+    /// unknown outcome sorts with the non-terminal rows until then.
+    ///
     /// Project rows (`context_type = 'project'`) are the audit trail of the
     /// project agent's direct MCP writes, never an owner gesture, so they
     /// stay off the strip (STRIP-01) — except an External one, which is a
@@ -77,10 +93,12 @@ package enum AgentActionQueries {
     package static func fetchStrip(_ db: Database, terminalSince: String) throws -> [AgentAction] {
         try AgentAction.fetchAll(db, sql: """
             SELECT * FROM agent_actions
-            WHERE (status IN ('pending','approved','failed','executing')
-                   OR (status IN ('applied','rejected') AND decided_at >= ?))
+            WHERE ((status IN ('pending','approved','failed','executing') AND NOT \(settledSessionCall))
+                   OR (status IN ('applied','rejected') AND decided_at >= ?)
+                   OR (\(settledSessionCall) AND (applied_at >= ? OR dismissed_at >= ?)))
               AND \(notWorkbenchRow)
-            ORDER BY (status IN ('applied','rejected')) ASC, created_at DESC, id DESC
-            """, arguments: [terminalSince])
+            ORDER BY (status IN ('applied','rejected') OR \(settledSessionCall)) ASC, created_at DESC, id DESC
+            """, arguments: [terminalSince, terminalSince, terminalSince])
     }
+
 }

@@ -2,6 +2,7 @@ package chat
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -35,6 +36,19 @@ type ClaudeOptions struct {
 	Tools           string
 	AllowedTools    string // --allowedTools
 	DisallowedTools string // --disallowedTools
+	// ClaudeAI is the main chat's claude.ai mode (publishing and the
+	// account's connectors); off = argv and environment as without it. The
+	// caller pairs it with ai.ClaudeAISessionBuiltinTools and
+	// ai.ClaudeAISessionDisallowedTools.
+	ClaudeAI ClaudeAIMode
+	// Gate answers the child's permission requests in claude.ai mode (#737);
+	// nil denies every request ("not available in this chat"), so a child
+	// that asks is never left waiting.
+	Gate *GateOptions
+	// ConnectorsFile is the claude.ai connectors sidecar (ConnectorsFileName
+	// beside the database) a claude.ai-mode session rewrites from each
+	// child's mcp_status; "" writes none.
+	ConnectorsFile string
 	// WorkDir is the child's working directory; "" = NeutralWorkDir(). It
 	// must hold no CLAUDE.md: claude loads project instructions from its cwd
 	// (and its parents) into the session. It must also be stable across
@@ -75,6 +89,9 @@ type claudeProc struct {
 	gotResult atomic.Bool
 	lostMsg   atomic.Value // string: the session_lost error the child reported on stdout
 	sessionID atomic.Value // string: the latest session id the child reported (see noteSessionID)
+	// unreadable is set once a JSON line the translator could not read was
+	// reported, so a protocol change is noted once per child, not per line.
+	unreadable atomic.Bool
 }
 
 // exitedOutputWait bounds how long an exited child's stdout may take to be
@@ -140,11 +157,29 @@ func (p *claudeProc) closeStdin() {
 type claudeBackend struct {
 	opts       ClaudeOptions
 	tr         *ClaudeTranslator
+	gate       *gate // nil without ClaudeOptions.Gate
+	gateErr    error // invalid ClaudeOptions.Gate: Start refuses
 	promptFile string
 	mcpFile    string
 	curTurn    atomic.Value // string: the running turn id (read by the translator)
 	active     atomic.Bool  // a Turn is in flight
 	closeOnce  sync.Once
+
+	// catalog is the claude.ai-mode connector catalog (the gate's own when
+	// there is a gate); nil when the mode is off.
+	catalog *connectorCatalog
+	// statusWaits are the mcp_status requests awaiting the CLI's answer,
+	// by request id.
+	statusMu    sync.Mutex
+	statusWaits map[string]chan mcpStatusAnswer
+	statusSeq   atomic.Int64
+	fileMu      sync.Mutex     // serialises the sidecar writes
+	watchers    sync.WaitGroup // each child's watchConnectors
+	// connPoll, connSettle and connAnswer bound the connector watch: an
+	// mcp_status is re-sent every connPoll while the list settles, for at
+	// most connSettle, and each answer is awaited up to connAnswer (also the
+	// gate's refresh bound).
+	connPoll, connSettle, connAnswer time.Duration
 
 	mu        sync.Mutex
 	proc      *claudeProc
@@ -195,7 +230,25 @@ func NewClaudeBackend(opts ClaudeOptions) Backend {
 	}
 	b := &claudeBackend{opts: opts, resume: opts.ResumeSessionID}
 	b.curTurn.Store("")
-	b.tr = NewClaudeTranslator(func() string { s, _ := b.curTurn.Load().(string); return s })
+	turnID := func() string { s, _ := b.curTurn.Load().(string); return s }
+	b.tr = NewClaudeTranslator(turnID)
+	if opts.Gate != nil {
+		b.gate, b.gateErr = newGate(*opts.Gate, turnID, opts.Warn)
+	}
+	if opts.ClaudeAI.On {
+		b.statusWaits = map[string]chan mcpStatusAnswer{}
+		b.connPoll, b.connSettle, b.connAnswer = connectorsPollInterval, connectorsSettleWindow, connectorsAnswerWait
+		if b.gate == nil {
+			b.catalog = newConnectorCatalog()
+		} else {
+			b.catalog = b.gate.catalog
+			if opts.ClaudeAI.Connectors {
+				// Off, the CLI lists none: a refresh would only
+				// overwrite the sidecar's carried-over list.
+				b.gate.refresh = b.refreshConnectors
+			}
+		}
+	}
 	return b
 }
 
@@ -206,10 +259,20 @@ func claudeArgs(o ClaudeOptions, promptFile, mcpFile, resume string) []string {
 		"--include-partial-messages", "--verbose",
 		// Skip user-level settings: their plugins/hooks probe ~/Desktop and
 		// ~/Documents at startup and trigger TCC prompts (see internal/ai).
-		"--setting-sources", "project,local",
+		// claude.ai mode keeps this: the connectors come from the account,
+		// not from user settings.
+		"--setting-sources", "project,local"}
+	if o.ClaudeAI.On {
+		// The owner's claude.ai connectors load (no --strict-mcp-config),
+		// and every call not pre-allowed by --allowedTools reaches the
+		// session's permission gate as a can_use_tool control request
+		// instead of being denied silently.
+		args = append(args, "--permission-prompt-tool", "stdio")
+	} else {
 		// Only the servers in --mcp-config (watchtower + Quick Connections):
 		// never the owner's claude.ai connectors or other auto-loaded servers.
-		"--strict-mcp-config"}
+		args = append(args, "--strict-mcp-config")
+	}
 	if o.Model != "" {
 		args = append(args, "--model", o.Model)
 	}
@@ -217,8 +280,15 @@ func claudeArgs(o ClaudeOptions, promptFile, mcpFile, resume string) []string {
 		args = append(args, "--mcp-config", mcpFile)
 	}
 	args = append(args, "--tools", o.Tools)
-	if o.AllowedTools != "" {
-		args = append(args, "--allowedTools", o.AllowedTools)
+	allowed := o.AllowedTools
+	if o.ClaudeAI.On {
+		// A pre-allowed tool never reaches the gate: no entry may name a
+		// server in the account connectors' namespace (a Quick Connection
+		// named claude_ai_Gmail would pre-allow the real Gmail's send).
+		allowed = withoutReservedAllowTokens(allowed)
+	}
+	if allowed != "" {
+		args = append(args, "--allowedTools", allowed)
 	}
 	if o.DisallowedTools != "" {
 		args = append(args, "--disallowedTools", o.DisallowedTools)
@@ -232,10 +302,27 @@ func claudeArgs(o ClaudeOptions, promptFile, mcpFile, resume string) []string {
 	return args
 }
 
+// claudeEnv is the child's environment: this process's, a PATH that finds
+// the CLI's own helpers, the claude.ai mode values, then the extra
+// ClaudeOptions.Env (a later entry of a key wins).
+func claudeEnv(o ClaudeOptions) []string {
+	env := append(os.Environ(), "PATH="+claude.RichPATH())
+	env = append(env, claudeAIEnv(o.ClaudeAI)...)
+	return append(env, o.Env...)
+}
+
 // Start writes the prompt/MCP files and spawns the warm process.
 func (b *claudeBackend) Start(ctx context.Context) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
+	}
+	if b.gateErr != nil {
+		return "", b.gateErr
+	}
+	// Before the first spawn: no row a dead session of this conversation
+	// left open may ever be claimed or shown as waiting (AGENT-05).
+	if err := b.gate.expireOrphans(ctx); err != nil {
+		return "", fmt.Errorf("closing the connector calls a previous session left open: %w", err)
 	}
 	var err error
 	if b.promptFile, err = fsutil.WritePrivateTemp("wt-chat-prompt-*.txt", b.opts.SystemPrompt); err != nil {
@@ -455,11 +542,26 @@ func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd := exec.Command(b.opts.Binary, claudeArgs(b.opts, b.promptFile, b.mcpFile, resume)...)
+	name, args := b.opts.Binary, claudeArgs(b.opts, b.promptFile, b.mcpFile, resume)
+	if b.opts.ClaudeAI.On {
+		// claude.ai mode exposes Write and Artifact, whose paths the CLI
+		// touches before the gate decides: never without the sandbox.
+		if b.opts.ClaudeAI.Sandbox == nil {
+			return nil, errors.New("claude.ai mode needs its file sandbox")
+		}
+		// Resolved here, as exec.Command would: sandbox-exec searches the
+		// child's PATH instead.
+		bin, err := exec.LookPath(name)
+		if err != nil {
+			return nil, fmt.Errorf("starting claude: %w", err)
+		}
+		name, args = b.opts.ClaudeAI.Sandbox.command(bin, args)
+	}
+	cmd := exec.Command(name, args...)
 	// A TCC-neutral, empty cwd: never inherit one inside ~/Documents or
 	// ~/Desktop, and never one holding a project CLAUDE.md (see WorkDir).
 	cmd.Dir = dir
-	cmd.Env = append(append(os.Environ(), "PATH="+claude.RichPATH()), b.opts.Env...)
+	cmd.Env = claudeEnv(b.opts)
 	// Own process group, so Close can reap the MCP servers claude spawns.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdin, err := cmd.StdinPipe()
@@ -506,6 +608,10 @@ func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 	}()
 	go b.read(p, outR)
 	b.proc = p
+	if b.catalog != nil {
+		b.watchers.Add(1)
+		go b.watchConnectors(p)
+	}
 	return p, nil
 }
 
@@ -513,18 +619,35 @@ func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 	defer close(p.outDone)
 	defer r.Close()
+	// The child is gone or replaced: a claimed call's result can no longer
+	// arrive.
+	defer b.gate.procGone(p)
 	sc := bufio.NewScanner(r)
 	// Tool results arrive as one line each; allow multi-megabyte lines.
 	sc.Buffer(make([]byte, 0, 64<<10), 64<<20)
 	for sc.Scan() {
-		evs, sid, err := b.tr.feed(sc.Bytes())
+		if b.routeStatusAnswer(sc.Bytes()) || b.routeControl(p, sc.Bytes()) {
+			continue
+		}
+		f, err := b.tr.feed(sc.Bytes())
 		if err != nil {
-			continue // non-JSON noise on stdout is not a protocol event
+			// Non-JSON noise on stdout is not a protocol event; a JSON line
+			// the translator cannot read is a protocol change worth a note.
+			if json.Valid(sc.Bytes()) && !p.unreadable.Swap(true) {
+				fmt.Fprintf(b.warn(), "chat: unreadable CLI line skipped: %v\n", err)
+			}
+			continue
 		}
-		if sid != "" {
-			b.noteSessionID(p, sid)
+		if f.sessionID != "" {
+			b.noteSessionID(p, f.sessionID)
 		}
-		for _, e := range evs {
+		if f.init {
+			b.noteAPIKeySource(f.apiKeySource)
+		}
+		for _, r := range f.results {
+			b.gate.onResult(r)
+		}
+		for _, e := range f.events {
 			// lostMsg before gotResult: a reader seen half-way must never
 			// show a result without the rejection it carried.
 			if e.Type == EventError && e.Code == CodeSessionLost {
@@ -540,6 +663,42 @@ func (b *claudeBackend) read(p *claudeProc, r *os.File) {
 			}
 		}
 	}
+}
+
+// routeControl answers the CLI's control lines: a can_use_tool goes to the
+// gate (denied without one), a withdrawn request stops its wait, and any
+// other control request gets an error answer instead of a silent hang.
+// False for every other line, which the translator reads.
+func (b *claudeBackend) routeControl(p *claudeProc, line []byte) bool {
+	if !bytes.Contains(line, []byte(`"control_`)) {
+		return false // the cheap test keeps the stream's hot path decode-free
+	}
+	if req, ok := parseControlRequest(line); ok {
+		if b.gate != nil {
+			b.gate.dispatch(p, req)
+			return true
+		}
+		tool := req.ToolName
+		if tool == "" {
+			tool = "This tool"
+		}
+		go answerControl(p, permissionDenyLine(req.RequestID, tool+" is not available in this chat"), b.warn())
+		return true
+	}
+	if id, ok := parseControlCancel(line); ok {
+		b.gate.withdraw(id)
+		return true
+	}
+	if id, subtype, ok := parseOtherControlRequest(line); ok {
+		go answerControl(p, controlErrorLine(id, fmt.Sprintf("unsupported control request %q", subtype)), b.warn())
+		return true
+	}
+	if env, ok := decodeObject(line); ok && env.str("type") == "control_request" {
+		// No request_id: it cannot be answered, and the CLI may wait on it.
+		fmt.Fprintf(b.warn(), "chat: unanswerable control request without a request_id\n")
+		return true
+	}
+	return false
 }
 
 // noteSessionID makes the session id the live child reports (its init line
@@ -596,6 +755,7 @@ func (b *claudeBackend) Turn(ctx context.Context, c Command, emit func(Event)) e
 	}()
 	b.curTurn.Store(c.TurnID)
 	b.tr.clearInterrupted()
+	b.gate.resume()
 	b.active.Store(true)
 	defer b.active.Store(false)
 
@@ -853,6 +1013,9 @@ func (b *claudeBackend) replayText(turnID string) (string, error) {
 // Turn has reached the child: the recorded flag then stops the message from
 // being sent at all (see send).
 func (b *claudeBackend) Cancel() error {
+	// A call waiting for the owner is denied and its row rejected (or
+	// expired, when approved but not yet claimed) before the interrupt.
+	b.gate.halt(false)
 	b.mu.Lock()
 	b.cancelled = true
 	p, inFlight := b.proc, b.inFlight
@@ -1048,6 +1211,7 @@ func checkWorkDirEntries(dir string) error {
 // sweeps its process group and removes the temp files. Idempotent.
 func (b *claudeBackend) Close() error {
 	b.closeOnce.Do(func() {
+		b.gate.halt(true)
 		b.mu.Lock()
 		b.closed = true
 		p := b.proc
@@ -1055,7 +1219,23 @@ func (b *claudeBackend) Close() error {
 		b.mu.Unlock()
 		if p != nil {
 			b.stopProc(p)
+			if b.gate != nil {
+				// The reader records the results the child printed before
+				// it went; whatever is still claimed after that is unknown.
+				waitClosed(p.outDone, exitedOutputWait)
+			}
 		}
+		// Every child is stopped, so each watch is ending: no sidecar
+		// write outlives the session.
+		watched := make(chan struct{})
+		go func() {
+			b.watchers.Wait()
+			close(watched)
+		}()
+		if !waitClosed(watched, gateStopWait) {
+			fmt.Fprintf(b.warn(), "chat: a claude.ai connector watch did not stop within %v\n", gateStopWait)
+		}
+		b.gate.shutdown()
 		for _, f := range []string{b.promptFile, b.mcpFile} {
 			if f != "" {
 				_ = os.Remove(f)

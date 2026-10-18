@@ -44,6 +44,7 @@ struct ProfileSettings: View {
                 // states explicitly.
                 SkillsSettingsSection()
                 AssistantToolsSettingsSection()
+                ClaudeAIConnectorsSection(model: appState.claudeAIConnectors)
                 onboardingSection
             }
         }

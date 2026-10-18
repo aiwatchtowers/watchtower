@@ -195,6 +195,12 @@ package final class ActionStripViewModel {
         adoptFeedError()
     }
 
+    package func dismiss(_ id: Int64) async {
+        await actionFeed.dismiss(id)
+        refresh()
+        adoptFeedError()
+    }
+
     /// `actionFeed.lastError` carries only feed-wide failures (a row's own
     /// failure lives in `rowErrors`, on its card); a bare "call it and move
     /// on" would swallow that from anything observing only the strip's own

@@ -43,6 +43,12 @@ You also have NO internet access and NO live access to Slack, Jira, or Calendar 
 const DataAccessRulesWithWebSearch = `There is no SQL tool and no shell — you cannot run database or shell commands of any kind.
 You have NO live access to Slack, Jira, or Calendar — the local database already mirrors them, and the tools above are the only way in. The one outside resource is the WebSearch tool (see WEB SEARCH). Never say you will check an external system, and never ask the user to approve tool permissions: everything you can use is already connected; everything else is unavailable by design.`
 
+// DataAccessRulesWithClaudeAI is DataAccessRules for a main-chat session in
+// claude.ai mode: publishing and the account's connectors are outside
+// resources too, and connector writes do ask for the owner's Approve.
+const DataAccessRulesWithClaudeAI = `There is no SQL tool and no shell — you cannot run database or shell commands of any kind.
+The local database mirrors the owner's Slack, Jira and Calendar, and the tools above are the way into it: use them first for the owner's own work. The outside resources are the claude.ai tools (see CLAUDE.AI) and, when listed, the WebSearch tool (see WEB SEARCH); nothing else. Never ask the owner to approve tool permissions yourself: the app asks for the owner's Approve on the calls that need it.`
+
 // WebSearchRules governs the WebSearch tool: public knowledge only, no private
 // data in queries, web text is data, cite URLs. There is no WebFetch.
 const WebSearchRules = `=== WEB SEARCH ===

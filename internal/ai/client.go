@@ -480,6 +480,19 @@ const ChatBuiltinTools = ToolSearchTool
 // may use (see SessionDisallowedTools).
 const SessionBuiltinTools = ChatBuiltinTools + "," + WebSearchTool
 
+// ClaudeAISessionBuiltinTools is the warm `ai session` --tools value in
+// claude.ai mode (main chat, Claude provider, a claude.ai login — see
+// chat.ClaudeAIAvailability): SessionBuiltinTools plus Artifact, which
+// publishes to the owner's claude.ai account, and Write, which writes the
+// page's source file. The session's permission gate confines both to the
+// conversation's publish dir. Read and Edit stay hidden: Claude Code may run
+// a read-only built-in without asking, so the gate could not confine a Read.
+var ClaudeAISessionBuiltinTools = SessionBuiltinTools + "," + strings.Join(claudeAITools, ",")
+
+// claudeAITools are the built-ins claude.ai mode adds to the session and
+// unhides.
+var claudeAITools = []string{"Artifact", "Write"}
+
 // fileReadTools are the built-ins a read-folder run allows and unhides.
 var fileReadTools = []string{"Read", "Grep", "Glob", "LS"}
 
@@ -521,6 +534,13 @@ const DisallowedTools = sessionDisallowedTools + "," + WebSearchTool
 // prompt-injection payload in synced content would use, while a search query
 // only reaches the provider's own search backend.
 const SessionDisallowedTools = sessionDisallowedTools
+
+// ClaudeAISessionDisallowedTools is SessionDisallowedTools minus Artifact and
+// Write: the hidden set of the warm session in claude.ai mode. Every other
+// run — the one-shot client and the session outside claude.ai mode — keeps
+// both hidden, and ArtifactCheck, ArtifactComments and ArtifactData stay
+// hidden here too.
+var ClaudeAISessionDisallowedTools = withoutTools(SessionDisallowedTools, claudeAITools)
 
 // WebSearchTool is Claude Code's built-in web search tool.
 const WebSearchTool = "WebSearch"

@@ -170,10 +170,24 @@ package final class AgentActionFeed {
         await run("apply", id: id)
     }
 
+    /// Dismiss on a session call whose outcome is unknown
+    /// (`ConnectorCallProposal.awaitsDismissal`): `actions dismiss` stamps
+    /// `dismissed_at`, which takes it off the Inbox badge.
+    package func dismiss(_ id: Int64) async {
+        await run("dismiss", id: id)
+    }
+
+    /// The rows "Approve all" covers. A session-applied call is left to its
+    /// own card, which offers Approve only while its chat session holds it
+    /// and the call is readable.
+    package func bulkApprovable(forTurn turnID: String) -> [AgentAction] {
+        cards(forTurn: turnID).filter { $0.isPending && !$0.isSessionApplied }
+    }
+
     /// One owner gesture over several rows: each row keeps its own error, so a
     /// failure on row 1 still shows on its card after row 2 succeeds.
     package func approveAllPending(forTurn turnID: String) async {
-        for row in cards(forTurn: turnID) where row.isPending {
+        for row in bulkApprovable(forTurn: turnID) {
             await approve(row.id, shownArgs: row.argsJSON)
         }
     }

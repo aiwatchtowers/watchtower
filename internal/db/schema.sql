@@ -2053,7 +2053,14 @@ CREATE TABLE IF NOT EXISTS agent_actions (
     error           TEXT    NOT NULL DEFAULT '',
     created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     decided_at      TEXT    NOT NULL DEFAULT '',
-    applied_at      TEXT    NOT NULL DEFAULT ''
+    applied_at      TEXT    NOT NULL DEFAULT '',
+    -- The chat-session process that proposed a session-applied row
+    -- (claude_ai_connector_call); only it may claim the row. '' otherwise.
+    session_token   TEXT    NOT NULL DEFAULT '',
+    -- When the owner dismissed a session-applied call that failed with an
+    -- unknown outcome (it waits on the Inbox badge until then; `actions
+    -- dismiss`). '' = not dismissed.
+    dismissed_at    TEXT    NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_agent_actions_conversation ON agent_actions(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_actions_status ON agent_actions(status);

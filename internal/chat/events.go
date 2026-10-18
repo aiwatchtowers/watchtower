@@ -19,9 +19,14 @@ const (
 	EventTextDelta    = "text_delta"
 	EventToolStart    = "tool_start"
 	EventToolEnd      = "tool_end"
-	EventUsage        = "usage"
-	EventTurnDone     = "turn_done"
-	EventError        = "error"
+	// EventToolWait: a started tool call waits for the owner's Approve on
+	// the agent_actions row ActionID (#737). Live only — the row is the
+	// durable state; the step's tool_end follows (ok=false when rejected,
+	// timed out or stopped).
+	EventToolWait = "tool_wait"
+	EventUsage    = "usage"
+	EventTurnDone = "turn_done"
+	EventError    = "error"
 )
 
 // turn_done statuses.
@@ -71,6 +76,16 @@ type Event struct {
 	Code      string          `json:"code,omitempty"`
 	Message   string          `json:"message,omitempty"`
 	Retryable bool            `json:"retryable,omitempty"`
+	ActionID  int64           `json:"action_id,omitempty"`
+}
+
+// ToolWaitMessage is the waiting step's label.
+const ToolWaitMessage = "Waiting for your approval"
+
+// toolWaitEvent says the call toolUseID of turnID waits for the owner's
+// decision on agent_actions row actionID.
+func toolWaitEvent(turnID, toolUseID string, actionID int64) Event {
+	return Event{Type: EventToolWait, TurnID: turnID, ID: toolUseID, ActionID: actionID, Message: ToolWaitMessage}
 }
 
 // Source is one cited source of a tool_end (spec §3.4). Group, Snippet and
@@ -87,6 +102,16 @@ type Source struct {
 	Group   string `json:"group,omitempty"`
 	Snippet string `json:"snippet,omitempty"`
 	Date    string `json:"date,omitempty"`
+}
+
+// SourceKindPublished marks the page or doc a turn published to the owner's
+// claude.ai account; the Desktop renders it as a link card, only for an
+// https://claude.ai/ URL.
+const SourceKindPublished = "claude_ai_published"
+
+// publishedSource is the source of a published artifact; Ref is its URL.
+func publishedSource(url, title string) Source {
+	return Source{Kind: SourceKindPublished, Title: title, URL: url, Ref: url}
 }
 
 // Attachment is a file the owner attached to a turn. Its path travels on

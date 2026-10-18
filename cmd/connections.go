@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/chat/connectorpolicy"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
@@ -228,6 +229,12 @@ func validateConnectionAddFlags(name, kind, command, url string) error {
 	}
 	if externalmcp.ReservedName(name) {
 		return fmt.Errorf(`--name %q is reserved: "watchtower" and names starting with "watchtower_" belong to the built-in MCP server; choose another name`, name)
+	}
+	// The CLI names a Quick Connection's tools mcp__<name>__…, the same
+	// namespace as the account's claude.ai connectors (mcp__claude_ai_Gmail__…):
+	// a connection named claude_ai_Gmail would share their token (#737).
+	if connectorpolicy.ReservedServerToken(name) {
+		return fmt.Errorf(`--name %q is reserved: names starting with "claude_ai" belong to claude.ai connectors; choose another name`, name)
 	}
 	switch kind {
 	case "stdio":

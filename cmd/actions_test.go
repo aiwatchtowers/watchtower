@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/ownerconfirm"
 	"watchtower/internal/tools"
 )
 
@@ -547,6 +548,13 @@ func TestAgent07_CLIApproveRefusedUnderAgent(t *testing.T) {
 			approved, err := database.InsertAgentAction(db.AgentAction{Tool: "create_target",
 				ArgsJSON: `{"text":"y","reason":"r"}`, Reason: "r", Surface: "main", Status: "approved"})
 			require.NoError(t, err)
+			unknown, err := database.InsertAgentAction(db.AgentAction{Tool: tools.ClaudeAIConnectorCallTool,
+				External: true, ArgsJSON: sessionCallArgs, Reason: "r", Surface: "main", Status: "executing"})
+			require.NoError(t, err)
+			ok, err := database.TransitionAgentAction(unknown, []string{"executing"}, "failed", "",
+				"session ended while the call ran; outcome unknown")
+			require.NoError(t, err)
+			require.True(t, ok)
 			t.Setenv(marker, "1")
 
 			_, err = runActions(t, "approve", strconv.FormatInt(pending, 10), "--json")
@@ -558,6 +566,13 @@ func TestAgent07_CLIApproveRefusedUnderAgent(t *testing.T) {
 			require.Error(t, err)
 			_, err = runActions(t, "trust", "create_target", "execute")
 			require.Error(t, err)
+			_, err = runActions(t, "dismiss", strconv.FormatInt(unknown, 10), "--json")
+			require.Error(t, err, "only the owner dismisses an unknown outcome")
+			assert.Contains(t, err.Error(), marker)
+			var dismissedAt string
+			require.NoError(t, database.QueryRow(`SELECT dismissed_at FROM agent_actions WHERE id = ?`, unknown).
+				Scan(&dismissedAt))
+			assert.Empty(t, dismissedAt)
 
 			for id, want := range map[int64]string{pending: "pending", approved: "approved"} {
 				row, err := database.GetAgentAction(id)
@@ -631,4 +646,141 @@ func TestActionsTrust_FanOutSkipsAutomation(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+const sessionCallArgs = `{"server":"claude.ai Connector A","tool":"send_mail","input":{"body":"hi"},"reason":"r"}`
+
+// A session-applied row (#737): approve records the owner's decision with the
+// usual envelope and stops at `approved` — the chat session claims and runs
+// it; the CLI never does.
+func TestActions_ApproveSessionCallDoesNotApply(t *testing.T) {
+	database := writeActionsConfig(t)
+	id, err := database.InsertAgentAction(db.AgentAction{Tool: tools.ClaudeAIConnectorCallTool, External: true,
+		ArgsJSON: sessionCallArgs, Reason: "r", Surface: "main", ConversationID: 7})
+	require.NoError(t, err)
+
+	out, err := runActions(t, "approve", strconv.FormatInt(id, 10), "--patch", `{"input":{"body":"edited"}}`,
+		"--args-sha256", tools.ArgsSHA256(sessionCallArgs), "--json")
+	require.NoError(t, err, out)
+	var env struct {
+		OK        bool   `json:"ok"`
+		AppliedOK bool   `json:"applied_ok"`
+		Error     string `json:"error"`
+		Action    struct {
+			Status string `json:"status"`
+		} `json:"action"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &env), out)
+	assert.True(t, env.OK)
+	assert.False(t, env.AppliedOK)
+	assert.Empty(t, env.Error)
+	assert.Equal(t, "approved", env.Action.Status)
+	row, err := database.GetAgentAction(id)
+	require.NoError(t, err)
+	assert.Equal(t, "approved", row.Status)
+	assert.Contains(t, row.ArgsJSON, `"edited"`)
+	assert.Empty(t, row.AppliedAt)
+
+	out, err = runActions(t, "tools", "--json")
+	require.NoError(t, err)
+	assert.NotContains(t, out, tools.ClaudeAIConnectorCallTool, "no Settings trust switch for a session call")
+}
+
+// `actions apply` — with or without --force — never runs a session call and
+// writes nothing: not even an `executing` row is reclaimed.
+func TestActions_ApplySessionCallRefused(t *testing.T) {
+	database := writeActionsConfig(t)
+	for _, status := range []string{"approved", "failed", "executing"} {
+		id, err := database.InsertAgentAction(db.AgentAction{Tool: tools.ClaudeAIConnectorCallTool, External: true,
+			ArgsJSON: sessionCallArgs, Reason: "r", Surface: "main", ConversationID: 7, Status: status})
+		require.NoError(t, err)
+		for _, args := range [][]string{{"apply", strconv.FormatInt(id, 10), "--json"},
+			{"apply", strconv.FormatInt(id, 10), "--force", "--json"}} {
+			_, err := runActions(t, args...)
+			require.Error(t, err, args)
+			assert.ErrorIs(t, err, tools.ErrSessionApplied)
+			assert.Contains(t, err.Error(), "claude_ai_connector_call runs only in the chat session that proposed it")
+			row, err := database.GetAgentAction(id)
+			require.NoError(t, err)
+			assert.Equal(t, status, row.Status, args)
+		}
+	}
+}
+
+// A connector call whose session ended while it ran waits on the owner's
+// Inbox badge until `actions dismiss` (ask #342): it stamps dismissed_at,
+// keeps the row failed, is a no-op the second time, and refuses every other
+// row and any caller under an agent (AGENT-07).
+func TestActions_DismissSessionCallWithUnknownOutcome(t *testing.T) {
+	const unknown = "session ended while the call ran; outcome unknown"
+	database := writeActionsConfig(t)
+	insertFailed := func(tool, reason string) int64 {
+		t.Helper()
+		id, err := database.InsertAgentAction(db.AgentAction{Tool: tool, External: true, ArgsJSON: sessionCallArgs,
+			Reason: "r", Surface: "main", ConversationID: 7, Status: "executing"})
+		require.NoError(t, err)
+		ok, err := database.TransitionAgentAction(id, []string{"executing"}, "failed", "", reason)
+		require.NoError(t, err)
+		require.True(t, ok)
+		return id
+	}
+	dismissedAt := func(id int64) string {
+		t.Helper()
+		var at string
+		require.NoError(t, database.QueryRow(`SELECT dismissed_at FROM agent_actions WHERE id = ?`, id).Scan(&at))
+		return at
+	}
+	id := insertFailed(tools.ClaudeAIConnectorCallTool, unknown)
+
+	t.Setenv("CLAUDECODE", "1")
+	_, err := runActions(t, "dismiss", strconv.FormatInt(id, 10), "--json")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "CLAUDECODE")
+	assert.Empty(t, dismissedAt(id), "refused under an agent, nothing written")
+	require.NoError(t, os.Unsetenv("CLAUDECODE"))
+
+	asked := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Denied}, nil)
+	_, err = runActions(t, "dismiss", strconv.FormatInt(id, 10), "--json")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "did not confirm")
+	assert.Empty(t, dismissedAt(id), "the owner denied in the Desktop, nothing written")
+	require.Len(t, *asked, 1)
+	assert.Equal(t, "dismiss an action", (*asked)[0].Verb)
+	withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+
+	out, err := runActions(t, "dismiss", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err, out)
+	var env struct {
+		OK     bool `json:"ok"`
+		Action struct {
+			Status      string `json:"status"`
+			DismissedAt string `json:"dismissed_at"`
+		} `json:"action"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &env), out)
+	assert.True(t, env.OK)
+	assert.Equal(t, "failed", env.Action.Status, "a dismiss is not a transition")
+	first := dismissedAt(id)
+	assert.NotEmpty(t, first)
+	assert.Equal(t, first, env.Action.DismissedAt)
+	_, err = runActions(t, "dismiss", strconv.FormatInt(id, 10), "--json")
+	require.NoError(t, err, "a second dismiss is a no-op")
+	assert.Equal(t, first, dismissedAt(id))
+
+	running, err := database.InsertAgentAction(db.AgentAction{Tool: tools.ClaudeAIConnectorCallTool, External: true,
+		ArgsJSON: sessionCallArgs, Reason: "r", Surface: "main", ConversationID: 7, Status: "executing"})
+	require.NoError(t, err)
+	for _, other := range []int64{
+		running, // not failed yet: a later expiry must land it undismissed
+		insertFailed(tools.ClaudeAIConnectorCallTool, "session ended before approval"),
+		insertFailed(tools.ClaudeAIConnectorCallTool, "stopped"),
+		insertFailed("send_slack_message", unknown),
+	} {
+		_, err := runActions(t, "dismiss", strconv.FormatInt(other, 10), "--json")
+		require.ErrorIs(t, err, tools.ErrBadTransition)
+		assert.Empty(t, dismissedAt(other))
+	}
+	_, err = runActions(t, "dismiss", "999999", "--json")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no action #999999")
 }

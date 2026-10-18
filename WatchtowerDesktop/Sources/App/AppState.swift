@@ -228,6 +228,8 @@ final class AppState {
     /// App-wide warm chat sessions (spec §1.4) — owns every running main-chat
     /// turn, so turns survive navigation. Created once the DB is open.
     private(set) var chatSessionPool: ChatSessionPool?
+    /// Settings → Profile → claude.ai tools (#737); `AppState+Chat.swift`.
+    @ObservationIgnored private(set) lazy var claudeAIConnectors = makeClaudeAIConnectors()
 
     /// Calendar ViewModel — persists across tab switches.
     private(set) var calendarViewModel: CalendarViewModel?
@@ -486,15 +488,9 @@ final class AppState {
         let hvm = ChatHistoryViewModel(dbManager: db)
         hvm.load()
         Self.wireChat(cvm, history: hvm)
+        wireActionStripRefresh(cvm)
         chatViewModel = cvm
         chatHistoryViewModel = hvm
-    }
-
-    /// The main chat's two view models: the history list follows the chat's
-    /// writes, and the landing's first turn becomes the history selection.
-    static func wireChat(_ cvm: ChatViewModel, history hvm: ChatHistoryViewModel) {
-        cvm.onConversationsChanged = { [weak hvm] in hvm?.load() }
-        cvm.onLandingTurnStarted = { [weak hvm] id in hvm?.selectedConversationID = id }
     }
 
     @discardableResult

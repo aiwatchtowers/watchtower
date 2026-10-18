@@ -87,6 +87,12 @@ final class ChatViewModel {
     /// takes over and the view makes it the history selection. Fired only
     /// by `send`, never by other ways of leaving the landing.
     @ObservationIgnored var onLandingTurnStarted: ((Int64) -> Void)?
+    /// Any conversation's turn ended, after this VM's own refresh. The Inbox
+    /// strip re-reads then: a connector call it shows was claimed and run
+    /// inside that turn, and its live "session holds it" just turned false.
+    @ObservationIgnored var onTurnFinished: ((Int64) -> Void)?
+    /// A turn of that conversation waits on an approval card (`tool_wait`).
+    @ObservationIgnored var onActionAwaited: ((Int64) -> Void)?
 
     let actionFeed: AgentActionFeed
     let pool: ChatSessionPool
@@ -221,6 +227,7 @@ final class ChatViewModel {
             skills: { SkillsCatalog.pickerSkills(contextType: "main") }
         )
         pool.onTurnFinished = { [weak self] id in self?.turnFinished(conversationID: id) }
+        pool.onActionAwaited = { [weak self] id in self?.actionAwaited(conversationID: id) }
         reloadProjects()
     }
 
@@ -1127,6 +1134,13 @@ final class ChatViewModel {
         pool.close(conversationID: id)
     }
 
+    /// The turn is blocked on a proposal the session subprocess just wrote:
+    /// surface its card now, not at the turn boundary it is waiting for.
+    private func actionAwaited(conversationID id: Int64) {
+        if id == conversationID { actionFeed.refresh() }
+        onActionAwaited?(id)
+    }
+
     private func turnFinished(conversationID id: Int64) {
         if id == conversationID {
             reload()
@@ -1143,6 +1157,7 @@ final class ChatViewModel {
         }
         reloadConversations()
         requestTitleIfNeeded(conversationID: id)
+        onTurnFinished?(id)
     }
 
     /// Fire-and-forget `watchtower chat title` after the first completed

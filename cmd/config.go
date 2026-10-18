@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -212,6 +213,8 @@ var knownConfigKeys = map[string]bool{
 	"ai.provider":                          true,
 	"ai.ollama_url":                        true,
 	"ai.context_budget":                    true,
+	"ai.claude_ai.connectors":              true,
+	"ai.claude_ai.disabled_connectors":     true,
 	"sync.workers":                         true,
 	"sync.initial_history_days":            true,
 	"sync.poll_interval":                   true,
@@ -322,6 +325,10 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		// can parse them correctly into time.Duration on read.
 		typedValue = value
 	}
+	typedValue, err := claudeAIConfigValue(key, value, typedValue)
+	if err != nil {
+		return err
+	}
 	if err := setConfigKey(configPath, key, typedValue); err != nil {
 		return err
 	}
@@ -333,6 +340,30 @@ func runConfigSet(cmd *cobra.Command, args []string) error {
 		}
 	}
 	return nil
+}
+
+// claudeAIConfigValue types the claude.ai connector switches (#737), which
+// the Desktop's Settings writes: ai.claude_ai.connectors must be true or
+// false (anything else would fail every later config load), and
+// ai.claude_ai.disabled_connectors takes comma-separated display names,
+// stored as a list ("" = none disabled; a name "true" or "42" stays a
+// name). Any other key keeps typed.
+func claudeAIConfigValue(key, value string, typed any) (any, error) {
+	switch strings.ToLower(key) {
+	case "ai.claude_ai.connectors":
+		if _, ok := typed.(bool); !ok {
+			return nil, fmt.Errorf("ai.claude_ai.connectors must be true or false, got %q; nothing was written", value)
+		}
+	case "ai.claude_ai.disabled_connectors":
+		names := []string{}
+		for _, name := range strings.Split(value, ",") {
+			if name = strings.TrimSpace(name); name != "" && !slices.Contains(names, name) {
+				names = append(names, name)
+			}
+		}
+		return names, nil
+	}
+	return typed, nil
 }
 
 func runConfigShow(cmd *cobra.Command, args []string) error {
