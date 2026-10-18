@@ -9,14 +9,53 @@ package final class SessionFeedStore: ObservableObject {
     @Published package private(set) var entries: [SessionFeedEntry] = []
     @Published package private(set) var error: String?
 
+    /// No CLI binary was found: the pane shows the error and never polls.
+    package let runnerMissing: Bool
+    /// Every read of the pane goes through it, so a read already in flight
+    /// is joined instead of spawning a second CLI.
+    package private(set) lazy var poller = SessionFeedPoller { [weak self] in await self?.refresh() }
+
     private let sessionID: Int64
     private let runner: CLIRunnerProtocol
     private var cursor = ""
     private var index: [String: Int] = [:]
+    private var screenGate = ForegroundRefreshGate()
 
-    package init(sessionID: Int64, runner: CLIRunnerProtocol) {
+    /// `runner` nil: the CLI binary is missing (`runnerMissing`).
+    package init(sessionID: Int64, runner: CLIRunnerProtocol?) {
         self.sessionID = sessionID
-        self.runner = runner
+        self.runner = runner ?? UnavailableRunner()
+        runnerMissing = runner == nil
+    }
+
+    /// The pane's poll: one read now, then while `isActive` one more every
+    /// `interval`. A read due while `isOnScreen` is false (the main window
+    /// hidden, minimised or covered) is skipped, and `screenChanged` reads at
+    /// once on the way back. Returns when inactive or cancelled.
+    package func follow(
+        interval: Duration = .seconds(3),
+        isActive: () -> Bool,
+        isOnScreen: () -> Bool
+    ) async {
+        guard !runnerMissing else { return }
+        if gatedTick(isOnScreen()) { await poller.refresh() }
+        while isActive() {
+            try? await Task.sleep(for: interval)
+            if Task.isCancelled { return }
+            if gatedTick(isOnScreen()) { await poller.refresh() }
+        }
+    }
+
+    /// The main window's visibility changed: back on screen after a skipped
+    /// read, the feed is read now.
+    package func screenChanged(_ onScreen: Bool) async {
+        guard !runnerMissing, screenGate.setOnScreen(onScreen) else { return }
+        await poller.refresh()
+    }
+
+    private func gatedTick(_ onScreen: Bool) -> Bool {
+        _ = screenGate.setOnScreen(onScreen)
+        return screenGate.tick()
     }
 
     /// Reads what is new since the last cursor (a full read while none exists).
@@ -57,4 +96,10 @@ package final class SessionFeedStore: ObservableObject {
             }
         }
     }
+}
+
+/// Stand-in when the CLI binary is missing: the store never polls then, so
+/// this is never called.
+private struct UnavailableRunner: CLIRunnerProtocol {
+    func run(args: [String]) async throws -> Data { Data() }
 }
