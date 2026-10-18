@@ -61,8 +61,8 @@ Update the `Version` variable in `cmd/version.go` to the new version.
 
 ## Step 5: Pre-release gate
 
-Run the pre-release checks. This runs sentrux quality (rules + structural
-regression), periphery dead-code check (vs baseline), Go tests, and Swift tests.
+Run the pre-release checks. This runs the periphery dead-code check (vs
+baseline), Go tests, and Swift tests.
 Any failure halts the release.
 
 ```bash
