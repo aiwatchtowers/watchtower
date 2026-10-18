@@ -25,6 +25,11 @@ package enum ChatToolCatalog {
         "get_jira_issue": Entry(template: "Opened {}", fallback: "Opened a Jira issue", keys: ["key"]),
         "get_jira_status_history": Entry(template: nil, fallback: "Read Jira status history", keys: []),
         "get_jira_time_in_status": Entry(template: nil, fallback: "Summed Jira time in status", keys: []),
+        "list_linear_teams": Entry(template: nil, fallback: "Listed Linear teams", keys: []),
+        "list_linear_issues": Entry(template: "Listed Linear issues: {}", fallback: "Listed Linear issues", keys: ["team", "assignee", "state"]),
+        "get_linear_issue": Entry(template: "Opened {}", fallback: "Opened a Linear issue", keys: ["key"]),
+        "get_linear_status_history": Entry(template: nil, fallback: "Read Linear status history", keys: []),
+        "list_linear_cycles": Entry(template: nil, fallback: "Listed Linear cycles", keys: []),
         "get_task_context": Entry(template: "Gathered context for {}", fallback: "Gathered task context", keys: ["key", "issue_key"]),
         "list_people": Entry(template: nil, fallback: "Listed people", keys: []),
         "get_person": Entry(template: "Looked up {}", fallback: "Looked up a person", keys: ["name", "query", "id"]),
@@ -69,7 +74,7 @@ package enum ChatToolCatalog {
         if external(name) != nil { return "puzzlepiece.extension" }
         if ReactionToolCatalog.info(for: name) != nil { return "hand.raised" }
         let rules: [(String, String)] = [
-            ("knowledge", "magnifyingglass"), ("messages", "bubble.left.and.bubble.right"), ("jira", "ticket"),
+            ("knowledge", "magnifyingglass"), ("messages", "bubble.left.and.bubble.right"), ("jira", "ticket"), ("linear", "ticket"),
             ("task_context", "ticket"), ("transcript", "waveform"), ("person", "person"), ("people", "person.2"),
             ("experts", "person.2"), ("memory", "brain"), ("digest", "doc.text"), ("briefing", "sun.max"),
             ("target", "target"), ("track", "arrow.triangle.branch"), ("events", "calendar"),

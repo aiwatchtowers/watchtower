@@ -47,6 +47,12 @@ package enum ReactionToolCatalog {
             destination: "Jira",
             alwaysAsks: true
         ),
+        "create_linear_issue": ReactionToolInfo(
+            title: "Create a Linear issue",
+            summary: "Drafts a Linear issue",
+            destination: "Linear",
+            alwaysAsks: true
+        ),
         "create_track": ReactionToolInfo(
             title: "Track this",
             summary: "Starts a track following the topic",
