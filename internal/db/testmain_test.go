@@ -1,11 +1,8 @@
 package db
 
 import (
-	"errors"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -40,44 +37,17 @@ var freshMigrationPaths sync.Map
 // openMigratingFresh can prove its file was not one of them.
 var seededPaths sync.Map
 
-// seedFromTemplate writes the migrated template to the new file dbPath, at
-// the 0644 SQLite itself creates a file with under the usual umask, so Open's
-// permission tightening still has work to do. The bytes go to a temp file in
-// the same directory first and are hard-linked into place, so dbPath never
-// holds a partial snapshot and an existing file is never clobbered.
+// seedFromTemplate writes the migrated template to the new file dbPath
+// (writeTemplateFile) unless openMigratingFresh opens it, and records it.
 func seedFromTemplate(dbPath string) error {
 	if _, fresh := freshMigrationPaths.Load(dbPath); fresh {
 		return nil
 	}
-	if len(templateSnapshot) == 0 {
-		return errors.New("template not initialised")
+	written, err := writeTemplateFile(dbPath)
+	if written {
+		seededPaths.Store(dbPath, true)
 	}
-	f, err := os.CreateTemp(filepath.Dir(dbPath), filepath.Base(dbPath)+".seed-*")
-	if err != nil {
-		return err
-	}
-	tmp := f.Name()
-	defer func() { _ = os.Remove(tmp) }()
-	if _, err := f.Write(templateSnapshot); err != nil {
-		_ = f.Close()
-		return err
-	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp, 0o644); err != nil {
-		return err
-	}
-	// Link fails with EEXIST when dbPath appeared meanwhile: someone else
-	// seeded (or created) it, which is as good as seeding it here.
-	if err := os.Link(tmp, dbPath); err != nil {
-		if errors.Is(err, fs.ErrExist) {
-			return nil
-		}
-		return err
-	}
-	seededPaths.Store(dbPath, true)
-	return nil
+	return err
 }
 
 // openMigratingFresh opens the new file dbPath through Open's real migration
