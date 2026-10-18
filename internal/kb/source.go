@@ -41,6 +41,7 @@ func allSources() []Source {
 		recapSource{},
 		transcriptSource{},
 		jiraSource{},
+		linearSource{},
 		imapSource{},
 		gmailSource{},
 		extSource{provider: "confluence"},
