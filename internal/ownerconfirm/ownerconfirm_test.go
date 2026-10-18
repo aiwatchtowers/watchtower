@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"testing"
 	"time"
 
@@ -139,8 +140,72 @@ func TestVerifyDesktopRefusesFromADevelopmentBuild(t *testing.T) {
 	t.Setenv(DevTrustUnsignedEnv, "")
 	err := VerifyDesktop(context.Background(), os.Getpid())
 	require.ErrorIs(t, err, ErrDevBuild)
+	// F6: the override still checks the identifier; this test binary is not
+	// com.watchtower.desktop.
 	t.Setenv(DevTrustUnsignedEnv, "1")
-	assert.NoError(t, VerifyDesktop(context.Background(), os.Getpid()))
+	err = VerifyDesktop(context.Background(), os.Getpid())
+	require.Error(t, err)
+	assert.NotErrorIs(t, err, ErrDevBuild)
+	assert.Contains(t, err.Error(), `identifier "com.watchtower.desktop"`)
+}
+
+// fakeCodesign points codesignPath at a script: `-d` prints
+// TeamIdentifier=<team> on stderr, `-v` logs its argv and exits verifyExit.
+// It returns the log file.
+func fakeCodesign(t *testing.T, team string, verifyExit int) string {
+	t.Helper()
+	dir := t.TempDir()
+	log := filepath.Join(dir, "argv.log")
+	script := filepath.Join(dir, "codesign")
+	body := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"-d\" ]; then echo \"Identifier=x\" >&2; echo \"TeamIdentifier=" + team + "\" >&2; exit 0; fi\n" +
+		"printf '%s\\n' \"$@\" >> '" + log + "'\n" +
+		"exit " + strconv.Itoa(verifyExit) + "\n"
+	require.NoError(t, os.WriteFile(script, []byte(body), 0o700))
+	orig := codesignPath
+	t.Cleanup(func() { codesignPath = orig })
+	codesignPath = script
+	return log
+}
+
+// F8: a Team-ID CLI ignores the development override — its peer must pass
+// the team requirement, which carries the CLI's own team.
+func TestVerifyDesktopWithATeamIgnoresTheDevOverride(t *testing.T) {
+	fakeCodesign(t, "ABCDE12345", 1)
+	t.Setenv(DevTrustUnsignedEnv, "1")
+	require.Error(t, VerifyDesktop(context.Background(), 4242), "the failed requirement refuses despite the override")
+
+	log := fakeCodesign(t, "ABCDE12345", 0)
+	require.NoError(t, VerifyDesktop(context.Background(), 4242))
+	argv, err := os.ReadFile(log)
+	require.NoError(t, err)
+	assert.Equal(t, "-v\n-R\n"+`=identifier "com.watchtower.desktop" and anchor apple generic and `+
+		`certificate leaf[subject.OU] = "ABCDE12345"`+"\n4242\n", string(argv))
+}
+
+func TestTeamOfParsesTheTeamIdentifier(t *testing.T) {
+	fakeCodesign(t, "ABCDE12345", 0)
+	team, err := teamOf(context.Background(), 1)
+	require.NoError(t, err)
+	assert.Equal(t, "ABCDE12345", team)
+
+	fakeCodesign(t, "not set", 0)
+	team, err = teamOf(context.Background(), 1)
+	require.NoError(t, err)
+	assert.Empty(t, team, `"not set" is no team`)
+}
+
+// F6: a development CLI with the override checks the identifier only.
+func TestVerifyDesktopDevOverrideStillChecksTheIdentifier(t *testing.T) {
+	log := fakeCodesign(t, "not set", 0)
+	t.Setenv(DevTrustUnsignedEnv, "1")
+	require.NoError(t, VerifyDesktop(context.Background(), 7))
+	argv, err := os.ReadFile(log)
+	require.NoError(t, err)
+	assert.Equal(t, "-v\n-R\n"+`=identifier "com.watchtower.desktop"`+"\n7\n", string(argv))
+
+	fakeCodesign(t, "not set", 3)
+	assert.Error(t, VerifyDesktop(context.Background(), 7), "a failed identifier check refuses")
 }
 
 func TestVerifyDesktopFailsClosedWithoutCodesign(t *testing.T) {

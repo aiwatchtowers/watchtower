@@ -50,16 +50,25 @@ struct CLIRunnerTests {
     }
 
     /// AGENT-07 (board #568): the Desktop's own launch is the owner's, so its
-    /// owner-only gesture is confirmed without a window.
-    @Test("ProcessCLIRunner registers the child's argv as the owner's launch")
+    /// owner-only gesture is confirmed without a window — while the child
+    /// runs; the grant goes when it exits (F9).
+    @Test("ProcessCLIRunner registers the child's argv and pid while it runs")
     func processRunnerRegistersOwnerLaunch() async throws {
-        // The child prints its own pid, so the grant's pid can be checked.
-        let args = ["-c", "echo $$", UUID().uuidString]
-        let out = try await ProcessCLIRunner(binaryPath: "/bin/sh").run(args: args)
-        let pid = try #require(Int32((String(bytes: out, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)))
-        #expect(!OwnerConfirmGrants.shared.consume(args, pid: pid + 1))
-        #expect(OwnerConfirmGrants.shared.consume(args, pid: pid))
-        #expect(!OwnerConfirmGrants.shared.consume(args, pid: pid))
+        let pidFile = NSTemporaryDirectory() + "owner-launch-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: pidFile) }
+        let args = ["-c", "echo $$ > \"$1\"; sleep 1", "sh", pidFile]
+        let run = Task { try await ProcessCLIRunner(binaryPath: "/bin/sh").run(args: args) }
+        var pid: Int32?
+        for _ in 0..<100 where pid == nil {
+            try await Task.sleep(for: .milliseconds(20))
+            pid = (try? String(contentsOfFile: pidFile, encoding: .utf8))
+                .flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        }
+        let child = try #require(pid)
+        #expect(OwnerConfirmGrants.shared.hasLive(pid: child))
+        _ = try await run.value
+        #expect(!OwnerConfirmGrants.shared.hasLive(pid: child))
+        #expect(!OwnerConfirmGrants.shared.consume(args, pid: child))
     }
 
     @Test("ProcessCLIRunner writes stdin to the child and closes it")

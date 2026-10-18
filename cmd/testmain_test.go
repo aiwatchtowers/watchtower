@@ -64,6 +64,11 @@ func TestMain(m *testing.M) {
 	// The test binary as the real CLI (os.Args[1:] are its arguments), for
 	// tests that need a process: signals, stdin EOF, exit codes.
 	if os.Getenv(runCLIEnv) == "1" {
+		// The owner-confirm argv test's listener is this test binary, not
+		// the signed app: its subprocess trusts the peer (test binary only).
+		if os.Getenv(trustTestPeerEnv) == "1" {
+			ownerconfirm.VerifyPeer = func(context.Context, int) error { return nil }
+		}
 		os.Exit(Execute())
 	}
 	// The test binary as a stdio MCP server, a Quick Connection's command

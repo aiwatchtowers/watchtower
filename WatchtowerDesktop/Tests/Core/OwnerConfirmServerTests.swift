@@ -21,8 +21,14 @@ final class OwnerConfirmServerTests: XCTestCase {
         try? FileManager.default.removeItem(atPath: dir)
     }
 
-    private func start(grants: OwnerConfirmGrants = OwnerConfirmGrants(), timeout: Duration = .seconds(30)) throws {
-        let server = OwnerConfirmServer(path: socketPath, grants: grants, timeout: timeout) { [weak self] in
+    /// No cooldown by default: every request here comes from this one pid.
+    private func start(
+        grants: OwnerConfirmGrants = OwnerConfirmGrants(),
+        timeout: Duration = .seconds(30),
+        cooldown: Duration = .zero
+    ) throws {
+        let server = OwnerConfirmServer(path: socketPath, grants: grants, timeout: timeout,
+                                        cooldown: cooldown) { [weak self] in
             self?.prompts.append($0)
         }
         try server.start()
@@ -142,6 +148,35 @@ final class OwnerConfirmServerTests: XCTestCase {
         XCTAssertTrue(prompts.isEmpty)
     }
 
+    /// F2: idle connections filling the cap do not lock the Desktop's own
+    /// child out: a pid with a live grant is admitted past the cap.
+    func testAGrantedPidIsAdmittedPastTheCap() async throws {
+        let grants = OwnerConfirmGrants()
+        try start(grants: grants)
+        let path = socketPath
+        let fds = (0..<OwnerConfirmServer.maxConnections).compactMap { _ in UnixLineClient.connect(path: path) }
+        defer { fds.forEach { close($0) } }
+        XCTAssertEqual(fds.count, OwnerConfirmServer.maxConnections)
+        try await Task.sleep(for: .milliseconds(200))
+        grants.register(["actions", "approve", "9"], pid: getpid())
+        let reply = await ask(OwnerConfirmRequest(verb: "a", args: ["actions", "approve", "9"])).value
+        XCTAssertEqual(reply?.decision, OwnerConfirmReply.confirmed)
+        XCTAssertTrue(prompts.isEmpty)
+    }
+
+    /// F5: after a Deny the same pid gets no new window for a while.
+    func testADenyCoolsThePidDown() async throws {
+        try start(cooldown: .seconds(30))
+        let first = ask(OwnerConfirmRequest(verb: "a", args: ["actions", "approve", "1"]))
+        try await waitForPrompt()
+        prompts[0].answer(false)
+        _ = await first.value
+        let again = await ask(OwnerConfirmRequest(verb: "a", args: ["actions", "approve", "1"])).value
+        XCTAssertEqual(again?.decision, OwnerConfirmReply.denied)
+        XCTAssertEqual(again?.reason, OwnerConfirmServer.cooldownReason)
+        XCTAssertEqual(prompts.count, 1, "no second window")
+    }
+
     func testStopRemovesTheSocketFile() throws {
         try start()
         XCTAssertTrue(FileManager.default.fileExists(atPath: socketPath))
@@ -169,6 +204,12 @@ final class OwnerConfirmServerTests: XCTestCase {
         grants.register(["a"], pid: 7)
         clock.now = clock.now.addingTimeInterval(OwnerConfirmGrants.lifetime + 1)
         XCTAssertFalse(grants.consume(["a"], pid: 7), "expired")
+        // F9: a grant goes with its child.
+        grants.register(["b"], pid: 9)
+        XCTAssertTrue(grants.hasLive(pid: 9))
+        grants.revoke(pid: 9)
+        XCTAssertFalse(grants.hasLive(pid: 9))
+        XCTAssertFalse(grants.consume(["b"], pid: 9))
     }
 
     func testConfirmArmsAfterOneSecond() {
@@ -182,7 +223,11 @@ final class OwnerConfirmServerTests: XCTestCase {
         let long = String(repeating: "y", count: 5000)
         let request = OwnerConfirmRequest(verb: "v", detail: "a\u{202E}cba\u{200B}\nline2 " + long,
                                           args: ["actions", "approve", "1 2", "\u{0007}", long])
-        XCTAssertEqual(request.commandLine, "watchtower actions approve \"1 2\" \u{FFFD} " + long)
+        XCTAssertEqual(request.commandLine, "watchtower actions approve '1 2' '\u{FFFD}' " + long)
+        // F10: quoting leaves no doubt where an arg ends.
+        let tricky = OwnerConfirmRequest(verb: "v", args: ["--patch", #"{"text":"a b"}"#, "it's", "", "a=b/c:d@e%f+g-h.i_j"])
+        XCTAssertEqual(tricky.commandLine,
+                       #"watchtower --patch '{"text":"a b"}' 'it'\''s' '' a=b/c:d@e%f+g-h.i_j"#)
         XCTAssertEqual(request.displayDetail, "a\u{FFFD}cba\u{FFFD}\nline2 " + long)
         XCTAssertEqual(OwnerConfirmServer.socketPath(databasePath: "/w/ws/watchtower.db"), "/w/ws/owner-confirm.sock")
     }

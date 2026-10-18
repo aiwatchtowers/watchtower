@@ -106,6 +106,23 @@ func TestAgent07_OwnerGestureNeedsTheDesktopsConfirmation(t *testing.T) {
 	})
 }
 
+// F7: a detail that cannot be built says so in the window instead of
+// showing nothing.
+func TestOwnerConfirmDetailSaysWhenItCouldNotBeLoaded(t *testing.T) {
+	writeActionsConfig(t)
+	got := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Denied}, nil)
+	_, err := runActions(t, "approve", "999", "--json")
+	require.Error(t, err)
+	require.Len(t, *got, 1)
+	assert.Equal(t, "details could not be loaded: no action #999", (*got)[0].Detail)
+	assert.Contains(t, automationConfirmDetail("x"), "details could not be loaded: ")
+	assert.Contains(t, recipeConfirmDetail(nil), "details could not be loaded: ")
+}
+
+// trustTestPeerEnv makes a runCLIEnv subprocess skip the peer's signature
+// check (TestMain); production code never reads it.
+const trustTestPeerEnv = "WATCHTOWER_TEST_TRUST_OWNER_CONFIRM_PEER"
+
 // F13: the Desktop recognises its own launch by the exact argv it passed
 // (OwnerConfirmGrants); the CLI must send os.Args[1:] unchanged. A real
 // subprocess talks to a real socket server here.
@@ -148,7 +165,7 @@ func TestOwnerConfirmRequestArgsAreTheProcessArgv(t *testing.T) {
 	c.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		name, _, _ := strings.Cut(kv, "=")
 		return name == "HOME" || slices.Contains(agentEnvMarkers, name)
-	}), "HOME="+home, runCLIEnv+"=1", ownerconfirm.DevTrustUnsignedEnv+"=1")
+	}), "HOME="+home, runCLIEnv+"=1", trustTestPeerEnv+"=1")
 	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	t.Cleanup(func() {
 		if c.Process != nil {

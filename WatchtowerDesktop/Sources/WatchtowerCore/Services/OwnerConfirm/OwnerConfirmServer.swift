@@ -15,11 +15,20 @@ package struct OwnerConfirmRequest: Codable, Equatable, Sendable {
     }
 
     /// The command as the window shows it, in full: `watchtower` and the
-    /// args, an arg with spaces quoted, control and format characters (bidi
-    /// overrides, zero-width marks, line breaks) replaced so it reads as it runs.
+    /// args, each arg that is not plain `[A-Za-z0-9._/=:@%+-]` single-quoted
+    /// the shell's way (so word boundaries are unambiguous), control and
+    /// format characters (bidi overrides, zero-width marks, line breaks)
+    /// replaced so it reads as it runs.
     package var commandLine: String {
-        let words = ["watchtower"] + args.map { $0.contains(" ") || $0.isEmpty ? "\"\($0)\"" : $0 }
-        return Self.displayable(words.joined(separator: " "))
+        Self.displayable((["watchtower"] + args.map(Self.shellQuoted)).joined(separator: " "))
+    }
+
+    package static func shellQuoted(_ arg: String) -> String {
+        let plain = !arg.isEmpty && arg.unicodeScalars.allSatisfy { scalar in
+            scalar.isASCII && (CharacterSet.alphanumerics.contains(scalar) || "._/=:@%+-".unicodeScalars.contains(scalar))
+        }
+        if plain { return arg }
+        return "'" + arg.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     /// The detail in full, line breaks kept, other control and format
@@ -110,6 +119,11 @@ package final class OwnerConfirmServer {
     /// `sun_path` holds 104 bytes on macOS, the terminating NUL included.
     package nonisolated static let maxPathBytes = 103
     package nonisolated static let fileName = "owner-confirm.sock"
+    /// After a window ends without Confirm (Deny, timeout, hang-up), the
+    /// same pid gets no new window for this long: a raw client cannot keep
+    /// reopening windows and holding the one slot.
+    package nonisolated static let deniedCooldown: Duration = .seconds(3)
+    package nonisolated static let cooldownReason = "denied a moment ago — wait a few seconds before asking again"
 
     package enum ServerError: Error, Equatable {
         case pathTooLong
@@ -126,6 +140,8 @@ package final class OwnerConfirmServer {
     private let grants: OwnerConfirmGrants
     private let present: (OwnerConfirmPrompt) -> Void
     private let timeout: Duration
+    private let cooldown: Duration
+    private var cooldownUntil: [Int32: ContinuousClock.Instant] = [:]
     private let io = OwnerConfirmIO()
     private var open: (prompt: OwnerConfirmPrompt, box: OwnerConfirmReplyBox)?
 
@@ -133,11 +149,13 @@ package final class OwnerConfirmServer {
         path: String,
         grants: OwnerConfirmGrants = .shared,
         timeout: Duration = promptTimeout,
+        cooldown: Duration = deniedCooldown,
         present: @escaping (OwnerConfirmPrompt) -> Void
     ) {
         self.path = path
         self.grants = grants
         self.timeout = timeout
+        self.cooldown = cooldown
         self.present = present
     }
 
@@ -149,9 +167,11 @@ package final class OwnerConfirmServer {
             if OwnerConfirmIO.answers(path) { throw ServerError.anotherServer }
             unlink(path)
         }
-        try io.listen(path: path) { [weak self] fd in
-            self?.serve(fd)
-        }
+        try io.listen(
+            path: path,
+            pastCap: { [grants] pid in grants.hasLive(pid: pid) },
+            serve: { [weak self] fd in self?.serve(fd) }
+        )
     }
 
     /// Closes the socket and removes its file; an open window is withdrawn.
@@ -203,12 +223,17 @@ package final class OwnerConfirmServer {
                 }
                 try? await Task.sleep(for: .milliseconds(50))
             } while ContinuousClock.now < deadline && !box.isSet
-            self?.openWindow(request, box: box)
+            self?.openWindow(request, pid: pid, box: box)
         }
     }
 
-    private func openWindow(_ request: OwnerConfirmRequest, box: OwnerConfirmReplyBox) {
+    private func openWindow(_ request: OwnerConfirmRequest, pid: Int32?, box: OwnerConfirmReplyBox) {
         guard !box.isSet else { return } // hung up meanwhile
+        let now = ContinuousClock.now
+        cooldownUntil = cooldownUntil.filter { $0.value > now }
+        if let pid, cooldownUntil[pid] != nil {
+            return box.set(OwnerConfirmReply(decision: OwnerConfirmReply.denied, reason: Self.cooldownReason))
+        }
         guard open == nil else {
             return box.set(OwnerConfirmReply(decision: OwnerConfirmReply.denied,
                                              reason: "another confirmation is already open"))
@@ -222,8 +247,10 @@ package final class OwnerConfirmServer {
         }
         prompt.reply = { [weak self] confirmed in
             deadline.cancel()
-            if self?.open?.box === box { self?.open = nil }
             box.set(OwnerConfirmReply(decision: confirmed ? OwnerConfirmReply.confirmed : OwnerConfirmReply.denied))
+            guard let self else { return }
+            if open?.box === box { open = nil }
+            if !confirmed, let pid { cooldownUntil[pid] = ContinuousClock.now + cooldown }
         }
         present(prompt)
     }

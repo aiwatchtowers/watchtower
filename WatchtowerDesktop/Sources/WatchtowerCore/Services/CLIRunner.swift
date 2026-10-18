@@ -196,6 +196,7 @@ package struct ProcessCLIRunner: CLIRunnerProtocol {
             let stdoutData = await stdoutRead.value
             let stderrData = await stderrRead.value
             await ProcessPipes.offPool { process.waitUntilExit() }
+            OwnerConfirmGrants.shared.revoke(pid: process.processIdentifier)
 
             if Task.isCancelled {
                 throw CancellationError()

@@ -17,7 +17,14 @@ final class OwnerConfirmIO: @unchecked Sendable {
     private static let solLocal: Int32 = 0
     private static let localPeerPID: Int32 = 2
 
-    func listen(path: String, serve: @escaping @Sendable (Int32) -> Void) throws {
+    /// `pastCap` admits a connection over the cap when it says yes for the
+    /// connection's pid (the Desktop's own child: idle connections must not
+    /// lock its buttons out).
+    func listen(
+        path: String,
+        pastCap: @escaping @Sendable (Int32) -> Bool,
+        serve: @escaping @Sendable (Int32) -> Void
+    ) throws {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { throw OwnerConfirmServer.ServerError.socket(errno) }
         var addr = Self.address(path)
@@ -33,7 +40,7 @@ final class OwnerConfirmIO: @unchecked Sendable {
         }
         _ = fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK)
         let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: acceptQueue)
-        source.setEventHandler { [weak self] in self?.acceptAll(fd, serve: serve) }
+        source.setEventHandler { [weak self] in self?.acceptAll(fd, pastCap: pastCap, serve: serve) }
         source.setCancelHandler { close(fd) }
         lock.lock()
         listenFD = fd
@@ -51,7 +58,11 @@ final class OwnerConfirmIO: @unchecked Sendable {
         source?.cancel()
     }
 
-    private func acceptAll(_ fd: Int32, serve: @escaping @Sendable (Int32) -> Void) {
+    private func acceptAll(
+        _ fd: Int32,
+        pastCap: @Sendable (Int32) -> Bool,
+        serve: @escaping @Sendable (Int32) -> Void
+    ) {
         while true {
             let conn = accept(fd, nil, nil)
             guard conn >= 0 else { return }
@@ -60,9 +71,19 @@ final class OwnerConfirmIO: @unchecked Sendable {
             var on: Int32 = 1
             setsockopt(conn, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
             lock.lock()
-            let admitted = connections < OwnerConfirmServer.maxConnections
-            if admitted { connections += 1 }
+            var admitted = connections < OwnerConfirmServer.maxConnections
             lock.unlock()
+            // Past the cap: a granted pid, or a child of this app that its
+            // runner has not registered yet (the spawn → register gap). It
+            // still needs its grant, or the window, to be confirmed.
+            if !admitted, let pid = Self.peerPID(conn), pastCap(pid) || Self.parentPID(pid) == getpid() {
+                admitted = true
+            }
+            if admitted {
+                lock.lock()
+                connections += 1
+                lock.unlock()
+            }
             guard admitted else {
                 close(conn)
                 continue
@@ -109,6 +130,15 @@ final class OwnerConfirmIO: @unchecked Sendable {
         var size = socklen_t(MemoryLayout<pid_t>.size)
         guard getsockopt(fd, solLocal, localPeerPID, &pid, &size) == 0, pid > 0 else { return nil }
         return pid
+    }
+
+    /// The parent of `pid` (sysctl KERN_PROC_PID), nil when unreadable.
+    static func parentPID(_ pid: Int32) -> Int32? {
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return nil }
+        return info.kp_eproc.e_ppid
     }
 
     static func write(_ fd: Int32, _ reply: OwnerConfirmReply) {

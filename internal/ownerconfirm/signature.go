@@ -18,9 +18,10 @@ import (
 const DesktopBundleID = "com.watchtower.desktop"
 
 // DevTrustUnsignedEnv lets a development CLI — one with no Team ID in its
-// own signature (`go build`, `make build`) — accept an unsigned or ad-hoc
-// signed development Desktop. A release CLI is signed with a Team ID and
-// ignores it: there the Desktop must carry the same Team ID.
+// own signature (`go build`, `make build`) — accept an ad-hoc signed
+// development Desktop, as long as its identifier is DesktopBundleID. A
+// release CLI is signed with a Team ID and ignores it: there the Desktop must
+// carry the same Team ID.
 const DevTrustUnsignedEnv = "WATCHTOWER_DEV_TRUST_UNSIGNED_DESKTOP"
 
 // codesignPath is the system tool; codesignTimeout bounds each call.
@@ -40,24 +41,38 @@ var ErrDevBuild = errors.New("this watchtower binary is not signed with a Team I
 // same team as this CLI: codesign's dynamic validation of the process (the
 // kernel's view of the running code, not a file on disk) against the
 // requirement identifier = DesktopBundleID, an Apple-issued certificate, and
-// leaf subject OU = this CLI's own Team ID.
+// leaf subject OU = this CLI's own Team ID. A development CLI (no Team ID)
+// refuses unless DevTrustUnsignedEnv is set, and then still requires the
+// identifier (an ad-hoc signature carries one; a bare `swift build`
+// executable is named after itself and fails).
+//
+// The peer is named by pid, not by an audit token: a pid reused between the
+// socket read and codesign's check is a known gap (within the non-goal: a
+// process that can race it runs as the owner). The check is only as strong
+// as the secrecy of the team's signing key.
 func VerifyDesktop(ctx context.Context, pid int) error {
 	team, err := teamOf(ctx, os.Getpid())
 	if err != nil {
 		return err
 	}
-	if team == "" {
-		if os.Getenv(DevTrustUnsignedEnv) == "1" {
-			return nil
-		}
+	if team == "" && os.Getenv(DevTrustUnsignedEnv) != "1" {
 		return ErrDevBuild
 	}
-	req := fmt.Sprintf(`=identifier "%s" and anchor apple generic and certificate leaf[subject.OU] = "%s"`,
-		DesktopBundleID, team)
+	req := desktopRequirement(team)
 	if _, err := codesign(ctx, "-v", "-R", req, strconv.Itoa(pid)); err != nil {
-		return fmt.Errorf("process %d is not %s signed by team %s: %w", pid, DesktopBundleID, team, err)
+		return fmt.Errorf("process %d does not satisfy %s: %w", pid, req, err)
 	}
 	return nil
+}
+
+// desktopRequirement is the code requirement the Desktop must satisfy: the
+// identifier, and with a team the Apple-issued certificate of that team.
+func desktopRequirement(team string) string {
+	if team == "" {
+		return fmt.Sprintf(`=identifier "%s"`, DesktopBundleID)
+	}
+	return fmt.Sprintf(`=identifier "%s" and anchor apple generic and certificate leaf[subject.OU] = "%s"`,
+		DesktopBundleID, team)
 }
 
 // teamOf is the Team ID in pid's code signature, "" when it has none

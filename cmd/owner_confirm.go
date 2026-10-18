@@ -77,22 +77,30 @@ func ownerConfirmSocket() string {
 	return ownerconfirm.SocketPath(cfg.DBPath())
 }
 
+// detailUnavailable is the window's text when a detail cannot be built: the
+// owner sees that something is missing and why, never an empty detail.
+func detailUnavailable(err error) string {
+	return "details could not be loaded: " + err.Error()
+}
+
 // actionConfirmDetail is what the window shows for the action idArg names:
-// its tool, its stored args and the --patch edits, unclipped; "" when the row
-// cannot be read (the command reports that itself).
+// its tool, its stored args and the --patch edits, unclipped.
 func actionConfirmDetail(idArg string) string {
 	id, err := parseActionID(idArg)
 	if err != nil {
-		return ""
+		return detailUnavailable(err)
 	}
 	database, err := openDBFromConfig()
 	if err != nil {
-		return ""
+		return detailUnavailable(err)
 	}
 	defer database.Close()
 	row, err := database.GetAgentAction(id)
-	if err != nil || row == nil {
-		return ""
+	if err == nil && row == nil {
+		err = fmt.Errorf("no action #%d", id)
+	}
+	if err != nil {
+		return detailUnavailable(err)
 	}
 	detail := fmt.Sprintf("Action #%d — %s\nArgs: %s", id, row.Tool, row.ArgsJSON)
 	if actionsFlagPatch != "" {
@@ -106,27 +114,26 @@ func actionConfirmDetail(idArg string) string {
 // permissions, outputs) and script.
 func recipeConfirmDetail(a *db.Automation) string {
 	if a == nil {
-		return ""
+		return detailUnavailable(errors.New("no automation"))
 	}
 	return fmt.Sprintf("Automation #%d %q (%s)\nTrigger: %s %s\nPermissions: %s\nOutputs: %s\n\n%s",
 		a.ID, a.Name, a.Path, a.TriggerKind, a.TriggerSpec, a.PermissionsJSON, a.OutputsJSON, a.RecipeText)
 }
 
-// automationConfirmDetail reads the automation arg names for the window; ""
-// when it cannot be read (the command reports that itself).
+// automationConfirmDetail reads the automation arg names for the window.
 func automationConfirmDetail(arg string) string {
 	id, err := parseAutomationID("automation id", arg)
 	if err != nil {
-		return ""
+		return detailUnavailable(err)
 	}
 	database, err := openDBFromConfig()
 	if err != nil {
-		return ""
+		return detailUnavailable(err)
 	}
 	defer database.Close()
 	a, err := database.GetAutomation(id)
 	if err != nil {
-		return ""
+		return detailUnavailable(err)
 	}
 	return recipeConfirmDetail(a)
 }
@@ -134,8 +141,11 @@ func automationConfirmDetail(arg string) string {
 // lessonConfirmDetail is the window's text for the --lesson of a workbench.
 func lessonConfirmDetail(database *db.DB, workbenchID int64) string {
 	l, err := database.GetReviewLesson(workbenchID, reviewFlagLesson)
-	if err != nil || l == nil {
-		return ""
+	if err == nil && l == nil {
+		err = fmt.Errorf("lesson %d is not on this workbench", reviewFlagLesson)
+	}
+	if err != nil {
+		return detailUnavailable(err)
 	}
 	return "Lesson (" + l.Lens + "):\n\n" + l.Text
 }
@@ -149,5 +159,5 @@ func hunkConfirmDetail(d reviewdiff.Diff, hunkID string) string {
 			}
 		}
 	}
-	return ""
+	return detailUnavailable(fmt.Errorf("hunk %q is not in this round's diff", hunkID))
 }
