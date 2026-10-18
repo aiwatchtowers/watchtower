@@ -61,26 +61,177 @@ final class JiraAccountsViewModelTests: XCTestCase {
     // The connect never names the site: the CLI labels it after its host.
     func testAddArgsCarryNoLabel() {
         let args = JiraAccountsViewModel.addArgs()
-        XCTAssertEqual(args, ["jira", "add", "--app-return"])
+        XCTAssertEqual(args, ["jira", "add", "--app-return", "--app-site-picker"])
     }
 
-    // A grant reaching several Atlassian sites can only be resolved by naming
-    // one: the CLI's picker reads stdin, which the spawned Process never wires.
-    func testAddArgsWithSite() {
-        let args = JiraAccountsViewModel.addArgs(site: "acme.atlassian.net")
-        XCTAssertEqual(args, ["jira", "add", "--app-return", "--site", "acme.atlassian.net"])
+    // #574: a grant reaching several Atlassian sites is answered from a list,
+    // never a typed site — the connect asks the CLI for its site line and
+    // never passes `--site`.
+    func testAddArgsAskForTheSiteListNotASite() {
+        let args = JiraAccountsViewModel.addArgs()
+        XCTAssertTrue(args.contains("--app-site-picker"))
+        XCTAssertFalse(args.contains("--site"))
     }
 
     // #573: "Also connect Confluence" widens the same consent.
     func testAddArgsWithConfluence() {
         XCTAssertEqual(
             JiraAccountsViewModel.addArgs(withConfluence: true),
-            ["jira", "add", "--app-return", "--with-confluence"]
+            ["jira", "add", "--app-return", "--app-site-picker", "--with-confluence"]
         )
-        XCTAssertEqual(
-            JiraAccountsViewModel.addArgs(site: "acme.atlassian.net", withConfluence: true),
-            ["jira", "add", "--app-return", "--site", "acme.atlassian.net", "--with-confluence"]
-        )
+    }
+
+    // #574: with several sites the CLI prints them and waits; the owner's
+    // pick goes back on its stdin and the connect finishes.
+    func testSeveralSitesAreChosenFromTheList() async throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let answer = dir.appendingPathComponent("answer")
+        let cli = dir.appendingPathComponent("watchtower")
+        let line = #"[jira-sites] {"sites":[{"url":"https://alpha.example.com","name":"Alpha"},"#
+            + #"{"url":"https://beta.example.com","name":"Beta"}]}"#
+        try "#!/bin/sh\necho '\(line)'\nread -r site\necho \"$site\" > '\(answer.path)'\n"
+            .write(to: cli, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
+        let (vm, _, _) = try makeVM(cli: cli.path)
+
+        let connect = Task { await vm.addAccountHoldingRestart(daemonPolicy: .deferred).connected }
+        for _ in 0..<500 where vm.siteChoices == nil { try await Task.sleep(for: .milliseconds(10)) }
+        let sites = try XCTUnwrap(vm.siteChoices)
+        XCTAssertEqual(sites.map(\.name), ["Alpha", "Beta"])
+        vm.chooseSite(sites[1])
+        XCTAssertNil(vm.siteChoices, "the list goes away once answered")
+
+        let connected = await connect.value
+        XCTAssertTrue(connected)
+        XCTAssertEqual(try String(contentsOf: answer, encoding: .utf8), "https://beta.example.com\n")
+    }
+
+    /// A stand-in `jira add` that offers two sites and records its stdin
+    /// answer (`<eof>` when stdin closes unanswered). Like the CLI, no
+    /// answer exits 1 with "no site was chosen"; with `connectsOnRerun` set,
+    /// a second run connects at once (exit 0).
+    private func sitePickerCLI(connectsOnRerun: Bool = false) throws -> (cli: String, answer: URL) {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let answer = dir.appendingPathComponent("answer")
+        let cli = dir.appendingPathComponent("watchtower")
+        let line = #"[jira-sites] {"sites":[{"url":"https://alpha.example.com","name":"Alpha"},"#
+            + #"{"url":"https://beta.example.com","name":"Beta"}]}"#
+        let ran = dir.appendingPathComponent("ran").path
+        let rerun = connectsOnRerun ? "[ -e '\(ran)' ] && exit 0\ntouch '\(ran)'\n" : ""
+        let script = "#!/bin/sh\n\(rerun)echo '\(line)'\n"
+            + "if read -r site; then echo \"$site\" > '\(answer.path)'; exit 0; fi\n"
+            + "echo '<eof>' > '\(answer.path)'\n"
+            + "echo 'this Atlassian grant reaches 2 sites and no site was chosen' >&2\nexit 1\n"
+        try script.write(to: cli, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
+        return (cli.path, answer)
+    }
+
+    private func waitForSiteChoices(_ vm: JiraAccountsViewModel) async throws -> [JiraSiteChoice] {
+        for _ in 0..<500 where vm.siteChoices == nil { try await Task.sleep(for: .milliseconds(10)) }
+        return try XCTUnwrap(vm.siteChoices)
+    }
+
+    // F1 (#574 review): Cancel on the list closes the CLI's stdin rather than
+    // killing it, so `jira add` takes its no-site path (which runs before any
+    // account row exists); the sheet sees a Cancel, not an error, and no
+    // account appears.
+    func testCancelOnTheSiteListClosesStdinAndEndsAsACancel() async throws {
+        let stub = try sitePickerCLI()
+        let (vm, daemon, _) = try makeVM(cli: stub.cli)
+
+        let connect = Task { await vm.addAccountHoldingRestart(daemonPolicy: .restart) }
+        let sites = try await waitForSiteChoices(vm)
+        XCTAssertEqual(sites.count, 2)
+        vm.declineSiteChoice()
+        XCTAssertNil(vm.siteChoices)
+
+        let result = await connect.value
+        XCTAssertFalse(result.connected)
+        XCTAssertTrue(result.cancelled)
+        XCTAssertNil(vm.error, "a Cancel at the list is not an error")
+        XCTAssertFalse(vm.isConnecting)
+        XCTAssertEqual(try String(contentsOf: stub.answer, encoding: .utf8), "<eof>\n", "the CLI read end-of-file")
+        await vm.refreshAsync()
+        XCTAssertTrue(vm.accounts.isEmpty)
+        vm.finishBoardStep()
+        XCTAssertEqual(daemon.restartCount, 0)
+    }
+
+    // F2 (#574 review): the sheet closes while `jira add` waits at the list;
+    // the flow ends with the sheet, and a reopened sheet's connect works.
+    func testClosingTheSheetEndsTheConnectAndANewOneWorks() async throws {
+        let stub = try sitePickerCLI(connectsOnRerun: true)
+        let (vm, _, _) = try makeVM(cli: stub.cli)
+
+        let first = Task { await vm.addAccountHoldingRestart(daemonPolicy: .deferred) }
+        _ = try await waitForSiteChoices(vm)
+        vm.abandonConnect()
+        XCTAssertFalse(vm.isConnecting)
+        XCTAssertNil(vm.siteChoices)
+
+        let second = await vm.addAccountHoldingRestart(daemonPolicy: .deferred)
+        XCTAssertTrue(second.connected, "error: \(vm.error ?? "nil")")
+        let firstResult = await first.value
+        XCTAssertFalse(firstResult.connected)
+        XCTAssertTrue(firstResult.cancelled)
+        XCTAssertNil(vm.error)
+        XCTAssertFalse(vm.isConnecting)
+    }
+
+    // F7 (#574 review): the sheet goes away after Continue. The owner chose
+    // the site, so the CLI is left to finish, and the finished connect
+    // applies the restart once by itself.
+    func testClosingTheSheetAfterContinueLetsTheConnectFinish() async throws {
+        let stub = try sitePickerCLI()
+        let (vm, daemon, _) = try makeVM(cli: stub.cli)
+
+        let connect = Task { await vm.addAccountHoldingRestart(daemonPolicy: .restart) }
+        let sites = try await waitForSiteChoices(vm)
+        vm.chooseSite(sites[0])
+        // The sheet's onDisappear.
+        vm.abandonConnect()
+        vm.finishBoardStep()
+        XCTAssertTrue(vm.isConnecting, "an answered connect is not cancelled")
+
+        let result = await connect.value
+        XCTAssertTrue(result.connected)
+        XCTAssertFalse(result.cancelled)
+        XCTAssertNil(vm.error)
+        XCTAssertEqual(try String(contentsOf: stub.answer, encoding: .utf8), "https://alpha.example.com\n")
+        await vm.daemonRestartTask?.value
+        XCTAssertEqual(daemon.restartCount, 1)
+        vm.finishBoardStep()
+        await vm.daemonRestartTask?.value
+        XCTAssertEqual(daemon.restartCount, 1, "nothing is left held to fire twice")
+    }
+
+    // F2: closing the sheet while the consent is still in the browser
+    // cancels the flow too.
+    func testClosingTheSheetMidConsentCancels() async throws {
+        // `exec`: the terminate reaches sleep itself, nothing is left behind.
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        let cli = dir.appendingPathComponent("watchtower")
+        try "#!/bin/sh\nexec sleep 30\n".write(to: cli, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: cli.path)
+        let (vm, _, _) = try makeVM(cli: cli.path)
+        let connect = Task { await vm.addAccountHoldingRestart(daemonPolicy: .deferred) }
+        for _ in 0..<500 where !vm.isConnecting { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(vm.isConnecting)
+        let closed = ContinuousClock.now
+        vm.abandonConnect()
+        XCTAssertFalse(vm.isConnecting)
+        let result = await connect.value
+        XCTAssertFalse(result.connected)
+        XCTAssertTrue(result.cancelled)
+        // Even a Cancel that lands mid-launch stops the child (onLaunch).
+        XCTAssertLessThan(closed.duration(to: .now), .seconds(10), "the CLI must not run on")
     }
 
     // MARK: - removeArgs (pure)
@@ -218,10 +369,13 @@ extension JiraAccountsViewModelTests {
         let stub = try argvRecordingCLI()
         let (vm, _, _) = try makeVM(cli: stub.cli)
         _ = await vm.addAccountHoldingRestart(withConfluence: true, daemonPolicy: .deferred)
-        XCTAssertEqual(try String(contentsOf: stub.argv, encoding: .utf8), "jira add --app-return --with-confluence\n")
+        XCTAssertEqual(
+            try String(contentsOf: stub.argv, encoding: .utf8),
+            "jira add --app-return --app-site-picker --with-confluence\n"
+        )
 
         _ = await vm.addAccountHoldingRestart(withConfluence: false, daemonPolicy: .deferred)
-        XCTAssertEqual(try String(contentsOf: stub.argv, encoding: .utf8), "jira add --app-return\n")
+        XCTAssertEqual(try String(contentsOf: stub.argv, encoding: .utf8), "jira add --app-return --app-site-picker\n")
     }
 
     // F11: `jira add`'s stable timeout exit code reaches the sheet as timedOut.
