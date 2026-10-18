@@ -333,7 +333,7 @@ func runDigestGenerate(cmd *cobra.Command, args []string) error {
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
-	gen, savePool := cliPooledGenerator(cfg, logger)
+	gen, savePool := cliPooledGenerator(cfg)
 	defer savePool()
 	pipe := digest.New(database, cfg, gen, logger)
 	pipe.SetPromptStore(prompts.New(database, nil))
@@ -635,7 +635,7 @@ func runDigestSummary(cmd *cobra.Command, args []string) error {
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
-	gen, savePool := cliPooledGenerator(cfg, logger)
+	gen, savePool := cliPooledGenerator(cfg)
 	defer savePool()
 	pipe := digest.New(database, cfg, gen, logger)
 	pipe.SetPromptStore(prompts.New(database, nil))

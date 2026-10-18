@@ -873,6 +873,69 @@ final class WorkbenchesViewModelGitTests: XCTestCase {
         XCTAssertLessThanOrEqual(sleeps, 1)
     }
 
+    /// A setup re-run replaces the view model (board #593): `stop` ends the
+    /// title poll, every page's git poll, refs watcher and activation
+    /// observer, and the code viewer's folder streams at once.
+    func testStopEndsTheTitlePollGitWatchingAndFolderStreams() async throws {
+        let runner = ScriptedCLIRunner(results: [.success(status())])
+        let vm = makeVM(runner)
+        var watchers: [FakeWatcher] = []
+        vm.makeGitWatcher = { gitDir, commonDir, onChange in
+            let watcher = FakeWatcher(gitDir: gitDir, commonDir: commonDir, onChange: onChange)
+            watchers.append(watcher)
+            return watcher
+        }
+        vm.gitPollSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        vm.titleSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        vm.startTitleRefresh()
+        await vm.startGitWatching(project: project)
+        vm.codeFiles.startWatching(CodeRoot(main: project))
+        let titleTask = try XCTUnwrap(vm.titleTask)
+        XCTAssertEqual(watchers.count, 1)
+        XCTAssertNotNil(vm.gitTimers[project.id])
+        XCTAssertNotNil(vm.gitActivationObserver)
+        XCTAssertFalse(vm.codeFiles.watchers.isEmpty, "the main folder is watched")
+
+        vm.stop()
+
+        XCTAssertTrue(titleTask.isCancelled)
+        XCTAssertNil(vm.titleTask)
+        XCTAssertTrue(vm.gitWatching.isEmpty)
+        XCTAssertTrue(vm.gitTimers.isEmpty)
+        XCTAssertTrue(watchers[0].stopped)
+        XCTAssertTrue(vm.gitWatchers.isEmpty)
+        XCTAssertNil(vm.gitActivationObserver)
+        XCTAssertTrue(vm.codeFiles.watchers.isEmpty, "no FSEvents stream left")
+    }
+
+    /// A page's watching in flight across `stop()` (its status read held)
+    /// arms nothing once it resumes, and a stopped view model never starts
+    /// watching again (board #593).
+    func testAStoppedViewModelNeverArmsAWatcher() async throws {
+        let held = HeldCLIRunner(stdout: status())
+        let vm = makeVM(held)
+        var watchers: [FakeWatcher] = []
+        vm.makeGitWatcher = { gitDir, commonDir, onChange in
+            let watcher = FakeWatcher(gitDir: gitDir, commonDir: commonDir, onChange: onChange)
+            watchers.append(watcher)
+            return watcher
+        }
+        vm.gitPollSleep = { _ in try? await Task.sleep(for: .seconds(3600)) }
+        let watching = Task { await vm.startGitWatching(project: self.project) }
+        await awaitStarted(held)
+
+        vm.stop()
+        held.release()
+        await watching.value
+        await vm.startGitWatching(project: project)
+
+        XCTAssertTrue(watchers.isEmpty, "no refs watcher after the stop")
+        XCTAssertTrue(vm.gitWatchers.isEmpty)
+        XCTAssertTrue(vm.gitTimers.isEmpty)
+        XCTAssertNil(vm.gitActivationObserver)
+        XCTAssertTrue(vm.gitWatching.isEmpty)
+    }
+
     func testThePollRefreshesOnlyWhileTheTabIsOnScreen() async {
         let runner = ScriptedCLIRunner(results: [.success(status(gitDir: ""))])
         let vm = makeVM(runner)

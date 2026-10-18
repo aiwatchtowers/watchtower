@@ -124,6 +124,19 @@ struct FeatureCustomizeView: View {
                 Text(feature.tagline)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if selection.wrappedValue.waitsOnSlackDigests(feature.id),
+                   let digests = ReadinessFeature.digests.featureID {
+                    // The daemon skips it without Slack Digests (#575).
+                    HStack(spacing: 6) {
+                        Text("Needs Slack Digests")
+                            .foregroundStyle(.orange)
+                        Button("Turn on Slack Digests") {
+                            selection.wrappedValue.setFeature(digests, enabled: true)
+                        }
+                        .buttonStyle(.link)
+                    }
+                    .font(.caption)
+                }
             }
             Spacer(minLength: 8)
             Toggle("", isOn: Binding(

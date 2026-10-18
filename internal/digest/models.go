@@ -33,7 +33,10 @@ func TierForSource(source string) Tier {
 		// automation.llm: an owner automation's llm() call without
 		// tier: strong (spec 2026-10-14-automations-design §5); the strong
 		// twin automation.llm.strong stays strong by absence.
-		"automation.llm":
+		"automation.llm",
+		// instructions.suggest: the owner's repeated directions from 14 days of
+		// workbench sessions to a bounded list of short lines Go validates
+		"instructions.suggest":
 		return TierLight
 	default:
 		return TierStrong

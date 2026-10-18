@@ -78,6 +78,8 @@ final class DigestViewModel {
     var unreadDigestCount: Int = 0
     var unreadDecisionCount: Int = 0
     var sortOrder: SortOrder = .newestFirst
+    /// One pending star write per channel (board #670).
+    let pendingWrites = PendingWrites()
 
     enum SortOrder: String, CaseIterable {
         case newestFirst = "Newest first"
@@ -123,6 +125,8 @@ final class DigestViewModel {
     private(set) var slackLinks: SlackLinkResolver?
     private(set) var starredChannelIDs: Set<String> = []
     private let dbManager: DatabaseManager
+    /// Every write of this view model, in order (board #670).
+    @ObservationIgnored private let writes = SerialWrites()
     private var observationTask: Task<Void, Never>?
     private var streamsObservationTask: Task<Void, Never>?
     private var decisionsObservationTask: Task<Void, Never>?
@@ -322,9 +326,9 @@ final class DigestViewModel {
 
     // MARK: - Read tracking (digests)
 
-    func markDigestRead(_ digestID: Int) {
+    func markDigestRead(_ digestID: Int) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await chained { db in
                 try DigestQueries.markDigestRead(db, id: digestID)
                 // Cascade: mark all decisions embedded in this digest's raw JSON
                 // read. Vestigial for the ledger (which tracks seen_at on the
@@ -351,9 +355,9 @@ final class DigestViewModel {
     /// `.onAppear`, the `DigestDetailView`/`markDigestRead`-on-selection
     /// precedent) and reloads just the stream slice so the feed entry's
     /// `isRead` and the segment's unread count update immediately.
-    func markStreamRead(id: Int) {
+    func markStreamRead(id: Int) async {
         do {
-            try dbManager.dbPool.write { db in try StreamDigestQueries.markRead(db, id: id) }
+            try await chained { db in try StreamDigestQueries.markRead(db, id: id) }
             reloadStreams()
         } catch {
             errorMessage = "Failed to mark stream digest read: \(error.localizedDescription)"
@@ -376,9 +380,9 @@ final class DigestViewModel {
 
     // MARK: - Batch operations
 
-    func markDigestsRead(_ ids: Set<Int>) {
+    func markDigestsRead(_ ids: Set<Int>) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await chained { db in
                 for id in ids {
                     try DigestQueries.markDigestRead(db, id: id)
                     // Cascade: mark all decisions in each digest as read
@@ -398,9 +402,9 @@ final class DigestViewModel {
         }
     }
 
-    func submitBatchFeedback(entityType: String, entityIDs: [String], rating: Int) {
+    func submitBatchFeedback(entityType: String, entityIDs: [String], rating: Int) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await chained { db in
                 for entityID in entityIDs {
                     try FeedbackQueries.addFeedback(db, entityType: entityType, entityID: entityID, rating: rating)
                 }
@@ -414,9 +418,9 @@ final class DigestViewModel {
 
     /// Marks a single decision seen and reloads the ledger, so the row state
     /// and unread badge update immediately.
-    func markDecisionSeen(id: Int) {
+    func markDecisionSeen(id: Int) async {
         do {
-            try dbManager.dbPool.write { db in try IdeaQueries.markDecisionSeen(db, id: id) }
+            try await chained { db in try IdeaQueries.markDecisionSeen(db, id: id) }
             reloadLedger()
         } catch {
             errorMessage = "Failed to mark decision seen: \(error.localizedDescription)"
@@ -424,27 +428,27 @@ final class DigestViewModel {
     }
 
     /// Stamps every not-yet-seen decision as seen.
-    func markAllDecisionsSeen() {
+    func markAllDecisionsSeen() async {
         do {
-            try dbManager.dbPool.write { db in try IdeaQueries.markAllDecisionsSeen(db) }
+            try await chained { db in try IdeaQueries.markAllDecisionsSeen(db) }
             reloadLedger()
         } catch {
             errorMessage = "Failed to mark decisions seen: \(error.localizedDescription)"
         }
     }
 
-    func supersede(id: Int, by newID: Int? = nil) {
+    func supersede(id: Int, by newID: Int? = nil) async {
         do {
-            try dbManager.dbPool.write { db in try IdeaQueries.supersede(db, id: id, by: newID) }
+            try await chained { db in try IdeaQueries.supersede(db, id: id, by: newID) }
             reloadLedger()
         } catch {
             reportLedgerWriteFailure("supersede decision", error)
         }
     }
 
-    func reverse(id: Int) {
+    func reverse(id: Int) async {
         do {
-            try dbManager.dbPool.write { db in try IdeaQueries.setStatus(db, id: id, status: "reversed") }
+            try await chained { db in try IdeaQueries.setStatus(db, id: id, status: "reversed") }
             reloadLedger()
         } catch {
             reportLedgerWriteFailure("reverse decision", error)
@@ -455,9 +459,9 @@ final class DigestViewModel {
     /// owner-typed comment on screen when it did not (clear-only-on-success,
     /// the IdeaDetailPane precedent).
     @discardableResult
-    func setRating(id: Int, rating: Int, comment: String = "") -> Bool {
+    func setRating(id: Int, rating: Int, comment: String = "") async -> Bool {
         do {
-            try dbManager.dbPool.write { db in try IdeaQueries.setRating(db, id: id, rating: rating, comment: comment) }
+            try await chained { db in try IdeaQueries.setRating(db, id: id, rating: rating, comment: comment) }
             reloadLedger()
             return true
         } catch {
@@ -585,27 +589,31 @@ final class DigestViewModel {
     /// Toggle a channel's starred status. The write resolves the owner's
     /// profile key in its own transaction (`ProfileQueries.ownerProfileWriteKey`),
     /// never a key remembered at load() that a later re-key may have moved.
-    func toggleStarredChannel(_ channelID: String) {
-        let wasStarred = starredChannelIDs.contains(channelID)
-        // Optimistic update
-        if wasStarred {
-            starredChannelIDs.remove(channelID)
-        } else {
-            starredChannelIDs.insert(channelID)
+    /// The star changes only once the write landed; a second press while it
+    /// waits does nothing (board #670).
+    func toggleStarredChannel(_ channelID: String) async {
+        await pendingWrites.run("star:\(channelID)") {
+            await writeStar(channelID)
         }
+    }
+
+    /// The star of `channelID` is being written: its button waits.
+    func isStarPending(_ channelID: String) -> Bool {
+        pendingWrites.isPending("star:\(channelID)")
+    }
+
+    private func writeStar(_ channelID: String) async {
+        let wasStarred = starredChannelIDs.contains(channelID)
         do {
             if wasStarred {
-                try dbManager.removeStarredChannel(channelID)
-            } else {
-                try dbManager.addStarredChannel(channelID)
-            }
-        } catch {
-            // Revert on failure
-            if wasStarred {
-                starredChannelIDs.insert(channelID)
-            } else {
+                try await writes.runThrowing { try await self.dbManager.removeStarredChannel(channelID) }
                 starredChannelIDs.remove(channelID)
+            } else {
+                try await writes.runThrowing { try await self.dbManager.addStarredChannel(channelID) }
+                starredChannelIDs.insert(channelID)
             }
+            errorMessage = nil
+        } catch {
             errorMessage = "Failed to update starred channel: \(error.localizedDescription)"
         }
     }
@@ -613,5 +621,11 @@ final class DigestViewModel {
     /// Check if a channel is starred
     func isChannelStarred(_ channelID: String) -> Bool {
         starredChannelIDs.contains(channelID)
+    }
+
+    /// A database write in this view model's chain (board #670): it starts
+    /// only once every write asked for before it finished.
+    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await writes.runThrowing { try await self.dbManager.dbPool.write(body) }
     }
 }

@@ -171,6 +171,7 @@ extension WorkbenchesViewModel {
     /// does not cancel them. The worktree the page shows is followed too
     /// (`followGitRoot`).
     func startGitWatching(project: Workbench) async {
+        guard !isStopped else { return }
         let id = project.id
         gitWatching.insert(id)
         sessionPlaces.followWorkbench(id, folder: project.folderPath)
@@ -185,6 +186,7 @@ extension WorkbenchesViewModel {
             }
         }
         await refreshGitStatus(projectID: id)
+        guard !isStopped else { return }
         // The read above arms the watcher; a status already known (a read
         // coalesced into one in flight) arms it now.
         if let status = gitStatus[id] { armGitWatcher(status, key: .mainFolder(id)) }
@@ -197,7 +199,7 @@ extension WorkbenchesViewModel {
     /// root or goes away. The main root is always watched by the page.
     func followGitRoot(_ root: CodeRoot) async {
         let id = root.workbenchID
-        guard gitWatching.contains(id) else { return }
+        guard !isStopped, gitWatching.contains(id) else { return }
         let next: CodeRoot? = root.isMain ? nil : root
         guard gitWatchedWorktree[id] != next else { return }
         if let old = gitWatchedWorktree.removeValue(forKey: id) { stopGitWatcher(key: GitRootKey(old)) }
@@ -410,7 +412,7 @@ extension WorkbenchesViewModel {
     /// Whether a page watches `key`: its main folder, or the worktree its
     /// branch menu works on.
     private func isGitWatched(_ key: GitRootKey) -> Bool {
-        guard gitWatching.contains(key.workbenchID) else { return false }
+        guard !isStopped, gitWatching.contains(key.workbenchID) else { return false }
         guard key.worktreeFolder != nil else { return true }
         return gitWatchedWorktree[key.workbenchID].map(GitRootKey.init) == key
     }

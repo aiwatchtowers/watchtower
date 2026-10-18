@@ -198,6 +198,9 @@ CREATE INDEX idx_inbox_items_updated ON inbox_items(updated_at DESC)
 index	idx_inbox_learned_rules_scope
 CREATE INDEX idx_inbox_learned_rules_scope ON inbox_learned_rules(rule_type, scope_key)
 
+index	idx_instruction_suggestions_status
+CREATE INDEX idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at)
+
 index	idx_jira_comments_issue
 CREATE INDEX idx_jira_comments_issue ON jira_comments(account_id, issue_key)
 
@@ -763,7 +766,7 @@ last_scheduled_for TEXT, -- RFC 3339 UTC
 next_run_at TEXT, -- derived by the scheduler, for the list
 removed_at TEXT, -- the file is gone
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')), disabled_reason TEXT NOT NULL DEFAULT '', disabled_at TEXT,
 CHECK ((scope = 'workbench') = (project_id IS NOT NULL))
 )
 
@@ -1458,6 +1461,21 @@ last_updated TEXT NOT NULL, pipeline TEXT NOT NULL DEFAULT 'inbox',
 UNIQUE(rule_type, scope_key)
 )
 
+table	instruction_suggestions
+CREATE TABLE instruction_suggestions (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+text TEXT NOT NULL,
+field TEXT NOT NULL CHECK (field IN ('session','procedure')),
+workbench_id INTEGER NULL REFERENCES projects(id) ON DELETE CASCADE,
+session_count INTEGER NOT NULL DEFAULT 0,
+workbench_count INTEGER NOT NULL DEFAULT 0,
+first_seen_at TEXT NOT NULL,
+last_seen_at TEXT NOT NULL,
+status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','added','dismissed')),
+fingerprint TEXT NOT NULL UNIQUE,
+decided_at TEXT NULL
+)
+
 table	jira_accounts
 CREATE TABLE jira_accounts (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2118,6 +2136,13 @@ CHECK ((kind = 'review') = (doc_path != '')),
 CHECK ((status IN ('answered','delivered')) = (answer != ''))
 )
 
+table	owner_instructions
+CREATE TABLE owner_instructions (
+scope TEXT PRIMARY KEY CHECK (scope IN ('session','procedure')),
+body TEXT NOT NULL,
+updated_at TEXT NOT NULL
+)
+
 table	owner_presence
 CREATE TABLE owner_presence (
 id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -2323,7 +2348,7 @@ updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 , board_language TEXT NOT NULL DEFAULT '', archive_after_days INTEGER NOT NULL DEFAULT 14
 CHECK (archive_after_days BETWEEN 0 AND 365), archived_through TEXT NULL
 CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL), worktree_setup TEXT NOT NULL DEFAULT '', agent_analytics INTEGER NOT NULL DEFAULT 0
-CHECK (agent_analytics IN (0, 1)), methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), board_hidden_statuses TEXT NULL, methodology_carry_pending INTEGER NOT NULL DEFAULT 0 CHECK (methodology_carry_pending IN (0, 1)), ask_guard_carried_at TEXT NULL, finish_check_carried_at TEXT NULL)
+CHECK (agent_analytics IN (0, 1)), methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), board_hidden_statuses TEXT NULL, methodology_carry_pending INTEGER NOT NULL DEFAULT 0 CHECK (methodology_carry_pending IN (0, 1)), ask_guard_carried_at TEXT NULL, finish_check_carried_at TEXT NULL, session_instructions TEXT NULL, target_procedure TEXT NULL)
 
 table	prompt_history
 CREATE TABLE prompt_history (
@@ -3673,6 +3698,8 @@ GROUP BY up.ancestor
 23	removed_at	TEXT	notnull=0	dflt=NULL	pk=0
 24	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 25	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+26	disabled_reason	TEXT	notnull=1	dflt=''	pk=0
+27	disabled_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## briefings
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -4273,6 +4300,19 @@ GROUP BY up.ancestor
 5	evidence_count	INTEGER	notnull=1	dflt=0	pk=0
 6	last_updated	TEXT	notnull=1	dflt=NULL	pk=0
 7	pipeline	TEXT	notnull=1	dflt='inbox'	pk=0
+
+## instruction_suggestions
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	text	TEXT	notnull=1	dflt=NULL	pk=0
+2	field	TEXT	notnull=1	dflt=NULL	pk=0
+3	workbench_id	INTEGER	notnull=0	dflt=NULL	pk=0
+4	session_count	INTEGER	notnull=1	dflt=0	pk=0
+5	workbench_count	INTEGER	notnull=1	dflt=0	pk=0
+6	first_seen_at	TEXT	notnull=1	dflt=NULL	pk=0
+7	last_seen_at	TEXT	notnull=1	dflt=NULL	pk=0
+8	status	TEXT	notnull=1	dflt='open'	pk=0
+9	fingerprint	TEXT	notnull=1	dflt=NULL	pk=0
+10	decided_at	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## jira_accounts
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -4880,6 +4920,11 @@ GROUP BY up.ancestor
 21	withdrawn_at	TEXT	notnull=1	dflt=''	pk=0
 22	automation_run_id	INTEGER	notnull=0	dflt=NULL	pk=0
 
+## owner_instructions
+0	scope	TEXT	notnull=0	dflt=NULL	pk=1
+1	body	TEXT	notnull=1	dflt=NULL	pk=0
+2	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
+
 ## owner_presence
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	session_id	INTEGER	notnull=0	dflt=NULL	pk=0
@@ -5058,6 +5103,8 @@ GROUP BY up.ancestor
 15	methodology_carry_pending	INTEGER	notnull=1	dflt=0	pk=0
 16	ask_guard_carried_at	TEXT	notnull=0	dflt=NULL	pk=0
 17	finish_check_carried_at	TEXT	notnull=0	dflt=NULL	pk=0
+18	session_instructions	TEXT	notnull=0	dflt=NULL	pk=0
+19	target_procedure	TEXT	notnull=0	dflt=NULL	pk=0
 
 ## prompt_history
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

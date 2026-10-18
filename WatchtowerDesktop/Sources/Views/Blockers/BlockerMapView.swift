@@ -33,20 +33,17 @@ struct BlockerMapView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .onAppear {
-            if viewModel == nil, let db = appState.databaseManager {
-                let vm = BlockerMapViewModel(dbManager: db)
-                viewModel = vm
-                vm.startObserving()
-            }
+        .onAppear { startViewModel() }
+        .onDisappear { viewModel?.stopObserving() }
+        .onChange(of: appState.isDBAvailable) { startViewModel() }
+    }
+
+    /// Builds the VM once and (re)starts its observation: onDisappear stops it.
+    private func startViewModel() {
+        if viewModel == nil, let db = appState.databaseManager {
+            viewModel = BlockerMapViewModel(dbManager: db)
         }
-        .onChange(of: appState.isDBAvailable) {
-            if viewModel == nil, let db = appState.databaseManager {
-                let vm = BlockerMapViewModel(dbManager: db)
-                viewModel = vm
-                vm.startObserving()
-            }
-        }
+        viewModel?.startObserving()
     }
 
     @ViewBuilder

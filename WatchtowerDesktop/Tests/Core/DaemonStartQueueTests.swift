@@ -13,6 +13,23 @@ final class DaemonStartQueueTests: XCTestCase {
         super.tearDown()
     }
 
+    /// #575: a successful restart (or a reported start) clears `failure`
+    /// and tells `onSuccess`; a failed one tells nothing.
+    func testSuccessTellsOnSuccess() async {
+        let queue = DaemonStartQueue()
+        var told = 0
+        queue.onSuccess = { told += 1 }
+        queue.failure = "old"
+        try? await queue.restart { throw CocoaError(.fileNoSuchFile) }
+        XCTAssertEqual(told, 0)
+        XCTAssertEqual(queue.failure, "old")
+        try? await queue.restart {}
+        XCTAssertEqual(told, 1)
+        XCTAssertNil(queue.failure)
+        queue.succeeded()
+        XCTAssertEqual(told, 2)
+    }
+
     func testItemsRunOneAfterTheOther() async {
         let queue = DaemonStartQueue()
         var log: [String] = []

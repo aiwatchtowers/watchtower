@@ -300,8 +300,8 @@ func TestProj11_CodexPermissionRequestIsApproval(t *testing.T) {
 	runCodexState(t, string(codexHookFixture(t, "permission_request")))
 	assert.Equal(t, agentStateApproval, storedAgentState(t, database, row))
 
-	state, onlyFrom, ok := agentStateFor("PermissionRequest", "")
-	assert.Equal(t, []any{agentStateApproval, "", true}, []any{state, onlyFrom, ok})
+	state, ok := agentStateFor("PermissionRequest", "")
+	assert.Equal(t, []any{agentStateApproval, true}, []any{state, ok})
 }
 
 func TestProj11_CodexPostToolUseClearsApproval(t *testing.T) {

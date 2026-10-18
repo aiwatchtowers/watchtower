@@ -60,6 +60,10 @@ final class IdeasViewModel {
     private let registryLimit = 200
 
     private let dbManager: DatabaseManager
+    /// Every write of this view model, in order (board #670).
+    @ObservationIgnored private let writes = SerialWrites()
+    /// One pending create or conversion (board #670).
+    let pendingWrites = PendingWrites()
     private var observationTask: Task<Void, Never>?
     private var pollTask: Task<Void, Never>?
     private var refreshGate = ForegroundRefreshGate()
@@ -279,48 +283,57 @@ final class IdeasViewModel {
 
     // MARK: - Actions
 
-    func approve(_ idea: Idea) {
-        write("approve idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "active") }
+    func approve(_ idea: Idea) async {
+        await write("approve idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "active") }
     }
 
-    func reject(_ idea: Idea) {
-        write("reject idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "rejected") }
+    func reject(_ idea: Idea) async {
+        await write("reject idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "rejected") }
     }
 
-    func activate(_ idea: Idea) {
-        write("activate idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "active") }
+    func activate(_ idea: Idea) async {
+        await write("activate idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "active") }
     }
 
-    func notNow(_ idea: Idea, until: String = "") {
-        write("snooze idea") { db in try IdeaQueries.snooze(db, id: idea.id, until: until.isEmpty ? nil : until) }
+    func notNow(_ idea: Idea, until: String = "") async {
+        await write("snooze idea") { db in try IdeaQueries.snooze(db, id: idea.id, until: until.isEmpty ? nil : until) }
     }
 
-    func drop(_ idea: Idea) {
-        write("drop idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "dropped") }
+    func drop(_ idea: Idea) async {
+        await write("drop idea") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "dropped") }
     }
 
-    func merge(_ idea: Idea, into targetID: Int) {
-        write("merge idea") { db in try IdeaQueries.merge(db, id: idea.id, into: targetID) }
+    func merge(_ idea: Idea, into targetID: Int) async {
+        await write("merge idea") { db in try IdeaQueries.merge(db, id: idea.id, into: targetID) }
     }
 
     /// Hard delete — the row, its mentions, and its Discuss chat. The reload's
     /// `reconcileSelection()` moves the selection off the vanished id.
     @discardableResult
-    func deleteIdea(_ idea: Idea) -> Bool {
-        write("delete idea") { db in try IdeaQueries.delete(db, id: idea.id) }
+    func deleteIdea(_ idea: Idea) async -> Bool {
+        await write("delete idea") { db in try IdeaQueries.delete(db, id: idea.id) }
     }
 
     /// Returns whether the rating landed, so the view can keep the owner's
     /// typed comment on screen when it did not (clear-only-on-success).
     @discardableResult
-    func setRating(_ idea: Idea, rating: Int, comment: String = "") -> Bool {
-        write("set rating") { db in try IdeaQueries.setRating(db, id: idea.id, rating: rating, comment: comment) }
+    func setRating(_ idea: Idea, rating: Int, comment: String = "") async -> Bool {
+        await write("set rating") { db in try IdeaQueries.setRating(db, id: idea.id, rating: rating, comment: comment) }
     }
 
+    /// One create at a time (board #670): a second press while the first
+    /// waits does nothing (nil).
     @discardableResult
-    func createManual(kind: String, title: String, essence: String) -> Int? {
+    func createManual(kind: String, title: String, essence: String) async -> Int? {
+        let created = await pendingWrites.run("create") {
+            await insertManual(kind: kind, title: title, essence: essence)
+        }
+        return created.flatMap { $0 }
+    }
+
+    private func insertManual(kind: String, title: String, essence: String) async -> Int? {
         do {
-            let newID = try dbManager.dbPool.write { db in
+            let newID = try await chained { db in
                 try IdeaQueries.createManual(db, kind: kind, title: title, essence: essence)
             }
             // Show what was just created: switch to its segment, clear the
@@ -346,11 +359,18 @@ final class IdeasViewModel {
     /// title/essence (`source_type: "idea"`), marks the idea converted with a
     /// link back to it, and returns the new target id so the caller can
     /// navigate via `AppState.navigateToTarget`.
+    /// One conversion per idea at a time: a second press while the first
+    /// waits does nothing (nil), so no second target is made.
     @discardableResult
-    func convertToTarget(_ idea: Idea) -> Int? {
+    func convertToTarget(_ idea: Idea) async -> Int? {
+        let converted = await pendingWrites.run("convert:\(idea.id)") { await convert(idea) }
+        return converted.flatMap { $0 }
+    }
+
+    private func convert(_ idea: Idea) async -> Int? {
         do {
             let today = Self.dateFormatter.string(from: Date())
-            let newTargetID = try dbManager.dbPool.write { db -> Int in
+            let newTargetID = try await chained { db -> Int in
                 let targetID = try TargetQueries.create(
                     db,
                     text: idea.title,
@@ -377,9 +397,9 @@ final class IdeasViewModel {
     /// Returns whether the write succeeded, so callers that clear owner-typed
     /// input can gate on it.
     @discardableResult
-    private func write(_ label: String, _ body: @escaping (Database) throws -> Void) -> Bool {
+    private func write(_ label: String, _ body: @escaping @Sendable (Database) throws -> Void) async -> Bool {
         do {
-            try dbManager.dbPool.write(body)
+            try await chained(body)
             load()
             return true
         } catch {
@@ -526,6 +546,12 @@ final class IdeasViewModel {
         guard let text = String(data: data, encoding: .utf8) else { return nil }
         guard let lastLine = text.split(separator: "\n", omittingEmptySubsequences: true).last else { return nil }
         return try? JSONDecoder().decode(IdeasDisabledEnvelope.self, from: Data(lastLine.utf8))
+    }
+
+    /// A database write in this view model's chain (board #670): it starts
+    /// only once every write asked for before it finished.
+    private func chained<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
+        try await writes.runThrowing { try await self.dbManager.dbPool.write(body) }
     }
 }
 

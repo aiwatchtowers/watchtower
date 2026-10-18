@@ -50,7 +50,7 @@ func (c ToolCapability) scopes(ctx context.Context, d *db.DB, args json.RawMessa
 var ToolCapabilities = map[string]ToolCapability{
 	// Jira reads.
 	"list_jira_issues":        {Capability: "jira", Verb: "read", ScopeArg: "project", ScopeOf: upperArgScope("project")},
-	"get_jira_issue":          {Capability: "jira", Verb: "read", ScopeArg: "key", ScopeOf: issueKeyScope("key")},
+	"get_jira_issue":          {Capability: "jira", Verb: "read", ScopeArg: "key", ScopeOf: issueKeyScope},
 	"get_jira_status_history": {Capability: "jira", Verb: "read", ScopeArg: "keys", ScopeOf: statusHistoryScope},
 	"get_jira_time_in_status": {Capability: "jira", Verb: "read", ScopeArg: "project", ScopeOf: timeInStatusScope},
 	"list_jira_projects":      {Capability: "jira", Verb: "read"},
@@ -94,10 +94,10 @@ var ToolCapabilities = map[string]ToolCapability{
 	"create_idea":           {Capability: "ideas", Verb: "write"},
 	"create_track":          {Capability: "tracks", Verb: "write"},
 	"create_jira_issue":     {Capability: "jira", Verb: "write", ScopeArg: "project_key", ScopeOf: upperArgScope("project_key")},
-	"add_jira_comment":      {Capability: "jira", Verb: "write", ScopeArg: "key", ScopeOf: issueKeyScope("key")},
-	"transition_jira_issue": {Capability: "jira", Verb: "write", ScopeArg: "key", ScopeOf: issueKeyScope("key")},
-	"assign_jira_issue":     {Capability: "jira", Verb: "write", ScopeArg: "key", ScopeOf: issueKeyScope("key")},
-	"update_jira_issue":     {Capability: "jira", Verb: "write", ScopeArg: "key", ScopeOf: issueKeyScope("key")},
+	"add_jira_comment":      {Capability: "jira", Verb: "write", ScopeArg: "key", ScopeOf: issueKeyScope},
+	"transition_jira_issue": {Capability: "jira", Verb: "write", ScopeArg: "key", ScopeOf: issueKeyScope},
+	"assign_jira_issue":     {Capability: "jira", Verb: "write", ScopeArg: "key", ScopeOf: issueKeyScope},
+	"update_jira_issue":     {Capability: "jira", Verb: "write", ScopeArg: "key", ScopeOf: issueKeyScope},
 	"send_slack_message":    {Capability: "slack", Verb: "write", ScopeArg: "account_id", ScopeOf: slackAccountScope},
 }
 

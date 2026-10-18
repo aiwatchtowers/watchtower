@@ -159,6 +159,14 @@ struct CalendarEventsView: View {
         current == tapped ? nil : tapped
     }
 
+    /// Selection once a recording deleted from the pane of `deletedFrom` is
+    /// gone: the pane closes only when it is still the one on screen — the
+    /// delete lands after its write, and the owner may have opened another
+    /// meeting meanwhile.
+    static func selectionAfterDelete(current: MeetingSelection?, deletedFrom: MeetingSelection) -> MeetingSelection? {
+        current == deletedFrom ? nil : current
+    }
+
     private func selectRow(_ tapped: MeetingSelection) {
         selectedMeeting = Self.toggledSelection(current: selectedMeeting, tapped: tapped)
     }
@@ -219,7 +227,7 @@ struct CalendarEventsView: View {
                 MeetingDetailView(
                     entry: entry,
                     userNotes: $userNotes,
-                    onDeleted: handleRecordingDeleted,
+                    onDeleted: { handleRecordingDeleted(from: selected) },
                     onChanged: loadRecordings,
                     onClose: { selectedMeeting = nil },
                     onOpenEvent: { link in openLinkedEvent(link, in: vm) }
@@ -257,8 +265,8 @@ struct CalendarEventsView: View {
         .onChange(of: recordings) { _, _ in rebuildSections(vm) }
     }
 
-    private func handleRecordingDeleted() {
-        selectedMeeting = nil
+    private func handleRecordingDeleted(from pane: MeetingSelection) {
+        selectedMeeting = Self.selectionAfterDelete(current: selectedMeeting, deletedFrom: pane)
         loadRecordings()
     }
 

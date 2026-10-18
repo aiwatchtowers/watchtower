@@ -21,6 +21,26 @@ struct FailingWorkbenchActivityReader: WorkbenchActivityReading {
     }
 }
 
+/// Holds every project read until released, telling the test once it is
+/// inside one (board #593: a stop arriving mid-read).
+final class HeldWorkbenchActivityReader: WorkbenchActivityReading, @unchecked Sendable {
+    let entered: AsyncStream<Void>
+    private let enteredContinuation: AsyncStream<Void>.Continuation
+    private let release = DispatchSemaphore(value: 0)
+
+    init() {
+        (entered, enteredContinuation) = AsyncStream<Void>.makeStream()
+    }
+
+    func open() { release.signal() }
+
+    func snapshot(_ db: Database, project: Workbench, afterAgentCommentID: Int64) throws -> WorkbenchNotificationPolicy.Snapshot {
+        enteredContinuation.yield()
+        release.wait()
+        return try DefaultWorkbenchActivityReader().snapshot(db, project: project, afterAgentCommentID: afterAgentCommentID)
+    }
+}
+
 /// The Workbench rename keeps every persisted UserDefaults key byte for byte
 /// (spec 2026-10-02 A1): a renamed key would silently reset layouts, panel
 /// widths and board modes, and lose the notification watermark (a burst of
@@ -171,6 +191,32 @@ final class WorkbenchNotificationCenterTests: XCTestCase {
         }
         await makeCenter().poll()
         XCTAssertTrue(notifier.sent.isEmpty, "workbench \(other) was discovered, not created: no replay")
+    }
+
+    /// A stop while a poll reads (board #593, the replaced center of a setup
+    /// re-run): the poll then sends no notice, saves no snapshot and does
+    /// not reload the list.
+    func testStopMidPollSendsAndSavesNothing() async throws {
+        await makeCenter().poll()   // the baseline
+        let key = WorkbenchNotificationCenter.snapshotKey(projectID)
+        let baseline = defaults.data(forKey: key)
+        try await write { _ = try TestDatabase.insertWorkbenchComment($0, projectID: self.projectID, body: "Which queue?", targetID: self.targetID) }
+        let reader = HeldWorkbenchActivityReader()
+        defer { reader.open() }
+        let center = makeCenter(activityReader: reader)
+        var reloaded = 0
+        center.onPolled = { reloaded += 1 }
+        var entered = reader.entered.makeAsyncIterator()
+        let poll = Task { await center.poll() }
+        _ = await entered.next()
+
+        center.stop()
+        reader.open()
+        await poll.value
+
+        XCTAssertTrue(notifier.sent.isEmpty, "no notice after the stop")
+        XCTAssertEqual(defaults.data(forKey: key), baseline, "the snapshot and watermark stay")
+        XCTAssertEqual(reloaded, 0, "no list reload after the stop")
     }
 
     func testPollReloadsTheProjectsList() async {

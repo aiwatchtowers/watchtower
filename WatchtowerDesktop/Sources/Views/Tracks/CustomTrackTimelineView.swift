@@ -78,7 +78,7 @@ struct CustomTrackTimelineView: View {
             } else {
                 ForEach(viewModel.events) { event in
                     TrackEventRow(event: event, viewModel: viewModel)
-                        .onAppear { viewModel.markRead(event) }
+                        .onAppear { Task { await viewModel.markRead(event) } }
                 }
             }
         }
@@ -187,12 +187,13 @@ private struct TrackEventRow: View {
                     Spacer()
                     // Only a track linked to a target can apply a proposed action.
                     if viewModel.canApplyActions {
-                        Button("Apply") { viewModel.applyAction(for: event) }
+                        Button("Apply") { Task { await viewModel.applyAction(for: event) } }
                             .controlSize(.small)
                     }
-                    Button("Dismiss") { viewModel.dismissAction(for: event) }
+                    Button("Dismiss") { Task { await viewModel.dismissAction(for: event) } }
                         .controlSize(.small).buttonStyle(.borderless)
                 }
+                .disabled(viewModel.pendingWrites.isPending(event.id))
                 .padding(.top, 2)
             } else if event.actionStatus == "applied" {
                 Label("Applied", systemImage: "checkmark.circle.fill")

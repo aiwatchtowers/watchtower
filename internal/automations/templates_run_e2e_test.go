@@ -547,6 +547,11 @@ func TestTemplates_ProductionSizeReports(t *testing.T) {
 		{"jira-state-report &-heavy titles", "jira-state-report", map[string]string{"PROJECT": "PAY,OPS"},
 			ampOpsSeed, []string{`"key":"OPS-`, strings.Repeat(`\u0026`, 2)}},
 		{"team-performance-report", "team-performance-report", nil, "", []string{"PAY-300"}},
+		// #665: Slack texts full of < and > (mentions, links) are 6 bytes a
+		// character in Go's JSON, so a script counting characters sends past
+		// the cap.
+		{"team-performance-report <>-heavy messages", "team-performance-report", nil,
+			`UPDATE messages SET text = replace(hex(zeroblob(128)), '0', '<>')`, []string{strings.Repeat("\\u003c\\u003e", 2)}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			gen := &automationstest.FakeGenerator{Replies: []string{"## Summary\nA busy week."}}

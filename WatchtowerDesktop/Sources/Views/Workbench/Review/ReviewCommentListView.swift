@@ -50,7 +50,7 @@ private struct ResolvedByAgentRow: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 // A failure lands in lastError, the pane's banner.
-                Button("Reopen") { try? model.reopen(comment.id) }
+                Button("Reopen") { Task { try? await model.reopen(comment.id) } }
                     .controlSize(.small)
                     .disabled(model.round?.status != "open")
             }
@@ -125,7 +125,8 @@ private struct ReviewCommentRow: View {
             if text != comment.body {
                 Button("Save") {
                     // A failure keeps the text and lands in lastError.
-                    if (try? model.editComment(id: comment.id, body: text)) != nil { editing = false }
+                    let body = text
+                    Task { if (try? await model.editComment(id: comment.id, body: body)) != nil { editing = false } }
                 }
                 .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
@@ -135,15 +136,15 @@ private struct ReviewCommentRow: View {
     @ViewBuilder private var actions: some View {
         switch comment.status {
         case .draft:
-            Button("Delete", role: .destructive) { try? model.deleteComment(id: comment.id) }
+            Button("Delete", role: .destructive) { Task { try? await model.deleteComment(id: comment.id) } }
         case .carried:
             Button(editing ? "Cancel" : "Edit") {
                 editing.toggle()
                 text = comment.body
             }
-            Button("Resolve") { try? model.resolve(id: comment.id) }
+            Button("Resolve") { Task { try? await model.resolve(id: comment.id) } }
         case .outdated:
-            Button("Resolve") { try? model.resolve(id: comment.id) }
+            Button("Resolve") { Task { try? await model.resolve(id: comment.id) } }
         case .sent, .resolved:
             EmptyView()
         }

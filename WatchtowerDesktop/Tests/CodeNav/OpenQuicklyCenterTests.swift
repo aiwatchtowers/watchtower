@@ -280,6 +280,8 @@ final class OpenQuicklyCenterTests: XCTestCase {
         XCTAssertTrue(session.model.rows.contains(.askAI(query: "why save")))
 
         center.perform(session.activateSelection(option: false, command: true))
+        // The conversation is written off the main thread (board #670).
+        _ = await eventually { session.answerConversationID != nil }
         let conversationID = try XCTUnwrap(session.answerConversationID)
         XCTAssertTrue(center.session === session, "the answer is where the question was asked")
         XCTAssertEqual(presenter.dismissals, [])
@@ -331,6 +333,78 @@ final class OpenQuicklyCenterTests: XCTestCase {
         center.perform(.askAI("why"))
         XCTAssertNil(center.session?.answerConversationID)
         XCTAssertEqual(center.session?.askError, "Couldn't start the question.")
+    }
+
+    // MARK: The question's write (board #670)
+
+    private func conversationCount() async throws -> Int {
+        try await pool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_conversations") ?? 0 }
+    }
+
+    /// A panel and its question center with the writer held by `held`.
+    private func askingPanel() throws -> (OpenQuicklyCenter, CodeQuestionCenter, ScriptedAIService, OpenQuicklySession) {
+        let (center, vm) = makeCenter()
+        let ai = ScriptedAIService()
+        let questions = makeQuestions(vm, ai: ai)
+        center.questions = questions
+        center.pageAppeared(project, root: root, window: nil)
+        center.present(scope: .all)
+        let session = try XCTUnwrap(center.session)
+        session.updateQuery("why save")
+        return (center, questions, ai, session)
+    }
+
+    /// While ⌘↩'s question is written the footer says so and a second ⌘↩
+    /// does nothing: one conversation, one turn.
+    func testASecondCommandReturnWhileTheQuestionIsWrittenDoesNothing() async throws {
+        let (center, questions, ai, session) = try askingPanel()
+        let held = HeldWriter(pool)
+        defer { held.release() }
+        center.perform(.askAI("why save"))
+        XCTAssertTrue(session.isAsking, "the footer shows the question starting")
+        center.perform(.askAI("why save again"))
+        held.release()
+        let shown = await eventually { session.answerConversationID != nil }
+        XCTAssertTrue(shown)
+        XCTAssertFalse(session.isAsking)
+        let started = await eventually { ai.calls.count == 1 }
+        XCTAssertTrue(started)
+        XCTAssertEqual(ai.calls.map(\.prompt), ["why save"])
+        let count = try await conversationCount()
+        XCTAssertEqual(count, 1)
+        ai.emit(.text("ok"), .turnComplete("ok"), .done)
+        ai.finish()
+        withExtendedLifetime(questions) {}
+    }
+
+    /// The panel closes and opens again while the question is written: the
+    /// question is not sent, its row goes, and the new panel neither shows
+    /// it nor waits for it.
+    func testAQuestionWhosePanelWentIsNotSentAndShowsNowhere() async throws {
+        let (center, questions, ai, session) = try askingPanel()
+        let held = HeldWriter(pool)
+        defer { held.release() }
+        center.perform(.askAI("why save"))
+        center.dismiss(restoringFocus: false)
+        center.present(scope: .all)
+        let fresh = try XCTUnwrap(center.session)
+        XCTAssertFalse(fresh === session, "a new panel")
+        XCTAssertFalse(fresh.isAsking, "the new panel is not blocked by the old one's write")
+        held.release()
+        let ended = await eventually { !session.isAsking }
+        XCTAssertTrue(ended)
+        var left = try await conversationCount()
+        let start = ContinuousClock.now
+        while left != 0, ContinuousClock.now - start < .seconds(5) {
+            try await Task.sleep(for: .milliseconds(10))
+            left = try await conversationCount()
+        }
+        XCTAssertEqual(left, 0, "the closed panel's question is removed")
+        XCTAssertTrue(ai.calls.isEmpty, "nothing was sent")
+        XCTAssertNil(session.answerConversationID)
+        XCTAssertNil(fresh.answerConversationID)
+        XCTAssertNil(fresh.askError)
+        withExtendedLifetime(questions) {}
     }
 
     // MARK: Text search

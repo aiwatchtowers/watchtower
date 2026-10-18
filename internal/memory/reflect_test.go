@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/digest"
 )
 
@@ -292,7 +293,7 @@ func TestReflectBudgetSkipsInPipeline(t *testing.T) {
 	}
 	assert.Equal(t, "skipped", byName["reflect"], "over budget, reflection records a skipped row")
 	for _, c := range gen.calls {
-		assert.NotContains(t, c, "Memory activity over the last seven days", "no reflection AI call over budget")
+		assert.NotContains(t, c, "Memory activity since ", "no reflection AI call over budget")
 	}
 }
 
@@ -451,4 +452,21 @@ func sectionText(body, heading string) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+// TestBuildReflectPromptNamesItsWindow: the churn digest names the period it
+// covers from since, not a hardcoded "this week".
+func TestBuildReflectPromptNamesItsWindow(t *testing.T) {
+	rows := []db.MemoryNodeRow{{ID: "bel_a", Title: "A", Type: "belief"}, {ID: "ent_b", Title: "B", Type: "entity"}}
+	churn := map[string]nodeChurn{
+		"bel_a": {commits: 3, historyLines: 2},
+		"ent_b": {commits: 4, byOp: map[string]int{"rewrite": 4}},
+	}
+	since := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+	_, user := buildReflectPrompt("%s", "", rows, churn, since)
+
+	assert.Contains(t, user, "Memory activity since 2026-10-11.")
+	assert.Contains(t, user, `- bel_a "A": 3 revisions, 2 history entries since 2026-10-11`)
+	assert.Contains(t, user, `- ent_b "B": 4 page revisions since 2026-10-11 (rewrite x4)`)
+	assert.NotContains(t, user, "this week")
 }

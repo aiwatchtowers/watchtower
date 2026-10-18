@@ -23,6 +23,7 @@ package enum HomeTodayBuilder {
             case .briefing: briefing(data)
             case .myTargets: myTargets(data, today: dayString(now, calendar: calendar))
             case .agentsWaiting: agentsWaiting(data)
+            case .instructionSuggestion: instructionSuggestion(data)
             }
         }
     }
@@ -125,6 +126,15 @@ package enum HomeTodayBuilder {
         }
         return TodayCard(kind: .agentsWaiting, eyebrow: "AGENTS WAITING · \(rows.count)", items: items,
                          link: .workbenches)
+    }
+
+    /// The one open suggestion; Add / Dismiss act on it, the header opens Settings.
+    private static func instructionSuggestion(_ data: HomeTodayData) -> TodayCard? {
+        guard let suggestion = data.suggestion else { return nil }
+        return TodayCard(
+            kind: .instructionSuggestion, eyebrow: "INSTRUCTIONS",
+            body: "You keep telling agents: \u{201C}\(suggestion.text)\u{201D} — add to your instructions?",
+            link: .instructionSettings, suggestionID: suggestion.id)
     }
 
     /// The Catch-Up badge's condition (`CatchUpQueries.hasUnacknowledgedReady`):

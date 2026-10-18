@@ -8,7 +8,7 @@ package enum HomeQueries {
     package static let observedTables: [String] = [
         "agent_actions", "reminders",
         "calendar_events", "calendar_calendars", "google_accounts", "meeting_prep_cache",
-        "briefings", "targets", "owner_asks", "projects", "catchup_recaps"
+        "briefings", "targets", "owner_asks", "projects", "catchup_recaps", "instruction_suggestions"
     ]
 
     /// Every Today source in one read. Each card's read is caught separately:
@@ -53,7 +53,22 @@ package enum HomeQueries {
         }) {
             data.pendingRecap = value
         }
+        if let value = readCard(.instructionSuggestion, db, tables: ["instruction_suggestions"],
+                                failed: &data.failed, { try newestOpenSuggestion(db, now: now) }) {
+            data.suggestion = value
+        }
         return data
+    }
+
+    /// The newest open suggestion first seen within 7 days.
+    private static func newestOpenSuggestion(_ db: Database, now: Date) throws -> HomeInstructionSuggestion? {
+        let cutoff = ISO8601DateFormatter().string(from: now.addingTimeInterval(-7 * 24 * 3600))
+        let row = try Row.fetchOne(db, sql: """
+            SELECT id, text FROM instruction_suggestions
+            WHERE status = 'open' AND first_seen_at >= ?
+            ORDER BY first_seen_at DESC, id DESC LIMIT 1
+            """, arguments: [cutoff])
+        return row.map { HomeInstructionSuggestion(id: $0["id"], text: $0["text"]) }
     }
 
     /// One card's read: nil when a table it needs is missing (no content) or

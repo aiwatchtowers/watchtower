@@ -714,18 +714,18 @@ final class TargetsViewModelTests: XCTestCase {
         XCTAssertEqual(all[2].level, "week")
     }
 
-    func testMarkDoneMovesTargetOutOfActive() throws {
+    func testMarkDoneMovesTargetOutOfActive() async throws {
         let (mgr, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
         let today = "2026-04-23"
-        _ = try mgr.dbPool.write { db in
+        _ = try await mgr.dbPool.write { db in
             try TestDatabase.insertTarget(db, text: "Active",
                                           periodStart: today, periodEnd: today, priority: "high")
         }
         let vm = TargetsViewModel(dbManager: mgr)
         vm.load()
         let target = try XCTUnwrap(vm.todayTargets.first)
-        vm.markDone(target)
+        await vm.markDone(target)
         XCTAssertTrue(vm.todayTargets.isEmpty)
     }
 
@@ -745,17 +745,18 @@ final class TargetsViewModelTests: XCTestCase {
         XCTAssertEqual(all.first?.text, "Deploy backend")
     }
 
-    func testDeleteTargetRemovesRow() throws {
+    func testDeleteTargetRemovesRow() async throws {
         let (mgr, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
-        _ = try mgr.dbPool.write { try TestDatabase.insertTarget($0) }
+        _ = try await mgr.dbPool.write { try TestDatabase.insertTarget($0) }
 
         let vm = TargetsViewModel(dbManager: mgr)
-        let target = try XCTUnwrap(mgr.dbPool.read { try TargetQueries.fetchByID($0, id: 1) })
+        let fetchByIDResult = try await mgr.dbPool.read { try TargetQueries.fetchByID($0, id: 1) }
+        let target = try XCTUnwrap(fetchByIDResult)
 
-        vm.deleteTarget(target)
+        await vm.deleteTarget(target)
 
-        let gone = try mgr.dbPool.read { try TargetQueries.fetchByID($0, id: 1) }
+        let gone = try await mgr.dbPool.read { try TargetQueries.fetchByID($0, id: 1) }
         XCTAssertNil(gone)
         XCTAssertNil(vm.errorMessage)
     }

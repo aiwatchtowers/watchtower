@@ -128,26 +128,26 @@ type transcriptRecap struct {
 // a failure anywhere (the AI call, the parse, or an apply write) leaves the
 // registry, its mentions, and the floors untouched (IDEA-01). Returns the
 // number of ideas/decisions rows created this run. A nil generator (the
-// runEmailDigests/runJiraDigests precedent) is a clean no-op. from/to are an
-// optional [from, to] window on every listing this pass reads (the zero
-// value for either is unbounded — Run's ordinary daemon/incremental path
-// passes time.Time{} for both); a backfill run passes both to scope one pass
-// to a slice of history — from matters only for
-// ListDigestTopicIdeasAfter's lower bound (GB3: a regenerated old-period
-// digest topic can carry a high id despite an old content period, and must
-// not be swept into a window it predates).
+// runEmailDigests/runJiraDigests precedent) is a clean no-op. It reads every
+// listing unbounded (Run's ordinary daemon/incremental path); Backfill calls
+// consolidate with a window instead.
 // Returns the number of ideas/decisions rows created and the number of
-// mentions dropped because their ref was already recorded (IDEA-05) — the
-// backfill engine's drain loop watches the latter to know when re-mining an
-// already-mined window has stopped finding anything new.
-func (p *Pipeline) runConsolidate(ctx context.Context, from, to time.Time) (proposed, mentionsDeduped int, err error) {
-	return p.consolidate(ctx, from, to, nil)
+// mentions dropped because their ref was already recorded (IDEA-05).
+func (p *Pipeline) runConsolidate(ctx context.Context) (proposed, mentionsDeduped int, err error) {
+	return p.consolidate(ctx, time.Time{}, time.Time{}, nil)
 }
 
-// consolidate is runConsolidate with an optional in-memory floor set: nil
-// reads and advances the stored floors; Backfill passes its own, which the
-// run starts from and advances instead (after a committed apply), writing no
-// stored floor.
+// consolidate is runConsolidate with an optional [from, to] window on every
+// listing the pass reads (the zero value for either is unbounded) and an
+// optional in-memory floor set. A backfill run passes both bounds to scope
+// one pass to a slice of history — from matters only for
+// ListDigestTopicIdeasAfter's lower bound (GB3: a regenerated old-period
+// digest topic can carry a high id despite an old content period, and must
+// not be swept into a window it predates) — and the backfill engine's drain
+// loop watches mentionsDeduped to know when re-mining an already-mined
+// window has stopped finding anything new. A nil mem reads and advances the
+// stored floors; Backfill passes its own, which the run starts from and
+// advances instead (after a committed apply), writing no stored floor.
 func (p *Pipeline) consolidate(ctx context.Context, from, to time.Time, mem *workspaceFloors) (proposed, mentionsDeduped int, err error) {
 	if p.generator == nil {
 		return 0, 0, nil

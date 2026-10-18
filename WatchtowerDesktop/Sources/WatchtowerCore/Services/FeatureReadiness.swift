@@ -2,8 +2,8 @@ import Foundation
 
 /// Per-feature readiness, pure: every input (the clock included) comes in
 /// `ReadinessInputs`. Precedence is fixed: off > needsSource > ready >
-/// needsSource(.jiraBoards) > daemonStopped > preparing > error > waitingForSync >
-/// scheduled.
+/// needsSource(.jiraBoards) > needsDigests > daemonStopped > preparing > error >
+/// waitingForSync > scheduled.
 package enum FeatureReadiness {
     /// A `running` row older than this is a dead process's leftover
     /// (`reapStalePipelineRuns` only reaps it after 24 h), not a run.
@@ -53,6 +53,10 @@ package enum FeatureReadiness {
         // is their only connected source.
         if !inputs.jiraBoardsSelected, waitsOnJiraBoards(feature, inputs.connected) {
             return .needsSource(.jiraBoards)
+        }
+        if feature.runsOnlyWithDigests, let digests = ReadinessFeature.digests.featureID,
+           inputs.disabledFeatureIDs.contains(digests) {
+            return .needsDigests
         }
         if isDaemonDown(running: inputs.daemonRunning, since: inputs.daemonNotRunningSince, now: inputs.now) {
             return .daemonStopped
@@ -154,6 +158,19 @@ package enum FeatureReadiness {
         return .inHours(min(hours, Int((left / 3600).rounded(.up))))
     }
 
+    /// The feature a Turn on for `feature` switches on, which also keys its
+    /// progress and error: Slack Digests while `feature` waits on it, and
+    /// while a Slack Digests Turn on failed (`digestsTurnOnFailed`: an
+    /// enable whose restart failed leaves Digests on, the state moves on,
+    /// and only its retry restarts, #575); otherwise the feature's own id.
+    package static func turnOnFeatureID(
+        for feature: ReadinessFeature, readiness: Readiness?, digestsTurnOnFailed: Bool
+    ) -> String? {
+        guard feature.runsOnlyWithDigests, readiness != .off else { return feature.featureID }
+        if readiness == .needsDigests || digestsTurnOnFailed { return ReadinessFeature.digests.featureID }
+        return feature.featureID
+    }
+
     // MARK: - Wording
 
     package static func phrase(_ eta: Eta) -> String {
@@ -173,6 +190,8 @@ package enum FeatureReadiness {
         case .off: "Off — Turn on"
         case .needsSource(.ownerIdentityPending(let name)): "Waiting for your \(name) identity…"
         case .needsSource(let source): "\(source.actionTitle) to get this"
+        // Every place that shows it follows it with a Turn on Slack Digests button.
+        case .needsDigests: "Needs Slack Digests"
         case .ready: "Ready — Open"
         case .daemonStopped: "Watchtower isn't running"
         case .preparing(let detail): withDetail("Preparing now", detail)

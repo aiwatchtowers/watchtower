@@ -124,7 +124,7 @@ func runProfileStyleSample(cmd *cobra.Command, _ []string) error {
 	defer database.Close()
 
 	logger := log.New(cmd.ErrOrStderr(), "[profile] ", log.LstdFlags)
-	gen, closeGen := cliPooledGenerator(cfg, logger)
+	gen, closeGen := cliPooledGenerator(cfg)
 	defer closeGen()
 
 	pipe := inbox.New(database, cfg, gen, logger)

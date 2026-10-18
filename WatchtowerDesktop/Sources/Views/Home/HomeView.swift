@@ -12,7 +12,9 @@ struct HomeView: View {
             HomeContent(
                 snapshot: appState.homeCenter.snapshot,
                 today: context.date,
+                digestsTurnOn: appState.digestsTurnOnState,
                 onLink: { appState.openHomeLink($0) },
+                onDecideSuggestion: { await appState.decideInstructionSuggestion(id: $0, add: $1) },
                 onHideGettingReady: { appState.homeCenter.hideGettingReady() },
                 onAsk: { appState.toggleHelpChat() }
             )
@@ -26,19 +28,25 @@ struct HomeContent: View {
     /// nil until the first read.
     let snapshot: HomeSnapshot?
     let today: Date
+    let digestsTurnOn: DigestsTurnOnState
     let onLink: (HomeLink) -> Void
+    let onDecideSuggestion: (Int64, Bool) async -> String?
     let onHideGettingReady: () -> Void
     let onAsk: () -> Void
 
     init(
         snapshot: HomeSnapshot?,
         today: Date,
+        digestsTurnOn: DigestsTurnOnState = .idle,
         onLink: @escaping (HomeLink) -> Void,
+        onDecideSuggestion: @escaping (Int64, Bool) async -> String? = { _, _ in nil },
         onHideGettingReady: @escaping () -> Void,
         onAsk: @escaping () -> Void = {}
     ) {
+        self.onDecideSuggestion = onDecideSuggestion
         self.snapshot = snapshot
         self.today = today
+        self.digestsTurnOn = digestsTurnOn
         self.onLink = onLink
         self.onHideGettingReady = onHideGettingReady
         self.onAsk = onAsk
@@ -51,10 +59,11 @@ struct HomeContent: View {
                 if let snapshot {
                     GettingReadyZoneView(
                         zone: snapshot.gettingReady, firstSync: snapshot.firstSync,
-                        onLink: onLink, onHide: onHideGettingReady)
+                        digestsTurnOn: digestsTurnOn, onLink: onLink, onHide: onHideGettingReady)
                     TodayZoneView(
                         cards: snapshot.today, nothingNeedsYou: snapshot.nothingNeedsYou,
-                        readFailed: snapshot.showsReadError, onLink: onLink)
+                        readFailed: snapshot.showsReadError, onLink: onLink,
+                        onDecideSuggestion: onDecideSuggestion)
                 } else {
                     ProgressView()
                         .frame(maxWidth: .infinity)

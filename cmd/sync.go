@@ -868,7 +868,7 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	// cheap struct, and the daemon's own phase methods gate execution on
 	// their own feature's config flag (internal/daemon/daemon.go), not on
 	// whether it was wired here.
-	gen, cleanupPool := cliPooledGenerator(cfg, logger)
+	gen, cleanupPool := cliPooledGenerator(cfg)
 	defer cleanupPool()
 	tracksPipe := tracks.New(database, cfg, gen, logger)
 	tracksPipe.SetPromptStore(prompts.New(database, nil))
@@ -1403,7 +1403,7 @@ func runPostSyncPipelines(ctx context.Context, database *db.DB, cfg *config.Conf
 	}
 
 	out := os.Stdout
-	gen, cleanup := cliPooledGenerator(cfg, logger)
+	gen, cleanup := cliPooledGenerator(cfg)
 	defer cleanup()
 
 	// Digests (with tracks linked between channel digests and rollups)

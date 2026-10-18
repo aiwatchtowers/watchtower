@@ -20,6 +20,8 @@ struct IdeaCreateSheet: View {
     @State private var title: String = ""
     @State private var essence: String = ""
     @State private var createError: String?
+    /// The row is being written (board #670): Create, Cancel and Esc wait.
+    @State private var isCreating = false
 
     init(vm: IdeasViewModel, allowedKinds: [Idea.Kind] = [.idea, .note], initialKind: Idea.Kind? = nil) {
         self.vm = vm
@@ -43,6 +45,7 @@ struct IdeaCreateSheet: View {
             sheetFooter
         }
         .frame(width: 460, height: 420)
+        .interactiveDismissDisabled(isCreating)
     }
 
     private var sheetHeader: some View {
@@ -51,6 +54,7 @@ struct IdeaCreateSheet: View {
                 .font(.headline)
             Spacer()
             Button("Cancel") { dismiss() }
+                .disabled(isCreating)
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
         }
@@ -106,7 +110,7 @@ struct IdeaCreateSheet: View {
             Spacer()
             Button("Create", action: create)
                 .buttonStyle(.borderedProminent)
-                .disabled(!canCreate)
+                .disabled(!canCreate || isCreating)
                 .keyboardShortcut(.return, modifiers: [.command])
         }
         .padding(.horizontal)
@@ -125,10 +129,15 @@ struct IdeaCreateSheet: View {
     /// throw away the owner's typed title and essence on a failed write, with
     /// the sheet gone before its error could be read.
     private func create() {
-        guard vm.createManual(kind: kind.rawValue, title: title, essence: essence) != nil else {
-            createError = vm.errorMessage ?? "Couldn't create the idea."
-            return
+        guard !isCreating else { return }
+        isCreating = true
+        Task {
+            defer { isCreating = false }
+            guard await vm.createManual(kind: kind.rawValue, title: title, essence: essence) != nil else {
+                createError = vm.errorMessage ?? "Couldn't create the idea."
+                return
+            }
+            dismiss()
         }
-        dismiss()
     }
 }

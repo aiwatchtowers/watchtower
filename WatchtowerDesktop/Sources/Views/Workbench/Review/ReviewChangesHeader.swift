@@ -36,7 +36,7 @@ struct ReviewChangesHeader: View {
                 }
                 Picker("Mode", selection: Binding(
                     get: { model.mode },
-                    set: { try? model.setMode($0) } // a failure lands in lastError
+                    set: { mode in Task { try? await model.setMode(mode) } } // a failure lands in lastError
                 )) {
                     Text("Quick").tag(ReviewChangesModel.Mode.quick)
                     Text("Deep").tag(ReviewChangesModel.Mode.deep)

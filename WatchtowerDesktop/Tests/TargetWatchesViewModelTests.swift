@@ -7,7 +7,7 @@ import WatchtowerTestSupport
 @MainActor
 final class TargetWatchesViewModelTests: XCTestCase {
 
-    private func makeWatch(_ db: Database, targetID: Int?, text: String) throws -> Int {
+    nonisolated private func makeWatch(_ db: Database, targetID: Int?, text: String) throws -> Int {
         try db.execute(sql: """
             INSERT INTO tracks (assignee_user_id, text, context, category, ownership, priority,
                 origin, instruction, enabled, linked_target_id)
@@ -90,14 +90,14 @@ final class TargetWatchesViewModelTests: XCTestCase {
         XCTAssertEqual(vm.events.map(\.summary), ["new update"], "the feed must reflect the CLI's write without an active observation")
     }
 
-    func testApplyActionMutatesTargetAndMarksApplied() throws {
+    func testApplyActionMutatesTargetAndMarksApplied() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
 
-        let targetID = try manager.dbPool.write { db -> Int in
+        let targetID = try await manager.dbPool.write { db -> Int in
             try TargetQueries.create(db, text: "ship it", periodStart: "2026-06-01", periodEnd: "2026-06-30")
         }
-        let (watchID, eventID) = try manager.dbPool.write { db -> (Int, Int) in
+        let (watchID, eventID) = try await manager.dbPool.write { db -> (Int, Int) in
             let w = try makeWatch(db, targetID: targetID, text: "watch ship")
             try db.execute(sql: """
                 INSERT INTO track_events (track_id, summary, proposed_action, action_status)
@@ -107,7 +107,8 @@ final class TargetWatchesViewModelTests: XCTestCase {
         }
         _ = watchID
 
-        let target = try XCTUnwrap(manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: targetID) })
+        let targetRow = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: targetID) }
+        let target = try XCTUnwrap(targetRow)
         let vm = TargetWatchesViewModel(
             target: target,
             dbManager: manager,
@@ -115,16 +116,17 @@ final class TargetWatchesViewModelTests: XCTestCase {
             targetsViewModel: TargetsViewModel(dbManager: manager),
             scanCenter: TrackScanCenter()
         )
-        let event = try XCTUnwrap(manager.dbPool.read { db in
+        let eventRow = try await manager.dbPool.read { db in
             try TrackEvent.fetchOne(db, sql: "SELECT * FROM track_events WHERE id = ?", arguments: [eventID])
-        })
-        vm.applyAction(for: event)
+        }
+        let event = try XCTUnwrap(eventRow)
+        await vm.applyAction(for: event)
 
-        let status = try manager.dbPool.read { db in
+        let status = try await manager.dbPool.read { db in
             try String.fetchOne(db, sql: "SELECT status FROM targets WHERE id = ?", arguments: [targetID])
         }
         XCTAssertEqual(status, "done")
-        let evStatus = try manager.dbPool.read { db in
+        let evStatus = try await manager.dbPool.read { db in
             try String.fetchOne(db, sql: "SELECT action_status FROM track_events WHERE id = ?", arguments: [eventID])
         }
         XCTAssertEqual(evStatus, "applied")

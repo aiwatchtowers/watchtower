@@ -181,7 +181,9 @@ no longer active with `ErrRunNotActive`). Any other terminal status —
 `failed`, `timed_out`, `budget_exceeded`, `cancelled`, `expired`, an
 interrupted run — leaves `automation_state` and `automation_outputs`
 byte-identical. Reads see the committed state plus the run's own sets. A dry
-run never commits.
+run never commits. A succeeded script whose journal lost a write still commits
+(its writes already happened; failing it would make the next run repeat them),
+and the run's error notes the incomplete journal (board #562).
 
 **Why locked:** A run that dies halfway must be safe to rerun; a half-written
 cursor in `state` would silently skip or repeat work.
@@ -191,6 +193,7 @@ cursor in `state` would silently skip or repeat work.
 - `internal/automations/executor_test.go` — `TestAuto04_FailedRunLeavesStateAndOutputsUnchanged` (failed, timed out, over budget, cancelled), `TestAuto04_SucceededCommitsStateAndOutputsAtomically`
 - `internal/automations/sdk_test.go` — `TestState_ReadsCommittedPlusOwnSets`, `TestState_RejectsUnserialisableValues`
 - `internal/automations/sdk_output_p2_test.go` — `TestOutput_BriefingBufferedAndCommittedOnSuccess` (P2: `output.briefing` is buffered like `report` and committed only with `succeeded`)
+- `internal/automations/run_limits_test.go` — `TestAuto04_JournalErrorAfterSuccessStillCommits` (board #562)
 
 **Locked since:** 2026-10-14
 
@@ -351,6 +354,15 @@ daemon restart: on start the executor ends every `running`/`waiting` run
 `failed`/`interrupted` — except a live CLI dry run, which is swept only past
 its deadline plus one minute; a stop mid-run ends it `failed`/`interrupted`.
 Ending a run closes its still-open steps in the same transaction.
+A finish the database refuses is retried three times, then the run is ended
+`failed`/`backend` without its commit, so it never holds its slots until the
+next restart (board #562). A run makes at most 2000 SDK calls (the call past
+it is an error step, then the run ends `failed`/`script`, uncatchably), files
+at most 50 buffered outputs and starts at most 10 sessions with `session()`
+(a refused or invalid call does not count; each call past either cap is a
+catchable `ValidationError`). A finish without a commit keeps its own
+status and error; a deterministic refusal (`db.ErrInvalidRunFinish`) is not
+retried, nor is any finish once the daemon is stopping.
 
 **Why locked:** An automation runs unattended; a run that never ends holds a
 concurrency slot forever, and one that never stops spending burns the owner's
@@ -364,6 +376,7 @@ model quota.
 - `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_BudgetBound`
 - P6 (`agent()`): `internal/automations/sdk_agent_test.go` — `TestAgent_BudgetCarvedFromRun`, `TestAgent_CarvedDeadlineThrowsCatchableBudgetExceeded` (a spent carved minutes deadline throws a catchable `BudgetExceeded`; the run's own deadline stays uncatchable), `TestAgent_ResultUsageDebitedOnce`; `cmd/automations_agent_test.go` — `TestAgent_RunBudgetCrossedInterruptsRun`, `TestAgent_LocalBudgetSpentThrowsCatchable`, `TestAgent_IterationsCapped12`, `TestAgent_CLIUsageDebitedOrEstimated`, `TestAgent_CancelKillsCLIChild` (the whole process group dies); `internal/ai/client_child_test.go` — `TestCLIAgent_SIGINTIgnoringGroupKilledWithinGrace` (`ai.GroupKillGrace` = 1 s, inside the 2 s `AbandonGrace`)
 - `internal/db/automation_runs_test.go` — `TestAuto08_RestartMarksInterrupted`, `TestAuto08_RestartSparesLiveDryRun`, `TestRunEnd_ClosesOpenSteps`
+- `internal/automations/run_limits_test.go` — `TestAuto08_StepCapEndsTheRun`, `TestAuto08_FinishFailureRetries`, `TestAuto08_FinishFailureEndsTheRunFailed`, `TestAuto08_FinishFailureWithoutCommitKeepsItsEnd`, `TestAuto08_FinishSkipsRetriesWhenStopping`, `TestAuto08_FinishDoesNotRetryAnInvalidFinish`, `TestOutputs_CapPerRun`, `TestSession_CapPerRun` (board #562); `internal/automations/workbench_e2e_test.go` — `TestPRReviewRounds_MorePRsThanTheSessionCap`
 
 **Locked since:** 2026-10-14
 
@@ -437,7 +450,9 @@ report, not two and not zero; a restart must not produce a third.
 duration; `args_json` and `result_summary` are clipped to 4 KiB. A step whose
 result cannot be encoded is re-closed as an error, never left `ok`. `log` is
 capped at 200 ok steps plus one cap-error step per run, even when getters log
-while their arguments are converted.
+while their arguments are converted. A run's SDK calls are capped at 2000
+steps plus one cap-error step, after which the run ends (AUTO-08), so no call
+goes unjournaled.
 
 **Why locked:** The journal is the owner's only view of what an unattended
 script did; a call missing from it is an action nobody can audit.
@@ -544,6 +559,8 @@ turn a recipe into arbitrary code execution.
 ## Changelog
 
 - 2026-10-18 (board #568, **AGENT-07 amended, owner approved in ask #357**): strengthening, no guard changed. The owner gestures this file lists as refused under an AI-agent marker stay refused there; without a marker they now also need the owner's Confirm in the running Desktop, whose window shows the whole recipe (trigger, permissions, outputs, text), and no Desktop is a refusal. See AGENT-07 in `agent-actions.md`.
+- 2026-10-18 (board #562, **owner decision ask #304 q4**; security review A5, tech review E1–E3): strengthening. **AUTO-08:** per-run caps — 2000 SDK calls (`MaxStepsPerRun`; the call past it is an error step and ends the run `failed`/`script`, uncatchably), 50 buffered outputs (`MaxOutputsPerRun`) and 10 sessions started by `session()` (`MaxSessionCalls`; refused or invalid calls do not count), each past its cap a catchable `ValidationError`. The session cap is 10, not the 3 first proposed, because the shipped `pr-review-rounds` template starts one session per changed pull request: it now starts at most 10 per round and moves its `last_round` mark (to the round's start) only after a round that left none, with state `reviewed` holding when each open pull request's review ended, so every pull request still gets one session and a retry after an error or a failed launch; its pinned dry-run journal in `TestTemplates_DryRunE2E` (AUTO-12) gains the second `state.get`/`state.set` — a template change, not a relaxed guard. A refused run finish with a commit is retried 3 times (not after the daemon's ctx ended, not for a deterministic `db.ErrInvalidRunFinish`), then written `failed`/`backend` without its commit, so a busy database no longer leaves a run holding its slots until restart; a finish without a commit keeps its own status and error. **AUTO-04:** a succeeded script whose journal lost a write commits (no repeated writes on the next run) and notes the incomplete journal in the run's error. **AUTO-11:** the step cap adds one cap-error step, like `log`'s. Guard `TestSandbox_InterruptIsNotCatchable`'s external-interrupt case paces its SDK loop (a busy loop after each `echo`, still inside the `try`) so the new step cap does not end it before the interrupt; its assertion (an uncatchable `budget` interrupt) is unchanged. Guards added: `TestAuto08_StepCapEndsTheRun`, `TestAuto08_FinishFailureRetries`, `TestAuto08_FinishFailureEndsTheRunFailed`, `TestAuto08_FinishFailureWithoutCommitKeepsItsEnd`, `TestAuto08_FinishSkipsRetriesWhenStopping`, `TestAuto08_FinishDoesNotRetryAnInvalidFinish`, `TestOutputs_CapPerRun`, `TestSession_CapPerRun`, `TestPRReviewRounds_MorePRsThanTheSessionCap`, `TestPRReviewRounds_CarryOverEdgeCases`, `TestAuto04_JournalErrorAfterSuccessStillCommits`. `TestPRReviewRounds_E2E` (not an inventory guard) now expects `last_round` to stay when a review session ended with an error, since that pull request is retried. No guard relaxed.
+
 - 2026-10-17 (board #561, **owner decision ask #331**): **AUTO-07 narrowed — BigInt is removed from the sandbox.** Its `**` and `<<` operators computed results of any size in one native step (an OOM kill of the daemon no wrapper can prevent). A BigInt literal is refused when the script compiles (an AST walk, so no lexical trick hides one) with "BigInt is not available in automations"; `BigInt`, `BigInt64Array`, `BigUint64Array` and DataView's BigInt accessors are deleted. Guard `TestState_RejectsUnserialisableValues` (AUTO-04) loses its `10n` case, which can no longer run, and instead asserts that `state.set("k", 10n)` is refused by `PreParse` — the guarantee (no BigInt reaches state) is unchanged. Guard added: `TestSandbox_BigIntNotAvailable`.
 - 2026-10-17 (board #561, security review #5; owner decision ask #304 q3 — "a clear error instead of a daemon crash"): **AUTO-08 strengthened** — deep or huge data can no longer end the daemon through the capped builtins (goja's `JSON.parse`/`flat` overflowed the Go stack, an unrecoverable fatal error, and several builtins allocated without bound, so the abandon net never ran and the daemon crash-looped). Each limit throws a catchable `RangeError`, like the caps before it; no automation is disabled for it. Guards added: `TestSandbox_NativeBombsEndTheRunNotTheProcess`, `TestSandbox_HeapBudgetStopsTheRun`, `TestSandbox_HeapBudgetSparesSiblingRuns`, `TestSandbox_HeapBudgetSparesAWaitingRun`, `TestSandbox_MemoryStopThenStuckIsAbandoned` (the per-run memory budget), `TestSandbox_HeapBudgetForgivenessIsCapped`, `TestSandbox_ExecCallsAreTimed`, `TestSandbox_ExecRewriteSkipsSuperAndOptionalChains`, `TestSandbox_DeletedExecIsATypeError`. No guard relaxed.
 - 2026-10-17 (**owner decision, ask #326**; board #557, security review F4): strengthening, no guard relaxed. AUTO-12: `draft_automation`'s in-memory dry run (run id 0) no longer calls a Quick Connection — after the manifest check the first `mcp()` call closes its step `dry_run` with the note "Stopped at mcp(): external calls are not made in a draft; dry-run the saved recipe from its card to see the rest" and ends the draft with status `stopped` (not a failure, earlier steps kept; the Desktop Draft panel shows the note). Closes a no-click exfiltration path: a chat-written draft could pass synced text as a QC-02 read tool's arguments. A saved recipe's card dry run and real runs are unchanged. Guards added: `TestDryRunInMemory_MCPIsNotCalled`, `TestDryRunInMemory_MCPOutsideManifestIsDenied`.

@@ -68,7 +68,7 @@ func TestSyncCalendarItems_AddsUpdatesRemoves(t *testing.T) {
 	}
 
 	p := New(d, pipeTestCfg(), nil, nil)
-	require.NoError(t, p.syncCalendarItems(planID, "2026-04-23", events))
+	require.NoError(t, p.syncCalendarItems(planID, events))
 
 	items, err := d.GetDayPlanItems(planID)
 	require.NoError(t, err)
@@ -109,7 +109,7 @@ func TestSyncCalendarItems_SkipsAllDayEvent(t *testing.T) {
 	}
 
 	p := New(d, pipeTestCfg(), nil, nil)
-	require.NoError(t, p.syncCalendarItems(planID, "2026-04-23", events))
+	require.NoError(t, p.syncCalendarItems(planID, events))
 
 	items, err := d.GetDayPlanItems(planID)
 	require.NoError(t, err)
@@ -159,7 +159,7 @@ func TestSyncCalendarItems_OrphansStaleAllDayItem(t *testing.T) {
 	}
 
 	p := New(d, pipeTestCfg(), nil, nil)
-	require.NoError(t, p.syncCalendarItems(planID, "2026-04-23", events))
+	require.NoError(t, p.syncCalendarItems(planID, events))
 
 	items, err := d.GetDayPlanItems(planID)
 	require.NoError(t, err)

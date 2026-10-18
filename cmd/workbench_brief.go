@@ -20,6 +20,7 @@ import (
 	"watchtower/internal/asks"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
+	"watchtower/internal/instructions"
 	"watchtower/internal/kb"
 	"watchtower/internal/reviewdiff"
 	"watchtower/internal/tools"
@@ -28,8 +29,9 @@ import (
 )
 
 const (
-	// briefMaxChars caps the SessionStart hook body (runes): Claude Code adds
-	// it to every session's context, whatever the board holds.
+	// briefMaxChars caps the SessionStart hook body (runes) without the
+	// owner's instructions slot: Claude Code adds it to every session's
+	// context, whatever the board holds. briefMaxCharsFor adds the slot.
 	briefMaxChars  = 4000
 	briefLineChars = 240
 	// briefDriftBudget bounds the brief's offline board drift check (git
@@ -211,7 +213,7 @@ func briefFromDB(database *db.DB, p *db.Workbench) string {
 	// The board columns (PROJ-19) share the folder rules' reserved slot.
 	method := joinBriefLines(briefMethodSection(e, briefPresetMismatch(e, p.FolderPath, p.ID)), briefColumnsFor(database, p.ID))
 	return renderSessionBrief(board, p, comments, drift, loadBriefRecent(database, p.ID, now), loadBriefAsks(database, p.ID), now,
-		briefRulesFor(e.Preset), method, joinBriefLines(briefReviewLines(database, p.ID), briefCleanupLine(database, p.ID)))
+		briefRulesFor(e.Preset), method, joinBriefLines(briefReviewLines(database, p.ID), briefCleanupLine(database, p.ID)), briefInstructionsSlot(database, p.ID))
 }
 
 // briefAsks is the answered-asks input: the asks for the brief's own session
@@ -272,6 +274,18 @@ func briefReviewLines(database *db.DB, workbenchID int64) string {
 	return strings.Join(lines, "\n")
 }
 
+// briefInstructionsSlot is the owner's session instructions block; "" when
+// there are none. A failed read is logged and renders no slot: the brief
+// never fails.
+func briefInstructionsSlot(database *db.DB, workbenchID int64) string {
+	t, err := instructions.Load(database, workbenchID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "watchtower: workbench %d brief: owner instructions: %v\n", workbenchID, err)
+		return ""
+	}
+	return instructions.BriefSlot(t)
+}
+
 // joinBriefLines joins the non-empty parts with newlines.
 func joinBriefLines(parts ...string) string {
 	return strings.Join(slices.DeleteFunc(parts, func(s string) bool { return s == "" }), "\n")
@@ -325,6 +339,17 @@ func readBriefRecent(ctx context.Context, database *db.DB, workbenchID int64, no
 }
 
 // briefUnavailable is the one-line brief for every failure.
+// briefMaxCharsFor is the brief's cap with the owner's instructions slot
+// owner as rendered: the cap grows by the slot and its joining newline, so
+// the board, comments and asks keep exactly the room they have without it
+// (PROJ-22).
+func briefMaxCharsFor(owner string) int {
+	if owner == "" {
+		return briefMaxChars
+	}
+	return briefMaxChars + utf8.RuneCountInString(owner) + 1
+}
+
 func briefUnavailable(id int64, reason string) string {
 	return briefClip(fmt.Sprintf("Watchtower: workbench %d %s.", id, reason), briefLineChars)
 }
@@ -333,31 +358,35 @@ func briefUnavailable(id int64, reason string) string {
 // the open tree, the comments new for the agent, the answered asks (left out
 // when there are none; one row is reserved before the board is cut), recent
 // documents of the workbench's sources (recent nil = the workbench has none,
-// the section is left out), the rules — at most briefMaxChars runes. A
+// the section is left out), the rules — at most briefMaxChars runes (plus
+// the owner's slot, briefMaxCharsFor, on the session path). A
 // drift check cut short says so, so a partial check never reads as a clean
 // board. board is the full board: archived targets (PROJ-15) leave the
 // counts and the tree, and are only counted in the header; comments on them
 // keep their titles. Pure.
 func renderWorkbenchBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, drift workbenchcheck.Report, recent *briefRecent, answered *briefAsks, now time.Time) string {
-	return renderSessionBrief(board, p, comments, drift, recent, answered, now, briefRules, "", "")
+	return renderSessionBrief(board, p, comments, drift, recent, answered, now, briefRules, "", "", "")
 }
 
 // renderSessionBrief is renderWorkbenchBrief with the board rules for the
 // session's preset (briefRulesFor), the folder rules slot
-// (briefMethodSection) and the session's cleanup line (briefCleanupLine) after
+// (briefMethodSection), the owner's instructions slot and the session's cleanup line (briefCleanupLine) after
 // the rules when not "": like the rules, their room is set aside before
 // anything else is fitted. Pure.
-func renderSessionBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, drift workbenchcheck.Report, recent *briefRecent, answered *briefAsks, now time.Time, boardRules []string, method, cleanup string) string {
+func renderSessionBrief(board []db.BoardNode, p *db.Workbench, comments []db.WorkbenchComment, drift workbenchcheck.Report, recent *briefRecent, answered *briefAsks, now time.Time, boardRules []string, method, cleanup, owner string) string {
 	shown := db.WithoutArchived(board)
 	head := briefHeader(p, shown, db.CountArchived(board), len(comments))
 	rules := strings.Join(boardRules, "\n")
 	if method != "" {
 		rules += "\n" + method
 	}
+	if owner != "" {
+		rules += "\n" + owner
+	}
 	if cleanup != "" {
 		rules += "\n" + cleanup
 	}
-	budget := briefMaxChars - utf8.RuneCountInString(head) - utf8.RuneCountInString(rules) - 3 // three joining newlines
+	budget := briefMaxCharsFor(owner) - utf8.RuneCountInString(head) - utf8.RuneCountInString(rules) - 3 // three joining newlines
 	if section := briefDriftSection(drift, budget/4); section != "" {
 		head += "\n" + section
 		budget -= utf8.RuneCountInString(section) + 1

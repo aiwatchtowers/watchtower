@@ -281,6 +281,13 @@ every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
 
+- 2026-10-18 (#573, Confluence at connect): `*confluence.Fetcher` gained
+  `RecentSpaceKeys` (one GET-only CQL search for `confluence select
+  --recent`). Contract unchanged; `TestEXT01_FetcherReachesOnlyTheGETAPI`'s
+  pinned method set grows by that name and the guard exercises it like
+  every other method (still GET-only, still under `/wiki/`). EXT-02 holds:
+  `--recent` writes `ext_sources` rows only for the spaces it names, like a
+  `select` of their keys.
 - 2026-10-01 (release audit, lost-response Retry): a Retry that finds this very
   edit already saved (base+1, same title, storage equal up to `local-id`s) is now a
   success result carrying the "already saved" note instead of a failed

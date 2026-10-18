@@ -2075,6 +2075,32 @@ owner never saw.
 
 **Locked since:** 2026-10-17
 
+
+## PROJ-22 — the owner's instructions reach the agent in the session brief and in `update_target`'s `procedure`, are read from Watchtower's own storage, and only the owner's Add changes them
+
+**Status:** Enforced (Go and Desktop; spec `docs/superpowers/specs/2026-10-17-agent-instructions-design.md`; owner decisions in asks #270–#272, #320–#322, #327; feature note `docs/features/agent-instructions.md`)
+
+**Observable:** The owner keeps two texts, **session instructions** and **target procedure**, each global (`owner_instructions`) and per workbench (`projects.session_instructions`, `projects.target_procedure`); each text is at most `instructions.MaxRunes` = 1000 runes (surrounding space not counted) and a longer one is refused by `watchtower instructions set` and by Add. (1) The session brief (`renderSessionBrief` and the Codex path `runCodexBrief`) carries, after the board and folder rules, the slot `Owner's instructions (follow in every turn):` + the global session text + `For this workbench:` + the workbench text (that header only when the workbench text is non-empty), plus the line `Target procedure: update_target returns it when a target goes in_progress.` when any procedure text exists; the slot is absent when both session texts and both procedures are empty, is inline in full (never cut to a pointer) and the cap is 4000 + the rendered slot's size and its joining newline (`briefMaxCharsFor`; 4000 with no slot), so the board, comments and asks keep exactly their room. (2) `update_target` returns a `procedure` string (`Owner's target procedure — follow it for #<id>:` + global + `For this workbench:` + workbench) on every call whose `status` argument is `in_progress` — including a target already `in_progress` and a `column` move into an `in_progress` column — and no `procedure` key for any other status, for no status, for `create_targets`, or when both procedure texts are empty; it is read at call time. (3) Every write goes through `watchtower instructions set|suggestion add|dismiss` (text on stdin, never argv); the agent surface has no tool to read or change the texts, and nothing is written into the workbench folder. (4) A suggestion (`instruction_suggestions`, from the daily `phaseInstructionSuggestions`) changes no text by itself: the model's output is validated in Go (session ids must exist in the input, at least 3 distinct sessions recomputed, lines over 200 runes dropped), upserted by fingerprint, and only **Add** appends it; a `dismissed` or `added` row is never reopened by a re-mine.
+
+**Why locked:** The owner's own words are injected as instructions on purpose, so what injects them must stay exact: a brief that silently cuts the slot, a `procedure` that appears on the wrong status or a suggestion that edits text without the owner's press would each change what every agent does with no sign. The `procedure` timing is the point of the feature; a text leaking into the repository would publish personal directions.
+
+**Test guards:**
+- `cmd/workbench_brief_instructions_test.go::TestProj22_BriefCarriesOwnerInstructions`
+- `cmd/workbench_brief_instructions_test.go::TestProj22_BriefOmitsSlotWhenEmpty`
+- `cmd/workbench_brief_instructions_test.go::TestProj22_FullBoardKeepsWholeSlot`
+- `cmd/workbench_brief_instructions_test.go::TestProj22_NoInstructionsKeepsTodaysBudget`
+- `cmd/workbench_brief_instructions_test.go::TestProj22_CodexBriefCarriesSlot`
+- `internal/tools/workbench_targets_procedure_test.go::TestProj22_UpdateTargetInProgressReturnsProcedure`
+- `internal/tools/workbench_targets_procedure_test.go::TestProj22_UpdateTargetAlreadyInProgressStillReturns`
+- `internal/tools/workbench_targets_procedure_test.go::TestProj22_OtherStatusNoProcedure`
+- `internal/tools/workbench_targets_procedure_test.go::TestProj22_ColumnIntoInProgressReturnsProcedure`
+- `internal/tools/workbench_targets_procedure_test.go::TestProj22_NoTextsNoKey`
+- supporting: `internal/instructions/instructions_test.go`, `internal/instructions/suggest_test.go`; the existing `TestProj12_AnsweredAskSurvivesAFullBoard` and brief budget tests stay unchanged
+
+**Limits (accepted):** an edit reaches a running or resumed session only through `procedure` (its brief keeps the text it started with); a status change made on the Desktop or phone delivers no procedure by itself; suggestions need three sessions in 14 days; the texts are not synced to the phone.
+
+**Locked since:** 2026-10-17
+
 ## v1 limits and notes (accepted)
 
 - **Status rollup bounds (PROJ-05).** The ancestor walk stops after 256
@@ -2367,6 +2393,8 @@ owner never saw.
 
 ## Changelog
 
+- 2026-10-18 (board #670 phase 2b-1, PR #398): note only — **no contract or assertion changed**. `WorkbenchBoardViewModel`'s owner writes are queued off the main thread; `testStatusWriteReportsTheParentsTheRollupMoved` gained `await vm.writesSettled()` after its synchronous `setStatus`, and `testMoveReportsBothRolledUpParentsAndExpandsTheNewOne` and `testArchivedTargetsShowOnlyWithTheToggleAndReopeningRestoresOne` hoist the awaited `move`/`setStatus` result into a `let`. PROJ-05's rollup reporting and PROJ-15 are unchanged.
+- 2026-10-18 (board #670 phase 2a, heads-up to the owner): **no contract changed and no assertion changed.** `DatabaseManager.wipeLLMData` is `async` (it no longer writes on the main thread). The PROJ-02 guard `testWipeLLMDataPreservesProjectTargets` changes mechanically and only that way: it gains `async`, and the wipe and its setup writes and reads gain `await`. Every assertion is byte-identical.
 - 2026-10-17 (board #588, review #546 fix wave; **approved by the owner in ask #310**, which sent #588 into work and accepted that a quit with a busy database may take a few seconds longer, with a progress indicator): **PROJ-17 amended — the quit commit of the Undo batch.** It moved from a 2 s main-thread wait in `willTerminate` (always lost under the 5 s busy budget, so the session came back at launch) to `QuitCoordinator`'s async phase: started at the beginning, alongside the chat, terminal and daemon steps, awaited before the reply, on every quit (sessions kept or stopped, an update's relaunch), waiting for every delete write in flight as one set, bounded at `DBLockInstrumentation.busyTimeoutMS` + 3 s (8 s), with a "Finishing session deletes…" panel after 0.5 s. Guard `testProj17_QuitCommitsPendingDeletes` unchanged except that it now awaits the call; supporting tests added (`testQuitBoundOutlastsTheBusyBudget`, `testQuitCommitsAWriteSlowerThanTheOldWait`, `testQuitWaitsForTheTimersCommitAndItsOwnBatch`, `testTheQuitStepCommitsTheBatch`, `QuitCoordinatorTests.testPendingDeletesRunAlongsideTheQuitAndBeforeTheReply`, `QuitProgressPanelTests`).
 - 2026-10-17 (board #517, answer a permission prompt and interrupt from the iPhone; spec `docs/superpowers/specs/2026-10-17-phone-permission-answers-design.md` §7, plan `docs/superpowers/plans/2026-10-17-phone-permission-answers.md`; **owner approved, ask #263 / #265**): **PROJ-21 added** — a permission prompt is answered from the phone only by an explicit Allow once or Deny through the `PermissionRequest` hook (`workbench permission-wait`, migration `00130` `permission_requests`), from a device with its own `permissions_allowed` grant; the answer types nothing, allows one call and loses to a Mac answer; `session_interrupt` sends one Esc under the typing grant while Working only. **PROJ-16 amended** — the heading's last clause reads "nothing typed from the phone ever answers a permission prompt", the Observable points to PROJ-21; no PROJ-16 guard changed. The Swift guards were written as `testProjNN_*` and renamed `testProj21_*`; the Go hook's key exit-path tests renamed `TestPermissionWait_*` → `TestProj21_PermissionWait*`.
 - 2026-10-17 (board #517; **owner approved, ask #312**): **PROJ-21 strengthened — no guard relaxed.** The Deny-only settings paths gain `.git/config`, `.mcp.json`, `.envrc`, `.gitconfig` and `.watchtower/workflow.md`; `testProj21_ASettingsPathEditCannotBeAllowed` lists them (`.git/config` moved there from the allowed list).

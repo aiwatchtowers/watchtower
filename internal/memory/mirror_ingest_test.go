@@ -60,9 +60,12 @@ func TestMirrorOpenTargetShape(t *testing.T) {
 	gen := mirrorNoCallGen(t)
 	p := NewPipeline(d, v, gen, operationalConfig(), t.Logf)
 	var stats RunStats
-	recorded, err := p.runOperationalMirrors(1, 0, &stats)
+	runID, err := d.CreatePipelineRun("memory", "test", "")
 	require.NoError(t, err)
-	assert.Equal(t, 1, recorded, "one pipeline_steps row recorded")
+	require.NoError(t, p.runOperationalMirrors(runID, 0, &stats))
+	steps, err := d.GetPipelineSteps(runID)
+	require.NoError(t, err)
+	assert.Len(t, steps, 1, "one pipeline_steps row recorded")
 	assert.Equal(t, 1, stats.Mirrored)
 	assert.Zero(t, stats.MirrorsFailed)
 	assert.Empty(t, gen.calls, "no AI call")
@@ -103,7 +106,7 @@ func TestMirrorConversionCrossLink(t *testing.T) {
 
 	p := NewPipeline(d, v, mirrorNoCallGen(t), operationalConfig(), t.Logf)
 	var stats RunStats
-	_, err = p.runOperationalMirrors(1, 0, &stats)
+	err = p.runOperationalMirrors(1, 0, &stats)
 	require.NoError(t, err)
 
 	n, err := Resolve(v, d, targetMirrorAlias(int(tid)))
@@ -132,7 +135,7 @@ func TestMirrorConversionLinkNoDuplicateOnTitleChange(t *testing.T) {
 
 	p := NewPipeline(d, v, mirrorNoCallGen(t), operationalConfig(), t.Logf)
 	var s1 RunStats
-	_, err = p.runOperationalMirrors(1, 0, &s1)
+	err = p.runOperationalMirrors(1, 0, &s1)
 	require.NoError(t, err)
 
 	// The episode is re-titled (a later extraction refined its title).
@@ -143,7 +146,7 @@ func TestMirrorConversionLinkNoDuplicateOnTitleChange(t *testing.T) {
 	})
 
 	var s2 RunStats
-	_, err = p.runOperationalMirrors(2, 0, &s2)
+	err = p.runOperationalMirrors(2, 0, &s2)
 	require.NoError(t, err)
 
 	n, err := Resolve(v, d, targetMirrorAlias(int(tid)))
@@ -165,7 +168,7 @@ func TestMirrorCurrentRefreshAndTerminalClearsLoops(t *testing.T) {
 
 	p := NewPipeline(d, v, mirrorNoCallGen(t), operationalConfig(), t.Logf)
 	var s1 RunStats
-	_, err = p.runOperationalMirrors(1, 0, &s1)
+	err = p.runOperationalMirrors(1, 0, &s1)
 	require.NoError(t, err)
 	repo := openTestRepo(t, v.path)
 	afterFirst := commitCount(t, repo)
@@ -178,7 +181,7 @@ func TestMirrorCurrentRefreshAndTerminalClearsLoops(t *testing.T) {
 	// A status change refreshes ## Current and commits once.
 	require.NoError(t, d.UpdateTargetStatus(int(id), "in_progress"))
 	var s2 RunStats
-	_, err = p.runOperationalMirrors(2, 0, &s2)
+	err = p.runOperationalMirrors(2, 0, &s2)
 	require.NoError(t, err)
 	assert.Equal(t, 1, s2.Mirrored)
 	assert.Equal(t, afterFirst+1, commitCount(t, repo), "one commit on the refresh")
@@ -189,7 +192,7 @@ func TestMirrorCurrentRefreshAndTerminalClearsLoops(t *testing.T) {
 	// A terminal transition clears ## Open loops.
 	require.NoError(t, d.UpdateTargetStatus(int(id), "done"))
 	var s3 RunStats
-	_, err = p.runOperationalMirrors(3, 0, &s3)
+	err = p.runOperationalMirrors(3, 0, &s3)
 	require.NoError(t, err)
 	n3, err := Resolve(v, d, targetMirrorAlias(int(id)))
 	require.NoError(t, err)
@@ -206,7 +209,7 @@ func TestMirrorUnchangedRescanNoCommit(t *testing.T) {
 
 	p := NewPipeline(d, v, mirrorNoCallGen(t), operationalConfig(), t.Logf)
 	var s1 RunStats
-	_, err = p.runOperationalMirrors(1, 0, &s1)
+	err = p.runOperationalMirrors(1, 0, &s1)
 	require.NoError(t, err)
 	require.Equal(t, 1, s1.Mirrored)
 
@@ -214,7 +217,7 @@ func TestMirrorUnchangedRescanNoCommit(t *testing.T) {
 	afterFirst := commitCount(t, repo)
 
 	var s2 RunStats
-	_, err = p.runOperationalMirrors(2, 0, &s2)
+	err = p.runOperationalMirrors(2, 0, &s2)
 	require.NoError(t, err)
 	assert.Zero(t, s2.Mirrored, "unchanged re-scan mirrors nothing")
 	assert.Equal(t, afterFirst, commitCount(t, repo), "no empty commit on an unchanged re-scan")
@@ -235,7 +238,7 @@ func TestMirrorTrackSymmetry(t *testing.T) {
 
 	p := NewPipeline(d, v, mirrorNoCallGen(t), operationalConfig(), t.Logf)
 	var stats RunStats
-	_, err = p.runOperationalMirrors(1, 0, &stats)
+	err = p.runOperationalMirrors(1, 0, &stats)
 	require.NoError(t, err)
 	assert.Equal(t, 1, stats.Mirrored)
 
@@ -265,7 +268,7 @@ func TestMirrorDismissedLongAgoSkip(t *testing.T) {
 
 	p := NewPipeline(d, v, mirrorNoCallGen(t), operationalConfig(), t.Logf)
 	var stats RunStats
-	_, err = p.runOperationalMirrors(1, 0, &stats)
+	err = p.runOperationalMirrors(1, 0, &stats)
 	require.NoError(t, err)
 	assert.Zero(t, stats.Mirrored, "a long-dismissed target with no mirror is not mirrored")
 
@@ -288,7 +291,7 @@ func TestMirrorAncientTerminalTrackNeverMirrored(t *testing.T) {
 
 	p := NewPipeline(d, v, mirrorNoCallGen(t), operationalConfig(), t.Logf)
 	var stats RunStats
-	_, err = p.runOperationalMirrors(1, 0, &stats)
+	err = p.runOperationalMirrors(1, 0, &stats)
 	require.NoError(t, err)
 	assert.Zero(t, stats.Mirrored, "a long-dismissed track with no mirror is not mirrored")
 
@@ -313,7 +316,7 @@ func TestMirrorStaleDismissedTrackRefreshes(t *testing.T) {
 
 	p := NewPipeline(d, v, mirrorNoCallGen(t), operationalConfig(), t.Logf)
 	var s1 RunStats
-	_, err = p.runOperationalMirrors(1, 0, &s1)
+	err = p.runOperationalMirrors(1, 0, &s1)
 	require.NoError(t, err)
 	require.Equal(t, 1, s1.Mirrored)
 	n1, err := Resolve(v, d, trackMirrorAlias(int(id)))
@@ -327,7 +330,7 @@ func TestMirrorStaleDismissedTrackRefreshes(t *testing.T) {
 	setUpdatedAt(t, d, "tracks", int(id), time.Now().AddDate(0, 0, -120).UTC().Format(time.RFC3339))
 
 	var s2 RunStats
-	_, err = p.runOperationalMirrors(2, 0, &s2)
+	err = p.runOperationalMirrors(2, 0, &s2)
 	require.NoError(t, err)
 	assert.Equal(t, 1, s2.Mirrored, "the stale-dismissed track's mirror is refreshed")
 	n2, err := Resolve(v, d, trackMirrorAlias(int(id)))
@@ -351,7 +354,7 @@ func TestMirrorStaleDoneTargetRefreshes(t *testing.T) {
 
 	p := NewPipeline(d, v, mirrorNoCallGen(t), operationalConfig(), t.Logf)
 	var s1 RunStats
-	_, err = p.runOperationalMirrors(1, 0, &s1)
+	err = p.runOperationalMirrors(1, 0, &s1)
 	require.NoError(t, err)
 	require.Equal(t, 1, s1.Mirrored)
 	n1, err := Resolve(v, d, targetMirrorAlias(int(id)))
@@ -362,7 +365,7 @@ func TestMirrorStaleDoneTargetRefreshes(t *testing.T) {
 	setUpdatedAt(t, d, "targets", int(id), time.Now().AddDate(0, 0, -200).UTC().Format(time.RFC3339))
 
 	var s2 RunStats
-	_, err = p.runOperationalMirrors(2, 0, &s2)
+	err = p.runOperationalMirrors(2, 0, &s2)
 	require.NoError(t, err)
 	assert.Equal(t, 1, s2.Mirrored, "the long-done target's mirror is refreshed")
 	n2, err := Resolve(v, d, targetMirrorAlias(int(id)))
@@ -388,7 +391,7 @@ func TestMirrorSnoozedTargetOpenLoopsTagged(t *testing.T) {
 
 	p := NewPipeline(d, v, mirrorNoCallGen(t), operationalConfig(), t.Logf)
 	var stats RunStats
-	_, err = p.runOperationalMirrors(1, 0, &stats)
+	err = p.runOperationalMirrors(1, 0, &stats)
 	require.NoError(t, err)
 
 	n, err := Resolve(v, d, targetMirrorAlias(int(id)))
@@ -468,7 +471,7 @@ func TestMemory14_MirrorNeverWritesOperationalTables(t *testing.T) {
 
 	p := NewPipeline(d, v, mirrorNoCallGen(t), operationalConfig(), t.Logf)
 	var stats RunStats
-	_, err = p.runOperationalMirrors(1, 0, &stats)
+	err = p.runOperationalMirrors(1, 0, &stats)
 	require.NoError(t, err)
 	require.Positive(t, stats.Mirrored, "the step actually did mirror work")
 

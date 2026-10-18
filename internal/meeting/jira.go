@@ -28,14 +28,15 @@ type issueRole struct {
 
 // gatherJiraMeetingContext builds a Jira context section for the meeting prep prompt.
 // It loads open issues for each attendee, computes workload stats, and finds shared issues.
-// Returns empty string if Jira is disabled or no attendees have Jira data.
-func gatherJiraMeetingContext(database *db.DB, cfg *config.Config, attendeeSlackIDs []string) (string, error) {
+// Returns empty string if Jira is disabled or no attendees have Jira data;
+// a failed per-attendee read is skipped, never an error.
+func gatherJiraMeetingContext(database *db.DB, cfg *config.Config, attendeeSlackIDs []string) string {
 	if cfg == nil || !cfg.Jira.Enabled || len(attendeeSlackIDs) == 0 {
-		return "", nil
+		return ""
 	}
 	idSet, ids := dedupAttendeeIDs(attendeeSlackIDs)
 	if len(ids) == 0 {
-		return "", nil
+		return ""
 	}
 
 	now := time.Now()
@@ -45,14 +46,14 @@ func gatherJiraMeetingContext(database *db.DB, cfg *config.Config, attendeeSlack
 	allIssues := indexIssuesAndReporters(attendees, idSet, issueParticipants)
 
 	if !attendeesHaveData(attendees) {
-		return "", nil
+		return ""
 	}
 
 	var sb strings.Builder
 	sb.WriteString("=== JIRA CONTEXT FOR ATTENDEES ===\n\n")
 	formatAttendeeSections(&sb, attendees, today)
 	formatSharedIssues(&sb, attendees, allIssues, issueParticipants)
-	return sb.String(), nil
+	return sb.String()
 }
 
 // dedupAttendeeIDs returns a presence set + ordered list with empties removed.
