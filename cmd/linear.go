@@ -50,13 +50,13 @@ var linearCmd = &cobra.Command{
 
 var linearAddCmd = &cobra.Command{
 	Use:   "add",
-	Short: "Connect a new Linear workspace via OAuth",
+	Short: "Connect a new Linear workspace via OAuth or a personal API key (--api-key)",
 	RunE:  runLinearAdd,
 }
 
 var linearLoginCmd = &cobra.Command{
 	Use:   "login",
-	Short: "Re-consent (re-authorize) a connected Linear workspace",
+	Short: "Re-authorize a connected Linear workspace (OAuth, or --api-key to replace the key)",
 	RunE:  runLinearLogin,
 }
 
@@ -65,13 +65,13 @@ var linearAccountsCmd = &cobra.Command{
 	Short: "List connected Linear workspaces",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		_, database, err := openJiraCmdDB()
+		cfg, database, err := openJiraCmdDB()
 		if err != nil {
 			return err
 		}
 		defer database.Close()
 		asJSON, _ := cmd.Flags().GetBool("json")
-		return printLinearAccounts(cmd.OutOrStdout(), database, asJSON)
+		return printLinearAccounts(cmd.OutOrStdout(), database, cfg.WorkspaceDir(), asJSON)
 	},
 }
 
@@ -142,6 +142,9 @@ func init() {
 	for _, c := range []*cobra.Command{linearAddCmd, linearLoginCmd} {
 		c.Flags().Bool("no-open", false, "don't open the browser automatically")
 		c.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
+	}
+	for _, c := range []*cobra.Command{linearAddCmd, linearLoginCmd} {
+		c.Flags().Bool("api-key", false, "use a personal API key read from stdin instead of OAuth")
 	}
 	linearAddCmd.Flags().String("label", "", "label for the new account")
 	linearAccountsCmd.Flags().Bool("json", false, "output as JSON (for Swift integration)")
@@ -275,7 +278,7 @@ func connectLinearAccount(ctx context.Context, cfg *config.Config, database *db.
 	if err = saveLinearTokenLocked(ctx, linear.NewTokenStore(cfg.WorkspaceDir(), id), token); err != nil {
 		return 0, false, err
 	}
-	viewer, err := linearFetchViewer(ctx, token.AccessToken)
+	viewer, err := linearFetchViewer(ctx, token)
 	if err != nil {
 		return 0, false, fmt.Errorf("fetching Linear viewer: %w", err)
 	}
@@ -347,8 +350,35 @@ func reviveLinearAccount(ctx context.Context, cfg *config.Config, database *db.D
 	return nil
 }
 
-func runLinearAdd(cmd *cobra.Command, _ []string) error {
+// acquireLinearToken returns the credential for add/login: a personal API key
+// read from stdin with --api-key (hidden prompt on a terminal, one line from a
+// pipe, never argv), otherwise the OAuth browser flow.
+func acquireLinearToken(cmd *cobra.Command) (*linear.Token, error) {
+	if useKey, _ := cmd.Flags().GetBool("api-key"); useKey {
+		key, err := readSecret(cmd, "Linear API key: ")
+		if err != nil {
+			return nil, fmt.Errorf("reading API key: %w", err)
+		}
+		if key == "" {
+			return nil, errors.New("empty API key")
+		}
+		return linear.APIKeyToken(key), nil
+	}
 	oauthCfg, err := linearLoginConfig()
+	if err != nil {
+		return nil, err
+	}
+	opts := linearLoginOptionsFromFlags(cmd)
+	token, err := linearLogin(cmd.Context(), oauthCfg, cmd.OutOrStdout(), opts)
+	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
+	if err != nil {
+		return nil, fmt.Errorf("linear login: %w", err)
+	}
+	return token, nil
+}
+
+func runLinearAdd(cmd *cobra.Command, _ []string) error {
+	token, err := acquireLinearToken(cmd)
 	if err != nil {
 		return err
 	}
@@ -360,12 +390,6 @@ func runLinearAdd(cmd *cobra.Command, _ []string) error {
 
 	label, _ := cmd.Flags().GetString("label")
 	out := cmd.OutOrStdout()
-	opts := linearLoginOptionsFromFlags(cmd)
-	token, err := linearLogin(cmd.Context(), oauthCfg, out, opts)
-	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
-	if err != nil {
-		return fmt.Errorf("linear login: %w", err)
-	}
 	id, revived, err := connectLinearAccount(cmd.Context(), cfg, database, token, label)
 	if err != nil {
 		return err
@@ -385,7 +409,7 @@ func runLinearAdd(cmd *cobra.Command, _ []string) error {
 }
 
 func runLinearLogin(cmd *cobra.Command, _ []string) error {
-	oauthCfg, err := linearLoginConfig()
+	token, err := acquireLinearToken(cmd)
 	if err != nil {
 		return err
 	}
@@ -400,12 +424,6 @@ func runLinearLogin(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 	out := cmd.OutOrStdout()
-	opts := linearLoginOptionsFromFlags(cmd)
-	token, err := linearLogin(cmd.Context(), oauthCfg, out, opts)
-	oauthpage.ReturnAfterLogin(opts.AppReturn, err, cmd.ErrOrStderr())
-	if err != nil {
-		return fmt.Errorf("linear login: %w", err)
-	}
 	if err := relinkLinearAccount(cmd.Context(), cfg, database, account, token); err != nil {
 		return err
 	}
@@ -419,7 +437,7 @@ func runLinearLogin(cmd *cobra.Command, _ []string) error {
 func relinkLinearAccount(ctx context.Context, cfg *config.Config, database *db.DB, account db.LinearAccount, token *linear.Token) error {
 	// The viewer is fetched with the new token in memory, before it is saved,
 	// so a wrong-workspace login never overwrites the account's token.
-	viewer, err := linearFetchViewer(ctx, token.AccessToken)
+	viewer, err := linearFetchViewer(ctx, token)
 	if err != nil {
 		return fmt.Errorf("fetching Linear viewer: %w", err)
 	}
@@ -454,9 +472,23 @@ type linearAccountJSON struct {
 	Status  string `json:"status"`
 	Enabled bool   `json:"enabled"`
 	Error   string `json:"error"`
+	Auth    string `json:"auth"`
 }
 
-func printLinearAccounts(w io.Writer, database *db.DB, asJSON bool) error {
+// linearAuthKind reads the credential kind from the account's token file:
+// "oauth", "api_key", or "" when the file is missing or unreadable.
+func linearAuthKind(workspaceDir string, accountID int64) string {
+	tok, err := linear.NewTokenStore(workspaceDir, accountID).Load()
+	if err != nil {
+		return ""
+	}
+	if tok.IsAPIKey() {
+		return linear.TokenTypeAPIKey
+	}
+	return "oauth"
+}
+
+func printLinearAccounts(w io.Writer, database *db.DB, workspaceDir string, asJSON bool) error {
 	accounts, err := database.ListLinearAccounts()
 	if err != nil {
 		return err
@@ -464,7 +496,7 @@ func printLinearAccounts(w io.Writer, database *db.DB, asJSON bool) error {
 	if asJSON {
 		rows := make([]linearAccountJSON, 0, len(accounts))
 		for _, a := range accounts {
-			rows = append(rows, linearAccountJSON{a.ID, a.Label, a.OrgName, linearWorkspaceURL(a), a.Status, a.Enabled, a.Error})
+			rows = append(rows, linearAccountJSON{a.ID, a.Label, a.OrgName, linearWorkspaceURL(a), a.Status, a.Enabled, a.Error, linearAuthKind(workspaceDir, a.ID)})
 		}
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
@@ -474,14 +506,15 @@ func printLinearAccounts(w io.Writer, database *db.DB, asJSON bool) error {
 		fmt.Fprintln(w, "No Linear workspaces connected. Run 'watchtower linear add' to connect one.")
 		return nil
 	}
-	fmt.Fprintf(w, "%-4s %-24s %-36s %-8s %-8s %s\n", "ID", "Name", "Workspace URL", "Status", "Enabled", "Error")
+	fmt.Fprintf(w, "%-4s %-24s %-36s %-8s %-8s %-8s %s\n", "ID", "Name", "Workspace URL", "Status", "Enabled", "Auth", "Error")
 	for _, a := range accounts {
 		enabled := "yes"
 		if !a.Enabled {
 			enabled = "no"
 		}
-		fmt.Fprintf(w, "%-4d %-24s %-36s %-8s %-8s %s\n",
-			a.ID, truncate(linearAccountDisplayName(a), 24), truncate(linearWorkspaceURL(a), 36), a.Status, enabled, truncate(a.Error, 40))
+		fmt.Fprintf(w, "%-4d %-24s %-36s %-8s %-8s %-8s %s\n",
+			a.ID, truncate(linearAccountDisplayName(a), 24), truncate(linearWorkspaceURL(a), 36), a.Status, enabled,
+			linearAuthKind(workspaceDir, a.ID), truncate(a.Error, 40))
 	}
 	return nil
 }
@@ -561,7 +594,9 @@ func revokeAndDeleteLinearToken(ctx context.Context, store *linear.TokenStore, e
 		return fmt.Errorf("deleting token: %w", err)
 	}
 	defer unlock()
-	if tok, err := store.Load(); err == nil && tok.AccessToken != "" {
+	if tok, err := store.Load(); err == nil && tok.IsAPIKey() {
+		fmt.Fprintln(errOut, "Note: a personal API key can't be revoked from here; revoke it in Linear's settings (Settings > Account > Security & access).")
+	} else if err == nil && tok.AccessToken != "" {
 		revokeCtx, cancelRevoke := context.WithTimeout(ctx, 10*time.Second)
 		if err := linearRevoke(revokeCtx, tok.AccessToken); err != nil {
 			fmt.Fprintf(errOut, "Warning: revoking token: %v\n", err)
@@ -716,13 +751,13 @@ func runLinearSync(cmd *cobra.Command, _ []string) error {
 }
 
 func runLinearStatus(cmd *cobra.Command, _ []string) error {
-	_, database, err := openJiraCmdDB()
+	cfg, database, err := openJiraCmdDB()
 	if err != nil {
 		return err
 	}
 	defer database.Close()
 	out := cmd.OutOrStdout()
-	if err := printLinearAccounts(out, database, false); err != nil {
+	if err := printLinearAccounts(out, database, cfg.WorkspaceDir(), false); err != nil {
 		return err
 	}
 	accounts, err := database.ListLinearAccounts()

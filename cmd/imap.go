@@ -231,10 +231,15 @@ func runImapList(cmd *cobra.Command, _ []string) error {
 // prompt when interactive, or the full piped input when not (e.g. spawned by
 // the Desktop app) — never via a flag/argv, which would leak into `ps`.
 func readPassword(cmd *cobra.Command) (string, error) {
+	return readSecret(cmd, "Password: ")
+}
+
+// readSecret is readPassword with a caller-chosen terminal prompt.
+func readSecret(cmd *cobra.Command, prompt string) (string, error) {
 	in := cmd.InOrStdin()
 	if f, ok := in.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 		out := cmd.OutOrStdout()
-		fmt.Fprint(out, "Password: ")
+		fmt.Fprint(out, prompt)
 		data, err := term.ReadPassword(int(f.Fd()))
 		fmt.Fprintln(out)
 		if err != nil {

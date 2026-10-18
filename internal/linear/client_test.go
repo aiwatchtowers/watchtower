@@ -215,12 +215,30 @@ func TestFetchViewerWithToken(t *testing.T) {
 	graphqlEndpoint = srv.URL
 	t.Cleanup(func() { graphqlEndpoint = old })
 
-	v, err := FetchViewerWithToken(context.Background(), "good")
+	v, err := FetchViewerWithToken(context.Background(), &Token{AccessToken: "good"})
 	require.NoError(t, err)
 	assert.Equal(t, Viewer{UserID: "user-1", Email: "owner@example.com", Name: "Owner", OrgID: "org-1", OrgName: "Acme", URLKey: "acme"}, v)
 
-	_, err = FetchViewerWithToken(context.Background(), "stale")
+	_, err = FetchViewerWithToken(context.Background(), &Token{AccessToken: "stale"})
 	assert.ErrorIs(t, err, ErrAuthRevoked)
+}
+
+func TestFetchViewerWithToken_APIKeyBareHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "lin_api_x" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"viewer":{"id":"user-1","organization":{"id":"org-1"}}}}`))
+	}))
+	t.Cleanup(srv.Close)
+	old := graphqlEndpoint
+	graphqlEndpoint = srv.URL
+	t.Cleanup(func() { graphqlEndpoint = old })
+
+	v, err := FetchViewerWithToken(context.Background(), APIKeyToken("lin_api_x"))
+	require.NoError(t, err)
+	assert.Equal(t, "org-1", v.OrgID)
 }
 
 func newAPIKeyClient(t *testing.T, gql http.HandlerFunc) (*Client, *atomic.Int32) {

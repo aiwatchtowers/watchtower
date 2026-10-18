@@ -29,17 +29,17 @@ func (c *Client) FetchViewer(ctx context.Context) (Viewer, error) {
 	return v.viewer(), nil
 }
 
-// FetchViewerWithToken runs one viewer request with a bare access token: no
-// token store, no refresh. Login and add use it to identify a fresh token's
+// FetchViewerWithToken runs one viewer request with a token held in memory: no
+// token store, no refresh. A personal API key goes out as a bare Authorization. Login and add use it to identify a fresh token's
 // workspace before anything is written to disk.
-func FetchViewerWithToken(ctx context.Context, accessToken string) (Viewer, error) {
+func FetchViewerWithToken(ctx context.Context, token *Token) (Viewer, error) {
 	body, err := json.Marshal(map[string]any{"query": queryViewer})
 	if err != nil {
 		return Viewer{}, fmt.Errorf("encoding linear request: %w", err)
 	}
 	c := &Client{endpoint: graphqlEndpoint, http: &http.Client{Timeout: 30 * time.Second}}
 	var v viewerData
-	authFailed, err := c.send(ctx, body, accessToken, false, &v)
+	authFailed, err := c.send(ctx, body, token.AccessToken, token.IsAPIKey(), &v)
 	if err != nil {
 		return Viewer{}, fmt.Errorf("fetching linear viewer: %w", err)
 	}

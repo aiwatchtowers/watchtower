@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -46,7 +47,7 @@ func TestPrintLinearAccountsJSON(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, database.UpdateLinearAccountConnection(id, "org-1", "acme", "Acme"))
 	var buf bytes.Buffer
-	require.NoError(t, printLinearAccounts(&buf, database, true))
+	require.NoError(t, printLinearAccounts(&buf, database, t.TempDir(), true))
 	var rows []map[string]any
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
 	require.Len(t, rows, 1)
@@ -74,8 +75,8 @@ func linearTestEnv(t *testing.T, viewer *linear.Viewer) *config.Config {
 	t.Cleanup(func() { flagConfig, linearFetchViewer = oldCfg, oldFetch })
 	cfg := &config.Config{ActiveWorkspace: "test"}
 	require.NoError(t, os.MkdirAll(cfg.WorkspaceDir(), 0o700))
-	linearFetchViewer = func(_ context.Context, accessToken string) (linear.Viewer, error) {
-		if viewer == nil || accessToken == "" {
+	linearFetchViewer = func(_ context.Context, token *linear.Token) (linear.Viewer, error) {
+		if viewer == nil || token.AccessToken == "" {
 			return linear.Viewer{}, errors.New("viewer unavailable")
 		}
 		return *viewer, nil
@@ -122,7 +123,7 @@ func TestConnectLinearAccount_RevivesRemoved(t *testing.T) {
 	// The workspace was renamed while the account was removed.
 	renamed := acmeViewer
 	renamed.OrgName, renamed.URLKey = "Acme Renamed", "acme-renamed"
-	linearFetchViewer = func(context.Context, string) (linear.Viewer, error) { return renamed, nil }
+	linearFetchViewer = func(context.Context, *linear.Token) (linear.Viewer, error) { return renamed, nil }
 	id, revived, err := connectLinearAccount(context.Background(), cfg, database, &linear.Token{AccessToken: "new"}, "")
 	require.NoError(t, err)
 	assert.True(t, revived)
@@ -168,7 +169,7 @@ func TestRelinkLinearAccount(t *testing.T) {
 	// Wrong workspace: refused, token untouched.
 	other := acmeViewer
 	other.OrgID, other.OrgName = "org-2", "Other"
-	linearFetchViewer = func(context.Context, string) (linear.Viewer, error) { return other, nil }
+	linearFetchViewer = func(context.Context, *linear.Token) (linear.Viewer, error) { return other, nil }
 	err = relinkLinearAccount(context.Background(), cfg, database, acct, &linear.Token{AccessToken: "wrong"})
 	require.ErrorContains(t, err, "this login is for workspace Other, but account")
 	tok, err := linear.NewTokenStore(cfg.WorkspaceDir(), id).Load()
@@ -178,7 +179,7 @@ func TestRelinkLinearAccount(t *testing.T) {
 	// Same workspace, renamed since: saved, status ok, new name stored.
 	renamed := acmeViewer
 	renamed.OrgName, renamed.URLKey = "Acme Renamed", "acme-renamed"
-	linearFetchViewer = func(context.Context, string) (linear.Viewer, error) { return renamed, nil }
+	linearFetchViewer = func(context.Context, *linear.Token) (linear.Viewer, error) { return renamed, nil }
 	require.NoError(t, relinkLinearAccount(context.Background(), cfg, database, acct, &linear.Token{AccessToken: "fresh"}))
 	tok, err = linear.NewTokenStore(cfg.WorkspaceDir(), id).Load()
 	require.NoError(t, err)
@@ -365,4 +366,146 @@ func TestLinearTeamKeys_ReportsReadFailure(t *testing.T) {
 	var errOut bytes.Buffer
 	assert.Empty(t, linearTeamKeys(database, 7, &errOut))
 	assert.Contains(t, errOut.String(), "account 7: reading teams")
+}
+
+// newLinearKeyCmd is newLinearCmd with --api-key set and the key piped on stdin.
+func newLinearKeyCmd(t *testing.T, stdin string) (*cobra.Command, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	cmd, out, errOut := newLinearCmd(context.Background())
+	cmd.Flags().Bool("api-key", true, "")
+	cmd.Flags().String("label", "", "")
+	cmd.SetIn(strings.NewReader(stdin))
+	return cmd, out, errOut
+}
+
+// stubLinearKeyFlow fails the test on any OAuth browser flow and records the
+// tokens handed to the viewer call.
+func stubLinearKeyFlow(t *testing.T, viewer linear.Viewer) *[]*linear.Token {
+	t.Helper()
+	oldLogin, oldFetch := linearLogin, linearFetchViewer
+	t.Cleanup(func() { linearLogin, linearFetchViewer = oldLogin, oldFetch })
+	linearLogin = func(context.Context, linear.OAuthConfig, io.Writer, linear.LoginOptions) (*linear.Token, error) {
+		t.Fatal("the OAuth flow must not run with --api-key")
+		return nil, nil
+	}
+	var seen []*linear.Token
+	linearFetchViewer = func(_ context.Context, token *linear.Token) (linear.Viewer, error) {
+		seen = append(seen, token)
+		return viewer, nil
+	}
+	return &seen
+}
+
+func TestLinearAdd_APIKeyFromStdin(t *testing.T) {
+	cfg, database := linearCmdFixture(t)
+	seen := stubLinearKeyFlow(t, acmeViewer)
+	cmd, out, errOut := newLinearKeyCmd(t, "lin_api_x\n")
+
+	require.NoError(t, runLinearAdd(cmd, nil))
+
+	accounts, err := database.ListLinearAccounts()
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	tok, err := linear.NewTokenStore(cfg.WorkspaceDir(), accounts[0].ID).Load()
+	require.NoError(t, err)
+	assert.Equal(t, "api_key", tok.TokenType)
+	assert.Equal(t, "lin_api_x", tok.AccessToken)
+	require.Len(t, *seen, 1)
+	assert.True(t, (*seen)[0].IsAPIKey(), "the workspace is identified with a key-kind token")
+	assert.NotContains(t, out.String()+errOut.String(), "lin_api_x")
+}
+
+func TestLinearAdd_APIKeyTrimmedAndEmptyRefused(t *testing.T) {
+	cfg, database := linearCmdFixture(t)
+	seen := stubLinearKeyFlow(t, acmeViewer)
+
+	cmd, _, _ := newLinearKeyCmd(t, "\n")
+	require.EqualError(t, runLinearAdd(cmd, nil), "empty API key")
+	assert.Empty(t, *seen, "no network call for an empty key")
+	accounts, err := database.ListLinearAccounts()
+	require.NoError(t, err)
+	assert.Empty(t, accounts)
+
+	cmd, _, _ = newLinearKeyCmd(t, "  lin_api_x \n")
+	require.NoError(t, runLinearAdd(cmd, nil))
+	accounts, err = database.ListLinearAccounts()
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	tok, err := linear.NewTokenStore(cfg.WorkspaceDir(), accounts[0].ID).Load()
+	require.NoError(t, err)
+	assert.Equal(t, "lin_api_x", tok.AccessToken)
+}
+
+func TestLinearLogin_APIKeyWrongWorkspaceRefused(t *testing.T) {
+	cfg, database := linearCmdFixture(t)
+	setLinearFlagAccount(t, 0)
+	stubLinearKeyFlow(t, acmeViewer)
+	cmd, _, _ := newLinearKeyCmd(t, "lin_api_old\n")
+	require.NoError(t, runLinearAdd(cmd, nil))
+	accounts, err := database.ListLinearAccounts()
+	require.NoError(t, err)
+	require.Len(t, accounts, 1)
+	id := accounts[0].ID
+	setLinearFlagAccount(t, id)
+
+	other := acmeViewer
+	other.OrgID, other.OrgName = "org-2", "Other"
+	stubLinearKeyFlow(t, other)
+	cmd, _, _ = newLinearKeyCmd(t, "lin_api_new\n")
+	err = runLinearLogin(cmd, nil)
+	require.ErrorContains(t, err, "this login is for workspace Other")
+	tok, err := linear.NewTokenStore(cfg.WorkspaceDir(), id).Load()
+	require.NoError(t, err)
+	assert.Equal(t, "lin_api_old", tok.AccessToken)
+
+	stubLinearKeyFlow(t, acmeViewer)
+	cmd, _, _ = newLinearKeyCmd(t, "lin_api_new\n")
+	require.NoError(t, runLinearLogin(cmd, nil))
+	tok, err = linear.NewTokenStore(cfg.WorkspaceDir(), id).Load()
+	require.NoError(t, err)
+	assert.Equal(t, "lin_api_new", tok.AccessToken)
+	assert.True(t, tok.IsAPIKey())
+}
+
+func TestLinearAccounts_JSONAuth(t *testing.T) {
+	dir := t.TempDir()
+	database := db.OpenTestDB(t)
+	oauthID, err := database.CreateLinearAccount("oauth")
+	require.NoError(t, err)
+	keyID, err := database.CreateLinearAccount("key")
+	require.NoError(t, err)
+	_, err = database.CreateLinearAccount("nofile")
+	require.NoError(t, err)
+	require.NoError(t, linear.NewTokenStore(dir, oauthID).Save(&linear.Token{AccessToken: "a", RefreshToken: "r"}))
+	require.NoError(t, linear.NewTokenStore(dir, keyID).Save(linear.APIKeyToken("k")))
+
+	var buf bytes.Buffer
+	require.NoError(t, printLinearAccounts(&buf, database, dir, true))
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
+	require.Len(t, rows, 3)
+	assert.Equal(t, "oauth", rows[0]["auth"])
+	assert.Equal(t, "api_key", rows[1]["auth"])
+	assert.Equal(t, "", rows[2]["auth"])
+}
+
+func TestLinearRemove_APIKeySkipsRevoke(t *testing.T) {
+	cfg, database := linearCmdFixture(t)
+	setLinearFlagAccount(t, 0)
+	id, err := database.CreateLinearAccount("Work")
+	require.NoError(t, err)
+	store := linear.NewTokenStore(cfg.WorkspaceDir(), id)
+	require.NoError(t, store.Save(linear.APIKeyToken("lin_api_x")))
+	old := linearRevoke
+	t.Cleanup(func() { linearRevoke = old })
+	linearRevoke = func(context.Context, string) error {
+		t.Fatal("a personal API key has nothing to revoke")
+		return nil
+	}
+
+	cmd, out, errOut := newLinearCmd(context.Background())
+	require.NoError(t, runLinearRemove(cmd, []string{strconv.FormatInt(id, 10)}))
+	assert.False(t, store.Exists())
+	assert.Contains(t, errOut.String(), "revoke it in Linear's settings")
+	assert.NotContains(t, out.String()+errOut.String(), "lin_api_x")
 }
