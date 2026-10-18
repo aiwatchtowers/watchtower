@@ -42,6 +42,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertEqual(SliceKind.sessionReport.rawValue, "session_report")
         XCTAssertEqual(SliceKind.sessionTimeline.rawValue, "session_timeline")
         XCTAssertEqual(SliceKind.permissionRequest.rawValue, "permission_request")
+        XCTAssertEqual(SliceKind.sessionChat.rawValue, "session_chat")
         XCTAssertEqual(PermissionRequest.sliceKind, .permissionRequest)
 
         XCTAssertEqual(Workbench.sliceKind, .workbench)
@@ -55,12 +56,12 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
 
     func testWorkbenchActionKindsAreFrozen() {
         XCTAssertEqual(
-            ActionKind.allCases.suffix(14).map(\.rawValue),
+            ActionKind.allCases.suffix(15).map(\.rawValue),
             [
                 "ask_answer", "board_target_status", "board_target_priority", "board_comment_add",
                 "board_comment_reply", "board_target_create", "session_start", "session_input",
                 "session_input_cancel", "session_finish_request", "session_stop", "session_report_request",
-                "permission_answer", "session_interrupt"
+                "permission_answer", "session_interrupt", "session_chat_request"
             ]
         )
     }
@@ -266,6 +267,16 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
             wire("permission_answer", entity: "31", params: #"{"behavior":"deny","request_id":9}"#)
         )
         try assertParams(
+            SessionChatRequestParams(sessionID: 7),
+            entityID: "7",
+            wire("session_chat_request", entity: "7", params: #"{"session_id":7}"#)
+        )
+        try assertParams(
+            SessionChatRequestParams(sessionID: 7, subagentID: "a1b2"),
+            entityID: "7",
+            wire("session_chat_request", entity: "7", params: #"{"session_id":7,"subagent_id":"a1b2"}"#)
+        )
+        try assertParams(
             SessionInterruptParams(),
             entityID: "31",
             wire("session_interrupt", entity: "31", params: "{}")
@@ -413,6 +424,45 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         XCTAssertNil(report.phasesClipped)
     }
 
+    func testSessionChatFixtureDecodes() throws {
+        let chat = try SessionChat.decode(payload: try fixture("session_chat"))
+        XCTAssertEqual(chat.sessionID, 7)
+        XCTAssertNil(chat.agentID)
+        XCTAssertEqual(chat.updatedAt, Date(timeIntervalSince1970: 1_700_000_060))
+        XCTAssertTrue(chat.live)
+        XCTAssertEqual(chat.entriesMore, 12)
+        XCTAssertEqual(Set(chat.entries.map(\.kind)), Set(SessionChat.Entry.Kind.knownValues))
+        XCTAssertTrue(chat.entries.allSatisfy(\.kind.isKnown))
+        XCTAssertEqual(chat.entries.filter(\.textClipped).map(\.id), ["e3"])
+        XCTAssertEqual(chat.entries[3].askID, 12)
+        XCTAssertEqual(chat.entries[3].title, "Which release?")
+        XCTAssertEqual(chat.entries[4].via, "Watchtower")
+        XCTAssertEqual(
+            chat.entries[5].subagent,
+            .init(agentID: "a1b2", type: "Explore", description: "Check the fixtures", status: "running")
+        )
+        XCTAssertNil(chat.entries[6].at)
+
+        let sub = try SessionChat.decode(payload: try fixture("session_chat_subagent"))
+        XCTAssertEqual(sub.agentID, "a1b2")
+        XCTAssertFalse(sub.live)
+        XCTAssertEqual(sub.entries.count, 2)
+    }
+
+    func testSessionChatRecordName() {
+        XCTAssertEqual(SessionChat.recordName(sessionID: 7, agentID: nil), "session_chat-7")
+        XCTAssertEqual(SessionChat.recordName(sessionID: 7, agentID: "a1b2"), "session_chat-7-a1b2")
+        XCTAssertEqual(SessionChat.recordName(sessionID: 7, agentID: "a1b2"), SliceKind.sessionChat.recordName(id: "7-a1b2"))
+    }
+
+    func testSessionChatFutureKindStillDecodes() throws {
+        var json = try object("session_chat")
+        json["entries"] = [["id": "x", "kind": "hologram", "text": "t"]]
+        let chat = try SessionChat.decode(payload: try data(json))
+        XCTAssertEqual(chat.entries.first?.kind.rawValue, "hologram")
+        XCTAssertEqual(chat.entries.first?.kind.isKnown, false)
+    }
+
     func testSessionTimelineFixture() throws {
         let timeline = try SessionTimeline.decode(payload: try fixture("session_timeline"))
         XCTAssertEqual(timeline.sessionID, 31)
@@ -431,7 +481,8 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
 
     private static let allFixtures = [
         "workbench", "workbench_target", "workbench_comment", "terminal_session",
-        "owner_ask", "owner_ask_review", "owner_ask_closed", "session_report", "session_timeline"
+        "owner_ask", "owner_ask_review", "owner_ask_closed", "session_report", "session_timeline",
+        "session_chat", "session_chat_subagent"
     ]
 
     private func decodeAny(_ name: String, _ payload: Data) throws -> AnyHashable {
@@ -443,6 +494,7 @@ final class WorkbenchMirrorFixtureTests: XCTestCase {
         case "owner_ask", "owner_ask_review", "owner_ask_closed": AnyHashable(try OwnerAsk.decode(payload: payload))
         case "session_report": AnyHashable(try SessionReport.decode(payload: payload))
         case "session_timeline": AnyHashable(try SessionTimeline.decode(payload: payload))
+        case "session_chat", "session_chat_subagent": AnyHashable(try SessionChat.decode(payload: payload))
         default: throw XCTSkip("unknown fixture \(name)")
         }
     }

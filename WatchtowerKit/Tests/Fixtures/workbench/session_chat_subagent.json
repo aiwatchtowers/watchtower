@@ -1,0 +1,11 @@
+{
+  "agent_id": "a1b2",
+  "entries": [
+    {"at": 1700000041, "id": "s1", "kind": "owner", "text": "Check the fixtures."},
+    {"at": 1700000045, "id": "s2", "kind": "agent", "text": "The fixtures look fine."}
+  ],
+  "entries_more": 0,
+  "live": false,
+  "session_id": 7,
+  "updated_at": 1700000060
+}

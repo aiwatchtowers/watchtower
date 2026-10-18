@@ -249,3 +249,24 @@ public struct SessionInterruptParams: ActionParams {
     public static let actionKind = ActionKind.sessionInterrupt
     public init() {}
 }
+
+/// `session_chat_request`, entity: the session id. Idempotent: asks the Mac
+/// to watch the session's chat (or one subagent's) for the next five minutes;
+/// the phone repeats it while the screen is open.
+public struct SessionChatRequestParams: ActionParams {
+    public static let actionKind = ActionKind.sessionChatRequest
+
+    public let sessionID: Int64
+    /// nil for the main feed.
+    public let subagentID: String?
+
+    public init(sessionID: Int64, subagentID: String? = nil) {
+        self.sessionID = sessionID
+        self.subagentID = subagentID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case sessionID = "sessionId"
+        case subagentID = "subagentId"
+    }
+}
