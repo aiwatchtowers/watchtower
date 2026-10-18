@@ -39,7 +39,7 @@ package struct TargetPrefill: Equatable {
 /// One link to be written into `target_links` alongside the new target.
 package struct TargetPrefillLink: Equatable {
     /// Must satisfy the Go-side allow-list `IsValidExternalRef`:
-    /// starts with `"jira:"` or `"slack:"`. Anything else is dropped before insert.
+    /// starts with `"jira:"`, `"linear:"` or `"slack:"`. Anything else is dropped before insert.
     package var externalRef: String
     /// One of the values in the `target_links.relation` CHECK:
     /// `contributes_to | blocks | related | duplicates`.
