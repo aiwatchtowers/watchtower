@@ -103,13 +103,13 @@ struct KitIconButtonStyle: ButtonStyle {
                 .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
                 .frame(width: 26, height: 26)
                 .background(
-                    HeaderSegmentStyle.fill(isOn: isOn, isHovered: isHovered || configuration.isPressed),
+                    SegmentedToggleStyle.fill(isOn: isOn, isHovered: isHovered || configuration.isPressed),
                     in: RoundedRectangle(cornerRadius: KitIconButtonStyle.cornerRadius, style: .continuous)
                 )
                 .contentShape(Rectangle())
                 .onHover { isHovered = $0 }
-                .animation(HeaderSegmentStyle.animation, value: isOn)
-                .animation(HeaderSegmentStyle.animation, value: isHovered)
+                .animation(SegmentedToggleStyle.animation, value: isOn)
+                .animation(SegmentedToggleStyle.animation, value: isHovered)
         }
     }
 }

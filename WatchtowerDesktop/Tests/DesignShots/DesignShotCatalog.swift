@@ -142,12 +142,12 @@ enum DesignShotFixtures {
     /// status menu label and a read-only one, the `#id` badge and an agent tag.
     static func panelParts() -> AnyView {
         AnyView(VStack(alignment: .leading, spacing: 12) {
-            WorkbenchDetailSectionHeader(title: "Sub-tasks", systemImage: "checklist", count: 3)
+            SectionHeader(title: "Sub-tasks", systemImage: "checklist", count: 3)
             HStack(spacing: 8) {
-                WorkbenchDetailMenuLabel(text: "In progress", systemImage: "circle.lefthalf.filled", color: .blue)
-                WorkbenchDetailMenuLabel(text: "Done", systemImage: "checkmark.circle.fill", color: .green, isMenu: false)
-                WorkbenchCapsuleBadge(text: "#42")
-                AgentTag(text: "Codex")
+                MenuLabel(text: "In progress", systemImage: "circle.lefthalf.filled", color: .blue)
+                MenuLabel(text: "Done", systemImage: "checkmark.circle.fill", color: .green, isMenu: false)
+                CountBadge(text: "#42")
+                OutlineTag(text: "Codex")
             }
             Spacer(minLength: 0)
         })
@@ -191,30 +191,13 @@ enum DesignShotFixtures {
                 }
                 HStack {
                     Spacer()
-                    JumpToLatestLabel()
+                    FloatingButtonLabel(title: "Jump to latest", systemImage: "arrow.down")
                     Spacer()
                 }
                 Spacer(minLength: 0)
             })
         } catch {
             return failure(error)
-        }
-    }
-
-    /// A verbatim copy of `ChatFeedView.jumpToLatestButton`'s label, which
-    /// is private there (and only shows once the feed is scrolled away).
-    /// Task 5 of the style guide plan promotes it to `FloatingButtonLabel`;
-    /// this shot then renders that instead.
-    private struct JumpToLatestLabel: View {
-        var body: some View {
-            Label("Jump to latest", systemImage: "arrow.down")
-                .font(.caption)
-                .fontWeight(.medium)
-                .foregroundStyle(.white)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Color.accentColor, in: Capsule())
-                .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
         }
     }
 

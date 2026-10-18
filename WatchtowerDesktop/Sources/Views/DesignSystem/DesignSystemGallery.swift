@@ -18,6 +18,11 @@ struct DesignSystemGalleryContent: View {
         VStack(alignment: .leading, spacing: Spacing.wide) {
             GallerySection(title: "Tokens") { GalleryTokens() }
             GallerySection(title: "Buttons") { GalleryButtons() }
+            GallerySection(title: "Segmented toggle") { GallerySegments() }
+            GallerySection(title: "Chips and tags") { GalleryChips() }
+            GallerySection(title: "Section header") { GallerySectionHeaders() }
+            GallerySection(title: "Card") { GalleryCards() }
+            GallerySection(title: "Floating button") { GalleryFloatingButton() }
         }
         .padding(Spacing.page)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -154,5 +159,65 @@ private struct GalleryButtons: View {
             Text(name).font(.caption).foregroundStyle(.secondary).frame(width: 170, alignment: .leading)
             body()
         }
+    }
+}
+
+/// The header segmented toggle: off, on and the hovered fill.
+private struct GallerySegments: View {
+    @State private var states = [false, true, false]
+
+    var body: some View {
+        HStack(spacing: Spacing.small) {
+            ForEach(0..<3, id: \.self) { index in
+                Toggle(isOn: $states[index]) {
+                    Label(["Board", "Terminal", "Files"][index], systemImage: ["rectangle.split.3x1", "terminal", "folder"][index])
+                }
+                .toggleStyle(SegmentedToggleStyle(joinsChevron: index == 1, isHovered: index == 2) { _ in })
+            }
+        }
+    }
+}
+
+/// The four capsule recipes, each with its own values.
+private struct GalleryChips: View {
+    var body: some View {
+        HStack(spacing: Spacing.medium) {
+            Chip(text: "HIGH", color: .red)
+            Chip(text: "In progress", color: .blue, dot: true)
+            CountBadge(text: "#42")
+            OutlineTag(text: "Codex")
+            MenuLabel(text: "In progress", systemImage: "circle.lefthalf.filled", color: .blue)
+            MenuLabel(text: "Done", systemImage: "checkmark.circle.fill", color: .green, isMenu: false)
+        }
+    }
+}
+
+private struct GallerySectionHeaders: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.medium) {
+            SectionHeader(title: "Sub-tasks", systemImage: "checklist", count: 3)
+            SectionHeader(title: "Description", systemImage: "text.alignleft")
+        }
+    }
+}
+
+/// The card outline, resting and selected, over a caller-owned fill.
+private struct GalleryCards: View {
+    var body: some View {
+        HStack(spacing: Spacing.medium) {
+            ForEach([false, true], id: \.self) { selected in
+                Text(selected ? "Selected" : "Resting")
+                    .padding(Spacing.medium)
+                    .frame(width: 160, alignment: .leading)
+                    .background(Fill.card)
+                    .card(selected: selected)
+            }
+        }
+    }
+}
+
+private struct GalleryFloatingButton: View {
+    var body: some View {
+        FloatingButtonLabel(title: "Jump to latest", systemImage: "arrow.down")
     }
 }

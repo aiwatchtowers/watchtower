@@ -58,10 +58,7 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
         .padding(.vertical, 8)
         .background(background)
         .overlay(alignment: .leading) { chevron }
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(isSelected ? Color.accentColor : Color(nsColor: .separatorColor), lineWidth: isSelected ? 1.5 : 0.5)
-        )
+        .card(selected: isSelected)
         .opacity(dimming)
         .padding(.leading, CGFloat(min(row.depth, 6)) * 18)
         .contentShape(Rectangle())
@@ -123,17 +120,17 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .help("Target number — right-click to copy it")
-            WorkbenchBoardChip(
+            Chip(
                 text: target.priority.capitalized,
                 color: Tone.priority(target.priority),
                 dot: true
             )
-            WorkbenchBoardChip(
+            Chip(
                 text: WorkbenchBoardCard.statusLabel(target.status),
                 color: Tone.status(target.statusColor)
             )
             if row.node.archived {
-                WorkbenchBoardChip(text: "Archived", color: .secondary)
+                Chip(text: "Archived", color: .secondary)
                     .help("Archived: closed longer than the archive setting, or before the last Archive Now. Reopen it to bring it back.")
             }
             if let children = card.children {
@@ -180,27 +177,6 @@ extension WorkbenchBoardCardView where Trailing == EmptyView {
 enum WorkbenchBoardChevron {
     static let zoneWidth: CGFloat = 28
     static let accessibilityID = "workbench-board-card-chevron"
-}
-
-/// A small tinted capsule: a card's priority or status, and the side panel's
-/// drift findings.
-struct WorkbenchBoardChip: View {
-    let text: String
-    let color: Color
-    var dot = false
-
-    var body: some View {
-        HStack(spacing: 4) {
-            if dot {
-                Circle().fill(color).frame(width: 6, height: 6)
-            }
-            Text(text).font(.caption2.weight(.medium))
-        }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .foregroundStyle(dot ? Color.primary : color)
-        .background(color.opacity(0.14), in: Capsule())
-    }
 }
 
 /// A board target's number as the agent writes it (`#163`, board #207), and
