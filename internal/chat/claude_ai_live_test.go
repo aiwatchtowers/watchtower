@@ -130,12 +130,19 @@ func TestClaudeAISandboxLive_ProtectedFoldersStayUnread(t *testing.T) {
 		}
 	}
 
-	// Write into a protected folder never lands, whether or not it asks.
+	// Even an allowed Write into a protected folder cannot land: the
+	// stand-in Desktop is in the probe's temp root, so only the sandbox
+	// stops it.
 	target := filepath.Join(p.home, "Desktop", "new.md")
-	turn := p.turn("Use the Write tool once to create "+target+" containing x. Do not try anything else. Then reply done.", probeDeny, "Write")
+	turn := p.turn("Use the Write tool once to create "+target+" containing x. Do not try anything else. Then reply done.", probeAllow, "Write")
 	t.Logf("sandbox: Write into Desktop: %d request(s)", len(turn.requests("Write")))
 	if _, err := os.Lstat(target); !os.IsNotExist(err) {
 		t.Errorf("sandbox: a Write into the protected Desktop landed (lstat: %v)", err)
+	}
+	for _, id := range turn.toolUseIDs("Write") {
+		if res := turn.toolResult(id); res != nil && res["is_error"] != true {
+			t.Errorf("sandbox: the Write into Desktop did not fail: %v", res)
+		}
 	}
 }
 
@@ -687,13 +694,9 @@ func startLiveProbe(t *testing.T, rec *probeRecorder, scenario string, extraArgs
 	args := append([]string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
 		"--verbose", "--setting-sources", "project,local", "--permission-prompt-tool", "stdio",
 		"--model", "haiku", "--tools", "ToolSearch,WebSearch,Artifact,Write,Edit,Read"}, extraArgs...)
-	// Under the production file sandbox, over the real home and the
+	// Under the production file sandbox, over the account's homes and the
 	// stand-in one.
-	homes := []string{p.home}
-	if h, err := os.UserHomeDir(); err == nil {
-		homes = append(homes, h)
-	}
-	sandbox, err := NewChildSandboxAt(sandboxExecPath, homes)
+	sandbox, err := NewChildSandboxAt(sandboxExecPath, append(accountHomes(), p.home))
 	if err != nil {
 		t.Fatal(err)
 	}

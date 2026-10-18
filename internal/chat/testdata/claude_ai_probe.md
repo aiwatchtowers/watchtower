@@ -51,10 +51,14 @@ TCC-specific answers come from `TestClaudeAISandboxLive_ProtectedFoldersStayUnre
   `home/open/page.html` reaches `can_use_tool` with
   `__artifactPublishSourcePin.kind:"file"` (outside the cwd there was no
   `sha256` this time; inside it, line 8 of the fixtures has one). A `Write` to
-  `home/Desktop/new.md` reaches `can_use_tool` only after the CLI tried to
-  stat and list `home/Desktop` (`decision_reason_type:"safetyCheck"`, "a
-  sensitive file"). On the real `~/Documents` or `~/Desktop` either touch
-  would come from a Watchtower-spawned process.
+  `home/Desktop/new.md` stats the target and lists `home/Desktop` before it
+  asks: with only reads denied it reached `can_use_tool`
+  (`decision_reason_type:"safetyCheck"`, "a sensitive file") after those
+  denials; with existence tests denied too (the production profile) the
+  CLI's own `stat` fails — `Error calling tool (Write): EPERM: operation not
+  permitted, stat '…/home/Desktop/new.md'` — and no request is sent. On the
+  real `~/Documents` or `~/Desktop` either touch would come from a
+  Watchtower-spawned process.
 - **Under the sandbox, nothing in a protected folder is touched.** A
   `publish` of `home/Documents/page.html` or `home/Desktop/page.html` never
   reaches `can_use_tool`: the CLI refuses it itself (`system`/
@@ -63,7 +67,7 @@ TCC-specific answers come from `TestClaudeAISandboxLive_ProtectedFoldersStayUnre
   content or hash. The kernel log shows only denials for the CLI's pid
   (`Sandbox: 2.1.302(<pid>) deny(1) file-read-metadata …/home/Documents/page.html`,
   `deny(1) file-read-data …/home/Documents`), and `tccd` logs nothing for
-  it. The denied `Write` creates nothing.
+  it. The `Write` creates nothing even when the probe would allow it.
 - **A sandbox denial never reaches TCC** *(observed on macOS 26.7)*: reading
   an FDA-guarded file (`~/Library/Application Support/com.apple.TCC/TCC.db`)
   unsandboxed logs a `tccd` `AUTHREQ_ATTRIBUTION` naming the responsible app

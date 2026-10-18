@@ -16,13 +16,13 @@ import (
 // sandboxExecPath is macOS's sandbox-exec.
 const sandboxExecPath = "/usr/bin/sandbox-exec"
 
-// protectedHomeDirs are the folders under a home directory that macOS guards
-// with TCC (Desktop, Documents, Downloads, iCloud Drive, cloud storage
-// providers, other apps' containers, Photos, Contacts, Calendars, Mail…),
-// or with Full Disk Access. An access to one from a process Watchtower
-// started can raise a privacy prompt in Watchtower's name.
+// protectedHomeDirs are the standard places under a home directory that
+// macOS guards with TCC (Desktop, Documents, Downloads, iCloud Drive, cloud
+// storage providers, other apps' containers, Photos, Contacts, Calendars,
+// Mail…), plus some Full Disk Access data. An access to one from a process
+// Watchtower started can raise a privacy prompt in Watchtower's name.
 var protectedHomeDirs = []string{
-	"Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music",
+	"Desktop", "Documents", "Downloads", "Pictures", "Movies", "Music", ".Trash",
 	"Library/Mobile Documents", "Library/CloudStorage",
 	"Library/Containers", "Library/Group Containers", "Library/Daemon Containers",
 	"Library/Application Support/AddressBook", "Library/Application Support/CallHistoryDB",
@@ -31,16 +31,16 @@ var protectedHomeDirs = []string{
 	"Library/Calendars", "Library/Reminders", "Library/Mail", "Library/Messages", "Library/Safari",
 	"Library/Cookies", "Library/HomeKit", "Library/Photos", "Library/Biome", "Library/Suggestions",
 	"Library/IdentityServices", "Library/Accounts", "Library/PersonalizationPortrait",
-	"Library/Metadata/CoreSpotlight",
+	"Library/Metadata/CoreSpotlight", "Library/Application Support/MobileSync",
 }
 
-// protectedRoots are the TCC-guarded places outside any home: removable and
-// network volumes.
-var protectedRoots = []string{"/Volumes", "/Network"}
+// protectedRoots are the standard mount points of removable and network
+// volumes (TCC-guarded), outside any home.
+var protectedRoots = []string{"/Volumes", "/Network", "/home", "/net"}
 
 // ChildSandbox runs the claude.ai-mode child under a macOS sandbox profile
-// that denies every file read (stat included) and write in the TCC-guarded
-// folders. The CLI touches a model-chosen path before it sends can_use_tool
+// that denies every file access — stat and existence tests included — in the
+// TCC-guarded folders. The CLI touches a model-chosen path before it sends can_use_tool
 // (it resolves symlinks for Read and Write, and reads and hashes an Artifact
 // publish source to pin it), so the permission gate alone cannot keep a path
 // in ~/Documents unread. A sandbox denial is decided before TCC is consulted:
@@ -51,15 +51,19 @@ type ChildSandbox struct {
 	homes []string // the home directories whose protected folders are denied
 }
 
-// NewChildSandbox is the sandbox for this account: the home from $HOME and
-// the account's own (they differ when HOME is overridden), symlinks
-// resolved. It fails on a system without sandbox-exec, or when the profile
-// does not run, so the caller keeps claude.ai mode off instead of starting
-// an unguarded child.
+// NewChildSandbox is the sandbox for this account (accountHomes). It fails
+// on a system without sandbox-exec, or when the profile does not run, so the
+// caller keeps claude.ai mode off instead of starting an unguarded child.
 func NewChildSandbox() (*ChildSandbox, error) {
 	if runtime.GOOS != "darwin" {
 		return nil, errors.New("the file sandbox needs macOS")
 	}
+	return NewChildSandboxAt(sandboxExecPath, accountHomes())
+}
+
+// accountHomes are the home from $HOME and the account's own: they differ
+// when HOME is overridden, and the guarded folders are the account's.
+func accountHomes() []string {
 	var homes []string
 	if h, err := os.UserHomeDir(); err == nil {
 		homes = append(homes, h)
@@ -67,12 +71,14 @@ func NewChildSandbox() (*ChildSandbox, error) {
 	if u, err := user.Current(); err == nil && u.HomeDir != "" {
 		homes = append(homes, u.HomeDir)
 	}
-	return NewChildSandboxAt(sandboxExecPath, homes)
+	return homes
 }
 
 // NewChildSandboxAt is NewChildSandbox with an explicit sandbox-exec binary
-// and home directories (tests pass a stand-in). It checks the profile runs
-// by starting /usr/bin/true under it.
+// and home directories (tests pass a stand-in; production code calls
+// NewChildSandbox). Homes are made absolute-only, symlink-resolved and
+// deduplicated. It checks the profile runs by starting /usr/bin/true under
+// it.
 func NewChildSandboxAt(execPath string, homes []string) (*ChildSandbox, error) {
 	s := &ChildSandbox{exec: execPath}
 	for _, h := range homes {
@@ -113,11 +119,11 @@ func (s *ChildSandbox) command(bin string, args []string) (string, []string) {
 	return s.exec, append(argv, args...)
 }
 
-// profile is the SBPL text: everything allowed except file reads and writes
-// under protectedRoots and each home's protectedHomeDirs.
+// profile is the SBPL text: everything allowed except file reads, writes and
+// existence tests under protectedRoots and each home's protectedHomeDirs.
 func (s *ChildSandbox) profile() string {
 	var b strings.Builder
-	b.WriteString("(version 1)\n(allow default)\n(deny file-read* file-write*")
+	b.WriteString("(version 1)\n(allow default)\n(deny file-read* file-write* file-test-existence")
 	for _, root := range protectedRoots {
 		fmt.Fprintf(&b, "\n  (subpath %q)", root)
 	}

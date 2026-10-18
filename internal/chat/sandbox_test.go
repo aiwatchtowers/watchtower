@@ -1,11 +1,13 @@
 package chat
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -51,7 +53,7 @@ func TestChildSandbox_ProfileCoversEveryHomeAndProtectedFolder(t *testing.T) {
 	profile := argv[5]
 	assert.NotContains(t, profile, "/h/")
 	assert.Contains(t, profile, "(allow default)")
-	assert.Contains(t, profile, "(deny file-read* file-write*")
+	assert.Contains(t, profile, "(deny file-read* file-write* file-test-existence")
 	for _, root := range protectedRoots {
 		assert.Contains(t, profile, `(subpath "`+root+`")`)
 	}
@@ -97,7 +99,7 @@ func TestChildSandbox_Homes(t *testing.T) {
 // an On session without one refuses to start, and the profile denies stat,
 // read, write and symlink-following into the protected folders with EPERM —
 // a sandbox denial never reaches TCC, so no privacy prompt appears.
-func TestChat05_PublishNeverReadsOutsideThePublishDir(t *testing.T) {
+func TestChat05_ClaudeAIChildNeverTouchesTCCGuardedFolders(t *testing.T) {
 	t.Run("an On session without a sandbox never starts the CLI", func(t *testing.T) {
 		fx := gateFake(t)
 		fx.opts.ClaudeAI.Sandbox = nil
@@ -121,42 +123,46 @@ func TestChat05_PublishNeverReadsOutsideThePublishDir(t *testing.T) {
 		dash := indexOf(argv, "--")
 		require.Positive(t, dash)
 		assert.Equal(t, "-p", argv[dash-2])
-		assert.Contains(t, argv[dash-1], "(deny file-read* file-write*")
+		assert.Contains(t, argv[dash-1], "(deny file-read* file-write* file-test-existence")
 		require.Less(t, dash+1, len(argv))
 		assert.Equal(t, fx.opts.Binary, argv[dash+1])
 	})
 
-	t.Run("the CLI runs under the macOS sandbox", func(t *testing.T) {
+	t.Run("the CLI the backend starts is confined", func(t *testing.T) {
 		if runtime.GOOS != "darwin" {
 			t.Skip("sandbox-exec is macOS only")
 		}
-		fx := gateFake(t)
-		sandbox, err := NewChildSandboxAt(sandboxExecPath, []string{t.TempDir()})
+		home := sandboxTestHome(t)
+		sandbox, err := NewChildSandboxAt(sandboxExecPath, []string{home})
 		require.NoError(t, err)
+		fx := gateFake(t)
 		fx.opts.ClaudeAI.Sandbox = sandbox
+		// The "CLI" first tries to read the canary, then runs the fake.
+		probe := filepath.Join(t.TempDir(), "probe")
+		bin := filepath.Join(t.TempDir(), "claude")
+		require.NoError(t, os.WriteFile(bin, []byte("#!/bin/sh\ncat "+
+			shQuote(filepath.Join(home, "Documents", "canary.md"))+" > "+shQuote(probe)+" 2>&1\nexec "+
+			shQuote(fx.opts.Binary)+` "$@"`+"\n"), 0o700))
+		fx.opts.Binary = bin
 		startSession(t, NewClaudeBackend(fx.opts), nil)
 		require.Eventually(t, func() bool {
 			_, err := os.Stat(fx.files.argv)
 			return err == nil
 		}, 5*time.Second, 10*time.Millisecond, "the CLI never started")
+		out, err := os.ReadFile(probe)
+		require.NoError(t, err)
+		assert.Contains(t, string(out), "Operation not permitted")
+		assert.NotContains(t, string(out), sandboxTestCanary)
 	})
 
 	t.Run("the macOS sandbox denies every access to a protected folder", func(t *testing.T) {
 		if runtime.GOOS != "darwin" {
 			t.Skip("sandbox-exec is macOS only")
 		}
-		// A stand-in home under the test's temp dir: its Documents and
-		// Desktop are not TCC-guarded, so a missed denial reads a canary
-		// instead of raising a prompt.
-		home, err := filepath.EvalSymlinks(t.TempDir())
-		require.NoError(t, err)
+		home := sandboxTestHome(t)
 		s, err := NewChildSandboxAt(sandboxExecPath, []string{home})
 		require.NoError(t, err)
 		open := filepath.Join(home, "open")
-		for _, d := range []string{"Documents", "Desktop", "Library/Mobile Documents", "open"} {
-			require.NoError(t, os.MkdirAll(filepath.Join(home, d), 0o700))
-			require.NoError(t, os.WriteFile(filepath.Join(home, d, "canary.md"), []byte("SECRET-CANARY"), 0o600))
-		}
 		require.NoError(t, os.Symlink(filepath.Join(home, "Documents", "canary.md"), filepath.Join(open, "link.md")))
 
 		run := func(script string) (string, error) {
@@ -177,15 +183,51 @@ func TestChat05_PublishNeverReadsOutsideThePublishDir(t *testing.T) {
 			out, err := run(script)
 			assert.Error(t, err, "%s ran: %s", script, out)
 			assert.Contains(t, out, "Operation not permitted", script)
-			assert.NotContains(t, out, "SECRET-CANARY", script)
+			assert.NotContains(t, out, sandboxTestCanary, script)
 		}
 		_, statErr := os.Stat(filepath.Join(home, "Desktop", "new.md"))
 		assert.True(t, os.IsNotExist(statErr), "a write into Desktop went through")
 
+		// Not even existence leaks: access(F_OK) is denied too.
+		name, args := s.command(os.Args[0], []string{"-test.run=^TestSandboxHelperAccess$"})
+		helper := exec.Command(name, args...)
+		helper.Env = append(os.Environ(), "SANDBOX_HELPER_ACCESS="+filepath.Join(home, "Documents", "canary.md"))
+		access, err := helper.CombinedOutput()
+		require.NoError(t, err, string(access))
+		assert.Contains(t, string(access), "access: operation not permitted")
+
 		out, err := run(`cat ` + shQuote(filepath.Join(open, "canary.md")))
 		require.NoError(t, err, out)
-		assert.Equal(t, "SECRET-CANARY", out, "a folder outside the protected list stays readable")
+		assert.Equal(t, sandboxTestCanary, out, "a folder outside the protected list stays readable")
 	})
+}
+
+// TestSandboxHelperAccess is the guard's helper process: run under the
+// sandbox with SANDBOX_HELPER_ACCESS set, it prints access(F_OK)'s result.
+func TestSandboxHelperAccess(t *testing.T) {
+	path := os.Getenv("SANDBOX_HELPER_ACCESS")
+	if path == "" {
+		t.Skip("helper process for TestChat05_ClaudeAIChildNeverTouchesTCCGuardedFolders")
+	}
+	fmt.Printf("access: %v\n", syscall.Access(path, 0))
+}
+
+// sandboxTestCanary is the content of the stand-in home's files.
+const sandboxTestCanary = "SECRET-CANARY"
+
+// sandboxTestHome is a stand-in home under the test's temp dir with a canary
+// file in Documents, Desktop, Library/Mobile Documents and open/. Its
+// protected folders are not TCC-guarded, so a missed denial reads a canary
+// instead of raising a prompt.
+func sandboxTestHome(t *testing.T) string {
+	t.Helper()
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	for _, d := range []string{"Documents", "Desktop", "Library/Mobile Documents", "open"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(home, d), 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(home, d, "canary.md"), []byte(sandboxTestCanary), 0o600))
+	}
+	return home
 }
 
 func shQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }

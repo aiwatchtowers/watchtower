@@ -213,13 +213,14 @@ path the read saves to) are confined to the conversation's publish dir;
 publish, and a Claude Docs call that shares, deletes, mentions someone other
 than the owner, answers a comment thread, or comments on or otherwise touches
 anything outside a doc this session created — one such member makes a whole `batch` wait — go to Approve.
-No tool call of the claude.ai-mode child touches a TCC-guarded location (Desktop,
-Documents, Downloads, Pictures/Photos, Movies, Music, iCloud Drive, cloud storage,
-other apps' containers and data, removable and network volumes): the CLI inspects a
+No tool call of the claude.ai-mode child touches a TCC-guarded location in its
+standard place (Desktop, Documents, Downloads, Pictures/Photos, Movies, Music,
+iCloud Drive, cloud storage, other apps' containers and data, removable and network
+volumes under `/Volumes`, `/Network`, `/home`, `/net`): the CLI inspects a
 model-chosen path before it asks the gate, so the child always runs under a macOS
-sandbox profile (`ChildSandbox`) that denies every file read, stat included, and
-write there — a sandbox denial never reaches TCC, so no privacy prompt appears in
-Watchtower's name. Without the sandbox the claude.ai tools are off; a claude.ai-mode
+sandbox profile (`ChildSandbox`) that denies every file access there — read, write,
+stat and existence test — and a sandbox denial never reaches TCC, so no privacy
+prompt appears in Watchtower's name. Without the sandbox the claude.ai tools are off; a claude.ai-mode
 child is never started without it.
 
 **Guard:** `testChat05ArtifactActionsOnlyOpenOrCopy`
@@ -234,14 +235,14 @@ child is never started without it.
 `TestChat05_PublishOnlyFromThePublishDir`,
 `TestChat05_DeadSessionNeverRunsAnApprovedCall`
 (`internal/chat/gate_test.go`);
-`TestChat05_PublishNeverReadsOutsideThePublishDir`
-(`internal/chat/sandbox_test.go`; its real-sandbox half runs on macOS only);
+`TestChat05_ClaudeAIChildNeverTouchesTCCGuardedFolders`
+(`internal/chat/sandbox_test.go`; its real-sandbox halves run on macOS only);
 `testChat05PublishedLinkCardOnlyOpensOrCopies`
 (`WatchtowerDesktop/Tests/Core/ArtifactChat05ScanTests.swift`)
 
 ## Changelog
 
-- 2026-10-18 (board #737, owner decision ask #342 "guard before the CLI"): **CHAT-05** strengthened, no guard relaxed. The PR #379 review found that the CLI resolves, lists or hashes a model-chosen `Write` target or `Artifact` source before it sends `can_use_tool`, so the gate's lexical publish-dir check could not keep a path in `~/Documents` untouched. The Observable gains the TCC rule: the claude.ai-mode child runs under a macOS sandbox profile denying file reads and writes in the TCC-guarded folders (`internal/chat/sandbox.go`), the tools are off without it, and a claude.ai-mode child never starts without it. New guard `TestChat05_PublishNeverReadsOutsideThePublishDir`; the live evidence is in `internal/chat/testdata/claude_ai_probe.md` ("Sandbox").
+- 2026-10-18 (board #737, owner decision ask #342 "guard before the CLI"): **CHAT-05** strengthened, no guard relaxed. The PR #379 review found that the CLI resolves, lists or hashes a model-chosen `Write` target or `Artifact` source before it sends `can_use_tool`, so the gate's lexical publish-dir check could not keep a path in `~/Documents` untouched. The Observable gains the TCC rule: the claude.ai-mode child runs under a macOS sandbox profile denying file reads and writes in the TCC-guarded folders (`internal/chat/sandbox.go`), the tools are off without it, and a claude.ai-mode child never starts without it. New guard `TestChat05_ClaudeAIChildNeverTouchesTCCGuardedFolders`; the live evidence is in `internal/chat/testdata/claude_ai_probe.md` ("Sandbox").
 
 - 2026-10-17 (board #737, Task 16): the #737 guards landed and lost their `(planned, #737)` marks, each verified by `grep` (`TestChat02_GateDecisionsAreSteps`, `testChat02WaitingStepIsVisibleUntilItEnds`, `TestChat03_CloseWhileWaitingForApprovalRejectsAndReaps`, `TestChat05_ConnectorWriteWaitsForApproval`, `TestChat05_PublishOnlyFromThePublishDir`, `TestChat05_DeadSessionNeverRunsAnApprovedCall`, `testChat05PublishedLinkCardOnlyOpensOrCopies`). **CHAT-05** strengthened, no exception widened: its Observable now states the gate's fail-closed rules (an unclassifiable or unrecorded call is denied or asks, never silently allowed; a failed publish is a red step), the publish-dir confinement of `Write`, `Artifact` sources and `read`'s `out_dir`, and which `Artifact` and Claude Docs calls always go to Approve — all as already implemented and covered by `internal/chat/connectorpolicy/policy_test.go` and `internal/chat/gate_test.go`. Feature note: `docs/features/chat-claude-ai-tools.md`.
 - 2026-10-17 (board #737): amended per spec 2026-10-16-chat-claude-ai-tools-design §4, owner approved 2026-10-13, ask #236 (scope and the CHAT-05 amendment; spec approved ask #325, decisions Q1–Q4 ask #326, plan approved ask #332); strengthening + one stated exception, no guard relaxed. **CHAT-05** gains the one private exception — on the Claude provider the assistant may publish to the owner's own claude.ai account (`Artifact` `publish` from the session's publish dir, `list`/`open`/`quickstart`, the owner's own private Claude Docs doc) as a visible step with its link — while every other claude.ai connector write goes through the session's permission gate as one `agent_actions` row the session alone executes after the owner's Approve (AGENT-05); the in-app artifact panel and its source scan are unchanged. **CHAT-02** gains gate decisions as steps (a denied call is a red step with the gate's reason, a waiting call a visible waiting step). **CHAT-03** gains a guard for `Close` during an approval wait. New guards are marked `(planned, #737)` until they land. The TCC guard stays: user settings are never loaded (`--setting-sources project,local`, private neutral cwd). DEV-06: no change — the workbench terminal is plain Claude Code and already has these tools under the owner's own settings.
