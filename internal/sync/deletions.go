@@ -7,6 +7,8 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/sourcediff"
+
+	"github.com/slack-go/slack"
 )
 
 // sweepMaxPages caps the search pages the rolling sweep spends per cycle:
@@ -20,14 +22,57 @@ const sweepMaxPages = 10
 // new messages with a lag, so a message missing from them may not be gone.
 const liveDiffLag = 2 * time.Hour
 
+// searchLatestDayStart is how far after UTC midnight a calendar day can
+// start in the searcher's Slack profile timezone (UTC-12 at the latest).
+const searchLatestDayStart = 12 * time.Hour
+
 // searchListing collects what one search.messages run returned, so a
 // completed run can be diffed against the stored rows it covered.
 type searchListing struct {
 	seen     map[db.SlackMessageKey]struct{}
-	matched  int  // matches received across pages
-	total    int  // result.Total from page 1
-	maxPages int  // 0 = no cap; the rolling sweep sets sweepMaxPages
-	tooLarge bool // page 1 reported more than maxPages pages; only page 1 was fetched
+	pages    []pageEdge // first and last match ts of every page, in API order
+	matched  int        // matches received across pages
+	total    int        // result.Total from page 1
+	maxPages int        // 0 = no cap; the rolling sweep sets sweepMaxPages
+	tooLarge bool       // page 1 reported more than maxPages pages; only page 1 was fetched
+	badEdge  bool       // a page edge ts did not parse, so page boundaries are unknown
+}
+
+// pageEdge is the first and last match time of one received page.
+type pageEdge struct{ first, last time.Time }
+
+// addPage records a received page's edge timestamps (in API order).
+func (l *searchListing) addPage(matches []slack.SearchMessage) {
+	if len(matches) == 0 {
+		return
+	}
+	first, ferr := parseSlackTS(matches[0].Timestamp)
+	last, lerr := parseSlackTS(matches[len(matches)-1].Timestamp)
+	if ferr != nil || lerr != nil {
+		// An unparseable edge leaves no boundary to guard; mark the whole
+		// listing as unprovable instead of guessing.
+		l.badEdge = true
+		return
+	}
+	l.pages = append(l.pages, pageEdge{first: first, last: last})
+}
+
+// atPageBoundary reports that at lies in the closed range between the last
+// match of one page and the first match of the next. Offset paging can skip
+// a match there when the result set shifts mid-paging (a deletion moves the
+// next page's first match back onto a fetched page while a new arrival keeps
+// the count), so a row missing there is not proven gone.
+func (l *searchListing) atPageBoundary(at time.Time) bool {
+	for i := 0; i+1 < len(l.pages); i++ {
+		lo, hi := l.pages[i].last, l.pages[i+1].first
+		if hi.Before(lo) {
+			lo, hi = hi, lo
+		}
+		if !at.Before(lo) && !at.After(hi) {
+			return true
+		}
+	}
+	return false
 }
 
 func newSearchListing(maxPages int) *searchListing {
@@ -36,16 +81,31 @@ func newSearchListing(maxPages int) *searchListing {
 
 // complete reports that every match Slack counted was received. A search
 // stops at 100 pages, so page >= pages alone does not prove a full listing.
-func (l *searchListing) complete() bool { return l.matched >= l.total }
+func (l *searchListing) complete() bool { return l.matched >= l.total && !l.badEdge }
 
 // liveDiffWindow is the part of a forward search the diff may judge: UTC
-// today up to now − 2 h. It is empty (to <= from) in the first 2 h of a UTC
-// day. searchWindow keeps after: at or before local today − 2, so the query
-// always covers it.
-func liveDiffWindow(now time.Time) (from, to time.Time) {
+// today up to now − 2 h, clamped to what the query's after: date provably
+// covers. It is empty (to <= from) in the first 2 h of a UTC day.
+//
+// after: is a machine-local date (searchWindow, local today − 2 at most)
+// and Slack reads it in the searcher's profile timezone: after:X returns
+// profile-local dates > X, so coverage starts at X+1 00:00 profile-local,
+// which is at the latest X+1 12:00Z (UTC−12). When the machine's local date
+// runs ahead of UTC (east of UTC, past local midnight) X+1 can be UTC today,
+// and from is moved to X+1 12:00Z; the early-UTC-day hours left out are the
+// sweep's. to is never widened. An unparseable after gives an empty window.
+func liveDiffWindow(now time.Time, after string) (from, to time.Time) {
 	now = now.UTC()
 	from = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
-	return from, now.Add(-liveDiffLag)
+	to = now.Add(-liveDiffLag)
+	x, err := time.Parse(searchDateFormat, after)
+	if err != nil {
+		return from, from
+	}
+	if covered := x.AddDate(0, 0, 1).Add(searchLatestDayStart); covered.After(from) {
+		from = covered
+	}
+	return from, to
 }
 
 // tombstoneMissing tombstones the account's stored plain messages in
@@ -53,7 +113,8 @@ func liveDiffWindow(now time.Time) (from, to time.Time) {
 // refuses (an empty listing, or more than half missing). Only channels the
 // listing returned at least one message from inside the range are judged: a
 // channel search does not see (hidden from search, shared from another
-// org) would otherwise lose every row each cycle and never heal. Every skip
+// org) would otherwise lose every row each cycle and never heal. A missing
+// row at a page boundary (atPageBoundary) is not judged either. Every skip
 // is logged. The stored set is read and diffed before the short writes.
 func (o *Orchestrator) tombstoneMissing(l *searchListing, from, to time.Time) (int, error) {
 	all, err := o.db.LiveSlackMessageKeys(o.accountID, float64(from.Unix()), float64(to.Unix()))
@@ -75,6 +136,7 @@ func (o *Orchestrator) tombstoneMissing(l *searchListing, from, to time.Time) (i
 	rangeDesc := from.UTC().Format(time.RFC3339) + ".." + to.UTC().Format(time.RFC3339)
 	var stored, missing []db.SlackMessageKey
 	unlisted := make(map[string]bool)
+	atBoundary := 0
 	for _, k := range all {
 		if listedIn[k.ChannelID] == 0 {
 			unlisted[k.ChannelID] = true
@@ -82,12 +144,20 @@ func (o *Orchestrator) tombstoneMissing(l *searchListing, from, to time.Time) (i
 		}
 		stored = append(stored, k)
 		if _, ok := l.seen[k]; !ok {
+			if at, err := parseSlackTS(k.TS); err != nil || l.atPageBoundary(at) {
+				atBoundary++
+				continue
+			}
 			missing = append(missing, k)
 		}
 	}
 	if len(unlisted) > 0 {
 		o.logger.Printf("slack deletions: account %d range %s: skipped %d channels with stored messages but none listed",
 			o.accountID, rangeDesc, len(unlisted))
+	}
+	if atBoundary > 0 {
+		o.logger.Printf("slack deletions: account %d range %s: skipped %d missing messages at a page boundary",
+			o.accountID, rangeDesc, atBoundary)
 	}
 	ok, reason := sourcediff.Check(len(stored), listed, len(missing), sourcediff.SlackFloors)
 	if !ok {
@@ -98,7 +168,11 @@ func (o *Orchestrator) tombstoneMissing(l *searchListing, from, to time.Time) (i
 	}
 	n, err := o.db.TombstoneSlackMessages(missing)
 	if err != nil {
-		return 0, err
+		if n > 0 {
+			o.logger.Printf("slack deletions: account %d range %s: tombstoned %d messages before failing: %v",
+				o.accountID, rangeDesc, n, err)
+		}
+		return n, err
 	}
 	o.logger.Printf("slack deletions: account %d range %s: tombstoned %d of %d stored messages (%d listed)",
 		o.accountID, rangeDesc, n, len(stored), listed)
@@ -106,10 +180,11 @@ func (o *Orchestrator) tombstoneMissing(l *searchListing, from, to time.Time) (i
 }
 
 // diffLiveWindow tombstones messages deleted at the source inside the live
-// window of a completed forward search. It is best-effort: an incomplete
-// listing is skipped and an error is logged, never failing the sync.
-func (o *Orchestrator) diffLiveWindow(l *searchListing) {
-	from, to := liveDiffWindow(o.clock())
+// window of a completed forward search whose query used after: date after.
+// It is best-effort: an incomplete listing is skipped and an error is
+// logged, never failing the sync.
+func (o *Orchestrator) diffLiveWindow(l *searchListing, after string) {
+	from, to := liveDiffWindow(o.clock(), after)
 	if !to.After(from) {
 		return
 	}

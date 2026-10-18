@@ -17,7 +17,7 @@
 
 **Status:** Enforced
 
-**Observable:** Rows are removed because a source no longer lists them only when the listing is complete (no API error, every page fetched, Slack matches received >= reported total, Jira comment listing complete) and `sourcediff.Check` accepts it. An empty listing over stored rows, or a removal of more than half, deletes nothing and is logged.
+**Observable:** Rows are removed because a source no longer lists them only when the listing is complete (no API error, every page fetched, Slack matches received >= reported total, Jira comment listing complete) and `sourcediff.Check` accepts it. An empty listing over stored rows, or a removal of more than half, deletes nothing and is logged. Exception: Jira comments do not go through `sourcediff.Check`. A complete Jira listing (a `total` present and every comment it counts received) may legitimately be empty, and it then removes all stored comments of that issue.
 
 **Test guards:**
 - Guard: `internal/sourcediff/guard_test.go::TestSRCDEL01_GuardRefusesBadListings`

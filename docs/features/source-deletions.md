@@ -22,7 +22,9 @@ A deleted Slack message is not removed. `db.TombstoneSlackMessages` sets `is_del
 
 ## The shared guard
 
-`internal/sourcediff.Check(stored, listed, missing, floors)` refuses a diff when the listing returned 0 of at least `EmptyMin` stored rows, or when more than half of at least `HalfMin` stored rows would go. `SlackFloors` = {5, 10}; `MailFloors` = {1, 1}. Every diff also needs a complete listing first: no API error, every page fetched, Slack matched >= `Total` (Slack caps `pages` at 100, so reaching the last page does not prove completeness), Jira reporting a complete listing (a missing `total` means incomplete). Every skip is logged with source, account, range and reason.
+`internal/sourcediff.Check(stored, listed, missing, floors)` refuses a diff when the listing returned 0 of at least `EmptyMin` stored rows, or when more than half of at least `HalfMin` stored rows would go. `SlackFloors` = {5, 10}; `MailFloors` = {1, 1}. Every diff also needs a complete listing first: no API error, every page fetched, Slack matched >= `Total` (Slack caps `pages` at 100, so reaching the last page does not prove completeness), Jira reporting a complete listing (a missing `total` means incomplete). Every skip is logged with source, account, range and reason. Jira is the exception to `Check`: a complete comment listing may be empty and then removes all of the issue's stored comments.
+
+The Slack live window is also clamped to what the forward query's `after:` date provably covers (`liveDiffWindow`), and a missing Slack row whose ts lies between one page's last match and the next page's first match is skipped and counted in the log: offset paging can skip a match there when the result set shifts mid-paging.
 
 Slack candidates are narrowed so rows search cannot see are never judged: rows with a subtype, bot posts, rows with an empty author or an author with no `users` row, rows of other accounts, rows outside the range, and every channel the listing returned nothing from inside the range. The half-check counts only listed channels, so a small listed channel can lose more than half its rows in one cycle (bounded by the listed >= 1 gate). Gmail skips undated rows, and a store of only undated rows skips the listing.
 
@@ -40,6 +42,8 @@ Migration 00136 adds `kb_dirty(source, key, gen)` and AFTER triggers: `messages_
 - `BackfillSearch` passes no listing and never tombstones (`TestBackfillSearch_NeverTombstones`).
 - A thread_ts-only change does not mark `kb_dirty`. A hard-deleted Slack document still waits for the daily KB reconcile.
 - The sweep's 429 does not set `searchRateLimited`; a persistent DB error retries the same day.
+- The live window starts no earlier than `after:` + 1 day at 12:00Z (the latest a profile-local day can start, UTC−12). When the machine's local date runs ahead of UTC (east of UTC, after local midnight), the early-UTC-day hours before that bound are left to the sweep.
+- Gmail mail restored from trash (or spam) after the daily check removed it may not come back: the forward sync queries `in:inbox after:<watermark>` on the message date, and the history backfill covers each date window once, so a restored mail dated before the watermark is not re-fetched.
 
 ## Tests
 

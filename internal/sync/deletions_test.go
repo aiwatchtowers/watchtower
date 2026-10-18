@@ -19,12 +19,29 @@ import (
 var liveDiffNow = time.Date(2026, 9, 22, 15, 0, 0, 0, time.UTC)
 
 func TestLiveDiffWindow(t *testing.T) {
-	from, to := liveDiffWindow(liveDiffNow)
+	from, to := liveDiffWindow(liveDiffNow, "2026-09-20")
 	assert.Equal(t, time.Date(2026, 9, 22, 0, 0, 0, 0, time.UTC), from)
 	assert.Equal(t, time.Date(2026, 9, 22, 13, 0, 0, 0, time.UTC), to)
 
-	from, to = liveDiffWindow(time.Date(2026, 9, 22, 1, 30, 0, 0, time.UTC))
+	from, to = liveDiffWindow(time.Date(2026, 9, 22, 1, 30, 0, 0, time.UTC), "2026-09-20")
 	assert.False(t, to.After(from), "the first 2 h of a UTC day give an empty window")
+
+	from, to = liveDiffWindow(liveDiffNow, "not-a-date")
+	assert.False(t, to.After(from), "an unknown after: date judges nothing")
+}
+
+// TestLiveDiffWindow_ClampsToQueryCoverage: a machine whose local date runs
+// one day ahead of UTC (east of UTC, past local midnight) last synced on
+// local 2026-09-23, so the query is after:2026-09-21. A profile at UTC−12
+// covers only from 2026-09-22 00:00 local = 12:00Z, so from moves there; to
+// stays.
+func TestLiveDiffWindow_ClampsToQueryCoverage(t *testing.T) {
+	from, to := liveDiffWindow(liveDiffNow, "2026-09-21")
+	assert.Equal(t, time.Date(2026, 9, 22, 12, 0, 0, 0, time.UTC), from)
+	assert.Equal(t, time.Date(2026, 9, 22, 13, 0, 0, 0, time.UTC), to)
+
+	from, to = liveDiffWindow(time.Date(2026, 9, 22, 11, 0, 0, 0, time.UTC), "2026-09-21")
+	assert.False(t, to.After(from), "before the covered bound the window is empty")
 }
 
 // dayTS is a Slack ts at h:m UTC on 2026-09-22 (+ day offset).
@@ -265,5 +282,76 @@ func TestLiveDiff_SkipsChannelWithNothingListed(t *testing.T) {
 	for _, h := range hidden {
 		assert.False(t, isTombstone(t, ts.db, ts.ns("C900"), h))
 	}
+	assert.Equal(t, 1, countTombstones(t, ts.db))
+}
+
+// shiftingSearch serves a result set by offset pages of pageSize. After page
+// 1 is served it runs onServed, which can reshape the set before page 2.
+type shiftingSearch struct {
+	mu       gosync.Mutex
+	items    []string
+	pageSize int
+	onServed func(items []string) []string
+}
+
+func (s *shiftingSearch) handle(w http.ResponseWriter, r *http.Request) {
+	_ = r.ParseForm()
+	page := 1
+	if p := r.FormValue("page"); p != "" {
+		_, _ = fmt.Sscanf(p, "%d", &page)
+	}
+	s.mu.Lock()
+	items := s.items
+	pages := (len(items) + s.pageSize - 1) / s.pageSize
+	start := min((page-1)*s.pageSize, len(items))
+	served := items[start:min(start+s.pageSize, len(items))]
+	matches := make([]map[string]any, 0, len(served))
+	for _, ts := range served {
+		matches = append(matches, liveDiffMatch(ts))
+	}
+	if page == 1 && s.onServed != nil {
+		s.items = s.onServed(append([]string{}, items...))
+	}
+	s.mu.Unlock()
+	jsonOK(w, map[string]any{"ok": true, "messages": map[string]any{
+		"matches": matches,
+		"paging":  map[string]any{"count": s.pageSize, "total": len(items), "page": page, "pages": pages},
+		"total":   len(items),
+	}})
+}
+
+// TestLiveDiff_SkipsMessageAtPageBoundary: a message deleted from page 1
+// after it was served moves page 2's start one later, so m5 is never
+// served, while a new arrival keeps the count. m5 lies between page 1's
+// last and page 2's first match and is not tombstoned; a stored message
+// missing well inside page 1 still is.
+func TestLiveDiff_SkipsMessageAtPageBoundary(t *testing.T) {
+	s := &shiftingSearch{pageSize: 5}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/search.messages", s.handle)
+	mux.Handle("/", baseMux())
+	ts := newTestSetup(t, mux)
+	require.NoError(t, ts.db.SetSlackAccountSearchWatermark(ts.accountID, "2026-09-20"))
+	ts.orch.now = func() time.Time { return liveDiffNow }
+
+	m := make([]string, 11)
+	for i := range m {
+		m[i] = dayTS(0, 8, 20*i)
+	}
+	gone := dayTS(0, 8, 30) // between m1 and m2, deleted before the search
+	for _, msgTS := range append(append([]string{}, m[:10]...), gone) {
+		require.NoError(t, ts.db.UpsertMessage(db.Message{ChannelID: ts.ns("C001"), TS: msgTS, UserID: ts.ns("U001"),
+			Text: "msg " + msgTS}))
+	}
+	s.items = append([]string{}, m[:10]...)
+	s.onServed = func(items []string) []string {
+		items = append(items[:2], items[3:]...) // m2 deleted after page 1 served it
+		return append(items, m[10])             // a new arrival keeps the count at 10
+	}
+
+	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
+
+	assert.False(t, isTombstone(t, ts.db, ts.ns("C001"), m[5]), "a message skipped at a page boundary is not proven gone")
+	assert.True(t, isTombstone(t, ts.db, ts.ns("C001"), gone), "a message missing inside a page is")
 	assert.Equal(t, 1, countTombstones(t, ts.db))
 }

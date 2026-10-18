@@ -132,7 +132,7 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 		firstSync = !has
 	}
 
-	now := time.Now()
+	now := o.clock()
 	searchAfter, gapDays, clamped := searchWindow(now, lastDate, o.config.Sync.InitialHistoryDays)
 	if clamped {
 		unclampedAfter := now.AddDate(0, 0, -gapDays).Format(searchDateFormat)
@@ -176,7 +176,7 @@ func (o *Orchestrator) syncViaSearch(ctx context.Context) error {
 	}
 	// Only a completed search can prove a stored message is gone.
 	if completed {
-		o.diffLiveWindow(listing)
+		o.diffLiveWindow(listing, searchAfter)
 	}
 
 	// Populate discoveredChannelIDs (namespaced) so the full-sync fallback can skip inactive channels.
@@ -299,6 +299,7 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 				listing.tooLarge = listing.maxPages > 0 && result.Pages > listing.maxPages
 			}
 			listing.matched += len(result.Messages)
+			listing.addPage(result.Messages)
 		}
 		if len(result.Messages) == 0 {
 			completed = true

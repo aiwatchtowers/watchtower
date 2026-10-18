@@ -276,7 +276,11 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 // returned; nothing is deleted from a failed listing.
 func (s *Syncer) reconcileDeletions(client *Client, validity int64, stored []int64) {
 	_, persisted, err := s.db.GetImapWatermark(s.account.ID)
-	if err != nil || persisted != validity {
+	if err != nil {
+		s.logger.Printf("imap account %d: deletion diff skipped: reading watermark: %v", s.account.ID, err)
+		return
+	}
+	if persisted != validity {
 		return
 	}
 	listed, err := client.SearchAll()

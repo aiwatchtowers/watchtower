@@ -29,7 +29,7 @@ func TestClient_GetIssueComments_SinglePage(t *testing.T) {
 	defer srv.Close()
 
 	c := makeTestClient(t, srv.URL)
-	comments, complete, err := c.GetIssueComments(context.Background(), "PROJ-1")
+	comments, complete, _, err := c.getIssueComments(context.Background(), "PROJ-1")
 	require.NoError(t, err)
 	assert.True(t, complete)
 	require.Len(t, comments, 1)
@@ -58,7 +58,7 @@ func TestClient_GetIssueComments_Paginates(t *testing.T) {
 	defer srv.Close()
 
 	c := makeTestClient(t, srv.URL)
-	comments, complete, err := c.GetIssueComments(context.Background(), "PROJ-1")
+	comments, complete, _, err := c.getIssueComments(context.Background(), "PROJ-1")
 	require.NoError(t, err)
 	assert.True(t, complete)
 	require.Len(t, comments, 3)
@@ -75,7 +75,7 @@ func TestClient_GetIssueComments_StopsOnEmptyPage(t *testing.T) {
 	defer srv.Close()
 
 	c := makeTestClient(t, srv.URL)
-	comments, complete, err := c.GetIssueComments(context.Background(), "PROJ-1")
+	comments, complete, _, err := c.getIssueComments(context.Background(), "PROJ-1")
 	require.NoError(t, err)
 	assert.Empty(t, comments)
 	assert.False(t, complete)
@@ -89,7 +89,7 @@ func TestClient_GetIssueComments_MissingTotalIsIncomplete(t *testing.T) {
 			_, _ = w.Write([]byte(body))
 		}))
 		c := makeTestClient(t, srv.URL)
-		comments, complete, err := c.GetIssueComments(context.Background(), "PROJ-1")
+		comments, complete, _, err := c.getIssueComments(context.Background(), "PROJ-1")
 		srv.Close()
 		require.NoError(t, err)
 		assert.Empty(t, comments)
@@ -108,7 +108,7 @@ func TestClient_GetIssueComments_PropagatesAuthRevoked(t *testing.T) {
 	stubTokenEndpoint(t)
 
 	c := makeTestClient(t, srv.URL)
-	_, _, err := c.GetIssueComments(context.Background(), "PROJ-1")
+	_, _, _, err := c.getIssueComments(context.Background(), "PROJ-1")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrAuthRevoked)
 }
@@ -120,7 +120,7 @@ func TestClient_GetIssueComments_NonOKError(t *testing.T) {
 	defer srv.Close()
 
 	c := makeTestClient(t, srv.URL)
-	_, _, err := c.GetIssueComments(context.Background(), "PROJ-404")
+	_, _, _, err := c.getIssueComments(context.Background(), "PROJ-404")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), fmt.Sprintf("comments for %s", "PROJ-404"))
 }

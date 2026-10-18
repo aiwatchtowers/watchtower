@@ -72,7 +72,7 @@ func loadDirty(ctx context.Context, d *db.DB, source, after string) (keys []stri
 		var k string
 		var g int64
 		if err := rows.Scan(&k, &g); err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("kb: scanning dirty mark: %w", err)
 		}
 		keys = append(keys, k)
 		gens = append(gens, g)

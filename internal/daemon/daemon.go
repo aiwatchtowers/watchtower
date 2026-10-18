@@ -87,6 +87,10 @@ type deletionsChecker interface {
 	CheckDeletions(ctx context.Context, now time.Time) (int, error)
 }
 
+// The Gmail syncer must keep offering the optional check; a signature drift
+// would otherwise silently drop the daily diff.
+var _ deletionsChecker = (*gmail.Syncer)(nil)
+
 // minPollInterval is the minimum allowed poll interval. Values below this
 // (e.g. nanosecond-scale durations from misconfigured integer values) are
 // replaced with DefaultPollInterval. Tests may lower this for fast execution.
@@ -862,7 +866,7 @@ func (d *Daemon) phaseGmailSync(ctx context.Context) {
 			// Outside observePhase: deletions publish no event.
 			if c, ok := s.(deletionsChecker); ok {
 				if removed, derr := c.CheckDeletions(ctx, time.Now()); derr != nil {
-					d.logger.Printf("gmail deletions check error: %v", derr)
+					d.logger.Printf("gmail deletions check error (%d removed before it): %v", removed, derr)
 				} else if removed > 0 {
 					d.logger.Printf("gmail: %d deleted messages removed", removed)
 				}
