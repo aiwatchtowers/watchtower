@@ -11,6 +11,7 @@ import (
 // rowidTables are the tables whose rowids saved cursors depend on (the
 // linkscan synced_at|rowid cursors, memory's rowid identities, the
 // knowledge index), each with its primary key columns and a row insert.
+// Every table with a rowid-based cursor must be listed here.
 var rowidTables = []struct {
 	table  string
 	pk     string
