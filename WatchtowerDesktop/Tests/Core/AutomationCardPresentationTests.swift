@@ -165,6 +165,8 @@ final class AutomationCardPresentationTests: XCTestCase {
         XCTAssertEqual(ACP.permissionLine("llm:light"), "Use the light model")
         XCTAssertEqual(ACP.permissionLine("llm:strong"), "Use the strong model")
         XCTAssertEqual(ACP.permissionLine("jira:read@*"), "Read issues in all projects (Jira)")
+        XCTAssertEqual(ACP.permissionLine("linear:write@ENG"), "Change issues in ENG (Linear)")
+        XCTAssertEqual(ACP.permissionLine("linear:read@*"), "Read issues in all teams (Linear)")
         XCTAssertEqual(ACP.permissionLine("slack:write@acme"), "Post messages in acme (Slack)")
         XCTAssertEqual(ACP.permissionLine("targets:read"), "Read your targets")
         XCTAssertEqual(ACP.permissionLine("tool:create_target"), "Use the tool create_target")

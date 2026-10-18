@@ -10,6 +10,10 @@ Connector (`internal/linear/`) → `linear_*` tables (migration 00119) → `trac
 
 Authorization-code flow with PKCE (no client secret). The client id comes from `WATCHTOWER_LINEAR_CLIENT_ID`, else `linear.DefaultLinearClientID` (build-time `-X`, Makefile `LINEAR_ID`; release builds need `LINEAR_ID`/`WATCHTOWER_LINEAR_CLIENT_ID` in the build environment); with neither, `add`/`login` fail before opening a browser. The loopback listener tries fixed ports 18531..18535, so the Linear OAuth app must register `http://localhost:18531/callback` ... `18535`. Tokens rotate: every refresh returns a new refresh token, saved before use and single-flight across goroutines and processes (LINEAR-02); token and revoke calls time out after 30 s. Token file `<workspace>/linear_token_<accountID>.json`.
 
+## API key (2026-10-18, #694)
+
+An alternative to OAuth, for a workspace where the owner prefers a personal API key: `watchtower linear add --api-key` / `login --api-key` read the key from stdin (prompt `Linear API key: `, an empty key is refused). The token file carries `token_type: "api_key"`; the client sends it as a bare `Authorization` value (no `Bearer`), never refreshes it (no refresh lock), and treats a 401 as `ErrAuthRevoked` (the account goes `revoked`, LINEAR-03). `add` identifies the workspace with `FetchViewerWithToken` as for OAuth. `remove` deletes the token file and disables the account but revokes nothing at Linear: the owner revokes the key in Linear's settings. `linear accounts` shows `auth` (`oauth`|`api_key`, empty with no token file, `error` for an unreadable or corrupt one) in text and `--json`.
+
 ## Sync
 
 `phaseLinearSync` runs every `linear.sync_interval_mins` (default 15) when `linear.enabled`, one syncer per account, errors isolated per account; `ErrAuthRevoked` marks the account `revoked` (LINEAR-03). The syncers are built once at daemon start (`wireLinearSyncers`), so an account added, disabled or removed is picked up on the daemon's next start (the Jira precedent).
@@ -33,6 +37,18 @@ Authorization-code flow with PKCE (no client secret). The client id comes from `
 
 Read the migration for the exact column lists; the owner-open query shape is pinned by `TestTrackerIssues_OwnerOpenQueryUsesIndexes`.
 
+## Mirrors for the write tools (migration 00142)
+
+`linear_workflow_states` and `linear_labels` hold each selected team's workflow states and labels. They are refreshed per selected team on every sync pass (the workspace labels once per pass, by the first team that syncs); a failure fails that team and leaves its watermark unmoved (guard `TestLinear01_StatesLabelsFailureHoldsWatermark`). `Syncer.RefreshIssue` refetches one issue (and its comments) by id, stamps the Slack ids (`db.BackfillLinearSlackIDs`) and moves no cursor; the write tools call it after a successful write (non-fatal). Contract note: `TestSyncer_MirrorsStatesAndLabelsForSelectedTeams`, `TestSyncer_WorkspaceLabelsOncePerPass`, `TestSyncer_RefreshIssueNoWatermark`, `TestSyncer_RefreshIssueStampsSlackIDs`.
+
+## Tools (2026-10-18, #694; spec `docs/superpowers/specs/2026-10-18-linear-automation-tools-design.md`)
+
+Reads (`internal/tools/linear_read.go`, no live call except where noted): `list_linear_teams` (with states and labels), `list_linear_issues` (team, state, state_type, assignee `me`|email|id, created_after, limit; newest first; no account gives an empty list), `get_linear_issue` (with comments; a previous key resolves), `get_linear_status_history` (at most 20 keys), `list_linear_cycles` (automation surface only, like `list_jira_sprints`).
+
+Writes (`internal/tools/linear_write.go`; `External`, surfaces main, target and automation; propose, approve, apply — AGENT-03): `create_linear_issue` (team, title, description, labels, priority, assignee, state), `add_linear_comment`, `transition_linear_issue` (state or state_type), `assign_linear_issue` (`me`, email, display name or `none`), `update_linear_issue` (title, priority, `labels_add`/`labels_remove`, due_date, whole-number estimate). Normalize pins the account, issue, team, state, assignee and label ids at propose time, resolving from the mirror first and doing one live refetch on a miss; an unknown label is refused, never created. `create_linear_issue` pins a client UUID (`issue_uuid`) so a Retry looks up the landed issue instead of creating a second one. An auth error at apply marks the account `revoked`.
+
+Automations: capability `linear:read|write@<TEAM>|*` (AUTO-01); issue tools are scoped by the issue's current team, a list call without `team` is the absent scope. Desktop: chat catalog entries, approval-card summary lines and the automation card's "Linear" source.
+
 ## CLI
 
 `watchtower linear add [--label] | login | accounts [--json] | enable|disable|remove <id> | teams [--json] | select|deselect <TEAM-KEY>... | sync | status`, with `--account` to pick a workspace and `--no-open`/`--app-return` on the OAuth commands. `add` revives a removed account for the same org, refuses a non-removed one and cleans up on any failure; `login` refuses a different workspace. Both identify the fresh token's workspace with an in-memory viewer request (`linear.FetchViewerWithToken`: no token file, no refresh); `login` saves the token only after the workspace matches. Both refresh the stored workspace name and URL key, so a renamed workspace shows its new name. `enable`/`disable`/`remove` take the id positionally; an `--account` naming a different id is refused. `remove` revokes (best effort) and deletes the token under the account's token lock, so a daemon refresh in flight cannot write it back. `sync` prints a line per account and exits non-zero when any account failed (the `jira sync` rule).
@@ -43,5 +59,7 @@ Read the migration for the exact column lists; the owner-open query shape is pin
 - Nested history is capped at 50 per issue per pass (default order unconfirmed), labels and relations at 20.
 - The mention node name `suggestion_userMentions` (`attrs.id`) is unconfirmed against live data.
 - Slack mapping is by email only.
-- Consumers (briefing, inbox, ...) come in Plan 2, Desktop in Plan 3.
+- Consumers (briefing, inbox, ...) come in Plan 2, Desktop tabs in Plan 3.
+- The write tools cannot create labels, move an issue between teams, delete issues or touch cycles, projects, estimates other than whole numbers, or relations; they act through the mirror, so a team that is not selected for sync has no states to choose from.
+- An API key is per person and has no scopes: the workspace permissions of its owner apply.
 - The OAuth app must register the five redirect URIs above; release builds need `LINEAR_ID`.

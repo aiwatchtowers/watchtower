@@ -2101,6 +2101,22 @@ CREATE TABLE IF NOT EXISTS kb_dirty (
     gen    INTEGER NOT NULL DEFAULT 0, -- bumped on every re-mark; the drain deletes only the gen it rendered
     PRIMARY KEY (source, key)
 );
+CREATE TABLE IF NOT EXISTS linear_workflow_states (
+    account_id INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+    team_id    TEXT NOT NULL DEFAULT '',
+    id         TEXT NOT NULL,
+    name       TEXT NOT NULL DEFAULT '',
+    type       TEXT NOT NULL DEFAULT '',
+    position   REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, id)
+);
+CREATE TABLE IF NOT EXISTS linear_labels (
+    account_id INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+    id         TEXT NOT NULL,
+    team_id    TEXT NOT NULL DEFAULT '',
+    name       TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account_id, id)
+);
 CREATE VIEW IF NOT EXISTS workbench_target_archive AS
 WITH RECURSIVE
     node(id, parent_id, project_id, open, closed_at) AS (
@@ -2426,6 +2442,8 @@ CREATE INDEX IF NOT EXISTS idx_stream_digests_source ON stream_digests(source, a
 CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
 CREATE INDEX IF NOT EXISTS idx_idea_mentions_ref ON idea_mentions(source, ref);
 CREATE INDEX IF NOT EXISTS idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at);
+CREATE INDEX IF NOT EXISTS idx_linear_states_team ON linear_workflow_states(account_id, team_id, position);
+CREATE INDEX IF NOT EXISTS idx_linear_labels_team ON linear_labels(account_id, team_id);
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN

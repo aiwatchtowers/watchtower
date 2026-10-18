@@ -196,6 +196,7 @@ package enum AutomationCardPresentation {
         "slack": Source(name: "Slack", noun: "messages", all: "all workspaces", write: "Post messages in"),
         "calendar": Source(name: "Calendar", noun: "events", all: "all accounts", write: "Change events in"),
         "jira": Source(name: "Jira", noun: "issues", all: "all projects", write: "Change issues in"),
+        "linear": Source(name: "Linear", noun: "issues", all: "all teams", write: "Change issues in"),
         "confluence": Source(name: "Confluence", noun: "pages", all: "all spaces", write: "Edit pages in")
     ]
 

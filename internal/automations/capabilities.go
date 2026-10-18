@@ -57,6 +57,13 @@ var ToolCapabilities = map[string]ToolCapability{
 	"list_jira_sprints":       {Capability: "jira", Verb: "read", ScopeArg: "project", ScopeOf: sprintScope},
 	"list_jira_releases":      {Capability: "jira", Verb: "read", ScopeArg: "project", ScopeOf: upperArgScope("project")},
 
+	// Linear reads, scoped by team key (the issue's current team).
+	"list_linear_teams":         {Capability: "linear", Verb: "read"},
+	"list_linear_issues":        {Capability: "linear", Verb: "read", ScopeArg: "team", ScopeOf: upperArgScope("team")},
+	"list_linear_cycles":        {Capability: "linear", Verb: "read", ScopeArg: "team", ScopeOf: upperArgScope("team")},
+	"get_linear_issue":          {Capability: "linear", Verb: "read", ScopeArg: "key", ScopeOf: linearIssueScope},
+	"get_linear_status_history": {Capability: "linear", Verb: "read", ScopeArg: "keys", ScopeOf: linearStatusHistoryScope},
+
 	// Account-scoped reads. list_messages and list_upcoming_events read every
 	// connected workspace/calendar: their scope is always absent (D22).
 	"list_emails":          {Capability: "gmail", Verb: "read", ScopeArg: "account", ScopeOf: emailAccountScope},
@@ -99,6 +106,14 @@ var ToolCapabilities = map[string]ToolCapability{
 	"assign_jira_issue":     {Capability: "jira", Verb: "write", ScopeArg: "key", ScopeOf: issueKeyScope},
 	"update_jira_issue":     {Capability: "jira", Verb: "write", ScopeArg: "key", ScopeOf: issueKeyScope},
 	"send_slack_message":    {Capability: "slack", Verb: "write", ScopeArg: "account_id", ScopeOf: slackAccountScope},
+
+	// Linear writes, scoped like the reads: the team key, or the issue's
+	// current team.
+	"create_linear_issue":     {Capability: "linear", Verb: "write", ScopeArg: "team", ScopeOf: upperArgScope("team")},
+	"add_linear_comment":      {Capability: "linear", Verb: "write", ScopeArg: "key", ScopeOf: linearIssueScope},
+	"transition_linear_issue": {Capability: "linear", Verb: "write", ScopeArg: "key", ScopeOf: linearIssueScope},
+	"assign_linear_issue":     {Capability: "linear", Verb: "write", ScopeArg: "key", ScopeOf: linearIssueScope},
+	"update_linear_issue":     {Capability: "linear", Verb: "write", ScopeArg: "key", ScopeOf: linearIssueScope},
 }
 
 // ClampListLimit applies the list-tool limit (S9) to a call of a tool whose

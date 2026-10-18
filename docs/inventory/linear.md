@@ -26,7 +26,7 @@
 **Why locked:** Advancing the watermark past a failed page silently drops issues forever (the next pass starts after them); letting comment timestamps or the wall clock move it can skip issues that were updated between the query and the write.
 
 **Test guards:**
-- `internal/linear/syncer_test.go`: `TestLinear01_PageErrorHoldsWatermark`, `TestLinear01_CommentFailureHoldsWatermark`, `TestLinear01_PlanningFailureHoldsWatermark`, `TestLinear01_QuietTeamRecordsSinceAsWatermark`, `TestLinear01_CommentsDoNotRaiseWatermark`.
+- `internal/linear/syncer_test.go`: `TestLinear01_PageErrorHoldsWatermark`, `TestLinear01_CommentFailureHoldsWatermark`, `TestLinear01_PlanningFailureHoldsWatermark`, `TestLinear01_StatesLabelsFailureHoldsWatermark` (#694: a failed workflow-states or labels request fails the team and leaves its watermark unmoved), `TestLinear01_QuietTeamRecordsSinceAsWatermark`, `TestLinear01_CommentsDoNotRaiseWatermark`.
 - `internal/db/linear_accounts_test.go`: `TestLinear01_ErrorKeepsWatermark`.
 
 **Locked since:** 2026-10-15
@@ -41,8 +41,11 @@
 
 **Why locked:** A refresh that is not persisted before use, or two parallel refreshes that each burn the same refresh token, leave the account with a dead token pair and force a manual re-login.
 
+**API keys (2026-10-18, #694):** a personal API key (`watchtower linear add|login --api-key`, key read from stdin) is stored as token file `token_type: "api_key"` and sent as a bare `Authorization` value. It never expires, so the client never refreshes it and no refresh lock is taken; the rotation contract above applies to OAuth tokens only. A key that Linear rejects with 401 is `ErrAuthRevoked` (LINEAR-03).
+
 **Test guards:**
 - `internal/linear/client_test.go`: `TestLinear02_RefreshSavesRotatedPair`, `TestLinear02_ConcurrentRefreshSingleFlight` (one client, `Client.mu`), `TestLinear02_TwoClientsOneStoreSingleRefresh` (two clients on one token file — the file lock; both the 401 and the expired-token paths).
+- API key (#694): `internal/linear/client_test.go`: `TestLinear02_APIKeyNeverRefreshes`, `TestLinear02_APIKeySendsBareAuthorization`, `TestLinear02_APIKeyTokenRoundTrip`.
 
 **Locked since:** 2026-10-15
 
@@ -59,6 +62,7 @@
 **Test guards:**
 - `internal/daemon/linear_sync_test.go`: `TestLinear03_RevokedMarksAccount`, `TestLinear03_CancelledContextLeavesAuthState` (a cancelled context wins over a wrapped `ErrAuthRevoked`).
 - `internal/db/linear_accounts_test.go`: `TestLinear03_AccountLifecycleSoftDelete` (also asserts the account's issue and comment rows survive remove).
+- API key (#694): a 401 on an api-key account is `ErrAuthRevoked` and marks it `revoked` — `internal/linear/client_test.go` `TestLinear03_APIKey401IsAuthRevoked`. `linear remove` of a key account deletes the token file and disables the account but revokes nothing at Linear (the owner revokes the key in Linear's settings): `cmd/linear_test.go` `TestLinear03_RemoveAPIKeySkipsRevoke`. `linear accounts` shows `auth` (`oauth`|`api_key`, empty with no token file, `error` for an unreadable one): `cmd/linear_test.go` `TestLinear03_AccountsJSONAuth`.
 
 **Locked since:** 2026-10-15
 
@@ -77,3 +81,7 @@
 - `internal/db/tracker_test.go`: `TestLinear04_TrackerCommentsFollowTeamMove`.
 
 **Locked since:** 2026-10-15
+
+## Changelog
+
+- 2026-10-18 (Linear tools, board #694; spec `docs/superpowers/specs/2026-10-18-linear-automation-tools-design.md`): strengthening, no guard relaxed. LINEAR-02 records that a personal API key is never refreshed (the rotation contract is OAuth-only); LINEAR-03 covers a 401 on a key as revoked and records that removing a key account revokes nothing at Linear. Guards added: `TestLinear02_APIKeyNeverRefreshes`, `TestLinear02_APIKeySendsBareAuthorization`, `TestLinear02_APIKeyTokenRoundTrip`, `TestLinear03_APIKey401IsAuthRevoked`, `TestLinear03_RemoveAPIKeySkipsRevoke`, `TestLinear03_AccountsJSONAuth`. Migration 00142 adds `linear_workflow_states` and `linear_labels` (mirror for the write tools, refreshed per selected team each pass; workspace labels once per pass; a failure fails the team and leaves its watermark unmoved: `TestLinear01_StatesLabelsFailureHoldsWatermark`, mirror shape `TestSyncer_MirrorsStatesAndLabelsForSelectedTeams`, `TestSyncer_WorkspaceLabelsOncePerPass`); `Syncer.RefreshIssue` refetches one issue, stamps the Slack ids as a pass does and moves no cursor (`TestSyncer_RefreshIssueNoWatermark`, `TestSyncer_RefreshIssueStampsSlackIDs`). The watermark contract (LINEAR-01) is untouched.

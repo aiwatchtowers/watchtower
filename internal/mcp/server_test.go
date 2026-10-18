@@ -71,6 +71,7 @@ func TestToolsList(t *testing.T) {
 		"list_people", "get_person", "list_tracks", "get_track", "get_track_counts", "list_upcoming_events",
 		"list_jira_issues", "get_jira_issue", "list_jira_projects",
 		"get_jira_status_history", "get_jira_time_in_status",
+		"list_linear_teams", "list_linear_issues", "get_linear_issue", "get_linear_status_history",
 		"list_messages",
 		"list_transcripts", "get_transcript",
 		"list_ideas", "get_idea",
@@ -168,6 +169,16 @@ func seedGuardFixture(t *testing.T, database *db.DB) {
 	}); err != nil {
 		t.Fatalf("seeding jira issue: %v", err)
 	}
+	linearAcct, err := database.CreateLinearAccount("guard")
+	if err != nil {
+		t.Fatalf("seeding linear account: %v", err)
+	}
+	if err := database.UpsertLinearIssue(db.LinearIssue{
+		AccountID: linearAcct, ID: "lin-1", Key: "ENG-1", TeamID: "t-eng", TeamKey: "ENG", Title: "guard linear issue",
+		StateName: "Todo", StateType: "unstarted", CreatedAt: "2026-06-01T00:00:00Z", UpdatedAt: "2026-06-02T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("seeding linear issue: %v", err)
+	}
 	seedGuardExpertsFixture(t, database)
 	// Index the fixture so search_knowledge/get_knowledge_document have a real
 	// ref to read (get_knowledge_document's guard call below targets
@@ -227,6 +238,9 @@ func readOnlyGuardCalls() []mcpsdk.CallToolParams {
 		{Name: "list_jira_projects"},
 		{Name: "get_jira_status_history", Arguments: map[string]any{"keys": []any{"ABC-1"}}},
 		{Name: "get_jira_time_in_status", Arguments: map[string]any{"project": "ABC", "include_done": true}},
+		{Name: "list_linear_teams"}, {Name: "list_linear_issues", Arguments: map[string]any{"team": "ENG"}},
+		{Name: "get_linear_issue", Arguments: map[string]any{"key": "ENG-1"}},
+		{Name: "get_linear_status_history", Arguments: map[string]any{"keys": []any{"ENG-1"}}},
 		{Name: "get_task_context", Arguments: map[string]any{"key": "ABC-1"}},
 		{Name: "find_experts", Arguments: map[string]any{"topic": "guard", "issue_key": "ABC-1"}},
 		{Name: "list_transcripts"}, {Name: "list_transcripts", Arguments: map[string]any{"query": "guard"}},

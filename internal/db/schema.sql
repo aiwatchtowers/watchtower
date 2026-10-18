@@ -1201,6 +1201,28 @@ CREATE TABLE IF NOT EXISTS linear_relations (
 CREATE INDEX IF NOT EXISTS idx_linear_relations_related ON linear_relations(account_id, related_issue_id, type);
 CREATE INDEX IF NOT EXISTS idx_linear_relations_issue ON linear_relations(account_id, issue_id);
 
+-- Workflow states and labels of the selected teams (migration 00142), mirrored
+-- by the sync. linear_labels.team_id '' = a workspace label.
+CREATE TABLE IF NOT EXISTS linear_workflow_states (
+    account_id INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+    team_id    TEXT NOT NULL DEFAULT '',
+    id         TEXT NOT NULL,
+    name       TEXT NOT NULL DEFAULT '',
+    type       TEXT NOT NULL DEFAULT '',
+    position   REAL NOT NULL DEFAULT 0,
+    PRIMARY KEY (account_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_linear_states_team ON linear_workflow_states(account_id, team_id, position);
+
+CREATE TABLE IF NOT EXISTS linear_labels (
+    account_id INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+    id         TEXT NOT NULL,
+    team_id    TEXT NOT NULL DEFAULT '',
+    name       TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (account_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_linear_labels_team ON linear_labels(account_id, team_id);
+
 -- Linear user UUIDs are global, so the map is not account-scoped (the
 -- jira_user_map precedent).
 CREATE TABLE IF NOT EXISTS linear_user_map (

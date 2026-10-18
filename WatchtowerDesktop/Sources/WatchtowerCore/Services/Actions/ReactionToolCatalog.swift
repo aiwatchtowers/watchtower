@@ -47,6 +47,13 @@ package enum ReactionToolCatalog {
             destination: "Jira",
             alwaysAsks: true
         ),
+        // Exists for approval-card titles, not the reaction dictionary.
+        "create_linear_issue": ReactionToolInfo(
+            title: "Create a Linear issue",
+            summary: "Drafts a Linear issue",
+            destination: "Linear",
+            alwaysAsks: true
+        ),
         "create_track": ReactionToolInfo(
             title: "Track this",
             summary: "Starts a track following the topic",
@@ -111,6 +118,32 @@ package enum ReactionToolCatalog {
             title: "Update a Jira issue",
             summary: "Edits an existing issue's summary, priority, labels or due date",
             destination: "Jira",
+            alwaysAsks: true
+        ),
+        // The Linear twins of the Jira writes (#694) — External, so always
+        // behind Approve; for approval-card titles, not the reaction dictionary.
+        "add_linear_comment": ReactionToolInfo(
+            title: "Comment on a Linear issue",
+            summary: "Posts a comment on an existing issue",
+            destination: "Linear",
+            alwaysAsks: true
+        ),
+        "transition_linear_issue": ReactionToolInfo(
+            title: "Move a Linear issue",
+            summary: "Moves an existing issue to another workflow state",
+            destination: "Linear",
+            alwaysAsks: true
+        ),
+        "assign_linear_issue": ReactionToolInfo(
+            title: "Assign a Linear issue",
+            summary: "Sets an existing issue's assignee",
+            destination: "Linear",
+            alwaysAsks: true
+        ),
+        "update_linear_issue": ReactionToolInfo(
+            title: "Update a Linear issue",
+            summary: "Edits an existing issue's title, priority, labels, due date or estimate",
+            destination: "Linear",
             alwaysAsks: true
         ),
         // Chat-only Confluence page edit (spec 2026-09-30 §6) — External.

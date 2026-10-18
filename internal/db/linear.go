@@ -275,19 +275,16 @@ func (db *DB) KnownLinearIssueIDs(accountID int64, ids []string) ([]string, erro
 	return out, nil
 }
 
-// GetLinearIssueByKey matches the current key or a previous one, across accounts.
-func (db *DB) GetLinearIssueByKey(key string) ([]LinearIssue, error) {
-	rows, err := db.Query(`SELECT account_id, id, key, previous_keys, team_id, team_key, title,
+// linearIssueColumns is the SELECT list scanLinearIssues reads, in order.
+const linearIssueColumns = `account_id, id, key, previous_keys, team_id, team_key, title,
 		description_text, state_name, state_type, status_category, state_changed_at, assignee_id, assignee_email,
 		assignee_display_name, creator_id, creator_email, creator_display_name, priority, estimate, due_date,
 		cycle_id, project_id, parent_id, labels, url, created_at, updated_at, completed_at, canceled_at, raw_json,
-		is_deleted
-		FROM linear_issues
-		WHERE key = ? OR EXISTS (SELECT 1 FROM json_each(linear_issues.previous_keys) WHERE value = ?)
-		ORDER BY account_id, id`, key, key)
-	if err != nil {
-		return nil, fmt.Errorf("getting linear issue %s: %w", key, err)
-	}
+		is_deleted`
+
+// scanLinearIssues reads every row of a linearIssueColumns query and closes
+// rows.
+func scanLinearIssues(rows *sql.Rows) ([]LinearIssue, error) {
 	defer rows.Close()
 	var out []LinearIssue
 	for rows.Next() {
@@ -305,6 +302,18 @@ func (db *DB) GetLinearIssueByKey(key string) ([]LinearIssue, error) {
 		out = append(out, i)
 	}
 	return out, rows.Err()
+}
+
+// GetLinearIssueByKey matches the current key or a previous one, across accounts.
+func (db *DB) GetLinearIssueByKey(key string) ([]LinearIssue, error) {
+	rows, err := db.Query(`SELECT `+linearIssueColumns+`
+		FROM linear_issues
+		WHERE key = ? OR EXISTS (SELECT 1 FROM json_each(linear_issues.previous_keys) WHERE value = ?)
+		ORDER BY account_id, id`, key, key)
+	if err != nil {
+		return nil, fmt.Errorf("getting linear issue %s: %w", key, err)
+	}
+	return scanLinearIssues(rows)
 }
 
 // LinearComment is one issue comment.

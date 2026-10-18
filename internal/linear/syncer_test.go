@@ -116,6 +116,20 @@ func TestLinear01_PlanningFailureHoldsWatermark(t *testing.T) {
 	assert.Equal(t, 1, issues)
 }
 
+func TestLinear01_StatesLabelsFailureHoldsWatermark(t *testing.T) {
+	for name, fail := range map[string]func(*fakeLinear){
+		"states unavailable": func(f *fakeLinear) { f.failStates = true },
+		"labels unavailable": func(f *fakeLinear) { f.failLabels = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			watermark, lastErr, issues := syncTeamWithFailure(t, fail)
+			assert.Equal(t, "2026-09-01T00:00:00.000Z", watermark)
+			assert.Contains(t, lastErr, name)
+			assert.Equal(t, 1, issues)
+		})
+	}
+}
+
 func TestLinear04_TeamMoveKeepsOneRow(t *testing.T) {
 	f := newFakeLinear(t)
 	f.viewerTeams = []string{"t-1"}

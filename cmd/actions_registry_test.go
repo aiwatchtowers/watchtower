@@ -57,6 +57,12 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 		require.True(t, ok)
 		assert.True(t, tool.External, "%s leaves the machine (AGENT-03)", w)
 	}
+	for _, w := range []string{"create_linear_issue", "add_linear_comment", "transition_linear_issue",
+		"assign_linear_issue", "update_linear_issue"} {
+		tool, ok := reg.Get(w)
+		require.True(t, ok, "%s missing", w)
+		assert.True(t, tool.External, "%s leaves the machine (AGENT-03)", w)
+	}
 
 	// Confluence page editing (EXT-05): both tools on main + target; the
 	// write is External (AGENT-03); the live read is chat-mode only — it is
@@ -259,6 +265,12 @@ var automationWriteSurfaces = map[string][]string{
 	"assign_jira_issue":     {"main", "target", tools.AutomationSurface},
 	"update_jira_issue":     {"main", "target", tools.AutomationSurface},
 	"send_slack_message":    {"main", tools.WorkbenchSurface, tools.AutomationSurface},
+	// Linear writes (spec 2026-10-18 §6.2): the Jira writes' surfaces.
+	"create_linear_issue":     {"main", "target", tools.AutomationSurface},
+	"add_linear_comment":      {"main", "target", tools.AutomationSurface},
+	"transition_linear_issue": {"main", "target", tools.AutomationSurface},
+	"assign_linear_issue":     {"main", "target", tools.AutomationSurface},
+	"update_linear_issue":     {"main", "target", tools.AutomationSurface},
 }
 
 func pinAutomationWriteTools(t *testing.T, reg *tools.Registry, automation map[string]bool) {
@@ -270,13 +282,13 @@ func pinAutomationWriteTools(t *testing.T, reg *tools.Registry, automation map[s
 		assert.Equal(t, want, tool.Surfaces, "%s: exact surfaces", name)
 		assert.True(t, automation[name], "%s missing on the automation surface", name)
 	}
-	// Exactly the ten write tools: the bulk dismiss (AlwaysAsk), the board
+	// Exactly the fifteen write tools: the bulk dismiss (AlwaysAsk), the board
 	// connect, the Confluence edit, the reaction-only brief and every
 	// workbench tool stay off the automation surface.
 	for _, tool := range reg.List(tools.AutomationSurface) {
 		if tool.Access == tools.AccessWrite {
 			_, pinned := automationWriteSurfaces[tool.Name]
-			assert.True(t, pinned, "%s is a write tool on the automation surface but not one of the ten", tool.Name)
+			assert.True(t, pinned, "%s is a write tool on the automation surface but not one of the fifteen", tool.Name)
 		}
 	}
 	for _, name := range []string{"connect_jira_board", "dismiss_tracks", "edit_confluence_page", "brief_context",

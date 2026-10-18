@@ -22,7 +22,12 @@ The **Jira Features** switches (role preset plus one switch per signal) decide w
 
 - **Connect:** `watchtower linear add` signs in with Linear, then `watchtower linear teams` and `select` pick the teams. Connecting (or signing in again) switches `linear.enabled` on for you.
 - **Sync:** the daemon syncs the selected teams every 15 minutes (`linear.sync_interval_mins`). The first pass loads every open issue and everything updated in the last 90 days.
-- **What reads it:** the data is stored next to Jira's in a shared form, but no tab, briefing or inbox card reads it. Linear's one use is identifying you: a connected Linear workspace can identify you for the briefing and the day plan.
+- **API key instead of the browser:** `watchtower linear add --api-key` asks for a personal API key (create one in Linear under Settings, Security & access) and reads it from standard input. A key never expires and is not refreshed. If Linear rejects it, the account shows **revoked**: run `watchtower linear login --api-key` with a new key. Removing the account does not delete the key at Linear; revoke it there. `watchtower linear accounts` shows `oauth` or `api_key` in the `auth` column (`error` if the saved credential cannot be read: sign in again with `watchtower linear login`).
+- **What reads it:** the data is stored next to Jira's in a shared form, but no tab, briefing or inbox card reads it. Two things use it: the assistant, and automations (below). A connected Linear workspace can also identify you for the briefing and the day plan.
+
+### Linear in the assistant
+
+In **AI Chat** you can ask the assistant to list teams and issues, read an issue with its comments and status history, or change Linear: create an issue, add a comment, move an issue to another state, assign it, or edit its title, priority, labels, due date and estimate. Every change is a proposal: it waits in the chat's action card until you press Approve, and Linear changes only then. If you press Retry after a failed create, no second issue is made. The assistant can only choose a state, label or person that Linear knows for that team; a label that does not exist is refused, not created. Teams you did not select for sync have no states to choose from, so select the team first.
 
 ## Using it
 
