@@ -4,20 +4,33 @@ Home is the page Watchtower opens on. It shows what needs you right now and, on 
 
 ## Why use it
 
-You open the app after a meeting and want one answer: what is waiting for me? Home puts the recap you haven't read, your next meeting, pending approvals, today's briefing, your own targets and questions from coding agents in one column. Nothing here is built by Home itself, so there is nothing to wait for.
+You open the app after a meeting and want one answer: what is waiting for me? Home puts the mentions, mail and reminders that need you, then your meetings, in one feed. Next to it sit the recap you haven't read, today's briefing and questions from coding agents. Nothing here is built by Home itself, so there is nothing to wait for.
 
 ## How it works
 
-Home only reads what the rest of the app has already produced, and refreshes about every 30 seconds. A Today card appears only when it has something to show, and only when its tab is visible: a card for Inbox, Calendar, Briefings or Catch Up disappears with that tab.
+Home only reads what the rest of the app has already produced, and refreshes about every 30 seconds. The feed is on the left; the Today cards are on the right, or under the feed in a narrow window. A Today card appears only when it has something to show, and only when its tab is visible: a card for Briefings or Catch Up disappears with that tab.
 
 | Card | Shows | Opens |
 |---|---|---|
 | **SINCE YOU WERE AWAY** | The newest finished Catch Up recap you haven't marked caught up, with its TL;DR | Catch Up |
-| **NEXT MEETING** | The next event starting within 24 hours: time, up to two attendees, "Prep ready" when prep exists | That event in Calendar |
-| **WAITING ON YOU** | The three newest proposals, failed actions and due reminders, with the total | Inbox |
 | **BRIEFING** | The first line of today's briefing | The briefing |
-| **MY TARGETS** | Up to five of your own targets that are overdue, due today or in progress (never a Workbench board's) | The target |
 | **AGENTS WAITING** | The three oldest questions and review requests from Claude Code or Codex sessions, with the workbench | That session |
+
+### The feed
+
+The feed reads top to bottom like your day. Above a **NOW** line with the current time is everything that waits on you. Below it are your meetings and what is still to come.
+
+**Above NOW** are, from the last 72 hours: Slack mentions, direct messages, thread replies and reactions, then Jira items, proposals and failed actions from the assistant, due reminders, your own targets that are overdue or due today, and email. Slack, Jira and email rows come from Inbox, so they follow its detection and snooze. A row stays when you read it, shown dimmer; only acting on it removes it. Newest comes first within each kind, and the list shows seven rows with a **N more** line that opens the rest in place. A Workbench board's targets never appear.
+
+**Below NOW** are the meeting in progress, if any, then today's remaining meetings, reminders and targets that have a time, in time order. The next meeting says how soon it starts, such as "in 25 min", and shows "Prep ready" when prep exists. After today, a short block shows the first of the next three days that has meetings: **Tomorrow**, or the weekday, with up to three meetings. All-day events, cancelled events and events you declined are left out.
+
+### Done and Hide
+
+- Press **Done** on a row to resolve it, or **Hide** to put it away. A hidden reminder or target comes back tomorrow at 09:00. Proposals and meetings have no buttons: open them instead.
+- A row leaves the feed at once. If the action fails the row comes back with the error under it, and pressing again retries.
+- Click a row to open it: a Slack, Jira or email row opens its source, the rest open Inbox, the target or the meeting in Calendar.
+
+### Today cards
 
 With nothing to show, Today says "Nothing needs you right now." If a card can't be read it is skipped and the others still show. If none could be read, Today says "Couldn't read today's items — see the log."
 
@@ -60,6 +73,8 @@ Home ends with the line "Stuck? Press **⌘/** to ask, or open the User Guide." 
 - **No Getting ready zone.** It is shown only while something is still preparing or waiting for a source. It is also gone after three days, or after you hid it.
 - **A tab is missing from the menu.** Turn its feature on in Settings → Features and connect its source. You may also have hidden it: look under **HIDDEN**.
 - **A card is missing from Today.** It has nothing to show right now, or its feature is off or its source isn't connected.
+- **The feed has no Slack, Jira or email rows.** Inbox detection is off, or nothing arrived in the last 72 hours.
+- **No meetings below NOW.** Calendar isn't connected, or the events are all-day, cancelled or declined.
 - **"Couldn't read today's items — see the log."** The local database couldn't be read. Quit and reopen the app; if it persists, check the app log.
 
 A tab stays empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).

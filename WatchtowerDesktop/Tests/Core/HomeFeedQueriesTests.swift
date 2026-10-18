@@ -187,7 +187,7 @@ final class HomeFeedQueriesTests: XCTestCase {
 
     // MARK: - Targets
 
-    func testWorkbenchTargetNeverReturned() throws {
+    func testProj01_FeedNeverReturnsAProjectTarget() throws {
         try db.write { d in
             try d.execute(sql: "INSERT INTO projects (id, name, folder_path) VALUES (1, 'wb', '/tmp/wb')")
             try self.insertTarget(d, "Workbench overdue", dueDate: try self.dayString(-1) + "T09:00", projectID: 1)

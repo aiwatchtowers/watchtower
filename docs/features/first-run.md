@@ -474,17 +474,13 @@ waiting have no tab gate).
 | Card | Source | Shows when | Click |
 |---|---|---|---|
 | Since you were away | `CatchUpQueries.newestUnacknowledgedReady` | a ready, unacknowledged recap exists (the Catch-Up badge, `hasUnacknowledgedReady`) — the newest such, so a newer building or failed run does not hide it; eyebrow "SINCE THU 18:00", body = `tldr` | Catch-Up |
-| Next meeting | `CalendarQueries.fetchNextEvent` + `hasPrep` | the event starts within 24 h; eyebrow "IN N MIN", "HH:MM" or "TOMORROW HH:MM"; line = time range · up to two attendees +N · "Prep ready" | the event in Calendar (`navigateToCalendarEvent`) |
-| Waiting on you · N | `AgentActionQueries.awaitingOwnerCount` + `awaitingOwner(limit: 3)` (pending/failed, not workbench rows) and `ReminderQueries.fetchDue`; N = the badge's count | N > 0; top 3 items, newest first, chips Proposal / Failed / Reminder | Inbox (follows the Inbox tab) |
 | Briefing | `BriefingQueries.fetchByDate(today)` | today's briefing has an item; body = the first item of the first non-empty section | that briefing (`navigateToBriefing`) |
-| My targets | `TargetQueries.homeSummary` (limit 5) | any row; detail "Overdue · Oct 12", "Due today", "Due HH:MM" or "In progress" | the target (`navigateToTarget`); header → Targets |
 | Agents waiting · N | `OwnerAskQueries.openAsksAllWorkbenches` (open asks joined to `projects.name`; an unreadable row is logged, named and left out, and marks the card failed) | any readable open ask; 3 oldest, chip = ask kind, detail = workbench | `WorkbenchRoute.forAsk` — the ask's session terminal, or the board for an ask filed outside the app; header → Workbench |
 
-- `TargetQueries.homeSummary` (`TargetQueries.swift:237`): `project_id IS
-  NULL` (PROJ-01 — workbench targets stay on their board), ownership `mine`,
-  status todo/in_progress/in_review/blocked, and due on or before today or
-  `in_progress`; due/overdue first by due date, then in-progress by
-  `updated_at DESC`.
+- `TargetQueries.homeSummary` (`TargetQueries.swift:237`) is no longer
+  Home's read (the feed's targets come from `HomeFeedQueries`, below) but stays
+  and stays guarded: `project_id IS NULL` (PROJ-01 — workbench targets stay on
+  their board), ownership `mine`, due on or before today or `in_progress`.
 - **Read errors.** `HomeSnapshot.showsReadError` (`Home.swift:241`): no card
   to show and at least one allowed card failed → "Couldn't read today's items
   — see the log." `nothingNeedsYou` (`:247`) — "Nothing needs you right now."
@@ -492,6 +488,69 @@ waiting have no tab gate).
   failed card never hides the others and is never read as the all-clear; an
   unreadable open ask counts as Agents waiting's failed read, while the
   readable asks still show.
+
+### Feed (2026-10-19, #717)
+
+Board #717, spec `docs/superpowers/specs/2026-10-19-home-zones-design.md`
+§§3–5, PR 1. The Next meeting, Waiting on you and My targets cards are gone
+from Today; one feed replaces them, on the left of a two-column Home (the
+remaining cards on the right; one column below 900 pt content width). No
+migration, no AI, no daemon phase.
+
+- **Read** — `HomeFeedQueries.read`
+  (`WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/HomeFeedQueries.swift:57`)
+  runs in `HomeCenter`'s one `pool.read` beside `HomeQueries.today`
+  (`HomeCenter.swift:182`), each source on its own: a throw is logged and puts
+  the source in `HomeFeedData.failed`; a missing table reads as no content.
+  Observed tables: `HomeFeedQueries.observedTables`.
+- **Sources.**
+  - Inbox (`:91`): `status = 'pending'`, `item_class = 'actionable'`, trigger in
+    mention/dm/thread_reply/reaction/jira_assigned/jira_comment_mention/email_received,
+    `MAX(created_at, mentioned_at)` within 72 h (`windowHours`), not snoozed
+    (`snooze_until = ''` or elapsed), newest first, `LIMIT 200`.
+    `read_at` never hides a row: a read row stays and renders secondary;
+    `priority` is not used.
+  - Due reminders (`ReminderQueries.fetchDue`), proposals/failed actions
+    (`AgentActionQueries.awaitingOwner`, workbench rows excluded there), and
+    own targets overdue or due today (`dueTargets`, `:163`: `project_id IS
+    NULL` — PROJ-01 — `ownership = 'mine'`, open statuses; no in-progress
+    arm).
+  - Calendar (`events`, `:178`): today and the next 4 days through
+    `isShownEvent` (`:200`) — no all-day, no `cancelled`, none the owner
+    declined (attendee email equal to the event's `accountEmail`,
+    `responseStatus == "declined"`); prep ids only for events still to start
+    today and the next day's.
+- **Build** — `HomeFeedBuilder.feed`
+  (`Sources/WatchtowerCore/Services/HomeFeedBuilder.swift:17`) is pure. Above
+  NOW: kind order Slack (mention/dm/thread/reaction) → Jira → proposal →
+  reminder → target → email (`FeedKind`), newest first within a kind, 7 rows
+  (`waitingLimit`) and `hiddenWaiting` for "N more" (expanding is
+  `HomeCenter.setFeedExpanded`, `:248`, in place). NOW carries `HH:mm`. Below:
+  the ongoing meeting, then later today by time — meetings (the first says "in
+  N min" under 60 min, "now" under one), timed targets and later reminders.
+  Next day: the first of the next 3 days (`nextDayHorizonDays`) with events,
+  meetings only, at most 3, titled "Tomorrow" or the weekday; it also rolls
+  over at midnight because the day is computed from `now`.
+- **Allowed sources** — `AppState.homeFeedSourcesAllowed`
+  (`AppState+Home.swift:47`): inbox follows Attention detection's feature,
+  calendar follows the Calendar tab's visibility; reminders, proposals and
+  targets are always allowed. `HomeCenter.makeFeed` (`:347`) empties a source
+  Home may not show and drops its failure too.
+- **Done / Hide** — `HomeCenter.act` (`:227`) hides the row at once
+  (`hiddenRefs`), then runs `LiveHomeFeedPerformer.perform`
+  (`Sources/Services/HomeFeedActions.swift:47`): inbox rows through the CLI,
+  `watchtower inbox resolve|dismiss <id>` (the only non-GRDB write, a writer
+  in inbox-pulse's terms, owner ask #408); reminders through
+  `ReminderQueries.markDone` / `snooze`, targets through
+  `TargetQueries.updateStatus(done)` / `snooze` — Hide snoozes to tomorrow
+  09:00 local. Proposals and events have no action. A failure un-hides the
+  row and stores the message in `feedErrors` (a second press clears it). An
+  item already gone (Go's resolve/dismiss exit 0 on a missing row;
+  `RowNotFoundError`, `TargetNotFoundError`) is success. No CLI is an error
+  (`HomeFeedActionError.cliUnavailable`), not a silent no-op.
+- **Failed source is never the all-clear** — `HomeFeed.failed` names it and
+  the view says so; an empty feed with a failed source never reads as nothing
+  waiting.
 
 ### Resolutions made while planning
 
@@ -533,14 +592,26 @@ waiting have no tab gate).
 Core: `GettingReadyTests`, `FeatureCardCopyTests`, `HomeTodayTests`,
 `HomeQueriesTests` (`testOneFailingCardKeepsTheOthers`),
 `WorkbenchTargetExclusionTests.testProj01_HomeSummaryNeverReturnsAProjectTarget`.
+Feed (2026-10-19, #717), Core: `HomeFeedQueriesTests` (72 h window, triggers and
+snooze, 200 cap, read rows kept, who/where, events filter, prep scope,
+reminder split, `testOneFailingSourceMarksOnlyItself`, missing table,
+`testProj01_FeedNeverReturnsAProjectTarget`), `HomeFeedBuilderTests` (kind
+order, cap and N more, hidden refs, NOW, next meeting, next day within 3 days,
+midnight roll-over, `testFailedSourceIsNeverAllClear`). Desktop:
+`HomeFeedActionTests` (Done hides at once, CLI failure restores, quiet when
+gone, snooze to 09:00, no CLI), `HomeCenterTests` (`testFeedIsInTheSnapshot`,
+`testFeedSourcesFollowAttentionDetectionAndCalendar`).
 Desktop: `HomeCenterTests` (`testAllReadsFailedIsNotAllClear`),
 `HomeCenterSurvivesNavigationTests`, `HomeLandingTests` (landing, launch
 default, fallback, re-run keeps the tab), `HomeLinkTests`, `HomeViewTests`.
 
 ## Contracts and tests
 
-- **No inventory file changes** (P1, P4 and P2). P2 adds a PROJ-01 guard
-  case for `homeSummary` and changes no contract. P1/P4 touched no guard test:
+- **Inventory changes** (Feed, #717): `docs/inventory/workbench.md` PROJ-01
+  note and guard list (the feed's targets read), `docs/inventory/inbox-pulse.md`
+  header (Home's Done/Hide is a writer through the CLI). No contract text
+  changed. Before that, no inventory changes (P1, P4 and P2): P2 added a
+  PROJ-01 guard case for `homeSummary` and changed no contract. P1/P4 touched no guard test:
   `TestShouldRunBriefing_*`, `*Backoff_*` and `TestOwner02_*` are as they were.
   `TestDaemon_RunSyncInvokesAllTrackedPhases` (`internal/daemon/daemon_test.go:1088`)
   got fixture data only — active users and a digest situation in people's window

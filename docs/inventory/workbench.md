@@ -111,9 +111,12 @@ workbench target. The registry's `list_targets`/`get_target` return a workbench
 target only inside that workbench's own session (`watchtower mcp --workbench N`);
 any other session is told `no target with id N`.
 
-*Note (2026-10-15, no contract change):* the Desktop's Home "My targets" read,
-`TargetQueries.homeSummary`, filters `project_id IS NULL` as well, guarded by
-`testProj01_HomeSummaryNeverReturnsAProjectTarget`.
+*Note (2026-10-15, amended 2026-10-19, no contract change):* the Desktop's Home
+targets now come from `HomeFeedQueries` (the feed: overdue and due today only),
+which filters `project_id IS NULL` as well, guarded by
+`testProj01_FeedNeverReturnsAProjectTarget`. `TargetQueries.homeSummary`
+(2026-10-15's "My targets" read) is no longer Home's read but stays and stays
+guarded by `testProj01_HomeSummaryNeverReturnsAProjectTarget`.
 
 **Why locked:** Owner decision D4. An agent decomposes a plan into dozens of
 sub-targets; letting them into the Targets tab, the day plan, next-step,
@@ -125,6 +128,7 @@ calls on it.
 - `internal/db` — `TestProj01_ProjectTargetsNeverReachNonBoardReaders` (Task 3)
 - `internal/tools/workbenches_test.go::TestProj01_TargetReadsFollowTheSessionScope`
 - `WatchtowerDesktop/Tests/Core/WorkbenchTargetExclusionTests.swift::testProj01_HomeSummaryNeverReturnsAProjectTarget` (Home, 2026-10-15)
+- `WatchtowerDesktop/Tests/Core/HomeFeedQueriesTests.swift::testProj01_FeedNeverReturnsAProjectTarget` (Home feed, 2026-10-19)
 
 **Locked since:** 2026-09-29
 
