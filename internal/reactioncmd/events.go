@@ -3,10 +3,14 @@ package reactioncmd
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
+	"time"
 
 	"github.com/slack-go/slack"
 
 	"watchtower/internal/automations"
+	"watchtower/internal/db"
 	watchtowerslack "watchtower/internal/slack"
 )
 
@@ -58,11 +62,15 @@ func (p *Pipeline) resetEventSeeds() {
 // publishReactionEvents publishes a slack.reaction_added event for every owner
 // reaction on a message that the reaction_events ledger has not seen, in list
 // order. An account without a seed stamp records its reactions as history and
-// publishes nothing. The dictionary plays no part: a dictionary emoji takes
-// the tool path and this one independently.
+// publishes nothing. A reaction on a message older than the seed stamp never
+// fires (ask #366): reactions.list returns only the latest window, so removing
+// a fresh reaction slides an old, never-recorded one into it, and the message
+// time is the only signal telling the two apart. The cost: a fresh reaction on
+// a message from before the seed does not fire either. The dictionary plays no
+// part: a dictionary emoji takes the tool path and this one independently.
 func (p *Pipeline) publishReactionEvents(ctx context.Context, list *reactionList, sink EventSink) error {
 	accountID := list.acct.AccountID
-	seeded, err := p.db.ReactionEventsSeeded(accountID)
+	seededAt, err := p.db.ReactionEventsSeededAt(accountID)
 	if err != nil {
 		return err
 	}
@@ -71,7 +79,7 @@ func (p *Pipeline) publishReactionEvents(ctx context.Context, list *reactionList
 		return err
 	}
 	reactions := ownerMessageReactions(items, list.rawOwner, accountID)
-	if !seeded {
+	if seededAt.IsZero() {
 		if err := p.db.SeedReactionEvents(accountID, reactions); err != nil {
 			return err
 		}
@@ -84,7 +92,7 @@ func (p *Pipeline) publishReactionEvents(ctx context.Context, list *reactionList
 	}
 	// Filter with a read first: a steady-state poll lists ~2000 reactions it
 	// has all seen, and writing each one would churn the write lock.
-	unseen, err := p.db.FilterUnseenReactionEvents(accountID, reactions)
+	unseen, err := p.db.FilterUnseenReactionEvents(accountID, postedSince(reactions, seededAt))
 	if err != nil {
 		return err
 	}
@@ -103,4 +111,19 @@ func (p *Pipeline) publishReactionEvents(ctx context.Context, list *reactionList
 		sink.Publish(events...)
 	}
 	return nil
+}
+
+// postedSince keeps the reactions whose message was posted at or after since.
+// A message ts is "<unix seconds>.<micros>"; one that does not parse is
+// dropped with the old ones.
+func postedSince(rs []db.OwnerReaction, since time.Time) []db.OwnerReaction {
+	var out []db.OwnerReaction
+	for _, r := range rs {
+		secs, _, _ := strings.Cut(r.MessageTS, ".")
+		posted, err := strconv.ParseInt(secs, 10, 64)
+		if err == nil && posted >= since.Unix() {
+			out = append(out, r)
+		}
+	}
+	return out
 }

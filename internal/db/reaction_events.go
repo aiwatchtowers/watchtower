@@ -90,18 +90,26 @@ func (db *DB) SeedReactionEvents(accountID int64, rs []OwnerReaction) error {
 	return nil
 }
 
-// ReactionEventsSeeded reports whether accountID's existing reactions have
-// been recorded into reaction_events. A missing row reads as NOT seeded.
-func (db *DB) ReactionEventsSeeded(accountID int64) (bool, error) {
+// ReactionEventsSeededAt returns when accountID's existing reactions were
+// recorded into reaction_events, or the zero time when they have not been. A
+// missing row reads as NOT seeded.
+func (db *DB) ReactionEventsSeededAt(accountID int64) (time.Time, error) {
 	var stamp string
 	err := db.QueryRow(`SELECT reaction_events_seeded_at FROM slack_accounts WHERE id = ?`, accountID).Scan(&stamp)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return false, nil
+			return time.Time{}, nil
 		}
-		return false, fmt.Errorf("reading reaction events seed stamp for slack account %d: %w", accountID, err)
+		return time.Time{}, fmt.Errorf("reading reaction events seed stamp for slack account %d: %w", accountID, err)
 	}
-	return stamp != "", nil
+	if stamp == "" {
+		return time.Time{}, nil
+	}
+	at, err := time.Parse(time.RFC3339, stamp)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parsing reaction events seed stamp for slack account %d: %w", accountID, err)
+	}
+	return at, nil
 }
 
 // ResetReactionEventsSeeded clears every account's seed stamp (rows are

@@ -560,9 +560,9 @@ func stampReactionSeed(t *testing.T, database *db.DB) {
 
 func reactionSeeded(t *testing.T, database *db.DB, id int64) bool {
 	t.Helper()
-	seeded, err := database.ReactionEventsSeeded(id)
+	seeded, err := database.ReactionEventsSeededAt(id)
 	require.NoError(t, err)
-	return seeded
+	return !seeded.IsZero()
 }
 
 // With no event bus (automations off) nobody can listen, so the poll clears

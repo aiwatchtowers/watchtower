@@ -33,9 +33,9 @@ func TestSeedReactionEvents_StampsAndRecords(t *testing.T) {
 
 	require.NoError(t, d.SeedReactionEvents(id, []OwnerReaction{r, r}))
 
-	seeded, err := d.ReactionEventsSeeded(id)
+	seeded, err := d.ReactionEventsSeededAt(id)
 	require.NoError(t, err)
-	assert.True(t, seeded)
+	assert.False(t, seeded.IsZero())
 
 	ok, err := d.InsertReactionEvent(r)
 	require.NoError(t, err)
@@ -53,9 +53,9 @@ func TestResetReactionEventsSeeded(t *testing.T) {
 
 	require.NoError(t, d.ResetReactionEventsSeeded())
 
-	seeded, err := d.ReactionEventsSeeded(id)
+	seeded, err := d.ReactionEventsSeededAt(id)
 	require.NoError(t, err)
-	assert.False(t, seeded)
+	assert.True(t, seeded.IsZero())
 	ok, err := d.InsertReactionEvent(r)
 	require.NoError(t, err)
 	assert.False(t, ok, "rows are kept after a reset")
@@ -63,9 +63,9 @@ func TestResetReactionEventsSeeded(t *testing.T) {
 
 func TestReactionEventsSeeded_MissingAccount(t *testing.T) {
 	d := openTestDB(t)
-	seeded, err := d.ReactionEventsSeeded(999)
+	seeded, err := d.ReactionEventsSeededAt(999)
 	require.NoError(t, err)
-	assert.False(t, seeded)
+	assert.True(t, seeded.IsZero())
 }
 
 func TestFilterUnseenReactionEvents(t *testing.T) {

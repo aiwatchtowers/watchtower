@@ -143,8 +143,9 @@ func TestEventAutomation_ReactionEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	require.Empty(t, runs)
 
+	// The message is posted after the seed stamp (wall clock), so it counts.
 	lister.items = []slack.ReactedItem{{
-		Item:      slack.Item{Type: "message", Channel: "C1", Message: &slack.Message{Msg: slack.Msg{Timestamp: "1700000101.000100", User: "UAUTHOR"}}},
+		Item:      slack.Item{Type: "message", Channel: "C1", Message: &slack.Message{Msg: slack.Msg{Timestamp: "4102444801.000100", User: "UAUTHOR"}}},
 		Reactions: []slack.ItemReaction{{Name: "eyes", Users: []string{"UOWNER"}}},
 	}}
 	cycle(time.Date(2026, 10, 14, 12, 15, 0, 0, time.UTC))

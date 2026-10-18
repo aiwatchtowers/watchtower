@@ -3,8 +3,10 @@ package reactioncmd
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
@@ -76,6 +78,13 @@ func clearDictionary(t *testing.T, database *db.DB) {
 	require.NoError(t, err)
 }
 
+// Message timestamps after any seed stamp a test run writes (2100-01-01).
+const (
+	ts1 = "4102444801.000100"
+	ts2 = "4102444802.000200"
+	ts3 = "4102444803.000300"
+)
+
 func eyesItem(ts string) slack.ReactedItem {
 	return msgItem("C1", ts, "UAUTHOR", "look at this", "",
 		slack.ItemReaction{Name: "eyes", Users: []string{"UOWNER"}})
@@ -96,13 +105,13 @@ func TestRun_PublishesNewOwnerReaction(t *testing.T) {
 	p, database := eventTestPipeline(t, lister, nil)
 	seedEvents(t, p)
 
-	lister.set(eyesItem("111.1"))
+	lister.set(eyesItem(ts1))
 	sink := &recordingSink{wants: true}
 	n, err := p.Run(context.Background(), sink)
 	require.NoError(t, err)
 	assert.Zero(t, n, "an event is not a tool dispatch")
 	require.Len(t, sink.events, 1)
-	assert.Equal(t, automations.ReactionEvent("acme", "1:C1", "111.1", "eyes"), sink.events[0])
+	assert.Equal(t, automations.ReactionEvent("acme", "1:C1", ts1, "eyes"), sink.events[0])
 	assert.Equal(t, 0, countRows(t, database, "reaction_commands"))
 }
 
@@ -111,7 +120,7 @@ func TestRun_SecondPollPublishesNothing(t *testing.T) {
 	p, _ := eventTestPipeline(t, lister, nil)
 	seedEvents(t, p)
 
-	lister.set(eyesItem("111.1"))
+	lister.set(eyesItem(ts1))
 	first := &recordingSink{wants: true}
 	_, err := p.Run(context.Background(), first)
 	require.NoError(t, err)
@@ -128,7 +137,7 @@ func TestRun_ReReactSameMessageDoesNotFireAgain(t *testing.T) {
 	p, _ := eventTestPipeline(t, lister, nil)
 	seedEvents(t, p)
 
-	lister.set(eyesItem("111.1"))
+	lister.set(eyesItem(ts1))
 	sink := &recordingSink{wants: true}
 	_, err := p.Run(context.Background(), sink)
 	require.NoError(t, err)
@@ -138,7 +147,7 @@ func TestRun_ReReactSameMessageDoesNotFireAgain(t *testing.T) {
 	_, err = p.Run(context.Background(), sink)
 	require.NoError(t, err)
 
-	lister.set(eyesItem("111.1")) // and placed it again
+	lister.set(eyesItem(ts1)) // and placed it again
 	_, err = p.Run(context.Background(), sink)
 	require.NoError(t, err)
 	assert.Len(t, sink.events, 1, "re-reacting the same message does not fire again")
@@ -146,16 +155,16 @@ func TestRun_ReReactSameMessageDoesNotFireAgain(t *testing.T) {
 
 func TestRun_FirstWantedPollSeedsWithoutPublishing(t *testing.T) {
 	lister := &countingLister{}
-	lister.set(eyesItem("111.1"), eyesItem("222.2"))
+	lister.set(eyesItem(ts1), eyesItem(ts2))
 	p, database := eventTestPipeline(t, lister, nil)
 
 	sink := &recordingSink{wants: true}
 	_, err := p.Run(context.Background(), sink)
 	require.NoError(t, err)
 	assert.Empty(t, sink.events)
-	seeded, err := database.ReactionEventsSeeded(1)
+	seeded, err := database.ReactionEventsSeededAt(1)
 	require.NoError(t, err)
-	assert.True(t, seeded)
+	assert.False(t, seeded.IsZero())
 	assert.Equal(t, 2, countRows(t, database, "reaction_events"))
 
 	_, err = p.Run(context.Background(), sink)
@@ -170,11 +179,11 @@ func TestRun_ResetWhileNobodyListensThenReseeds(t *testing.T) {
 
 	_, err := p.Run(context.Background(), &recordingSink{wants: false})
 	require.NoError(t, err)
-	seeded, err := database.ReactionEventsSeeded(1)
+	seeded, err := database.ReactionEventsSeededAt(1)
 	require.NoError(t, err)
-	assert.False(t, seeded, "a poll nobody listens to clears the stamp")
+	assert.True(t, seeded.IsZero(), "a poll nobody listens to clears the stamp")
 
-	lister.set(eyesItem("111.1")) // placed while nobody listened
+	lister.set(eyesItem(ts1)) // placed while nobody listened
 	sink := &recordingSink{wants: true}
 	_, err = p.Run(context.Background(), sink)
 	require.NoError(t, err)
@@ -207,7 +216,7 @@ func readCommandRows(t *testing.T, database *db.DB) []commandRow {
 }
 
 func TestRun_DictionaryEmojiAlsoSubscribed(t *testing.T) {
-	item := msgItem("C1", "111.1", "UAUTHOR", "please handle the deploy", "",
+	item := msgItem("C1", ts1, "UAUTHOR", "please handle the deploy", "",
 		slack.ItemReaction{Name: "white_check_mark", Users: []string{"UOWNER"}})
 	out := `{"text":"Handle the deploy","reason":"owner flagged it"}`
 
@@ -235,13 +244,13 @@ func TestRun_DictionaryEmojiAlsoSubscribed(t *testing.T) {
 	assert.Equal(t, 1, gen.calls)
 	assert.Equal(t, want, readCommandRows(t, database), "the ledger row equals the dictionary-only run's")
 	require.Len(t, sink.events, 1)
-	assert.Equal(t, automations.ReactionEvent("acme", "1:C1", "111.1", "white_check_mark"), sink.events[0])
+	assert.Equal(t, automations.ReactionEvent("acme", "1:C1", ts1, "white_check_mark"), sink.events[0])
 	assert.Equal(t, 1, lister.calls-before, "one reactions.list call per poll, shared by both paths")
 }
 
 func TestRun_NoSubscriberEmptyDictionaryNoListCall(t *testing.T) {
 	lister := &countingLister{}
-	lister.set(eyesItem("111.1"))
+	lister.set(eyesItem(ts1))
 	p, database := eventTestPipeline(t, lister, nil)
 	clearDictionary(t, database)
 
@@ -258,7 +267,7 @@ func TestRun_EmptyDictionaryStillPublishes(t *testing.T) {
 	clearDictionary(t, database)
 	seedEvents(t, p)
 
-	lister.set(eyesItem("111.1"))
+	lister.set(eyesItem(ts1))
 	sink := &recordingSink{wants: true}
 	_, err := p.Run(context.Background(), sink)
 	require.NoError(t, err)
@@ -269,31 +278,31 @@ func TestRun_EmptyDictionaryStillPublishes(t *testing.T) {
 // alone — no seeding, no reset, no ledger rows, no publish.
 func TestRun_NilSinkKeepsTodayBehaviour(t *testing.T) {
 	lister := &countingLister{}
-	lister.set(eyesItem("111.1"))
+	lister.set(eyesItem(ts1))
 	p, database := eventTestPipeline(t, lister, nil)
 
 	n, err := p.Run(context.Background(), nil)
 	require.NoError(t, err)
 	assert.Zero(t, n)
 	assert.Equal(t, 0, countRows(t, database, "reaction_events"), "a nil sink seeds nothing")
-	seeded, err := database.ReactionEventsSeeded(1)
+	seeded, err := database.ReactionEventsSeededAt(1)
 	require.NoError(t, err)
-	assert.False(t, seeded)
+	assert.True(t, seeded.IsZero())
 
 	seedEvents(t, p)
-	lister.set(eyesItem("111.1"), eyesItem("222.2"))
+	lister.set(eyesItem(ts1), eyesItem(ts2))
 	_, err = p.Run(context.Background(), nil)
 	require.NoError(t, err)
-	seeded, err = database.ReactionEventsSeeded(1)
+	seeded, err = database.ReactionEventsSeededAt(1)
 	require.NoError(t, err)
-	assert.True(t, seeded, "a nil sink does not clear the stamp")
+	assert.False(t, seeded.IsZero(), "a nil sink does not clear the stamp")
 	assert.Equal(t, 1, countRows(t, database, "reaction_events"), "a nil sink records nothing")
 
 	sink := &recordingSink{wants: true}
 	_, err = p.Run(context.Background(), sink)
 	require.NoError(t, err)
 	require.Len(t, sink.events, 1, "the stamp survived, so the next wanted poll publishes the new reaction")
-	assert.Equal(t, "222.2", sink.events[0].Fields["message_ts"])
+	assert.Equal(t, ts2, sink.events[0].Fields["message_ts"])
 }
 
 // TestRun_SteadyStatePollIssuesNoInsert counts every INSERT attempt on
@@ -302,7 +311,7 @@ func TestRun_NilSinkKeepsTodayBehaviour(t *testing.T) {
 // are all seen must attempt none, and a poll with one new reaction exactly one.
 func TestRun_SteadyStatePollIssuesNoInsert(t *testing.T) {
 	lister := &countingLister{}
-	lister.set(eyesItem("111.1"), eyesItem("222.2"))
+	lister.set(eyesItem(ts1), eyesItem(ts2))
 	p, database := eventTestPipeline(t, lister, nil)
 	clearDictionary(t, database)
 	seedEvents(t, p)
@@ -319,7 +328,7 @@ func TestRun_SteadyStatePollIssuesNoInsert(t *testing.T) {
 	assert.Empty(t, sink.events)
 	assert.Equal(t, 0, countRows(t, database, "ev_insert_attempts"), "a steady-state poll attempts no insert")
 
-	lister.set(eyesItem("111.1"), eyesItem("222.2"), eyesItem("333.3"))
+	lister.set(eyesItem(ts1), eyesItem(ts2), eyesItem(ts3))
 	_, err = p.Run(context.Background(), sink)
 	require.NoError(t, err)
 	assert.Len(t, sink.events, 1)
@@ -332,7 +341,7 @@ func TestRun_EventCarriesNoText(t *testing.T) {
 	p, _ := eventTestPipeline(t, lister, nil)
 	seedEvents(t, p)
 
-	lister.set(msgItem("C1", "111.1", "UAUTHOR", "text "+marker, "",
+	lister.set(msgItem("C1", ts1, "UAUTHOR", "text "+marker, "",
 		slack.ItemReaction{Name: "eyes", Users: []string{"UOWNER"}}))
 	sink := &recordingSink{wants: true}
 	_, err := p.Run(context.Background(), sink)
@@ -342,6 +351,23 @@ func TestRun_EventCarriesNoText(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(raw), marker)
 	assert.NotContains(t, string(raw), "UAUTHOR")
+}
+
+func TestRun_ReactionOnMessageOlderThanSeedNeverFires(t *testing.T) {
+	lister := &countingLister{}
+	p, _ := eventTestPipeline(t, lister, nil)
+	seedEvents(t, p)
+
+	// An old reaction slid into the reactions.list window (a fresher one was
+	// removed), a fresh reaction on an old message and an unparseable ts: none
+	// fires. Only the message posted after the seed does.
+	old := strconv.FormatInt(time.Now().Add(-24*time.Hour).Unix(), 10) + ".000100"
+	lister.set(eyesItem(old), eyesItem("not-a-ts"), eyesItem(ts1))
+	sink := &recordingSink{wants: true}
+	_, err := p.Run(context.Background(), sink)
+	require.NoError(t, err)
+	require.Len(t, sink.events, 1)
+	assert.Equal(t, ts1, sink.events[0].Fields["message_ts"])
 }
 
 func TestOwnerMessageReactions_SkipsOthersAndNonMessages(t *testing.T) {
