@@ -40,35 +40,38 @@ Exit codes: 0 compacted or not due, 1 error, 2 not enough disk space,
 
 // daemonRunningForCompact reports whether the daemon runs, through the pid
 // file check `sync stop` uses (a stale file naming a gone or reused pid reads
-// as not running). A pid whose identity cannot be confirmed, or a pid file
-// that cannot be read, reads as running: fail safe, --force overrides. A seam
-// for tests.
+// as not running). A live pid whose identity cannot be confirmed reads as
+// running: fail safe, --force overrides. A pid file that cannot be read or
+// parsed names no process, so it reads as not running. A seam for tests.
 var daemonRunningForCompact = func(cfg *config.Config) bool {
 	pid, err := daemon.FindConfirmedProcess(pidFilePath(cfg))
-	return pid != 0 || err != nil
+	if err != nil {
+		return errors.Is(err, daemon.ErrIdentityUnconfirmed)
+	}
+	return pid != 0
 }
 
 func runDBCompact(cmd *cobra.Command, _ []string) error {
+	out := cmd.OutOrStdout()
 	if dbCompactFlagCheck && (dbCompactFlagIfDue || dbCompactFlagForce) {
-		return errors.New("--check takes neither --if-due nor --force")
+		return compactSetupFailed(out, errors.New("--check takes neither --if-due nor --force"))
 	}
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
-		return fmt.Errorf("loading config: %w", err)
+		return compactSetupFailed(out, fmt.Errorf("loading config: %w", err))
 	}
 	if flagWorkspace != "" {
 		cfg.ActiveWorkspace = flagWorkspace
 	}
 	if err := cfg.ValidateWorkspace(); err != nil {
-		return err
+		return compactSetupFailed(out, err)
 	}
 	dbPath := cfg.DBPath()
-	out := cmd.OutOrStdout()
 
 	if dbCompactFlagCheck {
 		c, err := db.CheckCompaction(dbPath, Version)
 		if err != nil {
-			return err
+			return compactSetupFailed(out, err)
 		}
 		return printCompactCheck(out, filepath.Base(dbPath), c)
 	}
@@ -77,12 +80,31 @@ func runDBCompact(cmd *cobra.Command, _ []string) error {
 	return reportCompact(out, filepath.Base(dbPath), res, err)
 }
 
+// compactSetupFailed reports an error that comes before any compaction (flag
+// misuse, config, workspace, the --check read): with --json it prints one
+// result line with error filled, so a caller decoding stdout always gets one.
+// Exit 1 either way.
+func compactSetupFailed(out io.Writer, err error) error {
+	if dbCompactFlagJSON {
+		if encErr := json.NewEncoder(out).Encode(db.CompactResult{Error: err.Error()}); encErr != nil {
+			return errors.Join(err, fmt.Errorf("printing the result: %w", encErr))
+		}
+	}
+	return err
+}
+
 // compactDatabase runs the --if-due check, the daemon rule and Compact under
-// the shutdown context, so SIGTERM interrupts the VACUUM.
+// the shutdown context, so SIGTERM anywhere in it — the check included —
+// ends as interrupted (exit 4).
 func compactDatabase(cmd *cobra.Command, cfg *config.Config, dbPath string) (db.CompactResult, error) {
+	ctx, cancel := notifyShutdownContext(cmd.Context(), stderrLogf)
+	defer cancel()
 	reason := "manual"
 	if dbCompactFlagIfDue {
 		c, err := db.CheckCompaction(dbPath, Version)
+		if ctx.Err() != nil {
+			return db.CompactResult{Skipped: "interrupted"}, nil
+		}
 		if err != nil {
 			return db.CompactResult{}, err
 		}
@@ -95,8 +117,6 @@ func compactDatabase(cmd *cobra.Command, cfg *config.Config, dbPath string) (db.
 	if !dbCompactFlagForce && daemonRunningForCompact(cfg) {
 		return db.CompactResult{Skipped: "daemon_running", Reason: reason}, nil
 	}
-	ctx, cancel := notifyShutdownContext(cmd.Context(), stderrLogf)
-	defer cancel()
 	return db.Compact(ctx, dbPath, db.CompactOptions{Force: dbCompactFlagForce, Reason: reason, Version: Version})
 }
 
