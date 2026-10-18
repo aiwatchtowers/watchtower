@@ -17,7 +17,9 @@ import WatchtowerCore
 ///
 /// State changes come from the fast lane's chain on
 /// `SessionAgentStateCenter` (`sessionStatesChanged()`); there is no second
-/// observation loop. The next pass resolves the window's states and stores
+/// observation loop. A state change or an accepted phone request wakes the
+/// loop at once; otherwise it sleeps until a deferred state-change run is
+/// due, at most `Timing.idle` (board #842). The next pass resolves the window's states and stores
 /// a `state` milestone for each session whose state text differs from its
 /// last stored one (the first sighting is stamped with the state's own
 /// time, a transition with the time the fast lane reported it).
@@ -41,11 +43,12 @@ final class SessionReportRunner: HubCompanion, Sendable {
         let requestSpacing: Duration
         /// The bound on one CLI run.
         let timeout: Duration
-        /// How often the loop looks for due sessions.
-        let wake: Duration
+        /// The longest wait between two passes with no state change or phone
+        /// request (board #842); either wakes the loop at once.
+        let idle: Duration
 
         static let standard = Self(
-            every: .seconds(120), stateSpacing: .seconds(5), requestSpacing: .seconds(60), timeout: .seconds(30), wake: .seconds(5)
+            every: .seconds(120), stateSpacing: .seconds(5), requestSpacing: .seconds(60), timeout: .seconds(30), idle: .seconds(15)
         )
     }
 
@@ -61,6 +64,9 @@ final class SessionReportRunner: HubCompanion, Sendable {
         /// When the fast lane first reported a state change the runner has
         /// not resolved yet; nil when there is none.
         var statesChangedAt: Date?
+        /// When the earliest state-change run the last pass deferred (inside
+        /// `stateSpacing`) is due; nil when it deferred none.
+        var nextStateRunDue: ContinuousClock.Instant?
     }
 
     /// One due run, and what `takeDue` changed, so a pass that did not
@@ -82,13 +88,16 @@ final class SessionReportRunner: HubCompanion, Sendable {
     /// Whether a pass runs at all (the hub's linked-phone gate).
     private let isActive: @Sendable () -> Bool
     let state = OSAllocatedUnfairLock(initialState: State())
+    private let wake: HubRunnerWake
     private let loopTask = OSAllocatedUnfairLock<Task<Void, Never>?>(initialState: nil)
     /// Bumped by `start()` and `stop()`: a pass that began under another
     /// generation stops before its next run and stores nothing.
     let generation = OSAllocatedUnfairLock(initialState: 0)
     let logger = Logger(subsystem: Constants.bundleID, category: "SessionReportRunner")
 
-    /// - Parameter window: the report window (`SessionReportSlice.window`).
+    /// - Parameters:
+    ///   - wake: the loop's wait between passes.
+    ///   - window: the report window (`SessionReportSlice.window`).
     init(
         fetch: @escaping Fetch,
         sidecar: HubSyncState,
@@ -96,6 +105,7 @@ final class SessionReportRunner: HubCompanion, Sendable {
         clock: @escaping @Sendable () -> ContinuousClock.Instant = { .now },
         now: @escaping @Sendable () -> Date = { Date() },
         isActive: @escaping @Sendable () -> Bool = { true },
+        wake: HubRunnerWake = HubRunnerWake(),
         window: @escaping Window
     ) {
         self.fetch = fetch
@@ -105,6 +115,7 @@ final class SessionReportRunner: HubCompanion, Sendable {
         self.clock = clock
         self.now = now
         self.isActive = isActive
+        self.wake = wake
     }
 
     /// `SessionReportCenter`'s argv, plus `--no-network` for every run the
@@ -136,11 +147,12 @@ final class SessionReportRunner: HubCompanion, Sendable {
         }
     }
 
-    /// The fast lane saw a session state change: the next pass resolves the
-    /// window's states.
+    /// The fast lane saw a session state change: wakes the loop, whose pass
+    /// resolves the window's states.
     func sessionStatesChanged() {
         let stamp = now()
         state.withLock { $0.statesChangedAt = $0.statesChangedAt ?? stamp }
+        wake.signal()
     }
 
     /// The phone's `session_report_request`: a run with the network at the
@@ -149,7 +161,7 @@ final class SessionReportRunner: HubCompanion, Sendable {
     @discardableResult
     func requestReport(sessionID: Int64) -> Bool {
         let stamp = clock()
-        return state.withLock { [timing] state in
+        let accepted = state.withLock { [timing] state in
             var entry = state.entries[sessionID] ?? Entry()
             if let last = entry.lastRequest, stamp - last < timing.requestSpacing { return false }
             entry.lastRequest = stamp
@@ -157,6 +169,19 @@ final class SessionReportRunner: HubCompanion, Sendable {
             state.entries[sessionID] = entry
             return true
         }
+        if accepted { wake.signal() }
+        return accepted
+    }
+
+    /// The wait before the next pass: until the earliest state-change run
+    /// the last pass deferred, else `idle`. Taken once, so a pass that did
+    /// not get to `takeDue` (a failed read) leaves the loop at `idle`.
+    private func takeNextWait() -> Duration {
+        let due = state.withLock { state -> ContinuousClock.Instant? in
+            defer { state.nextStateRunDue = nil }
+            return state.nextStateRunDue
+        }
+        return HubRunnerWake.duration(until: due, now: clock(), idle: timing.idle)
     }
 
     // MARK: - HubCompanion
@@ -168,8 +193,9 @@ final class SessionReportRunner: HubCompanion, Sendable {
         let task = Task { [weak self] in
             while !Task.isCancelled {
                 guard let self else { return }
-                if self.isActive() { await self.runDue() }
-                try? await Task.sleep(for: self.timing.wake)
+                let active = self.isActive()
+                if active { await self.runDue() }
+                await self.wake.wait(upTo: active ? self.takeNextWait() : self.timing.idle)
             }
         }
         loopTask.withLock { current in

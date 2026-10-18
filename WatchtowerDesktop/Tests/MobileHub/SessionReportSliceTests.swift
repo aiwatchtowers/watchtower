@@ -204,7 +204,7 @@ final class SessionReportSliceTests: XCTestCase {
             sidecar: sidecar,
             timing: .init(
                 every: .seconds(120), stateSpacing: .seconds(5), requestSpacing: .seconds(60),
-                timeout: .seconds(5), wake: .milliseconds(10)
+                timeout: .seconds(5), idle: .milliseconds(10)
             ),
             isActive: {
                 checks.withLock { $0 += 1 }
@@ -377,7 +377,7 @@ final class SessionReportSliceTests: XCTestCase {
             },
             sidecar: sidecar,
             timing: .init(
-                every: .seconds(120), stateSpacing: .seconds(5), requestSpacing: .seconds(60), timeout: .milliseconds(50), wake: .seconds(5)
+                every: .seconds(120), stateSpacing: .seconds(5), requestSpacing: .seconds(60), timeout: .milliseconds(50), idle: .seconds(5)
             ),
             window: { [Self.windowed(31, live: true)] } // swiftlint:disable:this trailing_closure
         )
