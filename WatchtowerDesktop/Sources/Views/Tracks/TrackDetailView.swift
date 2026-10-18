@@ -11,8 +11,12 @@ struct TrackDetailView: View {
     /// a reply.
     @State private var chatConversationID: Int64?
     @State private var chatError: String?
-    /// The latest chat open asked for; an older one landing late is dropped.
-    @State private var chatOpenToken = UUID()
+    /// The track whose chat the pane shows; a create landing for another
+    /// one is dropped.
+    @State private var chatShownKey: String?
+    /// Tracks whose first chat is being written (board #670): a spinner
+    /// stands in for the chat meanwhile.
+    @State private var chatCreates = ChatCreateGate()
     @State private var showCreateTarget = false
     @State private var targetPrefill: TargetPrefill?
     @State private var targetPrefillError: String?
@@ -66,6 +70,11 @@ struct TrackDetailView: View {
                 TrackChatSection(engine: engine, trackID: track.id)
                     .frame(minHeight: 200, idealHeight: 300)
                     .embeddedChatVisibility(engine.spec.key, in: appState.embeddedChatCenter)
+            } else if chatCreates.isCreating(String(track.id)) {
+                Divider()
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(maxWidth: .infinity, minHeight: 200)
             } else if let chatError {
                 Divider()
                 Label(chatError, systemImage: "exclamationmark.triangle")
@@ -115,8 +124,8 @@ struct TrackDetailView: View {
     /// unless the pane moved on to another track meanwhile.
     private func openChat(db: DatabaseManager) {
         let requested = track
-        let token = UUID()
-        chatOpenToken = token
+        let key = String(requested.id)
+        chatShownKey = key
         do {
             if let existing = try TrackChatSurface.existingConversationID(for: requested, dbPool: db.dbPool) {
                 chatConversationID = existing
@@ -128,14 +137,17 @@ struct TrackDetailView: View {
             return
         }
         chatConversationID = nil
+        // A create already under way for this track shows its chat when it lands.
+        guard chatCreates.begin(key) else { return }
         Task {
+            defer { chatCreates.end(key) }
             do {
                 let id = try await TrackChatSurface.conversationID(for: requested, dbPool: db.dbPool)
-                guard chatOpenToken == token else { return }
+                guard chatShownKey == key else { return }
                 chatConversationID = id
                 chatError = nil
             } catch {
-                guard chatOpenToken == token else { return }
+                guard chatShownKey == key else { return }
                 chatOpenFailed(error, trackID: requested.id)
             }
         }

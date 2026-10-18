@@ -18,8 +18,8 @@ struct HelpChatPanel: View {
                 text: $chatVM.draft,
                 isStreaming: chatVM.isBusy,
                 onSend: send,
-                // Nothing to stop while the turn's rows are being written.
-                onStop: chatVM.isStartingTurn ? nil : { chatVM.stop() },
+                // Nothing to stop while the turn's rows or its end are written.
+                onStop: chatVM.canStop ? { chatVM.stop() } : nil,
                 placeholder: "Ask how Watchtower works…",
                 maxHeight: 120,
                 // Esc stops a running answer first, then closes the panel.

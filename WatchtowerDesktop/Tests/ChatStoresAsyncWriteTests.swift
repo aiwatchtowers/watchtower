@@ -156,6 +156,18 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
         XCTAssertEqual(rows.last?.status, "partial")
     }
 
+    /// A brief whose rows could not be written comes back after the owner's
+    /// draft once, also when the owner typed while it waited: the engine's
+    /// own give-back (ahead of the field) is taken out first.
+    func testAFailedBriefIsGivenBackOnce() {
+        XCTAssertEqual(TargetBriefCenter.withoutReturnedBrief("brief text\nhalf-typed draft and more",
+                                                              brief: "brief text"),
+                       "half-typed draft and more")
+        XCTAssertEqual(TargetBriefCenter.withoutReturnedBrief("brief text", brief: " brief text "), "")
+        XCTAssertEqual(TargetBriefCenter.withoutReturnedBrief("owner's own words", brief: "brief text"),
+                       "owner's own words", "nothing given back: the field is left alone")
+    }
+
     // MARK: - Artifact edit
 
     /// The editor stays open and editable while an edit is written; text
@@ -218,5 +230,30 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
         XCTAssertFalse(strip.isWriting(reminder: id))
         XCTAssertTrue(strip.reminderRows.isEmpty)
         XCTAssertNil(strip.lastError)
+    }
+
+    /// A Done that cannot be written keeps the card, says why, and gives
+    /// the card its buttons back.
+    func testAFailedStripWriteKeepsTheCardAndReEnablesIt() async throws {
+        let id = try await pool.write { db -> Int64 in
+            try db.execute(sql: """
+                INSERT INTO reminders (message_ref, note, remind_at, status)
+                VALUES ('C1@1','call back','2000-01-01T00:00:00Z','pending')
+                """)
+            let id = db.lastInsertedRowID
+            try db.execute(sql: """
+                CREATE TRIGGER fail_reminder BEFORE UPDATE ON reminders
+                BEGIN SELECT RAISE(ABORT, 'disk full'); END
+                """)
+            return id
+        }
+        let strip = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        strip.refresh()
+
+        await strip.markReminderDone(id)
+
+        XCTAssertEqual(strip.reminderRows.map(\.id), [id], "the card stays")
+        XCTAssertNotNil(strip.lastError)
+        XCTAssertFalse(strip.isWriting(reminder: id), "its buttons work again")
     }
 }

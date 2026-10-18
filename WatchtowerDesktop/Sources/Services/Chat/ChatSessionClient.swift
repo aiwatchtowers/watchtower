@@ -222,7 +222,9 @@ final class ChatSessionClient {
         let turnID = turn.turnID
         Task { [weak self] in
             try? await Task.sleep(for: grace)
-            guard let self, self.driver.liveTurn?.turnID == turnID else { return }
+            // Still running: a turn that ended and only waits for its final
+            // write (board #670) answered the cancel; its session is healthy.
+            guard let self, let live = self.driver.liveTurn, live.turnID == turnID, live.isRunning else { return }
             self.driver.finishRunningAsPartial()
             // A session that ignored `cancel` is never reused.
             self.shutdownRequested = true
@@ -309,7 +311,9 @@ final class ChatSessionClient {
         if case let .exited(status, stderrTail) = event {
             // Only an exit nobody asked for is an error: a non-zero status, or
             // any exit that leaves a turn without its terminal event.
-            if !shutdownRequested, status != 0 || isBusy {
+            // A turn only finishing (its final write under way) has its
+            // terminal event: a clean exit then is not an error.
+            if !shutdownRequested, status != 0 || driver.liveTurn?.isRunning == true {
                 let failure = ChatSessionError(turnID: nil, code: .sessionLost,
                                                message: Self.exitMessage(status: status, stderrTail: stderrTail),
                                                retryable: true)

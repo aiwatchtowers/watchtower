@@ -53,8 +53,9 @@ struct RecordingDetailView: View {
     /// recordings or leaving never stops a reply.
     @State private var chatConversationID: Int64?
     @State private var chatError: String?
-    /// A recording's first chat is being written (board #670).
-    @State private var isCreatingChat = false
+    /// Recordings whose first chat is being written (board #670), keyed by
+    /// recording: another recording opened meanwhile starts its own.
+    @State private var chatCreates = ChatCreateGate()
     @State private var isRetryingRecap = false
     @State private var showDeleteConfirm = false
     @State private var linkTarget: MeetingTranscript?
@@ -419,7 +420,7 @@ struct RecordingDetailView: View {
     /// An existing conversation opens at once (a read); a recording's first
     /// chat is created off the main thread (board #670) and shows once
     /// written, while this pane still shows that recording. The spinner stays
-    /// meanwhile; one create at a time.
+    /// meanwhile; one create per recording at a time.
     private func openChat(_ transcript: MeetingTranscript) {
         guard let db = appState.databaseManager else {
             chatError = "Couldn't open the chat: the database isn't open."
@@ -435,10 +436,10 @@ struct RecordingDetailView: View {
             chatOpenFailed(error, transcriptID: id)
             return
         }
-        guard !isCreatingChat else { return }
-        isCreatingChat = true
+        let key = String(id)
+        guard chatCreates.begin(key) else { return }
         Task {
-            defer { isCreatingChat = false }
+            defer { chatCreates.end(key) }
             do {
                 let created = try await MeetingChatSurface.conversationID(
                     transcriptID: id, title: transcript.title, dbPool: db.dbPool)

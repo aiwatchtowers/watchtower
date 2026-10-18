@@ -10,6 +10,9 @@ struct InboxLearnedRulesView: View {
 
     var body: some View {
         List {
+            if let error = vm.errorMessage {
+                WriteErrorBanner(message: error) { vm.errorMessage = nil }
+            }
             Section("Mutes (\(vm.mutes.count))") {
                 ForEach(vm.mutes) { r in ruleRow(r) }
             }
@@ -21,8 +24,8 @@ struct InboxLearnedRulesView: View {
         .task { await vm.load() }
         .sheet(isPresented: $showAdd) {
             AddRuleSheet { scope, weight, type in
-                await vm.addRule(ruleType: type, scopeKey: scope, weight: weight)
-                showAdd = false
+                // The sheet stays (its input kept) when the rule wasn't saved.
+                if await vm.addRule(ruleType: type, scopeKey: scope, weight: weight) { showAdd = false }
             }
         }
     }
@@ -35,6 +38,7 @@ struct InboxLearnedRulesView: View {
             Text(r.source).font(.caption).foregroundStyle(.secondary)
             Button(role: .destructive) { Task { await vm.remove(r) } } label: { Image(systemName: "trash") }
                 .buttonStyle(.plain)
+                .disabled(vm.pendingWrites.isPending(InboxLearnedRulesViewModel.key(r)))
         }
     }
 }
@@ -45,6 +49,8 @@ struct AddRuleSheet: View {
     @State private var scopeValue = ""
     @State private var weight: Double = -0.8
     @State private var ruleType = "source_mute"
+    /// The rule is being written (board #670): Save waits; the fields stay.
+    @State private var saving = false
 
     var body: some View {
         Form {
@@ -63,8 +69,13 @@ struct AddRuleSheet: View {
             }
             Slider(value: $weight, in: -1...1, step: 0.1) { Text(String(format: "Weight: %+.1f", weight)) }
             Button("Save") {
-                Task { await onSave("\(scopeType):\(scopeValue)", weight, ruleType) }
+                saving = true
+                Task {
+                    await onSave("\(scopeType):\(scopeValue)", weight, ruleType)
+                    saving = false
+                }
             }
+            .disabled(saving)
         }.padding()
     }
 }

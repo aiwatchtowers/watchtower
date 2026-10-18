@@ -86,6 +86,10 @@ struct IdeaDiscussSection: View {
                         .background(Color.accentColor, in: Capsule())
                 }
                 Spacer()
+                if isCreatingChat {
+                    // The idea's first chat is being written (board #670).
+                    ProgressView().controlSize(.mini)
+                }
                 Image(systemName: state.isExpanded ? "chevron.up" : "chevron.down")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
@@ -94,6 +98,7 @@ struct IdeaDiscussSection: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(isCreatingChat)
     }
 
     /// Collapsing only hides the chat — a reply in flight keeps streaming.

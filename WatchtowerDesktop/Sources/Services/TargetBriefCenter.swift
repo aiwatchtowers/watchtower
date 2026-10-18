@@ -233,11 +233,21 @@ final class TargetBriefCenter {
         guard chatVM.isStreaming else { return false }
         await chatVM.engine.started()
         if chatVM.isStreaming { return true }
-        // The engine gave the brief back ahead of the draft; the caller puts
-        // it after the draft, as for any brief that never went out.
-        let sent = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if chatVM.inputText == (draft.isEmpty ? sent : "\(sent)\n\(draft)") { chatVM.inputText = draft }
+        // The engine gave the brief back ahead of whatever the field holds
+        // now (the draft, and anything typed meanwhile); the caller puts it
+        // after that, once, as for any brief that never went out.
+        chatVM.inputText = Self.withoutReturnedBrief(chatVM.inputText, brief: text)
         return false
+    }
+
+    /// `field` without the brief the engine put back at its start (a failed
+    /// send's text goes back ahead of the field's text, `"<brief>\n<rest>"`).
+    static func withoutReturnedBrief(_ field: String, brief: String) -> String {
+        let sent = brief.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sent.isEmpty else { return field }
+        if field == sent { return "" }
+        guard field.hasPrefix(sent + "\n") else { return field }
+        return String(field.dropFirst(sent.count + 1))
     }
 
     private static let backInTheBox = " — the brief is back in the message box; send it from there."

@@ -160,6 +160,9 @@ final class ChatViewModel {
     /// An owner turn's rows are being written (board #670): the composer's
     /// send is refused meanwhile, so one Enter never sends twice.
     private(set) var isStartingTurn = false
+    /// A send waits for the files dropped or pasted just before it (board
+    /// #670): the composer says so.
+    private(set) var isWaitingForAttachments = false
     /// A turn is running or about to: what the composer and the actions
     /// that start a turn wait for.
     var isBusy: Bool { isStreaming || isStartingTurn || isFinishingTurn }
@@ -223,6 +226,9 @@ final class ChatViewModel {
     /// The shown chat's turn ended and its final state is being written
     /// (board #670): nothing can stop it, and the next send waits for it.
     var isFinishingTurn: Bool { pool.client(for: conversationID)?.driver.isFinishing == true }
+    /// Whether the composer offers Stop: never while the turn's rows or its
+    /// end are being written — nothing could stop it then.
+    var canStop: Bool { !isStartingTurn && !isFinishingTurn }
     /// Every live session is busy with another conversation's turn: this
     /// turn is held (not lost) until one finishes. The UI says so.
     var isWaitingForSession: Bool {
@@ -404,9 +410,9 @@ final class ChatViewModel {
         }
         do {
             let pending = try dbManager.dbPool.read { try ChatAttachmentQueries.fetchPending($0, conversationID: id) }
-            composerAttachments.replacePending(with: pending)
+            composerAttachments.replacePending(with: pending, conversationID: id)
         } catch {
-            composerAttachments.replacePending(with: [])
+            composerAttachments.replacePending(with: [], conversationID: id)
             errorMessage = "Couldn't load this chat's unsent files: \(error.localizedDescription)"
         }
     }
@@ -655,9 +661,20 @@ final class ChatViewModel {
     /// its text back ahead of it, and only the files that went out leave
     /// the composer.
     func sendDraft(screen: ScreenContext? = nil) async {
-        for paste in pastesInFlight.values { _ = await paste.value }
-        // Files dropped or removed just before Enter land first (board #670).
-        await composerAttachments.settled()
+        guard !isWaitingForAttachments else { return }
+        let shown = conversationID
+        let fromLanding = isOnLanding
+        // Files dropped, pasted or removed just before Enter land first
+        // (board #670); the composer says the send waits for them.
+        if composerAttachments.isBusy || !pastesInFlight.isEmpty {
+            isWaitingForAttachments = true
+            for paste in pastesInFlight.values { _ = await paste.value }
+            await composerAttachments.settled()
+            isWaitingForAttachments = false
+        }
+        // The owner opened another chat meanwhile: nothing goes out, and the
+        // text stays where the switch left it, as for a switch before Enter.
+        guard conversationID == shown || (fromLanding && isOnLanding) else { return }
         let attachments = composerAttachments.pending
         let batchID = conversationID
         let typed = draft

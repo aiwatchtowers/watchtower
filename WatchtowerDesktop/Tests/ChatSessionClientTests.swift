@@ -147,11 +147,9 @@ final class ChatSessionClientTests: XCTestCase {
         let client = makeClient { throw Boom() }
         XCTAssertFalse(client.isAlive)
         XCTAssertEqual(client.startupError?.code, .providerUnavailable)
-        await client.driver.writesSettled()
         client.startTurn(request())
         await client.driver.writesSettled()
         XCTAssertEqual(try row().status, "error")
-        await client.driver.writesSettled()
         XCTAssertEqual(try row().errorCode, "provider_unavailable")
         XCTAssertNil(client.continuousLeafID, "a failed turn forces a replay next time")
     }
@@ -161,20 +159,16 @@ final class ChatSessionClientTests: XCTestCase {
         let fake = FakeChatSessionProcess(arguments: [])
         fake.sendError = PipeClosed()
         let client = makeClient { fake }
-        await client.driver.writesSettled()
         client.startTurn(request())
         await client.driver.writesSettled()
         XCTAssertFalse(client.isBusy)
-        await client.driver.writesSettled()
         XCTAssertEqual(try row().status, "error")
-        await client.driver.writesSettled()
         XCTAssertEqual(try row().errorCode, "provider_unavailable")
     }
 
     func testProcessDeathKeepsPartialTextAndMarksTheClientDead() async throws {
         let fake = FakeChatSessionProcess(arguments: [])
         let client = makeClient { fake }
-        await client.driver.writesSettled()
         client.startTurn(request())
         fake.emit(.textDelta(turnID: "t1", text: "half"))
         fake.exit(status: 9)
@@ -182,7 +176,6 @@ final class ChatSessionClientTests: XCTestCase {
         XCTAssertTrue(dead)
         await client.driver.writesSettled()
         XCTAssertEqual(try row().text, "half")
-        await client.driver.writesSettled()
         XCTAssertEqual(try row().status, "partial")
     }
 
@@ -191,18 +184,17 @@ final class ChatSessionClientTests: XCTestCase {
     func testUnexpectedExitSurfacesStatusAndStderr() async throws {
         let fake = FakeChatSessionProcess(arguments: [])
         let client = makeClient { fake }
-        await client.driver.writesSettled()
         client.startTurn(request())
         fake.emit(.textDelta(turnID: "t1", text: "half"))
         fake.exit(status: 2, stderr: "panic: boom\n\ngoroutine 1\n")
         let dead = await waitForCondition { !client.isAlive }
         XCTAssertTrue(dead)
-        await client.driver.writesSettled()
         XCTAssertEqual(try row().status, "partial")
         XCTAssertEqual(client.exitError?.code, .sessionLost)
         XCTAssertEqual(client.exitError?.message,
                        "The chat session ended unexpectedly (exit status 2). panic: boom goroutine 1")
         XCTAssertEqual(client.driver.lastSessionError, client.exitError)
+        // The lost turn's end lands first: until then no next turn starts.
         await client.driver.writesSettled()
         client.startTurn(request())
         await client.driver.writesSettled()
@@ -251,14 +243,12 @@ final class ChatSessionClientTests: XCTestCase {
         let fake = FakeChatSessionProcess(arguments: [])
         let client = ChatSessionClient(config: config(), spawn: { fake }, store: ChatTurnStore(dbPool: dbPool),
                                        clock: Date.init, launchImmediately: false)
-        await client.driver.writesSettled()
         client.startTurn(request())
         client.cancel()
         await client.driver.writesSettled()
         XCTAssertFalse(client.isBusy)
         client.launch()
         XCTAssertTrue(fake.turns.isEmpty)
-        await client.driver.writesSettled()
         XCTAssertEqual(try row().status, "partial")
     }
 
@@ -291,6 +281,29 @@ final class ChatSessionClientTests: XCTestCase {
         XCTAssertFalse(fake.terminated)
         XCTAssertTrue(client.isAlive)
         XCTAssertEqual(try row().status, "partial")
+    }
+
+    /// Board #670: a cancel answered in time whose final write outlasts the
+    /// grace (a busy writer) leaves a healthy session alone: the watchdog
+    /// kills only a turn still running, and a clean exit meanwhile is no
+    /// lost session.
+    func testAFinishingTurnOutlivingTheCancelGraceKeepsTheSession() async throws {
+        let fake = FakeChatSessionProcess(arguments: [])
+        let client = makeClient { fake }
+        client.startTurn(request())
+        let held = HeldWriter(dbPool)
+        defer { held.release() }
+        client.cancel(grace: .milliseconds(20))
+        fake.emit(.turnDone(turnID: "t1", status: .interrupted, sessionID: nil))
+        _ = await waitForCondition { client.driver.isFinishing }
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertTrue(client.driver.isFinishing, "its final write still waits")
+        XCTAssertFalse(fake.terminated, "the watchdog never kills a turn that answered")
+        XCTAssertTrue(client.isAlive)
+        held.release()
+        await client.driver.writesSettled()
+        XCTAssertEqual(try row().status, "partial")
+        XCTAssertTrue(client.isAlive)
     }
 
     func testAdoptInitialContinuityOnlyBeforeTheFirstTurn() {

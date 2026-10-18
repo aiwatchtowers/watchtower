@@ -53,10 +53,10 @@ final class InboxLearnedRulesQueriesTests: XCTestCase {
 
     // MARK: - upsertManual
 
-    func testUpsertManualCreatesNewRule() throws {
+    func testUpsertManualCreatesNewRule() async throws {
         let pool = try makePool()
         let q = InboxLearnedRulesQueries(dbPool: pool)
-        try q.upsertManual(ruleType: "source_mute", scopeKey: "sender:U1", weight: -0.9)
+        try await q.upsertManual(ruleType: "source_mute", scopeKey: "sender:U1", weight: -0.9)
         let all = try q.listAll()
         XCTAssertEqual(all.count, 1)
         XCTAssertEqual(all[0].ruleType, "source_mute")
@@ -65,25 +65,25 @@ final class InboxLearnedRulesQueriesTests: XCTestCase {
         XCTAssertEqual(all[0].source, "user_rule")
     }
 
-    func testUpsertManualUpdatesExistingRule() throws {
+    func testUpsertManualUpdatesExistingRule() async throws {
         let pool = try makePool()
         let q = InboxLearnedRulesQueries(dbPool: pool)
-        try q.upsertManual(ruleType: "source_mute", scopeKey: "sender:U1", weight: -0.5)
-        try q.upsertManual(ruleType: "source_mute", scopeKey: "sender:U1", weight: -0.9)
+        try await q.upsertManual(ruleType: "source_mute", scopeKey: "sender:U1", weight: -0.5)
+        try await q.upsertManual(ruleType: "source_mute", scopeKey: "sender:U1", weight: -0.9)
         let all = try q.listAll()
         XCTAssertEqual(all.count, 1)
         XCTAssertEqual(all[0].weight, -0.9)
         XCTAssertEqual(all[0].source, "user_rule")
     }
 
-    func test_INBOX_06_manual_rule_overrides_implicit() throws {
+    func test_INBOX_06_manual_rule_overrides_implicit() async throws {
         // BEHAVIOR INBOX-06 — see docs/inventory/inbox-pulse.md
         // Manual rule upsert overrides an existing implicit rule on the same scope.
         // Do not weaken or remove without explicit owner approval.
         let pool = try makePool()
         let q = InboxLearnedRulesQueries(dbPool: pool)
         // Insert an implicit rule first
-        try pool.write { db in
+        try await pool.write { db in
             try db.execute(
                 sql: """
                     INSERT INTO inbox_learned_rules (rule_type, scope_key, weight, source, evidence_count, last_updated)
@@ -93,7 +93,7 @@ final class InboxLearnedRulesQueriesTests: XCTestCase {
             )
         }
         // Now upsert manual — should override source to 'user_rule'
-        try q.upsertManual(ruleType: "source_mute", scopeKey: "sender:U1", weight: -0.9)
+        try await q.upsertManual(ruleType: "source_mute", scopeKey: "sender:U1", weight: -0.9)
         let all = try q.listAll()
         XCTAssertEqual(all.count, 1)
         XCTAssertEqual(all[0].source, "user_rule")
@@ -102,28 +102,32 @@ final class InboxLearnedRulesQueriesTests: XCTestCase {
 
     // MARK: - delete
 
-    func testDeleteRule() throws {
+    func testDeleteRule() async throws {
         let pool = try makePool()
         let q = InboxLearnedRulesQueries(dbPool: pool)
-        try q.upsertManual(ruleType: "source_mute", scopeKey: "sender:U1", weight: -0.9)
+        try await q.upsertManual(ruleType: "source_mute", scopeKey: "sender:U1", weight: -0.9)
         XCTAssertEqual(try q.listAll().count, 1)
-        try q.delete(ruleType: "source_mute", scopeKey: "sender:U1")
+        try await q.delete(ruleType: "source_mute", scopeKey: "sender:U1")
         XCTAssertEqual(try q.listAll().count, 0)
     }
 
-    func testDeleteNonExistentRuleIsNoop() throws {
+    func testDeleteNonExistentRuleIsNoop() async throws {
         let pool = try makePool()
         let q = InboxLearnedRulesQueries(dbPool: pool)
-        XCTAssertNoThrow(try q.delete(ruleType: "source_mute", scopeKey: "sender:X"))
+        do {
+            try await q.delete(ruleType: "source_mute", scopeKey: "sender:X")
+        } catch {
+            XCTFail("deleting a rule that isn't there threw: \(error)")
+        }
         XCTAssertEqual(try q.listAll().count, 0)
     }
 
     // MARK: - observeAll
 
-    func testObserveAllReturnsValueObservation() throws {
+    func testObserveAllReturnsValueObservation() async throws {
         let pool = try makePool()
         let q = InboxLearnedRulesQueries(dbPool: pool)
-        try pool.write { db in
+        try await pool.write { db in
             try db.execute(
                 sql: """
                     INSERT INTO inbox_learned_rules (rule_type, scope_key, weight, source, evidence_count, last_updated)

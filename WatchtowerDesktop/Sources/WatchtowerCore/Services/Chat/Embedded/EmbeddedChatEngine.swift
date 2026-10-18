@@ -127,6 +127,9 @@ package final class EmbeddedChatEngine {
     /// A quit or a shutdown arrived while the turn's rows were written: the
     /// turn ends as stopped once they landed, and is never sent.
     @ObservationIgnored private var stopBeforeStart = false
+    /// The app is quitting: a turn that ends from here on (its end awaits
+    /// the writer, board #670) starts no follow-up turn.
+    @ObservationIgnored private var isQuitting = false
     /// The session id being stored, so a repeated event stores it once.
     @ObservationIgnored private var savingSessionID: String?
 
@@ -299,6 +302,7 @@ package final class EmbeddedChatEngine {
     /// App quit, step 1: a queued turn never starts during termination. Its
     /// owner text stays in the draft mirror and comes back after a restart.
     package func abandonQueuedForQuit() {
+        isQuitting = true
         _ = withdrawQueued()
     }
 
@@ -750,7 +754,7 @@ package final class EmbeddedChatEngine {
     /// Queued follow-ups go out together as one turn — unless the surface
     /// says its context is gone (then they are dropped, with a log line).
     private func startFollowUps() {
-        guard !queuedFollowUps.isEmpty, !isBusy else { return }
+        guard !queuedFollowUps.isEmpty, !isBusy, !isQuitting else { return }
         guard spec.mayContinue() else {
             log("dropping \(queuedFollowUps.count) follow-up(s): the chat's context is gone")
             queuedFollowUps.removeAll()

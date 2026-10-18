@@ -5,24 +5,38 @@ import Observation
 /// so pending files survive navigating away from the chat.
 ///
 /// Files are copied and recorded off the main thread (board #670): a file
-/// joins `pending` once its row landed, and leaves it once its removal did.
-/// `settled()` waits for the adds and removals under way — a send awaits it,
-/// so a file dropped just before Enter goes out with that message.
+/// shows as being stored (`importing`) at once and joins `pending` once its
+/// row landed; a removed one stays (its ✕ disabled, `removing`) until its
+/// delete landed. `settled()` waits for the adds and removals under way — a
+/// send awaits it, so a file dropped just before Enter goes out with that
+/// message.
 @MainActor @Observable
 package final class ComposerAttachments {
     package private(set) var pending: [ChatAttachment] = []
     package private(set) var errorMessage: String?
+    /// Attachments whose removal is under way.
+    package private(set) var removing: Set<Int64> = []
+    /// Files being stored, with the conversation each is for.
+    private var stores: [(id: UUID, conversationID: Int64, name: String)] = []
     @ObservationIgnored private let store: ChatAttachmentStore?
     /// Adds and removals under way.
     @ObservationIgnored private var inFlight: [UUID: Task<Void, Never>] = [:]
-    @ObservationIgnored private var removing: Set<Int64> = []
-    /// Bumped when the composer switches chats: an add that lands after the
-    /// switch stays stored as that chat's pending file and is not shown here.
-    @ObservationIgnored private var generation = 0
+    /// The conversation whose files the composer shows: an add that lands
+    /// for another one stays stored as that chat's pending file and is shown
+    /// only when that chat is shown again.
+    @ObservationIgnored private var shown: Int64?
 
     package init(store: ChatAttachmentStore?) {
         self.store = store
     }
+
+    /// The names of the shown chat's files being stored.
+    package var importing: [String] {
+        stores.filter { $0.conversationID == shown }.map(\.name)
+    }
+
+    /// Whether an add or a removal is under way.
+    package var isBusy: Bool { !inFlight.isEmpty }
 
     /// Imports `urls` one after another; each is shown once stored.
     package func add(urls: [URL], conversationID: Int64) {
@@ -30,20 +44,22 @@ package final class ComposerAttachments {
             errorMessage = "Attachments need an active workspace"
             return
         }
-        let generation = self.generation
+        shown = shown ?? conversationID
+        let entries = urls.map { (id: UUID(), conversationID: conversationID, name: $0.lastPathComponent) }
+        stores.append(contentsOf: entries)
         track { [self] in
             var problems: [String] = []
-            for url in urls {
+            for (url, entry) in zip(urls, entries) {
                 do {
-                    let item = try await store.importFile(url: url, conversationID: conversationID)
-                    if self.generation == generation { pending.append(item) }
+                    show(try await store.importFile(url: url, conversationID: conversationID))
                 } catch let rejection as AttachmentRejection {
                     problems.append(rejection.message)
                 } catch {
                     problems.append("\(url.lastPathComponent) could not be attached: \(error.localizedDescription)")
                 }
+                stores.removeAll { $0.id == entry.id }
             }
-            guard self.generation == generation else { return }
+            guard shown == conversationID else { return }
             errorMessage = problems.isEmpty ? nil : problems.joined(separator: "\n")
         }
     }
@@ -56,25 +72,23 @@ package final class ComposerAttachments {
             errorMessage = "Attachments need an active workspace"
             return false
         }
-        let generation = self.generation
+        shown = shown ?? conversationID
+        let entry = (id: UUID(), conversationID: conversationID, name: name)
+        stores.append(entry)
+        defer { stores.removeAll { $0.id == entry.id } }
         do {
-            let item = try await store.importData(data, name: name, owner: .conversation(conversationID))
-            guard self.generation == generation else { return true }
-            pending.append(item)
-            errorMessage = nil
+            show(try await store.importData(data, name: name, owner: .conversation(conversationID)))
+            if shown == conversationID { errorMessage = nil }
             return true
         } catch let rejection as AttachmentRejection {
-            if self.generation == generation { errorMessage = rejection.message }
+            if shown == conversationID { errorMessage = rejection.message }
         } catch {
-            if self.generation == generation {
-                errorMessage = "\(name) could not be attached: \(error.localizedDescription)"
-            }
+            if shown == conversationID { errorMessage = "\(name) could not be attached: \(error.localizedDescription)" }
         }
         return false
     }
 
-    /// The file stays shown until its removal landed; a second press
-    /// meanwhile does nothing.
+    /// The file stays shown, its ✕ disabled, until its removal landed.
     package func remove(id: Int64) {
         guard let item = pending.first(where: { $0.id == id }), let store, removing.insert(id).inserted else { return }
         track { [self] in
@@ -94,19 +108,12 @@ package final class ComposerAttachments {
     }
 
     /// Switching conversations: pending files belong to their own chat, so
-    /// the composer shows the newly opened chat's unsent files instead.
-    package func replacePending(with items: [ChatAttachment]) {
-        generation += 1
+    /// the composer shows the newly opened chat's unsent files instead (read
+    /// from the database by the caller; nil = the landing, which has none).
+    package func replacePending(with items: [ChatAttachment], conversationID: Int64? = nil) {
+        shown = conversationID
         pending = items
         errorMessage = nil
-    }
-
-    private func track(_ body: @escaping @MainActor () async -> Void) {
-        let key = UUID()
-        inFlight[key] = Task { [self] in
-            await body()
-            inFlight[key] = nil
-        }
     }
 
     /// The files a turn just sent leave the composer; one added while that
@@ -123,5 +130,20 @@ package final class ComposerAttachments {
         pending = []
         errorMessage = nil
         return taken
+    }
+
+    /// A stored file joins the composer when its chat is the one shown (and
+    /// it is not there yet: the chat may have been reopened, reading it).
+    private func show(_ item: ChatAttachment) {
+        guard item.conversationID == shown, !pending.contains(where: { $0.id == item.id }) else { return }
+        pending.append(item)
+    }
+
+    private func track(_ body: @escaping @MainActor () async -> Void) {
+        let key = UUID()
+        inFlight[key] = Task { [self] in
+            await body()
+            inFlight[key] = nil
+        }
     }
 }

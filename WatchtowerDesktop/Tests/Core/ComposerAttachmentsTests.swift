@@ -89,6 +89,21 @@ final class ComposerAttachmentsTests: XCTestCase {
         XCTAssertEqual(stored, 1, "kept as the first chat's pending file")
     }
 
+    /// A → B → A before an add for A landed: back on A, the file shows
+    /// once stored, though A's pending rows were read before it existed.
+    func testAnAddLandingAfterSwitchingBackShowsItsFile() async throws {
+        let model = ComposerAttachments(store: ChatAttachmentStore(db: dbQueue, rootDir: root))
+        model.replacePending(with: [], conversationID: conversationID)
+        model.add(urls: [try source("a.png", AttachmentValidatorTests.png)], conversationID: conversationID)
+        XCTAssertEqual(model.importing, ["a.png"], "shown as being stored at once")
+        model.replacePending(with: [], conversationID: conversationID + 1)
+        XCTAssertTrue(model.importing.isEmpty, "not in another chat")
+        model.replacePending(with: [], conversationID: conversationID)
+        await model.settled()
+        XCTAssertEqual(model.pending.map(\.name), ["a.png"])
+        XCTAssertTrue(model.importing.isEmpty)
+    }
+
     func testNoWorkspaceSaysSo() {
         let model = ComposerAttachments(store: nil)
         model.add(urls: [URL(fileURLWithPath: "/tmp/x.png")], conversationID: 1)
