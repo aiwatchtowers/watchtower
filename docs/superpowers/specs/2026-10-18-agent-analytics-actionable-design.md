@@ -47,7 +47,7 @@ Each `Hint` gains two keys:
 | H6 expensive context | "Start a new session per task, or `/clear` between tasks; long sessions re-read their whole context." | `open_session` |
 | H7 top model on subagents | "Run subagents on a cheaper model (`model: sonnet` in the agent definition)." | — |
 
-The first hint is shown above the list as **The main thing**: its finding, its action and its button.
+The first hint is shown above the list as **The main thing**: its finding, its action, its button and a **Where** disclosure with its evidence; the list below starts from the second hint. Every hint row shows its action line and button without expanding; expanding shows only the evidence. Mockup: https://claude.ai/artifact/Cdfk9CfQWPerCMbfw8QQCJ (sample numbers).
 
 A pane-level **Discuss in Chat** button opens AI Chat with the overview's hints, tiles and top tasks as the screen context (the existing `AppState.askWatchtower` path), so the owner can ask "what should I change first?" in their own language. It costs nothing until pressed.
 
