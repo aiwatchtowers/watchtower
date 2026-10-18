@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -212,16 +213,47 @@ func TestSchemaCurrentErr_NoVersionTableIsPendingNotError(t *testing.T) {
 	}
 }
 
+// copyDBFile copies the database file and any -wal beside it to a new temp
+// dir and returns the copy's path.
+func copyDBFile(t *testing.T, path string) string {
+	t.Helper()
+	dst := filepath.Join(t.TempDir(), filepath.Base(path))
+	for _, suffix := range []string{"", "-wal"} {
+		b, err := os.ReadFile(path + suffix)
+		if suffix != "" && os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dst+suffix, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dst
+}
+
 func TestCompact_InterruptLeavesDBIntact(t *testing.T) {
 	path := sparseFixture(t, 8000)
 	countBefore, sumBefore := messagesDigest(t, path)
+
+	// The cancel must land while the VACUUM runs, not after it commits: time
+	// an uninterrupted compaction of a copy and cancel within a tenth of it.
+	measured, err := Compact(context.Background(), copyDBFile(t, path), CompactOptions{Version: "1.0.0"})
+	if err != nil || !measured.Compacted {
+		t.Fatalf("measuring run: got (%+v, %v), want compacted", measured, err)
+	}
+	delay := min(20*time.Millisecond, time.Duration(measured.DurationMS)*time.Millisecond/10)
+	if delay < time.Millisecond {
+		t.Fatalf("the fixture compacts in %d ms, too fast to interrupt reliably; enlarge its live data", measured.DurationMS)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	prev := compactVacuumHook
 	compactVacuumHook = func() {
 		go func() {
-			time.Sleep(20 * time.Millisecond)
+			time.Sleep(delay)
 			cancel()
 		}()
 	}
@@ -283,6 +315,28 @@ func TestCompact_FailureCounter(t *testing.T) {
 		if v, ok := keys[k]; ok {
 			t.Fatalf("%s = %q left after a success", k, v)
 		}
+	}
+}
+
+// A failure after a VACUUM that succeeded — here recording it — is a
+// failure like the VACUUM's own: Error filled, counted against the cap.
+func TestCompact_RecordFailureCounts(t *testing.T) {
+	path := compactFixture(t)
+	prev := compactRecord
+	compactRecord = func(*DB) error { return errors.New("record failed") }
+	t.Cleanup(func() { compactRecord = prev })
+
+	for i, wantGaveUp := range []bool{false, false, true} {
+		res, err := Compact(context.Background(), path, CompactOptions{Version: "1.0.0"})
+		if err == nil || !strings.Contains(err.Error(), "record failed") {
+			t.Fatalf("call %d: err = %v, want the record error", i+1, err)
+		}
+		if res.Compacted || res.Error != "record failed" || res.Failures != i+1 || res.GaveUp != wantGaveUp {
+			t.Fatalf("call %d: got %+v, want failures=%d gave_up=%v with the error", i+1, res, i+1, wantGaveUp)
+		}
+	}
+	if c := checkCompaction(t, path, "1.0.0"); c.Due || c.Reason != "gave_up" {
+		t.Fatalf("after 3 failures: got due=%v reason=%q, want gave_up", c.Due, c.Reason)
 	}
 }
 

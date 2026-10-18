@@ -14,13 +14,18 @@ import (
 // compactAfterMigrations lists the goose versions whose migration frees a lot
 // of space: once one is applied and newer than last_compacted_version, a
 // compaction is due. A new space-freeing migration adds its version here.
+// Tests mutate this; no t.Parallel.
 var compactAfterMigrations = []int64{134}
 
+// The free-pages rule: freelist_count * page_size > compactFreelistMinBytes
+// and freelist_count > compactFreelistMinRatio * page_count. Vars so a test
+// can reach the rule with a small fixture; tests mutate them, no t.Parallel.
+var (
+	compactFreelistMinBytes int64 = 256 << 20
+	compactFreelistMinRatio       = 0.25
+)
+
 const (
-	// The free-pages rule: freelist_count * page_size > compactFreelistMinBytes
-	// and freelist_count > compactFreelistMinRatio * page_count.
-	compactFreelistMinBytes = 256 << 20
-	compactFreelistMinRatio = 0.25
 	// compactMaxFailures consecutive failures for one CLI version stop the
 	// check from reporting due until the version changes.
 	compactMaxFailures = 3
@@ -31,7 +36,7 @@ const (
 
 // compactBusy bounds how long a compaction statement waits on another
 // process's lock; a var so a test can shorten the final checkpoint's wait
-// on a reader.
+// on a reader. Tests mutate this; no t.Parallel.
 var compactBusy = 30 * time.Second
 
 // db_maintenance keys (migration 00142).
@@ -56,7 +61,7 @@ type CompactCheck struct {
 }
 
 // freeDiskBytes returns the bytes available to an unprivileged writer on the
-// volume holding dir (statfs); tests replace it.
+// volume holding dir (statfs). Tests mutate this; no t.Parallel.
 var freeDiskBytes = statfsFreeBytes
 
 // SetFreeDiskBytesForTest overrides the free disk space CheckCompaction and
@@ -248,6 +253,9 @@ var compactVacuumHook func()
 // compactVacuumSQL is the statement run (test seam for a forced failure).
 var compactVacuumSQL = "VACUUM"
 
+// compactRecord records a successful VACUUM (test seam for a failed record).
+var compactRecord = recordCompaction
+
 // Compact rewrites the database at dbPath with VACUUM between two
 // wal_checkpoint(TRUNCATE)s and records last_compacted_version and
 // compacted_at. It opens with OpenExistingRW, so it never creates the file
@@ -255,9 +263,13 @@ var compactVacuumSQL = "VACUUM"
 // Unless opts.Force, a volume with less than twice the file's size free is
 // skipped as disk before the database is opened. Cancelling ctx interrupts
 // the VACUUM (skipped as interrupted, nothing written; VACUUM is atomic, so
-// the old content stays). Skips return (result, nil); a VACUUM or I/O
-// failure returns (result, err) with Error, Failures and GaveUp filled,
-// after counting it in compact_failures for opts.Version.
+// the old content stays). An interrupt that races the VACUUM's commit can
+// still report interrupted with the file already compacted: nothing is
+// recorded, so the next launch finds it due again and re-runs it cheaply.
+// Skips return (result, nil); a VACUUM or I/O failure — including reading
+// the size or recording the compaction after a VACUUM that succeeded —
+// returns (result, err) with Error, Failures and GaveUp filled, after
+// counting it in compact_failures for opts.Version.
 func Compact(ctx context.Context, dbPath string, opts CompactOptions) (CompactResult, error) {
 	res := CompactResult{Reason: opts.Reason}
 	if !opts.Force {
@@ -301,11 +313,11 @@ func Compact(ctx context.Context, dbPath string, opts CompactOptions) (CompactRe
 		return res, compactFailed(d, opts.Version, &res, err)
 	}
 	if res.BytesAfter, err = fileSize(dbPath); err != nil {
-		return res, err
+		return res, compactFailed(d, opts.Version, &res, err)
 	}
 	res.DurationMS = time.Since(start).Milliseconds()
-	if err := recordCompaction(d); err != nil {
-		return res, err
+	if err := compactRecord(d); err != nil {
+		return res, compactFailed(d, opts.Version, &res, err)
 	}
 	res.Compacted = true
 	return res, nil
@@ -371,19 +383,19 @@ func recordCompaction(d *DB) error {
 	return nil
 }
 
-// compactFailed counts vacErr in compact_failures — restarting at 1 when
+// compactFailed counts cause in compact_failures — restarting at 1 when
 // compact_failures_version is not version — and fills res. It returns the
-// error to hand back: vacErr, joined with the counter write's error if that
+// error to hand back: cause, joined with the counter write's error if that
 // failed too.
-func compactFailed(d *DB, version string, res *CompactResult, vacErr error) error {
-	res.Error = vacErr.Error()
+func compactFailed(d *DB, version string, res *CompactResult, cause error) error {
+	res.Error = cause.Error()
 	failures, err := countCompactFailure(d, version)
 	if err != nil {
-		return errors.Join(vacErr, fmt.Errorf("recording the compaction failure: %w", err))
+		return errors.Join(cause, fmt.Errorf("recording the compaction failure: %w", err))
 	}
 	res.Failures = failures
 	res.GaveUp = failures >= compactMaxFailures
-	return vacErr
+	return cause
 }
 
 func countCompactFailure(d *DB, version string) (int, error) {

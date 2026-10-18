@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -166,6 +168,43 @@ func TestDBCompact_StalePIDFileDoesNotRefuse(t *testing.T) {
 	assert.True(t, decodeCompactResult(t, line).Compacted)
 }
 
+// An unreadable pid file names no process: the compaction proceeds (only a
+// confirmed or identity-unconfirmed live pid refuses).
+func TestDBCompact_MalformedPIDFileDoesNotRefuse(t *testing.T) {
+	cfg := setupCompactTestEnv(t)
+	require.NoError(t, os.WriteFile(pidFilePath(cfg), []byte("not a pid\n"), 0o600))
+
+	_, line, code := execDBCompact(t, "--json")
+	assert.Equal(t, 0, code, line)
+	assert.True(t, decodeCompactResult(t, line).Compacted)
+}
+
+// A shutdown signal that lands during the --if-due check ends as
+// interrupted (exit 4), not as not_due: the shutdown context covers the
+// check too. The database is compacted first so the check alone would say
+// not due.
+func TestDBCompact_InterruptDuringIfDueCheck(t *testing.T) {
+	cfg := setupCompactTestEnv(t)
+	stubDaemonRunningForCompact(t, false)
+	_, line, code := execDBCompact(t, "--if-due", "--json")
+	require.Equal(t, 0, code, line)
+	require.True(t, decodeCompactResult(t, line).Compacted)
+	maintBefore := compactTableRows(t, cfg.DBPath(), "db_maintenance")
+	prev := dbCompactFlagIfDue
+	dbCompactFlagIfDue = true
+	t.Cleanup(func() { dbCompactFlagIfDue = prev })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	cmd := &cobra.Command{}
+	cmd.SetContext(ctx)
+
+	res, err := compactDatabase(cmd, cfg, cfg.DBPath())
+	require.NoError(t, err)
+	assert.Equal(t, "interrupted", res.Skipped)
+	assert.Equal(t, 4, compactExitCode(res, err))
+	assert.Equal(t, maintBefore, compactTableRows(t, cfg.DBPath(), "db_maintenance"))
+}
+
 func TestDBCompact_DiskShortExit2(t *testing.T) {
 	cfg := setupCompactTestEnv(t)
 	t.Cleanup(db.SetFreeDiskBytesForTest(func(string) (int64, error) { return 1, nil }))
@@ -245,6 +284,36 @@ func TestDBCompact_FlagConflictIsExit1(t *testing.T) {
 		assert.Equal(t, 1, code, "%v", args)
 	}
 	assert.Empty(t, compactTableRows(t, cfg.DBPath(), "db_maintenance"))
+}
+
+// With --json every error before the compaction — flag misuse, an invalid
+// workspace, a config that does not load — still prints one JSON line with
+// error filled (the Desktop decodes the last stdout line).
+func TestDBCompact_SetupErrorsPrintJSON(t *testing.T) {
+	setupCompactTestEnv(t)
+	for _, args := range [][]string{{"--check", "--force", "--json"}, {"--if-due", "--json", "--workspace", "bad/ws"}} {
+		stdout, line, code := execDBCompact(t, args...)
+		assert.Equal(t, 1, code, "%v", args)
+		assert.Equal(t, 1, strings.Count(stdout, "\n"), "%v: %q", args, stdout)
+		res := decodeCompactResult(t, line)
+		assert.False(t, res.Compacted)
+		assert.NotEmpty(t, res.Error, "%v", args)
+	}
+
+	// A config that does not load fails the root pre-run before any command
+	// when run through rootCmd; runDBCompact's own load is reached directly.
+	prev := flagConfig
+	flagConfig = filepath.Join(t.TempDir(), "config.yaml")
+	t.Cleanup(func() { flagConfig = prev })
+	require.NoError(t, os.WriteFile(flagConfig, []byte("workspaces: [not, a, map\n"), 0o600))
+	prevJSON := dbCompactFlagJSON
+	dbCompactFlagJSON = true
+	t.Cleanup(func() { dbCompactFlagJSON = prevJSON })
+	var out bytes.Buffer
+	cmd := &cobra.Command{}
+	cmd.SetOut(&out)
+	require.Error(t, runDBCompact(cmd, nil))
+	assert.Contains(t, decodeCompactResult(t, strings.TrimSpace(out.String())).Error, "loading config")
 }
 
 func TestDBCompact_NoDatabase(t *testing.T) {

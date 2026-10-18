@@ -108,6 +108,9 @@ func TestDBMigrate_NeverCompacts(t *testing.T) {
 	require.NoError(t, err)
 	_, err = database.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
 	require.NoError(t, err)
+	var freelist int64
+	require.NoError(t, database.QueryRow(`PRAGMA freelist_count`).Scan(&freelist))
+	require.Positive(t, freelist, "precondition: the fixture left no free pages to compact")
 	require.NoError(t, database.Close())
 	info, err := os.Stat(cfg.DBPath())
 	require.NoError(t, err)

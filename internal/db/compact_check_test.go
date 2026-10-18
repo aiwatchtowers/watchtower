@@ -138,6 +138,28 @@ func TestCheckCompaction_FreelistRuleSmallFileNotDue(t *testing.T) {
 	}
 }
 
+// End to end through the pragmas: with the migration rule recorded as done
+// and the byte floor lowered to fit a small fixture, a dropped table's free
+// pages make the check due for "freelist".
+func TestCheckCompaction_FreelistDueEndToEnd(t *testing.T) {
+	path := compactFixture(t)
+	prev := compactFreelistMinBytes
+	compactFreelistMinBytes = 1 << 20
+	t.Cleanup(func() { compactFreelistMinBytes = prev })
+	setMaintenance(t, path, maintLastCompactedVersion, strconv.FormatInt(highestAppliedVersion(t, path), 10))
+	if c := checkCompaction(t, path, "1.0.0"); c.Due {
+		t.Fatalf("precondition: due (%q) before any free pages", c.Reason)
+	}
+	compactExec(t, path, `CREATE TABLE compact_filler (b BLOB)`)
+	compactExec(t, path, `INSERT INTO compact_filler WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000) SELECT randomblob(4096) FROM n`)
+	compactExec(t, path, `DROP TABLE compact_filler`)
+
+	c := checkCompaction(t, path, "1.0.0")
+	if !c.Due || c.Reason != "freelist" {
+		t.Fatalf("got due=%v reason=%q, want due freelist", c.Due, c.Reason)
+	}
+}
+
 func TestCheckCompaction_NoFileCreatesNothing(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "watchtower.db")

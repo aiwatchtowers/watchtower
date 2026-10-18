@@ -98,14 +98,16 @@ final class DatabaseCompactionStepTests: XCTestCase {
         XCTAssertFalse(step.canSkip)
     }
 
-    func testSkipTerminatesThenKillsAfter10Seconds() async {
+    /// Skip lands between ticks: ten ticks after it may be under 10 s, so the
+    /// SIGKILL waits for the eleventh — strictly more than the threshold.
+    func testSkipTerminatesThenKillsAfterMoreThan10Seconds() async {
         let step = makeStep(check: .success(.fixture()))
         let run = await startCompacting(step)
         await tick(15, step)
         step.skip()
         XCTAssertEqual(child.terminateCount, 1)
         XCTAssertFalse(step.canSkip)
-        await tick(9, step)
+        await tick(DatabaseCompactionStep.killAfterSkipSeconds, step)
         XCTAssertEqual(child.killCount, 0)
         await tick(1, step)
         XCTAssertEqual(child.killCount, 1)
@@ -113,6 +115,29 @@ final class DatabaseCompactionStepTests: XCTestCase {
         await run.value
         XCTAssertEqual(step.phase, .finished)
         XCTAssertEqual(child.killCount, 1)
+    }
+
+    func testSecondRunIsANoOp() async {
+        let step = makeStep(check: .success(.fixture()))
+        let run = await startCompacting(step)
+        // While the first run compacts…
+        await step.run { "/db" }
+        XCTAssertEqual(calls.items.filter { $0 == "check" }.count, 1)
+        child.exit(status: 0, stdout: #"{"compacted":true}"#)
+        await run.value
+        // …and once it has finished.
+        await step.run { "/db" }
+        XCTAssertEqual(calls.items, ["check", "stopDaemon", "startCompact"])
+        XCTAssertEqual(step.phase, .finished)
+    }
+
+    func testUndecodableResultLineIsLogged() async {
+        let step = makeStep(check: .success(.fixture()))
+        let run = await startCompacting(step)
+        child.exit(status: 1, stdout: "not json")
+        await run.value
+        XCTAssertTrue(logs.items.contains { $0.hasPrefix("DB compaction: no result line (exit 1)") }, "\(logs.items)")
+        XCTAssertTrue(logs.items.contains { $0.hasPrefix("DB compaction failed") })
     }
 
     func testSkipChildExitsOnTerminateNoKill() async {
