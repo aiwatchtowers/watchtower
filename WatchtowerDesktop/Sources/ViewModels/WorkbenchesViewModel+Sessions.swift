@@ -758,9 +758,6 @@ extension WorkbenchesViewModel {
     private func project(id: Int64) async -> Workbench? {
         if let known = summaries.first(where: { $0.id == id })?.project { return known }
         do {
-            // Read before the `if`: a closure argument inside an `if let`
-            // condition makes sentrux's Swift parser lose this function's end
-            // and charge it every branch of the functions below.
             let fetched = try await dbPool.read { try WorkbenchQueries.fetch($0, id: id) }
             if let fetched { return fetched }
             setSessionError("Workbench \(id) no longer exists.", projectID: id)
