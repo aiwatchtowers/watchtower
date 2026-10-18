@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -295,6 +296,8 @@ func init() {
 	jiraAddCmd.Flags().Bool("app-return", false, "bring the Watchtower app back to the front when done")
 	jiraAddCmd.Flags().String("site", "", "select Jira site by URL (e.g. https://mysite.atlassian.net)")
 	jiraAddCmd.Flags().String("label", "", "display name for this site")
+	jiraAddCmd.Flags().Bool("app-site-picker", false, "with several sites, print them as one [jira-sites] JSON line and read the chosen URL from stdin (the Desktop's connect sheet)")
+	_ = jiraAddCmd.Flags().MarkHidden("app-site-picker")
 	jiraAddCmd.Flags().Bool("with-confluence", false, "also request Confluence scopes (requires the Confluence API enabled on this OAuth app)")
 	jiraAddCmd.Flags().Bool("with-confluence-write", false, "also request Confluence write scopes, so the assistant can edit pages (implies --with-confluence; requires the Confluence API with its write scopes enabled on this OAuth app in its Atlassian developer console, or the login fails)")
 	jiraFeaturesCmd.Flags().Bool("json", false, "output as JSON (for Swift integration)")
@@ -398,7 +401,8 @@ func jiraSiteURLs(resources []jira.CloudResource) []string {
 }
 
 // selectJiraSite picks one accessible site: --site substring match, auto if
-// exactly one, else an interactive numeric prompt. preferCloudID, when
+// exactly one, else an interactive numeric prompt (under --app-site-picker,
+// the Desktop's list: pickJiraSiteForApp). preferCloudID, when
 // non-empty, is the re-login path: the account already has a site, so the
 // grant must reach it — a hit short-circuits the choice without prompting and
 // a miss is an error, never a silent re-point onto some other site.
@@ -435,6 +439,15 @@ func selectJiraSite(cmd *cobra.Command, resources []jira.CloudResource, siteFlag
 	if len(resources) == 1 {
 		return resources[0], nil
 	}
+	if f := cmd.Flags().Lookup("app-site-picker"); f != nil && f.Value.String() == "true" {
+		return pickJiraSiteForApp(cmd, resources)
+	}
+	return promptJiraSite(cmd, resources)
+}
+
+// promptJiraSite is the terminal's numbered site prompt over several sites.
+func promptJiraSite(cmd *cobra.Command, resources []jira.CloudResource) (jira.CloudResource, error) {
+	out := cmd.OutOrStdout()
 	fmt.Fprintln(out, "\nAvailable Jira Cloud sites:")
 	for i, r := range resources {
 		fmt.Fprintf(out, "  [%d] %s (%s)\n", i+1, r.Name, r.URL)
@@ -442,11 +455,10 @@ func selectJiraSite(cmd *cobra.Command, resources []jira.CloudResource, siteFlag
 	fmt.Fprintf(out, "\nSelect site [1-%d]: ", len(resources))
 	var choice int
 	if _, err := fmt.Fscan(cmd.InOrStdin(), &choice); err != nil {
-		// No usable stdin — the Desktop "Add Jira Site" sheet spawns this
-		// without a terminal, so an unattended run must say what to do next
-		// instead of dying on "invalid selection". The site names are inlined
-		// rather than pointed at: the sheet surfaces only stderr, so "see the
-		// list above" would name a list the user cannot see.
+		// No usable stdin (a run without a terminal and without
+		// --app-site-picker): say what to do next instead of dying on
+		// "invalid selection". The site names are inlined rather than
+		// pointed at, so the error alone is enough to act on.
 		return jira.CloudResource{}, fmt.Errorf(
 			"this Atlassian grant reaches %d sites and no site was chosen; re-run with --site set to one of: %s",
 			len(resources), strings.Join(jiraSiteURLs(resources), ", "))
@@ -455,6 +467,45 @@ func selectJiraSite(cmd *cobra.Command, resources []jira.CloudResource, siteFlag
 		return jira.CloudResource{}, fmt.Errorf("invalid selection %d: choose 1-%d", choice, len(resources))
 	}
 	return resources[choice-1], nil
+}
+
+// jiraSitesMarker starts the one stdout line `jira add --app-site-picker`
+// prints when a grant reaches several sites (#574, dual path: WatchtowerCore
+// `JiraSitePrompt`): the marker, a space, then {"sites":[{"url","name"}]}.
+// The Desktop's connect sheet shows the sites as a list and writes the
+// chosen URL back on stdin, so the owner picks a site instead of typing one.
+const jiraSitesMarker = "[jira-sites]"
+
+// jiraSiteChoice is one entry of the jiraSitesMarker line.
+type jiraSiteChoice struct {
+	URL  string `json:"url"`
+	Name string `json:"name"`
+}
+
+// pickJiraSiteForApp prints the sites as a jiraSitesMarker line and reads
+// the chosen site's URL from one stdin line. An empty answer, a closed stdin
+// or a URL outside the grant chooses nothing.
+func pickJiraSiteForApp(cmd *cobra.Command, resources []jira.CloudResource) (jira.CloudResource, error) {
+	choices := make([]jiraSiteChoice, len(resources))
+	for i, r := range resources {
+		choices[i] = jiraSiteChoice{URL: r.URL, Name: r.Name}
+	}
+	payload, err := json.Marshal(struct {
+		Sites []jiraSiteChoice `json:"sites"`
+	}{choices})
+	if err != nil {
+		return jira.CloudResource{}, fmt.Errorf("encoding the site list: %w", err)
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "%s %s\n", jiraSitesMarker, payload)
+	line, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+	if chosen := strings.TrimSpace(line); chosen != "" {
+		for _, r := range resources {
+			if r.URL == chosen {
+				return r, nil
+			}
+		}
+	}
+	return jira.CloudResource{}, fmt.Errorf("this Atlassian grant reaches %d sites and no site was chosen", len(resources))
 }
 
 // connectJiraAccount finishes an OAuth flow for accountID: resolves the

@@ -25,6 +25,9 @@ struct AddEmailAccountView: View {
     @State private var username = ""
     @State private var password = ""
     @State private var folder = "INBOX"
+    /// Port, security and folder sit under "Advanced" (#574): their defaults
+    /// fit almost every mailbox, so the form asks only for what it cannot know.
+    @State private var showIMAPAdvanced = false
     @State private var isConnectingIMAP = false
     @State private var imapError: String?
 
@@ -53,6 +56,30 @@ struct AddEmailAccountView: View {
 
     /// Security "none" to a remote host: the CLI refuses it, so the sheet does.
     private var noneRefused: Bool { CleartextRefusal.refusesNoTLS(host: host) }
+
+    /// An Advanced value that blocks Connect (a port that is not a number,
+    /// "None" to a remote host) keeps the section open, so the reason shows.
+    private var imapAdvancedNeedsAttention: Bool {
+        port == nil || (security == .none && noneRefused)
+    }
+
+    /// Port, security and folder, folded under "Advanced" (#574).
+    private var imapAdvanced: some View {
+        DisclosureGroup(
+            "Advanced: port, security, folder",
+            isExpanded: Binding(
+                get: { showIMAPAdvanced || imapAdvancedNeedsAttention },
+                set: { showIMAPAdvanced = $0 }
+            )
+        ) {
+            VStack(alignment: .leading, spacing: 8) {
+                imapPortAndSecurity
+                TextField("Folder", text: $folder, prompt: Text("INBOX"))
+                    .textFieldStyle(.roundedBorder)
+            }
+            .padding(.top, 4)
+        }
+    }
 
     /// Port, security, and the inline refusal of "None" to a remote host.
     @ViewBuilder
@@ -212,14 +239,12 @@ struct AddEmailAccountView: View {
                     .controlSize(.small)
                     .help("Chat with an assistant that fills in these settings for you")
                 }
-                Text("Any IMAP mailbox — host, port, and folder configured manually.")
+                Text("Any IMAP mailbox — its server, your username and password.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 TextField("Host", text: $host, prompt: Text("imap.example.com"))
                     .textFieldStyle(.roundedBorder)
-
-                imapPortAndSecurity
 
                 TextField("Username", text: $username, prompt: Text("you@example.com"))
                     .textFieldStyle(.roundedBorder)
@@ -227,8 +252,7 @@ struct AddEmailAccountView: View {
                 SecureField("Password", text: $password)
                     .textFieldStyle(.roundedBorder)
 
-                TextField("Folder", text: $folder, prompt: Text("INBOX"))
-                    .textFieldStyle(.roundedBorder)
+                imapAdvanced
 
                 HStack {
                     if isConnectingIMAP {
@@ -318,6 +342,8 @@ struct AddEmailAccountView: View {
         if let value = patch.security, let parsed = IMAPSecurity(rawValue: value) { security = parsed }
         if let value = patch.username { username = value }
         if let value = patch.folder { folder = value }
+        // A filled value off the defaults shows where it went.
+        if portText != "993" || security != .ssl || folder != "INBOX" { showIMAPAdvanced = true }
 
         assistantFilledNoteToken += 1
         let token = assistantFilledNoteToken

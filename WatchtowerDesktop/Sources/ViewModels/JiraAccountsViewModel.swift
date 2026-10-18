@@ -37,6 +37,11 @@ final class JiraAccountsViewModel {
     /// A status line for the running consent, e.g. the Jira-only retry
     /// (#573); nil otherwise.
     private(set) var connectStatus: String?
+    /// The sites `jira add` offers while it waits for the owner's choice — a
+    /// grant that reaches several Atlassian sites (#574); nil otherwise.
+    private(set) var siteChoices: [JiraSiteChoice]?
+    /// The running `jira add`'s stdin, where `chooseSite` writes the answer.
+    @ObservationIgnored private var siteAnswerPipe: Pipe?
 
     private let dbPool: DatabasePool
     private let daemon: any DaemonRestarting
@@ -83,16 +88,14 @@ final class JiraAccountsViewModel {
 
     // MARK: - Add
 
-    /// Builds the `jira add` args with an optional `--site`. No `--label`: the
-    /// CLI names the site after its host (`db.JiraAccountLabel`); the owner
-    /// renames it in Settings.
+    /// Builds the `jira add` args. No `--label`: the CLI names the site after
+    /// its host (`db.JiraAccountLabel`); the owner renames it in Settings.
     /// Pure and side-effect-free so the flag assembly is directly testable
     /// without shelling out to a real process.
     ///
-    /// `--site` matters because the CLI's site picker is an interactive stdin
-    /// prompt: a grant that reaches several Atlassian sites cannot be resolved
-    /// from a spawned process, so the sheet lets the user name the site up
-    /// front.
+    /// No site is asked up front (#574): `--app-site-picker` makes a grant
+    /// that reaches several Atlassian sites print them as one line
+    /// (`JiraSitePrompt`), and the sheet answers with the one the owner picks.
     ///
     /// `withConfluence` adds `--with-confluence` (#573): the same Atlassian
     /// consent also grants Confluence read access, so the site's Confluence
@@ -101,11 +104,8 @@ final class JiraAccountsViewModel {
     /// owner's ask): unticking it is the opt-out.
     static let alsoConnectConfluenceByDefault = true
 
-    static func addArgs(site: String = "", withConfluence: Bool = false) -> [String] {
-        var args = ["jira", "add", "--app-return"]
-        if !site.isEmpty {
-            args.append(contentsOf: ["--site", site])
-        }
+    static func addArgs(withConfluence: Bool = false) -> [String] {
+        var args = ["jira", "add", "--app-return", "--app-site-picker"]
         if withConfluence {
             args.append("--with-confluence")
         }
@@ -115,14 +115,22 @@ final class JiraAccountsViewModel {
     /// Connects a new Atlassian site via `watchtower jira add`. The OAuth
     /// consent happens in the loopback browser; the detached Process is held in
     /// `authProcess` so `cancelConnect()` can terminate it mid-flow.
-    func addAccount(
-        site: String = "", withConfluence: Bool = false, daemonPolicy: DaemonRestartPolicy = .restart
-    ) async {
+    func addAccount(withConfluence: Bool = false, daemonPolicy: DaemonRestartPolicy = .restart) async {
         await runAuthFlow(
-            args: Self.addArgs(site: site, withConfluence: withConfluence),
+            args: Self.addArgs(withConfluence: withConfluence),
             failurePrefix: "Connect failed",
-            daemonPolicy: daemonPolicy
+            daemonPolicy: daemonPolicy,
+            picksSite: true
         )
+    }
+
+    /// Answers the running `jira add`'s site question with the owner's pick
+    /// from `siteChoices`; the connect then carries on as usual.
+    func chooseSite(_ site: JiraSiteChoice) {
+        guard siteChoices?.contains(site) == true, let pipe = siteAnswerPipe else { return }
+        siteChoices = nil
+        siteAnswerPipe = nil
+        ProcessPipes.feed(pipe, JiraSitePrompt.answer(site))
     }
 
     /// The add sheet's connect (#572): `addAccount` with the daemon restart
@@ -133,12 +141,12 @@ final class JiraAccountsViewModel {
     /// the connect, so the board step can list the site it added (nil when
     /// that read fails).
     func addAccountHoldingRestart(
-        site: String = "", withConfluence: Bool = false, daemonPolicy: DaemonRestartPolicy
+        withConfluence: Bool = false, daemonPolicy: DaemonRestartPolicy
     ) async -> (connected: Bool, accountIDsBefore: Set<Int>?, cancelled: Bool, timedOut: Bool) {
         boardStepClosed = false
         heldRestart = nil
         let before = try? await dbPool.read { db in Set(try JiraAccountQueries.fetchAll(db).map(\.id)) }
-        await addAccount(site: site, withConfluence: withConfluence, daemonPolicy: .deferred)
+        await addAccount(withConfluence: withConfluence, daemonPolicy: .deferred)
         guard error == nil, !lastAuthFlowCancelled else {
             return (false, before, lastAuthFlowCancelled, lastAuthFlowTimedOut)
         }
@@ -223,6 +231,7 @@ final class JiraAccountsViewModel {
         }
         authProcess = nil
         isConnecting = false
+        siteChoices = nil
     }
 
     // MARK: - Enable / Disable
@@ -280,7 +289,11 @@ final class JiraAccountsViewModel {
 
     /// Browser-consent flow (`add`/`login`) — holds the detached Process in
     /// `authProcess` so `cancelConnect()` can terminate it while this awaits.
-    private func runAuthFlow(args: [String], failurePrefix: String, daemonPolicy: DaemonRestartPolicy) async {
+    /// `picksSite` (`jira add` only) wires a stdin pipe for the site question
+    /// (#574); a re-login never asks one, and must not wait on a stdin.
+    private func runAuthFlow(
+        args: [String], failurePrefix: String, daemonPolicy: DaemonRestartPolicy, picksSite: Bool = false
+    ) async {
         guard !isConnecting else {
             error = "Another connection is already in progress."
             return
@@ -309,6 +322,10 @@ final class JiraAccountsViewModel {
 
         connectStatus = nil
         authOutput = Data()
+        siteChoices = nil
+        let answerPipe = picksSite ? Pipe() : nil
+        if let answerPipe { process.standardInput = answerPipe }
+        siteAnswerPipe = answerPipe
         let onStdout: @Sendable (Data) -> Void = { [weak self] chunk in
             Task { @MainActor in self?.noteAuthOutput(chunk, of: process) }
         }
@@ -316,6 +333,12 @@ final class JiraAccountsViewModel {
         authProcess = nil
         isConnecting = false
         connectStatus = nil
+        siteChoices = nil
+        // Never answered (one site, a failure, a Cancel): release the pipe.
+        if let answerPipe, siteAnswerPipe === answerPipe {
+            siteAnswerPipe = nil
+            try? answerPipe.fileHandleForWriting.close()
+        }
         applyResult(result, failurePrefix: failurePrefix, daemonPolicy: daemonPolicy)
     }
 
@@ -325,8 +348,13 @@ final class JiraAccountsViewModel {
     private func noteAuthOutput(_ chunk: Data, of process: Process) {
         guard authProcess === process else { return }
         authOutput.append(chunk)
-        if ConfluenceConnectStep.isRetryingJiraOnly(String(bytes: authOutput, encoding: .utf8) ?? "") {
+        let output = String(bytes: authOutput, encoding: .utf8) ?? ""
+        if ConfluenceConnectStep.isRetryingJiraOnly(output) {
             connectStatus = ConfluenceConnectStep.retryStatus
+        }
+        // The site question (#574), shown once while its answer is pending.
+        if siteChoices == nil, siteAnswerPipe != nil, let sites = JiraSitePrompt.sites(in: output) {
+            siteChoices = sites
         }
     }
 

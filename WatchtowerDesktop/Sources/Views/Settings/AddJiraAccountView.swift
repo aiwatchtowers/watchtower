@@ -24,11 +24,12 @@ struct AddJiraAccountView: View {
         self.daemonPolicy = daemonPolicy
     }
 
-    /// Optional site hint passed through as `--site`. The CLI's site picker is
-    /// an interactive stdin prompt, and the Process this sheet spawns has no
-    /// stdin wired — so when a grant reaches several Atlassian sites, naming
-    /// one here is the only way the add can complete.
-    @State private var site = ""
+    /// The site picked in the list a grant with several sites brings up
+    /// (#574); nil means the first one.
+    @State private var chosenSiteURL: String?
+    /// Cancel was pressed on that list: the sign-in itself went fine, so it
+    /// earns no Confluence untick hint.
+    @State private var cancelledAtSiteChoice = false
     /// Set when Cancel is tapped so the awaited connect (which returns
     /// with a cleared error after the SIGTERM) does NOT move on — Cancel
     /// means "let me adjust the form", matching AddSlackAccountView's behavior.
@@ -62,13 +63,19 @@ struct AddJiraAccountView: View {
                 ) { dismiss() }
                     .padding(20)
                     .frame(width: 420, height: 420)
+            } else if let sites = vm?.siteChoices {
+                siteChoiceForm(sites)
             } else {
                 connectForm
             }
         }
         // Done, Skip or any other way the sheet closes: one restart for the
         // new site and its boards (nothing under onboarding's `.deferred`).
-        .onDisappear { vm?.finishBoardStep() }
+        .onDisappear {
+            // A site question nobody can answer any more ends the connect.
+            if vm?.siteChoices != nil { vm?.cancelConnect() }
+            vm?.finishBoardStep()
+        }
     }
 
     private var connectForm: some View {
@@ -82,13 +89,10 @@ struct AddJiraAccountView: View {
                     .buttonStyle(.plain)
             }
 
-            TextField("Site (optional)", text: $site, prompt: Text("e.g. acme.atlassian.net"))
-                .textFieldStyle(.roundedBorder)
-
             Text("""
                 Opens Atlassian's authorization page in your browser. After you approve, \
-                the site is added under its address (acme for acme.atlassian.net) and you choose the boards to sync. Leave Site \
-                empty unless your Atlassian account reaches several sites.
+                the site is added under its address (acme for acme.atlassian.net) and you choose the boards to sync. \
+                If your Atlassian account reaches several sites, you pick one from a list.
                 """)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -143,10 +147,11 @@ struct AddJiraAccountView: View {
         cancelled = false
         showsUntickHint = false
         let askConfluence = withConfluence
-        let trimmedSite = site.trimmingCharacters(in: .whitespaces)
+        chosenSiteURL = nil
+        cancelledAtSiteChoice = false
         Task {
             let result = await vm.addAccountHoldingRestart(
-                site: trimmedSite, withConfluence: askConfluence, daemonPolicy: daemonPolicy
+                withConfluence: askConfluence, daemonPolicy: daemonPolicy
             )
             starting = false
             accountIDsBefore = result.accountIDsBefore
@@ -155,7 +160,7 @@ struct AddJiraAccountView: View {
             if ConfluenceConnectStep.suggestsUntick(
                 askedConfluence: askConfluence,
                 connected: result.connected && !cancelled,
-                cancelled: cancelled || result.cancelled,
+                cancelled: (cancelled || result.cancelled) && !cancelledAtSiteChoice,
                 timedOut: result.timedOut
             ) {
                 showsUntickHint = true
@@ -173,5 +178,53 @@ struct AddJiraAccountView: View {
                 choosingBoards = true
             }
         }
+    }
+
+    /// The list a grant with several Atlassian sites brings up (#574): the
+    /// owner picks one instead of typing its address before the sign-in.
+    private func siteChoiceForm(_ sites: [JiraSiteChoice]) -> some View {
+        let selection = Binding(
+            get: { chosenSiteURL ?? sites.first?.url ?? "" },
+            set: { chosenSiteURL = $0 }
+        )
+        return VStack(alignment: .leading, spacing: 16) {
+            Text("Choose a Site")
+                .font(.title2)
+                .fontWeight(.bold)
+            Text("Your Atlassian account reaches several sites. Pick the one to add; add another later the same way.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            ScrollView {
+                Picker("Site", selection: selection) {
+                    ForEach(sites) { site in
+                        VStack(alignment: .leading) {
+                            Text(site.name.isEmpty ? site.url : site.name)
+                            Text(site.url).font(.caption).foregroundStyle(.secondary)
+                        }
+                        .tag(site.url)
+                    }
+                }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") {
+                    cancelled = true
+                    cancelledAtSiteChoice = true
+                    vm?.cancelConnect()
+                }
+                Button("Continue") {
+                    if let site = sites.first(where: { $0.url == selection.wrappedValue }) {
+                        vm?.chooseSite(site)
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 360, height: 290)
     }
 }
