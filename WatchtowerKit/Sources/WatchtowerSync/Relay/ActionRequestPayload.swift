@@ -51,6 +51,8 @@ public enum ActionKind: String, Codable, CaseIterable {
     case permissionAnswer = "permission_answer"
     /// Entity: session id. Sends Esc to a Working session; needs the typing grant.
     case sessionInterrupt = "session_interrupt"
+    /// Entity: session id; params `session_id`, optional `subagent_id`. Idempotent: asks the Mac to watch the chat.
+    case sessionChatRequest = "session_chat_request"
 }
 
 /// Wire status of one action record (spec §5.2). Only the Mac moves a record

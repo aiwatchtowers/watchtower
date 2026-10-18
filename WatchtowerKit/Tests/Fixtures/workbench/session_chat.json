@@ -1,0 +1,14 @@
+{
+  "entries": [
+    {"at": 1700000000, "id": "e1", "kind": "brief", "text": "Brief for the Acme board."},
+    {"at": 1700000010, "id": "e2", "kind": "owner", "text": "Please add the login test."},
+    {"at": 1700000020, "id": "e3", "kind": "agent", "text": "Starting with the fixtures. This text was cut.", "text_clipped": true},
+    {"at": 1700000030, "id": "e4", "kind": "ask_answer", "ask_id": 12, "text": "Approved", "title": "Which release?"},
+    {"at": 1700000040, "id": "e5", "kind": "watchtower", "text": "Target moved to in review.", "via": "Watchtower"},
+    {"at": 1700000050, "id": "e6", "kind": "subagent", "text": "", "subagent": {"agent_id": "a1b2", "tool_use_id": "toolu_01a", "description": "Check the fixtures", "status": "running", "type": "Explore"}},
+    {"id": "e7", "kind": "separator", "text": "Context compacted"}
+  ],
+  "entries_more": 12,
+  "live": true,
+  "session_id": 7
+}

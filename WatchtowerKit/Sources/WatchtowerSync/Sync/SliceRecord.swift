@@ -53,6 +53,9 @@ public enum SliceKind: String, Codable, CaseIterable, Sendable {
     case askAlert = "ask_alert"
     /// A pending Claude Code permission prompt (#517), record name `permission_request-<permission_requests.id>`.
     case permissionRequest = "permission_request"
+    /// A session's chat (session-chat-iphone spec), record name
+    /// `session_chat-<session id>[-<agent id>]`. Written only while the phone watches it.
+    case sessionChat = "session_chat"
 
     public func recordName(id: String) -> String {
         "\(rawValue)-\(id)"

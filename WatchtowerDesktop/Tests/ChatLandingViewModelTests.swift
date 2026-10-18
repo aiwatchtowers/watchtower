@@ -61,7 +61,7 @@ final class ChatLandingViewModelTests: XCTestCase {
         let fake = try XCTUnwrap(fakes.last)
         fake.emit(.textDelta(turnID: "turn-\(turnCounter)", text: "a"))
         fake.emit(.turnDone(turnID: "turn-\(turnCounter)", status: .complete, sessionID: nil))
-        let done = await waitForCondition { !vm.isStreaming && vm.thread.last?.message.status == "complete" }
+        let done = await waitForCondition { !vm.isBusy && vm.thread.last?.message.status == "complete" }
         XCTAssertTrue(done)
         return id
     }

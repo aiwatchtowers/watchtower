@@ -10,9 +10,9 @@ You step away from your desk while a Workbench session waits on a question. The 
 
 The Mac is the **hub**. With **Sync with iPhone** on, it publishes a slice of your data (asks, Workbench boards and sessions, calendar, recaps) into your iCloud. The phone reads that slice and sends its changes back as requests, which the Mac applies when it is awake.
 
-Everything is sealed with keys exchanged when you link, so iCloud only holds ciphertext. The phone never gets a session's transcript or terminal output.
+Everything is sealed with keys exchanged when you link, so iCloud holds only ciphertext. The phone never gets terminal output or a raw transcript; the one exception is a session's **Chat** (below).
 
-Because the Mac does the work, the phone depends on it. An ask answered on the phone waits as **Waiting for your Mac** while the Mac sleeps, and applies on wake. The Mac checks for phone requests every 30 seconds, or every 3 seconds for five minutes after the last one, and writes a heartbeat every 15 minutes.
+An ask answered on the phone waits as **Waiting for your Mac** while the Mac sleeps, and applies on wake. The Mac checks for phone requests every 30 seconds, or every 3 seconds for five minutes after the last one, and writes a heartbeat every 15 minutes.
 
 A phone links to up to four Macs and switches between them; each Mac is its own hub with its own data.
 
@@ -22,7 +22,7 @@ iCloud keeps a Development and a Production environment, and records saved in on
 
 A phone run from Xcode is Development, and only pairs with a Mac built for Development. Mixed pairs fail silently: the phone never sees the Mac.
 
-A Mac build without iCloud signing shows **Needs a signed build** and cannot turn sync on. An unsigned phone build runs a demo linked to "Acme Mac".
+A Mac build without iCloud signing shows **Needs a signed build** and cannot turn sync on. An unsigned phone build runs a demo.
 
 ## Using it
 
@@ -44,6 +44,10 @@ If the phone uses the same Apple ID as the Mac, it syncs through your private iC
 
 Asks come in three kinds: a question, a review (select text, **Comment on the selection**, then **Approve** or **Request changes**) and a check (mark each step **OK**, **Broken** or **Skipped**).
 
+### Read a session's chat
+
+Tap **Chat** on a session to read its conversation, with subagent markers that open the subagent's own chat. Tool output is never shown. The Mac sends it only while the screen is open, plus five minutes. It shows the newest 300 lines. The **Tell the session…** bar appears on the main chat only.
+
 ### Let the phone do more
 
 Three switches under Settings → **Workbench** on the phone:
@@ -52,9 +56,9 @@ Three switches under Settings → **Workbench** on the phone:
 - **Type into sessions from this phone** lets you send a line to a running session. The Mac must also approve: the phone row on the Mac shows **Asks to type into sessions**, and **Allow…** grants it. **Revoke** takes it back.
 - **Answer permission prompts from this phone** lets you answer a Claude Code permission prompt. It is a separate grant: the Mac's phone row shows **Asks to answer permission prompts**, with its own **Allow…**.
 
-Open a running session without the typing switch and its bottom bar says so, with **Turn On** right there; once asked, it says it waits for the Mac's **Allow…**.
+Without the typing switch, a running session's bottom bar says so, with **Turn On** right there.
 
-A running session's status shows how long it has been in that state, for example **Working · 12m** or **Needs approval · 40m**, so a session stuck at a prompt is easy to spot.
+A running session's status shows how long it has been in that state, like **Working · 12m**.
 
 ### Answer prompts and interrupt agents
 
@@ -72,12 +76,12 @@ On the Mac, **Remove…** next to a phone unlinks it. On the phone, that Mac's h
 - **"This code expired" or "This code can't be used".** Press **New code** on the Mac and scan again. A code works for one phone.
 - **"Sign in to iCloud on this iPhone to use Watchtower".** The phone needs an iCloud account; the Mac needs one too ("Mobile isn't available on this Mac: iCloud is off.").
 - **Another Apple ID won't link.** The message "This Mac can't share with another Apple ID right now" means the Mac's share failed. Show a new code and try again.
-- **"<Mac> hasn't synced for a day".** The phone has had no heartbeat for a day. If the Mac changed iCloud account, link again.
+- **"<Mac> hasn't synced for a day".** No heartbeat for a day. If the Mac changed iCloud account, link again.
 - **"<Mac> removed this phone".** The Mac removed the link. That Mac's hub freezes on the phone: its data stays readable but nothing new arrives. **Forget** deletes the data and clears the row.
-- **"iCloud is slowing sync down"** on the Mac's Mobile tab means iCloud has held sync back for over a minute. It clears on its own.
+- **"iCloud is slowing sync down"** on the Mac's Mobile tab clears on its own.
 - **"Your Mac has not allowed this phone to start sessions"** under **Start**. On the Mac, open Watchtower → Settings → **Mobile**, allow typing for the phone, then click **Allow…** on its **Starting sessions off** line. A phone linked before this grant existed needs it once too.
 - **"Allow answering permission prompts on the Mac: Watchtower → Settings → Mobile → Allow…"** on a prompt card. Click **Allow…** on the phone's permission-prompts line on the Mac.
-- **"Too late — answer on the Mac"** after Allow once or Deny. The prompt waited too long or its session stopped.
+- **"Too late — answer on the Mac"** after Allow once or Deny: the prompt waited too long or its session stopped.
 - **No Allow once on a prompt card.** The card says why: the prompt was too long to show in full, or it edits settings. Allow it on the Mac, or tap **Deny**.
 - **Nothing updates.** The hub runs inside the Watchtower app, so it stops when you quit Watchtower. Closing the window is fine; the app keeps running in the menu bar.
 
