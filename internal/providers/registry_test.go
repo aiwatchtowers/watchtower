@@ -54,7 +54,7 @@ func TestResolveModelsFor(t *testing.T) {
 		{
 			name:     "retired codex pins resolve to the tier defaults",
 			cfg:      cfgWith("codex", "", "gpt-5.4-mini", "gpt-5.5"),
-			provider: "codex", wantLight: "gpt-6-luna", wantStrong: "gpt-6-astra",
+			provider: "codex", wantLight: "gpt-5.6-luna", wantStrong: "gpt-6-astra",
 		},
 		{
 			name:     "current codex pins stay",
@@ -62,14 +62,24 @@ func TestResolveModelsFor(t *testing.T) {
 			provider: "codex", wantLight: "gpt-6-luna", wantStrong: "gpt-6.1-sol",
 		},
 		{
+			name:     "gpt-5.6 codex pins are current and stay",
+			cfg:      cfgWith("codex", "", "gpt-5.6-luna", "gpt-5.6-sol"),
+			provider: "codex", wantLight: "gpt-5.6-luna", wantStrong: "gpt-5.6-sol",
+		},
+		{
+			name:     "bare gpt-5 and gpt-5-codex pins are retired",
+			cfg:      cfgWith("codex", "", "gpt-5", "gpt-5.3-codex"),
+			provider: "codex", wantLight: "gpt-5.6-luna", wantStrong: "gpt-6-astra",
+		},
+		{
 			name:     "codex defaults",
 			cfg:      cfgWith("codex", "", "", ""),
-			provider: "codex", wantLight: "gpt-6-luna", wantStrong: "gpt-6-astra",
+			provider: "codex", wantLight: "gpt-5.6-luna", wantStrong: "gpt-6-astra",
 		},
 		{
 			name:     "codex ignores carried-over claude seeded default",
 			cfg:      cfgWith("codex", config.DefaultAIModel, "", ""),
-			provider: "codex", wantLight: "gpt-6-luna", wantStrong: "gpt-6-astra",
+			provider: "codex", wantLight: "gpt-5.6-luna", wantStrong: "gpt-6-astra",
 		},
 		{
 			name:     "ollama single model configures both tiers",
@@ -84,7 +94,7 @@ func TestResolveModelsFor(t *testing.T) {
 		{
 			name:     "config overrides never leak into a non-active provider",
 			cfg:      cfgWith("claude", "", "claude-haiku-4-5-20251001", "claude-opus-4-6"),
-			provider: "codex", wantLight: "gpt-6-luna", wantStrong: "gpt-6-astra",
+			provider: "codex", wantLight: "gpt-5.6-luna", wantStrong: "gpt-6-astra",
 		},
 		{
 			name:     "legacy ai.model never leaks into a non-active provider",
@@ -130,5 +140,28 @@ func TestAllIsACopy(t *testing.T) {
 	a[0].ID = "mutated"
 	if All()[0].ID != "claude" {
 		t.Fatal("All() must return a copy, not the registry backing array")
+	}
+}
+
+// A refused codex model retries once with the tier's fallback, never with
+// itself; claude has no fallback (board #666).
+func TestFallbackModel(t *testing.T) {
+	tests := []struct {
+		provider, model string
+		light           bool
+		want            string
+	}{
+		{"codex", "gpt-6-astra", false, "gpt-5.6-sol"},
+		{"codex", "gpt-6.1-sol", false, "gpt-5.6-sol"},
+		{"codex", "gpt-6-luna", true, "gpt-5.6-luna"},
+		{"codex", "gpt-5.6-sol", false, ""},
+		{"codex", "gpt-5.6-luna", true, ""},
+		{"claude", "opus", false, ""},
+		{"ollama", "llama4:70b", true, ""},
+	}
+	for _, tt := range tests {
+		if got := FallbackModel(tt.provider, tt.model, tt.light); got != tt.want {
+			t.Errorf("FallbackModel(%q, %q, %v) = %q, want %q", tt.provider, tt.model, tt.light, got, tt.want)
+		}
 	}
 }

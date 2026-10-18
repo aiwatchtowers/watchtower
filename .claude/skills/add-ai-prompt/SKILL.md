@@ -23,7 +23,7 @@ type Generator interface {
    - Give the pipeline a `SetPromptStore` seam and wire it at every construction site in `cmd/` — `cmd/prompt_store_scan_test.go` fails on an unwired one.
 
 2. **Pick the model tier** via the *source tag*, not a hardcoded model:
-   - Lightweight (classify/prioritize/rollup) → route to Haiku / `gpt-6-luna`. Add your source name to the switch in BOTH `internal/digest/models.go` (`ModelForSource`) and `internal/codex/models.go`.
+   - Lightweight (classify/prioritize/rollup) → route to Haiku / `gpt-5.6-luna`. Add your source name to the switch in BOTH `internal/digest/models.go` (`ModelForSource`) and `internal/codex/models.go`.
    - Quality-critical (summaries/analysis) → default (Opus / `gpt-6-astra`), no change needed.
 
 3. **Build and split the prompt**, then call the generator with a source-tagged context:

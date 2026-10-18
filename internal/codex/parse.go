@@ -7,6 +7,9 @@ type CodexEvent struct {
 	Item     *CodexItem  `json:"item"`
 	Usage    *CodexUsage `json:"usage"`
 	Error    *CodexError `json:"error"`
+	// Message is the text of a top-level "error" event (codex exec puts
+	// it beside the type, not under error).
+	Message string `json:"message"`
 }
 
 // CodexItem represents an item within a Codex event.

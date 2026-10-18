@@ -29,6 +29,11 @@ type Provider struct {
 	// suggest them (e.g. claude's opus). Not serialized directly: `ai models`
 	// folds it into the same `models` field the live listing uses.
 	KnownModels []string `json:"-"`
+	// FallbackLight/FallbackStrong are the per-tier models a call retries
+	// once with when the CLI refuses its model (a CLI too old for it, or an
+	// account that does not offer it); "" = no retry. See FallbackModel.
+	FallbackLight  string `json:"-"`
+	FallbackStrong string `json:"-"`
 }
 
 // registry order is the display order in UIs.
@@ -42,11 +47,18 @@ var registry = []Provider{
 		KnownModels:   []string{"haiku", "sonnet", "opus"},
 	},
 	{
-		ID:            "codex",
-		DisplayName:   "Codex",
-		Kind:          "cli",
-		DefaultLight:  "gpt-6-luna",
-		DefaultStrong: "gpt-6-astra",
+		ID:          "codex",
+		DisplayName: "Codex",
+		Kind:        "cli",
+		// gpt-6-astra is the current strong model, but a Codex CLI older
+		// than its release refuses it ("requires a newer version of
+		// Codex"), so the strong tier falls back to gpt-5.6-sol. The light
+		// default is gpt-5.6-luna: gpt-6-luna is refused on ChatGPT
+		// sign-in (checked 2026-10-18, board #666).
+		DefaultLight:   "gpt-5.6-luna",
+		DefaultStrong:  "gpt-6-astra",
+		FallbackLight:  "gpt-5.6-luna",
+		FallbackStrong: "gpt-5.6-sol",
 	},
 	{
 		ID:          "ollama",
@@ -77,6 +89,21 @@ func ByID(id string) Provider {
 	return registry[0]
 }
 
+// FallbackModel returns the model to retry a call once with after the
+// provider's CLI refused model: the tier's fallback (light or strong), or ""
+// when the provider has none or model already is it.
+func FallbackModel(providerID, model string, light bool) string {
+	p := ByID(providerID)
+	fb := p.FallbackStrong
+	if light {
+		fb = p.FallbackLight
+	}
+	if fb == model {
+		return ""
+	}
+	return fb
+}
+
 // ResolveModelsFor returns the concrete light/strong models the given
 // provider should use under cfg. Precedence per tier:
 //
@@ -99,9 +126,11 @@ func ByID(id string) Provider {
 // resolves to its family alias (`opus`, `haiku`): a pin written once — by an
 // older setup, a Settings pick or a hand edit — otherwise stays on that release
 // forever while the aliases move on to the newest model of the class.
-// For `codex`, a pinned gpt-5 family model (`gpt-5.4`, `gpt-5.4-mini`,
-// `gpt-5.5`, `gpt-5.3-codex`) resolves to the tier default: OpenAI retired
-// them from Codex (2026-08-31 … 2026-10-14), and a pin would fail every call.
+// For `codex`, a pinned retired gpt-5 model (`gpt-5`, `gpt-5.4`,
+// `gpt-5.4-mini`, `gpt-5.5`, `gpt-5.3-codex`) resolves to the tier default:
+// OpenAI retired them from Codex (2026-08-31 … 2026-10-14), and a pin would
+// fail every call. The gpt-5.6 models (`gpt-5.6-sol`, `gpt-5.6-luna`) are
+// still offered and stay pinned.
 // For single-model backends (ollama), an unset light tier follows the
 // resolved strong model, so configuring one model configures both tiers.
 // Ollama ships no default model — an unconfigured ollama resolves to empty
@@ -138,7 +167,7 @@ func ResolveModelsFor(cfg *config.Config, providerID string) (light, strong stri
 
 var (
 	claudeFullModelID  = regexp.MustCompile(`^claude-(opus|sonnet|haiku)-[0-9]`)
-	codexRetiredModels = regexp.MustCompile(`^gpt-5([.-]|$)`)
+	codexRetiredModels = regexp.MustCompile(`^gpt-5(\.[0-5])?(-|$)`)
 )
 
 // normalizePinnedModel keeps a pinned model from going stale: a full Claude

@@ -42,17 +42,31 @@ func (g *CodexGenerator) SetIsolatedChild(dropEnv ...string) {
 
 // Generate calls Codex CLI with the given prompt and returns the response text,
 // token usage statistics, and an empty session ID (Codex uses --ephemeral).
+// A model codex refuses (too old a CLI, or not on the account) is retried
+// once with the tier's fallback (providers.FallbackModel).
 func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage, _ string) (string, *digest.Usage, string, error) {
-	model := g.modelStrong
+	model, light := g.modelStrong, false
 	if s, ok := digest.SourceFromContext(ctx); ok && digest.TierForSource(s) == digest.TierLight {
-		model = g.modelLight
+		model, light = g.modelLight, true
 	}
+	model = modelFor(model)
 
+	result, usage, err := g.generate(ctx, model, systemPrompt, userMessage)
+	if fb := fallbackFor(model, light, err); fb != "" {
+		first := err
+		result, usage, err = g.generate(ctx, fb, systemPrompt, userMessage)
+		err = withFallbackErr(first, fb, err)
+	}
+	return result, usage, "", err
+}
+
+// generate runs one `codex exec` turn on model.
+func (g *CodexGenerator) generate(ctx context.Context, model, systemPrompt, userMessage string) (string, *digest.Usage, error) {
 	codexBin := FindBinary(g.codexPath)
 
 	args, stdin, promptFile, err := buildArgs(codexBin, model, systemPrompt, userMessage)
 	if err != nil {
-		return "", nil, "", err
+		return "", nil, err
 	}
 	if promptFile != "" {
 		defer os.Remove(promptFile)
@@ -84,17 +98,17 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 
 	output, err := cmd.Output()
 	if err != nil {
-		return "", nil, "", classifyError(err, stderrBuf.String(), codexBin)
+		return "", nil, runError(model, output, err, stderrBuf.String(), codexBin)
 	}
 
 	// Parse JSONL output — find last item.completed with agent_message
 	result, usage, parseErr := parseJSONLOutput(output)
 	if parseErr != nil {
-		return "", nil, "", parseErr
+		return "", nil, parseErr
 	}
 
 	if strings.TrimSpace(result) == "" {
-		return "", nil, "", fmt.Errorf("codex returned empty result")
+		return "", nil, fmt.Errorf("codex returned empty result")
 	}
 
 	digestUsage := &digest.Usage{
@@ -103,7 +117,7 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 		OutputTokens: usage.OutputTokens,
 	}
 
-	return result, digestUsage, "", nil
+	return result, digestUsage, nil
 }
 
 // execArgs is the common `codex exec` prefix every Watchtower call starts
@@ -218,6 +232,19 @@ func (lw *limitedWriter) Write(p []byte) (int, error) {
 		return n, err
 	}
 	return total, nil
+}
+
+// runError is the error for a codex run that exited with err: the failed
+// turn's reason from its JSONL output when there is one (codex exec reports
+// it there, not on stderr), else classifyError.
+func runError(model string, output []byte, err error, stderr, codexBin string) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if turnErr := failedTurn(model, output); turnErr != nil {
+			return turnErr
+		}
+	}
+	return classifyError(err, stderr, codexBin)
 }
 
 // classifyError wraps CLI errors with user-friendly messages.
