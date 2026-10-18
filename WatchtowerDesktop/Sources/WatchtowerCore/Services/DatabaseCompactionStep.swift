@@ -134,7 +134,9 @@ package func decodeLastJSONLine<T: Decodable>(_ type: T.Type, from stdout: Data)
 /// daemon and runs `db compact --if-due` while the splash shows progress.
 /// Best effort throughout: every failure is logged and the launch continues.
 ///
-/// Elapsed time counts the injected `sleep(1 s)` calls, never the wall clock.
+/// Elapsed time counts the injected `sleep(1 s)` calls, never the wall clock:
+/// `elapsedSeconds` goes up by one after each completed sleep, so an action
+/// taken between two ticks lies anywhere inside that second.
 @MainActor @Observable
 package final class DatabaseCompactionStep {
     package enum Phase: Equatable {
@@ -234,8 +236,11 @@ package final class DatabaseCompactionStep {
         handle(exit, check: check)
     }
 
-    /// "Skip for now": SIGTERM now, SIGKILL `killAfterSkipSeconds` ticks
-    /// later if the child is still alive.
+    /// "Skip for now": SIGTERM now, SIGKILL on the first tick more than
+    /// `killAfterSkipSeconds` ticks later if the child is still alive. Skip
+    /// lands between two ticks, so `killAfterSkipSeconds` ticks after it may
+    /// be just under that many seconds; one more tick makes the wait
+    /// strictly longer than the threshold.
     package func skip() {
         guard canSkip, let child else { return }
         skipRequestedAt = elapsedSeconds
@@ -266,7 +271,7 @@ package final class DatabaseCompactionStep {
             guard !Task.isCancelled, case .compacting = phase else { return }
             elapsedSeconds += 1
             if let skipAt = skipRequestedAt, !killed,
-               elapsedSeconds - skipAt >= Self.killAfterSkipSeconds {
+               elapsedSeconds - skipAt > Self.killAfterSkipSeconds {
                 killed = true
                 log("DB compaction: the child ignored SIGTERM for \(Self.killAfterSkipSeconds) s, killing it")
                 child?.kill()
@@ -277,7 +282,13 @@ package final class DatabaseCompactionStep {
     // MARK: Exit handling
 
     private func handle(_ exit: CompactionExit, check: CompactionCheck) {
-        let output = try? decodeLastJSONLine(CompactionRunOutput.self, from: exit.stdout)
+        let output: CompactionRunOutput?
+        do {
+            output = try decodeLastJSONLine(CompactionRunOutput.self, from: exit.stdout)
+        } catch {
+            output = nil
+            log("DB compaction: no result line (exit \(exit.status)): \(error.localizedDescription)")
+        }
         let stderr = CLILog.detail(exit.stderr)
         switch exit.status {
         case 0:

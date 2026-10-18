@@ -16,7 +16,13 @@ package struct ProcessCompactionCLI: CompactionCLI {
         }
     }
 
-    package init() {}
+    /// The `watchtower` binary; nil looks it up (`Constants.findCLIPath`) on
+    /// every call. Tests pass a stub script.
+    private let executablePath: String?
+
+    package init(executablePath: String? = nil) {
+        self.executablePath = executablePath
+    }
 
     /// Cancelling the calling task terminates the child (a quit during the
     /// check).
@@ -44,7 +50,7 @@ package struct ProcessCompactionCLI: CompactionCLI {
     }
 
     private func makeProcess(_ arguments: [String]) throws -> Process {
-        guard let cliPath = Constants.findCLIPath() else { throw Failure.cliNotFound }
+        guard let cliPath = executablePath ?? Constants.findCLIPath() else { throw Failure.cliNotFound }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cliPath)
         process.arguments = arguments
