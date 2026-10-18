@@ -79,7 +79,7 @@ read-only old→new tool name map for stored `agent_actions` rows (DEV-06); see
 `WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionReport,Services/SessionStatePresentation,Services/SessionSwitcherPresentation,Services/SessionReportPresentation}.swift` +
 `WatchtowerDesktop/Sources/WatchtowerCore/{Models/OwnerAsk,Database/Queries/OwnerAskQueries,Services/OwnerAsk*}.swift` +
 `WatchtowerDesktop/Sources/ViewModels/OwnerAsksViewModel.swift` + `WatchtowerDesktop/Sources/Services/SessionLineDelivery.swift` +
-`WatchtowerDesktop/Sources/Services/MobileHub/Handlers/SessionInputHandlers.swift` (PROJ-16) +
+`WatchtowerDesktop/Sources/Services/MobileHub/Handlers/SessionInputHandlers.swift` + `WatchtowerDesktop/Sources/Services/SessionControl.swift` (PROJ-16) +
 `WatchtowerDesktop/Sources/WatchtowerCore/{Services/OwnerPresencePolicy,Services/ChatQuestionEscalationPolicy,Models/ChatQuestionEscalationResult,Database/Queries/OwnerPresenceQueries}.swift` +
 `WatchtowerDesktop/Sources/Services/{OwnerPresenceCenter,ChatQuestionEscalator}.swift` +
 `internal/agentkind/` + `internal/db/migrations/00109_terminal_sessions_codex.sql` + `internal/codex/appserver.go` +
