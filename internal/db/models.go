@@ -644,18 +644,6 @@ type JiraBoard struct {
 	ProfileGeneratedAt string `json:"profile_generated_at"`
 }
 
-// JiraSlackLink represents a detected Jira key mention in Slack.
-type JiraSlackLink struct {
-	ID         int
-	IssueKey   string
-	ChannelID  string
-	MessageTS  string
-	TrackID    *int
-	DigestID   *int
-	LinkType   string
-	DetectedAt string
-}
-
 // JiraIssue represents a Jira issue stored locally.
 type JiraIssue struct {
 	AccountID               int64

@@ -992,16 +992,6 @@ CREATE TABLE IF NOT EXISTS reminders (
     created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     done_at     TEXT    NOT NULL DEFAULT ''
 );
-CREATE TABLE IF NOT EXISTS "jira_slack_links" (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    issue_key TEXT NOT NULL,
-    channel_id TEXT NOT NULL DEFAULT '',
-    message_ts TEXT NOT NULL DEFAULT '',
-    track_id INTEGER,
-    digest_id INTEGER,
-    link_type TEXT NOT NULL DEFAULT 'mention',
-    detected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-);
 CREATE TABLE IF NOT EXISTS memory_step_state (
     step        TEXT NOT NULL,            -- 'rewrite' | 'reflect' | 'map'
     node_id     TEXT NOT NULL DEFAULT '', -- entity id for 'rewrite'; '' for the workspace-wide steps
@@ -1948,27 +1938,6 @@ CREATE TABLE IF NOT EXISTS permission_requests (
   decided_at          TEXT,
   decided_by          TEXT
 );
-CREATE TABLE IF NOT EXISTS "stream_digests" (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    source       TEXT NOT NULL CHECK(source IN ('gmail','jira','imap')),
-    account_id   INTEGER NOT NULL,
-    scope        TEXT NOT NULL DEFAULT '',
-    period_from  TEXT NOT NULL,
-    period_to    TEXT NOT NULL,
-    topics_json  TEXT NOT NULL DEFAULT '[]',
-    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    read_at      TEXT
-);
-CREATE TABLE IF NOT EXISTS "idea_mentions" (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    idea_id     INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
-    source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap')),
-    ref         TEXT NOT NULL DEFAULT '',
-    quote       TEXT NOT NULL DEFAULT '',
-    author      TEXT NOT NULL DEFAULT '',
-    said_at     TEXT NOT NULL DEFAULT '',
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-);
 CREATE TABLE IF NOT EXISTS owner_instructions (
     scope      TEXT PRIMARY KEY CHECK (scope IN ('session','procedure')),
     body       TEXT NOT NULL,
@@ -2117,6 +2086,38 @@ CREATE TABLE IF NOT EXISTS "inbox_items" (
     card_generated_at TEXT,
     composed_at     TEXT, mentions TEXT NOT NULL DEFAULT '[]', mentions_earlier INTEGER NOT NULL DEFAULT 0, mentioned_at TEXT NOT NULL DEFAULT '',
     UNIQUE(channel_id, message_ts)
+);
+CREATE TABLE IF NOT EXISTS issue_slack_links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tracker TEXT NOT NULL DEFAULT 'jira' CHECK (tracker IN ('jira','linear')),
+    issue_key TEXT NOT NULL,
+    channel_id TEXT NOT NULL DEFAULT '',
+    message_ts TEXT NOT NULL DEFAULT '',
+    track_id INTEGER,
+    digest_id INTEGER,
+    link_type TEXT NOT NULL DEFAULT 'mention',
+    detected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+);
+CREATE TABLE IF NOT EXISTS "stream_digests" (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    source       TEXT NOT NULL CHECK(source IN ('gmail','jira','imap','linear')),
+    account_id   INTEGER NOT NULL,
+    scope        TEXT NOT NULL DEFAULT '',
+    period_from  TEXT NOT NULL,
+    period_to    TEXT NOT NULL,
+    topics_json  TEXT NOT NULL DEFAULT '[]',
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    read_at      TEXT
+);
+CREATE TABLE IF NOT EXISTS "idea_mentions" (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    idea_id     INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
+    source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap','linear')),
+    ref         TEXT NOT NULL DEFAULT '',
+    quote       TEXT NOT NULL DEFAULT '',
+    author      TEXT NOT NULL DEFAULT '',
+    said_at     TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
@@ -2331,16 +2332,6 @@ CREATE INDEX IF NOT EXISTS idx_agent_actions_conversation ON agent_actions(conve
 CREATE INDEX IF NOT EXISTS idx_agent_actions_status ON agent_actions(status);
 CREATE INDEX IF NOT EXISTS idx_reaction_commands_status ON reaction_commands(status);
 CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, remind_at);
-CREATE INDEX IF NOT EXISTS idx_jira_slack_links_issue ON jira_slack_links(issue_key);
-CREATE INDEX IF NOT EXISTS idx_jira_slack_links_channel ON jira_slack_links(channel_id, message_ts);
-CREATE INDEX IF NOT EXISTS idx_jira_slack_links_track ON jira_slack_links(track_id);
-CREATE INDEX IF NOT EXISTS idx_jira_slack_links_digest ON jira_slack_links(digest_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_slack_links_mention_identity
-    ON jira_slack_links(issue_key, channel_id, message_ts) WHERE link_type = 'mention';
-CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_slack_links_track_identity
-    ON jira_slack_links(issue_key, track_id) WHERE link_type = 'track';
-CREATE UNIQUE INDEX IF NOT EXISTS idx_jira_slack_links_decision_identity
-    ON jira_slack_links(issue_key, digest_id) WHERE link_type = 'decision';
 CREATE INDEX IF NOT EXISTS idx_kb_documents_source_time ON kb_documents(source, doc_time_unix);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ext_sources_jira ON ext_sources(provider, jira_account_id, container_key)
   WHERE jira_account_id IS NOT NULL;
@@ -2419,9 +2410,6 @@ CREATE INDEX IF NOT EXISTS review_comments_round ON review_comments(round_id, id
 CREATE INDEX IF NOT EXISTS idx_workbench_board_columns_project ON workbench_board_columns(project_id, status, position);
 CREATE INDEX IF NOT EXISTS review_notes_session ON review_notes(project_id, session_id, kind, ord);
 CREATE INDEX IF NOT EXISTS idx_permission_requests_session ON permission_requests(terminal_session_id, status);
-CREATE INDEX IF NOT EXISTS idx_stream_digests_source ON stream_digests(source, account_id);
-CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
-CREATE INDEX IF NOT EXISTS idx_idea_mentions_ref ON idea_mentions(source, ref);
 CREATE INDEX IF NOT EXISTS idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at);
 CREATE INDEX IF NOT EXISTS idx_linear_states_team ON linear_workflow_states(account_id, team_id, position);
 CREATE INDEX IF NOT EXISTS idx_linear_labels_team ON linear_labels(account_id, team_id);
@@ -2445,6 +2433,19 @@ CREATE INDEX IF NOT EXISTS idx_inbox_items_sender ON inbox_items(sender_user_id)
 CREATE INDEX IF NOT EXISTS idx_inbox_items_snooze ON inbox_items(snooze_until);
 CREATE INDEX IF NOT EXISTS idx_inbox_items_status ON inbox_items(status);
 CREATE INDEX IF NOT EXISTS idx_inbox_items_updated ON inbox_items(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_issue_slack_links_issue ON issue_slack_links(issue_key);
+CREATE INDEX IF NOT EXISTS idx_issue_slack_links_channel ON issue_slack_links(channel_id, message_ts);
+CREATE INDEX IF NOT EXISTS idx_issue_slack_links_track ON issue_slack_links(track_id);
+CREATE INDEX IF NOT EXISTS idx_issue_slack_links_digest ON issue_slack_links(digest_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_slack_links_mention_identity
+    ON issue_slack_links(tracker, issue_key, channel_id, message_ts) WHERE link_type = 'mention';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_slack_links_track_identity
+    ON issue_slack_links(tracker, issue_key, track_id) WHERE link_type = 'track';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_slack_links_decision_identity
+    ON issue_slack_links(tracker, issue_key, digest_id) WHERE link_type = 'decision';
+CREATE INDEX IF NOT EXISTS idx_stream_digests_source ON stream_digests(source, account_id);
+CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
+CREATE INDEX IF NOT EXISTS idx_idea_mentions_ref ON idea_mentions(source, ref);
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN

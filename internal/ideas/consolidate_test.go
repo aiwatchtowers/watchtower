@@ -306,7 +306,7 @@ func TestIdeas02_SlackRefMissingFromMessages_NotRenderedNotCitable(t *testing.T)
 	// message's ref is offered.
 	in, err := p.gatherConsolidateInput(p.maxPromptChars(), time.Time{}, time.Time{}, nil)
 	require.NoError(t, err)
-	assert.Equal(t, map[string]string{"C1|1785746329.642879": "slack"}, in.validRefs)
+	assert.Equal(t, map[string][]string{"C1|1785746329.642879": {"slack"}}, in.validRefs)
 
 	proposed, _, err := p.runConsolidate(context.Background())
 	require.NoError(t, err)

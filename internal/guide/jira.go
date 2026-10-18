@@ -22,15 +22,19 @@ If JIRA DELIVERY data is provided above, include a Delivery section in the peopl
 - Combine Jira workload signals with Slack activity signals for compound red flags (e.g., high open issues + low Slack responsiveness = bottleneck risk).
 - List resolved issues as concrete accomplishments.`
 
-// gatherJiraDelivery collects Jira delivery context for a single user.
-// Returns an empty string (no error) when Jira is disabled or the user has no
-// Jira activity. The caller can safely append the result to the AI prompt.
+// gatherJiraDelivery collects issue-tracker delivery context (Jira and Linear,
+// from tracker_issues, enabled trackers only) for a single user; the section
+// keeps its JIRA header.
+// Returns an empty string (no error) when no tracker is connected, the
+// my_issues toggle is off, or the user has no tracker activity. The caller can
+// safely append the result to the AI prompt.
 func gatherJiraDelivery(database *db.DB, cfg *config.Config, userSlackID, from, to string) (string, error) {
-	if !jira.IsFeatureEnabled(cfg, "my_issues") {
+	scope, ok := jira.TrackerFeatureScope(cfg, "my_issues")
+	if !ok {
 		return "", nil
 	}
 
-	stats, err := database.GetJiraDeliveryStats(userSlackID, from, to)
+	stats, err := database.GetTrackerDeliveryStats(scope, userSlackID, from, to)
 	if err != nil {
 		return "", fmt.Errorf("jira delivery stats for %s: %w", userSlackID, err)
 	}
@@ -59,7 +63,7 @@ func gatherJiraDelivery(database *db.DB, cfg *config.Config, userSlackID, from, 
 	}
 
 	// Recent accomplishments: resolved issues within the period (bounded query).
-	accomplishments, err := database.GetJiraResolvedIssuesForUser(userSlackID, from, to, maxAccomplishments)
+	accomplishments, err := database.GetTrackerResolvedIssuesForUser(scope, userSlackID, from, to, maxAccomplishments)
 	if err == nil && len(accomplishments) > 0 {
 		b.WriteString("\nRecent accomplishments:\n")
 		for _, issue := range accomplishments {
@@ -70,7 +74,7 @@ func gatherJiraDelivery(database *db.DB, cfg *config.Config, userSlackID, from, 
 			} else if len(resolvedDate) > 10 {
 				resolvedDate = resolvedDate[:10]
 			}
-			fmt.Fprintf(&b, "- Resolved %s %q (%s)\n", issue.Key, issue.Summary, resolvedDate)
+			fmt.Fprintf(&b, "- Resolved %s %q (%s)\n", issue.Key, issue.Title, resolvedDate)
 		}
 	}
 

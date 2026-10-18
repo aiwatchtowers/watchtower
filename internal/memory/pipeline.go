@@ -66,6 +66,10 @@ type RunStats struct {
 	JiraEpisodes     int // episode nodes built/refreshed by the mechanical jira issue builder
 	JiraIssuesFailed int // jira issues dropped (unresolved ref) or frozen (step error)
 
+	// Linear source (zero unless memory.sources.jira, which governs both trackers).
+	LinearEpisodes     int // episode nodes built/refreshed by the mechanical linear issue builder
+	LinearIssuesFailed int // linear issues dropped (unresolved ref) or frozen (step error)
+
 	// Operational mirrors (Phase-5 slice-4, zero unless memory.sources.operational).
 	Mirrored      int // target/track entity mirrors created/refreshed by the mechanical mirror step
 	MirrorsFailed int // mirror steps frozen by a read/resolve/commit error (MEM-14)
@@ -157,8 +161,8 @@ func NewPipeline(database *db.DB, vault *Vault, gen digest.Generator, cfg config
 	}
 	p := &Pipeline{db: database, vault: vault, generator: gen, cfg: cfg, logf: logf, checkMsg: database, Source: "cli"}
 	// MEM-12: the belief surface's registry — chat (MEM-09) and act (MEM-15), the
-	// only schemes validateChatRefs routes through it. Calendar, Jira, and
-	// interaction tables are base tables, so the cal/jira/act resolvers are
+	// only schemes validateChatRefs routes through it. Calendar, Jira, Linear and
+	// interaction tables are base tables, so the cal/jira/linear/act resolvers are
 	// registered even when their sources are dark (a stray ref can only reach the
 	// belief pass through independently gated sources). The Slack/Gmail extractors
 	// validate through their own message-only / mail-only registries.
@@ -167,6 +171,7 @@ func NewPipeline(database *db.DB, vault *Vault, gen digest.Generator, cfg config
 		chatResolver{db: p.chatChecker, logf: logf, contextTypes: chatContextTypes(cfg.Sources.Chats)},
 		calResolver{database},
 		jiraResolver{database},
+		linearResolver{database},
 		actResolver{db: database, logf: logf},
 	)
 	return p
@@ -280,9 +285,9 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 		wmAfter = wmBefore
 	}
 	p.completeRun(runID, acc, stats.Episodes, wmBefore, wmAfter, nil)
-	p.logf("memory: run done: seeded %d, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d windows quarantined, %d vault files quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); mirrors: %d mirrored (%d failed); jira: %d built (%d failed); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped); compare: %d shadowed (%d failed, %d refs rejected); focus: %d matched, %d swept (%d failed)",
+	p.logf("memory: run done: seeded %d, %d episodes from %d/%d windows (%d messages, %d refs rejected, %d malformed, %d windows quarantined, %d vault files quarantined); gmail: %d episodes (%d threads failed); calendar: %d episodes (%d events failed); mirrors: %d mirrored (%d failed); jira: %d built (%d failed); linear: %d built (%d failed); semantic: %d deduped, %d promoted, %d rewritten (%d failed), %d belief-ops (%d rejected), %d aged, %d evicted; surfaces: %d chat-turns, %d reflections (%d disputes flagged, %d dropped); compare: %d shadowed (%d failed, %d refs rejected); focus: %d matched, %d swept (%d failed)",
 		stats.Seeded, stats.Episodes, stats.Windows-stats.WindowsFailed, stats.Windows, stats.Messages, stats.RefsRejected, stats.Malformed, stats.WindowsQuarantined, stats.Reconciled.Quarantined,
-		stats.GmailEpisodes, stats.GmailThreadsFailed, stats.CalendarEpisodes, stats.CalendarEventsFailed, stats.Mirrored, stats.MirrorsFailed, stats.JiraEpisodes, stats.JiraIssuesFailed,
+		stats.GmailEpisodes, stats.GmailThreadsFailed, stats.CalendarEpisodes, stats.CalendarEventsFailed, stats.Mirrored, stats.MirrorsFailed, stats.JiraEpisodes, stats.JiraIssuesFailed, stats.LinearEpisodes, stats.LinearIssuesFailed,
 		stats.Deduped, stats.Promoted, stats.Rewritten, stats.RewriteFailed, stats.BeliefOps, stats.BeliefOpsRejected, stats.Aged, stats.Evicted, stats.ChatTurnsIngested, stats.Reflections, stats.DisputesFlagged, stats.ReflectionsDropped,
 		stats.DigestsCompared, stats.CompareFailed, stats.CompareRefsRejected, stats.FocusMatched, stats.FocusSwept, stats.FocusFailed)
 	return stats, nil
@@ -363,6 +368,14 @@ func (p *Pipeline) runMechanicalAndExtraction(ctx context.Context, runID int64, 
 			p.logf("memory: jira ingest: %v", jerr)
 		}
 		jiraSteps = n
+
+		// (2e) Mechanical Linear issue → episode builder, behind the same
+		// switch (the tracker switches govern both trackers). No AI call.
+		ln, lerr := p.runLinearIngest(runID, focusSteps+calSteps+mirrorSteps+jiraSteps, stats)
+		if lerr != nil {
+			p.logf("memory: linear ingest: %v", lerr)
+		}
+		jiraSteps += ln
 	}
 
 	// (3) Episode extraction from raw text.

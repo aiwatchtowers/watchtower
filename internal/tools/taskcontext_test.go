@@ -133,7 +133,7 @@ func seedTaskContextFixture(t *testing.T, d *db.DB) {
 	require.NoError(t, d.EnsureChannel("C001", "eng-payments", "public", ""))
 	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "C001", TS: taskContextFixtureParentTS, UserID: "U001", Text: "does PROJ-1 touch the legacy adapter?"}))
 	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "C001", TS: taskContextFixtureReplyTS, UserID: "U002", Text: "we agreed to keep the old endpoint", ThreadTS: sql.NullString{String: taskContextFixtureParentTS, Valid: true}}))
-	require.NoError(t, d.UpsertJiraSlackLink(db.JiraSlackLink{IssueKey: "PROJ-1", ChannelID: "C001", MessageTS: taskContextFixtureParentTS, LinkType: "mention"}))
+	require.NoError(t, d.UpsertIssueSlackLink(db.IssueSlackLink{IssueKey: "PROJ-1", ChannelID: "C001", MessageTS: taskContextFixtureParentTS, LinkType: "mention"}))
 	_, err := d.InsertMeetingTranscript(db.MeetingTranscript{Title: "Payments sync", TranscriptText: "Meeting notes for PROJ-1: we decided to keep tokens in a file, not the keychain."})
 	require.NoError(t, err)
 
@@ -156,7 +156,7 @@ func seedTaskContextManyRepliesFixture(t *testing.T, d *db.DB) {
 	require.NoError(t, d.EnsureChannel("C003", "eng-busy", "public", ""))
 	anchorTS := "1690001000.000100"
 	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "C003", TS: anchorTS, UserID: "U004", Text: "PROJ-4: the anchor question"}))
-	require.NoError(t, d.UpsertJiraSlackLink(db.JiraSlackLink{IssueKey: "PROJ-4", ChannelID: "C003", MessageTS: anchorTS, LinkType: "mention"}))
+	require.NoError(t, d.UpsertIssueSlackLink(db.IssueSlackLink{IssueKey: "PROJ-4", ChannelID: "C003", MessageTS: anchorTS, LinkType: "mention"}))
 	for i := 1; i <= 30; i++ {
 		text := fmt.Sprintf("reply %d: filler discussion", i)
 		if i == 1 {
@@ -191,5 +191,5 @@ func seedTaskContextNoReplyThreadFixture(t *testing.T, d *db.DB) {
 	require.NoError(t, d.EnsureChannel("C002", "eng-quiet", "public", ""))
 	anchorTS := "1690000500.000100"
 	require.NoError(t, d.UpsertMessage(db.Message{ChannelID: "C002", TS: anchorTS, UserID: "U003", Text: "PROJ-3: no one has replied yet"}))
-	require.NoError(t, d.UpsertJiraSlackLink(db.JiraSlackLink{IssueKey: "PROJ-3", ChannelID: "C002", MessageTS: anchorTS, LinkType: "mention"}))
+	require.NoError(t, d.UpsertIssueSlackLink(db.IssueSlackLink{IssueKey: "PROJ-3", ChannelID: "C002", MessageTS: anchorTS, LinkType: "mention"}))
 }

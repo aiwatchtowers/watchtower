@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
-	"watchtower/internal/jira"
+	"watchtower/internal/issuekey"
 )
 
 // recordingKeyDetector captures every page handed to the sync's Jira hook.
@@ -106,7 +106,7 @@ func TestSyncMessages_ProducesMentionLinksForKnownProjectKeys(t *testing.T) {
 		Key:       "PROJ-1", ProjectKey: "PROJ", Summary: "S", Status: "O", StatusCategory: "todo",
 		CreatedAt: "now", UpdatedAt: "now", SyncedAt: "now",
 	}))
-	ts.orch.SetJiraKeyDetector(jira.NewKeyDetector(ts.db))
+	ts.orch.SetJiraKeyDetector(issuekey.NewKeyDetector(ts.db))
 
 	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{Full: true}))
 

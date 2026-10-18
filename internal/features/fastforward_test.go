@@ -336,3 +336,26 @@ func TestFastForward_NoHookIsNil(t *testing.T) {
 	require.NoError(t, FastForward("not-a-real-feature", database, now, Deps{}))
 	assertNoWatermarksWritten(t)
 }
+
+// Linear plan 2: the stream-digests hook stamps every enabled Linear
+// workspace's ideas floor and the memory hook its memory watermark, like the
+// Jira accounts; the two hooks stay disjoint (FEAT-03).
+func TestFastForward_LinearFloorsAndWatermark(t *testing.T) {
+	database := testDB(t)
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	acct, err := database.CreateLinearAccount("Test")
+	require.NoError(t, err)
+
+	require.NoError(t, FastForward("stream-digests", database, now, Deps{}))
+	floor, err := database.IdeasLinearFloor(acct)
+	require.NoError(t, err)
+	assert.Equal(t, db.FormatJiraTime(now), floor)
+	wm, err := database.MemoryLinearWatermark(acct)
+	require.NoError(t, err)
+	assert.Zero(t, wm, "stream-digests must not touch the memory watermark")
+
+	require.NoError(t, FastForward("memory", database, now, Deps{}))
+	wm, err = database.MemoryLinearWatermark(acct)
+	require.NoError(t, err)
+	assert.Equal(t, float64(now.Unix()), wm)
+}

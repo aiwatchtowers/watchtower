@@ -139,7 +139,7 @@ func TestPrintTracks(t *testing.T) {
 	}
 
 	buf := new(bytes.Buffer)
-	printTracks(buf, tracks, database, false)
+	printTracks(buf, tracks, database, false, false)
 
 	output := buf.String()
 	assert.Contains(t, output, "Review PR #42")

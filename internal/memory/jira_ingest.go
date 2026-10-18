@@ -186,7 +186,7 @@ func (p *Pipeline) buildJiraEpisodes(runID int64, jiraReg *provenanceRegistry, i
 			status, tier = "closed", "long"
 		}
 
-		epNode, changed, berr := p.jiraEpisodeNode(jiraIssueAlias(is.Key), title, body, status, tier)
+		epNode, changed, berr := p.issueEpisodeNode("jira", jiraIssueAlias(is.Key), title, body, status, tier)
 		if berr != nil {
 			return 0, 0, 0, berr
 		}
@@ -237,8 +237,9 @@ func linkJiraIssueEntities(p *Pipeline, byID map[string]*Node, order *[]string, 
 	return nil
 }
 
-// jiraEpisodeNode returns the episode node for one issue: fresh when the
-// jiraissue:<KEY> alias has none, else the existing node with Title/Body and
+// issueEpisodeNode returns the episode node for one issue: fresh when the
+// issue alias (jiraissue:<KEY>, linearissue:<account>:<id>) has none, else the
+// existing node with Title/Body and
 // the deterministic status/tier refreshed (a done+resolved issue is closed/
 // long; a reopened issue flips back to active/short). changed reports whether
 // anything differs from disk. A LookupMemoryAlias error (not a clean miss)
@@ -247,16 +248,16 @@ func linkJiraIssueEntities(p *Pipeline, byID map[string]*Node, order *[]string, 
 // re-alias), the builder never rewrites it — an evicted rollup is a deliberate
 // compaction the mechanical builder must not resurrect into an episode body;
 // the existing node is returned untouched with changed=false.
-func (p *Pipeline) jiraEpisodeNode(alias, title, body, status, tier string) (n Node, changed bool, err error) {
+func (p *Pipeline) issueEpisodeNode(source, alias, title, body, status, tier string) (n Node, changed bool, err error) {
 	existingID, lerr := p.db.LookupMemoryAlias(alias)
 	switch {
 	case lerr == nil:
 		existing, rerr := p.vault.ReadNode(existingID)
 		if rerr != nil {
-			return Node{}, false, fmt.Errorf("memory: jira ingest: read %s for %q: %w", existingID, alias, rerr)
+			return Node{}, false, fmt.Errorf("memory: %s ingest: read %s for %q: %w", source, existingID, alias, rerr)
 		}
 		if existing.Type != "episode" {
-			p.logf("memory: jira ingest: alias %q resolves to %s (%s), skipping update (archived)", alias, existingID, existing.Type)
+			p.logf("memory: %s ingest: alias %q resolves to %s (%s), skipping update (archived)", source, alias, existingID, existing.Type)
 			return existing, false, nil
 		}
 		if existing.Title == title && existing.Body == body && existing.Status == status && existing.Tier == tier {
@@ -279,7 +280,7 @@ func (p *Pipeline) jiraEpisodeNode(alias, title, body, status, tier string) (n N
 			Body:    body,
 		}, true, nil
 	default:
-		return Node{}, false, fmt.Errorf("memory: jira ingest: alias lookup %q: %w", alias, lerr)
+		return Node{}, false, fmt.Errorf("memory: %s ingest: alias lookup %q: %w", source, alias, lerr)
 	}
 }
 
