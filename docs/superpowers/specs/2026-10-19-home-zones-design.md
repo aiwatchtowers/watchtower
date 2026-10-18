@@ -278,8 +278,18 @@ requires: feature:ideas
 | `requires` | no | `feature:<id>` or `source:<name>`: while missing, the button becomes Turn on / Connect and the card sorts after the ones the owner can do now |
 | `replaces` | no | ids of older cards this one supersedes (a feature that changed); see 9.7 |
 
-**Read more** (on every card) opens the card's guide section in the ⌘/
-help popup — the same guide, no browser.
+**Read more** (on every card) opens the card's guide section in the
+browser through `GuideLinks` — the same way every guide link in the app
+works today (my call; the ⌘/ popup is a chat, not a page viewer). A
+second link, **Ask about this**, opens the ⌘/ popup with "How do I use
+<title>?" in the composer.
+
+**Cards are not guide text** (my call): `guide.parse` strips every
+`<!-- learn … -->` block from `Section.Text`, so the knowledge index, the
+chat's guide search and `TestFeaturePagesUnder8KB` never see them (the
+8 KB limit is about what a person or the model reads; cards are metadata).
+Stripping changes the guide's content hash, so every install reindexes
+the guide once after the update that ships it.
 
 The starter set: one pass over the guide writes cards for its feature and
 concept sections — about 150–200 (the feature pages alone have about 220
@@ -344,15 +354,20 @@ level and kind; seen cards stay listed, dimmed, with **Show again**.
 
 Owner, ask #417: new items arrive with the release.
 
-- An author writes `since: next` on a new card. The `/release` skill's
-  guide step replaces every `since: next` with the version being tagged
-  before the tag, and fails the release if a card is invalid.
-- The same step lists every `##` section under `docs/guide/features/` that
-  was added since the last tag without a card under it, and asks the
-  releaser to add one or mark the section `<!-- learn: none -->`. A
-  release with an unanswered section does not tag.
-- The Desktop remembers the app version it last ran (`learn.lastVersion`,
-  per install, `UserDefaults`, my call). On the first launch after an
+- An author writes `since: next` on a new card. The `/release` command's
+  guide step (Step 3) replaces every `since: next` with the version being
+  tagged, in the release commit before the tag. That replacement is
+  mechanical and always runs.
+- An invalid card fails the `internal/learn` Go test, so CI stops it
+  before any release.
+- The same step lists the `##` sections under `docs/guide/features/` added
+  since the last tag that have no card and no `<!-- learn: none -->`, as a
+  **warning** in the release report (my call): Step 3 never blocks a
+  release today, and a renamed heading would look new.
+- The Desktop remembers the app version it last ran per workspace
+  (`learn.lastVersion.<workspace>`, `UserDefaults`, my call — the seen
+  state lives in the workspace's database, so the version follows the
+  same scope). On the first launch after an
   update, cards with `since` newer than it are **new**; they keep the
   badge for 14 days or until seen. A fresh install has no "new": every
   card is simply unseen (`since` older than or equal to the install's
@@ -377,6 +392,16 @@ feature already in use.
   `iphone.paired`, `dictation.used`, `dayplan.opened`, `ideas.opened`,
   `automation.created`; more are added with the cards that need them. A
   card whose signal is true is recorded `in_use` and never shown.
+- Each signal reads what already exists (my call): a table row (most), a
+  feature or source state the app already holds (`calendar.connected`,
+  `jira.connected`, `memory.on` from `FeatureVisibility` / the accounts
+  tables), the mobile hub's paired state (`iphone.paired`, read from
+  `MobileHubService` in the app, not SQLite). Where nothing records use
+  today (`dictation.used`, `dayplan.opened`, `ideas.opened`), #718 adds a
+  per-install flag set by the feature's own code on real use (a finished
+  dictation, the tab opened with content) — never by a click on the card.
+  A signal with no source yet is not in the vocabulary; its cards close
+  with Got it or the button only.
 - An id that no longer exists in the guide is ignored (its row stays).
 
 ### 9.7 A new card can replace an old one
