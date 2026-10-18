@@ -340,7 +340,9 @@ func ledgerKey(channelID, ts, emoji string) string {
 // resolveTool returns the registered tool a candidate's emoji maps to, or
 // ok=false with the detail of the terminal `skipped` outcome to record — every
 // check is free (no AI call, no side effect). A tool the reaction surface does
-// not list is refused here, before the compose call, as Propose would.
+// not list is refused here, before the compose call, as Propose would. An
+// issue tool is then routed to the tracker the channel's keys belong to
+// (routeIssue), which reads the DB but spends no AI call.
 func (p *Pipeline) resolveTool(c candidate) (tool *tools.Tool, detail string, ok bool) {
 	if c.Mapping.Kind != "builtin_tool" || c.Mapping.Tool == "" {
 		return nil, "emoji maps to no built-in tool", false
@@ -352,6 +354,9 @@ func (p *Pipeline) resolveTool(c candidate) (tool *tools.Tool, detail string, ok
 	if !tool.VisibleOn(reactionSurface) {
 		return nil, tool.Name + " is not available on the reaction surface", false
 	}
+	if isIssueTool(tool.Name) {
+		tool = p.routeIssue(c, tool)
+	}
 	return tool, "", true
 }
 
@@ -362,10 +367,10 @@ func (p *Pipeline) resolveTool(c candidate) (tool *tools.Tool, detail string, ok
 // the next poll retries instead of burning it), stepStrand one whose outcome
 // is unknown.
 func (p *Pipeline) dispatch(ctx context.Context, c candidate, tool *tools.Tool) (status string, actionID int64, detail string, step ledgerStep) {
-	args, transient, err := p.compose(ctx, c)
+	args, transient, err := p.compose(ctx, c, tool.Name)
 	if err != nil {
 		if transient {
-			p.logf("reaction-commands: transient compose failure for :%s: (%s), will retry: %v", c.Emoji, c.Mapping.Tool, err)
+			p.logf("reaction-commands: transient compose failure for :%s: (%s), will retry: %v", c.Emoji, tool.Name, err)
 			return "", 0, "", stepRelease
 		}
 		return "failed", 0, "compose: " + err.Error(), stepFinalize
@@ -373,8 +378,8 @@ func (p *Pipeline) dispatch(ctx context.Context, c candidate, tool *tools.Tool) 
 	// Surface "reaction" keeps these proposals out of any chat conversation;
 	// the External-never-auto-execute rule (AGENT-03) and trust per tool and
 	// surface are
-	// enforced inside Propose, so a create_jira_issue reaction always lands as
-	// a pending proposal even if create_target is execute-trusted.
+	// enforced inside Propose, so a create_jira_issue or create_linear_issue
+	// reaction always lands as a pending proposal even if create_target is execute-trusted.
 	binding := tools.Binding{
 		Surface:     reactionSurface,
 		ContextType: "reaction",
@@ -426,15 +431,9 @@ func (p *Pipeline) afterProposeError(c candidate, toolName, contextID string, fl
 // argument JSON. transient=true means the generator itself failed (provider
 // down / timeout) and the caller should retry later rather than record a
 // terminal failure; a reply that arrived but carried no JSON is terminal.
-func (p *Pipeline) compose(ctx context.Context, c candidate) (args json.RawMessage, transient bool, err error) {
+func (p *Pipeline) compose(ctx context.Context, c candidate, toolName string) (args json.RawMessage, transient bool, err error) {
 	system, _ := p.getPrompt(prompts.ReactionCommand)
-	var jiraProjects []string
-	if c.Mapping.Tool == "create_jira_issue" {
-		if jiraProjects, err = p.db.ListSyncedJiraProjectKeys(); err != nil {
-			p.logf("reaction-commands: listing jira projects (composing without them): %v", err)
-			jiraProjects = nil
-		}
-	}
+	choices := p.issueChoices(toolName)
 	var threadLines []string
 	if c.ThreadTS != "" {
 		threadLines = p.threadContext(c)
@@ -445,7 +444,7 @@ func (p *Pipeline) compose(ctx context.Context, c candidate) (args json.RawMessa
 	now := time.Now()
 	today := now.Format("2006-01-02")
 	ownerNow := now.Format("2006-01-02T15:04:05-07:00 (MST)")
-	userMsg := buildComposeUserMessage(c, argGuide(c.Mapping.Tool), threadLines, jiraProjects, today, ownerNow, prompts.Directive(p.language()))
+	userMsg := buildComposeUserMessage(toolName, c, argGuide(toolName), threadLines, choices, today, ownerNow, prompts.Directive(p.language()))
 
 	reply, _, _, err := p.generator.Generate(digest.WithSource(ctx, prompts.ReactionCommand), system, userMsg, "")
 	if err != nil {
@@ -456,6 +455,30 @@ func (p *Pipeline) compose(ctx context.Context, c candidate) (args json.RawMessa
 		return nil, false, fmt.Errorf("no JSON object in reply: %w", err)
 	}
 	return json.RawMessage(obj), false, nil
+}
+
+// issueChoices lists the projects (Jira) or teams (Linear) an issue tool may
+// file into, for grounding; nil for any other tool. Best-effort: a read
+// error composes without the list.
+func (p *Pipeline) issueChoices(toolName string) []string {
+	switch toolName {
+	case toolJiraIssue:
+		keys, err := p.db.ListSyncedJiraProjectKeys()
+		if err != nil {
+			p.logf("reaction-commands: listing jira projects (composing without them): %v", err)
+			return nil
+		}
+		return keys
+	case toolLinearIssue:
+		teams, err := p.db.ListReactionLinearTeams()
+		if err != nil {
+			p.logf("reaction-commands: listing linear teams (composing without them): %v", err)
+			return nil
+		}
+		return formatLinearTeams(teams)
+	default:
+		return nil
+	}
 }
 
 // threadContext returns a few surrounding thread messages for grounding.

@@ -23,6 +23,15 @@ func argGuide(tool string) string {
 - "summary" (required): the issue title, at most 255 characters.
 - "description" (optional): plain-text body summarising the message and any thread context.
 - "reason" (required): one sentence for the owner.`
+	case "create_linear_issue":
+		return `Arguments:
+- "team" (required): a team key from the "Available Linear teams" list below — pick the best fit; if none fits, use the first.
+- "account_id" (only when the chosen team's entry names one): that number.
+- "title" (required): the issue title.
+- "description" (optional): markdown body summarising the message and any thread context.
+- "priority" (optional): "urgent" | "high" | "medium" | "low", only when the message makes it clear.
+- "reason" (required): one sentence for the owner.
+Set no other field.`
 	case "create_track":
 		return `Arguments:
 - "text" (required): what to watch, at most 200 characters.
@@ -49,13 +58,15 @@ func argGuide(tool string) string {
 
 // buildComposeUserMessage assembles the user message for the reactioncmd.command
 // prompt: which action to build, its argument guide, the reacted message and
-// any thread context, and grounding facts (Jira projects, today's date).
+// any thread context, and grounding facts (the issue tool's Jira projects or
+// Linear teams, today's date). tool is the routed tool, which for an issue
+// reaction may differ from the dictionary's (routeIssue).
 // ownerNow is the owner's wall-clock time with its offset and zone name, so
 // a relative time ("tomorrow 09:00") can be expressed deterministically;
 // empty omits the line.
-func buildComposeUserMessage(c candidate, guide string, threadLines, jiraProjects []string, today, ownerNow, langDirective string) string {
+func buildComposeUserMessage(tool string, c candidate, guide string, threadLines, issueChoices []string, today, ownerNow, langDirective string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Action to build: %s\n\n%s\n\n", c.Mapping.Tool, guide)
+	fmt.Fprintf(&b, "Action to build: %s\n\n%s\n\n", tool, guide)
 
 	b.WriteString("The owner reacted to this Slack message:\n")
 	if c.AuthorID != "" {
@@ -70,11 +81,18 @@ func buildComposeUserMessage(c candidate, guide string, threadLines, jiraProject
 		}
 	}
 
-	if c.Mapping.Tool == "create_jira_issue" {
-		if len(jiraProjects) > 0 {
-			fmt.Fprintf(&b, "\nAvailable Jira projects: %s\n", strings.Join(jiraProjects, ", "))
+	switch tool {
+	case toolJiraIssue:
+		if len(issueChoices) > 0 {
+			fmt.Fprintf(&b, "\nAvailable Jira projects: %s\n", strings.Join(issueChoices, ", "))
 		} else {
 			b.WriteString("\nAvailable Jira projects: (none synced — use your best guess for project_key)\n")
+		}
+	case toolLinearIssue:
+		if len(issueChoices) > 0 {
+			fmt.Fprintf(&b, "\nAvailable Linear teams: %s\n", strings.Join(issueChoices, ", "))
+		} else {
+			b.WriteString("\nAvailable Linear teams: (none selected — use your best guess for team)\n")
 		}
 	}
 
