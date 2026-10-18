@@ -583,19 +583,7 @@ func (p Policy) docsWriteStaysInOwnDoc(tool string, input json.RawMessage) bool 
 	rawRef, hasRef := in["ref"]
 	switch {
 	case hasContainer:
-		container, err := parseObject(rawContainer)
-		if err != nil || container.caseVariant("kind", "id", "create") {
-			return false
-		}
-		_, hasID := container["id"]
-		if create, ok := container["create"]; ok && !hasID {
-			if tool != "batch" || isNull(create) {
-				return false
-			}
-		} else if !p.ownDocRef(container, "kind") {
-			return false
-		}
-		if hasRef && !p.refRule(rawRef, false) {
+		if !p.containerIsOwnDoc(tool, rawContainer) || hasRef && !p.refRule(rawRef, false) {
 			return false
 		}
 	case hasRef:
@@ -609,6 +597,20 @@ func (p Policy) docsWriteStaysInOwnDoc(tool string, input json.RawMessage) bool 
 		return false
 	}
 	return p.batchMembersStayInOwnDoc(in) && p.nestedRefsOK(in)
+}
+
+// containerIsOwnDoc reports whether a Docs call's container is a doc this
+// session created, or — for a batch only — the doc the call itself creates.
+func (p Policy) containerIsOwnDoc(tool string, raw json.RawMessage) bool {
+	container, err := parseObject(raw)
+	if err != nil || container.caseVariant("kind", "id", "create") {
+		return false
+	}
+	_, hasID := container["id"]
+	if create, ok := container["create"]; ok && !hasID {
+		return tool == "batch" && !isNull(create)
+	}
+	return p.ownDocRef(container, "kind")
 }
 
 // ownDocRef reports whether obj names an own doc: obj[kindKey] is "project"

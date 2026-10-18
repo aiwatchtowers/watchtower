@@ -268,6 +268,23 @@ func prepareApply(database *db.DB, id int64) (string, error) {
 	return "", nil
 }
 
+// decideOrExplain moves the row from one of from to to; a row in another
+// state is an error naming its status.
+func decideOrExplain(reg *tools.Registry, database *db.DB, id int64, from []string, to string) error {
+	ok, err := decide(reg, database, id, from, to)
+	if err != nil || ok {
+		return err
+	}
+	row, err := database.GetAgentAction(id)
+	if err != nil {
+		return err
+	}
+	if row == nil {
+		return fmt.Errorf("no action #%d", id)
+	}
+	return fmt.Errorf("action #%d is %s, cannot %s it", id, row.Status, decisionVerb(to))
+}
+
 // decideAndMaybeApply is approve/reject/apply's shared core. The status
 // change is the persisted outcome (exit 0 once it landed); execution is
 // reported separately through applied_ok/error — the recap_ok precedent —
@@ -292,19 +309,8 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 	env := actionEnvelope{OK: true}
 	switch {
 	case to != "":
-		ok, err := decide(reg, database, id, from, to)
-		if err != nil {
+		if err := decideOrExplain(reg, database, id, from, to); err != nil {
 			return err
-		}
-		if !ok {
-			row, err := database.GetAgentAction(id)
-			if err != nil {
-				return err
-			}
-			if row == nil {
-				return fmt.Errorf("no action #%d", id)
-			}
-			return fmt.Errorf("action #%d is %s, cannot %s it", id, row.Status, decisionVerb(to))
 		}
 	case execute:
 		if env.Warning, err = prepareApply(database, id); err != nil {
