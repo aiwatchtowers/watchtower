@@ -3,7 +3,8 @@ import WatchtowerCore
 
 /// The dialog of an agent session as a chat (`.sessionChat`): the owner
 /// right in a tinted bubble, the agent left without one, Watchtower's own
-/// lines marked "via Watchtower", subagents as cards opening a sheet.
+/// lines marked "via Watchtower", subagents as cards opening in place (the
+/// path bar leads back).
 struct SessionChatView: View {
     @Environment(AppState.self) private var appState
     let vm: WorkbenchesViewModel
@@ -11,7 +12,9 @@ struct SessionChatView: View {
     let projectID: Int64
 
     @StateObject private var store: SessionFeedStore
-    @State private var openedSubagent: SessionFeedEntry?
+    /// The subagents opened in place; empty = the main feed.
+    @State private var path = SessionChatPath()
+    @FocusState private var subagentFocused: Bool
     /// Per pane, never shared across sessions: parsed text per entry, the
     /// built slice of a long chat, and which events show their body.
     @State private var markdown = SessionFeedMarkdownCache()
@@ -46,25 +49,120 @@ struct SessionChatView: View {
         VStack(spacing: 0) {
             if store.runnerMissing {
                 errorBar(WorkbenchesViewModel.cliMissingMessage, retry: false)
-            } else if let error = store.error {
+            } else if path.isRoot, let error = store.error {
                 errorBar(error, retry: true)
             }
-            if store.entries.isEmpty {
+            if let subagent = path.stack.last {
+                subagentScreen(subagent)
+            } else if store.entries.isEmpty {
                 emptyState
             } else {
                 feed
             }
         }
-        .task(id: stateKind) {
+        // The main feed is polled only while it is on screen: an open
+        // subagent stops it, and back at the root it is read once.
+        .task(id: MainFollowKey(state: stateKind, root: path.isRoot)) {
+            guard path.isRoot else { return }
             await store.follow(isActive: { isActive }, isOnScreen: { vm.isTabOnScreen() })
         }
         // The app's visibility hub (#731): back on screen after a skipped
         // read, the feed is read at once. Bound to the pane's lifetime.
         .task(id: appState.uiVisibility.isOnScreen) {
+            guard path.isRoot else { return }
             await store.screenChanged(appState.uiVisibility.isOnScreen)
         }
-        .sheet(item: $openedSubagent) { entry in
-            SessionChatSubagentSheet(store: store, entry: entry)
+        .onChange(of: sessionID) { path = SessionChatPath() }
+    }
+
+    private struct MainFollowKey: Hashable {
+        let state: SessionSwitcherPresentation.State.Kind?
+        let root: Bool
+    }
+
+    /// Back on screen or a new session state: the open subagent is read again.
+    private struct SubagentFollowKey: Hashable {
+        let state: SessionSwitcherPresentation.State.Kind?
+        let onScreen: Bool
+    }
+
+    /// One subagent in place of the feed: the path bar, its run, and the
+    /// read-only line where the composer would be.
+    private func subagentScreen(_ subagent: SessionFeedSubagent) -> some View {
+        VStack(spacing: 0) {
+            pathBar(subagent)
+            Divider()
+            SessionChatSubagentView(
+                store: store,
+                subagent: subagent,
+                isActive: { isActive },
+                isOnScreen: { vm.isTabOnScreen() },
+                onOpenSubagent: { path.push($0) },
+                followKey: SubagentFollowKey(state: stateKind, onScreen: appState.uiVisibility.isOnScreen)
+            )
+            .id(path.stack.map(\.toolUseID))
+            Divider()
+            Text("Subagents are read-only. Write to the agent in the main Workchat.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(10)
+        }
+        // Esc pops one level while the pane has focus; it takes focus when
+        // a subagent opens, so Esc works without another click.
+        .focusable()
+        .focusEffectDisabled()
+        .focused($subagentFocused)
+        .onKeyPress(.escape) {
+            path.pop()
+            return .handled
+        }
+        .onAppear { subagentFocused = true }
+    }
+
+    /// **‹ Back**, then `Workchat › type › …`: each part opens its level.
+    private func pathBar(_ subagent: SessionFeedSubagent) -> some View {
+        HStack(spacing: 6) {
+            Button("‹ Back") { path.pop() }
+                .keyboardShortcut("[", modifiers: .command)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    Button("Workchat") { path.popTo(level: 0) }
+                        .buttonStyle(.link)
+                    ForEach(Array(path.stack.enumerated()), id: \.offset) { index, item in
+                        Text("›").foregroundStyle(.tertiary)
+                        let title = Self.title(item)
+                        if index == path.stack.count - 1 {
+                            Text(title).fontWeight(.semibold)
+                        } else {
+                            Button(title) { path.popTo(level: index + 1) }
+                                .buttonStyle(.link)
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: 4)
+            if let status = statusLabel(subagent) {
+                Text(status).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .font(.callout)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+    }
+
+    private static func title(_ subagent: SessionFeedSubagent) -> String {
+        subagent.type.isEmpty ? "Subagent" : subagent.type
+    }
+
+    /// The marker's status as it was when the subagent opened. "Running"
+    /// only while the session is active: the main feed, which would update
+    /// the marker, is not read while a subagent is open.
+    private func statusLabel(_ subagent: SessionFeedSubagent) -> String? {
+        switch subagent.status {
+        case "running": isActive ? "Running" : nil
+        case "finished": "Finished"
+        default: nil
         }
     }
 
@@ -80,6 +178,7 @@ struct SessionChatView: View {
                                 .onAppear {
                                     loadingRowVisible = true
                                     loadEarlier(proxy: proxy)
+                                    fillIfShort(follow.tracker.lastMetrics)
                                 }
                                 .onDisappear { loadingRowVisible = false }
                         }
@@ -119,7 +218,7 @@ struct SessionChatView: View {
     private func row(_ entry: SessionFeedEntry) -> some View {
         SessionChatRow(entry: entry, blocks: markdown.blocks(for: entry),
                        expanded: expandedEvents.contains(entry.id),
-                       onOpenSubagent: { openedSubagent = entry },
+                       onOpenSubagent: { entry.subagent.map { path.push($0) } },
                        onToggle: { toggleEvent(entry.id) })
             .equatable()
     }
@@ -159,6 +258,18 @@ struct SessionChatView: View {
             if !following && loadingRowVisible { loadEarlier(proxy: proxy) }
         }
         if pull { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+        fillIfShort(current)
+    }
+
+    /// Content shorter than the viewport keeps the loading row on screen, so
+    /// its `onAppear` never fires again: grow from the measure path instead.
+    /// Nothing scrolls, so no anchor is kept.
+    private func fillIfShort(_ metrics: ChatAutoScrollPolicy.Metrics?) {
+        guard let metrics,
+              window.needsFill(total: store.entries.count, contentHeight: Double(metrics.contentHeight),
+                               viewportHeight: Double(metrics.viewportHeight))
+        else { return }
+        _ = window.grow(entries: store.entries)
     }
 
     @ViewBuilder

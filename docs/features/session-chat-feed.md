@@ -12,7 +12,7 @@ A workbench session's transcript holds hundreds of tool calls; the owner wants t
 | Ledger | migration `00127_*` `terminal_session_agent_sessions`, `internal/db/terminal_session_agent_sessions.go` (`ListTerminalAgentSessions`) |
 | CLI | `watchtower workbench session-feed --session N [--after C] [--subagent TOOL_USE_ID] [--json]` (`cmd/workbench_session_feed.go`) |
 | Desktop model/store/poller | `WatchtowerCore` `Models/SessionFeed.swift`, `Services/SessionFeedStore.swift`, `Services/SessionFeedPoller.swift` |
-| Desktop views | `Views/Workbench/SessionChatView.swift`, `SessionChatSubagentSheet.swift` |
+| Desktop views | `Views/Workbench/SessionChatView.swift`, `SessionChatSubagentView.swift`, `SessionChatRow.swift` |
 
 The Desktop runs the CLI with `--json` and decodes it; there is no Swift twin of the filter rules (the Go reader is the only parser).
 
@@ -35,7 +35,7 @@ The cursor is `<agent session id>:<byte offset after the last complete line>`. `
 
 ## Subagents
 
-`--subagent T` prints the feed of the subagent started by tool call `T`, read whole (empty cursor): its task as the first entry, its text replies, then the final report. A foreground subagent's report is the parent's `tool_result` for the `Agent` call; a background one reports through its `SubagentHandback` call (text in `input.message`). A background subagent without a hand-back has no report (the parent's result is only a launch notice). Nested subagents open the same way: the Desktop shows the feed in a sheet, and a nested marker inside it opens a further sheet.
+`--subagent T` prints the feed of the subagent started by tool call `T`, read whole (empty cursor): its task as the first entry, its text replies, then the final report. A foreground subagent's report is the parent's `tool_result` for the `Agent` call; a background one reports through its `SubagentHandback` call (text in `input.message`). A background subagent without a hand-back has no report (the parent's result is only a launch notice). Nested subagents open the same way: the Desktop opens the feed in place in the pane (`SessionChatPath`), and a nested marker inside it opens one level deeper.
 
 ## The ledger (migration 00127)
 
@@ -50,7 +50,7 @@ Locating transcripts: `LocateAll` lists the workbench's candidate directories (`
 
 ## Entry points in the app
 
-Session row context menu **Show Chat**; the session header **Chat** toggle; the pane picker **Chat**. The pane opens scrolled to the newest message, reads the feed once when shown or when the session's state changes and every 3 s while the agent works or has background subagents (`SessionFeedStore.follow`; `SessionFeedPoller` serializes polls: a refresh asked during a run folds into exactly one more run). Any of these reads — the one on open, the one on a state change, each 3 s tick — is skipped while the main window is hidden, minimised or covered (`isTabOnScreen`), so a pane nobody sees spawns no CLI; when the app's windows come back on screen (`AppState.uiVisibility`, #731) after a skipped read, the feed is read at once (`SessionFeedStore.screenChanged`, `ForegroundRefreshGate`, board #589). The store and its CLI lookup are built once per pane, not on each render. It shows `watchtower` entries as the owner's bubble marked "via Watchtower".
+Session row context menu **Show Chat**; the session header **Chat** toggle; the pane picker **Chat**. The pane opens scrolled to the newest message, reads the feed once when shown or when the session's state changes and every 3 s while the agent works or has background subagents (`SessionFeedStore.follow`; `SessionFeedPoller` serializes polls: a refresh asked during a run folds into exactly one more run). Any of these reads — the one on open, the one on a state change, each 3 s tick — is skipped while the main window is hidden, minimised or covered (`isTabOnScreen`), so a pane nobody sees spawns no CLI; when the app's windows come back on screen (`AppState.uiVisibility`, #731) after a skipped read, the feed is read at once (`SessionFeedStore.screenChanged`, `ForegroundRefreshGate`, board #589). The store and its CLI lookup are built once per pane, not on each render. It shows `watchtower` entries as the owner's bubble marked "via Watchtower". A subagent card opens the subagent in place (#711): the pane keeps a `SessionChatPath`, the bar shows **‹ Back** (also Esc and ⌘[) and `Workchat › <type> › …` with each part popping to its level, the subagent's feed keeps the **Task**/**Report** headings, and the read-only line "Subagents are read-only. Write to the agent in the main Workchat." stands where the composer would be. While a subagent is open the main feed is not polled (its `follow` runs only at the root, and **‹ Back** reads it once); the subagent is read on open and again every 3 s while its marker says `running` and the session is active (`SessionFeedStore.followSubagent`, skipped off screen). Every CLI read of the store, main or subagent, waits for the one before it, so the pane runs at most one CLI process. The path resets with the pane.
 
 ## v1 limits
 

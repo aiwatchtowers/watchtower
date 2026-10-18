@@ -20,6 +20,9 @@ package final class SessionFeedStore: ObservableObject {
     private var cursor = ""
     private var index: [String: Int] = [:]
     private var screenGate = ForegroundRefreshGate()
+    /// The last CLI read started; the next one waits for it, so the pane
+    /// never runs two CLI processes at once (main feed and subagent alike).
+    private var lastRead: Task<Void, Never>?
 
     /// `runner` nil: the CLI binary is missing (`runnerMissing`).
     package init(sessionID: Int64, runner: CLIRunnerProtocol?) {
@@ -64,7 +67,7 @@ package final class SessionFeedStore: ObservableObject {
         var args = ["workbench", "session-feed", "--session", String(sessionID), "--json"]
         if !cursor.isEmpty { args += ["--after", cursor] }
         do {
-            let payload = try Self.decode(try await runner.run(args: args))
+            let payload = try Self.decode(try await read(args))
             merge(payload.entries)
             merge(payload.subagents)
             cursor = payload.cursor
@@ -74,12 +77,58 @@ package final class SessionFeedStore: ObservableObject {
         }
     }
 
+    /// A subagent opened in the pane: one read now, then while `isRunning`
+    /// (its marker says `running`) one more every `interval`. Reads due while
+    /// `isOnScreen` is false are skipped. Each good read hands its entries to
+    /// `onEntries` and clears the error; a failed one reports it to
+    /// `onError`. Returns when finished or cancelled.
+    package func followSubagent(
+        _ toolUseID: String,
+        interval: Duration = .seconds(3),
+        isRunning: () -> Bool,
+        isOnScreen: () -> Bool,
+        onEntries: ([SessionFeedEntry]) -> Void,
+        onError: (String?) -> Void = { _ in }
+    ) async {
+        guard !runnerMissing else { return }
+        func tick() async {
+            guard isOnScreen() else { return }
+            do {
+                let entries = try await subagentFeed(toolUseID)
+                if Task.isCancelled { return }
+                onEntries(entries)
+                onError(nil)
+            } catch {
+                if !Task.isCancelled { onError(error.localizedDescription) }
+            }
+        }
+        await tick()
+        while isRunning() {
+            try? await Task.sleep(for: interval)
+            if Task.isCancelled { return }
+            await tick()
+        }
+    }
+
     /// The feed of one subagent run; not merged into the main feed.
     package func subagentFeed(_ toolUseID: String) async throws -> [SessionFeedEntry] {
-        let data = try await runner.run(args: [
+        let data = try await read([
             "workbench", "session-feed", "--session", String(sessionID), "--subagent", toolUseID, "--json"
         ])
         return try Self.decode(data).entries.filter { SessionFeedEntry.knownKinds.contains($0.kind) }
+    }
+
+    /// Runs one CLI read after the one before it has finished. The read
+    /// lives in its own task, so a cancelled caller never overlaps the next.
+    private func read(_ args: [String]) async throws -> Data {
+        let previous = lastRead
+        let runner = runner
+        let task = Task { @MainActor () throws -> Data in
+            await previous?.value
+            return try await runner.run(args: args)
+        }
+        lastRead = Task { _ = try? await task.value }
+        return try await task.value
     }
 
     private static func decode(_ data: Data) throws -> SessionFeedPayload {

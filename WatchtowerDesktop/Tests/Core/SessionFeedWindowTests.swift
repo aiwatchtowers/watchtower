@@ -43,4 +43,26 @@ final class SessionFeedWindowTests: XCTestCase {
         w.setFollowing(false, total: 700)
         XCTAssertEqual(w.range(total: 705).lowerBound, 580)
     }
+
+    /// The loading row stays on screen when the content does not fill the
+    /// viewport: `onAppear` never fires again, so the measure path grows it.
+    func testShortContentNeedsFill() {
+        let w = SessionFeedWindow()
+        XCTAssertTrue(w.needsFill(total: 200, contentHeight: 300, viewportHeight: 600))
+        XCTAssertFalse(w.needsFill(total: 200, contentHeight: 900, viewportHeight: 600), "content fills the viewport")
+        XCTAssertFalse(w.needsFill(total: 50, contentHeight: 300, viewportHeight: 600), "nothing earlier to show")
+        XCTAssertFalse(w.needsFill(total: 200, contentHeight: 300, viewportHeight: 0), "not laid out yet")
+    }
+
+    func testFillGrowsUntilStartOrFull() {
+        var w = SessionFeedWindow()
+        let all = entries(300)
+        var rounds = 0
+        while w.needsFill(total: all.count, contentHeight: Double(w.range(total: all.count).count), viewportHeight: 1000) {
+            _ = w.grow(entries: all)
+            rounds += 1
+        }
+        XCTAssertEqual(rounds, 2)
+        XCTAssertFalse(w.hasEarlier(total: 300))
+    }
 }

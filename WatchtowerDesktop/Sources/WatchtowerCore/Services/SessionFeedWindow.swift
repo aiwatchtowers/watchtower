@@ -50,4 +50,11 @@ package struct SessionFeedWindow: Equatable, Sendable {
         }
         return anchor
     }
+
+    /// Earlier entries exist and the content is shorter than the viewport:
+    /// the loading row stays on screen, so its `onAppear` never fires again
+    /// and the measure path grows the window instead.
+    package func needsFill(total: Int, contentHeight: Double, viewportHeight: Double) -> Bool {
+        viewportHeight > 0 && contentHeight < viewportHeight && hasEarlier(total: total)
+    }
 }
