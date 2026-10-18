@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Home zones wireframe</title>
+<style>
+  :root { --bg:#111112; --box:#1b1b1d; --line:#333338; --text:#f2f2f7; --dim:#9a9aa2; --faint:#66666e; --accent:#0a84ff; --now:#ff9f0a; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#0b0b0c; color:var(--text); font:13px/1.45 -apple-system,BlinkMacSystemFont,"Helvetica Neue",sans-serif; }
+  .page { max-width:1180px; margin:0 auto; padding:28px 16px 60px; }
+  h1 { font-size:20px; margin:0 0 4px; } .lead { color:var(--dim); margin:0 0 20px; }
+  .win { background:var(--bg); border:1px solid var(--line); border-radius:12px; padding:20px 24px; }
+  .hd { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:16px; }
+  .hd b { font-size:22px; } .hd span { color:var(--dim); }
+  .cols { display:grid; grid-template-columns: 1.6fr 1fr; gap:16px; align-items:start; }
+  @media (max-width:860px){ .cols{ grid-template-columns:1fr; } }
+  .zone { border:1.5px dashed var(--line); border-radius:10px; padding:12px 14px; margin-bottom:16px; }
+  .zt { font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); margin-bottom:8px; display:flex; justify-content:space-between; }
+  .zt i { font-style:normal; color:var(--faint); text-transform:none; letter-spacing:0; font-weight:400; }
+  .it { display:grid; grid-template-columns:58px 70px 1fr; gap:8px; padding:6px 0; border-top:1px solid #232327; align-items:baseline; }
+  .it:first-of-type { border-top:0; }
+  .tm { color:var(--dim); font-variant-numeric:tabular-nums; }
+  .k { font-size:10px; font-weight:600; padding:1px 6px; border-radius:4px; background:#2a2a2e; color:var(--dim); text-align:center; }
+  .k.cal { background:rgba(10,132,255,.18); color:var(--accent); }
+  .now { display:flex; align-items:center; gap:8px; color:var(--now); font-size:11px; font-weight:700; margin:6px 0; }
+  .now::before, .now::after { content:""; flex:1; height:1px; background:var(--now); opacity:.6; }
+  .sub { color:var(--faint); font-size:11px; margin:10px 0 2px; text-transform:uppercase; letter-spacing:.05em; }
+  .links { display:flex; flex-wrap:wrap; gap:8px; }
+  .links span { border:1px solid var(--line); border-radius:6px; padding:4px 10px; color:var(--accent); }
+  .stats { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; color:var(--faint); }
+  .stats div b { display:block; color:var(--dim); font-size:15px; font-weight:600; }
+  .wb .row { padding:6px 0; border-top:1px solid #232327; } .wb .row:first-of-type{border-top:0}
+  .wb .row small { color:var(--faint); display:block; }
+  .learn { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .learn div { border:1px solid var(--line); border-radius:8px; padding:10px; color:var(--dim); min-height:56px; }
+  .q { background:#26231a; border:1px solid #4a4024; color:#e8d9a8; border-radius:8px; padding:10px 12px; margin-top:6px; font-size:12.5px; }
+</style>
+</head>
+<body><div class="page">
+<h1>Home: зоны (черновой каркас, #717)</h1>
+<p class="lead">Только расположение зон, без дизайна. Данные выдуманные. Жёлтым отмечены мои догадки и открытые вопросы.</p>
+<div class="win">
+  <div class="hd"><b>Home</b><span>Вторник, 20 октября</span></div>
+  <div class="cols">
+    <div>
+      <div class="zone">
+        <div class="zt">1. Лента: что меня ждёт и что дальше <i>инбокс + календарь</i></div>
+        <div class="sub">Ждут ответа</div>
+        <div class="it"><span class="tm">09:58</span><span class="k">DM</span><span>Коллега E: перенесём 1:1 на четверг?</span></div>
+        <div class="it"><span class="tm">09:20</span><span class="k">Mail</span><span>Vendor X: подтвердите число мест до пятницы</span></div>
+        <div class="it"><span class="tm">08:40</span><span class="k">Mention</span><span>#release: аппрувни хотфикс</span></div>
+        <div class="now">СЕЙЧАС 10:40</div>
+        <div class="it"><span class="tm">11:00</span><span class="k cal">Встреча</span><span>Payments review · prep готов</span></div>
+        <div class="it"><span class="tm">12:00</span><span class="k">Напомин.</span><span>Отправить драфт Q4 коллеге C</span></div>
+        <div class="it"><span class="tm">14:00</span><span class="k cal">Встреча</span><span>1:1 коллега E</span></div>
+        <div class="it"><span class="tm">18:00</span><span class="k">Дедлайн</span><span>Ответ по контракту</span></div>
+        <div class="sub">Завтра</div>
+        <div class="it"><span class="tm">09:30</span><span class="k cal">Встреча</span><span>Daily standup</span></div>
+        <div class="q">Догадка: всё, что ждёт ответа, идёт над линией «сейчас», а всё, что по времени впереди, под ней.</div>
+      </div>
+      <div class="zone">
+        <div class="zt">5. Учиться <i>#718, позже</i></div>
+        <div class="learn"><div>Фича A</div><div>Фича B</div><div>Новое в 0.22</div></div>
+      </div>
+    </div>
+    <div>
+      <div class="zone wb">
+        <div class="zt">2. Workbench <i>что идёт и что ждёт меня</i></div>
+        <div class="row">acme-app · 2 сессии работают<small>1 ask ждёт: ревью спеки</small></div>
+        <div class="row">acme-api · сессия закончила<small>готово к проверке</small></div>
+        <div class="q">Догадка: если в workbench ничего не идёт и ничего не ждёт, зону не показываем.</div>
+      </div>
+      <div class="zone">
+        <div class="zt">3. Ссылки</div>
+        <div class="links"><span>Брифинг</span><span>Catch-Up</span><span>Day plan</span><span>Дайджесты</span></div>
+      </div>
+      <div class="zone">
+        <div class="zt">4. Сегодня в цифрах <i>без акцента</i></div>
+        <div class="stats"><div><b>214</b>сообщений</div><div><b>3</b>встречи</div><div><b>5</b>отвечено</div><div><b>$1.20</b>AI</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+</div></body></html>
