@@ -24,10 +24,11 @@ enum AgentAnalyticsFormat {
         return "Subagents: \(String(format: "%.1f", subagents.avgParallel)) at once on average · peak \(subagents.peak)"
     }
 
-    /// "Loading history — 2,125 files so far" until the import is done; nil then.
-    static func importLine(_ importState: AgentImportState) -> String? {
+    /// "Loading history — 2,125 files so far" until the import is done; nil
+    /// then. The count follows `locale` (the owner's, like the pane's other numbers).
+    static func importLine(_ importState: AgentImportState, locale: Locale = .autoupdatingCurrent) -> String? {
         guard importState.state != "done" else { return nil }
-        let files = importState.filesStored.formatted(.number.locale(Locale(identifier: "en_US")))
+        let files = importState.filesStored.formatted(.number.locale(locale))
         return "Loading history — \(files) files so far"
     }
 

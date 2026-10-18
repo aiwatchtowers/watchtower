@@ -53,7 +53,7 @@ struct AgentAnalyticsOverviewView: View {
 
     private func content(_ overview: AgentReportOverview, staleError: String?) -> some View {
         VStack(alignment: .leading, spacing: 20) {
-            if let line = overview.importState.flatMap(AgentAnalyticsFormat.importLine) {
+            if let line = overview.importState.flatMap { AgentAnalyticsFormat.importLine($0) } {
                 Label(line, systemImage: "arrow.down.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)

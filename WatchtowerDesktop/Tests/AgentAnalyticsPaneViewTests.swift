@@ -53,6 +53,13 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         return try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
     }
 
+    /// The fixture with `import` replaced by `state`/`files`, or removed for nil.
+    private static func importOverview(state: String?, files: Int = 0) throws -> AgentReportOverview {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture("agent-report-overview")) as? [String: Any])
+        json["import"] = state.map { ["state": $0, "files_stored": files, "updated_at": "2026-10-18T17:00:00Z"] }
+        return try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+    }
+
     private func overviewView(
         _ state: AgentAnalyticsPaneState, period: AgentAnalyticsCenter.Period = .week, log: AnalyticsActionLog? = nil
     ) -> AgentAnalyticsOverviewView {
@@ -298,6 +305,35 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         XCTAssertEqual(overviewRuns(), 1, "back to the overview reruns nothing")
         XCTAssertTrue(center.isPolling)
         XCTAssertEqual(runner.invocations.filter { $0.contains("--session") }.count, 1)
+    }
+
+    // MARK: - History import (#849)
+
+    func testImportLine() throws {
+        func line(_ state: String, _ files: Int, _ locale: String = "en_US") throws -> String? {
+            let importState = try XCTUnwrap(Self.importOverview(state: state, files: files).importState)
+            return AgentAnalyticsFormat.importLine(importState, locale: Locale(identifier: locale))
+        }
+        XCTAssertNil(try line("done", 2125))
+        XCTAssertEqual(try line("loading", 2125), "Loading history — 2,125 files so far")
+        XCTAssertEqual(try line("not_started", 0), "Loading history — 0 files so far")
+        XCTAssertEqual(try line("loading", 2125, "de_DE"), "Loading history — 2.125 files so far")
+    }
+
+    /// The loading line sits above the overview until the import is done;
+    /// an older binary that sends no `import` shows none.
+    func testOverviewShowsTheLoadingLineUntilDone() throws {
+        func lines(_ overview: AgentReportOverview) throws -> [String] {
+            try texts(overviewView(.overview(overview, staleError: nil)))
+        }
+        XCTAssertTrue(try lines(Self.overview()).contains("Loading history — 2 files so far"))   // the Go fixture
+        XCTAssertTrue(try lines(Self.importOverview(state: "loading", files: 2125))
+            .contains("Loading history — \(2125.formatted()) files so far"))
+        XCTAssertTrue(try lines(Self.importOverview(state: "not_started")).contains("Loading history — 0 files so far"))
+        for state in ["done", nil] as [String?] {
+            let all = try lines(Self.importOverview(state: state, files: 2125))
+            XCTAssertFalse(all.contains { $0.hasPrefix("Loading history") }, "\(String(describing: state)): \(all)")
+        }
     }
 
     // MARK: - Colours

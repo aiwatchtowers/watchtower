@@ -35,6 +35,8 @@ final class AgentReportDecodingTests: XCTestCase {
         XCTAssertEqual(ov.sessions.map(\.oldFormat), [true, false])
         XCTAssertEqual(ov.sessions[1].prs, ["https://example.com/acme/app/pull/1"])
         XCTAssertEqual(ov.oldFormatSessions, 1)
+        XCTAssertEqual(ov.importState?.state, "loading")
+        XCTAssertEqual(ov.importState?.filesStored, 2)
     }
 
     /// The fixture with `import` set to `value`, or without the key for nil.
