@@ -58,14 +58,14 @@ final class ArtifactPanelModelTests: XCTestCase {
         XCTAssertEqual(model.displayed?.content, "final")
     }
 
-    func testEditSavesNewEditedVersion() throws {
+    func testEditSavesNewEditedVersion() async throws {
         try store("v1", message: m1)
         let model = ArtifactPanelModel(db: dbQueue, conversationID: conversationID, key: "q3")
         model.beginEdit()
         XCTAssertTrue(model.isEditing)
         XCTAssertEqual(model.editText, "v1")
         model.editText = "v1 edited"
-        model.saveEdit()
+        await model.saveEdit()
         XCTAssertFalse(model.isEditing)
         XCTAssertNil(model.errorMessage)
         XCTAssertEqual(model.versions.map(\.version), [1, 2])
@@ -73,24 +73,24 @@ final class ArtifactPanelModelTests: XCTestCase {
         XCTAssertEqual(model.displayed?.content, "v1 edited")
     }
 
-    func testUnchangedEditWritesNothingAndEditIsBlockedWhileWriting() throws {
+    func testUnchangedEditWritesNothingAndEditIsBlockedWhileWriting() async throws {
         try store("v1", message: m1)
         let model = ArtifactPanelModel(db: dbQueue, conversationID: conversationID, key: "q3")
         model.beginEdit()
-        model.saveEdit()
+        await model.saveEdit()
         XCTAssertEqual(model.versions.count, 1)
         model.applyStreaming([doc("streaming", complete: false)])
         model.beginEdit()
         XCTAssertFalse(model.isEditing)
     }
 
-    func testFailedSaveKeepsEditorOpen() throws {
+    func testFailedSaveKeepsEditorOpen() async throws {
         try store("v1", message: m1)
         let model = ArtifactPanelModel(db: dbQueue, conversationID: conversationID, key: "q3")
         model.beginEdit()
         model.editText = "changed"
-        try dbQueue.write { try $0.execute(sql: "DROP TABLE chat_artifacts") }
-        model.saveEdit()
+        try await dbQueue.write { try $0.execute(sql: "DROP TABLE chat_artifacts") }
+        await model.saveEdit()
         XCTAssertTrue(model.isEditing, "UI state is cleared only after the write succeeds")
         XCTAssertEqual(model.editText, "changed")
         XCTAssertNotNil(model.errorMessage)

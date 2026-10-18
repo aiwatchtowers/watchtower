@@ -15,7 +15,9 @@ import GRDB
 /// done/snooze are direct GRDB writes (Swift-owned, no daemon contention,
 /// the `inbox_feedback` dual-path precedent), so they need no CLI round trip;
 /// so are an output's Done/Dismiss, the only automation columns Swift writes
-/// (`read_at`/`dismissed_at`, spec §9.6).
+/// (`read_at`/`dismissed_at`, spec §9.6). They await the writer off the main
+/// thread (board #670): one write per card at a time, and the card leaves
+/// the strip only once its write landed.
 @MainActor
 @Observable
 package final class ActionStripViewModel {
@@ -32,6 +34,8 @@ package final class ActionStripViewModel {
     package var lastError: String?
 
     private let dbPool: DatabasePool
+    /// One write per card (board #670).
+    private let pendingWrites = PendingWrites()
     /// Exposed so a view can reuse its `inFlight`/card helpers if it ever
     /// needs to render one of these rows the way a chat surface does.
     package let actionFeed: AgentActionFeed
@@ -114,47 +118,62 @@ package final class ActionStripViewModel {
         }
     }
 
-    package func markReminderDone(_ id: Int64) {
-        lastError = nil
-        do {
-            try dbPool.write { try ReminderQueries.markDone($0, id: id) }
-            refresh()
-        } catch {
-            lastError = error.localizedDescription
-        }
+    /// A reminder's Done or Snooze is being written: its buttons wait.
+    package func isWriting(reminder id: Int64) -> Bool {
+        pendingWrites.isPending(CardKey.reminder(id))
     }
 
-    package func snoozeReminder(_ id: Int64, until: String) {
-        lastError = nil
-        do {
-            try dbPool.write { try ReminderQueries.snooze($0, id: id, until: until) }
-            refresh()
-        } catch {
+    /// An output's Done or Dismiss is being written: its buttons wait.
+    package func isWriting(output id: Int64) -> Bool {
+        pendingWrites.isPending(CardKey.output(id))
+    }
+
+    package func markReminderDone(_ id: Int64) async {
+        await write(.reminder(id)) { try ReminderQueries.markDone($0, id: id) }
+    }
+
+    package func snoozeReminder(_ id: Int64, until: String) async {
+        await write(.reminder(id), { try ReminderQueries.snooze($0, id: id, until: until) }, onFailure: { error in
             // A reminder deleted elsewhere leaves the strip; `refresh` clears
             // `lastError`, so the reason is set after it.
-            if error is RowNotFoundError { refresh() }
-            lastError = error.localizedDescription
-        }
+            if error is RowNotFoundError { self.refresh() }
+        })
     }
 
     /// Done on an output card: writes `read_at` only. The card leaves the
     /// strip only once the write landed; a failure keeps it and says why.
-    package func markOutputDone(_ id: Int64) {
-        writeOutput { try AutomationQueries.markOutputRead($0, id: id, now: Date()) }
+    package func markOutputDone(_ id: Int64) async {
+        let now = Date()
+        await write(.output(id)) { try AutomationQueries.markOutputRead($0, id: id, now: now) }
     }
 
     /// Dismiss on an output card: writes `dismissed_at` only.
-    package func dismissOutput(_ id: Int64) {
-        writeOutput { try AutomationQueries.dismissOutput($0, id: id, now: Date()) }
+    package func dismissOutput(_ id: Int64) async {
+        let now = Date()
+        await write(.output(id)) { try AutomationQueries.dismissOutput($0, id: id, now: now) }
     }
 
-    private func writeOutput(_ write: (Database) throws -> Void) {
-        lastError = nil
-        do {
-            try dbPool.write(write)
-            refresh()
-        } catch {
-            lastError = error.localizedDescription
+    private enum CardKey: Hashable {
+        case reminder(Int64)
+        case output(Int64)
+    }
+
+    /// One write per card: a second press while it waits does nothing.
+    private func write(
+        _ key: CardKey,
+        _ change: @escaping @Sendable (Database) throws -> Void,
+        onFailure: (Error) -> Void = { _ in }
+    ) async {
+        let pool = dbPool
+        await pendingWrites.run(key) {
+            lastError = nil
+            do {
+                try await pool.write(change)
+                refresh()
+            } catch {
+                onFailure(error)
+                lastError = error.localizedDescription
+            }
         }
     }
 

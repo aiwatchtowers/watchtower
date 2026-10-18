@@ -68,7 +68,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
         vm.refresh()
 
-        vm.markOutputDone(id)
+        await vm.markOutputDone(id)
 
         let fetched = try outputRow(pool, id)
         let after = try XCTUnwrap(fetched)
@@ -92,7 +92,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
         vm.refresh()
 
-        vm.dismissOutput(id)
+        await vm.dismissOutput(id)
 
         let fetched = try outputRow(pool, id)
         let after = try XCTUnwrap(fetched)
@@ -121,11 +121,11 @@ final class ActionStripAutomationOutputTests: XCTestCase {
                 """)
         }
 
-        vm.markOutputDone(id)
+        await vm.markOutputDone(id)
         XCTAssertEqual(vm.outputRows.map(\.id), [id])
         XCTAssertNotNil(vm.lastError)
 
-        vm.dismissOutput(id)
+        await vm.dismissOutput(id)
         XCTAssertEqual(vm.outputRows.map(\.id), [id])
         XCTAssertNotNil(vm.lastError)
     }

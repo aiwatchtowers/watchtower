@@ -296,6 +296,7 @@ final class TargetAssistantViewModelTests: XCTestCase {
         let chat = try XCTUnwrap(assistant.activeChat)
         chat.inputText = "what is left here?"
         chat.send()
+        await chat.engine.started()
 
         activity = try await manager.dbPool.read { db in
             try ChatConversationQueries.latestTurnActivity(db, type: "target", id: String(target.id))

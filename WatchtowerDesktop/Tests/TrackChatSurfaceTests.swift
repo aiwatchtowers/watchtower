@@ -28,11 +28,12 @@ final class TrackChatSurfaceTests: XCTestCase {
         })
     }
 
-    func testTheTrackKeepsOneConversation() throws {
+    func testTheTrackKeepsOneConversation() async throws {
         let track = try makeTrack()
-        let first = try TrackChatSurface.conversationID(for: track, dbPool: dbManager.dbPool)
-        XCTAssertEqual(try TrackChatSurface.conversationID(for: track, dbPool: dbManager.dbPool), first)
-        let conv = try dbManager.dbPool.read { try ChatConversationQueries.fetchByID($0, id: first) }
+        let first = try await TrackChatSurface.conversationID(for: track, dbPool: dbManager.dbPool)
+        let again = try await TrackChatSurface.conversationID(for: track, dbPool: dbManager.dbPool)
+        XCTAssertEqual(again, first)
+        let conv = try await dbManager.dbPool.read { try ChatConversationQueries.fetchByID($0, id: first) }
         XCTAssertEqual(conv?.contextType, "track")
         XCTAssertEqual(conv?.title.hasPrefix("Track: "), true)
     }
@@ -44,11 +45,12 @@ final class TrackChatSurfaceTests: XCTestCase {
         let mock = MockClaudeService(events: [.text("the latest")], thenAwaitsRelease: true)
         let pool = dbManager.dbPool
         let center = EmbeddedChatCenter { spec, _ in makeSurfaceEngine(spec, dbPool: pool, ai: mock) }
-        let conv = try TrackChatSurface.conversationID(for: track, dbPool: pool)
+        let conv = try await TrackChatSurface.conversationID(for: track, dbPool: pool)
         let spec = TrackChatSurface.spec(track: track, conversationID: conv, dbPool: pool)
         let engine = center.engine(for: spec)
         center.markShown(spec.key)
         engine.send("what's new?")
+        await engine.finished()
         center.markHidden(spec.key)
         mock.release()
         let done = await eventually { !engine.isStreaming }
@@ -58,7 +60,7 @@ final class TrackChatSurfaceTests: XCTestCase {
     }
 
     /// The question card is taught on this surface too (spec 2026-10-02).
-    func testSystemPromptTeachesTheQuestionCard() throws {
+    func testSystemPromptTeachesTheQuestionCard() async throws {
         let track = try makeTrack()
         let prompt = TrackChatSurface.buildSystemPrompt(track: track, dbPool: dbManager.dbPool,
                                                         memoryChatEnabled: false, memoryVaultDir: nil, skillsDir: nil)

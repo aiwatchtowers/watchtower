@@ -199,6 +199,7 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(fake.sent.last, .cancel)
         fake.emit(.turnDone(turnID: "turn-1", status: .interrupted, sessionID: nil))
         let stopped = await waitForCondition { !vm.isStreaming }
+        await vm.writesSettled()
         XCTAssertTrue(stopped)
         let row = try XCTUnwrap(lastAssistant(convID))
         XCTAssertEqual(row.text, "Hello")
@@ -397,6 +398,7 @@ final class ChatViewModelTests: XCTestCase {
         await vm.send(text: "q4")
         XCTAssertTrue(vm.isWaitingForSession)
         vm.stop()
+        await vm.writesSettled()
         XCTAssertFalse(vm.isStreaming)
         XCTAssertFalse(vm.isWaitingForSession)
         XCTAssertEqual(activePath(waiting).map(\.status), ["complete", "partial"])
@@ -413,6 +415,7 @@ final class ChatViewModelTests: XCTestCase {
         _ = await vm.newConversation()
         await vm.send(text: "q4")
         vm.stop()
+        await vm.writesSettled()
         let sentResult = await vm.send(text: "q5")
         XCTAssertTrue(sentResult)
         XCTAssertTrue(vm.isWaitingForSession)
@@ -1354,10 +1357,11 @@ final class ChatViewModelTests: XCTestCase {
         return convID
     }
 
-    private func addComment(_ vm: ChatViewModel, on needle: String, body: String) throws -> ArtifactCommentsModel {
+    private func addComment(_ vm: ChatViewModel, on needle: String, body: String) async throws -> ArtifactCommentsModel {
         let comments = try XCTUnwrap(vm.artifactPanel?.comments)
         let text = try XCTUnwrap(comments.rendered?.text)
-        XCTAssertTrue(comments.add(body: body, selection: (text as NSString).range(of: needle)))
+        let added = await comments.add(body: body, selection: (text as NSString).range(of: needle))
+        XCTAssertTrue(added)
         return comments
     }
 
@@ -1370,7 +1374,7 @@ final class ChatViewModelTests: XCTestCase {
     func testArtifactCommentsReachTheAssistantOnlyAsTheOwnersMessage() async throws {
         let vm = try makeViewModel()
         _ = try await conversationWithArtifact(vm, content: "# Plan\n\nShip on Friday.")
-        let comments = try addComment(vm, on: "Ship on Friday", body: "Thursday?")
+        let comments = try await addComment(vm, on: "Ship on Friday", body: "Thursday?")
         XCTAssertTrue(try lastFake().turns.isEmpty, "adding a comment sends nothing")
         let expected = try XCTUnwrap(comments.outgoing()).text
         vm.toggleInspectorExpanded()
@@ -1388,7 +1392,7 @@ final class ChatViewModelTests: XCTestCase {
     func testAFailedSaveLeavesTheCommentsUnsent() async throws {
         let vm = try makeViewModel()
         _ = try await conversationWithArtifact(vm, content: "# Plan\n\nShip on Friday.")
-        _ = try addComment(vm, on: "Ship on Friday", body: "Thursday?")
+        _ = try await addComment(vm, on: "Ship on Friday", body: "Thursday?")
         try await dbManager.dbPool.write { d in
             try d.execute(sql: """
                 CREATE TRIGGER fail_user BEFORE INSERT ON chat_messages WHEN NEW.role = 'user'
@@ -1409,7 +1413,7 @@ final class ChatViewModelTests: XCTestCase {
         _ = try await conversationWithArtifact(vm, content: "# Plan\n\nShip on Friday.")
         let sent = await vm.send(text: "q")
         XCTAssertTrue(sent)
-        _ = try addComment(vm, on: "Ship on Friday", body: "Thursday?")
+        _ = try await addComment(vm, on: "Ship on Friday", body: "Thursday?")
         vm.toggleInspectorExpanded()
         await vm.sendArtifactComments()
         XCTAssertFalse(vm.isInspectorExpanded, "the refusal shows in the conversation (#786)")
@@ -1421,11 +1425,11 @@ final class ChatViewModelTests: XCTestCase {
     func testOnlyTheUnsentCommentsAreIncludedAndMarked() async throws {
         let vm = try makeViewModel()
         _ = try await conversationWithArtifact(vm, content: "# Plan\n\nKeep the retry budget small.\n\nShip on Friday.")
-        let comments = try addComment(vm, on: "Ship on Friday", body: "Thursday?")
+        let comments = try await addComment(vm, on: "Ship on Friday", body: "Thursday?")
         let earlier = try XCTUnwrap(comments.comments.first?.id)
         _ = try await dbManager.dbPool.write { try ArtifactCommentQueries.markSent($0, ids: [earlier], at: Date(timeIntervalSince1970: 100)) }
         comments.reload()
-        _ = try addComment(vm, on: "retry budget", body: "Why?")
+        _ = try await addComment(vm, on: "retry budget", body: "Why?")
 
         await vm.sendArtifactComments()
 

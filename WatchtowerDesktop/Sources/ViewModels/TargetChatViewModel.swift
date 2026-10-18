@@ -335,8 +335,12 @@ final class TargetChatViewModel {
         engine.sendDraft()
     }
 
+    /// Stops the running turn or withdraws a queued one; a turn whose rows
+    /// are still being written (board #670) ends as stopped once they
+    /// landed, and is never sent.
     func cancelStream() {
         engine.stop()
+        engine.finishAsPartial()
     }
 
     /// A finished, stopped or failed turn: proposals made during it were

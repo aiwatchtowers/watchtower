@@ -78,7 +78,7 @@ struct AutomationEditorChatView: View {
 /// closed on disappear. The engine lives in `AppState.embeddedChatCenter`,
 /// so closing never stops a turn and reopening shows it again.
 struct AutomationEditorChatLoader<Content: View>: View {
-    let make: () throws -> AutomationEditorChat?
+    let make: () async throws -> AutomationEditorChat?
     @ViewBuilder let content: (AutomationEditorChat) -> Content
 
     @State private var chat: AutomationEditorChat?
@@ -96,18 +96,25 @@ struct AutomationEditorChatLoader<Content: View>: View {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .onAppear(perform: open)
+        // A chat's first use writes its conversation off the main thread
+        // (board #670): the spinner shows meanwhile, and a sheet closed
+        // before it landed closes the chat it made.
+        .task { await open() }
         .onDisappear {
             chat?.close()
             chat = nil
         }
     }
 
-    private func open() {
+    private func open() async {
         guard chat == nil else { return }
         do {
-            guard let made = try make() else {
+            guard let made = try await make() else {
                 failure = "This chat can't open: the automation or the database is not available."
+                return
+            }
+            guard !Task.isCancelled else {
+                made.close()
                 return
             }
             chat = made
@@ -120,7 +127,7 @@ struct AutomationEditorChatLoader<Content: View>: View {
 /// "Change in words" for one automation, as a sheet.
 struct AutomationChangeInWordsSheet: View {
     let name: String
-    let make: () throws -> AutomationEditorChat?
+    let make: () async throws -> AutomationEditorChat?
     let onClose: () -> Void
 
     var body: some View {

@@ -20,13 +20,13 @@ package struct ArtifactComment: FetchableRecord, Decodable, Identifiable, Equata
     package let id: Int64
     package let conversationID: Int64
     package let artifactKey: String
-    package let artifactVersion: Int
+    package internal(set) var artifactVersion: Int
     package let body: String
     package let anchorQuote: String
     package let anchorPrefix: String
     package let anchorSuffix: String
     package let anchorHeading: String
-    package let status: Status
+    package internal(set) var status: Status
     package let createdAt: Double
     package let sentAt: Double?
 

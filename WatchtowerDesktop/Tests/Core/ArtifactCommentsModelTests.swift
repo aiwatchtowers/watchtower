@@ -59,10 +59,11 @@ final class ArtifactCommentsModelTests: XCTestCase {
         }
     }
 
-    func testCommentAnchorsOnTheLatestVersionsRenderedText() throws {
+    func testCommentAnchorsOnTheLatestVersionsRenderedText() async throws {
         try store(v1, message: 0)
         let model = makePanel().comments
-        XCTAssertTrue(model.add(body: "Why so small?", selection: try range("retry budget small", in: model)))
+        let added = await model.add(body: "Why so small?", selection: try range("retry budget small", in: model))
+        XCTAssertTrue(added)
         let comment = try XCTUnwrap(model.comments.first)
         XCTAssertEqual(comment.anchorQuote, "retry budget small")
         XCTAssertEqual(comment.anchorHeading, "Risks")
@@ -71,40 +72,45 @@ final class ArtifactCommentsModelTests: XCTestCase {
         XCTAssertEqual(model.ranges[comment.id], try range("retry budget small", in: model))
     }
 
-    func testEmptySelectionOrBodyWritesNothing() throws {
+    func testEmptySelectionOrBodyWritesNothing() async throws {
         try store(v1, message: 0)
         let model = makePanel().comments
-        XCTAssertFalse(model.add(body: "x", selection: NSRange(location: 3, length: 0)))
-        XCTAssertFalse(model.add(body: "   ", selection: try range("retry", in: model)))
+        let emptySelection = await model.add(body: "x", selection: NSRange(location: 3, length: 0))
+        XCTAssertFalse(emptySelection)
+        let emptyBody = await model.add(body: "   ", selection: try range("retry", in: model))
+        XCTAssertFalse(emptyBody)
         XCTAssertTrue(model.comments.isEmpty)
-        XCTAssertEqual(try queue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_artifact_comments") }, 0)
+        let count = try await queue.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_artifact_comments") }
+        XCTAssertEqual(count, 0)
     }
 
-    func testANewVersionThatKeepsThePassageMovesTheCommentOntoIt() throws {
+    func testANewVersionThatKeepsThePassageMovesTheCommentOntoIt() async throws {
         try store(v1, message: 0)
         let panel = makePanel()
-        panel.comments.add(body: "Why so small?", selection: try range("retry budget small", in: panel.comments))
+        await panel.comments.add(body: "Why so small?", selection: try range("retry budget small", in: panel.comments))
         let id = try XCTUnwrap(panel.comments.comments.first?.id)
 
         try store("Intro added by the assistant.\n\n" + v1.replacingOccurrences(of: "Ship on Friday.", with: "Ship on Thursday."),
                   message: 1)
         panel.turnFinished()
+        await panel.comments.writesSettled()
 
         XCTAssertEqual(try row(id)?.status, .open)
         XCTAssertEqual(try row(id)?.artifactVersion, 2)
         XCTAssertEqual(panel.comments.ranges[id], try range("retry budget small", in: panel.comments))
     }
 
-    func testANewVersionWithoutThePassageMakesOnlyThatCommentOutdated() throws {
+    func testANewVersionWithoutThePassageMakesOnlyThatCommentOutdated() async throws {
         try store(v1, message: 0)
         let panel = makePanel()
-        panel.comments.add(body: "Why so small?", selection: try range("retry budget small", in: panel.comments))
-        panel.comments.add(body: "Thursday?", selection: try range("Ship on Friday", in: panel.comments))
+        await panel.comments.add(body: "Why so small?", selection: try range("retry budget small", in: panel.comments))
+        await panel.comments.add(body: "Thursday?", selection: try range("Ship on Friday", in: panel.comments))
         let (risk, date) = (panel.comments.comments[0].id, panel.comments.comments[1].id)
 
         try store(v1.replacingOccurrences(of: "Keep the retry budget small so a flaky service cannot stall the sync.",
                                           with: "Retries are unbounded."), message: 1)
         panel.turnFinished()
+        await panel.comments.writesSettled()
 
         XCTAssertEqual(try row(risk)?.status, .outdated)
         XCTAssertEqual(try row(risk)?.artifactVersion, 1)
@@ -115,19 +121,20 @@ final class ArtifactCommentsModelTests: XCTestCase {
         XCTAssertEqual(panel.comments.unsent.map(\.id), [date])
     }
 
-    func testSentCommentsAreReanchoredAndResolvedOnesOnlyLoseTheirHighlight() throws {
+    func testSentCommentsAreReanchoredAndResolvedOnesOnlyLoseTheirHighlight() async throws {
         try store(v1, message: 0)
         let panel = makePanel()
-        panel.comments.add(body: "Why so small?", selection: try range("retry budget small", in: panel.comments))
-        panel.comments.add(body: "Thursday?", selection: try range("Ship on Friday", in: panel.comments))
+        await panel.comments.add(body: "Why so small?", selection: try range("retry budget small", in: panel.comments))
+        await panel.comments.add(body: "Thursday?", selection: try range("Ship on Friday", in: panel.comments))
         let (sent, resolved) = (panel.comments.comments[0].id, panel.comments.comments[1].id)
-        try queue.write { db in
+        try await queue.write { db in
             try ArtifactCommentQueries.markSent(db, ids: [sent, resolved], at: Date())
             try ArtifactCommentQueries.resolve(db, id: resolved)
         }
 
         try store("# Plan\n\nAll rewritten.", message: 1)
         panel.turnFinished()
+        await panel.comments.writesSettled()
 
         XCTAssertEqual(try row(sent)?.status, .outdated)
         XCTAssertNotNil(try row(sent)?.sentAt, "an outdated sent comment keeps sent_at")
@@ -135,39 +142,43 @@ final class ArtifactCommentsModelTests: XCTestCase {
         XCTAssertTrue(panel.comments.ranges.isEmpty)
     }
 
-    func testTheOwnersEditIsANewVersionAndReanchorsLikeAnyOther() throws {
+    func testTheOwnersEditIsANewVersionAndReanchorsLikeAnyOther() async throws {
         try store(v1, message: 0)
         let panel = makePanel()
-        panel.comments.add(body: "Thursday?", selection: try range("Ship on Friday", in: panel.comments))
+        await panel.comments.add(body: "Thursday?", selection: try range("Ship on Friday", in: panel.comments))
         let id = try XCTUnwrap(panel.comments.comments.first?.id)
         panel.beginEdit()
         panel.editText = panel.editText.replacingOccurrences(of: "Ship on Friday.", with: "Ship on Thursday.")
-        panel.saveEdit()
+        await panel.saveEdit()
+        await panel.comments.writesSettled()
         XCTAssertEqual(try row(id)?.status, .outdated)
     }
 
-    func testAnOutdatedCommentIsNeverReattachedWhenItsTextComesBack() throws {
+    func testAnOutdatedCommentIsNeverReattachedWhenItsTextComesBack() async throws {
         try store(v1, message: 0)
         let panel = makePanel()
-        panel.comments.add(body: "Thursday?", selection: try range("Ship on Friday", in: panel.comments))
+        await panel.comments.add(body: "Thursday?", selection: try range("Ship on Friday", in: panel.comments))
         let id = try XCTUnwrap(panel.comments.comments.first?.id)
         try store("# Plan\n\nRewritten.", message: 1)
         panel.turnFinished()
+        await panel.comments.writesSettled()
         try store(v1, message: 2)
         panel.turnFinished()
+        await panel.comments.writesSettled()
         XCTAssertEqual(try row(id)?.status, .outdated)
         XCTAssertNil(panel.comments.ranges[id])
     }
 
-    func testUnsentAreInTextOrderAndTheOutgoingMessageCarriesExactlyThem() throws {
+    func testUnsentAreInTextOrderAndTheOutgoingMessageCarriesExactlyThem() async throws {
         try store(v1, message: 0)
         let model = makePanel().comments
-        model.add(body: "Thursday?", selection: try range("Ship on Friday", in: model))
-        model.add(body: "Why so small?", selection: try range("retry budget small", in: model))
-        model.add(body: "Already sent", selection: try range("flaky service", in: model))
+        await model.add(body: "Thursday?", selection: try range("Ship on Friday", in: model))
+        await model.add(body: "Why so small?", selection: try range("retry budget small", in: model))
+        await model.add(body: "Already sent", selection: try range("flaky service", in: model))
         let alreadySent = try XCTUnwrap(model.comments.last?.id)
-        _ = try queue.write { try ArtifactCommentQueries.markSent($0, ids: [alreadySent], at: Date()) }
+        _ = try await queue.write { try ArtifactCommentQueries.markSent($0, ids: [alreadySent], at: Date()) }
         model.reload()
+        await model.writesSettled()
 
         XCTAssertEqual(model.unsent.map(\.body), ["Why so small?", "Thursday?"])
         XCTAssertEqual(model.sent.map(\.id), [alreadySent])
@@ -177,21 +188,23 @@ final class ArtifactCommentsModelTests: XCTestCase {
                        ArtifactCommentMessage.compose(title: "Plan", key: "plan", version: 1, comments: model.unsent))
     }
 
-    func testNothingUnsentHasNoOutgoingMessage() throws {
+    func testNothingUnsentHasNoOutgoingMessage() async throws {
         try store(v1, message: 0)
         XCTAssertNil(makePanel().comments.outgoing())
     }
 
-    func testDeleteAndResolveFollowTheStatusRules() throws {
+    func testDeleteAndResolveFollowTheStatusRules() async throws {
         try store(v1, message: 0)
         let model = makePanel().comments
-        model.add(body: "Draft", selection: try range("Ship on Friday", in: model))
-        model.add(body: "Sent", selection: try range("retry budget small", in: model))
+        await model.add(body: "Draft", selection: try range("Ship on Friday", in: model))
+        await model.add(body: "Sent", selection: try range("retry budget small", in: model))
         let (draft, sent) = (model.comments[0].id, model.comments[1].id)
-        _ = try queue.write { try ArtifactCommentQueries.markSent($0, ids: [sent], at: Date()) }
+        _ = try await queue.write { try ArtifactCommentQueries.markSent($0, ids: [sent], at: Date()) }
         model.reload()
+        await model.writesSettled()
         model.delete(draft)
         model.resolve(sent)
+        await model.writesSettled()
         XCTAssertEqual(model.comments.map(\.id), [sent])
         XCTAssertEqual(model.resolved.map(\.id), [sent])
         XCTAssertNil(model.ranges[draft])
@@ -200,14 +213,15 @@ final class ArtifactCommentsModelTests: XCTestCase {
     /// A table anchors on its cells as the panel shows them (#181: the
     /// panel reads and comments on one rendering); a draft message on its
     /// raw text.
-    func testNonDocumentKindsAnchorOnTheTextThePanelShows() throws {
+    func testNonDocumentKindsAnchorOnTheTextThePanelShows() async throws {
         try store("a,b\nretry,small", message: 0, kind: "table")
         let model = makePanel().comments
         XCTAssertEqual(model.rendered?.text, "a\nb\nretry\nsmall\n\n")
-        XCTAssertTrue(model.add(body: "Rename", selection: try range("retry", in: model)))
+        let added = await model.add(body: "Rename", selection: try range("retry", in: model))
+        XCTAssertTrue(added)
     }
 
-    func testCommentingNeedsTheLatestStoredVersionOnScreen() throws {
+    func testCommentingNeedsTheLatestStoredVersionOnScreen() async throws {
         try store(v1, message: 0)
         try store(v1 + "\n\nMore.", message: 1)
         let panel = makePanel()
@@ -221,6 +235,7 @@ final class ArtifactCommentsModelTests: XCTestCase {
                                             isComplete: false)])
         XCTAssertFalse(panel.canComment, "a version being written is not commentable")
         panel.turnFinished()
+        await panel.comments.writesSettled()
         panel.beginEdit()
         XCTAssertFalse(panel.canComment, "editing and commenting are exclusive")
     }

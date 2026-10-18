@@ -20,13 +20,48 @@ final class InboxLearnedRulesViewModel {
         boosts = all.filter { $0.weight > 0 }
     }
 
-    func addRule(ruleType: String, scopeKey: String, weight: Double) async {
-        try? queries.upsertManual(ruleType: ruleType, scopeKey: scopeKey, weight: weight)
-        await load()
+    /// A removal that failed, shown over the list (board #670: no more `try?`).
+    var errorMessage: String?
+    /// An add that failed, shown in the add sheet (which stays open over it).
+    var addError: String?
+    /// One write per rule at a time; its controls wait meanwhile.
+    let pendingWrites = PendingWrites()
+
+    /// True once stored; a failure keeps the sheet's input and says why.
+    @discardableResult
+    func addRule(ruleType: String, scopeKey: String, weight: Double) async -> Bool {
+        let queries = queries
+        let stored = await pendingWrites.run("add") { () -> Bool in
+            do {
+                try await queries.upsertManual(ruleType: ruleType, scopeKey: scopeKey, weight: weight)
+                addError = nil
+                return true
+            } catch {
+                addError = "Couldn't save the rule: \(error.localizedDescription)"
+                return false
+            }
+        } ?? false
+        if stored { await load() }
+        return stored
+    }
+
+    /// A rule's pending-write key: its type and scope (its row id may be nil).
+    static func key(_ rule: InboxLearnedRule) -> String {
+        "\(rule.ruleType)|\(rule.scopeKey)"
     }
 
     func remove(_ rule: InboxLearnedRule) async {
-        try? queries.delete(ruleType: rule.ruleType, scopeKey: rule.scopeKey)
-        await load()
+        let queries = queries
+        let removed = await pendingWrites.run(Self.key(rule)) { () -> Bool in
+            do {
+                try await queries.delete(ruleType: rule.ruleType, scopeKey: rule.scopeKey)
+                errorMessage = nil
+                return true
+            } catch {
+                errorMessage = "Couldn't remove the rule: \(error.localizedDescription)"
+                return false
+            }
+        } ?? false
+        if removed { await load() }
     }
 }

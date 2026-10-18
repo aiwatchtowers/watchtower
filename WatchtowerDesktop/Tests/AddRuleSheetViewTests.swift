@@ -24,6 +24,17 @@ final class AddRuleSheetViewTests: XCTestCase {
         }
     }
 
+    /// Board #670: a failed add keeps the sheet, so its reason shows in the
+    /// sheet, and Cancel (Esc) always closes it — even while a save waits.
+    func testAFailedAddSaysWhyInTheSheetAndCancelAlwaysCloses() throws {
+        var cancelled = 0
+        let view = AddRuleSheet(error: "Couldn't save the rule: disk full", onCancel: { cancelled += 1 },
+                                onSave: { _, _, _ in })
+        XCTAssertNoThrow(try view.inspect().find(text: "Couldn't save the rule: disk full"))
+        try view.inspect().find(button: "Cancel").tap()
+        XCTAssertEqual(cancelled, 1)
+    }
+
     /// Кнопка Save вызывает onSave с дефолтными значениями
     /// scope=sender:, weight=-0.8, type=source_mute.
     func testSaveDispatchesDefaults() async throws {

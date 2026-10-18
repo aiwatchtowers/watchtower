@@ -100,6 +100,8 @@ final class SetupAssistantChat<Snapshot, Patch> {
         }
     }
 
+    @ObservationIgnored private var greetingSeeded = false
+
     var messages: [ChatMessage] { engine.chatMessages }
     var isStreaming: Bool { engine.isBusy }
 
@@ -108,9 +110,11 @@ final class SetupAssistantChat<Snapshot, Patch> {
         set { engine.draft = newValue }
     }
 
-    /// Local greeting shown when the panel opens — no AI call.
+    /// Local greeting shown when the panel opens — no AI call. Seeded once:
+    /// its row lands a moment later (the engine queues every write, #670).
     func seedGreetingIfNeeded() {
-        guard engine.messages.isEmpty else { return }
+        guard engine.messages.isEmpty, !greetingSeeded else { return }
+        greetingSeeded = true
         engine.appendLocal(role: "assistant", text: greeting)
     }
 

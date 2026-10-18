@@ -20,6 +20,9 @@ package final class EmbeddedChatCenter {
     /// Keys a view currently shows, with how many views show each.
     @ObservationIgnored private var shownCount: [EmbeddedChatKey: Int] = [:]
     @ObservationIgnored private var hiddenSince: [EmbeddedChatKey: Date] = [:]
+    /// Engines let go of while their writes were still under way (board
+    /// #670), until those landed: the quit waits for them too.
+    @ObservationIgnored private var draining: [ObjectIdentifier: EmbeddedChatEngine] = [:]
     @ObservationIgnored private let makeEngine: EngineFactory
     @ObservationIgnored private let clock: () -> Date
     private let idleTTL: TimeInterval
@@ -102,8 +105,24 @@ package final class EmbeddedChatCenter {
         for engine in engines.values { engine.finishAsPartial() }
     }
 
+    /// The quit's async phase: `finishAllAsPartial`, then waits until every
+    /// engine's writes landed (they await the writer, board #670), so a
+    /// reply keeps all it streamed.
+    package func finishAllAsPartialForQuit() async {
+        finishAllAsPartial()
+        for engine in Array(engines.values) + Array(draining.values) { await engine.finished() }
+    }
+
     private func remove(_ key: EmbeddedChatKey, quietly: Bool) {
-        engines[key]?.shutdown(quietly: quietly)
+        if let engine = engines[key] {
+            engine.shutdown(quietly: quietly)
+            let id = ObjectIdentifier(engine)
+            draining[id] = engine
+            Task { [weak self] in
+                await engine.finished()
+                self?.draining[id] = nil
+            }
+        }
         engines[key] = nil
         shownCount[key] = nil
         hiddenSince[key] = nil

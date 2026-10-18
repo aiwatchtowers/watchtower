@@ -76,7 +76,7 @@ struct ProjectDetailView: View {
                 }
                 .dropDestination(for: URL.self) { urls, _ in
                     guard !urls.isEmpty else { return false }
-                    vm.addFiles(urls)
+                    Task { await vm.addFiles(urls) }
                     return true
                 }
 
@@ -155,7 +155,7 @@ struct ProjectDetailView: View {
         panel.message = "Add images, PDFs or text files to the project"
         panel.begin { response in
             guard response == .OK else { return }
-            vm.addFiles(panel.urls)
+            Task { await vm.addFiles(panel.urls) }
         }
     }
 
