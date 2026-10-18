@@ -87,7 +87,7 @@ func (p *Pipeline) trackerSections(owner db.Owner, tracker string) []string {
 	// Sprint/Iteration Progress — Jira: active sprints on selected boards;
 	// Linear: active cycles.
 	if feature("iteration_progress") {
-		ctx := ""
+		var ctx string
 		if tracker == db.TrackerJira {
 			ctx = p.gatherSprintProgress()
 		} else {

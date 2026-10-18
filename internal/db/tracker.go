@@ -2,7 +2,6 @@ package db
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -295,27 +294,10 @@ type TrackerIterationStats struct {
 // tracker_iterations with its issues counted by status category, ordered by
 // project key and start.
 func (db *DB) ActiveTrackerIterationStats(tracker string) ([]TrackerIterationStats, error) {
-	type iteration struct {
-		TrackerIterationStats
-		id, endsAt string
-	}
-	rows, err := db.Query(`SELECT account_id, id, name, ends_at, project_key FROM tracker_iterations
-		WHERE tracker = ? AND state = 'active' ORDER BY project_key, starts_at`, tracker)
+	// Fully read before the per-iteration counts (MaxOpenConns(1)).
+	its, err := db.activeIterations(tracker)
 	if err != nil {
-		return nil, fmt.Errorf("listing active %s iterations: %w", tracker, err)
-	}
-	var its []iteration
-	for rows.Next() {
-		it := iteration{TrackerIterationStats: TrackerIterationStats{Tracker: tracker}}
-		if err := rows.Scan(&it.AccountID, &it.id, &it.SprintName, &it.endsAt, &it.ProjectKey); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("scanning %s iteration: %w", tracker, err)
-		}
-		its = append(its, it)
-	}
-	// Drained before the per-iteration reads (MaxOpenConns(1)).
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, fmt.Errorf("listing active %s iterations: %w", tracker, err)
+		return nil, err
 	}
 	out := make([]TrackerIterationStats, 0, len(its))
 	for _, it := range its {
@@ -326,6 +308,32 @@ func (db *DB) ActiveTrackerIterationStats(tracker string) ([]TrackerIterationSta
 		out = append(out, it.TrackerIterationStats)
 	}
 	return out, nil
+}
+
+type activeIteration struct {
+	TrackerIterationStats
+	id, endsAt string
+}
+
+func (db *DB) activeIterations(tracker string) ([]activeIteration, error) {
+	rows, err := db.Query(`SELECT account_id, id, name, ends_at, project_key FROM tracker_iterations
+		WHERE tracker = ? AND state = 'active' ORDER BY project_key, starts_at`, tracker)
+	if err != nil {
+		return nil, fmt.Errorf("listing active %s iterations: %w", tracker, err)
+	}
+	defer rows.Close()
+	var its []activeIteration
+	for rows.Next() {
+		it := activeIteration{TrackerIterationStats: TrackerIterationStats{Tracker: tracker}}
+		if err := rows.Scan(&it.AccountID, &it.id, &it.SprintName, &it.endsAt, &it.ProjectKey); err != nil {
+			return nil, fmt.Errorf("scanning %s iteration: %w", tracker, err)
+		}
+		its = append(its, it)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing active %s iterations: %w", tracker, err)
+	}
+	return its, nil
 }
 
 func (db *DB) countIterationIssues(tracker string, accountID int64, iterationID string, stats *SprintStats) error {
