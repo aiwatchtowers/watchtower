@@ -24,12 +24,24 @@ final class DBLockMetricsTests: XCTestCase {
             dbPath: dbPath, settings: DBLockSettings(thresholdMS: thresholdMS), maxFileBytes: maxFileBytes))
     }
 
-    /// An instrumented pool over a DB holding table `t`.
+    /// An instrumented pool over a DB holding table `t`, handed back with an
+    /// empty sink. Opening a pool on a fresh file runs GRDB's own WAL
+    /// bootstrap on the writer (BEGIN IMMEDIATE, CREATE and DROP TABLE
+    /// grdb_issue_102, COMMIT): a write transaction with no recognised table,
+    /// which a loaded runner can stretch past a test's threshold into a
+    /// `desktop:?` line. That is setup, not what a test measures.
     private func makePool(sink: DBLockSink?, busyTimeoutMS: Int = DBLockInstrumentation.busyTimeoutMS) throws -> DatabasePool {
         var config = Configuration()
         DBLockInstrumentation.install(on: &config, sink: sink, busyTimeoutMS: busyTimeoutMS)
         let pool = try DatabasePool(path: dbPath, configuration: config)
         try pool.writeWithoutTransaction { try $0.execute(sql: "CREATE TABLE IF NOT EXISTS t (v INTEGER)") }
+        if let sink {
+            sink.flush()
+            // The sink re-opens a deleted file on its next line.
+            if FileManager.default.fileExists(atPath: sink.path) {
+                try FileManager.default.removeItem(atPath: sink.path)
+            }
+        }
         return pool
     }
 
@@ -301,17 +313,15 @@ final class DBLockMetricsTests: XCTestCase {
     func testReadersAreNotTracedAndKeepTheBusyTimeoutPragma() throws {
         let sink = try makeSink(thresholdMS: 0)
         let pool = try makePool(sink: sink)
-        sink.flush()
-        let before = try lines().count
         let timeout = try pool.read { try Int.fetchOne($0, sql: "PRAGMA busy_timeout") }
         XCTAssertEqual(timeout, 5000)
         _ = try pool.read { try Int.fetchOne($0, sql: "SELECT count(*) FROM t") }
         sink.flush()
-        XCTAssertEqual(try lines().count, before)
+        XCTAssertEqual(try lines().count, 0)
 
         try pool.write { try $0.execute(sql: "INSERT INTO t VALUES (1)") }
         sink.flush()
-        XCTAssertEqual(try lines().count, before + 1)
+        XCTAssertEqual(try lines().count, 1)
     }
 
     /// GRDB's ValueObservation starts run `isolated(readOnly: true)` on the
@@ -320,8 +330,6 @@ final class DBLockMetricsTests: XCTestCase {
     func testDeferredReadOnlyTransactionOnTheWriterRecordsNothing() throws {
         let sink = try makeSink(thresholdMS: 0)
         let pool = try makePool(sink: sink)
-        sink.flush()
-        let before = try lines().count
         try pool.writeWithoutTransaction { db in
             try db.readOnly {
                 try db.inSavepoint {
@@ -332,7 +340,7 @@ final class DBLockMetricsTests: XCTestCase {
             }
         }
         sink.flush()
-        XCTAssertEqual(try lines().count, before)
+        XCTAssertEqual(try lines().count, 0)
     }
 
     /// A deferred transaction that writes holds the lock from its first
