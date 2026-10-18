@@ -142,7 +142,7 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 		return nil, err
 	}
 
-	newItems, dropped, invalid := buildItems(parsed, opts.Date, events, targetsIDSet(targets), jiraKeySet(jiraIssues))
+	newItems, dropped, invalid := buildItems(parsed, opts.Date, events, targetsIDSet(targets), issueKeyTrackers(jiraIssues))
 	if p.logger != nil {
 		for _, d := range dropped {
 			p.logger.Printf("dayplan: dropped item: %s", d)

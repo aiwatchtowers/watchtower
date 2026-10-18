@@ -841,7 +841,7 @@ type DayPlanItem struct {
 	ID          int64
 	DayPlanID   int64
 	Kind        string // timeblock | backlog
-	SourceType  string // task | briefing_attention | jira | calendar | manual | focus
+	SourceType  string // task | briefing_attention | jira | linear | calendar | manual | focus
 	SourceID    sql.NullString
 	Title       string
 	Description sql.NullString

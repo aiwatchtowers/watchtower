@@ -3,6 +3,7 @@ package dayplan
 import (
 	"database/sql"
 	"fmt"
+	"slices"
 	"time"
 
 	"watchtower/internal/db"
@@ -15,10 +16,11 @@ import (
 // item restated or collided with a calendar event, which syncCalendarItems
 // adds itself.
 func buildItems(r *GenerateResult, date string, events []db.CalendarEvent,
-	taskIDs, jiraKeys map[string]bool) (out []db.DayPlanItem, dropped []string, invalid int) {
+	taskIDs map[string]bool, issueKeys map[string][]string) (out []db.DayPlanItem, dropped []string, invalid int) {
 	order := 0
 	for _, ai := range r.Timeblocks {
-		it, reason, calendarOwned := aiToTimeblock(ai, date, events, taskIDs, jiraKeys)
+		ai.SourceType = issueSourceType(ai, issueKeys)
+		it, reason, calendarOwned := aiToTimeblock(ai, date, events, taskIDs, issueKeys)
 		if reason != "" {
 			dropped = append(dropped, reason)
 			if !calendarOwned {
@@ -33,7 +35,8 @@ func buildItems(r *GenerateResult, date string, events []db.CalendarEvent,
 
 	order = 0
 	for _, ai := range r.Backlog {
-		it, reason, calendarOwned := aiToBacklog(ai, taskIDs, jiraKeys)
+		ai.SourceType = issueSourceType(ai, issueKeys)
+		it, reason, calendarOwned := aiToBacklog(ai, taskIDs, issueKeys)
 		if reason != "" {
 			dropped = append(dropped, reason)
 			if !calendarOwned {
@@ -50,14 +53,14 @@ func buildItems(r *GenerateResult, date string, events []db.CalendarEvent,
 }
 
 func aiToTimeblock(ai AIItem, date string, events []db.CalendarEvent,
-	taskIDs, jiraKeys map[string]bool) (*db.DayPlanItem, string, bool) {
+	taskIDs map[string]bool, issueKeys map[string][]string) (*db.DayPlanItem, string, bool) {
 	if ai.SourceType == "calendar" {
 		return nil, "calendar items must not come from AI", true
 	}
 	if ai.StartTimeLocal == "" || ai.EndTimeLocal == "" {
 		return nil, fmt.Sprintf("timeblock %q missing start/end time", ai.Title), false
 	}
-	if reason := validateSource(ai, taskIDs, jiraKeys); reason != "" {
+	if reason := validateSource(ai, taskIDs, issueKeys); reason != "" {
 		return nil, reason, false
 	}
 
@@ -106,11 +109,11 @@ func aiToTimeblock(ai AIItem, date string, events []db.CalendarEvent,
 	}, "", false
 }
 
-func aiToBacklog(ai AIItem, taskIDs, jiraKeys map[string]bool) (*db.DayPlanItem, string, bool) {
+func aiToBacklog(ai AIItem, taskIDs map[string]bool, issueKeys map[string][]string) (*db.DayPlanItem, string, bool) {
 	if ai.SourceType == "calendar" {
 		return nil, "calendar items must not come from AI", true
 	}
-	if reason := validateSource(ai, taskIDs, jiraKeys); reason != "" {
+	if reason := validateSource(ai, taskIDs, issueKeys); reason != "" {
 		return nil, reason, false
 	}
 	return &db.DayPlanItem{
@@ -126,17 +129,32 @@ func aiToBacklog(ai AIItem, taskIDs, jiraKeys map[string]bool) (*db.DayPlanItem,
 	}, "", false
 }
 
-func validateSource(ai AIItem, taskIDs, jiraKeys map[string]bool) string {
+// issueSourceType stamps an issue item with the tracker its key belongs to.
+// The prompt lists both trackers' issues in one section and names the source
+// "jira" (the template predates Linear), so a "jira" or "linear" item whose
+// key only one tracker carries takes that tracker; a key both carry keeps
+// the model's choice. Any other item is returned unchanged.
+func issueSourceType(ai AIItem, issueKeys map[string][]string) string {
+	if ai.SourceType != db.TrackerJira && ai.SourceType != db.TrackerLinear {
+		return ai.SourceType
+	}
+	if trackers := issueKeys[sourceIDToString(ai.SourceID)]; len(trackers) == 1 {
+		return trackers[0]
+	}
+	return ai.SourceType
+}
+
+func validateSource(ai AIItem, taskIDs map[string]bool, issueKeys map[string][]string) string {
 	switch ai.SourceType {
 	case "task":
 		id := sourceIDToString(ai.SourceID)
 		if !taskIDs[id] {
 			return fmt.Sprintf("unknown task source_id %q for %q", id, ai.Title)
 		}
-	case "jira":
+	case db.TrackerJira, db.TrackerLinear:
 		id := sourceIDToString(ai.SourceID)
-		if !jiraKeys[id] {
-			return fmt.Sprintf("unknown jira source_id %q for %q", id, ai.Title)
+		if !slices.Contains(issueKeys[id], ai.SourceType) {
+			return fmt.Sprintf("unknown %s source_id %q for %q", ai.SourceType, id, ai.Title)
 		}
 	case "focus":
 		// accept, source_id may be anything or null
