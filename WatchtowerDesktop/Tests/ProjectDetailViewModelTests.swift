@@ -81,21 +81,21 @@ final class ProjectDetailViewModelTests: XCTestCase {
         XCTAssertEqual(promptChanges, [projectID])
 
         let hit = ChatEntityHit(kind: .channel, ref: "1:C1", label: "#payments", detail: "")
-        vm.addSource(hit)
-        vm.addSource(hit)
+        await vm.addSource(hit)
+        await vm.addSource(hit)
         XCTAssertEqual(promptChanges.count, 2, "a duplicate source changes nothing")
         let source = try XCTUnwrap(vm.sources.first)
-        vm.removeSource(source)
+        await vm.removeSource(source)
         XCTAssertEqual(promptChanges.count, 3)
-        vm.removeSource(source)
+        await vm.removeSource(source)
         XCTAssertEqual(promptChanges.count, 3, "removing an already-gone source changes nothing")
 
         vm.addFiles([URL(fileURLWithPath: NSTemporaryDirectory() + "imported_\(UUID().uuidString).pdf")])
         XCTAssertEqual(promptChanges.count, 4)
         let file = try XCTUnwrap(vm.files.first)
-        vm.removeFile(file)
+        await vm.removeFile(file)
         XCTAssertEqual(promptChanges.count, 5)
-        vm.removeFile(file)
+        await vm.removeFile(file)
         XCTAssertEqual(promptChanges.count, 5, "removing an already-gone file changes nothing")
         XCTAssertEqual(Set(promptChanges), [projectID])
     }
@@ -110,19 +110,19 @@ final class ProjectDetailViewModelTests: XCTestCase {
         XCTAssertEqual(stored, "Keep me")
     }
 
-    func testRenameAddRemoveSource() throws {
+    func testRenameAddRemoveSource() async throws {
         let vm = makeVM()
         vm.load()
-        vm.rename("Q3 payments")
+        await vm.rename("Q3 payments")
         XCTAssertEqual(vm.project?.name, "Q3 payments")
-        vm.addSource(ChatEntityHit(kind: .channel, ref: "1:C1", label: "#payments", detail: ""))
-        vm.addSource(ChatEntityHit(kind: .jiraIssue, ref: "PAY-1", label: "PAY-1", detail: ""))
+        await vm.addSource(ChatEntityHit(kind: .channel, ref: "1:C1", label: "#payments", detail: ""))
+        await vm.addSource(ChatEntityHit(kind: .jiraIssue, ref: "PAY-1", label: "PAY-1", detail: ""))
         XCTAssertEqual(vm.sources.map(\.kind), ["slack_channel"], "an issue hit is not a project source")
-        vm.removeSource(vm.sources[0])
+        await vm.removeSource(vm.sources[0])
         XCTAssertTrue(vm.sources.isEmpty)
     }
 
-    func testAddAndRemoveFilesRemovesDiskFile() throws {
+    func testAddAndRemoveFilesRemovesDiskFile() async throws {
         let file = URL(fileURLWithPath: NSTemporaryDirectory() + "proj_\(UUID().uuidString).pdf")
         try Data("x".utf8).write(to: file)
         let vm = makeVM()
@@ -130,7 +130,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
         vm.addFiles([file])
         XCTAssertEqual(importedURLs, [file])
         XCTAssertEqual(vm.files.map(\.name), [file.lastPathComponent])
-        vm.removeFile(vm.files[0])
+        await vm.removeFile(vm.files[0])
         XCTAssertTrue(vm.files.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: file.path), "disk file removed post-commit")
     }
@@ -157,7 +157,7 @@ final class ProjectDetailViewModelTests: XCTestCase {
 
     /// The real store end to end: an imported file lands under
     /// `projects/<id>/`, and deleting the project removes that directory.
-    func testDeleteProjectRemovesItsStoredFilesDirectory() throws {
+    func testDeleteProjectRemovesItsStoredFilesDirectory() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("wt_proj_\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("in.pdf")
@@ -174,27 +174,31 @@ final class ProjectDetailViewModelTests: XCTestCase {
         let stored = try XCTUnwrap(vm.files.first?.path)
         XCTAssertTrue(stored.hasPrefix(root.appendingPathComponent("projects/\(projectID)").path))
 
-        XCTAssertTrue(vm.deleteProject())
+        let deleted = await vm.deleteProject()
+        XCTAssertTrue(deleted)
         XCTAssertFalse(FileManager.default.fileExists(atPath: stored))
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: root.appendingPathComponent("projects/\(projectID)").path))
     }
 
-    func testDeleteProjectKeepsChats() throws {
-        let chatID = try pool.write { d -> Int64 in
+    func testDeleteProjectKeepsChats() async throws {
+        let projectID = self.projectID
+        let chatID = try await pool.write { d -> Int64 in
             try d.execute(
                 sql: "INSERT INTO chat_conversations (title, created_at, updated_at, project_id) VALUES ('c', 1, 1, ?)",
-                arguments: [self.projectID]
+                arguments: [projectID]
             )
             return d.lastInsertedRowID
         }
         let vm = makeVM()
         vm.load()
         XCTAssertEqual(vm.chats.map(\.id), [chatID])
-        XCTAssertTrue(vm.deleteProject())
-        let remaining = try pool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_conversations") }
+        let deleted = await vm.deleteProject()
+        XCTAssertTrue(deleted)
+        let remaining = try await pool.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM chat_conversations") }
         XCTAssertEqual(remaining, 1)
-        XCTAssertNil(try pool.read { try ChatProjectQueries.fetchByID($0, id: self.projectID) })
+        let row = try await pool.read { try ChatProjectQueries.fetchByID($0, id: projectID) }
+        XCTAssertNil(row)
     }
 
     /// A rename or source change inside the debounce window must not reset the
@@ -203,8 +207,8 @@ final class ProjectDetailViewModelTests: XCTestCase {
         let vm = makeVM(debounce: .seconds(60))
         vm.load()
         vm.instructionsEdited("Still typing")
-        vm.rename("Renamed")
-        vm.addSource(ChatEntityHit(kind: .track, ref: "7", label: "T", detail: ""))
+        await vm.rename("Renamed")
+        await vm.addSource(ChatEntityHit(kind: .track, ref: "7", label: "T", detail: ""))
         XCTAssertEqual(vm.instructionsDraft, "Still typing")
         await vm.flush()
         let stored = try storedInstructions()
@@ -256,7 +260,8 @@ final class ProjectDetailViewModelTests: XCTestCase {
         let vm = makeVM(debounce: .seconds(60))
         vm.load()
         vm.instructionsEdited("typed just before delete")
-        XCTAssertTrue(vm.deleteProject())
+        let deleted = await vm.deleteProject()
+        XCTAssertTrue(deleted)
         let saved = await vm.flush()
         XCTAssertTrue(saved)
         XCTAssertNil(vm.errorMessage)
@@ -292,9 +297,9 @@ final class ProjectDetailViewModelTests: XCTestCase {
 
     /// A later successful list refresh (not `load`) does not unlock editing:
     /// only a load puts the stored text into the drafts.
-    func testRefreshWithoutLoadKeepsEditingOff() throws {
+    func testRefreshWithoutLoadKeepsEditingOff() async throws {
         let vm = makeVM()
-        vm.addSource(ChatEntityHit(kind: .track, ref: "7", label: "T", detail: ""))
+        await vm.addSource(ChatEntityHit(kind: .track, ref: "7", label: "T", detail: ""))
         XCTAssertNotNil(vm.project)
         XCTAssertFalse(vm.draftsLoaded)
         vm.load()

@@ -20,6 +20,9 @@ final class PeopleViewModel {
     private(set) var interactions: [UserInteraction] = []
     private let dbManager: DatabaseManager
     private var observationTask: Task<Void, Never>?
+    /// One pending star write per person (board #670).
+    let pendingWrites = PendingWrites()
+    private var connectionsSave: Task<Void, Never>?
 
     init(dbManager: DatabaseManager) {
         self.dbManager = dbManager
@@ -183,19 +186,31 @@ final class PeopleViewModel {
     /// Profile writes go by the owner's profile key
     /// (`ProfileQueries.ownerProfileWriteKey`), never `currentUserID` — that
     /// is the Slack id the cards and the graph are keyed by.
-    func updateConnections(reports: [String], peers: [String], manager: String) {
+    /// Saves run one after another (board #670), so an older pick never
+    /// lands after a newer one.
+    func updateConnections(reports: [String], peers: [String], manager: String) async {
+        let previous = connectionsSave
+        let save = Task {
+            await previous?.value
+            await writeConnections(reports: reports, peers: peers, manager: manager)
+        }
+        connectionsSave = save
+        await save.value
+    }
+
+    private func writeConnections(reports: [String], peers: [String], manager: String) async {
         do {
             let encoder = JSONEncoder()
             let reportsJSON = String(data: try encoder.encode(reports), encoding: .utf8) ?? "[]"
             let peersJSON = String(data: try encoder.encode(peers), encoding: .utf8) ?? "[]"
-            try dbManager.dbPool.write { db in
+            try await dbManager.dbPool.write { db in
                 let userID = try ProfileQueries.ownerProfileWriteKey(db)
                 try ProfileQueries.updateField(db, slackUserID: userID, field: "reports", value: reportsJSON)
                 try ProfileQueries.updateField(db, slackUserID: userID, field: "peers", value: peersJSON)
                 try ProfileQueries.updateField(db, slackUserID: userID, field: "manager", value: manager)
             }
             // Reload profile
-            currentProfile = try dbManager.dbPool.read { db in
+            currentProfile = try await dbManager.dbPool.read { db in
                 try ProfileQueries.fetchCurrentProfile(db)
             }
         } catch {
@@ -203,27 +218,25 @@ final class PeopleViewModel {
         }
     }
 
-    func toggleStarredPerson(_ personUserID: String) {
-        let wasStarred = starredPeopleIDs.contains(personUserID)
-        // Optimistic update
-        if wasStarred {
-            starredPeopleIDs.remove(personUserID)
-        } else {
-            starredPeopleIDs.insert(personUserID)
+    /// The star changes only once the write landed; a second press while it
+    /// waits does nothing (board #670).
+    func toggleStarredPerson(_ personUserID: String) async {
+        await pendingWrites.run("star:\(personUserID)") {
+            await writeStar(personUserID)
         }
+    }
+
+    private func writeStar(_ personUserID: String) async {
+        let wasStarred = starredPeopleIDs.contains(personUserID)
         do {
             if wasStarred {
-                try dbManager.removeStarredPerson(personUserID)
+                try await dbManager.removeStarredPerson(personUserID)
+                starredPeopleIDs.remove(personUserID)
             } else {
-                try dbManager.addStarredPerson(personUserID)
+                try await dbManager.addStarredPerson(personUserID)
+                starredPeopleIDs.insert(personUserID)
             }
         } catch {
-            // Revert on failure
-            if wasStarred {
-                starredPeopleIDs.insert(personUserID)
-            } else {
-                starredPeopleIDs.remove(personUserID)
-            }
             errorMessage = "Failed to update starred person: \(error.localizedDescription)"
         }
     }

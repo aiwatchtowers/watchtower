@@ -28,6 +28,8 @@ final class UserStatsViewModel {
     var errorMessage: String?
 
     private let dbManager: DatabaseManager
+    /// One pending toggle per row (board #670).
+    private let pendingWrites = PendingWrites()
     private(set) var observationTask: Task<Void, Never>?
 
     init(dbManager: DatabaseManager) {
@@ -145,11 +147,20 @@ final class UserStatsViewModel {
         stats.filter(\.effectiveIsBot).reduce(0) { $0 + $1.totalMessages }
     }
 
-    func toggleMuteForLLM(userID: String) {
+    /// A toggle pressed again while its write waits does nothing (board #670).
+    func toggleMuteForLLM(userID: String) async {
+        await pendingWrites.run("mute:\(userID)") { await writeMute(userID: userID) }
+    }
+
+    func toggleBotOverride(userID: String) async {
+        await pendingWrites.run("bot:\(userID)") { await writeBotOverride(userID: userID) }
+    }
+
+    private func writeMute(userID: String) async {
         guard let stat = stats.first(where: { $0.id == userID }) else { return }
         let newValue = !stat.isMutedForLLM
         do {
-            try dbManager.dbPool.write { db in
+            try await dbManager.dbPool.write { db in
                 try UserStatsQueries.setMutedForLLM(db, userID: userID, muted: newValue)
             }
             load()
@@ -158,7 +169,7 @@ final class UserStatsViewModel {
         }
     }
 
-    func toggleBotOverride(userID: String) {
+    private func writeBotOverride(userID: String) async {
         guard let stat = stats.first(where: { $0.id == userID }) else { return }
         let newValue: Bool? = stat.effectiveIsBot ? false : true
         // If the override would match the Slack value, clear it instead
@@ -169,7 +180,7 @@ final class UserStatsViewModel {
             finalValue = newValue
         }
         do {
-            try dbManager.dbPool.write { db in
+            try await dbManager.dbPool.write { db in
                 try UserStatsQueries.setBotOverride(db, userID: userID, isBot: finalValue)
             }
             load()

@@ -41,3 +41,27 @@ enum ViewWrite {
         return true
     }
 }
+
+/// One pending write per key, for a view model's user actions (board #670).
+///
+/// A view model's write awaits the writer queue, so a second press can land
+/// while the first still waits. `run` does nothing (returns nil) while a
+/// write under the same key is pending: a toggle is never flipped twice, a
+/// create never runs twice, and a read-modify-write of one row never builds
+/// on the snapshot the first write is about to replace.
+@MainActor
+final class PendingWrites {
+    private var keys: Set<AnyHashable> = []
+
+    func isPending(_ key: AnyHashable) -> Bool {
+        keys.contains(key)
+    }
+
+    /// Runs `body` unless a write under `key` is pending; nil when it did not run.
+    @discardableResult
+    func run<T>(_ key: AnyHashable, _ body: @MainActor () async -> T) async -> T? {
+        guard keys.insert(key).inserted else { return nil }
+        defer { keys.remove(key) }
+        return await body()
+    }
+}

@@ -443,7 +443,7 @@ struct ChannelStatisticsView: View {
                         .foregroundStyle(.secondary)
                     Spacer()
                     Button(actionButtonLabel(rec.action)) {
-                        vm.applyRecommendation(rec)
+                        Task { await vm.applyRecommendation(rec) }
                     }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
@@ -583,7 +583,7 @@ struct ChannelStatisticsView: View {
             // Action buttons
             HStack(spacing: 4) {
                 Button {
-                    vm.toggleMute(channelID: stat.id)
+                    Task { await vm.toggleMute(channelID: stat.id) }
                 } label: {
                     Image(systemName: stat.isMutedForLLM ? "speaker.wave.2" : "speaker.slash")
                         .font(.caption)
@@ -592,7 +592,7 @@ struct ChannelStatisticsView: View {
                 .help(stat.isMutedForLLM ? "Unmute for AI" : "Mute for AI")
 
                 Button {
-                    vm.toggleFavorite(channelID: stat.id)
+                    Task { await vm.toggleFavorite(channelID: stat.id) }
                 } label: {
                     Image(systemName: stat.isFavorite ? "star.slash" : "star")
                         .font(.caption)

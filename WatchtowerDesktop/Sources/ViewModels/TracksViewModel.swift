@@ -65,6 +65,8 @@ final class TracksViewModel {
     private(set) var workspaceDomain: String?
     private(set) var slackLinks: SlackLinkResolver?
     private let dbManager: DatabaseManager
+    /// One pending sub-item write per track (board #670).
+    let pendingWrites = PendingWrites()
     private var observationTask: Task<Void, Never>?
 
     // User name cache for resolving Slack user IDs
@@ -194,9 +196,9 @@ final class TracksViewModel {
         }
     }
 
-    func markRead(_ track: Track) {
+    func markRead(_ track: Track) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await dbManager.dbPool.write { db in
                 try TrackQueries.markRead(db, id: track.id)
             }
             load()
@@ -213,9 +215,9 @@ final class TracksViewModel {
         errorMessage = "Failed to \(what): \(error.localizedDescription)"
     }
 
-    func updatePriority(_ track: Track, to priority: String) {
+    func updatePriority(_ track: Track, to priority: String) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await dbManager.dbPool.write { db in
                 try TrackQueries.updatePriority(db, id: track.id, priority: priority)
             }
             load()
@@ -224,9 +226,9 @@ final class TracksViewModel {
         }
     }
 
-    func updateOwnership(_ track: Track, to ownership: String) {
+    func updateOwnership(_ track: Track, to ownership: String) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await dbManager.dbPool.write { db in
                 try TrackQueries.updateOwnership(db, id: track.id, ownership: ownership)
             }
             load()
@@ -235,23 +237,29 @@ final class TracksViewModel {
         }
     }
 
-    func toggleSubItem(_ track: Track, at index: Int) {
+    /// One sub-item write per track at a time (board #670): the change is
+    /// built on the list as loaded, so a second toggle while the first
+    /// waits would overwrite it. It does nothing.
+    func toggleSubItem(_ track: Track, at index: Int) async {
         var items = track.decodedSubItems
         guard index >= 0, index < items.count else { return }
         items[index].status = items[index].isDone ? "open" : "done"
-        do {
-            try dbManager.dbPool.write { db in
-                try TrackQueries.updateSubItems(db, id: track.id, subItems: items)
+        let updated = items
+        await pendingWrites.run("subItems:\(track.id)") {
+            do {
+                try await dbManager.dbPool.write { db in
+                    try TrackQueries.updateSubItems(db, id: track.id, subItems: updated)
+                }
+                load()
+            } catch {
+                reportWriteFailure("toggle sub-item", error)
             }
-            load()
-        } catch {
-            reportWriteFailure("toggle sub-item", error)
         }
     }
 
-    func dismissTrack(_ track: Track) {
+    func dismissTrack(_ track: Track) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await dbManager.dbPool.write { db in
                 try TrackQueries.dismiss(db, id: track.id)
             }
             load()
@@ -298,9 +306,10 @@ final class TracksViewModel {
 
     /// Soft-dismisses `ids` in one write (reversible one by one via Restore)
     /// and leaves selection mode.
-    func dismissTracks(ids: [Int]) {
+    @discardableResult
+    func dismissTracks(ids: [Int]) async -> Bool {
         do {
-            let dismissed = try dbManager.dbPool.write { db in
+            let dismissed = try await dbManager.dbPool.write { db in
                 try TrackQueries.dismissMany(db, ids: ids)
             }
             endSelection()
@@ -308,14 +317,16 @@ final class TracksViewModel {
             if dismissed < ids.count {
                 notice = "Dismissed \(dismissed) of \(ids.count); the rest were already dismissed or gone."
             }
+            return true
         } catch {
             errorMessage = "Failed to dismiss tracks: \(error.localizedDescription)"
+            return false
         }
     }
 
-    func restoreTrack(_ track: Track) {
+    func restoreTrack(_ track: Track) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await dbManager.dbPool.write { db in
                 try TrackQueries.restore(db, id: track.id)
             }
             load()
@@ -365,9 +376,9 @@ final class TracksViewModel {
         return slackLinks?.channelURL(channelID, messageTS: ts)
     }
 
-    func submitFeedback(trackID: Int, rating: Int) {
+    func submitFeedback(trackID: Int, rating: Int) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await dbManager.dbPool.write { db in
                 try FeedbackQueries.addFeedback(
                     db,
                     entityType: "track",

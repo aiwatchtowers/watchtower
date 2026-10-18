@@ -446,7 +446,7 @@ struct TrackDetailView: View {
 
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                     Button {
-                        viewModel.toggleSubItem(track, at: index)
+                        Task { await viewModel.toggleSubItem(track, at: index) }
                     } label: {
                         HStack(spacing: 8) {
                             Image(
@@ -762,7 +762,7 @@ struct TrackDetailView: View {
                 }
             } else if track.isDismissed {
                 Button {
-                    viewModel.restoreTrack(track)
+                    Task { await viewModel.restoreTrack(track) }
                 } label: {
                     Label("Restore", systemImage: "arrow.uturn.backward")
                 }
@@ -770,7 +770,7 @@ struct TrackDetailView: View {
             } else {
                 Button {
                     onClose?()
-                    viewModel.dismissTrack(track)
+                    Task { await viewModel.dismissTrack(track) }
                 } label: {
                     Label("Dismiss", systemImage: "archivebox")
                 }
@@ -1068,7 +1068,7 @@ struct TrackDetailView: View {
         Menu {
             ForEach(["high", "medium", "low"], id: \.self) { priority in
                 Button {
-                    viewModel.updatePriority(track, to: priority)
+                    Task { await viewModel.updatePriority(track, to: priority) }
                 } label: {
                     if priority == track.priority {
                         Label(priority.capitalized, systemImage: "checkmark")
@@ -1098,7 +1098,7 @@ struct TrackDetailView: View {
         Menu {
             ForEach(["mine", "delegated", "watching"], id: \.self) { own in
                 Button {
-                    viewModel.updateOwnership(track, to: own)
+                    Task { await viewModel.updateOwnership(track, to: own) }
                 } label: {
                     if own == track.ownership {
                         Label(ownershipLabel(own), systemImage: "checkmark")

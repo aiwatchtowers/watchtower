@@ -71,15 +71,17 @@ struct TracksListView: View {
             presenting: pendingBulkDismiss
         ) { pending in
             Button("Dismiss \(pending.ids.count)", role: .destructive) {
-                if let id = selectedItemID, pending.ids.contains(id) { selectedItemID = nil }
-                viewModel?.dismissTracks(ids: pending.ids)
+                Task {
+                    guard await viewModel?.dismissTracks(ids: pending.ids) == true else { return }
+                    if let id = selectedItemID, pending.ids.contains(id) { selectedItemID = nil }
+                }
             }
         } message: { _ in
             Text("Dismissed tracks leave the list; show them with the archive filter and restore any one.")
         }
         .onChange(of: selectedItemID) { _, newID in
             if let id = newID, let track = viewModel?.itemByID(id), track.isUnread {
-                viewModel?.markRead(track)
+                Task { await viewModel?.markRead(track) }
             }
         }
     }
@@ -423,21 +425,21 @@ struct TracksListView: View {
             .contextMenu {
                 if track.isDismissed {
                     Button {
-                        vm.restoreTrack(track)
+                        Task { await vm.restoreTrack(track) }
                     } label: {
                         Label("Restore", systemImage: "arrow.uturn.backward")
                     }
                 } else {
                     Button {
                         if selectedItemID == track.id { selectedItemID = nil }
-                        vm.dismissTrack(track)
+                        Task { await vm.dismissTrack(track) }
                     } label: {
                         Label("Dismiss", systemImage: "archivebox")
                     }
                 }
                 if track.isUnread {
                     Button {
-                        vm.markRead(track)
+                        Task { await vm.markRead(track) }
                     } label: {
                         Label("Mark as Read", systemImage: "eye")
                     }

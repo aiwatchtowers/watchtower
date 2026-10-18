@@ -131,8 +131,11 @@ struct ChatSplitView: View {
             TextField("Title", text: $renameText)
             Button("Save") {
                 if let id = chatVM.conversationID {
-                    historyVM.rename(id, title: renameText)
-                    chatVM.reload()
+                    let title = renameText
+                    Task {
+                        await historyVM.rename(id, title: title)
+                        chatVM.reload()
+                    }
                 }
             }
             Button("Cancel", role: .cancel) {}
@@ -244,7 +247,7 @@ struct ChatSplitView: View {
     private func delete(_ id: Int64) {
         let wasShown = id == chatVM.conversationID
         chatVM.forget(conversationID: id)
-        historyVM.deleteConversation(id)
+        Task { await historyVM.deleteConversation(id) }
         if wasShown { showLanding() }
     }
 
@@ -252,7 +255,7 @@ struct ChatSplitView: View {
     private func archive(_ id: Int64) {
         let wasShown = id == chatVM.conversationID
         chatVM.forget(conversationID: id)
-        historyVM.archive(id)
+        Task { await historyVM.archive(id) }
         if wasShown { showLanding() }
     }
 

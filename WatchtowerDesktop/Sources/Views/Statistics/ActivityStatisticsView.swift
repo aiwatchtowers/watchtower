@@ -346,7 +346,7 @@ struct ActivityStatisticsView: View {
 
             // Action: toggle mute
             Button {
-                vm.toggleMuteForLLM(userID: bot.id)
+                Task { await vm.toggleMuteForLLM(userID: bot.id) }
             } label: {
                 Image(systemName: bot.isMutedForLLM ? "speaker.wave.2" : "speaker.slash")
                     .font(.caption)

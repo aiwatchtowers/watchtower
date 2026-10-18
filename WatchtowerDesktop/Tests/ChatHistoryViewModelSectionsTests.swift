@@ -40,15 +40,15 @@ final class ChatHistoryViewModelSectionsTests: XCTestCase {
         let vm = await loaded()
         XCTAssertEqual(vm.sections.map(\.kind), [.today])
 
-        vm.togglePin(a)
+        await vm.togglePin(a)
         XCTAssertEqual(vm.sections.map(\.kind), [.pinned, .today])
-        vm.rename(b, title: "  Renamed  ")
+        await vm.rename(b, title: "  Renamed  ")
         XCTAssertEqual(vm.conversations.first { $0.id == b }?.title, "Renamed")
         XCTAssertEqual(vm.conversations.first { $0.id == b }?.titleSource, "user")
-        vm.rename(b, title: "   ")
+        await vm.rename(b, title: "   ")
         XCTAssertEqual(vm.conversations.first { $0.id == b }?.title, "Renamed", "an empty rename is ignored")
 
-        vm.archive(a)
+        await vm.archive(a)
         XCTAssertFalse(vm.conversations.contains { $0.id == a })
         XCTAssertNil(vm.lastError)
     }
@@ -62,7 +62,7 @@ final class ChatHistoryViewModelSectionsTests: XCTestCase {
         }
         let vm = await loaded()
         XCTAssertFalse(vm.selectAdjacent(by: 0))
-        vm.togglePin(b)
+        await vm.togglePin(b)
         let shown = vm.sections.flatMap(\.conversations).map(\.id)
         XCTAssertEqual(shown.first, b, "the pinned chat leads")
         XCTAssertEqual(Set(shown), [a, b, c])

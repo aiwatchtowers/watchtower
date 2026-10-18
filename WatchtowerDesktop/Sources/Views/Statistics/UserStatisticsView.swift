@@ -390,7 +390,7 @@ struct UserStatisticsView: View {
             // Actions
             HStack(spacing: 4) {
                 Button {
-                    vm.toggleBotOverride(userID: stat.id)
+                    Task { await vm.toggleBotOverride(userID: stat.id) }
                 } label: {
                     Image(systemName: stat.effectiveIsBot ? "person" : "cpu")
                         .font(.caption)
@@ -400,7 +400,7 @@ struct UserStatisticsView: View {
 
                 if stat.effectiveIsBot {
                     Button {
-                        vm.toggleMuteForLLM(userID: stat.id)
+                        Task { await vm.toggleMuteForLLM(userID: stat.id) }
                     } label: {
                         Image(systemName: stat.isMutedForLLM ? "speaker.wave.2" : "speaker.slash")
                             .font(.caption)

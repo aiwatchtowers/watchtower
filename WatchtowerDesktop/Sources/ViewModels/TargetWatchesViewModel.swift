@@ -10,6 +10,8 @@ import WatchtowerCore
 final class TargetWatchesViewModel {
     let target: Target
     private let dbPool: DatabasePool
+    /// One pending apply or dismiss per event (board #670).
+    let pendingWrites = PendingWrites()
     private let scanCenter: TrackScanCenter
     private let targetsViewModel: TargetsViewModel
     private let scanService: TrackScanService
@@ -143,11 +145,21 @@ final class TargetWatchesViewModel {
     /// confirmed proposed action always has a target to mutate.
     var canApplyActions: Bool { true }
 
-    func applyAction(for event: TrackEvent) {
+    /// One apply or dismiss per event at a time (board #670): a second
+    /// press while the first waits would apply the action twice.
+    func applyAction(for event: TrackEvent) async {
+        await pendingWrites.run(event.id) { await applyNow(event) }
+    }
+
+    func dismissAction(for event: TrackEvent) async {
+        await pendingWrites.run(event.id) { await dismissNow(event) }
+    }
+
+    private func applyNow(_ event: TrackEvent) async {
         guard let action = event.decodedAction else { return }
         errorMessage = nil
         do {
-            let (fresh, eventExists) = try dbPool.read { db in
+            let (fresh, eventExists) = try await dbPool.read { db in
                 (try TargetQueries.fetchByID(db, id: target.id), try TrackEventQueries.exists(db, id: event.id))
             }
             guard let fresh else {
@@ -161,14 +173,14 @@ final class TargetWatchesViewModel {
                 return
             }
             _ = try TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
-            try dbPool.write { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "applied") }
+            try await dbPool.write { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "applied") }
         } catch { reportWriteFailure("apply", error) }
     }
 
-    func dismissAction(for event: TrackEvent) {
+    private func dismissNow(_ event: TrackEvent) async {
         errorMessage = nil
         do {
-            try dbPool.write { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "dismissed") }
+            try await dbPool.write { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "dismissed") }
         } catch { reportWriteFailure("dismiss", error) }
     }
 
@@ -185,23 +197,23 @@ final class TargetWatchesViewModel {
         errorMessage = "Failed to \(what): \(error.localizedDescription)"
     }
 
-    func markRead(_ event: TrackEvent) {
+    func markRead(_ event: TrackEvent) async {
         guard event.isUnread else { return }
-        try? dbPool.write { db in try TrackEventQueries.markRead(db, id: event.id) }
+        try? await dbPool.write { db in try TrackEventQueries.markRead(db, id: event.id) }
     }
 
     // MARK: - Watch management
 
-    func setCollecting(_ watch: Track, _ on: Bool) {
+    func setCollecting(_ watch: Track, _ on: Bool) async {
         errorMessage = nil
         do {
-            try dbPool.write { db in try TrackQueries.setEnabled(db, id: watch.id, enabled: on) }
+            try await dbPool.write { db in try TrackQueries.setEnabled(db, id: watch.id, enabled: on) }
         } catch {
             reportWriteFailure("update the watch", error)
         }
     }
 
-    func deleteWatch(_ watch: Track) {
-        try? dbPool.write { db in try TrackQueries.delete(db, id: watch.id) }
+    func deleteWatch(_ watch: Track) async {
+        try? await dbPool.write { db in try TrackQueries.delete(db, id: watch.id) }
     }
 }

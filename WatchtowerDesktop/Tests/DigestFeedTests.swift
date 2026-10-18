@@ -167,9 +167,9 @@ final class DigestFeedTests: XCTestCase {
     // MARK: - Stream markRead flows through
 
     @MainActor
-    func testMarkStreamReadUpdatesTheFeedEntryAndUnreadCount() throws {
+    func testMarkStreamReadUpdatesTheFeedEntryAndUnreadCount() async throws {
         var streamID = 0
-        try dbManager.dbPool.write { db in
+        try await dbManager.dbPool.write { db in
             streamID = Int(try TestDatabase.insertStreamDigest(db))
         }
 
@@ -178,7 +178,7 @@ final class DigestFeedTests: XCTestCase {
         XCTAssertFalse(vm.feedEntries[0].isRead)
         XCTAssertEqual(vm.unreadStreamCount, 1)
 
-        vm.markStreamRead(id: streamID)
+        await vm.markStreamRead(id: streamID)
 
         XCTAssertTrue(vm.feedEntries[0].isRead)
         XCTAssertEqual(vm.unreadStreamCount, 0)

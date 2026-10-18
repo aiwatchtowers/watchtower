@@ -31,6 +31,8 @@ final class ChannelStatsViewModel {
     private(set) var slackLinks: SlackLinkResolver?
 
     private let dbManager: DatabaseManager
+    /// One pending toggle per row (board #670).
+    private let pendingWrites = PendingWrites()
     private(set) var observationTask: Task<Void, Never>?
 
     init(dbManager: DatabaseManager) {
@@ -154,19 +156,25 @@ final class ChannelStatsViewModel {
         stats.filter { if case .pending = $0.digestStatus { return true }; return false }.count
     }
 
-    func toggleMute(channelID: String) {
-        guard let stat = stats.first(where: { $0.id == channelID }) else { return }
-        setMuted(channelID: channelID, muted: !stat.isMutedForLLM)
+    /// A toggle pressed again while its write waits does nothing (board #670):
+    /// it would flip from the same stale row a second time.
+    func toggleMute(channelID: String) async {
+        await pendingWrites.run("mute:\(channelID)") {
+            guard let stat = stats.first(where: { $0.id == channelID }) else { return }
+            await setMuted(channelID: channelID, muted: !stat.isMutedForLLM)
+        }
     }
 
-    func toggleFavorite(channelID: String) {
-        guard let stat = stats.first(where: { $0.id == channelID }) else { return }
-        setFavorite(channelID: channelID, favorite: !stat.isFavorite)
+    func toggleFavorite(channelID: String) async {
+        await pendingWrites.run("favorite:\(channelID)") {
+            guard let stat = stats.first(where: { $0.id == channelID }) else { return }
+            await setFavorite(channelID: channelID, favorite: !stat.isFavorite)
+        }
     }
 
-    private func setMuted(channelID: String, muted: Bool) {
+    private func setMuted(channelID: String, muted: Bool) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await dbManager.dbPool.write { db in
                 try ChannelStatsQueries.toggleMuteForLLM(db, channelID: channelID, muted: muted)
             }
             load()
@@ -175,9 +183,9 @@ final class ChannelStatsViewModel {
         }
     }
 
-    private func setFavorite(channelID: String, favorite: Bool) {
+    private func setFavorite(channelID: String, favorite: Bool) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await dbManager.dbPool.write { db in
                 try ChannelStatsQueries.toggleFavorite(db, channelID: channelID, favorite: favorite)
             }
             load()
@@ -194,12 +202,12 @@ final class ChannelStatsViewModel {
     /// repeated apply is idempotent and can never un-mute (feeding the channel
     /// back into the AI pipelines) or un-favorite. "Leave" mutes: Watchtower
     /// cannot leave a Slack channel for the owner.
-    func applyRecommendation(_ rec: ChannelRecommendation) {
+    func applyRecommendation(_ rec: ChannelRecommendation) async {
         switch rec.action {
         case .mute, .leave:
-            setMuted(channelID: rec.channelID, muted: true)
+            await setMuted(channelID: rec.channelID, muted: true)
         case .favorite:
-            setFavorite(channelID: rec.channelID, favorite: true)
+            await setFavorite(channelID: rec.channelID, favorite: true)
         }
     }
 

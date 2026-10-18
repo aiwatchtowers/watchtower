@@ -95,6 +95,10 @@ final class ReviewChangesModel {
     var breakHintDismissed = false
     /// The active seconds the round row holds.
     private var savedActiveSeconds = 0
+    /// The last round-state save, which the next one waits for, and the
+    /// periodic save under way (board #670).
+    @ObservationIgnored private var stateSave: Task<Void, Error>?
+    @ObservationIgnored private var periodicSave: Task<Void, Never>?
 
     // The overview, the agent's notes, undo and answers (Plan 3).
     private(set) var overview: OverviewState = .idle
@@ -365,8 +369,8 @@ final class ReviewChangesModel {
     // MARK: - Comments and Viewed
 
     /// A draft on lines of the open file `path` (anchored by its text on `side`).
-    func addComment(path: String, side: String, startLine: Int, endLine: Int, body: String, lens: String = "") throws {
-        try run {
+    func addComment(path: String, side: String, startLine: Int, endLine: Int, body: String, lens: String = "") async throws {
+        try await run {
             guard let info = round else { throw ModelError.noRound }
             // A sent round is closed: a draft written into it would never be sent.
             guard info.status == "open" else { throw ModelError.roundNotOpen }
@@ -375,7 +379,7 @@ final class ReviewChangesModel {
             guard selectedPath == path, let sides = currentSides else { throw ModelError.fileNotLoaded(path) }
             let text = side == "old" ? sides.old.text : sides.new.text
             let anchor = ReviewCommentAnchor.anchor(text: text, startLine: startLine, endLine: endLine)
-            _ = try db.write {
+            _ = try await db.write {
                 try ReviewQueries.addDraft($0, roundID: info.id, path: path, side: side, startLine: startLine,
                                            endLine: endLine, anchor: anchor, treeSHA: info.treeSha, body: body, lens: lens)
             }
@@ -383,38 +387,38 @@ final class ReviewChangesModel {
         }
     }
 
-    func editComment(id: Int64, body: String) throws {
-        try run {
+    func editComment(id: Int64, body: String) async throws {
+        try await run {
             guard let info = round else { throw ModelError.noRound }
             guard info.status == "open" else { throw ModelError.roundNotOpen }
-            try db.write { try ReviewQueries.updateDraft($0, id: id, body: body) }
+            try await db.write { try ReviewQueries.updateDraft($0, id: id, body: body) }
             try reloadComments()
         }
     }
 
-    func deleteComment(id: Int64) throws {
-        try run {
+    func deleteComment(id: Int64) async throws {
+        try await run {
             // A carried comment is closed, not deleted: a deleted one would be carried again on reopen.
             let carried = comments.first { $0.id == id }?.status == .carried
-            try db.write { carried ? try ReviewQueries.resolve($0, id: id) : try ReviewQueries.deleteDraft($0, id: id) }
+            try await db.write { carried ? try ReviewQueries.resolve($0, id: id) : try ReviewQueries.deleteDraft($0, id: id) }
             try reloadComments()
         }
     }
 
-    func resolve(id: Int64) throws {
-        try run {
-            try db.write { try ReviewQueries.resolve($0, id: id) }
+    func resolve(id: Int64) async throws {
+        try await run {
+            try await db.write { try ReviewQueries.resolve($0, id: id) }
             try reloadComments()
         }
     }
 
-    func toggleViewed(_ path: String) throws {
-        try run {
+    func toggleViewed(_ path: String) async throws {
+        try await run {
             guard let info = round else { throw ModelError.noRound }
             guard let file = allFiles.first(where: { $0.path == path }) else { throw ModelError.unknownFile(path) }
             let key = viewed[path] == Self.contentKey(file) ? nil : Self.contentKey(file)
-            try db.write { try ReviewQueries.setViewed($0, roundID: info.id, path: path, contentSHA: key) }
-            viewed = try db.read { try ReviewQueries.viewed($0, roundID: info.id) }
+            try await db.write { try ReviewQueries.setViewed($0, roundID: info.id, path: path, contentSHA: key) }
+            viewed = try await db.read { try ReviewQueries.viewed($0, roundID: info.id) }
         }
     }
 
@@ -431,7 +435,7 @@ final class ReviewChangesModel {
         sending = true
         defer { sending = false }
         lastError = nil
-        flushState()
+        await flushState()
         do {
             let env = try Self.checked(await cli.reviewSend(projectID: projectID, roundID: info.id))
             // Either way the round is closed now: sent by this call, or already before it.
@@ -450,8 +454,8 @@ final class ReviewChangesModel {
     }
 
     /// Wrap-up marks live under this chapter key and the `intent` lens.
-    static let wrapupChapter = "wrapup"
-    static let intentLens = "intent"
+    nonisolated static let wrapupChapter = "wrapup"
+    nonisolated static let intentLens = "intent"
     /// Unsaved active seconds that trigger a save.
     private static let saveEverySeconds = 30
 
@@ -459,9 +463,9 @@ final class ReviewChangesModel {
 
     // Mode, phase, chapter
 
-    func setMode(_ m: Mode) throws {
-        try run {
-            try saveState(mode: m, phase: phase, chapterKey: persistedChapterKey)
+    func setMode(_ m: Mode) async throws {
+        try await run {
+            try await saveState(mode: m, phase: phase, chapterKey: persistedChapterKey)
             mode = m
         }
         // Deep makes its overview by itself: switching to it asks for one
@@ -470,10 +474,10 @@ final class ReviewChangesModel {
         if m == .deep, load == .ready, !(overviewShown && overviewTreeSHA == round?.treeSha) { startOverview() }
     }
 
-    func setPhase(_ p: ReviewPhase) throws {
-        try run {
+    func setPhase(_ p: ReviewPhase) async throws {
+        try await run {
             // A sent round only moves on screen; the position is saved while it is open.
-            if round?.status == "open" { try saveState(mode: mode, phase: p, chapterKey: persistedChapterKey) }
+            if round?.status == "open" { try await saveState(mode: mode, phase: p, chapterKey: persistedChapterKey) }
             phase = p
         }
     }
@@ -481,9 +485,9 @@ final class ReviewChangesModel {
     /// Makes `key` the current chapter and opens its first non-collapsed file.
     func selectChapter(_ key: String) async throws {
         guard let chapter = chapters.first(where: { $0.key == key }) else { return }
-        try run {
+        try await run {
             // A sent round only moves on screen; the position is saved while it is open.
-            if round?.status == "open" { try saveState(mode: mode, phase: phase, chapterKey: key) }
+            if round?.status == "open" { try await saveState(mode: mode, phase: phase, chapterKey: key) }
             currentChapterKey = key
             awaitedAIChapterKey = nil
         }
@@ -511,10 +515,10 @@ final class ReviewChangesModel {
         checks.filter { $0.chapterKey == key }
     }
 
-    func setCheck(chapterKey: String, lens: String, itemKey: String, checked: Bool) throws {
-        try run {
+    func setCheck(chapterKey: String, lens: String, itemKey: String, checked: Bool) async throws {
+        try await run {
             let info = try openRound()
-            try writeInOpenRound {
+            try await writeInOpenRound {
                 try ReviewQueries.setCheck($0, roundID: info.id, chapterKey: chapterKey, lens: lens, itemKey: itemKey,
                                            state: checked ? .checked : nil)
             }
@@ -523,10 +527,10 @@ final class ReviewChangesModel {
     }
 
     /// A design comment for a checklist question, and the question marked `commented`.
-    func commentOnCheck(chapterKey: String, lens: String, item: ReviewLens.Item, body: String) throws {
-        try run {
+    func commentOnCheck(chapterKey: String, lens: String, item: ReviewLens.Item, body: String) async throws {
+        try await run {
             let info = try openRound()
-            try writeInOpenRound { db in
+            try await writeInOpenRound { db in
                 _ = try Self.addDesign(db, info: info, body: body, lens: lens)
                 try ReviewQueries.setCheck(db, roundID: info.id, chapterKey: chapterKey, lens: lens, itemKey: item.key,
                                            state: .commented)
@@ -536,19 +540,19 @@ final class ReviewChangesModel {
         }
     }
 
-    func addDesignComment(body: String, lens: String) throws {
-        try run {
+    func addDesignComment(body: String, lens: String) async throws {
+        try await run {
             let info = try openRound()
-            try db.write { _ = try Self.addDesign($0, info: info, body: body, lens: lens) }
+            try await db.write { _ = try Self.addDesign($0, info: info, body: body, lens: lens) }
             try reloadComments()
         }
     }
 
     /// Marks a Wrap-up intent item; partial and not done also leave a design comment.
-    func markIntent(_ item: ReviewIntentItem, state: ReviewCheck.State, note: String) throws {
-        try run {
+    func markIntent(_ item: ReviewIntentItem, state: ReviewCheck.State, note: String) async throws {
+        try await run {
             let info = try openRound()
-            try writeInOpenRound { db in
+            try await writeInOpenRound { db in
                 // An earlier mark of this item (this round's draft, or a carried one) is replaced.
                 let heads = [false, true].map { ReviewWrapUp.intentCommentBody(partial: $0, item: item, note: "") }
                 let earlier = try ReviewQueries.comments(db, roundID: info.id).filter { c in
@@ -707,10 +711,10 @@ final class ReviewChangesModel {
     }
 
     /// Takes a comment the agent resolved back into the open round.
-    func reopen(_ id: Int64) throws {
-        try run {
+    func reopen(_ id: Int64) async throws {
+        try await run {
             let info = try openRound()
-            try writeInOpenRound { try ReviewQueries.reopen($0, commentID: id, openRoundID: info.id) }
+            try await writeInOpenRound { try ReviewQueries.reopen($0, commentID: id, openRoundID: info.id) }
             try reloadComments()
         }
     }
@@ -721,16 +725,26 @@ final class ReviewChangesModel {
         pace.noteInteraction(at: date)
     }
 
-    func tick(at date: Date = .now, isKey: Bool) {
+    /// - Returns: the periodic save it started, if any.
+    @discardableResult
+    func tick(at date: Date = .now, isKey: Bool) -> Task<Void, Never>? {
         pace.tick(at: date, isKey: isKey)
-        if pace.activeSeconds - savedActiveSeconds >= Self.saveEverySeconds { flushState() }
+        // One periodic save at a time: until it lands the unsaved seconds
+        // stay over the mark, and each tick would queue another.
+        guard periodicSave == nil, pace.activeSeconds - savedActiveSeconds >= Self.saveEverySeconds else { return nil }
+        let save = Task {
+            await flushState()
+            periodicSave = nil
+        }
+        periodicSave = save
+        return save
     }
 
     /// Saves the position and active time now (on disappear and before Send).
-    func flushState() {
+    func flushState() async {
         guard round?.status == "open" else { return }
         do {
-            try saveState(mode: mode, phase: phase, chapterKey: persistedChapterKey)
+            try await saveState(mode: mode, phase: phase, chapterKey: persistedChapterKey)
         } catch {
             lastError = error.localizedDescription
         }
@@ -746,19 +760,31 @@ final class ReviewChangesModel {
 
     /// A write in the open round: a row that is no longer open rolls the whole
     /// write back and closes the round here, as `saveState` does.
-    private func writeInOpenRound(_ body: (Database) throws -> Void) throws {
+    private func writeInOpenRound(_ body: @escaping @Sendable (Database) throws -> Void) async throws {
         do {
-            try db.write(body)
+            try await db.write(body)
         } catch ReviewQueries.ReviewQueryError.roundNotOpen {
             round?.status = "sent"
             throw ModelError.roundClosed
         }
     }
 
-    private func saveState(mode: Mode, phase: ReviewPhase, chapterKey: String?) throws {
+    /// State saves run one after another (board #670), so an older position
+    /// never lands after a newer one.
+    private func saveState(mode: Mode, phase: ReviewPhase, chapterKey: String?) async throws {
+        let previous = stateSave
+        let save = Task {
+            _ = await previous?.result
+            try await writeState(mode: mode, phase: phase, chapterKey: chapterKey)
+        }
+        stateSave = save
+        try await save.value
+    }
+
+    private func writeState(mode: Mode, phase: ReviewPhase, chapterKey: String?) async throws {
         let info = try openRound()
         let seconds = pace.activeSeconds
-        let saved = try db.write {
+        let saved = try await db.write {
             try ReviewQueries.saveRoundState($0, roundID: info.id, mode: mode.rawValue, phase: phase,
                                              chapterKey: chapterKey ?? "", activeSeconds: seconds)
         }
@@ -775,17 +801,17 @@ final class ReviewChangesModel {
         checks = try db.read { try ReviewQueries.checks($0, roundID: info.id) }
     }
 
-    private static func addDesign(_ db: Database, info: ReviewRoundInfo, body: String, lens: String) throws -> Int64 {
+    nonisolated private static func addDesign(_ db: Database, info: ReviewRoundInfo, body: String, lens: String) throws -> Int64 {
         try ReviewQueries.addDraft(db, roundID: info.id, path: nil, side: "new", startLine: 0, endLine: 0,
                                    anchor: CommentAnchor(quote: "", prefix: "", suffix: "", heading: ""),
                                    treeSHA: info.treeSha, body: body, lens: lens)
     }
 
     /// Records a failure of a throwing action in `lastError` and rethrows it.
-    private func run(_ body: () throws -> Void) throws {
+    private func run(_ body: () async throws -> Void) async throws {
         do {
             lastError = nil
-            try body()
+            try await body()
         } catch {
             lastError = Self.message(error)
             throw error

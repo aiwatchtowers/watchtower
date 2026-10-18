@@ -9,11 +9,12 @@ final class ViewDatabaseWriteCallSiteTests: XCTestCase {
     /// `try` / `try?` / `try!`, an optional parenthesised receiver
     /// (`(db ?? other).write`), a dotted receiver with optional chaining
     /// (`appState.databaseManager?.dbPool.write`), then a GRDB write entry
-    /// point called with a closure or an argument — never `write(to:)`, a
-    /// file write. `try await …` never matches: `await` is followed by a space.
+    /// point called with a closure or an argument — never `write(to:)` or
+    /// `write(toFile:)`, a file write. `try await …` never matches: `await`
+    /// is followed by a space.
     private static let syncWrite = #"\btry[?!]?\s+(\([^()]*\)\s*)?[\w.?]*\."#
         + #"(write|writeWithoutTransaction|writeInTransaction|barrierWriteWithoutTransaction)"#
-        + #"\s*(\{|\((?!to:))"#
+        + #"\s*(\{|\((?!to:|toFile:))"#
 
     func testThePatternCatchesEverySynchronousWriteShape() throws {
         let write = try NSRegularExpression(pattern: Self.syncWrite)
@@ -34,6 +35,7 @@ final class ViewDatabaseWriteCallSiteTests: XCTestCase {
             "_ = try await db.dbPool.write { conn in",
             "await ViewWrite.run(db.dbPool, pending: $isSaving, { conn in",
             "try file.contents.write(to: url, atomically: true, encoding: .utf8)",
+            "try content.write(toFile: path, atomically: true, encoding: .utf8)",
             "try db.dbPool.read { conn in"
         ]
         for line in caught {
@@ -62,6 +64,44 @@ final class ViewDatabaseWriteCallSiteTests: XCTestCase {
         XCTAssertEqual(exempted, Self.offMainWrites.count,
                        "each exemption names exactly one line that is still there; drop one whose write moved")
     }
+
+    /// Board #670 phase 2: the view models under `Sources/ViewModels/` and
+    /// `DatabaseManager` (whose star toggles the Digests and People screens
+    /// call) are main-actor code too.
+    func testNoSynchronousDatabaseWriteInViewModels() throws {
+        let viewModels = Self.sources.appendingPathComponent("ViewModels")
+        let (scanned, _) = try scan(viewModels) { url in
+            url.pathExtension == "swift" && !Self.viewModelsStillSynchronous.contains(url.lastPathComponent)
+        }
+        XCTAssertGreaterThan(scanned, 40, "the scan found too few view models: wrong path?")
+        let (manager, _) = try scan(Self.sources.appendingPathComponent("Database")) {
+            $0.lastPathComponent == "DatabaseManager.swift"
+        }
+        XCTAssertEqual(manager, 1, "DatabaseManager.swift moved: point the scan at it")
+        let write = try NSRegularExpression(pattern: Self.syncWrite)
+        for name in Self.viewModelsStillSynchronous {
+            let text = try String(contentsOf: viewModels.appendingPathComponent(name), encoding: .utf8)
+            XCTAssertNotNil(write.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+                            "\(name) no longer writes synchronously: drop it from viewModelsStillSynchronous")
+        }
+    }
+
+    /// View models not converted yet, each tied to a synchronous contract
+    /// that has to change first (board #670 phase 2b): `TargetsViewModel`'s
+    /// mutators run inside the embedded chat engine's synchronous `postTurn`
+    /// (execute-mode actions through `TargetActionExecutor`);
+    /// `TargetAssistantViewModel` creates a target's first chat tab inside its
+    /// synchronous `load()`; `ChatViewModel`'s landing draft and turn
+    /// persistence sit on the main chat's send path; `WorkbenchBoardViewModel`
+    /// saves a description draft synchronously on every panel move. A file
+    /// listed here must still hold a synchronous write, so the list only
+    /// shrinks.
+    private static let viewModelsStillSynchronous: Set<String> = [
+        "TargetsViewModel.swift",
+        "TargetAssistantViewModel.swift",
+        "ChatViewModel.swift",
+        "WorkbenchBoardViewModel.swift"
+    ]
 
     /// The one synchronous write that never runs on the main thread, by
     /// file and its exact line: `OwnerPresenceCenter.databaseWriter`'s

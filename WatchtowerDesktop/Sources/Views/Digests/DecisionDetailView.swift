@@ -17,6 +17,8 @@ struct DecisionDetailView: View {
     @Environment(AppState.self) private var appState
     @State private var comment: String
     @State private var rating: Int?
+    /// A rating write is waiting for the database (board #670).
+    @State private var isRating = false
     @State private var mentions: [IdeaMention] = []
     @State private var mentionsLoaded = false
     @State private var mentionsError: String?
@@ -276,10 +278,18 @@ struct DecisionDetailView: View {
 
     /// Clears the owner's typed comment only once the write actually landed —
     /// wiping it on a failed write throws away something they cannot get back.
+    /// A second press while the write waits does nothing, and text typed
+    /// meanwhile stays (board #670).
     private func submitRating(_ value: Int) {
-        guard viewModel.setRating(id: idea.id, rating: value, comment: comment) else { return }
-        comment = ""
-        rating = value
+        guard !isRating else { return }
+        isRating = true
+        let sent = comment
+        Task {
+            defer { isRating = false }
+            guard await viewModel.setRating(id: idea.id, rating: value, comment: sent) else { return }
+            if comment == sent { comment = "" }
+            rating = value
+        }
     }
 
     @ViewBuilder
@@ -287,14 +297,14 @@ struct DecisionDetailView: View {
         HStack(spacing: 8) {
             if idea.status == .active {
                 Button {
-                    viewModel.supersede(id: idea.id)
+                    Task { await viewModel.supersede(id: idea.id) }
                 } label: {
                     Label("Supersede", systemImage: "arrow.triangle.2.circlepath")
                 }
                 .buttonStyle(.bordered)
 
                 Button(role: .destructive) {
-                    viewModel.reverse(id: idea.id)
+                    Task { await viewModel.reverse(id: idea.id) }
                 } label: {
                     Label("Reverse", systemImage: "arrow.uturn.backward")
                 }

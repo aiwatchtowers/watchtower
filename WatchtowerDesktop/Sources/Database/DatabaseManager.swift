@@ -99,8 +99,8 @@ final class DatabaseManager: Sendable {
     // MARK: - Wipe LLM Data
 
     /// Delete all AI-generated data from the database, preserving raw Slack data, config, and user profile.
-    func wipeLLMData() throws {
-        try dbPool.write { db in
+    func wipeLLMData() async throws {
+        try await dbPool.write { db in
             // AI-generated content tables
             try db.execute(sql: "DELETE FROM digests")
             try db.execute(sql: "DELETE FROM user_analyses")
@@ -208,8 +208,8 @@ final class DatabaseManager: Sendable {
 
     /// Add a channel to the owner's starred channels list
     /// (`ProfileQueries.ownerProfileWriteKey` picks the row).
-    func addStarredChannel(_ channelID: String) throws {
-        try dbPool.write { db in
+    func addStarredChannel(_ channelID: String) async throws {
+        try await dbPool.write { db in
             let userID = try ProfileQueries.ownerProfileWriteKey(db)
             let sql = "SELECT starred_channels FROM user_profile WHERE slack_user_id = ?"
             let result: String? = try String.fetchOne(db, sql: sql, arguments: [userID])
@@ -237,8 +237,8 @@ final class DatabaseManager: Sendable {
 
     /// Remove a channel from the owner's starred channels list
     /// (`ProfileQueries.ownerProfileWriteKey` picks the row).
-    func removeStarredChannel(_ channelID: String) throws {
-        try dbPool.write { db in
+    func removeStarredChannel(_ channelID: String) async throws {
+        try await dbPool.write { db in
             let userID = try ProfileQueries.ownerProfileWriteKey(db)
             let sql = "SELECT starred_channels FROM user_profile WHERE slack_user_id = ?"
             let result: String? = try String.fetchOne(db, sql: sql, arguments: [userID])
@@ -264,8 +264,8 @@ final class DatabaseManager: Sendable {
 
     /// Add a person to the owner's starred people list
     /// (`ProfileQueries.ownerProfileWriteKey` picks the row).
-    func addStarredPerson(_ personUserID: String) throws {
-        try dbPool.write { db in
+    func addStarredPerson(_ personUserID: String) async throws {
+        try await dbPool.write { db in
             let userID = try ProfileQueries.ownerProfileWriteKey(db)
             let result: String? = try String.fetchOne(db, sql: "SELECT starred_people FROM user_profile WHERE slack_user_id = ?", arguments: [userID])
 
@@ -292,8 +292,8 @@ final class DatabaseManager: Sendable {
 
     /// Remove a person from the owner's starred people list
     /// (`ProfileQueries.ownerProfileWriteKey` picks the row).
-    func removeStarredPerson(_ personUserID: String) throws {
-        try dbPool.write { db in
+    func removeStarredPerson(_ personUserID: String) async throws {
+        try await dbPool.write { db in
             let userID = try ProfileQueries.ownerProfileWriteKey(db)
             let result: String? = try String.fetchOne(db, sql: "SELECT starred_people FROM user_profile WHERE slack_user_id = ?", arguments: [userID])
 

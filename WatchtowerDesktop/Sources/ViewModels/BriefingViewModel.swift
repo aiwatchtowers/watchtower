@@ -83,9 +83,9 @@ final class BriefingViewModel {
         isLoadingMore = false
     }
 
-    func markAsRead(_ briefingID: Int) {
+    func markAsRead(_ briefingID: Int) async {
         do {
-            try dbManager.dbPool.write { db in
+            try await dbManager.dbPool.write { db in
                 try BriefingQueries.markRead(db, id: briefingID)
             }
             if let idx = briefings.firstIndex(where: { $0.id == briefingID && !$0.isRead }) {

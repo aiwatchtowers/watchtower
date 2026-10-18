@@ -72,7 +72,7 @@ struct DigestListView: View {
         }
         .onChange(of: selectedDigestID) { _, newID in
             if let id = newID {
-                viewModel?.markDigestRead(id)
+                Task { await viewModel?.markDigestRead(id) }
             }
         }
         .onChange(of: appState.pendingDigestID) { _, newID in
@@ -95,7 +95,7 @@ struct DigestListView: View {
             if let id = newID,
                let idea = viewModel?.ledgerDecisions.first(where: { $0.id == id }),
                idea.seenAt == nil || idea.needsReview {
-                viewModel?.markDecisionSeen(id: id)
+                Task { await viewModel?.markDecisionSeen(id: id) }
             }
         }
     }
@@ -366,7 +366,7 @@ struct DigestListView: View {
                 Spacer()
                 if vm.unreadDecisionCount > 0 {
                     Button {
-                        vm.markAllDecisionsSeen()
+                        Task { await vm.markAllDecisionsSeen() }
                     } label: {
                         Label("Mark all read", systemImage: "checkmark.circle")
                             .font(.caption)
@@ -465,15 +465,14 @@ struct DigestListView: View {
     }
 
     private func markSelectedRead(_ vm: DigestViewModel) {
-        vm.markDigestsRead(checkedDigestIDs)
+        let ids = checkedDigestIDs
+        Task { await vm.markDigestsRead(ids) }
         checkedDigestIDs.removeAll()
     }
 
     private func submitSelectedFeedback(_ vm: DigestViewModel, rating: Int) {
         let ids = checkedDigestIDs.map { String($0) }
-        vm.submitBatchFeedback(
-            entityType: "digest", entityIDs: ids, rating: rating
-        )
+        Task { await vm.submitBatchFeedback(entityType: "digest", entityIDs: ids, rating: rating) }
         checkedDigestIDs.removeAll()
         isSelectMode = false
     }
@@ -701,7 +700,7 @@ struct DigestListView: View {
                 expandedDigestIDs.remove(id)
             } else {
                 expandedDigestIDs.insert(id)
-                viewModel?.markDigestRead(id)
+                Task { await viewModel?.markDigestRead(id) }
             }
         }
     }
@@ -732,7 +731,7 @@ struct DigestListView: View {
                     StarToggleButton(
                         isStarred: vm.isChannelStarred(digest.channelID)
                     ) {
-                        vm.toggleStarredChannel(digest.channelID)
+                        Task { await vm.toggleStarredChannel(digest.channelID) }
                     }
                 }
 
