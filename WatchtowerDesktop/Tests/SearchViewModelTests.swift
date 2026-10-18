@@ -92,18 +92,20 @@ struct SearchViewModelGuideTests {
         return SearchViewModel(dbManager: manager)
     }
 
-    private func waitUntil(_ condition: () -> Bool) async {
-        let deadline = Date().addingTimeInterval(5)
-        while !condition(), Date() < deadline { try? await Task.sleep(for: .milliseconds(20)) }
+    /// Runs one search to completion: no fixed sleeps, the test awaits the
+    /// view model's own task (debounce included).
+    private func searchAndWait(_ vm: SearchViewModel, _ query: String) async {
+        vm.query = query
+        vm.search()
+        await vm.searchTask?.value
     }
 
     @Test("guideHits follow the query and clear on an empty one")
     func guideHitsFollowQuery() async throws {
         let vm = try await makeVM()
-        vm.query = "inbox"
-        vm.search()
-        await waitUntil { !vm.guideHits.isEmpty }
+        await searchAndWait(vm, "inbox")
         #expect(!vm.guideHits.isEmpty)
+        #expect(!vm.isSearching)
         vm.query = ""
         vm.search()
         #expect(vm.guideHits.isEmpty)
@@ -114,10 +116,11 @@ struct SearchViewModelGuideTests {
         let vm = try await makeVM()
         vm.query = "inbox"
         vm.search()
-        try await Task.sleep(for: .milliseconds(310)) // past the debounce, reads in flight
+        try await Task.sleep(for: .milliseconds(310)) // around the debounce end, reads may be in flight
+        let stale = vm.searchTask
         vm.query = ""
         vm.search()
-        try await Task.sleep(for: .milliseconds(600))
+        await stale?.value // the cancelled search has finished writing whatever it writes
         #expect(vm.guideHits.isEmpty)
         #expect(vm.results.isEmpty)
         #expect(!vm.isSearching)
@@ -127,12 +130,32 @@ struct SearchViewModelGuideTests {
     func hostileQueries() async throws {
         let vm = try await makeVM()
         for q in ["\"", "*", "-", "AND", "\"inbox", "inbox -*"] {
-            vm.query = q
-            vm.search()
-            await waitUntil { !vm.isSearching && vm.query == q }
-            try await Task.sleep(for: .milliseconds(400))
+            await searchAndWait(vm, q)
             #expect(vm.errorMessage == nil)
+            #expect(!vm.isSearching)
         }
+    }
+
+    // #682: the debounce sleep finished while the main actor was busy, the
+    // owner cleared the field before the search task got to run, and the
+    // stale task then turned the spinner on with nobody left to turn it off.
+    @Test("a search cancelled after its debounce elapsed never turns the spinner on")
+    func clearedQueryAfterDebounceElapsed() async throws {
+        let vm = try await makeVM()
+        vm.query = "inbox"
+        vm.search()
+        let stale = vm.searchTask
+        // Let the search task start its debounce sleep, then hold the main
+        // actor past the 300 ms: the sleep completes off-main, so the task
+        // resumes without a cancellation error once the main actor is free.
+        await Task.yield()
+        Thread.sleep(forTimeInterval: 0.5)
+        vm.query = ""
+        vm.search()
+        await stale?.value
+        #expect(!vm.isSearching)
+        #expect(vm.guideHits.isEmpty)
+        #expect(vm.results.isEmpty)
     }
 
     @Test("prefill keeps an existing draft")

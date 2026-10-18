@@ -434,8 +434,8 @@ final class SearchViewModelTests: XCTestCase {
         vm.query = "hello"
         vm.search()
 
-        // After debounce completes (300ms), isSearching should be set then cleared
-        try await Task.sleep(for: .milliseconds(500))
+        // Await the search itself (debounce included), not a fixed sleep.
+        await vm.searchTask?.value
 
         // After completion, isSearching should be false
         XCTAssertFalse(vm.isSearching)
@@ -464,8 +464,8 @@ final class SearchViewModelTests: XCTestCase {
         vm.query = "beta"
         vm.search()
 
-        // Wait for debounce
-        try await Task.sleep(for: .milliseconds(500))
+        // Wait for the surviving search to finish, not a fixed sleep.
+        await vm.searchTask?.value
 
         XCTAssertFalse(vm.isSearching)
     }
