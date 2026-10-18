@@ -43,8 +43,9 @@ var protectedRoots = []string{"/Volumes", "/Network", "/home", "/net"}
 // TCC-guarded folders. The CLI touches a model-chosen path before it sends
 // can_use_tool (it stats a Write target and lists its folder, and inspects
 // and hashes an Artifact publish source to pin it), so the permission gate
-// alone cannot keep a path in ~/Documents untouched. A sandbox denial is decided before TCC is consulted:
-// the access fails with EPERM and no privacy prompt appears. The profile is
+// alone cannot keep a path in ~/Documents untouched. A sandbox denial is
+// decided before TCC is consulted: the access fails with EPERM and no
+// privacy prompt appears. The profile is
 // inherited by everything the child starts (MCP servers included).
 type ChildSandbox struct {
 	exec  string   // sandbox-exec
