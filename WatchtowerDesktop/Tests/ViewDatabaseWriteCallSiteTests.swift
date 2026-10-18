@@ -100,6 +100,39 @@ final class ViewDatabaseWriteCallSiteTests: XCTestCase {
         XCTAssertEqual(single, named.count, "a named file moved: point the scan at it")
     }
 
+    /// The mobile hub's ledger is exempt (owner decision, ask #368): every
+    /// synchronous write in `HubSyncState*.swift` goes through its `queue`,
+    /// the hub's private sidecar database (`MobileHub/hubstate.db`). Only the
+    /// Desktop writes that file — never the daemon, a hook or the CLI — so no
+    /// other process can hold its write lock and the busy wait #590 is about
+    /// cannot happen there. The exemption covers that receiver in those
+    /// files only: a write to any other handle there (the shared workspace
+    /// database included) still fails, and the sidecar must stay its own
+    /// file.
+    func testTheMobileHubSidecarIsTheOnlyExemptWriter() throws {
+        let hub = Self.sources.appendingPathComponent("Services/MobileHub")
+        let write = try NSRegularExpression(pattern: Self.syncWrite)
+        let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: hub, includingPropertiesForKeys: nil))
+        var scanned = 0
+        for case let url as URL in enumerator where url.lastPathComponent.hasPrefix("HubSyncState") {
+            scanned += 1
+            let lines = try String(contentsOf: url, encoding: .utf8).components(separatedBy: "\n")
+            for (index, line) in lines.enumerated() where !line.trimmingCharacters(in: .whitespaces).hasPrefix("//") {
+                guard let match = write.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+                      let range = Range(match.range, in: line) else { continue }
+                let call = String(line[range])
+                XCTAssertTrue(call.contains(" queue.write"),
+                              "\(url.lastPathComponent):\(index + 1) writes another handle than the sidecar `queue`")
+            }
+        }
+        XCTAssertGreaterThanOrEqual(scanned, 3, "the HubSyncState files moved: point the exemption at them")
+        let state = try String(contentsOf: hub.appendingPathComponent("HubSyncState.swift"), encoding: .utf8)
+        XCTAssertTrue(state.contains("let queue: DatabaseQueue"), "the sidecar is the hub's own DatabaseQueue")
+        let service = try String(contentsOf: hub.appendingPathComponent("MobileHubService.swift"), encoding: .utf8)
+        XCTAssertTrue(service.contains(#"HubSyncState(path: dir.appendingPathComponent("hubstate.db").path)"#),
+                      "the sidecar is its own file, never the workspace database")
+    }
+
     /// The one synchronous write that never runs on the main thread, by
     /// file and its exact line: `OwnerPresenceCenter.databaseWriter`'s
     /// closure, which the center only calls on its own serial `writes`

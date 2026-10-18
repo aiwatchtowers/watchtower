@@ -66,7 +66,9 @@
   - **Artifacts.** A comment's add awaits the writer (the field keeps its text until it is stored, as `CommentableDocumentText` already did); Delete and Resolve are queued per comment and hidden while one waits. A re-anchoring plan is shown at once (`ArtifactCommentReanchor.applied`) and stored behind them; a panel reload asked for while a comment write waits reads once it landed. An artifact edit's Save keeps the editor open and editable while it is written (Save and Cancel wait); it closes once stored, unless the owner typed on — then it stays open over the new version with that text.
   - **Inbox strip.** A reminder's Done/Snooze and an output's Done/Dismiss await the writer, one write per card (`isWriting`; the card's buttons are disabled meanwhile); the card leaves once the write landed.
 
-  Still synchronous: the mobile hub's `HubSyncState` (its sidecar database; the owner decides in ask #368).
+  **The one exempt writer: the mobile hub's ledger** (owner decision, ask #368). `HubSyncState` (`Services/MobileHub/HubSyncState*.swift`) still writes synchronously, through its `queue` only: the hub's private sidecar database `MobileHub/hubstate.db`, a file of its own that only the Desktop writes — never the daemon, a hook or the CLI — so no other process ever holds its write lock and the busy wait above cannot happen there. `testTheMobileHubSidecarIsTheOnlyExemptWriter` pins that: in those files any synchronous write to another handle (the shared workspace database included) fails, and the sidecar must stay `HubSyncState`'s own `DatabaseQueue` opened on `hubstate.db`. The exemption covers nothing else; other mobile hub code is scanned like the rest where the scans reach it.
+
+  With this phase board #670 is complete: the views, centers, view models, `DatabaseManager` and the chat stores all await the writer, and the call-site scans keep them so.
 
 ## File location and rotation — a Go↔Swift dual path
 
