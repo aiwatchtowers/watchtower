@@ -59,6 +59,16 @@ type CompactCheck struct {
 // volume holding dir (statfs); tests replace it.
 var freeDiskBytes = statfsFreeBytes
 
+// SetFreeDiskBytesForTest overrides the free disk space CheckCompaction and
+// Compact see. TEST-ONLY: no production code calls this; it exists for
+// cmd's `db compact` tests, which cannot reach freeDiskBytes. Returns a
+// restore func the caller must invoke (typically via t.Cleanup).
+func SetFreeDiskBytesForTest(fn func(dir string) (int64, error)) (restore func()) {
+	prev := freeDiskBytes
+	freeDiskBytes = fn
+	return func() { freeDiskBytes = prev }
+}
+
 // CheckCompaction reports whether the database at dbPath is due for a
 // compaction, by reads only: it opens with OpenExisting, so it never creates
 // the file, migrates or writes. No file → not due, disk OK. version is the CLI
