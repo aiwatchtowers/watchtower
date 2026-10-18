@@ -9,8 +9,10 @@ import (
 	"watchtower/internal/agentlogdb"
 )
 
-// agentAnalyticsBudget bounds one cycle; a big first backfill normally ran
-// already in `agents enable`, so this only catches up new lines.
+// agentAnalyticsBudget bounds one cycle, split across the enabled
+// workbenches. The daemon is the importer (#849: `agents enable` no longer
+// scans): a first backfill spreads over cycles, each resuming where the last
+// stopped, then the phase only catches up new lines.
 const agentAnalyticsBudget = 30 * time.Second
 
 // agentAnalyticsClaudeDir is a test seam for the Claude config directory.

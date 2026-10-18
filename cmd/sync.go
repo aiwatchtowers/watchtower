@@ -379,22 +379,35 @@ func waitForProcessExit(pid int, grace time.Duration) bool {
 // flock on sync.lock, so a local sync would fail on the lock anyway, and a
 // second syncer racing the daemon is exactly what that lock exists to prevent.
 func runSyncNow(cfg *config.Config) error {
-	pidPath := pidFilePath(cfg)
-	pid, err := daemon.FindConfirmedProcess(pidPath)
+	pid, err := signalSyncNow(cfg)
 	if err != nil {
-		if errors.Is(err, daemon.ErrIdentityUnconfirmed) {
-			return fmt.Errorf("cannot confirm PID %d is the watchtower daemon (its identity could not be verified); refusing to signal it — check manually, e.g. `ps -p %d`", pid, pid)
-		}
-		return fmt.Errorf("reading pid file: %w", err)
+		return err
 	}
 	if pid == 0 {
 		return errors.New("no daemon is running (start one with: watchtower sync --daemon --detach)")
 	}
-	if err := syscall.Kill(pid, daemon.TriggerSignal); err != nil {
-		return fmt.Errorf("signalling daemon (PID %d): %w", pid, err)
-	}
 	fmt.Printf("Sync requested (daemon PID %d).\n", pid)
 	return nil
+}
+
+// signalSyncNow sends a running daemon daemon.TriggerSignal and returns its
+// PID, or 0 (and no error) when no daemon is running.
+func signalSyncNow(cfg *config.Config) (int, error) {
+	pidPath := pidFilePath(cfg)
+	pid, err := daemon.FindConfirmedProcess(pidPath)
+	if err != nil {
+		if errors.Is(err, daemon.ErrIdentityUnconfirmed) {
+			return 0, fmt.Errorf("cannot confirm PID %d is the watchtower daemon (its identity could not be verified); refusing to signal it — check manually, e.g. `ps -p %d`", pid, pid)
+		}
+		return 0, fmt.Errorf("reading pid file: %w", err)
+	}
+	if pid == 0 {
+		return 0, nil
+	}
+	if err := syscall.Kill(pid, daemon.TriggerSignal); err != nil {
+		return 0, fmt.Errorf("signalling daemon (PID %d): %w", pid, err)
+	}
+	return pid, nil
 }
 
 func runSyncDetach(cfg *config.Config) error {

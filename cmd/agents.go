@@ -28,7 +28,7 @@ var (
 
 func init() {
 	for _, c := range []*cobra.Command{
-		{Use: "enable", Short: "Turn analytics on for a workbench and load its history now", RunE: runAgentsEnable},
+		{Use: "enable", Short: "Turn analytics on for a workbench; the daemon loads its history", RunE: runAgentsEnable},
 		{Use: "disable", Short: "Turn analytics off (stored metrics stay)", RunE: runAgentsDisable},
 		{Use: "scan", Short: "Read new transcript lines into the analytics tables", RunE: runAgentsScan},
 		{Use: "stats", Short: "Totals for a workbench's agent sessions", RunE: runAgentsStats},
@@ -87,6 +87,18 @@ func moveAgentLogRows(cmd *cobra.Command, database *db.DB, al *agentlogdb.DB, pa
 	return nil
 }
 
+// agentsEnableJSON is `agents enable --json` (keys pinned by
+// TestAgentsEnable_ReturnsWithoutScanning).
+type agentsEnableJSON struct {
+	WorkbenchID int64                   `json:"workbench_id"`
+	Enabled     bool                    `json:"enabled"`
+	Import      agentreport.ImportState `json:"import"`
+}
+
+// runAgentsEnable turns analytics on and returns at once (#849): the daemon
+// imports the history (FEAT-03 exception, ask #153 as amended in ask #350),
+// nudged here to start a cycle now; without a running daemon the import
+// starts when it does.
 func runAgentsEnable(cmd *cobra.Command, _ []string) error {
 	database, al, path, err := openAgentsDBs()
 	if err != nil {
@@ -94,14 +106,37 @@ func runAgentsEnable(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 	defer al.Close()
-	// FEAT-03 exception (ask #153): enabling loads history at once.
 	if err := database.SetWorkbenchAgentAnalytics(flagAgentsWorkbench, true); err != nil {
 		return err
 	}
 	if err := moveAgentLogRows(cmd, database, al, path); err != nil {
 		return err
 	}
-	return printAgentsScan(cmd, database, al)
+	nudgeDaemon(cmd)
+	progress, err := al.ImportProgress(flagAgentsWorkbench)
+	if err != nil {
+		return err
+	}
+	imp := agentreport.ImportStateOf(progress)
+	if flagAgentsJSON {
+		return writeJSON(cmd.OutOrStdout(), agentsEnableJSON{WorkbenchID: flagAgentsWorkbench, Enabled: true, Import: imp})
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Agent analytics is on for workbench %d; the daemon loads its history in the background (%s, %d files so far).\n",
+		flagAgentsWorkbench, imp.State, imp.FilesStored)
+	return nil
+}
+
+// nudgeDaemon asks a running daemon to start a sync cycle now. No daemon is
+// fine (it imports when it starts); any other failure is only a warning on
+// stderr: analytics is on either way.
+func nudgeDaemon(cmd *cobra.Command) {
+	cfg, err := workspaceConfigFromFlags()
+	if err == nil {
+		_, err = signalSyncNow(cfg)
+	}
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the daemon was not asked to start the import now: %v\n", err)
+	}
 }
 
 func runAgentsDisable(cmd *cobra.Command, _ []string) error {

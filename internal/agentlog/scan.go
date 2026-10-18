@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -53,6 +54,8 @@ func DefaultClaudeDir() string {
 // reprice old rows. Safe to run concurrently with itself (CAS + idempotent keys).
 // One file that fails to read or store is counted in FailedFiles and the scan
 // goes on; Scan returns an error only for setup and bookkeeping failures.
+// It ends by recording the workbench's import progress (agent_log_import),
+// also after a budget stop.
 // It only reads main (watchtower.db: workbenches, the worktree ledger,
 // terminal sessions) and writes al (agentlog.db). Until agentlogdb.MoveFromMain
 // completed it refuses with agentlogdb.ErrNotMoved and writes nothing.
@@ -121,7 +124,21 @@ func Scan(ctx context.Context, main *db.DB, al *agentlogdb.DB, id int64, o Optio
 	if res.Repriced, err = al.RepriceAgentLogEvents(PriceVersion, Cost); err != nil {
 		return nil, fmt.Errorf("repricing: %w", err)
 	}
+	if err := recordImportProgress(al, id, res, o.Now()); err != nil {
+		return nil, err
+	}
 	return res, nil
+}
+
+// recordImportProgress upserts the workbench's agent_log_import row (spec
+// D6): complete once a scan got through its whole listing, failed files
+// included (they are retried every scan, never awaited).
+func recordImportProgress(al *agentlogdb.DB, id int64, res *Result, now time.Time) error {
+	n, err := al.StoredTranscripts(id)
+	if err != nil {
+		return err
+	}
+	return al.SetImportProgress(id, !res.Incomplete, n, now)
 }
 
 // store is the scan's two handles: main is only read, al is written.
@@ -247,8 +264,11 @@ func scanFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bool, r
 		return nil
 	}
 	fh, err := os.Open(tf.Path)
-	if err != nil {
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil // vanished between listing and open: the missing sweep catches it
+	}
+	if err != nil {
+		return err
 	}
 	defer fh.Close()
 	o := ParseOptions{Path: tf.Path, Folder: wb.FolderPath, Subagent: tf.Subagent, AgentID: tf.AgentID, MaxRows: batchRows}

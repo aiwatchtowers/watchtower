@@ -533,3 +533,65 @@ func TestScan_RefusesBeforeMove(t *testing.T) {
 	r := f.scan()
 	assert.Equal(t, 1, r.Sessions, "the scan runs once the move is done")
 }
+
+// importProgress reads the fixture workbench's agent_log_import row.
+func (f *fixture) importProgress() *agentlogdb.ImportProgress {
+	p, err := f.al.ImportProgress(f.wb)
+	require.NoError(f.t, err)
+	require.NotNil(f.t, p, "the scan must record import progress")
+	return p
+}
+
+// #849 D6: a budget stop records loading (complete = 0); a scan through the
+// whole listing records done with the stored transcripts counted.
+func TestScan_ImportProgressLoadingThenDone(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.folder, "s1.jsonl", call(t, "s1", f.folder, "u1", "m1", "r1", 5))
+	f.write(f.folder, "s2.jsonl", call(t, "s2", f.folder, "u2", "m2", "r2", 5))
+	clock := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC)
+	now := func() time.Time { clock = clock.Add(time.Minute); return clock }
+	r, err := Scan(context.Background(), f.d, f.al, f.wb, Options{ClaudeDir: f.claude, Budget: time.Second, Now: now})
+	require.NoError(t, err)
+	require.True(t, r.Incomplete)
+	p := f.importProgress()
+	assert.False(t, p.Complete)
+	assert.Equal(t, clock.Format(time.RFC3339), p.UpdatedAt)
+
+	f.scan()
+	p = f.importProgress()
+	assert.True(t, p.Complete)
+	assert.Equal(t, 2, p.FilesStored)
+}
+
+// A transcript that keeps failing is retried every scan; it never holds the
+// import at loading.
+func TestScan_ImportDoneWithFailingFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0o000 file")
+	}
+	f := newFixture(t)
+	bad := f.write(f.folder, "a.jsonl", call(t, "a", f.folder, "u1", "m1", "r1", 5))
+	f.write(f.folder, "b.jsonl", call(t, "b", f.folder, "u2", "m2", "r2", 7))
+	f.scan()
+	// The session is stored, so the grown, now unreadable file is still owned.
+	f.write(f.folder, "a.jsonl", call(t, "a", f.folder, "u3", "m3", "r3", 5))
+	require.NoError(t, os.Chmod(bad, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(bad, 0o600) })
+	r := f.scan()
+	assert.Equal(t, 1, r.FailedFiles)
+	assert.False(t, r.Incomplete)
+	assert.True(t, f.importProgress().Complete)
+}
+
+// The candidate directories include a sibling folder's transcripts
+// (slug(/x/proj-tools) next to /x/proj); skipping them still ends the listing.
+func TestScan_ImportDoneWithSiblingFolderFiles(t *testing.T) {
+	f := newFixture(t)
+	sibling := f.folder + "-tools"
+	f.write(sibling, "t1.jsonl", call(t, "t1", sibling, "u1", "m1", "r1", 5))
+	f.write(f.folder, "s1.jsonl", call(t, "s1", f.folder, "u2", "m2", "r2", 5))
+	f.scan()
+	p := f.importProgress()
+	assert.True(t, p.Complete)
+	assert.Equal(t, 1, p.FilesStored, "the sibling's transcript is not this workbench's")
+}

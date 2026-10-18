@@ -120,6 +120,37 @@ func TestBuildOverview_OldFormatExcludedFromTime(t *testing.T) {
 	}
 }
 
+// #849 D6: the overview's import state follows the workbench's progress row.
+func TestBuildOverview_ImportState(t *testing.T) {
+	stamp := t0.Format(time.RFC3339)
+	for _, tc := range []struct {
+		name string
+		set  func(d testDBs, wb int64) error
+		want ImportState
+	}{
+		{"no row", func(testDBs, int64) error { return nil }, ImportState{State: "not_started"}},
+		{"incomplete", func(d testDBs, wb int64) error { return d.al.SetImportProgress(wb, false, 3, t0) },
+			ImportState{State: "loading", FilesStored: 3, UpdatedAt: stamp}},
+		{"complete", func(d testDBs, wb int64) error { return d.al.SetImportProgress(wb, true, 7, t0) },
+			ImportState{State: "done", FilesStored: 7, UpdatedAt: stamp}},
+		{"complete then incomplete", func(d testDBs, wb int64) error {
+			if err := d.al.SetImportProgress(wb, true, 7, t0.Add(-time.Hour)); err != nil {
+				return err
+			}
+			return d.al.SetImportProgress(wb, false, 8, t0)
+		}, ImportState{State: "loading", FilesStored: 8, UpdatedAt: stamp}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, wb := buildDB(t)
+			require.NoError(t, d.SetWorkbenchAgentAnalytics(wb, true))
+			require.NoError(t, tc.set(d, wb))
+			ov, err := BuildOverview(d.DB, d.al, wb, time.Time{}, t0)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, ov.Import)
+		})
+	}
+}
+
 func TestBuildSession_UnknownIsError(t *testing.T) {
 	d, wb := buildDB(t)
 	putSession(t, d, wb, "s1", 8, 2)

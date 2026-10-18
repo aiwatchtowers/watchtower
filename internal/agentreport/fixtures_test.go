@@ -26,7 +26,8 @@ const (
 
 // seedFixtureDB stores one v2 session that exercises every time category, a
 // background subagent, repeated `make test` runs inside two open board
-// targets (so they share the stretch) and a PR link, plus one old-format session. Placeholders only.
+// targets (so they share the stretch) and a PR link, plus one old-format session and
+// an import still loading. Placeholders only.
 func seedFixtureDB(t *testing.T) (testDBs, int64) {
 	t.Helper()
 	d, wb := buildDB(t)
@@ -113,6 +114,7 @@ func seedFixtureDB(t *testing.T) (testDBs, int64) {
 			TS: at(-2 * time.Hour), InputTokens: 10, OutputTokens: 5, CostUSD: 0.5, SrcPath: oldPath}},
 	})
 	require.NoError(t, err)
+	require.NoError(t, d.al.SetImportProgress(wb, false, 2, day.Add(2*time.Hour)))
 	return d, wb
 }
 

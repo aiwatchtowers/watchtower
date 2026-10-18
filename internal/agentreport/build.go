@@ -50,6 +50,28 @@ type Overview struct {
 	Tasks             []TaskRow    `json:"tasks"`
 	Sessions          []SessionRow `json:"sessions"`
 	OldFormatSessions int          `json:"old_format_sessions"`
+	Import            ImportState  `json:"import"`
+}
+
+// ImportState is how far the workbench's history import got (spec D6):
+// not_started (no scan recorded progress yet), loading (the last scan
+// stopped before the end of its listing) or done.
+type ImportState struct {
+	State       string `json:"state"`
+	FilesStored int    `json:"files_stored"`
+	UpdatedAt   string `json:"updated_at,omitempty"` // absent while not_started
+}
+
+// ImportStateOf maps a progress row (nil = none yet) to its state.
+func ImportStateOf(p *agentlogdb.ImportProgress) ImportState {
+	switch {
+	case p == nil:
+		return ImportState{State: "not_started"}
+	case p.Complete:
+		return ImportState{State: "done", FilesStored: p.FilesStored, UpdatedAt: p.UpdatedAt}
+	default:
+		return ImportState{State: "loading", FilesStored: p.FilesStored, UpdatedAt: p.UpdatedAt}
+	}
 }
 
 // SessionDetail is one session's drill-down (`agents report --session`).
@@ -169,6 +191,11 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 		sinceStr = since.UTC().Format(tsLayout)
 		ov.Since = since.UTC().Format(time.RFC3339)
 	}
+	progress, err := al.ImportProgress(workbenchID)
+	if err != nil {
+		return nil, err
+	}
+	ov.Import = ImportStateOf(progress)
 	sessions, err := al.AgentReportSessions(workbenchID, sinceStr)
 	if err != nil {
 		return nil, err

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // AgentLogFile is one agent_log_files row: a transcript's scan state.
@@ -462,4 +463,49 @@ func (d *DB) agentLogRows(q string, args []any, each func(*sql.Rows) error) erro
 		}
 	}
 	return rows.Err()
+}
+
+// ImportProgress is a workbench's agent_log_import row: how far its history
+// import got as of its last scan (spec D6).
+type ImportProgress struct {
+	Complete    bool   // the last scan finished its listing without a budget stop
+	FilesStored int    // the workbench's transcripts stored so far
+	UpdatedAt   string // RFC 3339 UTC
+}
+
+// SetImportProgress upserts the workbench's import progress row.
+func (d *DB) SetImportProgress(projectID int64, complete bool, filesStored int, now time.Time) error {
+	_, err := d.Exec(`INSERT INTO agent_log_import (project_id, complete, files_stored, updated_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT (project_id) DO UPDATE SET complete = excluded.complete, files_stored = excluded.files_stored,
+		updated_at = excluded.updated_at`, projectID, complete, filesStored, now.UTC().Format(time.RFC3339))
+	if err != nil {
+		return fmt.Errorf("recording import progress: %w", err)
+	}
+	return nil
+}
+
+// ImportProgress returns the workbench's import progress, nil when no scan
+// recorded any yet.
+func (d *DB) ImportProgress(projectID int64) (*ImportProgress, error) {
+	var p ImportProgress
+	err := d.QueryRow(`SELECT complete, files_stored, updated_at FROM agent_log_import WHERE project_id = ?`, projectID).
+		Scan(&p.Complete, &p.FilesStored, &p.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("reading import progress: %w", err)
+	}
+	return &p, nil
+}
+
+// StoredTranscripts counts the workbench's stored main transcripts: the
+// distinct source files of its sessions (a subagent's session row points at
+// its parent's transcript).
+func (d *DB) StoredTranscripts(projectID int64) (int, error) {
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(DISTINCT source_path) FROM agent_log_sessions WHERE project_id = ?`, projectID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting stored transcripts: %w", err)
+	}
+	return n, nil
 }

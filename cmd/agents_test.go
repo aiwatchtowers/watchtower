@@ -55,12 +55,53 @@ func agentsFixture(t *testing.T) (wb int64) {
 	return wb
 }
 
-func TestAgentsEnable_BackfillsAtOnce(t *testing.T) {
+// openAgentsTestLog opens the test workspace's agentlog.db.
+func openAgentsTestLog(t *testing.T) *agentlogdb.DB {
+	t.Helper()
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	al, err := agentlogdb.Open(agentlogdb.PathFor(cfg.DBPath()))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = al.Close() })
+	return al
+}
+
+// #849 D5: enable sets the switch and returns; the daemon imports.
+func TestAgentsEnable_ReturnsWithoutScanning(t *testing.T) {
 	wb := agentsFixture(t)
 	out := runAgentsCmd(t, "enable", "--workbench", strconv.FormatInt(wb, 10), "--json")
-	var r map[string]any
+	assert.Equal(t, []string{"enabled", "import", "workbench_id"}, jsonKeys(t, out))
+	var r struct {
+		WorkbenchID int64                      `json:"workbench_id"`
+		Enabled     bool                       `json:"enabled"`
+		Import      map[string]json.RawMessage `json:"import"`
+	}
 	require.NoError(t, json.Unmarshal([]byte(out), &r))
-	assert.EqualValues(t, 1, r["sessions"])
+	assert.Equal(t, wb, r.WorkbenchID)
+	assert.True(t, r.Enabled)
+	assert.JSONEq(t, `"not_started"`, string(r.Import["state"]))
+	assert.JSONEq(t, `0`, string(r.Import["files_stored"]))
+
+	var files int
+	require.NoError(t, openAgentsTestLog(t).QueryRow(`SELECT COUNT(*) FROM agent_log_files`).Scan(&files))
+	assert.Zero(t, files, "enable must not scan")
+	var mainPath string
+	on, err := openAgentsTestMain(t, &mainPath).WorkbenchAgentAnalytics(wb)
+	require.NoError(t, err)
+	assert.True(t, on)
+}
+
+// No daemon to nudge is not an error: it imports when it starts.
+func TestAgentsEnable_NoDaemonStillSucceeds(t *testing.T) {
+	wb := agentsFixture(t)
+	t.Cleanup(func() { flagAgentsWorkbench = 0; rootCmd.SetArgs(nil) })
+	var out, errOut bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errOut)
+	rootCmd.SetArgs([]string{"agents", "enable", "--workbench", strconv.FormatInt(wb, 10)})
+	require.NoError(t, rootCmd.Execute())
+	assert.Contains(t, out.String(), "Agent analytics is on for workbench")
+	assert.NotContains(t, errOut.String(), "warning")
 }
 
 func TestAgentsStatsJSON_PinnedKeys(t *testing.T) {
@@ -102,15 +143,19 @@ func mapKeys(m map[string]json.RawMessage) []string {
 func TestAgentsReportJSON_PinnedKeys(t *testing.T) {
 	wb := strconv.FormatInt(agentsFixture(t), 10)
 	runAgentsCmd(t, "enable", "--workbench", wb)
+	runAgentsCmd(t, "scan", "--workbench", wb)
 	out := runAgentsCmd(t, "report", "--workbench", wb, "--days", "0", "--json")
-	assert.Equal(t, []string{"commands", "enabled", "hints", "models", "old_format_sessions", "sessions", "since",
+	assert.Equal(t, []string{"commands", "enabled", "hints", "import", "models", "old_format_sessions", "sessions", "since",
 		"subagents", "tasks", "time", "totals", "until", "workbench_id"}, jsonKeys(t, out))
 	var ov struct {
 		Totals   map[string]json.RawMessage `json:"totals"`
+		Import   map[string]json.RawMessage `json:"import"`
 		Sessions []map[string]json.RawMessage
 	}
 	require.NoError(t, json.Unmarshal([]byte(out), &ov))
 	require.Len(t, ov.Sessions, 1)
+	assert.Equal(t, []string{"files_stored", "state", "updated_at"}, mapKeys(ov.Import))
+	assert.JSONEq(t, `"done"`, string(ov.Import["state"]))
 	assert.Equal(t, []string{"active_ms", "away_ms", "cost_estimated_calls", "cost_usd", "sessions", "tokens"}, mapKeys(ov.Totals))
 	assert.Equal(t, []string{"active_ms", "avg_parallel", "branch", "cost_usd", "ended_at", "model", "old_format", "prs",
 		"session_uuid", "started_at"}, mapKeys(ov.Sessions[0]))
@@ -151,6 +196,7 @@ func TestAgentsDisable_KeepsRows(t *testing.T) {
 	wb := agentsFixture(t)
 	id := strconv.FormatInt(wb, 10)
 	runAgentsCmd(t, "enable", "--workbench", id)
+	runAgentsCmd(t, "scan", "--workbench", id)
 	runAgentsCmd(t, "disable", "--workbench", id)
 	out := runAgentsCmd(t, "stats", "--workbench", id, "--json")
 	assert.Contains(t, out, `"sessions": 1`)
