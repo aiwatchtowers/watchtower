@@ -124,9 +124,10 @@ its path is never written to stdin either), and any MCP config carrying
 connection secrets travels as a 0600 temp-file path (`--mcp-config`), also
 deleted on exit. This holds across providers: the Claude backend's argv is
 ids/flags only (`--resume`, `--model`, etc.), and the codex-backed turn
-delivers the system prompt + replay + user text entirely through stdin
-(`codex exec -`) rather than `-c developer_instructions=...`/positional
-argv. `ai session`'s own argv (the Swift session-launch side) carries only
+hands codex the system prompt as a 0600 `model_instructions_file` (only
+its path on argv) and the replay + user text on stdin (`codex exec -`),
+never as `-c developer_instructions=...` or a positional prompt.
+`ai session`'s own argv (the Swift session-launch side) carries only
 ids and names (`--conversation`, `--provider`, `--model`, `--surface`,
 `--project-id`, `--resume`, `--db-path`) — the turn's text and attachments
 exist only in the stdin JSONL command. A resumed session (`--resume`) never
@@ -134,9 +135,21 @@ re-sends `--system-prompt-file` either — it reuses the prompt already
 recorded in its resumed history rather than passing it (or anything else)
 again on argv. The one-shot `watchtower chat title` call is covered too:
 its user message (the owner's first exchange) always travels on the
-claude/codex child's stdin, whatever its size (the generators' stdin-only
-mode), and so is `watchtower terminal title`, whose user message is the
-owner's typed messages from an embedded Claude Code session's transcript.
+claude/codex child's stdin, whatever its size, and so is `watchtower
+terminal title`, whose user message is the owner's typed messages from an
+embedded Claude Code session's transcript. Since board #566 the same holds
+for every one-shot claude/codex call — the `digest`/`codex` generators
+behind the daemon pipelines and `ai.Client`/`codex.Client` behind
+`ai query` and automations: the user message always goes on stdin, the
+system prompt in a 0600 file (`--system-prompt-file` for claude,
+`model_instructions_file` for codex) removed after the call, whatever the
+size. The Desktop's `ai query` chats (Discuss, code questions, help) pass
+`--prompt-stdin`, so the owner's message and the system prompt sit in one
+JSON object on the CLI's stdin, not on its argv either (the positional
+prompt stays for CLI users). Out of scope: the interactive Claude Code /
+Codex sessions in the workbench terminal, whose first prompt is a
+positional argument of the agent CLI (a fixed template, or the text of a
+code-question hand-off the owner sends).
 Extends QC-03's "secrets never on argv" to all chat content.
 
 **Guard:** `TestChat04_ClaudeArgvCarriesNoContent`,
@@ -220,6 +233,7 @@ anything outside a doc this session created — one such member makes a whole `b
 
 - 2026-10-17 (board #737, Task 16): the #737 guards landed and lost their `(planned, #737)` marks, each verified by `grep` (`TestChat02_GateDecisionsAreSteps`, `testChat02WaitingStepIsVisibleUntilItEnds`, `TestChat03_CloseWhileWaitingForApprovalRejectsAndReaps`, `TestChat05_ConnectorWriteWaitsForApproval`, `TestChat05_PublishOnlyFromThePublishDir`, `TestChat05_DeadSessionNeverRunsAnApprovedCall`, `testChat05PublishedLinkCardOnlyOpensOrCopies`). **CHAT-05** strengthened, no exception widened: its Observable now states the gate's fail-closed rules (an unclassifiable or unrecorded call is denied or asks, never silently allowed; a failed publish is a red step), the publish-dir confinement of `Write`, `Artifact` sources and `read`'s `out_dir`, and which `Artifact` and Claude Docs calls always go to Approve — all as already implemented and covered by `internal/chat/connectorpolicy/policy_test.go` and `internal/chat/gate_test.go`. Feature note: `docs/features/chat-claude-ai-tools.md`.
 - 2026-10-17 (board #737): amended per spec 2026-10-16-chat-claude-ai-tools-design §4, owner approved 2026-10-13, ask #236 (scope and the CHAT-05 amendment; spec approved ask #325, decisions Q1–Q4 ask #326, plan approved ask #332); strengthening + one stated exception, no guard relaxed. **CHAT-05** gains the one private exception — on the Claude provider the assistant may publish to the owner's own claude.ai account (`Artifact` `publish` from the session's publish dir, `list`/`open`/`quickstart`, the owner's own private Claude Docs doc) as a visible step with its link — while every other claude.ai connector write goes through the session's permission gate as one `agent_actions` row the session alone executes after the owner's Approve (AGENT-05); the in-app artifact panel and its source scan are unchanged. **CHAT-02** gains gate decisions as steps (a denied call is a red step with the gate's reason, a waiting call a visible waiting step). **CHAT-03** gains a guard for `Close` during an approval wait. New guards are marked `(planned, #737)` until they land. The TCC guard stays: user settings are never loaded (`--setting-sources project,local`, private neutral cwd). DEV-06: no change — the workbench terminal is plain Claude Code and already has these tools under the owner's own settings.
+- 2026-10-17 (board #566, owner decision in ask #305): prompts never ride a claude/codex child's argv, whatever their size or caller. `digest.ClaudeGenerator` and `ai.Client` pass the user message on stdin (bare `-p`) and a non-empty system prompt as a 0600 `--system-prompt-file` (an empty one stays `--system-prompt ""`); `codex.CodexGenerator` and `codex.Client` pass a non-empty system prompt as a 0600 `-c model_instructions_file="<path>"` (codex-cli 0.145; it replaces codex's built-in base instructions, MCP tool use verified unchanged) and the user message on stdin (`codex exec -`), never `-c developer_instructions=...` or a positional prompt. A codex older than 0.145 (or whose `--version` cannot be read; probed once per binary and logged) keeps the former delimited one-stdin-payload layout instead, still off argv. The temp files are removed after the call, and the daemon sweeps `wt-system-prompt-*` leftovers older than 10 minutes at startup. `ai query --prompt-stdin` (JSON `{"prompt", "system_prompt"}` on stdin) is what the Desktop now uses, so the owner's message is off the CLI's argv too. `digest.StdinThreshold` and the opt-in `SetStdinOnly` modes are gone. **CHAT-04** strengthened; one guard assertion changed shape: `TestChat04_CodexSessionArgvCarriesNoContent` no longer calls `SetStdinOnly`, asserts that the system prompt arrives in the 0600 `model_instructions_file` (it used to assert that it arrived on stdin, ahead of the user message), and its "a plain client keeps developer_instructions on argv" half now asserts the opposite (a read-folder client keeps the same layout). Its "nothing on argv" assertions are unchanged.
 - 2026-10-17 (board #563): **CHAT-05** strengthened, not changed. `SandboxedHTMLView` now turns WebRTC off in the web view's preferences (`lockDown`: `_setPeerConnectionEnabled:` read back; on a WebKit without it the reason is logged and the document-start script, which stays, removes WebRTC; DNS prefetch off best effort), so a fresh iframe of a chat html artifact cannot get WebRTC back. The workbench preview's https loads narrow to a CDN allowlist, its folder is served by a read-only scheme handler (`SandboxedHTMLSchemeHandler.swift`, no hidden files or links into them), and the loopback server streams files; none of it touches the artifact side. `testChat05ArtifactSurfacesNeverWrite` also scans `SandboxedHTMLSchemeHandler.swift`; both scan tests otherwise pass unchanged.
 - 2026-10-17 (board #535): artifact kind `html` (migration `00129`). An html artifact renders in `SandboxedHTMLView` (no network of any scheme, no bridge, no windows or media capture, WebRTC removed, links open nothing), and its new controls are view-only: **Reload**, **Open in Window** and **Present**. Nothing hands artifact content to a browser or any other networked app; `kindActions` has no `html` case (`testHTMLArtifactHasOnlyCopyExportAndView`), so its actions stay Copy and Export…, and `testChat05ArtifactActionsOnlyOpenOrCopy` covers it unchanged. **CHAT-05** strengthened, not changed: `ArtifactChat05ScanTests` also scans `SandboxedHTMLView.swift` and `HTMLPreviewPolicy.swift` and forbids `LocalPreviewServer`, `HTMLBrowserOpener`, `NWConnection` and `NWListener` on every artifact-side file. The loopback server behind the workbench code viewer's Open in Browser (`LocalPreviewServer.swift`, workbench files only) gets its own scan, `testChat05LoopbackServerNeverConnectsOut` (no `URLSession`, `NWConnection(`, `Process(`, `CLIRunner`).
 - 2026-10-17 (board #536): the chat quote batch is now fed by selecting a passage in the feed (**Ask about this**, `ChatSelectionQuoteTracker`) instead of the removed **Quote in reply** sheet. The batch, its send rule (`ChatQuoteReply.compose`, one owner turn) and CHAT-05's "nothing sent per quote" are unchanged; `ChatQuoteReplyScanTests` is renamed `ChatSelectionQuoteScanTests`, now scans `ChatSelectionQuote.swift` (no send entry point) and adds `ChatFeedView.swift` to the files that host no text view. No CHAT-01..05 guard changed.

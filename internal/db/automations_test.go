@@ -753,3 +753,30 @@ func TestLatestAppliedAutomationSave_Filters(t *testing.T) {
 		}
 	}
 }
+
+// #584: the daemon's own disable records why and when; the owner's next
+// enable or disable clears both.
+func TestAutomationIndex_DisableRunawayRecordsReason(t *testing.T) {
+	d := openTestDB(t)
+	id := seedAutomationRow(t, d, "digest", filepath.Join(t.TempDir(), "digest.md"), "h1")
+	now := time.Now().UTC().Truncate(time.Second)
+	if err := d.SetAutomationEnabled(id, true, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DisableRunawayAutomation(id, "runaway script", now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	a := mustGetAutomation(t, d, id)
+	if a.Enabled || a.DisabledReason != "runaway script" || a.DisabledAt == nil || !a.DisabledAt.Equal(now.Add(time.Minute)) {
+		t.Fatalf("after runaway disable: enabled=%v reason=%q at=%v", a.Enabled, a.DisabledReason, a.DisabledAt)
+	}
+	if err := d.SetAutomationEnabled(id, true, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if a = mustGetAutomation(t, d, id); a.DisabledReason != "" || a.DisabledAt != nil {
+		t.Errorf("enable kept reason=%q at=%v", a.DisabledReason, a.DisabledAt)
+	}
+	if err := d.DisableRunawayAutomation(id+100, "x", now); !errors.Is(err, ErrAutomationNotFound) {
+		t.Errorf("DisableRunawayAutomation(missing) = %v, want ErrAutomationNotFound", err)
+	}
+}

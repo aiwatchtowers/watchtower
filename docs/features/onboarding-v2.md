@@ -65,7 +65,23 @@ goals are `workCommunication`, `tasksAndJira`, `meetings`, `development`.
 
 **Connect step cards** (`OnboardingConnectPlan`, WatchtowerCore). Slack for
 Work communication, one Google card for Work communication or Meetings,
-Jira for Tasks & Jira. The Google card carries no scopes: connecting a
+Jira for Tasks & Jira. The Jira sheet (`AddJiraAccountView`, shared with
+Settings) turns into a board step after a successful connect (#572):
+`JiraBoardChoiceView` fetches the boards of the site the connect added
+(every enabled site when it added none, `JiraBoardPicker.sites`) with `jira
+--account N boards`, lists them with the current selection ticked (grouped
+by site when there are several; "Couldn't load boards" with Try Again when a
+fetch failed), and Done writes only the changes (`JiraBoardPicker.invocations`
+→ `jira boards select|deselect`). The connect's daemon restart is held while
+the step is up (`JiraAccountsViewModel.addAccountHoldingRestart`) and applied
+once when the sheet closes — Done, Skip or otherwise — by `finishBoardStep`:
+one restart under `.restart`, none under onboarding's `.deferred` (the daemon
+starts at the finish). A sheet that closes while `jira add` is still in the
+browser marks the step closed, and the connect then applies its policy itself
+when it succeeds (reset at each connect). No foreground sync: the daemon path syncs and starts
+the backfill. Skip leaves
+Jira with no board, which readiness reports as `needsSource(.jiraBoards)`
+(first-run.md). Nothing is preselected. The Google card carries no scopes: connecting a
 Google account means mail and calendar both, whatever the goals (owner
 decision 2026-10-14, #740), so its sheet opens with Calendar and Gmail
 checked like Settings' Add Google sheet, and either can be unchecked there.

@@ -582,7 +582,7 @@ func TestFormatExistingTracksTruncation(t *testing.T) {
 	}
 
 	pipe := New(database, testConfig(), nil, log.Default())
-	result := pipe.formatExistingTracks("U1")
+	result := pipe.formatExistingTracks()
 
 	// Should contain truncation notice.
 	assert.Contains(t, result, "Showing top 30 of 35")
@@ -614,7 +614,7 @@ func TestFormatExistingTracksIncludesBatchChannels(t *testing.T) {
 	require.NoError(t, err)
 
 	pipe := New(database, testConfig(), nil, log.Default())
-	result := pipe.formatExistingTracks("U1")
+	result := pipe.formatExistingTracks()
 
 	// Track from batch channel must be included (previously it was excluded).
 	assert.Contains(t, result, "Existing track from batch channel")

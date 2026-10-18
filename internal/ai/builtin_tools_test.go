@@ -172,7 +172,7 @@ func TestBuildArgs_ToolsAllowlist(t *testing.T) {
 			cl.SetExternalMCPServers([]ExternalMCPServer{{Name: "acme", Kind: "stdio", Command: "x",
 				AllowTools: []string{"getIssue"}, DenyTools: []string{"createIssue"}}})
 		}
-		args, _, err := cl.buildArgs("sys", c.msg, "stream-json", c.session)
+		args, _, err := buildArgsT(t, cl, "sys", c.msg, "stream-json", c.session)
 		require.NoError(t, err, name)
 		assertFlagValue(t, args, "--tools", ChatBuiltinTools)
 		n := 0
@@ -221,7 +221,7 @@ func TestChatBuiltins_LiveCLI(t *testing.T) {
 	}
 
 	cl := NewClient("haiku", "", "")
-	base, _, err := cl.buildArgs("sys", "ok", "stream-json", "")
+	base, _, err := buildArgsT(t, cl, "sys", "ok", "stream-json", "")
 	require.NoError(t, err)
 	for run, r := range chatBuiltinRuns {
 		args := slices.Clone(base)

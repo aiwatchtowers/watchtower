@@ -33,12 +33,12 @@ codex exec \
   --json \
   -c approval_policy=never \
   -c sandbox_mode=read-only \
-  -c developer_instructions="<systemPrompt>" \
-  "<userMessage>"
+  -c model_instructions_file="<0600 temp file holding systemPrompt>" \
+  -    # userMessage on stdin
 ```
 
 Key points:
-- System prompt via `-c developer_instructions="..."` (NOT concatenated into userMessage)
+- System prompt via a 0600 `model_instructions_file` (NOT concatenated into userMessage); the user message on stdin. Neither is on argv, where `ps` would show it (board #566 — this replaced `-c developer_instructions=...` and the positional prompt)
 - `--json` → JSONL output
 - `--ephemeral` to disable sessions
 
@@ -192,13 +192,13 @@ codex exec \
   --json \
   -c approval_policy=never \
   -c sandbox_mode=read-only \
-  -c developer_instructions="<systemPrompt>" \
+  -c model_instructions_file="<0600 temp file holding systemPrompt>" \
   --cd <workingDir> \
-  "<prompt>"
+  -    # prompt on stdin
 ```
 
 Key points:
-- System prompt via `-c developer_instructions="..."` (NOT concatenation)
+- System prompt via a 0600 `model_instructions_file`, the prompt on stdin (board #566: nothing on argv; was `-c developer_instructions=...` + positional)
 - `--json` → JSONL output, parsed line by line
 - `item.completed` + `type == "agent_message"` → `.turnComplete(content)`
 - Streaming deltas via `item.started` → `.text(delta)`

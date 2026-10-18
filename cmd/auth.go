@@ -137,7 +137,7 @@ func runAuthCheckCert(_ *cobra.Command, _ []string) error {
 // account #1 (nothing ever connected) it is a clean no-op, matching today's
 // `auth logout` with no token set.
 func runAuthLogout(cmd *cobra.Command, _ []string) error {
-	cfg, database, err := openSlackCmdDB(cmd)
+	cfg, database, err := openSlackCmdDB()
 	if err != nil {
 		return err
 	}

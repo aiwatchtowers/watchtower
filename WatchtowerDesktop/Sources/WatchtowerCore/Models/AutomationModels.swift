@@ -69,6 +69,9 @@ package struct Automation: FetchableRecord, Identifiable, Equatable, Sendable {
     package let lastScheduledFor: Date?
     package let nextRunAt: Date?
     package let removedAt: Date?
+    /// The daemon turned it off by itself (a runaway script, #584); "" / nil otherwise.
+    package let disabledReason: String
+    package let disabledAt: Date?
 
     package init(
         id: Int64,
@@ -94,7 +97,9 @@ package struct Automation: FetchableRecord, Identifiable, Equatable, Sendable {
         enabled: Bool = false,
         lastScheduledFor: Date? = nil,
         nextRunAt: Date? = nil,
-        removedAt: Date? = nil
+        removedAt: Date? = nil,
+        disabledReason: String = "",
+        disabledAt: Date? = nil
     ) {
         self.id = id
         self.slug = slug
@@ -120,6 +125,8 @@ package struct Automation: FetchableRecord, Identifiable, Equatable, Sendable {
         self.lastScheduledFor = lastScheduledFor
         self.nextRunAt = nextRunAt
         self.removedAt = removedAt
+        self.disabledReason = disabledReason
+        self.disabledAt = disabledAt
     }
 
     package init(row: Row) throws {
@@ -148,6 +155,8 @@ package struct Automation: FetchableRecord, Identifiable, Equatable, Sendable {
         lastScheduledFor = AutomationDates.parse(row["last_scheduled_for"])
         nextRunAt = AutomationDates.parse(row["next_run_at"])
         removedAt = AutomationDates.parse(row["removed_at"])
+        disabledReason = row["disabled_reason"] ?? ""
+        disabledAt = AutomationDates.parse(row["disabled_at"])
     }
 
     /// "Needs your confirmation" (spec §2.5): a parsed, present recipe whose

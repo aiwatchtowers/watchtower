@@ -616,7 +616,7 @@ func runTracksGenerate(cmd *cobra.Command, args []string) error {
 
 	logger := log.New(cmd.ErrOrStderr(), "[tracks] ", log.LstdFlags)
 
-	gen, cleanupPool := cliPooledGenerator(cfg, logger)
+	gen, cleanupPool := cliPooledGenerator(cfg)
 	defer cleanupPool()
 	pipe := tracks.New(database, cfg, gen, logger)
 	pipe.SetPromptStore(prompts.New(database, nil))

@@ -58,8 +58,8 @@ type worktreeEnvelope struct {
 
 // worktreeTarget is workbenchGitTarget for commands that take no --folder:
 // the main workbench folder, or the envelope's refusal when it cannot be read.
-func worktreeTarget(ctx context.Context, cmd *cobra.Command) (id int64, o workbenchgit.Options, refused, detail string, err error) {
-	id, o, folder, resolveErr, err := workbenchGitTarget(ctx, cmd)
+func worktreeTarget(ctx context.Context) (id int64, o workbenchgit.Options, refused, detail string, err error) {
+	id, o, folder, resolveErr, err := workbenchGitTarget(ctx)
 	if err != nil {
 		return 0, o, "", "", err
 	}
@@ -70,7 +70,7 @@ func worktreeTarget(ctx context.Context, cmd *cobra.Command) (id int64, o workbe
 func runWorkbenchWorktreeCreate(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
 	defer cancel()
-	id, o, refused, detail, err := worktreeTarget(ctx, cmd)
+	id, o, refused, detail, err := worktreeTarget(ctx)
 	if err != nil {
 		return err
 	}
@@ -102,7 +102,7 @@ func heldWorktreeBranches(ctx context.Context) ([]string, error) {
 func runWorkbenchWorktreeEnsure(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
 	defer cancel()
-	id, o, refused, detail, err := worktreeTarget(ctx, cmd)
+	id, o, refused, detail, err := worktreeTarget(ctx)
 	if err != nil {
 		return err
 	}
@@ -127,7 +127,7 @@ type worktreeForgetResult struct {
 func runWorkbenchWorktreeForget(cmd *cobra.Command, _ []string) error {
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
 	defer cancel()
-	id, o, refused, detail, err := worktreeTarget(ctx, cmd)
+	id, o, refused, detail, err := worktreeTarget(ctx)
 	if err != nil {
 		return err
 	}

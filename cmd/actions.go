@@ -14,7 +14,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/automations"
-	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/tools"
 )
@@ -127,16 +126,16 @@ type actionEnvelope struct {
 	Warning   string     `json:"warning,omitempty"`
 }
 
-func openActionsCmd() (*config.Config, *db.DB, *tools.Registry, error) {
+func openActionsCmd() (*db.DB, *tools.Registry, error) {
 	cfg, database, err := openJiraCmdDB()
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	if err := database.SetBusyTimeout(ownerWriteBusyTimeout); err != nil {
 		database.Close()
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
-	return cfg, database, buildToolRegistry(cfg, database), nil
+	return database, buildToolRegistry(cfg, database), nil
 }
 
 // ownerWriteBusyTimeout is how long an owner-facing write — an Approve,
@@ -171,7 +170,7 @@ func printAction(w io.Writer, a db.AgentAction) {
 }
 
 func runActionsList(cmd *cobra.Command, _ []string) error {
-	_, database, _, err := openActionsCmd()
+	database, _, err := openActionsCmd()
 	if err != nil {
 		return err
 	}
@@ -198,7 +197,7 @@ func runActionsShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	_, database, _, err := openActionsCmd()
+	database, _, err := openActionsCmd()
 	if err != nil {
 		return err
 	}
@@ -278,7 +277,7 @@ func decideAndMaybeApply(cmd *cobra.Command, idArg string, from []string, to str
 	if err != nil {
 		return err
 	}
-	_, database, reg, err := openActionsCmd()
+	database, reg, err := openActionsCmd()
 	if err != nil {
 		return err
 	}
@@ -443,7 +442,7 @@ func runActionsTrust(cmd *cobra.Command, args []string) error {
 			return err
 		}
 	}
-	_, database, reg, err := openActionsCmd()
+	database, reg, err := openActionsCmd()
 	if err != nil {
 		return err
 	}
@@ -510,7 +509,7 @@ type toolJSON struct {
 }
 
 func runActionsTools(cmd *cobra.Command, _ []string) error {
-	_, database, reg, err := openActionsCmd()
+	database, reg, err := openActionsCmd()
 	if err != nil {
 		return err
 	}

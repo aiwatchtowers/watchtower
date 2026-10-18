@@ -30,7 +30,7 @@ func TestValidateModel_AlwaysOK(t *testing.T) {
 func TestEmitError_WritesErrorAndDoneEvents(t *testing.T) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
-	require.NoError(t, emitError(enc, "boom"))
+	emitError(enc, "boom")
 
 	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
 	require.Len(t, lines, 2)

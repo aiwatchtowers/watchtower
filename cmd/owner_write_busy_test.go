@@ -50,7 +50,7 @@ func TestMCPModeOptions_WritableModesGetTheOwnerWriteBusyTimeout(t *testing.T) {
 
 func TestOpenActionsCmd_UsesTheOwnerWriteBusyTimeout(t *testing.T) {
 	writeActionsConfig(t)
-	_, database, _, err := openActionsCmd()
+	database, _, err := openActionsCmd()
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = database.Close() })
 	assert.Equal(t, ownerWriteBusyTimeout.Milliseconds(), busyTimeoutMS(t, database))

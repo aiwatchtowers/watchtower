@@ -236,6 +236,20 @@ func TestAutomationsAuto_GrantsJSONNeverNull(t *testing.T) {
 	assert.True(t, slices.Contains(keys, "grants") && slices.Contains(keys, "auto_paused"), "%v", keys)
 }
 
+// #584: list --json carries the daemon's own disable.
+func TestAutomationsCLI_ListDisabledReason(t *testing.T) {
+	c := newAutoCLI(t)
+	a := c.confirmedRecipe(t, "digest", autoCLIRecipeText(`return 1`))
+	item := listItem(t, a.ID)
+	assert.Equal(t, "", item["disabled_reason"])
+	assert.Nil(t, item["disabled_at"])
+	require.NoError(t, c.d.DisableRunawayAutomation(a.ID, "runaway script", time.Now()))
+	item = listItem(t, a.ID)
+	assert.Equal(t, "runaway script", item["disabled_reason"])
+	assert.NotNil(t, item["disabled_at"])
+	assert.Equal(t, false, item["enabled"])
+}
+
 // autoToolsOf reads show --json's auto_tools as tool → always_asks.
 func autoToolsOf(t *testing.T, show map[string]any) map[string]bool {
 	t.Helper()

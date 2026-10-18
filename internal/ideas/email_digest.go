@@ -597,11 +597,11 @@ func (p *Pipeline) insertStreamTopics(row db.StreamDigest, topics []streamTopic,
 // ideas floor (google_accounts / email_accounts .ideas_email_floor). A nil
 // generator is a clean no-op (the inbox pipeline.go:253 pattern). Per-account
 // errors are logged and the loop continues to the next account; the first
-// error encountered is returned once every account has had a turn. bound is
-// an optional upper bound on the thread window (the zero value is unbounded
-// — Run's ordinary daemon/incremental path passes time.Time{}); a non-zero
-// bound is how a backfill run scopes one pass to a slice of history.
-func (p *Pipeline) runEmailDigests(ctx context.Context, bound time.Time) error {
+// error encountered is returned once every account has had a turn. The
+// thread window is unbounded above (Run's ordinary daemon/incremental path);
+// a backfill run bounds runEmailDigestAccount itself to scope one pass to a
+// slice of history.
+func (p *Pipeline) runEmailDigests(ctx context.Context) error {
 	if p.generator == nil {
 		return nil
 	}
@@ -611,7 +611,7 @@ func (p *Pipeline) runEmailDigests(ctx context.Context, bound time.Time) error {
 	}
 	var firstErr error
 	for _, mb := range boxes {
-		if err := p.runEmailDigestAccount(ctx, mb, bound); err != nil {
+		if err := p.runEmailDigestAccount(ctx, mb, time.Time{}); err != nil {
 			p.logf("ideas: email digest %s: %v", mb.what(), err)
 			if firstErr == nil {
 				firstErr = err

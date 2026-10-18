@@ -83,7 +83,7 @@ final class ReadinessQueriesTests: XCTestCase {
 
     func testEachTableFlipsItsFeature() throws {
         XCTAssertEqual(Set(tables.map(\.0)), Set(ReadinessFeature.allCases))
-        XCTAssertEqual(Set(ReadinessQueries.observedTables), Set(tables.map(\.1) + ["pipeline_runs"]))
+        XCTAssertEqual(Set(ReadinessQueries.observedTables), Set(tables.map(\.1) + ["pipeline_runs", "jira_boards"]))
         for (feature, table) in tables {
             let queue = try TestDatabase.create()
             try insertMinimalRow(queue, into: table)
@@ -185,5 +185,36 @@ final class ReadinessQueriesTests: XCTestCase {
         let queue = try TestDatabase.create()
         try queue.write { db in try db.execute(sql: "DROP TABLE history_backfill") }
         XCTAssertEqual(try queue.read(ReadinessQueries.runningBackfillStarts), [])
+    }
+
+    // MARK: - Jira boards selected (#572)
+
+    func testJiraBoardsSelectedNeedsASelectedBoardOnAConnectedSite() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO jira_accounts (id, status) VALUES (10, 'ok'), (11, 'removed')")
+            try db.execute(sql: "INSERT INTO jira_boards (account_id, id, name, is_selected) VALUES (10, 1, 'A', 0)")
+        }
+        // Connected with an unselected board: nothing syncs.
+        XCTAssertFalse(try queue.read(ReadinessQueries.jiraBoardsSelected))
+        // A selected board on a removed site doesn't count.
+        try queue.write { db in
+            try db.execute(sql: "INSERT INTO jira_boards (account_id, id, name, is_selected) VALUES (11, 2, 'B', 1)")
+        }
+        XCTAssertFalse(try queue.read(ReadinessQueries.jiraBoardsSelected))
+        try queue.write { db in try db.execute(sql: "UPDATE jira_boards SET is_selected = 1 WHERE account_id = 10") }
+        XCTAssertTrue(try queue.read(ReadinessQueries.jiraBoardsSelected))
+        // A paused (disabled) site syncs nothing either.
+        try queue.write { db in try db.execute(sql: "UPDATE jira_accounts SET enabled = 0 WHERE id = 10") }
+        XCTAssertFalse(try queue.read(ReadinessQueries.jiraBoardsSelected))
+    }
+
+    func testJiraBoardsSelectedWithoutTheTableReadsTrue() throws {
+        let queue = try TestDatabase.create()
+        try queue.writeWithoutTransaction { db in
+            try db.execute(sql: "PRAGMA foreign_keys = OFF")
+            try db.execute(sql: "DROP TABLE jira_boards")
+        }
+        XCTAssertTrue(try queue.read(ReadinessQueries.jiraBoardsSelected))
     }
 }
