@@ -47,7 +47,7 @@ struct SessionChatView: View {
         } message: {
             Text(sendError ?? "")
         }
-        .onChange(of: lines) { _, rows in viewModel.noteOutgoing(rows.compactMap(SessionChatViewModel.Outgoing.init)) }
+        .onChange(of: lines, initial: true) { _, rows in viewModel.noteOutgoing(rows.compactMap(SessionChatViewModel.Outgoing.init)) }
         .onAppear { viewModel.appeared() }
         .onDisappear { viewModel.disappeared() }
     }
