@@ -72,15 +72,17 @@ func openAgentsTestLog(t *testing.T) *agentlogdb.DB {
 func TestAgentsEnable_ReturnsWithoutScanning(t *testing.T) {
 	wb := agentsFixture(t)
 	out := runAgentsCmd(t, "enable", "--workbench", strconv.FormatInt(wb, 10), "--json")
-	assert.Equal(t, []string{"enabled", "import", "workbench_id"}, jsonKeys(t, out))
+	assert.Equal(t, []string{"daemon_nudged", "enabled", "import", "workbench_id"}, jsonKeys(t, out))
 	var r struct {
-		WorkbenchID int64                      `json:"workbench_id"`
-		Enabled     bool                       `json:"enabled"`
-		Import      map[string]json.RawMessage `json:"import"`
+		WorkbenchID  int64                      `json:"workbench_id"`
+		Enabled      bool                       `json:"enabled"`
+		Import       map[string]json.RawMessage `json:"import"`
+		DaemonNudged bool                       `json:"daemon_nudged"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(out), &r))
 	assert.Equal(t, wb, r.WorkbenchID)
 	assert.True(t, r.Enabled)
+	assert.False(t, r.DaemonNudged, "no daemon runs in the test workspace")
 	assert.JSONEq(t, `"not_started"`, string(r.Import["state"]))
 	assert.JSONEq(t, `0`, string(r.Import["files_stored"]))
 
@@ -112,6 +114,14 @@ func TestAgentsEnable_NoDaemonStillSucceeds(t *testing.T) {
 	rest, err := io.ReadAll(dec.Buffered())
 	require.NoError(t, err)
 	assert.Empty(t, strings.TrimSpace(string(rest)))
+}
+
+// Without a running daemon the human line says how the history gets loaded.
+func TestAgentsEnable_NoDaemonSaysStartIt(t *testing.T) {
+	wb := agentsFixture(t)
+	out := runAgentsCmd(t, "enable", "--workbench", strconv.FormatInt(wb, 10))
+	assert.Contains(t, out, "start the daemon to load the history")
+	assert.NotContains(t, out, "the daemon loads its history in the background")
 }
 
 // A move that fails after the switch is set says analytics stays on and
@@ -292,6 +302,7 @@ func TestAgentsReport_BeforeMoveNeitherCopiesNorWrites(t *testing.T) {
 	for _, k := range []string{"commands", "models", "hints", "tasks", "sessions"} {
 		assert.JSONEq(t, `[]`, string(ov[k]), k)
 	}
+	assert.JSONEq(t, `{"state": "waiting_for_move", "files_stored": 0}`, string(ov["import"]))
 	runAgentsCmd(t, "stats", "--workbench", strconv.FormatInt(wb, 10), "--json")
 
 	assert.Equal(t, 3, mainAgentLogCount(t, database), "watchtower.db keeps its rows")
@@ -387,4 +398,55 @@ func TestSyncDaemon_MovesBeforeDaemonStarts(t *testing.T) {
 	var n int
 	require.NoError(t, al.QueryRow(`SELECT COUNT(*) FROM agent_log_events`).Scan(&n))
 	assert.Equal(t, 1, n)
+}
+
+// An agentlog.db that cannot be opened leaves the daemon without analytics
+// for this run (nil handle), logged; watchtower.db's rows stay.
+func TestOpenAgentLog_OpenFailsReturnsNil(t *testing.T) {
+	database := writeActionsConfig(t)
+	wb, err := database.CreateWorkbench("app", t.TempDir())
+	require.NoError(t, err)
+	seedMainAgentLog(t, database, wb)
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	require.NoError(t, os.Mkdir(agentlogdb.PathFor(cfg.DBPath()), 0o700), "a directory where agentlog.db goes")
+	var logBuf bytes.Buffer
+
+	al := openAgentLog(context.Background(), cfg, database, log.New(&logBuf, "", 0))
+
+	assert.Nil(t, al)
+	assert.Contains(t, logBuf.String(), "analytics are skipped until the next start")
+	assert.Equal(t, 3, mainAgentLogCount(t, database), "nothing moved, nothing deleted")
+}
+
+// A failed move still returns the handle (the daemon starts, the analytics
+// phase retries the move), logged; watchtower.db's rows stay.
+func TestOpenAgentLog_MoveFailsKeepsHandle(t *testing.T) {
+	database := writeActionsConfig(t)
+	wb, err := database.CreateWorkbench("app", t.TempDir())
+	require.NoError(t, err)
+	seedMainAgentLog(t, database, wb)
+	// A row agentlog.db's CHECK rejects aborts the move before its marker.
+	_, err = database.Exec(`PRAGMA ignore_check_constraints = ON`)
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO agent_log_files (path, agent, size, mtime, read_offset, parser_version, scanned_at)
+		VALUES ('/gone/x.jsonl', 'not_an_agent', 1, '2026-10-01T10:00:00Z', 1, 2, '2026-10-01T10:00:00Z')`)
+	require.NoError(t, err)
+	_, err = database.Exec(`PRAGMA ignore_check_constraints = OFF`)
+	require.NoError(t, err)
+	before := mainAgentLogCount(t, database)
+	cfg, err := workspaceConfigFromFlags()
+	require.NoError(t, err)
+	var logBuf bytes.Buffer
+
+	al := openAgentLog(context.Background(), cfg, database, log.New(&logBuf, "", 0))
+
+	require.NotNil(t, al)
+	t.Cleanup(func() { _ = al.Close() })
+	assert.Contains(t, logBuf.String(), "moving rows out of watchtower.db")
+	assert.Contains(t, logBuf.String(), "retried on the next start or agents enable/scan")
+	ok, err := al.Moved()
+	require.NoError(t, err)
+	assert.False(t, ok)
+	assert.Equal(t, before, mainAgentLogCount(t, database))
 }

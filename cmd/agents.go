@@ -90,9 +90,10 @@ func moveAgentLogRows(cmd *cobra.Command, database *db.DB, al *agentlogdb.DB, pa
 // agentsEnableJSON is `agents enable --json` (keys pinned by
 // TestAgentsEnable_ReturnsWithoutScanning).
 type agentsEnableJSON struct {
-	WorkbenchID int64                   `json:"workbench_id"`
-	Enabled     bool                    `json:"enabled"`
-	Import      agentreport.ImportState `json:"import"`
+	WorkbenchID  int64                   `json:"workbench_id"`
+	Enabled      bool                    `json:"enabled"`
+	Import       agentreport.ImportState `json:"import"`
+	DaemonNudged bool                    `json:"daemon_nudged"` // false: no daemon running, or the signal failed
 }
 
 // runAgentsEnable turns analytics on and returns at once (#849): the daemon
@@ -113,17 +114,21 @@ func runAgentsEnable(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("%w; analytics stays on for workbench %d and the move retries on the next daemon start or agents scan",
 			err, flagAgentsWorkbench)
 	}
-	nudgeDaemon(cmd)
+	nudged := nudgeDaemon(cmd)
 	progress, err := al.ImportProgress(flagAgentsWorkbench)
 	if err != nil {
 		return err
 	}
 	imp := agentreport.ImportStateOf(progress)
 	if flagAgentsJSON {
-		return writeJSON(cmd.OutOrStdout(), agentsEnableJSON{WorkbenchID: flagAgentsWorkbench, Enabled: true, Import: imp})
+		return writeJSON(cmd.OutOrStdout(), agentsEnableJSON{WorkbenchID: flagAgentsWorkbench, Enabled: true, Import: imp, DaemonNudged: nudged})
 	}
-	fmt.Fprintf(cmd.OutOrStdout(), "Agent analytics is on for workbench %d; the daemon loads its history in the background (%s, %d files so far).\n",
-		flagAgentsWorkbench, importStateText(imp.State), imp.FilesStored)
+	next := "the daemon loads its history in the background"
+	if !nudged {
+		next = "start the daemon to load the history"
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Agent analytics is on for workbench %d; %s (%s, %d files so far).\n",
+		flagAgentsWorkbench, next, importStateText(imp.State), imp.FilesStored)
 	return nil
 }
 
@@ -140,17 +145,19 @@ func importStateText(state string) string {
 	return state
 }
 
-// nudgeDaemon asks a running daemon to start a sync cycle now. No daemon is
-// fine (it imports when it starts); any other failure is only a warning on
-// stderr: analytics is on either way.
-func nudgeDaemon(cmd *cobra.Command) {
+// nudgeDaemon asks a running daemon to start a sync cycle now and reports
+// whether one was signalled. No daemon is fine (it imports when it starts);
+// any other failure is only a warning on stderr: analytics is on either way.
+func nudgeDaemon(cmd *cobra.Command) bool {
 	cfg, err := workspaceConfigFromFlags()
+	var pid int
 	if err == nil {
-		_, err = signalSyncNow(cfg)
+		pid, err = signalSyncNow(cfg)
 	}
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the daemon was not asked to start the import now: %v\n", err)
 	}
+	return err == nil && pid != 0
 }
 
 func runAgentsDisable(cmd *cobra.Command, _ []string) error {

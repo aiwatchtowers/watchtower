@@ -32,7 +32,7 @@ It refreshes every 30 seconds while on screen, and when the session's state chan
 
 The **Analytics** button in the page header (or **Analytics** in a pane's title menu) shows where this folder's Claude Code sessions spent their time and money:
 
-- Pick **7 days**, **30 days** or **All**. The first time, press **Turn On** to load the history.
+- Pick **7 days**, **30 days** or **All**. The first time, press **Turn On**: it returns at once, and the daemon loads the history in the background. Until it is done, **Loading history — N files so far** sits above the numbers loaded so far.
 - The hints say what would save the most. Each links to its session or board target.
 - Click a session to see its timeline: one lane for the main agent and one per subagent.
 
