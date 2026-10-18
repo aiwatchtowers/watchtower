@@ -44,8 +44,10 @@ final class UserStatsViewModel {
             }
             do {
                 for try await _ in observation.values(in: dbPool).dropFirst() {
-                    guard !Task.isCancelled else { break }
-                    self?.load()
+                    // A released VM ends the loop, so its observer leaves the pool
+                    // at the next change even if no view called stopObserving().
+                    guard !Task.isCancelled, let self else { break }
+                    self.load()
                 }
             } catch {}
         }
