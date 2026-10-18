@@ -200,21 +200,18 @@ func TestFormatSharedIssues_NoSharedNoOutput(t *testing.T) {
 
 func TestGatherJiraMeetingContext_Disabled(t *testing.T) {
 	cfg := disabledJiraConfig()
-	got, err := gatherJiraMeetingContext(nil, cfg, []string{"U1"})
-	assert.NoError(t, err)
+	got := gatherJiraMeetingContext(nil, cfg, []string{"U1"})
 	assert.Empty(t, got)
 }
 
 func TestGatherJiraMeetingContext_NoAttendees(t *testing.T) {
 	cfg := enabledJiraConfig()
-	got, err := gatherJiraMeetingContext(nil, cfg, nil)
-	assert.NoError(t, err)
+	got := gatherJiraMeetingContext(nil, cfg, nil)
 	assert.Empty(t, got)
 }
 
 func TestGatherJiraMeetingContext_OnlyEmptyIDs(t *testing.T) {
 	cfg := enabledJiraConfig()
-	got, err := gatherJiraMeetingContext(nil, cfg, []string{"", ""})
-	assert.NoError(t, err)
+	got := gatherJiraMeetingContext(nil, cfg, []string{"", ""})
 	assert.Empty(t, got)
 }

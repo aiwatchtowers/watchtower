@@ -206,7 +206,7 @@ func (p *Pipeline) prepareForEvent(ctx context.Context, event db.CalendarEvent, 
 			attendeeSlackIDs = append(attendeeSlackIDs, a.SlackUserID)
 		}
 	}
-	jiraCtx, _ := gatherJiraMeetingContext(p.db, p.cfg, attendeeSlackIDs)
+	jiraCtx := gatherJiraMeetingContext(p.db, p.cfg, attendeeSlackIDs)
 
 	// User profile context.
 	profileCtx := ""

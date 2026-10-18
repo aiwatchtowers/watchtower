@@ -198,6 +198,23 @@ package final class AutomationEditorCenter {
         }
     }
 
+    /// A recipe loaded with a parse error (#582): re-validates the text as
+    /// it is now, so the form's banner follows the owner's fix in Monaco.
+    /// The loaded text needs no call; a failed call leaves the banner as it
+    /// was, and a result for text changed since is dropped.
+    package func recheckParse(_ id: Int64) async {
+        guard let form = drafts[id]?.form, form.recipeUnparsed, saving[id] == nil else { return }
+        let text = form.renderedText()
+        guard text != form.detail.recipeText else {
+            form.currentParseError = form.detail.parseError
+            return
+        }
+        guard let validated = try? await withTempRecipe(text, slug: form.detail.slug, { file in
+            try await cli.validate(file: file, against: id)
+        }), drafts[id]?.form === form, form.renderedText() == text else { return }
+        form.currentParseError = validated.ok ? "" : validated.errors.joined(separator: "\n")
+    }
+
     /// The Save sheet was cancelled: nothing is written.
     package func cancelReview(_ id: Int64) {
         guard case .review = saving[id] else { return }
@@ -381,6 +398,8 @@ extension AutomationDetail {
         changedBy = ""
         changedAt = nil
         autoTools = []
+        llmAutoWrites = []
+        feedsSourcesToLLM = false
     }
 
     package var isNewRecipe: Bool { id == AutomationEditorCenter.newRecipeID }

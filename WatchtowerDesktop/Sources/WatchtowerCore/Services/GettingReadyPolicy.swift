@@ -84,7 +84,10 @@ package enum GettingReadyPolicy {
             switch state {
             case .off:
                 continue
-            case .needsSource(let source) where !source.isOwnerIdentity:
+            // Jira connected with no board picked (#572) stays a waiting
+            // card: a row never holds the zone open, and nothing syncs until
+            // the owner picks boards.
+            case .needsSource(let source) where !source.isOwnerIdentity && source != .jiraBoards:
                 if let index = sourceRows.firstIndex(where: { $0.source == source }) {
                     sourceRows[index] = GettingReadySourceRow(
                         source: source, features: sourceRows[index].features + [feature])

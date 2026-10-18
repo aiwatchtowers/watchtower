@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -47,14 +48,15 @@ func channelDigests(t *testing.T, database *db.DB, channelID string) []db.Digest
 }
 
 func batchAnswer(channelIDs ...string) string {
-	out := "["
+	var out strings.Builder
+	out.WriteString("[")
 	for i, id := range channelIDs {
 		if i > 0 {
-			out += ","
+			out.WriteString(",")
 		}
-		out += fmt.Sprintf(`{"channel_id":%q,"summary":"Work in %s","topics":[{"title":"t","summary":"s","decisions":[],"action_items":[],"situations":[],"key_messages":[]}]}`, id, id)
+		out.WriteString(fmt.Sprintf(`{"channel_id":%q,"summary":"Work in %s","topics":[{"title":"t","summary":"s","decisions":[],"action_items":[],"situations":[],"key_messages":[]}]}`, id, id))
 	}
-	return out + "]"
+	return out.String() + "]"
 }
 
 func TestRunBackfillWindow_DigestsChunk(t *testing.T) {
@@ -452,7 +454,7 @@ func TestRunBackfillWindow_LockContentionIsIncomplete(t *testing.T) {
 
 	gen := &mockGenerator{response: validDigestJSON()}
 	p := backfillPipeline(t, database, gen)
-	_, unlock, err := p.acquireDigestLock()
+	unlock, err := p.acquireDigestLock()
 	require.NoError(t, err)
 	defer unlock()
 
@@ -492,7 +494,7 @@ func TestRunBackfillRollups_LockErrors(t *testing.T) {
 	p := backfillPipeline(t, database, gen)
 	from, to := backfillRange()
 
-	_, unlock, err := p.acquireDigestLock()
+	unlock, err := p.acquireDigestLock()
 	require.NoError(t, err)
 	err = p.RunBackfillRollups(context.Background(), from, to)
 	unlock()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 
 	"watchtower/internal/db"
 )
@@ -144,12 +145,7 @@ func hasOpenWork(n db.BoardNode) bool {
 	if !closedStatus(n.Target.Status) {
 		return true
 	}
-	for _, c := range n.Children {
-		if hasOpenWork(c) {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(n.Children, hasOpenWork)
 }
 
 func closedStatus(status string) bool { return status == "done" || status == "dismissed" }

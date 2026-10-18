@@ -149,7 +149,7 @@ const webGroup = "Web"
 func webSearchSources(raw []byte) (string, []Source) {
 	var sources []Source
 	titles := make([]string, 0, 3)
-	for _, line := range strings.Split(string(raw), "\n") {
+	for line := range strings.SplitSeq(string(raw), "\n") {
 		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "Links:")
 		if !ok {
 			continue

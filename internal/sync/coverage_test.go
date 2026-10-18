@@ -313,7 +313,7 @@ func TestSaveSyncErrorWithNilState(t *testing.T) {
 func TestSearchChannelType(t *testing.T) {
 	tests := []struct {
 		name     string
-		ch       func() interface{} // we'll test the raw function
+		ch       func() any // we'll test the raw function
 		expected string
 	}{
 		{"public", nil, "public"},
@@ -893,8 +893,7 @@ func TestFinishSyncUpdatesSyncedAt(t *testing.T) {
 	err := ts.db.UpsertWorkspace(db.Workspace{ID: "T024BE7LD", Name: "my-company", Domain: "my-company"})
 	require.NoError(t, err)
 
-	err = ts.orch.finishSync()
-	require.NoError(t, err)
+	ts.orch.finishSync()
 
 	assert.Equal(t, PhaseDone, ts.orch.progress.Phase())
 

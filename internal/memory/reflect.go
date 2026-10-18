@@ -314,7 +314,8 @@ func historyChurnSince(body string, since time.Time) int {
 // buildReflectPrompt renders the reflection call: the language directive fills
 // the template's single %s slot; the user message is a churn digest listing the
 // flapping beliefs (with their statements + history churn) and entities (with
-// their titles + commit breakdown). It never opens with a "-"/"--" line (the
+// their titles + commit breakdown), over the window that starts at since (its
+// UTC date names the period). It never opens with a "-"/"--" line (the
 // claude-CLI argv gotcha).
 func buildReflectPrompt(tmpl, lang string, rows []db.MemoryNodeRow, churn map[string]nodeChurn, since time.Time) (system, user string) {
 	system = fmt.Sprintf(tmpl, prompts.Directive(lang))
@@ -330,6 +331,7 @@ func buildReflectPrompt(tmpl, lang string, rows []db.MemoryNodeRow, churn map[st
 		ids = append(ids, id)
 	}
 	sort.Strings(ids) // deterministic prompt order
+	period := "since " + since.UTC().Format("2006-01-02")
 
 	var beliefs, entities strings.Builder
 	for _, id := range ids {
@@ -339,14 +341,14 @@ func buildReflectPrompt(tmpl, lang string, rows []db.MemoryNodeRow, churn map[st
 			title = id
 		}
 		if typeByID[id] == "belief" {
-			fmt.Fprintf(&beliefs, "- %s %q: %d revisions, %d history entries this week\n", id, title, nc.commits, nc.historyLines)
+			fmt.Fprintf(&beliefs, "- %s %q: %d revisions, %d history entries %s\n", id, title, nc.commits, nc.historyLines, period)
 		} else {
-			fmt.Fprintf(&entities, "- %s %q: %d page revisions this week (%s)\n", id, title, nc.commits, opBreakdown(nc.byOp))
+			fmt.Fprintf(&entities, "- %s %q: %d page revisions %s (%s)\n", id, title, nc.commits, period, opBreakdown(nc.byOp))
 		}
 	}
 
 	var b strings.Builder
-	b.WriteString("Memory activity over the last seven days.\n\n")
+	b.WriteString("Memory activity " + period + ".\n\n")
 	b.WriteString("Beliefs revised:\n")
 	if beliefs.Len() == 0 {
 		b.WriteString("(none)\n")

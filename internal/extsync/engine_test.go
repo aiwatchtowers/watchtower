@@ -55,7 +55,7 @@ func TestBudgetCutResumesFromPageToken(t *testing.T) {
 	f := newFake()
 	f.pageSize = 2
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < 7; i++ {
+	for i := range 7 {
 		f.addPage(fmt.Sprintf("p%d", i), 1, base.Add(time.Duration(i)*time.Hour))
 	}
 	clock := &stepClock{t: base, step: time.Minute} // each Now() call advances one minute
@@ -101,7 +101,7 @@ func TestBackfillMakesOnePass(t *testing.T) {
 	d, src := newSourceDB(t)
 	f := newFake()
 	t0 := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		f.addPage(fmt.Sprintf("p%d", i), 1, t0.Add(time.Duration(i)*time.Hour))
 	}
 	e := New(d, Options{})
@@ -118,7 +118,7 @@ func TestOverlapWindowSpanningPagesTerminates(t *testing.T) {
 	d, src := newSourceDB(t)
 	f := newFake()
 	t0 := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
-	for i := 0; i < 5; i++ { // five items within one minute, pageSize 2
+	for i := range 5 { // five items within one minute, pageSize 2
 		f.addPage(fmt.Sprintf("p%d", i), 1, t0.Add(time.Duration(i)*time.Second))
 	}
 	e := New(d, Options{})
@@ -143,7 +143,7 @@ func TestResumedPassThenOneFreshPass(t *testing.T) {
 	d, src := newSourceDB(t)
 	f := newFake()
 	t0 := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		f.addPage(fmt.Sprintf("p%d", i), 1, t0.Add(time.Duration(i)*time.Second))
 	}
 	clock := &stepClock{t: t0, step: time.Minute}

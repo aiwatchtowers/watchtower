@@ -30,6 +30,10 @@ func TestMain(m *testing.M) {
 	if mode := os.Getenv(fakeModeEnv); mode != "" {
 		os.Exit(runFakeAppServer(mode))
 	}
+	// No test runs a real `codex --version`: every binary counts as one
+	// with model_instructions_file, except where a test restores the real
+	// probe against a fake codex (instructions_test.go).
+	probeCodexVersion = func(string) ([3]int, error) { return minInstructionsFileVersion, nil }
 	// Hermetic codex config layers: never the developer's own ~/.codex or
 	// /etc/codex (ownerServerNames); a test that needs owner servers sets
 	// CODEX_HOME itself.
@@ -172,7 +176,7 @@ func (f fakeServer) requests(t *testing.T) []loggedRequest {
 		t.Fatal(err)
 	}
 	var out []loggedRequest
-	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(string(b)), "\n") {
 		var r loggedRequest
 		if err := json.Unmarshal([]byte(line), &r); err != nil {
 			t.Fatalf("logged request %q: %v", line, err)
@@ -425,7 +429,7 @@ func waitPIDsGone(t *testing.T, f fakeServer) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range strings.Fields(string(b)) {
+	for field := range strings.FieldsSeq(string(b)) {
 		pid, _ := strconv.Atoi(field)
 		waitGone(t, pid)
 	}

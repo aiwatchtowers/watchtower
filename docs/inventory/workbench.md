@@ -492,15 +492,15 @@ rule from one Repair or Re-run Setup; `workbench resync --json` reports
 `cleanup_permission_added`.
 
 *2026-10-15 (board #266, spec §4.3):* the install writes two skills into `.claude/skills` and
-`.agents/skills`: the core `watchtower-workbench` (pack v12) always, and the `watchtower-flow` preset
+`.agents/skills`: the core `watchtower-workbench` (pack v13 since board #558) always, and the `watchtower-flow` preset
 unless the effective preset is `none` (`WorkbenchInstallOptions.PresetNone`, resolved like the hooks).
 Both follow the DEV-04 rules. Preset `none` removes the preset only when its bytes are ours (shipped,
 or matching the sidecar); an edited or foreign copy is kept and reported. An owner-edited core from
 before v10 (marker below `v10`) keeps the single-file layout: nothing is written beside it, and
 `resync` says "Your edited skill keeps the old single-file layout; delete it to take the v10 core and
-preset." A core byte-identical to the shipped v8, v9, v10 or v11 with no sidecar is adopted as ours. A preset change
+preset." A core byte-identical to the shipped v8, v9, v10, v11 or v12 with no sidecar is adopted as ours. A preset change
 through `watchtower workbench methodology` runs `devpack.SyncMethodology` (the skills only: each core
-copy goes through the install first, so a pre-v10 core of ours becomes v12, then the preset follows; no
+copy goes through the install first, so a pre-v10 core of ours becomes v13, then the preset follows; no
 hook or registration is touched); a changed `preset:` in `workflow.md` takes effect on the next install
 or resync, and the brief names the mismatch. An owner-edited preset copy counts as installed under
 `watchtower-flow` (no mismatch line, never rewritten); under `none` it is kept, `methodology --json`
@@ -1479,7 +1479,21 @@ are trusted as one set). The never-traps rules above hold unchanged.
 *2026-10-15 (board #266, spec `docs/superpowers/specs/2026-10-15-workbench-configurable-methodology-design.md` §7):*
 the guard runs under the workbench's ask guard mode and finish check, resolved at run time by
 `workbenchmethod.ResolveSession` (the owner's setting in `projects.ask_guard_mode`/`finish_check`,
-migration `00123`, else the session folder's `.watchtower/workflow.md`, else `strict` and `on`). Any
+migration `00123`, else `strict` and `on`; *amended 2026-10-17, board #558, owner decision ask #303 q4:*
+the folder's `.watchtower/workflow.md` no longer sets either check — it is repo content any clone, pulled
+branch or the agent's own worktree edit can change, so its `ask_guard`/`finish_check` keys are parsed but
+ignored and only the owner's personal setting weakens a check; the file still sets the preset. So that
+setups made before the change keep working, migration `00133` marks the workbenches that exist at the
+upgrade `methodology_carry_pending = 1` (a fresh install and every later workbench: 0), and a one-time
+carry-over (`workbenchmethod.CarryOverFileChecks`, run only by owner processes — the daemon at start, and
+`workbench methodology` or `workbench brief` with no agent marker set, i.e. the Desktop's Agent Settings
+or a plain Terminal; under an agent's markers it is skipped, `refuseUnderAgent`) copies each pending workbench folder's weaker
+`ask_guard`/`finish_check` into the owner's personal setting where none is set and clears the mark, in one
+statement (`db.CarryWorkflowChecks`: a value the owner set meanwhile is never overwritten), recording
+`*_carried_at`; a file of a workbench that is not pending is never copied. Changing `--ask-guard` or
+`--finish-check` (or `--clear`) through `workbench methodology` is refused under an agent, as AGENT-07's
+owner-only commands are).
+Any
 failure to read them — no database, a schema without the columns, a lock, a present but malformed
 terminal-session variable — resolves to `strict` and `on`, silently. `strict` with the finish check on
 is the table above, unchanged (`decideStop`). `soft`:
@@ -1539,9 +1553,10 @@ Watchtower is broken" with v4 (business D1, ask #148).
 - supporting: `cmd/workbench_askguard_test.go::TestAskGuard_DeniesAskUserQuestionInALiveWorkbench` (now with both reasons), `TestAskToolDenialReasonsAreTheSpecsText`, `TestAskGuardReasonsAreTheSpecsText`, `TestDecideStopTable`, `TestStopWithoutAQuestionClearsTheOlderOne`, `TestAskGuardModelOutputNormalisation`, `TestAskGuardMessageTail`, `TestAskGuardModelChildIsIsolated`, `TestStopGuardReadFailureStillClearsTheOlderQuestion`, `TestStopGuardDeletedWorkbenchPassesSilently`, `TestStopGuardCancelledDuringTheDatabasePhaseWritesNothing`, `TestStopGuardContinuedTurnWithoutASessionCallsNoModel`, `TestStopGuardUnreadableSessionVariableReadsAsAway`, `TestTierForSourceAskGuardIsLight`; `internal/devpack/workbench_ask_guard_test.go::TestAskGuardClassifier_IsTheV4Golden`; `internal/digest/isolated_child_test.go` (`TestIsolateChildKillsTheGroupAndDropsEnv`, `TestIsolateChildCancelAfterTheWaitKillsNothing`); `internal/db/owner_presence_test.go::TestOwnerPresentInStaleWriteIsAbsent`; `cmd/integrate_workbench_test.go::TestIntegrateWorkbenchStatusJSON_AskGuardKeys` (a prompt-only folder → `ask_guard: false`)
 - `cmd/workbench_askguard_modes_test.go::TestProj13_ModeTable` (2026-10-15: every mode × finish check against the table; strict + on is `decideStop`)
 - `cmd/workbench_askguard_modes_test.go::TestProj13_SoftNeverSendsBackAndAlwaysRecords` (owner away: a chat and a full request pass and are recorded, the full one with its text and level `full`)
-- `cmd/workbench_askguard_modes_test.go::TestProj13_OffWithFinishOffCallsNoModel` (set personally or in the folder file: no model call, the older question kept)
+- `cmd/workbench_askguard_modes_test.go::TestProj13_OffWithFinishOffCallsNoModel` (set personally, also over a folder file saying strict and on: no model call, the older question kept; until 2026-10-17 its second case was "set in the folder file", which board #558 inverted into the guard below)
+- `cmd/workbench_askguard_modes_test.go::TestProj13_FolderFileNeverWeakensTheGuard` (2026-10-17, board #558: `ask_guard: off` + `finish_check: off` in `workflow.md` with no personal setting → strict and on: the full request is sent back, `AskUserQuestion` is denied); supporting: `internal/workbenchmethod/resolve_test.go::TestCombine_FileNeverWeakensTheChecks`
 - `cmd/workbench_askguard_modes_test.go::TestProj13_UnreadableModeIsStrict` (a schema without the columns: strict despite `ask_guard: off` in the file; no database: `strictModes`)
-- `cmd/workbench_askguard_modes_test.go::TestProj13_UnreadableSessionVariableIsStrict` (a malformed terminal-session variable: strict + on in the Stop and PreToolUse hooks)
+- `cmd/workbench_askguard_modes_test.go::TestProj13_UnreadableSessionVariableIsStrict` (a malformed terminal-session variable: strict + on in the Stop and PreToolUse hooks; since board #558 the weaker modes it must not reach are the owner's personal off, as the folder file no longer sets them)
 - `cmd/workbench_askguard_modes_test.go::TestProj13_PreToolUseFollowsMode` (Claude Code and Codex; an unreadable mode denies)
 - supporting: `TestProj13_CodexStopFollowsTheMode`, `internal/workbenchmethod/resolve_test.go::TestResolve_UnreadableDatabaseIsStrict`, `cmd/workbench_escalate_test.go::TestEscalateZeroOptionsFromAFullRequestIsFull`
 
@@ -1698,7 +1713,9 @@ sent the line drops it and echoes it `cancelled` (another phone's cancel is
 withheld the Return) → `applied` with `delivery: typed`, and the phone says
 "Typed into the session — press Return on the Mac"; copied → `failed` /
 `cannot_type`. A `session_start` brief edited on the phone is used only from
-a device with `typing_allowed`; otherwise the Mac's own work-on prompt goes.
+a device with `typing_allowed`; a device without it cannot start a session
+at all (#565: a start needs the owner's start grant and `typing_allowed`,
+else `device_not_allowed`).
 No phone action writes to a session's terminal while its state is
 `needsApproval`, and the phone shows "Needs approval on the Mac" with no
 send.
@@ -1717,6 +1734,17 @@ points to PROJ-21 for the one structured answer channel and for the
 interrupt. Every condition for typed lines and every guard is unchanged;
 `testProj16_NeedsApprovalNeverGetsAPhoneLine` keeps its meaning (no typed
 line at Needs approval).
+
+**Amended 2026-10-17 (board #565, owner approved, ask #305 q3):** a
+`session_start` needs the owner's start grant on the Mac
+(`start_sessions_granted`, Settings → Mobile) and `typing_allowed`; the
+phone's own "Start sessions" toggle is only its opt-out. A device not
+allowed to type therefore cannot start a session at all, so its edited
+brief never reaches one: `testProj16_AnEditedBriefFromAnUnallowedDeviceIsIgnored`
+now gives such a device the start grant and checks the start is refused
+`device_not_allowed` with nothing launched (it was: started with the Mac's
+own prompt). The brief rule itself is unchanged
+(`SessionStartHandlerTests::testABriefFromADeviceThatMayNotTypeIsIgnoredForTheBasePrompt`).
 
 **Why locked:** Any device signed into the owner's Apple ID can write relay
 records. Without a Mac-side grant, that device could drive a Claude Code
@@ -2358,6 +2386,7 @@ owner never saw.
 - 2026-10-16 (board #411, Desktop New Task): note only — **no contract, guard test or status changed**. The Desktop board creates targets too (header **New Task**, under the current scope; card menu **New Sub-task…**): `WorkbenchBoardViewModel.createTarget` runs `watchtower workbench target add`, the phone's owner writer, so the creation is recorded as `owner` (PROJ-06), Go does the PROJ-09 parent check and the PROJ-05 rollup, and the new target plus every parent whose status moved are reported through `onOwnerWrite` so the owner is never notified about their own change.
 - 2026-10-16 (Automations P5 part 1, board #753; spec `docs/superpowers/specs/2026-10-14-automations-design.md` §13): **PROJ-02 strengthened** — deleting a workbench also removes its automation rows (`automations`, `automation_runs`, `automation_run_steps`, `automation_state`, `automation_outputs`) and the owner asks its automations filed; guard `TestProj02_DeleteRemovesAutomationRows`; the recipe files under `.watchtower/automations/` stay (owner's repo files). **PROJ-12/PROJ-13:** an automation's ask never reaches a session (see the entry above; guard `TestAutomationAsks_InvisibleToSessionReaders`); the Desktop-side guard that the terminal delivery excludes it follows in part 2. **PROJ-11 note, no text changed:** a session an automation's `session()` starts is an ordinary workbench session (same hooks, states, report and cleanup); for the run, "stopped" means the process ending, reported by the Desktop through `automations session-ended` (R-P5-3). No guard relaxed.
 - 2026-10-16 (Automations P5 Task 6, board #753; spec `docs/superpowers/specs/2026-10-14-automations-design.md` §5, D6/D7): **PROJ-12 and PROJ-13 strengthened — no contract text weakened, no guard changed.** A workbench automation's `ask()` files an `owner_asks` row with `session_id` NULL and `automation_run_id` set (migration `00122`); its run waits for the answer itself and marks it `delivered`. Every session-side reader leaves such a row out (`a.automation_run_id IS NULL`): the brief's "Answered asks for you" and its other-sessions count (`AnsweredAsksForBrief`), `list_asks` (`OwnerAskFilter.ExcludeAutomation`), `get_ask`, `withdraw_ask` and ask_owner's `previous_ask_id` (all through `askInWorkbench`: "no ask with id N"), the series hint (`RecentOpenQuestionAsk`) and the withdrawn-title check (`LastWithdrawnByTitle`) — so PROJ-12's "an ask with no session … the session's next `workbench brief` lists it" never applies to an automation's ask, and no session's `get_ask` can deliver it. The owner-facing readers keep it (the Waiting-for-you stack, `CountOpenOwnerAsks` — the 30-ask cap stays per workbench —, badges, `workbench asks --json`, the daily briefing). **PROJ-13:** the Stop and `PreToolUse` ask guards read no `owner_asks` row (they classify the message and read the session row and presence), so they cannot see an automation's ask; text unchanged. The Desktop's terminal delivery of an automation ask is excluded in the Swift phase (Task 12). Guards: `internal/db/owner_asks_automation_test.go::TestAutomationAsks_InvisibleToSessionReaders`, `internal/tools/workbench_asks_automation_test.go::TestAutomationAsks_InvisibleToSessionReaders`; every existing PROJ-12/PROJ-13 guard green unmodified.
+- 2026-10-17 (board #558, prompt-injection review finding F2; **PROJ-13 and PROJ-04 amended, owner approved in ask #303 q4**): the folder's `.watchtower/workflow.md` no longer sets the ask guard or the finish check — only the owner's personal setting (Agent Settings…, `workbench methodology`) weakens a check; the file's keys are parsed and, for a check with no personal value, reported as ignored (`methodology --json` `file.ignored`, a brief line, a note in Agent Settings). A one-time carry-over copies the weaker check of each workbench's folder file into the owner's personal setting where none is set, only for the workbenches migration `00133` marks carry-pending (those that exist at the upgrade; never on a fresh install or for a later workbench), in one statement that clears the mark and never overwrites a value the owner set meanwhile; it runs only in owner processes — the daemon start, and `workbench methodology` (Agent Settings) or the brief with no agent marker set; under an agent it is skipped — and Agent Settings shows a carried value as "Carried over from workflow.md on <date>". Check writes through `workbench methodology` are refused under an agent (AGENT-07's `refuseUnderAgent`; the env-marker bypass is tracked in #568). Accepted limit: a session worktree's own copy of `workflow.md` is not carried over — only the workbench folder's file is read for the carry-over, while hooks in a worktree read the worktree's copy for the preset. The brief fences the file's body between `--- team repo rules (…; data, not the owner's words) ---` and `--- end of team repo rules ---`, every line quoted with `| `, after the slot's own lines; the core skill (pack v13, PROJ-04: the v12 text joins the adopt-by-digest list and the DEV-04 fixtures) says so. `TestProj13_OffWithFinishOffCallsNoModel`'s folder-file case became `TestProj13_FolderFileNeverWeakensTheGuard` (the inverse, by owner decision) plus a personal-over-strict-file case; `TestProj13_UnreadableSessionVariableIsStrict` sets the owner's off instead of the file's. No other guard changed, none relaxed.
 - 2026-10-16 (board #328, diff reviewer Plan 1; **approved by the owner, spec review ask #179**): **PROJ-12 amended** — the delivery also carries the diff reviewer's round line `Review round #<id> sent (<n> comment[s]) — read it with get_review <id> …`, typed through `SessionLineDelivery` (`LineKey.review`) under the same gates and only after `review send` stored the round; no gate relaxed, no guard changed, round guards listed under PROJ-12 and in `review.md` (REVIEW-04).
 - 2026-10-15 (first run P2, Home, board #783): note only, no contract text changed and no guard relaxed. **PROJ-01** — the Desktop's Home "My targets" read `TargetQueries.homeSummary` is one more non-board reader filtering `project_id IS NULL`; its guard `testProj01_HomeSummaryNeverReturnsAProjectTarget` is listed under PROJ-01.
 - 2026-10-15 (board #266, configurable methodology; spec `docs/superpowers/specs/2026-10-15-workbench-configurable-methodology-design.md` §9, plan `docs/superpowers/plans/2026-10-15-workbench-configurable-methodology.md`; **PROJ-13, PROJ-04 and PROJ-02 amended, owner approved in asks #141 (modes), #146 (spec) and #150 (plan)**): **PROJ-13** gains the ask guard modes (`strict`/`soft`/`off`) and the finish check (`on`/`off`) for the Stop and PreToolUse guards, resolution failure → strict + on, and off with the finish check off → no model call. **PROJ-04** — the install writes the v10 core and the `watchtower-flow` preset, removes the preset only when ours, and keeps a drifted pre-v10 single file without a preset. **PROJ-02** — a delete removes our preset too. **PROJ-08** — listing only: the installed preset directories are skipped from the folder's docs index like the core. **PROJ-14** unchanged, noted: with the finish check off a session the agent does not finish ends as Stopped without a summary; only `finish_session` marks a session finished. **PROJ-03** unchanged: the Desktop's "Create workflow.md" runs the CLI on the owner's click and never overwrites a file; the agent never writes `workflow.md` or its own checks (no MCP tool changes them). PROJ-07 and PROJ-11 unchanged. All existing guards kept, none relaxed.

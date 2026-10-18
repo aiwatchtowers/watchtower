@@ -50,13 +50,27 @@ package enum AutomationQueries {
 
     private static let activeStatuses = "('queued','running','waiting')"
 
-    private static func newestRunPerAutomation(_ db: Database, active: Bool) throws -> [Int64: AutomationRun] {
-        let filter = active ? "IN \(activeStatuses)" : "NOT IN \(activeStatuses)"
+    private static func newestRunPerAutomation(_ db: Database, active: Bool, dryRuns: Bool = true) throws
+        -> [Int64: AutomationRun] {
+        let filter = (active ? "IN \(activeStatuses)" : "NOT IN \(activeStatuses)")
+            + (dryRuns ? "" : " AND trigger != 'dry_run'")
         let runs = try AutomationRun.fetchAll(db, sql: """
             SELECT * FROM automation_runs WHERE id IN (
                 SELECT MAX(id) FROM automation_runs WHERE status \(filter) GROUP BY automation_id)
             """)
         return Dictionary(uniqueKeysWithValues: runs.map { ($0.automationID, $0) })
+    }
+
+    /// Each automation's newest ended run that is not a dry run: what
+    /// `AutomationFailureWatch` judges (a dry run never hides a failure).
+    package static func newestEndedRuns(_ db: Database) throws -> [Int64: AutomationRun] {
+        try newestRunPerAutomation(db, active: false, dryRuns: false)
+    }
+
+    /// Every automation row's id, removed recipes included: the failure
+    /// watch keeps the state of a recipe whose file is only briefly gone.
+    package static func allIDs(_ db: Database) throws -> Set<Int64> {
+        Set(try Int64.fetchAll(db, sql: "SELECT id FROM automations"))
     }
 
     // MARK: - Card

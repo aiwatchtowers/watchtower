@@ -5,9 +5,11 @@ import WatchtowerCore
 /// A workspace can have any number of Jira accounts side by side, each
 /// granting access via its own OAuth consent flow — this small form kicks off
 /// `watchtower jira add`, which opens the loopback-browser consent. Structural
-/// copy of `AddSlackAccountView` (house pattern): `addAccount` is awaited
-/// directly, so the sheet dismisses on success rather than watching an
-/// `isConnecting` transition.
+/// copy of `AddSlackAccountView` (house pattern): the connect is awaited
+/// directly, so on success the sheet turns into the board step (#572,
+/// `JiraBoardChoiceView`) rather than watching an `isConnecting` transition.
+/// The connect's daemon restart is held while that step is up and applied
+/// once when the sheet goes away (`JiraAccountsViewModel.finishBoardStep`).
 struct AddJiraAccountView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.dismiss) private var dismiss
@@ -27,12 +29,35 @@ struct AddJiraAccountView: View {
     /// stdin wired — so when a grant reaches several Atlassian sites, naming
     /// one here is the only way the add can complete.
     @State private var site = ""
-    /// Set when Cancel is tapped so the awaited `addAccount` (which returns
-    /// with a cleared error after the SIGTERM) does NOT auto-dismiss — Cancel
+    /// Set when Cancel is tapped so the awaited connect (which returns
+    /// with a cleared error after the SIGTERM) does NOT move on — Cancel
     /// means "let me adjust the form", matching AddSlackAccountView's behavior.
     @State private var cancelled = false
+    /// After a successful connect the sheet turns into the board step (#572):
+    /// a new site syncs nothing until boards are selected.
+    @State private var choosingBoards = false
+    /// Account ids read before the connect, so the board step lists the
+    /// site it added; nil when the read failed (every enabled site).
+    @State private var accountIDsBefore: Set<Int>?
+    /// Set on the click, before any await, so a double click starts one connect.
+    @State private var starting = false
 
     var body: some View {
+        Group {
+            if choosingBoards {
+                JiraBoardChoiceView(accountIDsBefore: accountIDsBefore) { dismiss() }
+                    .padding(20)
+                    .frame(width: 420, height: 420)
+            } else {
+                connectForm
+            }
+        }
+        // Done, Skip or any other way the sheet closes: one restart for the
+        // new site and its boards (nothing under onboarding's `.deferred`).
+        .onDisappear { vm?.finishBoardStep() }
+    }
+
+    private var connectForm: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("Add Jira Site")
@@ -48,7 +73,7 @@ struct AddJiraAccountView: View {
 
             Text("""
                 Opens Atlassian's authorization page in your browser. After you approve, \
-                the site is added under its address (acme for acme.atlassian.net) and syncing starts. Leave Site \
+                the site is added under its address (acme for acme.atlassian.net) and you choose the boards to sync. Leave Site \
                 empty unless your Atlassian account reaches several sites.
                 """)
                 .font(.caption)
@@ -73,6 +98,7 @@ struct AddJiraAccountView: View {
                         connect()
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(starting)
                 }
             }
 
@@ -88,17 +114,18 @@ struct AddJiraAccountView: View {
     }
 
     private func connect() {
-        guard let vm else { return }
+        guard let vm, !starting else { return }
+        starting = true
         cancelled = false
         let trimmedSite = site.trimmingCharacters(in: .whitespaces)
         Task {
-            await vm.addAccount(site: trimmedSite, daemonPolicy: daemonPolicy)
-            // addAccount is awaited: on success `error` is nil. A user Cancel
-            // also clears error (SIGTERM/SIGKILL branch), so gate the dismiss
-            // on `cancelled` to keep the sheet open when the flow was
-            // cancelled.
-            if !cancelled && vm.error == nil {
-                dismiss()
+            let result = await vm.addAccountHoldingRestart(site: trimmedSite, daemonPolicy: daemonPolicy)
+            starting = false
+            accountIDsBefore = result.accountIDsBefore
+            // A user Cancel clears error (SIGTERM/SIGKILL branch) and returns
+            // false; `cancelled` also covers a Cancel before the launch.
+            if result.connected && !cancelled {
+                choosingBoards = true
             }
         }
     }

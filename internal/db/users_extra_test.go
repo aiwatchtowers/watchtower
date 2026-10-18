@@ -42,7 +42,7 @@ func TestGetIncompleteUserIDs(t *testing.T) {
 	require.NoError(t, db.UpsertUser(User{ID: "U1", Name: "alice"}))
 
 	// Messages from unknown users — should appear
-	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000002", UserID: "U_UNKNOWN", Text: "unknown", RawJSON: "{}"}))
+	require.NoError(t, db.UpsertMessage(Message{ChannelID: "C1", TS: "1500000.000002", UserID: "U_UNKNOWN", Text: "unknown"}))
 
 	// Stub user (created via EnsureUser) — should appear
 	require.NoError(t, db.EnsureUser("U_STUB", "stub-bot"))

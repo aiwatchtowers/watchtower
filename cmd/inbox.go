@@ -409,7 +409,7 @@ func runInboxGenerate(cmd *cobra.Command, _ []string) error {
 		defer database.Close()
 	}
 
-	gen, cleanupPool := cliPooledGenerator(cfg, logger)
+	gen, cleanupPool := cliPooledGenerator(cfg)
 	defer cleanupPool()
 	pipe := inbox.New(database, cfg, gen, logger)
 	pipe.SetPromptStore(prompts.New(database, nil))

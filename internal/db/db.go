@@ -7,10 +7,13 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +23,7 @@ import (
 	sqlite3 "modernc.org/sqlite/lib"
 
 	"watchtower/internal/db/lockmetrics"
+	"watchtower/internal/fsutil"
 )
 
 // DB wraps a *sql.DB connection to the watchtower SQLite database.
@@ -206,23 +210,9 @@ func Open(dbPath string) (*DB, error) {
 
 	db := openPool(sqliteDSN(dbPath, openDSN))
 
-	if err := db.setPragmas(); err != nil {
+	if err := db.setupSchema(dbPath); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("setting pragmas: %w: %w", ErrSchemaSetup, err)
-	}
-
-	// The lock-metrics sink sits next to the file. It is pointed there only
-	// once the connection works (a failed open must not re-point this
-	// process's sink) and before the migrations, so a slow one is recorded.
-	// An in-memory open is never measured and must not unset the sink
-	// another open configured.
-	if dbPath != ":memory:" {
-		lockmetrics.Configure(dbPath)
-	}
-
-	if err := db.migrate(); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("running migrations: %w: %w", ErrSchemaSetup, err)
+		return nil, err
 	}
 
 	// Logged, not returned: a database missing one feature's table must still
@@ -356,6 +346,128 @@ func (db *DB) setPragmas() error {
 		}
 	}
 	return nil
+}
+
+// migrateLockWait bounds how long Open waits for another process's
+// migration run; past it the Open fails with ErrMigrationInProgress. A var
+// so a test can shorten it.
+var migrateLockWait = 2 * time.Minute
+
+// ErrMigrationInProgress marks an Open that gave up waiting for another
+// process's migrations: a temporary condition, to be retried, unlike
+// ErrSchemaSetup.
+var ErrMigrationInProgress = errors.New("another Watchtower process is updating the database; try again in a moment")
+
+// setupSchema is Open's pragmas and migrations. When the file is not yet
+// current (schemaCurrent) they run under an exclusive flock on
+// <dbPath>.migrate.lock, so two processes opening the database right after
+// an update (the CLI, MCP servers, the session host's children) never apply
+// the same pending migration at once: goose reads the applied versions once
+// and then applies each pending one without re-checking, so a second runner
+// would re-run DDL ("table already exists") or interleave a NO TRANSACTION
+// table recreation. The waiter runs goose once the holder is done and finds
+// nothing pending. The WAL switch is under the lock too: on a new file two
+// concurrent switches fail one opener with SQLITE_BUSY. A current file takes
+// no lock and runs no goose. The hooks on a hard time budget never get here:
+// they open with OpenExisting*, which runs no migration; the Desktop's GRDB
+// pool never takes this lock either.
+func (db *DB) setupSchema(dbPath string) error {
+	current := false
+	if dbPath != ":memory:" {
+		current = db.schemaCurrent()
+	}
+	if dbPath != ":memory:" && !current {
+		ctx, cancel := context.WithTimeout(context.Background(), migrateLockWait)
+		defer cancel()
+		unlock, err := fsutil.LockFile(ctx, dbPath+".migrate.lock")
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			return fmt.Errorf("%w: %w", ErrMigrationInProgress, err)
+		case err != nil:
+			return fmt.Errorf("taking the migration lock: %w: %w", ErrSchemaSetup, err)
+		}
+		defer unlock()
+	}
+
+	if err := db.setPragmas(); err != nil {
+		return fmt.Errorf("setting pragmas: %w: %w", ErrSchemaSetup, err)
+	}
+
+	// The lock-metrics sink sits next to the file. It is pointed there only
+	// once the connection works (a failed open must not re-point this
+	// process's sink) and before the migrations, so a slow one is recorded.
+	// An in-memory open is never measured and must not unset the sink
+	// another open configured.
+	if dbPath != ":memory:" {
+		lockmetrics.Configure(dbPath)
+	}
+
+	if current {
+		return nil
+	}
+	if err := db.migrate(); err != nil {
+		return fmt.Errorf("running migrations: %w: %w", ErrSchemaSetup, err)
+	}
+	return nil
+}
+
+// embeddedMigrationVersions is the version of every migration file in this
+// binary, read once.
+var embeddedMigrationVersions = sync.OnceValues(func() ([]int64, error) {
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		return nil, fmt.Errorf("reading embedded migrations: %w", err)
+	}
+	var out []int64
+	for _, e := range entries {
+		if path.Ext(e.Name()) != ".sql" {
+			continue
+		}
+		prefix, _, _ := strings.Cut(e.Name(), "_")
+		v, err := strconv.ParseInt(prefix, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("migration %s has no version prefix: %w", e.Name(), err)
+		}
+		out = append(out, v)
+	}
+	return out, nil
+})
+
+// schemaCurrent reports, by reads only and without the migration lock,
+// whether the file is already in WAL mode and records every embedded
+// migration as applied — so goose.Up would have nothing to do. A failed read
+// reads false: the locked path then decides, as before.
+func (db *DB) schemaCurrent() bool {
+	var mode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil || !strings.EqualFold(mode, "wal") {
+		return false
+	}
+	want, err := embeddedMigrationVersions()
+	if err != nil {
+		return false
+	}
+	rows, err := db.Query(`SELECT version_id FROM goose_db_version WHERE is_applied = 1`)
+	if err != nil {
+		return false // no version table yet: a new file
+	}
+	defer rows.Close()
+	applied := map[int64]bool{}
+	for rows.Next() {
+		var v int64
+		if err := rows.Scan(&v); err != nil {
+			return false
+		}
+		applied[v] = true
+	}
+	if rows.Err() != nil {
+		return false
+	}
+	for _, v := range want {
+		if !applied[v] {
+			return false
+		}
+	}
+	return true
 }
 
 func (db *DB) migrate() error {

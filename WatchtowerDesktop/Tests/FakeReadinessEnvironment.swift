@@ -8,6 +8,7 @@ import WatchtowerCore
 final class FakeReadinessEnvironment: ReadinessEnvironment {
     var now = Date()
     var daemonRunning = true
+    var daemonNotRunningSince: Date?
     var syncProgress: SyncProgress?
     var lastSyncTime: Date? = Date().addingTimeInterval(-3600)
     var disabledFeatureIDs: Set<String> = []
@@ -15,6 +16,7 @@ final class FakeReadinessEnvironment: ReadinessEnvironment {
     var briefingHour = 8
     var dayPlanHour = 8
     var pollInterval: String?
+    var backfillDays: Int?
     var stamps: [String: Date] = [:]
     func stamp(_ fileName: String) -> Date? { stamps[fileName] }
 }

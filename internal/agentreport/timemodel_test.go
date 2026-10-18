@@ -47,8 +47,6 @@ func (f *fixture) sub(agentID string, at time.Duration) {
 	f.add(db.AgentReportEvent{Kind: "api_call", Name: "claude-opus-5-5", AgentID: agentID}, at)
 }
 
-func d(v time.Duration) *time.Duration { return &v }
-
 func sum(ts TimeSplit) int64 {
 	t := ts.Tools
 	return ts.ModelMS + t.BuildTest + t.Git + t.ReadSearch + t.Edit + t.MCP + t.SubagentsFG + t.Other +
@@ -81,17 +79,17 @@ func TestTimeModel_EveryCategorySumsToWall(t *testing.T) {
 	var f fixture
 	f.owner(0)
 	f.api(10 * sec)
-	f.tool(10*sec, "Bash", "go test", d(60*sec))
+	f.tool(10*sec, "Bash", "go test", new(60*sec))
 	f.api(75 * sec)
 	t1 := 75*sec + 20*mn // owner answers after a 20 min wait
 	f.owner(t1)
 	f.api(t1 + 10*sec)
-	spawn := f.tool(t1+10*sec, "Agent", "general-purpose", d(2*sec))
+	spawn := f.tool(t1+10*sec, "Agent", "general-purpose", new(2*sec))
 	spawn.Background, spawn.SpawnedAgentID = true, "a1"
 	f.api(t1 + 15*sec)
 	s := t1 + 15*sec // background subagent runs [s, s+15m]
 	f.sub("a1", s)
-	f.tool(s+1*mn, "Read", "main.go", d(10*sec)).AgentID = "a1"
+	f.tool(s+1*mn, "Read", "main.go", new(10*sec)).AgentID = "a1"
 	f.sub("a1", s+15*mn)
 	f.owner(s + 5*mn) // owner writes while the subagent still runs
 	f.api(s + 5*mn + 10*sec)
@@ -150,8 +148,8 @@ func TestTimeModel_OverlappingToolsCountedOnce(t *testing.T) {
 	var f fixture
 	f.owner(0)
 	f.api(5 * sec)
-	f.tool(5*sec, "Read", "a.go", d(20*sec))
-	f.tool(5*sec, "Bash", "go test", d(60*sec))
+	f.tool(5*sec, "Read", "a.go", new(20*sec))
+	f.tool(5*sec, "Bash", "go test", new(60*sec))
 	f.api(70 * sec)
 
 	split, segs := SessionTime(f.evs)
@@ -242,7 +240,7 @@ func TestTimeModel_TiesAndOrder(t *testing.T) {
 	var f fixture
 	f.owner(0)
 	f.add(db.AgentReportEvent{Kind: "api_call", SrcPath: "/tmp/x/b.jsonl"}, 10*sec)
-	tool := f.tool(10*sec, "Bash", "ls", d(time.Second))
+	tool := f.tool(10*sec, "Bash", "ls", new(time.Second))
 	tool.SrcPath = "/tmp/x/a.jsonl"
 	tool.TS = "2026-10-01T10:00:10Z" // a stored ts without milliseconds
 	f.api(10*sec + 500*time.Millisecond)
@@ -263,9 +261,9 @@ func TestTimeModel_TiesAndOrder(t *testing.T) {
 func TestSubagents_Parallelism(t *testing.T) {
 	var f fixture
 	f.owner(0)
-	fg := f.tool(0, "Agent", "Explore", d(10*mn))
+	fg := f.tool(0, "Agent", "Explore", new(10*mn))
 	fg.SpawnedAgentID = "a1"
-	bg := f.tool(0, "Task", "general-purpose", d(time.Second))
+	bg := f.tool(0, "Task", "general-purpose", new(time.Second))
 	bg.SpawnedAgentID, bg.Background = "a2", true
 	f.api(10 * mn)
 	f.sub("a1", 0)

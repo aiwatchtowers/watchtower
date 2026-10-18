@@ -1,6 +1,9 @@
 package db
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // AddFeedback records a thumbs up (+1) or thumbs down (-1) for an entity.
 func (db *DB) AddFeedback(f Feedback) (int64, error) {
@@ -82,7 +85,8 @@ func (db *DB) GetFeedbackForPrompt(promptID string, limit int) ([]Feedback, erro
 
 // GetFeedbackWithLimit is like GetFeedback but applies a custom LIMIT.
 func (db *DB) GetFeedbackWithLimit(f FeedbackFilter, limit int) ([]Feedback, error) {
-	query := `SELECT id, entity_type, entity_id, rating, comment, created_at FROM feedback`
+	var query strings.Builder
+	query.WriteString(`SELECT id, entity_type, entity_id, rating, comment, created_at FROM feedback`)
 	var conditions []string
 	var args []any
 
@@ -100,18 +104,18 @@ func (db *DB) GetFeedbackWithLimit(f FeedbackFilter, limit int) ([]Feedback, err
 	}
 
 	if len(conditions) > 0 {
-		query += " WHERE "
+		query.WriteString(" WHERE ")
 		for i, c := range conditions {
 			if i > 0 {
-				query += " AND "
+				query.WriteString(" AND ")
 			}
-			query += c
+			query.WriteString(c)
 		}
 	}
-	query += ` ORDER BY created_at DESC LIMIT ?`
+	query.WriteString(` ORDER BY created_at DESC LIMIT ?`)
 	args = append(args, limit)
 
-	rows, err := db.Query(query, args...)
+	rows, err := db.Query(query.String(), args...)
 	if err != nil {
 		return nil, fmt.Errorf("querying feedback: %w", err)
 	}

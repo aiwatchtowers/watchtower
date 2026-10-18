@@ -54,6 +54,7 @@ Known gaps, by design or for now:
 - A busy error during a Go process's first open, before its sink is configured (`Open`'s pragmas, `OpenExisting*`'s Ping).
 - A Desktop busy returned without the busy callback (`SQLITE_BUSY_SNAPSHOT` on a deferred read-then-write upgrade fails at once) is never recorded.
 - How an `exec`'s duration splits into wait and hold.
+- Time `Open` spends waiting on `<db>.migrate.lock` (the cross-process flock around pending migrations, #570) — a file lock, not SQLite's; a wait past 2 minutes fails with `db.ErrMigrationInProgress`.
 
 ## `watchtower db lockstats`
 

@@ -97,6 +97,70 @@ final class FeatureReadinessTests: XCTestCase {
         XCTAssertFalse(isPreparing(evaluate(.digests, input)))
     }
 
+    // MARK: - Daemon down (#577)
+
+    /// Down past the grace: every promise (an ETA, a waiting first sync, a
+    /// stale running row, a "retries automatically" error) reads as stopped.
+    func testDaemonDownPastGraceSaysStopped() {
+        let now = today(10)
+        var input = inputs(now: now)
+        input.daemonRunning = false
+        input.daemonNotRunningSince = now.addingTimeInterval(-FeatureReadiness.daemonDownGrace)
+        input.latestRuns = [
+            "digests": RunSnapshot(status: "running", startedAt: now.addingTimeInterval(-600)),
+            "tracks": RunSnapshot(status: "error", startedAt: now.addingTimeInterval(-600), errorMessage: "x")
+        ]
+        XCTAssertEqual(evaluate(.digests, input), .daemonStopped)
+        XCTAssertEqual(evaluate(.tracks, input), .daemonStopped)
+        XCTAssertEqual(evaluate(.peopleCards, input), .daemonStopped)
+        input.lastSyncTime = nil
+        XCTAssertEqual(evaluate(.ideas, input), .daemonStopped)
+        XCTAssertEqual(FeatureReadiness.line(.daemonStopped), "Watchtower isn't running")
+    }
+
+    /// The owner gap is the fix to name even with the daemon down: an
+    /// owner-gated feature drops `daemonStopped` like any promise.
+    func testOwnerGapBeatsDaemonStopped() {
+        XCTAssertNil(FeatureReadiness.honoringOwner(.daemonStopped, of: .briefing, ownerKnown: false))
+        XCTAssertEqual(FeatureReadiness.honoringOwner(.daemonStopped, of: .briefing, ownerKnown: true), .daemonStopped)
+        XCTAssertEqual(FeatureReadiness.honoringOwner(.daemonStopped, of: .digests, ownerKnown: false), .daemonStopped)
+        XCTAssertTrue(FeatureReadiness.isDaemonDown(running: false, since: Date(timeIntervalSince1970: 0), now: Date()))
+        XCTAssertFalse(FeatureReadiness.isDaemonDown(running: false, since: nil, now: Date()))
+    }
+
+    func testDaemonBannerFailureWinsOverStopped() {
+        XCTAssertEqual(DaemonBanner.current(failure: "boom", daemonDown: true), .failed("boom"))
+        XCTAssertEqual(DaemonBanner.current(failure: nil, daemonDown: true), .stopped)
+        XCTAssertNil(DaemonBanner.current(failure: nil, daemonDown: false))
+    }
+
+    /// A restart (down a few seconds) or no status read yet keeps the schedule.
+    func testDaemonDownWithinGraceKeepsSchedule() {
+        let now = today(10)
+        var input = inputs(now: now)
+        input.daemonRunning = false
+        XCTAssertEqual(evaluate(.digests, input), .scheduled(.nextCycle(minutes: 15)))
+        input.daemonNotRunningSince = now.addingTimeInterval(-FeatureReadiness.daemonDownGrace + 1)
+        XCTAssertEqual(evaluate(.digests, input), .scheduled(.nextCycle(minutes: 15)))
+        // A stale "since" with the daemon back up is ignored.
+        input.daemonRunning = true
+        input.daemonNotRunningSince = now.addingTimeInterval(-3600)
+        XCTAssertEqual(evaluate(.digests, input), .scheduled(.nextCycle(minutes: 15)))
+    }
+
+    /// Off, a missing source and content keep their own state.
+    func testOffNeedsSourceAndReadyBeatDaemonDown() {
+        let now = today(10)
+        var input = inputs(now: now)
+        input.daemonRunning = false
+        input.daemonNotRunningSince = now.addingTimeInterval(-3600)
+        input.disabledFeatureIDs = ["tracks"]
+        input.contentPresent = [.digests]
+        XCTAssertEqual(evaluate(.tracks, input), .off)
+        XCTAssertEqual(evaluate(.digests, input), .ready)
+        XCTAssertEqual(evaluate(.calendar, input), .needsSource(.calendar))
+    }
+
     func testErrorOnlyWithoutContent() {
         let now = today(10)
         var input = inputs(now: now)
@@ -183,6 +247,48 @@ final class FeatureReadinessTests: XCTestCase {
         XCTAssertEqual(evaluate(.ideas, input), .scheduled(.inHours(5)))
     }
 
+    /// #578, dual path with Go's memory gate: a running backfill row holds
+    /// memory for `memoryBackfillWaitMax` from its start; none, or an older
+    /// one, is the plain cycle.
+    func testMemoryWaitsForHistoryOnlyInsideTheWindow() {
+        let now = today(10)
+        var input = inputs(now: now)
+        XCTAssertEqual(evaluate(.memory, input), .scheduled(.nextCycle(minutes: 15)))
+
+        input.runningBackfillStarts = [now.addingTimeInterval(-FeatureReadiness.memoryBackfillWaitMax + 60)]
+        XCTAssertEqual(evaluate(.memory, input), .scheduled(.afterHistoryLoads))
+        XCTAssertEqual(FeatureReadiness.line(.scheduled(.afterHistoryLoads)), "Waiting for history to load")
+        XCTAssertEqual(evaluate(.digests, input), .scheduled(.nextCycle(minutes: 15)), "memory only")
+
+        input.runningBackfillStarts = [now.addingTimeInterval(-FeatureReadiness.memoryBackfillWaitMax - 60)]
+        XCTAssertEqual(evaluate(.memory, input), .scheduled(.nextCycle(minutes: 15)))
+    }
+
+    /// F6: the literal dual-path value (Go's `memoryBackfillWaitMax`).
+    func testMemoryBackfillWaitMaxIs24h() {
+        XCTAssertEqual(FeatureReadiness.memoryBackfillWaitMax, 24 * 60 * 60)
+    }
+
+    /// #578: the wait is only before memory's first successful run and never
+    /// under the kill switch; while waiting, an old failed run doesn't show.
+    func testMemoryWaitOnlyBeforeFirstRunAndBeatsAnOldError() {
+        let now = today(10)
+        var input = inputs(now: now)
+        input.runningBackfillStarts = [now.addingTimeInterval(-3600)]
+        input.latestRuns = ["memory": RunSnapshot(status: "error", startedAt: now.addingTimeInterval(-7200),
+                                                  errorMessage: "vault unavailable")]
+        XCTAssertEqual(evaluate(.memory, input), .scheduled(.afterHistoryLoads))
+
+        input.backfillOff = true
+        XCTAssertTrue(isError(evaluate(.memory, input)), "kill switch: no wait, the error shows")
+
+        input.backfillOff = false
+        input.memoryHasRun = true
+        input.latestRuns = [:]
+        XCTAssertEqual(evaluate(.memory, input), .scheduled(.nextCycle(minutes: 15)),
+                       "an established install never waits for a new source")
+    }
+
     func testCalendarHasNoPreparingOrError() {
         let now = today(10)
         var input = inputs(now: now)
@@ -222,7 +328,7 @@ final class FeatureReadinessTests: XCTestCase {
         let poll = 15
         let etas: [Eta] = [
             .afterCurrentSync, .nextCycle(minutes: poll), .at(hour: 8, tomorrow: false),
-            .at(hour: 8, tomorrow: true), .inAboutADay, .inHours(6)
+            .at(hour: 8, tomorrow: true), .inAboutADay, .inHours(6), .afterHistoryLoads
         ]
         let minutes = try NSRegularExpression(pattern: #"~?\d+ min"#)
         for eta in etas {
@@ -264,5 +370,54 @@ final class FeatureReadinessTests: XCTestCase {
             default: XCTFail("\(feature): \(readiness)")
             }
         }
+    }
+
+    // MARK: - Jira boards (#572)
+
+    func testJiraWithoutSelectedBoardsAsksToChooseThem() {
+        var input = inputs(now: today(10))
+        input.connected = ConnectedSources(jira: true)
+        input.jiraBoardsSelected = false
+        XCTAssertEqual(evaluate(.jira, input), .needsSource(.jiraBoards))
+        XCTAssertEqual(FeatureReadiness.line(.needsSource(.jiraBoards)), "Choose Jira boards to get this")
+        // Jira is Stream Digests' only source: it waits on boards too.
+        XCTAssertEqual(evaluate(.streamDigests, input), .needsSource(.jiraBoards))
+        // With mail it has something to read.
+        input.connected.mail = true
+        XCTAssertEqual(evaluate(.streamDigests, input), .scheduled(.nextCycle(minutes: 15)))
+        input.connected.mail = false
+
+        input.jiraBoardsSelected = true
+        XCTAssertEqual(evaluate(.jira, input), .scheduled(.nextCycle(minutes: 15)))
+    }
+
+    func testJiraBoardsGapKeepsNotConnectedAndContentFirst() {
+        var input = inputs(now: today(10))
+        input.jiraBoardsSelected = false
+        XCTAssertEqual(evaluate(.jira, input), .needsSource(.jira))
+        input.connected = ConnectedSources(jira: true)
+        input.contentPresent = [.jira]
+        XCTAssertEqual(evaluate(.jira, input), .ready)
+    }
+
+    /// Picking boards is the owner's fix whether or not the daemon runs, so
+    /// it wins over "Watchtower isn't running".
+    func testJiraBoardsGapWinsOverDaemonStopped() {
+        let now = today(10)
+        var input = inputs(now: now)
+        input.connected = ConnectedSources(jira: true)
+        input.jiraBoardsSelected = false
+        input.daemonRunning = false
+        input.daemonNotRunningSince = now.addingTimeInterval(-120)
+        XCTAssertEqual(evaluate(.jira, input), .needsSource(.jiraBoards))
+        input.jiraBoardsSelected = true
+        XCTAssertEqual(evaluate(.jira, input), .daemonStopped)
+    }
+
+    func testSourceActionTitles() {
+        XCTAssertEqual(ReadinessSource.jira.actionTitle, "Connect Jira")
+        XCTAssertEqual(ReadinessSource.jiraBoards.actionTitle, "Choose Jira boards")
+        XCTAssertTrue(ReadinessSource.jiraBoards.isConnected(in: ConnectedSources(jira: true)))
+        XCTAssertFalse(ReadinessSource.jiraBoards.isOwnerIdentity)
     }
 }

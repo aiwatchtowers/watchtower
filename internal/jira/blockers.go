@@ -190,7 +190,7 @@ func buildBlockingChain(issueKey string, idx *linkIndex, d *db.DB) []string {
 	visited := map[string]bool{issueKey: true}
 
 	current := issueKey
-	for depth := 0; depth < maxChainDepth; depth++ {
+	for range maxChainDepth {
 		blockers := idx.blockerOf[current]
 		if len(blockers) == 0 {
 			// Try loading from DB if not in index.
@@ -293,10 +293,7 @@ func buildEntry(issue db.JiraIssue, blockerType string, now time.Time) BlockerEn
 	if issue.StatusCategoryChangedAt != "" {
 		for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05.000Z", "2006-01-02"} {
 			if t, err := time.Parse(layout, issue.StatusCategoryChangedAt); err == nil {
-				days = int(now.Sub(t).Hours() / 24)
-				if days < 0 {
-					days = 0
-				}
+				days = max(int(now.Sub(t).Hours()/24), 0)
 				break
 			}
 		}

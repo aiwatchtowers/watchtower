@@ -174,3 +174,15 @@ func (db *DB) HasActiveHistoryBackfill() (bool, error) {
 	}
 	return n > 0, nil
 }
+
+// HasRunningHistoryBackfillSince reports whether a row is running (a held row
+// included: a hold leaves its status running) and started after since. It is
+// memory's gate (#578): paused, done and off rows never hold memory back.
+func (db *DB) HasRunningHistoryBackfillSince(since time.Time) (bool, error) {
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM history_backfill WHERE status = 'running' AND started_at > ?`,
+		planTime(since)).Scan(&n); err != nil {
+		return false, fmt.Errorf("history backfill: running: %w", err)
+	}
+	return n > 0, nil
+}

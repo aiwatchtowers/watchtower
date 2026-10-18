@@ -57,7 +57,7 @@ func TestAgentKind_SQLKindsMatchesParse(t *testing.T) {
 		t.Fatalf("SQLKinds() = %q", got)
 	}
 	inner := strings.TrimSuffix(strings.TrimPrefix(SQLKinds(), "("), ")")
-	for _, quoted := range strings.Split(inner, ",") {
+	for quoted := range strings.SplitSeq(inner, ",") {
 		s := strings.Trim(quoted, "'")
 		if _, ok := Parse(s); !ok || fmt.Sprintf("'%s'", s) != quoted {
 			t.Errorf("SQLKinds lists %s, which Parse rejects", quoted)

@@ -21,7 +21,6 @@ import (
 	"unicode/utf8"
 
 	"watchtower/internal/claude"
-	"watchtower/internal/digest"
 	"watchtower/internal/fsutil"
 )
 
@@ -153,12 +152,6 @@ type Client struct {
 	// written to this 0600 temp file instead of argv, and the caller (Query/
 	// QuerySync) removes it once the subprocess has been reaped.
 	mcpConfigTempPath string
-	// systemPromptTempPath is set by buildArgs when the system prompt is
-	// larger than digest.StdinThreshold: it then travels as a 0600
-	// --system-prompt-file instead of argv, and Query/QuerySync remove the
-	// file once the subprocess has been reaped (the mcpConfigTempPath
-	// lifecycle).
-	systemPromptTempPath string
 	// readFolder, when set (SetReadFolder), runs the CLI in that folder
 	// with its file-read tools allowed and unhidden and no settings files
 	// loaded. Empty = today's run in os.TempDir().
@@ -177,8 +170,6 @@ type Client struct {
 	processGroup bool
 	// maxTurns, when > 0, is passed as --max-turns (SetMaxTurns).
 	maxTurns int
-	// noTools runs the CLI with no tool at all (SetNoTools).
-	noTools bool
 }
 
 // SetWatchtowerTools narrows --allowedTools from the whole `mcp__watchtower`
@@ -284,25 +275,6 @@ func (c *Client) SetExternalMCPServers(s []ExternalMCPServer) { c.externalServer
 // already be resolved to a workbench folder (cmd's resolveReadFolder).
 func (c *Client) SetReadFolder(dir string) { c.readFolder = dir }
 
-// SetNoTools makes the run tool-less (`ai query --no-tools`, the ⌘/ help
-// chat): no MCP server is mounted whatever dbPath is (`--strict-mcp-config`
-// with no `--mcp-config`), no `--allowedTools` is passed and `--tools ""`
-// hides every built-in. The model answers from the prompt alone and can
-// reach none of the owner's data.
-func (c *Client) SetNoTools() { c.noTools = true }
-
-// ArgsForTest returns buildArgs' argv for a fresh call (tests outside this
-// package: cmd's `ai query` wiring tests). Temp files it may write are removed.
-func (c *Client) ArgsForTest(systemPrompt, userMessage string) []string {
-	args, _, _ := c.buildArgs(systemPrompt, userMessage, "stream-json", "")
-	for _, path := range []string{c.mcpConfigTempPath, c.systemPromptTempPath} {
-		if path != "" {
-			_ = os.Remove(path)
-		}
-	}
-	return args
-}
-
 // ExternalServersForTest exposes the registered external MCP servers for
 // tests outside this package (e.g. cmd's chat-wiring tests) — the field
 // itself stays unexported since nothing else needs to read it back.
@@ -320,35 +292,19 @@ func NewClient(model, dbPath, claudePath string) *Client {
 	}
 }
 
-// promptFlagAndStdin builds the "-p" flag (and its inline value, when safe)
-// for buildArgs, plus the same message again as stdin content when it must
-// travel that way instead of via argv: either it exceeds
-// digest.StdinThreshold (ARG_MAX safety — the digest.generateArgs precedent,
-// hour-long meeting transcripts run to hundreds of KB) or it begins with
-// '-', which a bare positional right after "-p" would then be parsed as a
-// new flag rather than consumed as -p's value — claude's --print takes an
-// OPTIONAL value, so a following dash-led token is never taken as it. A bare
-// "-p" with no following value makes claude read the prompt from stdin.
-func promptFlagAndStdin(userMessage string) (flagArgs []string, stdin string) {
-	if len(userMessage) > digest.StdinThreshold || strings.HasPrefix(userMessage, "-") {
-		return []string{"-p"}, userMessage
-	}
-	return []string{"-p", userMessage}, ""
-}
-
-// buildArgs constructs the common CLI arguments, plus stdin content when
-// userMessage must travel that way instead of inline (see
-// promptFlagAndStdin). When sessionID is non-empty, --resume is used instead
-// of --system-prompt (the system prompt is already baked into the existing
-// session).
-func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) ([]string, string, error) {
-	c.systemPromptTempPath = "" // set again below only if this call writes one
-	promptArgs, stdin := promptFlagAndStdin(userMessage)
-	// slices.Concat always allocates a fresh backing array, so the append
-	// calls below can never alias (and corrupt) promptFlagAndStdin's slice —
-	// unlike a plain append(promptArgs, tail...), which happens to be safe
-	// today only because promptFlagAndStdin returns full-capacity literals.
-	args := slices.Concat(promptArgs, []string{
+// buildArgs constructs the common CLI arguments, plus the stdin content: the
+// user message always travels on stdin (a bare "-p" makes claude read the
+// prompt from there), never on argv, where every local process could read
+// it through `ps` and a large one would hit ARG_MAX. When sessionID is
+// non-empty, --resume is used instead of the system prompt (the system
+// prompt is already baked into the existing session). promptFile is the
+// 0600 system-prompt file this call wrote ("" when none), which the caller
+// removes once the subprocess has been reaped — returned rather than kept on
+// the Client, so concurrent calls never share or race on it.
+func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) (args []string, stdin, promptFile string, err error) {
+	stdin = userMessage
+	args = slices.Concat([]string{
+		"-p",
 		"--output-format", outputFormat,
 		"--model", c.model,
 		// Allowlist: the watchtower MCP server — read-only in dev mode; in
@@ -359,7 +315,7 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		// must not be able to run shell commands. The task-chat agent still
 		// changes targets ONLY via watchtower-action approval cards, never by
 		// writing to the DB directly.
-	}, c.allowedToolsArgs(), []string{
+		"--allowedTools", c.allowedToolsFlag(),
 		// Built-in allowlist: the model sees exactly the Claude Code built-ins
 		// named here (MCP tools are unaffected), so a built-in a future CLI
 		// release adds stays hidden by default instead of slipping past the
@@ -401,7 +357,7 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	if outputFormat == "stream-json" {
 		args = append(args, "--verbose")
 	}
-	if c.dbPath != "" && !c.noTools {
+	if c.dbPath != "" {
 		mcpConfig := c.buildMCPConfig()
 		if c.hasSecret() {
 			// A secret (Env/Headers) must never sit in argv — it's visible to
@@ -427,21 +383,28 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
 	} else {
-		promptArgs, err := c.systemPromptArgs(systemPrompt)
-		if err != nil {
-			return nil, "", err
+		if systemPrompt == "" {
+			// An empty prompt still replaces claude's default one and
+			// carries nothing.
+			args = append(args, "--system-prompt", "")
+		} else {
+			// The prompt carries the owner's data (a pipeline's whole
+			// payload, a chat's context): on argv it would be readable in
+			// `ps` for the process lifetime and could hit ARG_MAX. A failed
+			// write fails the call rather than falling back to argv.
+			promptFile, err = fsutil.WritePrivateTemp(fsutil.SystemPromptTempPrefix+"*.txt", systemPrompt)
+			if err != nil {
+				return nil, "", "", fmt.Errorf("writing system prompt file: %w", err)
+			}
+			args = append(args, "--system-prompt-file", promptFile)
 		}
-		args = append(args, promptArgs...)
 	}
-	return args, stdin, nil
+	return args, stdin, promptFile, nil
 }
 
-// builtinTools is the --tools allowlist: none for a no-tools run,
-// ReadFolderBuiltinTools for a read-folder run, ChatBuiltinTools otherwise.
+// builtinTools is the --tools allowlist: ReadFolderBuiltinTools for a
+// read-folder run, ChatBuiltinTools otherwise.
 func (c *Client) builtinTools() string {
-	if c.noTools {
-		return ""
-	}
 	if c.readFolder != "" {
 		return ReadFolderBuiltinTools
 	}
@@ -475,25 +438,6 @@ func (c *Client) workDir() string {
 		return c.readFolder
 	}
 	return os.TempDir()
-}
-
-// systemPromptArgs passes the system prompt inline when it is small and as a
-// 0600 --system-prompt-file when it exceeds digest.StdinThreshold: pipelines
-// that put their whole data payload in the system prompt (briefing, target
-// extract) would otherwise hit ARG_MAX ("argument list too long") and leave
-// that payload readable in `ps` for the process lifetime. A failed file write
-// fails the call rather than falling back to argv (the digest.ClaudeGenerator
-// policy).
-func (c *Client) systemPromptArgs(systemPrompt string) ([]string, error) {
-	if len(systemPrompt) <= digest.StdinThreshold {
-		return []string{"--system-prompt", systemPrompt}, nil
-	}
-	path, err := fsutil.WritePrivateTemp("wt-system-prompt-*.txt", systemPrompt)
-	if err != nil {
-		return nil, fmt.Errorf("writing system prompt file: %w", err)
-	}
-	c.systemPromptTempPath = path
-	return []string{"--system-prompt-file", path}, nil
 }
 
 // hasSecret reports whether any external server carries a non-empty Env or
@@ -658,14 +602,6 @@ func ChatMCPConfig(dbPath string, mcpArgs []string, ext []ExternalMCPServer) str
 
 // allowedToolsFlag builds the --allowedTools value (see AllowedTools; no
 // external servers means byte-identical to the pre-feature value).
-// allowedToolsArgs is the --allowedTools pair, or nothing for a no-tools run.
-func (c *Client) allowedToolsArgs() []string {
-	if c.noTools {
-		return nil
-	}
-	return []string{"--allowedTools", c.allowedToolsFlag()}
-}
-
 func (c *Client) allowedToolsFlag() string {
 	if c.watchtowerToolsSet {
 		tokens := make([]string, len(c.watchtowerTools))
@@ -736,7 +672,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		defer close(errCh)
 		defer close(sidCh)
 
-		args, promptStdin, buildErr := c.buildArgs(systemPrompt, userMessage, "stream-json", sessionID)
+		args, promptStdin, promptFile, buildErr := c.buildArgs(systemPrompt, userMessage, "stream-json", sessionID)
 		// buildArgs may have written the mcp-config to a 0600 temp file
 		// (secret present) and recorded its path — clean it up once this
 		// goroutine returns. Every path below reaches its return only after
@@ -746,8 +682,8 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		if c.mcpConfigTempPath != "" {
 			defer os.Remove(c.mcpConfigTempPath)
 		}
-		if c.systemPromptTempPath != "" {
-			defer os.Remove(c.systemPromptTempPath)
+		if promptFile != "" {
+			defer os.Remove(promptFile)
 		}
 		if buildErr != nil {
 			errCh <- buildErr
@@ -867,7 +803,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 // the full response text and token usage. Pass a non-empty sessionID to resume
 // an existing session.
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, error) {
-	args, promptStdin, buildErr := c.buildArgs(systemPrompt, userMessage, "json", sessionID)
+	args, promptStdin, promptFile, buildErr := c.buildArgs(systemPrompt, userMessage, "json", sessionID)
 	// buildArgs may have written the mcp-config to a 0600 temp file (secret
 	// present) and recorded its path — clean it up on every return path.
 	// cmd.Output() below blocks until the subprocess exits, so by the time
@@ -875,8 +811,8 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 	if c.mcpConfigTempPath != "" {
 		defer os.Remove(c.mcpConfigTempPath)
 	}
-	if c.systemPromptTempPath != "" {
-		defer os.Remove(c.systemPromptTempPath)
+	if promptFile != "" {
+		defer os.Remove(promptFile)
 	}
 	if buildErr != nil {
 		return "", nil, buildErr

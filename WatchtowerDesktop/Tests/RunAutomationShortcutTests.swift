@@ -22,7 +22,10 @@ final class RunAutomationShortcutTests: XCTestCase {
         appState.wireAppDatabaseOverride = { _ in }
         appState.databaseManager = manager
         appState.completeOnboarding()
-        defer { appState.automationsViewModel?.stop() }
+        defer {
+            appState.automationsViewModel?.stop()
+            appState.stopSidebarCounts()
+        }
         try body(appState)
     }
 

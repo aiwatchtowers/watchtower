@@ -41,7 +41,8 @@ func (db *DB) UpsertUser(u User) error {
 
 // GetUsers returns users matching the given filter.
 func (db *DB) GetUsers(filter UserFilter) ([]User, error) {
-	query := `SELECT id, name, display_name, real_name, email, is_bot, is_deleted, is_stub, profile_json, updated_at FROM users`
+	var query strings.Builder
+	query.WriteString(`SELECT id, name, display_name, real_name, email, is_bot, is_deleted, is_stub, profile_json, updated_at FROM users`)
 	var conditions []string
 
 	if filter.ExcludeBots {
@@ -52,14 +53,14 @@ func (db *DB) GetUsers(filter UserFilter) ([]User, error) {
 	}
 
 	if len(conditions) > 0 {
-		query += " WHERE " + conditions[0]
+		query.WriteString(" WHERE " + conditions[0])
 		for _, c := range conditions[1:] {
-			query += " AND " + c
+			query.WriteString(" AND " + c)
 		}
 	}
-	query += " ORDER BY name"
+	query.WriteString(" ORDER BY name")
 
-	rows, err := db.Query(query)
+	rows, err := db.Query(query.String())
 	if err != nil {
 		return nil, fmt.Errorf("querying users: %w", err)
 	}

@@ -65,7 +65,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	}
 	// Connected-workspaces summary for the system prompt; the first account is
 	// the representative for illustrative deep-link examples (per-message
-	// permalinks are resolved per account by the context builder / renderer).
+	// permalinks are resolved per account at query time by the ResponseRenderer).
 	wsSummary := db.FormatConnectedWorkspaces(accounts)
 	domain, teamID := accounts[0].TeamDomain, accounts[0].TeamID
 

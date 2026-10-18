@@ -142,3 +142,22 @@ func TestSyncBoard_LeavesBacklogForDaemonBackfill(t *testing.T) {
 	require.NotNil(t, state)
 	assert.NotEmpty(t, state.LastSyncedAt, "Sync() should record a watermark after the full pass")
 }
+
+// TestSyncBoard_UnknownBoardIsAnError guards the nil profile GetJiraBoardProfile
+// returns when the board is not stored for the syncer's account: SyncBoard must
+// fail with a clear error, not dereference the nil board.
+func TestSyncBoard_UnknownBoardIsAnError(t *testing.T) {
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { database.Close() })
+	db.SeedTestJiraAccount(t, database)
+
+	srv := httptest.NewServer(jiraSearchMux())
+	t.Cleanup(srv.Close)
+	syncer := NewSyncer(makeTestClient(t, srv.URL), database, nil, []int{99}, 1)
+
+	n, err := syncer.SyncBoard(context.Background(), 99)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "board 99 not found for this account")
+	require.Zero(t, n)
+}

@@ -26,8 +26,8 @@ The **Jira Features** switches (role preset plus one switch per signal) decide w
 
 ## Using it
 
-1. Open **Settings** → **Connections** → **Jira**, press **Add Jira Site** and approve in the browser. Add a second site the same way.
-2. Open **Boards** in the sidebar, press **Fetch Boards** (later **Refresh Boards**) and switch on the boards you want synced.
+1. Open **Settings** → **Connections** → **Jira**, press **Add Jira Site** and approve in the browser. Add a second site the same way. Setup's Jira card opens the same sheet.
+2. After the approval the sheet turns into **Choose Boards**: tick the boards you want synced and press **Done**. Only ticked boards sync. To change them later, open **Boards** in the sidebar, press **Refresh Boards** (**Fetch Boards** when the list is empty) and flip a board's switch.
 3. Wait for the first sync. **Last sync** and **Issues synced** at the bottom of **Boards** show progress.
 4. Open **Workload**. If people are missing, expand **User Mapping** on **Boards** and press **Resolve**, or use **Assign Slack user** on an unmatched row.
 5. A board's row opens its profile. **Re-analyze** rebuilds the profile (workflow stages, estimation field) after the board's setup changed.
@@ -38,6 +38,7 @@ An issue or epic key on any tab opens in Jira.
 ## When it's empty or wrong
 
 - **A tab says Jira isn't connected.** The tab says "Connect Jira to get this". Press **Connect Jira**; it opens **Settings** → **Connections**.
+- **A tab says "Choose Jira boards to get this".** Jira is connected but no board is picked, so nothing syncs. Press **Choose Jira boards**; it opens **Boards**, where you switch boards on.
 - **Boards says "No boards yet".** Press **Fetch Boards**.
 - **A tab says "No blockers yet", "No workload yet" or similar.** Jira is connected but no data has arrived. Check that a board is switched on in **Boards** and wait for a sync.
 - **Workload is empty though Jira has issues.** No Jira user is matched to a Slack user. Connect Slack, then press **Resolve** in **User Mapping**.

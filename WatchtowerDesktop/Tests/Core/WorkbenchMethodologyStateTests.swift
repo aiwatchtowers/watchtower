@@ -46,6 +46,48 @@ final class WorkbenchMethodologyStateTests: XCTestCase {
                        #"workflow.md was ignored: line 2: unknown key "mode". The built-in defaults apply."#)
     }
 
+    /// Board #558: a repo file asking to weaken a check is ignored, and the
+    /// sheet says so, pointing at the owner's own settings.
+    func testFileNoteNamesTheIgnoredChecks() throws {
+        let asks = Self.envelope.replacingOccurrences(of: #""truncated":false"#,
+                                                      with: #""truncated":false,"ignored":["ask_guard: off","finish_check: off"]"#)
+        XCTAssertEqual(try decode(asks).file.ignored, ["ask_guard: off", "finish_check: off"])
+        XCTAssertEqual(try decode(asks).fileNote,
+                       "workflow.md asks for ask_guard: off, finish_check: off; that is ignored. "
+                           + "Only your settings can turn a check down: to turn it down, pick the value above.")
+        let none = Self.envelope.replacingOccurrences(of: #""truncated":false"#, with: #""truncated":false,"ignored":[]"#)
+        XCTAssertNil(try decode(none).fileNote)
+        let cutToo = asks.replacingOccurrences(of: #""truncated":false"#, with: #""truncated":true"#)
+        XCTAssertEqual(try decode(cutToo).fileNote,
+                       "workflow.md is longer than 64 KiB; Watchtower reads only its first 64 KiB. "
+                           + "workflow.md asks for ask_guard: off, finish_check: off; that is ignored. "
+                           + "Only your settings can turn a check down: to turn it down, pick the value above.")
+        XCTAssertTrue(WorkbenchMethodologyKey.askGuard.choiceHelp("file").contains("cannot turn this check down"))
+        XCTAssertTrue(WorkbenchMethodologyKey.preset.choiceHelp("file").contains("workflow.md, else the built-in default"))
+    }
+
+    /// Board #558: a check the upgrade carried over from workflow.md says so,
+    /// with its date, so the owner knows they did not pick it.
+    func testCarriedLineNamesTheCarryOver() throws {
+        XCTAssertNil(try decode().carriedLine(.askGuard), "no carried_at from an older CLI")
+        let carried = Self.envelope.replacingOccurrences(
+            of: #""file":{"#,
+            with: #""carried_at":{"preset":"","ask_guard":"2026-10-17T09:00:00Z","finish_check":""},"file":{"#)
+        let state = try decode(carried)
+        // 23:30 UTC is already the next day in UTC+3: the date is the viewer's local one.
+        let late = carried.replacingOccurrences(of: "2026-10-17T09:00:00Z", with: "2026-10-17T23:30:00Z")
+        let zone = try XCTUnwrap(TimeZone(secondsFromGMT: 3 * 3600))
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        formatter.timeZone = zone
+        let nextDay = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-18T12:00:00Z"))
+        XCTAssertEqual(try decode(late).carriedLine(.askGuard, timeZone: zone),
+                       "Carried over from workflow.md on \(formatter.string(from: nextDay)) — the file no longer sets it.")
+        XCTAssertNil(state.carriedLine(.finishCheck), "not carried")
+        XCTAssertNil(state.carriedLine(.preset))
+    }
+
     func testFailureNamesWhatFailed() throws {
         let notSaved = Self.envelope.replacingOccurrences(of: #""ok":true,"error":"""#, with: #""ok":false,"error":"database is locked""#)
         XCTAssertEqual(try decode(notSaved).failure, "Could not save the setting: database is locked")
@@ -84,7 +126,9 @@ final class WorkbenchMethodologyStateTests: XCTestCase {
         XCTAssertEqual(WorkbenchMethodologyKey.preset.choices, ["file", "watchtower-flow", "none"])
         XCTAssertEqual(WorkbenchMethodologyKey.finishCheck.choices, ["file", "on", "off"])
         XCTAssertEqual(WorkbenchMethodologyKey.preset.choiceLabel("watchtower-flow"), "Watchtower flow")
-        XCTAssertEqual(WorkbenchMethodologyKey.askGuard.choiceLabel("file"), "From folder file")
+        XCTAssertEqual(WorkbenchMethodologyKey.askGuard.choiceLabel("file"), "Default", "board #558: the file never sets a check")
+        XCTAssertEqual(WorkbenchMethodologyKey.finishCheck.choiceLabel("file"), "Default")
+        XCTAssertEqual(WorkbenchMethodologyKey.preset.choiceLabel("file"), "From folder file")
         XCTAssertEqual(WorkbenchMethodologyKey.askGuard.choiceLabel("soft"), "Soft")
         XCTAssertTrue(WorkbenchMethodologyKey.askGuard.choiceHelp("soft").contains("Watchtower app running"),
                       "spec §7.1: soft's Desktop-down limit is in the help")

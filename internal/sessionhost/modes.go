@@ -76,7 +76,7 @@ func (m *ModeTracker) parse(s []byte) (int, bool) {
 		return j, true
 	}
 	on := s[j] == 'h'
-	for _, f := range bytes.Split(s[3:j], []byte{';'}) {
+	for f := range bytes.SplitSeq(s[3:j], []byte{';'}) {
 		n, err := strconv.Atoi(string(f))
 		if err != nil {
 			continue

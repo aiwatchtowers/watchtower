@@ -4,10 +4,12 @@ import (
 	"fmt"
 
 	"github.com/spf13/cobra"
+
+	"watchtower/docs/guide"
 )
 
 var (
-	Version   = "0.19.0"
+	Version   = "0.20.0"
 	Commit    = "unknown"
 	BuildDate = "unknown"
 	// BuildFlavor names the build profile the artifact was produced with
@@ -15,6 +17,10 @@ var (
 	// and the Makefile build/install targets.
 	BuildFlavor = ""
 )
+
+// The guide's links follow the release tag of a clean version (ldflags set
+// Version before any init runs).
+func init() { guide.Version = Version }
 
 var versionCmd = &cobra.Command{
 	Use:   "version",

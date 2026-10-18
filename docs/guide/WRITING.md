@@ -14,6 +14,8 @@ Rules for every page in `docs/guide/`. A user-facing change updates its page in 
 8. **Voice.** Second person, present tense, plain words, lively without being jokey. "The assistant" is the only name for the AI persona.
 9. **Public repo.** No real names, ids, domains or paths. Use `acme` and `example.com`.
 
+Adding, renaming or re-titling a page changes the chat prompt golden: run `go test ./docs/guide/ ./internal/kb/ ./internal/chat/` (the Guide Check job's packages) and regenerate with `go test ./internal/chat -run TestBuildSystemPrompt_Golden -update`.
+
 ## Headings are anchors
 
 Other pages and the in-app help agent link to headings. Use only `##` and `###`, and keep a published heading's text stable.

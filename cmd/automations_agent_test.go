@@ -297,7 +297,7 @@ func (s *claudeStub) env(t *testing.T) []string {
 	data, err := os.ReadFile(filepath.Join(s.dir, "env"))
 	require.NoError(t, err)
 	var out []string
-	for _, l := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+	for l := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
 		if k, _, _ := strings.Cut(l, "="); k == "PWD" || k == "SHLVL" || k == "_" || k == "OLDPWD" {
 			continue
 		}

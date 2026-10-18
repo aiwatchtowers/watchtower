@@ -565,7 +565,7 @@ func TestFormatExistingTracksTruncation(t *testing.T) {
 	database := testDB(t)
 
 	// Create 35 tracks with varying priorities.
-	for i := 0; i < 35; i++ {
+	for i := range 35 {
 		priority := "low"
 		if i < 5 {
 			priority = "high"
@@ -582,7 +582,7 @@ func TestFormatExistingTracksTruncation(t *testing.T) {
 	}
 
 	pipe := New(database, testConfig(), nil, log.Default())
-	result := pipe.formatExistingTracks("U1")
+	result := pipe.formatExistingTracks()
 
 	// Should contain truncation notice.
 	assert.Contains(t, result, "Showing top 30 of 35")
@@ -614,7 +614,7 @@ func TestFormatExistingTracksIncludesBatchChannels(t *testing.T) {
 	require.NoError(t, err)
 
 	pipe := New(database, testConfig(), nil, log.Default())
-	result := pipe.formatExistingTracks("U1")
+	result := pipe.formatExistingTracks()
 
 	// Track from batch channel must be included (previously it was excluded).
 	assert.Contains(t, result, "Existing track from batch channel")
@@ -658,7 +658,7 @@ func TestBatchTracksIntegration(t *testing.T) {
 		Summary: "Backend review discussions", MessageCount: 10, Model: "test",
 	})
 	require.NoError(t, err)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		_, err = database.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
 			VALUES (1, ?, ?, 'Topic summary', '[]', '[{"text":"review code"}]', '[]', '[]')`, i, fmt.Sprintf("Backend topic %d", i))
 		require.NoError(t, err)
@@ -944,7 +944,7 @@ func TestFormatActiveTracksForPromptLimit(t *testing.T) {
 	database := testDB(t)
 
 	// Create 35 tracks to test the limit of 30.
-	for i := 0; i < 35; i++ {
+	for i := range 35 {
 		priority := "low"
 		if i < 5 {
 			priority = "high"
@@ -1219,7 +1219,7 @@ func TestTracksLearnedPrefsInPrompt(t *testing.T) {
 		Summary: "Backend review discussions", MessageCount: 10, Model: "test",
 	})
 	require.NoError(t, err)
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		_, err = database.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
 			VALUES (1, ?, ?, 'Topic summary', '[]', '[{"text":"review code"}]', '[]', '[]')`, i, fmt.Sprintf("Backend topic %d", i))
 		require.NoError(t, err)

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -350,7 +351,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 			lookup := newBatchResultLookup(batch, results)
 
 			// Distribute tokens evenly across batch users for progress reporting.
-			inTokPer, outTokPer, costPer := 0, 0, 0.0
+			inTokPer, outTokPer := 0, 0
 			if usage != nil && len(batch) > 0 {
 				inTokPer = usage.InputTokens / len(batch)
 				outTokPer = usage.OutputTokens / len(batch)
@@ -364,7 +365,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 					if ferr := p.createInsufficientCard(entry.stats, from, to); ferr != nil {
 						p.logger.Printf("people: batch missing user %s, fallback error: %v", entry.stats.UserID, ferr)
 					}
-				} else if serr := p.storeBatchCard(entry.stats, result, from, to, pv, inTokPer, outTokPer, costPer); serr != nil {
+				} else if serr := p.storeBatchCard(entry.stats, result, from, to, pv, inTokPer, outTokPer); serr != nil {
 					aiFailures++
 					p.logger.Printf("people: store batch card error for %s: %v", entry.stats.UserID, serr)
 				} else {
@@ -431,7 +432,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 
 			lookup := newBatchResultLookup(batch, results)
 
-			inTokPer, outTokPer, costPer := 0, 0, 0.0
+			inTokPer, outTokPer := 0, 0
 			if usage != nil && len(batch) > 0 {
 				inTokPer = usage.InputTokens / len(batch)
 				outTokPer = usage.OutputTokens / len(batch)
@@ -447,7 +448,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 					} else {
 						aiCards++
 					}
-				} else if serr := p.storeBatchCard(entry.stats, result, from, to, pv, inTokPer, outTokPer, costPer); serr != nil {
+				} else if serr := p.storeBatchCard(entry.stats, result, from, to, pv, inTokPer, outTokPer); serr != nil {
 					aiFailures++
 					p.logger.Printf("people: store batch card error for %s: %v", entry.stats.UserID, serr)
 				} else {
@@ -660,7 +661,7 @@ func (p *Pipeline) createInsufficientCard(stats db.UserStats, from, to float64) 
 }
 
 // storeBatchCard converts a BatchCardResult to a db.PeopleCard and stores it.
-func (p *Pipeline) storeBatchCard(stats db.UserStats, result *BatchCardResult, from, to float64, pv, inTok, outTok int, cost float64) error {
+func (p *Pipeline) storeBatchCard(stats db.UserStats, result *BatchCardResult, from, to float64, pv, inTok, outTok int) error {
 	redFlags, _ := json.Marshal(result.RedFlags)
 	highlights, _ := json.Marshal(result.Highlights)
 	accomplishments, _ := json.Marshal(result.Accomplishments)
@@ -800,10 +801,7 @@ func groupUsersIntoBatches(entries []batchUserEntry, maxUsers int) [][]batchUser
 	}
 	var batches [][]batchUserEntry
 	for i := 0; i < len(entries); i += maxUsers {
-		end := i + maxUsers
-		if end > len(entries) {
-			end = len(entries)
-		}
+		end := min(i+maxUsers, len(entries))
 		batches = append(batches, entries[i:end])
 	}
 	return batches
@@ -812,13 +810,13 @@ func groupUsersIntoBatches(entries []batchUserEntry, maxUsers int) [][]batchUser
 // parseBatchCardResult parses a JSON array of BatchCardResult from AI output.
 func parseBatchCardResult(raw string) ([]BatchCardResult, error) {
 	cleaned := raw
-	if idx := strings.Index(raw, "```json"); idx >= 0 {
-		cleaned = raw[idx+7:]
+	if _, after, ok := strings.Cut(raw, "```json"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
-	} else if idx := strings.Index(raw, "```"); idx >= 0 {
-		cleaned = raw[idx+3:]
+	} else if _, after, ok := strings.Cut(raw, "```"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
@@ -1023,9 +1021,7 @@ func (p *Pipeline) loadReactionsMultiChannel(msgs []db.Message) map[string][]db.
 		if err != nil {
 			continue
 		}
-		for ts, summaries := range rm {
-			result[ts] = summaries
-		}
+		maps.Copy(result, rm)
 	}
 	return result
 }
@@ -1225,13 +1221,13 @@ func parseTeamSummaryResult(raw string) (*TeamSummaryResult, error) {
 
 func extractJSON(raw string) string {
 	cleaned := raw
-	if idx := strings.Index(raw, "```json"); idx >= 0 {
-		cleaned = raw[idx+7:]
+	if _, after, ok := strings.Cut(raw, "```json"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
-	} else if idx := strings.Index(raw, "```"); idx >= 0 {
-		cleaned = raw[idx+3:]
+	} else if _, after, ok := strings.Cut(raw, "```"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}

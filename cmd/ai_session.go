@@ -248,11 +248,8 @@ func codexSessionClient(w sessionWiring) *codex.Client {
 	c.SetExternalMCPLoader(func() []ai.ExternalMCPServer {
 		return loadExternalMCPServersFrom(w.cfg, w.database, os.Environ()) // the codex child's environment
 	})
-	// CHAT-04 (spec §9): the chat session's system prompt and replayed
-	// history must never sit on this process's argv — route the whole
-	// turn through stdin instead of -c developer_instructions=... and a
-	// positional prompt.
-	c.SetStdinOnly(true)
+	// CHAT-04 (spec §9): the client always routes the system prompt and
+	// replayed history through stdin, never this process's argv.
 	return c
 }
 

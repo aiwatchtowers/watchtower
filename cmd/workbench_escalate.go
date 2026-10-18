@@ -67,7 +67,7 @@ var workbenchEscalateCmd = &cobra.Command{
 				err = writeEscalateResult(cmd.OutOrStdout(), escalateFailure(escalateErrInternal, fmt.Errorf("panic: %v", r)))
 			}
 		}()
-		return writeEscalateResult(cmd.OutOrStdout(), runEscalateQuestion(cmd, args))
+		return writeEscalateResult(cmd.OutOrStdout(), runEscalateQuestion(args))
 	},
 }
 
@@ -122,7 +122,7 @@ type escalateArgs struct {
 	reason                 string
 }
 
-func parseEscalateArgs(cmd *cobra.Command, positional []string) (escalateArgs, error) {
+func parseEscalateArgs(positional []string) (escalateArgs, error) {
 	var a escalateArgs
 	if len(positional) > 0 {
 		return a, fmt.Errorf("unexpected argument %q", briefClip(positional[0], 40))
@@ -151,8 +151,8 @@ var errEscalateOpenCap = errors.New("too many open asks")
 
 // runEscalateQuestion parses, opens the database (migrating it, as every
 // writer CLI) and raises the question.
-func runEscalateQuestion(cmd *cobra.Command, positional []string) escalateResult {
-	a, err := parseEscalateArgs(cmd, positional)
+func runEscalateQuestion(positional []string) escalateResult {
+	a, err := parseEscalateArgs(positional)
 	if err != nil {
 		return escalateFailure(escalateErrBadArgs, err)
 	}
@@ -162,7 +162,7 @@ func runEscalateQuestion(cmd *cobra.Command, positional []string) escalateResult
 	}
 	database, err := db.Open(cfg.DBPath())
 	switch {
-	case db.IsBusy(err):
+	case db.IsBusy(err), errors.Is(err, db.ErrMigrationInProgress):
 		return escalateFailure(escalateErrBusy, fmt.Errorf("opening database: %w", err))
 	case errors.Is(err, db.ErrSchemaSetup):
 		return escalateFailure(escalateErrSchema, fmt.Errorf("opening database: %w", err))

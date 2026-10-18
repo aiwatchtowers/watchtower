@@ -297,13 +297,13 @@ func (p *Pipeline) Run(ctx context.Context) (RunStats, error) {
 // run. Returns the step count for numbering everything after it.
 func (p *Pipeline) runFocusStep(runID int64, stats *RunStats) int {
 	if p.cfg.Focus.Enabled {
-		n, ferr := p.runFocus(runID, 0, stats)
+		n, ferr := p.runFocus(runID, stats)
 		if ferr != nil {
 			p.logf("memory: focus: %v", ferr)
 		}
 		return n
 	}
-	n, ferr := p.runFocusDisable(runID, 0, stats)
+	n, ferr := p.runFocusDisable(runID, stats)
 	if ferr != nil {
 		p.logf("memory: focus-disable: %v", ferr)
 	}
@@ -347,11 +347,10 @@ func (p *Pipeline) runMechanicalAndExtraction(ctx context.Context, runID int64, 
 	// (logged, MirrorsFailed) but is never fatal to the run (source isolation).
 	mirrorSteps := 0
 	if p.cfg.Sources.Operational {
-		n, merr := p.runOperationalMirrors(runID, focusSteps+calSteps, stats)
-		if merr != nil {
+		if merr := p.runOperationalMirrors(runID, focusSteps+calSteps, stats); merr != nil {
 			p.logf("memory: operational mirrors: %v", merr)
 		}
-		mirrorSteps = n
+		mirrorSteps = 1 // the step always records its one row
 	}
 
 	// (2d) Mechanical Jira issue → episode builder (dark behind
@@ -526,10 +525,7 @@ func (p *Pipeline) completeRun(runID int64, acc *usageAccumulator, items int, pF
 		p.logf("memory: complete pipeline run: %v", err)
 		return
 	}
-	cacheRead := acc.totalAPI - acc.input
-	if cacheRead < 0 {
-		cacheRead = 0
-	}
+	cacheRead := max(acc.totalAPI-acc.input, 0)
 	model := acc.model
 	if model == "" {
 		model = "auto"
@@ -986,10 +982,11 @@ func (p *Pipeline) buildEpisodeNodes(label string, kept []extractedEpisode) (nod
 	// (once via a structural hint, once via a model hint, or by two
 	// episodes) is only appended to once per episode line (appendToLinks
 	// itself is idempotent against exact-duplicate lines).
-	link := func(hint, l string) (en Node, ok bool) {
+	// It reports whether the hint resolved.
+	link := func(hint, l string) bool {
 		en, rerr := Resolve(p.vault, p.db, hint)
 		if rerr != nil || en.Type != "entity" || en.Status != "active" {
-			return Node{}, false
+			return false
 		}
 		idx, seen := entityIdx[en.ID]
 		if !seen {
@@ -999,7 +996,7 @@ func (p *Pipeline) buildEpisodeNodes(label string, kept []extractedEpisode) (nod
 			ids = append(ids, en.ID)
 		}
 		nodes[idx].Body = appendToLinks(nodes[idx].Body, l)
-		return nodes[idx], true
+		return true
 	}
 
 	for _, ep := range kept {
@@ -1036,7 +1033,7 @@ func (p *Pipeline) buildEpisodeNodes(label string, kept []extractedEpisode) (nod
 		}
 
 		for _, hint := range ep.EntityHints {
-			if _, ok := link(hint, linkLine); ok {
+			if link(hint, linkLine) {
 				continue
 			}
 			// Unresolved hint: no entity page matches it yet. Log as before

@@ -27,6 +27,8 @@ package final class LocalPreviewServer: @unchecked Sendable {
     /// A client that has not sent its whole request header by then is dropped.
     /// The send that follows is not timed: a big file is never cut off.
     private static let headerTimeout: TimeInterval = 15
+    /// How much of a file is read and sent at a time.
+    private static let chunkBytes = 256 * 1024
 
     /// Accepts and reads requests; replies are built off it (`replyQueue`),
     /// so a big file never holds up another connection.
@@ -182,8 +184,51 @@ package final class LocalPreviewServer: @unchecked Sendable {
         }
     }
 
+    /// Sends the head (and an in-memory body); a file body follows in
+    /// `chunkBytes` pieces read one at a time, so a reply never holds more
+    /// than one chunk of a file in memory (#563). A HEAD never opens it.
     private func reply(_ response: LocalPreviewResponse, includeBody: Bool, on connection: NWConnection) {
-        connection.send(content: response.serialized(includeBody: includeBody), contentContext: .finalMessage,
-                        isComplete: true, completion: .contentProcessed { _ in connection.cancel() })
+        var response = response
+        var handle: FileHandle?
+        if includeBody, let file = response.file {
+            handle = try? FileHandle(forReadingFrom: file)
+            if handle == nil { response = LocalPreviewHTTP.error(404) }
+        }
+        let length = Int(response.header("Content-Length") ?? "") ?? 0
+        guard let handle, length > 0 else {
+            try? handle?.close()
+            connection.send(content: response.serialized(includeBody: includeBody), contentContext: .finalMessage,
+                            isComplete: true, completion: .contentProcessed { _ in connection.cancel() })
+            return
+        }
+        // Each piece goes as a complete message (TCP has no message
+        // boundaries); a partial one would sit unsent until completed.
+        connection.send(content: response.serialized(includeBody: false), completion: .contentProcessed { [weak self] error in
+            guard let self, error == nil else {
+                try? handle.close()
+                return connection.cancel()
+            }
+            self.replyQueue.async { self.stream(handle, remaining: length, on: connection) }
+        })
+    }
+
+    /// One file chunk per turn; the next is read once this one is sent. A
+    /// file that shrank since its Content-Length was taken cuts the
+    /// connection rather than send a short body as whole.
+    private func stream(_ handle: FileHandle, remaining: Int, on connection: NWConnection) {
+        guard let chunk = try? handle.read(upToCount: min(remaining, Self.chunkBytes)), !chunk.isEmpty else {
+            try? handle.close()
+            return connection.cancel()
+        }
+        let left = remaining - chunk.count
+        // The last piece also closes the send side.
+        connection.send(content: chunk, contentContext: left == 0 ? .finalMessage : .defaultMessage, isComplete: true,
+                        completion: .contentProcessed { [weak self] error in
+                            guard let self, error == nil, left > 0 else {
+                                try? handle.close()
+                                return connection.cancel()
+                            }
+                            self.replyQueue.async { self.stream(handle, remaining: left, on: connection) }
+                        })
     }
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"time"
@@ -76,7 +77,7 @@ var cliBoundedGenerator = func(cfg *config.Config) digest.Generator {
 // terminal than in the daemon. cliGenerator (interactive commands like
 // ask/chat) deliberately does NOT get this wrapper: those calls are already
 // bounded by the user.
-func cliPooledGenerator(cfg *config.Config, logger *log.Logger) (digest.Generator, func()) {
+func cliPooledGenerator(cfg *config.Config) (digest.Generator, func()) {
 	rawGen := digest.WithCallTimeout(cliGenerator(cfg), digest.DaemonAICallTimeout)
 	poolSize := cfg.AI.Workers
 	if poolSize <= 0 {
@@ -122,7 +123,6 @@ func newAIClientWithModel(cfg *config.Config, dbPath, modelOverride string) ai.P
 // provider gets the runtime-B in-process tool loop (agentloop) instead, since it
 // has no subprocess. It returns a cleanup to run after the query drains (closing
 // the tool-loop's DB, if one was opened); the cleanup is a no-op otherwise.
-// With --no-tools no provider gets a tool or an MCP server.
 func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), error) {
 	noop := func() {}
 	// Runtime B: the ollama provider on a tool-bearing chat surface gets the
@@ -148,15 +148,6 @@ func newQueryClient(cfg *config.Config, dbPath string) (ai.Provider, func(), err
 		return agentloop.NewClient(model, cfg.AI.OllamaURL, reg, binding), func() { _ = database.Close() }, nil
 	}
 
-	if aiFlagNoTools {
-		// No database path: nothing to mount. SetNoTools also keeps the
-		// provider's own tools hidden (ollama's plain client has none).
-		client := newAIClientWithModel(cfg, "", aiFlagModel)
-		if c, ok := client.(noToolsConfigurable); ok {
-			c.SetNoTools()
-		}
-		return client, noop, nil
-	}
 	client := newAIClientWithModel(cfg, dbPath, aiFlagModel)
 	if aiFlagTools == "chat" {
 		if c, ok := client.(mcpConfigurable); ok {
@@ -488,9 +479,7 @@ func applyOAuthCredentials(
 	}
 
 	headers := make(map[string]string, len(secret.Headers)+1)
-	for k, v := range secret.Headers {
-		headers[k] = v
-	}
+	maps.Copy(headers, secret.Headers)
 	headers["Authorization"] = "Bearer " + secret.OAuth.AccessToken
 
 	if changed {

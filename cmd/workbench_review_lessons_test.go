@@ -35,7 +35,7 @@ func lessonComments(t *testing.T, database *db.DB, wb, session int64, n int) []i
 	require.NoError(t, err)
 	round, _ := res.LastInsertId()
 	var ids []int64
-	for i := 0; i < n; i++ {
+	for range n {
 		r, err := database.Exec(`INSERT INTO review_comments (round_id, path, body, status, lens) VALUES (?, 'a.go', ?, 'sent', 'tests')`, round, "needs a test")
 		require.NoError(t, err)
 		id, _ := r.LastInsertId()

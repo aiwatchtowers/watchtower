@@ -70,11 +70,11 @@ func newProvenanceRegistry(resolvers ...provenanceResolver) *provenanceRegistry 
 // classify into an unregistered numeric "scheme" and be dropped as invented
 // (MEM-01/MEM-12), discarding every Slack episode ref post-migration.
 func schemeOf(channelID string) string {
-	i := strings.IndexByte(channelID, ':')
-	if i < 0 {
+	before, _, ok := strings.Cut(channelID, ":")
+	if !ok {
 		return ""
 	}
-	seg := channelID[:i]
+	seg := before
 	if seg != "" && isDigits(seg) {
 		return ""
 	}

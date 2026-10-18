@@ -289,7 +289,7 @@ func TestParseHookEvent_UnknownEventIsNoop(t *testing.T) {
 	require.NoError(t, err, "an unknown event decodes")
 	assert.Equal(t, "PreCompact", ev.Event)
 	assert.Equal(t, codexExecSession, ev.SessionID)
-	_, _, ok := agentStateFor(ev.Event, ev.NotificationType)
+	_, ok := agentStateFor(ev.Event, ev.NotificationType)
 	assert.False(t, ok, "and maps to no state")
 
 	database, pid, row := briefSessionFixture(t)

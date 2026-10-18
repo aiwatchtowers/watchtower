@@ -25,6 +25,7 @@ import (
 	"watchtower/internal/digest"
 	"watchtower/internal/doclinks/linkscan"
 	"watchtower/internal/extsync"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/gmail"
 	"watchtower/internal/guide"
 	"watchtower/internal/ideas"
@@ -404,6 +405,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.loadRollupAttempts()
 	d.loadPeopleAttempts()
 	d.reapStalePipelineRuns()
+	d.sweepStaleSystemPrompts()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
@@ -654,6 +656,24 @@ const stalePipelineRunAfter = 24 * time.Hour
 
 // stalePipelineRunError is the error_msg a reaped run carries.
 const stalePipelineRunError = "interrupted: the process running it exited before it finished"
+
+// staleSystemPromptAge is how old a system-prompt temp file must be before
+// the startup sweep removes it: a live claude/codex call deletes its own file
+// as soon as the child exits, well within this.
+const staleSystemPromptAge = 10 * time.Minute
+
+// sweepStaleSystemPrompts removes the 0600 system-prompt files a killed
+// process left in the temp dir (they hold the owner's data). Best-effort:
+// a failure is logged and never keeps the daemon from starting.
+func (d *Daemon) sweepStaleSystemPrompts() {
+	n, err := fsutil.SweepStalePrivateTemp(fsutil.SystemPromptTempPrefix, staleSystemPromptAge, time.Now())
+	if n > 0 {
+		d.logger.Printf("removed %d stale system prompt temp file(s)", n)
+	}
+	if err != nil {
+		d.logger.Printf("sweeping system prompt temp files: %v", err)
+	}
+}
 
 // reapStalePipelineRuns fails every pipeline_runs row a killed process left in
 // 'running' (the catchup reapStaleRecaps precedent), so the Pipeline Progress
@@ -1178,13 +1198,21 @@ func (d *Daemon) cleanupOrphanRecordings(cutoff time.Time) {
 const kbCycleBudget = 60 * time.Second
 
 // phaseKnowledgeIndex brings the knowledge-search index up to date.
-// Mechanical (no AI, KB-02); off = no indexing, the existing index stays
-// readable (FEAT-01/02).
+// Mechanical (no AI, KB-02); off = no indexing of the owner's data, the
+// existing index stays readable (FEAT-01/02). The built-in user guide is not
+// owner data: it is indexed every cycle even when the switch is off, with no
+// pipeline_runs row (FEAT-01), and nothing tied to the switch deletes it.
 func (d *Daemon) phaseKnowledgeIndex(ctx context.Context) {
-	if !d.config.Knowledge.Enabled {
+	if d.db == nil {
 		return
 	}
-	if d.db == nil {
+	if !d.config.Knowledge.Enabled {
+		if ctx.Err() != nil {
+			return
+		}
+		if _, err := kb.Run(ctx, d.db, kb.Options{Budget: kbCycleBudget, Sources: []string{kb.GuideSource}}); err != nil && !isBenignShutdownErr(ctx, err) {
+			d.logger.Printf("knowledge index (guide): %v", err)
+		}
 		return
 	}
 	d.trackedPipelineRun("knowledge-index", func() pipelineRunStats {
@@ -1668,6 +1696,40 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 	})
 }
 
+// memoryBackfillWaitMax is how long memory waits for a running history
+// backfill row, counted from the row's started_at (#578). Dual path with the
+// Desktop's FeatureReadiness.memoryBackfillWaitMax: the Memory tab says
+// "Waiting for history to load" for exactly this window.
+const memoryBackfillWaitMax = 24 * time.Hour
+
+// memoryWaitsForBackfill reports whether phaseMemory holds this cycle for the
+// history backfill (#578, docs/features/history-backfill.md § Memory gate).
+// Extraction is oldest-first behind a watermark, so the gate only keeps
+// memory's FIRST run off a half-loaded month: once a memory run has
+// succeeded, its watermark is past anything a backfill lands, and waiting
+// would only stall memory. Before that it waits for a running row (a held one
+// included), at most memoryBackfillWaitMax after the row started; a paused
+// row (a revoked account) never holds it, and neither does the kill switch
+// (sync.backfill_days <= 0: the phase does not run, so the rows never end).
+// Dual path with the Desktop's FeatureReadiness.memoryWaitsForHistory.
+func (d *Daemon) memoryWaitsForBackfill() (bool, error) {
+	if d.config.Sync.BackfillDays <= 0 {
+		return false, nil
+	}
+	lastDone, err := d.db.GetLatestPipelineRunStartedAt("memory")
+	if err != nil {
+		return false, err
+	}
+	if lastDone != "" {
+		return false, nil
+	}
+	now := time.Now()
+	if d.memoryNow != nil {
+		now = d.memoryNow()
+	}
+	return d.db.HasRunningHistoryBackfillSince(now.Add(-memoryBackfillWaitMax))
+}
+
 // phaseMemory runs the memory consolidation pipeline (vault reconcile, entity
 // seeding, episode extraction). Runs after inbox, before next-step. The
 // pipeline records its own pipeline_runs row (source="daemon", see
@@ -1680,10 +1742,8 @@ func (d *Daemon) phaseMemory(ctx context.Context) {
 		d.logger.Printf("memory: disabled, skipping")
 		return
 	}
-	// Extraction is oldest-first behind a watermark: let the history
-	// backfill land its older rows first (docs/features/history-backfill.md).
 	if d.db != nil {
-		active, err := d.db.HasActiveHistoryBackfill()
+		active, err := d.memoryWaitsForBackfill()
 		if err != nil {
 			// Unknown backfill state: skip rather than fail open — running
 			// extraction past an unfinished backfill moves its watermark

@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/devpack"
 	"watchtower/internal/externalmcp"
 	"watchtower/internal/extract"
+	"watchtower/internal/gittest"
 )
 
 // TestMain installs the db schema template cache before running tests and
@@ -83,6 +84,9 @@ func TestMain(m *testing.M) {
 	codexAppServerStart = func(context.Context, string, []string, []string) (codex.AppServer, error) {
 		return nil, errors.New("the codex app-server is stubbed out in cmd tests")
 	}
+	// No git a cmd test starts may leave maintenance writing into a
+	// t.TempDir repository after it returns.
+	gittest.DisableBackgroundGit()
 	if err := db.InitTestTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)

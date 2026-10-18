@@ -96,7 +96,8 @@ struct FeatureEmptyState<Extra: View>: View {
     }
 
     /// The one button: Turn on while off (for a feature with a switch),
-    /// Connect while its source is missing, otherwise the tab's own action —
+    /// Connect while its source is missing, otherwise (daemon down included:
+    /// Start lives in the app-wide banner) the tab's own action —
     /// never a Turn on or Connect the state doesn't call for. A failed Turn
     /// on keeps its retry: an enable whose restart failed leaves the feature
     /// on (no longer `.off`), and only the retry restarts the daemon.
@@ -122,7 +123,7 @@ struct FeatureEmptyState<Extra: View>: View {
     static func label(for action: EmptyStateAction, retry: Bool = false) -> String {
         switch action {
         case .turnOn: retry ? "Try again" : "Turn on"
-        case .connect(let source): "Connect \(source.displayName)"
+        case .connect(let source): source.actionTitle
         case .openSettings(_, let label): label
         case .tabAction(let label): label
         }

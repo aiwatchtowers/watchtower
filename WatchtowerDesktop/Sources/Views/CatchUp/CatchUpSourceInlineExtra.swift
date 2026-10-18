@@ -37,7 +37,7 @@ struct StreamDigestInline: View {
     }
 
     private var caption: String {
-        digest.scope.isEmpty ? digest.source.capitalized : "\(digest.source.capitalized) · \(digest.scope)"
+        digest.scope.isEmpty ? digest.sourceLabel : "\(digest.sourceLabel) · \(digest.scope)"
     }
 }
 

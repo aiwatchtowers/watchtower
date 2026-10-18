@@ -62,7 +62,6 @@ package struct SearchResult: FetchableRecord, Decodable, Identifiable, Equatable
     package let subtype: String
     package let permalink: String
     package let tsUnix: Double
-    package let rawJSON: String
     package let channelName: String?
     package let userName: String?
     package let snippet: String?
@@ -78,7 +77,6 @@ package struct SearchResult: FetchableRecord, Decodable, Identifiable, Equatable
         case isEdited = "is_edited"
         case isDeleted = "is_deleted"
         case tsUnix = "ts_unix"
-        case rawJSON = "raw_json"
         case channelName = "channel_name"
         case userName = "user_name"
     }

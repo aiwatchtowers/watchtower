@@ -77,7 +77,7 @@ func TestConcurrent401sRefreshOnce(t *testing.T) {
 
 	c := newTestClient(t, api.URL, tokenSrv.URL, "stale") // helper: stored token "stale", not expired
 	var wg sync.WaitGroup
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		wg.Add(2)
 		go func() { defer wg.Done(); _ = c.getJSONForTest(context.Background(), "/rest/api/3/myself") }()
 		go func() {

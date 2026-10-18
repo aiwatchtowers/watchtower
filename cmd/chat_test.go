@@ -154,7 +154,7 @@ func TestChatTitleIsLightTier(t *testing.T) {
 // TestChat04_ChatTitleArgvCarriesNoContent pins CHAT-04 for `chat title`: the
 // production generator the command uses (chatTitleGeneratorFactory) must put
 // the owner's first exchange on stdin, never on the child's argv — even when
-// it is far below digest.StdinThreshold. A fake claude/codex binary records
+// it is short. A fake claude/codex binary records
 // its argv and stdin; the real CLIs are never invoked.
 func TestChat04_ChatTitleArgvCarriesNoContent(t *testing.T) {
 	const marker = "OWNER-SECRET-chat-title-7f3a"

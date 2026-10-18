@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"testing"
 	"time"
 
@@ -217,9 +218,7 @@ func TestMergeUserOverridesLogic(t *testing.T) {
 	require.NoError(t, err)
 
 	// Apply overrides on top.
-	for k, v := range overrides.StaleThresholds {
-		profile.StaleThresholds[k] = v
-	}
+	maps.Copy(profile.StaleThresholds, overrides.StaleThresholds)
 
 	assert.Equal(t, 3, profile.StaleThresholds["In Progress"], "unchanged threshold should remain")
 	assert.Equal(t, 1, profile.StaleThresholds["Code Review"], "override should replace LLM value")

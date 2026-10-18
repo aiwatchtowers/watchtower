@@ -48,9 +48,6 @@ type ClaudeGenerator struct {
 	modelLight  string
 	modelStrong string
 	claudePath  string // optional override from config (claude_path)
-	// stdinOnly routes every user message through stdin regardless of its
-	// size (see SetStdinOnly).
-	stdinOnly bool
 	// isolated runs the child in its own process group without the
 	// variables in dropEnv (see SetIsolatedChild).
 	isolated bool
@@ -63,12 +60,6 @@ type ClaudeGenerator struct {
 func NewClaudeGenerator(modelLight, modelStrong, claudePath string) *ClaudeGenerator {
 	return &ClaudeGenerator{modelLight: modelLight, modelStrong: modelStrong, claudePath: claudePath}
 }
-
-// SetStdinOnly makes every subsequent Generate pass the user message on
-// stdin, never as a positional argv value, whatever its size. Callers whose
-// user message carries the owner's chat text set it (CHAT-04: `chat title`);
-// every other caller keeps the size-based routing.
-func (g *ClaudeGenerator) SetStdinOnly(v bool) { g.stdinOnly = v }
 
 // SetIsolatedChild makes every subsequent Generate run claude through
 // IsolateChild: its own process group, killed whole on cancel, and none of
@@ -103,40 +94,26 @@ func validateModelArgs(model string) []string {
 	}
 }
 
-// StdinThreshold is the user-message size above which generators pass the
-// message via the subprocess's stdin instead of argv, to stay clear of
-// ARG_MAX (hour-long meeting transcripts run to hundreds of KB).
-const StdinThreshold = 32 * 1024
-
-// generateArgs builds the CLI args for a digest generation request; when
-// userMessage exceeds StdinThreshold or begins with '-' (or stdinOnly is set) it is returned as
-// stdin content instead ("-p" with no value makes claude read the prompt from
-// stdin). A non-empty systemPromptFile replaces the inline --system-prompt
-// (see Generate for when the prompt is written to a file).
+// generateArgs builds the CLI args for a digest generation request and their
+// stdin content. The args carry flags and paths only: the user message is
+// returned as the stdin content ("-p" with no value makes claude read the
+// prompt from there) and a non-empty system prompt travels as the 0600
+// systemPromptFile (see Generate) — on argv either would be readable by
+// every local process through `ps` and could hit ARG_MAX.
 // See validateModelArgs for why --setting-sources project,local is required.
-func generateArgs(model, systemPrompt, systemPromptFile, userMessage string, stdinOnly bool) ([]string, string) {
-	stdin := ""
-	args := []string{"-p"}
-	// A message beginning with '-' would be parsed as a flag (-c is
-	// --continue), so it travels on stdin like a large one.
-	if stdinOnly || len(userMessage) > StdinThreshold || strings.HasPrefix(userMessage, "-") {
-		stdin = userMessage
-	} else {
-		args = append(args, userMessage)
-	}
-	args = append(args,
+func generateArgs(model, systemPromptFile, userMessage string) ([]string, string) {
+	args := []string{
+		"-p",
 		"--output-format", "json",
 		"--model", model,
 		"--no-session-persistence",
 		"--tools", "",
 		"--setting-sources", "project,local",
-	)
+	}
 	if systemPromptFile != "" {
 		args = append(args, "--system-prompt-file", systemPromptFile)
-	} else if systemPrompt != "" {
-		args = append(args, "--system-prompt", systemPrompt)
 	}
-	return args, stdin
+	return args, userMessage
 }
 
 // ValidateModel sends a minimal request to verify the configured model is valid.
@@ -254,25 +231,24 @@ func parseCLIOutput(output []byte) (*cliResponse, error) {
 func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, string, error) {
 	model := g.modelForContext(ctx)
 
-	// A system prompt above StdinThreshold goes to a 0600 file: pipelines
-	// that carry their whole payload there (briefing, target extract) would
-	// otherwise overflow ARG_MAX and sit readable in `ps` for the run.
+	// The system prompt goes to a 0600 file and the user message to stdin
+	// (generateArgs): both carry the owner's data, which on argv would sit
+	// readable in `ps` for the run (and a large payload would overflow
+	// ARG_MAX).
 	var systemPromptFile string
-	if len(systemPrompt) > StdinThreshold {
-		path, err := fsutil.WritePrivateTemp("wt-system-prompt-*.txt", systemPrompt)
+	if systemPrompt != "" {
+		path, err := fsutil.WritePrivateTemp(fsutil.SystemPromptTempPrefix+"*.txt", systemPrompt)
 		if err != nil {
 			return "", nil, "", fmt.Errorf("writing system prompt file: %w", err)
 		}
 		defer os.Remove(path)
 		systemPromptFile = path
 	}
-	args, stdin := generateArgs(model, systemPrompt, systemPromptFile, userMessage, g.stdinOnly)
+	args, stdin := generateArgs(model, systemPromptFile, userMessage)
 
 	claudeBin := claude.FindBinary(g.claudePath)
 	cmd := exec.CommandContext(ctx, claudeBin, args...)
-	if stdin != "" {
-		cmd.Stdin = strings.NewReader(stdin)
-	}
+	cmd.Stdin = strings.NewReader(stdin)
 	// Send SIGINT first for graceful shutdown; SIGKILL after 5s.
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(os.Interrupt)

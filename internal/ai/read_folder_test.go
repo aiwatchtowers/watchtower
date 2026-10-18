@@ -15,11 +15,11 @@ import (
 // the read-folder option must not move a single flag of an ordinary run.
 func TestBuildArgs_WithoutReadFolderIsUnchanged(t *testing.T) {
 	c := NewClient("claude-sonnet-4-6", "", "")
-	args, stdin, err := c.buildArgs("sys", "hello", "stream-json", "")
+	args, stdin, err := buildArgsT(t, c, "sys", "hello", "stream-json", "")
 	require.NoError(t, err)
-	assert.Empty(t, stdin)
+	assert.Equal(t, "hello", stdin)
 	assert.Equal(t, []string{
-		"-p", "hello",
+		"-p",
 		"--output-format", "stream-json",
 		"--model", "claude-sonnet-4-6",
 		"--allowedTools", "mcp__watchtower",
@@ -36,7 +36,7 @@ func TestBuildArgs_WithoutReadFolderIsUnchanged(t *testing.T) {
 		"--setting-sources", "project,local",
 		"--strict-mcp-config",
 		"--verbose",
-		"--system-prompt", "sys",
+		"--system-prompt-file", flagValue(t, args, "--system-prompt-file"),
 	}, args)
 }
 
@@ -54,7 +54,7 @@ func TestReadOnlyFolderDisallowedTools_DropsOnlyTheReadTools(t *testing.T) {
 func TestBuildArgs_ReadFolderUnhidesOnlyTheReadTools(t *testing.T) {
 	c := NewClient("m", "", "")
 	c.SetReadFolder("/work/acme")
-	args, _, err := c.buildArgs("sys", "hello", "stream-json", "")
+	args, _, err := buildArgsT(t, c, "sys", "hello", "stream-json", "")
 	require.NoError(t, err)
 
 	disallowed := strings.Split(flagValue(t, args, "--disallowedTools"), ",")
@@ -77,7 +77,7 @@ func TestBuildArgs_ReadFolderKeepsExternalDenyList(t *testing.T) {
 	c := NewClient("m", "/tmp/db.sqlite", "")
 	c.SetReadFolder("/work/acme")
 	c.SetExternalMCPServers([]ExternalMCPServer{{Name: "trello", Kind: "stdio", Command: "x", DenyTools: []string{"create_card"}}})
-	args, _, err := c.buildArgs("sys", "hello", "stream-json", "")
+	args, _, err := buildArgsT(t, c, "sys", "hello", "stream-json", "")
 	require.NoError(t, err)
 	assertFlagValue(t, args, "--disallowedTools", ReadOnlyFolderDisallowedTools+",mcp__trello__create_card")
 }

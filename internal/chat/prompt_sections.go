@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"watchtower/docs/guide"
 	"watchtower/internal/chat/blocks"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -27,24 +28,27 @@ const memoryMapMaxRunes = 4000
 const noToolsBlock = `=== TOOLS ===
 No tools are connected in this session. Answer from the conversation only, and say so plainly when the owner asks you to look something up or to create something.`
 
-// appGuide is the short app guide (spec §4.1 item 9): what Watchtower is,
-// the search_guide rule only where that tool is mounted (the main surface
-// with tools), and the screen-link rule — the screen ids are
-// WatchtowerDesktop/Sources/App/SidebarDestination.swift's.
-func appGuide(o PromptOptions) string {
-	lines := []string{
-		"=== WATCHTOWER APP (answer questions about the app from this) ===",
-		"Watchtower is a macOS app that mirrors the owner's Slack, Google (Gmail, Calendar), Jira and recorded meetings into a local database and runs AI pipelines over it.",
+// appGuideSection is the prompt's app map: the user guide's catalogue plus the
+// instruction to search the guide (docs/guide, indexed as the "guide" source).
+// A session without tools cannot search, so it gets the catalogue to link
+// only (noToolsBlock's rule: no promise the session cannot keep). The main
+// surface (AI Chat and its ⌘/ popup) also gets the screen-link rule: the
+// Desktop renders watchtower-nav://<screen> as an in-app link there.
+func appGuideSection(o PromptOptions) string {
+	lead := "For any question about how Watchtower works, link the guide section that covers it; a page lives at " + guide.BaseURL(guide.Version) + "<path>. The guide's pages:\n"
+	if o.ToolsAvailable {
+		lead = "For any question about how Watchtower works, search the user guide first: search_knowledge with sources [\"guide\"]. " +
+			"Answer from what you find and link the section you used as the hit's link + \"#\" + its chunk_anchor; if the guide has nothing on it, say so instead of guessing. The guide's pages:\n"
 	}
-	if o.Surface == "main" && o.ToolsAvailable {
-		lines = append(lines, appGuideSearchRule)
+	out := "=== WATCHTOWER APP ===\n" + lead + guide.Map()
+	if o.Surface == "main" {
+		out += "\n\n" + appGuideNavRule
 	}
-	return strings.Join(append(lines, appGuideNavRule), "\n")
+	return out + "\n==="
 }
 
-const appGuideSearchRule = "For any question about how to use Watchtower — a tab, a setting, why something is empty — call search_guide and answer from the sections it returns, using screen names as the app shows them; if nothing matches, say the guide doesn't cover it."
-
-const appGuideNavRule = "To link a screen write watchtower-nav://<screen> with one of: home, chat, catchUp, briefings, dayPlan, inbox, ideas, calendar, targets, tracks, projects (Workbench), automations, digests, people, memory, workload, blockers, projectMap, releases, statistics, search, boards, usage, mcpServer."
+// appGuideNavRule lists WatchtowerDesktop's SidebarDestination raw values.
+const appGuideNavRule = "To link a screen of the app write watchtower-nav://<screen> with one of: home, chat, catchUp, briefings, dayPlan, inbox, ideas, calendar, targets, tracks, projects (Workbench), automations, digests, people, memory, workload, blockers, projectMap, releases, statistics, search, boards, usage, mcpServer. Only a screen shown in the sidebar becomes a link; any other shows as plain text."
 
 const responseStyle = `=== RESPONSE STYLE ===
 - Give the answer first and keep it short. Do not narrate your search steps — the app already shows them.
@@ -75,9 +79,9 @@ func identityBlock(d *db.DB, cfg *config.Config, now time.Time) (string, error) 
 		"and you show where each fact came from.\n\n")
 	fmt.Fprintf(&b, "Current time: %s when this session started. Each owner message begins with a newer "+
 		"%q line: always use the latest one.\n", formatCurrentTime(now), "[Current time: …]")
-	name := oneLine(owner.DisplayName, maxFieldRunes)
-	email := oneLine(owner.Email, maxFieldRunes)
-	id := oneLine(owner.ID, maxFieldRunes)
+	name := oneLine(owner.DisplayName)
+	email := oneLine(owner.Email)
+	id := oneLine(owner.ID)
 	switch {
 	case name != "" && email != "":
 		fmt.Fprintf(&b, "Owner: %s (%s)\n", name, email)
@@ -149,7 +153,7 @@ func splitSlackAccounts(accts []db.SlackAccount) ([]db.SlackAccount, []blocks.Sl
 		if name == "" {
 			name = a.TeamName
 		}
-		teams = append(teams, blocks.SlackTeam{AccountID: a.ID, TeamID: a.TeamID, Name: oneLine(name, maxFieldRunes)})
+		teams = append(teams, blocks.SlackTeam{AccountID: a.ID, TeamID: a.TeamID, Name: oneLine(name)})
 	}
 	return active, teams
 }
@@ -185,9 +189,9 @@ func slackSourceEntries(active []db.SlackAccount) []string {
 	}
 	sanitized := make([]db.SlackAccount, len(active))
 	for i, a := range active {
-		a.Label = oneLine(a.Label, maxFieldRunes)
-		a.TeamName = oneLine(a.TeamName, maxFieldRunes)
-		a.TeamDomain = oneLine(a.TeamDomain, maxFieldRunes)
+		a.Label = oneLine(a.Label)
+		a.TeamName = oneLine(a.TeamName)
+		a.TeamDomain = oneLine(a.TeamDomain)
 		sanitized[i] = a
 	}
 	return []string{db.FormatConnectedWorkspaces(sanitized)}
@@ -203,7 +207,7 @@ func googleSourceEntries(google []db.GoogleAccount) []string {
 		if g.GmailEnabled {
 			parts = append(parts, "Gmail")
 		}
-		entry := oneLine(g.Email, maxFieldRunes) + " (" + strings.Join(parts, ", ") + ")"
+		entry := oneLine(g.Email) + " (" + strings.Join(parts, ", ") + ")"
 		if g.Status == "revoked" || g.Status == "error" {
 			entry += " — needs re-login"
 		}
@@ -222,7 +226,7 @@ func jiraSourceEntries(jira []db.JiraAccount) []string {
 		if name == "" {
 			name = j.SiteName
 		}
-		jl = append(jl, oneLine(name, maxFieldRunes)+" ("+oneLine(j.SiteURL, maxFieldRunes)+")")
+		jl = append(jl, oneLine(name)+" ("+oneLine(j.SiteURL)+")")
 	}
 	return jl
 }
@@ -240,7 +244,7 @@ func skillsBlock(dir string) (string, error) {
 	var lines []string
 	for _, s := range list {
 		if s.Enabled {
-			lines = append(lines, "- "+oneLine(s.Name, maxFieldRunes)+" — "+oneLine(s.Description, maxFieldRunes))
+			lines = append(lines, "- "+oneLine(s.Name)+" — "+oneLine(s.Description))
 		}
 	}
 	if len(lines) == 0 {
@@ -280,7 +284,7 @@ func projectBlock(d *db.DB, projectID int64, provider string) (string, error) {
 		return "", err
 	}
 	var b strings.Builder
-	b.WriteString("=== PROJECT: " + oneLine(pc.Name, maxFieldRunes) + " ===\n")
+	b.WriteString("=== PROJECT: " + oneLine(pc.Name) + " ===\n")
 	// Instructions are the owner's own words, entered in this chat's Settings
 	// — they stay verbatim (unlike every field below, which a third party
 	// can set). The begin/end markers still bound them explicitly so their
@@ -302,9 +306,9 @@ func writePinnedSources(b *strings.Builder, sources []db.ChatProjectSource) {
 	b.WriteString("Pinned sources (prefer these when relevant):\n")
 	searchable := false
 	for _, s := range sources {
-		line := "- " + oneLine(s.Kind, maxFieldRunes) + ": " + oneLine(s.Ref, maxFieldRunes)
+		line := "- " + oneLine(s.Kind) + ": " + oneLine(s.Ref)
 		if s.Label != "" {
-			line += " (" + oneLine(s.Label, maxFieldRunes) + ")"
+			line += " (" + oneLine(s.Label) + ")"
 		}
 		b.WriteString(line + "\n")
 		searchable = searchable || slices.Contains(tools.ScopedSourceKinds, s.Kind)

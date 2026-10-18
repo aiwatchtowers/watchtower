@@ -77,7 +77,7 @@ final class GoogleAuthService {
                     // reflects exactly what got granted.
                     Task { await self.checkStatusAsync() }
                     // Re-wire the daemon so the first sync + AI cycle runs now.
-                    Task { await DaemonManager.restartLogging() }
+                    Task { await DaemonManager.restartLoggingQueued() }
                 } else if result.exitCode == 15 || result.exitCode == 9 {
                     // SIGTERM/SIGKILL — user cancelled
                     self.error = nil

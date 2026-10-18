@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,17 +29,19 @@ var (
 	// aiFlagSystemPromptStdin reads the system prompt from stdin instead of
 	// argv (the Desktop's chats: their prompt carries private context).
 	aiFlagSystemPromptStdin bool
-	aiFlagDBPath            string
-	aiFlagTools             string
-	aiFlagSurface           string
-	aiFlagConversation      int64
-	aiFlagTurn              string
-	aiFlagContextType       string
-	aiFlagContextID         string
-	aiFlagEvents            string
-	aiFlagReadFolder        string
-	// aiFlagNoTools runs the provider with no tool at all (the ⌘/ help chat).
-	aiFlagNoTools bool
+	// aiFlagPromptStdin reads the whole query — prompt and system prompt —
+	// as one JSON object from stdin (the Desktop's chats: the owner's typed
+	// message must not sit on this process's argv either).
+	aiFlagPromptStdin  bool
+	aiFlagDBPath       string
+	aiFlagTools        string
+	aiFlagSurface      string
+	aiFlagConversation int64
+	aiFlagTurn         string
+	aiFlagContextType  string
+	aiFlagContextID    string
+	aiFlagEvents       string
+	aiFlagReadFolder   string
 )
 
 var aiCmd = &cobra.Command{
@@ -50,7 +53,7 @@ var aiQueryCmd = &cobra.Command{
 	Use:   "query",
 	Short: "Stream an AI query through the configured provider",
 	Long:  "Sends a prompt to the configured AI provider (Claude or Codex) and streams the response as JSON lines. Intended for programmatic use by the desktop app.",
-	Args:  cobra.ExactArgs(1),
+	Args:  cobra.MaximumNArgs(1),
 	RunE:  runAIQuery,
 }
 
@@ -94,6 +97,10 @@ func init() {
 	aiQueryCmd.Flags().BoolVar(&aiFlagSystemPromptStdin, "system-prompt-stdin", false,
 		"read the system prompt from stdin (keeps it off argv: visible in ps, bounded by ARG_MAX)")
 	aiQueryCmd.MarkFlagsMutuallyExclusive("system-prompt", "system-prompt-stdin")
+	aiQueryCmd.Flags().BoolVar(&aiFlagPromptStdin, "prompt-stdin", false,
+		`read the query from stdin as JSON {"prompt": "...", "system_prompt": "..."} instead of a positional prompt (keeps both off argv)`)
+	aiQueryCmd.MarkFlagsMutuallyExclusive("prompt-stdin", "system-prompt")
+	aiQueryCmd.MarkFlagsMutuallyExclusive("prompt-stdin", "system-prompt-stdin")
 	aiQueryCmd.Flags().StringVar(&aiFlagDBPath, "db-path", "", "SQLite database path for MCP (overrides default)")
 	aiQueryCmd.Flags().StringVar(&aiFlagTools, "tools", "", "tool mode: chat = mount the assistant's write tools as proposals")
 	aiQueryCmd.Flags().StringVar(&aiFlagSurface, "surface", "main", "chat surface for --tools chat: main|target|automation_editor")
@@ -104,13 +111,9 @@ func init() {
 	aiQueryCmd.Flags().StringVar(&aiFlagEvents, "events", "v1", "output protocol: v1 (text/reset/session_id/done) or v2 (chat events)")
 	aiQueryCmd.Flags().StringVar(&aiFlagReadFolder, "read-folder", "",
 		"run in this workbench folder with the provider's own read-only file tools (claude, codex); exit 2 if it is not a workbench folder")
-	aiQueryCmd.Flags().BoolVar(&aiFlagNoTools, "no-tools", false,
-		"run with no tools at all: no MCP server (so none of the workspace's data), no built-in tools; the answer comes from the prompt alone")
-	aiQueryCmd.MarkFlagsMutuallyExclusive("no-tools", "tools")
-	aiQueryCmd.MarkFlagsMutuallyExclusive("no-tools", "read-folder")
 }
 
-// maxStdinSystemPrompt bounds --system-prompt-stdin; a chat prompt is tens of
+// maxStdinSystemPrompt bounds --system-prompt-stdin and --prompt-stdin; a chat prompt is tens of
 // KB, so anything near this is a caller bug, not a prompt.
 const maxStdinSystemPrompt = 16 << 20
 
@@ -135,30 +138,77 @@ func querySystemPrompt(stdin io.Reader) (string, error) {
 	return string(data), nil
 }
 
+// stdinQuery is the --prompt-stdin payload.
+type stdinQuery struct {
+	Prompt       string `json:"prompt"`
+	SystemPrompt string `json:"system_prompt"`
+}
+
+// queryInput returns the prompt and system prompt: with --prompt-stdin both
+// from the JSON object on stdin (no positional prompt allowed), otherwise
+// the positional prompt and querySystemPrompt.
+func queryInput(args []string, stdin io.Reader) (prompt, systemPrompt string, err error) {
+	if !aiFlagPromptStdin {
+		if len(args) != 1 {
+			return "", "", errors.New("a prompt is required: pass it as the argument or use --prompt-stdin")
+		}
+		systemPrompt, err = querySystemPrompt(stdin)
+		return args[0], systemPrompt, err
+	}
+	if len(args) != 0 {
+		return "", "", errors.New("--prompt-stdin reads the prompt from stdin: pass no prompt argument")
+	}
+	data, err := io.ReadAll(io.LimitReader(stdin, maxStdinSystemPrompt+1))
+	if err != nil {
+		return "", "", fmt.Errorf("reading the query from stdin: %w", err)
+	}
+	if len(data) > maxStdinSystemPrompt {
+		return "", "", fmt.Errorf("query on stdin exceeds %d bytes", maxStdinSystemPrompt)
+	}
+	var q stdinQuery
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&q); err != nil {
+		return "", "", fmt.Errorf("--prompt-stdin: stdin is not a query object: %w", err)
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		// A second object or stray bytes: the writer is not the one we expect.
+		return "", "", errors.New("--prompt-stdin: unexpected data after the query object")
+	}
+	if q.Prompt == "" {
+		// An empty prompt means the delivery failed: never run without it.
+		return "", "", errors.New("--prompt-stdin: the query has no prompt")
+	}
+	return q.Prompt, q.SystemPrompt, nil
+}
+
 func runAIQuery(_ *cobra.Command, args []string) error {
-	prompt := args[0]
 	enc := json.NewEncoder(os.Stdout)
 	if aiFlagEvents != "v1" && aiFlagEvents != "v2" {
-		return emitError(enc, fmt.Sprintf("--events must be v1 or v2, got %q", aiFlagEvents))
+		emitError(enc, fmt.Sprintf("--events must be v1 or v2, got %q", aiFlagEvents))
+		return nil
 	}
 	// Before the config/DB work below, so a writer feeding a large prompt on
 	// stdin is not kept waiting (the Desktop tolerates a CLI that exits
 	// before reading — see WatchtowerAIService.feedStdin).
-	systemPrompt, err := querySystemPrompt(os.Stdin)
+	prompt, systemPrompt, err := queryInput(args, os.Stdin)
 	if err != nil {
-		return emitError(enc, err.Error())
+		emitError(enc, err.Error())
+		return nil
 	}
 
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
-		return emitError(enc, fmt.Sprintf("loading config: %v", err))
+		emitError(enc, fmt.Sprintf("loading config: %v", err))
+		return nil
 	}
 	if flagWorkspace != "" {
 		cfg.ActiveWorkspace = flagWorkspace
 	}
 	applyProviderOverride(cfg)
 	if err := cfg.ValidateWorkspace(); err != nil {
-		return emitError(enc, fmt.Sprintf("invalid config: %v", err))
+		emitError(enc, fmt.Sprintf("invalid config: %v", err))
+		return nil
 	}
 
 	// Determine database path
@@ -174,7 +224,8 @@ func runAIQuery(_ *cobra.Command, args []string) error {
 
 	aiClient, cleanup, err := newQueryClient(cfg, dbPath)
 	if err != nil {
-		return emitError(enc, fmt.Sprintf("preparing tools: %v", err))
+		emitError(enc, fmt.Sprintf("preparing tools: %v", err))
+		return nil
 	}
 	defer cleanup()
 	if readFolder != "" {
@@ -354,14 +405,13 @@ func orPickHint(model string) string {
 	return model
 }
 
-func emitError(enc *json.Encoder, msg string) error {
+func emitError(enc *json.Encoder, msg string) {
 	if aiFlagEvents == "v2" {
 		_ = enc.Encode(chat.Event{Type: chat.EventError, TurnID: v2TurnID(), Code: chat.CodeInternal, Message: msg, Retryable: true})
-		return nil
+		return
 	}
 	_ = enc.Encode(aiStreamEvent{Type: "error", Error: msg})
 	_ = enc.Encode(aiStreamEvent{Type: "done"})
-	return nil
 }
 
 // v2TurnID is the turn id `ai query --events v2` stamps on its events: the
@@ -448,13 +498,9 @@ func resolveReadFolder(dbPath string) (string, error) {
 // the flag is a no-op there — the Desktop already builds an honest prompt.
 type mcpConfigurable interface{ SetMCPArgs(extra []string) }
 
-// noToolsConfigurable is a provider client that can run tool-less (claude,
-// codex: `ai query --no-tools`).
-type noToolsConfigurable interface{ SetNoTools() }
-
 // externalMCPConfigurable is implemented by ai.Client (claude: the chat's
-// mcp-config and tool allowlist) and codex.Client (the run's own CODEX_HOME
-// config, enabled_tools per server) — it mounts owner-added external MCP
+// mcp-config and tool allowlist) and codex.Client (the -c mcp_servers
+// override, enabled_tools per server) — it mounts owner-added external MCP
 // servers ("Quick Connections", internal/externalmcp) alongside the built-in
 // watchtower server. The ollama client has no MCP subprocess, so the
 // type-assert in newQueryClient simply skips it there.

@@ -256,18 +256,29 @@ type automationJSON struct {
 	MissedPolicy      string   `json:"missed_policy"`
 	PauseTimeoutHours int      `json:"pause_timeout_hours"`
 	Enabled           bool     `json:"enabled"`
-	Runnable          bool     `json:"runnable"`
-	NeedsConfirmation bool     `json:"needs_confirmation"`
-	ParseError        string   `json:"parse_error"`
-	ContentHash       string   `json:"content_hash"`
-	ApprovalHash      string   `json:"approval_hash"`
-	ConfirmedHash     string   `json:"confirmed_hash"`
-	Widening          []string `json:"widening"`
+	// DisabledReason / DisabledAt: the daemon turned it off by itself (#584).
+	DisabledReason    string     `json:"disabled_reason"`
+	DisabledAt        *time.Time `json:"disabled_at"`
+	Runnable          bool       `json:"runnable"`
+	NeedsConfirmation bool       `json:"needs_confirmation"`
+	ParseError        string     `json:"parse_error"`
+	ContentHash       string     `json:"content_hash"`
+	ApprovalHash      string     `json:"approval_hash"`
+	ConfirmedHash     string     `json:"confirmed_hash"`
+	Widening          []string   `json:"widening"`
 	// Grants are the auto grants, inactive ones included (P2, spec §6.4).
 	Grants []automationGrantJSON `json:"grants"`
 	// AutoTools are the write tools the manifest admits, for the edit form's
 	// Auto toggles (P3); never null, empty for a recipe that does not parse.
 	AutoTools []automationAutoToolJSON `json:"auto_tools"`
+	// LLMAutoWrites are the External tools with an auto grant, active or
+	// paused, when the recipe feeds its sources to llm() — the confirmation
+	// sheet's warning (#559); never null.
+	LLMAutoWrites []string `json:"llm_auto_writes"`
+	// FeedsSourcesToLLM is Manifest.FeedsSourcesToLLM (#559): the edit form
+	// warns next to the Auto toggles of External tools; false when the
+	// recipe does not parse.
+	FeedsSourcesToLLM bool `json:"feeds_sources_to_llm"`
 	// The confirmation sheet's Changed block (P3, spec §12.2, D26): see
 	// automationChanges and automationAuthor.
 	Changes      []automationChangeJSON `json:"changes"`
@@ -286,10 +297,12 @@ type automationChangeJSON struct {
 }
 
 // automationAutoToolJSON is one entry of show's auto_tools: a write tool the
-// manifest admits; always_asks marks one auto can never be turned on for (D14).
+// manifest admits; always_asks marks one auto can never be turned on for (D14);
+// external marks a write outside Watchtower (the #559 warning).
 type automationAutoToolJSON struct {
 	Tool       string `json:"tool"`
 	AlwaysAsks bool   `json:"always_asks"`
+	External   bool   `json:"external"`
 }
 
 // automationAutoTools lists the write tools of reg the manifest of a admits
@@ -302,11 +315,41 @@ func automationAutoTools(reg *tools.Registry, a *db.Automation) []automationAuto
 	}
 	for _, t := range reg.All() {
 		if m.AdmitsWriteTool(t) {
-			out = append(out, automationAutoToolJSON{Tool: t.Name, AlwaysAsks: t.AlwaysAsk})
+			out = append(out, automationAutoToolJSON{Tool: t.Name, AlwaysAsks: t.AlwaysAsk, External: t.External})
 		}
 	}
 	slices.SortFunc(out, func(x, y automationAutoToolJSON) int { return strings.Compare(x.Tool, y.Tool) })
 	return out
+}
+
+// automationLLMAutoWrites lists, sorted, the External tools of reg holding an
+// auto grant of a (active or paused: a paused one comes back with the exact
+// granted text or one click) that a's manifest still admits as a write, when
+// that manifest feeds the owner's sources to llm()
+// (Manifest.FeedsSourcesToLLM): model text written over other people's mail,
+// messages or tickets may then reach that tool without a card. [] when a
+// does not parse or nothing matches.
+func automationLLMAutoWrites(reg *tools.Registry, a *db.Automation, grants []db.AutomationToolGrant) []string {
+	out := []string{}
+	m, err := automationManifest(a)
+	if err != nil || !m.FeedsSourcesToLLM() {
+		return out
+	}
+	for _, g := range grants {
+		if t, ok := reg.Get(g.Tool); ok && t.External && m.AdmitsWrite(t) && !slices.Contains(out, g.Tool) {
+			out = append(out, g.Tool)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// llmAutoWarning is the #559 warning for External tools with auto on in a
+// recipe that feeds its sources to llm(); the Desktop's
+// AutomationLLMWarning.line says the same.
+func llmAutoWarning(tools []string) string {
+	return "This recipe passes data from its sources to llm(). With auto on for " + strings.Join(tools, ", ") +
+		", text the model writes from other people's messages can be sent without asking you."
 }
 
 // changedByAssistant is changed_by when an applied save_automation wrote the
@@ -329,10 +372,11 @@ func newAutomationJSON(database *db.DB, a *db.Automation, grants []db.Automation
 		RecipeText: a.RecipeText, TriggerKind: a.TriggerKind, TriggerSpec: a.TriggerSpec,
 		Permissions: perms, Outputs: outs, BudgetTokens: a.BudgetTokens, BudgetMinutes: a.BudgetMinutes,
 		Concurrency: a.Concurrency, MissedPolicy: a.MissedPolicy, PauseTimeoutHours: a.PauseTimeoutHours,
-		Enabled: a.Enabled, Runnable: a.Runnable(), NeedsConfirmation: automationNeedsConfirmation(a),
+		Enabled: a.Enabled, DisabledReason: a.DisabledReason, DisabledAt: a.DisabledAt,
+		Runnable: a.Runnable(), NeedsConfirmation: automationNeedsConfirmation(a),
 		ParseError: a.ParseError, ContentHash: a.ContentHash, ApprovalHash: a.ApprovalHash,
 		ConfirmedHash: a.ConfirmedHash, Widening: []string{}, Grants: newAutomationGrantsJSON(grants),
-		AutoTools: []automationAutoToolJSON{}, Changes: []automationChangeJSON{},
+		AutoTools: []automationAutoToolJSON{}, Changes: []automationChangeJSON{}, LLMAutoWrites: []string{},
 	}
 	if j.ChangedBy, j.ChangedAt, err = automationAuthor(database, a); err != nil {
 		return automationJSON{}, err
@@ -345,6 +389,9 @@ func newAutomationJSON(database *db.DB, a *db.Automation, grants []db.Automation
 		return automationJSON{}, fmt.Errorf("automation %d: re-parsing its indexed recipe (run `watchtower automations rescan`): %w", a.ID, err)
 	}
 	j.Description, j.Script = r.Description, r.Script
+	if man, perr := automations.ParseManifest(r.Permissions, r.Outputs, r.Scope); perr == nil {
+		j.FeedsSourcesToLLM = man.FeedsSourcesToLLM()
+	}
 	if !automationConfirmed(a) {
 		j.Widening = automations.Covers(nil, perms)
 	}
@@ -446,7 +493,9 @@ func runAutomationsShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	j.AutoTools = automationAutoTools(buildAutomationRegistry(cfg, database), a)
+	reg := buildAutomationRegistry(cfg, database)
+	j.AutoTools = automationAutoTools(reg, a)
+	j.LLMAutoWrites = automationLLMAutoWrites(reg, a, grants)
 	w := cmd.OutOrStdout()
 	if autoFlags.JSON {
 		return writeJSON(w, j)
@@ -476,6 +525,9 @@ func printAutomation(w io.Writer, j automationJSON) {
 			state = "auto paused — the recipe changed"
 		}
 		fmt.Fprintf(w, "  grant:       %s (%s)\n", g.Tool, state)
+	}
+	if len(j.LLMAutoWrites) > 0 {
+		fmt.Fprintf(w, "  warning:     %s\n", llmAutoWarning(j.LLMAutoWrites))
 	}
 }
 

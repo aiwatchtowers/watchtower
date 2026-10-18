@@ -288,7 +288,6 @@ func TestChatRun_MountsOnlyWatchtowerAndConnections(t *testing.T) {
 	rec := t.TempDir()
 	c := NewClient("gpt-5.4", "/tmp/w.db", recordingCodex(t, rec))
 	c.SetMCPArgs([]string{"--chat", "--surface", "main"})
-	c.SetStdinOnly(true)
 	loads := 0
 	c.SetExternalMCPLoader(func() []ai.ExternalMCPServer {
 		loads++

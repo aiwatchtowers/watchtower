@@ -521,6 +521,10 @@ func TestExecutor_AbandonedRunDisablesAutomation(t *testing.T) {
 	if err != nil || got.Enabled {
 		t.Fatalf("automation enabled=%v, %v; want disabled", got.Enabled, err)
 	}
+	// #584: the disable is recorded on the automation for Desktop's notice.
+	if got.DisabledReason != "runaway script — check and re-enable" || got.DisabledAt == nil {
+		t.Errorf("disabled_reason=%q disabled_at=%v, want the runaway reason and a time", got.DisabledReason, got.DisabledAt)
+	}
 }
 
 func TestExecutor_NoClaimsWhileTwoRunsAbandoned(t *testing.T) {

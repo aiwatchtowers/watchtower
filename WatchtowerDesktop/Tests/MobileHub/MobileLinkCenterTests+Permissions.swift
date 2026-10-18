@@ -41,7 +41,7 @@ extension MobileLinkCenterTests {
         XCTAssertFalse(grant.typingAllowed)
         XCTAssertEqual(
             MobileLinkCenter.sessionGrant(sidecar, deviceID: phoneA),
-            .init(typingAllowed: false, startSessionsAllowed: true, permissionsAllowed: true)
+            .init(typingAllowed: false, startSessionsAllowed: false, permissionsAllowed: true)
         )
 
         try center.setPermissionsAllowed(false, deviceID: phoneA)

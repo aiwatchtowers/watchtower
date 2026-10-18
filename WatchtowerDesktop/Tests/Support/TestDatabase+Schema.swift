@@ -691,7 +691,7 @@ CREATE TABLE IF NOT EXISTS email_accounts (
     uidvalidity    INTEGER NOT NULL DEFAULT 0,    -- IMAP UIDVALIDITY; a change means last_uid must reset
     created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-);
+, ideas_email_floor REAL NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS imap_messages (
     account_id     INTEGER NOT NULL REFERENCES email_accounts(id) ON DELETE CASCADE,
     uid            INTEGER NOT NULL,              -- IMAP UID; unique within (account_id, uidvalidity, uid)
@@ -938,26 +938,6 @@ CREATE TABLE IF NOT EXISTS ideas (
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 , seen_at TEXT);
-CREATE TABLE IF NOT EXISTS idea_mentions (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    idea_id     INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
-    source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner')),
-    ref         TEXT NOT NULL DEFAULT '',
-    quote       TEXT NOT NULL DEFAULT '',
-    author      TEXT NOT NULL DEFAULT '',
-    said_at     TEXT NOT NULL DEFAULT '',
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-);
-CREATE TABLE IF NOT EXISTS stream_digests (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    source       TEXT NOT NULL CHECK(source IN ('gmail','jira')),
-    account_id   INTEGER NOT NULL,
-    scope        TEXT NOT NULL DEFAULT '',
-    period_from  TEXT NOT NULL,
-    period_to    TEXT NOT NULL,
-    topics_json  TEXT NOT NULL DEFAULT '[]',
-    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-, read_at TEXT);
 CREATE TABLE IF NOT EXISTS jira_comments (
     account_id          INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
     issue_key           TEXT NOT NULL,
@@ -1327,7 +1307,7 @@ CREATE TABLE IF NOT EXISTS projects (
 , board_language TEXT NOT NULL DEFAULT '', archive_after_days INTEGER NOT NULL DEFAULT 14
     CHECK (archive_after_days BETWEEN 0 AND 365), archived_through TEXT NULL
     CHECK (archived_through IS NULL OR julianday(archived_through) IS NOT NULL), worktree_setup TEXT NOT NULL DEFAULT '', agent_analytics INTEGER NOT NULL DEFAULT 0
-  CHECK (agent_analytics IN (0, 1)), methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), board_hidden_statuses TEXT NULL);
+  CHECK (agent_analytics IN (0, 1)), methodology_preset TEXT NULL CHECK (methodology_preset IS NULL OR methodology_preset IN ('watchtower-flow','none')), ask_guard_mode TEXT NULL CHECK (ask_guard_mode IS NULL OR ask_guard_mode IN ('strict','soft','off')), finish_check TEXT NULL CHECK (finish_check IS NULL OR finish_check IN ('on','off')), board_hidden_statuses TEXT NULL, methodology_carry_pending INTEGER NOT NULL DEFAULT 0 CHECK (methodology_carry_pending IN (0, 1)), ask_guard_carried_at TEXT NULL, finish_check_carried_at TEXT NULL);
 CREATE TABLE IF NOT EXISTS project_sources (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -1607,7 +1587,7 @@ CREATE TABLE IF NOT EXISTS automations (
     next_run_at         TEXT,                                -- derived by the scheduler, for the list
     removed_at          TEXT,                                -- the file is gone
     created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')), disabled_reason TEXT NOT NULL DEFAULT '', disabled_at TEXT,
     CHECK ((scope = 'workbench') = (project_id IS NOT NULL))
 );
 CREATE TABLE IF NOT EXISTS automation_runs (
@@ -2068,6 +2048,27 @@ CREATE TABLE IF NOT EXISTS permission_requests (
   decided_at          TEXT,
   decided_by          TEXT
 );
+CREATE TABLE IF NOT EXISTS "stream_digests" (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    source       TEXT NOT NULL CHECK(source IN ('gmail','jira','imap')),
+    account_id   INTEGER NOT NULL,
+    scope        TEXT NOT NULL DEFAULT '',
+    period_from  TEXT NOT NULL,
+    period_to    TEXT NOT NULL,
+    topics_json  TEXT NOT NULL DEFAULT '[]',
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    read_at      TEXT
+);
+CREATE TABLE IF NOT EXISTS "idea_mentions" (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    idea_id     INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
+    source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap')),
+    ref         TEXT NOT NULL DEFAULT '',
+    quote       TEXT NOT NULL DEFAULT '',
+    author      TEXT NOT NULL DEFAULT '',
+    said_at     TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
 CREATE VIEW IF NOT EXISTS workbench_target_archive AS
 WITH RECURSIVE
     node(id, parent_id, project_id, open, closed_at) AS (
@@ -2284,10 +2285,7 @@ CREATE INDEX IF NOT EXISTS idx_jira_issues_assignee_status ON jira_issues(assign
 CREATE INDEX IF NOT EXISTS idx_jira_issues_key ON jira_issues(key);
 CREATE INDEX IF NOT EXISTS idx_ideas_status ON ideas(status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind, status);
-CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
-CREATE INDEX IF NOT EXISTS idx_stream_digests_source ON stream_digests(source, account_id);
 CREATE INDEX IF NOT EXISTS idx_jira_comments_issue ON jira_comments(account_id, issue_key);
-CREATE INDEX IF NOT EXISTS idx_idea_mentions_ref ON idea_mentions(source, ref);
 CREATE INDEX IF NOT EXISTS idx_catchup_recaps_ack ON catchup_recaps(acknowledged_at, period_to DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_actions_conversation ON agent_actions(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_agent_actions_status ON agent_actions(status);
@@ -2392,6 +2390,9 @@ CREATE INDEX IF NOT EXISTS review_comments_round ON review_comments(round_id, id
 CREATE INDEX IF NOT EXISTS idx_workbench_board_columns_project ON workbench_board_columns(project_id, status, position);
 CREATE INDEX IF NOT EXISTS review_notes_session ON review_notes(project_id, session_id, kind, ord);
 CREATE INDEX IF NOT EXISTS idx_permission_requests_session ON permission_requests(terminal_session_id, status);
+CREATE INDEX IF NOT EXISTS idx_stream_digests_source ON stream_digests(source, account_id);
+CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
+CREATE INDEX IF NOT EXISTS idx_idea_mentions_ref ON idea_mentions(source, ref);
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN

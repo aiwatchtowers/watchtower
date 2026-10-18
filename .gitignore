@@ -70,3 +70,6 @@ WatchtowerMobile/Signing.xcconfig
 # Xcode per-user state (WatchtowerMobile.xcodeproj is committed; user data is not)
 xcuserdata/
 *.xcuserstate
+
+# TextMate tokenizer + grammars, fetched by scripts/fetch-textmate.sh (code viewer, board #738)
+WatchtowerDesktop/Sources/CodeEditorWeb/textmate/

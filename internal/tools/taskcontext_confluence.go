@@ -120,8 +120,8 @@ func appendConfluenceHits(ctx context.Context, d *db.DB, key string, out []taskC
 func confluenceSnippet(text, key string) string {
 	runes := []rune(text)
 	at := 0
-	if i := strings.Index(text, key); i >= 0 {
-		at = len([]rune(text[:i]))
+	if before, _, ok := strings.Cut(text, key); ok {
+		at = len([]rune(before))
 	}
 	from := max(at-confluenceSnippetRadius, 0)
 	to := min(at+len([]rune(key))+confluenceSnippetRadius, len(runes))

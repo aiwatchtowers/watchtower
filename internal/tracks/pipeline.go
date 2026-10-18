@@ -735,10 +735,7 @@ func (p *Pipeline) contextBudget() int {
 func (p *Pipeline) planTrackBatches(entries []digestEntry) [][]digestEntry {
 	const tokensPerTopic = 700
 	const promptOverhead = 20000
-	maxTopicsPerBatch := (p.contextBudget() - promptOverhead) / tokensPerTopic
-	if maxTopicsPerBatch < 20 {
-		maxTopicsPerBatch = 20
-	}
+	maxTopicsPerBatch := max((p.contextBudget()-promptOverhead)/tokensPerTopic, 20)
 	return groupDigestBatches(entries, 15, maxTopicsPerBatch)
 }
 
@@ -1074,13 +1071,13 @@ func groupDigestBatches(entries []digestEntry, maxChannels, maxTopics int) [][]d
 // parseBatchTracksResult parses the JSON array returned by a batch tracks LLM call.
 func parseBatchTracksResult(raw string) ([]batchChannelResult, error) {
 	cleaned := raw
-	if idx := strings.Index(raw, "```json"); idx >= 0 {
-		cleaned = raw[idx+7:]
+	if _, after, ok := strings.Cut(raw, "```json"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
-	} else if idx := strings.Index(raw, "```"); idx >= 0 {
-		cleaned = raw[idx+3:]
+	} else if _, after, ok := strings.Cut(raw, "```"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
@@ -1165,7 +1162,7 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 	}
 
 	// Show ALL existing tracks (including from batch channels) to prevent duplicates.
-	crossChannelSection := p.formatExistingTracks(userID)
+	crossChannelSection := p.formatExistingTracks()
 	profileSection := p.formatProfileContext()
 	roleRules := p.formatRoleRules()
 
@@ -1330,7 +1327,7 @@ func priorityOrder(p string) int {
 // formatExistingTracks formats ALL active tracks for deduplication and merge.
 // Uses cached allActiveTracksRef if available, otherwise loads from DB.
 // Includes tracks from batch channels — this is critical to avoid duplicates.
-func (p *Pipeline) formatExistingTracks(userID string) string {
+func (p *Pipeline) formatExistingTracks() string {
 	p.cacheMu.RLock()
 	allTracks := p.allActiveTracksRef
 	p.cacheMu.RUnlock()
@@ -2055,13 +2052,13 @@ func sanitize(text string) string {
 
 func cleanJSON(raw string) string {
 	cleaned := raw
-	if idx := strings.Index(raw, "```json"); idx >= 0 {
-		cleaned = raw[idx+7:]
+	if _, after, ok := strings.Cut(raw, "```json"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}
-	} else if idx := strings.Index(raw, "```"); idx >= 0 {
-		cleaned = raw[idx+3:]
+	} else if _, after, ok := strings.Cut(raw, "```"); ok {
+		cleaned = after
 		if end := strings.Index(cleaned, "```"); end >= 0 {
 			cleaned = cleaned[:end]
 		}

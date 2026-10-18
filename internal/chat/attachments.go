@@ -102,7 +102,8 @@ func loadAttachment(a Attachment, textOnly bool) (loadedAttachment, error) {
 	if name == "" {
 		name = filepath.Base(a.Path)
 	}
-	reject := func(reason string) (loadedAttachment, error) {
+	// reject mirrors loadAttachment's results so each check is one return.
+	reject := func(reason string) (loadedAttachment, error) { //nolint:unparam // matches loadAttachment's results for `return reject(...)`
 		return loadedAttachment{}, &AttachmentError{Name: name, Reason: reason}
 	}
 	if !filepath.IsAbs(a.Path) {

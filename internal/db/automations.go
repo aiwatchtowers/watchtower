@@ -66,6 +66,10 @@ type Automation struct {
 	RemovedAt         *time.Time
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
+	// DisabledReason and DisabledAt say the daemon turned the automation off
+	// by itself (DisableRunawayAutomation); "" / nil otherwise.
+	DisabledReason string
+	DisabledAt     *time.Time
 }
 
 // Runnable reports whether the executor may run a: parsed, enabled, its file
@@ -82,7 +86,7 @@ const runnableAutomationSQL = `parse_error = '' AND enabled = 1 AND removed_at I
 const automationCols = `id, slug, scope, project_id, path, name, trigger_kind, trigger_spec, missed_policy,
 	concurrency, budget_tokens, budget_minutes, pause_timeout_hours, permissions_json, outputs_json,
 	recipe_text, content_hash, approval_hash, confirmed_hash, parse_error, enabled,
-	last_scheduled_for, next_run_at, removed_at, created_at, updated_at`
+	last_scheduled_for, next_run_at, removed_at, created_at, updated_at, disabled_reason, disabled_at`
 
 func scanAutomation(row interface{ Scan(...any) error }) (*Automation, error) {
 	var (
@@ -90,11 +94,13 @@ func scanAutomation(row interface{ Scan(...any) error }) (*Automation, error) {
 		projectID            sql.NullInt64
 		last, next, removed  sql.NullString
 		createdAt, updatedAt string
+		disabledAt           sql.NullString
 	)
 	if err := row.Scan(&a.ID, &a.Slug, &a.Scope, &projectID, &a.Path, &a.Name, &a.TriggerKind, &a.TriggerSpec,
 		&a.MissedPolicy, &a.Concurrency, &a.BudgetTokens, &a.BudgetMinutes, &a.PauseTimeoutHours,
 		&a.PermissionsJSON, &a.OutputsJSON, &a.RecipeText, &a.ContentHash, &a.ApprovalHash, &a.ConfirmedHash,
-		&a.ParseError, &a.Enabled, &last, &next, &removed, &createdAt, &updatedAt); err != nil {
+		&a.ParseError, &a.Enabled, &last, &next, &removed, &createdAt, &updatedAt,
+		&a.DisabledReason, &disabledAt); err != nil {
 		return nil, err
 	}
 	a.ProjectID = projectID.Int64
@@ -106,6 +112,9 @@ func scanAutomation(row interface{ Scan(...any) error }) (*Automation, error) {
 		return nil, err
 	}
 	if a.RemovedAt, err = parseAutomationTime(removed, "removed_at"); err != nil {
+		return nil, err
+	}
+	if a.DisabledAt, err = parseAutomationTime(disabledAt, "disabled_at"); err != nil {
 		return nil, err
 	}
 	if a.CreatedAt, err = time.Parse(automationTimeLayout, createdAt); err != nil {
@@ -323,10 +332,23 @@ func (db *DB) SetAutomationEnabled(id int64, enabled bool, now time.Time) error 
 	stamp := formatAutomationTime(now)
 	res, err := db.Exec(`UPDATE automations SET
 		last_scheduled_for = CASE WHEN ? AND enabled = 0 THEN ? ELSE last_scheduled_for END,
-		enabled = ?, updated_at = ?
+		enabled = ?, disabled_reason = '', disabled_at = NULL, updated_at = ?
 		WHERE id = ?`, enabled, stamp, enabled, stamp, id)
 	if err != nil {
 		return fmt.Errorf("setting automation %d enabled=%v: %w", id, enabled, err)
+	}
+	return requireAutomationRow(res, id)
+}
+
+// DisableRunawayAutomation turns automation id off by the daemon's own
+// decision and records why and when (#584): Desktop notifies the owner once
+// per disabled_at. The owner's next enable or disable clears both.
+func (db *DB) DisableRunawayAutomation(id int64, reason string, now time.Time) error {
+	stamp := formatAutomationTime(now)
+	res, err := db.Exec(`UPDATE automations SET enabled = 0, disabled_reason = ?, disabled_at = ?, updated_at = ?
+		WHERE id = ?`, reason, stamp, stamp, id)
+	if err != nil {
+		return fmt.Errorf("disabling runaway automation %d: %w", id, err)
 	}
 	return requireAutomationRow(res, id)
 }
