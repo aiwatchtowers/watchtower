@@ -126,6 +126,7 @@ type Daemon struct {
 	pidPath             string
 	db                  *db.DB
 	agentLog            *agentlogdb.DB // nil = agentlog.db did not open; the analytics phase skips
+	agentLogPath        string         // agentLog's file, for the move lock beside it
 	digestPipe          *digest.Pipeline
 	tracksPipe          *tracks.Pipeline
 	peoplePipe          *guide.Pipeline
@@ -187,6 +188,7 @@ type Daemon struct {
 
 	heartbeatErrLogged atomic.Bool // one-shot latch for sync_progress.json write failures
 	agentLogSkipLogged atomic.Bool // one-shot latch for the analytics phase's nil-agentlog.db skip line
+	agentLogMoveLogged atomic.Bool // one-shot latch for the analytics phase's failed-move line
 
 	lockStats sql.DBStats // pool stats at the last cycle's lock sample (sampleLockStats)
 }
@@ -219,9 +221,9 @@ func (d *Daemon) SetDB(database *db.DB) {
 }
 
 // SetAgentLogDB sets the agentlog.db handle the agent analytics phase
-// writes to.
-func (d *Daemon) SetAgentLogDB(al *agentlogdb.DB) {
-	d.agentLog = al
+// writes to, and its file's path (the move lock sits beside it).
+func (d *Daemon) SetAgentLogDB(al *agentlogdb.DB, path string) {
+	d.agentLog, d.agentLogPath = al, path
 }
 
 // SetDigestPipeline sets the digest pipeline for post-sync digest generation.

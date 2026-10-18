@@ -21,9 +21,11 @@ var agentAnalyticsClaudeDir = agentlog.DefaultClaudeDir
 // phaseAgentAnalytics keeps agentlog.db current for every workbench with
 // agent_analytics = 1. Inert (no pipeline_runs row) when none is enabled —
 // gated by the workbench column, not a config key (FEAT-01 note) — and when
-// agentlog.db did not open (logged once per daemon run) or the one-time move
-// out of watchtower.db has not completed (logged every cycle); never a
-// fallback to watchtower.db.
+// agentlog.db did not open (logged once per daemon run). When the one-time
+// move out of watchtower.db has not completed (the start's upgrade step
+// failed), each cycle tries it again, as `agents scan` does, and scans once
+// it succeeds; a failure skips the cycle (logged once per daemon run). Never
+// a fallback to watchtower.db.
 func (d *Daemon) phaseAgentAnalytics(ctx context.Context) {
 	if d.db == nil || ctx.Err() != nil {
 		return
@@ -47,8 +49,16 @@ func (d *Daemon) phaseAgentAnalytics(ctx context.Context) {
 		d.logger.Printf("agent analytics: %v; skipped", err)
 		return
 	case !moved:
-		d.logger.Printf("%v; skipped until the move succeeds (%d workbench(es) enabled)", agentlogdb.ErrNotMoved, len(ids))
-		return
+		res, err := agentlogdb.MoveFromMain(ctx, d.db, d.agentLog, agentlogdb.MoveLockPath(d.agentLogPath))
+		if err != nil {
+			if d.agentLogMoveLogged.CompareAndSwap(false, true) {
+				d.logger.Printf("%v (moving: %v); skipped, retried every cycle (%d workbench(es) enabled)", agentlogdb.ErrNotMoved, err, len(ids))
+			}
+			return
+		}
+		if res != nil {
+			d.logger.Print(res)
+		}
 	}
 	d.trackedPipelineRun("agent-analytics", func() pipelineRunStats {
 		var items int

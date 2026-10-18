@@ -884,7 +884,7 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	d.SetDB(database)
 	if al != nil {
 		defer al.Close()
-		d.SetAgentLogDB(al)
+		d.SetAgentLogDB(al, agentlogdb.PathFor(cfg.DBPath()))
 	}
 	d.SetPIDPath(pidFilePath(cfg))
 	// Every pipeline is constructed unconditionally now (Task 3 demoted
@@ -972,8 +972,8 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 // one-time move of its rows out of watchtower.db (agentlogdb.MoveFromMain).
 // A failed open returns nil: the analytics phase stays off for this run and
 // everything else syncs. A failed move is logged and does not stop the
-// daemon: the marker stays unset, the analytics phase skips every cycle, and
-// the next start (or `agents enable`/`scan`) retries.
+// daemon: the marker stays unset and the analytics phase retries the move
+// every cycle, as do the next start and `agents enable`/`scan`.
 func openAgentLog(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger) *agentlogdb.DB {
 	path := agentlogdb.PathFor(cfg.DBPath())
 	al, err := agentlogdb.Open(path)
@@ -984,7 +984,7 @@ func openAgentLog(ctx context.Context, cfg *config.Config, database *db.DB, logg
 	res, err := agentlogdb.MoveFromMain(ctx, database, al, agentlogdb.MoveLockPath(path))
 	switch {
 	case err != nil:
-		logger.Printf("agent analytics: moving rows out of watchtower.db: %v; analytics are skipped until a later start moves them", err)
+		logger.Printf("agent analytics: moving rows out of watchtower.db: %v; retried on the next start or agents enable/scan", err)
 	case res != nil:
 		logger.Print(res)
 	}

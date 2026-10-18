@@ -29,7 +29,7 @@ func newAgentAnalyticsTestDaemon(t *testing.T) (*Daemon, *db.DB) {
 	t.Cleanup(func() { _ = al.Close() })
 	_, err = agentlogdb.MoveFromMain(context.Background(), database, al, agentlogdb.MoveLockPath(path))
 	require.NoError(t, err)
-	d.SetAgentLogDB(al)
+	d.SetAgentLogDB(al, path)
 	return d, database
 }
 
@@ -76,7 +76,7 @@ func TestPhaseAgentAnalytics_ScansEnabledWorkbench(t *testing.T) {
 // no pipeline_runs row and never falls back to watchtower.db.
 func TestPhaseAgentAnalytics_NilAgentlogSkips(t *testing.T) {
 	d, database := newAgentAnalyticsTestDaemon(t)
-	d.SetAgentLogDB(nil)
+	d.SetAgentLogDB(nil, "")
 	enableAgentAnalyticsWorkbench(t, database)
 	var logBuf bytes.Buffer
 	d.SetLogger(log.New(&logBuf, "", 0))
@@ -117,15 +117,50 @@ func TestPhaseAgentAnalytics_ProgressWriteFailureKeepsResult(t *testing.T) {
 	assert.Contains(t, errText, "recording import progress")
 }
 
-// Spec D4: before the one-time move the phase skips (logged), with no
-// pipeline_runs row and no scan.
-func TestPhaseAgentAnalytics_SkipsBeforeMove(t *testing.T) {
-	d, database := newAgentAnalyticsTestDaemon(t)
-	al, err := agentlogdb.Open(filepath.Join(t.TempDir(), "agentlog.db"))
+// unmovedAgentLog gives d a fresh agentlog.db with no move marker, as after
+// a failed upgrade step at the daemon's start.
+func unmovedAgentLog(t *testing.T, d *Daemon) *agentlogdb.DB {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "agentlog.db")
+	al, err := agentlogdb.Open(path)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = al.Close() })
-	d.SetAgentLogDB(al)
+	d.SetAgentLogDB(al, path)
+	return al
+}
+
+// Spec D4: a move the start's upgrade step did not finish is retried by the
+// phase, which then scans in the same cycle.
+func TestPhaseAgentAnalytics_MovesThenScans(t *testing.T) {
+	d, database := newAgentAnalyticsTestDaemon(t)
+	al := unmovedAgentLog(t, d)
 	enableAgentAnalyticsWorkbench(t, database)
+
+	d.phaseAgentAnalytics(context.Background())
+
+	moved, err := al.Moved()
+	require.NoError(t, err)
+	assert.True(t, moved)
+	var n int
+	require.NoError(t, al.QueryRow(`SELECT COUNT(*) FROM agent_log_events`).Scan(&n))
+	assert.Equal(t, 1, n)
+	assert.Equal(t, 1, countPipelineRuns(t, database, "agent-analytics"))
+}
+
+// A move that fails skips the cycle with no pipeline_runs row and no scan,
+// logged once per daemon run; every cycle tries again.
+func TestPhaseAgentAnalytics_FailedMoveSkipsAndLogsOnce(t *testing.T) {
+	d, database := newAgentAnalyticsTestDaemon(t)
+	al := unmovedAgentLog(t, d)
+	enableAgentAnalyticsWorkbench(t, database)
+	// A row agentlog.db's CHECK rejects aborts the move before its marker.
+	_, err := database.Exec(`PRAGMA ignore_check_constraints = ON`)
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO agent_log_files (path, agent, size, mtime, read_offset, parser_version, scanned_at)
+		VALUES ('/gone/x.jsonl', 'not_an_agent', 1, '2026-10-01T10:00:00Z', 1, 2, '2026-10-01T10:00:00Z')`)
+	require.NoError(t, err)
+	_, err = database.Exec(`PRAGMA ignore_check_constraints = OFF`)
+	require.NoError(t, err)
 	var logBuf bytes.Buffer
 	d.SetLogger(log.New(&logBuf, "", 0))
 
@@ -136,4 +171,18 @@ func TestPhaseAgentAnalytics_SkipsBeforeMove(t *testing.T) {
 	require.NoError(t, al.QueryRow(`SELECT COUNT(*) FROM agent_log_files`).Scan(&n))
 	assert.Zero(t, n)
 	assert.Contains(t, logBuf.String(), agentlogdb.ErrNotMoved.Error())
+	assert.Contains(t, logBuf.String(), "CHECK constraint failed")
+
+	logBuf.Reset()
+	d.phaseAgentAnalytics(context.Background())
+	assert.Empty(t, logBuf.String(), "logged once per daemon run")
+	assert.Equal(t, 0, countPipelineRuns(t, database, "agent-analytics"))
+
+	_, err = database.Exec(`DELETE FROM agent_log_files`)
+	require.NoError(t, err)
+	d.phaseAgentAnalytics(context.Background())
+	moved, err := al.Moved()
+	require.NoError(t, err)
+	assert.True(t, moved, "the next cycle's retry succeeds")
+	assert.Equal(t, 1, countPipelineRuns(t, database, "agent-analytics"))
 }
