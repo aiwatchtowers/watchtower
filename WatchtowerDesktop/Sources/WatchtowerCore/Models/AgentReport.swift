@@ -244,6 +244,8 @@ package struct AgentReportOverview: Decodable, Equatable, Sendable {
     package let models: [AgentModelRow]
     package let hints: [AgentHint]
     package let tasks: [AgentTaskRow]
+    /// Task rows Go's cap left out; absent from an older CLI.
+    package let tasksMore: Int?
     package let sessions: [AgentSessionRow]
     package let oldFormatSessions: Int
     /// Absent from a CLI older than #849: no loading line.
@@ -256,6 +258,7 @@ package struct AgentReportOverview: Decodable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case enabled, since, until, totals, time, subagents, commands, models, hints, tasks, sessions
         case context, skills, trouble
+        case tasksMore = "tasks_more"
         case workbenchID = "workbench_id", oldFormatSessions = "old_format_sessions"
         case importState = "import"
     }
@@ -268,6 +271,7 @@ extension AgentReportOverview {
         workbenchID == other.workbenchID && enabled == other.enabled && totals == other.totals
             && time == other.time && subagents == other.subagents && commands == other.commands
             && models == other.models && hints == other.hints && tasks == other.tasks
+            && tasksMore == other.tasksMore
             && sessions == other.sessions && oldFormatSessions == other.oldFormatSessions
             && importState == other.importState && context == other.context
             && skills == other.skills && trouble == other.trouble

@@ -36,6 +36,15 @@ private final class AnalyticsActionLog {
 /// navigation and a light/dark render of the category colours.
 @MainActor
 final class AgentAnalyticsPaneViewTests: XCTestCase {
+    func testCappedHintsSlicing() throws {
+        let json = #"{"id":"H1","finding":"t","estimate_ms":0,"estimate_usd":0,"evidence":[]}"#
+        let hint = try JSONDecoder().decode(AgentHint.self, from: Data(json.utf8))
+        let hints = Array(repeating: hint, count: 8)
+        XCTAssertEqual(AgentAnalyticsCappedHints.visible(hints, expanded: false).count, 5)
+        XCTAssertEqual(AgentAnalyticsCappedHints.visible(hints, expanded: true).count, 8)
+        XCTAssertEqual(AgentAnalyticsCappedHints.visible(Array(hints.prefix(3)), expanded: false).count, 3)
+    }
+
     private typealias OverviewSnapshot = SessionReportCenter.Snapshot<AgentReportOverview>
     private typealias DetailSnapshot = SessionReportCenter.Snapshot<AgentSessionDetail>
 

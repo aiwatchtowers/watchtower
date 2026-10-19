@@ -83,7 +83,7 @@ struct AgentAnalyticsOverviewView: View {
             AgentAnalyticsTroubleView(trouble: overview.trouble, actions: actions)
             if overview.hints.count > 1 {
                 section("What else would save") {
-                    AgentAnalyticsHintsView(hints: Array(overview.hints.dropFirst()), actions: actions)
+                    AgentAnalyticsCappedHints(hints: Array(overview.hints.dropFirst()), actions: actions)
                 }
             }
             DisclosureGroup {
@@ -110,6 +110,11 @@ struct AgentAnalyticsOverviewView: View {
                 section("Tasks") {
                     AgentAnalyticsTopRows(rows: overview.tasks, shown: 10) { rows in
                         AgentAnalyticsTasksTable(tasks: rows, actions: actions)
+                    }
+                    if let more = overview.tasksMore, more > 0 {
+                        Text("\(more) more tasks not shown — they cost less")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }

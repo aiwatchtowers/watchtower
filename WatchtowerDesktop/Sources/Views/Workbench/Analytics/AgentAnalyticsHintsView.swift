@@ -133,3 +133,28 @@ struct AgentHintEvidenceList: View {
         }
     }
 }
+
+/// The "What else would save" list: the first `limit` hints, then
+/// "Show all N" / "Show fewer".
+struct AgentAnalyticsCappedHints: View {
+    static let limit = 5
+    let hints: [AgentHint]
+    let actions: AgentAnalyticsActions
+    @State private var expanded = false
+
+    /// The hints to render: all when expanded, else the first `limit`.
+    static func visible(_ hints: [AgentHint], expanded: Bool, limit: Int = limit) -> [AgentHint] {
+        expanded ? hints : Array(hints.prefix(limit))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            AgentAnalyticsHintsView(hints: Self.visible(hints, expanded: expanded), actions: actions)
+            if hints.count > Self.limit {
+                Button(expanded ? "Show fewer" : "Show all \(hints.count)") { expanded.toggle() }
+                    .buttonStyle(.link)
+                    .font(.callout)
+            }
+        }
+    }
+}

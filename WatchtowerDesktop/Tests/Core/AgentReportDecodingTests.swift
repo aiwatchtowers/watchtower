@@ -61,6 +61,20 @@ final class AgentReportDecodingTests: XCTestCase {
         XCTAssertNil(try overview(import: nil).importState)
     }
 
+    func testOverviewDecodesTasksMore() throws {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture("agent-report-overview")) as? [String: Any])
+        json["tasks_more"] = nil
+        func decode() throws -> AgentReportOverview {
+            try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+        }
+        let absent = try decode()
+        XCTAssertNil(absent.tasksMore)
+        json["tasks_more"] = 7
+        let present = try decode()
+        XCTAssertEqual(present.tasksMore, 7)
+        XCTAssertFalse(absent.sameReport(as: present))
+    }
+
     func testOverviewDecodesV2Blocks() throws {
         let ov = try JSONDecoder().decode(AgentReportOverview.self, from: fixture("agent-report-overview"))
         XCTAssertEqual(ov.hints[0].action?.isEmpty, false)
