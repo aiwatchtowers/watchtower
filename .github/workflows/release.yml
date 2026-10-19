@@ -41,16 +41,16 @@ jobs:
         timeout-minutes: 25
         run: make test-cover
 
-  # Mirrors ci.yml's go-test-race job — the same two shards of `make
-  # test-race SHARD=K/2` (cmd out, internal/db's migration tests without
+  # Mirrors ci.yml's go-test-race job — the same three shards of `make
+  # test-race SHARD=K/3` (cmd out, internal/db's migration tests without
   # -race), in parallel: the unsharded pass outgrew one 40-minute step.
   go-release-race:
-    name: Go Release Race (${{ matrix.shard }}/2)
+    name: Go Release Race (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
@@ -61,7 +61,7 @@ jobs:
 
       - name: Test (race, library packages)
         timeout-minutes: 30
-        run: make test-race SHARD=${{ matrix.shard }}/2
+        run: make test-race SHARD=${{ matrix.shard }}/3
 
   # Mirrors ci.yml's swift-test job — keep the two in step (runner, Xcode,
   # Go, cache, steps, timeouts). The release gate drifted once: it stayed on

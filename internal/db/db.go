@@ -492,7 +492,9 @@ func lockMigrations(dbPath string) (func(), error) {
 // binary — the embedded SQL files and the registered Go migrations, as
 // goose collects them — read once.
 var embeddedMigrationVersions = sync.OnceValues(func() ([]int64, error) {
+	gooseMu.Lock()
 	migrations, err := goose.CollectMigrations("migrations", 0, goose.MaxVersion)
+	gooseMu.Unlock()
 	if err != nil {
 		return nil, fmt.Errorf("collecting embedded migrations: %w", err)
 	}
@@ -559,12 +561,20 @@ func (db *DB) schemaCurrentErr() (bool, error) {
 	return true, nil
 }
 
+// gooseMu serializes goose's global-registry calls (Up, CollectMigrations)
+// within the process: each relinks the registered Go migrations (00125), a
+// data race when two handles migrate at once. The migrate flock covers
+// other processes only.
+var gooseMu sync.Mutex
+
 func (db *DB) migrate() error {
 	// Before goose: adopt Swift-created chat tables into the shape 00076
 	// expects (see normalizeLegacyChatTables).
 	if err := normalizeLegacyChatTables(db.DB); err != nil {
 		return fmt.Errorf("normalizing legacy chat tables: %w", err)
 	}
+	gooseMu.Lock()
+	defer gooseMu.Unlock()
 	return goose.Up(db.DB, "migrations")
 }
 

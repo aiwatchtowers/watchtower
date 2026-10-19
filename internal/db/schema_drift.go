@@ -241,7 +241,9 @@ func loadMigrations() ([]migration, error) {
 // newest version and laterMigrationTouches knows what it changes. A Go
 // migration is never replayed.
 func appendGoMigrations(sqlMigrations []migration) ([]migration, error) {
+	gooseMu.Lock()
 	all, err := goose.CollectMigrations("migrations", 0, goose.MaxVersion)
+	gooseMu.Unlock()
 	if err != nil {
 		return nil, fmt.Errorf("collecting embedded migrations: %w", err)
 	}

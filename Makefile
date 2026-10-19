@@ -87,19 +87,21 @@ test-cover:
 # results count; its log follows the rest's.
 #
 # SHARD=K/N runs only the K-th of N disjoint slices (CI's go-test-race matrix:
-# 1/2 and 2/2); without SHARD every package runs, as before. `make
+# 1/3, 2/3 and 3/3); without SHARD every package runs, as before. `make
 # race-packages [SHARD=K/N]` prints a slice's list. The split is deterministic:
 # the RACE_HEAVY packages first, in their listed order, then the rest in
 # `go list` (sorted) order, dealt round-robin — package i goes to shard
-# i mod N + 1. RACE_HEAVY is ordered so that dealing it alternately evens out
+# i mod N + 1. RACE_HEAVY is ordered so that dealing it in threes evens out
 # the race-pass seconds per shard (CI, 2026-10-19: automations 880, kb 821,
-# sessionreport 562, tools ~580, memory 360, digest 374, db ~300, daemon 296,
-# agentlogdb 209, extsync 202, jira 190, repl 187 — ~4.3k CPU-s per shard).
+# db ~600 with the compaction tests, tools ~580, sessionreport 562, digest
+# 374, memory 360, daemon 296, agentlogdb 209, extsync 202, jira 190, repl
+# 187 — ~1.75k heavy CPU-s per shard; two shards put ~4.3k on one runner and
+# timed out at 25 m).
 # To rebalance, read the per-package seconds off a race run's log and reorder
 # (or extend) the list so each shard's heavy sum stays level; a package new
 # to the module needs nothing — it lands in a shard by itself.
 RACE_SKIP := Migration|DownUp|SchemaGolden|DesktopTestSchema
-RACE_HEAVY := automations kb sessionreport tools memory digest daemon db agentlogdb extsync jira repl
+RACE_HEAVY := automations kb db digest sessionreport tools daemon agentlogdb memory extsync repl jira
 RACE_PACKAGES = go list ./... | grep -v -e '^watchtower/cmd$$' | awk -v shard='$(SHARD)' -v heavy='$(RACE_HEAVY)' ' \
 	{ pkgs[NR] = $$0; have[$$0] = 1 } \
 	END { \

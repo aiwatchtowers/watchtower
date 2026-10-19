@@ -199,10 +199,11 @@ jobs:
         timeout-minutes: 25
         run: make test-cover
 
-  # The race pass, split across two parallel jobs: grown past one job's
+  # The race pass, split across three parallel jobs: grown past one job's
   # budget (2026-10-19: ~7.7k CPU-s on a 4-vCPU runner, the 40-minute step
-  # timed out), each shard runs ~half the packages (`make test-race
-  # SHARD=K/2` — the split and how to rebalance it live there).
+  # timed out; two shards then put tools, kb and db on one runner and timed
+  # out at 25 m), each shard runs ~a third of the packages (`make test-race
+  # SHARD=K/3` — the split and how to rebalance it live there).
   # Race-instrumented pure-Go sqlite is ~10x slower, so the race pass runs
   # only on pushes to main (i.e. per merged PR — a one-PR bisect window), on
   # a manual workflow_dispatch (so a branch can prove it before merging), and
@@ -214,7 +215,7 @@ jobs:
   # internal/db's migration tests without -race — is in `make test-race`,
   # shared with the release workflow.
   go-test-race:
-    name: Go Test (race ${{ matrix.shard }}/2)
+    name: Go Test (race ${{ matrix.shard }}/3)
     needs: gate
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
@@ -222,7 +223,7 @@ jobs:
       # Both shards report: one shard's race must not hide the other's.
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
@@ -233,7 +234,7 @@ jobs:
 
       - name: Test (race, library packages)
         timeout-minutes: 30
-        run: make test-race SHARD=${{ matrix.shard }}/2
+        run: make test-race SHARD=${{ matrix.shard }}/3
 
   # Whether this change touches the code index or its grammar modules — the
   # only reason to pay for the full grammar set (codeindex-full below). A
