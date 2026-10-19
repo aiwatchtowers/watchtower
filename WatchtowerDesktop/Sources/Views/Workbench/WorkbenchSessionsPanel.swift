@@ -173,7 +173,9 @@ struct SessionRowActions {
     var cleanUp: ((TerminalSession) -> Void)?
     /// A workbench session's Review Changes (board #328); nil = no menu item.
     var reviewChanges: ((TerminalSession) -> Void)?
-    var showChat: ((TerminalSession) -> Void)?
+    /// A workbench agent session's Open in Terminal (false) / Open in
+    /// Workchat (true), #711; nil = no menu items.
+    var openIn: ((TerminalSession, Bool) -> Void)?
 }
 
 /// The last start's one line (board #229): why a session started in the

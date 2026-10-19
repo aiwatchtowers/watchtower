@@ -803,7 +803,8 @@ final class WorkbenchesViewModel {
         let id = subject?.id ?? activeSessionID(projectID: projectID) ?? terminalSessions[projectID]?.first?.id
         guard let id, isLatestSwitch(ticket, projectID: projectID) else { return }
         var updated = layout(projectID: projectID)
-        updated.show(.session(id))
+        // In the mode it was last shown in, as a panel click (#711).
+        updated.show(updated.pane(forSession: id))
         setLayout(updated, projectID: projectID)
     }
 

@@ -154,9 +154,15 @@ struct WorkbenchesView: View {
                 guard let projectID = session.projectID else { return }
                 vm.showChanges(sessionID: session.id, projectID: projectID)
             },
-            showChat: { session in
+            openIn: { session, workchat in
                 guard let projectID = session.projectID else { return }
-                vm.showChat(sessionID: session.id, projectID: projectID)
+                Task {
+                    if workchat {
+                        await vm.showWorkchat(sessionID: session.id, projectID: projectID)
+                    } else {
+                        await vm.showTerminal(sessionID: session.id, projectID: projectID)
+                    }
+                }
             }
         )
     }
