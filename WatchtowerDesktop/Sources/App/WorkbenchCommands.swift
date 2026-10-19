@@ -146,9 +146,6 @@ struct HelpCommands: Commands {
                 .keyboardShortcut("/", modifiers: .command)
             Button("Watchtower User Guide") { NSWorkspace.shared.open(GuideLinks.readme) }
             Button("Keyboard Shortcuts") { openWindow(id: KeyboardShortcutsView.sceneID) }
-            if DevBuild.isEnabled {
-                Button("Design Gallery") { openWindow(id: DesignSystemGallery.sceneID) }
-            }
         }
     }
 }

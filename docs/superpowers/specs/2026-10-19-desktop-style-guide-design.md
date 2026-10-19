@@ -154,6 +154,8 @@ Empty states (`FeatureEmptyState`, `TabEmptyState`), `SearchField`, `ResizeHandl
 
 ### 4.4 Gallery
 
+Superseded by docs/superpowers/specs/2026-10-19-design-gallery-window-design.md.
+
 `DesignSystemGallery` is a view that shows every token and component, in light and dark mode, in every state: rest, hover, selected, disabled. It is the kit's living documentation, and the input to the screenshots in §6.
 
 How the gallery opens *(builder check; my call)*:
