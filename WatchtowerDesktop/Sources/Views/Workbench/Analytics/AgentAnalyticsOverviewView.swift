@@ -1,8 +1,9 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The overview: header, tiles, where the time went, hints, then the
-/// tasks, sessions, commands and models.
+/// The overview: header, tiles, the main thing (the first hint), the
+/// Context, Skills and Trouble blocks, the other hints, then the collapsed
+/// Time section (where the time went, tasks, sessions, commands, models).
 struct AgentAnalyticsOverviewView: View {
     let state: AgentAnalyticsPaneState
     @Binding var period: AgentAnalyticsCenter.Period
@@ -74,23 +75,51 @@ struct AgentAnalyticsOverviewView: View {
                     .help("The last refresh failed; these numbers are from an earlier run.")
             }
             tiles(overview)
-            section("Where the time went") { AgentTimeBreakdownView(time: overview.time) }
-            if !overview.hints.isEmpty {
-                section("What would save the most") { AgentAnalyticsHintsView(hints: overview.hints, actions: actions) }
+            if let first = overview.hints.first {
+                AgentAnalyticsMainThingCard(hint: first, actions: actions)
             }
+            AgentAnalyticsContextView(context: overview.context, actions: actions)
+            AgentAnalyticsSkillsView(skills: overview.skills)
+            AgentAnalyticsTroubleView(trouble: overview.trouble, actions: actions)
+            if overview.hints.count > 1 {
+                section("What else would save") {
+                    AgentAnalyticsHintsView(hints: Array(overview.hints.dropFirst()), actions: actions)
+                }
+            }
+            DisclosureGroup {
+                time(overview).padding(.top, 8)
+            } label: {
+                Text("Time")
+                    .font(.subheadline.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+            }
+        }
+    }
+
+    /// The collapsed Time section: where the time went, then the tasks,
+    /// sessions, commands and models.
+    private func time(_ overview: AgentReportOverview) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            section("Where the time went") { AgentTimeBreakdownView(time: overview.time) }
             if overview.oldFormatSessions > 0 {
                 Text("Older sessions — time not analysed: \(overview.oldFormatSessions)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             if !overview.tasks.isEmpty {
-                section("Tasks") { AgentAnalyticsTasksTable(tasks: overview.tasks, actions: actions) }
+                section("Tasks") {
+                    AgentAnalyticsTopRows(rows: overview.tasks, shown: 10) { rows, header in
+                        AgentAnalyticsTasksTable(tasks: rows, actions: actions, header: header)
+                    }
+                }
             }
             section("Sessions") {
                 if overview.sessions.isEmpty {
                     Text("No agent sessions in this period.").foregroundStyle(.secondary)
                 } else {
-                    AgentAnalyticsSessionsTable(sessions: overview.sessions, actions: actions)
+                    AgentAnalyticsTopRows(rows: overview.sessions, shown: 5) { rows, header in
+                        AgentAnalyticsSessionsTable(sessions: rows, actions: actions, header: header)
+                    }
                 }
             }
             if !overview.commands.isEmpty {
@@ -120,6 +149,8 @@ struct AgentAnalyticsOverviewView: View {
                 .font(.caption)
                 .foregroundStyle(.green)
                 .help("Agent analytics is on for this workbench")
+            Button("Discuss in Chat") { actions.discuss(AgentAnalyticsFormat.discussText(overview)) }
+                .help("Open the chat with this report's top findings in the composer")
         }
     }
 
@@ -127,10 +158,11 @@ struct AgentAnalyticsOverviewView: View {
         let totals = overview.totals
         return VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 24) {
-                tile("Active", AgentAnalyticsFormat.duration(totals.activeMS))
-                tile("Away", AgentAnalyticsFormat.duration(totals.awayMS))
                 tile("Cost", AgentAnalyticsFormat.cost(totals.costUSD))
                 tile("Sessions", "\(totals.sessions)")
+                tile("Active", AgentAnalyticsFormat.duration(totals.activeMS))
+                tile("Cache hit", AgentAnalyticsFormat.cacheHit(totals.tokens))
+                    .help("Input tokens read from the cache, of all input tokens")
             }
             Text(AgentAnalyticsFormat.subagentsLine(overview.subagents))
                 .font(.callout)

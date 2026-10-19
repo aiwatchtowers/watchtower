@@ -151,6 +151,33 @@ final class AgentAnalyticsCenterTests: XCTestCase {
         XCTAssertEqual(center.overviews[3]?.isStale, true)
     }
 
+    /// A run that brings the same report back assigns nothing, so the pane
+    /// is not redrawn every 60 s; a changed report or an error still is.
+    func testCenterSkipsEqualOverview() async throws {
+        let runner = ScriptedAgentsRunner(Self.byFlags())
+        let center = makeCenter(runner)
+        center.show(workbench: 3, period: .week)
+        await waitUntil { center.overviews[3]?.value != nil }
+
+        var changes = 0
+        func track() {
+            withObservationTracking { _ = center.overviews } onChange: { changes += 1 }
+        }
+        track()
+        center.show(workbench: 3, period: .month)
+        await waitUntil { runner.invocations.count == 2 }
+        await settle()
+        XCTAssertEqual(changes, 0, "an equal report is not assigned again")
+
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.fixture("agent-report-overview")) as? [String: Any])
+        json["old_format_sessions"] = 7
+        let changed = try JSONSerialization.data(withJSONObject: json)
+        runner.answer { _ in changed }
+        center.show(workbench: 3, period: .all)
+        await waitUntil { center.overviews[3]?.value?.oldFormatSessions == 7 }
+        XCTAssertEqual(changes, 1, "a changed report is")
+    }
+
     func testOneInFlightAndOneQueued() async {
         let runner = ScriptedAgentsRunner(Self.byFlags())
         runner.hold()

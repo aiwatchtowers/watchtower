@@ -19,6 +19,43 @@ enum AgentAnalyticsFormat {
         return "\(Int((part / whole * 100).rounded()))%"
     }
 
+    /// Cache reads over all input the model read (fresh, cache reads and
+    /// cache writes; output left out): "28%", "—" with no input.
+    static func cacheHit(_ tokens: AgentTokens) -> String {
+        let input = tokens.input + tokens.cacheRead + tokens.cacheWrite5m + tokens.cacheWrite1h
+        guard input > 0 else { return "—" }
+        return percent(Double(tokens.cacheRead), of: Double(input))
+    }
+
+    /// "950", "12.3k", "2.5M".
+    static func tokens(_ count: Int64) -> String {
+        if count >= 1_000_000 { return String(format: "%.1fM", Double(count) / 1_000_000) }
+        if count >= 1000 { return String(format: "%.1fk", Double(count) / 1000) }
+        return "\(count)"
+    }
+
+    /// What Discuss in Chat puts in the composer: the period's figures and
+    /// its top three hints with their actions, as the report words them.
+    static func discussText(_ overview: AgentReportOverview) -> String {
+        let totals = overview.totals
+        var lines = [
+            "Help me act on the agent analytics of this workbench (\(periodLabel(overview))): "
+                + "\(totals.sessions) sessions, \(cost(totals.costUSD)), active \(duration(totals.activeMS)), "
+                + "cache hit \(cacheHit(totals.tokens))."
+        ]
+        let top = overview.hints.prefix(3)
+        if top.isEmpty {
+            lines.append("The report has no hints for this period.")
+        } else {
+            lines.append("What would save the most:")
+            for (index, hint) in top.enumerated() {
+                lines.append("\(index + 1). \(hint.finding)")
+                if let action = hint.action, !action.isEmpty { lines.append("   \(action)") }
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
     static func subagentsLine(_ subagents: AgentSubagents) -> String {
         guard subagents.count >= 1 else { return "Subagents: none" }
         return "Subagents: \(String(format: "%.1f", subagents.avgParallel)) at once on average · peak \(subagents.peak)"

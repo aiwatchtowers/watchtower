@@ -74,6 +74,15 @@ final class AgentReportDecodingTests: XCTestCase {
         let skills = try XCTUnwrap(ov.skills)
         XCTAssertNotNil(skills.listed)
         XCTAssertNotNil(skills.rows)
+        let trouble = try XCTUnwrap(ov.trouble)
+        XCTAssertNotNil(trouble.factsSessions)
+        XCTAssertEqual(trouble.classes, [])
+        XCTAssertEqual(trouble.denials, [])
+        XCTAssertEqual(trouble.interruptSessions, [])
+        XCTAssertNotNil(trouble.interrupts)
+        XCTAssertNotNil(trouble.rejections)
+        XCTAssertNotNil(trouble.unfinishedSubagents)
+        XCTAssertNotNil(trouble.rateLimited)
     }
 
     func testContextSkillsAndTroubleFieldsDecode() throws {
