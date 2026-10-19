@@ -120,3 +120,5 @@ Module → file mapping is in [docs/inventory/README.md](docs/inventory/README.m
 If a proposed change would weaken or break a guard test, **stop and ask the owner** before proceeding. Do not "improve" a guard test by relaxing its assertions, renaming it out of the `Test<Module>NN_` convention, or splitting it into multiple weaker tests.
 
 House conventions for Desktop code (Swift lifecycle/state patterns, Go↔Swift dual-path contracts, error handling, test expectations) are in the "Swift / Desktop conventions" section of [docs/review/review-rules.md](docs/review/review-rules.md) — read it before writing or reviewing anything under `WatchtowerDesktop/`. Rules there are promoted from recurring `docs/review/review-lessons.md` findings; the lessons file itself is the judge's calibration log, not required reading for feature work.
+
+New Desktop screens are built from the design kit in `WatchtowerDesktop/Sources/Views/DesignSystem/`; read [docs/design/desktop-style-guide.md](docs/design/desktop-style-guide.md) first (lint-enforced rules, and `make desktop-shots` to look at your screen before review).

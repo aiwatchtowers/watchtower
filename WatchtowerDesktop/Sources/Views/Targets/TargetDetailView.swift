@@ -1519,7 +1519,7 @@ struct TargetDetailView: View {
                 Task { await viewModel.snooze(target, until: until) }
                 showSnoozePopover = false
             }
-            .buttonStyle(.popoverPrimary)
+            .buttonStyle(.kitPrimary)
         }
         .padding()
         .frame(width: 220)

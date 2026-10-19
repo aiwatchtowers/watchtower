@@ -137,9 +137,9 @@ struct SessionSwitcherRow: View {
                     if let place = row.place { SessionPlaceLine(label: place) }
                 }
                 if let badge = row.badge {
-                    WorkbenchCapsuleBadge(text: badge)
+                    CountBadge(text: badge)
                 }
-                if let tag = row.agentTag { AgentTag(text: tag) }
+                if let tag = row.agentTag { OutlineTag(text: tag) }
                 Spacer(minLength: 4)
                 if let caption = row.caption {
                     SessionStateLabel(state: row.state, caption: caption).fixedSize()
