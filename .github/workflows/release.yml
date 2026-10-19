@@ -13,9 +13,9 @@ jobs:
     name: Go Release Gate
     runs-on: ubuntu-latest
     # A hang must fail the gate, not run to GitHub's 6 h default. The step
-    # budgets (code index 20 + coverage 25 + race 40 = 85) plus ~10 for setup
-    # and build, so the job cap never cuts a step short of its own timeout.
-    timeout-minutes: 95
+    # budgets (code index 20 + coverage 25 = 45) plus ~10 for setup and
+    # build, so the job cap never cuts a step short of its own timeout.
+    timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
 
@@ -41,12 +41,27 @@ jobs:
         timeout-minutes: 25
         run: make test-cover
 
+  # Mirrors ci.yml's go-test-race job — the same two shards of `make
+  # test-race SHARD=K/2` (cmd out, internal/db's migration tests without
+  # -race), in parallel: the unsharded pass outgrew one 40-minute step.
+  go-release-race:
+    name: Go Release Race (${{ matrix.shard }}/2)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.9"
+
       - name: Test (race, library packages)
-        # Same pass as ci.yml's main-branch one (`make test-race`: cmd out,
-        # internal/db's migration tests without -race). Its two go test runs
-        # go side by side, each -timeout 25m per package, under this budget.
-        timeout-minutes: 40
-        run: make test-race
+        timeout-minutes: 30
+        run: make test-race SHARD=${{ matrix.shard }}/2
 
   # Mirrors ci.yml's swift-test job — keep the two in step (runner, Xcode,
   # Go, cache, steps, timeouts). The release gate drifted once: it stayed on

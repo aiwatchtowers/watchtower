@@ -35,7 +35,7 @@ LINEAR_ID   ?= $(WATCHTOWER_LINEAR_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID)"
 
-.PHONY: golangci-version-check build test test-verbose test-cover test-race test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check
+.PHONY: golangci-version-check build test test-verbose test-cover test-race race-packages test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -85,12 +85,44 @@ test-cover:
 # an internal/db test of concurrency keeps those words out of its name.
 # internal/db runs alongside the rest (as one invocation did before) and both
 # results count; its log follows the rest's.
+#
+# SHARD=K/N runs only the K-th of N disjoint slices (CI's go-test-race matrix:
+# 1/2 and 2/2); without SHARD every package runs, as before. `make
+# race-packages [SHARD=K/N]` prints a slice's list. The split is deterministic:
+# the RACE_HEAVY packages first, in their listed order, then the rest in
+# `go list` (sorted) order, dealt round-robin — package i goes to shard
+# i mod N + 1. RACE_HEAVY is ordered so that dealing it alternately evens out
+# the race-pass seconds per shard (CI, 2026-10-19: automations 880, kb 821,
+# sessionreport 562, tools ~580, memory 360, digest 374, db ~300, daemon 296,
+# agentlogdb 209, extsync 202, jira 190, repl 187 — ~4.3k CPU-s per shard).
+# To rebalance, read the per-package seconds off a race run's log and reorder
+# (or extend) the list so each shard's heavy sum stays level; a package new
+# to the module needs nothing — it lands in a shard by itself.
 RACE_SKIP := Migration|DownUp|SchemaGolden|DesktopTestSchema
+RACE_HEAVY := automations kb sessionreport tools memory digest db daemon agentlogdb extsync jira repl
+RACE_PACKAGES = go list ./... | grep -v -e '^watchtower/cmd$$' | awk -v shard='$(SHARD)' -v heavy='$(RACE_HEAVY)' ' \
+	{ pkgs[NR] = $$0; have[$$0] = 1 } \
+	END { \
+		if (shard == "") { for (i = 1; i <= NR; i++) print pkgs[i]; exit } \
+		if (split(shard, kn, "/") != 2 || kn[1] !~ /^[0-9]+$$/ || kn[2] !~ /^[0-9]+$$/ || kn[1] < 1 || kn[1] > kn[2]) { \
+			print "SHARD must be K/N with 1 <= K <= N, got " shard > "/dev/stderr"; exit 1 } \
+		n = 0; nh = split(heavy, hs, " "); \
+		for (j = 1; j <= nh; j++) { p = "watchtower/internal/" hs[j]; if (p in have && !(p in seen)) { seen[p] = 1; order[n++] = p } } \
+		for (i = 1; i <= NR; i++) if (!(pkgs[i] in seen)) order[n++] = pkgs[i]; \
+		for (i = 0; i < n; i++) if (i % kn[2] == kn[1] - 1) print order[i] \
+	}'
+
+race-packages:
+	@$(RACE_PACKAGES)
+
 test-race:
-	@db_log="$$(mktemp)"; \
-	go test ./internal/db -race -count=1 -timeout 25m -skip '$(RACE_SKIP)' > "$$db_log" 2>&1 & db_pid=$$!; \
-	rc=0; go test $$(go list ./... | grep -v -e '^watchtower/cmd$$' -e '^watchtower/internal/db$$') -race -count=1 -timeout 25m || rc=$$?; \
-	db_rc=0; wait $$db_pid || db_rc=$$?; \
+	@pkgs="$$($(RACE_PACKAGES))" || exit 1; \
+	[ -n "$$pkgs" ] || { echo "test-race: no packages to test (did go list fail?)" >&2; exit 1; }; \
+	db=0; rest=""; for p in $$pkgs; do if [ "$$p" = watchtower/internal/db ]; then db=1; else rest="$$rest $$p"; fi; done; \
+	db_log="$$(mktemp)"; \
+	if [ $$db -eq 1 ]; then go test ./internal/db -race -count=1 -timeout 25m -skip '$(RACE_SKIP)' > "$$db_log" 2>&1 & db_pid=$$!; fi; \
+	rc=0; if [ -n "$$rest" ]; then go test $$rest -race -count=1 -timeout 25m || rc=$$?; fi; \
+	db_rc=0; if [ $$db -eq 1 ]; then wait $$db_pid || db_rc=$$?; fi; \
 	cat "$$db_log"; rm -f "$$db_log"; \
 	[ $$rc -eq 0 ] && [ $$db_rc -eq 0 ]
 

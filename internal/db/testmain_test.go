@@ -3,7 +3,6 @@ package db
 import (
 	"fmt"
 	"os"
-	"sync"
 	"testing"
 )
 
@@ -15,39 +14,17 @@ import (
 // database, and installs openMemoryHook so every Open(":memory:") call in this
 // binary returns a clone deserialized from that snapshot instead.
 //
-// It also installs seedNewFileHook: a file-backed Open of a path that does
-// not exist yet starts from the same snapshot written to that file, so the
+// It calls InitTestFileTemplate, so a file-backed Open of a path that does
+// not exist yet starts from the same snapshot written to that file, and the
 // tests about locking, file modes, DSNs and down/up cycles do not each pay a
 // full migration (~15 s under -race on CI). A test about migrating a fresh
 // file opens it with openMigratingFresh instead.
 func TestMain(m *testing.M) {
-	if err := InitTestTemplate(); err != nil {
+	if err := InitTestFileTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
 	}
-	seedNewFileHook = seedFromTemplate
 	os.Exit(m.Run())
-}
-
-// freshMigrationPaths holds the paths openMigratingFresh opens; Open leaves
-// them unseeded so goose migrates them from scratch.
-var freshMigrationPaths sync.Map
-
-// seededPaths holds every path seedFromTemplate wrote the template to, so
-// openMigratingFresh can prove its file was not one of them.
-var seededPaths sync.Map
-
-// seedFromTemplate writes the migrated template to the new file dbPath
-// (writeTemplateFile) unless openMigratingFresh opens it, and records it.
-func seedFromTemplate(dbPath string) error {
-	if _, fresh := freshMigrationPaths.Load(dbPath); fresh {
-		return nil
-	}
-	written, err := writeTemplateFile(dbPath)
-	if written {
-		seededPaths.Store(dbPath, true)
-	}
-	return err
 }
 
 // openMigratingFresh opens the new file dbPath through Open's real migration
@@ -55,9 +32,9 @@ func seedFromTemplate(dbPath string) error {
 // empty file.
 func openMigratingFresh(t *testing.T, dbPath string) (*DB, error) {
 	t.Helper()
-	freshMigrationPaths.Store(dbPath, true)
+	LeaveTestFileUnseeded(dbPath)
 	d, err := Open(dbPath)
-	if _, seeded := seededPaths.Load(dbPath); seeded {
+	if TestFileSeeded(dbPath) {
 		if d != nil {
 			_ = d.Close()
 		}
