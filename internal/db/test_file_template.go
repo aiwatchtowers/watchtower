@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 // InitTestFileTemplate is InitTestTemplate plus seedNewFileHook: from then
@@ -28,11 +29,25 @@ func InitTestFileTemplate() error {
 	// records what it seeded; replacing it would break those tests.
 	if seedNewFileHook == nil {
 		seedNewFileHook = func(dbPath string) error {
+			if _, fresh := unseededTestPaths.Load(dbPath); fresh {
+				return nil
+			}
 			_, err := writeTemplateFile(dbPath)
 			return err
 		}
 	}
 	return nil
+}
+
+// unseededTestPaths holds the paths LeaveTestFileUnseeded named; the hook
+// InitTestFileTemplate installs leaves them to a real migration.
+var unseededTestPaths sync.Map
+
+// LeaveTestFileUnseeded makes a later Open of the new file dbPath run goose
+// from scratch despite InitTestFileTemplate, for the one test in a package
+// that is about migrating an empty watchtower.db.
+func LeaveTestFileUnseeded(dbPath string) {
+	unseededTestPaths.Store(dbPath, true)
 }
 
 // writeTemplateFile writes the migrated template to the new file dbPath, at

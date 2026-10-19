@@ -46,32 +46,31 @@ func (f *moveFixture) move(t *testing.T) error {
 
 // seed writes files and sessions (one transcript each, none on disk) into
 // watchtower.db's agent_log_* tables, with perSession events per session.
+// Each session's events go in as one INSERT … SELECT over a counter, so the
+// 12,000-event fixture costs one statement instead of 12,000 under -race.
 func (f *moveFixture) seed(t *testing.T, sessions, perSession int) {
 	t.Helper()
 	tx, err := f.main.Begin()
 	require.NoError(t, err)
 	defer func() { _ = tx.Rollback() }()
-	stmt, err := tx.Prepare(`INSERT INTO agent_log_events (session_uuid, key, kind, ts, name, outcome, input_tokens, output_tokens, cost_usd, src_path, src_offset, spawned_agent_id, background)
-		VALUES (?, ?, ?, '2026-10-01T10:30:00Z', ?, ?, ?, 5, 0.01, ?, ?, 'a1', ?)`)
-	require.NoError(t, err)
-	defer stmt.Close()
 	for s := range sessions {
 		path := fmt.Sprintf("/gone/s%d.jsonl", s)
+		session := fmt.Sprintf("s%d", s)
 		_, err := tx.Exec(`INSERT INTO agent_log_files (path, agent, size, mtime, read_offset, parser_version, missing_at, scanned_at)
 			VALUES (?, 'claude', 100, '2026-10-01T10:00:00Z', 100, 3, '2026-10-02T10:00:00Z', '2026-10-01T10:00:00Z')`, path)
 		require.NoError(t, err)
 		_, err = tx.Exec(`INSERT INTO agent_log_sessions (session_uuid, agent, folder_path, home_cwd, source_path, model, started_at, ended_at, reported_cost_usd)
 			VALUES (?, 'claude', '/x/proj', '/x/proj', ?, 'claude-opus-5-5', '2026-10-01T10:00:00Z', '2026-10-01T11:00:00Z', 1.5)`,
-			fmt.Sprintf("s%d", s), path)
+			session, path)
 		require.NoError(t, err)
-		for e := range perSession {
-			kind, outcome := "api_call", ""
-			if e%3 == 1 {
-				kind, outcome = "tool", "error"
-			}
-			_, err = stmt.Exec(fmt.Sprintf("s%d", s), fmt.Sprintf("s%d:%d", s, e), kind, "Bash", outcome, e, path, e*10, e%2)
-			require.NoError(t, err)
-		}
+		// Event e: every third one (e%3 == 1) a failed Bash tool, the rest
+		// api calls; input_tokens e, src_offset e*10, background e%2.
+		_, err = tx.Exec(`WITH RECURSIVE n(e) AS (SELECT 0 WHERE ?2 > 0 UNION ALL SELECT e + 1 FROM n WHERE e + 1 < ?2)
+			INSERT INTO agent_log_events (session_uuid, key, kind, ts, name, outcome, input_tokens, output_tokens, cost_usd, src_path, src_offset, spawned_agent_id, background)
+			SELECT ?1, ?1 || ':' || e, CASE e % 3 WHEN 1 THEN 'tool' ELSE 'api_call' END, '2026-10-01T10:30:00Z', 'Bash',
+				CASE e % 3 WHEN 1 THEN 'error' ELSE '' END, e, 5, 0.01, ?3, e * 10, 'a1', e % 2
+			FROM n ORDER BY e`, session, perSession, path)
+		require.NoError(t, err)
 	}
 	require.NoError(t, tx.Commit())
 }

@@ -96,7 +96,11 @@ func TestOpen_DoesNotTouchGlobalGoose(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = al.Close() })
 
-	second, err := db.Open(filepath.Join(dir, "second", "watchtower.db"))
+	// first is seeded from the template TestMain migrated on the global goose
+	// state; second runs that migration for real after agentlog.db's.
+	secondPath := filepath.Join(dir, "second", "watchtower.db")
+	db.LeaveTestFileUnseeded(secondPath)
+	second, err := db.Open(secondPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = second.Close() })
 
