@@ -15,7 +15,7 @@ import (
 
 // ParserVersion is stamped on agent_log_files; bump it when parsing changes
 // so present files are reparsed from 0 (idempotent keys, AGENTLOG-03).
-const ParserVersion = 3
+const ParserVersion = 4
 
 const maxLineBytes = 8 << 20
 
@@ -97,6 +97,12 @@ type ParseOptions struct {
 	// command whose name is not already known, so an incremental read does
 	// not reread the file's prefix every scan.
 	PriorSkills func() ([]string, error)
+	// LaneBaseline, when set, is asked once per lane (session uuid) of a read
+	// that does not start at offset 0, on the lane's first baseline record:
+	// called says the lane's first API call is already stored (its baseline
+	// is complete); otherwise parts are the bytes stored so far, which this
+	// read continues until the lane's first call.
+	LaneBaseline func(sid string) (called bool, parts map[string]int64, err error)
 	// MaxRows stops the parse after the line that brings the produced events
 	// plus tool results to MaxRows (0 = read to the end); More then says the
 	// input may hold further complete lines.
@@ -107,8 +113,9 @@ type ParseResult struct {
 	Sessions    map[string]*agentlogdb.AgentLogSession
 	Events      []agentlogdb.AgentLogEvent
 	ToolResults []agentlogdb.AgentToolResult
-	// ContextParts are the baseline parts of each lane's first API call (a
-	// read from offset 0 only); SkillListing is every listed skill.
+	// ContextParts are the baseline parts of each lane's first API call, as
+	// far as they are known (a lane still before its first call stores what
+	// it has; the next read continues it); SkillListing is every listed skill.
 	ContextParts []agentlogdb.AgentContextPart
 	SkillListing []agentlogdb.AgentSkillListed
 	Unknown      map[string]int
@@ -156,7 +163,7 @@ func ParseClaude(r io.Reader, startOffset int64, o ParseOptions) (*ParseResult, 
 			p.handle(raw, lineOff)
 		}
 		if p.priorErr != nil {
-			return nil, fmt.Errorf("reading skill listings of %s: %w", o.Path, p.priorErr)
+			return nil, fmt.Errorf("reading the stored state of %s: %w", o.Path, p.priorErr)
 		}
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -217,7 +224,7 @@ type claudeParser struct {
 	laneOrder []string
 	fromStart bool // read from offset 0: the lanes' starts are in this read
 
-	priorErr error // PriorSkills failed: the parse fails, the file is retried next scan
+	priorErr error // PriorSkills or LaneBaseline failed: the parse fails, the file is retried next scan
 }
 
 // knowsSkill reports whether name is a listed skill, loading the listings
@@ -473,52 +480,95 @@ func attachmentPart(typ string) string {
 }
 
 // laneParts are the bytes per part a lane's context held before its first
-// API call; closed once that call is seen.
+// API call; closed once that call is seen. stored marks a lane whose first
+// call an earlier read already stored: nothing of it is emitted.
 type laneParts struct {
 	order  []string
 	bytes  map[string]int64
 	closed bool
+	stored bool
 }
 
-func (p *claudeParser) lane(sid string) *laneParts {
-	l := p.lanes[sid]
-	if l == nil {
-		l = &laneParts{bytes: map[string]int64{}}
-		p.lanes[sid] = l
-		p.laneOrder = append(p.laneOrder, sid)
+func (p *claudeParser) newLane(sid string, l *laneParts) *laneParts {
+	if l.bytes == nil {
+		l.bytes = map[string]int64{}
 	}
+	p.lanes[sid] = l
+	p.laneOrder = append(p.laneOrder, sid)
 	return l
 }
 
 // addPart adds n bytes to part of the session's lane in this file, until the
-// lane's first API call. A read not from offset 0 tracks nothing: the read
-// that saw the lane's start stored its parts.
+// lane's first API call. In a read that does not start at offset 0 the lane
+// continues from the stored bytes (LaneBaseline) unless its first call is
+// already stored; without LaneBaseline such a read tracks nothing.
 func (p *claudeParser) addPart(sid, part string, n int64) {
-	if !p.fromStart || sid == "" {
+	if sid == "" {
 		return
 	}
-	if l := p.lane(sid); !l.closed {
-		if _, ok := l.bytes[part]; !ok {
-			l.order = append(l.order, part)
+	l := p.lanes[sid]
+	if l == nil {
+		l = p.newLane(sid, p.openLane(sid))
+	}
+	if l.closed {
+		return
+	}
+	if _, ok := l.bytes[part]; !ok {
+		l.order = append(l.order, part)
+	}
+	l.bytes[part] += n
+}
+
+// openLane is the state of a lane first seen in this read: empty from
+// offset 0, else what LaneBaseline says is stored.
+func (p *claudeParser) openLane(sid string) *laneParts {
+	if p.fromStart {
+		return &laneParts{}
+	}
+	if p.o.LaneBaseline == nil {
+		return &laneParts{closed: true, stored: true}
+	}
+	called, parts, err := p.o.LaneBaseline(sid)
+	if err != nil {
+		if p.priorErr == nil {
+			p.priorErr = err
 		}
-		l.bytes[part] += n
+		return &laneParts{closed: true, stored: true}
 	}
+	if called {
+		return &laneParts{closed: true, stored: true}
+	}
+	l := &laneParts{bytes: parts}
+	for part := range parts {
+		l.order = append(l.order, part)
+	}
+	sort.Strings(l.order)
+	return l
 }
 
+// closeLane ends the lane's baseline at its first API call in this read. A
+// lane with no baseline record before that call in this read needs no
+// lookup: whatever is stored for it is already complete.
 func (p *claudeParser) closeLane(sid string) {
-	if p.fromStart && sid != "" {
-		p.lane(sid).closed = true
+	if sid == "" {
+		return
 	}
+	if l := p.lanes[sid]; l != nil {
+		l.closed = true
+		return
+	}
+	p.newLane(sid, &laneParts{closed: true, stored: !p.fromStart})
 }
 
-// emitContextParts moves the parts of every closed lane into the result; a
-// lane whose first API call is not in this read stores nothing (its baseline
-// is not complete yet). The lane is this file's agent id ("" for the main
-// transcript).
+// emitContextParts moves the parts of every lane into the result: the whole
+// baseline of a lane whose first API call is in this read, the bytes so far
+// of one still before it (the stored row grows by MAX on the next read). A
+// lane whose first call an earlier read stored emits nothing. The lane is
+// this file's agent id ("" for the main transcript).
 func (p *claudeParser) emitContextParts() {
 	for _, sid := range p.laneOrder {
 		l := p.lanes[sid]
-		if !l.closed {
+		if l.stored {
 			continue
 		}
 		for _, part := range l.order {

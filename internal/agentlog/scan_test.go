@@ -697,6 +697,45 @@ func TestScan_StoresContextPartsAndSkillListing(t *testing.T) {
 	assert.Equal(t, int64(5), perSkill)
 }
 
+// A scan that ends before a lane's first API call stores the baseline parts
+// so far; the next, incremental read continues them up to that call and adds
+// nothing after it.
+func TestScan_ContextPartsAcrossReads(t *testing.T) {
+	f := newFixture(t)
+	attach := func(typ, content string) string {
+		return line(t, map[string]any{"type": "attachment", "sessionId": "s1", "cwd": f.folder,
+			"attachment": map[string]any{"type": typ}, "rendered": []map[string]any{{"content": content}}})
+	}
+	prompt := line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "p1", "cwd": f.folder,
+		"timestamp": "2026-10-01T09:00:00Z", "message": map[string]any{"role": "user", "content": "hello"}})
+	f.write(f.folder, "s1.jsonl", prompt+attach("instructions", strings.Repeat("i", 40))+attach("hook_success", "hh"))
+	require.Equal(t, 1, f.scan().FilesScanned)
+	parts := func() map[string]int64 {
+		got := map[string]int64{}
+		rows, err := f.al.Query(`SELECT part, bytes FROM agent_log_context_parts WHERE session_uuid = 's1' AND agent_id = ''`)
+		require.NoError(t, err)
+		defer rows.Close()
+		for rows.Next() {
+			var part string
+			var n int64
+			require.NoError(t, rows.Scan(&part, &n))
+			got[part] = n
+		}
+		require.NoError(t, rows.Err())
+		return got
+	}
+	assert.Equal(t, map[string]int64{"instructions": 40, "hooks": 2}, parts(), "the first turn so far")
+
+	f.write(f.folder, "s1.jsonl", attach("instructions", strings.Repeat("j", 10))+attach("hook_success", "h")+
+		call(t, "s1", f.folder, "u1", "m1", "r1", 5)+attach("instructions", strings.Repeat("x", 100)))
+	require.Equal(t, 1, f.scan().FilesScanned)
+	assert.Equal(t, map[string]int64{"instructions": 50, "hooks": 3}, parts(), "completed up to the first call")
+
+	f.write(f.folder, "s1.jsonl", attach("hook_success", "hhhhhhhh")+call(t, "s1", f.folder, "u2", "m2", "r2", 5))
+	require.Equal(t, 1, f.scan().FilesScanned)
+	assert.Equal(t, map[string]int64{"instructions": 50, "hooks": 3}, parts(), "nothing after the first call")
+}
+
 func TestScan_StoresSubagentMeta(t *testing.T) {
 	f := newFixture(t)
 	f.write(f.folder, "s1.jsonl", call(t, "s1", f.folder, "u1", "m1", "r1", 5))

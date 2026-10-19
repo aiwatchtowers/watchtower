@@ -2,6 +2,7 @@ package agentlog
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -292,13 +293,54 @@ func TestParseClaude_ContextPartsBeforeFirstCall(t *testing.T) {
 		ParseOptions{Path: "/h/.claude/projects/-w/s1/subagents/agent-a1.jsonl", Subagent: true, AgentID: "a1"})
 	assert.Equal(t, map[string]int64{"s1/a1/instructions": 4}, partsOf(sub))
 
-	// A lane whose first call is not in the read stores nothing yet.
-	assert.Empty(t, parse(t, before, ParseOptions{}).ContextParts)
+	// A lane whose first call is not in the read stores what it has so far.
+	assert.Equal(t, map[string]int64{"s1//instructions": 15, "s1//skills": 6, "s1//agents": 3, "s1//mcp": 2,
+		"s1//deferred_tools": 5, "s1//hooks": 3, "s1//other": 3,
+		"s1//system": jsonLen(t, system), "s1//tools": jsonLen(t, tools)}, partsOf(parse(t, before, ParseOptions{})))
 
-	// An incremental read never emits parts: the read from 0 stored them.
+	// An incremental read without LaneBaseline tracks nothing.
 	inc, err := ParseClaude(strings.NewReader(before), 100, ParseOptions{Path: "/h/.claude/projects/-w/s1.jsonl", Folder: "/w"})
 	require.NoError(t, err)
 	assert.Empty(t, inc.ContextParts)
+}
+
+// An incremental read continues a lane's baseline from the stored bytes until
+// the lane's first API call, and adds nothing to a lane whose first call an
+// earlier read stored.
+func TestParseClaude_ContextPartsContinueIncremental(t *testing.T) {
+	asked := map[string]int{}
+	o := ParseOptions{Path: "/h/.claude/projects/-w/s1.jsonl", Folder: "/w",
+		LaneBaseline: func(sid string) (bool, map[string]int64, error) {
+			asked[sid]++
+			if sid == "done" {
+				return true, map[string]int64{}, nil
+			}
+			return false, map[string]int64{"instructions": 10, "skills": 4}, nil
+		}}
+	s := attachLine(t, "s1", "instructions", nil, "12345") +
+		shapeLine(t, "s1", []map[string]any{{"type": "text", "text": "sys"}}, nil) +
+		attachLine(t, "done", "instructions", nil, "zzzz") +
+		line(t, assistant("s1", "u1", "m1", "r1", 5)) +
+		attachLine(t, "s1", "instructions", nil, "AFTER-THE-FIRST-CALL") +
+		attachLine(t, "s1", "hook_success", nil, "hh") +
+		line(t, assistant("s1", "u2", "m2", "r2", 5))
+	r, err := ParseClaude(strings.NewReader(s), 500, o)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int64{"s1//instructions": 15, "s1//skills": 4,
+		"s1//system": jsonLen(t, []map[string]any{{"type": "text", "text": "sys"}}), "s1//tools": int64(len("null"))}, partsOf(r))
+	assert.Equal(t, map[string]int{"s1": 1, "done": 1}, asked, "one lookup per lane")
+
+	// A lane whose first record in the read is its API call needs no lookup.
+	asked = map[string]int{}
+	r, err = ParseClaude(strings.NewReader(line(t, assistant("s2", "u3", "m3", "r3", 5))+attachLine(t, "s2", "instructions", nil, "x")), 500, o)
+	require.NoError(t, err)
+	assert.Empty(t, r.ContextParts)
+	assert.Empty(t, asked)
+
+	// A failed lookup fails the parse: the file is retried next scan.
+	o.LaneBaseline = func(string) (bool, map[string]int64, error) { return false, nil, errors.New("db busy") }
+	_, err = ParseClaude(strings.NewReader(attachLine(t, "s1", "instructions", nil, "x")), 500, o)
+	require.ErrorContains(t, err, "db busy")
 }
 
 func TestParseClaude_SkillListingRows(t *testing.T) {

@@ -389,6 +389,35 @@ func (d *DB) AgentLogSessionFolder(sessionUUID string) (string, bool, error) {
 	return folder, err == nil, err
 }
 
+// AgentLaneBaseline reports whether a lane (a session's agent id, "" for the
+// main agent) already has a stored api_call, and, when it has none, the
+// baseline part bytes stored for it so far, so a later read can continue them.
+func (d *DB) AgentLaneBaseline(sessionUUID, agentID string) (bool, map[string]int64, error) {
+	var called bool
+	if err := d.QueryRow(`SELECT EXISTS (SELECT 1 FROM agent_log_events
+		WHERE session_uuid = ? AND agent_id = ? AND kind = 'api_call')`, sessionUUID, agentID).Scan(&called); err != nil {
+		return false, nil, fmt.Errorf("lane baseline: %w", err)
+	}
+	parts := map[string]int64{}
+	if called {
+		return true, parts, nil
+	}
+	err := d.agentLogRows(`SELECT part, bytes FROM agent_log_context_parts WHERE session_uuid = ? AND agent_id = ?`,
+		[]any{sessionUUID, agentID}, func(r *sql.Rows) error {
+			var part string
+			var n int64
+			if err := r.Scan(&part, &n); err != nil {
+				return err
+			}
+			parts[part] = n
+			return nil
+		})
+	if err != nil {
+		return false, nil, fmt.Errorf("lane baseline parts: %w", err)
+	}
+	return false, parts, nil
+}
+
 // RepriceAgentLogEvents recomputes cost for api_call rows priced with an
 // older table version, from their stored tokens.
 func (d *DB) RepriceAgentLogEvents(version int, price func(model, speed string, in, out, cacheRead, cw5m, cw1h int64) (float64, bool)) (int, error) {

@@ -238,6 +238,12 @@ func TestErrorClass_V3Classes(t *testing.T) {
 		"Blocked: sleep 100 is not allowed; use run_in_background":              ClassSleepBlocked,
 		"Too many concurrent agents: the limit is 10":                           ClassAgentLimit,
 		"boom": ClassOther,
+		// A Bash failure is exit_code whatever its output says.
+		"Exit code 1\n--- FAIL: TestRead (0.00s)\n    file too large":                 ClassExitCode,
+		"Exit code 2\nBlocked: sleep 100 is not allowed; use run_in_background":       ClassExitCode,
+		"Exit code 1\nToo many concurrent agents: the limit is 10":                    ClassExitCode,
+		"Exit code 1\nAgent type 'nope' not found. Available agents: a, b":            ClassExitCode,
+		"Exit code 127\nInputValidationError: no such tool; this session is isolated": ClassExitCode,
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, errorClass(in), in)

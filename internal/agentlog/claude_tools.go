@@ -184,10 +184,16 @@ func resultSize(raw json.RawMessage) *int64 {
 	return &n
 }
 
-// errorClass classifies a failed tool result's text; the specific classes are
-// checked before the generic exit_code / not_found / timeout ones.
+// errorClass classifies a failed tool result's text. A Bash failure
+// ("Exit code N" followed by the command's output) is exit_code first, so
+// words inside that output never pick a tool-level class; for every other
+// text the specific classes are checked before the generic exit_code /
+// not_found / timeout ones.
 func errorClass(text string) string {
 	t := strings.ToLower(text)
+	if strings.HasPrefix(strings.TrimSpace(t), "exit code") {
+		return ClassExitCode
+	}
 	has := func(subs ...string) bool {
 		for _, s := range subs {
 			if !strings.Contains(t, s) {

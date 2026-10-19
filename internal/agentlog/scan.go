@@ -276,7 +276,8 @@ func scanFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bool, r
 		return err
 	}
 	defer fh.Close()
-	o := ParseOptions{Path: tf.Path, Folder: wb.FolderPath, Subagent: tf.Subagent, AgentID: tf.AgentID, MaxRows: batchRows}
+	o := ParseOptions{Path: tf.Path, Folder: wb.FolderPath, Subagent: tf.Subagent, AgentID: tf.AgentID, MaxRows: batchRows,
+		LaneBaseline: func(sid string) (bool, map[string]int64, error) { return st.al.AgentLaneBaseline(sid, tf.AgentID) }}
 	if prefix := start; prefix > 0 {
 		o.PriorSkills = func() ([]string, error) { return listedSkills(io.NewSectionReader(fh, 0, prefix), prefix) }
 	}
