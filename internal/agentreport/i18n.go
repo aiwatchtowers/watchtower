@@ -31,8 +31,11 @@ var msgs = map[string][2]string{
 	"h1.where.target":  {"target %s", "задаче %s"},
 	"h1.label":         {"%s, %s", "%s, %s"},
 	"h1.and":           {" and ", " и "},
-	"h1.finding": {"%s ran %d+ times in %s, %s in all; the most: %s in %s, %s; the runs after the first took %s",
-		"%s запускался %d+ раз в %s, всего %s; больше всего — %s в %s, %s; повторные запуски заняли %s"},
+	"h1.more":          {" and %d more", " и ещё %d"},
+	"h1.finding": {"Repeated runs of %s: %s in %s, %s in all; the most: %s, %s in %s, %s; the runs after the first took %s",
+		"Повторные запуски %s: %s в %s, всего %s; больше всего — %s, %s в %s, %s; запуски после первого заняли %s"},
+	"h1.finding.one": {"%s ran %s in %s, %s in all; the runs after the first took %s",
+		"%s запускался %s в %s, всего %s; повторные запуски заняли %s"},
 	"h1.action": {"Run only the tests of the package you changed; run the full suite once before the PR.",
 		"Запускай тесты только изменённого пакета, полный прогон — один раз перед PR."},
 
@@ -65,6 +68,7 @@ var msgs = map[string][2]string{
 	"h6.and":   {" and ", " и "},
 	"h6.finding": {"%s had expensive context, %s in all; the most: session %s cost %s with %s",
 		"%s с дорогим контекстом, всего %s; больше всего — сессия %s стоила %s при %s"},
+	"h6.finding.one": {"Session %s cost %s with %s; its context was expensive", "Сессия %s стоила %s при %s — контекст был дорогим"},
 	"h6.action": {"Start a new session per task, or /clear between tasks; long sessions re-read their whole context.",
 		"Начинай новую сессию на каждую задачу или делай /clear между задачами: длинная сессия перечитывает весь контекст."},
 

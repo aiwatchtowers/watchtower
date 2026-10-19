@@ -164,7 +164,7 @@ func short(sid string) string { return sid[:min(len(sid), 8)] }
 // H1: one build & test verb run RepeatRuns+ times inside one leaf target's
 // in_progress/in_review window (from any session naming the target; the
 // narrowest window holding a run wins) or, outside every window, in one session.
-// One hint per verb sums the scopes that qualify.
+// One hint sums every verb and scope that qualifies.
 func repeatedHeavy(in HintInput, sessions []string) []Hint {
 	text, wins := leafWindows(in.Targets, in.Now.UTC())
 	runs := map[runKey][]timedEvent{}
@@ -179,17 +179,16 @@ func repeatedHeavy(in HintInput, sessions []string) []Hint {
 			runs[k] = append(runs[k], e)
 		}
 	}
-	byVerb := map[string][]scopeRuns{}
+	var groups []scopeRuns
 	for k, rs := range runs {
-		if sr, ok := repeatedScope(k.scope, rs); ok {
-			byVerb[k.verb] = append(byVerb[k.verb], sr)
+		if sr, ok := repeatedScope(k, rs); ok {
+			groups = append(groups, sr)
 		}
 	}
-	var out []Hint
-	for _, v := range slices.Sorted(maps.Keys(byVerb)) {
-		out = append(out, repeatedHint(in.Lang, v, byVerb[v], text))
+	if len(groups) == 0 {
+		return nil
 	}
-	return out
+	return []Hint{repeatedHint(in.Lang, groups, text)}
 }
 
 // runKey groups H1's runs: a "#<id>" target or a session id, and the verb.
@@ -243,17 +242,20 @@ func runScope(at time.Time, sid string, ids []int64, wins map[int64][]window) st
 	return scope
 }
 
+// h1Verbs is how many verbs H1's finding names; the rest are "and N more".
+const h1Verbs = 3
+
 // scopeRuns is one H1 scope's runs of a verb: their count, total time and
 // the time of the runs after the first.
 type scopeRuns struct {
-	scope      string
+	runKey
 	runs       int
 	total, est int64
 }
 
-// repeatedScope is the scope's runs when they are RepeatRuns+ for more than
-// RepeatMin in all.
-func repeatedScope(scope string, rs []timedEvent) (scopeRuns, bool) {
+// repeatedScope is the scope's runs of the verb when they are RepeatRuns+
+// for more than RepeatMin in all.
+func repeatedScope(k runKey, rs []timedEvent) (scopeRuns, bool) {
 	if len(rs) < RepeatRuns {
 		return scopeRuns{}, false
 	}
@@ -265,25 +267,62 @@ func repeatedScope(scope string, rs []timedEvent) (scopeRuns, bool) {
 	if total <= RepeatMin.Milliseconds() {
 		return scopeRuns{}, false
 	}
-	return scopeRuns{scope: scope, runs: len(rs), total: total, est: total - durMS(rs[0].AgentReportEvent)}, true
+	return scopeRuns{runKey: k, runs: len(rs), total: total, est: total - durMS(rs[0].AgentReportEvent)}, true
 }
 
-// repeatedHint is H1 for one verb over its qualifying scopes: the scopes are
-// its evidence, the most repeated-run time first, and the worst is named.
-func repeatedHint(l Lang, v string, scopes []scopeRuns, text map[int64]string) Hint {
-	slices.SortFunc(scopes, func(a, b scopeRuns) int { return cmp.Or(cmp.Compare(b.est, a.est), cmp.Compare(a.scope, b.scope)) })
-	var runs, nTargets, nSessions int
+// byEst orders the keys of m by their value, the largest first, then by key.
+func byEst(m map[string]int64) []string {
+	return slices.SortedFunc(maps.Keys(m), func(a, b string) int { return cmp.Or(cmp.Compare(m[b], m[a]), cmp.Compare(a, b)) })
+}
+
+// repeatedHint is H1 over every qualifying verb and scope. Its evidence is
+// the h1Verbs verbs the finding names, then the scopes, then the other verbs,
+// each by its repeated-run time; the worst verb and scope is named.
+func repeatedHint(l Lang, groups []scopeRuns, text map[int64]string) Hint {
+	slices.SortFunc(groups, func(a, b scopeRuns) int {
+		return cmp.Or(cmp.Compare(b.est, a.est), cmp.Compare(a.verb, b.verb), cmp.Compare(a.scope, b.scope))
+	})
+	var runs int
 	var total, est int64
-	var evs []Evidence
-	for _, sr := range scopes {
-		runs, total, est = runs+sr.runs, total+sr.total, est+sr.est
-		if id, ok := targetID(sr.scope); ok {
+	verbEst, scopeEst := map[string]int64{}, map[string]int64{}
+	verbRuns, verbTotal := map[string]int{}, map[string]int64{}
+	for _, g := range groups {
+		runs, total, est = runs+g.runs, total+g.total, est+g.est
+		verbEst[g.verb] += g.est
+		verbRuns[g.verb] += g.runs
+		verbTotal[g.verb] += g.total
+		scopeEst[g.scope] += g.est
+	}
+	verbs, scopes := byEst(verbEst), byEst(scopeEst)
+	cmdEv := func(v string) Evidence {
+		return Evidence{Kind: "command", Ref: v, Label: l.f("h1.label", l.count(verbRuns[v], "run"), l.dur(verbTotal[v]))}
+	}
+	h := Hint{ID: "H1", EstimateMS: est, Action: l.f("h1.action")}
+	named := verbs[:min(len(verbs), h1Verbs)]
+	for _, v := range named {
+		h.Evidence = append(h.Evidence, cmdEv(v))
+	}
+	nTargets, nSessions := 0, 0
+	for _, sc := range scopes {
+		if id, ok := targetID(sc); ok {
 			nTargets++
-			evs = append(evs, Evidence{Kind: "target", Ref: sr.scope, Label: text[id]})
+			h.Evidence = append(h.Evidence, Evidence{Kind: "target", Ref: sc, Label: text[id]})
 		} else {
 			nSessions++
-			evs = append(evs, sessionEv(sr.scope, short(sr.scope)))
+			h.Evidence = append(h.Evidence, sessionEv(sc, short(sc)))
 		}
+	}
+	for _, v := range verbs[len(named):] {
+		h.Evidence = append(h.Evidence, cmdEv(v))
+	}
+	w := groups[0]
+	if len(groups) == 1 {
+		h.Finding = l.f("h1.finding.one", w.verb, l.count(w.runs, "time"), h1Where(l, w.scope), l.dur(total), l.dur(est))
+		return h
+	}
+	list := strings.Join(named, ", ")
+	if n := len(verbs) - len(named); n > 0 {
+		list += l.f("h1.more", n)
 	}
 	var where []string
 	if nTargets > 0 {
@@ -292,15 +331,17 @@ func repeatedHint(l Lang, v string, scopes []scopeRuns, text map[int64]string) H
 	if nSessions > 0 {
 		where = append(where, l.count(nSessions, "session.in"))
 	}
-	w := scopes[0]
-	worst := l.f("h1.where.session", short(w.scope))
-	if strings.HasPrefix(w.scope, "#") {
-		worst = l.f("h1.where.target", w.scope)
+	h.Finding = l.f("h1.finding", list, l.count(runs, "run"), strings.Join(where, l.f("h1.and")), l.dur(total),
+		w.verb, l.count(w.runs, "run"), h1Where(l, w.scope), l.dur(w.total), l.dur(est))
+	return h
+}
+
+// h1Where names an H1 scope: "target #7" or "session <short uuid>".
+func h1Where(l Lang, scope string) string {
+	if strings.HasPrefix(scope, "#") {
+		return l.f("h1.where.target", scope)
 	}
-	return Hint{ID: "H1", EstimateMS: est, Action: l.f("h1.action"),
-		Evidence: append([]Evidence{{Kind: "command", Ref: v, Label: l.f("h1.label", l.count(runs, "run"), l.dur(total))}}, evs...),
-		Finding: l.f("h1.finding", v, RepeatRuns, strings.Join(where, l.f("h1.and")), l.dur(total),
-			l.count(w.runs, "time"), worst, l.dur(w.total), l.dur(est))}
+	return l.f("h1.where.session", short(scope))
 }
 
 func isCheap(e agentlogdb.AgentReportEvent) bool {
@@ -533,12 +574,17 @@ func expensiveContext(in HintInput, sessions []string) []Hint {
 	}
 	// The costliest first: the list is cut to evidenceMax.
 	slices.SortStableFunc(all, func(a, b costly) int { return cmp.Compare(b.usd, a.usd) })
-	h := Hint{ID: "H6", Action: l.f("h6.action"), Fix: &Fix{Kind: FixOpenSession, Ref: all[0].sid}}
+	w := all[0]
+	h := Hint{ID: "H6", Action: l.f("h6.action"), Fix: &Fix{Kind: FixOpenSession, Ref: w.sid}}
 	for _, c := range all {
 		h.EstimateUSD += c.usd
 		h.Evidence = append(h.Evidence, sessionEv(c.sid, fmtUSD(c.usd)))
 	}
-	h.Finding = l.f("h6.finding", l.count(len(all), "session"), fmtUSD(h.EstimateUSD), short(all[0].sid), fmtUSD(all[0].usd), all[0].why)
+	if len(all) == 1 {
+		h.Finding = l.f("h6.finding.one", short(w.sid), fmtUSD(w.usd), w.why)
+	} else {
+		h.Finding = l.f("h6.finding", l.count(len(all), "session"), fmtUSD(h.EstimateUSD), short(w.sid), fmtUSD(w.usd), w.why)
+	}
 	return []Hint{h}
 }
 

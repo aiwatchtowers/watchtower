@@ -82,51 +82,64 @@ func TestHintH1_RepeatedHeavyCommand(t *testing.T) {
 	}
 	s.add("s4", 0, tl("Bash", "go build", 4*mn, "ok"))
 	s.add("s4", 5*mn, tl("Bash", "go build", 4*mn, "ok"))
-	in := eventsInput(s)
-	in.Targets = []db.AgentReportTarget{target(7, nil, sc("in_progress", 2*mn), sc("done", 18*mn))}
-
-	// s6 runs swift test outside every window: the verb's second scope, and its worst
+	// s6 runs swift test outside every window: the worst verb and scope
 	for i := range 3 {
 		s.add("s6", time.Duration(i)*5*mn, tl("Bash", "swift test", 4*mn, "ok"))
 	}
+	in := eventsInput(s)
+	in.Targets = []db.AgentReportTarget{target(7, nil, sc("in_progress", 2*mn), sc("done", 18*mn))}
 
 	hs := hintsOf(Hints(in), "H1")
-	require.Len(t, hs, 2, "one hint per verb")
-	byVerb := map[string]Hint{}
-	for _, h := range hs {
-		byVerb[evidence(h, "command")[0]] = h
+	require.Len(t, hs, 1, "one hint for every verb and scope")
+	h := hs[0]
+	assert.Equal(t, ms(4*mn+6*mn+8*mn), h.EstimateMS, "runs after the first per scope, inside the status window only")
+	kinds, refs := []string{}, []string{}
+	for _, e := range h.Evidence {
+		kinds, refs = append(kinds, e.Kind), append(refs, e.Ref)
 	}
-	gt := byVerb["go test"]
-	assert.Equal(t, ms(4*mn), gt.EstimateMS)
-	assert.Equal(t, []string{"s1"}, evidence(gt, "session"))
+	assert.Equal(t, []string{"command", "command", "session", "target", "session"}, kinds)
+	assert.Equal(t, []string{"swift test", "go test", "s6", "#7", "s1"}, refs, "verbs, then scopes, by repeated-run time")
+	assert.Equal(t, "7 runs, 19m 0s", h.Evidence[0].Label)
+	assert.Equal(t, "Repeated runs of swift test, go test: 10 runs in 1 task and 2 sessions, 25m 0s in all; "+
+		"the most: swift test, 3 runs in session s6, 12m 0s; the runs after the first took 18m 0s", h.Finding)
 
-	st := byVerb["swift test"]
-	assert.Equal(t, ms(6*mn+8*mn), st.EstimateMS, "runs after the first per scope, inside the status window only")
-	require.Len(t, st.Evidence, 3)
-	assert.Equal(t, []string{"command", "session", "target"}, []string{st.Evidence[0].Kind, st.Evidence[1].Kind, st.Evidence[2].Kind})
-	assert.Equal(t, []string{"swift test", "s6", "#7"}, []string{st.Evidence[0].Ref, st.Evidence[1].Ref, st.Evidence[2].Ref},
-		"scopes by their repeated-run time")
-	assert.Equal(t, "swift test ran 3+ times in 1 task and 1 session, 19m 0s in all; the most: 3 times in session s6, 12m 0s; "+
-		"the runs after the first took 14m 0s", st.Finding)
+	in.Lang = Russian
+	assert.Equal(t, "Повторные запуски swift test, go test: 10 запусков в 1 задаче и 2 сессиях, всего 25 мин 0 с; "+
+		"больше всего — swift test, 3 запуска в сессии s6, 12 мин 0 с; запуски после первого заняли 18 мин 0 с",
+		hintsOf(Hints(in), "H1")[0].Finding)
 }
 
-// H1 is one hint per verb however many scopes repeat it; the evidence list
-// is cut to evidenceMax.
-func TestHintH1_OneHintPerVerb(t *testing.T) {
+// One verb in one scope gets the short sentence with its real count.
+func TestHintH1_OneScope(t *testing.T) {
 	s := evset{}
-	for n := range 7 {
+	for i := range 4 {
+		s.add("s1", time.Duration(i)*5*mn, tl("Bash", "go test", 2*mn, "ok"))
+	}
+	hs := hintsOf(Hints(eventsInput(s)), "H1")
+	require.Len(t, hs, 1)
+	assert.Equal(t, "go test ran 4 times in session s1, 8m 0s in all; the runs after the first took 6m 0s", hs[0].Finding)
+}
+
+// The finding names h1Verbs verbs and counts the rest; the evidence list is
+// cut to evidenceMax with the named verbs and the worst scopes first.
+func TestHintH1_ManyVerbsAndScopes(t *testing.T) {
+	s := evset{}
+	for n := range 5 {
 		sid := "s" + strconv.Itoa(n)
+		v := "make " + string(rune('a'+n))
 		for i := range 3 {
-			s.add(sid, time.Duration(i)*5*mn, tl("Bash", "go test", time.Duration(2+n)*mn, "ok"))
+			s.add(sid, time.Duration(i)*5*mn, tl("Bash", v, time.Duration(2+n)*mn, "ok"))
 		}
 	}
 	hs := hintsOf(Hints(eventsInput(s)), "H1")
 	require.Len(t, hs, 1)
-	assert.Equal(t, evidenceMax, len(hs[0].Evidence))
-	assert.Equal(t, 3, hs[0].MoreEvidence, "1 command and 7 sessions")
-	assert.Equal(t, []string{"s6", "s5", "s4", "s3"}, evidence(hs[0], "session"))
-	assert.Contains(t, hs[0].Finding, "in 7 sessions,")
-	assert.Contains(t, hs[0].Finding, "the most: 3 times in session s6")
+	h := hs[0]
+	assert.Equal(t, evidenceMax, len(h.Evidence))
+	assert.Equal(t, 3+5+2-evidenceMax, h.MoreEvidence, "3 named verbs, 5 sessions, 2 other verbs")
+	assert.Equal(t, []string{"make e", "make d", "make c"}, evidence(h, "command"))
+	assert.Equal(t, []string{"s4", "s3"}, evidence(h, "session"))
+	assert.Contains(t, h.Finding, "Repeated runs of make e, make d, make c and 2 more: 15 runs in 5 sessions,")
+	assert.Contains(t, h.Finding, "the most: make e, 3 runs in session s4")
 }
 
 func TestHintH2_SlowCheapCommands(t *testing.T) {
@@ -245,6 +258,11 @@ func TestHintH6_ExpensiveContext(t *testing.T) {
 	in.Lang = Russian
 	assert.Equal(t, "2 сессии с дорогим контекстом, всего $9.00; больше всего — сессия s1 стоила $8.00 при доле чтения из кэша 40%",
 		hintsOf(Hints(in), "H6")[0].Finding)
+
+	// one session: the short sentence
+	delete(in.Sessions, "s3")
+	in.Lang = English
+	assert.Equal(t, "Session s1 cost $8.00 with a 40% cache read share; its context was expensive", hintsOf(Hints(in), "H6")[0].Finding)
 }
 
 func TestHintH7_TopModelOnSubagents(t *testing.T) {
