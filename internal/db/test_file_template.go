@@ -16,38 +16,49 @@ import (
 // modes).
 //
 // Call it from TestMain in a package whose tests open fresh database files
-// (db.Open(filepath.Join(t.TempDir(), …))). Not for a package that tests
-// migrating an empty file: every new file is seeded. Outside a test binary
-// it refuses (InitTestTemplate checks testing.Testing), so it never seeds a
-// real database.
+// (db.Open(filepath.Join(t.TempDir(), …))). A test about migrating an empty
+// file names it with LeaveTestFileUnseeded before the Open and checks
+// TestFileSeeded after it. Outside a test binary it refuses
+// (InitTestTemplate checks testing.Testing), so it never seeds a real
+// database.
 func InitTestFileTemplate() error {
 	if err := InitTestTemplate(); err != nil {
 		return err
 	}
-	// A hook already set is kept: internal/db's own TestMain installs a
-	// wrapper that leaves openMigratingFresh's paths to a real migration and
-	// records what it seeded; replacing it would break those tests.
-	if seedNewFileHook == nil {
-		seedNewFileHook = func(dbPath string) error {
-			if _, fresh := unseededTestPaths.Load(dbPath); fresh {
-				return nil
-			}
-			_, err := writeTemplateFile(dbPath)
-			return err
-		}
-	}
+	seedNewFileHook = seedTestFile
 	return nil
 }
 
-// unseededTestPaths holds the paths LeaveTestFileUnseeded named; the hook
-// InitTestFileTemplate installs leaves them to a real migration.
-var unseededTestPaths sync.Map
+// unseededTestPaths holds the paths LeaveTestFileUnseeded named;
+// seededTestPaths every path seedTestFile wrote the template to.
+var unseededTestPaths, seededTestPaths sync.Map
+
+// seedTestFile writes the migrated template to the new file dbPath
+// (writeTemplateFile) unless LeaveTestFileUnseeded named it, and records it.
+func seedTestFile(dbPath string) error {
+	if _, fresh := unseededTestPaths.Load(dbPath); fresh {
+		return nil
+	}
+	written, err := writeTemplateFile(dbPath)
+	if written {
+		seededTestPaths.Store(dbPath, true)
+	}
+	return err
+}
 
 // LeaveTestFileUnseeded makes a later Open of the new file dbPath run goose
-// from scratch despite InitTestFileTemplate, for the one test in a package
-// that is about migrating an empty watchtower.db.
+// from scratch despite InitTestFileTemplate, for a test about migrating an
+// empty watchtower.db.
 func LeaveTestFileUnseeded(dbPath string) {
 	unseededTestPaths.Store(dbPath, true)
+}
+
+// TestFileSeeded reports whether Open seeded dbPath from the template. A
+// test that called LeaveTestFileUnseeded fails on true: goose never migrated
+// an empty file, so whatever it asserts about the migration holds vacuously.
+func TestFileSeeded(dbPath string) bool {
+	_, seeded := seededTestPaths.Load(dbPath)
+	return seeded
 }
 
 // writeTemplateFile writes the migrated template to the new file dbPath, at

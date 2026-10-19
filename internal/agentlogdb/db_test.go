@@ -70,8 +70,10 @@ func TestOpen_SchemaAndPerms(t *testing.T) {
 }
 
 // agentlog.db's migrations run on a goose Provider; watchtower.db's on the
-// global goose state. Opening one between two fresh watchtower.db opens must
-// leave the second one migrating exactly as the first.
+// global goose state. first is a fresh watchtower.db seeded from the template
+// TestMain migrated on that global state (the reference); after agentlog.db
+// opens, second migrates an empty watchtower.db for real and must end up with
+// exactly first's applied versions.
 func TestOpen_DoesNotTouchGlobalGoose(t *testing.T) {
 	applied := func(d *db.DB) []int64 {
 		t.Helper()
@@ -96,13 +98,15 @@ func TestOpen_DoesNotTouchGlobalGoose(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = al.Close() })
 
-	// first is seeded from the template TestMain migrated on the global goose
-	// state; second runs that migration for real after agentlog.db's.
+	// second runs watchtower.db's migrations for real, on the global goose
+	// state, after agentlog.db's ran on their Provider. Were it seeded from
+	// the template, the comparison below would hold vacuously.
 	secondPath := filepath.Join(dir, "second", "watchtower.db")
 	db.LeaveTestFileUnseeded(secondPath)
 	second, err := db.Open(secondPath)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = second.Close() })
+	require.False(t, db.TestFileSeeded(secondPath), "second was seeded from the template, so goose never migrated it")
 
 	want := applied(first)
 	require.Greater(t, len(want), 100, "the first watchtower.db migrated fully")

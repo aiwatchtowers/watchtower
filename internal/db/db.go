@@ -135,7 +135,7 @@ func IsForeignKeyViolation(err error) bool {
 var openMemoryHook func() (*DB, error)
 
 // seedNewFileHook, when non-nil, is called by Open with a file path that does
-// not exist yet, before the database is opened. This package's tests set it
+// not exist yet, before the database is opened. InitTestFileTemplate sets it
 // to write the pre-migrated template there, so a file-backed Open finds every
 // migration applied instead of running goose from scratch (~15 s under -race)
 // while still taking the real open path: DSN, pragmas, WAL, goose check,

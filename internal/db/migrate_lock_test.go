@@ -184,12 +184,11 @@ func TestConcurrentOpensMigrateFreshFileOnce(t *testing.T) {
 		t.Skip("full migration from scratch is too slow under -race")
 	}
 	dbPath := filepath.Join(t.TempDir(), "watchtower.db")
-	freshMigrationPaths.Store(dbPath, true)
+	LeaveTestFileUnseeded(dbPath)
 
 	for i, err := range openConcurrently(dbPath, 3) {
 		require.NoError(t, err, "opener %d", i)
 	}
-	_, seeded := seededPaths.Load(dbPath)
-	require.False(t, seeded, "the file was seeded from the template, so goose never migrated it")
+	require.False(t, TestFileSeeded(dbPath), "the file was seeded from the template, so goose never migrated it")
 	requireNoVersionAppliedTwice(t, dbPath)
 }
