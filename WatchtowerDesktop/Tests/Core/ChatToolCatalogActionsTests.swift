@@ -15,6 +15,32 @@ final class ChatToolCatalogActionsTests: XCTestCase {
                        "Proposing an update to ABC-7")
     }
 
+    func testLinearWriteLabels() {
+        XCTAssertEqual(ChatToolCatalog.label(name: "add_linear_comment", args: #"{"key":"ENG-7","body":"x"}"#),
+                       "Proposing a comment on ENG-7")
+        XCTAssertEqual(ChatToolCatalog.label(name: "add_linear_comment", args: "{}"), "Proposing a Linear comment")
+        XCTAssertEqual(ChatToolCatalog.label(name: "transition_linear_issue", args: #"{"key":"ENG-7","state_name":"Done","state":"Done"}"#),
+                       "Proposing ENG-7 → Done")
+        XCTAssertEqual(ChatToolCatalog.label(name: "transition_linear_issue", args: #"{"key":"ENG-7","state_type":"completed"}"#),
+                       "Proposing ENG-7 → completed")
+        XCTAssertEqual(ChatToolCatalog.label(name: "transition_linear_issue", args: "{}"), "Proposing an issue transition")
+        XCTAssertEqual(ChatToolCatalog.label(name: "assign_linear_issue", args: #"{"key":"ENG-7","assignee":"me","assignee_name":"Ada"}"#),
+                       "Proposing to assign ENG-7 to Ada")
+        XCTAssertEqual(ChatToolCatalog.label(name: "assign_linear_issue", args: #"{"key":"ENG-7","assignee":"me"}"#),
+                       "Proposing to assign ENG-7 to me")
+        XCTAssertEqual(ChatToolCatalog.label(name: "update_linear_issue", args: #"{"key":"ENG-7"}"#),
+                       "Proposing an update to ENG-7")
+        XCTAssertEqual(ChatToolCatalog.label(name: "update_linear_issue", args: "{}"), "Proposing a Linear issue update")
+        XCTAssertEqual(ChatToolCatalog.label(name: "create_linear_issue", args: "{}"), "Proposed: Create a Linear issue")
+    }
+
+    func testLinearIcons() {
+        XCTAssertEqual(ChatToolCatalog.icon(name: "add_linear_comment"), "text.bubble")
+        XCTAssertEqual(ChatToolCatalog.icon(name: "transition_linear_issue"), "arrow.right.circle")
+        XCTAssertEqual(ChatToolCatalog.icon(name: "assign_linear_issue"), "person.crop.circle.badge.plus")
+        XCTAssertEqual(ChatToolCatalog.icon(name: "update_linear_issue"), "square.and.pencil")
+    }
+
     func testLocalWriteLabels() {
         XCTAssertEqual(ChatToolCatalog.label(name: "create_idea", args: #"{"essence":"x"}"#), "Saving an idea")
         XCTAssertEqual(ChatToolCatalog.label(name: "create_track", args: #"{"text":"Payments migration"}"#),

@@ -1,13 +1,23 @@
 import SwiftUI
+import WatchtowerCore
 
 struct BlockerMapView: View {
     @Environment(AppState.self) private var appState
     @State private var viewModel: BlockerMapViewModel?
 
-    /// With Jira data, no blockers is good news, in the tab's own words;
-    /// before any Jira data, the shared empty state.
+    /// With Jira or Linear data, no blockers is good news, in the tab's own
+    /// words; before any tracker data, the shared empty state. The tab reads
+    /// both trackers, so its `.jira` row speaks for the pair
+    /// (`FeatureReadiness.trackerReadiness`).
     static func emptyState(context: EmptyStateContext) -> some View {
-        ContentAwareEmptyState(.blockers, context: context) {
+        var context = context
+        let readiness = context.readiness
+        context.readiness = { feature in
+            feature == .jira
+                ? FeatureReadiness.trackerReadiness(jira: readiness(.jira), linear: readiness(.linear))
+                : readiness(feature)
+        }
+        return ContentAwareEmptyState(.blockers, context: context) {
             VStack(spacing: 12) {
                 Image(systemName: "checkmark.shield")
                     .font(.system(size: 48))
@@ -15,7 +25,7 @@ struct BlockerMapView: View {
                 Text("No blockers")
                     .font(.title3)
                     .foregroundStyle(.secondary)
-                Text("No blocked or stale issues found in Jira")
+                Text("No blocked or stale issues found in Jira or Linear")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .multilineTextAlignment(.center)

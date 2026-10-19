@@ -436,7 +436,7 @@ func TestBlockerMap_SlackContext(t *testing.T) {
 		t.Fatalf("inserting message: %v", err)
 	}
 
-	if err := d.UpsertJiraSlackLink(db.JiraSlackLink{
+	if err := d.UpsertIssueSlackLink(db.IssueSlackLink{
 		IssueKey:  "PROJ-S",
 		ChannelID: "C123",
 		MessageTS: "1234567890.123456",

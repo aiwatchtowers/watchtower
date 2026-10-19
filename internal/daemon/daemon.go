@@ -1048,6 +1048,7 @@ func (d *Daemon) phaseLinearSync(ctx context.Context) {
 	}
 	d.lastLinear = time.Now()
 
+	anyClean := false
 	for _, s := range d.linearSyncers {
 		n, err := s.Sync(ctx)
 		if err != nil {
@@ -1064,8 +1065,20 @@ func (d *Daemon) phaseLinearSync(ctx context.Context) {
 			}
 			continue
 		}
+		anyClean = true
 		if n > 0 {
 			d.logger.Printf("linear: account %d: %d issues synced", s.AccountID(), n)
+		}
+	}
+
+	// Reflect Linear issue statuses onto targets once any account's pass came
+	// back clean (phaseJiraSync's rule: one broken account never freezes the
+	// others' targets).
+	if anyClean && d.db != nil {
+		if synced, err := d.db.SyncLinearTargetStatuses(); err != nil {
+			d.logger.Printf("linear target status sync warning: %v", err)
+		} else if synced > 0 {
+			d.logger.Printf("linear-targets: synced %d target status(es)", synced)
 		}
 	}
 }

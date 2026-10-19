@@ -9,6 +9,7 @@ import (
 	"watchtower/internal/confluence"
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
+	"watchtower/internal/linear"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/tools"
 	"watchtower/internal/workbenchfiles"
@@ -46,6 +47,28 @@ func jiraWriteClientFactory(cfg *config.Config) tools.JiraWriteClientFactory {
 			return nil, err
 		}
 		return c, nil
+	}
+}
+
+// linearWriter is the account's Linear client plus its syncer's one-issue
+// refresh — the tools.LinearWriteClient the five Linear writes take.
+type linearWriter struct {
+	*linear.Client
+	syncer *linear.Syncer
+}
+
+func (w linearWriter) RefreshIssue(ctx context.Context, issueID string) error {
+	return w.syncer.RefreshIssue(ctx, issueID)
+}
+
+// linearWriteClientFactory serves the Linear write tools.
+func linearWriteClientFactory(cfg *config.Config, database *db.DB) tools.LinearWriteClientFactory {
+	return func(account db.LinearAccount) (tools.LinearWriteClient, error) {
+		if !linear.NewTokenStore(cfg.WorkspaceDir(), account.ID).Exists() {
+			return nil, fmt.Errorf("linear account #%d has no token; run 'watchtower linear login --account %d'", account.ID, account.ID)
+		}
+		client := linearClient(cfg, account.ID)
+		return linearWriter{Client: client, syncer: linear.NewSyncer(client, database, account.ID, cfg.Linear.BackfillDays)}, nil
 	}
 }
 
@@ -151,6 +174,7 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 		tools.NewCreateJiraIssue(jiraClientFactory(cfg)),
 	}
 	regTools = append(regTools, tools.JiraWriteTools(jiraWriteClientFactory(cfg))...)
+	regTools = append(regTools, tools.LinearWriteTools(linearWriteClientFactory(cfg, database))...)
 	regTools = append(regTools,
 		tools.NewConnectJiraBoard(jiraConnectFactory(cfg, database)),
 		tools.NewCreateTrack(),

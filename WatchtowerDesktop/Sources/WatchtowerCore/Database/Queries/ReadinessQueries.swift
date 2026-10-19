@@ -23,6 +23,7 @@ package enum ReadinessQueries {
         case .knowledgeIndex: "kb_documents"
         case .calendar: "calendar_events"
         case .jira: "jira_issues"
+        case .linear: "linear_issues"
         }
     }
 

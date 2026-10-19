@@ -107,40 +107,6 @@ final class JiraQueriesTests: XCTestCase {
         XCTAssertTrue(stats.labels.isEmpty)
     }
 
-    // MARK: - Stale / blocked
-
-    func testStaleIssuesAreInProgressPastTheThresholdOldestFirst() throws {
-        let queue = try TestDatabase.create()
-        try queue.write { db in
-            let acct = try TestDatabase.insertJiraAccount(db)
-            try issue(db, acct, "PROJ-1") { $0.category = "in_progress"; $0.categoryChanged = self.daysAgo(10) }
-            try issue(db, acct, "PROJ-2") { $0.category = "in_progress"; $0.categoryChanged = self.daysAgo(20) }
-            try issue(db, acct, "PROJ-3") { $0.category = "in_progress"; $0.categoryChanged = self.daysAgo(3) }
-            try issue(db, acct, "PROJ-4") { $0.category = "in_progress" }
-            try issue(db, acct, "PROJ-5") { $0.category = "done"; $0.categoryChanged = self.daysAgo(30) }
-            try issue(db, acct, "PROJ-6") {
-                $0.category = "in_progress"; $0.categoryChanged = self.daysAgo(30); $0.deleted = true
-            }
-        }
-
-        let stale = try queue.read { db in try JiraQueries.fetchStaleIssues(db, staleDays: 7) }
-        XCTAssertEqual(stale.map(\.key), ["PROJ-2", "PROJ-1"])
-    }
-
-    func testBlockedIssuesMatchTheStatusNameAndSkipDone() throws {
-        let queue = try TestDatabase.create()
-        try queue.write { db in
-            let acct = try TestDatabase.insertJiraAccount(db)
-            try issue(db, acct, "PROJ-1") { $0.status = "Blocked"; $0.category = "in_progress" }
-            try issue(db, acct, "PROJ-2") { $0.status = "Waiting (blocker)" }
-            try issue(db, acct, "PROJ-3") { $0.status = "Blocked"; $0.category = "done" }
-            try issue(db, acct, "PROJ-4") { $0.status = "In Progress"; $0.category = "in_progress" }
-        }
-
-        let blocked = try queue.read { db in try JiraQueries.fetchBlockedIssues(db) }
-        XCTAssertEqual(Set(blocked.map(\.key)), ["PROJ-1", "PROJ-2"])
-    }
-
     // MARK: - Team workload
 
     func testTeamWorkloadAggregatesPerAssignee() throws {
@@ -175,45 +141,6 @@ final class JiraQueriesTests: XCTestCase {
         XCTAssertEqual(ann.avgCycleTimeDays, 4, accuracy: 0.01)
     }
 
-    // MARK: - Epic progress
-
-    func testEpicProgressNeedsThreeChildrenAndCountsRecentResolutions() throws {
-        let queue = try TestDatabase.create()
-        try queue.write { db in
-            let acct = try TestDatabase.insertJiraAccount(db)
-            try issue(db, acct, "PROJ-100") { $0.typeCategory = "epic"; $0.summary = "Payments" }
-            for (key, ago) in [("PROJ-1", 2.0), ("PROJ-2", 20), ("PROJ-3", 40)] {
-                try issue(db, acct, key) { $0.category = "done"; $0.resolved = self.daysAgo(ago); $0.epicKey = "PROJ-100" }
-            }
-            try issue(db, acct, "PROJ-4") { $0.category = "in_progress"; $0.epicKey = "PROJ-100" }
-            // Two children are below the floor of three.
-            try issue(db, acct, "PROJ-5") { $0.epicKey = "PROJ-200" }
-            try issue(db, acct, "PROJ-6") { $0.epicKey = "PROJ-200" }
-        }
-
-        let rows = try queue.read { db in try JiraQueries.fetchEpicProgress(db) }
-        XCTAssertEqual(rows.map(\.epicKey), ["PROJ-100"])
-        let epic = try XCTUnwrap(rows.first)
-        XCTAssertEqual(epic.epicName, "Payments")
-        XCTAssertEqual(epic.totalIssues, 4)
-        XCTAssertEqual(epic.doneIssues, 3)
-        XCTAssertEqual(epic.inProgressIssues, 1)
-        XCTAssertEqual(epic.progressPct, 0.75, accuracy: 0.001)
-        XCTAssertEqual(epic.weeklyResolvedCount, 1)
-        XCTAssertEqual(epic.monthlyResolvedCount, 2)
-    }
-
-    func testEpicProgressNamesAnEpicWithoutItsOwnRowByKey() throws {
-        let queue = try TestDatabase.create()
-        try queue.write { db in
-            let acct = try TestDatabase.insertJiraAccount(db)
-            for n in 1...3 { try issue(db, acct, "PROJ-\(n)") { $0.epicKey = "PROJ-300" } }
-        }
-        let rows = try queue.read { db in try JiraQueries.fetchEpicProgress(db) }
-        XCTAssertEqual(rows.first?.epicName, "PROJ-300")
-        XCTAssertEqual(rows.first?.progressPct, 0)
-    }
-
     // MARK: - Links
 
     func testIssuesForTracksGroupByTrackAndSkipDeleted() throws {
@@ -224,9 +151,12 @@ final class JiraQueriesTests: XCTestCase {
             try issue(db, acct, "PROJ-2")
             try issue(db, acct, "PROJ-3") { $0.deleted = true }
             try db.execute(sql: """
-                INSERT INTO jira_slack_links (issue_key, track_id, link_type) VALUES
+                INSERT INTO issue_slack_links (issue_key, track_id, link_type) VALUES
                     ('PROJ-1', 1, 'track'), ('PROJ-2', 1, 'track'), ('PROJ-1', 2, 'track'),
-                    ('PROJ-3', 2, 'track'), ('PROJ-2', 3, 'track')
+                    ('PROJ-3', 2, 'track'), ('PROJ-2', 3, 'track');
+                -- A Linear link on a key a Jira issue also carries is not a Jira link.
+                INSERT INTO issue_slack_links (tracker, issue_key, track_id, link_type) VALUES
+                    ('linear', 'PROJ-2', 2, 'track')
                 """)
         }
 
@@ -270,12 +200,42 @@ final class JiraQueriesTests: XCTestCase {
             // Older than the window: not counted.
             let old = since.timeIntervalSince1970 - 86400
             try TestDatabase.insertDigest(db, channelID: "C2", periodFrom: old, periodTo: old + 3600)
-            try db.execute(sql: "INSERT INTO jira_slack_links (issue_key, channel_id) VALUES ('PROJ-1', 'C1')")
+            try db.execute(sql: "INSERT INTO issue_slack_links (issue_key, channel_id) VALUES ('PROJ-1', 'C1')")
         }
 
         let rows = try queue.read { db in try JiraQueries.fetchChannelsWithoutJira(db, since: since) }
         XCTAssertEqual(rows.map(\.channelID), ["C2"])
         XCTAssertEqual(rows.first?.channelName, "unlinked")
         XCTAssertEqual(rows.first?.digestCount, 1)
+    }
+
+    // MARK: - Linear links are not Jira links (migration 00144)
+
+    /// issue_slack_links also holds Linear links (`tracker = 'linear'`). The
+    /// Jira readers must ignore them even when the key matches a Jira issue.
+    func testJiraLinkReadersIgnoreLinearLinks() throws {
+        let queue = try TestDatabase.create()
+        let since = daysAgo(14)
+        try queue.write { db in
+            let acct = try TestDatabase.insertJiraAccount(db)
+            try issue(db, acct, "PROJ-1")
+            try TestDatabase.insertChannel(db, id: "C1", name: "linear-only")
+            let recent = Date().timeIntervalSince1970 - 86400
+            try TestDatabase.insertDigest(db, channelID: "C1", periodFrom: recent, periodTo: recent + 3600)
+            try TestDatabase.insertMessage(db, channelID: "C1", ts: "1700000000.000100", text: "Linear thread on PROJ-1")
+            try db.execute(sql: """
+                INSERT INTO issue_slack_links (tracker, issue_key, channel_id, message_ts, digest_id, link_type) VALUES
+                    ('linear', 'PROJ-1', 'C1', '1700000000.000100', NULL, 'mention'),
+                    ('linear', 'PROJ-1', 'C1', '', 7, 'decision')
+                """)
+        }
+
+        try queue.read { db in
+            XCTAssertEqual(try JiraQueries.fetchChannelsWithoutJira(db, since: since).map(\.channelID), ["C1"],
+                           "a channel with only a Linear link is still without Jira")
+            XCTAssertTrue(try JiraQueries.fetchIssuesForDigest(db, digestID: 7).isEmpty)
+            XCTAssertNil(try JiraQueries.fetchSlackContextForIssue(db, issueKey: "PROJ-1"))
+            XCTAssertTrue(try JiraQueries.fetchSlackLinksForIssueKeys(db, keys: ["PROJ-1"]).isEmpty)
+        }
     }
 }

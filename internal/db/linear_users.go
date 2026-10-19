@@ -1,6 +1,33 @@
 package db
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
+
+// FindLinearUsers returns the linear_user_map rows whose email (when who
+// contains "@") or display name equals who, case-insensitively.
+func (db *DB) FindLinearUsers(who string) ([]LinearUser, error) {
+	column := "display_name"
+	if strings.Contains(who, "@") {
+		column = "email"
+	}
+	rows, err := db.Query(`SELECT linear_user_id, email, display_name FROM linear_user_map
+		WHERE `+column+` != '' AND LOWER(`+column+`) = LOWER(?) ORDER BY linear_user_id`, who)
+	if err != nil {
+		return nil, fmt.Errorf("finding linear users: %w", err)
+	}
+	defer rows.Close()
+	var out []LinearUser
+	for rows.Next() {
+		var u LinearUser
+		if err := rows.Scan(&u.ID, &u.Email, &u.DisplayName); err != nil {
+			return nil, fmt.Errorf("scanning linear user: %w", err)
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
 
 // ResolveLinearUsersByEmail maps every unmapped linear_user_map row whose
 // email equals (case-insensitively) a non-deleted, non-bot Slack user's email,

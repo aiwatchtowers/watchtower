@@ -333,60 +333,6 @@ func (db *DB) GetJiraIssuesByEpicKeys(epicKeys []string) (map[string][]JiraIssue
 	return result, rows.Err()
 }
 
-// GetJiraSlackLinksByIssueKeys returns all Slack links for a set of issue keys.
-func (db *DB) GetJiraSlackLinksByIssueKeys(keys []string) ([]JiraSlackLink, error) {
-	if len(keys) == 0 {
-		return nil, nil
-	}
-	placeholders := strings.Repeat("?,", len(keys))
-	placeholders = placeholders[:len(placeholders)-1]
-
-	args := make([]any, len(keys))
-	for i, k := range keys {
-		args[i] = k
-	}
-
-	rows, err := db.Query(`SELECT id, issue_key, channel_id, message_ts, track_id, digest_id, link_type, detected_at
-		FROM jira_slack_links WHERE issue_key IN (`+placeholders+`) ORDER BY detected_at DESC`, args...)
-	if err != nil {
-		return nil, fmt.Errorf("querying jira slack links by issue keys: %w", err)
-	}
-	defer rows.Close()
-
-	var links []JiraSlackLink
-	for rows.Next() {
-		var l JiraSlackLink
-		if err := rows.Scan(&l.ID, &l.IssueKey, &l.ChannelID, &l.MessageTS, &l.TrackID, &l.DigestID, &l.LinkType, &l.DetectedAt); err != nil {
-			return nil, fmt.Errorf("scanning jira slack link by issue keys: %w", err)
-		}
-		links = append(links, l)
-	}
-	return links, rows.Err()
-}
-
-// GetJiraDecisionCountByIssueKeys returns the number of slack links with link_type='decision'
-// for the given issue keys.
-func (db *DB) GetJiraDecisionCountByIssueKeys(keys []string) (int, error) {
-	if len(keys) == 0 {
-		return 0, nil
-	}
-	placeholders := strings.Repeat("?,", len(keys))
-	placeholders = placeholders[:len(placeholders)-1]
-
-	args := make([]any, len(keys))
-	for i, k := range keys {
-		args[i] = k
-	}
-
-	var count int
-	err := db.QueryRow(`SELECT COUNT(*) FROM jira_slack_links
-		WHERE issue_key IN (`+placeholders+`) AND link_type = 'decision'`, args...).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("counting jira decisions by issue keys: %w", err)
-	}
-	return count, nil
-}
-
 // UpsertJiraRelease inserts or updates a Jira release (fix version).
 func (db *DB) UpsertJiraRelease(r JiraRelease) error {
 	_, err := db.Exec(`INSERT INTO jira_releases (account_id, id, project_key, name, description, release_date, released, archived, synced_at)

@@ -270,6 +270,29 @@ final class AgentActionCardViewTests: XCTestCase {
             ["Issue: ABC-7", "Summary: New", "Priority: High", "Add labels: a, b", "Remove labels: c", "Due: 2026-10-01"])
     }
 
+    func testLinearWriteSummaryLines() throws {
+        func lines(_ tool: String, _ args: String) throws -> [String] {
+            let action = try row { db in try TestDatabase.insertAgentAction(db, tool: tool, external: true, argsJSON: args) }
+            return AgentActionCardView.summaryLines(for: action)
+        }
+        XCTAssertEqual(
+            try lines("create_linear_issue", #"{"team":"ENG","team_id":"t-1","title":"Fix","labels":["a","b"],"label_ids":["x"],"priority":"High"}"#),
+            ["Team: ENG", "Title: Fix", "Labels: a, b", "Priority: High"])
+        XCTAssertEqual(try lines("add_linear_comment", #"{"key":"ENG-7","issue_uuid":"u","body":"Ship it"}"#),
+                       ["Issue: ENG-7", "Ship it"])
+        XCTAssertEqual(try lines("transition_linear_issue", #"{"key":"ENG-7","state":"done","state_name":"Done","state_id":"s"}"#),
+                       ["Issue: ENG-7 → Done"])
+        XCTAssertEqual(try lines("transition_linear_issue", #"{"key":"ENG-7","state_type":"completed"}"#),
+                       ["Issue: ENG-7 → completed"])
+        XCTAssertEqual(try lines("assign_linear_issue", #"{"key":"ENG-7","assignee":"me","assignee_name":"Ada","assignee_id":"u"}"#),
+                       ["Issue: ENG-7 · Assignee: Ada"])
+        XCTAssertEqual(try lines("assign_linear_issue", #"{"key":"ENG-7","assignee":"me"}"#),
+                       ["Issue: ENG-7 · Assignee: me"])
+        XCTAssertEqual(
+            try lines("update_linear_issue", #"{"key":"ENG-7","title":"New","labels_add":["a"],"label_ids":["x"],"estimate":3}"#),
+            ["Issue: ENG-7", "Title: New", "Add labels: a", "Estimate: 3"])
+    }
+
     /// Any applied row with a url renders as a link titled by `label`, then
     /// `key`, then the url itself — no per-tool code for new tools.
     func testAppliedResultWithURLRendersGenericLabelledLink() throws {

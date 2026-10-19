@@ -65,7 +65,9 @@ goals are `workCommunication`, `tasksAndJira`, `meetings`, `development`.
 
 **Connect step cards** (`OnboardingConnectPlan`, WatchtowerCore). Slack for
 Work communication, one Google card for Work communication or Meetings,
-Jira for Tasks & Jira. The Jira sheet (`AddJiraAccountView`, shared with
+Jira and then Linear for Tasks & Jira (the Linear sheet, `AddLinearAccountView`,
+is Settings' own: browser sign-in or an API key on stdin, see
+`docs/features/linear.md` § Desktop). The Jira sheet (`AddJiraAccountView`, shared with
 Settings) turns into a board step after a successful connect (#572):
 `JiraBoardChoiceView` fetches the boards of the site the connect added
 (every enabled site when it added none, `JiraBoardPicker.sites`) with `jira
@@ -124,9 +126,9 @@ still decides only the `briefing` feature.
 
 **Sidebar visibility.** A tab shows when its feature rule AND its source
 rule hold (`SidebarDestination.isVisible`, `ConnectedSources`): Calendar
-needs a calendar; Boards, Workload, Blockers, Project Map and Releases need
-Jira; Statistics needs Slack or mail; Inbox and Catch-Up need any source
-(Slack, mail, Jira or a calendar). Inbox has no feature rule; Catch-Up needs
+needs a calendar; Boards, Workload, Project Map and Releases need
+Jira, Blockers Jira or Linear; Statistics needs Slack or mail; Inbox and Catch-Up need any source
+(Slack, mail, Jira, Linear or a calendar). Inbox has no feature rule; Catch-Up needs
 `secretary-inbox`, `slack-digests` or `stream-digests` on (owner decision
 2026-10-03, #284). A selection that lands on a hidden tab falls back to
 Home, which has no gate (first-run P2, `docs/features/first-run.md`). The quiet "+ Connect Slack, Mail, Jira…"

@@ -134,7 +134,7 @@ func (db *DB) ListCatchupStreams(from, to float64, limit int) ([]CatchupItem, er
 
 // streamSourceName names a stream_digests.source for a reader: an
 // IMAP/Outlook mailbox's 'imap' reads "Email" (its scope carries the address);
-// 'gmail' and 'jira' keep their stored names.
+// 'gmail', 'jira' and 'linear' keep their stored names.
 func streamSourceName(source string) string {
 	if source == "imap" {
 		return "Email"

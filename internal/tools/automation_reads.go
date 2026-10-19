@@ -875,5 +875,6 @@ func AutomationReadTools() []*Tool {
 		NewListReminders(),
 		NewListJiraSprints(),
 		NewListJiraReleases(),
+		NewListLinearCycles(),
 	}
 }

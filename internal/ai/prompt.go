@@ -148,16 +148,6 @@ CREATE TABLE jira_user_map (
     display_name TEXT NOT NULL DEFAULT ''
 );
 
-CREATE TABLE jira_slack_links (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    issue_key TEXT NOT NULL,
-    channel_id TEXT NOT NULL DEFAULT '',
-    message_ts TEXT NOT NULL DEFAULT '',
-    track_id INTEGER,
-    digest_id INTEGER,
-    link_type TEXT NOT NULL DEFAULT 'mention'
-);
-
 CREATE TABLE jira_boards (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -175,6 +165,55 @@ Notes:
 - jira_user_map maps Jira account IDs to Slack user IDs for cross-referencing
 - Use is_deleted = 0 to exclude deleted issues
 - due_date can be empty string — filter with due_date != '' for overdue queries`
+}
+
+// TrackerPromptSection returns the tracker-neutral schema reference (Jira and
+// Linear through the tracker_* views, Slack links in issue_slack_links) to
+// append to the system prompt. Call when Jira or Linear is enabled.
+func TrackerPromptSection() string {
+	return `
+
+=== ISSUE TRACKER VIEWS (reference) ===
+Jira and Linear issues are also exposed through tracker-neutral views; each row
+carries tracker ('jira' | 'linear') and account_id:
+
+CREATE VIEW tracker_issues (
+    tracker, account_id, issue_id, key,  -- key e.g. "PROJ-123" / "ENG-12"
+    project_key,                         -- Jira project key or Linear team key
+    title, description_text, status,
+    status_category,                     -- "todo", "in_progress", "done"
+    status_changed_at, assignee_id, assignee_email, assignee_display_name,
+    assignee_slack_id,                   -- links to users.id when known
+    reporter_id, reporter_display_name, reporter_slack_id,
+    priority, priority_rank,             -- rank 1 highest .. 5 lowest, 0 none
+    points, due_date, iteration_id, iteration_name,
+    container_kind,                      -- "epic" (Jira) or "project" (Linear)
+    container_id, container_name, parent_key, labels, is_bug, is_blocked, url,
+    created_at, updated_at, resolved_at, synced_at, is_deleted
+);
+CREATE VIEW tracker_comments (tracker, account_id, id, issue_key, author_id, author_display_name,
+    body_text, mentioned_ids, created_at, updated_at, synced_at);
+CREATE VIEW tracker_history (tracker, account_id, issue_key, id, field,  -- field: status | assignee
+    from_value, from_string, to_value, to_string, actor_id, actor_display_name, changed_at);
+CREATE VIEW tracker_iterations (tracker, account_id, id, name, state,    -- Jira sprints, Linear cycles
+    starts_at, ends_at, completed_at, project_key);
+CREATE VIEW tracker_people (tracker, user_id, email, slack_user_id, display_name);
+CREATE VIEW tracker_accounts (tracker, id, label, url, status, enabled);
+
+CREATE TABLE issue_slack_links (       -- issue keys detected in Slack, tracks and digests
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    tracker TEXT NOT NULL,             -- 'jira' | 'linear'; a key known to both has one row per tracker
+    issue_key TEXT NOT NULL,
+    channel_id TEXT NOT NULL DEFAULT '',
+    message_ts TEXT NOT NULL DEFAULT '',
+    track_id INTEGER,
+    digest_id INTEGER,
+    link_type TEXT NOT NULL DEFAULT 'mention'  -- mention | track | decision
+);
+
+Notes:
+- Use is_deleted = 0 to exclude deleted issues; status_category != 'done' for open work.
+- A Linear issue moved to another team gets a new key; links and mentions may carry an old key.`
 }
 
 // FormatTimeHints formats time range information from a parsed query as hints

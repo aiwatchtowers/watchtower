@@ -301,8 +301,8 @@ package enum TargetQueries {
         for link in secondaryLinks {
             let ref = link.externalRef
             // Mirrors the Go-side allow-list `IsValidExternalRef`
-            // (internal/targets/extractor.go:146): only "jira:" and "slack:" pass.
-            guard ref.hasPrefix("jira:") || ref.hasPrefix("slack:") else { continue }
+            // (internal/targets/extractor.go): only "jira:", "linear:" and "slack:" pass.
+            guard ref.hasPrefix("jira:") || ref.hasPrefix("linear:") || ref.hasPrefix("slack:") else { continue }
             try db.execute(
                 sql: """
                     INSERT INTO target_links (source_target_id, target_target_id, external_ref, relation, created_by)

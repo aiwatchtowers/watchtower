@@ -119,7 +119,7 @@ struct CommentableDocumentText: View {
                     composing = false
                 }
                 Button("Comment", action: save)
-                    .buttonStyle(.popoverPrimary)
+                    .buttonStyle(.kitPrimary)
                     .disabled(!canSave)
             }
         }
