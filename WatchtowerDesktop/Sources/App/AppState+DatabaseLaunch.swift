@@ -29,6 +29,34 @@ extension AppState {
         return await ProcessPipes.offPool { [openDatabase] in Result { try openDatabase() } }
     }
 
+    /// Opens the database for onboarding's Connect step, whose account
+    /// sheets need the account view models — on a fresh install launch could
+    /// not open it (no workspace until Goals' Continue). Only what the steps
+    /// need (`wireOnboardingDatabase`); completion wires the rest. A no-op
+    /// when the database is open; concurrent calls share one open. Returns
+    /// the failure to show, nil on success.
+    func openDatabaseForOnboarding() async -> String? {
+        if databaseManager != nil { return nil }
+        if let onboardingDatabaseOpen { return await onboardingDatabaseOpen.value }
+        let open = Task<String?, Never> { [migrateDatabase, openDatabase] in
+            let opened = await ProcessPipes.offPool {
+                migrateDatabase()
+                return Result { try openDatabase() }
+            }
+            switch opened {
+            case .failure(let error):
+                return error.localizedDescription
+            case .success(let manager):
+                await wireOnboardingDatabase(manager)
+                return nil
+            }
+        }
+        onboardingDatabaseOpen = open
+        let failure = await open.value
+        onboardingDatabaseOpen = nil
+        return failure
+    }
+
     /// The live database path for the compaction step. No database yet (a
     /// fresh install) is silent; any other resolve error is logged before
     /// the step skips.

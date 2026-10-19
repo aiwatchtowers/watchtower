@@ -56,7 +56,7 @@ struct SplashView: View {
                 .padding(.top, 8)
 
             if case let .compacting(dbBytes) = compaction.phase {
-                VStack(spacing: 6) {
+                VStack(spacing: Spacing.compact) {
                     Text(DatabaseCompactionStep.progressLine(
                         dbBytes: dbBytes, elapsedSeconds: compaction.elapsedSeconds
                     ))
@@ -67,7 +67,7 @@ struct SplashView: View {
                         .foregroundStyle(.secondary)
                     if compaction.canSkip {
                         Button("Skip for now") { compaction.skip() }
-                            .padding(.top, 4)
+                            .padding(.top, Spacing.small)
                     }
                 }
             }
@@ -92,7 +92,7 @@ struct DatabaseCompactionNoticeView: View {
     let onDismiss: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Spacing.regular) {
             Image(systemName: "info.circle.fill").foregroundStyle(.secondary)
             Text(text).font(.callout).lineLimit(2)
             Spacer()
@@ -102,9 +102,9 @@ struct DatabaseCompactionNoticeView: View {
             .buttonStyle(.borderless)
             .help("Dismiss")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(Color.secondary.opacity(0.1))
+        .padding(.horizontal, Spacing.medium)
+        .padding(.vertical, Spacing.regular)
+        .background(Fill.card)
     }
 }
 

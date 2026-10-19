@@ -915,7 +915,7 @@ final class AppState {
         }
     }
 
-    @ObservationIgnored private var onboardingDatabaseOpen: Task<String?, Never>?
+    @ObservationIgnored var onboardingDatabaseOpen: Task<String?, Never>?
 
     /// The completion sequence is running: every step's Continue is off, so
     /// a second click cannot run it (or Goals' writes) again.
@@ -987,34 +987,6 @@ final class AppState {
             },
             onRetry: onRetry
         )
-    }
-
-    /// Opens the database for onboarding's Connect step, whose account
-    /// sheets need the account view models — on a fresh install launch could
-    /// not open it (no workspace until Goals' Continue). Only what the steps
-    /// need (`wireOnboardingDatabase`); completion wires the rest. A no-op
-    /// when the database is open; concurrent calls share one open. Returns
-    /// the failure to show, nil on success.
-    func openDatabaseForOnboarding() async -> String? {
-        if databaseManager != nil { return nil }
-        if let onboardingDatabaseOpen { return await onboardingDatabaseOpen.value }
-        let open = Task<String?, Never> { [migrateDatabase, openDatabase] in
-            let opened = await ProcessPipes.offPool {
-                migrateDatabase()
-                return Result { try openDatabase() }
-            }
-            switch opened {
-            case .failure(let error):
-                return error.localizedDescription
-            case .success(let manager):
-                await wireOnboardingDatabase(manager)
-                return nil
-            }
-        }
-        onboardingDatabaseOpen = open
-        let failure = await open.value
-        onboardingDatabaseOpen = nil
-        return failure
     }
 
     /// Launch-time onboarding state: the DB's `onboarding_done` wins over a
@@ -1535,7 +1507,7 @@ final class AppState {
     /// What onboarding's steps need once the database is open: the database
     /// itself, the owner, the connected sources and the account view models
     /// behind the Connect sheets. Nothing here asks macOS for anything.
-    private func wireOnboardingDatabase(_ manager: DatabaseManager) async {
+    func wireOnboardingDatabase(_ manager: DatabaseManager) async {
         databaseManager = manager
         errorMessage = nil
         await refreshOwner()
