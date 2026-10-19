@@ -39,10 +39,9 @@ final class SessionInputHandlers: HubCompanion {
 
     /// The fixed line of `session_finish_request` (spec §6.5).
     static let finishLine = "Please wrap up: update the board, then call finish_session with a short summary."
-    /// After the app submits a line to a session, the session counts as
-    /// busy until a state read shows a hook stamp newer than the submit (its
-    /// UserPromptSubmit hook lands asynchronously), or this long passed.
-    static let submitSettle: TimeInterval = 30
+    /// How long a just-submitted line keeps the session busy without a
+    /// newer hook stamp (`SessionControl.submitSettle`).
+    static let submitSettle = SessionControl.submitSettle
     /// A held line expires this long after the phone created it.
     static let heldLifetime: TimeInterval = RelayProcessor.sessionRequestMaxAge
     /// This app launch: `TerminalCenter.runs` numbers restart at every launch,
@@ -58,6 +57,7 @@ final class SessionInputHandlers: HubCompanion {
     private let sidecar: HubSyncState
     private let lineDelivery: SessionLineDelivery
     private let terminalCenter: TerminalCenter
+    private let control: SessionControl
     private let status: Status
     private let deviceGrant: SessionStartStopHandlers.Grant
     private let lateEcho: RelayProcessor.LateEcho
@@ -87,12 +87,18 @@ final class SessionInputHandlers: HubCompanion {
         lateEcho: @escaping RelayProcessor.LateEcho,
         now: @escaping @Sendable () -> Date = { Date() },
         timeout: Duration = SessionInputHandlers.defaultTimeout,
-        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+        control: SessionControl? = nil
     ) {
         self.dbPool = dbPool
         self.sidecar = sidecar
         self.lineDelivery = lineDelivery
         self.terminalCenter = terminalCenter
+        // The app passes its shared one (over the same `lineDelivery`);
+        // alone (tests) a private one does the same checks.
+        self.control = control ?? SessionControl(
+            dbPool: dbPool, terminalCenter: terminalCenter, lineDelivery: lineDelivery, status: status, now: now
+        )
         self.status = status
         self.deviceGrant = deviceGrant
         self.lateEcho = lateEcho
@@ -280,21 +286,13 @@ final class SessionInputHandlers: HubCompanion {
         if let failure = standingFailure(line) { return .fail(failure) }
         // The state was read right before (the delivery's fresh read): a
         // session it does not list was deleted.
-        guard let current = status(line.sessionID) else { return .fail(.sessionNotRunning) }
-        if current.state.kind == .needsApproval { return .hold(.needsApproval) }
-        guard Self.isIdle(current), !justSubmitted(line.sessionID, status: current) else { return .hold(.agentBusy) }
-        if terminalCenter.promptHoldsText(line.sessionID) { return .hold(.promptHasText) }
-        return nil
-    }
-
-    /// A line went into the session within `submitSettle` and no hook has
-    /// reported since: the agent is turning to it (its Working may not be
-    /// written yet).
-    private func justSubmitted(_ sessionID: Int64, status: SessionAgentStatus) -> Bool {
-        guard let submitted = lineDelivery.submittedAt(sessionID),
-              now().timeIntervalSince(submitted) < Self.submitSettle else { return false }
-        guard let stamp = status.at.flatMap(SessionAgentStatus.parseStamp) else { return true }
-        return stamp <= submitted
+        switch control.lineCheck(line.sessionID) {
+        case .go: return nil
+        case .sessionGone: return .fail(.sessionNotRunning)
+        case .hold(.needsApproval): return .hold(.needsApproval)
+        case .hold(.agentBusy): return .hold(.agentBusy)
+        case .hold(.promptHasText): return .hold(.promptHasText)
+        }
     }
 
     /// What ends a line whatever the session does: its age, its device's
@@ -303,19 +301,6 @@ final class SessionInputHandlers: HubCompanion {
         if now().timeIntervalSince(line.action.createdAt) > Self.heldLifetime { return .expired }
         if !deviceGrant(line.action.deviceID).typingAllowed { return .deviceNotAllowed }
         return nil
-    }
-
-    /// The agent is idle for the current run: its turn ended — Stopped,
-    /// Finished, Waiting for you (or Ready to check, its #534 form when the
-    /// open asks are all checks or reviews) or Error by a hook state of this
-    /// run — or the run is marked and no turn began (spec §6.6).
-    static func isIdle(_ status: SessionAgentStatus) -> Bool {
-        guard status.state.live else { return false }
-        guard status.at != nil else { return status.runMarked }
-        switch status.state.kind {
-        case .stopped, .finished, .waitingOnAsk, .readyToCheck, .failed: return true
-        case .notStarted, .running, .working, .background, .needsApproval: return false
-        }
     }
 
     private func resolve(_ delivery: SessionLineDelivery.Delivery, of line: PhoneLine) -> Resolution {

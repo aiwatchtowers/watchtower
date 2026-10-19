@@ -71,7 +71,8 @@ package enum KeyboardShortcutCatalog {
             Entry("⌘[", "Back to the workbench list (the Files editor keeps ⌘[)"),
             Entry("⌃⌘A", "Waiting for you, from anywhere in the window, the terminal included"),
             Entry("A", "Waiting for you (nothing focused)"),
-            Entry("Esc", "Board: close the target panel, then leave the group")
+            Entry("Esc", "Board: close the target panel, then leave the group"),
+            Entry("⌃`", "Switch the session on screen between its terminal and its Workchat")
         ]),
         Area("Sessions Panel", note: "After a click on the panel's empty space, the SESSIONS label or the group header.", [
             Entry("↑ / ↓", "Move the highlight"),

@@ -75,6 +75,10 @@ The run waits until the session finishes. If you stop it or its process ends, th
 
 The progress line under the caption, the **Session** view and the **Analytics** view have their own page: [Session report and analytics](session-report.md).
 
+### Drive a session from its Workchat
+
+Workchat is a session's second mode: its dialog as a chat that you can write to, in the same place as its terminal. **Terminal | Workchat** in the page header or ⌃` switches between them, and each session opens in the mode you last used. See [Workchat](workchat.md).
+
 ### Get notified
 
 While Watchtower is in the background, a running session that stops, needs approval, hits an error or finishes sends one notice. A session waiting on an ask sends none of its own, because the ask already did. **Agents working** sends nothing. **Settings → Features → Notifications → Workbench notifications** turns this on and off; it is on by default.
@@ -91,6 +95,6 @@ Session not reporting a state? See [A Workbench session or ask is stuck](../../t
 ## Related
 
 - [Asks](asks.md), [Board and targets](board-and-targets.md)
-- [Session report and analytics](session-report.md), [Updates and quitting](updates-and-quitting.md)
+- [Workchat](workchat.md), [Session report and analytics](session-report.md), [Updates and quitting](updates-and-quitting.md)
 
 For developers: [docs/features/workbench.md](../../../features/workbench.md)

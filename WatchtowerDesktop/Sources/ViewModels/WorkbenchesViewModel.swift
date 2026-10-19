@@ -22,6 +22,10 @@ final class WorkbenchesViewModel {
     /// later the phone's input — one queue per session (PROJ-12). AppState
     /// passes its own; nil = one of the VM's own over `terminalCenter`.
     let lineDelivery: SessionLineDelivery
+    /// The gates a line, an Esc and a permission answer pass (PROJ-16/21),
+    /// shared by the phone's handlers and the Workchat (#711). AppState
+    /// passes its own; nil without one.
+    let sessionControl: SessionControl?
 
     private(set) var summaries: [WorkbenchSummary] = []
     /// The workbench switcher's rows (board #250), read when its popover opens.
@@ -471,6 +475,10 @@ final class WorkbenchesViewModel {
     /// when the session is deleted (`forgetProcessState`). Created during a
     /// view's body, hence not observed.
     @ObservationIgnored var reviewModels: [Int64: ReviewChangesModel] = [:]
+    /// One Workchat composer per session (#711), so its draft and queued
+    /// lines survive pane switches; dropped with the session
+    /// (`forgetProcessState`). Created during a view's body, hence not observed.
+    @ObservationIgnored var workchatModels: [Int64: WorkchatModel] = [:]
     /// Find Repeats' model per workbench, made on first use.
     @ObservationIgnored var reviewLessonModels: [Int64: ReviewLessonsModel] = [:]
 
@@ -503,7 +511,8 @@ final class WorkbenchesViewModel {
         defaults: UserDefaults = .standard,
         terminalCenter: TerminalCenter? = nil,
         agentStates: SessionAgentStateCenter? = nil,
-        lineDelivery: SessionLineDelivery? = nil
+        lineDelivery: SessionLineDelivery? = nil,
+        sessionControl: SessionControl? = nil
     ) {
         self.dbPool = dbPool
         self.cli = cli
@@ -515,6 +524,7 @@ final class WorkbenchesViewModel {
         sessionPlaces = Self.makeSessionPlaces(dbPool: dbPool, cli: cli, terminalCenter: terminalCenter)
         let lineDelivery = lineDelivery ?? SessionLineDelivery(terminalCenter: terminalCenter)
         self.lineDelivery = lineDelivery
+        self.sessionControl = sessionControl
         asks = OwnerAsksViewModel(dbPool: dbPool, terminalCenter: terminalCenter, lineDelivery: lineDelivery, defaults: defaults)
         if let cli {
             let service = TerminalTitleService(runner: cli.runner)
@@ -793,7 +803,8 @@ final class WorkbenchesViewModel {
         let id = subject?.id ?? activeSessionID(projectID: projectID) ?? terminalSessions[projectID]?.first?.id
         guard let id, isLatestSwitch(ticket, projectID: projectID) else { return }
         var updated = layout(projectID: projectID)
-        updated.show(.session(id))
+        // In the mode it was last shown in, as a panel click (#711).
+        updated.show(updated.pane(forSession: id))
         setLayout(updated, projectID: projectID)
     }
 

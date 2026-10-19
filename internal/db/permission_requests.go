@@ -34,7 +34,7 @@ type PermissionRequest struct {
 	Status            string
 	CreatedAt         time.Time
 	DecidedAt         sql.NullString // agent-state stamp layout
-	DecidedBy         sql.NullString // the phone's name; NULL otherwise
+	DecidedBy         sql.NullString // the phone's name, or "Mac" for the Desktop's Workchat card; NULL otherwise
 }
 
 // OpenPermissionRequest records the session's agent state `approval` at time at

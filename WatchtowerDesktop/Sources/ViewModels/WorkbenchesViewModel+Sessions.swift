@@ -96,8 +96,9 @@ extension WorkbenchesViewModel {
         // goes with it. The draft stays, and the drawer comes back with the
         // session once its pane measures itself (board #364,
         // `sessionPaneMeasured`).
+        // Either mode of the session keeps it (#711).
         if let sessionID = asks.drawerAsk(projectID: projectID)?.sessionID,
-           !layout.visiblePanes.contains(.session(sessionID)) {
+           !layout.showsSession(sessionID) {
             asks.hideDrawer(projectID: projectID)
         }
         // A session came on screen: its panel section is kept (#480).
@@ -148,7 +149,7 @@ extension WorkbenchesViewModel {
             // A row gone from the list (deleted from another window, or a
             // layout restored from an older run) leaves the layout too.
             if load == loads.started {
-                for id in layout(projectID: projectID).sessionIDs where !rows.contains(where: { $0.id == id }) {
+                for id in layout(projectID: projectID).referencedSessionIDs where !rows.contains(where: { $0.id == id }) {
                     forgetInLayout(id, projectID: projectID)
                 }
             }
@@ -931,8 +932,13 @@ extension WorkbenchesViewModel {
             }
             if isLatest { center.focus(row.id) }
         }
-        if isLatest, let projectID = row.projectID {
-            setLayout(placing(row.id, placement, in: layout(projectID: projectID)), projectID: projectID)
+        if let projectID = row.projectID {
+            var updated = layout(projectID: projectID)
+            // A new session opens in its terminal (#711): a fresh agent may
+            // stop at a trust or login prompt the Workchat cannot show.
+            if fresh { updated.setMode(false, sessionID: row.id) }
+            if isLatest { updated = placing(row.id, placement, in: updated) }
+            if isLatest || updated != layout(projectID: projectID) { setLayout(updated, projectID: projectID) }
         }
         await loadSessions(projectID: row.projectID)
         if isLatest, let previous, previous != row.id { await refreshTitle(sessionID: previous) }
@@ -1050,17 +1056,19 @@ extension WorkbenchesViewModel {
         }
     }
 
-    /// `layout` with session `id` placed the way `placement` says.
+    /// `layout` with session `id` placed the way `placement` says, in the
+    /// mode it was last shown in: its terminal or its Workchat (#711).
     private func placing(_ id: Int64, _ placement: Placement, in layout: WorkspaceLayout) -> WorkspaceLayout {
         var updated = layout
+        let pane = updated.pane(forSession: id)
         switch placement {
-        case .show: updated.show(.session(id))
-        case let .keeping(kept): updated.reveal(.session(id), keeping: kept)
+        case .show: updated.show(pane)
+        case let .keeping(kept): updated.reveal(pane, keeping: kept)
         case let .replacing(slot):
-            if !updated.replace(slot, with: .session(id)) { updated.show(.session(id)) }
+            if !updated.replace(slot, with: pane) { updated.show(pane) }
         case .inPlace:
             break
-        case let .beside(kept): updated.openBeside(.session(id), keeping: kept)
+        case let .beside(kept): updated.openBeside(pane, keeping: kept)
         case .background:
             break
         }
@@ -1098,6 +1106,9 @@ extension WorkbenchesViewModel {
         resumeStarts[sessionID] = nil
         resumeFailed.remove(sessionID)
         reviewModels[sessionID] = nil
+        if workchatModels.removeValue(forKey: sessionID) != nil {
+            lineDelivery.dropHeld(sessionID: sessionID) { if case .workchat = $0 { true } else { false } }
+        }
     }
 
     func setSessionError(_ message: String?, projectID: Int64?) {

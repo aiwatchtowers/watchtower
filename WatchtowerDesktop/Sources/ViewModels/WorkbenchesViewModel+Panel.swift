@@ -83,10 +83,17 @@ extension WorkbenchesViewModel {
         return activeSessionID(projectID: projectID).flatMap { session($0, projectID: projectID) }
     }
 
+    /// The session on screen as `.session(id)`, in its terminal or its
+    /// Workchat (#711).
     func visibleSession(projectID: Int64) -> WorkspacePane? {
+        visibleSessionPane(projectID: projectID).flatMap(WorkspaceLayout.sessionID(of:)).map { .session($0) }
+    }
+
+    /// The pane — a terminal or a Workchat — `visibleSession` picks.
+    func visibleSessionPane(projectID: Int64) -> WorkspacePane? {
         let layout = layout(projectID: projectID)
         let candidates = layout.expanded.map { [$0] } ?? [layout.secondary, layout.primary].compactMap(\.self)
-        return candidates.first { if case .session = $0 { true } else { false } }
+        return candidates.first { WorkspaceLayout.sessionID(of: $0) != nil }
     }
 
     /// A workbench page is on screen: ⌘1…⌘9 and ⌘T act on it.
@@ -202,6 +209,12 @@ extension WorkbenchesViewModel {
             updated.showWorkbenchView(.files)
         case .analytics:
             updated.showWorkbenchView(.analytics)
+        case .chat where !updated.isSplit:
+            // The twin switch's Workchat half: the session's Workchat in
+            // place of the pane on screen, its mode recorded (#711).
+            guard let id = sessionViewTarget(projectID: project.id) else { return }
+            updated.setMode(true, sessionID: id)
+            updated.show(.sessionChat(id))
         case .report, .changes, .chat:
             guard let id = sessionViewTarget(projectID: project.id) else { return }
             let pane: WorkspacePane = switch view {
@@ -210,19 +223,34 @@ extension WorkbenchesViewModel {
             default: .changes(id)
             }
             Self.placeBesideItsSession(pane, sessionID: id, in: &updated)
+        case .terminal where !updated.isSplit && updated.primary.isWorkchat:
+            // The twin switch's Terminal half over a Workchat: its own
+            // session's terminal, in place (#711).
+            guard let id = WorkspaceLayout.sessionID(of: updated.primary) else { return }
+            updated.toggleMode(sessionID: id)
         case .terminal:
-            let kept = updated.visiblePanes.first ?? updated.primary
+            let id = updated.sessionIDs.first ?? updated.shownSessionIDs.first ?? activeSessionID(projectID: project.id)
+            // A Workchat on screen stays beside its session's terminal.
+            let kept = id.flatMap { id in updated.visiblePanes.first { $0 == .sessionChat(id) } }
+                ?? updated.visiblePanes.first ?? updated.primary
             // `openMostRecentSession` takes its own ticket — past its
             // in-flight guard, so a repeated click never supersedes the
-            // open it is waiting for.
-            guard let id = updated.sessionIDs.first ?? activeSessionID(projectID: project.id) else {
+            // open it is waiting for. It opens the session in its recorded mode.
+            guard let id else {
                 await openMostRecentSession(project: project, placement: .keeping(kept))
                 return
             }
-            updated.reveal(.session(id), keeping: kept)
+            Self.revealTerminal(id, keeping: kept, in: &updated)
         }
         beginSwitch(projectID: project.id)
         setLayout(updated, projectID: project.id)
+    }
+
+    /// Session `id`'s terminal on screen beside `kept`, and Terminal its
+    /// mode from now on — unless its Workchat stays beside it.
+    private static func revealTerminal(_ id: Int64, keeping kept: WorkspacePane, in layout: inout WorkspaceLayout) {
+        if kept != .sessionChat(id) { layout.setMode(false, sessionID: id) }
+        layout.reveal(.session(id), keeping: kept)
     }
 
     /// The session the Session and Changes views open on: the one on screen,
@@ -230,7 +258,7 @@ extension WorkbenchesViewModel {
     /// nothing to report on or review (the header's Changes button is then
     /// disabled).
     func sessionViewTarget(projectID: Int64) -> Int64? {
-        layout(projectID: projectID).sessionIDs.first ?? activeSessionID(projectID: projectID)
+        layout(projectID: projectID).shownSessionIDs.first ?? activeSessionID(projectID: projectID)
             ?? orderedSessions(projectID: projectID).first { $0.kind.isAgent }?.id
     }
 
@@ -245,13 +273,58 @@ extension WorkbenchesViewModel {
         setLayout(updated, projectID: projectID)
     }
 
-    /// A session row's Show Chat: its workbench on screen, the session's chat
-    /// beside its terminal.
-    func showChat(sessionID: Int64, projectID: Int64) {
-        if selectedWorkbenchID != projectID { selectedWorkbenchID = projectID }
+    /// A session row's Open in Workchat (#711): its workbench on screen and
+    /// the session opened like a panel click, in its Workchat — the mode it
+    /// opens in from now on.
+    func showWorkchat(sessionID: Int64, projectID: Int64) async {
+        await showSession(sessionID, workchat: true, projectID: projectID)
+    }
+
+    /// A session row's Open in Terminal (#711): `showWorkchat`'s pair.
+    func showTerminal(sessionID: Int64, projectID: Int64) async {
+        await showSession(sessionID, workchat: false, projectID: projectID)
+    }
+
+    /// The Workchat's Show in Terminal (#711): the session's terminal on
+    /// screen, recorded as its mode. A Workchat in a slot swaps to it in
+    /// place; a terminal already on screen stays; otherwise the session
+    /// opens like a panel click.
+    func showTerminalFromWorkchat(sessionID id: Int64, projectID: Int64) async {
         beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
-        Self.placeBesideItsSession(.sessionChat(sessionID), sessionID: sessionID, in: &updated)
+        guard !updated.visiblePanes.contains(.session(id)) else { return }
+        guard updated.primary == .sessionChat(id) || updated.secondary == .sessionChat(id) else {
+            await showTerminal(sessionID: id, projectID: projectID)
+            return
+        }
+        updated.toggleMode(sessionID: id)
+        setLayout(updated, projectID: projectID)
+    }
+
+    private func showSession(_ id: Int64, workchat: Bool, projectID: Int64) async {
+        if selectedWorkbenchID != projectID { selectedWorkbenchID = projectID }
+        var updated = layout(projectID: projectID)
+        updated.setMode(workchat, sessionID: id)
+        setLayout(updated, projectID: projectID)
+        await showSession(id: id)
+    }
+
+    /// The session ⌃` acts on: the one on screen, when the toggle would
+    /// change what is on screen (not with both its modes side by side).
+    func workchatToggleSession(projectID: Int64) -> Int64? {
+        guard let id = visibleSessionPane(projectID: projectID).flatMap(WorkspaceLayout.sessionID(of:)),
+              layout(projectID: projectID).togglesVisibly(sessionID: id) else { return nil }
+        return id
+    }
+
+    /// ⌃` and the View menu's Show Terminal / Show Workchat (#711): the
+    /// session on screen swaps its terminal and its Workchat in place.
+    /// No session on screen, or both its modes side by side: nothing changes.
+    func toggleWorkchat(projectID: Int64) {
+        guard let id = workchatToggleSession(projectID: projectID) else { return }
+        beginSwitch(projectID: projectID)
+        var updated = layout(projectID: projectID)
+        updated.toggleMode(sessionID: id)
         setLayout(updated, projectID: projectID)
     }
 
@@ -272,6 +345,16 @@ extension WorkbenchesViewModel {
         return model
     }
 
+    /// The session's Workchat composer, made once per session; nil without
+    /// the app's `SessionControl` (a test VM).
+    func workchat(sessionID: Int64) -> WorkchatModel? {
+        if let model = workchatModels[sessionID] { return model }
+        guard let sessionControl else { return nil }
+        let model = WorkchatModel(sessionID: sessionID, control: sessionControl, lineDelivery: lineDelivery)
+        workchatModels[sessionID] = model
+        return model
+    }
+
     /// The workbench's Find Repeats model, made once; nil without the watchtower CLI.
     func reviewLessonsModel(projectID: Int64) -> ReviewLessonsModel? {
         if let model = reviewLessonModels[projectID] { return model }
@@ -281,15 +364,18 @@ extension WorkbenchesViewModel {
         return model
     }
 
-    /// A session's report or Changes beside its own session's terminal
-    /// (board #357): a split showing that terminal swaps its other pane;
-    /// otherwise the page becomes the terminal and `pane` side by side, so a
-    /// panel click re-points the report instead of replacing it. Nothing starts.
+    /// A session's report, Changes or Workchat beside its own session's
+    /// terminal or Workchat (board #357, #711): a split showing that session
+    /// swaps its other pane; otherwise the page becomes the session — its
+    /// Workchat on screen stays, else its terminal — and `pane` side by
+    /// side, so a panel click re-points the report instead of replacing it.
+    /// Nothing starts.
     private static func placeBesideItsSession(_ pane: WorkspacePane, sessionID id: Int64, in layout: inout WorkspaceLayout) {
-        if layout.isSplit, layout.visiblePanes.contains(.session(id)) {
+        let own = layout.visiblePanes.first { $0 != pane && WorkspaceLayout.sessionID(of: $0) == id }
+        if layout.isSplit, own != nil {
             layout.showWorkbenchView(pane)
         } else {
-            layout.primary = .session(id)
+            layout.primary = own ?? .session(id)
             layout.split(with: pane)
         }
     }

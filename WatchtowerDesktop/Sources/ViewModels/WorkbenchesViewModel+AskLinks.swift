@@ -110,7 +110,7 @@ extension WorkbenchesViewModel {
         }
         guard let row = session(sessionID, projectID: projectID) else { return false }
         await open(row)
-        return layout(projectID: projectID).sessionIDs.contains(sessionID)
+        return layout(projectID: projectID).shownSessionIDs.contains(sessionID)
     }
 }
 

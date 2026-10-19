@@ -45,11 +45,13 @@ final class PermissionAnswerHandlers {
     static let notFoundMessage = "This session no longer exists on the Mac"
     static let needsApprovalMessage = "A permission prompt may be open — answer it on the Mac or with Deny"
     static let notRunningMessage = "This session is not running on the Mac"
+    static let notWorkingMessage = "The agent is not working right now"
     /// `decided_by` when the device's name cannot be read.
     static let unnamedDevice = "phone"
 
     private let dbPool: DatabasePool
     private let terminalCenter: TerminalCenter
+    private let control: SessionControl
     private let status: SessionInputHandlers.Status
     private let deviceGrant: SessionStartStopHandlers.Grant
     private let deviceName: DeviceName
@@ -65,10 +67,17 @@ final class PermissionAnswerHandlers {
         deviceName: @escaping DeviceName,
         now: @escaping @Sendable () -> Date = { Date() },
         timeout: Duration = PermissionAnswerHandlers.defaultTimeout,
-        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) },
+        control: SessionControl? = nil
     ) {
         self.dbPool = dbPool
         self.terminalCenter = terminalCenter
+        // The app passes its shared one; alone (tests) a private one over
+        // the same session state does the same checks (it types no line).
+        self.control = control ?? SessionControl(
+            dbPool: dbPool, terminalCenter: terminalCenter,
+            lineDelivery: SessionLineDelivery(terminalCenter: terminalCenter), status: status, now: now
+        )
         self.status = status
         self.deviceGrant = deviceGrant
         self.deviceName = deviceName
@@ -102,90 +111,25 @@ final class PermissionAnswerHandlers {
               case let .string(rawBehavior)? = action.params["behavior"] else {
             return .failed(.invalidParams, message: "permission_answer needs a session id, request_id and behavior")
         }
-        let decided: String
+        let allow: Bool
         switch rawBehavior {
-        case "allow": decided = "allowed"
-        case "deny": decided = "denied"
+        case "allow": allow = true
+        case "deny": allow = false
         default: return .failed(.invalidParams, message: "behavior must be allow or deny")
         }
         guard deviceGrant(action.deviceID).permissionsAllowed else {
             return .failed(.deviceNotAllowed, message: "This phone is not allowed to answer permission prompts")
         }
-        guard try await isBoardSession(sessionID),
-              let current = try await storedRequest(requestID, sessionID: sessionID) else {
-            return .failed(.notFound, message: "This permission request no longer exists on the Mac")
-        }
-        guard current.status == "pending" else { return Self.notPending(current.status) }
-        if rawBehavior == "allow", let block = current.allowBlock {
-            return .failed(.answerOnMac, message: block.note)
-        }
-        guard terminalCenter.liveIDs.contains(sessionID) else {
-            return .failed(.sessionNotRunning, message: Self.notRunningMessage)
-        }
-        let stamp = SessionAgentStatus.formatStamp(now())
+        let notFound = ActionOutcome.failed(.notFound, message: "This permission request no longer exists on the Mac")
+        guard try await isBoardSession(sessionID) else { return notFound }
         let name = deviceName(action.deviceID) ?? Self.unnamedDevice
-        // One short write: the guard keeps an answer that landed since the read.
-        let changed = try await dbPool.write { db -> Int in
-            try db.execute(
-                sql: """
-                    UPDATE permission_requests SET status = ?, decided_at = ?, decided_by = ?
-                    WHERE id = ? AND terminal_session_id = ? AND status = 'pending'
-                    """,
-                arguments: [decided, stamp, name, requestID, sessionID]
-            )
-            return db.changesCount
+        switch try await control.answerPermission(requestID: requestID, sessionID: sessionID, allow: allow, decidedBy: name) {
+        case let .applied(decided): return .applied(["status": .string(decided)])
+        case .notFound: return notFound
+        case let .notPending(status): return Self.notPending(status)
+        case let .allowBlocked(block): return .failed(.answerOnMac, message: block.note)
+        case .notRunning: return .failed(.sessionNotRunning, message: Self.notRunningMessage)
         }
-        guard changed == 1 else {
-            let after = try await storedRequest(requestID, sessionID: sessionID)
-            return Self.notPending(after?.status ?? "")
-        }
-        return .applied(["status": .string(decided)])
-    }
-
-    /// What an answer needs of a stored request.
-    private struct StoredRequest {
-        let status: String
-        /// Why the phone may only deny it; nil when it may allow it.
-        let allowBlock: PermissionAllowBlock?
-    }
-
-    /// The row when it is `sessionID`'s request; nil otherwise. Shortened
-    /// as the phone saw it: Go's flag or the slice's own cap.
-    private func storedRequest(_ requestID: Int64, sessionID: Int64) async throws -> StoredRequest? {
-        try await dbPool.read { db in
-            guard let row = try Row.fetchOne(
-                db,
-                sql: """
-                    SELECT status, tool_name, summary, summary_clipped FROM permission_requests
-                    WHERE id = ? AND terminal_session_id = ?
-                    """,
-                arguments: [requestID, sessionID]
-            ) else { return nil }
-            let raw: String = row["summary"]
-            let clipped = PermissionRequestSlice.wireSummary(raw, clippedByGo: row["summary_clipped"]).clipped
-            let toolName: String = row["tool_name"]
-            return StoredRequest(
-                status: row["status"],
-                allowBlock: PermissionAllowBlock.check(toolName: toolName, summary: raw, clipped: clipped)
-                    ?? Self.resolvedSettingsPath(toolName: toolName, path: raw)
-            )
-        }
-    }
-
-    /// The Mac also checks the path with its symlinks resolved: a file or
-    /// folder linked into `.claude` must not read as an ordinary one. The
-    /// phone cannot resolve it, so only the hub refuses such an allow.
-    nonisolated static func resolvedSettingsPath(toolName: String, path: String) -> PermissionAllowBlock? {
-        guard PermissionAllowBlock.pathTools.contains(toolName), path.hasPrefix("/") else { return nil }
-        let url = URL(fileURLWithPath: path)
-        // An existing file resolves whole; the file a Write creates does
-        // not exist yet, and Foundation then resolves nothing: resolve the
-        // folder and keep the name.
-        let folder = url.deletingLastPathComponent().resolvingSymlinksInPath()
-        let candidates = [url.resolvingSymlinksInPath().path, folder.appendingPathComponent(url.lastPathComponent).path]
-        return candidates.lazy
-            .compactMap { PermissionAllowBlock.check(toolName: toolName, summary: $0, clipped: false) }
-            .first
     }
 
     /// `not_pending` with a message the phone shows as it is.
@@ -193,8 +137,8 @@ final class PermissionAnswerHandlers {
         let message = switch status {
         case "answered_on_mac": answeredOnMacMessage
         case "expired": tooLateMessage
-        case "allowed": "Already allowed from a phone"
-        case "denied": "Already denied from a phone"
+        case "allowed": "Already allowed"
+        case "denied": "Already denied"
         default: "This prompt is no longer waiting for an answer"
         }
         return .failed(.notPending, message: message)
@@ -210,42 +154,21 @@ final class PermissionAnswerHandlers {
             return .failed(.deviceNotAllowed, message: "This phone is not allowed to type into sessions")
         }
         guard try await isBoardSession(sessionID) else { return .failed(.notFound, message: Self.notFoundMessage) }
+        // Running and Working come before the action's age, as the phone's
+        // reasons always did; `control.interrupt` checks both again in the
+        // same main-actor turn, so they cannot differ.
         guard terminalCenter.liveIDs.contains(sessionID) else {
             return .failed(.sessionNotRunning, message: Self.notRunningMessage)
         }
-        guard let current = status(sessionID), Self.isWorking(current) else {
-            return .failed(.notWorking, message: "The agent is not working right now")
+        guard let current = status(sessionID), SessionControl.isWorking(current) else {
+            return .failed(.notWorking, message: Self.notWorkingMessage)
         }
         guard now().timeIntervalSince(action.createdAt) <= Self.interruptMaxAge else { return .expired }
-        // Claude Code draws a prompt before its hook reports it, so the
-        // state above may still say Working: a pending request means a
-        // prompt is on screen, and an Esc would reject it (spec §6).
-        guard try await !hasPendingRequest(sessionID) else {
-            return .failed(.notWorking, message: Self.needsApprovalMessage)
-        }
-        guard terminalCenter.sendInterrupt(sessionID: sessionID) else {
-            return .failed(.sessionNotRunning, message: Self.notRunningMessage)
-        }
-        return .applied()
-    }
-
-    private func hasPendingRequest(_ sessionID: Int64) async throws -> Bool {
-        try await dbPool.read { db in
-            try Bool.fetchOne(
-                db, sql: "SELECT EXISTS(SELECT 1 FROM permission_requests WHERE terminal_session_id = ? AND status = 'pending')",
-                arguments: [sessionID]
-            ) ?? false
-        }
-    }
-
-    /// Working for an interrupt: a live session whose current turn works,
-    /// or whose background agents do (Agents working).
-    static func isWorking(_ status: SessionAgentStatus) -> Bool {
-        guard status.state.live else { return false }
-        switch status.state.kind {
-        case .working, .background: return true
-        case .notStarted, .running, .needsApproval, .stopped, .finished, .waitingOnAsk, .readyToCheck, .failed:
-            return false
+        switch try await control.interrupt(sessionID) {
+        case .sent: return .applied()
+        case .notRunning: return .failed(.sessionNotRunning, message: Self.notRunningMessage)
+        case .notWorking: return .failed(.notWorking, message: Self.notWorkingMessage)
+        case .awaitingApproval: return .failed(.notWorking, message: Self.needsApprovalMessage)
         }
     }
 

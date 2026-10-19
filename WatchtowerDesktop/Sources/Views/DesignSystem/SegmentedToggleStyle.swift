@@ -6,7 +6,11 @@ import SwiftUI
 struct SegmentedToggleStyle: ToggleStyle {
     static let animation: Animation = .snappy(duration: 0.15)
 
-    /// Terminal's: the sessions chevron continues the segment on the right.
+    /// A twin's left half (Terminal): the other half continues it on the right.
+    var joinsRight = false
+    /// A twin's right half (Workchat): it continues the left half.
+    var joinsLeft = false
+    /// The sessions chevron continues the segment on the right.
     var joinsChevron = false
     /// False for a title-only segment: no icon copy, so no gap before the title.
     var showsIcon = true
@@ -21,7 +25,8 @@ struct SegmentedToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         let isOn = configuration.isOn
         let corner: CGFloat = 6
-        let trailing = joinsChevron ? 0 : corner
+        let leading = joinsLeft ? 0 : corner
+        let trailing = joinsChevron || joinsRight ? 0 : corner
         return Button {
             configuration.isOn.toggle()
         } label: {
@@ -44,7 +49,7 @@ struct SegmentedToggleStyle: ToggleStyle {
             .frame(height: 22)
             .background(
                 Self.fill(isOn: isOn, isHovered: isHovered),
-                in: UnevenRoundedRectangle(topLeadingRadius: corner, bottomLeadingRadius: corner,
+                in: UnevenRoundedRectangle(topLeadingRadius: leading, bottomLeadingRadius: leading,
                                            bottomTrailingRadius: trailing, topTrailingRadius: trailing,
                                            style: .continuous)
             )

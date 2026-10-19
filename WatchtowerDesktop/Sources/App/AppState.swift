@@ -1808,7 +1808,8 @@ final class AppState {
         let lineDelivery = SessionLineDelivery(terminalCenter: terminalCenter)
         let vm = WorkbenchesViewModel(
             dbPool: dbPool, cli: cliRunner.map { WorkbenchCLI(runner: $0) }, defaults: workbenchDefaults,
-            terminalCenter: terminalCenter, agentStates: agentStates, lineDelivery: lineDelivery
+            terminalCenter: terminalCenter, agentStates: agentStates, lineDelivery: lineDelivery,
+            sessionControl: makeSessionControl(dbPool: dbPool, agentStates: agentStates, lineDelivery: lineDelivery)
         )
         // Settings → Workbench → Default agent (board #399, D1), read at each launch.
         vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() }
