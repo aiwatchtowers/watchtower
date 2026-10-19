@@ -1,13 +1,15 @@
 import AppKit
 import SwiftUI
 
-/// The Workbench panel's right edge (board target #144): a strip the owner
-/// drags to resize the panel, within `widthRange`. It draws nothing — the
-/// edge line is the panel's own (`panelSurface()`), so the selected session
-/// row can cover it — and shows the workspace's backdrop behind it. `liveWidth` follows the
-/// drag; `width` (an `@AppStorage` value, so it survives a relaunch) is
-/// written once, when the drag ends. The ask drawer (spec 2026-10-03 Part 8)
-/// uses it on its leading edge: `range` its own, `growsLeftward` set.
+/// The drag strip on a side panel's edge: the owner drags it to resize the
+/// panel within `range`. It draws nothing — the edge line is the panel's own
+/// (`panelSurface()`, or a `Divider`), so a selected row can cover it — and
+/// shows whatever is behind it. `liveWidth` follows the drag; `width` (an
+/// `@AppStorage` value, so it survives a relaunch) is written once, when the
+/// drag ends. A panel on the trailing side sets `growsLeftward`. The statics
+/// below are the Workbench sessions panel's defaults (`range` defaults to
+/// `widthRange`); `PanelSplit`, the ask drawer and the target panel pass
+/// their own `range`.
 struct PanelResizeHandle: View {
     static let defaultWidth: Double = 260
     static let widthRange: ClosedRange<Double> = 200...480

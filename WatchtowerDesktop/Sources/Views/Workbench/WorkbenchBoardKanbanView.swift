@@ -280,9 +280,9 @@ private struct WorkbenchBoardKanbanLaneView: View {
                 .lineLimit(1)
             progress
             if let root = lane.root {
-                WorkbenchBoardChip(
+                Chip(
                     text: WorkbenchBoardCard.statusLabel(root.target.status),
-                    color: WorkbenchBoardColors.status(root.target.statusColor)
+                    color: Tone.status(root.target.statusColor)
                 )
             }
         }

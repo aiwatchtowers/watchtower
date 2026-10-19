@@ -3,17 +3,17 @@ import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
 
-/// The recorder's Stop reads in every state (#397): `.destructivePrimary`
+/// The recorder's Stop reads in every state (#397): `.kitDestructive`
 /// draws a white label on a red plate whatever the theme, the window's key
 /// state, the accent or the space the row leaves it — and the red
 /// `.borderedProminent` buttons it replaced stay gone.
 @MainActor
-final class DestructivePrimaryButtonStyleTests: XCTestCase {
+final class KitDestructiveButtonStyleTests: XCTestCase {
     private let probe = ViewRenderProbe(size: NSSize(width: 160, height: 44))
 
     private func stopButton() -> some View {
         Button {} label: { Label("Stop", systemImage: "stop.fill") }
-            .buttonStyle(.destructivePrimary)
+            .buttonStyle(.kitDestructive)
             .controlSize(.small)
     }
 
@@ -40,8 +40,8 @@ final class DestructivePrimaryButtonStyleTests: XCTestCase {
     }
 
     func testMetricsFollowControlSize() {
-        let small = DestructivePrimaryButtonStyle.metrics(for: .small)
-        let regular = DestructivePrimaryButtonStyle.metrics(for: .regular)
+        let small = KitDestructiveButtonStyle.metrics(for: .small)
+        let regular = KitDestructiveButtonStyle.metrics(for: .regular)
         XCTAssertEqual(small.fontSize, 11)
         XCTAssertLessThan(small.height, regular.height)
     }
@@ -64,13 +64,13 @@ final class DestructivePrimaryButtonStyleTests: XCTestCase {
             for (index, line) in lines.enumerated() where !Self.isComment(line) && Self.tintsRed(line) {
                 let nearby = lines[max(0, index - 3)...min(lines.count - 1, index + 3)].filter { !Self.isComment($0) }
                 XCTAssertFalse(nearby.contains { $0.contains(".borderedProminent") },
-                               "\(url.lastPathComponent):\(index + 1) uses a red .borderedProminent; use .destructivePrimary")
+                               "\(url.lastPathComponent):\(index + 1) uses a red .borderedProminent; use .kitDestructive")
             }
         }
         XCTAssertGreaterThan(scanned, 0, "the scan found no sources: wrong path?")
         let indicator = try String(contentsOf: sources.appendingPathComponent("Views/Calendar/RecordingIndicatorView.swift"),
                                    encoding: .utf8)
-        XCTAssertEqual(indicator.components(separatedBy: ".buttonStyle(.destructivePrimary)").count - 1, 2,
+        XCTAssertEqual(indicator.components(separatedBy: ".buttonStyle(.kitDestructive)").count - 1, 2,
                        "both Stop buttons (capsule and expanded panel) use the destructive style")
     }
 

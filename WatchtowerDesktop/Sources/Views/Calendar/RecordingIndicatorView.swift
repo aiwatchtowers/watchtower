@@ -245,7 +245,7 @@ struct RecordingIndicatorView: View {
             } label: {
                 Label("Stop", systemImage: "stop.fill")
             }
-            .buttonStyle(.destructivePrimary)
+            .buttonStyle(.kitDestructive)
             .controlSize(.small)
         }
         // Ideal width, never compressed: a squeezed capsule blanked the Stop
@@ -280,7 +280,7 @@ struct RecordingIndicatorView: View {
                 Button { expanded = false } label: { Image(systemName: corner.collapseChevron) }
                     .buttonStyle(.plain).controlSize(.small)
                 Button { stop(center) } label: { Label("Stop", systemImage: "stop.fill") }
-                    .buttonStyle(.destructivePrimary).controlSize(.small)
+                    .buttonStyle(.kitDestructive).controlSize(.small)
             }
             Divider()
             liveTranscriptBody(center)

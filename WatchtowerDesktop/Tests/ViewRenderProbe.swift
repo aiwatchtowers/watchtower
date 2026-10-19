@@ -16,7 +16,8 @@ struct ViewRenderProbe {
     let size: NSSize
 
     func render(_ view: some View, _ appearance: NSAppearance) throws -> NSBitmapImageRep {
-        let host = NSHostingView(rootView: view.frame(width: size.width, height: size.height))
+        let host = NSHostingView(rootView: view.frame(width: size.width, height: size.height)
+            .environment(\.controlActiveState, .key))
         host.frame = NSRect(origin: .zero, size: size)
         let window = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
@@ -36,6 +37,17 @@ struct ViewRenderProbe {
         context.cgContext.scaleBy(x: 1, y: -1)
         try XCTUnwrap(host.layer).render(in: context.cgContext)
         return bitmap
+    }
+
+    /// The height `view` wants at `width`, for a shot that sizes to its content.
+    static func fittingHeight(_ view: some View, width: CGFloat) -> CGFloat {
+        let host = NSHostingView(rootView: view.frame(width: width))
+        return ceil(host.fittingSize.height)
+    }
+
+    /// `render`'s bitmap as PNG data, for the design shots (`DesignShotsTests`).
+    func png(_ view: some View, _ appearance: NSAppearance) throws -> Data {
+        try XCTUnwrap(render(view, appearance).representation(using: .png, properties: [:]))
     }
 
     func pixel(_ bitmap: NSBitmapImageRep, x: Int, y: Int) throws -> RGBA {

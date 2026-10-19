@@ -198,8 +198,8 @@ struct GoToPalette: View {
             if let row = currentRows[session.id] {
                 SessionLiveDot(state: row.state).frame(width: 12)
                 Text(row.session.title).font(.callout).lineLimit(1).truncationMode(.tail)
-                if let badge = row.badge { WorkbenchCapsuleBadge(text: badge) }
-                if let tag = row.agentTag { AgentTag(text: tag) }
+                if let badge = row.badge { CountBadge(text: badge) }
+                if let tag = row.agentTag { OutlineTag(text: tag) }
                 // The dot only (§4b): its label reads the state out.
                 Spacer(minLength: 4)
             } else {
