@@ -105,7 +105,7 @@ struct GalleryPanelSplit: View {
 struct GalleryNewComponents: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.wide) {
-            GallerySection(title: "Buttons") { GallerySoftButtons() }
+            GallerySection(title: "Soft buttons") { GallerySoftButtons() }
             GallerySection(title: "Fields") { GalleryFields() }
             GallerySection(title: "Settings") { GallerySettings() }
             GallerySection(title: "Rows") { GalleryRows() }

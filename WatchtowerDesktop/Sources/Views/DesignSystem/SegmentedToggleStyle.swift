@@ -8,6 +8,8 @@ struct SegmentedToggleStyle: ToggleStyle {
 
     /// Terminal's: the sessions chevron continues the segment on the right.
     var joinsChevron = false
+    /// False for a title-only segment: no icon copy, so no gap before the title.
+    var showsIcon = true
     var isHovered: Bool
     var onHover: (Bool) -> Void
 
@@ -24,12 +26,14 @@ struct SegmentedToggleStyle: ToggleStyle {
             configuration.isOn.toggle()
         } label: {
             HStack(spacing: 6) {
-                configuration.label
-                    .labelStyle(.iconOnly)
-                    .font(.system(size: 14))
-                    .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
-                    // VoiceOver reads the title once, from the copy below.
-                    .accessibilityHidden(true)
+                if showsIcon {
+                    configuration.label
+                        .labelStyle(.iconOnly)
+                        .font(.system(size: 14))
+                        .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
+                        // VoiceOver reads the title once, from the copy below.
+                        .accessibilityHidden(true)
+                }
                 configuration.label
                     .labelStyle(.titleOnly)
                     .font(.system(size: 13, weight: .medium))

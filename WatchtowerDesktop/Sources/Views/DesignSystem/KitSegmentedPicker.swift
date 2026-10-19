@@ -10,7 +10,7 @@ struct KitSegment<Value: Hashable> {
 /// Pick one of 2–5 values in the Workbench header's capsule: the kit's
 /// replacement for `Picker` with `.segmented`. Each segment is a `Toggle`
 /// drawn by `SegmentedToggleStyle`; exactly one is on, and turning the
-/// selected one off does nothing.
+/// selected one off does nothing. Option values must be unique.
 struct KitSegmentedPicker<Value: Hashable>: View {
     @Binding var selection: Value
     let segments: [KitSegment<Value>]
@@ -36,13 +36,14 @@ struct KitSegmentedPicker<Value: Hashable>: View {
                         Label { Text(segment.title) } icon: { EmptyView() }
                     }
                 }
-                .toggleStyle(SegmentedToggleStyle(isHovered: hovered == segment.value) { inside in
+                .toggleStyle(SegmentedToggleStyle(showsIcon: segment.systemImage != nil, isHovered: hovered == segment.value) { inside in
                     if inside { hovered = segment.value } else if hovered == segment.value { hovered = nil }
                 })
             }
         }
         .padding(2)
         .frame(height: 26)
+        .fixedSize()
         .background(Self.containerFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
