@@ -1057,6 +1057,138 @@ func TestGate_ChildGoneRightAfterTheClaimIsASessionEnd(t *testing.T) {
 	assert.Equal(t, reasonSessionEnded, row.callErr)
 }
 
+// stopTestCall is r1/tu1 as the gate received it, with its pending row.
+func stopTestCall(t *testing.T, sink *fakeSink) (permissionRequest, int64) {
+	t.Helper()
+	req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
+	require.True(t, ok)
+	id, err := sink.ProposeConnectorCall(context.Background(), connectorCall("t1", req))
+	require.NoError(t, err)
+	return req, id
+}
+
+// cliAnswers closes p's stdin and returns everything the gate wrote to it.
+func cliAnswers(t *testing.T, p *claudeProc, r *os.File) string {
+	t.Helper()
+	require.NoError(t, p.stdin.Close())
+	rest, err := io.ReadAll(r)
+	require.NoError(t, err)
+	return string(rest)
+}
+
+// A stop the owner gave while the child lived stays the owner's stop when
+// the wait wakes only after Close stopped the child: rejected as stopped,
+// and denied.
+func TestGate_OwnerStopWinsOverTheExitItCaused(t *testing.T) {
+	sink := newFakeSink()
+	g, p, r := unitGate(t, sink)
+	req, id := stopTestCall(t, sink)
+	w := &gateWait{proc: p, stop: make(chan struct{}), done: make(chan struct{})}
+	w.signal(stopByOwner) // halt saw the child alive
+	close(p.stop)         // then Close stopped it, before the wait woke
+	close(p.exited)
+
+	require.True(t, g.settledByStopOrExit(p, req, w, id))
+	row := sink.row(id)
+	assert.Equal(t, "rejected", row.status)
+	assert.Equal(t, reasonStopped, row.reason)
+	assert.Contains(t, cliAnswers(t, p, r), denyStopped, "the owner's stop is answered")
+}
+
+// A child that had already exited when the stop came ended the call with its
+// session: expired as such, and no answer is written to the dead child.
+func TestGate_StopAfterTheChildExitedIsASessionEnd(t *testing.T) {
+	sink := newFakeSink()
+	g, p, r := unitGate(t, sink)
+	req, id := stopTestCall(t, sink)
+	w := &gateWait{proc: p, stop: make(chan struct{}), done: make(chan struct{})}
+	g.mu.Lock()
+	g.waits["r1"] = w
+	g.mu.Unlock()
+	close(w.done) // nothing to wait for: the test settles the call itself
+	close(p.exited)
+	g.halt(true)
+
+	require.True(t, g.settledByStopOrExit(p, req, w, id))
+	row := sink.row(id)
+	assert.Equal(t, "failed", row.status)
+	assert.Equal(t, reasonSessionEnded, row.reason)
+	assert.Empty(t, cliAnswers(t, p, r), "no answer is due to a dead child")
+}
+
+// halt snapshots each child's exit when the stop comes.
+func TestGate_HaltSnapshotsTheChildsExit(t *testing.T) {
+	sink := newFakeSink()
+	g, alive, _ := unitGate(t, sink)
+	dead, _ := pipeProc(t)
+	close(dead.exited)
+	waits := map[string]*gateWait{}
+	for id, p := range map[string]*claudeProc{"alive": alive, "dead": dead} {
+		w := &gateWait{proc: p, stop: make(chan struct{}), done: make(chan struct{})}
+		close(w.done)
+		waits[id] = w
+		g.waits[id] = w
+	}
+	g.halt(false)
+	assert.Equal(t, stopByOwner, waits["alive"].why)
+	assert.Equal(t, stopSessionEnded, waits["dead"].why)
+}
+
+// The claim twin: a stop that lands right after the claim settles the call
+// by the child's state at the stop, not at the wake.
+func TestGate_StopRightAfterTheClaimKeepsTheSnapshot(t *testing.T) {
+	for name, tc := range map[string]struct {
+		exitedBeforeStop bool
+		reason           string
+		denied           bool
+	}{
+		"owner stop, child alive": {false, reasonStopped, true},
+		"child already exited":    {true, reasonSessionEnded, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			sink := newFakeSink()
+			g, p, r := unitGate(t, sink)
+			halted := make(chan struct{})
+			sink.afterClaim = func(int64) {
+				g.mu.Lock()
+				w := g.waits["r1"]
+				g.mu.Unlock()
+				if tc.exitedBeforeStop {
+					close(p.exited)
+				}
+				go func() { g.halt(false); close(halted) }()
+				<-w.stop
+				if !tc.exitedBeforeStop {
+					close(p.stop) // Close stops the child after the stop
+					close(p.exited)
+				}
+			}
+			req, ok := parseControlRequest([]byte(gmailSend("r1", "tu1")))
+			require.True(t, ok)
+			g.dispatch(p, req)
+			sink.waitRows(t, 1)
+			require.True(t, sink.approve(1, ""))
+			<-halted
+			waitUntil(t, "the request to settle", func() bool {
+				g.mu.Lock()
+				defer g.mu.Unlock()
+				return len(g.waits) == 0
+			})
+
+			row := sink.row(1)
+			assert.Equal(t, "failed", row.status)
+			assert.Equal(t, tc.reason, row.callErr)
+			out := cliAnswers(t, p, r)
+			assert.NotContains(t, out, `"allow"`)
+			if tc.denied {
+				assert.Contains(t, out, denyStopped)
+			} else {
+				assert.Empty(t, out)
+			}
+		})
+	}
+}
+
 // A claimed call whose tool_result is an error lands failed with its text,
 // never applied.
 func TestGate_ErrorResultLandsFailed(t *testing.T) {

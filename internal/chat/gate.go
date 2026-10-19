@@ -146,13 +146,15 @@ func approvalWindow(d time.Duration) string {
 type stopReason int
 
 const (
-	stopByOwner   stopReason = iota // Stop or Close: the gate denies the call
-	stopWithdrawn                   // the CLI withdrew the request: no answer is due
+	stopByOwner      stopReason = iota // Stop or Close: the gate denies the call
+	stopWithdrawn                      // the CLI withdrew the request: no answer is due
+	stopSessionEnded                   // the child had already exited when the stop came; no answer is due
 )
 
 // gateWait is one request the gate is answering; registered by dispatch,
 // before its goroutine starts, so a Stop or a withdrawal never misses it.
 type gateWait struct {
+	proc     *claudeProc // the child the request came from
 	stop     chan struct{}
 	stopOnce sync.Once
 	why      stopReason
@@ -242,7 +244,7 @@ func (g *gate) expireOrphans(ctx context.Context) error {
 // dispatch answers req on its own goroutine: the reader never waits on a
 // decision, a write or the owner.
 func (g *gate) dispatch(p *claudeProc, req permissionRequest) {
-	w := &gateWait{stop: make(chan struct{}), done: make(chan struct{})}
+	w := &gateWait{proc: p, stop: make(chan struct{}), done: make(chan struct{})}
 	g.mu.Lock()
 	_, dup := g.waits[req.RequestID]
 	refused := g.closed || dup
@@ -457,20 +459,22 @@ func (g *gate) await(p *claudeProc, req permissionRequest, w *gateWait, id int64
 	}
 }
 
-// settledByStopOrExit settles a waiting call whose child is gone (expired,
-// nothing written) or that Stop, Close or the CLI withdrew (rejected or
-// expired, and denied when the owner stopped it). False when it may go on.
+// settledByStopOrExit settles a waiting call that Stop, Close or the CLI
+// withdrew (rejected or expired, and denied when the owner stopped it) or
+// whose child is gone (expired, nothing written). False when it may go on.
 //
-// A gone child wins over a stop: the turn ends on the child's exit, so a
-// Close right after it signals the stop before this wait wakes — the call
-// still ended with its session, and no answer can reach a dead child.
+// A stop wins over a gone child: Close stops the child after it signals the
+// stop, so by the time this wait wakes the child may be gone because of the
+// stop. Whether the child had already exited is snapshotted when the stop
+// comes (halt): a call whose child was dead before the stop lands as a
+// session end, with no answer, whenever this wait wakes.
 func (g *gate) settledByStopOrExit(p *claudeProc, req permissionRequest, w *gateWait, id int64) bool {
-	if childGone(p) {
-		g.expire(id, reasonSessionEnded)
-		return true
-	}
 	if stop, why := g.stopRequested(w); stop {
 		g.stopped(p, req, why, id)
+		return true
+	}
+	if childGone(p) {
+		g.expire(id, reasonSessionEnded)
 		return true
 	}
 	return false
@@ -514,15 +518,19 @@ func (g *gate) claim(p *claudeProc, req permissionRequest, w *gateWait, id int64
 	g.mu.Lock()
 	g.claimed[req.ToolUseID] = claimedCall{id: id, proc: p}
 	g.mu.Unlock()
-	if childGone(p) {
-		g.finish(req.ToolUseID, "", reasonSessionEnded)
-		return true
-	}
 	if stop, why := g.stopRequested(w); stop {
-		g.finish(req.ToolUseID, "", reasonStopped)
+		reason := reasonStopped
+		if why == stopSessionEnded {
+			reason = reasonSessionEnded
+		}
+		g.finish(req.ToolUseID, "", reason)
 		if why == stopByOwner {
 			g.answer(p, permissionDenyLine(req.RequestID, denyStopped))
 		}
+		return true
+	}
+	if childGone(p) {
+		g.finish(req.ToolUseID, "", reasonSessionEnded)
 		return true
 	}
 	line, err := permissionAllowLine(req.RequestID, input)
@@ -569,8 +577,14 @@ func (g *gate) timeOut(p *claudeProc, req permissionRequest, w *gateWait, id int
 }
 
 // stopped settles a call Stop, Close or the CLI's withdrawal ended: a pending
-// row is rejected, an approved one the session will not run is expired.
+// row is rejected, an approved one the session will not run is expired. A
+// call whose child had already exited when the stop came ended with its
+// session: expired as such, with no answer.
 func (g *gate) stopped(p *claudeProc, req permissionRequest, why stopReason, id int64) {
+	if why == stopSessionEnded {
+		g.expire(id, reasonSessionEnded)
+		return
+	}
 	cancelled, err := g.opts.Sink.CancelCall(context.Background(), id, reasonStopped)
 	if err != nil {
 		fmt.Fprintf(g.warn, "chat gate: cancelling action #%d: %v\n", id, err)
@@ -659,7 +673,8 @@ func (g *gate) withdraw(requestID string) {
 }
 
 // halt is Stop (closing=false) or Close (true): every waiting call is denied
-// and its row rejected or expired, and later asks are denied — until the
+// and its row rejected or expired (a call whose child had already exited is
+// expired as a session end, unanswered), and later asks are denied — until the
 // next turn after a Stop, every request for good after Close. It waits,
 // bounded, for the requests to settle, so their answers precede the
 // interrupt.
@@ -676,7 +691,16 @@ func (g *gate) halt(closing bool) {
 	}
 	g.mu.Unlock()
 	for _, w := range waits {
-		w.signal(stopByOwner)
+		// Snapshot the child's exit now, not when the wait wakes: Close stops
+		// the child right after this, and a call of a child that was alive at
+		// the stop is the owner's stop.
+		why := stopByOwner
+		select {
+		case <-w.proc.exited:
+			why = stopSessionEnded
+		default:
+		}
+		w.signal(why)
 	}
 	deadline := time.After(gateStopWait)
 	for id, w := range waits {
