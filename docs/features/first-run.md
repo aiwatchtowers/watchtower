@@ -461,11 +461,15 @@ the zone and the memory to persist out. Rules, first match wins:
    connects.
 7. Otherwise → shown, `firstShownAt` set once.
 
-A ready card stays in the zone with **Ready** + **Open** until every card is
-terminal (owner, ask #304); other cards show P1's `FeatureReadiness.line` —
-no new ETA phrase, no countdown, no counters. `off` features are not cards
-(they are P3's). Card text is `EmptyStateCopyTable.featureCard`
-(`EmptyStateCopy.swift:147`). **Open** goes to the feature's tab
+The zone is compact (owner, ask #432, 2026-10-19): a `HomeZone` titled
+GETTING READY with "N of M ready" — the zone's one counter —, one row per
+feature not ready yet (status dot, title, P1's `FeatureReadiness.line`, the
+row's fix; `whatItIs` is the tooltip), then the ready features as links on one
+**Ready** line, then the Connect rows. A ready feature stays on that line until
+every card is terminal (owner, ask #304); no new ETA phrase, no countdown.
+`off` features are not cards (they are P3's). Card text is
+`EmptyStateCopyTable.featureCard` (`EmptyStateCopy.swift:147`). A ready
+feature's link goes to its tab
 (`AppState.homeDestination`, `AppState+Home.swift:61`; Slack sync →
 Statistics, knowledge index → Search, Jira → Boards); **Connect** runs the
 empty states' `performEmptyStateAction(.connect)`. While the first sync runs,
@@ -565,19 +569,22 @@ right column of `HomeContent` (`Sources/Views/Home/HomeView.swift`) is
 `HomeSideColumn`: Workbench, links, numbers, in that order, each left
 out when empty; numbers show once their first read lands. Two columns from
 900 pt content width (`HomeContent.twoColumnWidth`), else one column in the order
-feed, Workbench, links, numbers. No migration, no AI, no daemon phase. A zone
+feed, Workbench, links, numbers. The two columns fill the whole window, split
+about 60/40 (`HomeColumnsLayout`, the mockup's 1.55 : 1; owner, ask #432) — no
+page width cap. No migration, no AI, no daemon phase. A zone
 whose read failed shows `HomeZoneErrorLine` ("Couldn't read <zone> — see the
 log.") and never reads as empty.
 
 - **Design kit** (style guide #719) — every zone, the feed included, is a
-  `HomeZone` (`HomeView.swift`): a `SectionHeader` (with the feed's count of
-  rows waiting, folded ones included) and a quiet trailing link over a
+  `HomeZone` (`HomeView.swift`): a `HomeZoneTitle` — small uppercase title as
+  in the mockup, then a dimmer detail such as the feed's count of rows
+  waiting, folded ones included (owner, ask #432) — and a quiet trailing link over a
   `.card()`; rows are `.kitRow` plates with no dividers between them (space
   separates the blocks, the next day and the suggestion), chips are the kit's
   `Chip` coloured from `Tone.feedKind` / `Tone.feedEvent`, and the NOW line,
   the meeting in progress, warnings, the all-clear and errors take `Tone.now`
   / `.warning` / `.success` / `.error`. The suggestion's Add is
-  `.kitSecondary` (the page has no prominent action). A feed row's hover
+  `.kitPrimary`, the page's one prominent action (ask #432). A feed row's hover
   buttons are hidden from accessibility while invisible; the row carries
   Open, and Done / Hide when it has them, as accessibility actions. Design
   shots: `home-wide` and `home-narrow` in `DesignShotCatalog`
@@ -594,7 +601,7 @@ log.") and never reads as empty.
   workbench, sorted by that order; asks oldest first; blocks by name; a
   workbench with only an ask still shows. Session rows link to the terminal,
   asks to `WorkbenchRoute.forAsk`; the suggestion is the last row (Add /
-  Dismiss through `decideInstructionSuggestion`, More… → Settings). View:
+  Dismiss through `decideInstructionSuggestion`; no More…, ask #432). View:
   `WorkbenchZoneView.swift`; header **Open →** is the Workbench tab. Shown
   when blocks, a suggestion or a failure exist (`HomeSnapshot.showsWorkbench`,
   `Home.swift:204`).

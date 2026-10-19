@@ -106,8 +106,6 @@ package enum HomeLink: Equatable, Sendable {
     case workbench(WorkbenchRoute)
     case workbenches
     case catchUp
-    /// Settings → System (the instruction suggestion's More…).
-    case instructionSettings
     /// Getting ready's Open.
     case feature(ReadinessFeature)
     /// Getting ready's Connect row.

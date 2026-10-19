@@ -52,6 +52,10 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "home-narrow", size: NSSize(width: 780, height: 1440)) {
                 HomeShotFixtures.home()
+            },
+            // A wide window: the columns fill it; Getting ready on top.
+            DesignShot(name: "home-getting-ready", size: NSSize(width: 1800, height: 1100)) {
+                HomeShotFixtures.home(gettingReady: true)
             }
         ] + CatalogPage.allCases.map { page in
             DesignShot(name: "catalog-\(page.rawValue)", size: NSSize(width: 900, height: 0)) {

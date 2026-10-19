@@ -87,7 +87,6 @@ struct HomeContent: View {
                 }
                 helpLine
             }
-            .frame(maxWidth: Self.maxPageWidth, alignment: .leading)
             .padding(.horizontal, Spacing.hero)
             .padding(.top, Spacing.wide)
             .padding(.bottom, Spacing.hero)
@@ -97,24 +96,19 @@ struct HomeContent: View {
         .navigationTitle("Home")
     }
 
-    /// The page's widest content; wider windows keep it on the leading side.
-    static let maxPageWidth: CGFloat = 1180
-
-    /// The feed and the right column side by side when the content is at
-    /// least `twoColumnWidth` wide, else one column: feed first. The columns
-    /// themselves need 880 pt (feed 520 + `Spacing.page` + column 340); the
-    /// row's minimum width holds the switch at the spec's 900.
+    /// The feed and the right column side by side across the whole width
+    /// when the content is at least `twoColumnWidth` wide, else one column:
+    /// feed first.
     private func columns(_ snapshot: HomeSnapshot) -> some View {
         let feed = FeedZoneView(
             feed: snapshot.feed, errors: feedErrors, onLink: onLink, onAct: onAct, onExpand: onExpand, now: today,
             calendar: calendar)
         let right = HomeSideColumn(snapshot: snapshot, onLink: onLink, onDecideSuggestion: onDecideSuggestion)
         return ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top, spacing: Spacing.page) {
-                feed.frame(minWidth: Self.feedMinWidth, idealWidth: Self.feedMinWidth, maxWidth: .infinity)
-                right.frame(width: Self.sideColumnWidth)
+            HomeColumnsLayout(spacing: Spacing.page) {
+                feed
+                right
             }
-            .frame(minWidth: Self.twoColumnWidth)
             VStack(alignment: .leading, spacing: Spacing.page) {
                 feed
                 right
@@ -124,8 +118,6 @@ struct HomeContent: View {
 
     /// The content width two columns start at (spec §3).
     static let twoColumnWidth: CGFloat = 900
-    static let feedMinWidth: CGFloat = 520
-    static let sideColumnWidth: CGFloat = 340
 
     private var helpLine: some View {
         HStack(spacing: 0) {
@@ -186,21 +178,55 @@ struct HomeSideColumn: View {
     }
 }
 
-/// A Home zone (style guide #719): a `SectionHeader` — with the zone's
-/// count when it has one — and optional trailing control over the content,
-/// on a kit card. Rows inside use `.kitRow`, whose plate insets the text by
-/// `Spacing.regular`; other content takes `homeZoneInset()` to line up.
+/// The feed and the right column side by side, split about 60/40 (the
+/// mockup's 1.55 : 1) across the whole proposed width; each column is as
+/// tall as its own content. Its ideal width is `HomeContent.twoColumnWidth`,
+/// so `ViewThatFits` falls back to one column below it.
+struct HomeColumnsLayout: Layout {
+    static let feedShare: CGFloat = 1.55 / 2.55
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache _: inout ()) -> CGSize {
+        let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? HomeContent.twoColumnWidth
+        let heights = zip(subviews, columnWidths(width)).map { subview, columnWidth in
+            subview.sizeThatFits(ProposedViewSize(width: columnWidth, height: nil)).height
+        }
+        return CGSize(width: width, height: heights.max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal _: ProposedViewSize, subviews: Subviews, cache _: inout ()) {
+        var x = bounds.minX
+        for (subview, columnWidth) in zip(subviews, columnWidths(bounds.width)) {
+            subview.place(
+                at: CGPoint(x: x, y: bounds.minY), anchor: .topLeading,
+                proposal: ProposedViewSize(width: columnWidth, height: nil))
+            x += columnWidth + spacing
+        }
+    }
+
+    /// The feed's and the right column's widths.
+    func columnWidths(_ width: CGFloat) -> [CGFloat] {
+        let feed = ((width - spacing) * Self.feedShare).rounded()
+        return [feed, width - spacing - feed]
+    }
+}
+
+/// A Home zone, as the mockup draws it: a small uppercase title with a
+/// dimmer detail (a count, a progress) and an optional trailing control over
+/// the content, on a kit card. Rows inside use `.kitRow`, whose plate insets
+/// the text by `Spacing.regular`; other content takes `homeZoneInset()` to
+/// line up.
 struct HomeZone<Trailing: View, Content: View>: View {
     let title: String
-    let systemImage: String
-    var count: Int?
+    /// After the title: "49", "6 of 11 ready"; nil shows the title alone.
+    var detail: String?
     @ViewBuilder var trailing: Trailing
     @ViewBuilder var content: Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.compact) {
             HStack(alignment: .center, spacing: Spacing.regular) {
-                SectionHeader(title: title, systemImage: systemImage, count: count)
+                HomeZoneTitle(title: title, detail: detail)
                 Spacer(minLength: Spacing.regular)
                 trailing
                     .buttonStyle(.kitQuiet)
@@ -219,8 +245,31 @@ struct HomeZone<Trailing: View, Content: View>: View {
 }
 
 extension HomeZone where Trailing == EmptyView {
-    init(title: String, systemImage: String, count: Int? = nil, @ViewBuilder content: () -> Content) {
-        self.init(title: title, systemImage: systemImage, count: count, trailing: { EmptyView() }, content: content)
+    init(title: String, detail: String? = nil, @ViewBuilder content: () -> Content) {
+        self.init(title: title, detail: detail, trailing: { EmptyView() }, content: content)
+    }
+}
+
+/// "WAITING ON YOU · 49": the zone's title in small caps, then its detail.
+struct HomeZoneTitle: View {
+    let title: String
+    var detail: String?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.small) {
+            Text(title)
+                .textCase(.uppercase)
+                .tracking(0.6)
+                .foregroundStyle(.secondary)
+            if let detail {
+                Text("· \(detail)")
+                    .monospacedDigit()
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .font(.caption.weight(.bold))
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
     }
 }
 
@@ -249,46 +298,11 @@ struct HomeZoneErrorLine: View {
     }
 }
 
-/// A zone's header: the title, an optional subtitle and trailing content.
-struct HomeZoneHeader<Trailing: View>: View {
-    let title: String
-    var subtitle: String?
-    @ViewBuilder var trailing: Trailing
-
+/// A Connect row's dashed outline.
+struct HomeDashedOutline: View {
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(title)
-                .font(.title3.weight(.semibold))
-            if let subtitle {
-                Text(subtitle)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer(minLength: 0)
-            trailing
-        }
-    }
-}
-
-extension HomeZoneHeader where Trailing == EmptyView {
-    init(title: String, subtitle: String? = nil) {
-        self.init(title: title, subtitle: subtitle) { EmptyView() }
-    }
-}
-
-/// A Home card's surface: the system control background with a hairline,
-/// or a dashed outline for a Connect row.
-struct HomeCardBackground: View {
-    var dashed = false
-
-    var body: some View {
-        let shape = RoundedRectangle(cornerRadius: 10, style: .continuous)
-        if dashed {
-            shape.strokeBorder(Color(nsColor: .separatorColor), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-        } else {
-            shape
-                .fill(Color(nsColor: .controlBackgroundColor))
-                .overlay(shape.strokeBorder(Color(nsColor: .separatorColor)))
-        }
+        RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
+            .strokeBorder(Color(nsColor: .separatorColor), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
     }
 }
 

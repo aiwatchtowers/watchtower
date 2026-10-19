@@ -13,7 +13,7 @@ struct WorkbenchZoneView: View {
     let onDecideSuggestion: (Int64, Bool) async -> String?
 
     var body: some View {
-        HomeZone(title: "Workbench", systemImage: "folder.badge.gearshape") {
+        HomeZone(title: "Workbench") {
             Button("Open →") { onLink(.workbenches) }
         } content: {
             if failed {
@@ -25,7 +25,7 @@ struct WorkbenchZoneView: View {
                     WorkbenchBlockView(block: block, onLink: onLink)
                 }
                 if let suggestion {
-                    HomeSuggestionRow(suggestion: suggestion, onLink: onLink, onDecide: onDecideSuggestion)
+                    HomeSuggestionRow(suggestion: suggestion, onDecide: onDecideSuggestion)
                         .id(suggestion.id)
                 }
             }
@@ -107,11 +107,9 @@ private struct WorkbenchBlockView: View {
 }
 
 /// The instruction suggestion: what the owner keeps telling agents, with
-/// Add / Dismiss (through the CLI) and More… (Settings → System). Add is a
-/// soft secondary button: the screen's one prominent action is not here.
+/// Add (Home's one prominent action) / Dismiss through the CLI.
 private struct HomeSuggestionRow: View {
     let suggestion: HomeInstructionSuggestion
-    let onLink: (HomeLink) -> Void
     let onDecide: (Int64, Bool) async -> String?
     @State private var busy = false
     @State private var errorText: String?
@@ -126,10 +124,8 @@ private struct HomeSuggestionRow: View {
             }
             HStack(spacing: Spacing.small) {
                 Button("Add") { decide(add: true) }
-                    .buttonStyle(.kitSecondary)
+                    .buttonStyle(.kitPrimary)
                 Button("Dismiss") { decide(add: false) }
-                    .buttonStyle(.kitQuiet)
-                Button("More\u{2026}") { onLink(.instructionSettings) }
                     .buttonStyle(.kitQuiet)
             }
             .controlSize(.small)

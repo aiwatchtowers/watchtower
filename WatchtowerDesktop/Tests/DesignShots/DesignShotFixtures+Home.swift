@@ -19,10 +19,12 @@ enum HomeShotFixtures {
 
     private static let now = Date(timeIntervalSince1970: 1_792_406_400) // 2026-10-19 10:40 UTC
 
-    static func home() -> AnyView {
+    /// `gettingReady`: a first run still preparing, as on a new install.
+    static func home(gettingReady: Bool = false) -> AnyView {
         do {
             return AnyView(HomeContent(
-                snapshot: try snapshot(), today: now, calendar: calendar,
+                snapshot: try snapshot(gettingReady: gettingReady ? Self.gettingReady : .hidden),
+                today: now, calendar: calendar,
                 feedErrors: [.target(4): "The database is locked."],
                 onLink: { _ in }, onHideGettingReady: {}))
         } catch {
@@ -31,7 +33,30 @@ enum HomeShotFixtures {
         }
     }
 
-    private static func snapshot() throws -> HomeSnapshot {
+    /// Six features ready, five still preparing, and Jira to connect.
+    private static let gettingReady: GettingReadyZone = {
+        func card(_ feature: ReadinessFeature, _ title: String, _ readiness: Readiness) -> GettingReadyCard {
+            GettingReadyCard(
+                feature: feature, copy: FeatureCardCopy(title: title, whatItIs: "\(title) sentence."),
+                readiness: readiness)
+        }
+        let cards = [
+            card(.slackSync, "Slack sync", .scheduled(.nextCycle(minutes: 15))),
+            card(.digests, "Digests", .preparing(detail: "Messages · 3/10 channels")),
+            card(.streamDigests, "Stream digests", .scheduled(.inHours(5))),
+            card(.tracks, "Tracks", .scheduled(.nextCycle(minutes: 15))),
+            card(.peopleCards, "People cards", .scheduled(.nextCycle(minutes: 15))),
+            card(.briefing, "Briefing", .ready),
+            card(.dayPlan, "Day plan", .ready),
+            card(.ideas, "Ideas", .ready),
+            card(.inbox, "Inbox", .ready),
+            card(.knowledgeIndex, "Knowledge search", .ready),
+            card(.calendar, "Calendar", .ready)
+        ]
+        return .shown(cards: cards, sourceRows: [GettingReadySourceRow(source: .jira, features: [.jira])])
+    }()
+
+    private static func snapshot(gettingReady: GettingReadyZone) throws -> HomeSnapshot {
         let asks = try TestDatabase.create().write { db in
             let acme = try TestDatabase.insertWorkbench(db, name: "acme", folder: "/tmp/acme")
             XCTAssertEqual(acme, 1, "the sessions' workbench")
@@ -56,7 +81,7 @@ enum HomeShotFixtures {
         numbers.workbenchDone = 3
         numbers.meetingsRecorded = 1
         return HomeSnapshot(
-            gettingReady: .hidden, firstSync: nil, feed: feed(),
+            gettingReady: gettingReady, firstSync: nil, feed: feed(),
             workbench: HomeWorkbenchBuilder.blocks(sessions: sessions, asks: asks),
             suggestion: HomeInstructionSuggestion(id: 5, text: "run the linter before committing"),
             links: [

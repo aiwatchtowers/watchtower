@@ -82,9 +82,6 @@ extension AppState {
         case .workbench(let route): navigateToWorkbench(route)
         case .workbenches: selectedDestination = .workbench
         case .catchUp: selectedDestination = .catchUp
-        case .instructionSettings:
-            settingsTab = .system
-            openSettingsWindow?()
         case .feature(let feature): selectedDestination = Self.homeDestination(for: feature)
         case .connect(let source): performEmptyStateAction(.connect(source))
         case .turnOn(let featureID): performEmptyStateAction(.turnOn(featureID: featureID))
