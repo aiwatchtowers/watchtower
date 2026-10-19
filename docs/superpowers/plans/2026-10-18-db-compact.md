@@ -4,7 +4,7 @@
 
 **Goal:** The first launch after compaction became due runs `VACUUM` on `watchtower.db` before the Desktop opens its pool and before the daemon starts — visibly, skippably, never at the cost of data or disk.
 
-**Architecture:** Go owns every rule: a `db_maintenance` table (migration 00142), a check/run engine in `internal/db/compact.go`, and the `watchtower db compact [--check|--if-due] [--force] [--json]` command with fixed exit codes. The Desktop only runs the CLI: `DatabaseCompactionStep` (WatchtowerCore, injected CLI runner and clock) drives the step and its launch-screen state; `AppState.initialize()` splits migrate → compact → open and gates every daemon start while the step runs.
+**Architecture:** Go owns every rule: a `db_maintenance` table (migration 00145), a check/run engine in `internal/db/compact.go`, and the `watchtower db compact [--check|--if-due] [--force] [--json]` command with fixed exit codes. The Desktop only runs the CLI: `DatabaseCompactionStep` (WatchtowerCore, injected CLI runner and clock) drives the step and its launch-screen state; `AppState.initialize()` splits migrate → compact → open and gates every daemon start while the step runs.
 
 **Tech Stack:** Go 1.26, `modernc.org/sqlite`, goose, cobra; SwiftUI/Observation (macOS 14), WatchtowerCore + XCTest.
 
@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Migration number **00142** (`internal/db/migrations/00142_db_maintenance.sql`); the highest on `main` at planning time is 00141. If another branch lands 00142 first, renumber at merge (file name only; nothing else keys on the number).
+- Migration number **00145** (`internal/db/migrations/00145_db_maintenance.sql`); the highest on `main` at planning time is 00141. If another branch lands 00145 first, renumber at merge (file name only; nothing else keys on the number).
 - `compactAfterMigrations = []int64{134}`; freelist rule: `freelist_count * page_size > 256 MiB` **and** `freelist_count > 0.25 * page_count`; disk rule `free_disk_bytes >= 2 * db_bytes`; failure cap 3 per CLI version.
 - `--check` never writes and never migrates (opens with `db.OpenExisting`); `db compact` opens with `db.OpenExistingRW`, `SetBusyTimeout(30 * time.Second)`; neither ever calls `db.Open`/`openDBFromConfig`.
 - Exit codes of `db compact`: 0 compacted / not_due, 1 other error, 2 `disk`, 3 `daemon_running`, 4 `interrupted`, 5 `schema_pending`. Flag misuse (e.g. `--check --force`) is exit **1**, never `usageError` (that is exit 2 = disk).
@@ -41,12 +41,12 @@
 
 ---
 
-### Task 1: `db_maintenance` table (migration 00142)
+### Task 1: `db_maintenance` table (migration 00145)
 
 **Depends on:** none
 
 **Files:**
-- Create: `internal/db/migrations/00142_db_maintenance.sql`
+- Create: `internal/db/migrations/00145_db_maintenance.sql`
 - Modify: `internal/db/schema.sql`, `internal/db/db_test.go` (`TestAllTablesExist` list)
 - Regenerate: `internal/db/testdata/*.golden`, `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift`
 
@@ -353,7 +353,7 @@ Launch task order: `syncCLIBinaryStore` → `startPolling` → `offPool { migrat
 
 **Files:**
 - Create: `docs/features/db-compact.md` (rules D1–D4 with the constants, exit codes, launch order, the D6 accepted effects, the rowid guard and what to do if it fails, the failure cap)
-- Modify: `docs/features/tray-daemon-lifecycle.md` (launch order: migrate → compact → open → daemon), `docs/app-guide.md` (launch line, Skip for now, disk/gave-up notices), `.claude/skills/add-migration/SKILL.md` (a step/gotcha: a migration that frees a lot of space adds its version to `compactAfterMigrations` in `internal/db/compact.go`), `CLAUDE.md` (one Feature Notes bullet linking `docs/features/db-compact.md`), the 00142 migration's doc comment is already in Task 1; also add the same one-line rule to the doc comment above `compactAfterMigrations`.
+- Modify: `docs/features/tray-daemon-lifecycle.md` (launch order: migrate → compact → open → daemon), `docs/app-guide.md` (launch line, Skip for now, disk/gave-up notices), `.claude/skills/add-migration/SKILL.md` (a step/gotcha: a migration that frees a lot of space adds its version to `compactAfterMigrations` in `internal/db/compact.go`), `CLAUDE.md` (one Feature Notes bullet linking `docs/features/db-compact.md`), the 00145 migration's doc comment is already in Task 1; also add the same one-line rule to the doc comment above `compactAfterMigrations`.
 
 - [ ] **Step 1:** write/modify the docs; no live numbers, no local paths.
 - [ ] **Step 2:** `bash scripts/leak-check.sh` over the branch's commits if runnable locally, else grep the diff for `/Users/` and real ids → none.

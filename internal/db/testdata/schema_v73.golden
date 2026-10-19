@@ -201,6 +201,30 @@ CREATE INDEX idx_inbox_learned_rules_scope ON inbox_learned_rules(rule_type, sco
 index	idx_instruction_suggestions_status
 CREATE INDEX idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at)
 
+index	idx_issue_slack_links_channel
+CREATE INDEX idx_issue_slack_links_channel ON issue_slack_links(channel_id, message_ts)
+
+index	idx_issue_slack_links_decision_identity
+CREATE UNIQUE INDEX idx_issue_slack_links_decision_identity
+ON issue_slack_links(tracker, issue_key, digest_id) WHERE link_type = 'decision'
+
+index	idx_issue_slack_links_digest
+CREATE INDEX idx_issue_slack_links_digest ON issue_slack_links(digest_id)
+
+index	idx_issue_slack_links_issue
+CREATE INDEX idx_issue_slack_links_issue ON issue_slack_links(issue_key)
+
+index	idx_issue_slack_links_mention_identity
+CREATE UNIQUE INDEX idx_issue_slack_links_mention_identity
+ON issue_slack_links(tracker, issue_key, channel_id, message_ts) WHERE link_type = 'mention'
+
+index	idx_issue_slack_links_track
+CREATE INDEX idx_issue_slack_links_track ON issue_slack_links(track_id)
+
+index	idx_issue_slack_links_track_identity
+CREATE UNIQUE INDEX idx_issue_slack_links_track_identity
+ON issue_slack_links(tracker, issue_key, track_id) WHERE link_type = 'track'
+
 index	idx_jira_comments_issue
 CREATE INDEX idx_jira_comments_issue ON jira_comments(account_id, issue_key)
 
@@ -255,30 +279,6 @@ CREATE INDEX idx_jira_issues_synced ON jira_issues(synced_at)
 index	idx_jira_issues_updated
 CREATE INDEX idx_jira_issues_updated ON jira_issues(updated_at)
 
-index	idx_jira_slack_links_channel
-CREATE INDEX idx_jira_slack_links_channel ON jira_slack_links(channel_id, message_ts)
-
-index	idx_jira_slack_links_decision_identity
-CREATE UNIQUE INDEX idx_jira_slack_links_decision_identity
-ON jira_slack_links(issue_key, digest_id) WHERE link_type = 'decision'
-
-index	idx_jira_slack_links_digest
-CREATE INDEX idx_jira_slack_links_digest ON jira_slack_links(digest_id)
-
-index	idx_jira_slack_links_issue
-CREATE INDEX idx_jira_slack_links_issue ON jira_slack_links(issue_key)
-
-index	idx_jira_slack_links_mention_identity
-CREATE UNIQUE INDEX idx_jira_slack_links_mention_identity
-ON jira_slack_links(issue_key, channel_id, message_ts) WHERE link_type = 'mention'
-
-index	idx_jira_slack_links_track
-CREATE INDEX idx_jira_slack_links_track ON jira_slack_links(track_id)
-
-index	idx_jira_slack_links_track_identity
-CREATE UNIQUE INDEX idx_jira_slack_links_track_identity
-ON jira_slack_links(issue_key, track_id) WHERE link_type = 'track'
-
 index	idx_kb_documents_source_time
 CREATE INDEX idx_kb_documents_source_time ON kb_documents(source, doc_time_unix)
 
@@ -327,11 +327,17 @@ CREATE INDEX idx_linear_issues_team ON linear_issues(account_id, team_id)
 index	idx_linear_issues_updated
 CREATE INDEX idx_linear_issues_updated ON linear_issues(updated_at)
 
+index	idx_linear_labels_team
+CREATE INDEX idx_linear_labels_team ON linear_labels(account_id, team_id)
+
 index	idx_linear_relations_issue
 CREATE INDEX idx_linear_relations_issue ON linear_relations(account_id, issue_id)
 
 index	idx_linear_relations_related
 CREATE INDEX idx_linear_relations_related ON linear_relations(account_id, related_issue_id, type)
+
+index	idx_linear_states_team
+CREATE INDEX idx_linear_states_team ON linear_workflow_states(account_id, team_id, position)
 
 index	idx_linear_teams_key
 CREATE INDEX idx_linear_teams_key ON linear_teams(key)
@@ -1041,11 +1047,11 @@ updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 )
 
 table	day_plan_items
-CREATE TABLE day_plan_items (
+CREATE TABLE "day_plan_items" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 day_plan_id INTEGER NOT NULL,
 kind TEXT NOT NULL CHECK (kind IN ('timeblock','backlog')),
-source_type TEXT NOT NULL CHECK (source_type IN ('task','briefing_attention','jira','calendar','manual','focus')),
+source_type TEXT NOT NULL CHECK (source_type IN ('task','briefing_attention','jira','linear','calendar','manual','focus')),
 source_id TEXT,
 title TEXT NOT NULL,
 description TEXT,
@@ -1361,7 +1367,7 @@ table	idea_mentions
 CREATE TABLE "idea_mentions" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 idea_id INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
-source TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap')),
+source TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap','linear')),
 ref TEXT NOT NULL DEFAULT '',
 quote TEXT NOT NULL DEFAULT '',
 author TEXT NOT NULL DEFAULT '',
@@ -1423,6 +1429,7 @@ sender_user_id TEXT NOT NULL,
 trigger_type TEXT NOT NULL CHECK(trigger_type IN (
 'mention','dm','thread_reply','reaction',
 'jira_assigned','jira_comment_mention','jira_comment_watching','jira_status_change','jira_priority_change',
+'linear_assigned','linear_comment_mention',
 'calendar_invite','calendar_time_change','calendar_cancelled',
 'decision_made','briefing_ready',
 'target_due',
@@ -1480,6 +1487,19 @@ last_seen_at TEXT NOT NULL,
 status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','added','dismissed')),
 fingerprint TEXT NOT NULL UNIQUE,
 decided_at TEXT NULL
+)
+
+table	issue_slack_links
+CREATE TABLE issue_slack_links (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+tracker TEXT NOT NULL DEFAULT 'jira' CHECK (tracker IN ('jira','linear')),
+issue_key TEXT NOT NULL,
+channel_id TEXT NOT NULL DEFAULT '',
+message_ts TEXT NOT NULL DEFAULT '',
+track_id INTEGER,
+digest_id INTEGER,
+link_type TEXT NOT NULL DEFAULT 'mention',
+detected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 )
 
 table	jira_accounts
@@ -1639,18 +1659,6 @@ archived INTEGER NOT NULL DEFAULT 0,
 synced_at TEXT NOT NULL DEFAULT '',
 PRIMARY KEY (account_id, id),
 UNIQUE(account_id, project_key, name)
-)
-
-table	jira_slack_links
-CREATE TABLE "jira_slack_links" (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-issue_key TEXT NOT NULL,
-channel_id TEXT NOT NULL DEFAULT '',
-message_ts TEXT NOT NULL DEFAULT '',
-track_id INTEGER,
-digest_id INTEGER,
-link_type TEXT NOT NULL DEFAULT 'mention',
-detected_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 )
 
 table	jira_sprints
@@ -1848,6 +1856,15 @@ is_deleted INTEGER NOT NULL DEFAULT 0,
 PRIMARY KEY (account_id, id)
 )
 
+table	linear_labels
+CREATE TABLE linear_labels (
+account_id INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+id TEXT NOT NULL,
+team_id TEXT NOT NULL DEFAULT '',
+name TEXT NOT NULL DEFAULT '',
+PRIMARY KEY (account_id, id)
+)
+
 table	linear_projects
 CREATE TABLE linear_projects (
 account_id INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
@@ -1901,6 +1918,17 @@ slack_user_id TEXT NOT NULL DEFAULT '',
 match_method TEXT NOT NULL DEFAULT '',
 match_confidence REAL NOT NULL DEFAULT 0,
 resolved_at TEXT NOT NULL DEFAULT ''
+)
+
+table	linear_workflow_states
+CREATE TABLE linear_workflow_states (
+account_id INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
+team_id TEXT NOT NULL DEFAULT '',
+id TEXT NOT NULL,
+name TEXT NOT NULL DEFAULT '',
+type TEXT NOT NULL DEFAULT '',
+position REAL NOT NULL DEFAULT 0,
+PRIMARY KEY (account_id, id)
 )
 
 table	meeting_notes
@@ -2609,7 +2637,7 @@ created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 table	stream_digests
 CREATE TABLE "stream_digests" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
-source TEXT NOT NULL CHECK(source IN ('gmail','jira','imap')),
+source TEXT NOT NULL CHECK(source IN ('gmail','jira','imap','linear')),
 account_id INTEGER NOT NULL,
 scope TEXT NOT NULL DEFAULT '',
 period_from TEXT NOT NULL,
@@ -2683,7 +2711,7 @@ sub_items TEXT NOT NULL DEFAULT '[]',
 notes TEXT NOT NULL DEFAULT '[]',
 progress REAL NOT NULL DEFAULT 0.0,
 source_type TEXT NOT NULL DEFAULT 'manual'
-CHECK(source_type IN ('extract','track','digest','briefing','manual','chat','inbox','jira','slack','promoted_subitem','idea')),
+CHECK(source_type IN ('extract','track','digest','briefing','manual','chat','inbox','jira','linear','slack','promoted_subitem','idea')),
 source_id TEXT NOT NULL DEFAULT '',
 ai_level_confidence REAL DEFAULT NULL,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
@@ -4374,6 +4402,17 @@ GROUP BY up.ancestor
 9	fingerprint	TEXT	notnull=1	dflt=NULL	pk=0
 10	decided_at	TEXT	notnull=0	dflt=NULL	pk=0
 
+## issue_slack_links
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	tracker	TEXT	notnull=1	dflt='jira'	pk=0
+2	issue_key	TEXT	notnull=1	dflt=NULL	pk=0
+3	channel_id	TEXT	notnull=1	dflt=''	pk=0
+4	message_ts	TEXT	notnull=1	dflt=''	pk=0
+5	track_id	INTEGER	notnull=0	dflt=NULL	pk=0
+6	digest_id	INTEGER	notnull=0	dflt=NULL	pk=0
+7	link_type	TEXT	notnull=1	dflt='mention'	pk=0
+8	detected_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
 ## jira_accounts
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	cloud_id	TEXT	notnull=1	dflt=''	pk=0
@@ -4527,16 +4566,6 @@ GROUP BY up.ancestor
 6	released	INTEGER	notnull=1	dflt=0	pk=0
 7	archived	INTEGER	notnull=1	dflt=0	pk=0
 8	synced_at	TEXT	notnull=1	dflt=''	pk=0
-
-## jira_slack_links
-0	id	INTEGER	notnull=0	dflt=NULL	pk=1
-1	issue_key	TEXT	notnull=1	dflt=NULL	pk=0
-2	channel_id	TEXT	notnull=1	dflt=''	pk=0
-3	message_ts	TEXT	notnull=1	dflt=''	pk=0
-4	track_id	INTEGER	notnull=0	dflt=NULL	pk=0
-5	digest_id	INTEGER	notnull=0	dflt=NULL	pk=0
-6	link_type	TEXT	notnull=1	dflt='mention'	pk=0
-7	detected_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 
 ## jira_sprints
 0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -4714,6 +4743,12 @@ GROUP BY up.ancestor
 33	synced_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 34	is_deleted	INTEGER	notnull=1	dflt=0	pk=0
 
+## linear_labels
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	id	TEXT	notnull=1	dflt=NULL	pk=2
+2	team_id	TEXT	notnull=1	dflt=''	pk=0
+3	name	TEXT	notnull=1	dflt=''	pk=0
+
 ## linear_projects
 0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
 1	id	TEXT	notnull=1	dflt=NULL	pk=2
@@ -4754,6 +4789,14 @@ GROUP BY up.ancestor
 4	match_method	TEXT	notnull=1	dflt=''	pk=0
 5	match_confidence	REAL	notnull=1	dflt=0	pk=0
 6	resolved_at	TEXT	notnull=1	dflt=''	pk=0
+
+## linear_workflow_states
+0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	team_id	TEXT	notnull=1	dflt=''	pk=0
+2	id	TEXT	notnull=1	dflt=NULL	pk=2
+3	name	TEXT	notnull=1	dflt=''	pk=0
+4	type	TEXT	notnull=1	dflt=''	pk=0
+5	position	REAL	notnull=1	dflt=0	pk=0
 
 ## meeting_notes
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

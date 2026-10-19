@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,6 +20,10 @@ var graphqlEndpoint = "https://api.linear.app/graphql"
 // ErrRateLimited means Linear's request or complexity budget is exhausted and
 // the reset is too far away to wait for. The syncer holds its watermark.
 var ErrRateLimited = errors.New("linear rate limited")
+
+// ErrNotFound wraps Linear's "Entity not found" GraphQL error: the id names
+// nothing the token can see.
+var ErrNotFound = errors.New("linear entity not found")
 
 const (
 	minRequestsRemaining   = 5
@@ -91,6 +96,9 @@ func classifyGraphQLErrors(errs []gqlError) (authFailed bool, err error) {
 			return false, fmt.Errorf("%w: %s", ErrRateLimited, e.Message)
 		}
 	}
+	if strings.HasPrefix(errs[0].Message, "Entity not found") {
+		return false, fmt.Errorf("%w: %s", ErrNotFound, errs[0].Message)
+	}
 	return false, fmt.Errorf("linear graphql: %s", errs[0].Message)
 }
 
@@ -104,13 +112,17 @@ func (c *Client) Do(ctx context.Context, query string, vars map[string]any, out 
 		if err := c.gate.wait(ctx); err != nil {
 			return err
 		}
-		access, err := c.getAccessToken(ctx)
+		access, isKey, err := c.getAccessToken(ctx)
 		if err != nil {
 			return err
 		}
-		authFailed, err := c.send(ctx, body, access, out)
+		authFailed, err := c.send(ctx, body, access, isKey, out)
 		if !authFailed {
 			return err
+		}
+		if isKey {
+			// A personal API key has nothing to refresh: a rejection is final.
+			return fmt.Errorf("%w: API key rejected", ErrAuthRevoked)
 		}
 		if attempt > 0 {
 			return fmt.Errorf("%w: request rejected after token refresh", ErrAuthRevoked)
@@ -123,13 +135,17 @@ func (c *Client) Do(ctx context.Context, query string, vars map[string]any, out 
 
 // send performs one HTTP round trip. authFailed reports an authentication
 // failure (HTTP 401 or AUTHENTICATION_ERROR), which the caller may retry once.
-func (c *Client) send(ctx context.Context, body []byte, access string, out any) (authFailed bool, err error) {
+func (c *Client) send(ctx context.Context, body []byte, access string, isKey bool, out any) (authFailed bool, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+access)
+	if isKey {
+		req.Header.Set("Authorization", access) // personal API keys go without a Bearer prefix
+	} else {
+		req.Header.Set("Authorization", "Bearer "+access)
+	}
 	resp, err := c.http.Do(req) // endpoint is a package var, overridden only by tests
 	if err != nil {
 		return false, fmt.Errorf("linear request: %w", err)
@@ -163,33 +179,38 @@ func (c *Client) send(ctx context.Context, body []byte, access string, out any) 
 	return false, nil
 }
 
-// getAccessToken loads the current token, refreshing if expired.
-func (c *Client) getAccessToken(ctx context.Context) (string, error) {
+// getAccessToken loads the current token, refreshing if expired. isKey reports
+// a personal API key, which is used as-is and never refreshed.
+func (c *Client) getAccessToken(ctx context.Context) (access string, isKey bool, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	token, err := c.store.Load()
 	if err != nil {
-		return "", fmt.Errorf("loading token: %w", err)
+		return "", false, fmt.Errorf("loading token: %w", err)
+	}
+	if token.IsAPIKey() {
+		return token.AccessToken, true, nil
 	}
 	if !token.IsExpired() {
-		return token.AccessToken, nil
+		return token.AccessToken, false, nil
 	}
 	// Expired: refresh under the cross-process lock, re-reading first — another
 	// process may have rotated the refresh token while this one waited.
 	unlock, err := c.store.Lock(ctx)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	defer unlock()
 	token, err = c.store.Load()
 	if err != nil {
-		return "", fmt.Errorf("loading token: %w", err)
+		return "", false, fmt.Errorf("loading token: %w", err)
 	}
 	if !token.IsExpired() {
-		return token.AccessToken, nil
+		return token.AccessToken, false, nil
 	}
-	return c.refreshAndSave(ctx, token)
+	access, err = c.refreshAndSave(ctx, token)
+	return access, false, err
 }
 
 // refreshIfCurrent refreshes the stored token only if its access token still

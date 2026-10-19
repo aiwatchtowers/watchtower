@@ -39,7 +39,7 @@ const (
 // on a reader. Tests mutate this; no t.Parallel.
 var compactBusy = 30 * time.Second
 
-// db_maintenance keys (migration 00142).
+// db_maintenance keys (migration 00145).
 const (
 	maintLastCompactedVersion   = "last_compacted_version"
 	maintCompactedAt            = "compacted_at"
@@ -195,7 +195,7 @@ type queryRower interface {
 }
 
 // readMaintenance reads key from db_maintenance. A missing table (a database
-// not yet migrated to 00142) or key reads ("", false, nil).
+// not yet migrated to 00145) or key reads ("", false, nil).
 func readMaintenance(q queryRower, key string) (string, bool, error) {
 	var hasTable bool
 	if err := q.QueryRow(`SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'db_maintenance')`).Scan(&hasTable); err != nil {

@@ -241,12 +241,13 @@ final class SessionCleanupSweepTests: XCTestCase {
                       "the key is written as the hint goes up on the page")
         XCTAssertEqual(runner.calls.first?.args,
                        ["workbench", "cleanup", "--workbench=2", "--sweep", "--live-session=3", "--json"])
-        XCTAssertEqual(cleanup.cleanupPhase(for: .workbench(workbenchID)), .idle, "the hint's plan is not kept")
+        XCTAssertEqual(try? readyPlan(cleanup).items.count, 4, "the hint's plan is kept for the sheet")
 
         await vm.watchCleanupHint(projectID: workbenchID)
         XCTAssertEqual(runner.calls.count, 1, "never planned again")
         vm.dismissCleanupHint(projectID: workbenchID)
         XCTAssertNil(vm.cleanupHints[workbenchID])
+        XCTAssertEqual(cleanup.cleanupPhase(for: .workbench(workbenchID)), .idle, "the ✕ forgets the hint's plan")
 
         // The next launch: shown before, so never planned for again.
         let (next, _) = makeVM(runner)
@@ -448,6 +449,98 @@ final class SessionCleanupSweepTests: XCTestCase {
 
         XCTAssertNil(vm.cleanupHints[workbenchID])
         XCTAssertTrue(defaults.bool(forKey: WorkbenchesViewModel.cleanupHintShownKey(workbenchID)))
+    }
+
+    /// The hint's **Review**: the sheet shows the plan the hint already
+    /// made instead of walking every worktree again (board #704).
+    func testSheetOpenedFromTheHintReusesItsPlan() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        let (vm, cleanup) = makeVM(runner)
+        await vm.watchCleanupHint(projectID: workbenchID)
+
+        vm.sweepSheetAppeared(projectID: workbenchID)
+        await vm.planSweepForSheet(projectID: workbenchID)
+
+        XCTAssertEqual(runner.calls.count, 1, "no second plan")
+        XCTAssertEqual(try readyPlan(cleanup).items.count, 4)
+    }
+
+    /// Closing the sheet while it plans leaves the plan running; reopening
+    /// waits for that plan instead of starting over (board #704).
+    func testClosingTheSheetMidPlanKeepsThePlanForTheNextOpen() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        runner.holdsCalls = true
+        let (vm, cleanup) = makeVM(runner)
+        vm.sweepSheetAppeared(projectID: workbenchID)
+        let first = Task { await vm.planSweepForSheet(projectID: workbenchID) }
+        while runner.heldCount == 0 { await Task.yield() }
+        first.cancel()
+        vm.closeSweepSheet(projectID: workbenchID)
+        vm.sweepSheetDisappeared(projectID: workbenchID)
+        XCTAssertEqual(cleanup.cleanupPhase(for: .workbench(workbenchID)), .planning, "the plan goes on")
+
+        vm.sweepSheetAppeared(projectID: workbenchID)
+        var secondEnded = false
+        let second = Task {
+            await vm.planSweepForSheet(projectID: workbenchID)
+            secondEnded = true
+        }
+        for _ in 0..<20 { await Task.yield() }
+        XCTAssertFalse(secondEnded, "the reopened sheet waits for the running plan")
+        runner.release()
+        await second.value
+
+        XCTAssertEqual(runner.calls.count, 1, "the reopened sheet waits for the running plan")
+        XCTAssertEqual(runner.cancelledCount, 0)
+        XCTAssertEqual(try readyPlan(cleanup).items.count, 4)
+
+        // A ready plan is forgotten on close: the next open plans afresh.
+        vm.closeSweepSheet(projectID: workbenchID)
+        XCTAssertEqual(cleanup.cleanupPhase(for: .workbench(workbenchID)), .idle)
+    }
+
+    /// A sheet's plan stalled on a read is stopped at its time limit and
+    /// shows a failure, closed and reopened or not (board #704).
+    func testStalledSheetPlanFailsAtItsTimeLimit() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan)])
+        runner.holdsCalls = true
+        let (vm, cleanup) = makeVM(runner)
+        vm.cleanupHintTimeLimit = .milliseconds(50)
+        vm.sweepSheetAppeared(projectID: workbenchID)
+        let first = Task { await vm.planSweepForSheet(projectID: workbenchID) }
+        while runner.heldCount == 0 { await Task.yield() }
+        first.cancel()
+        vm.closeSweepSheet(projectID: workbenchID)
+        vm.sweepSheetDisappeared(projectID: workbenchID)
+
+        vm.sweepSheetAppeared(projectID: workbenchID)
+        let reopened = Task { await vm.planSweepForSheet(projectID: workbenchID) }
+        try await Task.sleep(for: .milliseconds(150))
+        runner.release() // the real runner ends the child on cancel
+        await reopened.value
+
+        guard case let .failed(message) = cleanup.cleanupPhase(for: .workbench(workbenchID)) else {
+            return XCTFail("expected the stopped plan to fail, got \(cleanup.cleanupPhase(for: .workbench(workbenchID)))")
+        }
+        XCTAssertTrue(message.contains("was stopped"), message)
+        XCTAssertEqual(runner.cancelledCount, 1)
+        XCTAssertEqual(runner.calls.count, 1, "the reopened sheet waited for the same plan")
+    }
+
+    /// A ready plan older than the reuse window is planned again.
+    func testOldReadyPlanIsPlannedAgain() async throws {
+        let runner = FakeSessionCleanupRunner(replies: [.success(SweepFixture.plan), .success(SweepFixture.plan)])
+        let (vm, cleanup) = makeVM(runner)
+        var clock = Date(timeIntervalSince1970: 1_000_000)
+        cleanup.now = { clock }
+        await vm.watchCleanupHint(projectID: workbenchID)
+        clock += WorkbenchesViewModel.sweepPlanReuseWindow + 1
+
+        vm.sweepSheetAppeared(projectID: workbenchID)
+        await vm.planSweepForSheet(projectID: workbenchID)
+
+        XCTAssertEqual(runner.calls.count, 2, "a stale hint plan is not shown")
+        XCTAssertEqual(try readyPlan(cleanup).items.count, 4)
     }
 
     /// Opening the sweep before the hint plan ever ran answers it too.

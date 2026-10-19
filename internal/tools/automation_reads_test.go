@@ -554,7 +554,7 @@ func TestD23Tools_AutomationSurfaceOnly(t *testing.T) {
 		inReadTools[rt.Name] = true
 	}
 	d23 := AutomationReadTools()
-	require.Len(t, d23, 10)
+	require.Len(t, d23, 11)
 	for _, tool := range d23 {
 		assert.False(t, inReadTools[tool.Name], "%s must not be in ReadTools() (DEV-01)", tool.Name)
 		assert.True(t, tool.VisibleOn(AutomationSurface), tool.Name)

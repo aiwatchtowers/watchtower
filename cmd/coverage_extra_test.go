@@ -228,7 +228,7 @@ func TestPrintTracks_ChannelLookup(t *testing.T) {
 	}
 
 	buf := new(bytes.Buffer)
-	printTracks(buf, tracks, database, false)
+	printTracks(buf, tracks, database, false, false)
 	assert.Contains(t, buf.String(), "#general")
 }
 

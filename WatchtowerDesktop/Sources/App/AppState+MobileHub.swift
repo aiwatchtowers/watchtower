@@ -154,7 +154,8 @@ extension AppState {
             dbPool: dbPool, terminalCenter: terminalCenter,
             status: { [weak agentStates = sessionAgentStateCenter] in agentStates?.statuses[$0] },
             deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
-            deviceName: { [sidecar = storage.sidecar] in MobileLinkCenter.deviceName(sidecar, deviceID: $0) }
+            deviceName: { [sidecar = storage.sidecar] in MobileLinkCenter.deviceName(sidecar, deviceID: $0) },
+            control: workbenchesViewModel?.sessionControl
         ).register(on: dispatcher)
     }
 
@@ -167,7 +168,8 @@ extension AppState {
                 dbPool: dbPool, sidecar: storage.sidecar, lineDelivery: vm.lineDelivery, terminalCenter: terminalCenter,
                 status: { [weak agentStates = sessionAgentStateCenter] in agentStates?.statuses[$0] },
                 deviceGrant: { [sidecar = storage.sidecar] in MobileLinkCenter.sessionGrant(sidecar, deviceID: $0) },
-                lateEcho: RelayProcessor.lateEcho(transport: storage.secure, sidecar: storage.sidecar)
+                lateEcho: RelayProcessor.lateEcho(transport: storage.secure, sidecar: storage.sidecar),
+                control: vm.sessionControl
             )
         }
     }

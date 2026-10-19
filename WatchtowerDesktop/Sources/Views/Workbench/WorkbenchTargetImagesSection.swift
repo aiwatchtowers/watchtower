@@ -11,7 +11,7 @@ struct WorkbenchTargetImagesSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            WorkbenchDetailSectionHeader(title: "Images", systemImage: "photo", count: images.count)
+            SectionHeader(title: "Images", systemImage: "photo", count: images.count)
             LazyVGrid(
                 columns: [GridItem(.adaptive(minimum: 96, maximum: 140), spacing: 8)],
                 alignment: .leading,

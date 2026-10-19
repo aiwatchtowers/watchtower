@@ -284,11 +284,11 @@ func (p *Pipeline) runJiraDigests(ctx context.Context, bound time.Time) error {
 // single updated_at. Both escapes are logged: they are the only two ways a
 // stage-1 prompt exceeds ideas.max_prompt_chars, and an operator who set the
 // cap too low should be able to see why.
-func (p *Pipeline) renderJiraWindow(accountID int64, issues []db.JiraIssue, commentsByIssue map[string][]db.JiraComment, budget int) (string, map[string]bool, string) {
+func (p *Pipeline) renderJiraWindow(what string, issues []db.JiraIssue, commentsByIssue map[string][]db.JiraComment, budget int) (string, map[string]bool, string) {
 	block, tags := renderJiraBlock(issues, commentsByIssue, budget, "")
 	if len(block) > budget {
-		p.logf("ideas: jira account %d: issue %s alone renders %d chars, over the %d-char ideas.max_prompt_chars cap — rendered anyway so this window is mined instead of stalling",
-			accountID, issues[0].Key, len(block), budget)
+		p.logf("ideas: %s: issue %s alone renders %d chars, over the %d-char ideas.max_prompt_chars cap — rendered anyway so this window is mined instead of stalling",
+			what, issues[0].Key, len(block), budget)
 	}
 	floor, boundary, ok := renderedJiraFloor(issues, tags)
 	if ok {
@@ -300,8 +300,8 @@ func (p *Pipeline) renderJiraWindow(accountID int64, issues []db.JiraIssue, comm
 	// the whole group rather than stall; the loader already drains its own
 	// LIMIT cut this way.
 	block, tags = renderJiraBlock(issues, commentsByIssue, budget, boundary)
-	p.logf("ideas: jira account %d: the %d-char ideas.max_prompt_chars cap cut inside updated_at %s — rendered that whole group (%d chars) so the floor can pass it",
-		accountID, budget, boundary, len(block))
+	p.logf("ideas: %s: the %d-char ideas.max_prompt_chars cap cut inside updated_at %s — rendered that whole group (%d chars) so the floor can pass it",
+		what, budget, boundary, len(block))
 
 	drainedFloor, _, drainedOK := renderedJiraFloor(issues, tags)
 	if drainedOK {
@@ -311,8 +311,8 @@ func (p *Pipeline) renderJiraWindow(accountID int64, issues []db.JiraIssue, comm
 	// it anyway — the alternative is a pass that can never move — so this is
 	// the one branch where material is genuinely lost, and it is a fault, not
 	// a statistic: the ceiling is sized so ordinary bulk edits cannot reach it.
-	p.logf("ideas: ERROR: jira account %d: %d issue(s) sharing updated_at %s were NOT rendered — the boundary drain stopped at %s; the floor passes that timestamp, so they will not be mined",
-		accountID, countUnrenderedJiraTies(issues, tags, boundary), boundary,
+	p.logf("ideas: ERROR: %s: %d issue(s) sharing updated_at %s were NOT rendered — the boundary drain stopped at %s; the floor passes that timestamp, so they will not be mined",
+		what, countUnrenderedJiraTies(issues, tags, boundary), boundary,
 		drainCeilings(len(block)))
 	return block, tags, boundary
 }
@@ -326,6 +326,17 @@ const jiraLaggingProjectOverlap = 2 * time.Minute
 // (logged) so a permanently broken board cannot stall Jira mining forever.
 const jiraLaggingProjectMaxAge = 7 * 24 * time.Hour
 
+// trackerStream names one tracker's ideas stream for the shared floor-clamp
+// helpers below: the log label and the unit a failing sync is counted in. The
+// Linear stream reuses the Jira rule (spec §5: the floor holds back on a
+// failing team as on a failing project).
+type trackerStream struct{ name, unit string }
+
+var (
+	jiraStream   = trackerStream{name: "jira", unit: "project"}
+	linearStream = trackerStream{name: "linear", unit: "team"}
+)
+
 // failingJiraProjectClamp returns the instant a pass must not mine past
 // because one of the account's selected projects is currently failing to sync
 // (ok=false: no such project). jira.Syncer.Sync skips a failing project and
@@ -337,25 +348,34 @@ func (p *Pipeline) failingJiraProjectClamp(accountID int64, now time.Time) (time
 	if err != nil {
 		return time.Time{}, false, err
 	}
+	clamp, ok := p.laggingSyncClamp(jiraStream, accountID, lagging, now)
+	return clamp, ok, nil
+}
+
+// laggingSyncClamp turns the oldest failing unit's last successful sync
+// (lagging, "" = none) into the instant a pass must not mine past, or ok=false
+// when nothing holds the floor: no failing unit, an unparseable stamp, or a
+// unit failing for longer than jiraLaggingProjectMaxAge (abandoned, logged).
+func (p *Pipeline) laggingSyncClamp(s trackerStream, accountID int64, lagging string, now time.Time) (time.Time, bool) {
 	if lagging == "" {
-		return time.Time{}, false, nil
+		return time.Time{}, false
 	}
 	synced, ok := parseSyncStamp(lagging)
 	if !ok {
-		p.logf("ideas: jira account %d: unparseable project last_synced_at %q, not clamping the floor", accountID, lagging)
-		return time.Time{}, false, nil
+		p.logf("ideas: %s account %d: unparseable %s last_synced_at %q, not clamping the floor", s.name, accountID, s.unit, lagging)
+		return time.Time{}, false
 	}
 	if now.Sub(synced) > jiraLaggingProjectMaxAge {
-		p.logAbandonedProjectOnce(accountID, lagging, now)
-		return time.Time{}, false, nil
+		p.logAbandonedProjectOnce(s, accountID, lagging, now)
+		return time.Time{}, false
 	}
-	return synced.Add(-jiraLaggingProjectOverlap), true, nil
+	return synced.Add(-jiraLaggingProjectOverlap), true
 }
 
-// logAbandonedProjectOnce logs that a long-failing project no longer holds
-// the floor, at most once per (account, stalled stamp) per UTC day.
-func (p *Pipeline) logAbandonedProjectOnce(accountID int64, lagging string, now time.Time) {
-	key := fmt.Sprintf("%d|%s|%s", accountID, lagging, now.UTC().Format("2006-01-02"))
+// logAbandonedProjectOnce logs that a long-failing project (or team) no longer
+// holds the floor, at most once per (stream, account, stalled stamp) per UTC day.
+func (p *Pipeline) logAbandonedProjectOnce(s trackerStream, accountID int64, lagging string, now time.Time) {
+	key := fmt.Sprintf("%s|%d|%s|%s", s.name, accountID, lagging, now.UTC().Format("2006-01-02"))
 	if p.abandonedProjectLogged[key] {
 		return
 	}
@@ -363,13 +383,19 @@ func (p *Pipeline) logAbandonedProjectOnce(accountID int64, lagging string, now 
 		p.abandonedProjectLogged = map[string]bool{}
 	}
 	p.abandonedProjectLogged[key] = true
-	p.logf("ideas: jira account %d: a selected project has failed to sync since %s (over %s) — no longer holding the ideas floor for it", accountID, lagging, jiraLaggingProjectMaxAge)
+	p.logf("ideas: %s account %d: a selected %s has failed to sync since %s (over %s) — no longer holding the ideas floor for it", s.name, accountID, s.unit, lagging, jiraLaggingProjectMaxAge)
 }
 
 // passBeforeISO combines the pass's optional backfill bound and the
 // failing-project clamp into one string upper bound ("" = unbounded).
 func (p *Pipeline) passBeforeISO(accountID int64, bound time.Time) (string, error) {
-	clamp, clamped, err := p.failingJiraProjectClamp(accountID, time.Now())
+	return p.boundedBeforeISO(jiraStream, accountID, bound, p.failingJiraProjectClamp)
+}
+
+// boundedBeforeISO is passBeforeISO for any stream: clamp is that stream's
+// failing-unit clamp.
+func (p *Pipeline) boundedBeforeISO(s trackerStream, accountID int64, bound time.Time, clamp func(int64, time.Time) (time.Time, bool, error)) (string, error) {
+	at, clamped, err := clamp(accountID, time.Now())
 	if err != nil {
 		return "", err
 	}
@@ -378,9 +404,9 @@ func (p *Pipeline) passBeforeISO(accountID int64, bound time.Time) (string, erro
 		before = db.FormatJiraTime(bound)
 	}
 	if clamped {
-		c := db.FormatJiraTime(clamp)
+		c := db.FormatJiraTime(at)
 		if before == "" || c < before {
-			p.logf("ideas: jira account %d: a selected project is failing to sync — mining only up to %s", accountID, c)
+			p.logf("ideas: %s account %d: a selected %s is failing to sync — mining only up to %s", s.name, accountID, s.unit, c)
 			before = c
 		}
 	}
@@ -470,8 +496,9 @@ func (p *Pipeline) jiraDigestPass(ctx context.Context, acct db.JiraAccount, floo
 		return floor, err
 	}
 
+	what := fmt.Sprintf("jira account %d", acct.ID)
 	budget := p.maxPromptChars()
-	block, tags, renderedTo := p.renderJiraWindow(acct.ID, issues, commentsByIssue, budget)
+	block, tags, renderedTo := p.renderJiraWindow(what, issues, commentsByIssue, budget)
 	if renderedTo == "" {
 		// Unreachable: the drain leaves every issue at the boundary timestamp
 		// rendered, so a non-empty issues always yields a floor. Fail loudly
@@ -479,7 +506,6 @@ func (p *Pipeline) jiraDigestPass(ctx context.Context, acct db.JiraAccount, floo
 		return floor, fmt.Errorf("no issue rendered from %d jira issues", len(issues))
 	}
 
-	what := fmt.Sprintf("jira account %d", acct.ID)
 	topics, err := p.mineStreamTopics(ctx, "ideas.digest_jira", what, block, "", tags)
 	if err != nil {
 		return floor, err

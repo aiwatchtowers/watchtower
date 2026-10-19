@@ -48,7 +48,8 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 
 - [Targets](features/targets.md) — your own to-do list, with a next step per target and an assistant that breaks work down on your instruction
 - [Tracks](features/tracks.md) — the requests and decisions waiting on you, pulled out of Slack digests, plus custom watches on topics you describe
-- [Jira and Linear](features/jira-and-linear.md) — see stuck, late and overloaded work across your Jira boards, and connect Linear
+- [Jira and Linear](features/jira-and-linear.md) — see stuck, late and overloaded work across your Jira boards and Linear teams
+- [Linear](features/linear.md) — connect Linear workspaces, pick teams, and let the assistant read and change Linear issues
 
 ## Insights
 
@@ -62,6 +63,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Workbench](features/workbench/README.md) — a folder, a board, agent sessions and asks: what a workbench is and how to start one
 - [Board and targets](features/workbench/board-and-targets.md) — the plan the agent and you share: Kanban, grouping, archive and the git drift check
 - [Sessions](features/workbench/sessions.md) — what each session's state means, and how to start, find, resume and clear them
+- [Workchat](features/workbench/workchat.md) — read a session's dialog as a chat, write to the agent, stop it and answer its permission prompts
 - [Session report and analytics](features/workbench/session-report.md) — a session's progress line, its Session view and what its agents cost
 - [Updates and quitting](features/workbench/updates-and-quitting.md) — what keeps running when you update, quit or restart with sessions at work
 - [Asks](features/workbench/asks.md) — reviews, checks and decisions the agent files for you, and how your answer gets back

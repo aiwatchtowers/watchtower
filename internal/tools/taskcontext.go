@@ -21,7 +21,7 @@ const (
 )
 
 type getTaskContextArgs struct {
-	Key string `json:"key" jsonschema:"Jira issue key, e.g. PROJ-123"`
+	Key string `json:"key" jsonschema:"Jira or Linear issue key, e.g. PROJ-123 (a Linear key the issue had before a team move works too)"`
 }
 
 type taskIssue struct {
@@ -50,7 +50,7 @@ type taskMessage struct {
 	Permalink string `json:"permalink,omitempty"`
 }
 
-// taskThread is a linked Slack conversation. jira_slack_links names one message;
+// taskThread is a linked Slack conversation. issue_slack_links names one message;
 // the value is the discussion around it, so the tool resolves the message to its
 // thread and returns the replies.
 type taskThread struct {
@@ -88,13 +88,16 @@ type taskContext struct {
 	Notes      []string             `json:"notes,omitempty"`
 }
 
-// NewGetTaskContext assembles everything Watchtower knows about a Jira issue: the
-// ticket, its comments, the linked Slack threads, meetings that mentioned it,
-// recorded decisions, Confluence pages, and the people involved.
+// NewGetTaskContext assembles everything Watchtower knows about a Jira or Linear
+// issue: the ticket, its comments, the linked Slack threads, meetings that
+// mentioned it, recorded decisions, Confluence pages (Jira), and the people
+// involved. A key is looked up in Jira first (a key both trackers carry
+// resolves to the Jira issue, unchanged), then in Linear by its current or a
+// previous key.
 func NewGetTaskContext() *Tool {
 	return &Tool{
 		Name: "get_task_context",
-		Description: "Assemble everything Watchtower knows about a Jira issue: the ticket and its " +
+		Description: "Assemble everything Watchtower knows about a Jira or Linear issue: the ticket and its " +
 			"comments, the Slack threads where it was discussed, meetings that mentioned it, " +
 			"recorded decisions, the Confluence pages that mention it, and the people involved. Use before starting work on a ticket — " +
 			"it carries the context the ticket text does not.",
@@ -115,7 +118,14 @@ func NewGetTaskContext() *Tool {
 				return nil, fmt.Errorf("loading issue: %w", err)
 			}
 			if issue == nil {
-				return nil, fmt.Errorf("no issue with key %s", key)
+				lin, lerr := d.GetLinearIssueDossier(key)
+				if lerr != nil {
+					return nil, fmt.Errorf("loading issue: %w", lerr)
+				}
+				if lin == nil {
+					return nil, fmt.Errorf("no issue with key %s", key)
+				}
+				return linearTaskContext(d, lin), nil
 			}
 
 			out := taskContext{Issue: taskIssue{
@@ -131,7 +141,7 @@ func NewGetTaskContext() *Tool {
 			out.Comments, out.Notes = collectTaskComments(d, key, people, out.Notes)
 			out.Threads, out.Notes = collectTaskThreads(d, key, people, out.Notes)
 			out.Meetings, out.Notes = collectTaskMeetings(d, key, out.Notes)
-			out.Decisions, out.Notes = collectTaskDecisions(d, key, out.Notes)
+			out.Decisions, out.Notes = collectTaskDecisions(d, "jira", []string{key}, out.Notes)
 			out.Confluence, out.Notes = collectTaskConfluence(ctx, d, key, out.Notes)
 			out.People = people.list()
 
@@ -161,6 +171,13 @@ func collectTaskThreads(d *db.DB, key string, people *personSet, notes []string)
 	if err != nil {
 		return nil, append(notes, "linked slack threads unavailable: "+err.Error())
 	}
+	return threadsFromLinks(d, links, people, notes)
+}
+
+// threadsFromLinks resolves each mention link to its Slack thread (deduped,
+// capped at taskContextMaxThreads) — the shared body of the Jira and Linear
+// dossiers' thread sections.
+func threadsFromLinks(d *db.DB, links []db.IssueSlackLink, people *personSet, notes []string) ([]taskThread, []string) {
 	var out []taskThread
 	seen := map[string]bool{}
 	for _, l := range links {
@@ -288,19 +305,28 @@ func collectTaskMeetings(d *db.DB, key string, notes []string) ([]taskMeeting, [
 	return out, notes
 }
 
-func collectTaskDecisions(d *db.DB, key string, notes []string) ([]taskDecision, []string) {
-	// idea_mentions stores a bare issue key as the ref for source='jira', and
-	// (source, ref) is indexed (migration 00051) — ListIdeasByMentionRef joins
-	// on it directly, so a decision is found regardless of registry size.
-	ideas, err := d.ListIdeasByMentionRef("jira", key, taskContextMaxIdeas)
-	if err != nil {
-		return nil, append(notes, "registry unavailable: "+err.Error())
-	}
-	out := make([]taskDecision, 0, len(ideas))
-	for _, idea := range ideas {
-		out = append(out, taskDecision{
-			ID: idea.ID, Kind: idea.Kind, Title: idea.Title, Essence: idea.Essence, Status: idea.Status,
-		})
+func collectTaskDecisions(d *db.DB, source string, keys []string, notes []string) ([]taskDecision, []string) {
+	// idea_mentions stores a bare issue key as the ref for source='jira' and
+	// source='linear', and (source, ref) is indexed (migration 00051) —
+	// ListIdeasByMentionRef joins on it directly, so a decision is found
+	// regardless of registry size. A Linear issue is looked up under every
+	// key it has had (a mention minted before a team move keeps its old key).
+	var out []taskDecision
+	seen := map[int64]bool{}
+	for _, key := range keys {
+		ideas, err := d.ListIdeasByMentionRef(source, key, taskContextMaxIdeas)
+		if err != nil {
+			return nil, append(notes, "registry unavailable: "+err.Error())
+		}
+		for _, idea := range ideas {
+			if seen[idea.ID] || len(out) >= taskContextMaxIdeas {
+				continue
+			}
+			seen[idea.ID] = true
+			out = append(out, taskDecision{
+				ID: idea.ID, Kind: idea.Kind, Title: idea.Title, Essence: idea.Essence, Status: idea.Status,
+			})
+		}
 	}
 	if len(out) == 0 {
 		return nil, notes

@@ -49,7 +49,7 @@ With `--json` the result is the **last** stdout line on every outcome, errors in
 - `--check`: `due`, `reason` (`migration:<v>`, `freelist`, `schema_pending`, `gave_up` or `""`), `db_bytes`, `wal_bytes`, `free_disk_bytes`, `needs_disk_bytes` (= 2 × `db_bytes`, `needsDiskBytes`), `disk_ok`. A `--check` that fails (flag misuse, config, workspace, the read) prints the run shape instead: `{"compacted":false,"error":"…"}`, exit 1.
 - run: `compacted`, then as they apply `skipped`, `reason`, `bytes_before`, `bytes_after`, `duration_ms`, `error`, `failures`, `gave_up`, `checkpoint_busy`.
 
-## D4. State — `db_maintenance` (migration 00142)
+## D4. State — `db_maintenance` (migration 00145)
 
 `db_maintenance(key TEXT PRIMARY KEY, value TEXT NOT NULL)`, values as text: `last_compacted_version`, `compacted_at`, `compact_failures`, `compact_failures_version`. Absent key = never compacted / no failures. A value that is not an integer where one is expected is an error, not a zero.
 

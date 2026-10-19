@@ -144,9 +144,10 @@ func buildExtractPrompt(tmpl string, req ExtractRequest, enrichments []Enrichmen
 	)
 }
 
-// IsValidExternalRef reports whether ref has an allowed prefix ("jira:" or "slack:").
+// IsValidExternalRef reports whether ref has an allowed prefix ("jira:",
+// "linear:" or "slack:").
 func IsValidExternalRef(ref string) bool {
-	return strings.HasPrefix(ref, "jira:") || strings.HasPrefix(ref, "slack:")
+	return strings.HasPrefix(ref, "jira:") || strings.HasPrefix(ref, "linear:") || strings.HasPrefix(ref, "slack:")
 }
 
 // validLevels and validPriorities mirror the targets table's CHECK
@@ -273,7 +274,7 @@ func parseExtractResponse(raw string, activeSnapshot []db.Target, logger *log.Lo
 			// Validate external_ref allowlist before building the link.
 			if sl.ExternalRef != "" && !IsValidExternalRef(sl.ExternalRef) {
 				if logger != nil {
-					logger.Printf("targets/extractor: invalid external_ref %q (must start with jira: or slack:) — dropping link", sl.ExternalRef)
+					logger.Printf("targets/extractor: invalid external_ref %q (must start with jira:, linear: or slack:) — dropping link", sl.ExternalRef)
 				}
 				continue
 			}

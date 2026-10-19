@@ -1,8 +1,28 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The overview's tables: tasks, sessions, commands, and tokens & cost.
-/// Plain grids with a header row; numbers right-aligned.
+// The overview's tables: tasks, sessions, commands, and tokens & cost.
+// Plain grids with a header row; numbers right-aligned. Tasks and
+// sessions show their first rows until Show all.
+
+/// A long table's first `shown` rows, or all of them after "Show all N".
+struct AgentAnalyticsTopRows<Row, Table: View>: View {
+    let rows: [Row]
+    let shown: Int
+    @ViewBuilder let table: (_ rows: [Row]) -> Table
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.small) {
+            table(expanded ? rows : Array(rows.prefix(shown)))
+            if rows.count > shown {
+                Button(expanded ? "Show top \(shown)" : "Show all \(rows.count)") { expanded.toggle() }
+                    .buttonStyle(.link)
+                    .font(.callout)
+            }
+        }
+    }
+}
 
 /// Per board target: calendar time, time in review, agent time and cost; a
 /// row whose agent time was split with other targets says "shared". A row
@@ -96,7 +116,7 @@ struct AgentAnalyticsModelsTable: View {
     let tokens: AgentTokens
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
             Text(tokenLine).font(.caption).foregroundStyle(.secondary)
             if !models.isEmpty {
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {

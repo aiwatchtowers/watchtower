@@ -1,6 +1,7 @@
 package agentreport
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"time"
@@ -37,20 +38,24 @@ type SessionRow struct {
 
 // Overview is the report of one workbench over a period (`agents report --json`).
 type Overview struct {
-	WorkbenchID       int64        `json:"workbench_id"`
-	Enabled           bool         `json:"enabled"`
-	Since             string       `json:"since"`
-	Until             string       `json:"until"`
-	Totals            Totals       `json:"totals"`
-	Time              TimeSplit    `json:"time"`
-	Subagents         Subagents    `json:"subagents"`
-	Commands          []CommandRow `json:"commands"`
-	Models            []ModelRow   `json:"models"`
-	Hints             []Hint       `json:"hints"`
-	Tasks             []TaskRow    `json:"tasks"`
-	Sessions          []SessionRow `json:"sessions"`
-	OldFormatSessions int          `json:"old_format_sessions"`
-	Import            ImportState  `json:"import"`
+	WorkbenchID       int64         `json:"workbench_id"`
+	Enabled           bool          `json:"enabled"`
+	Since             string        `json:"since"`
+	Until             string        `json:"until"`
+	Totals            Totals        `json:"totals"`
+	Time              TimeSplit     `json:"time"`
+	Subagents         Subagents     `json:"subagents"`
+	Commands          []CommandRow  `json:"commands"`
+	Models            []ModelRow    `json:"models"`
+	Hints             []Hint        `json:"hints"`
+	Context           ContextReport `json:"context"`
+	Skills            SkillsReport  `json:"skills"`
+	Trouble           TroubleReport `json:"trouble"`
+	Tasks             []TaskRow     `json:"tasks"`
+	TasksMore         int           `json:"tasks_more"`
+	Sessions          []SessionRow  `json:"sessions"`
+	OldFormatSessions int           `json:"old_format_sessions"`
+	Import            ImportState   `json:"import"`
 }
 
 // ImportState is how far the workbench's history import got (spec D6):
@@ -178,10 +183,11 @@ func flatten(by map[string][]agentlogdb.AgentReportEvent) []agentlogdb.AgentRepo
 }
 
 // BuildOverview reports a workbench's sessions that started or ended at or
-// after since (zero = all) up to now. It answers whatever the analytics
-// switch: an off workbench shows the rows it has. main (watchtower.db: the
-// switch, the board) and al (agentlog.db) are only read.
-func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now time.Time) (*Overview, error) {
+// after since (zero = all) up to now, with the hints written in lang. It
+// answers whatever the analytics switch: an off workbench shows the rows it
+// has. main (watchtower.db: the switch, the board) and al (agentlog.db) are
+// only read.
+func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now time.Time, lang Lang) (*Overview, error) {
 	enabled, err := main.WorkbenchAgentAnalytics(workbenchID)
 	if err != nil {
 		return nil, err
@@ -223,6 +229,18 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 	}
 	allEvents := eventsByUUID(events)
 	b := assemble(sessions, allEvents)
+	wb, err := main.GetWorkbench(workbenchID)
+	if err != nil {
+		return nil, err
+	}
+	ov.Context, ov.Skills, err = loadBlocks(al, sessions, allEvents, wb.FolderPath)
+	if err != nil {
+		return nil, err
+	}
+	ov.Trouble, err = loadTrouble(al, sessions, allEvents, now)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, r := range b.rows {
 		if r.OldFormat {
@@ -243,15 +261,86 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 
 	ov.Models = nonNil(Models(flatten(allEvents)))
 	ov.Commands = nonNil(Commands(flatten(b.events)))
-	ov.Tasks = nonNil(Tasks(targets, b.segments, b.events, now))
-	ov.Hints = nonNil(Hints(HintInput{Sessions: b.views, Tasks: ov.Tasks, Targets: targets, Events: b.events, Now: now}))
+	tasks := touched(Tasks(targets, b.segments, b.events, now))
+	ov.Tasks, ov.TasksMore = capTasks(tasks)
+	ov.Hints = nonNil(Hints(HintInput{Lang: lang, Context: ov.Context, Skills: ov.Skills, Trouble: ov.Trouble, Sessions: b.views,
+		Tasks:   tasks,
+		Targets: targets, Events: b.events, Now: now}))
 	ov.Sessions = b.rows
 	return ov, nil
 }
 
-// BuildSession drills into one session of the workbench as of now. Its lanes
-// start with the main agent's (AgentID "") unless the session is old-format.
-func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID string, now time.Time) (*SessionDetail, error) {
+// loadBlocks reads the baseline parts and the skill listing of the sessions
+// with the v2 facts and measures the context and skills blocks; folder is the
+// workbench folder for the disk sizes ("" = none).
+func loadBlocks(al *agentlogdb.DB, sessions []agentlogdb.AgentReportSession, events map[string][]agentlogdb.AgentReportEvent,
+	folder string) (ContextReport, SkillsReport, error) {
+	var facts []string
+	for _, s := range sessions {
+		if s.Facts {
+			facts = append(facts, s.SessionUUID)
+		}
+	}
+	var parts []agentlogdb.AgentContextPart
+	var listing []agentlogdb.AgentSkillListed
+	if len(facts) > 0 {
+		var err error
+		if parts, err = al.AgentReportContextParts(facts); err != nil {
+			return ContextReport{}, SkillsReport{}, err
+		}
+		if listing, err = al.AgentReportSkillListing(facts); err != nil {
+			return ContextReport{}, SkillsReport{}, err
+		}
+	}
+	return Context(sessions, events, parts, folder), Skills(sessions, events, parts, listing), nil
+}
+
+// loadTrouble reads the subagents of the sessions with the v2 facts and
+// measures the trouble block as of now.
+func loadTrouble(al *agentlogdb.DB, sessions []agentlogdb.AgentReportSession, events map[string][]agentlogdb.AgentReportEvent,
+	now time.Time) (TroubleReport, error) {
+	var facts []string
+	for _, s := range sessions {
+		if s.Facts {
+			facts = append(facts, s.SessionUUID)
+		}
+	}
+	var subs []agentlogdb.AgentSubagent
+	if len(facts) > 0 {
+		var err error
+		if subs, err = al.AgentReportSubagents(facts); err != nil {
+			return TroubleReport{}, err
+		}
+	}
+	return Trouble(sessions, events, subs, now), nil
+}
+
+// touched keeps the task rows the period's sessions worked on (agent time,
+// cost or a session naming the target), the costliest first, then by agent
+// time; a board of hundreds of untouched targets would otherwise list them all.
+func touched(rows []TaskRow) []TaskRow {
+	out := slices.DeleteFunc(rows, func(r TaskRow) bool { return r.AgentMS == 0 && r.CostUSD == 0 && len(r.Sessions) == 0 })
+	slices.SortStableFunc(out, func(a, b TaskRow) int {
+		return cmp.Or(cmp.Compare(b.CostUSD, a.CostUSD), cmp.Compare(b.AgentMS, a.AgentMS), cmp.Compare(a.TargetID, b.TargetID))
+	})
+	return nonNil(out)
+}
+
+// TasksMax is how many touched tasks the overview lists.
+const TasksMax = 50
+
+// capTasks keeps the first TasksMax rows of touched's order and counts the rest.
+func capTasks(rows []TaskRow) ([]TaskRow, int) {
+	if len(rows) <= TasksMax {
+		return rows, 0
+	}
+	return rows[:TasksMax], len(rows) - TasksMax
+}
+
+// BuildSession drills into one session of the workbench as of now, with the
+// hints written in lang. Its lanes start with the main agent's (AgentID "")
+// unless the session is old-format.
+func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID string, now time.Time, lang Lang) (*SessionDetail, error) {
 	all, err := al.AgentReportSessions(workbenchID, "")
 	if err != nil {
 		return nil, err
@@ -276,7 +365,20 @@ func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID
 		det.Lanes = append(det.Lanes, Lane{AgentID: "", Segments: nonNil(segs)})
 		det.Lanes = append(det.Lanes, b.lanes[sessionUUID]...)
 	}
+	wb, err := main.GetWorkbench(workbenchID)
+	if err != nil {
+		return nil, err
+	}
+	ctx, skills, err := loadBlocks(al, all[i:i+1], by, wb.FolderPath) // the folder: C1's open_file fix
+	if err != nil {
+		return nil, err
+	}
+	trouble, err := loadTrouble(al, all[i:i+1], by, now)
+	if err != nil {
+		return nil, err
+	}
 	tasks := Tasks(targets, b.segments, b.events, now)
-	det.Hints = nonNil(Hints(HintInput{Sessions: b.views, Tasks: tasks, Targets: targets, Events: b.events, Now: now}))
+	det.Hints = nonNil(Hints(HintInput{Lang: lang, Context: ctx, Skills: skills, Trouble: trouble, Sessions: b.views, Tasks: tasks,
+		Targets: targets, Events: b.events, Now: now}))
 	return det, nil
 }

@@ -301,8 +301,8 @@ package enum TargetQueries {
         for link in secondaryLinks {
             let ref = link.externalRef
             // Mirrors the Go-side allow-list `IsValidExternalRef`
-            // (internal/targets/extractor.go:146): only "jira:" and "slack:" pass.
-            guard ref.hasPrefix("jira:") || ref.hasPrefix("slack:") else { continue }
+            // (internal/targets/extractor.go): only "jira:", "linear:" and "slack:" pass.
+            guard ref.hasPrefix("jira:") || ref.hasPrefix("linear:") || ref.hasPrefix("slack:") else { continue }
             try db.execute(
                 sql: """
                     INSERT INTO target_links (source_target_id, target_target_id, external_ref, relation, created_by)
@@ -655,6 +655,27 @@ package enum TargetQueries {
                 WHERE id = ?
                 """,
             arguments: [dateStr, id]
+        )
+        try requireUpdated(db, id: id)
+        try applyStatusProgress(db, id: id, status: "snoozed")
+    }
+
+    /// Snoozes to an instant (Home's Hide): `snooze_until` holds it as a UTC
+    /// "yyyy-MM-ddTHH:mm" minute, the form Go's `UnsnoozeExpiredTargets`
+    /// compares against, so the target comes back at that instant. The
+    /// bare-date overload above is the Targets tab's day picker.
+    package static func snooze(_ db: Database, id: Int, untilInstant: Date) throws {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.timeZone = TimeZone(identifier: "UTC")
+        fmt.dateFormat = "yyyy-MM-dd'T'HH:mm"
+        try db.execute(
+            sql: """
+                UPDATE targets SET status = 'snoozed', snooze_until = ?, status_actor = 'owner',
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?
+                """,
+            arguments: [fmt.string(from: untilInstant), id]
         )
         try requireUpdated(db, id: id)
         try applyStatusProgress(db, id: id, status: "snoozed")

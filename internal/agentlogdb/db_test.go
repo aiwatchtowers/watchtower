@@ -66,7 +66,7 @@ func TestOpen_SchemaAndPerms(t *testing.T) {
 	t.Cleanup(func() { _ = d2.Close() })
 	var versions int
 	require.NoError(t, d2.QueryRow(`SELECT COUNT(*) FROM goose_db_version WHERE version_id > 0`).Scan(&versions))
-	assert.Equal(t, 1, versions)
+	assert.Equal(t, 2, versions)
 }
 
 // agentlog.db's migrations run on a goose Provider; watchtower.db's on the
@@ -109,4 +109,32 @@ func TestOpen_DoesNotTouchGlobalGoose(t *testing.T) {
 	var alTables int
 	require.NoError(t, al.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name = 'projects'`).Scan(&alTables))
 	assert.Zero(t, alTables, "agentlog.db holds none of watchtower.db's migrations")
+}
+
+func TestMigration00002_AddsFactsTables(t *testing.T) {
+	d, err := Open(filepath.Join(t.TempDir(), "agentlog.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+
+	cols := func(table string) map[string]bool {
+		out := map[string]bool{}
+		rows, err := d.Query(`SELECT name FROM pragma_table_info(?)`, table)
+		require.NoError(t, err)
+		defer rows.Close()
+		for rows.Next() {
+			var n string
+			require.NoError(t, rows.Scan(&n))
+			out[n] = true
+		}
+		require.NoError(t, rows.Err())
+		return out
+	}
+	ev := cols("agent_log_events")
+	for _, c := range []string{"result_bytes", "thinking_tokens", "pre_tokens", "post_tokens"} {
+		assert.True(t, ev[c], c)
+	}
+	assert.Equal(t, map[string]bool{"session_uuid": true, "agent_id": true, "part": true, "bytes": true}, cols("agent_log_context_parts"))
+	assert.Equal(t, map[string]bool{"session_uuid": true, "skill": true, "bytes": true}, cols("agent_log_skill_listing"))
+	assert.Equal(t, map[string]bool{"session_uuid": true, "agent_id": true, "agent_type": true, "depth": true, "finished": true}, cols("agent_log_subagents"))
+	assert.True(t, cols("agent_log_session_totals")["owner_interrupts"])
 }

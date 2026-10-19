@@ -1,16 +1,17 @@
+import AppKit
 import Foundation
 import WatchtowerCore
 
 extension AppState {
-    /// Today cards with no tab of their own to follow.
-    static let homeAlwaysAllowed: Set<TodayCardKind> = [.myTargets, .agentsWaiting, .instructionSuggestion]
+    /// Feed sources with no tab or feature of their own to follow.
+    static let homeFeedAlwaysAllowed: Set<FeedSource> = [.reminders, .proposals, .targets]
 
-    /// The Today cards that follow a tab, shown only while that tab is.
-    private static let homeCardTabs: [(TodayCardKind, SidebarDestination)] = [
-        (.waitingOnYou, .inbox),
-        (.nextMeeting, .calendar),
+    /// Each Home link's tab: the link shows only while its tab does.
+    private static let homeLinkTabs: [(HomeLinkKind, SidebarDestination)] = [
         (.briefing, .briefings),
-        (.sinceYouWereAway, .catchUp)
+        (.catchUp, .catchUp),
+        (.dayPlan, .dayPlan),
+        (.digests, .digests)
     ]
 
     /// The first sync's line while it runs (Catch-Up's empty pane, Home); the
@@ -27,16 +28,28 @@ extension AppState {
         return text.map { FirstSyncLine(title: $0.title, detail: $0.detail) }
     }
 
-    /// The Today cards Home may show: a card that follows a tab (Waiting on
-    /// you → Inbox, Next meeting → Calendar, Briefing → Briefings, Since you
-    /// were away → Catch-Up) only while that tab is visible.
-    var homeTodayCardsAllowed: Set<TodayCardKind> {
+    /// The links Home's links zone may show: each only while its tab is visible.
+    var homeLinksAllowed: Set<HomeLinkKind> {
         let disabled = featureVisibility.disabledFeatureIDs
         let connected = featureVisibility.connectedSources
-        let followed = Self.homeCardTabs
+        return Set(Self.homeLinkTabs
             .filter { $0.1.isVisible(disabledFeatures: disabled, connected: connected) }
-            .map(\.0)
-        return Self.homeAlwaysAllowed.union(followed)
+            .map(\.0))
+    }
+
+    /// The feed sources Home may show: inbox rows only while attention
+    /// detection is on, calendar rows only while the Calendar tab is visible;
+    /// reminders, proposals and targets always.
+    var homeFeedSourcesAllowed: Set<FeedSource> {
+        let disabled = featureVisibility.disabledFeatureIDs
+        var allowed = Self.homeFeedAlwaysAllowed
+        // Attention detection (the inbox feeder) is ReadinessFeature.inbox's feature.
+        if ReadinessFeature.inbox.featureID.map(disabled.contains) != true { allowed.insert(.inbox) }
+        if SidebarDestination.calendar.isVisible(
+            disabledFeatures: disabled, connected: featureVisibility.connectedSources) {
+            allowed.insert(.calendar)
+        }
+        return allowed
     }
 
     /// Open the Automations tab on one of its sections (the Settings pointer).
@@ -45,7 +58,7 @@ extension AppState {
         selectedDestination = .automations
     }
 
-    /// The Slack Digests Turn on for Home's cards (#575); read inside a
+    /// The Slack Digests Turn on for Home's Getting ready cards (#575); read inside a
     /// view's body, so the card follows it.
     var digestsTurnOnState: DigestsTurnOnState {
         let id = ReadinessFeature.digests.featureID ?? ""
@@ -60,6 +73,8 @@ extension AppState {
     func openHomeLink(_ link: HomeLink) {
         switch link {
         case .inbox: selectedDestination = .inbox
+        case .permalink(let url):
+            if AllowedURLSchemes.permits(url) { NSWorkspace.shared.open(url) }
         case .calendarEvent(let id): navigateToCalendarEvent(id)
         case .briefing(let id): navigateToBriefing(id)
         case .targets: selectedDestination = .targets
@@ -76,8 +91,8 @@ extension AppState {
         }
     }
 
-    /// Add / Dismiss from Home's suggestion card; the CLI's refusal (an
-    /// over-limit Add) comes back as text for the card to show. A success
+    /// Add / Dismiss from Home's suggestion row; the CLI's refusal (an
+    /// over-limit Add) comes back as text for the row to show. A success
     /// re-reads Home at once: the CLI writes from another process, which the
     /// GRDB observation never sees. `decide` replaces the CLI call in tests.
     func decideInstructionSuggestion(
@@ -112,6 +127,26 @@ extension AppState {
         case .knowledgeIndex: .search
         case .calendar: .calendar
         case .jira: .boards
+        case .linear: .blockers
         }
+    }
+}
+
+/// Home's feed writes in the app: the pool is the open DB's at the moment
+/// of the press (Home is built before the DB opens) and the CLI is looked up
+/// per press, so a binary installed later is found. AppState is held weakly
+/// (it owns the center that owns this).
+@MainActor
+final class AppHomeFeedPerformer: HomeFeedPerforming {
+    private weak var appState: AppState?
+
+    init(appState: AppState) {
+        self.appState = appState
+    }
+
+    func perform(_ action: FeedAction, on ref: FeedRef, now: Date, calendar: Calendar) async throws {
+        guard let pool = appState?.databaseManager?.dbPool else { throw HomeFeedActionError.databaseUnavailable }
+        try await LiveHomeFeedPerformer(runner: ProcessCLIRunner.makeDefault(), pool: pool)
+            .perform(action, on: ref, now: now, calendar: calendar)
     }
 }

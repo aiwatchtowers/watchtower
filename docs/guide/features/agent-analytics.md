@@ -4,7 +4,7 @@ Agent analytics reads the history of the Claude Code sessions that ran in a work
 
 ## Why use it
 
-Agent bills and habits are invisible until you add them up. Analytics turns the transcripts Claude Code already writes into numbers you can query: what a week of sessions cost, which tools failed, and which skills ran.
+Agent bills and habits are invisible until you add them up. Analytics turns the transcripts Claude Code already writes into numbers you can query: what a week of sessions cost, what loads into every session before you type, which tools failed, and which skills ran. Then it tells you the one change worth making first.
 
 ## How it works
 
@@ -22,6 +22,8 @@ Turning the feature on returns at once. The daemon then loads the history alread
 
 Only Claude Code transcripts in `~/.claude` are read. Codex sessions are not.
 
+Besides counts, Watchtower stores sizes: how many bytes each tool result and each start-up part of a session held, how many tokens a compaction dropped, and a failure's class (for example "edit did not match"). It turns bytes into tokens with the ratio of the session's first call, so figures like "CLAUDE.md is 1,800 tokens" are estimates.
+
 ## Using it
 
 ```
@@ -33,7 +35,7 @@ watchtower agents disable --workbench 3
 - `enable` turns it on and nudges the daemon to start loading the folder's history. With no daemon running it says so; the history loads once the daemon starts.
 - `scan` reads new lines on demand and reports `unknown_records` and `failed_files`.
 - `stats` prints totals and a per-session breakdown: tokens, `cost_usd`, `tools` and `outcomes` (separate keys), skills and owner turns.
-- `report` prints the time, cost, task and hint breakdown the **Analytics** view shows.
+- `report` prints the time, cost, task, context, skills, trouble and hint breakdown the **Analytics** view shows (`--json` for scripts; `--session <uuid>` for one session).
 - `disable` stops reading.
 
 Find a workbench's number with `watchtower workbench list`, or use the id in its board.
@@ -44,7 +46,22 @@ Find a workbench's number with `watchtower workbench list`, or use the id in its
 - **No sessions.** Nothing in `~/.claude/projects/` matched the folder. Sessions run before the folder moved are not found.
 - **Cost is 0 for a model.** The price table does not know it yet. The calls are counted as estimated.
 - **History not moved yet — restart the daemon or run watchtower agents scan.** Analytics from an older version still sit in the main database and moving them failed. Nothing loads until the move succeeds; the daemon retries it every cycle, and the daemon log says why it failed.
+- **A block says "Not measured yet for older sessions".** The session was stored before the sizes were recorded. Wait for the daemon's next cycles, or run `watchtower agents scan`; if the transcript is gone, those sessions stay unmeasured.
+- **Repeated reads look wrong.** A file read in pages counts as read many times, because the page range is not stored.
+- **Image results add nothing to context growth.** Their size is not measured.
 - **`unknown_records` is not 0.** Claude Code writes record types Watchtower does not read. They are skipped and counted, and the totals are unaffected.
+
+## What the Analytics view shows
+
+The view starts with the header and tiles, then **The main thing**: the hint that would save the most, in your assistant's language, with a button. The buttons are **Copy Allow Rules** (for `.claude/settings.json`), **Open Session**, **Open Waiting for You** and **Open `<path>`**, named after the file it opens.
+
+- **Context** shows what a session carries before your first message (instructions, skills, tools, hooks) and what grew it afterwards: which tools and files, files read three or more times without an edit, compactions, and the size of your `CLAUDE.md` and rules.
+- **Skills** shows which skills ran and how, and which listed skills never did. Once five sessions over a week were measured, never-used skills are suggested for removal because each one's listing costs tokens in every session.
+- **Trouble** shows failed calls by class, commands that were denied, how often you interrupted or rejected the agent, subagents that never finished and rate limits.
+- **What else would save** lists the remaining hints. The **Time** section, collapsed, keeps the time bar, tasks, sessions and commands.
+- **Discuss in Chat** opens the assistant with the report, so you can ask what to change.
+
+Sessions recorded before this version are shown as **Not measured yet for older sessions** and fill in as the next history scan rereads them, while the transcripts still exist (Claude Code removes them after about 30 days).
 
 ## Related
 

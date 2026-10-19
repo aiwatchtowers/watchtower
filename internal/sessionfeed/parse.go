@@ -27,10 +27,13 @@ const (
 )
 
 var (
-	reminderRe = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
-	askRe      = regexp.MustCompile(`^Ask #(\d+) answered `)
-	cmdNameRe  = regexp.MustCompile(`(?s)<command-name>(.*?)</command-name>`)
-	cmdArgsRe  = regexp.MustCompile(`(?s)<command-args>(.*?)</command-args>`)
+	reminderRe    = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
+	askRe         = regexp.MustCompile(`^Ask #(\d+) answered `)
+	cmdNameRe     = regexp.MustCompile(`(?s)<command-name>(.*?)</command-name>`)
+	taskChildRe   = regexp.MustCompile(`(?s)<([A-Za-z][\w-]*)>(.*?)</[A-Za-z][\w-]*>`)
+	mateOpenRe    = regexp.MustCompile(`(?s)^<teammate-message\b([^>]*)>`)
+	mateSummaryRe = regexp.MustCompile(`summary="([^"]*)"`)
+	cmdArgsRe     = regexp.MustCompile(`(?s)<command-args>(.*?)</command-args>`)
 )
 
 // ignoredTypes are record types that are expected and carry no chat.
@@ -206,6 +209,9 @@ func classifyUserText(uuid, text string) (Entry, bool) {
 	if text == "" {
 		return Entry{}, false
 	}
+	if strings.HasPrefix(text, "<task-notification>") || strings.HasPrefix(text, "<teammate-message") {
+		return noticeEntry(uuid, text), true
+	}
 	e := Entry{ID: uuid, Kind: KindOwner, Text: text}
 	switch {
 	case strings.HasPrefix(text, "<command-name>"):
@@ -225,6 +231,49 @@ func classifyUserText(uuid, text string) (Entry, bool) {
 		e.Kind, e.Via = KindWatchtower, ViaHandoff
 	}
 	return e, true
+}
+
+// maxEventTitleRunes caps an event title.
+const maxEventTitleRunes = 200
+
+// noticeEntry turns a Claude Code notice wrapper (a task notification or a
+// teammate message) into an event entry.
+func noticeEntry(uuid, text string) Entry {
+	e := Entry{ID: uuid, Kind: KindEvent}
+	if strings.HasPrefix(text, "<task-notification>") {
+		e.EventType = EventTask
+		var lines []string
+		inner := strings.TrimSuffix(strings.TrimPrefix(text, "<task-notification>"), "</task-notification>")
+		for _, m := range taskChildRe.FindAllStringSubmatch(inner, -1) {
+			v := strings.TrimSpace(m[2])
+			lines = append(lines, m[1]+": "+v)
+			if m[1] == "summary" && e.Title == "" {
+				e.Title = v
+			}
+		}
+		e.Text = strings.Join(lines, "\n")
+	} else {
+		e.EventType = EventTeammate
+		body := strings.TrimPrefix(text, "<teammate-message")
+		if m := mateOpenRe.FindStringSubmatch(text); m != nil {
+			e.Title = firstGroup(mateSummaryRe, m[1])
+			body = text[len(m[0]):]
+		}
+		e.Text = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(body), "</teammate-message>"))
+	}
+	if e.Title == "" {
+		e.Title = "Notice"
+		for _, l := range strings.Split(e.Text, "\n") {
+			if l = strings.TrimSpace(l); l != "" {
+				e.Title = l
+				break
+			}
+		}
+	}
+	if r := []rune(e.Title); len(r) > maxEventTitleRunes {
+		e.Title = string(r[:maxEventTitleRunes])
+	}
+	return e
 }
 
 func firstGroup(re *regexp.Regexp, s string) string {

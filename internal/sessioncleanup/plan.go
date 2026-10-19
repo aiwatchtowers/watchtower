@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"watchtower/internal/gitbin"
@@ -14,6 +15,10 @@ import (
 
 // sizeBudget bounds the size walk of one worktree (spec §8).
 const sizeBudget = 20 * time.Second
+
+// sizeWorkers is how many worktrees are measured at the same time: one walk
+// at a time made a sweep over dozens of large worktrees take minutes.
+const sizeWorkers = 4
 
 // detailGone is the detail of a prunable worktree: its directory is gone,
 // so removing it only drops git's metadata.
@@ -454,14 +459,16 @@ func (b *builder) evaluateBranch(ctx context.Context, br branchRef) Item {
 // mode only — the sweep never signals) and its .app bundles; and in the
 // sweep the stale LaunchServices entries under the workbench folder.
 func (b *builder) extraItems(ctx context.Context, items []Item) []Item {
-	var extra []Item
-	for i := range items {
-		it := &items[i]
-		if it.Kind != KindWorktree || it.Action != ActionRemove || it.Detail == detailGone {
-			continue
+	var removed []int
+	for i, it := range items {
+		if it.Kind == KindWorktree && it.Action == ActionRemove && it.Detail != detailGone {
+			removed = append(removed, i)
 		}
-		root := it.Key[len("worktree:"):]
-		b.measure(ctx, it, root)
+	}
+	b.measureAll(ctx, items, removed)
+	var extra []Item
+	for _, i := range removed {
+		root := items[i].Key[len("worktree:"):]
 		if !b.req.Sweep {
 			extra = append(extra, b.orphanItems(root)...)
 		}
@@ -470,11 +477,23 @@ func (b *builder) extraItems(ctx context.Context, items []Item) []Item {
 	return append(extra, b.staleItems(ctx)...)
 }
 
-func (b *builder) measure(ctx context.Context, it *Item, root string) {
+// measureAll sizes items[i] for each i in idx, up to sizeWorkers walks at
+// a time; each walk keeps its own budget.
+func (b *builder) measureAll(ctx context.Context, items []Item, idx []int) {
 	if b.deps.Sizer == nil || b.req.NoSize {
 		return
 	}
-	it.Bytes, it.BytesKnown = b.deps.Sizer.Size(ctx, root, sizeBudget)
+	var wg sync.WaitGroup
+	slots := make(chan struct{}, sizeWorkers)
+	for _, i := range idx {
+		slots <- struct{}{}
+		wg.Go(func() {
+			defer func() { <-slots }()
+			it := &items[i]
+			it.Bytes, it.BytesKnown = b.deps.Sizer.Size(ctx, it.Key[len("worktree:"):], sizeBudget)
+		})
+	}
+	wg.Wait()
 }
 
 func (b *builder) orphanItems(root string) []Item {

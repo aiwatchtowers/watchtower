@@ -17,8 +17,9 @@ enum ChatDensity {
 }
 
 /// Frame of the feed content in the feed scroll view's named coordinate
-/// space; nil when nothing has published one yet.
-private struct ChatContentFramePreferenceKey: PreferenceKey {
+/// space; nil when nothing has published one yet. Shared with the session
+/// chat (`SessionChatView`).
+struct ChatContentFramePreferenceKey: PreferenceKey {
     static let defaultValue: CGRect? = nil
     static func reduce(value: inout CGRect?, nextValue: () -> CGRect?) {
         value = value ?? nextValue()
@@ -27,8 +28,9 @@ private struct ChatContentFramePreferenceKey: PreferenceKey {
 
 /// Reference box for the follow tracker — feeding it a measurement does not
 /// invalidate the view, unlike a plain `@State` (the `NowLineFrameBox`
-/// precedent); `isFollowing` mirrors the one bit the view renders.
-private final class ChatFollowTrackerBox {
+/// precedent); `isFollowing` mirrors the one bit the view renders. Shared
+/// with the session chat (`SessionChatView`).
+final class ChatFollowTrackerBox {
     var tracker = ChatFollowTracker()
 }
 
@@ -178,16 +180,9 @@ struct ChatFeedView<Content: View>: View {
                     proxy.scrollTo(Self.bottomSentinelID, anchor: .bottom)
                 }
             } label: {
-                Label("Jump to latest", systemImage: "arrow.down")
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(Color.accentColor, in: Capsule())
+                FloatingButtonLabel(title: "Jump to latest", systemImage: "arrow.down")
             }
             .buttonStyle(.plain)
-            .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
             .padding(.bottom, 12)
         }
     }

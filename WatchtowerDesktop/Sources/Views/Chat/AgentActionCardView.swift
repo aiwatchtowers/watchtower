@@ -85,7 +85,7 @@ struct AgentActionCardView: View {
             // The Confluence edit first: its args carry the whole new page
             // storage, and every other branch would decode them per render.
             return confluenceEditSummaryLines(for: action) ?? waveTwoSummaryLines(for: action)
-                ?? jiraIssueWriteSummaryLines(for: action) ?? slackSummaryLines(for: action) ?? [action.argsJSON]
+                ?? jiraIssueWriteSummaryLines(for: action) ?? linearSummaryLines(for: action) ?? slackSummaryLines(for: action) ?? [action.argsJSON]
         }
     }
 
@@ -108,6 +108,36 @@ struct AgentActionCardView: View {
                 if let value = action.argString(arg), !value.isEmpty { lines.append("\(title): \(value)") }
             }
             return lines
+        default:
+            return nil
+        }
+    }
+
+    /// The Linear writes: only the owner-facing fields, never the pinned ids
+    /// (`team_id`, `label_ids`, `issue_uuid`, …). Nil for any other tool.
+    private static func linearSummaryLines(for action: AgentAction) -> [String]? {
+        func present(_ pairs: [(String, String)]) -> [String] {
+            pairs.compactMap { arg, title in
+                action.argString(arg).flatMap { $0.isEmpty ? nil : "\(title): \($0)" }
+            }
+        }
+        func first(_ keys: [String]) -> String? {
+            keys.lazy.compactMap { action.argString($0) }.first { !$0.isEmpty }
+        }
+        switch action.tool {
+        case "create_linear_issue":
+            return present([("team", "Team"), ("title", "Title"), ("description", "Description"), ("state", "State"),
+                            ("assignee", "Assignee"), ("labels", "Labels"), ("priority", "Priority")])
+        case "add_linear_comment":
+            return ["Issue: \(issueKey(action))", action.argString("body") ?? ""]
+        case "transition_linear_issue":
+            return ["Issue: \(issueKey(action)) → \(first(["state_name", "state", "state_type"]) ?? "?")"]
+        case "assign_linear_issue":
+            return ["Issue: \(issueKey(action)) · Assignee: \(first(["assignee_name", "assignee"]) ?? "?")"]
+        case "update_linear_issue":
+            return ["Issue: \(issueKey(action))"] + present([
+                ("title", "Title"), ("priority", "Priority"), ("labels_add", "Add labels"),
+                ("labels_remove", "Remove labels"), ("due_date", "Due"), ("estimate", "Estimate")])
         default:
             return nil
         }

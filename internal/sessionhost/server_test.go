@@ -316,6 +316,18 @@ func TestServer_ResizeSendsSigwinch(t *testing.T) {
 	}
 }
 
+// A resize that reaches a session after its exit closed the PTY is a no-op:
+// no error frame, and the next request is answered normally.
+func TestServer_ResizeAfterExitIsNoop(t *testing.T) {
+	path := startServer(t, Options{})
+	c := dial(t, path)
+	c.launch(1, `exit 0`)
+	c.expect(Exit)
+	c.send(Resize, ResizeReq{Cols: 100, Rows: 30})
+	c.send(List, nil)
+	c.expect(Listed)
+}
+
 func TestServer_AttachTakesOver(t *testing.T) {
 	path := startServer(t, Options{})
 	c1 := dial(t, path)

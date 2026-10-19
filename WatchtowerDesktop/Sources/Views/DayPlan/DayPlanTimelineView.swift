@@ -261,7 +261,7 @@ struct DayPlanTimelineView: View {
         case .calendar:          return .gray
         case .focus:             return .blue
         case .task:              return .green
-        case .jira:              return .purple
+        case .jira, .linear:     return .purple
         case .briefingAttention: return .yellow
         case .manual:            return .orange
         }
@@ -272,7 +272,7 @@ struct DayPlanTimelineView: View {
         case .calendar:          return "calendar"
         case .focus:             return "brain.head.profile"
         case .task:              return "checkmark.circle"
-        case .jira:              return "ticket"
+        case .jira, .linear:     return "ticket"
         case .briefingAttention: return "sun.max"
         case .manual:            return "pin.fill"
         }
@@ -283,7 +283,7 @@ struct DayPlanTimelineView: View {
         case .task:
             guard let sid = item.sourceId else { return "task" }
             return "task:\(sid)"
-        case .jira:
+        case .jira, .linear:
             return item.sourceId
         case .briefingAttention:
             return "briefing"

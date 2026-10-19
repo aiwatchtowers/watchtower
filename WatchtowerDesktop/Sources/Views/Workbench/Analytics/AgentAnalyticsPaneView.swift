@@ -10,6 +10,8 @@ import WatchtowerCore
 struct AgentAnalyticsPaneView: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
+    /// Optional: a pane hosted without the app (tests) has none.
+    @Environment(AppState.self) private var appState: AppState?
 
     var body: some View {
         let center = vm.agentAnalytics
@@ -49,7 +51,14 @@ struct AgentAnalyticsPaneView: View {
         return AgentAnalyticsActions(
             turnOn: { Task { await center?.turnOn(workbench: project.id) } },
             openSession: { vm.analyticsSession[project.id] = $0 },
-            openTarget: { vm.showTargetOnBoard($0, projectID: project.id) }
+            openTarget: { vm.showTargetOnBoard($0, projectID: project.id) },
+            openFile: { path in
+                let root = vm.codeRoot(sessionID: nil, project: project)
+                Task { await vm.openFile(path, root: root, preview: false) }
+            },
+            openAsks: { Task { await vm.showWaitingForYou(projectID: project.id) } },
+            discuss: { [appState] in appState?.openHelpChat(prefill: $0) },
+            asksWaiting: !vm.asks.stack(projectID: project.id).asks.isEmpty
         )
     }
 }
@@ -62,6 +71,15 @@ struct AgentAnalyticsActions {
     let openSession: (String) -> Void
     /// A target id: the Board with that target's card open.
     let openTarget: (Int64) -> Void
+    /// A path relative to the workbench folder: the file in the Files pane.
+    let openFile: (String) -> Void
+    /// The workbench's Waiting for you stack.
+    let openAsks: () -> Void
+    /// Discuss in Chat: the chat popup with this text in its composer.
+    let discuss: (String) -> Void
+    /// Whether an ask of the workbench waits now (Open Waiting for You is
+    /// off without one).
+    let asksWaiting: Bool
 }
 
 /// What the overview shows.

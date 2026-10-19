@@ -356,7 +356,7 @@ Each card has:
 A card disappears for good when its **completion signal** turns true. The
 signal is read from data, never a click on the card. A card whose
 prerequisite source is missing sorts after the ones the owner can do now.
-There is no counter anywhere.
+There is no counter anywhere. *(Amended 2026-10-19, ask #418: Try this is superseded by Learn Watchtower — `2026-10-19-home-zones-design.md` §9 — which shows "N of M seen" and per-area progress; the owner approved that counter.)*
 
 | Card | Model | Cost class | Done when | Action |
 |---|---|---|---|---|

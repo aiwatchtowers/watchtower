@@ -150,10 +150,18 @@ func TestMoveFromMain_CopiesAllRows(t *testing.T) {
 	f := newMoveFixture(t)
 	f.seed(t, 3, 4)
 	want := f.counts(t, f.main)
-	const totals = `SELECT * FROM agent_log_session_totals ORDER BY session_uuid`
+	// The 00001 columns only: watchtower.db's tables and view predate the v2 facts.
+	const totals = `SELECT session_uuid, api_calls, input_tokens, output_tokens, cache_read_tokens, cache_write_5m_tokens,
+		cache_write_1h_tokens, cost_usd, cost_estimated_calls, owner_turns, tool_calls, tool_errors, tool_denials,
+		tool_interrupts, skill_activations, compactions, lines_added, lines_removed
+		FROM agent_log_session_totals ORDER BY session_uuid`
+	const events = `SELECT id, session_uuid, key, kind, ts, uuid, parent_uuid, prompt_id, agent_id, is_sidechain, name, target,
+		trigger, outcome, error_class, duration_ms, skill, input_tokens, output_tokens, cache_read_tokens,
+		cache_write_5m_tokens, cache_write_1h_tokens, speed, service_tier, cost_usd, price_version, cost_estimated,
+		lines_added, lines_removed, src_path, src_offset, spawned_agent_id, background FROM agent_log_events ORDER BY id`
 	wantTotals := dump(t, f.main, totals)
 	wantSessions := dump(t, f.main, `SELECT * FROM agent_log_sessions ORDER BY session_uuid`)
-	wantEvents := dump(t, f.main, `SELECT * FROM agent_log_events ORDER BY id`)
+	wantEvents := dump(t, f.main, events)
 	wantFiles := dump(t, f.main, `SELECT * FROM agent_log_files ORDER BY path`)
 
 	require.NoError(t, f.move(t))
@@ -163,7 +171,7 @@ func TestMoveFromMain_CopiesAllRows(t *testing.T) {
 	assert.Equal(t, wantTotals, dump(t, f.al, totals))
 	assert.Equal(t, wantSessions, dump(t, f.al, `SELECT * FROM agent_log_sessions ORDER BY session_uuid`),
 		"sessions whose transcript is gone are moved as they are")
-	assert.Equal(t, wantEvents, dump(t, f.al, `SELECT * FROM agent_log_events ORDER BY id`))
+	assert.Equal(t, wantEvents, dump(t, f.al, events))
 	assert.Equal(t, wantFiles, dump(t, f.al, `SELECT * FROM agent_log_files ORDER BY path`),
 		"read offsets, sizes and parser versions come along, so the next scan resumes")
 	f.assertMainEmpty(t)

@@ -182,7 +182,7 @@ func TestAllTablesExist(t *testing.T) {
 		"memory_entity_hints", "memory_dispute_flags", "memory_engagement",
 		"memory_provenance", "memory_digest_shadow", "memory_retrieve_shadow",
 		"memory_focus_matches", "memory_step_state", "memory_extract_failures",
-		"ideas", "idea_mentions", "stream_digests", "jira_comments",
+		"ideas", "idea_mentions", "stream_digests", "jira_comments", "issue_slack_links",
 		"jira_issue_changelog", "jira_changelog_sync", "jira_linked_issues",
 		"catchup_recaps",
 		"agent_actions", "tool_trust",
@@ -206,7 +206,7 @@ func TestAllTablesExist(t *testing.T) {
 		"linear_accounts", "linear_teams", "linear_sync_state", "linear_issues", "linear_comments",
 		"linear_issue_history", "linear_cycles", "linear_projects", "linear_relations", "linear_user_map",
 		"plan_usage_samples", "plan_usage_status", "history_backfill",
-		"automation_tool_grants",
+		"automation_tool_grants", "linear_workflow_states", "linear_labels",
 		"db_maintenance",
 	}
 

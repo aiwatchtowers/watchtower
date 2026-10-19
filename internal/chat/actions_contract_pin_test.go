@@ -30,6 +30,15 @@ func TestActionsContract_ListsEveryWriteToolOfTheSurface(t *testing.T) {
 		"send_slack_message", "save_automation"} {
 		assert.Contains(t, main, "- "+tool+" — ", tool)
 	}
+	// Linear writes (spec 2026-10-18 §6.2): both surfaces, with the
+	// teams-first rule.
+	for _, block := range []string{main, ActionsContract("target")} {
+		for _, tool := range []string{"create_linear_issue", "add_linear_comment", "transition_linear_issue",
+			"assign_linear_issue", "update_linear_issue"} {
+			assert.Contains(t, block, "- "+tool+" — ", tool)
+		}
+		assert.Contains(t, block, "call list_linear_teams FIRST")
+	}
 	target := ActionsContract("target")
 	for _, tool := range []string{"create_target", "connect_jira_board", "create_track", "dismiss_tracks", "create_idea", "remind_me", "send_slack_message"} {
 		assert.NotContains(t, target, "- "+tool+" — ", "%s is not offered on the target surface", tool)

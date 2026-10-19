@@ -482,4 +482,120 @@ final class WorkspaceLayoutTests: XCTestCase {
         l.openBeside(.session(2), keeping: .session(1))
         XCTAssertEqual(l.visiblePanes, [.session(1), .session(2)])
     }
+
+    // MARK: - Workchat mode (#711)
+
+    /// A layout saved before Workchat has no `workchatSessions` key: it
+    /// decodes with no session in Workchat and every other field as saved.
+    func testOldLayoutDecodesWithoutWorkchatSessions() {
+        let old = #"{"primary":{"session":{"_0":3}},"secondary":{"board":{}},"expanded":{"board":{}},"dividerFraction":0.4}"#
+        let decoded = WorkspaceLayout.decode(Data(old.utf8))
+        XCTAssertEqual(decoded.primary, .session(3))
+        XCTAssertEqual(decoded.secondary, .board)
+        XCTAssertEqual(decoded.expanded, .board)
+        XCTAssertEqual(decoded.dividerFraction, 0.4)
+        XCTAssertEqual(decoded.workchatSessions, [])
+    }
+
+    func testWorkchatSessionsRoundTrip() throws {
+        var l = WorkspaceLayout.default
+        l.setMode(true, sessionID: 5)
+        XCTAssertEqual(WorkspaceLayout.decode(try JSONEncoder().encode(l)), l)
+    }
+
+    /// A single pane swaps the session's terminal for its Workchat in the
+    /// same slot, and back; the mode is recorded each time.
+    func testToggleModeSwapsInPlace() {
+        var l = WorkspaceLayout(primary: .session(7), secondary: nil, expanded: nil, dividerFraction: 0.5)
+        l.toggleMode(sessionID: 7)
+        XCTAssertEqual(l.visiblePanes, [.sessionChat(7)])
+        XCTAssertEqual(l.workchatSessions, [7])
+        l.toggleMode(sessionID: 7)
+        XCTAssertEqual(l.visiblePanes, [.session(7)])
+        XCTAssertEqual(l.workchatSessions, [])
+    }
+
+    /// In a split only the slot holding the session swaps; the other slot
+    /// and an expansion of the swapped slot follow as they should.
+    func testToggleModeInSplitKeepsOtherSlot() {
+        var l = WorkspaceLayout(primary: .board, secondary: .session(7), expanded: nil, dividerFraction: 0.5)
+        l.toggleMode(sessionID: 7)
+        XCTAssertEqual(l.primary, .board)
+        XCTAssertEqual(l.secondary, .sessionChat(7))
+        XCTAssertTrue(l.workchatSessions.contains(7))
+
+        var expanded = WorkspaceLayout(primary: .sessionChat(7), secondary: .files, expanded: .sessionChat(7), dividerFraction: 0.5)
+        expanded.setMode(true, sessionID: 7)
+        expanded.toggleMode(sessionID: 7)
+        XCTAssertEqual(expanded.primary, .session(7))
+        XCTAssertEqual(expanded.secondary, .files)
+        XCTAssertEqual(expanded.expanded, .session(7))
+        XCTAssertFalse(expanded.workchatSessions.contains(7))
+
+        // Both modes side by side: nothing moves, only the mode flips.
+        var both = WorkspaceLayout(primary: .session(7), secondary: .sessionChat(7), expanded: nil, dividerFraction: 0.5)
+        both.toggleMode(sessionID: 7)
+        XCTAssertEqual(both.visiblePanes, [.session(7), .sessionChat(7)])
+        XCTAssertEqual(both.workchatSessions, [7])
+    }
+
+    func testPaneForSessionUsesRememberedMode() {
+        var l = WorkspaceLayout.default
+        XCTAssertEqual(l.pane(forSession: 4), .session(4))
+        l.setMode(true, sessionID: 4)
+        XCTAssertEqual(l.pane(forSession: 4), .sessionChat(4))
+        XCTAssertEqual(l.pane(forSession: 5), .session(5))
+        l.setMode(false, sessionID: 4)
+        XCTAssertEqual(l.pane(forSession: 4), .session(4))
+    }
+
+    func testForgetSessionDropsMode() {
+        var l = WorkspaceLayout(primary: .sessionChat(7), secondary: nil, expanded: nil, dividerFraction: 0.5)
+        l.setMode(true, sessionID: 7)
+        l.setMode(true, sessionID: 8)
+        l.forgetSession(7, fallback: .board)
+        XCTAssertEqual(l.visiblePanes, [.board])
+        XCTAssertEqual(l.workchatSessions, [8])
+    }
+
+    /// A new session opens in the Terminal: creation records Terminal, even
+    /// over an id remembered in Workchat.
+    func testNewSessionDefaultsToTerminal() {
+        var l = WorkspaceLayout.default
+        XCTAssertEqual(l.pane(forSession: 9), .session(9))
+        l.setMode(true, sessionID: 9)
+        l.setMode(false, sessionID: 9)
+        l.show(l.pane(forSession: 9))
+        XCTAssertEqual(l.visiblePanes, [.session(9)])
+    }
+
+    /// The Session view follows a session put on screen in Workchat too.
+    func testSessionReportFollowsAWorkchatPane() {
+        var l = WorkspaceLayout(primary: .session(1), secondary: .sessionReport(1), expanded: nil, dividerFraction: 0.5)
+        l.show(.sessionChat(2))
+        XCTAssertEqual(l.visiblePanes, [.sessionChat(2), .sessionReport(2)])
+    }
+
+    /// Either mode counts as the session on screen; with both side by side
+    /// ⌃` would change nothing visible, unless one of them is expanded.
+    func testShowsSessionAndTogglesVisibly() {
+        var l = WorkspaceLayout(primary: .sessionChat(7), secondary: nil, expanded: nil, dividerFraction: 0.5)
+        XCTAssertTrue(l.showsSession(7))
+        XCTAssertFalse(l.showsSession(8))
+        XCTAssertTrue(l.togglesVisibly(sessionID: 7))
+        l.split(with: .session(7))
+        XCTAssertFalse(l.togglesVisibly(sessionID: 7))
+        l.toggleExpand(.session(7))
+        XCTAssertTrue(l.togglesVisibly(sessionID: 7))
+    }
+
+    func testShowsOtherMode() {
+        var l = WorkspaceLayout(primary: .session(7), secondary: .sessionChat(7), expanded: nil, dividerFraction: 0.5)
+        XCTAssertTrue(l.showsOtherMode(of: .session(7)))
+        XCTAssertTrue(l.showsOtherMode(of: .sessionChat(7)))
+        l.toggleExpand(.sessionChat(7))
+        XCTAssertTrue(l.showsOtherMode(of: .session(7)), "the expanded Workchat holds the room")
+        XCTAssertFalse(l.showsOtherMode(of: .sessionChat(7)))
+        XCTAssertFalse(l.showsOtherMode(of: .board))
+    }
 }

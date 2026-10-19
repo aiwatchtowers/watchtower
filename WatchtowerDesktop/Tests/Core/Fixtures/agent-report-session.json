@@ -14,11 +14,11 @@
     ]
   },
   "time": {
-    "model_ms": 82000,
+    "model_ms": 79000,
     "tools": {
       "build_test": 360000,
       "git": 0,
-      "read_search": 0,
+      "read_search": 3000,
       "edit": 0,
       "mcp": 2000,
       "subagents_fg": 0,
@@ -45,8 +45,13 @@
     {
       "id": "H4",
       "finding": "Waiting for you took over 30% of active time in 1 session and 2 tasks, 30m 0s in all",
+      "action": "Answer asks sooner: turn on ask notifications on the Mac or the phone, or let agents use Quick asks.",
+      "fix": {
+        "kind": "open_asks"
+      },
       "estimate_ms": 1800000,
       "estimate_usd": 0,
+      "estimate_tokens": 0,
       "evidence": [
         {
           "kind": "session",
@@ -63,13 +68,16 @@
           "ref": "#2",
           "label": "Fix login"
         }
-      ]
+      ],
+      "more_evidence": 0
     },
     {
       "id": "H1",
       "finding": "make test ran 3 times in target #1, 6m 0s in all; the runs after the first took 4m 0s",
+      "action": "Run only the tests of the package you changed; run the full suite once before the PR.",
       "estimate_ms": 240000,
       "estimate_usd": 0,
+      "estimate_tokens": 0,
       "evidence": [
         {
           "kind": "command",
@@ -80,26 +88,29 @@
           "kind": "target",
           "ref": "#1",
           "label": "Add widget"
-        },
-        {
-          "kind": "session",
-          "ref": "11111111-aaaa-bbbb-cccc-000000000001",
-          "label": "11111111"
         }
-      ]
+      ],
+      "more_evidence": 0
     },
     {
       "id": "H6",
-      "finding": "Session 11111111 cost $15.00 with a 28% cache read share; its context was expensive",
+      "finding": "Session 11111111 cost $15.00 with a 5% cache read share; its context was expensive",
+      "action": "Start a new session per task, or /clear between tasks; long sessions re-read their whole context.",
+      "fix": {
+        "kind": "open_session",
+        "ref": "11111111-aaaa-bbbb-cccc-000000000001"
+      },
       "estimate_ms": 0,
       "estimate_usd": 15,
+      "estimate_tokens": 0,
       "evidence": [
         {
           "kind": "session",
           "ref": "11111111-aaaa-bbbb-cccc-000000000001",
           "label": "$15.00"
         }
-      ]
+      ],
+      "more_evidence": 0
     }
   ],
   "lanes": [
@@ -229,6 +240,34 @@
         },
         {
           "start": "2026-10-01T11:00:15.000Z",
+          "end": "2026-10-01T11:00:20.000Z",
+          "category": "model",
+          "tool_class": "",
+          "verb": ""
+        },
+        {
+          "start": "2026-10-01T11:00:20.000Z",
+          "end": "2026-10-01T11:00:21.000Z",
+          "category": "tool",
+          "tool_class": "read_search",
+          "verb": "Read"
+        },
+        {
+          "start": "2026-10-01T11:00:21.000Z",
+          "end": "2026-10-01T11:00:22.000Z",
+          "category": "tool",
+          "tool_class": "read_search",
+          "verb": "Read"
+        },
+        {
+          "start": "2026-10-01T11:00:22.000Z",
+          "end": "2026-10-01T11:00:23.000Z",
+          "category": "tool",
+          "tool_class": "read_search",
+          "verb": "Read"
+        },
+        {
+          "start": "2026-10-01T11:00:23.000Z",
           "end": "2026-10-01T11:00:30.000Z",
           "category": "model",
           "tool_class": "",
@@ -277,10 +316,10 @@
     {
       "verb": "Read",
       "class": "read_search",
-      "runs": 1,
-      "errors": 0,
-      "total_ms": 5000,
-      "avg_ms": 5000
+      "runs": 4,
+      "errors": 1,
+      "total_ms": 8000,
+      "avg_ms": 2000
     },
     {
       "verb": "mcp__watchtower-workbench__update_target",

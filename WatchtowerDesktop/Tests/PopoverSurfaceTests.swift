@@ -37,9 +37,9 @@ final class PopoverSurfaceTests: XCTestCase {
         XCTAssertTrue(text.contains(".popoverSurface()"))
     }
 
-    /// The popover forms' main actions use `.popoverPrimary`, never a bare
+    /// The popover forms' main actions use `.kitPrimary`, never a bare
     /// `.borderedProminent` that goes blank while disabled.
-    func testPopoverFormsMainActionsUsePopoverPrimary() throws {
+    func testPopoverFormsMainActionsUseKitPrimary() throws {
         let paths = [
             "Views/Comments/CommentableDocumentText.swift",
             "Views/Workbench/CodeNav/CodeQuestionPopover.swift",
@@ -49,7 +49,7 @@ final class PopoverSurfaceTests: XCTestCase {
         for path in paths {
             let text = try source(path)
             XCTAssertFalse(text.contains(".borderedProminent"), path)
-            XCTAssertTrue(text.contains(".buttonStyle(.popoverPrimary)"), path)
+            XCTAssertTrue(text.contains(".buttonStyle(.kitPrimary)"), path)
         }
     }
 

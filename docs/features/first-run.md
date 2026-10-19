@@ -4,7 +4,7 @@ Board #779. Spec `docs/superpowers/specs/2026-10-14-first-run-home-design.md`
 (§1 readiness + empty states = P1, §2 first cycle = P4); plan
 `docs/superpowers/plans/2026-10-14-first-run-p1-p4.md`, whose "Spec corrections
 found while planning" are folded in below. **P2 (Home: Getting ready + Today,
-board #783)** is built from `docs/superpowers/plans/2026-10-15-first-run-p2-home.md`
+board #783; Today's cards retired 2026-10-19 by the zones, #717)** is built from `docs/superpowers/plans/2026-10-15-first-run-p2-home.md`
 (section "Home (P2)" below). **P3 (Try this → Recent work) is not built** (#785).
 
 The problem it closes: right after onboarding most tabs were a blank page or "No
@@ -100,6 +100,13 @@ until the next morning's hour.
   7. `waitingForSync(detail)` — the feature reads synced data, **Slack is
      connected** and `lastSyncTime == nil` (R7);
   8. `scheduled(Eta)` — the next run time from the feature's gate.
+- **Linear (`ReadinessFeature.linear`, 2026-10-18).** No switch, no
+  pipeline run (`phaseLinearSync` writes no `pipeline_runs` row), content
+  `linear_issues`, source `ReadinessSource.linear`; `.anySource` counts a
+  Linear workspace. Home never shows a Connect Linear row (the Jira row is the
+  tracker prompt), only a card once Linear is connected. Blockers reads both
+  trackers, so its `.jira` empty-state row is evaluated through
+  `FeatureReadiness.trackerReadiness(jira:linear:)`.
 - **`lastSyncTime` means "the first Slack sync finished".** It is the mtime of
   `last_sync.json` (`DaemonManager.readLastSyncTime`,
   `WatchtowerDesktop/Sources/WatchtowerCore/Services/DaemonManager.swift:95`), which only the Slack sync paths
@@ -353,9 +360,10 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
 ## Home (Desktop, P2)
 
 Board #783, spec §3. Home is the page the app opens on: a **Getting ready**
-zone while the install is still filling up, then **Today** — what needs the
-owner now. It composes nothing: no AI call, no CLI call, no DB write; every
-Today card reads an existing table, and Getting ready reads P1's readiness.
+zone while the install is still filling up, then (since 2026-10-19, #717) the
+feed, Workbench, links and numbers — what needs the owner now. It composes
+nothing: no AI call, no DB write; every zone reads existing tables (the feed's
+Done/Hide is the one writer), and Getting ready reads P1's readiness.
 
 ### Destination and landing
 
@@ -388,21 +396,26 @@ never reads on its own. It is started with the main app's DB wiring right
 after `ReadinessCenter` (`AppState.swift:1466`), which both launch and
 `completeOnboarding()` reach, and stopped on quit.
 
-- **Inputs.** The Today read (`HomeQueries.today`), `ReadinessCenter`'s map and
+- **Inputs.** The Workbench, feed and links reads (`HomeQueries.workbench`, `HomeFeedQueries.read`, `HomeLinksQueries.read`) and the numbers read, `ReadinessCenter`'s map and
   hours, and `HomeEnvironment` (`HomeCenter.swift:8`): `now`, `calendar`,
-  `ownerKnown`, `firstSync` (`AppState.firstSyncLine`) and `allowedTodayCards`
-  (`AppState.homeTodayCardsAllowed`, `AppState+Home.swift:33`).
-- **When it reads.** A GRDB `ValueObservation` over the Today tables that exist
-  (`HomeQueries.observedTables`; a table missing mid-migration is left out of
-  the region) sees this process' writes; a 30 s tick re-reads for the daemon's
-  writes (another process) and keeps the meeting eyebrow's minutes current. A
-  readiness, owner, first-sync or visibility change rebuilds from the last read
-  without touching the DB (`withObservationTracking`). A failed pool read is
-  logged and publishes the last read (or an empty one, before any good read)
-  with every card marked failed: Home shows the read error and Getting ready,
-  never an endless spinner, and stale content never passes as the all-clear;
-  the next tick tries again. Until the first read lands the snapshot is nil
-  and Home shows a spinner.
+  `ownerKnown`, `firstSync` (`AppState.firstSyncLine`), the live sessions and the allowed links/feed
+  sources (`AppState.homeLinksAllowed`, `homeFeedSourcesAllowed`, `AppState+Home.swift:32`/`:43`). (Before #717: the Today read and `homeTodayCardsAllowed`.)
+- **When it reads.** One combined read (`pool.read`: Workbench asks and
+  suggestion, feed, links) under a GRDB `ValueObservation` over
+  `HomeQueries.observedTables + HomeFeedQueries.observedTables +
+  HomeLinksQueries.observedTables` (tables that exist; one missing mid-migration
+  is left out of the region) sees this process' writes. The numbers have their
+  own read and observation over `HomeNumbersQueries.observedTables`, with their
+  own token, so a slow count never holds the feed. A 30 s tick re-reads both for
+  the daemon's writes (another process) and keeps the feed's minutes current.
+  Each read takes a token; a read is applied only if it started after the last
+  applied one (`token > landedToken`), so a slow older read never overwrites a
+  newer one. A readiness, owner, first-sync, live-session or visibility change
+  rebuilds from the last reads without touching the DB. A failed pool read is
+  logged and publishes the last data (or an empty one) with each zone saying so
+  ("Couldn't read <zone> — see the log.", numbers show "—"): never an endless
+  spinner, and stale content never passes as the all-clear; the next tick tries
+  again. Until the first read lands the snapshot is nil and Home shows a spinner.
 - **Getting ready memory** — `GettingReadyStore` (`HomeCenter.swift:23`), per
   install in `UserDefaults`; `HomeCenter` is its only writer:
 
@@ -458,40 +471,155 @@ Statistics, knowledge index → Search, Jira → Boards); **Connect** runs the
 empty states' `performEmptyStateAction(.connect)`. While the first sync runs,
 its line (Catch-Up's) shows on top of the cards.
 
-### Today — `HomeQueries.today` + `HomeTodayBuilder`
+### Today cards (retired 2026-10-19, #717)
 
-`HomeQueries.today`
-(`WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/HomeQueries.swift:18`)
-reads every card's source in one pass, each card on its own: a missing table
-is that card having no content; a thrown error is logged (`NSLog`, card kind
-+ message) and marks only that card `failed`. `HomeTodayBuilder.cards`
-(`WatchtowerDesktop/Sources/WatchtowerCore/Services/HomeTodayBuilder.swift:12`)
-is pure: each card shows only with content, in this fixed order (owner ask
-#308; `TodayCardKind`'s case order), and only
-while its tab is visible (`homeTodayCardsAllowed`; My targets and Agents
-waiting have no tab gate).
+The Today cards (Since you were away, Briefing, Agents waiting, the
+instruction suggestion; before them Next meeting, Waiting on you and My
+targets) and `HomeTodayBuilder` / `TodayCardKind` / `HomeSnapshot.cards` are
+gone. The right column is now the Workbench, links and numbers zones, below.
+`HomeSnapshot.showsReadError` / `nothingNeedsYou` went with them: each zone
+names its own failed read ("Couldn't read <zone> — see the log.") and the
+feed's "Nothing is waiting for you." is the one all-clear.
+`TargetQueries.homeSummary` (`TargetQueries.swift:237`) is no longer read by
+Home but stays and stays guarded (PROJ-01 case in
+`WorkbenchTargetExclusionTests`).
 
-| Card | Source | Shows when | Click |
-|---|---|---|---|
-| Since you were away | `CatchUpQueries.newestUnacknowledgedReady` | a ready, unacknowledged recap exists (the Catch-Up badge, `hasUnacknowledgedReady`) — the newest such, so a newer building or failed run does not hide it; eyebrow "SINCE THU 18:00", body = `tldr` | Catch-Up |
-| Next meeting | `CalendarQueries.fetchNextEvent` + `hasPrep` | the event starts within 24 h; eyebrow "IN N MIN", "HH:MM" or "TOMORROW HH:MM"; line = time range · up to two attendees +N · "Prep ready" | the event in Calendar (`navigateToCalendarEvent`) |
-| Waiting on you · N | `AgentActionQueries.awaitingOwnerCount` + `awaitingOwner(limit: 3)` (pending/failed, not workbench rows) and `ReminderQueries.fetchDue`; N = the badge's count | N > 0; top 3 items, newest first, chips Proposal / Failed / Reminder | Inbox (follows the Inbox tab) |
-| Briefing | `BriefingQueries.fetchByDate(today)` | today's briefing has an item; body = the first item of the first non-empty section | that briefing (`navigateToBriefing`) |
-| My targets | `TargetQueries.homeSummary` (limit 5) | any row; detail "Overdue · Oct 12", "Due today", "Due HH:MM" or "In progress" | the target (`navigateToTarget`); header → Targets |
-| Agents waiting · N | `OwnerAskQueries.openAsksAllWorkbenches` (open asks joined to `projects.name`; an unreadable row is logged, named and left out, and marks the card failed) | any readable open ask; 3 oldest, chip = ask kind, detail = workbench | `WorkbenchRoute.forAsk` — the ask's session terminal, or the board for an ask filed outside the app; header → Workbench |
+### Feed (2026-10-19, #717)
 
-- `TargetQueries.homeSummary` (`TargetQueries.swift:237`): `project_id IS
-  NULL` (PROJ-01 — workbench targets stay on their board), ownership `mine`,
-  status todo/in_progress/in_review/blocked, and due on or before today or
-  `in_progress`; due/overdue first by due date, then in-progress by
-  `updated_at DESC`.
-- **Read errors.** `HomeSnapshot.showsReadError` (`Home.swift:241`): no card
-  to show and at least one allowed card failed → "Couldn't read today's items
-  — see the log." `nothingNeedsYou` (`:247`) — "Nothing needs you right now."
-  — only with no card, no failed read and no Getting ready zone shown. One
-  failed card never hides the others and is never read as the all-clear; an
-  unreadable open ask counts as Agents waiting's failed read, while the
-  readable asks still show.
+Board #717, spec `docs/superpowers/specs/2026-10-19-home-zones-design.md`
+§§3–5, PR 1. The Next meeting, Waiting on you and My targets cards are gone
+from Today; one feed replaces them, on the left of a two-column Home (the
+Workbench, links and numbers zones on the right; one column below 900 pt
+content width). No migration, no AI, no daemon phase.
+
+- **Read** — `HomeFeedQueries.read`
+  (`WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/HomeFeedQueries.swift`)
+  runs in `HomeCenter.reread`'s one `pool.read` beside `HomeQueries.workbench`
+  and `HomeLinksQueries.read`, each source on its own: a throw is logged and puts
+  the source in `HomeFeedData.failed`; a missing table reads as no content.
+  Observed tables: `HomeFeedQueries.observedTables`.
+- **Sources.**
+  - Inbox (`inboxRows`): `status = 'pending'`, `item_class = 'actionable'`,
+    `archived_at IS NULL` (as the briefing's `ListActionableOpen`), trigger in
+    mention/dm/thread_reply/reaction/jira_assigned/jira_comment_mention/email_received,
+    `MAX(created_at, mentioned_at)` within 72 h (`windowHours`), not snoozed
+    (`snooze_until = ''` or elapsed), newest first, `LIMIT 200` (`rowLimit`).
+    `read_at` never hides a row: a read row stays and renders secondary;
+    `priority` is not used.
+  - Due reminders (`ReminderQueries.fetchDue`), proposals/failed actions
+    (`AgentActionQueries.awaitingOwner`, workbench rows excluded there), and
+    own targets overdue or due today (`dueTargets`: `project_id IS NULL` —
+    PROJ-01 — `ownership = 'mine'`, open statuses; no in-progress arm). Both
+    read up to the same 200 rows as the inbox: the builder caps what shows,
+    so a target due later today (last by `due_date`) still reaches the part
+    below NOW.
+  - Calendar (`events`): today and the next 4 days through
+    `isShownEvent` — no all-day, no `cancelled`, none the owner
+    declined (attendee email equal to the event's `accountEmail`,
+    `responseStatus == "declined"`); prep ids only for events still to start
+    today and the next day's.
+- **Build** — `HomeFeedBuilder.feed`
+  (`Sources/WatchtowerCore/Services/HomeFeedBuilder.swift`) is pure. Above
+  NOW: kind order Slack (mention/dm/thread/reaction) → Jira → proposal →
+  reminder → target → email (`FeedKind`), newest first within a kind, 7 rows
+  (`waitingLimit`) and `hiddenWaiting` for "N more" (expanding is
+  `HomeCenter.setFeedExpanded`, in place). An inbox row opens its permalink;
+  one without an absolute permalink (empty, no scheme) opens Catch-Up. NOW carries `HH:mm`. Below:
+  the ongoing meeting, then later today by time — meetings (the first says "in
+  N min" under 60 min, "now" under one), timed targets and later reminders.
+  Next day: the first of the next 3 days (`nextDayHorizonDays`) with events,
+  meetings only, at most 3, titled "Tomorrow" or the weekday; it also rolls
+  over at midnight because the day is computed from `now`.
+- **Allowed sources** — `AppState.homeFeedSourcesAllowed`
+  (`AppState+Home.swift`): inbox follows Attention detection's feature,
+  calendar follows the Calendar tab's visibility; reminders, proposals and
+  targets are always allowed. `HomeCenter.makeFeed` empties a source
+  Home may not show and drops its failure too.
+- **Done / Hide** — `HomeCenter.act` hides the row at once
+  (`hiddenRefs`), then runs `LiveHomeFeedPerformer.perform`
+  (`Sources/Services/HomeFeedActions.swift`): inbox rows through the CLI,
+  `watchtower inbox resolve|dismiss <id>` with a 30 s timeout (`cliTimeout`;
+  a timeout is an error like any other) — the only non-GRDB write, a writer
+  in inbox-pulse's terms, owner ask #408; reminders through
+  `ReminderQueries.markDone` / `snooze`, targets through
+  `TargetQueries.updateStatus(done)` / `snooze(untilInstant:)` — Hide snoozes
+  to tomorrow 09:00 local. A reminder stores that instant as RFC 3339 UTC; a
+  target stores it as a UTC `yyyy-MM-ddTHH:mm` minute, the form Go's
+  `UnsnoozeExpiredTargets` compares against (a bare date would come back at
+  00:00 UTC, the same evening west of UTC). Proposals and events have no
+  action: `HomeCenter.act` ignores them (`FeedRef.hasActions`). A failure un-hides the
+  row and stores the message in `feedErrors` (a second press clears it). An
+  item already gone (Go's resolve/dismiss exit 0 on a missing row;
+  `RowNotFoundError`, `TargetNotFoundError`) is success. No CLI is an error
+  (`HomeFeedActionError.cliUnavailable`), not a silent no-op.
+- **Failed source is never the all-clear** — `HomeFeed.failed` names it and
+  the view says so; an empty feed with a failed source never reads as nothing
+  waiting.
+
+### Workbench, links, numbers (2026-10-19, #717)
+
+Spec `docs/superpowers/specs/2026-10-19-home-zones-design.md` §§6–8, PR 2. The
+right column of `HomeContent` (`Sources/Views/Home/HomeView.swift`) is
+`HomeSideColumn`: Workbench, links, numbers, in that order, each left
+out when empty; numbers show once their first read lands. Two columns from
+900 pt content width (`HomeContent.twoColumnWidth`), else one column in the order
+feed, Workbench, links, numbers. No migration, no AI, no daemon phase. A zone
+whose read failed shows `HomeZoneErrorLine` ("Couldn't read <zone> — see the
+log.") and never reads as empty.
+
+- **Design kit** (style guide #719) — every zone, the feed included, is a
+  `HomeZone` (`HomeView.swift`): a `SectionHeader` (with the feed's count of
+  rows waiting, folded ones included) and a quiet trailing link over a
+  `.card()`; rows are `.kitRow` plates with no dividers between them (space
+  separates the blocks, the next day and the suggestion), chips are the kit's
+  `Chip` coloured from `Tone.feedKind` / `Tone.feedEvent`, and the NOW line,
+  the meeting in progress, warnings, the all-clear and errors take `Tone.now`
+  / `.warning` / `.success` / `.error`. The suggestion's Add is
+  `.kitSecondary` (the page has no prominent action). A feed row's hover
+  buttons are hidden from accessibility while invisible; the row carries
+  Open, and Done / Hide when it has them, as accessibility actions. Design
+  shots: `home-wide` and `home-narrow` in `DesignShotCatalog`
+  (`HomeShotFixtures`).
+- **Workbench** — `HomeQueries.workbench`
+  (`Sources/WatchtowerCore/Database/Queries/HomeQueries.swift:16`) reads the
+  open asks (`OwnerAskQueries.openAsksAllWorkbenches`; an unreadable row
+  marks the zone failed, the rest show) and the newest open instruction
+  suggestion first seen within 7 days, each on its own. The live sessions come
+  from `HomeEnvironment.workbenchSessions` (`SessionAgentStateCenter`
+  statuses, `HomeCenter.swift:22`). `HomeWorkbenchBuilder.blocks`
+  (`Services/HomeWorkbenchBuilder.swift:24`) is pure: only needs-approval,
+  failed, ready-to-check, background and working sessions that belong to a
+  workbench, sorted by that order; asks oldest first; blocks by name; a
+  workbench with only an ask still shows. Session rows link to the terminal,
+  asks to `WorkbenchRoute.forAsk`; the suggestion is the last row (Add /
+  Dismiss through `decideInstructionSuggestion`, More… → Settings). View:
+  `WorkbenchZoneView.swift`; header **Open →** is the Workbench tab. Shown
+  when blocks, a suggestion or a failure exist (`HomeSnapshot.showsWorkbench`,
+  `Home.swift:204`).
+- **Links** — `HomeLinksQueries.read` (`HomeLinksQueries.swift:28`: today's
+  and the latest briefing, `CatchUpQueries.newestUnacknowledgedReady`, today's
+  day-plan done/total; each guarded, a throw sets `failed`, a missing table is
+  no content) and `HomeLinksBuilder.links` (`HomeLinksBuilder.swift:29`):
+  Briefing ("ready HH:mm" from `createdAt` in the feed's zone, else the latest
+  briefing's weekday), Catch-Up ("new recap", highlighted), Day plan
+  ("N of M done"), Digests. Each row only while its tab is visible
+  (`AppState.homeLinksAllowed`, `AppState+Home.swift:32`). View:
+  `LinksZoneView.swift`.
+- **Numbers** — `HomeNumbersQueries.read` (`HomeNumbersQueries.swift:31`), a
+  read of its own in `HomeCenter` (own observation task and token, so a slow
+  count never blocks the feed), one independent group per source; a throw marks
+  that group's fields in `HomeNumbers.failed` ("—"), a nil value (source absent
+  or off) is left out. Messages: not-owner, not-deleted, today, in a DM/group
+  DM or naming the owner, versus the owner's own; ids from
+  `OwnerQueries.ownSlackUserIDs` (every non-removed Slack account; OWNER-01
+  note). Meetings: `CalendarQueries.fetchEvents` through
+  `HomeFeedQueries.isShownEvent`, only with a calendar connected, hours
+  rounded to 0.5. AI spend: `TokenUsageQueries.fetchUsage`. Plan: only when
+  `plan_usage_status.state == "ok"`. Workbench targets new/done: today's
+  `target_status_history` rows of `project_id IS NOT NULL` targets (this is
+  the PROJ-01 mirror — workbench targets only, never reaching the feed).
+  Recorded: `meeting_transcripts` created today. View: `NumbersZoneView.swift`
+  (muted, nothing clickable).
 
 ### Resolutions made while planning
 
@@ -509,38 +637,61 @@ waiting have no tab gate).
    stored time.
 5. **`needsSource` rows** — one row per missing source, listing the tabs it
    unlocks.
-6. **Briefing summary** (decision 3) — a briefing has no prose field; the
+6. **Briefing summary** (superseded 2026-10-19 by the zones, #717: the Briefing link shows only "ready HH:mm" or a weekday) (decision 3) — a briefing has no prose field; the
    first item of the first non-empty section in the detail view's order
    (attention, your day, what happened, team pulse, coaching), two lines.
-7. **Since you were away** uses the unacknowledged recap's own window; no
+7. **Since you were away** (superseded 2026-10-19 by the zones, #717: the Catch-Up link's "new recap") uses the unacknowledged recap's own window; no
    `CatchUpQueries.autoWindowStart`.
-8. **Next meeting** — 24 h horizon; "Prep ready" from a non-empty
+8. **Next meeting** (superseded 2026-10-19 by the Feed, #717: see "Feed" above) — 24 h horizon; "Prep ready" from a non-empty
    `meeting_prep_cache` row (`CalendarQueries.hasPrep`), no prep text decoded.
-9. **Waiting on you** items are what the badge counts (pending/failed
+9. **Waiting on you** (superseded 2026-10-19 by the Feed, #717: see "Feed" above) items are what the badge counts (pending/failed
    proposals, due reminders), not the strip's 24 h tail of applied rows.
-10. **Agents waiting** — count + the 3 oldest asks, routed by
+10. **Agents waiting** (superseded 2026-10-19 by the Workbench zone, #717) — count + the 3 oldest asks, routed by
     `WorkbenchRoute.forAsk` (`Workbench.swift:45`), the rule
     `WorkbenchNotificationPolicy` now shares.
 11. **Calendar deep link** — `navigateToCalendarEvent` +
     `pendingCalendarEventID` (`AppState.swift:511`, `:371`), consumed by
     `CalendarEventsView.openPendingEvent` (`:205`) through
     `openLinkedEvent`.
-12. **Today cards follow tab visibility** — a card whose tab is hidden is
+12. **Today cards follow tab visibility** (superseded 2026-10-19 by the zones, #717: the links follow it through `homeLinksAllowed`) — a card whose tab is hidden is
     not shown, so no link leads to a hidden tab.
 
 ### Tests
 
-Core: `GettingReadyTests`, `FeatureCardCopyTests`, `HomeTodayTests`,
-`HomeQueriesTests` (`testOneFailingCardKeepsTheOthers`),
+Core: `GettingReadyTests`, `FeatureCardCopyTests`, `HomeQueriesTests`
+(`HomeTodayTests` and the Today-card cases went with the cards, #717),
 `WorkbenchTargetExclusionTests.testProj01_HomeSummaryNeverReturnsAProjectTarget`.
-Desktop: `HomeCenterTests` (`testAllReadsFailedIsNotAllClear`),
+Feed (2026-10-19, #717), Core: `HomeFeedQueriesTests` (72 h window, triggers and
+snooze, 200 cap, read rows kept, who/where, events filter, prep scope,
+reminder split, `testOneFailingSourceMarksOnlyItself`, missing table,
+`testProj01_FeedNeverReturnsAProjectTarget`), `HomeFeedBuilderTests` (kind
+order, cap and N more, hidden refs, NOW, next meeting, next day within 3 days,
+midnight roll-over, `testFailedSourceIsNeverAllClear`). Desktop:
+`HomeFeedActionTests` (Done hides at once, CLI failure restores, quiet when
+gone, snooze to 09:00, no CLI), `HomeCenterTests` (`testFeedIsInTheSnapshot`,
+`testFeedSourcesFollowAttentionDetectionAndCalendar`).
+Zones (2026-10-19, #717), Core: `HomeWorkbenchBuilderTests` (finished and
+stopped left out, no-workbench session left out, blocks by name and sessions by
+kind, ask-only workbench, links), `HomeLinksBuilderTests` (ready time, weekday
+fallback, new recap only when unacknowledged, day-plan counts, hidden tab),
+`HomeLinksQueriesTests` (today vs latest, plan counts, missing table, newest
+ready recap), `HomeNumbersQueriesTests` (DMs and mentions, every owner account,
+no Slack, meeting hours filter, plan only when ok, workbench created/done),
+`HomeQueriesTests`. Desktop: `HomeViewTests`, `HomeCenterTests`
+(`testFirstPoolFailurePublishesAllFailed`, `testPoolFailureAfterGoodReadIsSaid`,
+`testFailedLinksReadIsSaid`, `testOnlyUnreadableAsksMarksWorkbenchFailed`,
+`testDisallowedSourceFailureIsNotNamed`, `testMessagesWriteRereadsNumbersNotTheFeed`,
+`testTickRereadsNumbers`),
 `HomeCenterSurvivesNavigationTests`, `HomeLandingTests` (landing, launch
 default, fallback, re-run keeps the tab), `HomeLinkTests`, `HomeViewTests`.
 
 ## Contracts and tests
 
-- **No inventory file changes** (P1, P4 and P2). P2 adds a PROJ-01 guard
-  case for `homeSummary` and changes no contract. P1/P4 touched no guard test:
+- **Inventory changes** (Feed, #717): `docs/inventory/workbench.md` PROJ-01
+  note and guard list (the feed's targets read), `docs/inventory/inbox-pulse.md`
+  header (Home's Done/Hide is a writer through the CLI). No contract text
+  changed. Before that, no inventory changes (P1, P4 and P2): P2 added a
+  PROJ-01 guard case for `homeSummary` and changed no contract. P1/P4 touched no guard test:
   `TestShouldRunBriefing_*`, `*Backoff_*` and `TestOwner02_*` are as they were.
   `TestDaemon_RunSyncInvokesAllTrackedPhases` (`internal/daemon/daemon_test.go:1088`)
   got fixture data only — active users and a digest situation in people's window

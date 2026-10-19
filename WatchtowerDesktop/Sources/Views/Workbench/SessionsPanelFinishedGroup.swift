@@ -30,7 +30,8 @@ struct SessionsPanelSessionRow: View {
             quickDelete: quickDeleteAction,
             deleteButtonTakesKeyboard: vm.requestPanelKeyboard,
             showsDelete: hoveredRow == row.id || hasCursor,
-            hasCursor: hasCursor
+            hasCursor: hasCursor,
+            opensIn: row.session.kind.isAgent ? WorkspaceView(vm.layout(projectID: projectID).pane(forSession: row.id)) : nil
         )
         // Its terminal closed by Delete and Clean Up (board #535): no
         // resume, no menu. A Clean Up… apply leaves it clickable.

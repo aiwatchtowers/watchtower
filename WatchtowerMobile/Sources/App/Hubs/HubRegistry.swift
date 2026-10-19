@@ -78,6 +78,12 @@ final class HubRegistry {
         try HubRegistry(queue: DatabaseQueue())
     }
 
+    /// Closes the database for good, before its file is deleted (a test's
+    /// teardown); later calls throw. Closing again does nothing.
+    func close() throws {
+        try queue.close()
+    }
+
     private static func migrate(_ queue: DatabaseQueue) throws {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1") { db in

@@ -22,7 +22,7 @@ struct ReactionDictionaryEditor: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(SlackEmoji.label(forShortcode: mapping.emoji))
-                            Text(ReactionToolCatalog.title(for: mapping.tool))
+                            Text(ReactionToolCatalog.reactionTitle(for: mapping.tool))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -57,7 +57,7 @@ struct ReactionDictionaryEditor: View {
                 TextField("emoji short-name (e.g. white_check_mark)", text: $newReactionEmoji)
                 Picker("Tool", selection: $newReactionTool) {
                     ForEach(ReactionDictionaryTools.all, id: \.self) { tool in
-                        Text(ReactionToolCatalog.title(for: tool)).tag(tool)
+                        Text(ReactionToolCatalog.reactionTitle(for: tool)).tag(tool)
                     }
                 }
                 .labelsHidden()

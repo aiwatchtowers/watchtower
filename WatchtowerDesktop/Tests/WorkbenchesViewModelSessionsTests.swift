@@ -1530,6 +1530,168 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.layout.visiblePanes, [.session(fresh.id)])
     }
 
+    /// Workchat (#711): the twin switch and ⌃` swap the session on screen in
+    /// place; each session opens in the mode it was last shown in; the row's
+    /// Open in Terminal / Open in Workchat record it; a new session opens in
+    /// its terminal.
+    func testWorkchatIsTheSessionsSecondModeAndIsRemembered() async throws {
+        let p = try await workbenchWithFolder()
+        let fetched = try await pool.read { try WorkbenchQueries.fetch($0, id: p) }
+        let project = try XCTUnwrap(fetched)
+        let one = try await liveSession(p, "one")
+        let two = try await liveSession(p, "two")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        await vm.showSession(id: one.id)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(one.id)])
+
+        await vm.showView(.chat, project: project)
+        XCTAssertEqual(vm.layout.visiblePanes, [.sessionChat(one.id)], "Workchat swaps in place, no split")
+        XCTAssertEqual(vm.panelSelection, .session(one.id), "the panel still highlights the session")
+        XCTAssertEqual(vm.headerSession?.id, one.id)
+        await vm.showView(.terminal, project: project)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(one.id)], "Terminal swaps back to the same session")
+        vm.toggleWorkchat(projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.sessionChat(one.id)], "⌃`")
+
+        await vm.showSession(id: two.id)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(two.id)], "another session opens in its own mode")
+        await vm.showSession(id: one.id)
+        XCTAssertEqual(vm.layout.visiblePanes, [.sessionChat(one.id)], "the remembered mode")
+        await vm.showInPane(vm.layout.terminalSlot, item: .session(two.id), projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(two.id)], "the shared ▾ menu replaces the Workchat slot")
+
+        await vm.showTerminal(sessionID: one.id, projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(one.id)])
+        await vm.showWorkchat(sessionID: one.id, projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.sessionChat(one.id)])
+        XCTAssertEqual(vm.layout(projectID: p), WorkspaceLayout.decode(defaults.data(forKey: WorkspaceLayout.key(workbenchID: p))),
+                       "the mode is persisted with the layout")
+
+        await vm.newSession(inPane: vm.layout.terminalSlot, projectID: p)
+        let fresh = try XCTUnwrap(vm.sessions.first { $0.id != one.id && $0.id != two.id })
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(fresh.id)], "a new session opens in its terminal")
+        XCTAssertEqual(vm.layout.workchatSessions, [one.id])
+    }
+
+    /// In a split Workchat goes beside its session's terminal: both halves lit.
+    func testWorkchatInASplitSitsBesideItsTerminal() async throws {
+        let p = try await workbenchWithFolder()
+        let fetched = try await pool.read { try WorkbenchQueries.fetch($0, id: p) }
+        let project = try XCTUnwrap(fetched)
+        let one = try await liveSession(p, "one")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        await vm.showSession(id: one.id)
+        vm.toggleSplit(projectID: p)
+        await vm.showView(.chat, project: project)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(one.id), .sessionChat(one.id)])
+        XCTAssertTrue(vm.layout.isShowing(.terminal) && vm.layout.isShowing(.chat))
+
+        await vm.showTerminalFromWorkchat(sessionID: one.id, projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(one.id), .sessionChat(one.id)], "the terminal is on screen already")
+    }
+
+    /// The Workchat's Show in Terminal (#711, final review M1): a session
+    /// remembered in Workchat mode swaps to its terminal in place, and the
+    /// terminal is recorded — `showInPane` with the session's own pane did
+    /// nothing.
+    func testShowTerminalFromWorkchatSwapsASinglePane() async throws {
+        let p = try await workbenchWithFolder()
+        let one = try await liveSession(p, "one")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        await vm.showWorkchat(sessionID: one.id, projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.sessionChat(one.id)])
+        XCTAssertEqual(vm.layout.workchatSessions, [one.id])
+
+        await vm.showTerminalFromWorkchat(sessionID: one.id, projectID: p)
+
+        XCTAssertEqual(vm.layout.primary, .session(one.id))
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(one.id)])
+        XCTAssertFalse(vm.layout.workchatSessions.contains(one.id), "the terminal is the mode from now on")
+    }
+
+    /// A Workchat beside Board: its slot shows the terminal, Board stays.
+    func testShowTerminalFromWorkchatBesideBoardKeepsTheBoard() async throws {
+        let p = try await workbenchWithFolder()
+        let one = try await liveSession(p, "one")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        await vm.showSession(id: one.id)
+        vm.toggleSplit(projectID: p)
+        vm.toggleWorkchat(projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.sessionChat(one.id), .board])
+
+        await vm.showTerminalFromWorkchat(sessionID: one.id, projectID: p)
+
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(one.id), .board])
+        XCTAssertFalse(vm.layout.workchatSessions.contains(one.id))
+    }
+
+    /// The header's Terminal button records the terminal (final review m2):
+    /// the next panel click opens the session in it, not in its Workchat.
+    func testHeaderTerminalButtonRecordsTheTerminalMode() async throws {
+        let p = try await workbenchWithFolder()
+        let fetched = try await pool.read { try WorkbenchQueries.fetch($0, id: p) }
+        let project = try XCTUnwrap(fetched)
+        let one = try await liveSession(p, "one")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        await vm.showWorkchat(sessionID: one.id, projectID: p)
+        await vm.showView(.board, project: project)
+        XCTAssertEqual(vm.layout.visiblePanes, [.board])
+        XCTAssertEqual(vm.layout.workchatSessions, [one.id])
+
+        await vm.showView(.terminal, project: project)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(one.id)])
+        XCTAssertFalse(vm.layout.workchatSessions.contains(one.id), "Terminal is recorded")
+
+        await vm.showView(.board, project: project)
+        await vm.showSession(id: one.id)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(one.id)], "the next panel click opens the terminal")
+    }
+
+    /// Both modes side by side: Terminal keeps the Workchat and its mode.
+    func testHeaderTerminalButtonBesideItsWorkchatKeepsTheMode() async throws {
+        let p = try await workbenchWithFolder()
+        let fetched = try await pool.read { try WorkbenchQueries.fetch($0, id: p) }
+        let project = try XCTUnwrap(fetched)
+        let one = try await liveSession(p, "one")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        await vm.showSession(id: one.id)
+        vm.toggleSplit(projectID: p)
+        vm.toggleWorkchat(projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.sessionChat(one.id), .board])
+
+        await vm.showView(.terminal, project: project)
+
+        XCTAssertEqual(vm.layout.visiblePanes, [.sessionChat(one.id), .session(one.id)])
+        XCTAssertEqual(vm.layout.workchatSessions, [one.id], "the kept Workchat keeps its mode")
+    }
+
+    /// A session gone from the list leaves the remembered modes too.
+    func testLoadSessionsForgetsTheModeOfAGoneSession() async throws {
+        let p = try await workbenchWithFolder()
+        let one = try await liveSession(p, "one")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        var layout = vm.layout(projectID: p)
+        layout.setMode(true, sessionID: one.id)
+        layout.setMode(true, sessionID: 9_999)
+        vm.setLayout(layout, projectID: p)
+        await vm.loadSessions(projectID: p)
+        XCTAssertEqual(vm.layout(projectID: p).workchatSessions, [one.id])
+    }
+
     func testHeaderTerminalButtonStartsASessionWhenTheProjectHasNone() async throws {
         let p = try await workbenchWithFolder()
         let fetched = try await pool.read { try WorkbenchQueries.fetch($0, id: p) }

@@ -115,6 +115,19 @@ final class SessionLineDeliveryTests: XCTestCase {
         return try XCTUnwrap(vm.asks.openAsks[project]?.first { $0.id == id })
     }
 
+    /// Only the Workchat keeps line breaks (ask #421): an input line with a
+    /// newline is still typed without its line break.
+    func testOtherLineKeysStillOneLine() async throws {
+        let (_, s, _) = try await seed()
+        let vm = makeVM()
+
+        let sent = await vm.lineDelivery.deliverLine("first\nsecond", key: .input("action-nl"), sessionID: s.id) { _ in }
+
+        XCTAssertEqual(sent, .submitted)
+        XCTAssertTrue(typedText.contains { $0.contains("first") && $0.contains("second") }, "\(typedText)")
+        XCTAssertFalse(typedText.contains { $0.contains("\n") }, "no line break typed: \(typedText)")
+    }
+
     /// One queue per session: an ask's answer written while another line is
     /// in its pause waits, then goes on its own — each line pasted and
     /// submitted in turn, never two in one prompt.

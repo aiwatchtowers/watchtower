@@ -23,6 +23,17 @@ final class ChatToolCatalogTests: XCTestCase {
         XCTAssertEqual(ChatToolCatalog.label(name: "memory_map", args: "{}"), "Read the memory map")
     }
 
+    func testLinearReadsHaveEntries() {
+        XCTAssertEqual(ChatToolCatalog.label(name: "get_linear_issue", args: #"{"key":"ENG-12"}"#), "Opened ENG-12")
+        XCTAssertEqual(ChatToolCatalog.label(name: "get_linear_issue", args: "{}"), "Opened a Linear issue")
+        XCTAssertEqual(ChatToolCatalog.label(name: "list_linear_issues", args: #"{"team":"ENG"}"#), "Listed Linear issues: ENG")
+        XCTAssertEqual(ChatToolCatalog.label(name: "list_linear_issues", args: "{}"), "Listed Linear issues")
+        XCTAssertEqual(ChatToolCatalog.label(name: "list_linear_teams", args: "{}"), "Listed Linear teams")
+        XCTAssertEqual(ChatToolCatalog.label(name: "get_linear_status_history", args: "{}"), "Read Linear status history")
+        XCTAssertEqual(ChatToolCatalog.label(name: "list_linear_cycles", args: "{}"), "Listed Linear cycles")
+        XCTAssertEqual(ChatToolCatalog.icon(name: "get_linear_issue"), "ticket")
+    }
+
     func testWriteToolsReadAsProposals() {
         XCTAssertEqual(ChatToolCatalog.label(name: "create_jira_issue", args: "{}"), "Proposed: Create a Jira issue")
     }

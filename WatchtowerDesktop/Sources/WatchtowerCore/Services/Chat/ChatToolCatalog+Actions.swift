@@ -31,6 +31,27 @@ extension ChatToolCatalog {
         case "remind_me":
             return arg("remind_at").map { "Setting a reminder for \($0)" } ?? "Setting a reminder"
         default:
+            return linearActionLabel(name: name, arg: arg)
+        }
+    }
+
+    private static func linearActionLabel(name: String, arg: (String) -> String?) -> String? {
+        switch name {
+        case "add_linear_comment":
+            return arg("key").map { "Proposing a comment on \($0)" } ?? "Proposing a Linear comment"
+        case "transition_linear_issue":
+            guard let key = arg("key"), let state = arg("state_name") ?? arg("state") ?? arg("state_type") else {
+                return "Proposing an issue transition"
+            }
+            return "Proposing \(key) → \(state)"
+        case "assign_linear_issue":
+            guard let key = arg("key"), let who = arg("assignee_name") ?? arg("assignee") else {
+                return "Proposing an issue assignment"
+            }
+            return "Proposing to assign \(key) to \(who)"
+        case "update_linear_issue":
+            return arg("key").map { "Proposing an update to \($0)" } ?? "Proposing a Linear issue update"
+        default:
             return nil
         }
     }
@@ -41,6 +62,10 @@ extension ChatToolCatalog {
         case "transition_jira_issue": return "arrow.right.circle"
         case "assign_jira_issue": return "person.crop.circle.badge.plus"
         case "update_jira_issue": return "square.and.pencil"
+        case "add_linear_comment": return "text.bubble"
+        case "transition_linear_issue": return "arrow.right.circle"
+        case "assign_linear_issue": return "person.crop.circle.badge.plus"
+        case "update_linear_issue": return "square.and.pencil"
         case "create_idea": return "lightbulb"
         case "create_track": return "binoculars"
         case "dismiss_tracks": return "archivebox"

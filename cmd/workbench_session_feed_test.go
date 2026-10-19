@@ -105,14 +105,20 @@ func TestSessionFeedJSON_PinnedKeys(t *testing.T) {
 				"type": "tool_use", "id": "toolu_1", "name": "Agent",
 				"input": map[string]any{"subagent_type": "Explore", "description": "look around"}}}}}),
 		feedUser("u2", "Ask #9 answered (Q: A) — read it with get_ask 9 using the skill."),
+		feedUser("u3", "<task-notification>\n<task-id>t1</task-id>\n<summary>CI done</summary>\n</task-notification>"),
 	)
 	got := fx.feedJSON(t)
 	assert.Equal(t, []string{"cursor", "entries", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(got))
 	entries := got["entries"].([]any)
-	require.Len(t, entries, 4)
+	require.Len(t, entries, 5)
 	assert.Equal(t, []string{"at", "conversation", "id", "kind", "text"}, feedKeys(entries[0].(map[string]any)))
 	ask := entries[3].(map[string]any)
 	assert.Equal(t, []string{"ask_id", "at", "conversation", "id", "kind", "text"}, feedKeys(ask))
+	ev := entries[4].(map[string]any)
+	assert.Equal(t, []string{"at", "conversation", "event_type", "id", "kind", "text", "title"}, feedKeys(ev))
+	assert.Equal(t, "event", ev["kind"])
+	assert.Equal(t, "task", ev["event_type"])
+	assert.Equal(t, "CI done", ev["title"])
 	sub := entries[2].(map[string]any)
 	assert.Equal(t, []string{"agent_id", "description", "status", "tool_use_id", "type"}, feedKeys(sub["subagent"].(map[string]any)))
 	assert.Len(t, got["subagents"], 1)

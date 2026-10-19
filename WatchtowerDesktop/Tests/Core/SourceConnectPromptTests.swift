@@ -16,6 +16,18 @@ final class SourceConnectPromptTests: XCTestCase {
         XCTAssertNil(SourceConnectPrompt.rowTitle(connected: ConnectedSources(), dismissed: true))
     }
 
+    /// Linear is the tracker kind too: the row keeps naming Jira, and a
+    /// connected Linear fills the slot.
+    func testLinearFillsTheTrackerSlot() {
+        XCTAssertEqual(SourceConnectPrompt.rowTitle(connected: ConnectedSources(slack: true, linear: true), dismissed: false),
+                       "+ Connect Mail…")
+        XCTAssertEqual(SourceConnectPrompt.goals(newlyConnectedFrom: ConnectedSources(), to: ConnectedSources(linear: true)),
+                       [.tasksAndJira])
+        XCTAssertEqual(
+            SourceConnectPrompt.goals(newlyConnectedFrom: ConnectedSources(jira: true), to: ConnectedSources(jira: true, linear: true)),
+            [.tasksAndJira])
+    }
+
     func testGoalsOfANewlyConnectedSource() {
         let none = ConnectedSources()
         XCTAssertEqual(SourceConnectPrompt.goals(newlyConnectedFrom: none, to: ConnectedSources(slack: true)), [.workCommunication])

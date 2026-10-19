@@ -48,7 +48,7 @@ func TestIsBlocked(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.status, func(t *testing.T) {
-			got := isBlocked(db.JiraIssue{Status: tc.status})
+			got := isBlocked(db.TrackerIssue{Status: tc.status})
 			assert.Equal(t, tc.want, got)
 		})
 	}
@@ -59,16 +59,16 @@ func TestIsOverdue(t *testing.T) {
 
 	cases := []struct {
 		name  string
-		issue db.JiraIssue
+		issue db.TrackerIssue
 		want  bool
 	}{
-		{"past due, not done", db.JiraIssue{DueDate: "2026-04-01", StatusCategory: "in progress"}, true},
-		{"future due", db.JiraIssue{DueDate: "2026-04-10"}, false},
-		{"due today is not overdue", db.JiraIssue{DueDate: "2026-04-02"}, false},
-		{"past due but done", db.JiraIssue{DueDate: "2026-04-01", StatusCategory: "done"}, false},
-		{"past due but DONE upper", db.JiraIssue{DueDate: "2026-04-01", StatusCategory: "DONE"}, false},
-		{"no due date", db.JiraIssue{DueDate: ""}, false},
-		{"malformed due date", db.JiraIssue{DueDate: "not a date"}, false},
+		{"past due, not done", db.TrackerIssue{DueDate: "2026-04-01", StatusCategory: "in progress"}, true},
+		{"future due", db.TrackerIssue{DueDate: "2026-04-10"}, false},
+		{"due today is not overdue", db.TrackerIssue{DueDate: "2026-04-02"}, false},
+		{"past due but done", db.TrackerIssue{DueDate: "2026-04-01", StatusCategory: "done"}, false},
+		{"past due but DONE upper", db.TrackerIssue{DueDate: "2026-04-01", StatusCategory: "DONE"}, false},
+		{"no due date", db.TrackerIssue{DueDate: ""}, false},
+		{"malformed due date", db.TrackerIssue{DueDate: "not a date"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -80,7 +80,7 @@ func TestIsOverdue(t *testing.T) {
 func TestAttendeesHaveData(t *testing.T) {
 	assert.False(t, attendeesHaveData(nil))
 	assert.False(t, attendeesHaveData([]attendeeJira{{slackID: "U1"}}))
-	assert.True(t, attendeesHaveData([]attendeeJira{{slackID: "U1", issues: []db.JiraIssue{{Key: "PROJ-1"}}}}))
+	assert.True(t, attendeesHaveData([]attendeeJira{{slackID: "U1", issues: []db.TrackerIssue{{Key: "PROJ-1"}}}}))
 }
 
 func TestLookupDisplayName(t *testing.T) {
@@ -93,21 +93,24 @@ func TestLookupDisplayName(t *testing.T) {
 	assert.Equal(t, "U99", lookupDisplayName(attendees, "U99"), "fallback for unknown id")
 }
 
+// p1ID is the identity key of the untyped fixture issue P-1.
+var p1ID = issueIdentity(db.TrackerIssue{Key: "P-1"})
+
 func TestIndexIssuesAndReporters_AddsReporterRole(t *testing.T) {
 	attendees := []attendeeJira{
-		{slackID: "U1", issues: []db.JiraIssue{
+		{slackID: "U1", issues: []db.TrackerIssue{
 			{Key: "P-1", ReporterSlackID: "U2"},
 		}},
 	}
 	idSet := map[string]bool{"U1": true, "U2": true}
 	parts := map[string][]issueRole{
-		"P-1": {{slackID: "U1", role: "assignee"}},
+		p1ID: {{slackID: "U1", role: "assignee"}},
 	}
 	allIssues := indexIssuesAndReporters(attendees, idSet, parts)
-	assert.Contains(t, allIssues, "P-1")
+	assert.Contains(t, allIssues, p1ID)
 
 	// Reporter role added because U2 is also an attendee.
-	roles := parts["P-1"]
+	roles := parts[p1ID]
 	require := false
 	for _, r := range roles {
 		if r.role == "reporter" && r.slackID == "U2" {
@@ -120,34 +123,34 @@ func TestIndexIssuesAndReporters_AddsReporterRole(t *testing.T) {
 func TestIndexIssuesAndReporters_SkipsSelfReporter(t *testing.T) {
 	// Reporter == assignee should not add a duplicate role.
 	attendees := []attendeeJira{
-		{slackID: "U1", issues: []db.JiraIssue{
+		{slackID: "U1", issues: []db.TrackerIssue{
 			{Key: "P-1", ReporterSlackID: "U1"},
 		}},
 	}
 	idSet := map[string]bool{"U1": true}
-	parts := map[string][]issueRole{"P-1": {{slackID: "U1", role: "assignee"}}}
+	parts := map[string][]issueRole{p1ID: {{slackID: "U1", role: "assignee"}}}
 
 	indexIssuesAndReporters(attendees, idSet, parts)
-	assert.Len(t, parts["P-1"], 1, "no duplicate reporter for self-reported issue")
+	assert.Len(t, parts[p1ID], 1, "no duplicate reporter for self-reported issue")
 }
 
 func TestIndexIssuesAndReporters_SkipsNonAttendeeReporter(t *testing.T) {
 	attendees := []attendeeJira{
-		{slackID: "U1", issues: []db.JiraIssue{
+		{slackID: "U1", issues: []db.TrackerIssue{
 			{Key: "P-1", ReporterSlackID: "U99"}, // U99 not an attendee
 		}},
 	}
 	idSet := map[string]bool{"U1": true}
-	parts := map[string][]issueRole{"P-1": {{slackID: "U1", role: "assignee"}}}
+	parts := map[string][]issueRole{p1ID: {{slackID: "U1", role: "assignee"}}}
 
 	indexIssuesAndReporters(attendees, idSet, parts)
-	assert.Len(t, parts["P-1"], 1)
+	assert.Len(t, parts[p1ID], 1)
 }
 
 func TestFormatAttendeeSections_TruncatesIssueList(t *testing.T) {
-	issues := make([]db.JiraIssue, 12)
+	issues := make([]db.TrackerIssue, 12)
 	for i := range issues {
-		issues[i] = db.JiraIssue{Key: "P-" + strings.Repeat("x", i+1), Status: "In Progress", Summary: "issue"}
+		issues[i] = db.TrackerIssue{Key: "P-" + strings.Repeat("x", i+1), Status: "In Progress", Title: "issue"}
 	}
 	attendees := []attendeeJira{
 		{slackID: "U1", displayName: "Alice", issues: issues, totalSP: 4.5, blocked: 1, overdue: 2},
@@ -162,7 +165,7 @@ func TestFormatAttendeeSections_TruncatesIssueList(t *testing.T) {
 
 func TestFormatAttendeeSections_FallbackToSlackIDName(t *testing.T) {
 	attendees := []attendeeJira{
-		{slackID: "U1", issues: []db.JiraIssue{{Key: "P-1", Summary: "x"}}},
+		{slackID: "U1", issues: []db.TrackerIssue{{Key: "P-1", Title: "x"}}},
 	}
 	var sb strings.Builder
 	formatAttendeeSections(&sb, attendees, time.Now())
@@ -174,9 +177,9 @@ func TestFormatSharedIssues(t *testing.T) {
 		{slackID: "U1", displayName: "Alice"},
 		{slackID: "U2", displayName: "Bob"},
 	}
-	allIssues := map[string]db.JiraIssue{
-		"P-1": {Key: "P-1", Status: "In Progress", Summary: "Shared work"},
-		"P-2": {Key: "P-2", Status: "Done", Summary: "Solo work"},
+	allIssues := map[string]db.TrackerIssue{
+		"P-1": {Key: "P-1", Status: "In Progress", Title: "Shared work"},
+		"P-2": {Key: "P-2", Status: "Done", Title: "Solo work"},
 	}
 	parts := map[string][]issueRole{
 		"P-1": {{slackID: "U1", role: "assignee"}, {slackID: "U2", role: "reporter"}},

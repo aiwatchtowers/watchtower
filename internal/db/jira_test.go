@@ -423,13 +423,13 @@ func TestUpsertJiraBoard_DoesNotOverwriteProfile(t *testing.T) {
 func TestUpsertAndGetJiraSlackLink(t *testing.T) {
 	db := openTestDB(t)
 
-	link := JiraSlackLink{
+	link := IssueSlackLink{
 		IssueKey:  "PROJ-123",
 		ChannelID: "C1",
 		MessageTS: "1000.001",
 		LinkType:  "mention",
 	}
-	require.NoError(t, db.UpsertJiraSlackLink(link))
+	require.NoError(t, db.UpsertIssueSlackLink(link))
 
 	links, err := db.GetJiraSlackLinksByIssue("PROJ-123")
 	require.NoError(t, err)
@@ -443,27 +443,27 @@ func TestUpsertAndGetJiraSlackLink(t *testing.T) {
 	assert.Len(t, links, 1)
 }
 
-func TestUpsertJiraSlackLink_OnConflict(t *testing.T) {
+func TestUpsertIssueSlackLink_OnConflict(t *testing.T) {
 	db := openTestDB(t)
 
-	link1 := JiraSlackLink{
+	link1 := IssueSlackLink{
 		IssueKey:  "PROJ-1",
 		ChannelID: "C1",
 		MessageTS: "100.001",
 		LinkType:  "mention",
 	}
-	require.NoError(t, db.UpsertJiraSlackLink(link1))
+	require.NoError(t, db.UpsertIssueSlackLink(link1))
 
 	// Upsert with track_id.
 	trackID := 42
-	link2 := JiraSlackLink{
+	link2 := IssueSlackLink{
 		IssueKey:  "PROJ-1",
 		ChannelID: "C1",
 		MessageTS: "100.001",
 		TrackID:   &trackID,
 		LinkType:  "mention",
 	}
-	require.NoError(t, db.UpsertJiraSlackLink(link2))
+	require.NoError(t, db.UpsertIssueSlackLink(link2))
 
 	links, err := db.GetJiraSlackLinksByIssue("PROJ-1")
 	require.NoError(t, err)
@@ -507,8 +507,8 @@ func TestGetJiraIssuesForTrack(t *testing.T) {
 	seedIssue(t, db, "P-2", "P", "Open", "todo", "U2", "Low")
 
 	trackID := 10
-	require.NoError(t, db.UpsertJiraSlackLink(JiraSlackLink{IssueKey: "P-1", ChannelID: "C1", MessageTS: "100", TrackID: &trackID, LinkType: "mention"}))
-	require.NoError(t, db.UpsertJiraSlackLink(JiraSlackLink{IssueKey: "P-2", ChannelID: "C1", MessageTS: "200", TrackID: &trackID, LinkType: "mention"}))
+	require.NoError(t, db.UpsertIssueSlackLink(IssueSlackLink{IssueKey: "P-1", ChannelID: "C1", MessageTS: "100", TrackID: &trackID, LinkType: "mention"}))
+	require.NoError(t, db.UpsertIssueSlackLink(IssueSlackLink{IssueKey: "P-2", ChannelID: "C1", MessageTS: "200", TrackID: &trackID, LinkType: "mention"}))
 
 	issues, err := db.GetJiraIssuesForTrack(10)
 	require.NoError(t, err)
@@ -530,7 +530,7 @@ func TestGetJiraIssuesForDigest(t *testing.T) {
 	seedIssue(t, db, "P-1", "P", "Done", "done", "U1", "Medium")
 
 	digestID := 5
-	require.NoError(t, db.UpsertJiraSlackLink(JiraSlackLink{IssueKey: "P-1", ChannelID: "C1", MessageTS: "100", DigestID: &digestID, LinkType: "mention"}))
+	require.NoError(t, db.UpsertIssueSlackLink(IssueSlackLink{IssueKey: "P-1", ChannelID: "C1", MessageTS: "100", DigestID: &digestID, LinkType: "mention"}))
 
 	issues, err := db.GetJiraIssuesForDigest(5)
 	require.NoError(t, err)
@@ -703,8 +703,8 @@ func TestGetJiraSlackLinksByTrackID(t *testing.T) {
 	db := openTestDB(t)
 
 	trackID := 42
-	require.NoError(t, db.UpsertJiraSlackLink(JiraSlackLink{IssueKey: "P-1", ChannelID: "C1", MessageTS: "100", TrackID: &trackID, LinkType: "mention"}))
-	require.NoError(t, db.UpsertJiraSlackLink(JiraSlackLink{IssueKey: "P-2", ChannelID: "C1", MessageTS: "200", TrackID: &trackID, LinkType: "mention"}))
+	require.NoError(t, db.UpsertIssueSlackLink(IssueSlackLink{IssueKey: "P-1", ChannelID: "C1", MessageTS: "100", TrackID: &trackID, LinkType: "mention"}))
+	require.NoError(t, db.UpsertIssueSlackLink(IssueSlackLink{IssueKey: "P-2", ChannelID: "C1", MessageTS: "200", TrackID: &trackID, LinkType: "mention"}))
 
 	links, err := db.GetJiraSlackLinksByTrackID(42)
 	require.NoError(t, err)

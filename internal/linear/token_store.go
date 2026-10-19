@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"watchtower/internal/fsutil"
@@ -19,6 +20,19 @@ type Token struct {
 	ExpiresIn    int    `json:"expires_in"`
 	Scope        string `json:"scope"`
 	Expiry       string `json:"expiry,omitempty"` // RFC 3339, calculated from ExpiresIn
+}
+
+// TokenTypeAPIKey marks a personal API key stored in place of an OAuth token.
+const TokenTypeAPIKey = "api_key"
+
+// APIKeyToken wraps a personal API key: no refresh token, no expiry.
+func APIKeyToken(key string) *Token {
+	return &Token{AccessToken: strings.TrimSpace(key), TokenType: TokenTypeAPIKey}
+}
+
+// IsAPIKey reports whether the token is a personal API key.
+func (t *Token) IsAPIKey() bool {
+	return t.TokenType == TokenTypeAPIKey
 }
 
 // IsExpired reports whether the token has expired or will within 60 seconds.

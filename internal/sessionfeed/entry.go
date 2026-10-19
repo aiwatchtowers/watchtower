@@ -16,6 +16,13 @@ const (
 	KindBrief      Kind = "brief"
 	KindSubagent   Kind = "subagent"
 	KindSeparator  Kind = "separator"
+	KindEvent      Kind = "event"
+)
+
+// EventType values for KindEvent entries: Claude Code notices written as user records.
+const (
+	EventTask     = "task"
+	EventTeammate = "teammate"
 )
 
 // Via values for KindWatchtower entries.
@@ -44,6 +51,7 @@ type Entry struct {
 	AskID        int64        `json:"ask_id,omitempty"`
 	Title        string       `json:"title,omitempty"`
 	Via          string       `json:"via,omitempty"`
+	EventType    string       `json:"event_type,omitempty"`
 	Subagent     *SubagentRef `json:"subagent,omitempty"`
 	Conversation string       `json:"conversation,omitempty"`
 }

@@ -92,6 +92,9 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	if cfg.Jira.Enabled {
 		systemPrompt += ai.JiraPromptSection()
 	}
+	if cfg.Jira.Enabled || cfg.Linear.Enabled {
+		systemPrompt += ai.TrackerPromptSection()
+	}
 
 	// Inject digest context if available
 	if digestCtx := buildDigestContext(database); digestCtx != "" {

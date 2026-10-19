@@ -71,7 +71,7 @@ struct WorkbenchTargetPanel: View {
                 }
                 priorityMenu
                 ForEach(findings) { finding in
-                    WorkbenchBoardChip(
+                    Chip(
                         text: finding.kindLabel,
                         color: finding.isConflict ? .orange : .secondary,
                         dot: true
@@ -105,7 +105,7 @@ struct WorkbenchTargetPanel: View {
             }
             numberButton
             if mode == .group {
-                WorkbenchBoardChip(text: "GROUP", color: .secondary)
+                Chip(text: "GROUP", color: .secondary)
             }
             Spacer(minLength: 0)
             WorkOnTargetButton(target: target, compact: false, isVisible: true)
@@ -181,7 +181,7 @@ struct WorkbenchTargetPanel: View {
     /// The target's `#id` (board #207); a click copies it.
     private var numberButton: some View {
         Button { WorkbenchTargetNumber.copy(target.id) } label: {
-            WorkbenchBoardChip(text: WorkbenchTargetNumber.label(target.id), color: .secondary)
+            Chip(text: WorkbenchTargetNumber.label(target.id), color: .secondary)
                 .monospacedDigit()
         }
         .buttonStyle(.plain)
@@ -254,10 +254,10 @@ struct WorkbenchTargetPanel: View {
                 }
             }
         } label: {
-            WorkbenchDetailMenuLabel(
+            MenuLabel(
                 text: shown?.title ?? WorkbenchBoardCard.statusLabel(target.status),
                 systemImage: target.statusIcon,
-                color: WorkbenchBoardColors.status(target.statusColor)
+                color: Tone.status(target.statusColor)
             )
         }
         .menuStyle(.borderlessButton)
@@ -268,10 +268,10 @@ struct WorkbenchTargetPanel: View {
 
     /// A group's status follows its children (PROJ-05): never a menu here.
     private var groupStatus: some View {
-        WorkbenchDetailMenuLabel(
+        MenuLabel(
             text: "\(WorkbenchBoardCard.statusLabel(target.status)) · from sub-tasks",
             systemImage: target.statusIcon,
-            color: WorkbenchBoardColors.status(target.statusColor),
+            color: Tone.status(target.statusColor),
             isMenu: false
         )
         .fixedSize()
@@ -287,10 +287,10 @@ struct WorkbenchTargetPanel: View {
                 ))
             }
         } label: {
-            WorkbenchDetailMenuLabel(
+            MenuLabel(
                 text: target.priority.capitalized,
                 systemImage: "flag.fill",
-                color: WorkbenchBoardColors.priority(target.priority)
+                color: Tone.priority(target.priority)
             )
         }
         .menuStyle(.borderlessButton)

@@ -37,6 +37,22 @@ final class SessionFeedStoreTests: XCTestCase {
         """
     }
 
+    func testDecodesEventEntry() throws {
+        let json = #"{"id":"ev1","kind":"event","event_type":"task","title":"Task done","text":"body","#
+            + #""at":"2026-10-16T10:00:00Z","conversation":"main"}"#
+        let e = try JSONDecoder().decode(SessionFeedEntry.self, from: Data(json.utf8))
+        XCTAssertEqual(e.kind, "event")
+        XCTAssertEqual(e.eventType, "task")
+        XCTAssertEqual(e.title, "Task done")
+        XCTAssertEqual(e.text, "body")
+        XCTAssertTrue(SessionFeedEntry.knownKinds.contains("event"))
+    }
+
+    func testPhoneKindsExcludeEvent() {
+        XCTAssertFalse(SessionFeedEntry.phoneKinds.contains("event"))
+        XCTAssertEqual(SessionFeedEntry.phoneKinds.union(["event"]), SessionFeedEntry.knownKinds)
+    }
+
     func testDecodesPinnedPayload() throws {
         let kinds = ["owner", "agent", "watchtower", "brief", "separator"]
             .enumerated().map { entry("e\($0.offset)", $0.element) }
@@ -197,5 +213,117 @@ final class SessionFeedStoreTests: XCTestCase {
         XCTAssertEqual(runner.calls.count, 0, "the first read is skipped off screen")
         await store.screenChanged(true)
         XCTAssertEqual(runner.calls.count, 1)
+    }
+
+    // MARK: - subagents in place (#711)
+
+    func testSubagentFollowStopsWhenFinished() async {
+        let runner = FakeRunner([
+            .success(payload(cursor: "", entries: entry("s1", "owner"))),
+            .success(payload(cursor: "", entries: entry("s1", "owner") + "," + entry("s2", "agent"))),
+            .success(payload(cursor: "", entries: entry("s1", "owner") + "," + entry("s2", "agent") + "," + entry("s3", "agent")))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        // The marker says running for the first two checks, then finished.
+        var status = ["running", "running", "finished", "finished"]
+        var seen: [[String]] = []
+        await store.followSubagent("tu1", interval: .milliseconds(1),
+                                   isRunning: { status.removeFirst() == "running" },
+                                   isOnScreen: { true },
+                                   onEntries: { seen.append($0.map(\.id)) })
+        XCTAssertEqual(runner.calls.count, 3, "one read at open, one per running tick, none after finished")
+        XCTAssertTrue(runner.calls.allSatisfy { $0.contains("--subagent") && $0.contains("tu1") })
+        XCTAssertEqual(seen.last, ["s1", "s2", "s3"])
+        XCTAssertTrue(store.entries.isEmpty, "a subagent's feed never enters the main feed")
+    }
+
+    func testSubagentFollowFinishedReadsOnce() async {
+        let runner = FakeRunner([])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.followSubagent("tu1", interval: .milliseconds(1),
+                                   isRunning: { false }, isOnScreen: { true }, onEntries: { _ in })
+        XCTAssertEqual(runner.calls.count, 1)
+    }
+
+    func testSubagentFollowOffScreenSpawnsNothing() async {
+        let runner = FakeRunner([])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.followSubagent("tu1", interval: .milliseconds(1),
+                                   isRunning: activeFor(3), isOnScreen: { false }, onEntries: { _ in })
+        XCTAssertEqual(runner.calls.count, 0)
+    }
+
+    func testSubagentFollowFailureSetsErrorAndKeepsPolling() async {
+        let runner = FakeRunner([
+            .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")),
+            .success(payload(cursor: "", entries: entry("s1", "agent")))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        var errors: [String?] = []
+        var seen: [[String]] = []
+        await store.followSubagent("tu1", interval: .milliseconds(1),
+                                   isRunning: activeFor(1), isOnScreen: { true },
+                                   onEntries: { seen.append($0.map(\.id)) },
+                                   onError: { errors.append($0) })
+        XCTAssertEqual(runner.calls.count, 2)
+        XCTAssertEqual(seen, [["s1"]])
+        XCTAssertEqual(errors.count, 2)
+        XCTAssertNotNil(errors[0])
+        XCTAssertNil(errors[1], "a good read clears the error")
+    }
+
+    /// The pane's rule: the main follow runs only at the root of the path;
+    /// while a subagent is open only its feed is read, and back at the root
+    /// the main feed is read once.
+    func testMainFeedNotPolledWhileSubagentOpen() async {
+        let runner = FakeRunner([])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        var path = SessionChatPath()
+        path.push(SessionFeedSubagent(toolUseID: "tu1", status: "finished"))
+
+        if path.isRoot {
+            await store.follow(interval: .milliseconds(1), isActive: activeFor(3)) { true }
+        } else {
+            await store.followSubagent("tu1", interval: .milliseconds(1),
+                                       isRunning: { false }, isOnScreen: { true }, onEntries: { _ in })
+        }
+        XCTAssertEqual(runner.calls.count, 1)
+        XCTAssertTrue(runner.calls[0].contains("--subagent"))
+
+        path.pop()
+        if path.isRoot {
+            await store.follow(interval: .milliseconds(1), isActive: activeFor(0)) { true }
+        }
+        XCTAssertEqual(runner.calls.count, 2, "back at the root: one main read")
+        XCTAssertFalse(runner.calls[1].contains("--subagent"))
+    }
+
+    func testSubagentReadWaitsForMainReadInFlight() async {
+        let runner = SlowRunner()
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        async let main: Void = store.refresh()
+        async let sub: Void = store.followSubagent("tu1", interval: .milliseconds(1),
+                                                   isRunning: { false }, isOnScreen: { true }, onEntries: { _ in })
+        _ = await (main, sub)
+        XCTAssertEqual(runner.maxConcurrent, 1, "at most one CLI process per pane")
+        XCTAssertEqual(runner.calls, 2)
+    }
+
+    private final class SlowRunner: CLIRunnerProtocol, @unchecked Sendable {
+        private let lock = NSLock()
+        private var running = 0
+        private(set) var maxConcurrent = 0
+        private(set) var calls = 0
+
+        func run(args: [String]) async throws -> Data {
+            lock.withLock {
+                calls += 1
+                running += 1
+                maxConcurrent = max(maxConcurrent, running)
+            }
+            try? await Task.sleep(for: .milliseconds(20))
+            lock.withLock { running -= 1 }
+            return Data("{}".utf8)
+        }
     }
 }

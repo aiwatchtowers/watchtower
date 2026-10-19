@@ -23,7 +23,9 @@ package enum SourceConnectPrompt {
             switch kind {
             case .slack: !connected.slack
             case .mail: !(connected.mail || connected.calendar)
-            case .jira: !connected.jira
+            // Linear is the same kind of source: a tracker. The row keeps
+            // naming Jira; a connected Linear fills the slot.
+            case .jira: !(connected.jira || connected.linear)
             }
         }
     }
@@ -37,12 +39,12 @@ package enum SourceConnectPrompt {
     }
 
     /// The goals a newly connected source serves: Slack and mail are work
-    /// communication, a calendar is meetings, Jira is tasks.
+    /// communication, a calendar is meetings, Jira or Linear is tasks.
     package static func goals(newlyConnectedFrom before: ConnectedSources, to after: ConnectedSources) -> [OnboardingGoal] {
         var goals: [OnboardingGoal] = []
         if (after.slack && !before.slack) || (after.mail && !before.mail) { goals.append(.workCommunication) }
         if after.calendar && !before.calendar { goals.append(.meetings) }
-        if after.jira && !before.jira { goals.append(.tasksAndJira) }
+        if (after.jira && !before.jira) || (after.linear && !before.linear) { goals.append(.tasksAndJira) }
         return goals
     }
 

@@ -7,9 +7,9 @@ final class OnboardingConnectPlanTests: XCTestCase {
     func testCardsFollowTheGoals() {
         XCTAssertEqual(OnboardingConnectPlan.sources(for: [.workCommunication]), [.slack, .google])
         XCTAssertEqual(OnboardingConnectPlan.sources(for: [.meetings]), [.google])
-        XCTAssertEqual(OnboardingConnectPlan.sources(for: [.tasksAndJira]), [.jira])
+        XCTAssertEqual(OnboardingConnectPlan.sources(for: [.tasksAndJira]), [.jira, .linear])
         XCTAssertEqual(OnboardingConnectPlan.sources(for: [.workCommunication, .meetings, .tasksAndJira, .development]),
-                       [.slack, .google, .jira])
+                       [.slack, .google, .jira, .linear])
     }
 
     /// Development alone needs no source; the route skips the step anyway.
