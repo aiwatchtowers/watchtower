@@ -68,7 +68,10 @@ Stuck? Press ⌘/ to ask, or open the User Guide.
   column in this order: feed, Workbench, links, numbers, learn.
 - The old Today header and the card grid go away. `TodayCardKind` and
   `HomeTodayBuilder` are replaced by the zone builders below. The
-  Getting ready zone and the help line stay as they are.
+  Getting ready zone and the help line stay as they are. *(Amended
+  2026-10-19, ask #432: Getting ready became a compact zone — "N of M
+  ready", a line per feature preparing, the ready ones on one line — and
+  the columns fill the window with no page width cap.)*
 
 ## 4. Zone 1 — the feed
 

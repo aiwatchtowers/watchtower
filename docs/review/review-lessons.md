@@ -2056,3 +2056,12 @@ Entry format:
 - weak-dimension: 7. A flake fix verified by "30/30 green under -race -cpu 1" has no deterministic test pinning the new precedence, so neither the new flake nor a revert is caught.
 - rule-gap (candidate, dim 7): *a flake fix that changes ordering/precedence in concurrent code ships a deterministic test that drives each interleaving explicitly (hooks or direct calls), and every inventory guard touching the same function is re-checked for the opposite interleaving.*
 - outcome: TBD
+
+## 2026-10-19 — fix/home-layout-mockup (ask #432 Home redesign: full-width 60/40 `HomeColumnsLayout`, mockup-style uppercase `HomeZoneTitle`, suggestion Add as the page's primary + More… removed, compact Getting ready zone with "N of M ready" and a Ready links line; 16 files +283/−195; panel: prosecutor (7) + codex (1), 3 specialists DOWN (not installed); judge verified against c507bb7c5 + the uncommitted `sizeThatFits` floor by reading and grep, no runs; judge synthesis, round 1) — verdict: changes-needed
+
+- contested (held major, prosecutor F1 only): the compact row puts `FeatureReadiness.line` on `lineLimit(1)` beside the title and the fix in a 320 pt grid cell; the `.error` line is "Didn't work yet — retries automatically · <up to 80 chars>", so the only place the owner reads why a feature failed is now cut off, and the tooltip carries `whatItIs`, not the line. **A "compact" redesign that moves a variable-length status line onto one line must keep the full text reachable (wrap, second line, or tooltip) — measure against the longest producer of the string (`shortError`'s 80-char cap), not the mockup's sample.** [6]
+- false-positive: prosecutor F3 (accessibilityLabel read "throws on this toolchain") — the read-then-tap order is pre-existing and used across 19 Desktop tests; unverified, cut to a nit (reorder is free).
+- miss: codex alone saw that a custom `Layout` inside `ViewThatFits` must report a width floor itself once the old `.frame(minWidth:)` is dropped (the shot passed only because the ideal width happened to be 900). The fix sits uncommitted and untested — `Subviews` cannot be built in a test, so the width resolution belongs in a static func.
+- weak-dimension: 7. The layout test now asserts a constant against itself; the breakpoint behaviour has no test.
+- rule-gap (candidate, dim 8): *an owner-approved exception to a style-guide principle ("One readable column") amends the guide with the exception and the ask in the same PR.*
+- outcome: TBD

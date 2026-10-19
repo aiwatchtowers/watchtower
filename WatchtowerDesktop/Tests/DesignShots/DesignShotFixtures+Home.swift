@@ -33,7 +33,7 @@ enum HomeShotFixtures {
         }
     }
 
-    /// Six features ready, five still preparing, and Jira to connect.
+    /// Five features ready, five still preparing, one failed, and Jira to connect.
     private static let gettingReady: GettingReadyZone = {
         func card(_ feature: ReadinessFeature, _ title: String, _ readiness: Readiness) -> GettingReadyCard {
             GettingReadyCard(
@@ -51,7 +51,7 @@ enum HomeShotFixtures {
             card(.ideas, "Ideas", .ready),
             card(.inbox, "Inbox", .ready),
             card(.knowledgeIndex, "Knowledge search", .ready),
-            card(.calendar, "Calendar", .ready)
+            card(.calendar, "Calendar", .error(message: "Calendar API returned 403: the token lacks the calendar.readonly scope"))
         ]
         return .shown(cards: cards, sourceRows: [GettingReadySourceRow(source: .jira, features: [.jira])])
     }()

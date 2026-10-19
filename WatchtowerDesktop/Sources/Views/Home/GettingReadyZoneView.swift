@@ -192,10 +192,11 @@ struct GettingReadyRowView: View {
                 Text(card.copy.title)
                     .fontWeight(.semibold)
                 if let readiness = card.readiness {
+                    // Wraps: an error's detail or what to connect is the
+                    // only place the owner reads it.
                     Text(FeatureReadiness.line(readiness))
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 0)
                 fix

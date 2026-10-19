@@ -74,6 +74,15 @@ final class HomeViewTests: XCTestCase {
         XCTAssertEqual(layout.columnWidths(HomeContent.twoColumnWidth), [535, 345])
     }
 
+    /// The two columns never report narrower than 900 pt, so `ViewThatFits`
+    /// takes the one-column stack below it.
+    func testColumnsNeverNarrowerThanTheBreakpoint() {
+        XCTAssertEqual(HomeColumnsLayout.resolvedWidth(780), 900)
+        XCTAssertEqual(HomeColumnsLayout.resolvedWidth(1_040), 1_040)
+        XCTAssertEqual(HomeColumnsLayout.resolvedWidth(nil), 900)
+        XCTAssertEqual(HomeColumnsLayout.resolvedWidth(.infinity), 900)
+    }
+
     // MARK: - Getting ready
 
     func testGettingReadyShownRendersRowsInOrder() throws {
@@ -102,9 +111,9 @@ final class HomeViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(text: "· 1 of 2 ready"))
         XCTAssertThrowsError(try view.inspect().find(text: "Ready — Open"))
         let open = try view.inspect().find(button: "Digests")
-        XCTAssertEqual(try open.accessibilityLabel().string(), "Open Digests")
         try open.tap()
         XCTAssertEqual(tapped, .feature(.digests))
+        XCTAssertEqual(try open.accessibilityLabel().string(), "Open Digests")
     }
 
     func testPreparingCardShowsReadinessLine() throws {
@@ -505,9 +514,8 @@ final class HomeViewTests: XCTestCase {
     func testLayoutTwoColumnsThenOneColumn() throws {
         let snapshot = viewSnapshot(suggestion: Self.suggestion, links: Self.links, numbers: HomeNumbers())
         let layout = try makeContent(snapshot).inspect().find(ViewType.ViewThatFits.self)
-        // The spec's breakpoint: two columns from 900 pt of content width
-        // (`HomeColumnsLayout`'s ideal width), else the one-column stack.
-        XCTAssertEqual(HomeContent.twoColumnWidth, 900)
+        // Both branches hold the feed and the side column (the breakpoint
+        // itself: `testColumnsNeverNarrowerThanTheBreakpoint`).
         XCTAssertEqual(layout.findAll(FeedZoneView.self).count, 2)
         XCTAssertEqual(layout.findAll(HomeSideColumn.self).count, 2)
         let narrow = try layout.vStack(1)

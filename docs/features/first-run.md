@@ -587,7 +587,7 @@ log.") and never reads as empty.
   `.kitPrimary`, the page's one prominent action (ask #432). A feed row's hover
   buttons are hidden from accessibility while invisible; the row carries
   Open, and Done / Hide when it has them, as accessibility actions. Design
-  shots: `home-wide` and `home-narrow` in `DesignShotCatalog`
+  shots: `home-wide`, `home-narrow` and `home-getting-ready` in `DesignShotCatalog`
   (`HomeShotFixtures`).
 - **Workbench** — `HomeQueries.workbench`
   (`Sources/WatchtowerCore/Database/Queries/HomeQueries.swift:16`) reads the

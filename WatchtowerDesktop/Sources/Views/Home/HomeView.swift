@@ -187,7 +187,7 @@ struct HomeColumnsLayout: Layout {
     var spacing: CGFloat
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache _: inout ()) -> CGSize {
-        let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? HomeContent.twoColumnWidth
+        let width = Self.resolvedWidth(proposal.width)
         let heights = zip(subviews, columnWidths(width)).map { subview, columnWidth in
             subview.sizeThatFits(ProposedViewSize(width: columnWidth, height: nil)).height
         }
@@ -202,6 +202,13 @@ struct HomeColumnsLayout: Layout {
                 proposal: ProposedViewSize(width: columnWidth, height: nil))
             x += columnWidth + spacing
         }
+    }
+
+    /// Never narrower than the breakpoint, whatever is proposed (the old
+    /// row's `minWidth`), so the two columns never fit below it; nil or an
+    /// infinite proposal is the breakpoint itself (the ideal width).
+    static func resolvedWidth(_ proposed: CGFloat?) -> CGFloat {
+        max(proposed.flatMap { $0.isFinite ? $0 : nil } ?? 0, HomeContent.twoColumnWidth)
     }
 
     /// The feed's and the right column's widths.
@@ -259,7 +266,7 @@ struct HomeZoneTitle: View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.small) {
             Text(title)
                 .textCase(.uppercase)
-                .tracking(0.6)
+                .tracking(Tracking.caps)
                 .foregroundStyle(.secondary)
             if let detail {
                 Text("· \(detail)")
