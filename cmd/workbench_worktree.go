@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"watchtower/internal/agentkind"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/devpack"
@@ -29,6 +30,7 @@ var (
 	workbenchWorktreeFlagName   string
 	workbenchWorktreeFlagPath   string
 	workbenchWorktreeFlagBranch string
+	workbenchWorktreeFlagAgent  string
 )
 
 func init() {
@@ -45,6 +47,10 @@ func init() {
 		c.Flags().StringVar(&workbenchWorktreeFlagPath, "path", "", "the worktree's top level")
 	}
 	ensure.Flags().StringVar(&workbenchWorktreeFlagBranch, "branch", "", "its wt/… branch")
+	for _, c := range []*cobra.Command{create, ensure} {
+		c.Flags().StringVar(&workbenchWorktreeFlagAgent, "agent", "",
+			"the agent the worktree is for (claude or codex): claude skips codex's install; empty installs both")
+	}
 	workbenchCmd.AddCommand(workbenchWorktreeCmd)
 }
 
@@ -67,7 +73,23 @@ func worktreeTarget(ctx context.Context) (id int64, o workbenchgit.Options, refu
 	return id, o, refused, detail, nil
 }
 
+// worktreeAgent is --agent: "" (both integrations), claude or codex.
+func worktreeAgent() (agentkind.Kind, error) {
+	if workbenchWorktreeFlagAgent == "" {
+		return "", nil
+	}
+	k, ok := agentkind.Parse(workbenchWorktreeFlagAgent)
+	if !ok {
+		return "", fmt.Errorf("--agent must be claude or codex, got %q", workbenchWorktreeFlagAgent)
+	}
+	return k, nil
+}
+
 func runWorkbenchWorktreeCreate(cmd *cobra.Command, _ []string) error {
+	agent, err := worktreeAgent()
+	if err != nil {
+		return err
+	}
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
 	defer cancel()
 	id, o, refused, detail, err := worktreeTarget(ctx)
@@ -85,7 +107,7 @@ func runWorkbenchWorktreeCreate(cmd *cobra.Command, _ []string) error {
 	default:
 		res = workbenchgit.CreateWorktree(ctx, o, workbenchgit.WorktreeRequest{Slug: workbenchWorktreeFlagName, Taken: taken})
 	}
-	return writeWorktreeEnvelope(ctx, cmd, id, res)
+	return writeWorktreeEnvelope(ctx, cmd, id, res, agent)
 }
 
 // heldWorktreeBranches is every worktree branch a session row still holds,
@@ -100,6 +122,10 @@ func heldWorktreeBranches(ctx context.Context) ([]string, error) {
 }
 
 func runWorkbenchWorktreeEnsure(cmd *cobra.Command, _ []string) error {
+	agent, err := worktreeAgent()
+	if err != nil {
+		return err
+	}
 	ctx, cancel := workbenchGitContext(cmd, workbenchGitWriteBudget)
 	defer cancel()
 	id, o, refused, detail, err := worktreeTarget(ctx)
@@ -115,7 +141,7 @@ func runWorkbenchWorktreeEnsure(cmd *cobra.Command, _ []string) error {
 			res.Cwd = sessionCwdIn(ctx, o, res.Path)
 		}
 	}
-	return writeWorktreeEnvelope(ctx, cmd, id, res)
+	return writeWorktreeEnvelope(ctx, cmd, id, res, agent)
 }
 
 type worktreeForgetResult struct {
@@ -170,9 +196,10 @@ func sessionCwdIn(ctx context.Context, main workbenchgit.Options, worktreeTop st
 }
 
 // installWorktreeIntegration is `integrate claude-code` (and codex's skill
-// and hook trust, when codex is found) for the worktree folder, under the
+// and hook trust, when codex is found and the worktree is not for claude —
+// that step starts codex's app-server) for the worktree folder, under the
 // same workbench id.
-func installWorktreeIntegration(ctx context.Context, id int64, folder string) error {
+func installWorktreeIntegration(ctx context.Context, id int64, folder string, agent agentkind.Kind) error {
 	o, err := workbenchSetupOptions(&db.Workbench{ID: id, FolderPath: folder})
 	if err != nil {
 		return err
@@ -182,7 +209,7 @@ func installWorktreeIntegration(ctx context.Context, id int64, folder string) er
 	if cfgErr != nil {
 		cfg = &config.Config{}
 	}
-	if devpack.CodexFound(cfg, codexFindBinary) {
+	if agent != agentkind.Claude && devpack.CodexFound(cfg, codexFindBinary) {
 		ctx, cancel := codexShutdownContext(ctx)
 		defer cancel()
 		_, codexErr := devpack.InstallCodex(ctx, o, codexAppServerFor(ctx, cfg, o))
@@ -191,11 +218,11 @@ func installWorktreeIntegration(ctx context.Context, id int64, folder string) er
 	return err
 }
 
-func writeWorktreeEnvelope(ctx context.Context, cmd *cobra.Command, id int64, res workbenchgit.WorktreeResult) error {
+func writeWorktreeEnvelope(ctx context.Context, cmd *cobra.Command, id int64, res workbenchgit.WorktreeResult, agent agentkind.Kind) error {
 	res.WorkbenchID = id
 	env := worktreeEnvelope{WorktreeResult: res}
 	if res.Created && res.Cwd != "" {
-		if err := installWorktreeIntegration(ctx, id, res.Cwd); err != nil {
+		if err := installWorktreeIntegration(ctx, id, res.Cwd, agent); err != nil {
 			env.IntegrationError = err.Error()
 		}
 	}

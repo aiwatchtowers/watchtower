@@ -150,7 +150,7 @@ func TestInstallWorktreeIntegration_UsesTheWorkbenchPreset(t *testing.T) {
 	require.NoError(t, database.SetWorkbenchMethodology(pid, db.WorkbenchMethodology{Preset: workbenchmethod.PresetNone}))
 	worktree := resyncFolder(t)
 
-	require.NoError(t, installWorktreeIntegration(context.Background(), pid, worktree))
+	require.NoError(t, installWorktreeIntegration(context.Background(), pid, worktree, ""))
 
 	assert.FileExists(t, coreFileIn(worktree))
 	assert.NoFileExists(t, flowFileIn(worktree))

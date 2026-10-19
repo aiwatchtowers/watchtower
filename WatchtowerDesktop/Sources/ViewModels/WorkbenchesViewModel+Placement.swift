@@ -14,9 +14,9 @@ extension WorkbenchesViewModel {
     /// Decides and, for a worktree, makes it. Never fails: a worktree that
     /// could not be made starts the session in the folder with a notice
     /// saying why. The folder's git status is read only when a worktree is
-    /// wanted.
+    /// wanted. `agent`: the session's, so a worktree gets only its install.
     func placementForNewSession(
-        project: Workbench, choice: WorktreeChoice, targetID: Int64?, targetText: String?
+        project: Workbench, choice: WorktreeChoice, targetID: Int64?, targetText: String?, agent: AgentKind?
     ) async -> NewSessionPlacement {
         let folder = project.folderPath
         let working = workingAgentRows(projectID: project.id)
@@ -45,7 +45,7 @@ extension WorkbenchesViewModel {
             )
             let made: WorktreeCreateResult
             do {
-                made = try await cli.worktreeCreate(projectID: project.id, name: slug)
+                made = try await cli.worktreeCreate(projectID: project.id, name: slug, agent: agent)
             } catch {
                 return (folder, nil, nil, "Started in the folder: \(error.localizedDescription)")
             }

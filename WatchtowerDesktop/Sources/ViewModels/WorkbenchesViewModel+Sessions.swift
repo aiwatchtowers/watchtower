@@ -810,7 +810,8 @@ extension WorkbenchesViewModel {
             let projectID = placing.project.id
             row = try await inPlacementTurn(projectID) {
                 let place = await placementForNewSession(
-                    project: placing.project, choice: placing.choice, targetID: new.targetID, targetText: placing.targetText
+                    project: placing.project, choice: placing.choice, targetID: new.targetID, targetText: placing.targetText,
+                    agent: new.kind.agent
                 )
                 var placed = new
                 placed.folderPath = place.folderPath
@@ -964,7 +965,9 @@ extension WorkbenchesViewModel {
         }
         if exists { return await isOnOwnBranch(row, projectID: projectID, branch: branch, top: top) }
         do {
-            let result = try await cli.worktreeEnsure(projectID: projectID, path: top, branch: branch)
+            let result = try await cli.worktreeEnsure(
+                projectID: projectID, path: top, branch: branch, agent: row.kind.agent
+            )
             if result.created { return true }
             // An existing directory is a no-op (`created` false, nothing refused).
             if result.refused.isEmpty && result.error.isEmpty && Self.isDirectory(row.folderPath) {
