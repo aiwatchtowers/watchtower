@@ -526,22 +526,7 @@ FROM n;
 // text indexed once.
 func seedProductionSize(t *testing.T, d *db.DB, seeds ...string) {
 	t.Helper()
-	const ftsTriggers = `SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name IN ('messages_ai', 'messages_au')`
-	rows, err := d.Query(ftsTriggers)
-	if err != nil {
-		t.Fatalf("reading the messages FTS triggers: %v", err)
-	}
-	var names, creates []string
-	for rows.Next() {
-		var name, create string
-		if err := rows.Scan(&name, &create); err != nil {
-			t.Fatalf("scanning a messages FTS trigger: %v", err)
-		}
-		names, creates = append(names, name), append(creates, create)
-	}
-	if err := rows.Close(); err != nil {
-		t.Fatalf("reading the messages FTS triggers: %v", err)
-	}
+	names, creates := messagesFTSTriggers(t, d)
 	if len(creates) != 2 {
 		t.Fatalf("messages FTS triggers = %v; want messages_ai and messages_au", names)
 	}
@@ -568,6 +553,36 @@ SELECT text, channel_id, ts, user_id FROM messages WHERE text != '' AND is_delet
 			t.Fatalf("restoring a messages FTS trigger: %v", err)
 		}
 	}
+	var indexed, live int
+	if err := d.QueryRow(`SELECT (SELECT COUNT(*) FROM messages_fts),
+(SELECT COUNT(*) FROM messages WHERE text != '' AND is_deleted = 0)`).Scan(&indexed, &live); err != nil {
+		t.Fatalf("counting the indexed messages: %v", err)
+	}
+	if indexed != live {
+		t.Fatalf("messages_fts rows = %d; want %d live messages with text", indexed, live)
+	}
+}
+
+// messagesFTSTriggers reads the names and CREATE statements of the per-row
+// messages FTS triggers, closing its rows before the caller drops them.
+func messagesFTSTriggers(t *testing.T, d *db.DB) (names, creates []string) {
+	t.Helper()
+	rows, err := d.Query(`SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name IN ('messages_ai', 'messages_au')`)
+	if err != nil {
+		t.Fatalf("reading the messages FTS triggers: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, create string
+		if err := rows.Scan(&name, &create); err != nil {
+			t.Fatalf("scanning a messages FTS trigger: %v", err)
+		}
+		names, creates = append(names, name), append(creates, create)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("reading the messages FTS triggers: %v", err)
+	}
+	return names, creates
 }
 
 // TestTemplates_ProductionSizeReports runs jira-state-report and
