@@ -143,6 +143,27 @@ func TestTimeModel_WaitClosedByTrigger(t *testing.T) {
 	assert.Equal(t, split.WallMS, segSum(t, segs))
 }
 
+// An owner interrupt ends the model's turn: the gap until the owner's next
+// prompt is owner time (capped at AwayAfter, then away), not model time.
+func TestTimeModel_InterruptEndsTurn(t *testing.T) {
+	var f fixture
+	f.owner(0)
+	f.api(10 * sec)
+	f.tool(10*sec, "Bash", "go test", new(20*sec))
+	f.add(agentlogdb.AgentReportEvent{Kind: "owner_turn", Trigger: "interrupt"}, 40*sec)
+	f.owner(40*sec + 40*mn)
+	f.api(40*sec + 40*mn + 5*sec)
+
+	split, segs := SessionTime(f.evs)
+	assert.Equal(t, ms(10*sec+10*sec+5*sec), split.ModelMS, "the gap after the interrupt is not model time")
+	assert.Equal(t, ms(20*sec), split.Tools.BuildTest)
+	assert.Equal(t, ms(30*mn), split.OwnerMS)
+	assert.Equal(t, ms(10*mn), split.AwayMS)
+	assert.Equal(t, split.WallMS-split.AwayMS, split.ActiveMS)
+	assert.Equal(t, split.WallMS, sum(split))
+	assert.Equal(t, split.WallMS, segSum(t, segs))
+}
+
 func TestTimeModel_OverlappingToolsCountedOnce(t *testing.T) {
 	var f fixture
 	f.owner(0)

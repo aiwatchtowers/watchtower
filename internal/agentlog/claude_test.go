@@ -2,6 +2,7 @@ package agentlog
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -116,10 +117,28 @@ func TestParseClaude_OwnerTurnCompactionAPIErrorPRLinkCost(t *testing.T) {
 }
 
 func TestParseClaude_StoresNoText(t *testing.T) {
-	s := line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "o1", "timestamp": "2026-10-01T09:59:00Z", "cwd": "/w",
-		"message": map[string]any{"role": "user", "content": "SENTINEL-PROMPT"}}) + line(t, assistant("s1", "u1", "m1", "r1", 5,
-		toolUse("t1", "Bash", map[string]any{"command": "cd /SENTINEL_DIR && make test SENTINEL_ARG"})))
+	s := attachLine(t, "s1", "instructions", nil, "SENTINEL-CLAUDE-MD") +
+		attachLine(t, "s1", "skill_listing", map[string]any{"names": []string{"review"}}, "SENTINEL-SKILL-DESCRIPTION") +
+		attachLine(t, "s1", "hook_blocking_error", nil, "SENTINEL-HOOK") +
+		attachLine(t, "s1", "SENTINEL-TYPE", nil, "x") +
+		shapeLine(t, "s1", []map[string]any{{"type": "text", "text": "SENTINEL-SYSTEM"}}, []map[string]any{{"name": "SENTINEL-TOOL"}}) +
+		line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "o1", "timestamp": "2026-10-01T09:59:00Z", "cwd": "/w",
+			"message": map[string]any{"role": "user", "content": "SENTINEL-PROMPT"}}) + line(t, assistant("s1", "u1", "m1", "r1", 5,
+		toolUse("t1", "Bash", map[string]any{"command": "cd /SENTINEL_DIR && make test SENTINEL_ARG"}))) +
+		toolResultLine(t, "s1", "r1", "t1", "SENTINEL-OUTPUT exit code 1", true, nil) +
+		line(t, map[string]any{"type": "system", "subtype": "compact_boundary", "sessionId": "s1", "uuid": "c1", "content": "SENTINEL-COMPACT",
+			"compactMetadata": map[string]any{"trigger": "SENTINEL-TRIGGER", "preTokens": 10, "postTokens": 2}}) +
+		line(t, map[string]any{"type": "assistant", "isApiErrorMessage": true, "apiErrorStatus": "SENTINEL-STATUS", "sessionId": "s1", "uuid": "e2",
+			"message": map[string]any{"model": "<synthetic>", "content": []any{}}}) +
+		line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "cs1", "isCompactSummary": true,
+			"message": map[string]any{"role": "user", "content": "SENTINEL-SUMMARY"}}) +
+		line(t, map[string]any{"type": "assistant", "isApiErrorMessage": true, "apiErrorStatus": 529, "sessionId": "s1", "uuid": "e1",
+			"message": map[string]any{"model": "<synthetic>", "content": []map[string]any{{"type": "text", "text": "SENTINEL-API-ERROR"}}}}) +
+		line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "i1", "message": map[string]any{"role": "user",
+			"content": "[Request interrupted by user] SENTINEL-INTERRUPT"}})
 	r := parse(t, s, ParseOptions{})
+	require.Equal(t, int64(len("SENTINEL-CLAUDE-MD")), partsOf(r)["s1//instructions"], "the rendered text was measured")
+	require.NotEmpty(t, r.SkillListing)
 	b, err := json.Marshal(r)
 	require.NoError(t, err)
 	assert.NotContains(t, string(b), "SENTINEL")
@@ -179,4 +198,172 @@ func TestParseClaude_OwnerTurnTriggers(t *testing.T) {
 		}
 		assert.Equal(t, []string{c.want}, got, "case %d", i)
 	}
+}
+
+func attachLine(t *testing.T, sid, typ string, extra map[string]any, contents ...string) string {
+	t.Helper()
+	a := map[string]any{"type": typ}
+	for k, v := range extra {
+		a[k] = v
+	}
+	rec := map[string]any{"type": "attachment", "sessionId": sid, "timestamp": "2026-10-01T09:00:00Z", "attachment": a}
+	if contents != nil { // rendered sits at record level, next to attachment
+		var rendered []map[string]any
+		for _, c := range contents {
+			rendered = append(rendered, map[string]any{"type": "text", "content": c})
+		}
+		rec["rendered"] = rendered
+	}
+	return line(t, rec)
+}
+
+func shapeLine(t *testing.T, sid string, system, tools any) string {
+	t.Helper()
+	return line(t, map[string]any{"type": "api-request-shape", "sessionId": sid, "shape": map[string]any{"system": system, "tools": tools}})
+}
+
+func jsonLen(t *testing.T, v any) int64 {
+	t.Helper()
+	b, err := json.Marshal(v)
+	require.NoError(t, err)
+	return int64(len(b))
+}
+
+func partsOf(r *ParseResult) map[string]int64 {
+	got := map[string]int64{}
+	for _, p := range r.ContextParts {
+		got[p.SessionUUID+"/"+p.AgentID+"/"+p.Part] = p.Bytes
+	}
+	return got
+}
+
+func TestParseClaude_CompactionMeta(t *testing.T) {
+	s := line(t, map[string]any{"type": "system", "subtype": "compact_boundary", "sessionId": "s1", "uuid": "c1",
+		"timestamp": "2026-10-01T10:01:00Z", "content": "Conversation compacted",
+		"compactMetadata": map[string]any{"trigger": "auto", "preTokens": 167000, "postTokens": 12000, "durationMs": 9000}}) +
+		line(t, map[string]any{"type": "system", "subtype": "compact_boundary", "sessionId": "s1", "uuid": "c2"})
+	r := parse(t, s, ParseOptions{})
+	require.Len(t, r.Events, 2)
+	e := r.Events[0]
+	assert.Equal(t, "compaction", e.Kind)
+	assert.Equal(t, "auto", e.Trigger)
+	require.NotNil(t, e.PreTokens)
+	require.NotNil(t, e.PostTokens)
+	assert.Equal(t, int64(167000), *e.PreTokens)
+	assert.Equal(t, int64(12000), *e.PostTokens)
+	assert.Nil(t, r.Events[1].PreTokens, "no metadata = not measured")
+	assert.Empty(t, r.Events[1].Trigger)
+}
+
+func TestParseClaude_InterruptIsOwnerTurn(t *testing.T) {
+	s := line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "i1", "timestamp": "2026-10-01T09:59:00Z",
+		"message": map[string]any{"role": "user", "content": "[Request interrupted by user]"}}) +
+		line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "i2", "timestamp": "2026-10-01T09:59:01Z",
+			"message": map[string]any{"role": "user", "content": []map[string]any{{"type": "text", "text": "[Request interrupted by user for tool use]"}}}})
+	r := parse(t, s, ParseOptions{})
+	var got []string
+	for _, e := range r.Events {
+		got = append(got, e.Key+"/"+e.Kind+"/"+e.Trigger)
+	}
+	assert.Equal(t, []string{"owner_turn:i1/owner_turn/interrupt", "owner_turn:i2/owner_turn/interrupt"}, got)
+}
+
+func TestParseClaude_ContextPartsBeforeFirstCall(t *testing.T) {
+	system := []map[string]any{{"type": "text", "text": "system prompt"}}
+	tools := []map[string]any{{"name": "Bash"}, {"name": "Read"}}
+	before := attachLine(t, "s1", "instructions", nil, "1234567890", "12345") +
+		attachLine(t, "s1", "skill_listing", map[string]any{"names": []string{"a", "b"}}, "abcdef") +
+		attachLine(t, "s1", "agent_listing_delta", nil, "xyz") +
+		attachLine(t, "s1", "mcp_instructions_delta", nil, "mm") +
+		attachLine(t, "s1", "deferred_tools_record", nil, "dddd") +
+		attachLine(t, "s1", "deferred_tools_delta", nil, "d") +
+		attachLine(t, "s1", "hook_success", nil, "hh") +
+		attachLine(t, "s1", "hook_additional_context", nil, "h") +
+		attachLine(t, "s1", "brand_new_kind", nil, "ooo") +
+		attachLine(t, "s1", "instructions", nil) + // no rendered: 0 bytes
+		shapeLine(t, "s1", system, tools)
+	after := attachLine(t, "s1", "instructions", nil, "LATER-LATER-LATER") + shapeLine(t, "s1", system, append(tools, map[string]any{"name": "X"}))
+	s := before + line(t, assistant("s1", "u1", "m1", "r1", 5)) + after + line(t, assistant("s1", "u2", "m2", "r2", 5))
+	r := parse(t, s, ParseOptions{})
+	assert.Equal(t, map[string]int64{"s1//instructions": 15, "s1//skills": 6, "s1//agents": 3, "s1//mcp": 2,
+		"s1//deferred_tools": 5, "s1//hooks": 3, "s1//other": 3,
+		"s1//system": jsonLen(t, system), "s1//tools": jsonLen(t, tools)}, partsOf(r))
+
+	sub := parse(t, attachLine(t, "s1", "instructions", nil, "1234")+line(t, assistant("s1", "u1", "m9", "r9", 5)),
+		ParseOptions{Path: "/h/.claude/projects/-w/s1/subagents/agent-a1.jsonl", Subagent: true, AgentID: "a1"})
+	assert.Equal(t, map[string]int64{"s1/a1/instructions": 4}, partsOf(sub))
+
+	// A lane whose first call is not in the read stores what it has so far.
+	assert.Equal(t, map[string]int64{"s1//instructions": 15, "s1//skills": 6, "s1//agents": 3, "s1//mcp": 2,
+		"s1//deferred_tools": 5, "s1//hooks": 3, "s1//other": 3,
+		"s1//system": jsonLen(t, system), "s1//tools": jsonLen(t, tools)}, partsOf(parse(t, before, ParseOptions{})))
+
+	// An incremental read without LaneBaseline tracks nothing.
+	inc, err := ParseClaude(strings.NewReader(before), 100, ParseOptions{Path: "/h/.claude/projects/-w/s1.jsonl", Folder: "/w"})
+	require.NoError(t, err)
+	assert.Empty(t, inc.ContextParts)
+}
+
+// An incremental read continues a lane's baseline from the stored bytes until
+// the lane's first API call, and adds nothing to a lane whose first call an
+// earlier read stored.
+func TestParseClaude_ContextPartsContinueIncremental(t *testing.T) {
+	asked := map[string]int{}
+	o := ParseOptions{Path: "/h/.claude/projects/-w/s1.jsonl", Folder: "/w",
+		LaneBaseline: func(sid string) (bool, map[string]int64, error) {
+			asked[sid]++
+			if sid == "done" {
+				return true, map[string]int64{}, nil
+			}
+			return false, map[string]int64{"instructions": 10, "skills": 4}, nil
+		}}
+	s := attachLine(t, "s1", "instructions", nil, "12345") +
+		shapeLine(t, "s1", []map[string]any{{"type": "text", "text": "sys"}}, nil) +
+		attachLine(t, "done", "instructions", nil, "zzzz") +
+		line(t, assistant("s1", "u1", "m1", "r1", 5)) +
+		attachLine(t, "s1", "instructions", nil, "AFTER-THE-FIRST-CALL") +
+		attachLine(t, "s1", "hook_success", nil, "hh") +
+		line(t, assistant("s1", "u2", "m2", "r2", 5))
+	r, err := ParseClaude(strings.NewReader(s), 500, o)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]int64{"s1//instructions": 15, "s1//skills": 4,
+		"s1//system": jsonLen(t, []map[string]any{{"type": "text", "text": "sys"}}), "s1//tools": int64(len("null"))}, partsOf(r))
+	assert.Equal(t, map[string]int{"s1": 1, "done": 1}, asked, "one lookup per lane")
+
+	// A lane whose first record in the read is its API call needs no lookup.
+	asked = map[string]int{}
+	r, err = ParseClaude(strings.NewReader(line(t, assistant("s2", "u3", "m3", "r3", 5))+attachLine(t, "s2", "instructions", nil, "x")), 500, o)
+	require.NoError(t, err)
+	assert.Empty(t, r.ContextParts)
+	assert.Empty(t, asked)
+
+	// A failed lookup fails the parse: the file is retried next scan.
+	o.LaneBaseline = func(string) (bool, map[string]int64, error) { return false, nil, errors.New("db busy") }
+	_, err = ParseClaude(strings.NewReader(attachLine(t, "s1", "instructions", nil, "x")), 500, o)
+	require.ErrorContains(t, err, "db busy")
+}
+
+func TestParseClaude_SkillListingRows(t *testing.T) {
+	s := attachLine(t, "s1", "skill_listing", map[string]any{"names": []string{"review", "pdf", "brainstorming"}}, "0123456789", "0") +
+		line(t, assistant("s1", "u1", "m1", "r1", 5)) +
+		attachLine(t, "s1", "skill_listing", map[string]any{"names": []string{"late"}}, "1234")
+	r := parse(t, s, ParseOptions{})
+	got := map[string]int64{}
+	for _, k := range r.SkillListing {
+		assert.Equal(t, "s1", k.SessionUUID)
+		got[k.Skill] = k.Bytes
+	}
+	assert.Equal(t, map[string]int64{"review": 3, "pdf": 3, "brainstorming": 3, "late": 4}, got)
+}
+
+func TestParseClaude_APIErrorStatus(t *testing.T) {
+	s := line(t, map[string]any{"type": "assistant", "isApiErrorMessage": true, "apiErrorStatus": 429, "sessionId": "s1", "uuid": "e1",
+		"timestamp": "2026-10-01T10:02:00Z", "message": map[string]any{"model": "<synthetic>", "content": []any{}}}) +
+		line(t, map[string]any{"type": "assistant", "isApiErrorMessage": true, "sessionId": "s1", "uuid": "e2",
+			"timestamp": "2026-10-01T10:02:01Z", "message": map[string]any{"model": "<synthetic>", "content": []any{}}})
+	r := parse(t, s, ParseOptions{})
+	require.Len(t, r.Events, 2)
+	assert.Equal(t, "api_error", r.Events[0].Kind)
+	assert.Equal(t, "429", r.Events[0].ErrorClass)
+	assert.Empty(t, r.Events[1].ErrorClass)
 }

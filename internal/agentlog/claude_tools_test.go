@@ -50,7 +50,7 @@ func TestParseClaude_ToolPairingOutcomesAndTargets(t *testing.T) {
 			assert.Equal(t, 1, tr.LinesRemoved)
 		}
 	}
-	assert.Equal(t, map[string]string{"t1": "error/exit_code", "t2": "ok/", "t4": "denied/", "t5": "interrupted/"}, got)
+	assert.Equal(t, map[string]string{"t1": "error/exit_code", "t2": "ok/", "t4": "denied/user-rejected", "t5": "interrupted/"}, got)
 	b, _ := json.Marshal(r)
 	assert.NotContains(t, string(b), "SENTINEL")
 }
@@ -219,4 +219,80 @@ func TestParseClaude_PriorSkillsLoadedOnlyForUnknownSlashCommand(t *testing.T) {
 	}
 	assert.Equal(t, []string{"review"}, skills)
 	assert.Equal(t, []string{"review"}, r.Skills)
+}
+
+func TestErrorClass_V3Classes(t *testing.T) {
+	cases := map[string]string{
+		"Command failed with exit code 1":                                       ClassExitCode,
+		"File does not exist.":                                                  ClassNotFound,
+		"Command timed out after 2m":                                            ClassTimeout,
+		"String to replace not found in file.\nString: x":                       ClassEditNoMatch,
+		"Found 3 matches of the string to replace, but replace_all is false.":   ClassEditMultiMatch,
+		"File has been modified since read, either by the user or by a linter.": ClassStaleRead,
+		"File content (300KB) exceeds maximum allowed size (256KB).":            ClassTooLarge,
+		"File content (40000 tokens) exceeds maximum allowed tokens (25000).":   ClassTooLarge,
+		"InputValidationError: Edit failed due to the following issue":          ClassInputInvalid,
+		"<tool_use_error>Error: No such tool available: Foo</tool_use_error>":   ClassNoSuchTool,
+		"Agent type 'nope' not found. Available agents: a, b":                   ClassUnknownAgent,
+		"This session is isolated to its worktree; the path is outside it":      ClassIsolation,
+		"Blocked: sleep 100 is not allowed; use run_in_background":              ClassSleepBlocked,
+		"Too many concurrent agents: the limit is 10":                           ClassAgentLimit,
+		"boom": ClassOther,
+		// A Bash failure is exit_code whatever its output says.
+		"Exit code 1\n--- FAIL: TestRead (0.00s)\n    file too large":                 ClassExitCode,
+		"Exit code 2\nBlocked: sleep 100 is not allowed; use run_in_background":       ClassExitCode,
+		"Exit code 1\nToo many concurrent agents: the limit is 10":                    ClassExitCode,
+		"Exit code 1\nAgent type 'nope' not found. Available agents: a, b":            ClassExitCode,
+		"Exit code 127\nInputValidationError: no such tool; this session is isolated": ClassExitCode,
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, errorClass(in), in)
+	}
+}
+
+func TestParseClaude_ResultBytesAndThinking(t *testing.T) {
+	a := assistant("s1", "u1", "m1", "r1", 5, toolUse("t1", "Bash", map[string]any{"command": "go test"}),
+		toolUse("t2", "Read", map[string]any{"file_path": "/w/a.go"}))
+	a["message"].(map[string]any)["usage"].(map[string]any)["output_tokens_details"] = map[string]any{"thinking_tokens": 77}
+	s := line(t, a) +
+		toolResultLine(t, "s1", "r1", "t1", "short", false, map[string]any{"toolUseResult": map[string]any{"persistedOutputSize": 123456}}) +
+		toolResultLine(t, "s1", "r2", "t2", "0123456789", false, nil) +
+		line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "r3", "message": map[string]any{"role": "user",
+			"content": []map[string]any{{"type": "tool_result", "tool_use_id": "t3", "content": []map[string]any{
+				{"type": "text", "text": "abc"}, {"type": "image", "source": map[string]any{"data": "AAAA"}}, {"type": "text", "text": "de"}}}}}}) +
+		line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "r4", "message": map[string]any{"role": "user",
+			"content": []map[string]any{{"type": "tool_result", "tool_use_id": "t4", "content": []map[string]any{
+				{"type": "image", "source": map[string]any{"data": "AAAA"}}}}}}})
+	r := parse(t, s, ParseOptions{})
+	for _, e := range r.Events {
+		if e.Kind == "api_call" {
+			assert.Equal(t, int64(77), e.ThinkingTokens)
+		}
+	}
+	require.Len(t, r.ToolResults, 4)
+	require.NotNil(t, r.ToolResults[2].ResultBytes)
+	assert.Equal(t, int64(5), *r.ToolResults[2].ResultBytes, "every text block counts")
+	assert.Nil(t, r.ToolResults[3].ResultBytes, "no text: not measured")
+	require.NotNil(t, r.ToolResults[0].ResultBytes)
+	assert.Equal(t, int64(123456), *r.ToolResults[0].ResultBytes)
+	require.NotNil(t, r.ToolResults[1].ResultBytes)
+	assert.Equal(t, int64(10), *r.ToolResults[1].ResultBytes)
+}
+
+func TestParseClaude_DenialKind(t *testing.T) {
+	s := line(t, assistant("s1", "u1", "m1", "r1", 5, toolUse("t1", "Bash", map[string]any{"command": "make deploy"}))) +
+		toolResultLine(t, "s1", "r1", "t1", "denied", true, map[string]any{"toolDenialKind": "automode-blocked"}) +
+		toolResultLine(t, "s1", "r2", "t2", "denied", true, map[string]any{"toolDenialKind": "permission-rule"}) +
+		toolResultLine(t, "s1", "r3", "t3", "nope", true, map[string]any{"permissionDecision": map[string]any{"decision": "reject"}}) +
+		toolResultLine(t, "s1", "r4", "t4", "The user doesn't want to proceed with this tool use.", true, nil) +
+		toolResultLine(t, "s1", "r5", "t5", "denied", true, map[string]any{"toolDenialKind": "SENTINEL free text"})
+	r := parse(t, s, ParseOptions{})
+	got := map[string]string{}
+	for _, tr := range r.ToolResults {
+		got[tr.ToolUseID] = tr.Outcome + "/" + tr.ErrorClass
+	}
+	assert.Equal(t, map[string]string{"t1": "denied/automode-blocked", "t2": "denied/permission-rule",
+		"t3": "denied/user-rejected", "t4": "denied/user-rejected", "t5": "denied/other"}, got)
+	b, _ := json.Marshal(r)
+	assert.NotContains(t, string(b), "SENTINEL")
 }

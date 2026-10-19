@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/agentlogdb"
 	"watchtower/internal/db"
@@ -232,4 +233,20 @@ func TestTasks_CostOnlySplit(t *testing.T) {
 	assert.InDelta(t, 1.5, rows[0].CostUSD, 1e-9)
 	assert.InDelta(t, 1.5, rows[1].CostUSD, 1e-9)
 	assert.True(t, rows[0].Shared && rows[1].Shared)
+}
+
+// The overview lists the TasksMax costliest touched tasks and counts the rest.
+func TestCapTasks(t *testing.T) {
+	var rows []TaskRow
+	for i := range TasksMax + 3 {
+		rows = append(rows, TaskRow{TargetID: int64(i + 1), CostUSD: float64(i + 1)})
+	}
+	got, more := capTasks(touched(rows))
+	require.Len(t, got, TasksMax)
+	assert.Equal(t, 3, more)
+	assert.Equal(t, int64(TasksMax+3), got[0].TargetID, "the costliest first")
+
+	got, more = capTasks(touched(rows[:2]))
+	assert.Len(t, got, 2)
+	assert.Zero(t, more)
 }

@@ -62,11 +62,11 @@ struct AgentTimeBreakdownView: View {
     let time: AgentTimeSplit
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Spacing.compact) {
             AgentAnalyticsTimeBar(time: time)
-            HStack(spacing: 12) {
+            HStack(spacing: Spacing.medium) {
                 ForEach(AgentAnalyticsTimeBar.parts(time), id: \.category) { part in
-                    HStack(spacing: 4) {
+                    HStack(spacing: Spacing.small) {
                         Circle().fill(part.category.color).frame(width: 8, height: 8).accessibilityHidden(true)
                         Text("\(part.category.title) \(share(part.ms))")
                     }

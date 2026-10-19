@@ -201,7 +201,7 @@ func seeThrough(kind string) bool {
 
 // waitStarts maps each gap start i to the index of the turn-ending event of
 // the wait the gap [i, i+1) belongs to, or -1. A turn ends on an api_call, an
-// api_error or a pending tool the owner answered; the wait runs from there,
+// api_error, an owner interrupt or a pending tool the owner answered; the wait runs from there,
 // across see-through events only, to the next owner_turn that is not a hook
 // record (a hook answers at once: the gap before it is model).
 func waitStarts(evs []timedEvent) []int {
@@ -230,6 +230,8 @@ func turnEnds(evs []timedEvent, i int) bool {
 	switch e := evs[i]; e.Kind {
 	case "api_call", "api_error":
 		return true
+	case "owner_turn":
+		return e.Trigger == "interrupt" // the owner stopped the model; what follows is theirs
 	case "tool":
 		if e.DurationMS != nil {
 			return false

@@ -19,6 +19,83 @@ enum AgentAnalyticsFormat {
         return "\(Int((part / whole * 100).rounded()))%"
     }
 
+    /// Cache reads over all input the model read (fresh, cache reads and
+    /// cache writes; output left out): "28%", "—" with no input.
+    static func cacheHit(_ tokens: AgentTokens) -> String {
+        let input = tokens.input + tokens.cacheRead + tokens.cacheWrite5m + tokens.cacheWrite1h
+        guard input > 0 else { return "—" }
+        return percent(Double(tokens.cacheRead), of: Double(input))
+    }
+
+    /// A baseline part's name (`internal/agentlog/claude.go`); an unknown
+    /// one (a newer CLI) as sent.
+    static func label(part raw: String) -> String {
+        [
+            "instructions": "CLAUDE.md & rules", "skills": "Skill list", "tools": "Tool schemas",
+            "system": "System prompt", "deferred_tools": "Deferred tools", "agents": "Agent list",
+            "mcp": "MCP instructions", "hooks": "Hooks", "other": "Other"
+        ][raw] ?? raw
+    }
+
+    /// A context growth source's name (`internal/agentreport/context.go`):
+    /// a tool name as sent, `owner`/`model`/`reminders` named.
+    static func label(growthSource raw: String) -> String {
+        [
+            "owner": "Your turns", "model": "Model output", "reminders": "System reminders & other"
+        ][raw] ?? raw
+    }
+
+    /// An error class's name (`internal/agentlog/claude_tools.go`); an
+    /// unknown one as sent.
+    static func label(errorClass raw: String) -> String {
+        [
+            "exit_code": "Command failed", "not_found": "File not found", "timeout": "Timed out",
+            "edit_no_match": "Edit text not found", "edit_multi_match": "Edit text not unique",
+            "stale_read": "File changed since read", "too_large": "Output too large",
+            "input_invalid": "Invalid input", "no_such_tool": "Unknown tool", "unknown_agent": "Unknown agent type",
+            "isolation_block": "Blocked by worktree isolation", "sleep_blocked": "Sleep blocked",
+            "agent_limit": "Agent limit", "429": "Rate limited", "other": "Other"
+        ][raw] ?? raw
+    }
+
+    /// A denial kind's name (`internal/agentreport/trouble.go`); an unknown
+    /// one as sent.
+    static func label(denial raw: String) -> String {
+        [
+            "permission-rule": "Permission rule", "user-rejected": "You declined",
+            "automode-blocked": "Blocked in auto mode", "automode-unavailable": "Auto mode unavailable"
+        ][raw] ?? raw
+    }
+
+    /// "950", "12.3k", "2.5M".
+    static func tokens(_ count: Int64) -> String {
+        if count >= 1_000_000 { return String(format: "%.1fM", Double(count) / 1_000_000) }
+        if count >= 1000 { return String(format: "%.1fk", Double(count) / 1000) }
+        return "\(count)"
+    }
+
+    /// What Discuss in Chat puts in the composer: the period's figures and
+    /// its top three hints with their actions, as the report words them.
+    static func discussText(_ overview: AgentReportOverview) -> String {
+        let totals = overview.totals
+        var lines = [
+            "Help me act on the agent analytics of this workbench (\(periodLabel(overview))): "
+                + "\(totals.sessions) sessions, \(cost(totals.costUSD)), active \(duration(totals.activeMS)), "
+                + "cache hit \(cacheHit(totals.tokens))."
+        ]
+        let top = overview.hints.prefix(3)
+        if top.isEmpty {
+            lines.append("The report has no hints for this period.")
+        } else {
+            lines.append("What would save the most:")
+            for (index, hint) in top.enumerated() {
+                lines.append("\(index + 1). \(hint.finding)")
+                if let action = hint.action, !action.isEmpty { lines.append("   \(action)") }
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
     static func subagentsLine(_ subagents: AgentSubagents) -> String {
         guard subagents.count >= 1 else { return "Subagents: none" }
         return "Subagents: \(String(format: "%.1f", subagents.avgParallel)) at once on average · peak \(subagents.peak)"

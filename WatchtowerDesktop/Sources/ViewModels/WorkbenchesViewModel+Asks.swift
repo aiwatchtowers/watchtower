@@ -170,4 +170,13 @@ extension WorkbenchesViewModel {
         guard let next = asks.stack(projectID: projectID).next(after: askID) else { return }
         await showAsk(next.id, projectID: projectID)
     }
+
+    /// An analytics hint's Open Waiting for You: the sessions panel shown
+    /// and, when an ask waits, the oldest one opened the way a stack row
+    /// click opens it.
+    func showWaitingForYou(projectID: Int64) async {
+        panelVisible = true
+        guard let oldest = asks.stack(projectID: projectID).asks.first else { return }
+        await showAsk(oldest.id, projectID: projectID)
+    }
 }
