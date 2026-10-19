@@ -72,6 +72,13 @@ let package = Package(
             dependencies: ["DesignKit"],
             path: "Sources/DesignKitCatalog"
         ),
+        // The gallery window (`make design-gallery`): a thin @main over the
+        // catalog, never built into the app.
+        .executableTarget(
+            name: "DesignGallery",
+            dependencies: ["DesignKit", "DesignKitCatalog"],
+            path: "Sources/DesignGallery"
+        ),
         .executableTarget(
             name: "WatchtowerDesktop",
             dependencies: [
@@ -86,7 +93,7 @@ let package = Package(
                 .product(name: "WatchtowerSync", package: "WatchtowerKit"),
             ],
             path: "Sources",
-            exclude: ["WatchtowerCore", "OCRKit", "OCRHelper", "DesignKit", "DesignKitCatalog"],
+            exclude: ["WatchtowerCore", "OCRKit", "OCRHelper", "DesignKit", "DesignKitCatalog", "DesignGallery"],
             resources: [
                 .process("Resources"),
                 // POC (code viewer): Monaco host page + build (scripts/fetch-monaco.sh).

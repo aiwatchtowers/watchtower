@@ -45,14 +45,12 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "buttons", size: NSSize(width: 460, height: 64)) {
                 AnyView(DesignShotFixtures.buttons().padding(12).shotFrame().panelBackground())
-            },
-            DesignShot(name: "gallery", size: NSSize(width: 900, height: 0)) {
-                AnyView(DesignSystemGalleryContent().shotFrame().detailBackground())
-            },
-            DesignShot(name: "kit-new-components", size: NSSize(width: 640, height: 760)) {
-                AnyView(GalleryNewComponents().padding(Spacing.page).shotFrame().detailBackground())
             }
-        ]
+        ] + CatalogPage.allCases.map { page in
+            DesignShot(name: "catalog-\(page.rawValue)", size: NSSize(width: 900, height: 0)) {
+                AnyView(CatalogPageBody(page: page).shotFrame().detailBackground())
+            }
+        }
     }
 }
 

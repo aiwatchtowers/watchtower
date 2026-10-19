@@ -35,7 +35,7 @@ LINEAR_ID   ?= $(WATCHTOWER_LINEAR_CLIENT_ID)
 JIRA_SECRET ?= $(WATCHTOWER_JIRA_CLIENT_SECRET)
 LDFLAGS     := -ldflags "-X watchtower/cmd.Version=$(VERSION) -X watchtower/cmd.Commit=$(COMMIT) -X watchtower/cmd.BuildDate=$(BUILD_DATE) -X watchtower/cmd.BuildFlavor=$(BUILD_FLAVOR) -X watchtower/internal/auth.DefaultClientID=$(OAUTH_ID) -X watchtower/internal/auth.DefaultClientSecret=$(OAUTH_SECRET) -X watchtower/internal/calendar.DefaultGoogleClientID=$(GOOGLE_ID) -X watchtower/internal/calendar.DefaultGoogleClientSecret=$(GOOGLE_SECRET) -X watchtower/internal/jira.DefaultJiraClientID=$(JIRA_ID) -X watchtower/internal/jira.DefaultJiraClientSecret=$(JIRA_SECRET) -X watchtower/internal/linear.DefaultLinearClientID=$(LINEAR_ID)"
 
-.PHONY: golangci-version-check build test test-verbose test-cover test-race test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots mobile-archive mobile-testflight testflight cloudkit-check
+.PHONY: golangci-version-check build test test-verbose test-cover test-race test-codeindex-full lint lint-diff lint-swift lint-all install clean app app-dev dmg app-swap app-install test-swift test-swift-strict-pool kit-test test-scripts hooks leak-check periphery periphery-check periphery-baseline release-check editor-bridge-check mobile-gen mobile-build mobile-test mobile-run mobile-shots desktop-shots design-gallery mobile-archive mobile-testflight testflight cloudkit-check
 
 build:
 	go build $(LDFLAGS) -o $(BINARY_NAME) .
@@ -167,6 +167,11 @@ DESKTOP_SHOTS ?= build/desktop-shots
 desktop-shots:
 	mkdir -p "$(DESKTOP_SHOTS)"
 	cd WatchtowerDesktop && DESKTOP_SHOTS_DIR="$(abspath $(DESKTOP_SHOTS))" swift test --filter DesignShotsTests
+
+# The design gallery (#760): a separate window over the Desktop design kit,
+# one page per token, component and pattern. Never part of the app bundle.
+design-gallery:
+	cd WatchtowerDesktop && swift run DesignGallery
 
 # TestFlight archive: a Release archive for generic iOS plus an .ipa export
 # through the committed ExportOptions.plist. Needs the gitignored
