@@ -108,8 +108,8 @@ struct AgentAnalyticsOverviewView: View {
             }
             if !overview.tasks.isEmpty {
                 section("Tasks") {
-                    AgentAnalyticsTopRows(rows: overview.tasks, shown: 10) { rows, header in
-                        AgentAnalyticsTasksTable(tasks: rows, actions: actions, header: header)
+                    AgentAnalyticsTopRows(rows: overview.tasks, shown: 10) { rows in
+                        AgentAnalyticsTasksTable(tasks: rows, actions: actions)
                     }
                 }
             }
@@ -117,8 +117,8 @@ struct AgentAnalyticsOverviewView: View {
                 if overview.sessions.isEmpty {
                     Text("No agent sessions in this period.").foregroundStyle(.secondary)
                 } else {
-                    AgentAnalyticsTopRows(rows: overview.sessions, shown: 5) { rows, header in
-                        AgentAnalyticsSessionsTable(sessions: rows, actions: actions, header: header)
+                    AgentAnalyticsTopRows(rows: overview.sessions, shown: 5) { rows in
+                        AgentAnalyticsSessionsTable(sessions: rows, actions: actions)
                     }
                 }
             }

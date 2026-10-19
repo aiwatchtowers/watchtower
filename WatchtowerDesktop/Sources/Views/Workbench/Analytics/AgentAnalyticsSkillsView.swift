@@ -24,13 +24,7 @@ struct AgentAnalyticsSkillsView: View {
         return VStack(alignment: .leading, spacing: 8) {
             Text(Self.usedLine(skills)).font(.callout)
             if !rows.isEmpty {
-                rowList(Array(rows.prefix(Self.shownRows)))
-                if rows.count > Self.shownRows {
-                    DisclosureGroup("Show all \(rows.count)") {
-                        rowList(Array(rows.dropFirst(Self.shownRows)))
-                    }
-                    .font(.callout)
-                }
+                AgentAnalyticsTopRows(rows: rows, shown: Self.shownRows) { rowList($0) }
             }
             if let unused = skills.neverUsed, !unused.isEmpty {
                 Text("Never used: " + unused.map { "\($0.name) (\(AgentAnalyticsFormat.tokens($0.listingTokens)))" }

@@ -1,25 +1,24 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The overview's tables: tasks, sessions, commands, and tokens & cost.
-/// Plain grids with a header row; numbers right-aligned. Tasks and
-/// sessions show their first rows, the rest under Show all.
+// The overview's tables: tasks, sessions, commands, and tokens & cost.
+// Plain grids with a header row; numbers right-aligned. Tasks and
+// sessions show their first rows until Show all.
 
-/// The first `shown` rows of a long table, the rest under "Show all N"
-/// (a second grid without its header).
+/// A long table's first `shown` rows, or all of them after "Show all N".
 struct AgentAnalyticsTopRows<Row, Table: View>: View {
     let rows: [Row]
     let shown: Int
-    @ViewBuilder let table: (_ rows: [Row], _ header: Bool) -> Table
+    @ViewBuilder let table: (_ rows: [Row]) -> Table
+    @State private var expanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            table(Array(rows.prefix(shown)), true)
+            table(expanded ? rows : Array(rows.prefix(shown)))
             if rows.count > shown {
-                DisclosureGroup("Show all \(rows.count)") {
-                    table(Array(rows.dropFirst(shown)), false)
-                }
-                .font(.callout)
+                Button(expanded ? "Show top \(shown)" : "Show all \(rows.count)") { expanded.toggle() }
+                    .buttonStyle(.link)
+                    .font(.callout)
             }
         }
     }
@@ -31,11 +30,10 @@ struct AgentAnalyticsTopRows<Row, Table: View>: View {
 struct AgentAnalyticsTasksTable: View {
     let tasks: [AgentTaskRow]
     let actions: AgentAnalyticsActions
-    var header = true
 
     var body: some View {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
-            if header { AgentAnalyticsHeaderRow(titles: ["Task", "Calendar", "In review", "Agent", "Cost", ""]) }
+            AgentAnalyticsHeaderRow(titles: ["Task", "Calendar", "In review", "Agent", "Cost", ""])
             ForEach(tasks, id: \.targetID) { task in
                 GridRow {
                     Button("#\(task.targetID) \(task.text)") { actions.openTarget(task.targetID) }
@@ -66,11 +64,10 @@ struct AgentAnalyticsTasksTable: View {
 struct AgentAnalyticsSessionsTable: View {
     let sessions: [AgentSessionRow]
     let actions: AgentAnalyticsActions
-    var header = true
 
     var body: some View {
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {
-            if header { AgentAnalyticsHeaderRow(titles: ["Session", "Started", "Active", "Cost", "Subagents ∥", "Branch"]) }
+            AgentAnalyticsHeaderRow(titles: ["Session", "Started", "Active", "Cost", "Subagents ∥", "Branch"])
             ForEach(sessions, id: \.uuid) { session in
                 GridRow {
                     Button(String(session.uuid.prefix(8))) { actions.openSession(session.uuid) }

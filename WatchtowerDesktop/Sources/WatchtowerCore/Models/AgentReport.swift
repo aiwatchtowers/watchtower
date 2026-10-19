@@ -261,6 +261,19 @@ package struct AgentReportOverview: Decodable, Equatable, Sendable {
     }
 }
 
+extension AgentReportOverview {
+    /// The same report but for the `since`/`until` stamps, which Go sets
+    /// from the clock on every run.
+    package func sameReport(as other: Self) -> Bool {
+        workbenchID == other.workbenchID && enabled == other.enabled && totals == other.totals
+            && time == other.time && subagents == other.subagents && commands == other.commands
+            && models == other.models && hints == other.hints && tasks == other.tasks
+            && sessions == other.sessions && oldFormatSessions == other.oldFormatSessions
+            && importState == other.importState && context == other.context
+            && skills == other.skills && trouble == other.trouble
+    }
+}
+
 /// `agents report --session <uuid> --json`: one session's drill-down.
 package struct AgentSessionDetail: Decodable, Equatable, Sendable {
     package let session: AgentSessionRow

@@ -85,6 +85,19 @@ final class AgentReportDecodingTests: XCTestCase {
         XCTAssertNotNil(trouble.rateLimited)
     }
 
+    func testSameReportIgnoresOnlyTheStamps() throws {
+        func variant(_ changes: [String: Any]) throws -> AgentReportOverview {
+            var json = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture("agent-report-overview")) as? [String: Any])
+            json.merge(changes) { $1 }
+            return try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+        }
+        let base = try variant([:])
+        XCTAssertTrue(base.sameReport(as: try variant(["since": "2026-10-02T00:00:00Z", "until": "2026-10-09T00:00:00Z"])))
+        XCTAssertFalse(base.sameReport(as: try variant(["old_format_sessions": 9])))
+        XCTAssertFalse(base.sameReport(as: try variant(["enabled": false])))
+        XCTAssertFalse(base.sameReport(as: try variant(["hints": []])))
+    }
+
     func testContextSkillsAndTroubleFieldsDecode() throws {
         let json = #"""
         {"workbench_id":1,"enabled":true,"since":"a","until":"b",

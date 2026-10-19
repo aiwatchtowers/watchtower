@@ -27,6 +27,38 @@ enum AgentAnalyticsFormat {
         return percent(Double(tokens.cacheRead), of: Double(input))
     }
 
+    /// A baseline part's name (`internal/agentlog/claude.go`); an unknown
+    /// one (a newer CLI) as sent.
+    static func label(part raw: String) -> String {
+        [
+            "instructions": "CLAUDE.md & rules", "skills": "Skill list", "tools": "Tool schemas",
+            "system": "System prompt", "deferred_tools": "Deferred tools", "agents": "Agent list",
+            "mcp": "MCP instructions", "hooks": "Hooks", "other": "Other"
+        ][raw] ?? raw
+    }
+
+    /// An error class's name (`internal/agentlog/claude_tools.go`); an
+    /// unknown one as sent.
+    static func label(errorClass raw: String) -> String {
+        [
+            "exit_code": "Command failed", "not_found": "File not found", "timeout": "Timed out",
+            "edit_no_match": "Edit text not found", "edit_multi_match": "Edit text not unique",
+            "stale_read": "File changed since read", "too_large": "Output too large",
+            "input_invalid": "Invalid input", "no_such_tool": "Unknown tool", "unknown_agent": "Unknown agent type",
+            "isolation_block": "Blocked by worktree isolation", "sleep_blocked": "Sleep blocked",
+            "agent_limit": "Agent limit", "429": "Rate limited", "other": "Other"
+        ][raw] ?? raw
+    }
+
+    /// A denial kind's name (`internal/agentreport/trouble.go`); an unknown
+    /// one as sent.
+    static func label(denial raw: String) -> String {
+        [
+            "permission-rule": "Permission rule", "user-rejected": "You declined",
+            "automode-blocked": "Blocked in auto mode", "automode-unavailable": "Auto mode unavailable"
+        ][raw] ?? raw
+    }
+
     /// "950", "12.3k", "2.5M".
     static func tokens(_ count: Int64) -> String {
         if count >= 1_000_000 { return String(format: "%.1fM", Double(count) / 1_000_000) }

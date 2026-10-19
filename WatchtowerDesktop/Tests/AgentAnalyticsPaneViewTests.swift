@@ -16,6 +16,7 @@ private final class AnalyticsActionLog {
     var files: [String] = []
     var askOpens = 0
     var discussed: [String] = []
+    var asksWaiting = true
 
     var actions: AgentAnalyticsActions {
         AgentAnalyticsActions(
@@ -24,7 +25,8 @@ private final class AnalyticsActionLog {
             openTarget: { self.targets.append($0) },
             openFile: { self.files.append($0) },
             openAsks: { self.askOpens += 1 },
-            discuss: { self.discussed.append($0) }
+            discuss: { self.discussed.append($0) },
+            asksWaiting: asksWaiting
         )
     }
 }
@@ -297,6 +299,32 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         XCTAssertEqual(AgentAnalyticsFormat.cacheHit(none), "—", "no input at all")
     }
 
+    func testEnumLabels() {
+        let cases: [(String, String, String)] = [
+            ("part", "instructions", "CLAUDE.md & rules"), ("part", "deferred_tools", "Deferred tools"),
+            ("part", "hooks", "Hooks"), ("part", "brand_new", "brand_new"),
+            ("class", "exit_code", "Command failed"), ("class", "isolation_block", "Blocked by worktree isolation"),
+            ("class", "429", "Rate limited"), ("class", "brand_new", "brand_new"),
+            ("denial", "permission-rule", "Permission rule"), ("denial", "user-rejected", "You declined"),
+            ("denial", "automode-blocked", "Blocked in auto mode"), ("denial", "brand_new", "brand_new")
+        ]
+        for (kind, raw, want) in cases {
+            let got = switch kind {
+            case "part": AgentAnalyticsFormat.label(part: raw)
+            case "class": AgentAnalyticsFormat.label(errorClass: raw)
+            default: AgentAnalyticsFormat.label(denial: raw)
+            }
+            XCTAssertEqual(got, want, "\(kind) \(raw)")
+        }
+    }
+
+    func testOpenWaitingForYouIsOffWithoutAnAsk() throws {
+        let log = AnalyticsActionLog()
+        log.asksWaiting = false
+        let view = overviewView(.overview(try Self.overview(), staleError: nil), log: log)
+        XCTAssertTrue(try view.inspect().find(button: "Open Waiting for You").isDisabled())
+    }
+
     func testTokenCounts() {
         XCTAssertEqual(AgentAnalyticsFormat.tokens(950), "950")
         XCTAssertEqual(AgentAnalyticsFormat.tokens(12_300), "12.3k")
@@ -344,7 +372,7 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         let view = overviewView(.overview(try Self.filledOverview(), staleError: nil), log: log)
         let all = try texts(view)
         XCTAssertFalse(all.contains(AgentAnalyticsBlockState.notMeasuredLine))
-        for line in ["Baseline: 9.0k tokens at session start", "instructions 8.1k · 90%", "Bash 50 · 50%",
+        for line in ["Baseline: 9.0k tokens at session start", "CLAUDE.md & rules 8.1k · 90%", "Bash 50 · 50%",
                      "Compactions: 1 in 1 session · median 800 → 100 tokens",
                      "CLAUDE.md: 60 lines, 2 KB · rules 10 bytes",
                      "Used 1 of 5 listed skills · the listing costs 300 tokens per session",
@@ -353,10 +381,25 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
             XCTAssertTrue(all.contains(line), "\(line): \(all)")
         }
         XCTAssertTrue(all.contains("b.go — 5 reads, 40 tokens"), "\(all)")
-        XCTAssertTrue(all.contains("timeout · Bash — 3"), "\(all)")
-        XCTAssertTrue(all.contains("permission-rule · Bash make — 2"), "\(all)")
+        XCTAssertTrue(all.contains("Timed out · Bash — 3"), "\(all)")
+        XCTAssertTrue(all.contains("Permission rule · Bash make — 2"), "\(all)")
         try view.inspect().find(button: "22222222").tap()
         XCTAssertEqual(log.sessions, ["22222222-aaaa-bbbb-cccc-000000000002"], "the class's top session")
+    }
+
+    /// Compactions and the files on disk need no new facts: they show even
+    /// in a block that is not measured yet.
+    func testCompactionsAndDiskShowInAnyState() throws {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.fixture("agent-report-overview")) as? [String: Any])
+        var context = try XCTUnwrap(json["context"] as? [String: Any])
+        context["compactions"] = ["count": 2, "median_pre_tokens": 800, "median_post_tokens": 100, "sessions": 1]
+        context["disk"] = ["claude_md_bytes": 2048, "claude_md_lines": 60, "rules_bytes": 0]
+        json["context"] = context
+        let ov = try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+        let all = try texts(overviewView(.overview(ov, staleError: nil)))
+        XCTAssertTrue(all.contains("Compactions: 2 in 1 session · median 800 → 100 tokens"), "\(all)")
+        XCTAssertTrue(all.contains("CLAUDE.md: 60 lines, 2 KB"), "\(all)")
+        XCTAssertEqual(all.filter { $0 == AgentAnalyticsBlockState.notMeasuredLine }.count, 3)
     }
 
     func testBlocksWithFactsButNothingFound() throws {

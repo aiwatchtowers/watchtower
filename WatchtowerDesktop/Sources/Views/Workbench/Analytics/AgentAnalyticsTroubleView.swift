@@ -28,7 +28,7 @@ struct AgentAnalyticsTroubleView: View {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(classes.enumerated()), id: \.offset) { _, row in
                         HStack(spacing: 6) {
-                            Text("\(row.class) · \(row.tool) — \(row.count)")
+                            Text("\(AgentAnalyticsFormat.label(errorClass: row.class)) · \(row.tool) — \(row.count)")
                             if let top = row.sessions.first {
                                 AgentSessionLink(uuid: top.sessionUUID, actions: actions)
                             }
@@ -41,7 +41,8 @@ struct AgentAnalyticsTroubleView: View {
                 Text("Denied").font(.callout)
                 LazyVStack(alignment: .leading, spacing: 2) {
                     ForEach(Array(denials.enumerated()), id: \.offset) { _, row in
-                        Text("\(row.kind) · \([row.tool, row.target].filter { !$0.isEmpty }.joined(separator: " ")) — \(row.count)")
+                        let what = [row.tool, row.target].filter { !$0.isEmpty }.joined(separator: " ")
+                        Text("\(AgentAnalyticsFormat.label(denial: row.kind)) · \(what) — \(row.count)")
                             .font(.callout.monospacedDigit())
                             .lineLimit(1)
                     }

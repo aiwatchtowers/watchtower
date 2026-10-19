@@ -67,12 +67,21 @@ enum AgentHintFixAction: Equatable {
 struct AgentHintFixButton: View {
     let fix: AgentHintFix?
     let actions: AgentAnalyticsActions
+    /// Copy Allow Rules reads "Copied" for a moment after a click.
+    @State private var copied = false
 
     var body: some View {
         if let action = AgentHintFixAction.make(fix) {
-            Button(action.title) { perform(action) }
+            let noAsks = action == .openAsks && !actions.asksWaiting
+            Button(copied ? "Copied" : action.title) { perform(action) }
                 .controlSize(.small)
-                .help(action.help)
+                .disabled(noAsks)
+                .help(noAsks ? "No asks are waiting now" : action.help)
+                .task(id: copied) {
+                    guard copied else { return }
+                    try? await Task.sleep(for: .seconds(1.5))
+                    copied = false
+                }
         }
     }
 
@@ -81,6 +90,7 @@ struct AgentHintFixButton: View {
         case let .copyRules(rules):
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(AgentHintFixAction.copyText(rules), forType: .string)
+            copied = true
         case let .openSession(uuid): actions.openSession(uuid)
         case .openAsks: actions.openAsks()
         case let .openFile(path): actions.openFile(path)

@@ -11,6 +11,14 @@ struct AgentAnalyticsContextView: View {
     var body: some View {
         AgentAnalyticsBlock(title: "Context", state: state) {
             if let context { measured(context) }
+        } footer: {
+            // Compactions and the files on disk show in any state.
+            if let line = Self.compactionsLine(context?.compactions) {
+                Text(line).font(.callout)
+            }
+            if let line = Self.diskLine(context?.disk) {
+                Text(line).font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -27,7 +35,7 @@ struct AgentAnalyticsContextView: View {
             if let baseline = context.baseline, let parts = baseline.parts, !parts.isEmpty {
                 Text("Baseline: \(AgentAnalyticsFormat.tokens(baseline.tokens ?? 0)) tokens at session start")
                     .font(.callout)
-                AgentShareBar(parts: parts.map { ($0.part, $0.tokens, $0.share) })
+                AgentShareBar(parts: parts.map { (AgentAnalyticsFormat.label(part: $0.part), $0.tokens, $0.share) })
             }
             if let growth = context.growth, !growth.isEmpty {
                 Text("Growth by source").font(.callout)
@@ -58,12 +66,6 @@ struct AgentAnalyticsContextView: View {
                     }
                 }
             }
-            if let line = Self.compactionsLine(context.compactions) {
-                Text(line).font(.callout)
-            }
-            if let line = Self.diskLine(context.disk) {
-                Text(line).font(.caption).foregroundStyle(.secondary)
-            }
         }
     }
 
@@ -84,74 +86,4 @@ struct AgentAnalyticsContextView: View {
         if disk.rulesBytes > 0 { parts.append("rules \(bytes(disk.rulesBytes))") }
         return parts.joined(separator: " · ")
     }
-}
-
-/// A titled v2 block: its content once measured, else one line saying why
-/// there is none.
-struct AgentAnalyticsBlock<Content: View>: View {
-    let title: String
-    let state: AgentAnalyticsBlockState
-    @ViewBuilder let content: () -> Content
-
-    var body: some View {
-        AgentAnalyticsSection(title: title) {
-            switch state {
-            case .notMeasured:
-                Text(AgentAnalyticsBlockState.notMeasuredLine).font(.callout).foregroundStyle(.secondary)
-            case .nothingFound:
-                Text("Nothing to fix here").font(.callout).foregroundStyle(.secondary)
-            case .measured:
-                content()
-            }
-        }
-    }
-}
-
-/// A session's short id as a link to its analytics.
-struct AgentSessionLink: View {
-    let uuid: String
-    let actions: AgentAnalyticsActions
-
-    var body: some View {
-        Button(String(uuid.prefix(8))) { actions.openSession(uuid) }
-            .buttonStyle(.link)
-            .font(.callout.monospaced())
-            .help("Show this session's analytics")
-    }
-}
-
-/// A stacked bar of shares with a legend line per part ("skills 900 · 10%").
-struct AgentShareBar: View {
-    let parts: [(label: String, tokens: Int64, share: Double)]
-
-    private static let palette: [Color] = [.blue, .purple, .teal, .mint, .pink, .green, .indigo, .gray]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            GeometryReader { proxy in
-                HStack(spacing: 1) {
-                    ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
-                        Rectangle()
-                            .fill(Self.color(index))
-                            .frame(width: max(proxy.size.width * min(max(part.share, 0), 1) - 1, 0))
-                    }
-                }
-            }
-            .frame(height: 10)
-            .clipShape(RoundedRectangle(cornerRadius: 3))
-            .accessibilityHidden(true)
-            LazyVStack(alignment: .leading, spacing: 2) {
-                ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
-                    HStack(spacing: 4) {
-                        Circle().fill(Self.color(index)).frame(width: 8, height: 8).accessibilityHidden(true)
-                        Text("\(part.label) \(AgentAnalyticsFormat.tokens(part.tokens)) · "
-                            + AgentAnalyticsFormat.percent(part.share, of: 1))
-                    }
-                }
-            }
-            .font(.callout.monospacedDigit())
-        }
-    }
-
-    private static func color(_ index: Int) -> Color { palette[index % palette.count] }
 }

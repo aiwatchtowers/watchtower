@@ -57,7 +57,8 @@ struct AgentAnalyticsPaneView: View {
                 Task { await vm.openFile(path, root: root, preview: false) }
             },
             openAsks: { Task { await vm.showWaitingForYou(projectID: project.id) } },
-            discuss: { [appState] in appState?.openHelpChat(prefill: $0) }
+            discuss: { [appState] in appState?.openHelpChat(prefill: $0) },
+            asksWaiting: !vm.asks.stack(projectID: project.id).asks.isEmpty
         )
     }
 }
@@ -76,22 +77,9 @@ struct AgentAnalyticsActions {
     let openAsks: () -> Void
     /// Discuss in Chat: the chat popup with this text in its composer.
     let discuss: (String) -> Void
-}
-
-/// What a Context, Skills or Trouble block shows.
-enum AgentAnalyticsBlockState: Equatable {
-    /// No session of the period has the facts the block reads.
-    case notMeasured
-    /// Measured, and nothing to show.
-    case nothingFound
-    case measured
-
-    static let notMeasuredLine = "Not measured for sessions before this update — they fill in as new sessions run."
-
-    static func make(factsSessions: Int?, hasFindings: Bool) -> Self {
-        guard (factsSessions ?? 0) > 0 else { return .notMeasured }
-        return hasFindings ? .measured : .nothingFound
-    }
+    /// Whether an ask of the workbench waits now (Open Waiting for You is
+    /// off without one).
+    let asksWaiting: Bool
 }
 
 /// What the overview shows.

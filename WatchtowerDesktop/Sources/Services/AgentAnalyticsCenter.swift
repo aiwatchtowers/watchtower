@@ -187,10 +187,15 @@ final class AgentAnalyticsCenter {
             let overview = try await decode(AgentReportOverview.self, args: args, key: key)
             // A run `stop()` cancelled applies nothing, whatever the runner returned.
             guard !Task.isCancelled else { return }
-            // The 60 s tick mostly brings the same report back: assigning it
-            // again would redraw the whole pane.
-            let next = SessionReportCenter.Snapshot(value: overview)
-            if overviews[workbench] != next { overviews[workbench] = next }
+            // The 60 s tick mostly brings the same report back, only its
+            // clock stamps moved: assigning it again would redraw the whole
+            // pane. A changed period or a pending error line still applies.
+            if let current = overviews[workbench], current.error == nil, let shown = current.value,
+               shown.sameReport(as: overview),
+               AgentAnalyticsFormat.period(of: shown) == AgentAnalyticsFormat.period(of: overview) {
+                return
+            }
+            overviews[workbench] = SessionReportCenter.Snapshot(value: overview)
         } catch {
             guard !Task.isCancelled, !(error is CancellationError) else { return }
             overviews[workbench, default: SessionReportCenter.Snapshot()].error = SessionReportCenter.errorLine(error)

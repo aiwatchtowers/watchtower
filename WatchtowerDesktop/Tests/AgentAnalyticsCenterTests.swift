@@ -151,31 +151,56 @@ final class AgentAnalyticsCenterTests: XCTestCase {
         XCTAssertEqual(center.overviews[3]?.isStale, true)
     }
 
-    /// A run that brings the same report back assigns nothing, so the pane
-    /// is not redrawn every 60 s; a changed report or an error still is.
+    /// The fixture with some keys replaced.
+    nonisolated private static func overview(_ changes: [String: Any]) -> Data {
+        guard var json = (try? JSONSerialization.jsonObject(with: fixture("agent-report-overview"))) as? [String: Any]
+        else { return Data() }
+        json.merge(changes) { $1 }
+        return (try? JSONSerialization.data(withJSONObject: json)) ?? Data()
+    }
+
+    /// A run that brings the same report back — Go moves `since`/`until`
+    /// with the clock on every run — assigns nothing, so the pane is not
+    /// redrawn every 60 s; a changed report is assigned.
     func testCenterSkipsEqualOverview() async throws {
+        let runner = ScriptedAgentsRunner(Self.byFlags())
+        let center = makeCenter(runner, interval: .milliseconds(20))
+        var onScreen = false
+        center.isTabOnScreen = { onScreen }
+        center.show(workbench: 3, period: .week)
+        await waitUntil { center.overviews[3]?.value != nil }
+
+        var changes = 0
+        withObservationTracking { _ = center.overviews } onChange: { changes += 1 }
+        let later = Self.overview(["since": "2026-10-01T00:01:00Z", "until": "2026-10-08T00:01:00Z"])
+        runner.answer { _ in later }
+        onScreen = true
+        await waitUntil { runner.invocations.count >= 3 }
+        onScreen = false
+        await settle()
+        XCTAssertEqual(changes, 0, "only the stamps moved: nothing is assigned")
+        XCTAssertEqual(center.overviews[3]?.value?.until, "2026-10-08T00:00:00Z", "the shown report is kept")
+
+        let changed = Self.overview(["old_format_sessions": 7])
+        runner.answer { _ in changed }
+        onScreen = true
+        await waitUntil { center.overviews[3]?.value?.oldFormatSessions == 7 }
+        onScreen = false
+        XCTAssertGreaterThan(changes, 0, "a changed report is assigned")
+    }
+
+    /// The same content over another period is assigned: the pane reads
+    /// the period off the report ("Updating…" until it matches).
+    func testCenterAssignsTheSameContentForAnotherPeriod() async {
         let runner = ScriptedAgentsRunner(Self.byFlags())
         let center = makeCenter(runner)
         center.show(workbench: 3, period: .week)
         await waitUntil { center.overviews[3]?.value != nil }
 
-        var changes = 0
-        func track() {
-            withObservationTracking { _ = center.overviews } onChange: { changes += 1 }
-        }
-        track()
+        let month = Self.overview(["since": "2026-09-08T00:00:00Z"])
+        runner.answer { _ in month }
         center.show(workbench: 3, period: .month)
-        await waitUntil { runner.invocations.count == 2 }
-        await settle()
-        XCTAssertEqual(changes, 0, "an equal report is not assigned again")
-
-        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.fixture("agent-report-overview")) as? [String: Any])
-        json["old_format_sessions"] = 7
-        let changed = try JSONSerialization.data(withJSONObject: json)
-        runner.answer { _ in changed }
-        center.show(workbench: 3, period: .all)
-        await waitUntil { center.overviews[3]?.value?.oldFormatSessions == 7 }
-        XCTAssertEqual(changes, 1, "a changed report is")
+        await waitUntil { center.overviews[3]?.value?.since == "2026-09-08T00:00:00Z" }
     }
 
     func testOneInFlightAndOneQueued() async {
