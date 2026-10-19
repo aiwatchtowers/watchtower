@@ -166,7 +166,7 @@ func TestAutomationEditorSurface_MountsOnlyDraftSaveAndReads(t *testing.T) {
 		}
 		assert.Equal(t, tools.AccessRead, tool.Access, "%s is a write tool on automation_editor", tool.Name)
 	}
-	for _, name := range []string{"save_automation", "draft_automation", "load_skill"} {
+	for _, name := range []string{"save_automation", "draft_automation", "workbench_skills", "load_skill"} {
 		assert.True(t, listed[name], "%s missing on automation_editor", name)
 	}
 	for _, rt := range tools.ReadTools() {
