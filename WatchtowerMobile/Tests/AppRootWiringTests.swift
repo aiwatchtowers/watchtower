@@ -175,7 +175,7 @@ final class AppRootWiringTests: XCTestCase {
         defaults = try makeDefaults()
         registry = try HubRegistry(path: paths.registryPath)
         // After the sessions' teardown, before the temp directory's removal.
-        addTeardownBlock { @MainActor [registry] in try? registry?.close() }
+        addTeardownBlock { @MainActor [registry] in XCTAssertNoThrow(try registry?.close()) }
         for link in links {
             try registry.upsert(link, now: Date())
             if frozen.contains(link.hubID) {
