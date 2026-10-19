@@ -17,7 +17,7 @@ The tools cover these areas:
 - **Work items and briefings:** targets, today's briefing, tracks and track counts, ideas.
 - **People and calendar:** people cards, `find_experts`, upcoming events.
 - **Slack and meetings:** digests, messages, transcripts.
-- **Jira:** issues, projects, status history, time in status, and `get_task_context`, which bundles one ticket with its comments, linked threads, meeting mentions, decisions and people.
+- **Jira:** issues, projects, status history, time in status, and `get_task_context`, which bundles one Jira or Linear ticket with its comments, linked threads, meeting mentions, decisions and people.
 - **Knowledge and memory:** `search_knowledge`, `get_knowledge_document`, the memory tools and `load_skill`.
 
 The three skills tell the agent when to use which tool:
@@ -75,7 +75,7 @@ You do not run these for a Workbench folder; Watchtower sets the folder up itsel
 
 ## When it's empty or wrong
 
-- **A tool returns nothing.** The server only returns what Watchtower has synced. Check that the source is connected and has synced; a Jira key unknown to Watchtower gives an empty dossier.
+- **A tool returns nothing.** The server only returns what Watchtower has synced. Check that the source is connected and has synced; a Jira or Linear key unknown to Watchtower gives an empty dossier.
 - **The agent never uses a skill.** Run `watchtower integrate status`. A missing skill means the install did not run in that scope; a drifted one is yours and is not updated.
 - **`claude CLI not found`.** The skills are still installed. Run the printed `claude mcp add` command yourself.
 - **The agent talks to the wrong workspace.** Add `--workspace <name>` to the server's args.

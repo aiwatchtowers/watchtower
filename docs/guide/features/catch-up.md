@@ -15,7 +15,7 @@ A recap is built only when you ask for it. The daemon never builds one for you.
 - **Top-up.** When the window ends within five minutes of now, the digests for the part not yet covered are refreshed first. A failed top-up never fails the recap.
 - **One AI call** composes the recap. Every source link in it is checked against what was gathered, and a link that doesn't exist is dropped.
 
-The tab shows when any of Attention detection, Slack Digests or Stream Digests is on and any source (Slack, mail, Jira or a calendar) is connected. **For you** is only as good as Attention detection, which needs no AI and runs every sync cycle.
+The tab shows when any of Attention detection, Slack Digests or Stream Digests is on and any source (Slack, mail, Jira, Linear or a calendar) is connected. **For you** is only as good as Attention detection, which needs no AI and runs every sync cycle.
 
 ## Using it
 

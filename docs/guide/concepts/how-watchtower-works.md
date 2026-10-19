@@ -82,4 +82,4 @@ After three failed tries it waits for the next update and says so. You can also 
 - [Why a tab is empty](features-on-and-off.md#why-a-tab-is-empty-and-what-its-status-line-means)
 - [Troubleshooting](../troubleshooting/README.md)
 
-For developers: [docs/features/tray-daemon-lifecycle.md](../../features/tray-daemon-lifecycle.md), [docs/features/first-run.md](../../features/first-run.md)
+For developers: [docs/features/tray-daemon-lifecycle.md](../../features/tray-daemon-lifecycle.md), [docs/features/first-run.md](../../features/first-run.md), [docs/features/db-compact.md](../../features/db-compact.md)

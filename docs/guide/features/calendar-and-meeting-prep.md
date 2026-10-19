@@ -28,7 +28,7 @@ Connecting a calendar is also what makes the **Calendar** tab appear in the side
 
 - the attendees' people cards and their last 7 days of activity
 - tracks and digests that involve them
-- their Jira issues
+- their Jira and Linear issues
 - your pending attention items and targets
 - the attendees' memory context
 - your own profile

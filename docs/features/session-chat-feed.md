@@ -103,7 +103,7 @@ Spec: `docs/superpowers/specs/2026-10-18-session-chat-iphone-design.md`. Contrac
 | Runner | `Services/MobileHub/Slices/SessionChatRunner.swift` |
 | Slice | `Services/MobileHub/Slices/SessionChatSlice.swift` |
 | Request handler | `Services/MobileHub/Handlers/SessionChatRequestHandler.swift` |
-| Kit | `WatchtowerKit/Models/SessionChat.swift`, `SessionChatRequestParams` in `WorkbenchActionParams.swift` |
+| Kit | `WatchtowerKit/Sources/WatchtowerKit/Models/SessionChat.swift`, `SessionChatRequestParams` in `WorkbenchActionParams.swift` |
 | Phone | `WatchtowerMobile/Sources/Features/Workbench/{SessionChatView,SessionChatViewModel,TellSessionBar}.swift` |
 
 Limits: no search, no paging, no chat of a session the owner did not open, no copy beyond the replica record.

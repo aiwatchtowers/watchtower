@@ -8,7 +8,7 @@ Seven tabs, in this order: **General**, **Connections**, **Features**, **Meeting
 
 ## Connections
 
-A list of services (Slack, Google, Email, Calendar, Jira, Linear, Quick Connections) with a status dot: green connected, red when an account has an error or needs re-login, gray not set up. You never type an account name: Watchtower names the account after what it connected to, and **Rename…** changes it. See [Sources and accounts](../concepts/sources-and-accounts.md).
+A list of services (Slack, Google, Email, Calendar, Jira, Linear, Quick Connections) with a status dot: green connected, red when an account has an error or needs re-login, gray not set up. You never type an account name: Watchtower names the account after what it connected to, and **Rename…** changes it (Linear has no **Rename…**). See [Sources and accounts](../concepts/sources-and-accounts.md).
 
 - **Remove** stops syncing and deletes the sign-in. Slack, Jira and Linear keep their synced data; Google, Email and Calendar delete the mail and events synced from that account, although the dialog says they are kept (see [Known issues](../troubleshooting/known-issues.md)). A disabled account (**Enabled** off, Slack, Jira and Linear only) stops syncing and keeps its data.
 - After you connect a source, a **Turn on related features?** sheet may offer features that source can feed. Nothing turns on unless you press **Turn on**. See [Features on and off](../concepts/features-on-and-off.md).

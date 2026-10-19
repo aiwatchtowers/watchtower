@@ -1,6 +1,6 @@
 # Ideas & Decisions
 
-Ideas collects proposals that were floated in Slack threads, meetings, Jira comments and mail but never written down, so they don't get lost. You only triage what it finds. Decisions are mined by the same pipeline, but they are born settled and live in Digests → Decisions, not here.
+Ideas collects proposals that were floated in Slack threads, meetings, Jira and Linear comments and mail but never written down, so they don't get lost. You only triage what it finds. Decisions are mined by the same pipeline, but they are born settled and live in Digests → Decisions, not here.
 
 ## Why use it
 
@@ -10,10 +10,10 @@ Someone says "we could cache this per tenant" in a thread, and it is buried by l
 
 The registry is filled in two steps, both by the background sync.
 
-1. **Cheap pre-digests.** Slack digests and meeting recaps already pick out ideas and decisions. Mail and Jira get their own digest passes over recent threads, issues and comments. That pass is the separate **Stream Digests** feature, which runs about every 6 hours.
+1. **Cheap pre-digests.** Slack digests and meeting recaps already pick out ideas and decisions. Mail, Jira and Linear get their own digest passes over recent threads, issues and comments. That pass is the separate **Stream Digests** feature, which runs about every 6 hours.
 2. **Consolidation.** About every 6 hours (Settings → Features → **Ideas**, **Mining interval (hours)**, 1 to 48), a stronger AI pass reads only the new material and your recent verdicts. It proposes new ideas or attaches a repeat mention to an existing one.
 
-It needs **Ideas & Decisions** on in Settings → Features (on by default). For mail and Jira ideas, Stream Digests must also be on. The daemon's regular pass looks only at recent activity; use **Find Ideas** to reach further back.
+It needs **Ideas & Decisions** on in Settings → Features (on by default). For mail, Jira and Linear ideas, Stream Digests must also be on. The daemon's regular pass looks only at recent activity; use **Find Ideas** to reach further back (it does not cover Linear).
 
 A mention of something you rejected, dropped or put on **Not now** brings it back into **For review** with the reason "brought up again". An exact repeat of a mention it already has does not.
 
@@ -60,7 +60,7 @@ The empty tab says "No ideas yet" and "Ideas and decisions picked up from conver
 - **Within ~15 min, After this sync.** The next pass is due on the next cycle.
 - **In about N h.** The last pass was recent; the line counts whole hours to the next.
 - **Didn't work yet — retries automatically.** The last run failed; the reason is in the line.
-- **Nothing from mail or Jira.** Turn on Stream Digests and connect the account.
+- **Nothing from mail, Jira or Linear.** Turn on Stream Digests and connect the account.
 - **The badge count differs from the list.** It counts items to review in both Ideas and Notes, never decisions.
 
 Tab still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md). A parked idea not returning is a [known issue](../troubleshooting/known-issues.md).
