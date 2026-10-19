@@ -87,7 +87,7 @@ Source rules (each source read on its own, same `readCard`-style catch as `HomeQ
   - `testOnlyActionablePendingFeedTriggers` — one each of `mention`, `email_cc`, `briefing_ready`, `calendar_invite`, a `resolved` mention, an `ambient` mention, a snoozed-until-tomorrow dm: only the plain `mention` returned.
   - `testMentionedAtCountsAsTheStamp` — `created_at` 5 days ago, `mentioned_at` 1 h ago: returned, `stamp` = mentioned_at.
   - `testOldBacklogStaysOutAndCountIsBounded` — 500 emails 10 days old + 3 fresh: `inbox.count == 3`.
-  - `testWorkbenchTargetNeverReturned` — a `project_id = 1` overdue target: absent (PROJ-01).
+  - `testProj01_FeedNeverReturnsAProjectTarget` — a `project_id = 1` overdue target: absent (PROJ-01).
   - `testInProgressWithoutDueIsNotATargetRow` — absent.
   - `testOneFailingSourceMarksOnlyItself` — drop `reminders` mid-test via a `CREATE VIEW reminders AS SELECT 1/0` swap (or the failure technique `HomeQueriesTests.testOneFailingCardKeepsTheOthers` uses): `failed == [.reminders]`, inbox still read.
   - `testSlackWhoAndWhere` — user `Ann` in `#eng`: `who == "Ann"`, `whereText == "#eng"`.

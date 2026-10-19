@@ -74,7 +74,7 @@ Home ends with the line "Stuck? Press **⌘/** to ask, or open the User Guide." 
 - **A tab is missing from the menu.** Turn its feature on in Settings → Features and connect its source. You may also have hidden it: look under **HIDDEN**.
 - **A card is missing from Today.** It has nothing to show right now, or its feature is off or its source isn't connected.
 - **The feed has no Slack, Jira or email rows.** Inbox detection is off, or nothing arrived in the last 72 hours.
-- **No meetings below NOW.** Calendar isn't connected, or the events are all-day, cancelled or declined.
+- **No meetings below NOW.** Calendar isn't connected or its tab is hidden (meetings are not shown while it is), or the events are all-day, cancelled or declined.
 - **"Couldn't read today's items — see the log."** The local database couldn't be read. Quit and reopen the app; if it persists, check the app log.
 
 A tab stays empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).

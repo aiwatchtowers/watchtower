@@ -468,8 +468,10 @@ is that card having no content; a thrown error is logged (`NSLog`, card kind
 (`WatchtowerDesktop/Sources/WatchtowerCore/Services/HomeTodayBuilder.swift:12`)
 is pure: each card shows only with content, in this fixed order (owner ask
 #308; `TodayCardKind`'s case order), and only
-while its tab is visible (`homeTodayCardsAllowed`; My targets and Agents
-waiting have no tab gate).
+while its tab is visible (`homeTodayCardsAllowed`; Agents waiting and the
+instruction suggestion have no tab gate). `TodayCardKind` is now
+`sinceYouWereAway`, `briefing`, `agentsWaiting`, `instructionSuggestion`; the
+rows for Next meeting, Waiting on you and My targets moved to the Feed (below).
 
 | Card | Source | Shows when | Click |
 |---|---|---|---|
@@ -573,9 +575,9 @@ migration, no AI, no daemon phase.
    (attention, your day, what happened, team pulse, coaching), two lines.
 7. **Since you were away** uses the unacknowledged recap's own window; no
    `CatchUpQueries.autoWindowStart`.
-8. **Next meeting** — 24 h horizon; "Prep ready" from a non-empty
+8. **Next meeting** (superseded 2026-10-19 by the Feed, #717: see "Feed" above) — 24 h horizon; "Prep ready" from a non-empty
    `meeting_prep_cache` row (`CalendarQueries.hasPrep`), no prep text decoded.
-9. **Waiting on you** items are what the badge counts (pending/failed
+9. **Waiting on you** (superseded 2026-10-19 by the Feed, #717: see "Feed" above) items are what the badge counts (pending/failed
    proposals, due reminders), not the strip's 24 h tail of applied rows.
 10. **Agents waiting** — count + the 3 oldest asks, routed by
     `WorkbenchRoute.forAsk` (`Workbench.swift:45`), the rule
