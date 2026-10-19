@@ -56,14 +56,82 @@ final class WorkchatModelTests: XCTestCase {
 
     private var typedText: String { String(bytes: processes.flatMap(\.inputs).joined(), encoding: .utf8) ?? "" }
 
-    private func makeModel(_ sessionID: Int64) throws -> WorkchatModel {
+    private func makeControl() throws -> SessionControl {
         let clock = try XCTUnwrap(clock)
-        let control = SessionControl(
+        return SessionControl(
             dbPool: pool, terminalCenter: center, lineDelivery: delivery,
             status: { [weak self] in self?.statuses[$0] },
             now: { clock.now }
         )
+    }
+
+    private func makeModel(_ sessionID: Int64, control: (any WorkchatControl)? = nil) throws -> WorkchatModel {
+        let clock = try XCTUnwrap(clock)
+        let control = try control ?? makeControl()
         return WorkchatModel(sessionID: sessionID, control: control, lineDelivery: delivery) { clock.now }
+    }
+
+    /// Lets one test make the permission read, the answer or the interrupt
+    /// fail or wait; each call not scripted goes to the real control.
+    private final class ScriptedControl: WorkchatControl {
+        let base: SessionControl
+        var pending: ((Int64) async throws -> SessionControl.PermissionPrompt?)?
+        var answer: (() async throws -> SessionControl.PermissionAnswer)?
+        var interrupt: (() async throws -> SessionControl.InterruptResult)?
+        private(set) var answers = 0
+
+        init(base: SessionControl) {
+            self.base = base
+        }
+
+        func lineCheck(_ sessionID: Int64) -> SessionControl.LineCheck {
+            base.lineCheck(sessionID)
+        }
+
+        func interrupt(_ sessionID: Int64) async throws -> SessionControl.InterruptResult {
+            if let interrupt { return try await interrupt() }
+            return try await base.interrupt(sessionID)
+        }
+
+        func pendingPermission(_ sessionID: Int64) async throws -> SessionControl.PermissionPrompt? {
+            if let pending { return try await pending(sessionID) }
+            return try await base.pendingPermission(sessionID)
+        }
+
+        func answerPermission(requestID: Int64, sessionID: Int64, allow: Bool, decidedBy: String) async throws
+            -> SessionControl.PermissionAnswer {
+            answers += 1
+            if let answer { return try await answer() }
+            return try await base.answerPermission(requestID: requestID, sessionID: sessionID, allow: allow, decidedBy: decidedBy)
+        }
+    }
+
+    private struct Failure: LocalizedError {
+        var errorDescription: String? { "disk I/O error" }
+    }
+
+    /// A one-time suspension the test releases: the first `wait` parks
+    /// until `release`; later ones pass straight through.
+    @MainActor
+    private final class Gate {
+        private var continuation: CheckedContinuation<Void, Never>?
+        private(set) var reached = false
+
+        func wait() async {
+            guard !reached else { return }
+            reached = true
+            await withCheckedContinuation { continuation = $0 }
+        }
+
+        func release() {
+            continuation?.resume()
+            continuation = nil
+        }
+
+        /// Yields until a call parks here (bounded).
+        func untilReached() async {
+            for _ in 0..<1_000 where !reached { await Task.yield() }
+        }
     }
 
     private func liveSession(kind: TerminalSession.Kind = .claude) async throws -> Int64 {
@@ -166,6 +234,60 @@ final class WorkchatModelTests: XCTestCase {
         setState(session, .stopped)
         await delivery.deliverHeld()
         XCTAssertEqual(typedText, "", "a cancelled line is never typed")
+    }
+
+    /// Cancel on a line that is not queued — on its first try, or sent —
+    /// changes nothing (final review m7).
+    func testCancelOnALineNotQueuedIsANoOp() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let model = try makeModel(session)
+        let gate = Gate()
+        delivery.refreshStates = { await gate.wait(); return true }
+        model.draft = "Hold on"
+        let sending = Task { await model.send() }
+        await gate.untilReached()
+        let id = try XCTUnwrap(model.outgoing.first?.id)
+        XCTAssertEqual(model.outgoing.first?.state, .sending)
+
+        model.cancel(id)
+        XCTAssertEqual(model.outgoing.map(\.id), [id], "a line on its first try stays")
+        gate.release()
+        await sending.value
+        XCTAssertEqual(model.outgoing.first?.state, .queued)
+        XCTAssertEqual(delivery.heldKeys(sessionID: session), [.workchat(id)], "nothing was dropped from the queue")
+
+        delivery.refreshStates = { true }
+        setState(session, .stopped)
+        await delivery.deliverHeld()
+        XCTAssertEqual(model.outgoing.first?.state, .sent)
+        model.cancel(id)
+        XCTAssertEqual(model.outgoing.map(\.state), [.sent], "a sent line stays")
+    }
+
+    /// A queued line whose retry is under way is out of the queue:
+    /// `dropHeld` finds nothing and the line stays (final review m7).
+    func testCancelKeepsALineWhoseRetryIsUnderWay() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let model = try makeModel(session)
+        model.draft = "Run it"
+        await model.send()
+        let id = try XCTUnwrap(model.outgoing.first?.id)
+        XCTAssertEqual(model.outgoing.first?.state, .queued)
+
+        let gate = Gate()
+        delivery.refreshStates = { await gate.wait(); return true }
+        setState(session, .stopped)
+        let retry = Task { await delivery.deliverHeld() }
+        await gate.untilReached()
+        XCTAssertTrue(delivery.heldKeys(sessionID: session).isEmpty, "taken out for its retry")
+
+        model.cancel(id)
+        XCTAssertEqual(model.outgoing.map(\.id), [id], "nothing was dropped: the line stays")
+        gate.release()
+        await retry.value
+        XCTAssertEqual(model.outgoing.first?.state, .sent)
     }
 
     /// Review Focus 2: the session ends while a line waits. The bubble says
@@ -313,6 +435,29 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertTrue(model.outgoing.isEmpty, "the echo already read takes it")
     }
 
+    /// The same text typed in the terminal while the line sat queued is
+    /// dated before its delivery: it is not the line's echo (final review m1).
+    func testOwnerEntryWhileQueuedIsNotTheEcho() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let model = try makeModel(session)
+        model.draft = "Ship it"
+        await model.send()
+        XCTAssertEqual(model.outgoing.first?.state, .queued)
+        let typedMeanwhile = owner("Ship it", after: 5)
+
+        clock.advance(20)
+        setState(session, .stopped)
+        await delivery.deliverHeld()
+        XCTAssertEqual(model.outgoing.first?.state, .sent)
+
+        model.reconcile(with: [typedMeanwhile])
+        XCTAssertEqual(model.outgoing.count, 1, "the bubble stays")
+
+        model.reconcile(with: [typedMeanwhile, owner("Ship it", after: -1)])
+        XCTAssertTrue(model.outgoing.isEmpty, "an echo stamped just before deliveredAt still takes it")
+    }
+
     /// No echo within `echoWindow` (a `/clear`, say): the line stays as a
     /// plain local bubble, and a late identical entry does not take it.
     func testReconcileKeepsLineWithoutEchoPastWindow() async throws {
@@ -362,6 +507,49 @@ final class WorkchatModelTests: XCTestCase {
 
         XCTAssertEqual(result, .sent)
         XCTAssertEqual(processes.flatMap(\.inputs), [[0x1B]])
+    }
+
+    /// Refusals say why (final review m6); the result is still returned.
+    func testStopRefusedWithPendingRequestSaysWhy() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        try await insertRequest(session, summary: "make test")
+        let model = try makeModel(session)
+
+        let result = await model.stop()
+
+        XCTAssertEqual(result, .awaitingApproval)
+        XCTAssertEqual(model.stopError, "A permission prompt is open — answer it on the card or in the terminal")
+    }
+
+    func testStopOnASessionNotRunningSaysWhy() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        processes[0].onExit?(0)
+        let model = try makeModel(session)
+
+        let result = await model.stop()
+
+        XCTAssertEqual(result, .notRunning)
+        XCTAssertEqual(model.stopError, "The session is not running")
+    }
+
+    /// A failed check sets `stopError`; the next Stop that goes clears it.
+    func testStopErrorClearsOnTheNextSuccess() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let control = ScriptedControl(base: try makeControl())
+        control.interrupt = { throw Failure() }
+        let model = try makeModel(session, control: control)
+
+        let failed = await model.stop()
+        XCTAssertEqual(failed, .notWorking)
+        XCTAssertEqual(model.stopError, "Could not check for a permission prompt: disk I/O error")
+
+        control.interrupt = nil
+        let sent = await model.stop()
+        XCTAssertEqual(sent, .sent)
+        XCTAssertNil(model.stopError)
     }
 
     // MARK: - Permission
@@ -516,6 +704,104 @@ final class WorkchatModelTests: XCTestCase {
 
         await model.refreshPermission()
         XCTAssertEqual(model.permission?.id, second)
+    }
+
+    /// A failed read before the first card: no card, the error kept for
+    /// the pane's caption (final review M4).
+    func testFailedPermissionReadWithoutACardKeepsTheError() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let control = ScriptedControl(base: try makeControl())
+        control.pending = { _ in throw Failure() }
+        let model = try makeModel(session, control: control)
+
+        await model.refreshPermission()
+
+        XCTAssertNil(model.permission)
+        XCTAssertEqual(model.permissionError, "Could not read the permission prompt: disk I/O error")
+    }
+
+    /// An answer that fails keeps the card and says why (final review m7).
+    func testFailedAnswerKeepsTheCard() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let id = try await insertRequest(session)
+        let control = ScriptedControl(base: try makeControl())
+        let model = try makeModel(session, control: control)
+        await model.refreshPermission()
+        control.answer = { throw Failure() }
+
+        await model.answer(allow: true)
+
+        XCTAssertEqual(model.permission?.id, id, "the card stays")
+        XCTAssertEqual(model.permissionError, "Could not answer the prompt: disk I/O error")
+        XCTAssertFalse(model.answering)
+        let stored = try await storedRequest(id)
+        XCTAssertEqual(stored.status, "pending")
+    }
+
+    /// A second Allow or Deny while one is on its way is ignored.
+    func testSecondAnswerWhileAnsweringIsIgnored() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let id = try await insertRequest(session)
+        let control = ScriptedControl(base: try makeControl())
+        let model = try makeModel(session, control: control)
+        await model.refreshPermission()
+        let gate = Gate()
+        let base = control.base
+        control.answer = {
+            await gate.wait()
+            return try await base.answerPermission(requestID: id, sessionID: session, allow: true, decidedBy: WorkchatModel.decidedBy)
+        }
+        let first = Task { await model.answer(allow: true) }
+        await gate.untilReached()
+        XCTAssertTrue(model.answering)
+
+        await model.answer(allow: false)
+
+        XCTAssertEqual(control.answers, 1, "the second answer never reached the control")
+        gate.release()
+        await first.value
+        XCTAssertFalse(model.answering)
+        XCTAssertNil(model.permission)
+        let stored = try await storedRequest(id)
+        XCTAssertEqual(stored.status, "allowed", "the first answer, the only one")
+    }
+
+    /// A read that started before an answer and finishes after it is
+    /// stale: the answered card does not come back (final review m7).
+    func testReadFinishingAfterAnAnswerDoesNotBringTheCardBack() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let id = try await insertRequest(session)
+        let control = ScriptedControl(base: try makeControl())
+        let model = try makeModel(session, control: control)
+        await model.refreshPermission()
+        let stale = try XCTUnwrap(model.permission)
+        XCTAssertEqual(stale.id, id)
+
+        let gate = Gate()
+        var reads = 0
+        let base = control.base
+        control.pending = { sessionID in
+            reads += 1
+            // The first read waits past the answer; the answer's own read is real.
+            guard reads == 1 else { return try await base.pendingPermission(sessionID) }
+            await gate.wait()
+            return stale
+        }
+        let read = Task { await model.refreshPermission() }
+        await gate.untilReached()
+
+        await model.answer(allow: true)
+        XCTAssertNil(model.permission)
+        gate.release()
+        await read.value
+
+        XCTAssertNil(model.permission, "the old read is dropped")
+        let stored = try await storedRequest(id)
+        XCTAssertEqual(stored.status, "allowed")
     }
 
     /// Codex writes no permission rows: no card.

@@ -137,8 +137,8 @@ final class PermissionAnswerHandlers {
         let message = switch status {
         case "answered_on_mac": answeredOnMacMessage
         case "expired": tooLateMessage
-        case "allowed": "Already allowed from a phone"
-        case "denied": "Already denied from a phone"
+        case "allowed": "Already allowed"
+        case "denied": "Already denied"
         default: "This prompt is no longer waiting for an answer"
         }
         return .failed(.notPending, message: message)

@@ -80,7 +80,7 @@ struct SessionChatView: View {
 
     /// A typed or copied line waits for the owner in the terminal.
     private func showInTerminal() {
-        Task { await vm.showInPane(.sessionChat(sessionID), item: .session(sessionID), projectID: projectID) }
+        Task { await vm.showTerminalFromWorkchat(sessionID: sessionID, projectID: projectID) }
     }
 
     var body: some View {
@@ -107,6 +107,16 @@ struct SessionChatView: View {
                     .padding(10)
             } else if path.isRoot, composerShown, let workchat {
                 Divider()
+                // No card to carry it: a failed permission read shows here.
+                if permission == nil, let error = workchat.permissionError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 6)
+                }
                 WorkchatComposer(model: workchat, working: working)
             }
         }

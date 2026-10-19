@@ -235,15 +235,22 @@ extension WorkbenchesViewModel {
                 ?? updated.visiblePanes.first ?? updated.primary
             // `openMostRecentSession` takes its own ticket — past its
             // in-flight guard, so a repeated click never supersedes the
-            // open it is waiting for.
+            // open it is waiting for. It opens the session in its recorded mode.
             guard let id else {
                 await openMostRecentSession(project: project, placement: .keeping(kept))
                 return
             }
-            updated.reveal(.session(id), keeping: kept)
+            Self.revealTerminal(id, keeping: kept, in: &updated)
         }
         beginSwitch(projectID: project.id)
         setLayout(updated, projectID: project.id)
+    }
+
+    /// Session `id`'s terminal on screen beside `kept`, and Terminal its
+    /// mode from now on — unless its Workchat stays beside it.
+    private static func revealTerminal(_ id: Int64, keeping kept: WorkspacePane, in layout: inout WorkspaceLayout) {
+        if kept != .sessionChat(id) { layout.setMode(false, sessionID: id) }
+        layout.reveal(.session(id), keeping: kept)
     }
 
     /// The session the Session and Changes views open on: the one on screen,
@@ -276,6 +283,22 @@ extension WorkbenchesViewModel {
     /// A session row's Open in Terminal (#711): `showWorkchat`'s pair.
     func showTerminal(sessionID: Int64, projectID: Int64) async {
         await showSession(sessionID, workchat: false, projectID: projectID)
+    }
+
+    /// The Workchat's Show in Terminal (#711): the session's terminal on
+    /// screen, recorded as its mode. A Workchat in a slot swaps to it in
+    /// place; a terminal already on screen stays; otherwise the session
+    /// opens like a panel click.
+    func showTerminalFromWorkchat(sessionID id: Int64, projectID: Int64) async {
+        beginSwitch(projectID: projectID)
+        var updated = layout(projectID: projectID)
+        guard !updated.visiblePanes.contains(.session(id)) else { return }
+        guard updated.primary == .sessionChat(id) || updated.secondary == .sessionChat(id) else {
+            await showTerminal(sessionID: id, projectID: projectID)
+            return
+        }
+        updated.toggleMode(sessionID: id)
+        setLayout(updated, projectID: projectID)
     }
 
     private func showSession(_ id: Int64, workchat: Bool, projectID: Int64) async {

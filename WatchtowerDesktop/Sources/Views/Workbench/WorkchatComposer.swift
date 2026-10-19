@@ -3,8 +3,8 @@ import WatchtowerCore
 
 /// The Workchat's field and round button (#711, spec §4): Return sends,
 /// Shift-Return adds a line; while the agent works the button is Stop, and
-/// Esc in the empty field stops too. A Stop refused for a permission prompt
-/// shows nothing here: the permission card covers it.
+/// Esc in the empty field stops too. A Stop that did not go says why above
+/// the field (`WorkchatModel.stopError`).
 struct WorkchatComposer: View {
     @Bindable var model: WorkchatModel
     /// `SessionControl.isWorking` for the session's status.
