@@ -74,7 +74,7 @@ struct HomeContent: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 32) {
+            VStack(alignment: .leading, spacing: Spacing.wide) {
                 header
                 if let snapshot {
                     GettingReadyZoneView(
@@ -87,31 +87,35 @@ struct HomeContent: View {
                 }
                 helpLine
             }
-            .frame(maxWidth: 1180, alignment: .leading)
-            .padding(.horizontal, 40)
-            .padding(.top, 28)
-            .padding(.bottom, 48)
+            .frame(maxWidth: Self.maxPageWidth, alignment: .leading)
+            .padding(.horizontal, Spacing.hero)
+            .padding(.top, Spacing.wide)
+            .padding(.bottom, Spacing.hero)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .detailBackground()
         .navigationTitle("Home")
     }
 
+    /// The page's widest content; wider windows keep it on the leading side.
+    static let maxPageWidth: CGFloat = 1180
+
     /// The feed and the right column side by side when the content is at
     /// least `twoColumnWidth` wide, else one column: feed first. The columns
-    /// themselves need 880 pt (feed 520 + 20 spacing + column 340); the row's
-    /// minimum width holds the switch at the spec's 900.
+    /// themselves need 880 pt (feed 520 + `Spacing.page` + column 340); the
+    /// row's minimum width holds the switch at the spec's 900.
     private func columns(_ snapshot: HomeSnapshot) -> some View {
         let feed = FeedZoneView(
             feed: snapshot.feed, errors: feedErrors, onLink: onLink, onAct: onAct, onExpand: onExpand, now: today,
             calendar: calendar)
         let right = HomeSideColumn(snapshot: snapshot, onLink: onLink, onDecideSuggestion: onDecideSuggestion)
         return ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top, spacing: 20) {
-                feed.frame(minWidth: 520, idealWidth: 520, maxWidth: .infinity)
-                right.frame(width: 340)
+            HStack(alignment: .top, spacing: Spacing.page) {
+                feed.frame(minWidth: Self.feedMinWidth, idealWidth: Self.feedMinWidth, maxWidth: .infinity)
+                right.frame(width: Self.sideColumnWidth)
             }
             .frame(minWidth: Self.twoColumnWidth)
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: Spacing.page) {
                 feed
                 right
             }
@@ -120,6 +124,8 @@ struct HomeContent: View {
 
     /// The content width two columns start at (spec §3).
     static let twoColumnWidth: CGFloat = 900
+    static let feedMinWidth: CGFloat = 520
+    static let sideColumnWidth: CGFloat = 340
 
     private var helpLine: some View {
         HStack(spacing: 0) {
@@ -134,7 +140,7 @@ struct HomeContent: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
             Text("Home")
                 .font(.largeTitle.bold())
             Text(Self.dateLine(today))
@@ -164,7 +170,7 @@ struct HomeSideColumn: View {
     let onDecideSuggestion: (Int64, Bool) async -> String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: Spacing.page) {
             if snapshot.showsWorkbench {
                 WorkbenchZoneView(
                     blocks: snapshot.workbench, suggestion: snapshot.suggestion, failed: snapshot.workbenchFailed,
@@ -180,27 +186,48 @@ struct HomeSideColumn: View {
     }
 }
 
-/// A right-column zone's caption: "WORKBENCH", with optional trailing content.
-struct HomeZoneTitle<Trailing: View>: View {
+/// A Home zone (style guide #719): a `SectionHeader` — with the zone's
+/// count when it has one — and optional trailing control over the content,
+/// on a kit card. Rows inside use `.kitRow`, whose plate insets the text by
+/// `Spacing.regular`; other content takes `homeZoneInset()` to line up.
+struct HomeZone<Trailing: View, Content: View>: View {
     let title: String
+    let systemImage: String
+    var count: Int?
     @ViewBuilder var trailing: Trailing
+    @ViewBuilder var content: Content
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(title)
-                .font(.caption.weight(.bold))
-                .kerning(0.6)
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 8)
-            trailing
+        VStack(alignment: .leading, spacing: Spacing.compact) {
+            HStack(alignment: .center, spacing: Spacing.regular) {
+                SectionHeader(title: title, systemImage: systemImage, count: count)
+                Spacer(minLength: Spacing.regular)
+                trailing
+                    .buttonStyle(.kitQuiet)
+                    .controlSize(.small)
+            }
+            .homeZoneInset()
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                content
+            }
         }
-        .padding(.bottom, 2)
+        .padding(.vertical, Spacing.medium)
+        .padding(.horizontal, Spacing.small)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .card()
     }
 }
 
-extension HomeZoneTitle where Trailing == EmptyView {
-    init(title: String) {
-        self.init(title: title) { EmptyView() }
+extension HomeZone where Trailing == EmptyView {
+    init(title: String, systemImage: String, count: Int? = nil, @ViewBuilder content: () -> Content) {
+        self.init(title: title, systemImage: systemImage, count: count, trailing: { EmptyView() }, content: content)
+    }
+}
+
+extension View {
+    /// Lines non-row content of a zone up with the text of its `.kitRow` rows.
+    func homeZoneInset() -> some View {
+        padding(.horizontal, Spacing.regular)
     }
 }
 
@@ -210,24 +237,15 @@ struct HomeZoneErrorLine: View {
     let zone: String
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Spacing.regular) {
             Image(systemName: "exclamationmark.triangle")
-                .foregroundStyle(.orange)
+                .foregroundStyle(Tone.warning)
                 .accessibilityHidden(true)
             Text("Couldn't read \(zone) — see the log.")
                 .foregroundStyle(.secondary)
         }
-        .padding(.vertical, 4)
-    }
-}
-
-extension View {
-    /// A right-column zone's surface: the feed's padding and card background.
-    func homeZoneCard() -> some View {
-        padding(.horizontal, 16)
-            .padding(.vertical, 14)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
-            .background(HomeCardBackground())
+        .padding(.vertical, Spacing.small)
+        .homeZoneInset()
     }
 }
 

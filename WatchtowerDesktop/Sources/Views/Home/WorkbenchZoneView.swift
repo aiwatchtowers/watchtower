@@ -13,26 +13,23 @@ struct WorkbenchZoneView: View {
     let onDecideSuggestion: (Int64, Bool) async -> String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HomeZoneTitle(title: "WORKBENCH") {
-                Button("Open →") { onLink(.workbenches) }
-                    .buttonStyle(.link)
-                    .font(.callout)
-            }
+        HomeZone(title: "Workbench", systemImage: "folder.badge.gearshape") {
+            Button("Open →") { onLink(.workbenches) }
+        } content: {
             if failed {
                 HomeZoneErrorLine(zone: "Workbench")
             }
-            ForEach(Array(blocks.enumerated()), id: \.element.workbenchID) { index, block in
-                if index > 0 { Divider().padding(.vertical, 4) }
-                WorkbenchBlockView(block: block, onLink: onLink)
-            }
-            if let suggestion {
-                if !blocks.isEmpty || failed { Divider().padding(.vertical, 4) }
-                HomeSuggestionRow(suggestion: suggestion, onLink: onLink, onDecide: onDecideSuggestion)
-                    .id(suggestion.id)
+            // Space, not dividers, separates the blocks and the suggestion.
+            VStack(alignment: .leading, spacing: Spacing.medium) {
+                ForEach(blocks, id: \.workbenchID) { block in
+                    WorkbenchBlockView(block: block, onLink: onLink)
+                }
+                if let suggestion {
+                    HomeSuggestionRow(suggestion: suggestion, onLink: onLink, onDecide: onDecideSuggestion)
+                        .id(suggestion.id)
+                }
             }
         }
-        .homeZoneCard()
     }
 }
 
@@ -43,19 +40,20 @@ private struct WorkbenchBlockView: View {
     let onLink: (HomeLink) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .firstTextBaseline) {
                 Text(block.name)
                     .fontWeight(.semibold)
                     .lineLimit(1)
-                Spacer(minLength: 8)
+                Spacer(minLength: Spacing.regular)
                 if !block.sessions.isEmpty {
                     Text(Self.sessionCount(block.sessions.count))
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
             }
-            .padding(.bottom, 2)
+            .homeZoneInset()
+            .padding(.bottom, Spacing.tight)
             ForEach(block.sessions, id: \.sessionID) { status in
                 sessionRow(status)
             }
@@ -75,47 +73,42 @@ private struct WorkbenchBlockView: View {
         Button {
             if let link = HomeWorkbenchBuilder.link(for: status) { onLink(link) }
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: Spacing.regular) {
                 HomeStatusDot(color: tone)
                 Text(status.title)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                Spacer(minLength: 8)
+                Spacer(minLength: Spacing.regular)
                 Text(SessionStatePresentation.caption(for: status.state))
                     .font(.caption)
                     .foregroundStyle(tone)
                     .lineLimit(1)
             }
-            .contentShape(Rectangle())
+            .kitRow(isSelected: false)
         }
         .buttonStyle(.plain)
-        .padding(.vertical, 2)
     }
 
     private func askRow(_ row: WorkbenchAskRow) -> some View {
         Button { onLink(HomeWorkbenchBuilder.link(for: row)) } label: {
-            HStack(spacing: 8) {
-                Text(row.ask.kind.rawValue.capitalized)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(.quaternary))
+            HStack(spacing: Spacing.regular) {
+                Chip(text: row.ask.kind.rawValue.capitalized, color: .secondary)
                 Text(row.ask.title)
                     .lineLimit(1)
                     .truncationMode(.tail)
                 Spacer(minLength: 0)
             }
-            .contentShape(Rectangle())
+            // Under its workbench's sessions, past their status dots.
+            .padding(.leading, Spacing.large)
+            .kitRow(isSelected: false)
         }
         .buttonStyle(.plain)
-        .padding(.leading, 16)
-        .padding(.vertical, 2)
     }
 }
 
 /// The instruction suggestion: what the owner keeps telling agents, with
-/// Add / Dismiss (through the CLI) and More… (Settings → System).
+/// Add / Dismiss (through the CLI) and More… (Settings → System). Add is a
+/// soft secondary button: the screen's one prominent action is not here.
 private struct HomeSuggestionRow: View {
     let suggestion: HomeInstructionSuggestion
     let onLink: (HomeLink) -> Void
@@ -124,23 +117,25 @@ private struct HomeSuggestionRow: View {
     @State private var errorText: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Spacing.compact) {
             Text(Self.line(suggestion))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             if let errorText {
-                Text(errorText).font(.caption).foregroundStyle(.red)
+                Text(errorText).font(.caption).foregroundStyle(Tone.error)
             }
-            HStack {
+            HStack(spacing: Spacing.small) {
                 Button("Add") { decide(add: true) }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.kitSecondary)
                 Button("Dismiss") { decide(add: false) }
+                    .buttonStyle(.kitQuiet)
                 Button("More\u{2026}") { onLink(.instructionSettings) }
-                    .buttonStyle(.link)
+                    .buttonStyle(.kitQuiet)
             }
             .controlSize(.small)
             .disabled(busy)
         }
+        .homeZoneInset()
     }
 
     /// "You keep telling agents: “…”. Add to your instructions?"

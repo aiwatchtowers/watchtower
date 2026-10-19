@@ -567,6 +567,19 @@ feed, Workbench, links, numbers. No migration, no AI, no daemon phase. A zone
 whose read failed shows `HomeZoneErrorLine` ("Couldn't read <zone> — see the
 log.") and never reads as empty.
 
+- **Design kit** (style guide #719) — every zone, the feed included, is a
+  `HomeZone` (`HomeView.swift`): a `SectionHeader` (with the feed's count of
+  rows waiting, folded ones included) and a quiet trailing link over a
+  `.card()`; rows are `.kitRow` plates with no dividers between them (space
+  separates the blocks, the next day and the suggestion), chips are the kit's
+  `Chip` coloured from `Tone.feedKind` / `Tone.feedEvent`, and the NOW line,
+  the meeting in progress, warnings, the all-clear and errors take `Tone.now`
+  / `.warning` / `.success` / `.error`. The suggestion's Add is
+  `.kitSecondary` (the page has no prominent action). A feed row's hover
+  buttons are hidden from accessibility while invisible; the row carries
+  Open, and Done / Hide when it has them, as accessibility actions. Design
+  shots: `home-wide` and `home-narrow` in `DesignShotCatalog`
+  (`HomeShotFixtures`).
 - **Workbench** — `HomeQueries.workbench`
   (`Sources/WatchtowerCore/Database/Queries/HomeQueries.swift:16`) reads the
   open asks (`OwnerAskQueries.openAsksAllWorkbenches`; an unreadable row

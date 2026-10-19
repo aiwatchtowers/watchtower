@@ -26,13 +26,13 @@ The feed reads top to bottom like your day: above a **NOW** line is everything t
 
 ### Workbench
 
-The **WORKBENCH** zone lists your coding-agent sessions that need a look and the questions they have asked you, grouped by workbench, with **Open →** for the Workbench tab. A session shows only while it waits for approval, failed, is ready to check, or is working (or in the background); finished and stopped sessions are left out. Under the sessions come the open questions and review requests, oldest first. Click a session to open its terminal, a question to open its session.
+The **Workbench** zone lists your coding-agent sessions that need a look and the questions they have asked you, grouped by workbench, with **Open →** for the Workbench tab. A session shows only while it waits for approval, failed, is ready to check, or is working (or in the background); finished and stopped sessions are left out. Under the sessions come the open questions and review requests, oldest first. Click a session to open its terminal, a question to open its session.
 
 If you keep telling agents the same thing, the last row offers it as an instruction: **Add**, **Dismiss** or **More…**.
 
 ### Links
 
-The **LINKS** zone has up to four shortcuts, each shown while its tab is visible:
+The **Links** zone has up to four shortcuts, each shown while its tab is visible:
 
 - **Briefing** shows "ready 08:05" once today's briefing exists, else the latest one's weekday.
 - **Catch-Up** shows a highlighted "new recap" while a finished recap waits for **I'm caught up**.
@@ -41,7 +41,7 @@ The **LINKS** zone has up to four shortcuts, each shown while its tab is visible
 
 ### Today in numbers
 
-**TODAY IN NUMBERS** is a quiet grid of counts for the current day:
+**Today in numbers** is a quiet grid of counts for the current day:
 
 - **messages to me / sent**: Slack direct messages and mentions from others, and the messages you sent, in every connected workspace.
 - **meetings**: today's meetings and their hours; all-day, cancelled and declined events don't count.

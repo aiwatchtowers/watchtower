@@ -239,10 +239,10 @@ final class HomeViewTests: XCTestCase {
 
     func testNoBlocksHidesTheZone() throws {
         let all = try texts(makeContent(viewSnapshot()))
-        XCTAssertFalse(all.contains("WORKBENCH"))
+        XCTAssertFalse(all.contains("Workbench"))
         XCTAssertFalse(all.contains("Couldn't read Workbench — see the log."))
         // The suggestion alone still shows the zone.
-        XCTAssertTrue(try texts(makeContent(viewSnapshot(suggestion: Self.suggestion))).contains("WORKBENCH"))
+        XCTAssertTrue(try texts(makeContent(viewSnapshot(suggestion: Self.suggestion))).contains("Workbench"))
     }
 
     func testWorkbenchBlocksShowSessionsAndAsks() throws {
@@ -260,7 +260,7 @@ final class HomeViewTests: XCTestCase {
         var tapped: [HomeLink] = []
         let view = makeContent(viewSnapshot(workbench: blocks)) { tapped.append($0) }
         let all = try texts(view)
-        let order = ["WORKBENCH", "acme", "2 sessions", "Export to CSV", "Needs approval", "Fix login redirect",
+        let order = ["Workbench", "acme", "2 sessions", "Export to CSV", "Needs approval", "Fix login redirect",
                      "Working", "acme-api", "Question", "Which date format?"]
         // ViewThatFits holds both layouts; the first one is the two-column.
         XCTAssertEqual(Array(all.filter(order.contains).prefix(order.count)), order)
@@ -293,7 +293,7 @@ final class HomeViewTests: XCTestCase {
         let suggestionIndex = try XCTUnwrap(all.firstIndex(of: line))
         XCTAssertLessThan(rate, suggestionIndex)
         // Only its buttons follow it, up to the next layout's copy.
-        XCTAssertEqual(Array(all[(suggestionIndex + 1)...].prefix(4)), ["Add", "Dismiss", "More\u{2026}", "WAITING ON YOU"])
+        XCTAssertEqual(Array(all[(suggestionIndex + 1)...].prefix(4)), ["Add", "Dismiss", "More\u{2026}", "Waiting on you"])
         try view.inspect().find(button: "Add").tap()
         await fulfillment(of: [decided], timeout: 2)
         XCTAssertEqual(calls.map(\.0), [5])
@@ -302,7 +302,7 @@ final class HomeViewTests: XCTestCase {
 
     func testWorkbenchReadFailedIsSaid() throws {
         let all = try texts(makeContent(viewSnapshot(workbenchFailed: true)))
-        XCTAssertTrue(all.contains("WORKBENCH"))
+        XCTAssertTrue(all.contains("Workbench"))
         XCTAssertTrue(all.contains("Couldn't read Workbench — see the log."))
     }
 
@@ -317,14 +317,14 @@ final class HomeViewTests: XCTestCase {
     ]
 
     func testNoLinksHidesZone() throws {
-        XCTAssertFalse(try texts(makeContent(viewSnapshot())).contains("LINKS"))
+        XCTAssertFalse(try texts(makeContent(viewSnapshot())).contains("Links"))
     }
 
     func testLinksRowsInOrderAndOpen() throws {
         var tapped: [HomeLink] = []
         let view = makeContent(viewSnapshot(links: Self.links)) { tapped.append($0) }
         let all = try texts(view)
-        let order = ["LINKS", "Briefing", "ready 08:12", "Catch-Up", "new recap", "Day plan", "2 of 6 done", "Digests"]
+        let order = ["Links", "Briefing", "ready 08:12", "Catch-Up", "new recap", "Day plan", "2 of 6 done", "Digests"]
         XCTAssertEqual(Array(all.filter(order.contains).prefix(order.count)), order)
         try view.inspect().find(button: "Catch-Up").tap()
         try view.inspect().find(button: "Day plan").tap()
@@ -352,7 +352,7 @@ final class HomeViewTests: XCTestCase {
         numbers.workbenchDone = 3
         numbers.meetingsRecorded = 1
         let all = try texts(NumbersZoneView(numbers: numbers))
-        for text in ["TODAY IN NUMBERS", "38 / 12", "messages to me / sent", "4 · 3.5 h", "meetings", "$1.84",
+        for text in ["Today in numbers", "38 / 12", "messages to me / sent", "4 · 3.5 h", "meetings", "$1.84",
                      "AI spend", "41% · 63%", "Claude 5 h · week", "5 / 3", "workbench targets new / done", "1",
                      "meeting recorded"] {
             XCTAssertTrue(all.contains(text), text)
@@ -370,7 +370,7 @@ final class HomeViewTests: XCTestCase {
         XCTAssertFalse(few.contains("messages to me / sent"))
         XCTAssertFalse(few.contains { $0.hasPrefix("Claude") })
         // Nothing at all: the header still shows.
-        XCTAssertTrue(try texts(NumbersZoneView(numbers: HomeNumbers())).contains("TODAY IN NUMBERS"))
+        XCTAssertTrue(try texts(NumbersZoneView(numbers: HomeNumbers())).contains("Today in numbers"))
     }
 
     /// The feed owns the all-clear: the right column never says it.
@@ -472,7 +472,8 @@ final class HomeViewTests: XCTestCase {
             later: [Self.event("e1", "Payments review", minutes: 20)],
             nextDay: FeedDay(title: "Tomorrow", events: [Self.event("e2", "Daily standup", minutes: 1400)]))
         let all = try texts(feedZone(feed))
-        let order = ["WAITING ON YOU · 1", "is the review done?", "10:40", "Payments review", "Tomorrow", "Daily standup"]
+        // The section header's title, then its count.
+        let order = ["Waiting on you", "1", "is the review done?", "10:40", "Payments review", "Tomorrow", "Daily standup"]
         XCTAssertEqual(all.filter(order.contains), order)
         XCTAssertTrue(all.contains("Catch-Up →"))
         XCTAssertFalse(all.contains("Nothing is waiting for you."))
@@ -504,7 +505,7 @@ final class HomeViewTests: XCTestCase {
         XCTAssertNoThrow(try side.find(LinksZoneView.self))
         XCTAssertNoThrow(try side.find(NumbersZoneView.self))
         let all = try texts(makeContent(snapshot))
-        let order = ["WORKBENCH", "LINKS", "TODAY IN NUMBERS"]
+        let order = ["Workbench", "Links", "Today in numbers"]
         XCTAssertEqual(Array(all.filter(order.contains).prefix(3)), order)
     }
 
@@ -523,7 +524,9 @@ final class HomeViewTests: XCTestCase {
         try feedZone(Self.feed(waiting: rows, hidden: 2)) { _ in } onExpand: { expanded.append($0) }
             .inspect().find(button: "2 more").tap()
         XCTAssertEqual(expanded, [true])
-        XCTAssertNoThrow(try feedZone(Self.feed(waiting: rows, hidden: 2)).inspect().find(text: "WAITING ON YOU · 9"))
+        let folded = try texts(feedZone(Self.feed(waiting: rows, hidden: 2)))
+        let title = try XCTUnwrap(folded.firstIndex(of: "Waiting on you"))
+        XCTAssertEqual(folded[title + 1], "9", "the header counts the folded rows too")
 
         // Expanded: every row, and Show less collapses.
         let all = (1...9).map { Self.row(.inbox($0), who: "Ann", text: "row \($0)") }
@@ -557,12 +560,46 @@ final class HomeViewTests: XCTestCase {
         XCTAssertEqual(Set(calls), ["done inbox(9)", "hide inbox(9)"])
     }
 
+    /// The hover buttons are hidden from accessibility while invisible; the
+    /// row offers Open, and Done / Hide only when it has them, as named
+    /// accessibility actions.
+    func testRowActionsReachAccessibility() async throws {
+        let acted = expectation(description: "acted")
+        acted.expectedFulfillmentCount = 2
+        var calls: [String] = []
+        var opened: [HomeLink] = []
+        let slack = feedZone(Self.feed(waiting: [Self.row(.inbox(9), who: "Ann", text: "hi")])) {
+            opened.append($0)
+        } onAct: { action, ref in
+            calls.append("\(action) \(ref)")
+            acted.fulfill()
+        }
+        for title in ["Open", "Done", "Hide"] {
+            XCTAssertTrue(try slack.inspect().find(button: title).accessibilityHidden(), title)
+        }
+        let actions = try slack.inspect().find(FeedRowView.self).hStack().accessibilityActions()
+        try actions.find(button: "Done").tap()
+        try actions.find(button: "Hide").tap()
+        try actions.find(button: "Open").tap()
+        await fulfillment(of: [acted], timeout: 2)
+        XCTAssertEqual(Set(calls), ["done inbox(9)", "hide inbox(9)"])
+        XCTAssertEqual(opened, [.permalink(URL(string: "https://example.com/1")!)])
+
+        let proposal = Self.row(.proposal(4), kind: .proposal, chip: "Proposal", who: "Send the note", text: "review in Inbox",
+                                actions: [])
+        let none = try feedZone(Self.feed(waiting: [proposal])).inspect().find(FeedRowView.self).hStack().accessibilityActions()
+        XCTAssertNoThrow(try none.find(button: "Open"))
+        XCTAssertThrowsError(try none.find(button: "Done"))
+        XCTAssertThrowsError(try none.find(button: "Hide"))
+    }
+
     func testEmptyFeedLine() throws {
         let all = try texts(feedZone(Self.feed()))
         XCTAssertTrue(all.contains("Nothing is waiting for you."))
         XCTAssertTrue(all.contains("Nothing else today."))
-        XCTAssertTrue(all.contains("WAITING ON YOU"))
-        XCTAssertFalse(all.contains { $0.hasPrefix("WAITING ON YOU ·") })
+        // No count at zero: the header's title is followed by its trailing link.
+        let title = try XCTUnwrap(all.firstIndex(of: "Waiting on you"))
+        XCTAssertEqual(all[title + 1], "Catch-Up →")
         // The NOW line still shows.
         XCTAssertTrue(all.contains("10:40"))
     }

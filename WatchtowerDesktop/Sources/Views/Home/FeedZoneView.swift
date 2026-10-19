@@ -22,46 +22,26 @@ struct FeedZoneView: View {
     private static let waitingSources: [FeedSource] = [.inbox, .proposals, .reminders, .targets]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            header
+        HomeZone(title: "Waiting on you", systemImage: "tray", count: feed.waiting.count + feed.hiddenWaiting) {
+            Button("Catch-Up →") { onLink(.catchUp) }
+        } content: {
             waitingPart
             FeedNowLine(label: feed.nowLabel)
-                .padding(.vertical, 6)
+                .padding(.vertical, Spacing.compact)
             laterPart
             if let day = feed.nextDay {
-                Divider().padding(.top, 8)
+                // Space, not a divider, sets the next day apart.
                 Text(day.title)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .padding(.top, 4)
+                    .homeZoneInset()
+                    .padding(.top, Spacing.medium)
+                    .padding(.bottom, Spacing.tight)
                 ForEach(day.events) { event in
                     FeedEventRow(event: event, muted: true, calendar: calendar, onLink: onLink)
                 }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(HomeCardBackground())
-    }
-
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(Self.title(count: feed.waiting.count + feed.hiddenWaiting))
-                .font(.caption.weight(.bold))
-                .kerning(0.6)
-                .foregroundStyle(.secondary)
-            Spacer(minLength: 8)
-            Button("Catch-Up →") { onLink(.catchUp) }
-                .buttonStyle(.link)
-                .font(.callout)
-        }
-        .padding(.bottom, 4)
-    }
-
-    /// "WAITING ON YOU · N", no count at zero.
-    static func title(count: Int) -> String {
-        count > 0 ? "WAITING ON YOU · \(count)" : "WAITING ON YOU"
     }
 
     @ViewBuilder private var waitingPart: some View {
@@ -86,10 +66,9 @@ struct FeedZoneView: View {
 
     private func moreButton(_ title: String, action: @escaping () -> Void) -> some View {
         Button(title, action: action)
-            .buttonStyle(.link)
-            .font(.callout)
-            .padding(.leading, FeedRowMetrics.textInset)
-            .padding(.top, 2)
+            .buttonStyle(.kitQuiet)
+            .controlSize(.small)
+            .padding(.leading, FeedRowMetrics.textInset - Spacing.regular)
     }
 
     @ViewBuilder private var laterPart: some View {
@@ -128,14 +107,17 @@ struct FeedZoneView: View {
 private enum FeedRowMetrics {
     static let time: CGFloat = 44
     static let chip: CGFloat = 72
-    static let spacing: CGFloat = 10
-    /// Where a row's text starts: past the time column.
-    static let textInset: CGFloat = time + spacing
+    static let spacing = Spacing.cozy
+    /// Where a row's text starts: past the row plate's inset and the time column.
+    static let textInset: CGFloat = Spacing.regular + time + spacing
 }
 
-/// One row above NOW: time · chip · who / where over the text, with Open /
-/// Done / Hide on hover. Focusable: Return opens, ⌘Return is Done, Delete is
-/// Hide — Done and Hide only when the row offers them.
+/// One row above NOW: time · chip · who / where over the text, on a kit row
+/// with Open / Done / Hide on hover. Focusable: Return opens, ⌘Return is
+/// Done, Delete is Hide — Done and Hide only when the row offers them. The
+/// hover buttons are hidden from accessibility while invisible; the row
+/// offers Open, and Done / Hide when it has them, as named accessibility
+/// actions instead.
 struct FeedRowView: View {
     let row: FeedRow
     let error: String?
@@ -152,9 +134,10 @@ struct FeedRowView: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(row.read ? .tertiary : .secondary)
                 .frame(width: FeedRowMetrics.time, alignment: .leading)
-            FeedChip(text: row.chip, tint: Self.tint(row))
+            Chip(text: row.chip, color: Tone.feedKind(row.kind))
+                .lineLimit(1)
                 .frame(width: FeedRowMetrics.chip, alignment: .leading)
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
                 whoLine
                 Text(row.text)
                     .lineLimit(1)
@@ -163,20 +146,14 @@ struct FeedRowView: View {
                 if let error {
                     Text(error)
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Tone.error)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             actions
         }
-        .padding(.vertical, 6)
-        .padding(.horizontal, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(hovering || focused ? Color.primary.opacity(0.05) : .clear))
-        .padding(.horizontal, -8)
-        .contentShape(Rectangle())
         .onHover { hovering = $0 }
+        .kitRow(isSelected: focused)
         .onTapGesture { onLink(row.link) }
         .focusable()
         .focused($focused)
@@ -190,10 +167,21 @@ struct FeedRowView: View {
         }
         .onKeyPress(.delete) { act(.hide) ? .handled : .ignored }
         .accessibilityElement(children: .contain)
+        // Only the actions the row offers, so VoiceOver never lists one that
+        // would do nothing.
+        .accessibilityActions {
+            Button("Open") { onLink(row.link) }
+            if row.actions.contains(.done) {
+                Button("Done") { _ = act(.done) }
+            }
+            if row.actions.contains(.hide) {
+                Button("Hide") { _ = act(.hide) }
+            }
+        }
     }
 
     private var whoLine: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: Spacing.small) {
             Text(row.who)
                 .fontWeight(row.read ? .regular : .semibold)
                 .foregroundStyle(row.read ? .tertiary : .primary)
@@ -207,17 +195,28 @@ struct FeedRowView: View {
     }
 
     private var actions: some View {
-        HStack(spacing: 4) {
-            Button("Open") { onLink(row.link) }
+        HStack(spacing: Spacing.small) {
+            hoverButton("Open") { onLink(row.link) }
             if row.actions.contains(.done) {
-                Button("Done") { _ = act(.done) }
+                hoverButton("Done") { _ = act(.done) }
             }
             if row.actions.contains(.hide) {
-                Button("Hide") { _ = act(.hide) }
+                hoverButton("Hide") { _ = act(.hide) }
             }
         }
+        .buttonStyle(.kitQuiet)
         .controlSize(.small)
-        .opacity(hovering || focused ? 1 : 0)
+    }
+
+    /// The hover buttons show under the pointer or with focus.
+    private var showsActions: Bool { hovering || focused }
+
+    /// A hover button: invisible, and hidden from accessibility, until the
+    /// row is hovered or focused.
+    private func hoverButton(_ title: String, action: @escaping () -> Void) -> some View {
+        Button(title, action: action)
+            .opacity(showsActions ? 1 : 0)
+            .accessibilityHidden(!showsActions)
     }
 
     /// Done / Hide when the row offers it, in an unstructured task so the
@@ -241,21 +240,11 @@ struct FeedRowView: View {
         }
         return FeedTime.string(stamp, "MMM d", calendar)
     }
-
-    static func tint(_ row: FeedRow) -> Color {
-        switch row.kind {
-        case .slack: .purple
-        case .jira: .blue
-        case .proposal: .yellow
-        case .reminder: .secondary
-        case .target: .red
-        case .email: .teal
-        }
-    }
 }
 
-/// One row below NOW: time · chip · title, "Prep ready" when the meeting has
-/// a prep. The next one is bold; one in progress sits on the NOW line.
+/// One row below NOW: time · chip · title on a kit row, "Prep ready" when the
+/// meeting has a prep. The next one is bold; one in progress sits on the NOW
+/// line on a soft `Tone.now` tint.
 struct FeedEventRow: View {
     let event: FeedEvent
     /// The next day's rows: secondary, never bold.
@@ -268,11 +257,12 @@ struct FeedEventRow: View {
             HStack(alignment: .center, spacing: FeedRowMetrics.spacing) {
                 Text(event.isOngoing ? "now" : FeedTime.string(event.start, "HH:mm", calendar))
                     .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(event.isOngoing ? AnyShapeStyle(Tone.now) : AnyShapeStyle(.secondary))
                     .frame(width: FeedRowMetrics.time, alignment: .leading)
-                FeedChip(text: event.chip, tint: Self.tint(event))
+                Chip(text: event.chip, color: event.isOngoing ? Tone.now : Tone.feedEvent(event.id))
+                    .lineLimit(1)
                     .frame(width: FeedRowMetrics.chip, alignment: .leading)
-                HStack(spacing: 4) {
+                HStack(spacing: Spacing.small) {
                     Text(event.title)
                         .fontWeight(event.isNext && !muted ? .semibold : .regular)
                         .foregroundStyle(muted ? .secondary : .primary)
@@ -285,21 +275,13 @@ struct FeedEventRow: View {
                 .truncationMode(.tail)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 if event.prepReady {
-                    Text("Prep ready")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.green)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(.green.opacity(0.45)))
+                    Chip(text: "Prep ready", color: Tone.success)
                 }
             }
-            .padding(.vertical, 6)
-            .padding(.horizontal, event.isOngoing ? 8 : 0)
+            .kitRow(isSelected: false)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(event.isOngoing ? Color.orange.opacity(0.1) : .clear))
-            .padding(.horizontal, event.isOngoing ? -8 : 0)
-            .contentShape(Rectangle())
+                event.isOngoing ? Tone.now.opacity(ChipTint.fillOpacity) : .clear,
+                in: RoundedRectangle(cornerRadius: Radius.row, style: .continuous))
         }
         .buttonStyle(.plain)
     }
@@ -313,14 +295,6 @@ struct FeedEventRow: View {
         let rest = minutes % 60
         if hours == 0 { return "\(rest) min" }
         return rest == 0 ? "\(hours) h" : "\(hours) h \(rest) min"
-    }
-
-    private static func tint(_ event: FeedEvent) -> Color {
-        switch event.id {
-        case .event: .green
-        case .target: .red
-        default: .secondary
-        }
     }
 }
 
@@ -337,7 +311,8 @@ private enum FeedTime {
     }
 }
 
-/// The NOW line: the current time and a 1.5 pt orange rule with a dot.
+/// The NOW line: the current time and a `Stroke.selection` rule with a dot,
+/// in `Tone.now`.
 struct FeedNowLine: View {
     let label: String
 
@@ -345,37 +320,22 @@ struct FeedNowLine: View {
         HStack(spacing: FeedRowMetrics.spacing) {
             Text(label)
                 .font(.caption.weight(.bold).monospacedDigit())
-                .foregroundStyle(.orange)
+                .foregroundStyle(Tone.now)
                 .frame(width: FeedRowMetrics.time, alignment: .leading)
             ZStack(alignment: .leading) {
                 Rectangle()
-                    .fill(.orange)
-                    .frame(height: 1.5)
+                    .fill(Tone.now)
+                    .frame(height: Stroke.selection)
                 Circle()
-                    .fill(.orange)
-                    .frame(width: 8, height: 8)
-                    .offset(x: -4)
+                    .fill(Tone.now)
+                    .frame(width: Spacing.regular, height: Spacing.regular)
+                    .offset(x: -Spacing.small)
             }
             .accessibilityHidden(true)
         }
+        .homeZoneInset()
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Now, \(label)")
-    }
-}
-
-/// A kind chip: the text on a tinted capsule.
-private struct FeedChip: View {
-    let text: String
-    let tint: Color
-
-    var body: some View {
-        Text(text)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(tint)
-            .lineLimit(1)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(tint.opacity(0.16)))
     }
 }
 
@@ -388,12 +348,12 @@ private struct FeedStatusLine: View {
     let icon: Icon?
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Spacing.regular) {
             switch icon {
             case .ok:
-                Image(systemName: "checkmark").foregroundStyle(.green).accessibilityHidden(true)
+                Image(systemName: "checkmark").foregroundStyle(Tone.success).accessibilityHidden(true)
             case .failed:
-                Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange).accessibilityHidden(true)
+                Image(systemName: "exclamationmark.triangle").foregroundStyle(Tone.warning).accessibilityHidden(true)
             case nil:
                 EmptyView()
             }
@@ -401,6 +361,6 @@ private struct FeedStatusLine: View {
                 .foregroundStyle(.secondary)
         }
         .padding(.leading, FeedRowMetrics.textInset)
-        .padding(.vertical, 6)
+        .padding(.vertical, Spacing.compact)
     }
 }

@@ -17,11 +17,10 @@ struct NumbersZoneView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HomeZoneTitle(title: "TODAY IN NUMBERS")
-            LazyVGrid(columns: Self.columns, alignment: .leading, spacing: 10) {
+        HomeZone(title: "Today in numbers", systemImage: "chart.bar") {
+            LazyVGrid(columns: Self.columns, alignment: .leading, spacing: Spacing.cozy) {
                 ForEach(Self.cells(numbers), id: \.caption) { cell in
-                    VStack(alignment: .leading, spacing: 1) {
+                    VStack(alignment: .leading, spacing: Spacing.tight) {
                         Text(cell.value)
                             .font(.callout.weight(.medium).monospacedDigit())
                             .foregroundStyle(.secondary)
@@ -38,13 +37,14 @@ struct NumbersZoneView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+            .homeZoneInset()
+            .padding(.top, Spacing.small)
         }
-        .homeZoneCard()
     }
 
     private static let columns = [
-        GridItem(.flexible(), spacing: 14, alignment: .topLeading),
-        GridItem(.flexible(), spacing: 14, alignment: .topLeading)
+        GridItem(.flexible(), spacing: Spacing.medium, alignment: .topLeading),
+        GridItem(.flexible(), spacing: Spacing.medium, alignment: .topLeading)
     ]
 
     /// The cells in the mockup's order; a pair shows while either half has a

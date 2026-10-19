@@ -11,37 +11,32 @@ struct LinksZoneView: View {
     let onLink: (HomeLink) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HomeZoneTitle(title: "LINKS")
-                .padding(.bottom, 4)
+        HomeZone(title: "Links", systemImage: "link") {
             if failed {
                 HomeZoneErrorLine(zone: "the links")
             }
-            ForEach(Array(links.enumerated()), id: \.offset) { index, row in
-                if index > 0 { Divider() }
+            ForEach(Array(links.enumerated()), id: \.offset) { _, row in
                 linkRow(row)
             }
         }
-        .homeZoneCard()
     }
 
     private func linkRow(_ row: HomeLinkRow) -> some View {
         Button { onLink(row.link) } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: Spacing.regular) {
                 Image(systemName: Self.symbol(row.kind))
                     .foregroundStyle(.tertiary)
                     .frame(width: 18)
                     .accessibilityHidden(true)
                 Text(row.title)
-                Spacer(minLength: 8)
+                Spacer(minLength: Spacing.regular)
                 if let status = row.status {
                     Text(status)
                         .font(.caption.weight(row.highlighted ? .semibold : .regular))
                         .foregroundStyle(row.highlighted ? AnyShapeStyle(.tint) : AnyShapeStyle(.tertiary))
                 }
             }
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
+            .kitRow(isSelected: false)
         }
         .buttonStyle(.plain)
     }
