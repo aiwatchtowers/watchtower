@@ -331,7 +331,7 @@ func TestPrintTracks_AllFields(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	printTracks(&buf, items, database, false)
+	printTracks(&buf, items, database, false, false)
 	output := buf.String()
 
 	assert.Contains(t, output, "#1")

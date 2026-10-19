@@ -137,7 +137,12 @@ func TestLinearWriteTools_ExternalOnMainTargetAutomation(t *testing.T) {
 		assert.Equal(t, names[i], tool.Name)
 		assert.Equal(t, AccessWrite, tool.Access)
 		assert.True(t, tool.External, "%s leaves the machine", tool.Name)
-		assert.Equal(t, []string{"main", "target", AutomationSurface}, tool.Surfaces)
+		want := []string{"main", "target", AutomationSurface}
+		if tool.Name == "create_linear_issue" {
+			// The create alone answers an issue reaction, like create_jira_issue.
+			want = []string{"main", "target", "reaction", AutomationSurface}
+		}
+		assert.Equal(t, want, tool.Surfaces)
 		assert.Contains(t, tool.InputSchema.Required, "reason")
 		assert.Contains(t, tool.InputSchema.Properties, "account_id")
 		require.NoError(t, reg.Register(tool))

@@ -197,8 +197,9 @@ final class JiraDashboardViewModelTests: XCTestCase {
     // MARK: - Epic Progress badge
 
     private func progressItem(total: Int, done: Int, weekly: Int, monthly: Int) -> EpicProgressItem {
-        EpicProgressItem(row: EpicProgressRow(
-            epicKey: "PROJ-1", epicName: "Epic", totalIssues: total, doneIssues: done, inProgressIssues: 0,
+        EpicProgressItem(row: ContainerProgressRow(
+            tracker: .jira, accountID: 1, kind: "epic", containerID: "PROJ-1", name: "Epic",
+            totalIssues: total, doneIssues: done, inProgressIssues: 0,
             progressPct: total > 0 ? Double(done) / Double(total) : 0,
             weeklyResolvedCount: weekly, monthlyResolvedCount: monthly
         ))

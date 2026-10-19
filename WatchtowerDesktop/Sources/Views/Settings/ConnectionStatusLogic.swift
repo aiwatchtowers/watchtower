@@ -25,7 +25,7 @@ enum ConnectionStatusLogic {
         derive(okCount: okFlags.filter { $0 }.count, problemCount: okFlags.filter { !$0 }.count)
     }
 
-    /// A disabled account counts toward NEITHER ok nor problem (Slack/Jira
+    /// A disabled account counts toward NEITHER ok nor problem (Slack/Jira/Linear
     /// rows — a soft-disabled account shouldn't paint the service red or
     /// green off a status it isn't actively syncing).
     static func enabledFilteredStatus(_ accounts: [(isOK: Bool, enabled: Bool)]) -> ConnectionStatus {
@@ -34,7 +34,7 @@ enum ConnectionStatusLogic {
 }
 
 enum ConnectionService: String, CaseIterable, Identifiable {
-    case slack, google, email, calendar, jira, quickConnections
+    case slack, google, email, calendar, jira, linear, quickConnections
     var id: String { rawValue }
 
     var label: String {
@@ -44,6 +44,7 @@ enum ConnectionService: String, CaseIterable, Identifiable {
         case .email: "Email"
         case .calendar: "Calendar"
         case .jira: "Jira"
+        case .linear: "Linear"
         case .quickConnections: "Quick Connections"
         }
     }
@@ -55,6 +56,7 @@ enum ConnectionService: String, CaseIterable, Identifiable {
         case .email: "envelope"
         case .calendar: "calendar"
         case .jira: "checklist"
+        case .linear: "line.3.horizontal.decrease.circle"
         case .quickConnections: "bolt.horizontal.circle"
         }
     }

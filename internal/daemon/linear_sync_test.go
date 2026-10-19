@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"testing"
+	"time"
 
 	"watchtower/internal/db"
 	"watchtower/internal/linear"
@@ -96,4 +97,33 @@ func TestLinear03_CancelledContextLeavesAuthState(t *testing.T) {
 	acc, err := database.GetLinearAccount(a1)
 	require.NoError(t, err)
 	assert.Equal(t, "ok", acc.Status)
+}
+
+// A clean Linear pass reflects Linear issue statuses onto their targets; a
+// pass where every account failed leaves them alone.
+func TestPhaseLinearSync_SyncsLinearTargets(t *testing.T) {
+	d, database := newLinearTestDaemon(t)
+	a1, err := database.CreateLinearAccount("")
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertLinearIssue(db.LinearIssue{AccountID: a1, ID: "l-1", Key: "ENG-1",
+		Title: "Ship", StatusCategory: "done", UpdatedAt: "2026-10-03T00:00:00.000Z"}))
+	issues, err := database.ListTrackerIssues(db.TrackerIssueFilter{Tracker: db.TrackerLinear, Key: "ENG-1"})
+	require.NoError(t, err)
+	require.Len(t, issues, 1)
+	target, err := database.CreateTargetFromTrackerIssue(issues[0])
+	require.NoError(t, err)
+
+	ran := 0
+	d.linearSyncers = []linearAccountSyncer{fakeLinearSyncer{id: a1, err: linear.ErrRateLimited, ran: &ran}}
+	d.phaseLinearSync(context.Background())
+	got, err := database.GetTargetByID(target.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "todo", got.Status, "no clean pass: targets untouched")
+
+	d.lastLinear = time.Time{}
+	d.linearSyncers = []linearAccountSyncer{fakeLinearSyncer{id: a1, ran: &ran}}
+	d.phaseLinearSync(context.Background())
+	got, err = database.GetTargetByID(target.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "done", got.Status)
 }

@@ -167,6 +167,9 @@ func (r *REPL) runAIQuery(question string) {
 		if cfg.Jira.Enabled {
 			systemPrompt += ai.JiraPromptSection()
 		}
+		if cfg.Jira.Enabled || cfg.Linear.Enabled {
+			systemPrompt += ai.TrackerPromptSection()
+		}
 	}
 	userMessage := ai.AssembleUserMessage(question, timeHints)
 

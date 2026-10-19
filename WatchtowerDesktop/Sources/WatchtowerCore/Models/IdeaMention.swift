@@ -24,6 +24,8 @@ package struct IdeaMention: FetchableRecord, Identifiable, Equatable {
         case owner
         /// An IMAP/Outlook mailbox (`email_accounts`), mined like Gmail.
         case imap
+        /// A Linear issue (`stream_digests` source 'linear'); ref = issue key.
+        case linear
 
         /// The user-facing name of the source ("Email" for an IMAP/Outlook
         /// mailbox, the capitalized raw value otherwise).

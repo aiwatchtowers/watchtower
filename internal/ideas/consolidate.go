@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"maps"
+	"slices"
 	"strings"
 	"time"
 
@@ -33,13 +33,15 @@ type consolidateOp struct {
 // new-material line. The ref is validated against this run's rendered material
 // before it is trusted — the model only proposes a ref, Go disposes (IDEA-02).
 //
-// Source is parsed for completeness but NEVER used: the authoritative source
+// Source is never a gate and never written as given: the authoritative source
 // is whatever the run's own validRefs map recorded for that ref. A model token
-// is not a second gate a ref has to pass — it is only another way to get a
-// legitimate sighting silently dropped, or (worse, before this) to write a
-// source string outside idea_mentions' CHECK and abort the whole transaction.
+// as a gate is only another way to get a legitimate sighting silently dropped,
+// or (worse, before this) to write a source string outside idea_mentions'
+// CHECK and abort the whole transaction. Its one use is a tiebreak: when the
+// same ref was rendered under two sources (a Jira and a Linear issue sharing a
+// key), a Source naming one of them picks it (mentionSources).
 type mentionInput struct {
-	Source string `json:"source"` // ignored — see the type comment
+	Source string `json:"source"` // tiebreak only — see the type comment
 	Ref    string `json:"ref"`
 	Quote  string `json:"quote"`
 	Author string `json:"author"`
@@ -66,7 +68,7 @@ type consolidateResult struct {
 type consolidateInput struct {
 	startTopicID, startStreamID, startTranscriptID int64
 	maxTopicID, maxStreamID, maxTranscriptID       int64
-	validRefs                                      map[string]string
+	validRefs                                      map[string][]string // ref -> every source it was rendered under
 	block                                          string
 	included                                       int
 	// memFloors, when set (Backfill), holds the floors this run started from
@@ -271,7 +273,7 @@ func (p *Pipeline) gatherConsolidateInput(maxChars int, from, to time.Time, mem 
 	in := &consolidateInput{
 		startTopicID: topicFloor, startStreamID: streamFloor, startTranscriptID: transcriptFloor,
 		maxTopicID: topicFloor, maxStreamID: streamFloor, maxTranscriptID: transcriptFloor,
-		validRefs: map[string]string{}, memFloors: mem,
+		validRefs: map[string][]string{}, memFloors: mem,
 	}
 	m := newMaterialAssembler(p, in, maxChars)
 	if err := m.addTopics(topics); err != nil {
@@ -347,8 +349,35 @@ func (m *materialAssembler) include(id, unit string, refs map[string]string) boo
 	m.b.WriteString(unit)
 	m.budget -= len(unit)
 	m.in.included++
-	maps.Copy(m.in.validRefs, refs)
+	for ref, src := range refs {
+		m.in.addValidRef(ref, src)
+	}
 	return true
+}
+
+// addValidRef records that ref was rendered under src. A ref rendered under
+// two sources (the same issue key in a Jira and a Linear stream) keeps both,
+// so neither overwrites the other's provenance (IDEA-02).
+func (in *consolidateInput) addValidRef(ref, src string) {
+	if !slices.Contains(in.validRefs[ref], src) {
+		in.validRefs[ref] = append(in.validRefs[ref], src)
+	}
+}
+
+// mentionSources returns the sources a cited ref resolves to: none for an
+// invented ref; its one source when unambiguous; for a ref rendered under
+// several sources, the one the model named when it names one of them, else all
+// of them (each is a real sighting the model was shown).
+func (in *consolidateInput) mentionSources(m mentionInput) []string {
+	srcs := in.validRefs[m.Ref]
+	if len(srcs) > 1 {
+		for _, s := range srcs {
+			if strings.EqualFold(s, strings.TrimSpace(m.Source)) {
+				return []string{s}
+			}
+		}
+	}
+	return srcs
 }
 
 // addTopics is materialAssembler's Slack-digest-topics pass. It is the only
@@ -708,12 +737,14 @@ func applyNewIdeaOp(tx *sql.Tx, database *db.DB, op consolidateOp, registryByID 
 	}
 	candidates := make([]candidate, 0, len(op.Mentions))
 	for _, m := range op.Mentions {
-		src, ok := in.validRefs[m.Ref]
-		if !ok {
+		srcs := in.mentionSources(m)
+		if len(srcs) == 0 {
 			refsRejected++
 			continue
 		}
-		candidates = append(candidates, candidate{m: m, src: src})
+		for _, src := range srcs {
+			candidates = append(candidates, candidate{m: m, src: src})
+		}
 	}
 
 	// Second pass: drop refs already mined before this pass began (IDEA-05)
@@ -802,31 +833,46 @@ func applyAttachMentionOp(tx *sql.Tx, database *db.DB, op consolidateOp, registr
 			target = merged // follow merged_into_id exactly one hop
 		}
 	}
-	src, refOK := in.validRefs[op.Mention.Ref]
-	if !refOK {
+	srcs := in.mentionSources(*op.Mention)
+	if len(srcs) == 0 {
 		return 0, 1, nil
 	}
-	dup, derr := database.IdeaHasMentionRefTx(tx, target.ID, src, op.Mention.Ref)
+	for _, src := range srcs {
+		deduped, aerr := attachMentionSource(tx, database, target, src, op.Mention)
+		if aerr != nil {
+			return 0, 0, aerr
+		}
+		mentionsDeduped += deduped
+	}
+	return mentionsDeduped, 0, nil
+}
+
+// attachMentionSource attaches one (source, ref) sighting to target unless the
+// target already records it (IDEA-05, target-scoped), flagging a
+// not_now/dropped/rejected target for review (IDEA-04). Returns 1 when it was
+// already recorded.
+func attachMentionSource(tx *sql.Tx, database *db.DB, target db.Idea, src string, mention *mentionInput) (int, error) {
+	dup, derr := database.IdeaHasMentionRefTx(tx, target.ID, src, mention.Ref)
 	if derr != nil {
-		return 0, 0, fmt.Errorf("checking known mention ref for idea %d: %w", target.ID, derr)
+		return 0, fmt.Errorf("checking known mention ref for idea %d: %w", target.ID, derr)
 	}
 	if dup {
 		// Already on the target idea — no new evidence, so this must not
 		// resurface a not_now/dropped/rejected verdict either (IDEA-05 x
 		// IDEA-04, mirroring PR #78's IDEA-02x04 finding).
-		return 1, 0, nil
+		return 1, nil
 	}
 	if merr := database.InsertIdeaMentionTx(tx, db.IdeaMention{
-		IdeaID: target.ID, Source: src, Ref: op.Mention.Ref,
-		Quote: op.Mention.Quote, Author: op.Mention.Author, SaidAt: op.Mention.SaidAt,
+		IdeaID: target.ID, Source: src, Ref: mention.Ref,
+		Quote: mention.Quote, Author: mention.Author, SaidAt: mention.SaidAt,
 	}); merr != nil {
-		return 0, 0, fmt.Errorf("attaching mention to idea %d: %w", target.ID, merr)
+		return 0, fmt.Errorf("attaching mention to idea %d: %w", target.ID, merr)
 	}
 	if target.Status == "not_now" || target.Status == "dropped" || target.Status == "rejected" {
-		reason := fmt.Sprintf("brought up again: %s %s", src, op.Mention.Ref)
+		reason := fmt.Sprintf("brought up again: %s %s", src, mention.Ref)
 		if rerr := database.SetIdeaNeedsReviewTx(tx, target.ID, reason); rerr != nil {
-			return 0, 0, fmt.Errorf("flagging idea %d for review: %w", target.ID, rerr)
+			return 0, fmt.Errorf("flagging idea %d for review: %w", target.ID, rerr)
 		}
 	}
-	return 0, 0, nil
+	return 0, nil
 }

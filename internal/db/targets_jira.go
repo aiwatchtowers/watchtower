@@ -12,48 +12,61 @@ import (
 // If a target with source_type='jira' and source_id=issue.Key already exists,
 // it returns the existing target without creating a duplicate.
 func (db *DB) CreateTargetFromJiraIssue(issue JiraIssue) (*Target, error) {
+	return db.createIssueTarget(TrackerJira, issue.Key, issue.Summary, jiraPriorityToTargetPriority(issue.Priority), issue.DueDate)
+}
+
+// CreateTargetFromTrackerIssue creates a target from a Jira or Linear issue
+// with the same dedup: an existing target with source_type = the issue's
+// tracker and source_id = its key is returned instead of a duplicate.
+func (db *DB) CreateTargetFromTrackerIssue(issue TrackerIssue) (*Target, error) {
+	if issue.Tracker != TrackerJira && issue.Tracker != TrackerLinear {
+		return nil, fmt.Errorf("creating target from %s issue %s: unknown tracker", issue.Tracker, issue.Key)
+	}
+	return db.createIssueTarget(issue.Tracker, issue.Key, issue.Title, rankToTargetPriority(issue.PriorityRank), issue.DueDate)
+}
+
+// createIssueTarget is the shared body: a day-level, mine, todo target whose
+// source is the issue (sourceType 'jira' or 'linear', source_id the key).
+func (db *DB) createIssueTarget(sourceType, key, title, priority, dueDate string) (*Target, error) {
 	tx, err := db.Begin()
 	if err != nil {
-		return nil, fmt.Errorf("beginning jira target tx: %w", err)
+		return nil, fmt.Errorf("beginning %s target tx: %w", sourceType, err)
 	}
 	defer tx.Rollback()
 
-	row := tx.QueryRow(`SELECT `+targetSelectCols+` FROM targets WHERE source_type = 'jira' AND source_id = ?`, issue.Key)
+	row := tx.QueryRow(`SELECT `+targetSelectCols+` FROM targets WHERE source_type = ? AND source_id = ?`, sourceType, key)
 	existing, err := scanTarget(row)
 	if err == nil {
 		return existing, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("checking existing jira target %s: %w", issue.Key, err)
+		return nil, fmt.Errorf("checking existing %s target %s: %w", sourceType, key, err)
 	}
-
-	priority := jiraPriorityToTargetPriority(issue.Priority)
-	today := issue.DueDate
 
 	res, err := tx.Exec(`INSERT INTO targets
 		(text, intent, level, custom_label, period_start, period_end,
 		 status, priority, ownership, ball_on, due_date, snooze_until, blocking,
 		 tags, sub_items, notes, progress, source_type, source_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		issue.Summary, "", "day", "", issue.DueDate, today,
-		"todo", priority, "mine", "", issue.DueDate, "", "",
-		"[]", "[]", "[]", 0.0, "jira", issue.Key,
+		title, "", "day", "", dueDate, dueDate,
+		"todo", priority, "mine", "", dueDate, "", "",
+		"[]", "[]", "[]", 0.0, sourceType, key,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("creating target from jira issue %s: %w", issue.Key, err)
+		return nil, fmt.Errorf("creating target from %s issue %s: %w", sourceType, key, err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing jira target tx: %w", err)
+		return nil, fmt.Errorf("committing %s target tx: %w", sourceType, err)
 	}
 
 	id, _ := res.LastInsertId()
 	created, err := db.GetTargetByID(int(id))
 	if err != nil {
 		return &Target{
-			ID: int(id), Text: issue.Summary, Status: "todo",
-			Priority: priority, Ownership: "mine", DueDate: issue.DueDate,
-			SourceType: "jira", SourceID: issue.Key, Tags: "[]", SubItems: "[]",
+			ID: int(id), Text: title, Status: "todo",
+			Priority: priority, Ownership: "mine", DueDate: dueDate,
+			SourceType: sourceType, SourceID: key, Tags: "[]", SubItems: "[]",
 		}, err
 	}
 	return created, nil
@@ -73,48 +86,41 @@ func jiraPriorityToTargetPriority(jiraPriority string) string {
 	}
 }
 
-// resolveUnambiguousJiraIssue returns the non-deleted issue carrying key only
-// when EXACTLY ONE connected site has it, and nil when several do.
-//
-// `targets.source_id` holds a bare issue key with no account dimension, so two
-// connected sites that both use, say, OPS-42 make the key ambiguous. Reads may
-// resolve such a key to an arbitrary site's row (the documented v1 ambiguity),
-// but this is a WRITE path — it flips a user-authored target to done — and
-// guessing there would silently mutate the owner's state from the wrong site's
-// issue. Ambiguity therefore means "leave the target alone", not "pick one".
-func (db *DB) resolveUnambiguousJiraIssue(key string) (*JiraIssue, error) {
-	rows, err := db.Query(`SELECT `+jiraIssueColumns+`
-		FROM jira_issues WHERE key = ? AND is_deleted = 0`, key)
-	if err != nil {
-		return nil, fmt.Errorf("querying jira issue %s: %w", key, err)
+// rankToTargetPriority maps tracker_issues.priority_rank (1 highest … 5
+// lowest, 0 none) to a target priority — for Jira's standard names the same
+// levels jiraPriorityToTargetPriority gives.
+func rankToTargetPriority(rank int) string {
+	switch rank {
+	case 1, 2:
+		return "high"
+	case 4, 5:
+		return "low"
+	default:
+		return "medium"
 	}
-	defer rows.Close()
-
-	var found []JiraIssue
-	for rows.Next() {
-		issue, err := scanJiraIssue(rows)
-		if err != nil {
-			return nil, fmt.Errorf("scanning jira issue %s: %w", key, err)
-		}
-		found = append(found, issue)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	if len(found) != 1 {
-		if len(found) > 1 {
-			log.Printf("jira-targets: issue key %s exists on %d connected sites, leaving target untouched", key, len(found))
-		}
-		return nil, nil
-	}
-	return &found[0], nil
 }
 
 // SyncJiraTargetStatuses synchronizes target statuses from linked Jira issues.
 func (db *DB) SyncJiraTargetStatuses() (int, error) {
-	rows, err := db.Query(`SELECT ` + targetSelectCols + ` FROM targets WHERE source_type = 'jira' AND status NOT IN ('done', 'dismissed')`)
+	return db.syncIssueTargetStatuses(TrackerJira)
+}
+
+// SyncLinearTargetStatuses synchronizes target statuses from linked Linear
+// issues, with the Jira rules.
+func (db *DB) SyncLinearTargetStatuses() (int, error) {
+	return db.syncIssueTargetStatuses(TrackerLinear)
+}
+
+// syncIssueTargetStatuses moves the open targets whose source is a tracker
+// issue: done when the issue is done, in_progress when a todo target's issue
+// started. The issue is read from tracker_issues and must be unambiguous:
+// `targets.source_id` holds a bare key with no account dimension, and this
+// WRITE path flips a user-authored target, so a key two connected accounts
+// share leaves the target alone rather than guessing (UnambiguousTrackerIssue).
+func (db *DB) syncIssueTargetStatuses(tracker string) (int, error) {
+	rows, err := db.Query(`SELECT `+targetSelectCols+` FROM targets WHERE source_type = ? AND status NOT IN ('done', 'dismissed')`, tracker)
 	if err != nil {
-		return 0, fmt.Errorf("querying jira targets: %w", err)
+		return 0, fmt.Errorf("querying %s targets: %w", tracker, err)
 	}
 	defer rows.Close()
 
@@ -122,7 +128,7 @@ func (db *DB) SyncJiraTargetStatuses() (int, error) {
 	for rows.Next() {
 		t, err := scanTarget(rows)
 		if err != nil {
-			return 0, fmt.Errorf("scanning jira target: %w", err)
+			return 0, fmt.Errorf("scanning %s target: %w", tracker, err)
 		}
 		targets = append(targets, *t)
 	}
@@ -132,9 +138,9 @@ func (db *DB) SyncJiraTargetStatuses() (int, error) {
 
 	synced := 0
 	for _, t := range targets {
-		issue, err := db.resolveUnambiguousJiraIssue(t.SourceID)
+		issue, err := db.UnambiguousTrackerIssue(tracker, t.SourceID)
 		if err != nil {
-			log.Printf("jira-targets: error fetching issue %s: %v", t.SourceID, err)
+			log.Printf("%s-targets: error fetching issue %s: %v", tracker, t.SourceID, err)
 			continue
 		}
 		if issue == nil {
@@ -155,7 +161,7 @@ func (db *DB) SyncJiraTargetStatuses() (int, error) {
 		// A sync write: recorded as the system's in a project target's
 		// status history (PROJ-06).
 		if err := updateTargetStatusOn(db, t.ID, newStatus, ActorSystem); err != nil {
-			log.Printf("jira-targets: error updating target %d status to %s: %v", t.ID, newStatus, err)
+			log.Printf("%s-targets: error updating target %d status to %s: %v", tracker, t.ID, newStatus, err)
 			continue
 		}
 		synced++

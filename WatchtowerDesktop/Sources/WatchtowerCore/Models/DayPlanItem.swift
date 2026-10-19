@@ -12,6 +12,7 @@ package enum DayPlanItemSourceType: String, Codable {
     case task
     case briefingAttention = "briefing_attention"
     case jira
+    case linear
     case calendar
     case manual
     case focus

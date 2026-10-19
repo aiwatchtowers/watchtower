@@ -188,7 +188,11 @@ func runTracks(cmd *cobra.Command, args []string) error {
 		channelIDFilter = ch.ID
 	}
 
-	jiraEnabled := jira.IsFeatureEnabled(cfg, "track_linking")
+	// The track_linking toggle governs Jira and Linear links alike (spec 3.5),
+	// each only while its tracker is enabled.
+	linkScope, jiraEnabled := jira.TrackerFeatureScope(cfg, "track_linking")
+	jiraLinks := jiraEnabled && jira.ScopeCovers(linkScope, db.TrackerJira)
+	linearLinks := jiraEnabled && jira.ScopeCovers(linkScope, db.TrackerLinear)
 
 	if (tracksFlagJira || tracksFlagNoJira) && !jiraEnabled {
 		fmt.Fprintln(out, "Jira track linking is not enabled. Ignoring --jira/--no-jira flags.")
@@ -205,6 +209,7 @@ func runTracks(cmd *cobra.Command, args []string) error {
 		f.HasUpdates = &v
 	}
 	if jiraEnabled {
+		f.LinkTracker = linkScope
 		if tracksFlagJira {
 			v := true
 			f.HasJira = &v
@@ -226,13 +231,15 @@ func runTracks(cmd *cobra.Command, args []string) error {
 
 	var buf strings.Builder
 	fmt.Fprintf(&buf, "## Tracks (%d)\n\n", len(items))
-	printTracks(&buf, items, database, jiraEnabled)
+	printTracks(&buf, items, database, jiraLinks, linearLinks)
 
 	fmt.Fprint(out, ui.RenderMarkdown(buf.String()))
 	return nil
 }
 
-func printTracks(w io.Writer, items []db.Track, database *db.DB, jiraEnabled bool) {
+// printTracks renders the list; jiraLinks/linearLinks turn on each tracker's
+// linked-issue badges (only for an enabled tracker with track_linking on).
+func printTracks(w io.Writer, items []db.Track, database *db.DB, jiraLinks, linearLinks bool) {
 	priorityIcon := map[string]string{
 		"high":   "!",
 		"medium": "-",
@@ -245,13 +252,14 @@ func printTracks(w io.Writer, items []db.Track, database *db.DB, jiraEnabled boo
 		"watching":  "[watching]",
 	}
 
-	// Batch-load all Jira issues for tracks in a single query.
+	// Batch-load each enabled tracker's linked issues in a single query.
+	trackIDs := make([]int, len(items))
+	for i, item := range items {
+		trackIDs[i] = item.ID
+	}
 	var jiraByTrack map[int][]db.JiraIssue
-	if jiraEnabled {
-		trackIDs := make([]int, len(items))
-		for i, item := range items {
-			trackIDs[i] = item.ID
-		}
+	var linearByTrack map[int][]db.LinkedLinearIssue
+	if jiraLinks {
 		var jiraErr error
 		jiraByTrack, jiraErr = database.GetJiraIssuesForTracks(trackIDs)
 		if jiraErr != nil {
@@ -259,6 +267,13 @@ func printTracks(w io.Writer, items []db.Track, database *db.DB, jiraEnabled boo
 		}
 		if jiraByTrack == nil {
 			jiraByTrack = make(map[int][]db.JiraIssue)
+		}
+	}
+	if linearLinks {
+		var linearErr error
+		linearByTrack, linearErr = database.GetLinearIssuesForTracks(trackIDs)
+		if linearErr != nil {
+			log.Printf("warning: failed to load Linear issues for tracks: %v", linearErr)
 		}
 	}
 
@@ -290,13 +305,16 @@ func printTracks(w io.Writer, items []db.Track, database *db.DB, jiraEnabled boo
 
 		// Jira badges
 		jiraBadges := ""
-		if jiraEnabled {
+		if jiraLinks || linearLinks {
 			if issues := jiraByTrack[item.ID]; len(issues) > 0 {
 				var badges []string
 				for _, issue := range issues {
 					badges = append(badges, jira.FormatJiraBadge(issue))
 				}
 				jiraBadges = " " + strings.Join(badges, " ")
+			}
+			for _, issue := range linearByTrack[item.ID] {
+				jiraBadges += fmt.Sprintf(" [%s %s]", issue.Key, issue.Status)
 			}
 		}
 
@@ -362,6 +380,7 @@ func runTracksShow(cmd *cobra.Command, args []string) error {
 	printTrackDecisions(out, track)
 	printTrackChannelsAndTags(out, database, track)
 	printTrackLinkedJiraIssues(out, database, cfg, track)
+	printTrackLinkedLinearIssues(out, database, cfg, track)
 	return nil
 }
 
@@ -870,4 +889,36 @@ func setTrackEnabled(cmd *cobra.Command, args []string, enabled bool) error {
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "track #%d enabled=%v\n", id, enabled)
 	return nil
+}
+
+// printTrackLinkedLinearIssues lists the Linear issues a track links to
+// (issue_slack_links, tracker 'linear'), under the same track_linking toggle.
+func printTrackLinkedLinearIssues(out io.Writer, database *db.DB, cfg *config.Config, track *db.Track) {
+	if scope, ok := jira.TrackerFeatureScope(cfg, "track_linking"); !ok || !jira.ScopeCovers(scope, db.TrackerLinear) {
+		return
+	}
+	byTrack, err := database.GetLinearIssuesForTracks([]int{track.ID})
+	if err != nil {
+		log.Printf("warning: failed to load Linear issues for track %d: %v", track.ID, err)
+		return
+	}
+	issues := byTrack[track.ID]
+	if len(issues) == 0 {
+		return
+	}
+	fmt.Fprintf(out, "\nLinked Linear Issues:\n")
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	for _, issue := range issues {
+		line := fmt.Sprintf("[%s %s] %s", issue.Key, issue.Status, issue.Title)
+		if issue.AssigneeDisplayName != "" {
+			line += " (" + issue.AssigneeDisplayName + ")"
+		}
+		if issue.DueDate != "" && issue.StatusCategory != "done" {
+			if due, perr := time.Parse("2006-01-02", issue.DueDate); perr == nil && due.Before(today) {
+				line += " *** OVERDUE ***"
+			}
+		}
+		fmt.Fprintf(out, "  %s\n", line)
+	}
 }
