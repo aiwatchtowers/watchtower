@@ -3,7 +3,6 @@ package db
 import (
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
@@ -47,7 +46,7 @@ func TestMigration00070_FreezesSituationsAndDropsDeadTables(t *testing.T) {
 		exec(`INSERT INTO prompts (id, template) VALUES (?, 'x')`, id)
 	}
 
-	require.NoError(t, goose.UpTo(raw, "migrations", 70))
+	require.NoError(t, gooseUpTo(raw, "migrations", 70))
 
 	for _, tbl := range []string{"inbox_feedback", "feed_items", "feed_state"} {
 		var n int

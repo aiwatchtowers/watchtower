@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -101,7 +100,7 @@ func TestMigration00081_DownDropsProjectsAndTheirTargets(t *testing.T) {
 	require.NoError(t, err)
 
 	// DownTo(80), not a bare Down: a later migration can move the tip past 00081.
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 80))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 80))
 	assert.False(t, columnNames(t, d.DB, "targets")["project_id"], "Down removes targets.project_id")
 	var n int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM targets`).Scan(&n))
@@ -109,6 +108,6 @@ func TestMigration00081_DownDropsProjectsAndTheirTargets(t *testing.T) {
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'project%'`).Scan(&n))
 	assert.Zero(t, n, "Down drops every project table")
 
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 	assert.True(t, columnNames(t, d.DB, "targets")["project_id"], "re-Up restores the column")
 }

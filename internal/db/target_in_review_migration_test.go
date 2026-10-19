@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,7 +43,7 @@ func TestMigration00086_RebuildKeepsRowsChildrenIndexesAndRollup(t *testing.T) {
 	indexesBefore := targetIndexes(t, raw)
 	require.Equal(t, 3, countTargetTriggers(t, raw))
 
-	require.NoError(t, goose.UpTo(raw, "migrations", 86))
+	require.NoError(t, gooseUpTo(raw, "migrations", 86))
 
 	var fk int
 	require.NoError(t, raw.QueryRow(`PRAGMA foreign_keys`).Scan(&fk))
@@ -102,7 +101,7 @@ func TestMigration00086_DownRestoresThe00085Schema(t *testing.T) {
 	_, err = raw.Exec(`INSERT INTO target_links (source_target_id, external_ref, relation) VALUES (5, 'jira:X-1', 'related')`)
 	require.NoError(t, err)
 
-	require.NoError(t, goose.DownTo(raw, "migrations", 85))
+	require.NoError(t, gooseDownTo(raw, "migrations", 85))
 	var st string
 	require.NoError(t, raw.QueryRow(`SELECT status FROM targets WHERE id = 5`).Scan(&st))
 	assert.Equal(t, "in_progress", st)
@@ -116,7 +115,7 @@ func TestMigration00086_DownRestoresThe00085Schema(t *testing.T) {
 	_, err = raw.Exec(`UPDATE targets SET status = 'in_review' WHERE id = 5`)
 	assert.Error(t, err, "the 00085 CHECK has no in_review")
 
-	require.NoError(t, goose.UpTo(raw, "migrations", 86))
+	require.NoError(t, gooseUpTo(raw, "migrations", 86))
 	assert.Equal(t, 6, countTargetTriggers(t, raw))
 }
 

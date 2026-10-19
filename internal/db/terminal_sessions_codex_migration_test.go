@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -144,7 +143,7 @@ func TestMigrationCodex_RebuildKeepsRowsAndChildren(t *testing.T) {
 	seedPre109Sessions(t, raw)
 	before := childDumps(t, raw)
 
-	require.NoError(t, goose.UpTo(raw, "migrations", codexMigration))
+	require.NoError(t, gooseUpTo(raw, "migrations", codexMigration))
 
 	var fk int
 	require.NoError(t, raw.QueryRow(`PRAGMA foreign_keys`).Scan(&fk))
@@ -185,9 +184,9 @@ func TestMigrationCodex_IndexesRecreated(t *testing.T) {
 	raw := rawDBAt(t, codexMigration-1)
 	before := terminalSessionIndexes(t, raw)
 	require.Len(t, before, 2)
-	require.NoError(t, goose.UpTo(raw, "migrations", codexMigration))
+	require.NoError(t, gooseUpTo(raw, "migrations", codexMigration))
 	assert.Equal(t, before, terminalSessionIndexes(t, raw))
-	require.NoError(t, goose.DownTo(raw, "migrations", codexMigration-1))
+	require.NoError(t, gooseDownTo(raw, "migrations", codexMigration-1))
 	assert.Equal(t, before, terminalSessionIndexes(t, raw), "Down recreates them too")
 }
 
@@ -196,7 +195,7 @@ func TestMigrationCodex_DownDropsCodexRowsAndColumn(t *testing.T) {
 	raw := rawDBAt(t, codexMigration-1)
 	seedPre109Sessions(t, raw)
 	before := childDumps(t, raw)
-	require.NoError(t, goose.UpTo(raw, "migrations", codexMigration))
+	require.NoError(t, gooseUpTo(raw, "migrations", codexMigration))
 	_, err := raw.Exec(`INSERT INTO terminal_sessions (id, project_id, kind, title, folder_path, claude_session_id,
 		agent_transcript_path) VALUES (20, 1, 'codex', 'cx', '/Users/example/acme', ?, '/Users/example/r.jsonl')`, codexTestUUID)
 	require.NoError(t, err)
@@ -207,7 +206,7 @@ func TestMigrationCodex_DownDropsCodexRowsAndColumn(t *testing.T) {
 	_, err = raw.Exec(`INSERT INTO terminal_session_targets (session_id, target_id, first_at, last_at) VALUES (20, 5, 'a', 'b')`)
 	require.NoError(t, err)
 
-	require.NoError(t, goose.DownTo(raw, "migrations", codexMigration-1))
+	require.NoError(t, gooseDownTo(raw, "migrations", codexMigration-1))
 
 	assert.False(t, columnNames(t, raw, "terminal_sessions")["agent_transcript_path"])
 	var codex int
@@ -223,7 +222,7 @@ func TestMigrationCodex_DownDropsCodexRowsAndColumn(t *testing.T) {
 	_, err = raw.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path) VALUES (1, 'codex', 'x', '/tmp')`)
 	assert.Error(t, err, "the 00108 CHECK has no codex")
 
-	require.NoError(t, goose.UpTo(raw, "migrations", codexMigration))
+	require.NoError(t, gooseUpTo(raw, "migrations", codexMigration))
 	assert.True(t, columnNames(t, raw, "terminal_sessions")["agent_transcript_path"])
 	assert.Equal(t, before["terminal_sessions"], childDumps(t, raw)["terminal_sessions"])
 }

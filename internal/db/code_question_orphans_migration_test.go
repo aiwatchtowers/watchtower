@@ -4,7 +4,6 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,7 +36,7 @@ func TestMigration00104_RemovesOrphanCodeQuestions(t *testing.T) {
 	mainChat := conv(nil, "999:main.go:3")
 	malformed := conv("code_question", "main.go")
 
-	require.NoError(t, goose.Up(raw, "migrations"))
+	require.NoError(t, gooseUp(raw, "migrations"))
 
 	count := func(q string, id int64) int {
 		t.Helper()

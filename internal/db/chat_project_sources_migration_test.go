@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -53,7 +52,7 @@ func TestMigration00096_DownDropsOnlyConfluencePins(t *testing.T) {
 	require.NoError(t, err)
 
 	// DownTo(95), not a bare Down: a later migration can move the tip past 00096.
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 95))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 95))
 	var id int64
 	var kind, label string
 	require.NoError(t, d.QueryRow(`SELECT id, kind, label FROM chat_project_sources`).Scan(&id, &kind, &label))
@@ -61,7 +60,7 @@ func TestMigration00096_DownDropsOnlyConfluencePins(t *testing.T) {
 	_, err = d.Exec(`INSERT INTO chat_project_sources (project_id, kind, ref) VALUES (?, 'confluence_space', 'ENG')`, p)
 	assert.Error(t, err, "the old CHECK is back")
 
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 	_, err = d.Exec(`INSERT INTO chat_project_sources (project_id, kind, ref) VALUES (?, 'confluence_space', 'ENG')`, p)
 	assert.NoError(t, err, "re-Up accepts confluence_space again")
 }

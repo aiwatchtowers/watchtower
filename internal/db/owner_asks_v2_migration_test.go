@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -49,14 +48,14 @@ func TestMigration00107_UpDownUpKeepsAsksAndSessions(t *testing.T) {
 		assert.Zero(t, n, "%s: owner_presence starts empty", stage)
 	}
 
-	require.NoError(t, goose.Up(raw, "migrations"))
+	require.NoError(t, gooseUp(raw, "migrations"))
 	assertV2Defaults("up")
 	// A presence row proves Down drops a non-empty table and re-Up recreates it empty.
 	_, err = raw.Exec(`INSERT INTO owner_presence (id, session_id, seen_at) VALUES (1, 5, '2026-10-10T12:00:00.000Z')`)
 	require.NoError(t, err)
 
 	// DownTo(106), not a bare Down: a later migration can move the tip past 00107.
-	require.NoError(t, goose.DownTo(raw, "migrations", 106))
+	require.NoError(t, gooseDownTo(raw, "migrations", 106))
 	askCols := columnNames(t, raw, "owner_asks")
 	for _, c := range []string{"level", "origin", "chat_asked_at", "withdrawn_at"} {
 		assert.False(t, askCols[c], "Down kept owner_asks.%s", c)
@@ -73,7 +72,7 @@ func TestMigration00107_UpDownUpKeepsAsksAndSessions(t *testing.T) {
 	require.NoError(t, raw.QueryRow(`SELECT agent_state FROM terminal_sessions WHERE id = 5`).Scan(&state))
 	assert.Equal(t, "waiting", state, "Down changed the session's other columns")
 
-	require.NoError(t, goose.Up(raw, "migrations"))
+	require.NoError(t, gooseUp(raw, "migrations"))
 	assertV2Defaults("re-up")
 }
 

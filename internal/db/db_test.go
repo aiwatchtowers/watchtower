@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -560,7 +559,7 @@ func TestMigration00019ClearsBeliefContentHash(t *testing.T) {
 
 	// Roll back to just before 00019: memory_nodes exists (from 00017) but has no
 	// subject/confidence columns yet.
-	if err := goose.DownTo(d.DB, "migrations", 18); err != nil {
+	if err := gooseDownTo(d.DB, "migrations", 18); err != nil {
 		t.Fatalf("goose down to 18: %v", err)
 	}
 	if _, err := d.Exec(`INSERT INTO memory_nodes (id, type, tier, path, content_hash, indexed_at)
@@ -570,7 +569,7 @@ func TestMigration00019ClearsBeliefContentHash(t *testing.T) {
 	}
 
 	// Apply 00019 (adds columns + clears belief content_hash).
-	if err := goose.UpTo(d.DB, "migrations", 19); err != nil {
+	if err := gooseUpTo(d.DB, "migrations", 19); err != nil {
 		t.Fatalf("goose up to 19: %v", err)
 	}
 
@@ -773,10 +772,10 @@ func TestMigration00044ConferenceURLDownUpCycle(t *testing.T) {
 	// DownTo 43 (not Down): the moment a 00045 lands, a plain Down would
 	// silently stop exercising 00044's Down forever (the DownTo idiom from
 	// TestMigration00043DownUpCycle).
-	if err := goose.DownTo(d.DB, "migrations", 43); err != nil {
+	if err := gooseDownTo(d.DB, "migrations", 43); err != nil {
 		t.Fatalf("goose down to 43: %v", err)
 	}
-	if err := goose.Up(d.DB, "migrations"); err != nil {
+	if err := gooseUp(d.DB, "migrations"); err != nil {
 		t.Fatalf("goose up after down: %v", err)
 	}
 
@@ -1310,7 +1309,7 @@ func TestTranscriptsFTSBackfillIndexesPreExistingTranscripts(t *testing.T) {
 	// Roll back to just before 00052: meeting_transcripts exists (since
 	// 00020) but transcripts_fts and its triggers do not yet, matching a
 	// pre-migration installation.
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 51))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 51))
 
 	res, err := d.Exec(
 		`INSERT INTO meeting_transcripts (title, transcript_text) VALUES (?, ?)`,
@@ -1328,7 +1327,7 @@ func TestTranscriptsFTSBackfillIndexesPreExistingTranscripts(t *testing.T) {
 
 	// Apply 00052: creates transcripts_fts + triggers, then runs the backfill
 	// against the two rows seeded above.
-	require.NoError(t, goose.UpTo(d.DB, "migrations", 52))
+	require.NoError(t, gooseUpTo(d.DB, "migrations", 52))
 
 	var got int64
 	err = d.QueryRow(

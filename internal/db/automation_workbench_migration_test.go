@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,9 +40,9 @@ func TestMigration00122_AutomationRunColumns(t *testing.T) {
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM owner_asks WHERE automation_run_id IS NULL`).Scan(&n))
 	assert.Equal(t, 1, n, "deleting the run keeps the ask and nulls the link")
 
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 121))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 121))
 	for _, table := range []string{"owner_asks", "terminal_sessions"} {
 		assert.False(t, columnNames(t, d.DB, table)["automation_run_id"], table)
 	}
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 }

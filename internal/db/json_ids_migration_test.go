@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 )
 
@@ -27,7 +26,7 @@ func TestMigration00054_TracksChannelIDs(t *testing.T) {
 		t.Fatalf("seed tracks: %v", err)
 	}
 
-	if err := goose.UpTo(raw, "migrations", 54); err != nil {
+	if err := gooseUpTo(raw, "migrations", 54); err != nil {
 		t.Fatalf("apply 00054: %v", err)
 	}
 
@@ -69,7 +68,7 @@ func TestMigration00054_TracksParticipants(t *testing.T) {
 		t.Fatalf("seed tracks.participants: %v", err)
 	}
 
-	if err := goose.UpTo(raw, "migrations", 54); err != nil {
+	if err := gooseUpTo(raw, "migrations", 54); err != nil {
 		t.Fatalf("apply 00054: %v", err)
 	}
 
@@ -137,7 +136,7 @@ func TestMigration00054_ParticipantsDangerousShapes(t *testing.T) {
 		t.Fatalf("seed tracks: %v", err)
 	}
 
-	if err := goose.UpTo(raw, "migrations", 54); err != nil {
+	if err := gooseUpTo(raw, "migrations", 54); err != nil {
 		t.Fatalf("apply 00054: %v", err)
 	}
 
@@ -190,7 +189,7 @@ func TestMigration00054_FlatArrayNonTextElement(t *testing.T) {
 		t.Fatalf("seed tracks: %v", err)
 	}
 
-	if err := goose.UpTo(raw, "migrations", 54); err != nil {
+	if err := gooseUpTo(raw, "migrations", 54); err != nil {
 		t.Fatalf("apply 00054: %v", err)
 	}
 
@@ -219,7 +218,7 @@ func TestMigration00054_UserProfileListColumns(t *testing.T) {
 		t.Fatalf("seed user_profile: %v", err)
 	}
 
-	if err := goose.UpTo(raw, "migrations", 54); err != nil {
+	if err := gooseUpTo(raw, "migrations", 54); err != nil {
 		t.Fatalf("apply 00054: %v", err)
 	}
 
@@ -267,7 +266,7 @@ func TestMigration00054_EdgeCasesUntouched(t *testing.T) {
 		t.Fatalf("seed tracks: %v", err)
 	}
 
-	if err := goose.UpTo(raw, "migrations", 54); err != nil {
+	if err := gooseUpTo(raw, "migrations", 54); err != nil {
 		t.Fatalf("apply 00054: %v", err)
 	}
 
@@ -316,7 +315,7 @@ func TestMigration00054_ReRunIsNoOp(t *testing.T) {
 		t.Fatalf("seed user_profile: %v", err)
 	}
 
-	if err := goose.UpTo(raw, "migrations", 54); err != nil {
+	if err := gooseUpTo(raw, "migrations", 54); err != nil {
 		t.Fatalf("apply 00054: %v", err)
 	}
 
@@ -347,7 +346,7 @@ func TestMigration00054DownUpCycle(t *testing.T) {
 		t.Fatalf("seed tracks: %v", err)
 	}
 
-	if err := goose.UpTo(raw, "migrations", 54); err != nil {
+	if err := gooseUpTo(raw, "migrations", 54); err != nil {
 		t.Fatalf("apply 00054: %v", err)
 	}
 	var channelIDs, userID string
@@ -359,7 +358,7 @@ func TestMigration00054DownUpCycle(t *testing.T) {
 		t.Fatalf("after up: channel_ids=%q user_id=%q, want namespaced", channelIDs, userID)
 	}
 
-	if err := goose.DownTo(raw, "migrations", 53); err != nil {
+	if err := gooseDownTo(raw, "migrations", 53); err != nil {
 		t.Fatalf("goose down to 53: %v", err)
 	}
 	if err := raw.QueryRow(`SELECT channel_ids, json_extract(participants, '$[0].user_id') FROM tracks WHERE id = 1`).
@@ -370,7 +369,7 @@ func TestMigration00054DownUpCycle(t *testing.T) {
 		t.Errorf("after down: channel_ids=%q user_id=%q, want bare", channelIDs, userID)
 	}
 
-	if err := goose.UpTo(raw, "migrations", 54); err != nil {
+	if err := gooseUpTo(raw, "migrations", 54); err != nil {
 		t.Fatalf("re-apply 00054: %v", err)
 	}
 	if err := raw.QueryRow(`SELECT channel_ids, json_extract(participants, '$[0].user_id') FROM tracks WHERE id = 1`).
@@ -397,7 +396,7 @@ func openMigratedTo(t *testing.T, version int64) *sql.DB {
 	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		t.Fatal(err)
 	}
-	if err := goose.UpTo(raw, "migrations", version); err != nil {
+	if err := gooseUpTo(raw, "migrations", version); err != nil {
 		t.Fatalf("migrate to v%d: %v", version, err)
 	}
 	return raw

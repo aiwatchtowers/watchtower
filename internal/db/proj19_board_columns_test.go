@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -379,10 +378,10 @@ func TestMigration00126_DownUp(t *testing.T) {
 	assert.True(t, columnNames(t, d.DB, "targets")["board_column_id"])
 	assert.True(t, columnNames(t, d.DB, "projects")["board_hidden_statuses"])
 
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 125))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 125))
 	assert.False(t, columnNames(t, d.DB, "targets")["board_column_id"])
 	assert.False(t, columnNames(t, d.DB, "projects")["board_hidden_statuses"])
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 	assert.True(t, columnNames(t, d.DB, "targets")["board_column_id"])
 }
 

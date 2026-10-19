@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -290,12 +289,12 @@ func TestMigration00105_ArchivedThroughStartsNull(t *testing.T) {
 	require.NoError(t, d.ArchiveWorkbenchClosedNow(pid))
 
 	// DownTo(104), not a bare Down: a later migration can move the tip past 00105.
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 104))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 104))
 	assert.False(t, columnNames(t, d.DB, "projects")["archived_through"], "Down kept the column")
 	// The view only: the board reader needs later migrations' tables (00126).
 	assert.Equal(t, map[int64]bool{recent: false, old: true}, viewArchived(t, d, pid))
 
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 	w, err := d.GetWorkbench(pid)
 	require.NoError(t, err)
 	assert.Empty(t, w.ArchivedThrough, "an existing workbench starts with no stamp")

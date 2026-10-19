@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/fsutil"
@@ -22,7 +21,7 @@ func openOnePending(t *testing.T, dbPath string) {
 	t.Helper()
 	d, err := Open(dbPath)
 	require.NoError(t, err)
-	require.NoError(t, goose.Down(d.DB, "migrations"))
+	require.NoError(t, gooseDown(d.DB, "migrations"))
 	require.NoError(t, d.Close())
 }
 

@@ -5,7 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 )
 
@@ -88,7 +87,7 @@ func TestMigration00049_UpgradesLegacySingleAccount(t *testing.T) {
 	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		t.Fatal(err)
 	}
-	if err := goose.UpTo(raw, "migrations", 48); err != nil {
+	if err := gooseUpTo(raw, "migrations", 48); err != nil {
 		t.Fatalf("migrate to v48: %v", err)
 	}
 
@@ -119,7 +118,7 @@ func TestMigration00049_UpgradesLegacySingleAccount(t *testing.T) {
 		t.Fatalf("seed jira_slack_links: %v", err)
 	}
 
-	if err := goose.UpTo(raw, "migrations", 49); err != nil {
+	if err := gooseUpTo(raw, "migrations", 49); err != nil {
 		t.Fatalf("apply 00049: %v", err)
 	}
 
@@ -185,7 +184,7 @@ func TestMigration00049_SeedIsIdempotent(t *testing.T) {
 	}
 	defer raw.Close()
 	raw.SetMaxOpenConns(1)
-	if err := goose.UpTo(raw, "migrations", 48); err != nil {
+	if err := gooseUpTo(raw, "migrations", 48); err != nil {
 		t.Fatalf("migrate to v48: %v", err)
 	}
 	if _, err := raw.Exec(`INSERT INTO jira_boards (id, name, project_key) VALUES (7, 'Board', 'OPS')`); err != nil {
@@ -256,7 +255,7 @@ func TestMigration00049DownUpCycle(t *testing.T) {
 	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		t.Fatal(err)
 	}
-	if err := goose.UpTo(raw, "migrations", 48); err != nil {
+	if err := gooseUpTo(raw, "migrations", 48); err != nil {
 		t.Fatalf("migrate to v48: %v", err)
 	}
 	if _, err := raw.Exec(`INSERT INTO workspace (id, name, memory_jira_last_extracted_ts)
@@ -268,10 +267,10 @@ func TestMigration00049DownUpCycle(t *testing.T) {
 		t.Fatalf("seed jira_issues: %v", err)
 	}
 
-	if err := goose.UpTo(raw, "migrations", 49); err != nil {
+	if err := gooseUpTo(raw, "migrations", 49); err != nil {
 		t.Fatalf("apply 00049: %v", err)
 	}
-	if err := goose.DownTo(raw, "migrations", 48); err != nil {
+	if err := gooseDownTo(raw, "migrations", 48); err != nil {
 		t.Fatalf("goose down to 48: %v", err)
 	}
 
@@ -287,7 +286,7 @@ func TestMigration00049DownUpCycle(t *testing.T) {
 		t.Errorf("workspace.memory_jira_last_extracted_ts after down = %v, want 42", watermark)
 	}
 
-	if err := goose.UpTo(raw, "migrations", 49); err != nil {
+	if err := gooseUpTo(raw, "migrations", 49); err != nil {
 		t.Fatalf("re-apply 00049: %v", err)
 	}
 	var acct int64
@@ -314,7 +313,7 @@ func TestMigration00049DownDropsOtherAccounts(t *testing.T) {
 	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		t.Fatal(err)
 	}
-	if err := goose.UpTo(raw, "migrations", 49); err != nil {
+	if err := gooseUpTo(raw, "migrations", 49); err != nil {
 		t.Fatalf("migrate to v49: %v", err)
 	}
 
@@ -333,7 +332,7 @@ func TestMigration00049DownDropsOtherAccounts(t *testing.T) {
 		}
 	}
 
-	if err := goose.DownTo(raw, "migrations", 48); err != nil {
+	if err := gooseDownTo(raw, "migrations", 48); err != nil {
 		t.Fatalf("goose down to 48: %v", err)
 	}
 
@@ -370,7 +369,7 @@ func TestMigration00049_SeedsAccountForNonIssueJiraData(t *testing.T) {
 	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		t.Fatal(err)
 	}
-	if err := goose.UpTo(raw, "migrations", 48); err != nil {
+	if err := gooseUpTo(raw, "migrations", 48); err != nil {
 		t.Fatalf("migrate to v48: %v", err)
 	}
 
@@ -383,7 +382,7 @@ func TestMigration00049_SeedsAccountForNonIssueJiraData(t *testing.T) {
 		t.Fatalf("seed jira_releases: %v", err)
 	}
 
-	if err := goose.UpTo(raw, "migrations", 49); err != nil {
+	if err := gooseUpTo(raw, "migrations", 49); err != nil {
 		t.Fatalf("apply 00049: %v", err)
 	}
 

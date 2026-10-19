@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/pressly/goose/v3"
 )
 
 func TestSetTerminalSessionAITitle_NeverOverwritesUserOrAI(t *testing.T) {
@@ -124,14 +122,14 @@ func TestMigration00098_AgentStateCheckAndDownUp(t *testing.T) {
 	}
 
 	// DownTo(97), not a bare Down: a later migration can move the tip past 00098.
-	if err := goose.DownTo(d.DB, "migrations", 97); err != nil {
+	if err := gooseDownTo(d.DB, "migrations", 97); err != nil {
 		t.Fatal(err)
 	}
 	cols := columnNames(t, d.DB, "terminal_sessions")
 	if cols["agent_state"] || cols["agent_state_at"] {
 		t.Fatal("Down kept the agent state columns")
 	}
-	if err := goose.Up(d.DB, "migrations"); err != nil {
+	if err := gooseUp(d.DB, "migrations"); err != nil {
 		t.Fatal(err)
 	}
 	cols = columnNames(t, d.DB, "terminal_sessions")

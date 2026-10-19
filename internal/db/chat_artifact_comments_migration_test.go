@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -64,11 +63,11 @@ func TestMigration00082_DownDropsTheTable(t *testing.T) {
 	defer d.Close()
 
 	// DownTo(81), not a bare Down: a later migration can move the tip past 00082.
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 81))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 81))
 	var n int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name LIKE '%chat_artifact_comments%'`).Scan(&n))
 	assert.Zero(t, n, "Down drops the table and its index")
 
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 	assert.True(t, columnNames(t, d.DB, "chat_artifact_comments")["anchor_quote"], "re-Up restores the table")
 }

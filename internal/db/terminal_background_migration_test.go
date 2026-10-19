@@ -4,8 +4,6 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
-
-	"github.com/pressly/goose/v3"
 )
 
 func TestMigration00106_AddsTheBackgroundColumns(t *testing.T) {
@@ -52,7 +50,7 @@ func TestMigration00106_DownDropsAndReUpRestoresTheColumns(t *testing.T) {
 	}
 
 	// DownTo(105), not a bare Down: a later migration can move the tip past 00106.
-	if err := goose.DownTo(d.DB, "migrations", 105); err != nil {
+	if err := gooseDownTo(d.DB, "migrations", 105); err != nil {
 		t.Fatal(err)
 	}
 	cols := columnNames(t, d.DB, "terminal_sessions")
@@ -68,7 +66,7 @@ func TestMigration00106_DownDropsAndReUpRestoresTheColumns(t *testing.T) {
 		t.Fatalf("Down changed the row's other columns: state=%q claude_session_id=%q", state, claudeID)
 	}
 
-	if err := goose.Up(d.DB, "migrations"); err != nil {
+	if err := gooseUp(d.DB, "migrations"); err != nil {
 		t.Fatal(err)
 	}
 	cols = columnNames(t, d.DB, "terminal_sessions")

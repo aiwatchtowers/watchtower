@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 )
 
@@ -22,7 +21,7 @@ func openRawDBAtVersion(t *testing.T, version int64) *sql.DB {
 	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		t.Fatal(err)
 	}
-	if err := goose.UpTo(raw, "migrations", version); err != nil {
+	if err := gooseUpTo(raw, "migrations", version); err != nil {
 		t.Fatalf("migrate to v%d: %v", version, err)
 	}
 	return raw
@@ -31,7 +30,7 @@ func openRawDBAtVersion(t *testing.T, version int64) *sql.DB {
 // applyNextMigration applies exactly one pending goose migration.
 func applyNextMigration(t *testing.T, raw *sql.DB) {
 	t.Helper()
-	if err := goose.UpByOne(raw, "migrations"); err != nil {
+	if err := gooseUpByOne(raw, "migrations"); err != nil {
 		t.Fatalf("apply next migration: %v", err)
 	}
 }

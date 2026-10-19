@@ -103,7 +103,7 @@ func TestOpenExistingRWNeverCreatesNeverMigrates(t *testing.T) {
 	has, err := full.HasColumns("terminal_sessions", "chat_question", "chat_question_at")
 	require.NoError(t, err)
 	assert.True(t, has, "the current schema has the chat question columns")
-	require.NoError(t, goose.DownTo(full.DB, "migrations", 106))
+	require.NoError(t, gooseDownTo(full.DB, "migrations", 106))
 	require.NoError(t, full.Close())
 	require.NoError(t, os.Chmod(path, 0o644))
 
@@ -210,7 +210,7 @@ func TestOpenMarksSchemaSetupFailures(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "watchtower.db")
 	full, err := Open(path)
 	require.NoError(t, err)
-	require.NoError(t, goose.DownTo(full.DB, "migrations", 106))
+	require.NoError(t, gooseDownTo(full.DB, "migrations", 106))
 	// The column 00107 adds is already there, so its ALTER fails.
 	_, err = full.Exec(`ALTER TABLE owner_asks ADD COLUMN level TEXT`)
 	require.NoError(t, err)

@@ -3,7 +3,6 @@ package db
 import (
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -54,7 +53,7 @@ func TestMigration00143_LinearEnumsDownUp(t *testing.T) {
 		VALUES (1, 'backlog', 'linear', 'ENG-1', 'a'), (1, 'backlog', 'jira', 'PROJ-1', 'b')`)
 	require.NoError(t, err)
 
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 142))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 142))
 
 	var n int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM targets WHERE source_type = 'manual'`).Scan(&n))
@@ -72,7 +71,7 @@ func TestMigration00143_LinearEnumsDownUp(t *testing.T) {
 	_, err = d.Exec(`INSERT INTO day_plan_items (day_plan_id, kind, source_type, title) VALUES (1, 'backlog', 'linear', 'c')`)
 	require.Error(t, err, "the old CHECK refuses linear")
 
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 	assert.Equal(t, before, rebuiltObjects(t, d), "every index, trigger and the view come back verbatim")
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM target_links`).Scan(&n))
 	assert.Equal(t, 1, n)
@@ -99,7 +98,7 @@ func TestMigration00143_LinearEnumsDownUp(t *testing.T) {
 // id is never handed out again, after the Up or after a Down and Up.
 func TestMigration00143_KeepsAutoincrementSequence(t *testing.T) {
 	d := openTestDB(t)
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 142))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 142))
 	_, err := d.Exec(`INSERT INTO day_plans (user_id, plan_date, generated_at) VALUES ('U1', '2026-10-18', '2026-10-18T08:00:00Z')`)
 	require.NoError(t, err)
 
@@ -123,7 +122,7 @@ func TestMigration00143_KeepsAutoincrementSequence(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 	for table := range inserts {
 		id := insert(table)
 		assert.Greater(t, id, top[table], "%s reused a deleted id after the Up", table)
@@ -132,8 +131,8 @@ func TestMigration00143_KeepsAutoincrementSequence(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 142))
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 142))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 	for table := range inserts {
 		assert.Greater(t, insert(table), top[table], "%s reused a deleted id after Down and Up", table)
 	}

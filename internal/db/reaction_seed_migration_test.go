@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 )
 
@@ -30,7 +29,7 @@ func TestMigration00073_StampsAccountsThatAlreadyUseTheFeature(t *testing.T) {
 	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		t.Fatal(err)
 	}
-	if err := goose.UpTo(raw, "migrations", 72); err != nil {
+	if err := gooseUpTo(raw, "migrations", 72); err != nil {
 		t.Fatalf("migrate to v72: %v", err)
 	}
 
@@ -46,7 +45,7 @@ func TestMigration00073_StampsAccountsThatAlreadyUseTheFeature(t *testing.T) {
 		t.Fatalf("seed ledger: %v", err)
 	}
 
-	if err := goose.UpByOne(raw, "migrations"); err != nil {
+	if err := gooseUpByOne(raw, "migrations"); err != nil {
 		t.Fatalf("apply 00073: %v", err)
 	}
 

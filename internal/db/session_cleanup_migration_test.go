@@ -3,8 +3,6 @@ package db
 import (
 	"path/filepath"
 	"testing"
-
-	"github.com/pressly/goose/v3"
 )
 
 func TestMigrationSessionCleanup_UpCreatesTableAndColumns(t *testing.T) {
@@ -63,7 +61,7 @@ func TestMigrationSessionCleanup_DownDropsAndReUpRestores(t *testing.T) {
 	}
 
 	// DownTo(110), not a bare Down: a later migration can move the tip past 00111.
-	if err := goose.DownTo(d.DB, "migrations", 110); err != nil {
+	if err := gooseDownTo(d.DB, "migrations", 110); err != nil {
 		t.Fatal(err)
 	}
 	cols := columnNames(t, d.DB, "terminal_sessions")
@@ -78,7 +76,7 @@ func TestMigrationSessionCleanup_DownDropsAndReUpRestores(t *testing.T) {
 		t.Fatalf("the row did not survive Down intact: state=%q err=%v", state, err)
 	}
 
-	if err := goose.Up(d.DB, "migrations"); err != nil {
+	if err := gooseUp(d.DB, "migrations"); err != nil {
 		t.Fatal(err)
 	}
 	cols = columnNames(t, d.DB, "terminal_sessions")

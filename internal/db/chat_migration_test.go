@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
@@ -54,7 +53,7 @@ func rawDBAt(t *testing.T, version int64) *sql.DB {
 	raw.SetMaxOpenConns(1)
 	_, err = raw.Exec("PRAGMA foreign_keys=ON")
 	require.NoError(t, err)
-	require.NoError(t, goose.UpTo(raw, "migrations", version))
+	require.NoError(t, gooseUpTo(raw, "migrations", version))
 	return raw
 }
 
@@ -179,14 +178,14 @@ func TestMigration00076_DownUpKeepsMessages(t *testing.T) {
 	// DownTo(75), not a bare Down: a later migration (e.g. 00077) can move the
 	// tip past 00076, and a bare Down would roll back only the tip instead of
 	// the migration this test targets.
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 75))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 75))
 	var n int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM chat_messages`).Scan(&n))
 	assert.Equal(t, 2, n, "Down keeps the adopted tables and their rows")
 	assert.False(t, columnNames(t, d.DB, "chat_messages")["parent_id"], "Down removes the 00076 columns")
 	assert.True(t, columnNames(t, d.DB, "chat_messages")["turn_id"], "Down keeps the adopted shape")
 
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 	path, err := d.ActiveChatPath(conv)
 	require.NoError(t, err)
 	require.Len(t, path, 2)

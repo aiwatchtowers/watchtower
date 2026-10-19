@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,9 +25,9 @@ func TestMigration00133_MarksOnlyExistingWorkbenchesCarryPending(t *testing.T) {
 	fresh := newTestWorkbench(t, d)
 	assert.False(t, carryPending(t, d, fresh), "a fresh install marks nothing")
 
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 132))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 132))
 	assert.False(t, columnNames(t, d.DB, "projects")["methodology_carry_pending"])
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 
 	assert.True(t, carryPending(t, d, fresh), "it existed at the upgrade")
 	later := newTestWorkbench(t, d)

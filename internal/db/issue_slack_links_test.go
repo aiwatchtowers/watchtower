@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,7 +16,7 @@ func TestMigration00144_CopiesJiraLinksAndDownUp(t *testing.T) {
 	require.NoError(t, err)
 	defer d.Close()
 
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 143))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 143))
 	_, err = d.Exec(`INSERT INTO jira_slack_links (id, issue_key, channel_id, message_ts, link_type)
 		VALUES (7, 'PROJ-1', '1:C1', '1.1', 'mention'), (9, 'PROJ-2', '', '', 'track'), (50, 'GONE-1', '', '', 'track')`)
 	require.NoError(t, err)
@@ -25,7 +24,7 @@ func TestMigration00144_CopiesJiraLinksAndDownUp(t *testing.T) {
 	// still remembers 50, so a new row above 50 proves the mark was carried.
 	_, err = d.Exec(`DELETE FROM jira_slack_links WHERE id = 50`)
 	require.NoError(t, err)
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 
 	links, err := d.GetIssueSlackLinksByKeys("jira", []string{"PROJ-1", "PROJ-2"})
 	require.NoError(t, err)
@@ -44,11 +43,11 @@ func TestMigration00144_CopiesJiraLinksAndDownUp(t *testing.T) {
 	assert.Greater(t, maxID, 50)
 
 	// Down keeps the Jira links and drops the Linear one; Up restores them.
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 143))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 143))
 	var n int
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM jira_slack_links`).Scan(&n))
 	assert.Equal(t, 2, n)
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM issue_slack_links WHERE tracker = 'jira'`).Scan(&n))
 	assert.Equal(t, 2, n)
 }
@@ -172,7 +171,7 @@ func TestMigration00144_CarriesStreamDigestAndMentionSequences(t *testing.T) {
 	require.NoError(t, err)
 	defer d.Close()
 
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 143))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 143))
 	_, err = d.Exec(`INSERT INTO stream_digests (id, source, account_id, period_from, period_to) VALUES (40, 'jira', 1, 'a', 'b')`)
 	require.NoError(t, err)
 	_, err = d.Exec(`DELETE FROM stream_digests WHERE id = 40`)
@@ -185,7 +184,7 @@ func TestMigration00144_CarriesStreamDigestAndMentionSequences(t *testing.T) {
 	require.NoError(t, err)
 	_, err = d.Exec(`DELETE FROM idea_mentions WHERE id = 60`)
 	require.NoError(t, err)
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 
 	sd, err := d.InsertStreamDigest(StreamDigest{Source: "linear", AccountID: 1, PeriodFrom: "a", PeriodTo: "b", TopicsJSON: "[]"})
 	require.NoError(t, err)

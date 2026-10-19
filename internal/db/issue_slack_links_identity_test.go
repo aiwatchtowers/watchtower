@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -130,7 +129,7 @@ func TestMigration00067DownUpCycle(t *testing.T) {
 		IssueKey: "PROJ-1", ChannelID: "1:C1", TrackID: &second, LinkType: "track",
 	}))
 
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 66))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 66))
 
 	// The legacy shared identity is back: the two track rows differ only in
 	// track_id, so the Down keeps one of them and a third write is refused.
@@ -142,7 +141,7 @@ func TestMigration00067DownUpCycle(t *testing.T) {
 		VALUES ('PROJ-1', '1:C1', '', 43, 'track')`)
 	assert.Error(t, err, "the shared UNIQUE(issue_key, channel_id, message_ts) must be restored")
 
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 
 	third := 43
 	require.NoError(t, d.UpsertIssueSlackLink(IssueSlackLink{
@@ -193,7 +192,7 @@ func TestMigration00067_DedupesLegacyRowsTheNewIndexesCannotHold(t *testing.T) {
 	require.NoError(t, err)
 	defer d.Close()
 
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 66))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 66))
 
 	// PROJ-1: two rows legal under UNIQUE(issue_key, channel_id, message_ts) but
 	// illegal under the track identity — what the old upsert could write, since
@@ -221,7 +220,7 @@ func TestMigration00067_DedupesLegacyRowsTheNewIndexesCannotHold(t *testing.T) {
 		VALUES ('PROJ-4', '1:C1', '12', 'mention'), ('PROJ-4', '1:C11', '2', 'mention')`)
 	require.NoError(t, err)
 
-	require.NoError(t, goose.Up(d.DB, "migrations"), "the migration must survive legacy rows")
+	require.NoError(t, gooseUp(d.DB, "migrations"), "the migration must survive legacy rows")
 
 	links, err := d.GetJiraSlackLinksByIssue("PROJ-1")
 	require.NoError(t, err)

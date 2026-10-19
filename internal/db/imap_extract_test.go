@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -99,7 +98,7 @@ func TestMigration00135_DownUpKeepsRowsAndSequences(t *testing.T) {
 	_, err = d.Exec(`DELETE FROM idea_mentions WHERE id = ?`, goneMention)
 	require.NoError(t, err)
 
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 134))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 134))
 	assert.False(t, columnNames(t, d.DB, "email_accounts")["ideas_email_floor"], "Down dropped the floor column")
 	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM stream_digests WHERE id = ?`, gmailDigest))
 	assert.Zero(t, countRows(t, d, `SELECT COUNT(*) FROM stream_digests WHERE source = 'imap'`))
@@ -107,7 +106,7 @@ func TestMigration00135_DownUpKeepsRowsAndSequences(t *testing.T) {
 	assert.Zero(t, countRows(t, d, `SELECT COUNT(*) FROM idea_mentions WHERE source = 'imap'`))
 	assert.Greater(t, insert(sd, "gmail"), gone, "Down carried the stream_digests sequence")
 
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM stream_digests WHERE id = ?`, gmailDigest))
 	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM idea_mentions WHERE id = ?`, gmailMention))
 	assert.Greater(t, insert(sd, "imap"), gone+1, "Up carried the stream_digests sequence")

@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -76,13 +75,13 @@ func TestMigration00127_Backfill(t *testing.T) {
 	defer d.Close()
 	wb := newTestWorkbench(t, d)
 
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 126))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 126))
 	_, err = d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path, claude_session_id, created_at)
 		VALUES (?, 'claude', 'T', '/tmp/acme', 's-old', '2026-10-01T10:00:00Z')`, wb)
 	require.NoError(t, err)
 	_, err = d.Exec(`INSERT INTO terminal_sessions (project_id, kind, title, folder_path) VALUES (?, 'shell', 'S', '/tmp/acme')`, wb)
 	require.NoError(t, err)
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 
 	var n int
 	var id, at string

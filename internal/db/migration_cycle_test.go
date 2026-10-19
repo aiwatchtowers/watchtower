@@ -30,14 +30,14 @@ func TestMigrationsDownAllUpAllRoundTrip(t *testing.T) {
 		t.Fatalf("reading goose version: %v", err)
 	}
 
-	if err := goose.DownTo(d.DB, "migrations", 0); err != nil {
+	if err := gooseDownTo(d.DB, "migrations", 0); err != nil {
 		t.Fatalf("goose down to 0: %v", err)
 	}
 	if v, err := goose.GetDBVersion(d.DB); err != nil || v != 0 {
 		t.Fatalf("goose version after down-all = %d (err %v), want 0", v, err)
 	}
 
-	if err := goose.Up(d.DB, "migrations"); err != nil {
+	if err := gooseUp(d.DB, "migrations"); err != nil {
 		t.Fatalf("goose up after down-all: %v", err)
 	}
 	if v, err := goose.GetDBVersion(d.DB); err != nil || v != latest {
@@ -69,13 +69,13 @@ func normalizeRenamedTables(dump string) string {
 func openAfterMigrationCycle(t *testing.T, version int64) *DB {
 	t.Helper()
 	raw := openRawDBAtVersion(t, version)
-	if err := goose.DownTo(raw, "migrations", version-1); err != nil {
+	if err := gooseDownTo(raw, "migrations", version-1); err != nil {
 		t.Fatalf("goose down to %d: %v", version-1, err)
 	}
 	if v, err := goose.GetDBVersion(raw); err != nil || v >= version {
 		t.Fatalf("goose version after down = %d (err %v), want below %d", v, err, version)
 	}
-	if err := goose.Up(raw, "migrations"); err != nil {
+	if err := gooseUp(raw, "migrations"); err != nil {
 		t.Fatalf("goose up after down: %v", err)
 	}
 	return &DB{DB: raw}

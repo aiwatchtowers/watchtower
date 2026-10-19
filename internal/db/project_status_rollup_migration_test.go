@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -54,7 +53,7 @@ func TestMigration00085_RecomputesExistingBoards(t *testing.T) {
 	_, err = raw.Exec(`UPDATE targets SET updated_at = '2000-01-01T00:00:00Z'`)
 	require.NoError(t, err)
 
-	require.NoError(t, goose.Up(raw, "migrations"))
+	require.NoError(t, gooseUp(raw, "migrations"))
 
 	status := func(id int64) string {
 		var s string
@@ -93,8 +92,8 @@ func TestMigration00085_DownDropsTheTriggers(t *testing.T) {
 		return n
 	}
 	require.Equal(t, 3, countTriggers(raw))
-	require.NoError(t, goose.DownTo(raw, "migrations", 82))
+	require.NoError(t, gooseDownTo(raw, "migrations", 82))
 	assert.Zero(t, countTriggers(raw))
-	require.NoError(t, goose.UpTo(raw, "migrations", 85))
+	require.NoError(t, gooseUpTo(raw, "migrations", 85))
 	assert.Equal(t, 3, countTriggers(raw))
 }

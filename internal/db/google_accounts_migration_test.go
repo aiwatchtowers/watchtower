@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 )
 
@@ -92,13 +91,13 @@ func TestMigration00043_UpgradesLegacySingleAccount(t *testing.T) {
 	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		t.Fatal(err)
 	}
-	if err := goose.UpTo(raw, "migrations", 42); err != nil {
+	if err := gooseUpTo(raw, "migrations", 42); err != nil {
 		t.Fatalf("migrate to v42: %v", err)
 	}
 
 	seedLegacySingleAccountFixture(t, raw)
 
-	if err := goose.UpByOne(raw, "migrations"); err != nil {
+	if err := gooseUpByOne(raw, "migrations"); err != nil {
 		t.Fatalf("apply 00043: %v", err)
 	}
 
@@ -204,12 +203,12 @@ func TestMigration00043DownUpCycle(t *testing.T) {
 	// 00043, and this test's legacy-shape assertions require 00043 itself
 	// rolled back — a plain Down would only revert whatever is on top (the
 	// db_test.go DownTo precedent).
-	if err := goose.DownTo(d.DB, "migrations", 42); err != nil {
+	if err := gooseDownTo(d.DB, "migrations", 42); err != nil {
 		t.Fatalf("goose down: %v", err)
 	}
 	assertDownMigrationRestoredLegacyShape(t, d)
 
-	if err := goose.Up(d.DB, "migrations"); err != nil {
+	if err := gooseUp(d.DB, "migrations"); err != nil {
 		t.Fatalf("goose up after down: %v", err)
 	}
 	assertUpMigrationReappliedShape(t, d)

@@ -3,7 +3,6 @@ package db
 import (
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,7 +36,7 @@ func TestMigration00134_ClearsMessagesRawJSON(t *testing.T) {
 		('C1', '1700000002.000001', 'U1', 'empty', '{}')`)
 	require.NoError(t, err)
 
-	require.NoError(t, goose.UpTo(raw, "migrations", 134))
+	require.NoError(t, gooseUpTo(raw, "migrations", 134))
 
 	var n int
 	require.NoError(t, raw.QueryRow(`SELECT COUNT(*) FROM messages WHERE raw_json != '{}'`).Scan(&n))

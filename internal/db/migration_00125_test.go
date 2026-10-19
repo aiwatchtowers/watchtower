@@ -20,7 +20,7 @@ func openAt124(t *testing.T, prepare func(*DB)) (path, wantTable, wantView strin
 	require.NoError(t, err)
 	defer d.Close()
 	wantTable, wantView = agentLogSchemaSQL(t, d)
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 124))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 124))
 	prepare(d)
 	return path, wantTable, wantView
 }

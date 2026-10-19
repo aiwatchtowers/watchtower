@@ -4,7 +4,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -48,7 +47,7 @@ func TestMigration00100_DropsDocumentsAndTheirComments(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	require.NoError(t, goose.Up(raw, "migrations"))
+	require.NoError(t, gooseUp(raw, "migrations"))
 
 	commentIDs := func() []int64 {
 		t.Helper()
@@ -122,7 +121,7 @@ func TestMigration00100_DownUpIsClean(t *testing.T) {
 	require.NoError(t, err)
 
 	// DownTo(99), not a bare Down: a later migration can move the tip past 00100.
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 99))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 99))
 	cols := columnNames(t, d.DB, "project_comments")
 	for _, c := range []string{"document_id", "anchor_quote", "anchor_prefix", "anchor_suffix", "anchor_heading"} {
 		assert.True(t, cols[c], "project_comments.%s is back", c)
@@ -136,7 +135,7 @@ func TestMigration00100_DownUpIsClean(t *testing.T) {
 	_, err = d.Exec(`INSERT INTO project_documents (project_id, rel_path) VALUES (?, 'a.md')`, pid)
 	require.NoError(t, err)
 
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM project_comments WHERE id = ?`, cid).Scan(&n))
 	assert.Equal(t, 1, n, "a target comment survives the re-Up")
 	_, err = d.Exec(`INSERT INTO owner_asks (project_id, kind, title) VALUES (?, 'question', 'Again?')`, pid)

@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	_ "modernc.org/sqlite"
@@ -23,7 +22,7 @@ func TestMigration00112_ToolTrustPerSurface(t *testing.T) {
 	require.NoError(t, err)
 	defer raw.Close()
 	raw.SetMaxOpenConns(1)
-	require.NoError(t, goose.UpTo(raw, "migrations", 111))
+	require.NoError(t, gooseUpTo(raw, "migrations", 111))
 
 	_, err = raw.Exec(`INSERT OR REPLACE INTO tool_trust (tool, trust) VALUES
 		('create_target', 'execute'),
@@ -32,7 +31,7 @@ func TestMigration00112_ToolTrustPerSurface(t *testing.T) {
 		('gone_tool', 'execute')`)
 	require.NoError(t, err)
 
-	require.NoError(t, goose.UpByOne(raw, "migrations"))
+	require.NoError(t, gooseUpByOne(raw, "migrations"))
 
 	rows, err := raw.Query(`SELECT tool, surface, trust FROM tool_trust ORDER BY tool, surface`)
 	require.NoError(t, err)
@@ -62,7 +61,7 @@ func TestMigration00112_ToolTrustPerSurface(t *testing.T) {
 	// A tool whose surfaces now differ folds to ask on the way down (MIN).
 	_, err = raw.Exec(`UPDATE tool_trust SET trust = 'ask' WHERE tool = 'remind_me' AND surface = 'main'`)
 	require.NoError(t, err)
-	require.NoError(t, goose.Down(raw, "migrations"))
+	require.NoError(t, gooseDown(raw, "migrations"))
 	down := map[string]string{}
 	rows, err = raw.Query(`SELECT tool, trust FROM tool_trust`)
 	require.NoError(t, err)

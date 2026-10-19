@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -431,12 +430,12 @@ func TestMigration00103_DefaultsToFourteen(t *testing.T) {
 	leaf := closedLeaf(t, d, pid, "done", 30*oneDay)
 
 	// DownTo(102), not a bare Down: a later migration can move the tip past 00103.
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 102))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 102))
 	assert.False(t, columnNames(t, d.DB, "projects")["archive_after_days"], "Down kept the column")
 	assert.Zero(t, countRows(t, d, `SELECT COUNT(*) FROM sqlite_master WHERE name = 'workbench_target_archive'`))
 	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM targets WHERE id = ?`, leaf))
 
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 	w, err := d.GetWorkbench(pid)
 	require.NoError(t, err)
 	assert.Equal(t, 14, w.ArchiveAfterDays, "an existing workbench gets the default")

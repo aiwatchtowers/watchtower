@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 )
 
@@ -58,7 +57,7 @@ func TestMigration00053_FlipsProposedDecisionsToActive(t *testing.T) {
 	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		t.Fatal(err)
 	}
-	if err := goose.UpTo(raw, "migrations", 52); err != nil {
+	if err := gooseUpTo(raw, "migrations", 52); err != nil {
 		t.Fatalf("migrate to v52: %v", err)
 	}
 
@@ -74,7 +73,7 @@ func TestMigration00053_FlipsProposedDecisionsToActive(t *testing.T) {
 		t.Fatalf("seed rejected decision: %v", err)
 	}
 
-	if err := goose.UpByOne(raw, "migrations"); err != nil {
+	if err := gooseUpByOne(raw, "migrations"); err != nil {
 		t.Fatalf("apply 00053: %v", err)
 	}
 
@@ -128,11 +127,11 @@ func TestMigration00053DownDropsMarkerColumns(t *testing.T) {
 	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		t.Fatal(err)
 	}
-	if err := goose.Up(raw, "migrations"); err != nil {
+	if err := gooseUp(raw, "migrations"); err != nil {
 		t.Fatalf("migrate up: %v", err)
 	}
 
-	if err := goose.DownTo(raw, "migrations", 52); err != nil {
+	if err := gooseDownTo(raw, "migrations", 52); err != nil {
 		t.Fatalf("goose down to 52: %v", err)
 	}
 

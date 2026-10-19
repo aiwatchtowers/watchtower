@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -77,7 +76,7 @@ func TestMigration00092_RewritesJiraTimestampsToUTC(t *testing.T) {
 		jiraWire(floor, msk), jiraWire(later, cet), jiraWire(floor, msk), jiraWire(later, cet))
 	require.NoError(t, err)
 
-	require.NoError(t, goose.Up(raw, "migrations"))
+	require.NoError(t, gooseUp(raw, "migrations"))
 
 	col := func(query string, args ...any) string {
 		t.Helper()

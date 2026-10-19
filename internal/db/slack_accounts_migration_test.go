@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/pressly/goose/v3"
 	_ "modernc.org/sqlite"
 )
 
@@ -69,7 +68,7 @@ func TestMigration00048_UpgradesLegacySingleAccount(t *testing.T) {
 	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		t.Fatal(err)
 	}
-	if err := goose.UpTo(raw, "migrations", 43); err != nil {
+	if err := gooseUpTo(raw, "migrations", 43); err != nil {
 		t.Fatalf("migrate to v43: %v", err)
 	}
 
@@ -99,7 +98,7 @@ func TestMigration00048_UpgradesLegacySingleAccount(t *testing.T) {
 		t.Fatalf("seed inbox_items (gmail): %v", err)
 	}
 
-	if err := goose.UpTo(raw, "migrations", 48); err != nil {
+	if err := gooseUpTo(raw, "migrations", 48); err != nil {
 		t.Fatalf("apply through 00048: %v", err)
 	}
 
@@ -185,7 +184,7 @@ func TestMigration00048_PreservesSearchOverExistingMessages(t *testing.T) {
 	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		t.Fatal(err)
 	}
-	if err := goose.UpTo(raw, "migrations", 43); err != nil {
+	if err := gooseUpTo(raw, "migrations", 43); err != nil {
 		t.Fatalf("migrate to v43: %v", err)
 	}
 
@@ -199,7 +198,7 @@ func TestMigration00048_PreservesSearchOverExistingMessages(t *testing.T) {
 		t.Fatalf("seed messages (fires messages_ai trigger): %v", err)
 	}
 
-	if err := goose.UpTo(raw, "migrations", 48); err != nil {
+	if err := gooseUpTo(raw, "migrations", 48); err != nil {
 		t.Fatalf("apply through 00048: %v", err)
 	}
 
@@ -233,7 +232,7 @@ func TestMigration00048_PreservesGmailJiraSenderLearnedRules(t *testing.T) {
 	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		t.Fatal(err)
 	}
-	if err := goose.UpTo(raw, "migrations", 43); err != nil {
+	if err := gooseUpTo(raw, "migrations", 43); err != nil {
 		t.Fatalf("migrate to v43: %v", err)
 	}
 
@@ -248,7 +247,7 @@ func TestMigration00048_PreservesGmailJiraSenderLearnedRules(t *testing.T) {
 	seed("sender:PROJ-123")            // Jira — must NOT get namespaced
 	seed("sender:watchtower")          // watchtower detector — must NOT get namespaced
 
-	if err := goose.UpTo(raw, "migrations", 48); err != nil {
+	if err := gooseUpTo(raw, "migrations", 48); err != nil {
 		t.Fatalf("apply through 00048: %v", err)
 	}
 
@@ -297,7 +296,7 @@ func TestMigration00048DownUpCycle(t *testing.T) {
 	if _, err := raw.Exec("PRAGMA foreign_keys=ON"); err != nil {
 		t.Fatal(err)
 	}
-	if err := goose.UpTo(raw, "migrations", 43); err != nil {
+	if err := gooseUpTo(raw, "migrations", 43); err != nil {
 		t.Fatalf("migrate to v43: %v", err)
 	}
 
@@ -310,7 +309,7 @@ func TestMigration00048DownUpCycle(t *testing.T) {
 		t.Fatalf("seed channel scope_key: %v", err)
 	}
 
-	if err := goose.UpTo(raw, "migrations", 48); err != nil {
+	if err := gooseUpTo(raw, "migrations", 48); err != nil {
 		t.Fatalf("apply through 00048: %v", err)
 	}
 
@@ -328,7 +327,7 @@ func TestMigration00048DownUpCycle(t *testing.T) {
 		t.Fatalf("channel scope_key after up = %q, want channel:1:C1", channelKey)
 	}
 
-	if err := goose.DownTo(raw, "migrations", 43); err != nil {
+	if err := gooseDownTo(raw, "migrations", 43); err != nil {
 		t.Fatalf("goose down to 43: %v", err)
 	}
 
@@ -345,7 +344,7 @@ func TestMigration00048DownUpCycle(t *testing.T) {
 		t.Errorf("channel scope_key after down = %q, want channel:C1 (original bare form)", channelKey)
 	}
 
-	if err := goose.UpTo(raw, "migrations", 48); err != nil {
+	if err := gooseUpTo(raw, "migrations", 48); err != nil {
 		t.Fatalf("re-apply through 00048: %v", err)
 	}
 	if err := raw.QueryRow(`SELECT scope_key FROM inbox_learned_rules WHERE scope_key LIKE 'sender:%'`).Scan(&senderKey); err != nil {

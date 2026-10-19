@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -36,7 +35,7 @@ func TestMigration00101_DownUpKeepsOtherRows(t *testing.T) {
 	require.NoError(t, d.UpsertPRState(PRState{WorkbenchID: pid, Ref: "pr:7", State: "open", CheckedAt: "2026-10-03T10:00:00Z"}))
 
 	// DownTo(100), not a bare Down: a later migration can move the tip past 00101.
-	require.NoError(t, goose.DownTo(d.DB, "migrations", 100))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 100))
 	cols := columnNames(t, d.DB, "terminal_sessions")
 	for _, c := range []string{"finished_at", "finish_summary", "agent_failed_at", "agent_error"} {
 		assert.False(t, cols[c], "Down kept %s", c)
@@ -48,7 +47,7 @@ func TestMigration00101_DownUpKeepsOtherRows(t *testing.T) {
 	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM terminal_sessions WHERE id = ?`, sid))
 	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM targets WHERE id = ?`, target))
 
-	require.NoError(t, goose.Up(d.DB, "migrations"))
+	require.NoError(t, gooseUp(d.DB, "migrations"))
 	cols = columnNames(t, d.DB, "terminal_sessions")
 	for _, c := range []string{"finished_at", "finish_summary", "agent_failed_at", "agent_error"} {
 		assert.True(t, cols[c], "re-Up did not restore %s", c)

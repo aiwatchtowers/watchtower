@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pressly/goose/v3"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -41,7 +40,7 @@ func TestMigration00090_ResetsWatermarksForMissingStatusCategoryDate(t *testing.
 	issue("GONE-1", "GONE", changed, 0)
 	issue("GONE-2", "GONE", "", 1)
 
-	require.NoError(t, goose.Up(raw, "migrations"))
+	require.NoError(t, gooseUp(raw, "migrations"))
 
 	state := func(project string) (lastSynced string, issuesSynced int, lastError string) {
 		t.Helper()
