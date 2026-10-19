@@ -24,6 +24,27 @@ final class DesignKitComponentsTests: XCTestCase {
         XCTAssertTrue(reported)
     }
 
+    func testPickerSelectsTheTappedSegmentAndKeepsTheSelectedOne() {
+        var selection = "b"
+        let binding = Binding(get: { selection }, set: { selection = $0 })
+        let flags = ["a", "b", "c"].map { KitSegmentedPicker<String>.isOn($0, selection: binding) }
+        XCTAssertEqual(flags.map(\.wrappedValue), [false, true, false])
+        flags[2].wrappedValue = true
+        XCTAssertEqual(selection, "c")
+        XCTAssertEqual(flags.filter(\.wrappedValue).count, 1)
+        flags[2].wrappedValue = false
+        XCTAssertEqual(selection, "c")
+    }
+
+    func testPickerRendersOneToggleOnPerSelection() throws {
+        let picker = KitSegmentedPicker(selection: .constant(2), segments: [
+            KitSegment(value: 1, title: "One"), KitSegment(value: 2, title: "Two", systemImage: "star")
+        ])
+        let toggles = try picker.inspect().findAll(ViewType.Toggle.self)
+        XCTAssertEqual(toggles.count, 2)
+        XCTAssertEqual(try toggles.filter { try $0.isOn() }.count, 1)
+    }
+
     func testSectionHeaderHidesAZeroCount() throws {
         let view = SectionHeader(title: "Asks", systemImage: "x", count: 0)
         XCTAssertThrowsError(try view.inspect().find(text: "0"))

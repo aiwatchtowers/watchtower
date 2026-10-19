@@ -40,7 +40,8 @@ Shadows exist only on floating buttons (`FloatingButtonLabel`).
 | `.kitQuiet` | `.borderless`, `.plain` text buttons | low-emphasis text actions |
 | `.kitDestructive` | red bordered buttons | delete, discard; confirm first |
 | `.kitIcon(isOn:)` | icon buttons | header and toolbar icon buttons, toggled or not |
-| `SegmentedToggleStyle` | `Picker` with `.segmented` | a capsule of `Toggle`s, one per segment, via `.toggleStyle(SegmentedToggleStyle(...))` (the Workbench header's view buttons); you manage the selection yourself |
+| `KitSegmentedPicker` | `Picker` with `.segmented` | pick one of 2–5 values: `KitSegmentedPicker(selection:segments:)`, the Workbench header's capsule with exactly one segment on |
+| `SegmentedToggleStyle` | — | the multi-toggle header style: a capsule of independent `Toggle`s via `.toggleStyle(SegmentedToggleStyle(...))` (the Workbench header's view buttons); you manage each state yourself |
 | `Chip`, `CountBadge`, `OutlineTag` | hand-drawn capsules | status or priority chip; count badge; outlined tag. Four recipes kept apart on purpose (merging would change pixels) |
 | `MenuLabel` | default `Menu` chrome | the label of a menu or read-only value in a panel |
 | `SectionHeader` | bold `Text` plus `Divider()` | the title of a section, with optional count |
@@ -75,7 +76,7 @@ New code under `Sources/Views/` and `Sources/App/` (not `DesignSystem/`) fails `
 | `kit_no_form` | `Form { }` | stock grouped forms look foreign; use `SettingsSection` / `SettingRow` |
 | `kit_no_groupbox` | `GroupBox` | hard stock chrome; use `.card()` or `SettingsSection` |
 | `kit_no_stock_buttons` | `.buttonStyle(.bordered)`, `.borderedProminent` | clumsy next to the app; use the `.kit*` styles |
-| `kit_no_segmented_picker` | `.pickerStyle(.segmented)` | build segments from `Toggle`s with `SegmentedToggleStyle`, or use a menu `Picker` |
+| `kit_no_segmented_picker` | `.pickerStyle(.segmented)` | use `KitSegmentedPicker` (single choice), or a menu `Picker` |
 | `kit_no_rounded_field` | `.textFieldStyle(.roundedBorder)` | use `.textFieldStyle(.kit)` |
 | `kit_no_raw_metrics` | numeric literals in `.padding`, `spacing:`, `cornerRadius:`, `.font(.system(size:))` | eleven paddings and ten radii is how screens drift; use `Spacing`, `Radius`, `IconSize` |
 | `kit_no_color_opacity` | `Color.x.opacity(0.n)` fills and tints | use `Fill` and `ChipTint` (the view `.opacity` for dimming is fine) |

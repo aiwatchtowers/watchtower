@@ -19,6 +19,7 @@ struct DesignSystemGalleryContent: View {
             GallerySection(title: "Tokens") { GalleryTokens() }
             GallerySection(title: "Buttons") { GalleryButtons() }
             GallerySection(title: "Segmented toggle") { GallerySegments() }
+            GallerySection(title: "Segmented picker") { GalleryPicker() }
             GallerySection(title: "Chips and tags") { GalleryChips() }
             GallerySection(title: "Section header") { GallerySectionHeaders() }
             GallerySection(title: "Card") { GalleryCards() }
@@ -176,6 +177,19 @@ private struct GallerySegments: View {
                 .toggleStyle(SegmentedToggleStyle(joinsChevron: index == 1, isHovered: index == 2) { _ in })
             }
         }
+    }
+}
+
+/// The single-choice capsule: one segment on at a time.
+private struct GalleryPicker: View {
+    @State private var choice = "Week"
+
+    var body: some View {
+        KitSegmentedPicker(selection: $choice, segments: [
+            KitSegment(value: "Day", title: "Day"),
+            KitSegment(value: "Week", title: "Week", systemImage: "calendar"),
+            KitSegment(value: "Month", title: "Month")
+        ])
     }
 }
 

@@ -188,7 +188,7 @@ custom_rules:
     regex: '\.pickerStyle\(\s*\.segmented\s*\)'
     included: '.*/Sources/(Views|App)/.*\.swift'
     excluded: '.*/Sources/Views/DesignSystem/.*'
-    message: 'Use SegmentedToggleStyle.'
+    message: 'Use KitSegmentedPicker (DesignSystem).'
     severity: error
   kit_no_rounded_field:
     name: 'kit_no_rounded_field'
