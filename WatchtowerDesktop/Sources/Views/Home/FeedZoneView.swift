@@ -14,6 +14,9 @@ struct FeedZoneView: View {
     let onExpand: (Bool) -> Void
     /// The clock row stamps are labelled against.
     var now = Date()
+    /// The builder's calendar: its zone formats every time, so rows and
+    /// events agree with the NOW label and the chips.
+    var calendar: Calendar = .current
 
     /// The sources of the rows above NOW, in the order their failure lines show.
     private static let waitingSources: [FeedSource] = [.inbox, .proposals, .reminders, .targets]
@@ -32,7 +35,7 @@ struct FeedZoneView: View {
                     .foregroundStyle(.secondary)
                     .padding(.top, 4)
                 ForEach(day.events) { event in
-                    FeedEventRow(event: event, muted: true, onLink: onLink)
+                    FeedEventRow(event: event, muted: true, calendar: calendar, onLink: onLink)
                 }
             }
         }
@@ -71,7 +74,7 @@ struct FeedZoneView: View {
             }
         } else {
             ForEach(feed.waiting) { row in
-                FeedRowView(row: row, error: errors[row.id], now: now, onLink: onLink, onAct: onAct)
+                FeedRowView(row: row, error: errors[row.id], now: now, calendar: calendar, onLink: onLink, onAct: onAct)
             }
         }
         if feed.hiddenWaiting > 0 {
@@ -91,7 +94,7 @@ struct FeedZoneView: View {
 
     @ViewBuilder private var laterPart: some View {
         if let ongoing = feed.ongoing {
-            FeedEventRow(event: ongoing, muted: false, onLink: onLink)
+            FeedEventRow(event: ongoing, muted: false, calendar: calendar, onLink: onLink)
         }
         if feed.failed.contains(.calendar) {
             FeedStatusLine(text: Self.failureLine(.calendar), icon: .failed)
@@ -103,7 +106,7 @@ struct FeedZoneView: View {
             }
         } else {
             ForEach(feed.laterToday) { event in
-                FeedEventRow(event: event, muted: false, onLink: onLink)
+                FeedEventRow(event: event, muted: false, calendar: calendar, onLink: onLink)
             }
         }
     }
@@ -137,6 +140,7 @@ struct FeedRowView: View {
     let row: FeedRow
     let error: String?
     let now: Date
+    let calendar: Calendar
     let onLink: (HomeLink) -> Void
     let onAct: (FeedAction, FeedRef) async -> Void
     @State private var hovering = false
@@ -144,7 +148,7 @@ struct FeedRowView: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: FeedRowMetrics.spacing) {
-            Text(Self.stampLabel(row.stamp, now: now))
+            Text(Self.stampLabel(row.stamp, now: now, calendar: calendar))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(row.read ? .tertiary : .secondary)
                 .frame(width: FeedRowMetrics.time, alignment: .leading)
@@ -227,20 +231,15 @@ struct FeedRowView: View {
     }
 
     /// "HH:mm" today, the weekday within the last week, else "Oct 16".
-    static func stampLabel(_ stamp: Date, now: Date, calendar: Calendar = .current) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
+    static func stampLabel(_ stamp: Date, now: Date, calendar: Calendar) -> String {
         if calendar.isDate(stamp, inSameDayAs: now) {
-            formatter.dateFormat = "HH:mm"
-        } else if let weekAgo = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: now)),
-                  stamp >= weekAgo, stamp <= now {
-            formatter.dateFormat = "EEE"
-        } else {
-            formatter.dateFormat = "MMM d"
+            return FeedTime.string(stamp, "HH:mm", calendar)
         }
-        return formatter.string(from: stamp)
+        if let weekAgo = calendar.date(byAdding: .day, value: -6, to: calendar.startOfDay(for: now)),
+           stamp >= weekAgo, stamp <= now {
+            return FeedTime.string(stamp, "EEE", calendar)
+        }
+        return FeedTime.string(stamp, "MMM d", calendar)
     }
 
     static func tint(_ row: FeedRow) -> Color {
@@ -261,12 +260,13 @@ struct FeedEventRow: View {
     let event: FeedEvent
     /// The next day's rows: secondary, never bold.
     let muted: Bool
+    let calendar: Calendar
     let onLink: (HomeLink) -> Void
 
     var body: some View {
         Button { onLink(event.link) } label: {
             HStack(alignment: .center, spacing: FeedRowMetrics.spacing) {
-                Text(event.isOngoing ? "now" : Self.time(event.start))
+                Text(event.isOngoing ? "now" : FeedTime.string(event.start, "HH:mm", calendar))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .frame(width: FeedRowMetrics.time, alignment: .leading)
@@ -315,23 +315,25 @@ struct FeedEventRow: View {
         return rest == 0 ? "\(hours) h" : "\(hours) h \(rest) min"
     }
 
-    private static func time(_ date: Date) -> String {
-        timeFormatter.string(from: date)
-    }
-
-    private static let timeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "HH:mm"
-        return formatter
-    }()
-
     private static func tint(_ event: FeedEvent) -> Color {
         switch event.id {
         case .event: .green
         case .target: .red
         default: .secondary
         }
+    }
+}
+
+/// Formats a feed time in the given calendar's zone — never a formatter
+/// without one, which would follow the process zone instead of the builder's.
+private enum FeedTime {
+    static func string(_ date: Date, _ pattern: String, _ calendar: Calendar) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = pattern
+        return formatter.string(from: date)
     }
 }
 

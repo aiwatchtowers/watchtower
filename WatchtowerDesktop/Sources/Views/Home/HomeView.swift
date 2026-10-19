@@ -12,6 +12,7 @@ struct HomeView: View {
             HomeContent(
                 snapshot: appState.homeCenter.snapshot,
                 today: context.date,
+                calendar: .current,
                 feedErrors: appState.homeCenter.feedErrors,
                 digestsTurnOn: appState.digestsTurnOnState,
                 onLink: { appState.openHomeLink($0) },
@@ -33,6 +34,8 @@ struct HomeContent: View {
     /// nil until the first read.
     let snapshot: HomeSnapshot?
     let today: Date
+    /// The calendar the feed was built with; its zone formats the feed's times.
+    let calendar: Calendar
     /// A feed Done / Hide that failed, by row.
     let feedErrors: [FeedRef: String]
     let digestsTurnOn: DigestsTurnOnState
@@ -46,6 +49,7 @@ struct HomeContent: View {
     init(
         snapshot: HomeSnapshot?,
         today: Date,
+        calendar: Calendar = .current,
         feedErrors: [FeedRef: String] = [:],
         digestsTurnOn: DigestsTurnOnState = .idle,
         onLink: @escaping (HomeLink) -> Void,
@@ -55,6 +59,7 @@ struct HomeContent: View {
         onAct: @escaping (FeedAction, FeedRef) async -> Void = { _, _ in },
         onExpand: @escaping (Bool) -> Void = { _ in }
     ) {
+        self.calendar = calendar
         self.feedErrors = feedErrors
         self.onAct = onAct
         self.onExpand = onExpand
@@ -92,26 +97,31 @@ struct HomeContent: View {
     }
 
     /// The feed and the right column side by side when the content is at
-    /// least 900 pt wide (520 + 20 + 340 + the page's gutters' slack), else
-    /// one column: feed first.
+    /// least `twoColumnWidth` wide, else one column: feed first. The columns
+    /// themselves need 880 pt (feed 520 + 20 spacing + column 340); the row's
+    /// minimum width holds the switch at the spec's 900.
     private func columns(_ snapshot: HomeSnapshot) -> some View {
         let feed = FeedZoneView(
-            feed: snapshot.feed, errors: feedErrors, onLink: onLink, onAct: onAct, onExpand: onExpand, now: today)
+            feed: snapshot.feed, errors: feedErrors, onLink: onLink, onAct: onAct, onExpand: onExpand, now: today,
+            calendar: calendar)
         let right = TodayZoneView(
-            cards: snapshot.today, nothingNeedsYou: snapshot.nothingNeedsYou,
-            readFailed: snapshot.showsReadError, onLink: onLink,
+            cards: snapshot.today, readFailed: snapshot.showsReadError, onLink: onLink,
             onDecideSuggestion: onDecideSuggestion)
         return ViewThatFits(in: .horizontal) {
             HStack(alignment: .top, spacing: 20) {
                 feed.frame(minWidth: 520, idealWidth: 520, maxWidth: .infinity)
                 right.frame(width: 340)
             }
+            .frame(minWidth: Self.twoColumnWidth)
             VStack(alignment: .leading, spacing: 20) {
                 feed
                 right
             }
         }
     }
+
+    /// The content width two columns start at (spec §3).
+    static let twoColumnWidth: CGFloat = 900
 
     private var helpLine: some View {
         HStack(spacing: 0) {

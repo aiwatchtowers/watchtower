@@ -32,7 +32,7 @@ The feed reads top to bottom like your day. Above a **NOW** line with the curren
 
 ### Today cards
 
-With nothing to show, Today says "Nothing needs you right now." If a card can't be read it is skipped and the others still show. If none could be read, Today says "Couldn't read today's items — see the log."
+With no card to show, the right column stays empty: the feed's "Nothing is waiting for you." is the one all-clear. If a card can't be read it is skipped and the others still show. If none could be read, the column says "Couldn't read today's items — see the log."
 
 ### The Getting ready zone
 

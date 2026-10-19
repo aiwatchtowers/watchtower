@@ -252,12 +252,15 @@ final class HomeViewTests: XCTestCase {
         XCTAssertEqual(tapped.last, .briefing(id: 7))
     }
 
-    func testNothingNeedsYouLine() throws {
+    /// The feed owns the all-clear: with no card the right column shows
+    /// nothing, and the feed says "Nothing is waiting for you." once per layout.
+    func testOneAllClearInTheFeed() throws {
         let view = makeContent(viewSnapshot(.hidden))
-        XCTAssertNoThrow(try view.inspect().find(text: "Nothing needs you right now."))
-        XCTAssertNoThrow(try view.inspect().find(ViewType.Image.self) {
+        XCTAssertThrowsError(try view.inspect().find(text: "Nothing needs you right now."))
+        XCTAssertThrowsError(try view.inspect().find(ViewType.Image.self) {
             try $0.actualImage().name() == "checkmark.circle"
         })
+        XCTAssertNoThrow(try view.inspect().find(text: "Nothing is waiting for you."))
         XCTAssertThrowsError(try view.inspect().find(text: "Couldn't read today's items — see the log."))
     }
 
@@ -330,10 +333,30 @@ final class HomeViewTests: XCTestCase {
         errors: [FeedRef: String] = [:],
         onLink: @escaping (HomeLink) -> Void = { _ in },
         onAct: @escaping (FeedAction, FeedRef) async -> Void = { _, _ in },
-        onExpand: @escaping (Bool) -> Void = { _ in }
+        onExpand: @escaping (Bool) -> Void = { _ in },
+        calendar: Calendar = .current
     ) -> FeedZoneView {
         FeedZoneView(
-            feed: feed, errors: errors, onLink: onLink, onAct: onAct, onExpand: onExpand, now: Self.feedNow)
+            feed: feed, errors: errors, onLink: onLink, onAct: onAct, onExpand: onExpand, now: Self.feedNow,
+            calendar: calendar)
+    }
+
+    /// Row stamps and event times use the builder's calendar zone, not the
+    /// process's: 08:00 UTC is 17:00 in UTC+9.
+    func testFeedTimesUseTheCalendarZone() throws {
+        var tokyo = Calendar(identifier: .gregorian)
+        tokyo.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 9 * 3600))
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let feed = Self.feed(
+            waiting: [Self.row(.inbox(1), who: "Ann", text: "hi")],
+            later: [Self.event("e1", "Payments review", minutes: 20)])
+        let east = try texts(feedZone(feed, calendar: tokyo))
+        XCTAssertTrue(east.contains("16:50"), "\(east)")
+        XCTAssertTrue(east.contains("17:20"), "\(east)")
+        let west = try texts(feedZone(feed, calendar: utc))
+        XCTAssertTrue(west.contains("07:50"), "\(west)")
+        XCTAssertTrue(west.contains("08:20"), "\(west)")
     }
 
     func testFeedShowsWaitingThenNowThenLater() throws {
@@ -361,6 +384,8 @@ final class HomeViewTests: XCTestCase {
     func testLayoutTwoColumnsThenOneColumn() throws {
         let layout = try makeContent(viewSnapshot(today: Self.todayCards)).inspect().find(ViewType.ViewThatFits.self)
         let wide = try layout.hStack(0)
+        // The spec's breakpoint: two columns from 900 pt of content width.
+        XCTAssertEqual(try wide.flexFrame().minWidth, 900)
         XCTAssertNoThrow(try wide.view(FeedZoneView.self, 0))
         XCTAssertNoThrow(try wide.view(TodayZoneView.self, 1))
         let narrow = try layout.vStack(1)
