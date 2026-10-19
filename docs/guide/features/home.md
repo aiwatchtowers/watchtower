@@ -1,39 +1,70 @@
 # Home
 
-Home is the page Watchtower opens on. It shows what needs you right now and, on a new install, how far the setup has got. It also anchors the menu on the left, which is described at the end of this page.
+Home is the page Watchtower opens on. It shows what needs you right now and, on a new install, how far the setup has got. The menu on the left is described at the end.
 
 ## Why use it
 
-You open the app after a meeting and want one answer: what is waiting for me? Home puts the recap you haven't read, your next meeting, pending approvals, today's briefing, your own targets and questions from coding agents in one column. Nothing here is built by Home itself, so there is nothing to wait for.
+You open the app after a meeting and want one answer: what is waiting for me? Home puts the mentions, mail and reminders that need you, then your meetings, in one feed. Next to it sit your coding agents' sessions and questions, shortcuts to your briefing and recap, and a few numbers for today.
 
 ## How it works
 
-Home only reads what the rest of the app has already produced, and refreshes about every 30 seconds. A Today card appears only when it has something to show, and only when its tab is visible: a card for Inbox, Calendar, Briefings or Catch Up disappears with that tab.
+Home only reads what the rest of the app has already produced, and refreshes about every 30 seconds. The feed is on the left. On the right, top to bottom, are **Workbench**, **Links** and **Today in numbers**. In a narrow window everything is one column in the same order: feed, Workbench, links, numbers. A zone with nothing to show is left out.
 
-| Card | Shows | Opens |
-|---|---|---|
-| **SINCE YOU WERE AWAY** | The newest finished Catch Up recap you haven't marked caught up, with its TL;DR | Catch Up |
-| **NEXT MEETING** | The next event starting within 24 hours: time, up to two attendees, "Prep ready" when prep exists | That event in Calendar |
-| **WAITING ON YOU** | The three newest proposals, failed actions and due reminders, with the total | Inbox |
-| **BRIEFING** | The first line of today's briefing | The briefing |
-| **MY TARGETS** | Up to five of your own targets that are overdue, due today or in progress (never a Workbench board's) | The target |
-| **AGENTS WAITING** | The three oldest questions and review requests from Claude Code or Codex sessions, with the workbench | That session |
+### The feed
 
-With nothing to show, Today says "Nothing needs you right now." If a card can't be read it is skipped and the others still show. If none could be read, Today says "Couldn't read today's items — see the log."
+The feed reads top to bottom like your day: above a **NOW** line is everything that waits on you, below it your meetings and what is still to come.
+
+**Above NOW** are, from the last 72 hours: Slack mentions, direct messages, thread replies and reactions, then Jira items, proposals and failed actions from the assistant, due reminders, your own targets that are overdue or due today, and email. Slack, Jira and email rows come from Inbox and follow its detection and snooze. A read row stays, shown dimmer; only acting on it removes it. Newest comes first within each kind; seven rows show, and **N more** opens the rest in place. Workbench targets never appear.
+
+**Below NOW** are the meeting in progress, then today's remaining meetings, reminders and timed targets in time order. The next meeting says how soon it starts, such as "in 25 min", and shows "Prep ready" when prep exists. After today, a short block shows the first of the next three days that has meetings: **Tomorrow**, or the weekday, with up to three meetings. All-day, cancelled and declined events are left out.
+
+### Done and Hide
+
+- Press **Done** on a row to resolve it, or **Hide** to put it away. A hidden reminder or target comes back tomorrow at 09:00. Proposals and meetings have no buttons: open them instead.
+- A row leaves the feed at once. If the action fails it comes back with the error under it; press again to retry.
+- Click a row to open it: a Slack, Jira or email row opens its source, the rest open Inbox, the target or the meeting in Calendar.
+
+### Workbench
+
+The **Workbench** zone lists your coding-agent sessions that need a look and the questions they have asked you, grouped by workbench, with **Open →** for the Workbench tab. A session shows only while it waits for approval, failed, is ready to check, or is working (or in the background); finished and stopped sessions are left out. Under the sessions come the open questions and review requests, oldest first. Click a session to open its terminal, a question to open its session.
+
+If you keep telling agents the same thing, the last row offers it as an instruction: **Add**, **Dismiss** or **More…**.
+
+### Links
+
+The **Links** zone has up to four shortcuts, each shown while its tab is visible:
+
+- **Briefing** shows "ready 08:05" once today's briefing exists, else the latest one's weekday.
+- **Catch-Up** shows a highlighted "new recap" while a finished recap waits for **I'm caught up**.
+- **Day plan** shows "2 of 5 done" for today's plan.
+- **Digests** has no status.
+
+### Today in numbers
+
+**Today in numbers** is a quiet grid of counts for the current day:
+
+- **messages to me / sent**: Slack direct messages and mentions from others, and the messages you sent, in every connected workspace.
+- **meetings**: today's meetings and their hours; all-day, cancelled and declined events don't count.
+- **AI spend**: today's AI cost.
+- **Claude 5 h · week**: your Claude plan limits used.
+- **workbench targets new / done**: created and finished today.
+- **meetings recorded**: recordings made today.
+
+**AI spend** always shows. Another number whose source isn't connected or is off is left out, and a number that couldn't be read shows "—".
 
 ### The Getting ready zone
 
-On a new install a **Getting ready** zone sits above Today, one card per feature that is on and has its source. Each card carries the same status line as the feature's own empty tab, such as "Preparing now", "Starts after the first sync", "Within ~15 min" or "Today at 08:00". A finished feature shows **Ready** and **Open**. If the background sync has been stopped for 30 seconds or more, the cards that are not ready say "Watchtower isn't running" instead; the banner at the top of the window has **Start**.
+On a new install a **Getting ready** zone sits above the feed and the right column, one card per feature that is on and has its source. Each card carries the feature's own status line, such as "Preparing now", "Within ~15 min" or "Today at 08:00". A finished feature shows **Ready** and **Open**. If the background sync has been stopped for 30 seconds or more, unfinished cards say "Watchtower isn't running"; the banner has **Start**.
 
-While no account tells Watchtower who you are, the Inbox, Briefing and Day Plan cards say "Connect Slack, Google, Jira, Linear or an email account to get this" instead of a time, with **Open Connections**. A connected Jira site or Linear workspace that has not reported who you are yet shows "Waiting for your Jira identity…" (or Linear) instead. A bare IMAP login without an @ does not count as an address.
+While no account tells Watchtower who you are, the Inbox, Briefing and Day Plan cards say "Connect Slack, Google, Jira, Linear or an email account to get this" instead of a time, with **Open Connections**. A Jira site or Linear workspace that has not reported who you are yet shows "Waiting for your Jira identity…" (or Linear) instead.
 
-A source you haven't connected becomes one dashed row ("Connect Jira to get Boards, Workload, Blockers, Project Map and Releases") with a **Connect** button. A connected Jira with no board picked keeps a Jira card saying "Choose Jira boards to get this", with a **Choose Jira boards** button that opens **Boards**; the card stays until you pick boards, hide the zone, or the zone folds after three days.
+A source you haven't connected becomes one dashed row ("Connect Jira to get Boards, Workload, Blockers, Project Map and Releases") with a **Connect** button. A connected Jira with no board picked keeps a card with **Choose Jira boards**, which opens **Boards**.
 
-When every card is ready or has failed and retries on its own, the zone shrinks to "Everything's ready" for the rest of that launch and is gone on the next. It also folds by itself three days after it first showed, whatever is still waiting. An install that was already ready never sees it.
+When every card is ready or retrying on its own, the zone shrinks to "Everything's ready" for the rest of that launch. It also folds three days after it first showed, whatever is still waiting. An install that was already ready never sees it.
 
 ## Using it
 
-- Click a card header to open its tab, or a row to open that item.
+- Click a row to open that item, or **Open →** to open the Workbench tab.
 - Click **×** in the Getting ready header to hide the zone for good.
 - When a tab you were on is turned off or its source is disconnected, you land on Home.
 
@@ -47,25 +78,29 @@ The menu lists Home, Targets, Tracks, Workbench, Automations and Calendar first.
 
 AI Chat and the TOOLS (Search, Boards, Usage, MCP Server) sit at the bottom. FOCUS starts open and the other two start folded; your own folds are remembered.
 
-- **⌘B** folds the menu into a narrow icon rail and back. In the rail each section is one group icon that opens its tabs in place.
-- Right-click a tab inside a section and choose **Hide**. It moves to that section's **HIDDEN** list, where **Show** brings it back.
-- A tab appears only when its feature is on in Settings → Features and a source it needs is connected. For example Calendar needs a calendar, the Jira tabs need Jira, and Statistics needs Slack or mail.
-- Until Slack, mail and Jira are all connected, a quiet **+ Connect …** line at the bottom names what is missing and opens Settings → Connections. Its **×** hides it for good. A connected calendar counts as mail here.
-- Badges show what waits: unread briefings, proposals and due reminders in Inbox, ideas to review, one for a recap waiting for **I'm caught up**.
+- **⌘B** folds the menu into an icon rail and back; in the rail each section is one icon that opens its tabs.
+- Right-click a tab and choose **Hide**; it moves to the section's **HIDDEN** list, where **Show** brings it back.
+- A tab appears only when its feature is on in Settings → Features and its source is connected.
+- Until Slack, mail and Jira are all connected, a quiet **+ Connect …** line at the bottom names what is missing and opens Settings → Connections. Its **×** hides it for good.
+- Badges show what waits: unread briefings, Inbox proposals and due reminders, ideas to review, a recap waiting.
 
 Home ends with the line "Stuck? Press **⌘/** to ask, or open the User Guide." It is always there, and **⌘/** opens the [assistant over this tab](ai-chat.md).
 
 ## When it's empty or wrong
 
 - **No Getting ready zone.** It is shown only while something is still preparing or waiting for a source. It is also gone after three days, or after you hid it.
-- **A tab is missing from the menu.** Turn its feature on in Settings → Features and connect its source. You may also have hidden it: look under **HIDDEN**.
-- **A card is missing from Today.** It has nothing to show right now, or its feature is off or its source isn't connected.
-- **"Couldn't read today's items — see the log."** The local database couldn't be read. Quit and reopen the app; if it persists, check the app log.
+- **A tab is missing from the menu.** Turn its feature on in Settings → Features and connect its source, or look under **HIDDEN**.
+- **A link is missing.** Its tab is hidden or its feature is off or its source isn't connected.
+- **A number is missing.** Its source isn't connected or is off.
+- **No Workbench zone.** No session needs a look and nothing is asked of you.
+- **The feed has no Slack, Jira or email rows.** Inbox detection is off, or nothing arrived in the last 72 hours.
+- **No meetings below NOW.** Calendar isn't connected or its tab is hidden, or the events are all-day, cancelled or declined.
+- **"Couldn't read … — see the log."** A zone (Workbench, the links, or a feed source) says this when the local database couldn't be read. Quit and reopen the app; if it persists, check the app log.
 
 A tab stays empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
 
 ## Related
 
-[Catch Up](catch-up.md), [Briefings](briefings.md), [Inbox](inbox.md), [Day Plan](day-plan.md).
+[Workbench](workbench/README.md), [Catch Up](catch-up.md), [Briefings](briefings.md), [Inbox](inbox.md), [Day Plan](day-plan.md).
 
 For developers: [docs/features/first-run.md](../../features/first-run.md)

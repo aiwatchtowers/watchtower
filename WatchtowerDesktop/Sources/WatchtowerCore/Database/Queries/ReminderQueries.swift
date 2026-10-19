@@ -15,6 +15,15 @@ package enum ReminderQueries {
             """, arguments: [nowUTC])
     }
 
+    /// Pending reminders still to fire in `(fromUTC, toUTC]`, earliest first.
+    package static func fetchPending(_ db: Database, fromUTC: String, toUTC: String) throws -> [Reminder] {
+        try Reminder.fetchAll(db, sql: """
+            SELECT * FROM reminders
+            WHERE status = 'pending' AND remind_at > ? AND remind_at <= ?
+            ORDER BY remind_at ASC
+            """, arguments: [fromUTC, toUTC])
+    }
+
     /// Marks a reminder done — Swift-owned, no daemon contention (the
     /// `inbox_feedback` dual-path precedent). Mirrors Go's `MarkReminderDone`.
     /// Best-effort, unchecked: a reminder deleted meanwhile is as finished as

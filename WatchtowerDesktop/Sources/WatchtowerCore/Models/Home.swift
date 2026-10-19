@@ -81,12 +81,7 @@ package struct GettingReadyStep: Equatable, Sendable {
     }
 }
 
-// MARK: - Today
-
-/// A Today card, in its fixed order (owner ask #308).
-package enum TodayCardKind: CaseIterable, Sendable {
-    case sinceYouWereAway, nextMeeting, waitingOnYou, briefing, myTargets, agentsWaiting, instructionSuggestion
-}
+// MARK: - Right column
 
 /// The open instruction suggestion Home offers (`instruction_suggestions`).
 package struct HomeInstructionSuggestion: Equatable, Sendable {
@@ -102,6 +97,8 @@ package struct HomeInstructionSuggestion: Equatable, Sendable {
 /// Where a click goes. Core has no SidebarDestination; AppState.openHomeLink maps these.
 package enum HomeLink: Equatable, Sendable {
     case inbox
+    /// Slack / mail / Jira open the item's own permalink.
+    case permalink(URL)
     case calendarEvent(id: String)
     case briefing(id: Int)
     case targets
@@ -119,109 +116,34 @@ package enum HomeLink: Equatable, Sendable {
     case turnOn(featureID: String)
 }
 
-/// A target row's status dot.
-package enum TodayItemTone: Equatable, Sendable {
-    case overdue, dueToday, inProgress
-}
-
-/// One row inside a Today card.
-package struct TodayItem: Equatable, Sendable {
-    /// "Proposal", "Failed", "Reminder", "Review", "Check", "Question".
-    package let chip: String?
-    package let title: String
-    /// A workbench name, "Due today", "Overdue · Oct 12", "In progress".
-    package let detail: String?
-    package let tone: TodayItemTone?
-    package let link: HomeLink
-
-    package init(chip: String?, title: String, detail: String?, tone: TodayItemTone?, link: HomeLink) {
-        self.chip = chip
-        self.title = title
-        self.detail = detail
-        self.tone = tone
-        self.link = link
-    }
-}
-
-package struct TodayCard: Equatable, Sendable {
-    package let kind: TodayCardKind
-    /// "WAITING ON YOU · 4", "NEXT MEETING · IN 25 MIN".
-    package let eyebrow: String
-    /// The meeting title.
-    package let title: String?
-    /// The meeting line, the briefing summary or the recap line.
-    package let body: String?
-    package let items: [TodayItem]
-    /// The card's own target (header click).
-    package let link: HomeLink
-    /// The suggestion an Add / Dismiss card decides.
-    package let suggestionID: Int64?
-
-    package init(
-        kind: TodayCardKind,
-        eyebrow: String,
-        title: String? = nil,
-        body: String? = nil,
-        items: [TodayItem] = [],
-        link: HomeLink,
-        suggestionID: Int64? = nil
-    ) {
-        self.kind = kind
-        self.eyebrow = eyebrow
-        self.title = title
-        self.body = body
-        self.items = items
-        self.link = link
-        self.suggestionID = suggestionID
-    }
-}
-
-/// Every Today source as one read (`HomeQueries.today`) left it.
-package struct HomeTodayData: Equatable, Sendable {
-    package var awaitingCount: Int
-    /// `awaitingOwner(limit: 3)`.
-    package var actions: [AgentAction]
-    /// `fetchDue`.
-    package var reminders: [Reminder]
-    package var nextEvent: CalendarEvent?
-    package var nextEventHasPrep: Bool
-    /// Today's.
-    package var briefing: Briefing?
-    /// `homeSummary`.
-    package var targets: [Target]
+/// The Workbench zone's read (`HomeQueries.workbench`): the open asks and the
+/// instruction suggestion. The live sessions come from the app, not the DB.
+package struct HomeWorkbenchData: Equatable, Sendable {
     package var asks: WorkbenchAskRows
-    /// `newestUnacknowledgedReady`: the newest ready recap not yet acknowledged.
-    package var pendingRecap: CatchUpRecap?
     /// The newest open suggestion first seen within 7 days.
     package var suggestion: HomeInstructionSuggestion?
-    /// A card whose read threw (logged).
-    package var failed: Set<TodayCardKind>
+    /// A read threw (logged) or an open ask could not be read: the zone says
+    /// so and never reads as empty.
+    package var failed: Bool
 
     package init(
-        awaitingCount: Int = 0,
-        actions: [AgentAction] = [],
-        reminders: [Reminder] = [],
-        nextEvent: CalendarEvent? = nil,
-        nextEventHasPrep: Bool = false,
-        briefing: Briefing? = nil,
-        targets: [Target] = [],
         asks: WorkbenchAskRows = WorkbenchAskRows(rows: [], unreadableIDs: []),
-        pendingRecap: CatchUpRecap? = nil,
         suggestion: HomeInstructionSuggestion? = nil,
-        failed: Set<TodayCardKind> = []
+        failed: Bool = false
     ) {
-        self.awaitingCount = awaitingCount
-        self.actions = actions
-        self.reminders = reminders
-        self.nextEvent = nextEvent
-        self.nextEventHasPrep = nextEventHasPrep
-        self.briefing = briefing
-        self.targets = targets
         self.asks = asks
-        self.pendingRecap = pendingRecap
         self.suggestion = suggestion
         self.failed = failed
     }
+}
+
+extension HomeNumbers {
+    /// Every field's name, as `failed` names them: a pool that could not be
+    /// read at all fails them all.
+    package static let fieldNames: Set<String> = [
+        "messagesToMe", "messagesSent", "meetings", "meetingHours", "aiSpendUSD",
+        "plan5h", "planWeek", "workbenchCreated", "workbenchDone", "meetingsRecorded"
+    ]
 }
 
 /// `OnboardingFinishPlan.firstSyncText`'s pair, named.
@@ -239,40 +161,47 @@ package struct HomeSnapshot: Equatable, Sendable {
     package let gettingReady: GettingReadyZone
     /// Shown on top of a `.shown` zone.
     package let firstSync: FirstSyncLine?
-    package let today: [TodayCard]
-    /// Every allowed card's read failed.
-    package let todayReadFailed: Bool
-    /// The allowed cards whose read failed (`HomeTodayData.failed ∩ allowed`);
-    /// any one of them rules out the all-clear (Review Focus 3).
-    package let todayFailed: Set<TodayCardKind>
+    /// The left column: what waits, NOW and what follows. The all-clear is
+    /// its own; the right column never says it.
+    package let feed: HomeFeed
+    /// The right column's Workbench zone: one block per workbench with a live
+    /// session to look at or an open ask.
+    package let workbench: [HomeWorkbenchBlock]
+    /// The zone's last row, Add / Dismiss.
+    package let suggestion: HomeInstructionSuggestion?
+    /// The asks or suggestion read failed, or an ask could not be read.
+    package let workbenchFailed: Bool
+    /// The links zone, only the links whose tab is visible.
+    package let links: [HomeLinkRow]
+    /// A links read failed: the rows still show, their status may be stale.
+    package let linksFailed: Bool
+    /// Today in numbers; nil until its own first read lands.
+    package let numbers: HomeNumbers?
 
     package init(
         gettingReady: GettingReadyZone,
         firstSync: FirstSyncLine?,
-        today: [TodayCard],
-        todayReadFailed: Bool,
-        todayFailed: Set<TodayCardKind> = []
+        feed: HomeFeed,
+        workbench: [HomeWorkbenchBlock] = [],
+        suggestion: HomeInstructionSuggestion? = nil,
+        workbenchFailed: Bool = false,
+        links: [HomeLinkRow] = [],
+        linksFailed: Bool = false,
+        numbers: HomeNumbers? = nil
     ) {
         self.gettingReady = gettingReady
         self.firstSync = firstSync
-        self.today = today
-        self.todayReadFailed = todayReadFailed
-        self.todayFailed = todayFailed
+        self.feed = feed
+        self.workbench = workbench
+        self.suggestion = suggestion
+        self.workbenchFailed = workbenchFailed
+        self.links = links
+        self.linksFailed = linksFailed
+        self.numbers = numbers
     }
 
-    /// No card to show, and at least one allowed card's read failed: Home
-    /// shows the read error where the all-clear line would be.
-    package var showsReadError: Bool {
-        today.isEmpty && (todayReadFailed || !todayFailed.isEmpty)
-    }
-
-    /// "Nothing needs you right now.": no card, no failed read (not even
-    /// one), and no Getting ready zone still asking for attention.
-    package var nothingNeedsYou: Bool {
-        guard today.isEmpty, !showsReadError else { return false }
-        switch gettingReady {
-        case .hidden, .allReady: return true
-        case .shown: return false
-        }
+    /// The Workbench zone shows: a block, the suggestion or its read error.
+    package var showsWorkbench: Bool {
+        !workbench.isEmpty || suggestion != nil || workbenchFailed
     }
 }

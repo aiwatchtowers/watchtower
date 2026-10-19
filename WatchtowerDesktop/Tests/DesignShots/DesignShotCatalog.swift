@@ -50,6 +50,13 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "kit-new-components", size: NSSize(width: 640, height: 760)) {
                 AnyView(GalleryNewComponents().padding(Spacing.page).shotFrame().detailBackground())
+            },
+            // Home (#717): two columns from 900 pt of content, one below.
+            DesignShot(name: "home-wide", size: NSSize(width: 1280, height: 960)) {
+                HomeShotFixtures.home()
+            },
+            DesignShot(name: "home-narrow", size: NSSize(width: 780, height: 1440)) {
+                HomeShotFixtures.home()
             }
         ]
     }

@@ -9,6 +9,8 @@
 > proposed change that would break a guard test or remove a contract
 > must be raised as a question before touching code.
 
+**Writers outside the detectors:** Home's Done/Hide through `watchtower inbox resolve|dismiss` (owner ask #408, #717).
+
 **Module:** `internal/inbox/` + `WatchtowerDesktop/Sources/Views/Inbox/`
 **Last full audit:** 2026-07-06
 
