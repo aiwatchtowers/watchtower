@@ -136,6 +136,15 @@ Plan `docs/superpowers/plans/2026-10-14-automations-p3.md`, spec §11, §12.1–
 - **Editor draft cache** (Ruling H, `draftcache.go`): embedded chats stream text only, so the Desktop cannot see a read tool's result. `draft_automation` called on `automation_editor` with a conversation id (`Binding.ConversationID > 0`) appends `{recipe_text, result, at}` — or, when the evaluation fails, `{recipe_text, result: null, error, at}`, so the panel never shows an older draft as current — to `<config.WorkspaceDir()>/automation-drafts/<conversation_id>.jsonl` (the folder beside the database; last 5 lines kept; dir 0700, file 0600, atomic rewrite, best effort — a failure is logged and never changes the result). It is a UI cache of the tool's own result, not a store of record: no database row (AGENT-06 holds). Nothing is written on `main` or without a conversation id.
 - **Journal fix (P1 bug):** `marshalForStep` now records a generic step's result as JSON; it used to store the base64 of the JSON in `automation_run_steps.result_summary` (and in `show`/`runs`/`steps --json`). Regression test `TestDryRunInMemory_StepResultIsJSON`.
 
+### Editor fidelity (2026-10-20)
+
+Spec `docs/superpowers/specs/2026-10-20-automation-editor-fidelity-design.md`. The assistant wraps the owner's own procedure, and the owner sees what it will start before saving.
+
+- **`workbench_skills`** (read tool, `{workbench_id, name?}`, surfaces `main` and `automation_editor`, not in `tools.ReadTools()`): lists a workbench's `.claude/commands/*.md` (as `/<stem>`), `.claude/skills/*/SKILL.md` and `.agents/skills/*/SKILL.md`; with `name` it reads one, capped at 64 KiB with `truncated`. Symlinked roots, folders and files are skipped; a frontmatter name that looks like a path falls back to the folder name. An unknown workbench or a missing folder is an error.
+- **Skill `create-automation`:** a "Wrapping the owner's procedure" section (read the workbench's skills, put their text into the `session()` prompt), the exact `session()` return values, waits that do not count toward `minutes`, and a Release example that is one session.
+- **Sessions it starts:** the Draft panel and the save card list each `session()` the dry run recorded (title and prompt; "(prompt not available)" when the step has none; agent instructions cut at 1 KB are marked). A pending save card whose text has no dry run says "No dry run of this exact text — the sessions are not shown."; a dry run that stopped early says "The dry run stopped early — later sessions are not listed."
+- **Scope:** the save card shows "For: Personal" or "For: workbench <name>". The New automation sheet has a **For** picker (hidden when there are no workbenches); **Form** stays personal ("The form makes personal automations only."); a **Template** installs into the picked workbench. The workbench ⋯ menu has **New Automation…**. Each scope keeps its own draft, and a save under any scope starts a fresh draft for all of them.
+
 ### CLI additions (P3)
 
 - `validate <file> --against <id>`: scope from that automation, `widening` = `Covers(its confirmed permissions, new)` — the confirmed text from `automations.ConfirmedRecipe`, every permission when none is known, like `draft_automation`/`save_automation` (`TestAutomationsCLI_ValidateAgainstWidensFromConfirmedPermissions`: a hand-added permission stays widening after a form rename); refused together with a non-zero `--workbench`; `widening` stays `[]`, never null.
@@ -283,5 +292,5 @@ Spec `docs/superpowers/specs/2026-10-18-rules-in-automations-design.md`, plan `d
 ## Phase status (P1–P6 shipped)
 
 - **P4 events:** done — bus, publishers in the sync phases, `Flush` per cycle, `where` matching, `db.MergeQueuedAutomationRunEvents`; the event half of AUTO-09 is Enforced (Event triggers above).
-- **P5 workbench:** done — part 1 (daemon rescans, `session()`, `shell()`, `ask()`, 00122, workbench writes; AUTO-12/AUTO-13 Enforced) and part 2 (workbench saves with PROJ-03 amended, the session launch center, header buttons, automation asks, Desktop rescans). Left: the New automation gallery's workbench picker.
+- **P5 workbench:** done — part 1 (daemon rescans, `session()`, `shell()`, `ask()`, 00122, workbench writes; AUTO-12/AUTO-13 Enforced) and part 2 (workbench saves with PROJ-03 amended, the session launch center, header buttons, automation asks, Desktop rescans).
 - **P6:** done — `mcp()`, `agent()`, the QC-02 amendment (part 1) and the template gallery (part 2, Templates above).
