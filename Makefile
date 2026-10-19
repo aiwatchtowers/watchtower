@@ -117,6 +117,7 @@ race-packages:
 
 test-race:
 	@pkgs="$$($(RACE_PACKAGES))" || exit 1; \
+	[ -n "$$pkgs" ] || { echo "test-race: no packages to test (did go list fail?)" >&2; exit 1; }; \
 	db=0; rest=""; for p in $$pkgs; do if [ "$$p" = watchtower/internal/db ]; then db=1; else rest="$$rest $$p"; fi; done; \
 	db_log="$$(mktemp)"; \
 	if [ $$db -eq 1 ]; then go test ./internal/db -race -count=1 -timeout 25m -skip '$(RACE_SKIP)' > "$$db_log" 2>&1 & db_pid=$$!; fi; \
