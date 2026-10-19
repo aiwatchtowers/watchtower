@@ -27,7 +27,7 @@ final class AgentReportDecodingTests: XCTestCase {
         XCTAssertEqual(ov.commands.first?.avgMS, 120_000)
         XCTAssertEqual(ov.models.first?.cacheReadShare ?? 0, 0.2837, accuracy: 0.0001)
         XCTAssertEqual(ov.hints.map(\.id), ["H4", "H1", "H6"])
-        XCTAssertEqual(ov.hints[1].evidence.map(\.kind), ["command", "target", "session"])
+        XCTAssertEqual(ov.hints[1].evidence.map(\.kind), ["command", "target"])
         XCTAssertEqual(ov.hints[2].estimateUSD, 15)
         XCTAssertEqual(ov.tasks.first?.targetID, 1)
         XCTAssertEqual(ov.tasks.first?.phases["in_review"], 567_000_000)

@@ -135,11 +135,6 @@
           "kind": "target",
           "ref": "#1",
           "label": "Add widget"
-        },
-        {
-          "kind": "session",
-          "ref": "11111111-aaaa-bbbb-cccc-000000000001",
-          "label": "11111111"
         }
       ],
       "more_evidence": 0
@@ -281,6 +276,7 @@
       "shared": true
     }
   ],
+  "tasks_more": 0,
   "sessions": [
     {
       "session_uuid": "22222222-aaaa-bbbb-cccc-000000000002",

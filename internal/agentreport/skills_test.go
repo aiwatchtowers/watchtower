@@ -158,7 +158,7 @@ func TestHintS1_UnusedSkills(t *testing.T) {
 	h := hs[0]
 	assert.Equal(t, int64((1000+100)*UnusedMinSessions), h.EstimateTokens, "their listing tokens x sessions")
 	assert.Equal(t, []string{"idle", "rare"}, evidence(h, "skill"), "the largest listing first")
-	assert.Equal(t, "2 of 3 listed skills were never used; listing them took 5.5k tokens in 5 sessions", h.Finding)
+	assert.Equal(t, "2 of 3 listed skills were never used; listing them took 5500 tokens in 5 sessions", h.Finding)
 	assert.NotEmpty(t, h.Action)
 	for _, e := range h.Evidence {
 		assert.Contains(t, append(unusedNames(in.Skills), "review"), e.Ref)
@@ -244,7 +244,7 @@ func TestHintS1_RussianOneUnused(t *testing.T) {
 	in.Skills.NeverUsed = in.Skills.NeverUsed[:1]
 	hs := hintsOf(Hints(in), "S1")
 	require.Len(t, hs, 1)
-	assert.Equal(t, "1 из 3 навыков в списке ни разу не использовался; их описания заняли 5,0 тыс. токенов в 5 сессиях", hs[0].Finding)
+	assert.Equal(t, "1 из 3 навыков в списке ни разу не использовался; их описания заняли 5000 токенов в 5 сессиях", hs[0].Finding)
 	in.Lang = English
-	assert.Equal(t, "1 of 3 listed skills was never used; listing them took 5.0k tokens in 5 sessions", hintsOf(Hints(in), "S1")[0].Finding)
+	assert.Equal(t, "1 of 3 listed skills was never used; listing them took 5000 tokens in 5 sessions", hintsOf(Hints(in), "S1")[0].Finding)
 }

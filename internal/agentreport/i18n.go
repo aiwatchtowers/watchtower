@@ -30,7 +30,11 @@ var msgs = map[string][2]string{
 	"h1.where.session": {"session %s", "сессии %s"},
 	"h1.where.target":  {"target %s", "задаче %s"},
 	"h1.label":         {"%s, %s", "%s, %s"},
-	"h1.finding": {"%s ran %s in %s, %s in all; the runs after the first took %s",
+	"h1.and":           {" and ", " и "},
+	"h1.more":          {" and %d more", " и ещё %d"},
+	"h1.finding": {"Repeated runs of %s: %s in %s, %s in all; the most: %s, %s in %s, %s; the runs after the first took %s",
+		"Повторные запуски %s: %s в %s, всего %s; больше всего — %s, %s в %s, %s; запуски после первого заняли %s"},
+	"h1.finding.one": {"%s ran %s in %s, %s in all; the runs after the first took %s",
 		"%s запускался %s в %s, всего %s; повторные запуски заняли %s"},
 	"h1.action": {"Run only the tests of the package you changed; run the full suite once before the PR.",
 		"Запускай тесты только изменённого пакета, полный прогон — один раз перед PR."},
@@ -60,9 +64,11 @@ var msgs = map[string][2]string{
 	"h5.action": {"The agent retried a failing command. Open the session and add the fix to the folder rules.",
 		"Агент повторял падающую команду. Открой сессию и добавь исправление в правила папки."},
 
-	"h6.cache":   {"a %d%% cache read share", "долей чтения из кэша %d%%"},
-	"h6.and":     {" and ", " и "},
-	"h6.finding": {"Session %s cost %s with %s; its context was expensive", "Сессия %s стоила %s при %s — контекст был дорогим"},
+	"h6.cache": {"a %d%% cache read share", "доле чтения из кэша %d%%"},
+	"h6.and":   {" and ", " и "},
+	"h6.finding": {"%s had expensive context, %s in all; the most: session %s cost %s with %s",
+		"%s с дорогим контекстом, всего %s; больше всего — сессия %s стоила %s при %s"},
+	"h6.finding.one": {"Session %s cost %s with %s; its context was expensive", "Сессия %s стоила %s при %s — контекст был дорогим"},
 	"h6.action": {"Start a new session per task, or /clear between tasks; long sessions re-read their whole context.",
 		"Начинай новую сессию на каждую задачу или делай /clear между задачами: длинная сессия перечитывает весь контекст."},
 
@@ -161,6 +167,7 @@ var nouns = map[string]struct {
 	"fgsubagent": {[2]string{"foreground subagent", "foreground subagents"}, [3]string{"субагент", "субагента", "субагентов"}},
 	"failure":    {[2]string{"failure", "failures"}, [3]string{"ошибка", "ошибки", "ошибок"}},
 	"compaction": {[2]string{"compaction", "compactions"}, [3]string{"компакция", "компакции", "компакций"}},
+	"session":    {[2]string{"session", "sessions"}, [3]string{"сессия", "сессии", "сессий"}},
 	"session.in": {[2]string{"session", "sessions"}, [3]string{"сессии", "сессиях", "сессиях"}},
 	"task.in":    {[2]string{"task", "tasks"}, [3]string{"задаче", "задачах", "задачах"}},
 	"file.of":    {[2]string{"file", "files"}, [3]string{"файла", "файлов", "файлов"}},
@@ -200,16 +207,21 @@ func (l Lang) form(n int, noun string) string {
 	return form
 }
 
-// tok renders a token count: "950 tokens" / "950 токенов" under a thousand,
-// else "12.3k tokens" / "12,3 тыс. токенов".
+// tok renders a token count compactly: "9500 tokens" / "9500 токенов" under
+// ten thousand, "12.3k tokens" / "12,3 тыс. токенов" under a million, else
+// "44.4M tokens" / "44,4 млн токенов".
 func (l Lang) tok(n int64) string {
-	if n < 1000 {
+	if n < 10_000 {
 		return l.count(int(n), "token")
 	}
-	if l == English {
-		return fmt.Sprintf("%.1fk tokens", float64(n)/1000)
+	v, unit := float64(n)/1e3, [2]string{"k", " тыс."}
+	if n >= 999_950 { // would round to 1000.0k
+		v, unit = float64(n)/1e6, [2]string{"M", " млн"}
 	}
-	return strings.Replace(fmt.Sprintf("%.1f тыс. токенов", float64(n)/1000), ".", ",", 1)
+	if l == English {
+		return fmt.Sprintf("%.1f%s tokens", v, unit[0])
+	}
+	return strings.Replace(fmt.Sprintf("%.1f%s токенов", v, unit[1]), ".", ",", 1)
 }
 
 // dur renders ms as "2h 10m" / "2 ч 10 мин", "7m 10s" / "7 мин 10 с" or "45s" / "45 с".

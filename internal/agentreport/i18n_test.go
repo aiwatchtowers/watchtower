@@ -137,3 +137,14 @@ func TestTouched_DropsIdleRowsAndSortsByCost(t *testing.T) {
 	assert.Equal(t, []int64{4, 5, 2, 3}, ids)
 	assert.NotNil(t, touched(nil))
 }
+
+func TestTok_Compact(t *testing.T) {
+	for n, want := range map[int64]string{1: "1 token", 950: "950 tokens", 9999: "9999 tokens", 10_000: "10.0k tokens",
+		12_345: "12.3k tokens", 999_949: "999.9k tokens", 999_950: "1.0M tokens", 1_000_000: "1.0M tokens",
+		44_400_000: "44.4M tokens"} {
+		assert.Equal(t, want, English.tok(n), n)
+	}
+	for n, want := range map[int64]string{2: "2 токена", 9500: "9500 токенов", 12_345: "12,3 тыс. токенов", 999_950: "1,0 млн токенов", 44_400_000: "44,4 млн токенов"} {
+		assert.Equal(t, want, Russian.tok(n), n)
+	}
+}

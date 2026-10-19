@@ -164,7 +164,8 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         let log = AnalyticsActionLog()
         let view = overviewView(.overview(try Self.overview(), staleError: nil), log: log)
         try view.inspect().find(button: "#1 Add widget").tap()
-        try view.inspect().find(button: "Session 11111111").tap()
+        // The session half: H6's evidence in the fixture is a session item.
+        try view.inspect().find(button: "Session $15.00").tap()
         XCTAssertEqual(log.targets, [1])
         XCTAssertEqual(log.sessions, ["11111111-aaaa-bbbb-cccc-000000000001"])
     }

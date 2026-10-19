@@ -193,7 +193,7 @@ func TestAgentsReportJSON_PinnedKeys(t *testing.T) {
 	runAgentsCmd(t, "scan", "--workbench", wb)
 	out := runAgentsCmd(t, "report", "--workbench", wb, "--days", "0", "--json")
 	assert.Equal(t, []string{"commands", "context", "enabled", "hints", "import", "models", "old_format_sessions", "sessions", "since",
-		"skills", "subagents", "tasks", "time", "totals", "trouble", "until", "workbench_id"}, jsonKeys(t, out))
+		"skills", "subagents", "tasks", "tasks_more", "time", "totals", "trouble", "until", "workbench_id"}, jsonKeys(t, out))
 	var ov struct {
 		Context  map[string]json.RawMessage `json:"context"`
 		Skills   map[string]json.RawMessage `json:"skills"`
