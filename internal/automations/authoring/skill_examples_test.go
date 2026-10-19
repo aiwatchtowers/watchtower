@@ -83,6 +83,8 @@ func TestCreateAutomationSkill_WrapRules(t *testing.T) {
 		"workbench_skills",
 		"{session_id}",
 		"does not count toward",
+		"as is",
+		"it returns only `{session_id}`",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("skill body does not contain %q", want)

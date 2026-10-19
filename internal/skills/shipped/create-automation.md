@@ -377,7 +377,9 @@ output.report({ title: "Team week", body: report });
 ### Release button (workbench, button)
 
 Wraps the owner's own release command as is: one session, no extra stages.
-Name the command the owner named; read it with `workbench_skills` first.
+Name the command the owner named, then repeat the owner's own requirements in
+the owner's words (this prompt is written in the owner's language, here
+English); read the command with `workbench_skills` first.
 
 ````markdown
 ---
@@ -395,7 +397,7 @@ the session said.
 ```js
 const s = session({
   title: "Release",
-  prompt: "Run /release."
+  prompt: "Run /release. Release from main only, tag the version, and stop if any test fails."
 });
 output.report({ title: "Release " + s.status, body: s.summary || s.error || "" });
 ```

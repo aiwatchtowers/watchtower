@@ -123,6 +123,19 @@ func regularFile(path string) bool {
 	return err == nil && st.Mode().IsRegular()
 }
 
+// realDir reports whether every component of rel under folder is a real
+// directory (lstat: a symlinked parent is not followed).
+func realDir(folder, rel string) bool {
+	cur := folder
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		cur = filepath.Join(cur, part)
+		if st, err := os.Lstat(cur); err != nil || !st.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
 // collectSkills lists commands and skills sorted by name; the first of two
 // equal names wins.
 func collectSkills(folder string) []skillEntry {
@@ -134,7 +147,10 @@ func collectSkills(folder string) []skillEntry {
 			out = append(out, e)
 		}
 	}
-	if des, err := os.ReadDir(filepath.Join(folder, ".claude", "commands")); err == nil {
+	commandsRel := filepath.Join(".claude", "commands")
+	if !realDir(folder, commandsRel) {
+		// skip: a symlinked parent could point outside the folder
+	} else if des, err := os.ReadDir(filepath.Join(folder, commandsRel)); err == nil {
 		for _, de := range des {
 			p := filepath.Join(folder, ".claude", "commands", de.Name())
 			if strings.HasSuffix(de.Name(), ".md") && regularFile(p) {
@@ -143,6 +159,9 @@ func collectSkills(folder string) []skillEntry {
 		}
 	}
 	for _, root := range []string{filepath.Join(".claude", "skills"), filepath.Join(".agents", "skills")} {
+		if !realDir(folder, root) {
+			continue
+		}
 		des, err := os.ReadDir(filepath.Join(folder, root))
 		if err != nil {
 			continue
@@ -158,7 +177,8 @@ func collectSkills(folder string) []skillEntry {
 			}
 			name := de.Name()
 			if text, _, err := readCapped(p); err == nil {
-				if fm, _ := splitFrontmatter(text); fm["name"] != "" {
+				if fm, _ := splitFrontmatter(text); fm["name"] != "" && !strings.ContainsAny(fm["name"], `/\`) &&
+					!strings.Contains(fm["name"], "..") {
 					name = fm["name"]
 				}
 			}

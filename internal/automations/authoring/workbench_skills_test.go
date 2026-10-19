@@ -124,3 +124,33 @@ func TestWorkbenchSkills_ResolvesOnlyItsWorkbench(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []int64{7}, wb.ids)
 }
+
+func TestWorkbenchSkills_SkipsSymlinkedRootsAndFolders(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	writeFile(t, filepath.Join(outside, "leak.md"), "secret")
+	writeFile(t, filepath.Join(outside, "evil/SKILL.md"), "# Evil\n")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".claude/skills"), 0o755))
+	require.NoError(t, os.Symlink(outside, filepath.Join(dir, ".claude/commands")))
+	require.NoError(t, os.Symlink(filepath.Join(outside, "evil"), filepath.Join(dir, ".claude/skills/evil")))
+	require.NoError(t, os.Symlink(outside, filepath.Join(dir, ".agents")))
+	out, err := runSkills(t, &fakeWB{folder: dir}, `{"workbench_id":7}`)
+	require.NoError(t, err)
+	assert.Empty(t, out["skills"])
+}
+
+func TestWorkbenchSkills_PathLikeFrontmatterNameFallsBack(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, ".claude/skills/one/SKILL.md"), "---\nname: a/b\n---\n")
+	writeFile(t, filepath.Join(dir, ".claude/skills/two/SKILL.md"), "---\nname: /release\n---\n")
+	writeFile(t, filepath.Join(dir, ".claude/skills/three/SKILL.md"), "---\nname: ..x\n---\n")
+	out, err := runSkills(t, &fakeWB{folder: dir}, `{"workbench_id":7}`)
+	require.NoError(t, err)
+	var names []string
+	for _, s := range out["skills"].([]any) {
+		names = append(names, s.(map[string]any)["name"].(string))
+	}
+	assert.Equal(t, []string{"one", "three", "two"}, names)
+	_, err = runSkills(t, &fakeWB{folder: dir}, `{"workbench_id":7,"name":"one"}`)
+	require.NoError(t, err)
+}
