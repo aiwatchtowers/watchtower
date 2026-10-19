@@ -1,6 +1,6 @@
 # Desktop style guide
 
-One page for whoever builds a Desktop screen. The kit in `WatchtowerDesktop/Sources/Views/DesignSystem/` is the detail; this page says which part to reach for and why. Design and decisions: `docs/superpowers/specs/2026-10-19-desktop-style-guide-design.md`. New screens only; old screens move onto the kit later.
+One page for whoever builds a Desktop screen. The kit in `WatchtowerDesktop/Sources/DesignKit/` is the detail; this page says which part to reach for and why. The kit's names are imported into every app file; on a clash with another module, qualify the kit's name (`DesignKit.Surface`). Design and decisions: `docs/superpowers/specs/2026-10-19-desktop-style-guide-design.md`. New screens only; old screens move onto the kit later.
 
 The reference is the app's own good screens: Workbench, Calendar and AI Chat. A screen built from the kit should look like them without you choosing a number.
 
@@ -16,7 +16,7 @@ The reference is the app's own good screens: Workbench, Calendar and AI Chat. A 
 
 ## Tokens
 
-Use the token, never the number. The scale is closed: a screen that needs a new step adds a token to `DesignSystem/` in the same PR.
+Use the token, never the number. The scale is closed: a screen that needs a new step adds a token to `DesignKit/` in the same PR.
 
 | Token | Values |
 |---|---|
@@ -55,24 +55,26 @@ Shadows exist only on floating buttons (`FloatingButtonLabel`).
 | `.popoverSurface()` | custom popover backgrounds | the body of a popover |
 | `FloatingButtonLabel` | one-off shadows | "Jump to latest" style floating buttons |
 
-![gallery](shots/gallery.png)
+![colours](shots/catalog-colours.png)
+![spacing](shots/catalog-spacing.png)
+![typography](shots/catalog-typography.png)
 
-![buttons](shots/buttons.png)
+![actions](shots/catalog-actions.png)
 ![workbench-header](shots/workbench-header.png)
 ![workbench-panel-parts](shots/workbench-panel-parts.png)
 ![workbench-board-cards](shots/workbench-board-cards.png)
 ![sessions-panel](shots/sessions-panel.png)
 ![chat-rows](shots/chat-rows.png)
 ![calendar-rows](shots/calendar-rows.png)
-![kit-new-components](shots/kit-new-components.png)
+![inputs](shots/catalog-inputs.png)
+![settings](shots/catalog-settings.png)
+![panels](shots/catalog-panels.png)
 
-The gallery shows every token and component in light and dark. In a dev build (`make app-dev`) open it from Help, Design Gallery.
-
-Before a release: build with `make app` and check that neither the Help nor the Window menu shows Design Gallery.
+The design gallery shows every token and component, one page per kind (colours, spacing, radius, strokes, typography, icons, motion, actions, selection, inputs, display, containers, settings, panels, popover). Run `make design-gallery`: it is a separate window and is never part of the app. `make desktop-shots DESKTOP_SHOTS=<dir>` renders the pages as `catalog-<page>` shots. A new kit component adds itself to a catalog page in `Sources/DesignKitCatalog/`.
 
 ## Lint rules
 
-New code under `Sources/Views/` and `Sources/App/` (not `DesignSystem/`) fails `make lint-swift` on these. There is no inline `swiftlint:disable` for them: `scripts/kit-lint-guard.sh`, run by `make lint-swift` and by CI, fails on any `swiftlint:disable` (including `:next`, `:this`, `:previous`) there that names a `kit_` rule or `all`. Existing code is in the baseline.
+New code under `Sources/Views/` and `Sources/App/` (not `DesignKit/`) fails `make lint-swift` on these. There is no inline `swiftlint:disable` for them: `scripts/kit-lint-guard.sh`, run by `make lint-swift` and by CI, fails on any `swiftlint:disable` (including `:next`, `:this`, `:previous`) there that names a `kit_` rule or `all`. Existing code is in the baseline.
 
 | Rule id | Forbids | Why |
 |---|---|---|
@@ -96,4 +98,4 @@ Every new screen is looked at before it merges.
 3. Open both PNGs and look: soft fills, no hard borders, nothing stock-looking, nothing clipped.
 4. Attach them to the PR. A new window also goes to the owner as a review ask with its shots before merge.
 
-PNGs can be produced without a dev build via `make desktop-shots DESKTOP_SHOTS=<dir>`. The lint baseline is regenerated with `scripts/swiftlint-baseline.sh && make lint-swift`, only when absorbing legacy code, never to hide new violations. The script refuses a baseline that gains any violation the old one did not have (it lists them and leaves the file alone); a new rule that deliberately absorbs legacy hits passes `--allow-new <rule-id>` (repeatable) for that rule only.
+PNGs can be produced via `make desktop-shots DESKTOP_SHOTS=<dir>`. The lint baseline is regenerated with `scripts/swiftlint-baseline.sh && make lint-swift`, only when absorbing legacy code, never to hide new violations. The script refuses a baseline that gains any violation the old one did not have (it lists them and leaves the file alone); a new rule that deliberately absorbs legacy hits passes `--allow-new <rule-id>` (repeatable) for that rule only.

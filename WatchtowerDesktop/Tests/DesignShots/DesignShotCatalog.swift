@@ -2,6 +2,7 @@ import AppKit
 import GRDB
 import SwiftUI
 import XCTest
+@testable import DesignKitCatalog
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
@@ -45,12 +46,6 @@ enum DesignShotCatalog {
             DesignShot(name: "buttons", size: NSSize(width: 460, height: 64)) {
                 AnyView(DesignShotFixtures.buttons().padding(12).shotFrame().panelBackground())
             },
-            DesignShot(name: "gallery", size: NSSize(width: 900, height: 0)) {
-                AnyView(DesignSystemGalleryContent().shotFrame().detailBackground())
-            },
-            DesignShot(name: "kit-new-components", size: NSSize(width: 640, height: 760)) {
-                AnyView(GalleryNewComponents().padding(Spacing.page).shotFrame().detailBackground())
-            },
             // Home (#717): two columns from 900 pt of content, one below.
             DesignShot(name: "home-wide", size: NSSize(width: 1280, height: 960)) {
                 HomeShotFixtures.home()
@@ -58,7 +53,15 @@ enum DesignShotCatalog {
             DesignShot(name: "home-narrow", size: NSSize(width: 780, height: 1440)) {
                 HomeShotFixtures.home()
             }
-        ]
+        ] + CatalogPage.allCases.map { page in
+            DesignShot(name: "catalog-\(page.rawValue)", size: NSSize(width: 900, height: 0)) {
+                // A fixed moment, so the Typography page's live counter is the same every run.
+                AnyView(CatalogPageBody(page: page)
+                    .environment(\.galleryFrozenDate, Date(timeIntervalSinceReferenceDate: 812_345.6))
+                    .shotFrame()
+                    .detailBackground())
+            }
+        }
     }
 }
 
