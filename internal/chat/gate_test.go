@@ -1293,3 +1293,27 @@ func TestGate_RowIsCommittedBeforeToolWait(t *testing.T) {
 	h.next(EventTurnDone)
 	require.NoError(t, h.finish())
 }
+
+// A wait that looks between halt setting halted and its own stop signal gets
+// the reason halt gives it, never a default: a child that had already exited
+// at the stop is a session end, expired unanswered.
+func TestGate_HaltReasonIsSetWithTheHaltedState(t *testing.T) {
+	sink := newFakeSink()
+	g, p, r := unitGate(t, sink)
+	req, id := stopTestCall(t, sink)
+	w := &gateWait{proc: p, stop: make(chan struct{}), done: make(chan struct{})}
+	g.mu.Lock()
+	g.waits["r1"] = w
+	g.mu.Unlock()
+	close(w.done) // nothing to wait for: the test settles the call itself
+	close(p.exited)
+	settled := false
+	g.haltedHook = func() { settled = g.settledByStopOrExit(p, req, w, id) }
+	g.halt(true)
+
+	require.True(t, settled)
+	row := sink.row(id)
+	assert.Equal(t, "failed", row.status)
+	assert.Equal(t, reasonSessionEnded, row.reason)
+	assert.Empty(t, cliAnswers(t, p, r), "no answer is due to a dead child")
+}

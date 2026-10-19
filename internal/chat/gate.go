@@ -197,6 +197,10 @@ type gate struct {
 	own     map[string]bool // ids of the pages and docs this session published
 	halted  bool            // Stop arrived: asks are denied until the next turn
 	closed  bool            // Close arrived: every request is denied for good
+
+	// haltedHook, a test seam, runs in halt right after the critical section
+	// that sets halted; nil outside tests.
+	haltedHook func()
 }
 
 // newGate validates opts and binds the policy to the session.
@@ -344,6 +348,14 @@ func (g *gate) stopRequested(w *gateWait) (bool, stopReason) {
 	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	// halt signals every wait it found in the critical section that sets
+	// halted: a wait it stopped has its reason by now. Halted with w still
+	// open, w came after the stop.
+	select {
+	case <-w.stop:
+		return true, w.why
+	default:
+	}
 	return g.halted || g.closed, stopByOwner
 }
 
@@ -688,12 +700,10 @@ func (g *gate) halt(closing bool) {
 	waits := make(map[string]*gateWait, len(g.waits))
 	for id, w := range g.waits {
 		waits[id] = w
-	}
-	g.mu.Unlock()
-	for _, w := range waits {
 		// Snapshot the child's exit now, not when the wait wakes: Close stops
 		// the child right after this, and a call of a child that was alive at
-		// the stop is the owner's stop.
+		// the stop is the owner's stop. Signalled under g.mu, with halted, so
+		// no wait sees the halt without its reason.
 		why := stopByOwner
 		select {
 		case <-w.proc.exited:
@@ -701,6 +711,10 @@ func (g *gate) halt(closing bool) {
 		default:
 		}
 		w.signal(why)
+	}
+	g.mu.Unlock()
+	if g.haltedHook != nil {
+		g.haltedHook()
 	}
 	deadline := time.After(gateStopWait)
 	for id, w := range waits {
