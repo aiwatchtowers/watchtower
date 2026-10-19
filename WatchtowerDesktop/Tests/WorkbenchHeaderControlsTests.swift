@@ -75,9 +75,11 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         _ vm: WorkbenchesViewModel,
         _ project: Workbench,
         onCleanUp: @escaping () -> Void = {},
+        onNewAutomation: (() -> Void)? = nil,
         onDelete: @escaping () -> Void = {}
     ) -> WorkbenchHeaderControls {
-        WorkbenchHeaderControls(vm: vm, project: project, onDelete: onDelete, onCleanUpOldWorktrees: onCleanUp)
+        WorkbenchHeaderControls(vm: vm, project: project, onDelete: onDelete, onCleanUpOldWorktrees: onCleanUp,
+                                onNewAutomation: onNewAutomation)
     }
 
     private static func title(_ toggle: InspectableView<ViewType.Toggle>) throws -> String {
@@ -266,6 +268,19 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         var opened = 0
         let open = { opened += 1 }
         try controls(vm, s.project, onCleanUp: open).inspect().find(button: "Clean Up Old Worktrees…").tap()
+        XCTAssertEqual(opened, 1)
+    }
+
+    /// "New Automation…" (spec 2026-10-20 §4) opens the New automation sheet
+    /// for this workbench; off until the page supplies the hook.
+    func testNewAutomationOpensTheSheetForThisWorkbench() async throws {
+        let s = try await seed()
+        let vm = makeVM(FakeCLIRunner())
+        XCTAssertTrue(try controls(vm, s.project).inspect().find(button: "New Automation…").isDisabled())
+
+        var opened = 0
+        let open = { opened += 1 }
+        try controls(vm, s.project, onNewAutomation: open).inspect().find(button: "New Automation…").tap()
         XCTAssertEqual(opened, 1)
     }
 

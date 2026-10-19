@@ -3,6 +3,7 @@ import SwiftUI
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// The automation editor before a save: the Draft panel with "Sessions it
 /// starts" (one prompt long enough to fold, one clipped), and a pending
@@ -68,6 +69,31 @@ enum AutomationShotFixtures {
             let sessions = AutomationDraftPanelModel.dryRunSessions(inCache: try cacheLine())
             return AnyView(AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {},
                                                onRetry: {}, latestDraftText: recipe, draftSessions: sessions))
+        } catch {
+            return failure(error)
+        }
+    }
+
+    private static var newSheetPoolPath: String?
+
+    /// The New automation sheet opened from acme's **New Automation…**: the
+    /// "For" picker on acme, the chat still opening.
+    static func newSheetForWorkbench() -> AnyView {
+        do {
+            let (pool, path) = try TestDatabase.createPool()
+            if let newSheetPoolPath { TestDatabase.cleanup(path: newSheetPoolPath) }
+            newSheetPoolPath = path
+            let noSleep: (Duration) async -> Void = { _ in }
+            let vm = AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: FakeCLIRunner()), sleep: noSleep)
+            let workbenches = [AutomationTemplateGallery.InstallTarget(id: 3, name: "acme"),
+                               AutomationTemplateGallery.InstallTarget(id: 4, name: "acme-docs")]
+            let opening: (Int64?) async throws -> AutomationEditorChat? = { _ in
+                try await Task.sleep(for: .seconds(3600))
+                return nil
+            }
+            return AnyView(NewAutomationSheet(vm: vm, editor: nil, workbenches: workbenches,
+                                              workbenchID: .constant(3), makeChat: opening,
+                                              automationsDir: nil, onTemplates: nil) {})
         } catch {
             return failure(error)
         }

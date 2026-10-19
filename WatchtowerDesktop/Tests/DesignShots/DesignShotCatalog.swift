@@ -58,6 +58,9 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "automation-save-card", size: NSSize(width: 560, height: 520)) {
                 AnyView(AutomationShotFixtures.saveCard().padding(12).shotFrame().detailBackground())
+            },
+            DesignShot(name: "automation-new-sheet-workbench", size: NSSize(width: 960, height: 640)) {
+                AnyView(AutomationShotFixtures.newSheetForWorkbench().detailBackground())
             }
         ] + CatalogPage.allCases.map { page in
             DesignShot(name: "catalog-\(page.rawValue)", size: NSSize(width: 900, height: 0)) {

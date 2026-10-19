@@ -138,7 +138,8 @@ struct WorkbenchPageView: View {
                 if vm.isInstalling(projectID: project.id) { ProgressView().controlSize(.mini) }
                 Spacer(minLength: 8)
                 WorkbenchHeaderControls(vm: vm, project: project, automationButtons: automationButtons(project),
-                                        onDelete: confirmDelete) { sweeping = true }
+                                        onDelete: confirmDelete, onCleanUpOldWorktrees: { sweeping = true },
+                                        onNewAutomation: newAutomation(project))
             }
             if let installError = vm.installErrors[project.id] {
                 Text(installError)
@@ -157,6 +158,13 @@ struct WorkbenchPageView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
+    }
+
+    /// **New Automation…**: the Automations tab's New automation sheet
+    /// with this workbench picked; nil until the tab's view model is up.
+    private func newAutomation(_ project: Workbench) -> (() -> Void)? {
+        guard appState.automationsViewModel != nil else { return nil }
+        return { [appState] in appState.newAutomation(forWorkbench: project.id) }
     }
 
     private func automationButtons(_ project: Workbench) -> WorkbenchAutomationButtons? {

@@ -36,10 +36,23 @@ enum AutomationEditorChatSurface {
             title: "Automation: \(String(automation.name.prefix(60)))")
     }
 
-    /// The new draft's conversation, created on first use.
-    static func newConversationID(draftID: String, dbPool: DatabasePool) async throws -> Int64 {
+    /// The workbench a new automation is made for: its id, name and folder
+    /// name (the last path component), as the editor chat names it.
+    typealias NewWorkbench = (id: Int64, name: String, folder: String)
+
+    /// The new draft's conversation key per scope (the "For" picker): each
+    /// scope keeps its own conversation, so nothing written under one scope
+    /// is sent under another.
+    static func draftContextID(draftID: String, workbenchID: Int64?) -> String {
+        guard let workbenchID else { return draftID }
+        return "\(draftID)-wb\(workbenchID)"
+    }
+
+    /// The new draft's conversation for one scope, created on first use.
+    static func newConversationID(draftID: String, workbenchID: Int64?, dbPool: DatabasePool) async throws -> Int64 {
         try await DatabaseEmbeddedChatStore.conversationID(
-            dbPool: dbPool, contextType: draftContextType, contextID: draftID, title: "New automation")
+            dbPool: dbPool, contextType: draftContextType,
+            contextID: draftContextID(draftID: draftID, workbenchID: workbenchID), title: "New automation")
     }
 
     /// The chat about `automation`. Its per-turn prompt re-reads the recipe
@@ -76,18 +89,21 @@ enum AutomationEditorChatSurface {
     }
 
     /// The "New automation" chat: no automation yet, so the CLI gets
-    /// `--surface automation_editor` with no context (Task 3).
+    /// `--surface automation_editor` with no context (Task 3). With a
+    /// `workbench` the prompt names it and its `workbench_id`.
     static func newSpec(
         provider: String?,
         draftID: String,
+        workbench: NewWorkbench?,
         conversationID: Int64,
         outcomes: @escaping @MainActor (Date?) -> String? = { _ in nil },
         skillsDir: String? = SkillsCatalog.defaultDir()
     ) -> ChatSurfaceSpec {
         let tools = toolsAvailable(provider: provider)
-        let context = newContextBlock
+        let context = newContextBlock(workbench: workbench)
+        let contextID = draftContextID(draftID: draftID, workbenchID: workbench?.id)
         return ChatSurfaceSpec(
-            key: EmbeddedChatKey(contextType: draftContextType, contextID: draftID, conversationID: conversationID),
+            key: EmbeddedChatKey(contextType: draftContextType, contextID: contextID, conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: tools ? .actionsWithoutContext(surface: surface) : .draftOnly,
             systemPrompt: { systemPrompt(context: context, tools: tools, skillsDir: skillsDir) },
@@ -120,13 +136,28 @@ enum AutomationEditorChatSurface {
         return lines.joined(separator: "\n")
     }
 
-    static let newContextBlock = """
-        You are Watchtower's assistant, helping the owner create a new automation in words.
-
-        === NEW AUTOMATION ===
-        Scope: personal
-        Pick a short slug for it (lowercase letters, digits and hyphens) and keep using the same one.
-        """
+    static func newContextBlock(workbench: NewWorkbench?) -> String {
+        var lines = [
+            "You are Watchtower's assistant, helping the owner create a new automation in words.",
+            "",
+            "=== NEW AUTOMATION ==="
+        ]
+        if let workbench {
+            lines += [
+                "Scope: workbench \(workbench.id) (\(workbench.name), folder \(workbench.folder))",
+                "Pick a short slug for it (lowercase letters, digits and hyphens) and keep using the same one.",
+                "Always pass `workbench_id: \(workbench.id)` to `draft_automation` and `save_automation`.",
+                "When the owner names a skill or a command, start with `workbench_skills` "
+                    + "(`workbench_id: \(workbench.id)`) to find it in the folder."
+            ]
+        } else {
+            lines += [
+                "Scope: personal",
+                "Pick a short slug for it (lowercase letters, digits and hyphens) and keep using the same one."
+            ]
+        }
+        return lines.joined(separator: "\n")
+    }
 
     /// Who the assistant is and the rules; repeated on a resumed turn, whose
     /// CLI call drops the system prompt.
