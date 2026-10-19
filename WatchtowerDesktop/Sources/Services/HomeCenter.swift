@@ -286,10 +286,11 @@ final class HomeCenter {
     /// performer writes it. A failure brings the row back with the error's
     /// text; a success re-reads now (an inbox write comes from the CLI, which
     /// the observation never sees) and the row's hidden mark goes once that
-    /// read no longer returns it. A second press while the write runs does
+    /// read no longer returns it. A second press while the write runs, or a
+    /// press on a kind without Done / Hide (`FeedRef.hasActions`), does
     /// nothing.
     func act(_ action: FeedAction, on ref: FeedRef) async {
-        guard !acting.contains(ref) else { return }
+        guard ref.hasActions, !acting.contains(ref) else { return }
         acting.insert(ref)
         hiddenRefs.insert(ref)
         feedErrors[ref] = nil

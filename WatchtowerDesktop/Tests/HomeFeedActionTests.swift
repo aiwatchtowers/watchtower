@@ -30,13 +30,24 @@ final class FakeHomeFeedPerformer: HomeFeedPerforming {
     }
 }
 
-/// Records each CLI call; answers with `stdout` or throws `error`.
+/// Records each CLI call and its timeout (nil for the untimed call);
+/// answers with empty stdout or throws `error`.
 private final class RecordingRunner: CLIRunnerProtocol, @unchecked Sendable {
     private(set) var calls: [[String]] = []
+    private(set) var timeouts: [TimeInterval?] = []
     var error: Error?
 
     func run(args: [String]) async throws -> Data {
+        try record(args, timeout: nil)
+    }
+
+    func run(args: [String], timeout: TimeInterval) async throws -> Data {
+        try record(args, timeout: timeout)
+    }
+
+    private func record(_ args: [String], timeout: TimeInterval?) throws -> Data {
         calls.append(args)
+        timeouts.append(timeout)
         if let error { throw error }
         return Data()
     }
@@ -217,6 +228,44 @@ final class HomeFeedActionTests: XCTestCase {
         XCTAssertFalse(center.hiddenRefs.contains(ref))
     }
 
+    /// Done / Hide on a kind that has neither (a proposal, an event) does
+    /// nothing: no hide, no write.
+    func testActOnAKindWithoutActionsDoesNothing() async throws {
+        let pool = try makePool()
+        let id = try await pool.write { db in try TestDatabase.insertAgentAction(db) }
+        let ref = FeedRef.proposal(id)
+        let performer = FakeHomeFeedPerformer()
+        let center = try makeCenter(performer: performer)
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntil(center, shows(ref))
+
+        await center.act(.hide, on: ref)
+        await center.act(.done, on: .event("e1"))
+        XCTAssertTrue(performer.calls.isEmpty)
+        XCTAssertTrue(center.hiddenRefs.isEmpty)
+        XCTAssertTrue(shows(ref)(center.snapshot))
+    }
+
+    /// The inbox CLI call is bounded: a timeout is an error like any other,
+    /// and the row comes back with it.
+    func testInboxTimeoutBringsTheRowBack() async throws {
+        let pool = try makePool()
+        let ref = try insertMention(pool)
+        let runner = RecordingRunner()
+        runner.error = CLIRunnerError.nonZeroExit(code: -1, stderr: "timed out after 30s")
+        let center = try makeCenter(performer: LiveHomeFeedPerformer(runner: runner, pool: pool))
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntil(center, shows(ref))
+
+        await center.act(.hide, on: ref)
+        XCTAssertEqual(runner.timeouts, [30])
+        XCTAssertTrue(shows(ref)(center.snapshot))
+        XCTAssertEqual(center.feedErrors[ref], "watchtower exited with error: timed out after 30s")
+        XCTAssertFalse(center.hiddenRefs.contains(ref))
+    }
+
     func testSetFeedExpandedShowsEveryRow() async throws {
         let pool = try makePool()
         try await pool.write { db in
@@ -244,6 +293,7 @@ final class HomeFeedActionTests: XCTestCase {
         try await performer.perform(.done, on: .inbox(1), now: Date(), calendar: .current)
         try await performer.perform(.hide, on: .inbox(1), now: Date(), calendar: .current)
         XCTAssertEqual(runner.calls, [["inbox", "resolve", "1"], ["inbox", "dismiss", "1"]])
+        XCTAssertEqual(runner.timeouts, [30, 30])
     }
 
     /// A non-zero exit is a real failure (Go has no "not found" exit for these).
@@ -306,9 +356,26 @@ final class HomeFeedActionTests: XCTestCase {
             try Row.fetchAll(db, sql: "SELECT status, snooze_until FROM targets ORDER BY id")
         }
         XCTAssertEqual(rows.map { $0["status"] as String }, ["done", "snoozed"])
-        let tomorrow = HomeFeedBuilder.dayString(
-            LiveHomeFeedPerformer.tomorrowNine(now: Date(), calendar: .current), calendar: .current)
-        XCTAssertEqual(rows[1]["snooze_until"] as String, tomorrow)
+    }
+
+    /// Hide brings a target back tomorrow 09:00 local: `snooze_until` holds
+    /// that instant as a UTC minute, which Go's `UnsnoozeExpiredTargets`
+    /// compares against — a bare date would come back at 00:00 UTC, the
+    /// same evening west of UTC.
+    func testTargetHideSnoozesToTomorrowNineLocal() async throws {
+        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-19T12:00:00Z"))
+        for (zone, expected) in [("America/Los_Angeles", "2026-10-20T16:00"), ("Europe/Berlin", "2026-10-20T07:00")] {
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = try XCTUnwrap(TimeZone(identifier: zone))
+            let pool = try makePool()
+            let id = try await pool.write { db in Int(try TestDatabase.insertTarget(db, text: "A")) }
+            try await LiveHomeFeedPerformer(runner: nil, pool: pool)
+                .perform(.hide, on: .target(id), now: now, calendar: calendar)
+            let stored = try await pool.read { db in
+                try String.fetchOne(db, sql: "SELECT snooze_until FROM targets WHERE id = ?", arguments: [id])
+            }
+            XCTAssertEqual(stored, expected, zone)
+        }
     }
 
     func testAReminderOrTargetGoneElsewhereIsQuiet() async throws {

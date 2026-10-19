@@ -14,6 +14,15 @@ package enum FeedRef: Hashable, Sendable {
     case proposal(Int64)
     case target(Int)
     case event(String)
+
+    /// Whether Done / Hide exist for this kind: inbox, reminder and target
+    /// rows have both; a proposal (decided in Inbox) and an event have none.
+    package var hasActions: Bool {
+        switch self {
+        case .inbox, .reminder, .target: true
+        case .proposal, .event: false
+        }
+    }
 }
 
 /// What the owner can do to a row in place.

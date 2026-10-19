@@ -48,7 +48,8 @@ final class LiveHomeFeedPerformer: HomeFeedPerforming {
         switch ref {
         case .inbox(let id):
             guard let runner else { throw HomeFeedActionError.cliUnavailable }
-            _ = try await runner.run(args: ["inbox", action == .done ? "resolve" : "dismiss", "\(id)"])
+            _ = try await runner.run(
+                args: ["inbox", action == .done ? "resolve" : "dismiss", "\(id)"], timeout: Self.cliTimeout)
         case .reminder(let id):
             let until = ISO8601DateFormatter().string(from: Self.tomorrowNine(now: now, calendar: calendar))
             try await quietIfGone {
@@ -65,7 +66,7 @@ final class LiveHomeFeedPerformer: HomeFeedPerforming {
                 try await self.pool.write { db in
                     switch action {
                     case .done: try TargetQueries.updateStatus(db, id: id, status: "done")
-                    case .hide: try TargetQueries.snooze(db, id: id, until: until)
+                    case .hide: try TargetQueries.snooze(db, id: id, untilInstant: until)
                     }
                 }
             }
@@ -73,6 +74,10 @@ final class LiveHomeFeedPerformer: HomeFeedPerforming {
             return
         }
     }
+
+    /// How long an inbox CLI call may run; past it the call throws and the
+    /// row comes back with the error.
+    static let cliTimeout: TimeInterval = 30
 
     /// Tomorrow 09:00 in `calendar`'s time zone: where a hidden reminder or
     /// target comes back.

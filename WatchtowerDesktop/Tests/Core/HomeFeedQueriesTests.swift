@@ -103,6 +103,18 @@ final class HomeFeedQueriesTests: XCTestCase {
     }
 
     /// A snooze that has elapsed no longer hides the row.
+    /// An archived item is gone from Home, as from the briefing's
+    /// `ListActionableOpen`.
+    func testArchivedItemIsLeftOut() throws {
+        try db.write { d in
+            try self.insertItem(d, snippet: "kept")
+            let archived = try self.insertItem(d, snippet: "archived")
+            try d.execute(sql: "UPDATE inbox_items SET archived_at = ? WHERE id = ?",
+                          arguments: [self.hoursAgo(0.5), archived])
+        }
+        XCTAssertEqual(try read().inbox.map(\.item.snippet), ["kept"])
+    }
+
     func testElapsedSnoozeIsShown() throws {
         try db.write { d in
             try self.insertItem(d, trigger: "dm", snoozeUntil: self.hoursAgo(1))
@@ -205,6 +217,24 @@ final class HomeFeedQueriesTests: XCTestCase {
         XCTAssertEqual(try read().targets.map(\.text), ["Due today"])
     }
 
+    /// The read takes every due target (the inbox's 200 bound), not the
+    /// first seven: the builder caps what shows, and a target due later
+    /// today sorts last by `due_date` yet belongs below NOW.
+    func testEveryDueTargetReachesTheFeed() throws {
+        try db.write { d in
+            for day in 1...8 {
+                try self.insertTarget(d, "Overdue \(day)", dueDate: try self.dayString(-day))
+            }
+            try self.insertTarget(d, "Due today", dueDate: try self.dayString(0))
+            try self.insertTarget(d, "Later today", dueDate: try self.dayString(0) + "T23:59")
+        }
+        let data = try read()
+        XCTAssertEqual(data.targets.count, 10)
+        let feed = HomeFeedBuilder.feed(data, now: now, calendar: calendar, expanded: false, hidden: [])
+        XCTAssertEqual(feed.laterToday.map(\.title), ["Later today"])
+        XCTAssertEqual(feed.waiting.count + feed.hiddenWaiting, 9)
+    }
+
     // MARK: - Calendar
 
     private func insertEvent(
@@ -294,6 +324,16 @@ final class HomeFeedQueriesTests: XCTestCase {
         let data = try read()
         XCTAssertEqual(data.dueReminders.map(\.note), ["due"])
         XCTAssertEqual(data.laterReminders.map(\.note), ["later"])
+    }
+
+    /// Every proposal waiting on the owner is read, not the first seven.
+    func testEveryAwaitingProposalIsRead() throws {
+        try db.write { d in
+            for index in 1...8 {
+                try TestDatabase.insertAgentAction(d, turnID: "turn-\(index)")
+            }
+        }
+        XCTAssertEqual(try read().proposals.count, 8)
     }
 
     // MARK: - Failure

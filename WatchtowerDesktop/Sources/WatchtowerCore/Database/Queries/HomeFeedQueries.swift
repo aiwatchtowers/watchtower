@@ -42,8 +42,8 @@ package enum HomeFeedQueries {
     ]
 
     private static let windowHours = 72.0
-    private static let inboxLimit = 200
-    private static let rowLimit = 7
+    /// Every source's row bound; the builder caps what shows.
+    private static let rowLimit = 200
     private static let calendarDays = 4
     private static let nextDayHorizon = 3
     private static let feedTriggers = [
@@ -92,10 +92,10 @@ package enum HomeFeedQueries {
         let formatter = ISO8601DateFormatter()
         let cutoff = formatter.string(from: now.addingTimeInterval(-windowHours * 3600))
         let marks = feedTriggers.map { _ in "?" }.joined(separator: ", ")
-        let arguments: [any DatabaseValueConvertible] = feedTriggers + [cutoff, formatter.string(from: now), inboxLimit]
+        let arguments: [any DatabaseValueConvertible] = feedTriggers + [cutoff, formatter.string(from: now), rowLimit]
         let rows = try Row.fetchAll(db, sql: """
             SELECT *, MAX(created_at, mentioned_at) AS stamp FROM inbox_items
-            WHERE status = 'pending' AND item_class = 'actionable'
+            WHERE status = 'pending' AND item_class = 'actionable' AND archived_at IS NULL
               AND trigger_type IN (\(marks))
               AND MAX(created_at, mentioned_at) >= ?
               AND (snooze_until = '' OR snooze_until <= ?)
@@ -158,8 +158,8 @@ package enum HomeFeedQueries {
 
     // MARK: - Targets
 
-    /// `TargetQueries.homeSummary`'s rows without its in-progress arm:
-    /// overdue or due today.
+    /// The owner's open targets that are overdue or due today (a timed one
+    /// due later today too: the builder puts it below NOW).
     private static func dueTargets(_ db: Database, today: String) throws -> [Target] {
         // BEHAVIOR PROJ-01 — project targets live only on their board
         // (WorkbenchQueries.board); Home never sees one.

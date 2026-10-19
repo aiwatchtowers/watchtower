@@ -173,8 +173,16 @@ final class HomeFeedBuilderTests: XCTestCase {
         data.targets = [target(4, due: "2026-10-19")]
         let rows = build(data).waiting
         XCTAssertEqual(rows[0].link, .permalink(try XCTUnwrap(URL(string: "https://example.com/p/1"))))
-        XCTAssertEqual(rows[1].link, .inbox)
+        XCTAssertEqual(rows[1].link, .catchUp)
         XCTAssertEqual(rows[2].link, .target(id: 4))
+    }
+
+    /// An inbox row with no permalink it can open (empty, or no scheme)
+    /// opens Catch-Up instead (final review #717).
+    func testInboxRowWithoutAPermalinkOpensCatchUp() {
+        var data = HomeFeedData()
+        data.inbox = [inbox(1, minutesAgo: 1), inbox(2, minutesAgo: 2, permalink: "not a link")]
+        XCTAssertEqual(build(data).waiting.map(\.link), [.catchUp, .catchUp])
     }
 
     // MARK: - Below NOW

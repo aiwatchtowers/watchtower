@@ -92,7 +92,14 @@ package enum HomeFeedBuilder {
         return FeedRow(
             id: .inbox(item.id), kind: kind, chip: chip, who: who, whereText: whereText, text: item.snippet,
             stamp: row.stamp, read: !item.isUnread, actions: [.done, .hide],
-            link: URL(string: item.permalink).map { .permalink($0) } ?? .inbox)
+            link: permalink(item.permalink).map { .permalink($0) } ?? .catchUp)
+    }
+
+    /// The item's permalink when it is an absolute URL; an empty or
+    /// scheme-less one is nil, and the row opens Catch-Up instead.
+    private static func permalink(_ text: String) -> URL? {
+        guard let url = URL(string: text), let scheme = url.scheme, !scheme.isEmpty else { return nil }
+        return url
     }
 
     // MARK: - Below NOW
@@ -186,8 +193,8 @@ package enum HomeFeedBuilder {
         ISO8601DateFormatter().date(from: stamp) ?? .distantPast
     }
 
-    /// A target's "yyyy-MM-dd[THH:mm]" as local wall-clock time, like the
-    /// Today card's `targetDetail`; a bare day is its midnight.
+    /// A target's "yyyy-MM-dd[THH:mm]" due date as local wall-clock time; a
+    /// bare day is its midnight.
     private static func dueInstant(_ due: String, calendar: Calendar) -> Date {
         let fmt = DateFormatter()
         fmt.locale = Locale(identifier: "en_US_POSIX")
