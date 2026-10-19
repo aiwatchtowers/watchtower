@@ -56,6 +56,12 @@ struct SessionChatView: View {
         return state.live && state.kind != .finished
     }
 
+    /// A known session that ended shows the finished line; an unknown one
+    /// (the sessions not loaded yet) shows neither it nor the composer.
+    private var finishedShown: Bool {
+        vm.session(sessionID, projectID: projectID) != nil && !composerShown
+    }
+
     /// The round button is Stop while the agent or its subagents work.
     private var working: Bool {
         vm.sessionStatuses[sessionID].map(SessionControl.isWorking) ?? false
@@ -91,7 +97,7 @@ struct SessionChatView: View {
             } else {
                 feed
             }
-            if path.isRoot && !composerShown {
+            if path.isRoot && finishedShown {
                 // No composer and no Stop once the session ended.
                 Divider()
                 Text("Session finished. The history stays readable.")
@@ -99,14 +105,17 @@ struct SessionChatView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
-            } else if path.isRoot, let workchat {
+            } else if path.isRoot, composerShown, let workchat {
                 Divider()
                 WorkchatComposer(model: workchat, working: working)
             }
         }
-        // Each state change of the session reads its permission prompt
-        // again (the hooks write the row and the state together).
-        .task(id: stateKind) { await workchat?.refreshPermission() }
+        // Each hook write for the session reads its permission prompt again
+        // (its hook writes the row and the state): keyed on the stamp
+        // too, so a second prompt within one state poll is still read.
+        .task(id: WorkchatModel.PermissionReadKey(vm.sessionStatuses[sessionID])) {
+            await workchat?.refreshPermission()
+        }
         // The feed shows a sent line: its bubble leaves.
         .onChange(of: store.entries) { _, entries in workchat?.reconcile(with: entries) }
         // The main feed is polled only while it is on screen: an open

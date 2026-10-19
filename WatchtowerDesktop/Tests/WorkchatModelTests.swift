@@ -483,6 +483,31 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertEqual(stored.status, "pending")
     }
 
+    /// Prompt B arrives right after A was answered here, and its hook sets
+    /// Needs approval again within one state poll: the kind never changes,
+    /// but the hook stamp does, and the pane's read key with it.
+    func testNextPromptShowsAfterHookStampChanges() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        try await insertRequest(session)
+        let model = try makeModel(session)
+        await model.refreshPermission()
+        let before = WorkchatModel.PermissionReadKey(statuses[session])
+
+        await model.answer(allow: true)
+        XCTAssertNil(model.permission, "B's row is not written yet")
+
+        let second = try await insertRequest(session, summary: "make test")
+        clock.advance(1)
+        setState(session, .needsApproval)
+        let after = WorkchatModel.PermissionReadKey(statuses[session])
+        XCTAssertEqual(before.kind, after.kind)
+        XCTAssertNotEqual(before, after, "a new hook stamp re-runs the read")
+
+        await model.refreshPermission()
+        XCTAssertEqual(model.permission?.id, second)
+    }
+
     /// Codex writes no permission rows: no card.
     func testNoPermissionCardForCodexSession() async throws {
         let session = try await liveSession(kind: .codex)

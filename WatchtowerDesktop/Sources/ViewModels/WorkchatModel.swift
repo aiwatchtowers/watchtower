@@ -117,9 +117,23 @@ final class WorkchatModel {
 
     // MARK: - Permission
 
+    /// What re-runs the pane's permission read: the state kind and the
+    /// trusted hook's stamp (`agent_state_at`). Every hook write changes
+    /// it, so a prompt whose hook set Needs approval again within one state
+    /// poll, the kind unchanged, is still read.
+    struct PermissionReadKey: Hashable {
+        let kind: SessionSwitcherPresentation.State.Kind?
+        let at: String?
+
+        init(_ status: SessionAgentStatus?) {
+            kind = status?.state.kind
+            at = status?.at
+        }
+    }
+
     /// Reads the session's pending permission request again. Called on each
-    /// `SessionAgentStateCenter` change for the session (the pane's
-    /// `.task(id:)`) and after an answer; no timer of its own. A read that
+    /// hook write for the session (the pane's `.task(id:)` over
+    /// `PermissionReadKey`) and after an answer; no timer of its own. A read that
     /// fails keeps the card as it was.
     func refreshPermission() async {
         permissionReads += 1
