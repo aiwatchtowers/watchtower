@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 )
 
 // readChunk is the PTY read size; one read becomes one Output frame.
@@ -133,10 +134,23 @@ func (s *session) infoLocked() SessionInfo {
 }
 
 // resize sets the window size and signals the process group even when the
-// size did not change, so a client can force a redraw.
+// size did not change, so a client can force a redraw. The ioctl runs inside
+// the file's own reference (RawConn.Control) rather than on Fd(): a resize can
+// race wait's Close, and Fd() would read the descriptor unsynchronised.
+// Control fails only once the file is closed; that surfaces as os.ErrClosed.
 func (s *session) resize(cols, rows uint16) error {
-	if err := pty.Setsize(s.ptmx, &pty.Winsize{Rows: rows, Cols: cols}); err != nil {
+	rc, err := s.ptmx.SyscallConn()
+	if err != nil {
 		return fmt.Errorf("resize: %w", err)
+	}
+	var ioctlErr error
+	if err := rc.Control(func(fd uintptr) {
+		ioctlErr = unix.IoctlSetWinsize(int(fd), unix.TIOCSWINSZ, &unix.Winsize{Row: rows, Col: cols})
+	}); err != nil {
+		return fmt.Errorf("resize: %w (%v)", os.ErrClosed, err)
+	}
+	if ioctlErr != nil {
+		return fmt.Errorf("resize: %w", ioctlErr)
 	}
 	if err := syscall.Kill(-s.pid, syscall.SIGWINCH); err != nil {
 		return fmt.Errorf("resize: signal group: %w", err)
