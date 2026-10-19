@@ -489,56 +489,65 @@ Home but stays and stays guarded (PROJ-01 case in
 Board #717, spec `docs/superpowers/specs/2026-10-19-home-zones-design.md`
 §§3–5, PR 1. The Next meeting, Waiting on you and My targets cards are gone
 from Today; one feed replaces them, on the left of a two-column Home (the
-remaining cards on the right; one column below 900 pt content width). No
-migration, no AI, no daemon phase.
+Workbench, links and numbers zones on the right; one column below 900 pt
+content width). No migration, no AI, no daemon phase.
 
 - **Read** — `HomeFeedQueries.read`
-  (`WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/HomeFeedQueries.swift:57`)
-  runs in `HomeCenter`'s one `pool.read` beside `HomeQueries.today`
-  (`HomeCenter.swift:182`), each source on its own: a throw is logged and puts
+  (`WatchtowerDesktop/Sources/WatchtowerCore/Database/Queries/HomeFeedQueries.swift`)
+  runs in `HomeCenter.reread`'s one `pool.read` beside `HomeQueries.workbench`
+  and `HomeLinksQueries.read`, each source on its own: a throw is logged and puts
   the source in `HomeFeedData.failed`; a missing table reads as no content.
   Observed tables: `HomeFeedQueries.observedTables`.
 - **Sources.**
-  - Inbox (`:91`): `status = 'pending'`, `item_class = 'actionable'`, trigger in
+  - Inbox (`inboxRows`): `status = 'pending'`, `item_class = 'actionable'`,
+    `archived_at IS NULL` (as the briefing's `ListActionableOpen`), trigger in
     mention/dm/thread_reply/reaction/jira_assigned/jira_comment_mention/email_received,
     `MAX(created_at, mentioned_at)` within 72 h (`windowHours`), not snoozed
-    (`snooze_until = ''` or elapsed), newest first, `LIMIT 200`.
+    (`snooze_until = ''` or elapsed), newest first, `LIMIT 200` (`rowLimit`).
     `read_at` never hides a row: a read row stays and renders secondary;
     `priority` is not used.
   - Due reminders (`ReminderQueries.fetchDue`), proposals/failed actions
     (`AgentActionQueries.awaitingOwner`, workbench rows excluded there), and
-    own targets overdue or due today (`dueTargets`, `:163`: `project_id IS
-    NULL` — PROJ-01 — `ownership = 'mine'`, open statuses; no in-progress
-    arm).
-  - Calendar (`events`, `:178`): today and the next 4 days through
-    `isShownEvent` (`:200`) — no all-day, no `cancelled`, none the owner
+    own targets overdue or due today (`dueTargets`: `project_id IS NULL` —
+    PROJ-01 — `ownership = 'mine'`, open statuses; no in-progress arm). Both
+    read up to the same 200 rows as the inbox: the builder caps what shows,
+    so a target due later today (last by `due_date`) still reaches the part
+    below NOW.
+  - Calendar (`events`): today and the next 4 days through
+    `isShownEvent` — no all-day, no `cancelled`, none the owner
     declined (attendee email equal to the event's `accountEmail`,
     `responseStatus == "declined"`); prep ids only for events still to start
     today and the next day's.
 - **Build** — `HomeFeedBuilder.feed`
-  (`Sources/WatchtowerCore/Services/HomeFeedBuilder.swift:17`) is pure. Above
+  (`Sources/WatchtowerCore/Services/HomeFeedBuilder.swift`) is pure. Above
   NOW: kind order Slack (mention/dm/thread/reaction) → Jira → proposal →
   reminder → target → email (`FeedKind`), newest first within a kind, 7 rows
   (`waitingLimit`) and `hiddenWaiting` for "N more" (expanding is
-  `HomeCenter.setFeedExpanded`, `:248`, in place). NOW carries `HH:mm`. Below:
+  `HomeCenter.setFeedExpanded`, in place). An inbox row opens its permalink;
+  one without an absolute permalink (empty, no scheme) opens Catch-Up. NOW carries `HH:mm`. Below:
   the ongoing meeting, then later today by time — meetings (the first says "in
   N min" under 60 min, "now" under one), timed targets and later reminders.
   Next day: the first of the next 3 days (`nextDayHorizonDays`) with events,
   meetings only, at most 3, titled "Tomorrow" or the weekday; it also rolls
   over at midnight because the day is computed from `now`.
 - **Allowed sources** — `AppState.homeFeedSourcesAllowed`
-  (`AppState+Home.swift:47`): inbox follows Attention detection's feature,
+  (`AppState+Home.swift`): inbox follows Attention detection's feature,
   calendar follows the Calendar tab's visibility; reminders, proposals and
-  targets are always allowed. `HomeCenter.makeFeed` (`:347`) empties a source
+  targets are always allowed. `HomeCenter.makeFeed` empties a source
   Home may not show and drops its failure too.
-- **Done / Hide** — `HomeCenter.act` (`:227`) hides the row at once
+- **Done / Hide** — `HomeCenter.act` hides the row at once
   (`hiddenRefs`), then runs `LiveHomeFeedPerformer.perform`
-  (`Sources/Services/HomeFeedActions.swift:47`): inbox rows through the CLI,
-  `watchtower inbox resolve|dismiss <id>` (the only non-GRDB write, a writer
-  in inbox-pulse's terms, owner ask #408); reminders through
+  (`Sources/Services/HomeFeedActions.swift`): inbox rows through the CLI,
+  `watchtower inbox resolve|dismiss <id>` with a 30 s timeout (`cliTimeout`;
+  a timeout is an error like any other) — the only non-GRDB write, a writer
+  in inbox-pulse's terms, owner ask #408; reminders through
   `ReminderQueries.markDone` / `snooze`, targets through
-  `TargetQueries.updateStatus(done)` / `snooze` — Hide snoozes to tomorrow
-  09:00 local. Proposals and events have no action. A failure un-hides the
+  `TargetQueries.updateStatus(done)` / `snooze(untilInstant:)` — Hide snoozes
+  to tomorrow 09:00 local. A reminder stores that instant as RFC 3339 UTC; a
+  target stores it as a UTC `yyyy-MM-ddTHH:mm` minute, the form Go's
+  `UnsnoozeExpiredTargets` compares against (a bare date would come back at
+  00:00 UTC, the same evening west of UTC). Proposals and events have no
+  action: `HomeCenter.act` ignores them (`FeedRef.hasActions`). A failure un-hides the
   row and stores the message in `feedErrors` (a second press clears it). An
   item already gone (Go's resolve/dismiss exit 0 on a missing row;
   `RowNotFoundError`, `TargetNotFoundError`) is success. No CLI is an error
@@ -550,10 +559,10 @@ migration, no AI, no daemon phase.
 ### Workbench, links, numbers (2026-10-19, #717)
 
 Spec `docs/superpowers/specs/2026-10-19-home-zones-design.md` §§6–8, PR 2. The
-right column of `HomeContent` (`Sources/Views/Home/HomeView.swift:33`) is
-`HomeSideColumn` (`:161`): Workbench, links, numbers, in that order, each left
+right column of `HomeContent` (`Sources/Views/Home/HomeView.swift`) is
+`HomeSideColumn`: Workbench, links, numbers, in that order, each left
 out when empty; numbers show once their first read lands. Two columns from
-900 pt content width (`twoColumnWidth`, `:122`), else one column in the order
+900 pt content width (`HomeContent.twoColumnWidth`), else one column in the order
 feed, Workbench, links, numbers. No migration, no AI, no daemon phase. A zone
 whose read failed shows `HomeZoneErrorLine` ("Couldn't read <zone> — see the
 log.") and never reads as empty.
