@@ -263,7 +263,7 @@ struct MainNavigationView: View {
         let workspaceDir = (appState.databaseManager?.dbPool.path as NSString?)?.deletingLastPathComponent
         return AutomationEditorChatHooks(
             open: { try await appState.automationEditorChat(automationID: $0) },
-            openNew: { try await appState.newAutomationEditorChat() },
+            openNew: { try await appState.newAutomationEditorChat(workbenchID: $0) },
             automationsDir: (workspaceDir as NSString?)?.appendingPathComponent("automations"),
             unavailableHelp: AutomationEditorChatSurface.toolsAvailable(provider: nil)
                 ? nil : AutomationEditorChatSurface.unavailableHelp

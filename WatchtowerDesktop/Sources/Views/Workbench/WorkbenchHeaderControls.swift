@@ -14,6 +14,9 @@ struct WorkbenchHeaderControls: View {
     let onDelete: () -> Void
     /// The ⋯ menu's Clean Up Old Worktrees…: the page shows the sweep sheet.
     let onCleanUpOldWorktrees: () -> Void
+    /// The ⋯ menu's New Automation…: the New automation sheet with this
+    /// workbench picked (nil: the Automations view model is not up yet).
+    var onNewAutomation: (() -> Void)?
     /// The view button under the pointer, and whether the sessions chevron
     /// is: Workchat and the chevron after it light up together.
     @State private var hoveredView: WorkspaceView?
@@ -156,7 +159,7 @@ struct WorkbenchHeaderControls: View {
     }
 
     /// Repair install, Re-run Setup, the archive items, Agent Settings…,
-    /// Clean Up Old Worktrees… and Delete…, out of the header row.
+    /// New Automation…, Clean Up Old Worktrees… and Delete…, out of the header row.
     private var moreMenu: some View {
         let status = vm.installStatus[project.id]
         let installing = vm.isInstalling(projectID: project.id)
@@ -204,6 +207,13 @@ struct WorkbenchHeaderControls: View {
                 Label("Board Columns…", systemImage: "rectangle.split.3x1")
             }
             .help("Name the board's columns inside each status, and hide In Review or Blocked")
+            Button {
+                onNewAutomation?()
+            } label: {
+                Label("New Automation…", systemImage: "gearshape.2")
+            }
+            .disabled(onNewAutomation == nil)
+            .help("Create an automation for this workbench: describe it in words or start from a template")
             Divider()
             Button {
                 onCleanUpOldWorktrees()

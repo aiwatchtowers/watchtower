@@ -548,19 +548,28 @@ final class AppState {
     }
 
     /// The "New automation" sheet's chat, keyed by the draft id
-    /// `automationsViewModel` keeps, so a half-written draft survives the
-    /// sheet. Once its save lands, the next **+ New** starts a fresh draft.
-    func newAutomationEditorChat() async throws -> AutomationEditorChat? {
+    /// `automationsViewModel` keeps and the "For" pick, so a half-written
+    /// draft survives the sheet and each scope keeps its own. Once a save
+    /// lands, the next **+ New** starts a fresh draft. A workbench that is
+    /// gone opens nothing (never a personal chat in its place).
+    func newAutomationEditorChat(workbenchID: Int64?) async throws -> AutomationEditorChat? {
         guard let pool = databaseManager?.dbPool, let draftID = automationsViewModel?.newDraftID else { return nil }
+        var workbench: AutomationEditorChatSurface.NewWorkbench?
+        if let workbenchID {
+            guard let project = workbenchesViewModel?.summaries.first(where: { $0.project.id == workbenchID })?.project
+            else { return nil }
+            workbench = (workbenchID, project.name, project.folderURL.lastPathComponent)
+        }
         let provider = Constants.aiProviderID()
-        let conversationID = try await AutomationEditorChatSurface.newConversationID(draftID: draftID, dbPool: pool)
+        let conversationID = try await AutomationEditorChatSurface.newConversationID(
+            draftID: draftID, workbenchID: workbenchID, dbPool: pool)
         let onSaved: () -> Void = { [weak self] in
             self?.automationsViewModel?.refresh()
             self?.automationsViewModel?.startNewDraft()
         }
         return makeAutomationEditorChat(conversationID: conversationID, pool: pool, provider: provider,
                                         onSaved: onSaved) { outcomes in
-            AutomationEditorChatSurface.newSpec(provider: provider, draftID: draftID,
+            AutomationEditorChatSurface.newSpec(provider: provider, draftID: draftID, workbench: workbench,
                                                 conversationID: conversationID, outcomes: outcomes)
         }
     }

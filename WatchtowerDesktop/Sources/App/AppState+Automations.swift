@@ -15,6 +15,14 @@ extension AppState {
         automationsViewModel?.open(automationID: automationID, runID: runID)
     }
 
+    /// **New Automation…** in a workbench's header menu: the Automations
+    /// tab opens the New automation sheet with that workbench picked.
+    func newAutomation(forWorkbench id: Int64) {
+        guard let automationsViewModel else { return }
+        automationsViewModel.pendingNewWorkbenchID = id
+        selectedDestination = .automations
+    }
+
     /// An Inbox proposal card's automation label: opens the run's
     /// automation with the run expanded. A run that is gone (its automation
     /// was deleted) opens nothing; a failed read still opens the tab, where
