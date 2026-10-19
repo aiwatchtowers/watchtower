@@ -164,10 +164,10 @@ func short(sid string) string { return sid[:min(len(sid), 8)] }
 // H1: one build & test verb run RepeatRuns+ times inside one leaf target's
 // in_progress/in_review window (from any session naming the target; the
 // narrowest window holding a run wins) or, outside every window, in one session.
+// One hint per verb sums the scopes that qualify.
 func repeatedHeavy(in HintInput, sessions []string) []Hint {
 	text, wins := leafWindows(in.Targets, in.Now.UTC())
 	runs := map[runKey][]timedEvent{}
-	inSessions := map[runKey]map[string]bool{}
 	for _, sid := range sessions {
 		evs := sortEvents(in.Events[sid], func(e agentlogdb.AgentReportEvent) bool { return e.Kind == "tool" })
 		ids := linkedLeaves(evs, wins)
@@ -177,20 +177,17 @@ func repeatedHeavy(in HintInput, sessions []string) []Hint {
 			}
 			k := runKey{runScope(e.at, sid, ids, wins), verb(e.AgentReportEvent)}
 			runs[k] = append(runs[k], e)
-			if inSessions[k] == nil {
-				inSessions[k] = map[string]bool{}
-			}
-			inSessions[k][sid] = true
 		}
 	}
-	keys := slices.SortedFunc(maps.Keys(runs), func(a, b runKey) int {
-		return cmp.Or(cmp.Compare(a.scope, b.scope), cmp.Compare(a.verb, b.verb))
-	})
-	var out []Hint
-	for _, k := range keys {
-		if h, ok := repeatedHint(in.Lang, k, runs[k], inSessions[k], text); ok {
-			out = append(out, h)
+	byVerb := map[string][]scopeRuns{}
+	for k, rs := range runs {
+		if sr, ok := repeatedScope(k.scope, rs); ok {
+			byVerb[k.verb] = append(byVerb[k.verb], sr)
 		}
+	}
+	var out []Hint
+	for _, v := range slices.Sorted(maps.Keys(byVerb)) {
+		out = append(out, repeatedHint(in.Lang, v, byVerb[v], text))
 	}
 	return out
 }
@@ -246,11 +243,19 @@ func runScope(at time.Time, sid string, ids []int64, wins map[int64][]window) st
 	return scope
 }
 
-// repeatedHint is H1 for one scope and verb, when it ran RepeatRuns+ times
-// for more than RepeatMin in all.
-func repeatedHint(l Lang, k runKey, rs []timedEvent, inSessions map[string]bool, text map[int64]string) (Hint, bool) {
+// scopeRuns is one H1 scope's runs of a verb: their count, total time and
+// the time of the runs after the first.
+type scopeRuns struct {
+	scope      string
+	runs       int
+	total, est int64
+}
+
+// repeatedScope is the scope's runs when they are RepeatRuns+ for more than
+// RepeatMin in all.
+func repeatedScope(scope string, rs []timedEvent) (scopeRuns, bool) {
 	if len(rs) < RepeatRuns {
-		return Hint{}, false
+		return scopeRuns{}, false
 	}
 	slices.SortStableFunc(rs, func(a, b timedEvent) int { return a.at.Compare(b.at) })
 	var total int64
@@ -258,22 +263,44 @@ func repeatedHint(l Lang, k runKey, rs []timedEvent, inSessions map[string]bool,
 		total += durMS(r.AgentReportEvent)
 	}
 	if total <= RepeatMin.Milliseconds() {
-		return Hint{}, false
+		return scopeRuns{}, false
 	}
-	est := total - durMS(rs[0].AgentReportEvent)
-	label := l.f("h1.label", l.count(len(rs), "run"), l.dur(total))
-	h := Hint{ID: "H1", EstimateMS: est, Action: l.f("h1.action"), Evidence: []Evidence{{Kind: "command", Ref: k.verb, Label: label}}}
-	where := l.f("h1.where.session", short(k.scope))
-	if strings.HasPrefix(k.scope, "#") {
-		where = l.f("h1.where.target", k.scope)
-		id, _ := targetID(k.scope)
-		h.Evidence = append(h.Evidence, Evidence{Kind: "target", Ref: k.scope, Label: text[id]})
+	return scopeRuns{scope: scope, runs: len(rs), total: total, est: total - durMS(rs[0].AgentReportEvent)}, true
+}
+
+// repeatedHint is H1 for one verb over its qualifying scopes: the scopes are
+// its evidence, the most repeated-run time first, and the worst is named.
+func repeatedHint(l Lang, v string, scopes []scopeRuns, text map[int64]string) Hint {
+	slices.SortFunc(scopes, func(a, b scopeRuns) int { return cmp.Or(cmp.Compare(b.est, a.est), cmp.Compare(a.scope, b.scope)) })
+	var runs, nTargets, nSessions int
+	var total, est int64
+	var evs []Evidence
+	for _, sr := range scopes {
+		runs, total, est = runs+sr.runs, total+sr.total, est+sr.est
+		if id, ok := targetID(sr.scope); ok {
+			nTargets++
+			evs = append(evs, Evidence{Kind: "target", Ref: sr.scope, Label: text[id]})
+		} else {
+			nSessions++
+			evs = append(evs, sessionEv(sr.scope, short(sr.scope)))
+		}
 	}
-	for _, sid := range slices.Sorted(maps.Keys(inSessions)) {
-		h.Evidence = append(h.Evidence, sessionEv(sid, short(sid)))
+	var where []string
+	if nTargets > 0 {
+		where = append(where, l.count(nTargets, "task.in"))
 	}
-	h.Finding = l.f("h1.finding", k.verb, l.count(len(rs), "time"), where, l.dur(total), l.dur(est))
-	return h, true
+	if nSessions > 0 {
+		where = append(where, l.count(nSessions, "session.in"))
+	}
+	w := scopes[0]
+	worst := l.f("h1.where.session", short(w.scope))
+	if strings.HasPrefix(w.scope, "#") {
+		worst = l.f("h1.where.target", w.scope)
+	}
+	return Hint{ID: "H1", EstimateMS: est, Action: l.f("h1.action"),
+		Evidence: append([]Evidence{{Kind: "command", Ref: v, Label: l.f("h1.label", l.count(runs, "run"), l.dur(total))}}, evs...),
+		Finding: l.f("h1.finding", v, RepeatRuns, strings.Join(where, l.f("h1.and")), l.dur(total),
+			l.count(w.runs, "time"), worst, l.dur(w.total), l.dur(est))}
 }
 
 func isCheap(e agentlogdb.AgentReportEvent) bool {
@@ -474,16 +501,22 @@ func failingLoops(in HintInput, sessions []string) []Hint {
 	return out
 }
 
-// H6: a session whose cache read share is under CacheShareMin with over
-// CacheCostMin spent, or with CompactionsMax+ compactions.
+// H6: sessions whose cache read share is under CacheShareMin with over
+// CacheCostMin spent, or with CompactionsMax+ compactions. One hint names the
+// costliest; its estimate is their cost.
 func expensiveContext(in HintInput, sessions []string) []Hint {
-	var out []Hint
+	l := in.Lang
+	type costly struct {
+		sid string
+		usd float64
+		why string
+	}
+	var all []costly
 	for _, sid := range sessions {
 		sv, ok := in.Sessions[sid]
 		if !ok {
 			continue
 		}
-		l := in.Lang
 		var why []string
 		if sv.CacheReadShare < CacheShareMin && sv.CostUSD > CacheCostMin {
 			why = append(why, l.f("h6.cache", int(sv.CacheReadShare*100)))
@@ -491,15 +524,22 @@ func expensiveContext(in HintInput, sessions []string) []Hint {
 		if sv.Compactions >= CompactionsMax {
 			why = append(why, l.count(sv.Compactions, "compaction"))
 		}
-		if len(why) == 0 {
-			continue
+		if len(why) > 0 {
+			all = append(all, costly{sid, sv.CostUSD, strings.Join(why, l.f("h6.and"))})
 		}
-		out = append(out, Hint{ID: "H6", EstimateUSD: sv.CostUSD, Action: l.f("h6.action"),
-			Fix:      &Fix{Kind: FixOpenSession, Ref: sid},
-			Finding:  l.f("h6.finding", short(sid), fmtUSD(sv.CostUSD), strings.Join(why, l.f("h6.and"))),
-			Evidence: []Evidence{sessionEv(sid, fmtUSD(sv.CostUSD))}})
 	}
-	return out
+	if len(all) == 0 {
+		return nil
+	}
+	// The costliest first: the list is cut to evidenceMax.
+	slices.SortStableFunc(all, func(a, b costly) int { return cmp.Compare(b.usd, a.usd) })
+	h := Hint{ID: "H6", Action: l.f("h6.action"), Fix: &Fix{Kind: FixOpenSession, Ref: all[0].sid}}
+	for _, c := range all {
+		h.EstimateUSD += c.usd
+		h.Evidence = append(h.Evidence, sessionEv(c.sid, fmtUSD(c.usd)))
+	}
+	h.Finding = l.f("h6.finding", l.count(len(all), "session"), fmtUSD(h.EstimateUSD), short(all[0].sid), fmtUSD(all[0].usd), all[0].why)
+	return []Hint{h}
 }
 
 // outputRate is a model's $ per million output tokens.

@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	// UnfinishedAfter is how long after its session ended a subagent not
-	// marked finished counts as unfinished (before that it may still run).
+	// UnfinishedAfter is how long after its session ended a subagent marked
+	// not finished counts as unfinished (before that it may still run).
 	UnfinishedAfter = time.Hour
 	troubleTopRows  = 10 // rows of denials and interrupt_sessions
 	classSessions   = 5  // sessions an error class lists
@@ -94,8 +94,8 @@ type classAgg struct {
 
 // Trouble measures the period's trouble from the sessions' events (keyed by
 // uuid, in AgentReportEvents order: by ts) and their subagents as of now. Sessions without the v2 facts are
-// skipped. A subagent counts as unfinished when its meta does not say it
-// finished and its session ended over UnfinishedAfter before now.
+// skipped. A subagent counts as unfinished when its meta says it did not
+// finish and its session ended over UnfinishedAfter before now.
 //
 // A failed or denied call loses the time from its start to its lane's next
 // event, or its own duration when that is longer (or there is no next event):
@@ -253,12 +253,12 @@ func safeToAllow(e agentlogdb.AgentReportEvent) bool {
 }
 
 // unfinished counts the subagents of the measured sessions (ended: uuid →
-// ended_at) that never finished.
+// ended_at) whose meta says they did not finish; no flag is unknown.
 func unfinished(subagents []agentlogdb.AgentSubagent, ended map[string]string, now time.Time) int {
 	n := 0
 	for _, a := range subagents {
 		end, ok := ended[a.SessionUUID]
-		if !ok || a.Finished != nil && *a.Finished {
+		if !ok || a.Finished == nil || *a.Finished {
 			continue
 		}
 		if at, ok := parseAt(end); ok && now.Sub(at) > UnfinishedAfter {

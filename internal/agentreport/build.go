@@ -52,6 +52,7 @@ type Overview struct {
 	Skills            SkillsReport  `json:"skills"`
 	Trouble           TroubleReport `json:"trouble"`
 	Tasks             []TaskRow     `json:"tasks"`
+	TasksMore         int           `json:"tasks_more"`
 	Sessions          []SessionRow  `json:"sessions"`
 	OldFormatSessions int           `json:"old_format_sessions"`
 	Import            ImportState   `json:"import"`
@@ -260,9 +261,10 @@ func BuildOverview(main *db.DB, al *agentlogdb.DB, workbenchID int64, since, now
 
 	ov.Models = nonNil(Models(flatten(allEvents)))
 	ov.Commands = nonNil(Commands(flatten(b.events)))
-	ov.Tasks = touched(Tasks(targets, b.segments, b.events, now))
+	tasks := touched(Tasks(targets, b.segments, b.events, now))
+	ov.Tasks, ov.TasksMore = capTasks(tasks)
 	ov.Hints = nonNil(Hints(HintInput{Lang: lang, Context: ov.Context, Skills: ov.Skills, Trouble: ov.Trouble, Sessions: b.views,
-		Tasks:   ov.Tasks,
+		Tasks:   tasks,
 		Targets: targets, Events: b.events, Now: now}))
 	ov.Sessions = b.rows
 	return ov, nil
@@ -322,6 +324,17 @@ func touched(rows []TaskRow) []TaskRow {
 		return cmp.Or(cmp.Compare(b.CostUSD, a.CostUSD), cmp.Compare(b.AgentMS, a.AgentMS), cmp.Compare(a.TargetID, b.TargetID))
 	})
 	return nonNil(out)
+}
+
+// TasksMax is how many touched tasks the overview lists.
+const TasksMax = 50
+
+// capTasks keeps the first TasksMax rows of touched's order and counts the rest.
+func capTasks(rows []TaskRow) ([]TaskRow, int) {
+	if len(rows) <= TasksMax {
+		return rows, 0
+	}
+	return rows[:TasksMax], len(rows) - TasksMax
 }
 
 // BuildSession drills into one session of the workbench as of now, with the

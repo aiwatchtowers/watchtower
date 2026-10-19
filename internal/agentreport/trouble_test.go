@@ -99,13 +99,13 @@ func TestTrouble_UnfinishedSubagents(t *testing.T) {
 	subs := []agentlogdb.AgentSubagent{
 		{SessionUUID: "s1", AgentID: "a", Finished: &yes},
 		{SessionUUID: "s1", AgentID: "b", Finished: &no},
-		{SessionUUID: "s1", AgentID: "c"},                // unknown, the session ended 2h ago: unfinished
+		{SessionUUID: "s1", AgentID: "c"},                // no flag: unknown, never unfinished
 		{SessionUUID: "s2", AgentID: "d"},                // unknown, the session ended 10m ago: may still run
 		{SessionUUID: "s2", AgentID: "e", Finished: &no}, // not yet, the session ended 10m ago: may still run
 		{SessionUUID: "s9", AgentID: "f", Finished: &no}, // not a session of the period
 	}
 	r := Trouble(sessions, evset{}, subs, now)
-	assert.Equal(t, 2, r.UnfinishedSubagents, "b and c")
+	assert.Equal(t, 1, r.UnfinishedSubagents, "b only")
 }
 
 func TestTrouble_RateLimited(t *testing.T) {

@@ -154,6 +154,7 @@ func TestContext_RepeatedReads(t *testing.T) {
 	reads("s1", "a.go", 3)
 	reads("s1", "b.go", 2) // under RepeatReadsMin
 	reads("s2", "a.go", 4)
+	reads("s3", "<outside>", 5) // reads outside the folder share one target: not one file
 	r := Context(factsOf(s), s, nil, "")
 
 	require.Len(t, r.RepeatedReads, 1)

@@ -16,6 +16,9 @@ const (
 	// RepeatReadsMin is how often one file must be read in one session to
 	// count as a repeated read.
 	RepeatReadsMin = 3
+	// outsideTarget is the one target the parser gives every file outside
+	// the workbench folder (agentlog's relativeTarget): never a repeated file.
+	outsideTarget = "<outside>"
 	// defaultBytesPerToken converts bytes to tokens in a lane with no
 	// baseline parts to measure its own ratio.
 	defaultBytesPerToken = 2.6
@@ -345,7 +348,7 @@ func (a *contextAcc) tool(sid string, e agentlogdb.AgentReportEvent) gapItem {
 	if isFileEdit(e.Name) {
 		delete(a.readIdx, e.Target)
 	}
-	if e.Name == "Read" && e.Target != "" {
+	if e.Name == "Read" && e.Target != "" && e.Target != outsideTarget {
 		j, ok := a.readIdx[e.Target]
 		if !ok {
 			j = len(a.reads)
