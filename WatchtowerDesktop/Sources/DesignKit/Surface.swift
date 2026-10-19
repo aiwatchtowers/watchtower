@@ -12,7 +12,7 @@ extension NSColor {
     /// black, not `controlBackgroundColor`: macOS 15 draws those two 50 and
     /// 30 (the blend gives the same 30), but macOS 26 draws both 30, which
     /// left the content and the selected tab in the panel's colour.
-    static var detailBackground: NSColor {
+    public static var detailBackground: NSColor {
         NSColor(name: nil) { appearance in
             guard appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua else {
                 return .controlBackgroundColor
@@ -30,21 +30,21 @@ extension NSColor {
 }
 
 /// The app's background colours by role.
-enum Surface {
-    static var detail: Color { Color(nsColor: .detailBackground) }
-    static var window: Color { Color(nsColor: .windowBackgroundColor) }
-    static var text: Color { Color(nsColor: .textBackgroundColor) }
-    static var control: Color { Color(nsColor: .controlBackgroundColor) }
+public enum Surface {
+    public static var detail: Color { Color(nsColor: .detailBackground) }
+    public static var window: Color { Color(nsColor: .windowBackgroundColor) }
+    public static var text: Color { Color(nsColor: .textBackgroundColor) }
+    public static var control: Color { Color(nsColor: .controlBackgroundColor) }
 }
 
 extension View {
     /// The side panels' background: the app sidebar's colour.
-    func panelBackground() -> some View {
+    public func panelBackground() -> some View {
         background(Color(nsColor: .windowBackgroundColor))
     }
 
     /// The darker surface a tab's content sits on (`NSColor.detailBackground`).
-    func detailBackground() -> some View {
+    public func detailBackground() -> some View {
         background(Color(nsColor: .detailBackground))
     }
 }

@@ -160,62 +160,62 @@ type_name:
     warning: 50
     error: 60
 
-# Keep new Desktop code on the design kit (Views/DesignSystem); legacy uses live in the baseline.
+# Keep new Desktop code on the design kit (Sources/DesignKit); legacy uses live in the baseline.
 custom_rules:
   kit_no_form:
     name: 'kit_no_form'
     regex: '\bForm\s*\{'
     included: '.*/Sources/(Views|App)/.*\.swift'
-    excluded: '.*/Sources/Views/DesignSystem/.*'
+    excluded: '.*/Sources/(DesignKit|DesignKitCatalog|DesignGallery)/.*'
     message: 'Use SettingsSection / SettingRow (DesignSystem).'
     severity: error
   kit_no_groupbox:
     name: 'kit_no_groupbox'
     regex: '\bGroupBox\b'
     included: '.*/Sources/(Views|App)/.*\.swift'
-    excluded: '.*/Sources/Views/DesignSystem/.*'
+    excluded: '.*/Sources/(DesignKit|DesignKitCatalog|DesignGallery)/.*'
     message: 'Use .card() or SettingsSection (DesignSystem).'
     severity: error
   kit_no_stock_buttons:
     name: 'kit_no_stock_buttons'
     regex: '\.buttonStyle\(\s*\.bordered(Prominent)?\s*\)'
     included: '.*/Sources/(Views|App)/.*\.swift'
-    excluded: '.*/Sources/Views/DesignSystem/.*'
+    excluded: '.*/Sources/(DesignKit|DesignKitCatalog|DesignGallery)/.*'
     message: 'Use .kitPrimary / .kitSecondary / .kitQuiet / .kitDestructive.'
     severity: error
   kit_no_segmented_picker:
     name: 'kit_no_segmented_picker'
     regex: '\.pickerStyle\(\s*\.segmented\s*\)'
     included: '.*/Sources/(Views|App)/.*\.swift'
-    excluded: '.*/Sources/Views/DesignSystem/.*'
+    excluded: '.*/Sources/(DesignKit|DesignKitCatalog|DesignGallery)/.*'
     message: 'Use KitSegmentedPicker (DesignSystem).'
     severity: error
   kit_no_rounded_field:
     name: 'kit_no_rounded_field'
     regex: '\.textFieldStyle\(\s*\.roundedBorder\s*\)'
     included: '.*/Sources/(Views|App)/.*\.swift'
-    excluded: '.*/Sources/Views/DesignSystem/.*'
+    excluded: '.*/Sources/(DesignKit|DesignKitCatalog|DesignGallery)/.*'
     message: 'Use .textFieldStyle(.kit).'
     severity: error
   kit_no_raw_metrics:
     name: 'kit_no_raw_metrics'
     regex: '\.padding\((\s*\.\w+\s*,)?\s*[1-9][0-9.]*\s*\)|spacing:\s*[1-9][0-9.]*|cornerRadius:\s*[1-9][0-9.]*|\.cornerRadius\(\s*[1-9]|\.system\(size:\s*[0-9]'
     included: '.*/Sources/(Views|App)/.*\.swift'
-    excluded: '.*/Sources/Views/DesignSystem/.*'
+    excluded: '.*/Sources/(DesignKit|DesignKitCatalog|DesignGallery)/.*'
     message: 'Use Spacing / Radius / IconSize tokens.'
     severity: error
   kit_no_color_opacity:
     name: 'kit_no_color_opacity'
     regex: '\w\.opacity\(\s*0?\.[0-9]'
     included: '.*/Sources/(Views|App)/.*\.swift'
-    excluded: '.*/Sources/Views/DesignSystem/.*'
+    excluded: '.*/Sources/(DesignKit|DesignKitCatalog|DesignGallery)/.*'
     message: 'Use Fill / ChipTint tokens (view .opacity for dimming is fine).'
     severity: error
   kit_no_rgb_color:
     name: 'kit_no_rgb_color'
     regex: 'Color\(\s*(red:|hex)|NSColor\(\s*(calibratedRed|srgbRed|red):'
     included: '.*/Sources/(Views|App)/.*\.swift'
-    excluded: '.*/Sources/Views/DesignSystem/.*'
+    excluded: '.*/Sources/(DesignKit|DesignKitCatalog|DesignGallery)/.*'
     message: 'Use semantic system colours.'
     severity: error
 

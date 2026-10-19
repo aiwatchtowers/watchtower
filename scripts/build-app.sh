@@ -482,11 +482,12 @@ if [ -n "$FLAVOR" ]; then
     fi
 fi
 
-# Every --dev build carries the marker that turns on the developer-only Design
-# Gallery (DevBuild.isEnabled), a --dev build with a flavor included; a build
-# without --dev (a release, flavored or not) never gets it.
-if $DEV_MODE; then
-    /usr/libexec/PlistBuddy -c "Add :WTDevBuild bool true" "$APP_BUNDLE/Contents/Info.plist"
+# The design gallery is a developer window of its own and never ships: fail
+# if anything of it reached the assembled bundle.
+if [ -n "$(find "$APP_BUNDLE" -name 'DesignGallery*')" ]; then
+    echo "ERROR: the design gallery leaked into the app bundle:" >&2
+    find "$APP_BUNDLE" -name 'DesignGallery*' >&2
+    exit 1
 fi
 
 # Code sign — one path for dev and release.

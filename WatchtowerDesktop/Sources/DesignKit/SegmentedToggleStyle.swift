@@ -3,8 +3,8 @@ import SwiftUI
 /// A view button inside the header capsule: on = accent tint behind an
 /// accent icon, off = secondary with a light highlight under the pointer.
 /// Hover comes from the controls so Terminal and its chevron share it.
-struct SegmentedToggleStyle: ToggleStyle {
-    static let animation: Animation = .snappy(duration: 0.15)
+public struct SegmentedToggleStyle: ToggleStyle {
+    public static let animation: Animation = .snappy(duration: 0.15)
 
     /// A twin's left half (Terminal): the other half continues it on the right.
     var joinsRight = false
@@ -17,12 +17,28 @@ struct SegmentedToggleStyle: ToggleStyle {
     var isHovered: Bool
     var onHover: (Bool) -> Void
 
-    static func fill(isOn: Bool, isHovered: Bool) -> Color {
+    public init(
+        joinsRight: Bool = false,
+        joinsLeft: Bool = false,
+        joinsChevron: Bool = false,
+        showsIcon: Bool = true,
+        isHovered: Bool,
+        onHover: @escaping (Bool) -> Void
+    ) {
+        self.joinsRight = joinsRight
+        self.joinsLeft = joinsLeft
+        self.joinsChevron = joinsChevron
+        self.showsIcon = showsIcon
+        self.isHovered = isHovered
+        self.onHover = onHover
+    }
+
+    public static func fill(isOn: Bool, isHovered: Bool) -> Color {
         if isOn { return Fill.on }
         return isHovered ? Fill.hover : .clear
     }
 
-    func makeBody(configuration: Configuration) -> some View {
+    public func makeBody(configuration: Configuration) -> some View {
         let isOn = configuration.isOn
         let corner: CGFloat = 6
         let leading = joinsLeft ? 0 : corner

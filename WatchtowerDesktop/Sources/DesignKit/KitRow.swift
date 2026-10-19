@@ -26,7 +26,7 @@ struct KitRow: ViewModifier {
 }
 
 extension View {
-    func kitRow(isSelected: Bool) -> some View {
+    public func kitRow(isSelected: Bool) -> some View {
         modifier(KitRow(isSelected: isSelected))
     }
 }

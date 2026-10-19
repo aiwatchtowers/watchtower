@@ -1,10 +1,9 @@
+import DesignKit
 import SwiftUI
 
 /// The dev-build window that shows every kit token and component on one page
 /// (style guide #719). Each component task appends a `GallerySection`.
 struct DesignSystemGallery: View {
-    static let sceneID = "design-gallery"
-
     var body: some View {
         ScrollView { DesignSystemGalleryContent() }
             .detailBackground()

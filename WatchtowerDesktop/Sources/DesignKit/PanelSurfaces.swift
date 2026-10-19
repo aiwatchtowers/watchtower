@@ -10,19 +10,19 @@ extension View {
     /// desktop wallpaper and tints the panel (owner reports: a brown chat
     /// history, a brown Workbench list and board). A plain list over the window
     /// background matches the app's own `SidebarView`.
-    func panelListStyle() -> some View {
+    public func panelListStyle() -> some View {
         clearPlainList().panelBackground()
     }
 
     /// `panelListStyle()` for a list inside the Projects workspace (the
     /// Board): the same plain list, over the detail backdrop.
-    func workspaceListStyle() -> some View {
+    public func workspaceListStyle() -> some View {
         clearPlainList().detailBackground()
     }
 
     /// A plain list that paints no background of its own, for a list whose
     /// container paints it (`panelSurface()`).
-    func clearPlainList() -> some View {
+    public func clearPlainList() -> some View {
         listStyle(.plain).scrollContentBackground(.hidden)
     }
 
@@ -33,7 +33,7 @@ extension View {
     /// line and runs on into the content beside it like a tab. The panel's
     /// list must not paint its own background (`clearPlainList()`), and the
     /// content beside the panel sits on `detailBackground()`.
-    func panelSurface() -> some View {
+    public func panelSurface() -> some View {
         background(alignment: .trailing) {
             Rectangle()
                 .fill(Color(nsColor: .separatorColor))
@@ -43,7 +43,7 @@ extension View {
     }
 
     /// A row of a `panelSurface()` list as a tab (`PanelTab`).
-    func panelTab(isSelected: Bool) -> some View {
+    public func panelTab(isSelected: Bool) -> some View {
         modifier(PanelTab(isSelected: isSelected))
     }
 }
@@ -55,17 +55,21 @@ extension View {
 /// that row (`panelSurface()`) so the tab merges into the content; other
 /// rows have no fill but a faint one under the pointer. Shared by the
 /// Workbench sessions panel and the AI Chat history so the two never drift.
-struct PanelTab: ViewModifier {
-    static let cornerRadius: CGFloat = 7
+public struct PanelTab: ViewModifier {
+    public static let cornerRadius: CGFloat = 7
     /// The plain List keeps a margin of its own (8pt) past the row's
     /// trailing inset; the fill overshoots it and the list's clip ends it
     /// exactly at the panel's edge, whatever that margin is.
-    static let trailingOverhang: CGFloat = 16
+    public static let trailingOverhang: CGFloat = 16
 
     let isSelected: Bool
     @State private var isHovering = false
 
-    func body(content: Content) -> some View {
+    public init(isSelected: Bool) {
+        self.isSelected = isSelected
+    }
+
+    public func body(content: Content) -> some View {
         content
             .padding(.vertical, 4)
             .padding(.horizontal, 6)
@@ -98,7 +102,7 @@ extension ScrollViewProxy {
     /// Scrolls a tabbed panel to `id` (a `PanelSelectionScrollPolicy` result)
     /// on the next main-queue turn, so the table already has the row; no
     /// anchor = minimal scroll (a fully visible row stays put).
-    func followSelection(_ id: Int64?) {
+    public func followSelection(_ id: Int64?) {
         guard let id else { return }
         DispatchQueue.main.async { scrollTo(id) }
     }
@@ -106,7 +110,7 @@ extension ScrollViewProxy {
     /// `followSelection` over each id in turn (a minimal scroll each), so
     /// the last one is surely in view and the earlier ones as far as they
     /// fit — a group header above its row (`SessionPanelSections.panelScrollPath`).
-    func followSelection(along ids: [Int64]) {
+    public func followSelection(along ids: [Int64]) {
         for id in ids { followSelection(id) }
     }
 }

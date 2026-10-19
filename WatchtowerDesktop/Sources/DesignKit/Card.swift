@@ -5,7 +5,7 @@ extension View {
     /// separator border, or the accent selection stroke when selected. A
     /// caller whose fill depends on its state (the board card) passes
     /// `fill: nil` and keeps its own `background`.
-    func card(selected: Bool = false, fill: Color? = Fill.card) -> some View {
+    public func card(selected: Bool = false, fill: Color? = Fill.card) -> some View {
         let shape = RoundedRectangle(cornerRadius: Radius.row)
         return background {
             if let fill { shape.fill(fill) }

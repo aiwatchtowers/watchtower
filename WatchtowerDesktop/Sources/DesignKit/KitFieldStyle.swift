@@ -4,14 +4,16 @@ import SwiftUI
 /// with a hairline edge that turns accent while it has focus, in place of
 /// the stock bezel. On a popover it is a translucent well over the material,
 /// as the comment field (`CommentTextEditor`) is.
-struct KitFieldStyle: TextFieldStyle {
-    func _body(configuration: TextField<Self._Label>) -> some View {
+public struct KitFieldStyle: TextFieldStyle {
+    public init() {}
+
+    public func _body(configuration: TextField<Self._Label>) -> some View {
         KitField(field: configuration)
     }
 }
 
 extension TextFieldStyle where Self == KitFieldStyle {
-    static var kit: KitFieldStyle { KitFieldStyle() }
+    public static var kit: KitFieldStyle { KitFieldStyle() }
 }
 
 /// The field's body: a view, so it can track focus.

@@ -5,25 +5,29 @@ import SwiftUI
 /// `.kitQuiet`, an accent label with no plate until the pointer is over it
 /// (Show more, Clear). Both draw from the kit's fills instead of the stock
 /// bordered bezel, so they read like the Workbench's own controls.
-struct KitSecondaryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
+public struct KitSecondaryButtonStyle: ButtonStyle {
+    public init() {}
+
+    public func makeBody(configuration: Configuration) -> some View {
         KitSoftButton(configuration: configuration, restFill: Fill.card, label: .primary)
     }
 }
 
 /// See `KitSecondaryButtonStyle`.
-struct KitQuietButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
+public struct KitQuietButtonStyle: ButtonStyle {
+    public init() {}
+
+    public func makeBody(configuration: Configuration) -> some View {
         KitSoftButton(configuration: configuration, restFill: .clear, label: .accentColor)
     }
 }
 
 extension ButtonStyle where Self == KitSecondaryButtonStyle {
-    static var kitSecondary: KitSecondaryButtonStyle { KitSecondaryButtonStyle() }
+    public static var kitSecondary: KitSecondaryButtonStyle { KitSecondaryButtonStyle() }
 }
 
 extension ButtonStyle where Self == KitQuietButtonStyle {
-    static var kitQuiet: KitQuietButtonStyle { KitQuietButtonStyle() }
+    public static var kitQuiet: KitQuietButtonStyle { KitQuietButtonStyle() }
 }
 
 /// The soft buttons' body: a view, so it can track the pointer.
@@ -70,14 +74,14 @@ struct KitSoftButton: View {
 /// of the kit's custom buttons (`.kitSecondary`, `.kitQuiet`,
 /// `.kitDestructive`), so each sits in a row of stock buttons at the same
 /// height.
-enum KitButtonMetrics {
-    struct Metrics {
+public enum KitButtonMetrics {
+    public struct Metrics {
         let fontSize: CGFloat
         let height: CGFloat
         let horizontalPadding: CGFloat
     }
 
-    static func metrics(for size: ControlSize) -> Metrics {
+    public static func metrics(for size: ControlSize) -> Metrics {
         switch size {
         case .mini: Metrics(fontSize: 9, height: 15, horizontalPadding: 6)
         case .small: Metrics(fontSize: 11, height: 20, horizontalPadding: 8)

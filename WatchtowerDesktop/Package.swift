@@ -60,10 +60,23 @@ let package = Package(
             dependencies: ["OCRKit"],
             path: "Sources/OCRHelper"
         ),
+        // The Desktop design kit (tokens, button styles, rows, panels): SwiftUI
+        // only, so the gallery window can build without the app.
+        .target(
+            name: "DesignKit",
+            path: "Sources/DesignKit"
+        ),
+        // The gallery's views over the kit; never linked into the app.
+        .target(
+            name: "DesignKitCatalog",
+            dependencies: ["DesignKit"],
+            path: "Sources/DesignKitCatalog"
+        ),
         .executableTarget(
             name: "WatchtowerDesktop",
             dependencies: [
                 "WatchtowerCore",
+                "DesignKit",
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "Yams", package: "Yams"),
                 .product(name: "WhisperKit", package: "WhisperKit"),
@@ -73,7 +86,7 @@ let package = Package(
                 .product(name: "WatchtowerSync", package: "WatchtowerKit"),
             ],
             path: "Sources",
-            exclude: ["WatchtowerCore", "OCRKit", "OCRHelper"],
+            exclude: ["WatchtowerCore", "OCRKit", "OCRHelper", "DesignKit", "DesignKitCatalog"],
             resources: [
                 .process("Resources"),
                 // POC (code viewer): Monaco host page + build (scripts/fetch-monaco.sh).
@@ -108,6 +121,8 @@ let package = Package(
             dependencies: [
                 "WatchtowerDesktop",
                 "WatchtowerCore",
+                "DesignKit",
+                "DesignKitCatalog",
                 "WatchtowerTestSupport",
                 .product(name: "GRDB", package: "GRDB.swift"),
                 .product(name: "ViewInspector", package: "ViewInspector"),

@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import ViewInspector
+@testable import DesignKitCatalog
 @testable import WatchtowerDesktop
 
 final class DesignSystemGalleryTests: XCTestCase {

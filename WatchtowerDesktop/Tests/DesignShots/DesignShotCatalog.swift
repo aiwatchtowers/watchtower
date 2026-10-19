@@ -2,6 +2,7 @@ import AppKit
 import GRDB
 import SwiftUI
 import XCTest
+@testable import DesignKitCatalog
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport

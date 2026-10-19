@@ -7,7 +7,7 @@ import SwiftUI
 /// itself with the opaque text background. Apply `.popoverSurface()` to the
 /// root of every `.popover { … }` (and an `NSPopover`'s hosted root).
 extension View {
-    func popoverSurface() -> some View {
+    public func popoverSurface() -> some View {
         scrollContentBackground(.hidden)
             .environment(\.onPopoverSurface, true)
     }
@@ -16,5 +16,5 @@ extension View {
 extension EnvironmentValues {
     /// Set by `popoverSurface()`: a field draws a translucent well instead
     /// of its opaque fill, so the material stays visible behind it.
-    @Entry var onPopoverSurface = false
+    @Entry public var onPopoverSurface = false
 }

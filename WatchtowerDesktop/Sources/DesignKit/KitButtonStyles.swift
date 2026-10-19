@@ -6,10 +6,12 @@ import SwiftUI
 /// color, and under the Graphite accent (or any light accent in the light
 /// theme) that fill is nearly the label's color — the button reads as a
 /// blank gray plate. The bordered style keeps a dimmed but legible label.
-struct KitPrimaryButtonStyle: PrimitiveButtonStyle {
+public struct KitPrimaryButtonStyle: PrimitiveButtonStyle {
     @Environment(\.isEnabled) private var isEnabled
 
-    func makeBody(configuration: Configuration) -> some View {
+    public init() {}
+
+    public func makeBody(configuration: Configuration) -> some View {
         if isEnabled {
             Button(configuration).buttonStyle(.borderedProminent)
         } else {
@@ -19,7 +21,7 @@ struct KitPrimaryButtonStyle: PrimitiveButtonStyle {
 }
 
 extension PrimitiveButtonStyle where Self == KitPrimaryButtonStyle {
-    static var kitPrimary: KitPrimaryButtonStyle { KitPrimaryButtonStyle() }
+    public static var kitPrimary: KitPrimaryButtonStyle { KitPrimaryButtonStyle() }
 }
 
 /// The main action that stops or discards something (the recorder's Stop):
@@ -30,9 +32,9 @@ extension PrimitiveButtonStyle where Self == KitPrimaryButtonStyle {
 /// plate with no label at all. This style resolves none of those: the
 /// label is white on red in every state, and the button keeps its ideal
 /// width, so a crowded row can never squeeze the label away.
-struct KitDestructiveButtonStyle: ButtonStyle {
-    static let fill = Color.red
-    static let label = Color.white
+public struct KitDestructiveButtonStyle: ButtonStyle {
+    public static let fill = Color.red
+    public static let label = Color.white
 
     @Environment(\.controlSize) private var controlSize
     @Environment(\.isEnabled) private var isEnabled
@@ -40,7 +42,9 @@ struct KitDestructiveButtonStyle: ButtonStyle {
     /// only the default.
     @Environment(\.font) private var font
 
-    func makeBody(configuration: Configuration) -> some View {
+    public init() {}
+
+    public func makeBody(configuration: Configuration) -> some View {
         let metrics = Self.metrics(for: controlSize)
         let plate = RoundedRectangle(cornerRadius: metrics.cornerRadius, style: .continuous)
         configuration.label
@@ -57,7 +61,7 @@ struct KitDestructiveButtonStyle: ButtonStyle {
             .fixedSize()
     }
 
-    struct Metrics {
+    public struct Metrics {
         let fontSize: CGFloat
         let height: CGFloat
         let horizontalPadding: CGFloat
@@ -67,7 +71,7 @@ struct KitDestructiveButtonStyle: ButtonStyle {
     /// The shared size table (`KitButtonMetrics`) plus this plate's corner
     /// radius per control size, so the plate sits in a row of stock buttons
     /// without standing out.
-    static func metrics(for size: ControlSize) -> Metrics {
+    public static func metrics(for size: ControlSize) -> Metrics {
         let base = KitButtonMetrics.metrics(for: size)
         let cornerRadius: CGFloat = switch size {
         case .mini: 4
@@ -81,19 +85,23 @@ struct KitDestructiveButtonStyle: ButtonStyle {
 }
 
 extension ButtonStyle where Self == KitDestructiveButtonStyle {
-    static var kitDestructive: KitDestructiveButtonStyle { KitDestructiveButtonStyle() }
+    public static var kitDestructive: KitDestructiveButtonStyle { KitDestructiveButtonStyle() }
 }
 
 /// Split and ⋯ beside the capsule: a 26pt icon square, highlighted under
 /// the pointer; `isOn` (split) tints it like an on segment. Disabled, it
 /// dims to half and takes no hover highlight.
-struct KitIconButtonStyle: ButtonStyle {
+public struct KitIconButtonStyle: ButtonStyle {
     var isOn: Bool
 
     /// Off the radius scale on purpose: it matches the header capsule's segments.
     private static let cornerRadius: CGFloat = 7
 
-    func makeBody(configuration: Configuration) -> some View {
+    public init(isOn: Bool) {
+        self.isOn = isOn
+    }
+
+    public func makeBody(configuration: Configuration) -> some View {
         IconSquare(configuration: configuration, isOn: isOn)
     }
 
@@ -122,5 +130,5 @@ struct KitIconButtonStyle: ButtonStyle {
 }
 
 extension ButtonStyle where Self == KitIconButtonStyle {
-    static func kitIcon(isOn: Bool) -> KitIconButtonStyle { KitIconButtonStyle(isOn: isOn) }
+    public static func kitIcon(isOn: Bool) -> KitIconButtonStyle { KitIconButtonStyle(isOn: isOn) }
 }

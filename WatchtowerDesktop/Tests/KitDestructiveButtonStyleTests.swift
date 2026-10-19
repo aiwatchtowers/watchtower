@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import XCTest
+@testable import DesignKit
 @testable import WatchtowerDesktop
 
 /// The recorder's Stop reads in every state (#397): `.kitDestructive`

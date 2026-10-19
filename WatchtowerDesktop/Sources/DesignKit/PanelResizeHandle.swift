@@ -10,11 +10,11 @@ import SwiftUI
 /// below are the Workbench sessions panel's defaults (`range` defaults to
 /// `widthRange`); `PanelSplit`, the ask drawer and the target panel pass
 /// their own `range`.
-struct PanelResizeHandle: View {
-    static let defaultWidth: Double = 260
-    static let widthRange: ClosedRange<Double> = 200...480
+public struct PanelResizeHandle: View {
+    public static let defaultWidth: Double = 260
+    public static let widthRange: ClosedRange<Double> = 200...480
     /// The strip's width.
-    static let thickness: CGFloat = 7
+    public static let thickness: CGFloat = 7
 
     @Binding var width: Double
     @Binding var liveWidth: Double?
@@ -24,11 +24,23 @@ struct PanelResizeHandle: View {
     @State private var dragStart: Double?
     @State private var cursorPushed = false
 
-    static func clamp(_ width: Double) -> Double {
+    public init(
+        width: Binding<Double>,
+        liveWidth: Binding<Double?>,
+        range: ClosedRange<Double> = Self.widthRange,
+        growsLeftward: Bool = false
+    ) {
+        _width = width
+        _liveWidth = liveWidth
+        self.range = range
+        self.growsLeftward = growsLeftward
+    }
+
+    public static func clamp(_ width: Double) -> Double {
         min(max(width, widthRange.lowerBound), widthRange.upperBound)
     }
 
-    var body: some View {
+    public var body: some View {
         Color.clear
             .frame(width: Self.thickness)
             .contentShape(Rectangle())

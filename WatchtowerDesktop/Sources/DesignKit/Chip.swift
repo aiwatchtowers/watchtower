@@ -2,12 +2,18 @@ import SwiftUI
 
 /// A small tinted capsule: a card's priority or status, and the side panel's
 /// drift findings.
-struct Chip: View {
+public struct Chip: View {
     let text: String
     let color: Color
     var dot = false
 
-    var body: some View {
+    public init(text: String, color: Color, dot: Bool = false) {
+        self.text = text
+        self.color = color
+        self.dot = dot
+    }
+
+    public var body: some View {
         HStack(spacing: 4) {
             if dot {
                 Circle().fill(color).frame(width: 6, height: 6)
@@ -23,10 +29,14 @@ struct Chip: View {
 
 /// White semibold text on a blue capsule: a session's `#id`, a workbench's
 /// new-comments count.
-struct CountBadge: View {
+public struct CountBadge: View {
     let text: String
 
-    var body: some View {
+    public init(text: String) {
+        self.text = text
+    }
+
+    public var body: some View {
         Text(text)
             .font(.caption2.weight(.semibold))
             .foregroundStyle(.white)
@@ -40,10 +50,14 @@ struct CountBadge: View {
 
 /// A session's agent when it is not Claude Code ("Codex", board #399): small
 /// secondary text in an outlined capsule, quieter than the `#id` badge.
-struct OutlineTag: View {
+public struct OutlineTag: View {
     let text: String
 
-    var body: some View {
+    public init(text: String) {
+        self.text = text
+    }
+
+    public var body: some View {
         Text(text)
             .font(.caption2)
             .foregroundStyle(.secondary)
@@ -57,14 +71,21 @@ struct OutlineTag: View {
 
 /// A status or priority menu's label: a tinted capsule with an icon and a
 /// chevron, so it reads as a control rather than a bare tag.
-struct MenuLabel: View {
+public struct MenuLabel: View {
     let text: String
     let systemImage: String
     let color: Color
     /// A read-only value (a group's status) drops the chevron.
     var isMenu = true
 
-    var body: some View {
+    public init(text: String, systemImage: String, color: Color, isMenu: Bool = true) {
+        self.text = text
+        self.systemImage = systemImage
+        self.color = color
+        self.isMenu = isMenu
+    }
+
+    public var body: some View {
         HStack(spacing: 5) {
             Image(systemName: systemImage)
                 .font(.caption2)

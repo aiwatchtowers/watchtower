@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import ViewInspector
 import XCTest
+@testable import DesignKit
 @testable import WatchtowerDesktop
 
 /// The kit's new components (style guide #719, Task 6): settings rows with a

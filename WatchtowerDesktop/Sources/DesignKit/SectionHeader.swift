@@ -2,12 +2,18 @@ import SwiftUI
 
 /// A section title inside the target panel (Description, Sub-tasks, Asks,
 /// Images, Comments), so every section reads the same.
-struct SectionHeader: View {
+public struct SectionHeader: View {
     let title: String
     let systemImage: String
     var count: Int?
 
-    var body: some View {
+    public init(title: String, systemImage: String, count: Int? = nil) {
+        self.title = title
+        self.systemImage = systemImage
+        self.count = count
+    }
+
+    public var body: some View {
         HStack(spacing: 6) {
             Label(title, systemImage: systemImage)
                 .font(.subheadline.weight(.semibold))

@@ -1,9 +1,9 @@
 import SwiftUI
 
 /// The Targets tab's colours for status and priority.
-enum Tone {
+public enum Tone {
     /// Maps `Target.statusColor`'s name to a colour; an unknown status is neutral.
-    static func status(_ name: String) -> Color {
+    public static func status(_ name: String) -> Color {
         switch name {
         case "blue": .blue
         case "teal": .teal
@@ -15,7 +15,7 @@ enum Tone {
         }
     }
 
-    static func priority(_ priority: String) -> Color {
+    public static func priority(_ priority: String) -> Color {
         switch priority {
         case "high": .red
         case "low": .blue

@@ -2,12 +2,18 @@ import SwiftUI
 
 /// Where a `PanelSplit` keeps its panel's width: dragged within `range`,
 /// remembered under `key` across launches, `ideal` until first dragged.
-struct PanelSplitWidth {
+public struct PanelSplitWidth {
     let key: String
     let range: ClosedRange<Double>
     let ideal: Double
 
-    func clamped(_ width: Double) -> Double {
+    public init(key: String, range: ClosedRange<Double>, ideal: Double) {
+        self.key = key
+        self.range = range
+        self.ideal = ideal
+    }
+
+    public func clamped(_ width: Double) -> Double {
         min(max(width, range.lowerBound), range.upperBound)
     }
 }
@@ -20,7 +26,7 @@ struct PanelSplitWidth {
 /// The Workbench target panel (`WorkbenchBoardView.panel`) overlays the board
 /// instead and is not built on this. Not an `.inspector`, which acts on the
 /// window and would squeeze a split pane.
-struct PanelSplit<Main: View, Panel: View>: View {
+public struct PanelSplit<Main: View, Panel: View>: View {
     let isPanelShown: Bool
     let width: PanelSplitWidth
     @ViewBuilder let main: Main
@@ -29,7 +35,7 @@ struct PanelSplit<Main: View, Panel: View>: View {
     @AppStorage private var storedWidth: Double
     @State private var liveWidth: Double?
 
-    init(
+    public init(
         isPanelShown: Bool,
         width: PanelSplitWidth,
         @ViewBuilder main: () -> Main,
@@ -42,7 +48,7 @@ struct PanelSplit<Main: View, Panel: View>: View {
         _storedWidth = AppStorage(wrappedValue: width.ideal, width.key)
     }
 
-    var body: some View {
+    public var body: some View {
         HStack(spacing: 0) {
             main.frame(maxWidth: .infinity, maxHeight: .infinity)
             if isPanelShown {

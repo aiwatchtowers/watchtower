@@ -4,11 +4,16 @@ import SwiftUI
 /// caption text on an accent capsule with a soft shadow. The caller wraps it
 /// in a plain-style `Button`; the styling stays on the label so the whole
 /// painted capsule is clickable.
-struct FloatingButtonLabel: View {
+public struct FloatingButtonLabel: View {
     let title: String
     let systemImage: String
 
-    var body: some View {
+    public init(title: String, systemImage: String) {
+        self.title = title
+        self.systemImage = systemImage
+    }
+
+    public var body: some View {
         Label(title, systemImage: systemImage)
             .font(.caption)
             .fontWeight(.medium)
