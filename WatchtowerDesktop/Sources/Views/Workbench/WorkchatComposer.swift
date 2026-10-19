@@ -16,8 +16,8 @@ struct WorkchatComposer: View {
                 Text(stopError)
                     .font(.caption)
                     .foregroundStyle(.red)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 6)
+                    .padding(.horizontal, Spacing.large)
+                    .padding(.top, Spacing.compact)
             }
             ChatComposerField(
                 text: $model.draft,
@@ -55,11 +55,11 @@ struct WorkchatOutgoingBubble: View {
     var body: some View {
         HStack {
             Spacer(minLength: 48)
-            VStack(alignment: .trailing, spacing: 3) {
+            VStack(alignment: .trailing, spacing: Spacing.tight) {
                 Text(line.text)
                     .textSelection(.enabled)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
+                    .padding(.horizontal, Spacing.cozy)
+                    .padding(.vertical, Spacing.compact)
                     .background(bubble)
                 caption
                     .font(.caption2)
@@ -75,11 +75,11 @@ struct WorkchatOutgoingBubble: View {
 
     @ViewBuilder
     private var bubble: some View {
-        let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
+        let shape = RoundedRectangle(cornerRadius: Radius.container, style: .continuous)
         if isPending {
             shape.strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
         } else {
-            shape.fill(Color.accentColor.opacity(0.14))
+            shape.fill(Color.accentColor.opacity(ChipTint.fillOpacity))
         }
     }
 
@@ -89,17 +89,17 @@ struct WorkchatOutgoingBubble: View {
         case .sending:
             Text("Sending…")
         case .queued:
-            HStack(spacing: 4) {
+            HStack(spacing: Spacing.small) {
                 Text("Queued · sends when the agent stops ·")
                 Button("Cancel", action: onCancel).buttonStyle(.link)
             }
         case .typed:
-            HStack(spacing: 4) {
+            HStack(spacing: Spacing.small) {
                 Text("Typed into the terminal, not sent: press Return there ·")
                 Button("Show in Terminal", action: onShowTerminal).buttonStyle(.link)
             }
         case .copied:
-            HStack(spacing: 4) {
+            HStack(spacing: Spacing.small) {
                 Text("Copied to the clipboard: the terminal does not accept pasted text ·")
                 Button("Show in Terminal", action: onShowTerminal).buttonStyle(.link)
             }

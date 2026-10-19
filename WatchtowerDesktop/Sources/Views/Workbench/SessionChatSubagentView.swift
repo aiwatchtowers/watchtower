@@ -51,7 +51,7 @@ struct SessionChatSubagentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
+                LazyVStack(alignment: .leading, spacing: Spacing.cozy) {
                     if let error {
                         Text(error).font(.caption).foregroundStyle(.orange)
                     }
@@ -66,7 +66,7 @@ struct SessionChatSubagentView: View {
                             .equatable()
                     }
                 }
-                .padding(14)
+                .padding(Spacing.medium)
             }
         }
     }

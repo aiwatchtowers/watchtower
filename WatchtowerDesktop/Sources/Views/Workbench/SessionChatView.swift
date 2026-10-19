@@ -104,7 +104,7 @@ struct SessionChatView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
+                    .padding(Spacing.cozy)
             } else if path.isRoot, composerShown, let workchat {
                 Divider()
                 // No card to carry it: a failed permission read shows here.
@@ -114,8 +114,8 @@ struct SessionChatView: View {
                         .foregroundStyle(.red)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 6)
+                        .padding(.horizontal, Spacing.large)
+                        .padding(.top, Spacing.compact)
                 }
                 WorkchatComposer(model: workchat, working: working)
             }
@@ -174,7 +174,7 @@ struct SessionChatView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
-                .padding(10)
+                .padding(Spacing.cozy)
         }
         // Esc and ⌘[ pop one level while the pane has focus; it takes focus when
         // a subagent opens, so Esc works without another click.
@@ -193,10 +193,10 @@ struct SessionChatView: View {
 
     /// **‹ Back**, then `Workchat › type › …`: each part opens its level.
     private func pathBar(_ subagent: SessionFeedSubagent) -> some View {
-        HStack(spacing: 6) {
+        HStack(spacing: Spacing.compact) {
             Button("‹ Back") { path.pop() }
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
+                HStack(spacing: Spacing.small) {
                     Button("Workchat") { path.popTo(level: 0) }
                         .buttonStyle(.link)
                     ForEach(Array(path.stack.enumerated()), id: \.offset) { index, item in
@@ -217,8 +217,8 @@ struct SessionChatView: View {
             }
         }
         .font(.callout)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.horizontal, Spacing.cozy)
+        .padding(.vertical, Spacing.compact)
     }
 
     private static func title(_ subagent: SessionFeedSubagent) -> String {
@@ -242,7 +242,7 @@ struct SessionChatView: View {
         ScrollViewReader { proxy in
             GeometryReader { viewport in
                 ScrollView {
-                    LazyVStack(spacing: 10) {
+                    LazyVStack(spacing: Spacing.cozy) {
                         if window.hasEarlier(total: store.entries.count) {
                             loadingRow
                                 .onAppear {
@@ -276,7 +276,7 @@ struct SessionChatView: View {
                         // content's true bottom (the `ChatFeedView` rule).
                         Color.clear.frame(height: 14).id(Self.bottomID)
                     }
-                    .padding([.top, .horizontal], 14)
+                    .padding([.top, .horizontal], Spacing.medium)
                     .background(
                         GeometryReader { geo in
                             Color.clear.preference(key: ChatContentFramePreferenceKey.self,
@@ -311,7 +311,7 @@ struct SessionChatView: View {
     }
 
     private var loadingRow: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: Spacing.compact) {
             ProgressView().controlSize(.mini)
             Text("Loading earlier messages…")
         }

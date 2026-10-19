@@ -34,7 +34,7 @@ struct SessionChatRow: View, Equatable {
             ownerBubble(label: nil, title: nil, caption: "via Watchtower")
         case "agent":
             HStack {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Spacing.tight) {
                     markdown
                     timeCaption
                 }
@@ -42,7 +42,7 @@ struct SessionChatRow: View, Equatable {
             }
         case "brief":
             DisclosureGroup {
-                markdown.padding(.top, 4)
+                markdown.padding(.top, Spacing.small)
             } label: {
                 Text("Watchtower: brief").font(.caption).foregroundStyle(.secondary)
             }
@@ -51,7 +51,7 @@ struct SessionChatRow: View, Equatable {
         case "event":
             eventLine
         case "separator":
-            HStack(spacing: 8) {
+            HStack(spacing: Spacing.regular) {
                 Rectangle().fill(.quaternary).frame(height: 1)
                 Text("New conversation").font(.caption).foregroundStyle(.secondary)
                 Rectangle().fill(.quaternary).frame(height: 1)
@@ -72,11 +72,11 @@ struct SessionChatRow: View, Equatable {
     /// A Claude Code notice (a background task finished, a message from
     /// another session): one centered grey line; a click shows its body.
     private var eventLine: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: Spacing.small) {
             Button {
                 onToggle?()
             } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: Spacing.compact) {
                     Image(systemName: entry.eventType == "teammate" ? "envelope" : "gearshape")
                     Text(entry.title.flatMap { $0.isEmpty ? nil : $0 } ?? "Notice").lineLimit(1)
                     Image(systemName: expanded ? "chevron.down" : "chevron.right").foregroundStyle(.tertiary)
@@ -96,8 +96,8 @@ struct SessionChatRow: View, Equatable {
     private func ownerBubble(label: String?, title: String?, caption: String?) -> some View {
         HStack {
             Spacer(minLength: 48)
-            VStack(alignment: .trailing, spacing: 3) {
-                VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .trailing, spacing: Spacing.tight) {
+                VStack(alignment: .leading, spacing: Spacing.small) {
                     if let label {
                         Text(label).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     }
@@ -106,10 +106,10 @@ struct SessionChatRow: View, Equatable {
                     }
                     markdown
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(Color.accentColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                HStack(spacing: 6) {
+                .padding(.horizontal, Spacing.cozy)
+                .padding(.vertical, Spacing.compact)
+                .background(Color.accentColor.opacity(ChipTint.fillOpacity), in: RoundedRectangle(cornerRadius: Radius.container, style: .continuous))
+                HStack(spacing: Spacing.compact) {
                     if let caption { Text(caption) }
                     if let at = entry.at { Text(at, format: .dateTime.hour().minute()) }
                 }
@@ -130,9 +130,9 @@ struct SessionChatRow: View, Equatable {
         Button {
             onOpenSubagent?()
         } label: {
-            HStack(spacing: 8) {
+            HStack(spacing: Spacing.regular) {
                 Image(systemName: "person.2").foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: Spacing.tight) {
                     Text(subagent.type.isEmpty ? "Subagent" : subagent.type).font(.callout.weight(.semibold))
                     if !subagent.description.isEmpty {
                         Text(subagent.description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
@@ -143,9 +143,8 @@ struct SessionChatRow: View, Equatable {
                     .font(.caption).foregroundStyle(.secondary)
                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
             }
-            .padding(10)
-            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5))
+            .padding(Spacing.cozy)
+            .card()
         }
         .buttonStyle(.plain)
         .frame(maxWidth: 420, alignment: .leading)

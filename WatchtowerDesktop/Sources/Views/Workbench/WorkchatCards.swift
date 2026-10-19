@@ -12,7 +12,7 @@ struct WorkchatPermissionCard: View {
     let onShowTerminal: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: Spacing.compact) {
             Text(Self.title(toolName: prompt.toolName))
                 .fontWeight(.semibold)
                 .foregroundStyle(.orange)
@@ -20,21 +20,23 @@ struct WorkchatPermissionCard: View {
                 .font(.system(.callout, design: .monospaced))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 7)
-                .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
+                .padding(.horizontal, Spacing.regular)
+                .padding(.vertical, Spacing.compact)
+                .background(Surface.text, in: RoundedRectangle(cornerRadius: Radius.control))
             if let block = prompt.allowBlock {
                 Text(Self.note(block))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            HStack(spacing: 6) {
+            HStack(spacing: Spacing.compact) {
                 if prompt.allowBlock == nil {
                     Button("Allow") { answer(true) }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.kitPrimary)
                 }
                 Button("Deny") { answer(false) }
+                    .buttonStyle(.kitSecondary)
                 Button("Show in Terminal", action: onShowTerminal)
+                    .buttonStyle(.kitSecondary)
             }
             .disabled(model.answering)
             if let error = model.permissionError {
@@ -43,10 +45,11 @@ struct WorkchatPermissionCard: View {
                     .foregroundStyle(.red)
             }
         }
-        .padding(10)
+        .padding(Spacing.cozy)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.orange.opacity(0.5)))
+        .background(Color.orange.opacity(ChipTint.fillOpacity), in: RoundedRectangle(cornerRadius: Radius.container))
+        .overlay(RoundedRectangle(cornerRadius: Radius.container)
+            .strokeBorder(Color.orange.opacity(ChipTint.strokeOpacity)))
     }
 
     private func answer(_ allow: Bool) {
@@ -78,7 +81,7 @@ struct WorkchatAskCard: View {
     let onOpen: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: Spacing.compact) {
             Text("Ask #\(ask.id) · \(OwnerAskPresentation.askKindLabel(ask.kind))")
                 .font(.caption.weight(.semibold))
                 .textCase(.uppercase)
@@ -87,10 +90,11 @@ struct WorkchatAskCard: View {
                 .fontWeight(.semibold)
                 .textSelection(.enabled)
             Button("Open Ask", action: onOpen)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.kitPrimary)
         }
-        .padding(10)
+        .padding(Spacing.cozy)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.purple.opacity(0.45)))
+        .overlay(RoundedRectangle(cornerRadius: Radius.container)
+            .strokeBorder(Color.purple.opacity(ChipTint.strokeOpacity)))
     }
 }
