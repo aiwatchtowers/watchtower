@@ -38,14 +38,19 @@ package struct StreamDigest: FetchableRecord, Decodable, Identifiable, Equatable
     package var isRead: Bool { readAt != nil }
 
     /// The user-facing name of the stream (`stream_digests.source`): "Jira",
-    /// "Email" for an IMAP/Outlook mailbox, "Gmail" otherwise.
+    /// "Linear", "Email" for an IMAP/Outlook mailbox, "Gmail" otherwise.
     package var sourceLabel: String {
         switch source {
         case "jira": "Jira"
+        case "linear": "Linear"
         case "imap": "Email"
         default: "Gmail"
         }
     }
+
+    /// An issue-tracker stream (Jira or Linear) rather than a mailbox — the
+    /// views badge it with the ticket glyph instead of the envelope.
+    package var isTrackerStream: Bool { source == "jira" || source == "linear" }
 
     private static let decoder = JSONDecoder()
 

@@ -281,6 +281,7 @@ every Confluence hit's `link` is the page or attachment URL.
 
 ## Changelog
 
+- 2026-10-18 (Linear Plan 2 lane 2, board #688/#689, spec `docs/superpowers/specs/2026-10-15-linear-integration-design.md` §6/§8): EXT-04 unchanged: the issue-key detector moved from `internal/jira` to the new `internal/issuekey`, which imports only `config`, `db` and the dependency-free `jirakey` (no AI, sync-engine or connector package); `internal/jira` still re-exports `KeyRegexp`.
 - 2026-10-18 (#573, Confluence at connect): `*confluence.Fetcher` gained
   `RecentSpaceKeys` (one GET-only CQL search for `confluence select
   --recent`). Contract unchanged; `TestEXT01_FetcherReachesOnlyTheGETAPI`'s

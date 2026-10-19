@@ -12,7 +12,7 @@ import (
 
 	"watchtower/internal/ai"
 	"watchtower/internal/db"
-	"watchtower/internal/jira"
+	"watchtower/internal/issuekey"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
 
@@ -148,9 +148,9 @@ func runSyncCommand(ctx context.Context, deps Deps) string {
 	// One detector shared by every account's orchestrator, exactly as
 	// wireSlackSyncers builds it. /sync advances search_last_date and
 	// sync_state like any other sync, so a page it writes is never offered to
-	// the daemon again — an unwired orchestrator here would lose every Jira
+	// the daemon again — an unwired orchestrator here would lose every issue
 	// key in that window permanently.
-	keyDetector := jira.NewKeyDetectorIfEnabled(cfg, database)
+	keyDetector := issuekey.NewKeyDetectorIfEnabled(cfg, database)
 
 	// Fan out over every connected account; one account's failure is reported
 	// but does not block the others (the daemon fan-out pattern).
@@ -247,6 +247,9 @@ func (r *REPL) runCatchup() {
 	// Inject Jira context if enabled
 	if cfg.Jira.Enabled {
 		systemPrompt += ai.JiraPromptSection()
+	}
+	if cfg.Jira.Enabled || cfg.Linear.Enabled {
+		systemPrompt += ai.TrackerPromptSection()
 	}
 
 	timeHints := ai.FormatTimeHints(pq)

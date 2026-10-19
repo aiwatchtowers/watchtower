@@ -26,6 +26,35 @@ final class ReactionToolCatalogTests: XCTestCase {
         XCTAssertEqual(ReactionToolCatalog.title(for: "remind_me"), "Remind me")
     }
 
+    /// The five Linear writes are named on approval cards, notifications and
+    /// Home and always ask; only `create_linear_issue` is a reaction tool
+    /// (the Go reaction surface carries it since Linear plan 2).
+    func testLinearWritesHaveTitlesButAreNotReactionTools() {
+        let tools = ["create_linear_issue", "add_linear_comment", "transition_linear_issue",
+                     "assign_linear_issue", "update_linear_issue"]
+        for tool in tools {
+            guard let info = ReactionToolCatalog.info(for: tool) else {
+                XCTFail("\(tool) has no catalog entry")
+                continue
+            }
+            XCTAssertNotEqual(info.title, tool, "\(tool) must read as words, not the tool id")
+            XCTAssertTrue(info.title.contains("Linear"), tool)
+            XCTAssertEqual(info.destination, "Linear", tool)
+            XCTAssertTrue(info.alwaysAsks, tool)
+            XCTAssertEqual(ReactionDictionaryTools.all.contains(tool), tool == "create_linear_issue", tool)
+        }
+    }
+
+    /// `:ticket:` drafts on Jira or Linear by the channel's keys: the
+    /// dictionary and cheat sheet say so; approval cards keep the Jira title.
+    func testCreateJiraIssueReadsTrackerNeutralAsAReaction() {
+        XCTAssertEqual(ReactionToolCatalog.reactionTitle(for: "create_jira_issue"), "Create an issue")
+        XCTAssertEqual(ReactionToolCatalog.reactionInfo(for: "create_jira_issue")?.destination, "Jira or Linear")
+        XCTAssertEqual(ReactionToolCatalog.title(for: "create_jira_issue"), "Create a Jira issue")
+        XCTAssertEqual(ReactionToolCatalog.reactionTitle(for: "create_linear_issue"), "Create a Linear issue")
+        XCTAssertEqual(ReactionToolCatalog.reactionTitle(for: "frobnicate"), "frobnicate")
+    }
+
     func testUnknownToolFallsBackToItsID() {
         XCTAssertNil(ReactionToolCatalog.info(for: "frobnicate"))
         XCTAssertEqual(ReactionToolCatalog.title(for: "frobnicate"), "frobnicate")

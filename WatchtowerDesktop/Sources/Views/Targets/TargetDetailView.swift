@@ -28,6 +28,8 @@ struct TargetDetailView: View {
     @State private var newNoteText: String = ""
     @State private var newTagText: String = ""
     @State private var jiraIssue: JiraIssue?
+    /// The Linear issue of a `source_type = 'linear'` target (`tracker_issues`).
+    @State private var linearIssue: TrackerIssue?
     @State private var jiraConnected = false
     @State private var jiraSiteURL: String?
     @State private var links: [TargetLink] = []
@@ -1626,6 +1628,34 @@ struct TargetDetailView: View {
 
     @ViewBuilder
     private var jiraIssueSection: some View {
+        if target.sourceType == "linear", let issue = linearIssue {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Linear Issue")
+                    .font(.headline)
+                Button {
+                    if let url = issue.browseURL { NSWorkspace.shared.open(url) }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "tray.full")
+                            .foregroundStyle(.blue)
+                        Text(issue.key)
+                            .font(.callout)
+                            .fontWeight(.medium)
+                            .foregroundStyle(.blue)
+                        if issue.browseURL != nil {
+                            Image(systemName: "arrow.up.right.square")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(issue.browseURL == nil)
+                Text(issue.status)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        }
         if target.sourceType == "jira", let issue = jiraIssue {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Jira Issue")
@@ -1753,6 +1783,9 @@ struct TargetDetailView: View {
             let key = String(ref.dropFirst(5))
             return URL(string: "\(site)/browse/\(key)")
         }
+        if ref.hasPrefix("linear:") {
+            return appState.trackerIssueURL(tracker: .linear, key: String(ref.dropFirst("linear:".count)))
+        }
         // `slack:<channelID>[:<ts>]` — archives link, or the generic channel
         // redirect for a channel-only ref (no team/domain needed either way).
         return SlackDeepLink.targetRef(ref)
@@ -1763,6 +1796,18 @@ struct TargetDetailView: View {
             jiraIssue = viewModel.fetchJiraIssue(key: target.sourceID)
         } else {
             jiraIssue = nil
+        }
+        linearIssue = target.sourceType == "linear" ? fetchLinearIssue(key: target.sourceID) : nil
+    }
+
+    /// A read failure is logged and shows no issue section, like a missing issue.
+    private func fetchLinearIssue(key: String) -> TrackerIssue? {
+        guard let pool = appState.databaseManager?.dbPool else { return nil }
+        do {
+            return try pool.read { db in try TrackerQueries.fetchIssue(db, tracker: .linear, key: key) }
+        } catch {
+            NSLog("TargetDetailView: reading Linear issue %@ failed: %@", key, error.localizedDescription)
+            return nil
         }
     }
 

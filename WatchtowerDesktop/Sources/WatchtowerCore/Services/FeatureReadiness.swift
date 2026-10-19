@@ -123,7 +123,7 @@ package enum FeatureReadiness {
             return interval(last: inputs.stamps.lastStreams, hours: streamsIntervalHours, now: now) ?? cycle
         case .memory:
             return memoryWaitsForHistory(inputs) ? .afterHistoryLoads : cycle
-        case .slackSync, .digests, .tracks, .inbox, .knowledgeIndex, .calendar, .jira:
+        case .slackSync, .digests, .tracks, .inbox, .knowledgeIndex, .calendar, .jira, .linear:
             return cycle
         }
     }
@@ -169,6 +169,17 @@ package enum FeatureReadiness {
         guard feature.runsOnlyWithDigests, readiness != .off else { return feature.featureID }
         if readiness == .needsDigests || digestsTurnOnFailed { return ReadinessFeature.digests.featureID }
         return feature.featureID
+    }
+
+    /// The readiness a tracker-neutral tab (Blockers) shows: it reads Jira
+    /// and Linear through the `tracker_*` views, so either one's content
+    /// makes it ready. Without content, the connected tracker speaks (Jira
+    /// first when both are); with neither connected it asks for Jira, the
+    /// tracker the Connect rows name.
+    package static func trackerReadiness(jira: Readiness?, linear: Readiness?) -> Readiness? {
+        if jira == .ready || linear == .ready { return .ready }
+        if case .needsSource(.jira) = jira, let linear, linear != .needsSource(.linear) { return linear }
+        return jira
     }
 
     // MARK: - Wording

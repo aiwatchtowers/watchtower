@@ -634,7 +634,7 @@ struct DigestListView: View {
     }
 
     private func streamSourceBadge(_ digest: StreamDigest) -> some View {
-        let isJira = digest.source == "jira"
+        let isJira = digest.isTrackerStream
         let color: Color = isJira ? .indigo : .red
         return Label(digest.sourceLabel, systemImage: isJira ? "ticket" : "envelope")
             .font(.caption2)

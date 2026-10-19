@@ -286,6 +286,11 @@ struct DayPlanView: View {
             }
         case .jira:
             appState.selectedDestination = .boards
+        case .linear:
+            // Linear has no Boards tab: open the issue itself, else Blockers.
+            if !appState.openTrackerIssue(tracker: .linear, key: sid) {
+                appState.selectedDestination = .blockers
+            }
         case .focus, .calendar, .manual:
             break
         }

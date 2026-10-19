@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -214,10 +215,84 @@ func TestFetchViewerWithToken(t *testing.T) {
 	graphqlEndpoint = srv.URL
 	t.Cleanup(func() { graphqlEndpoint = old })
 
-	v, err := FetchViewerWithToken(context.Background(), "good")
+	v, err := FetchViewerWithToken(context.Background(), &Token{AccessToken: "good"})
 	require.NoError(t, err)
 	assert.Equal(t, Viewer{UserID: "user-1", Email: "owner@example.com", Name: "Owner", OrgID: "org-1", OrgName: "Acme", URLKey: "acme"}, v)
 
-	_, err = FetchViewerWithToken(context.Background(), "stale")
+	_, err = FetchViewerWithToken(context.Background(), &Token{AccessToken: "stale"})
 	assert.ErrorIs(t, err, ErrAuthRevoked)
+}
+
+func TestFetchViewerWithToken_APIKeyBareHeader(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "lin_api_x" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"viewer":{"id":"user-1","organization":{"id":"org-1"}}}}`))
+	}))
+	t.Cleanup(srv.Close)
+	old := graphqlEndpoint
+	graphqlEndpoint = srv.URL
+	t.Cleanup(func() { graphqlEndpoint = old })
+
+	v, err := FetchViewerWithToken(context.Background(), APIKeyToken("lin_api_x"))
+	require.NoError(t, err)
+	assert.Equal(t, "org-1", v.OrgID)
+}
+
+func newAPIKeyClient(t *testing.T, gql http.HandlerFunc) (*Client, *atomic.Int32) {
+	t.Helper()
+	c, store := newTestClient(t, gql, nil)
+	require.NoError(t, store.Save(APIKeyToken("  lin_api_x\n")))
+	var tokenCalls atomic.Int32
+	tk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		tokenCalls.Add(1)
+		_, _ = w.Write([]byte(`{"access_token":"a1","refresh_token":"r1","expires_in":86399}`))
+	}))
+	t.Cleanup(tk.Close)
+	c.tokenURL = tk.URL
+	return c, &tokenCalls
+}
+
+func TestLinear02_APIKeySendsBareAuthorization(t *testing.T) {
+	c, _ := newAPIKeyClient(t, func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "lin_api_x", r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	})
+	require.NoError(t, c.Do(context.Background(), `query { viewer { id } }`, nil, &struct{}{}))
+}
+
+func TestLinear02_APIKeyNeverRefreshes(t *testing.T) {
+	c, tokenCalls := newAPIKeyClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"data":{}}`))
+	})
+	require.True(t, APIKeyToken("k").IsExpired()) // an empty Expiry would trigger a refresh for OAuth
+	require.NoError(t, c.Do(context.Background(), `query { viewer { id } }`, nil, &struct{}{}))
+	assert.Zero(t, tokenCalls.Load())
+}
+
+func TestLinear03_APIKey401IsAuthRevoked(t *testing.T) {
+	var gqlCalls atomic.Int32
+	c, tokenCalls := newAPIKeyClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		gqlCalls.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	err := c.Do(context.Background(), `query { viewer { id } }`, nil, &struct{}{})
+	assert.ErrorIs(t, err, ErrAuthRevoked)
+	assert.Zero(t, tokenCalls.Load())
+	assert.Equal(t, int32(1), gqlCalls.Load())
+}
+
+func TestLinear02_APIKeyTokenRoundTrip(t *testing.T) {
+	store := NewTokenStore(t.TempDir(), 7)
+	require.NoError(t, store.Save(APIKeyToken(" lin_api_x ")))
+	got, err := store.Load()
+	require.NoError(t, err)
+	assert.Equal(t, TokenTypeAPIKey, got.TokenType)
+	assert.Equal(t, "lin_api_x", got.AccessToken)
+	assert.True(t, got.IsAPIKey())
+	fi, err := os.Stat(store.Path())
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), fi.Mode().Perm())
 }
