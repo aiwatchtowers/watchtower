@@ -124,6 +124,20 @@ extension XCTestCase {
         return dir.appendingPathComponent("replica.sqlite").path
     }
 
+    /// Shuts `session` down at teardown and closes its databases, before
+    /// the directories made earlier go (teardown blocks run last-in
+    /// first-out). A connection left open on deleted files makes the
+    /// simulator's SQLite flag an API violation and invalidate descriptors
+    /// while the next test opens its own databases, which then fail or
+    /// stall.
+    @MainActor
+    func closeAtTeardown(_ session: HubSession) {
+        addTeardownBlock { @MainActor in
+            await session.shutDown()
+            session.closeDatabases()
+        }
+    }
+
     /// `reader` was closed (#216): a read fails as on a closed connection,
     /// not with the disk I/O error of one left open on deleted files.
     func assertClosed(_ reader: (any DatabaseReader)?, file: StaticString = #filePath, line: UInt = #line) {
