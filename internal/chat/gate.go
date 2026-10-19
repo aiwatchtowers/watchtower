@@ -457,16 +457,20 @@ func (g *gate) await(p *claudeProc, req permissionRequest, w *gateWait, id int64
 	}
 }
 
-// settledByStopOrExit settles a waiting call that Stop, Close or the CLI
-// withdrew (rejected or expired, and denied when the owner stopped it) or
-// whose child is gone (expired, nothing written). False when it may go on.
+// settledByStopOrExit settles a waiting call whose child is gone (expired,
+// nothing written) or that Stop, Close or the CLI withdrew (rejected or
+// expired, and denied when the owner stopped it). False when it may go on.
+//
+// A gone child wins over a stop: the turn ends on the child's exit, so a
+// Close right after it signals the stop before this wait wakes — the call
+// still ended with its session, and no answer can reach a dead child.
 func (g *gate) settledByStopOrExit(p *claudeProc, req permissionRequest, w *gateWait, id int64) bool {
-	if stop, why := g.stopRequested(w); stop {
-		g.stopped(p, req, why, id)
-		return true
-	}
 	if childGone(p) {
 		g.expire(id, reasonSessionEnded)
+		return true
+	}
+	if stop, why := g.stopRequested(w); stop {
+		g.stopped(p, req, why, id)
 		return true
 	}
 	return false
@@ -510,13 +514,13 @@ func (g *gate) claim(p *claudeProc, req permissionRequest, w *gateWait, id int64
 	g.mu.Lock()
 	g.claimed[req.ToolUseID] = claimedCall{id: id, proc: p}
 	g.mu.Unlock()
-	if stop, why := g.stopRequested(w); stop || childGone(p) {
-		reason := reasonSessionEnded
-		if stop {
-			reason = reasonStopped
-		}
-		g.finish(req.ToolUseID, "", reason)
-		if stop && why == stopByOwner {
+	if childGone(p) {
+		g.finish(req.ToolUseID, "", reasonSessionEnded)
+		return true
+	}
+	if stop, why := g.stopRequested(w); stop {
+		g.finish(req.ToolUseID, "", reasonStopped)
+		if why == stopByOwner {
 			g.answer(p, permissionDenyLine(req.RequestID, denyStopped))
 		}
 		return true

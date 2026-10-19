@@ -39,6 +39,7 @@ type fakeSink struct {
 	beforePropose func()
 	beforeStatus  func(id int64)
 	afterClaim    func(id int64)
+	statusReads   int // ActionStatus reads that found a row, counted under mu
 }
 
 type fakeRow struct {
@@ -83,6 +84,7 @@ func (s *fakeSink) ActionStatus(_ context.Context, id int64) (string, error) {
 	if !ok {
 		return "", errors.New("no such row")
 	}
+	s.statusReads++
 	return r.status, nil
 }
 
@@ -447,6 +449,13 @@ func TestChat05_DeadSessionNeverRunsAnApprovedCall(t *testing.T) {
 	turnDone := make(chan error, 1)
 	go func() { turnDone <- b.Turn(context.Background(), Command{TurnID: "t1", Text: "send"}, func(Event) {}) }()
 	fx.sink.waitRows(t, 1)
+	// The gate read the row as pending and sleeps on its hour-long poll: an
+	// Approve before that read would be claimed by a live child.
+	waitUntil(t, "the gate's first status read", func() bool {
+		fx.sink.mu.Lock()
+		defer fx.sink.mu.Unlock()
+		return fx.sink.statusReads >= 1
+	})
 
 	// The owner approves; the child dies before the session claims it.
 	require.True(t, fx.sink.approve(1, ""))
