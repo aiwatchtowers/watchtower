@@ -1,6 +1,6 @@
 # Desktop style guide
 
-One page for whoever builds a Desktop screen. The kit in `WatchtowerDesktop/Sources/Views/DesignSystem/` is the detail; this page says which part to reach for and why. Design and decisions: `docs/superpowers/specs/2026-10-19-desktop-style-guide-design.md`. New screens only; old screens move onto the kit later.
+One page for whoever builds a Desktop screen. The kit in `WatchtowerDesktop/Sources/DesignKit/` is the detail; this page says which part to reach for and why. Design and decisions: `docs/superpowers/specs/2026-10-19-desktop-style-guide-design.md`. New screens only; old screens move onto the kit later.
 
 The reference is the app's own good screens: Workbench, Calendar and AI Chat. A screen built from the kit should look like them without you choosing a number.
 
@@ -16,7 +16,7 @@ The reference is the app's own good screens: Workbench, Calendar and AI Chat. A 
 
 ## Tokens
 
-Use the token, never the number. The scale is closed: a screen that needs a new step adds a token to `DesignSystem/` in the same PR.
+Use the token, never the number. The scale is closed: a screen that needs a new step adds a token to `DesignKit/` in the same PR.
 
 | Token | Values |
 |---|---|
@@ -55,24 +55,22 @@ Shadows exist only on floating buttons (`FloatingButtonLabel`).
 | `.popoverSurface()` | custom popover backgrounds | the body of a popover |
 | `FloatingButtonLabel` | one-off shadows | "Jump to latest" style floating buttons |
 
-![gallery](shots/gallery.png)
+<!-- shot: catalog-colours, catalog-spacing, catalog-typography (replaces gallery.png) -->
 
-![buttons](shots/buttons.png)
+<!-- shot: catalog-actions (replaces buttons.png) -->
 ![workbench-header](shots/workbench-header.png)
 ![workbench-panel-parts](shots/workbench-panel-parts.png)
 ![workbench-board-cards](shots/workbench-board-cards.png)
 ![sessions-panel](shots/sessions-panel.png)
 ![chat-rows](shots/chat-rows.png)
 ![calendar-rows](shots/calendar-rows.png)
-![kit-new-components](shots/kit-new-components.png)
+<!-- shot: catalog-inputs, catalog-settings, catalog-panels (replaces kit-new-components.png) -->
 
-The gallery shows every token and component in light and dark. In a dev build (`make app-dev`) open it from Help, Design Gallery.
-
-Before a release: build with `make app` and check that neither the Help nor the Window menu shows Design Gallery.
+The design gallery shows every token and component, one page per kind (colours, spacing, radius, strokes, typography, icons, motion, actions, selection, inputs, display, containers, settings, panels, popover). Run `make design-gallery`: it is a separate window and is never part of the app. `make desktop-shots DESKTOP_SHOTS=<dir>` renders the pages as `catalog-<page>` shots. A new kit component adds itself to a catalog page in `Sources/DesignKitCatalog/`.
 
 ## Lint rules
 
-New code under `Sources/Views/` and `Sources/App/` (not `DesignSystem/`) fails `make lint-swift` on these. There is no inline `swiftlint:disable` for them: `scripts/kit-lint-guard.sh`, run by `make lint-swift` and by CI, fails on any `swiftlint:disable` (including `:next`, `:this`, `:previous`) there that names a `kit_` rule or `all`. Existing code is in the baseline.
+New code under `Sources/Views/` and `Sources/App/` (not `DesignKit/`) fails `make lint-swift` on these. There is no inline `swiftlint:disable` for them: `scripts/kit-lint-guard.sh`, run by `make lint-swift` and by CI, fails on any `swiftlint:disable` (including `:next`, `:this`, `:previous`) there that names a `kit_` rule or `all`. Existing code is in the baseline.
 
 | Rule id | Forbids | Why |
 |---|---|---|

@@ -112,7 +112,7 @@ tags in brackets.
 
 ### Design kit
 
-- New Desktop UI is built from `Sources/Views/DesignSystem/` per [docs/design/desktop-style-guide.md](../design/desktop-style-guide.md). The reviewer checks layout as well as lint: detail in a panel, not a pop-up or sheet (sheets only for short blocking flows); one prominent action per screen; no dividers between rows; empty, loading and error states present; and the PR carries the `make desktop-shots` PNGs. A new token goes into `DesignSystem/` in the same PR, never an inline number. (2026-10-19, #719) [6]
+- New Desktop UI is built from `Sources/DesignKit/` per [docs/design/desktop-style-guide.md](../design/desktop-style-guide.md). The reviewer checks layout as well as lint: detail in a panel, not a pop-up or sheet (sheets only for short blocking flows); one prominent action per screen; no dividers between rows; empty, loading and error states present; and the PR carries the `make desktop-shots` PNGs. A new token goes into `DesignKit/` in the same PR, never an inline number. (2026-10-19, #719) [6]
 
 ### The assistant & chat contracts
 
