@@ -15,7 +15,7 @@ The app is MVVM over GRDB: **Model → Queries → ViewModel → View**, reading
 
 3. **ViewModel** — `Sources/ViewModels/<Feature>ViewModel.swift`. `@MainActor @Observable final class`, inject `DatabasePool`. `startObserving()` streams `observation.values(in: dbPool)` in a stored `Task`; writes via `await dbPool.write { db in ... }`. Plain `var` properties (no `@Published`).
 
-4. **View(s)** — `Sources/Views/<Feature>/<Feature>View.swift` (+ optional `…Row`, `…DetailView`). `@Bindable var vm`, `.onAppear { vm.startObserving() }`, `navigationTitle` on the content (not inside a `@ViewBuilder` branch). Master-detail → `HSplitView`. Build views from `Sources/Views/DesignSystem/` (tokens, button styles, `SettingsSection`, `PanelSplit`…) and read `docs/design/desktop-style-guide.md` first; stock `Form`, `GroupBox`, `.bordered` and raw numbers fail lint.
+4. **View(s)** — `Sources/Views/<Feature>/<Feature>View.swift` (+ optional `…Row`, `…DetailView`). `@Bindable var vm`, `.onAppear { vm.startObserving() }`, `navigationTitle` on the content (not inside a `@ViewBuilder` branch). Master-detail → `HSplitView`. Build views from `Sources/DesignKit/` (tokens, button styles, `SettingsSection`, `PanelSplit`…; `make design-gallery` shows every component in a separate window) and read `docs/design/desktop-style-guide.md` first; stock `Form`, `GroupBox`, `.bordered` and raw numbers fail lint. A new kit component adds itself to a `CatalogPage` in `Sources/DesignKitCatalog/` in the same PR.
 
 5. **Navigation wiring** (4 spots):
    - `Sources/App/SidebarDestination.swift` — add the `case`, its `title`, `icon` (SF Symbol), and include it in `mainItems`.

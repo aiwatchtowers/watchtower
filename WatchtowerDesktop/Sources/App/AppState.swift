@@ -15,7 +15,6 @@ final class AppState {
     /// `WatchtowerApp` describes cannot arise. Tests still construct their own
     /// `AppState()` instances.
     static let shared = AppState()
-
     var selectedDestination: SidebarDestination = .home
     /// The ⌘/ chat popup over the current tab (in-app help).
     var isHelpChatShown = false
