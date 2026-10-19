@@ -23,7 +23,7 @@ PR #419 shipped the design gallery inside the app, behind a dev-build flag (Help
   - The app target depends on it, and one file re-exports it (`@_exported import DesignKit`), so no app file needs a new import.
 - **`DesignGallery`**, a new executable target at `Sources/DesignGallery/`. It depends on `DesignKit` and `DesignKitCatalog` only, never on the app or `WatchtowerCore`.
   - It runs with `make design-gallery`, which wraps `swift run DesignGallery`.
-  - `build-app.sh` builds only the app's own products, so the gallery is never in the `.app` bundle. A check in the build script fails if a `DesignGallery` binary ever appears in the bundle.
+  - `build-app.sh` runs the full `swift build`, which also builds the gallery, but copies into the `.app` only the app's executable and the resource bundles. A check in the build script fails the build if anything of the gallery reaches the bundle: the app target depending on the catalog, a `DesignGallery*` file or `*DesignKitCatalog*` resource bundle, or a gallery symbol in the app's binary (matched against the gallery's own binary as a positive control).
 - **Removed from the app:** `DesignGalleryScene.swift`, the Help → Design Gallery item, `DevBuild.swift` with its tests, and the `WTDevBuild` stamp in `build-app.sh`.
 
 ### 2.2 The window
@@ -32,7 +32,7 @@ The window is a `NavigationSplitView`: the taxonomy in the sidebar, one page per
 
 Every page has a toolbar:
 
-- **Appearance:** System, Light or Dark (applied to the page).
+- **Appearance:** System, Light or Dark (applied to the whole gallery window, so AppKit's dynamic colours follow it too).
 - **Control size:** mini, small, regular or large.
 - **Surface:** the page sits on the detail backdrop, the window panel or a popover-like material.
 - **Disabled:** forces `.disabled(true)` on the samples.

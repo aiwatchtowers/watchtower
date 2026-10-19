@@ -61,7 +61,7 @@ public struct KitDestructiveButtonStyle: ButtonStyle {
             .fixedSize()
     }
 
-    public struct Metrics {
+    struct Metrics {
         let fontSize: CGFloat
         let height: CGFloat
         let horizontalPadding: CGFloat
@@ -71,7 +71,7 @@ public struct KitDestructiveButtonStyle: ButtonStyle {
     /// The shared size table (`KitButtonMetrics`) plus this plate's corner
     /// radius per control size, so the plate sits in a row of stock buttons
     /// without standing out.
-    public static func metrics(for size: ControlSize) -> Metrics {
+    static func metrics(for size: ControlSize) -> Metrics {
         let base = KitButtonMetrics.metrics(for: size)
         let cornerRadius: CGFloat = switch size {
         case .mini: 4

@@ -1,6 +1,6 @@
 # Desktop style guide
 
-One page for whoever builds a Desktop screen. The kit in `WatchtowerDesktop/Sources/DesignKit/` is the detail; this page says which part to reach for and why. Design and decisions: `docs/superpowers/specs/2026-10-19-desktop-style-guide-design.md`. New screens only; old screens move onto the kit later.
+One page for whoever builds a Desktop screen. The kit in `WatchtowerDesktop/Sources/DesignKit/` is the detail; this page says which part to reach for and why. The kit's names are imported into every app file; on a clash with another module, qualify the kit's name (`DesignKit.Surface`). Design and decisions: `docs/superpowers/specs/2026-10-19-desktop-style-guide-design.md`. New screens only; old screens move onto the kit later.
 
 The reference is the app's own good screens: Workbench, Calendar and AI Chat. A screen built from the kit should look like them without you choosing a number.
 
@@ -98,4 +98,4 @@ Every new screen is looked at before it merges.
 3. Open both PNGs and look: soft fills, no hard borders, nothing stock-looking, nothing clipped.
 4. Attach them to the PR. A new window also goes to the owner as a review ask with its shots before merge.
 
-PNGs can be produced without a dev build via `make desktop-shots DESKTOP_SHOTS=<dir>`. The lint baseline is regenerated with `scripts/swiftlint-baseline.sh && make lint-swift`, only when absorbing legacy code, never to hide new violations. The script refuses a baseline that gains any violation the old one did not have (it lists them and leaves the file alone); a new rule that deliberately absorbs legacy hits passes `--allow-new <rule-id>` (repeatable) for that rule only.
+PNGs can be produced via `make desktop-shots DESKTOP_SHOTS=<dir>`. The lint baseline is regenerated with `scripts/swiftlint-baseline.sh && make lint-swift`, only when absorbing legacy code, never to hide new violations. The script refuses a baseline that gains any violation the old one did not have (it lists them and leaves the file alone); a new rule that deliberately absorbs legacy hits passes `--allow-new <rule-id>` (repeatable) for that rule only.

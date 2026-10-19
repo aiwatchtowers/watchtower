@@ -94,7 +94,7 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
         case .icons: ["IconSize"]
         case .motion: ["Motion", "FloatingShadow"]
         case .actions: ["kitPrimary", "kitSecondary", "kitQuiet", "kitDestructive", "kitIcon",
-                        "KitButtonMetrics", "FloatingButtonLabel"]
+                        "FloatingButtonLabel"]
         case .selection: ["SegmentedToggleStyle", "KitSegmentedPicker", "KitSegment", "segmentCapsule"]
         case .inputs: ["kit"]
         case .display: ["Chip", "CountBadge", "OutlineTag", "MenuLabel", "SectionHeader"]

@@ -483,23 +483,76 @@ if [ -n "$FLAVOR" ]; then
 fi
 
 # The design gallery is a developer window of its own and never ships: fail
-# if anything of it reached the assembled bundle, by file name or by symbol
-# in the main executable.
+# if anything of it reached the assembled bundle — the app target depending on
+# the catalog, a gallery file or resource bundle, or a gallery symbol in the
+# main executable. Plain `nm` (the binary is still unstripped here): internal
+# app types are absent from `nm -gU` on a release build. The same symbol
+# pattern must match the gallery's own binary (built into the same bin path by
+# the full `swift build` above), or the check proves nothing.
 # BEGIN gallery-bundle-guard
-check_no_gallery() {
-    local bundle="$1" exe="$1/Contents/MacOS/WatchtowerDesktop"
-    if [ -n "$(find "$bundle" -name 'DesignGallery*')" ]; then
-        echo "ERROR: the design gallery leaked into the app bundle:" >&2
-        find "$bundle" -name 'DesignGallery*' >&2
+GALLERY_SYMBOLS='DesignKitCatalog|CatalogPage|GalleryRootView|DesignSystemGallery'
+
+# has_gallery_symbols <binary> — 0 = found, 1 = clean, 2 = nm failed.
+# The symbol table goes through a temp file: a debug app's runs to ~90 MB.
+has_gallery_symbols() {
+    local syms rc=1
+    syms=$(mktemp)
+    if ! nm "$1" > "$syms" 2>&1; then
+        echo "ERROR: nm failed on $1:" >&2
+        head -n 5 "$syms" >&2
+        rc=2
+    elif grep -E "$GALLERY_SYMBOLS" "$syms" >/dev/null; then
+        rc=0
+    fi
+    rm -f "$syms"
+    return "$rc"
+}
+
+# check_app_target_deps — `swift package dump-package` JSON on stdin; fails
+# unless the WatchtowerDesktop target exists and depends on neither gallery
+# target.
+check_app_target_deps() {
+    local deps
+    if ! deps=$(jq -er '[.targets[] | select(.name == "WatchtowerDesktop")] | if length == 1 then .[0].dependencies[] | (.byName // .target // .product)[0] else error("WatchtowerDesktop target not found") end'); then
+        echo "ERROR: could not read the WatchtowerDesktop target's dependencies from the package" >&2
         return 1
     fi
-    if nm -gU "$exe" 2>/dev/null | grep -E 'DesignKitCatalog|CatalogPage|GalleryRootView|DesignSystemGallery' >/dev/null; then
-        echo "ERROR: gallery symbols found in $exe" >&2
+    if printf '%s\n' "$deps" | grep -Ex 'DesignKitCatalog|DesignGallery' >/dev/null; then
+        echo "ERROR: the WatchtowerDesktop target depends on the design gallery:" >&2
+        printf '%s\n' "$deps" | grep -Ex 'DesignKitCatalog|DesignGallery' >&2
         return 1
     fi
 }
+
+# check_no_gallery <bundle> [<gallery-binary>] — the gallery binary is the
+# positive control; when it is absent the control is skipped, said aloud.
+check_no_gallery() {
+    local bundle="$1" control="${2:-}" exe="$1/Contents/MacOS/WatchtowerDesktop" leaked rc
+    leaked=$(find "$bundle" \( -name 'DesignGallery*' -o -name '*DesignKitCatalog*' \))
+    if [ -n "$leaked" ]; then
+        echo "ERROR: the design gallery leaked into the app bundle:" >&2
+        printf '%s\n' "$leaked" >&2
+        return 1
+    fi
+    if [ -n "$control" ] && [ -f "$control" ]; then
+        rc=0; has_gallery_symbols "$control" || rc=$?
+        if [ "$rc" -ne 0 ]; then
+            echo "ERROR: the gallery symbol check does not match the gallery's own binary $control (rc=$rc) — the pattern is stale" >&2
+            return 1
+        fi
+    else
+        echo "    WARNING: no gallery binary at '${control}' — gallery symbol check runs without its positive control" >&2
+    fi
+    rc=0; has_gallery_symbols "$exe" || rc=$?
+    case "$rc" in
+        0) echo "ERROR: gallery symbols found in $exe" >&2; return 1 ;;
+        1) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 # END gallery-bundle-guard
-check_no_gallery "$APP_BUNDLE" || exit 1
+swift package dump-package | check_app_target_deps || exit 1
+check_no_gallery "$APP_BUNDLE" "$(swift build -c release --arch arm64 --show-bin-path)/DesignGallery" || exit 1
 
 # Code sign — one path for dev and release.
 # TCC pins permission grants (mic, system audio) to the app's code signature. An

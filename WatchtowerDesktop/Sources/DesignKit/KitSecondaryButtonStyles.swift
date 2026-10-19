@@ -74,14 +74,14 @@ struct KitSoftButton: View {
 /// of the kit's custom buttons (`.kitSecondary`, `.kitQuiet`,
 /// `.kitDestructive`), so each sits in a row of stock buttons at the same
 /// height.
-public enum KitButtonMetrics {
-    public struct Metrics {
+enum KitButtonMetrics {
+    struct Metrics {
         let fontSize: CGFloat
         let height: CGFloat
         let horizontalPadding: CGFloat
     }
 
-    public static func metrics(for size: ControlSize) -> Metrics {
+    static func metrics(for size: ControlSize) -> Metrics {
         switch size {
         case .mini: Metrics(fontSize: 9, height: 15, horizontalPadding: 6)
         case .small: Metrics(fontSize: 11, height: 20, horizontalPadding: 8)

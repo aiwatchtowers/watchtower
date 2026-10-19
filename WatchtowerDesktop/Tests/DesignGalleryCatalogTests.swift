@@ -43,7 +43,8 @@ final class DesignGalleryCatalogTests: XCTestCase {
             "KitIconButtonStyle": "shown as kitIcon",
             "KitFieldStyle": "shown as kit",
             "PanelTab": "the modifier behind panelTab(isSelected:)",
-            "followSelection": "a ScrollViewProxy helper: scrolling, nothing drawn"
+            "followSelection": "a ScrollViewProxy helper: scrolling, nothing drawn",
+            "onPopoverSurface": "an environment flag set by popoverSurface(), nothing drawn"
         ]
         let shown = Set(CatalogPage.componentsShown)
         XCTAssertEqual(CatalogPage.componentsShown.count, shown.count, "a component is listed on two pages")
@@ -53,9 +54,10 @@ final class DesignGalleryCatalogTests: XCTestCase {
         XCTAssertEqual(Set(excluded.keys).intersection(shown), [], "an excluded name is also listed on a page")
     }
 
-    /// The names of `Sources/DesignKit`'s top-level public types, and of the
-    /// public members of its extensions (`.card()`, `.kitPrimary`). A type's
-    /// own members belong to the type and are not listed.
+    /// The names of `Sources/DesignKit`'s top-level public declarations, and
+    /// of the public members of its extensions (`.card()`, `.kitPrimary`,
+    /// every member of a `public extension`). A type's own members belong to
+    /// the type and are not listed.
     private static func publicKitNames() throws -> Set<String> {
         let dir = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -63,23 +65,83 @@ final class DesignGalleryCatalogTests: XCTestCase {
             .appendingPathComponent("Sources/DesignKit")
         let files = try FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
             .filter { $0.pathExtension == "swift" }
-        let topLevel = try NSRegularExpression(pattern: #"^public (?:struct|enum) (\w+)"#)
-        let member = try NSRegularExpression(pattern: #"^    public (?:func|static var|static func) (\w+)"#)
         var names = Set<String>()
         for file in files {
-            var inExtension = false
-            for line in try String(contentsOf: file, encoding: .utf8).components(separatedBy: "\n") {
-                if let first = line.first, !first.isWhitespace, first != "}", !line.hasPrefix("//") {
-                    inExtension = line.hasPrefix("extension ")
-                }
-                let range = NSRange(line.startIndex..., in: line)
-                let regex = inExtension ? member : topLevel
-                if let match = regex.firstMatch(in: line, range: range), let name = Range(match.range(at: 1), in: line) {
-                    names.insert(String(line[name]))
-                }
+            names.formUnion(try publicNames(in: String(contentsOf: file, encoding: .utf8)))
+        }
+        return names
+    }
+
+    /// Leading attributes (`@Entry`, `@ViewBuilder`, `@available(macOS 14, *)`).
+    private static let attributes = #"(?:@\w+(?:\([^)]*\))?\s+)*"#
+    private static let declaration = #"(?:static\s+|class\s+)?(?:func|var|let)\s+(\w+)"#
+
+    static func publicNames(in source: String) throws -> Set<String> {
+        let topLevel = try NSRegularExpression(
+            pattern: "^" + attributes + #"public\s+(?:final\s+)?(?:struct|enum|class|protocol|actor|typealias|func|var|let)\s+(\w+)"#)
+        let extensionHead = try NSRegularExpression(pattern: "^" + attributes + #"(public\s+)?extension\s"#)
+        let publicMember = try NSRegularExpression(pattern: "^    " + attributes + #"public\s+"# + declaration)
+        let anyMember = try NSRegularExpression(pattern: "^    " + attributes + declaration)
+        let attributesOnly = try NSRegularExpression(pattern: #"^(?:@\w+(?:\([^)]*\))?\s*)+$"#)
+        var names = Set<String>()
+        var inExtension = false
+        var publicExtension = false
+        for line in source.components(separatedBy: "\n") {
+            let range = NSRange(line.startIndex..., in: line)
+            if let first = line.first, !first.isWhitespace, first != "}", !line.hasPrefix("//"),
+               attributesOnly.firstMatch(in: line, range: range) == nil {
+                let head = extensionHead.firstMatch(in: line, range: range)
+                inExtension = head != nil
+                publicExtension = head.map { $0.range(at: 1).location != NSNotFound } ?? false
+            }
+            let regex = !inExtension ? topLevel : publicExtension ? anyMember : publicMember
+            if let match = regex.firstMatch(in: line, range: range), let name = Range(match.range(at: 1), in: line) {
+                names.insert(String(line[name]))
             }
         }
         return names
+    }
+
+    /// Every way a declaration can be public is caught, and a type's own
+    /// members and non-public extension members are not.
+    func testScanFindsEveryPublicForm() throws {
+        let source = """
+        public struct ProbeBadge: View {
+            public static let size: CGFloat = 4
+        }
+        public final class ProbeClass {}
+        public protocol ProbeProtocol {}
+        struct Internal {}
+        extension View {
+            public func probeModifier() -> some View { self }
+            @ViewBuilder public func probeBuilder() -> some View { self }
+            public var probeVar: Int { 0 }
+            func internalHelper() {}
+        }
+        @MainActor public enum ProbeEnum {}
+        extension View {
+            func internalAfterAnExtension() {}
+        }
+        @MainActor
+        public struct ProbeAttributedOnItsOwnLine {
+            public func ownMember() {}
+        }
+        extension EnvironmentValues {
+            @Entry public var probeEntry = false
+        }
+        extension Color {
+            public static let probeColor = Color.red
+        }
+        public extension View {
+            func probeImplicit() -> some View { self }
+            static var probeImplicitStatic: Int { 0 }
+        }
+        """
+        XCTAssertEqual(try Self.publicNames(in: source), [
+            "ProbeBadge", "ProbeClass", "ProbeProtocol", "ProbeEnum", "ProbeAttributedOnItsOwnLine",
+            "probeModifier", "probeBuilder", "probeVar", "probeEntry", "probeColor",
+            "probeImplicit", "probeImplicitStatic"
+        ])
     }
 
     func testUsageLineIsMonospacedAndSelectable() throws {

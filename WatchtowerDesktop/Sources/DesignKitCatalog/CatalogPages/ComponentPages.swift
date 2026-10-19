@@ -66,8 +66,8 @@ struct ActionsPage: View {
 
     private var sizes: some View {
         PageSection("Sizes") {
-            Sample("Every control size beside the stock bordered button: one height per row (KitButtonMetrics)",
-                   usage: "KitButtonMetrics.metrics(for: .small)") {
+            Sample("Every control size beside the stock bordered button: one height per row",
+                   usage: ".controlSize(.small)") {
                 VStack(alignment: .leading, spacing: Spacing.regular) {
                     ForEach(GalleryControlSize.allCases) { size in
                         HStack(spacing: Spacing.cozy) {
