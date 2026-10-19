@@ -37,10 +37,15 @@ const permissionSummaryRunes = 2000
 
 // The decisions permission-wait prints. Allow is for this one call: never
 // updatedInput, never updatedPermissions (a phone allows a call, not a rule).
+// A deny decided by the Mac's Workchat card (`decided_by = "Mac"`) says so.
 const (
-	permissionAllowOutput = `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`
-	permissionDenyOutput  = `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from the owner's phone."}}}`
+	permissionAllowOutput   = `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`
+	permissionDenyOutput    = `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from the owner's phone."}}}`
+	permissionMacDenyOutput = `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied by the owner at the Mac."}}}`
 )
+
+// permissionDecidedByMac is the `decided_by` the Desktop's Workchat writes.
+const permissionDecidedByMac = "Mac"
 
 var workbenchPermissionWaitFlagWorkbench string
 
@@ -198,6 +203,9 @@ func checkPermissionRequest(stderr io.Writer, database *db.DB, id, workbenchID i
 	case db.PermissionAllowed:
 		return permissionAllowOutput, true, nil
 	case db.PermissionDenied:
+		if req.DecidedBy.Valid && req.DecidedBy.String == permissionDecidedByMac {
+			return permissionMacDenyOutput, true, nil
+		}
 		return permissionDenyOutput, true, nil
 	case db.PermissionPending:
 	default:

@@ -125,6 +125,31 @@ func TestProj21_PermissionWaitPhoneDenyPrintsDeny(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(out), &decoded), "valid JSON")
 }
 
+// A deny from the Mac's Workchat card (decided_by "Mac", #711) tells the
+// agent where it came from; the phone's pinned text stays the phone's.
+func TestProj21_PermissionWaitMacWorkchatDenySaysMac(t *testing.T) {
+	database, pid, row := briefSessionFixture(t)
+	t.Setenv(terminalSessionEnv, strconv.FormatInt(row, 10))
+	stepClock(t)
+	fastPermissionPoll(t)
+	done := make(chan error, 1)
+	go func() {
+		id, err := pendingPermissionID(database, row)
+		if err == nil {
+			_, err = database.Exec(`UPDATE permission_requests SET status = 'denied', decided_by = 'Mac'
+				WHERE id = ? AND status = 'pending'`, id)
+		}
+		done <- err
+	}()
+
+	out, errOut := runPermissionWait(t, pid, permissionPayload(briefLaunchID))
+
+	require.NoError(t, <-done)
+	assert.Equal(t, `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied by the owner at the Mac."}}}`, out)
+	assert.NotEqual(t, permissionDenyJSON, out)
+	assert.Empty(t, errOut)
+}
+
 // The owner answers at the Mac first: the tool's PostToolUse stamps
 // `working` after the request; the hook closes its row and prints nothing.
 func TestProj21_PermissionWaitMacAnswerWins(t *testing.T) {
