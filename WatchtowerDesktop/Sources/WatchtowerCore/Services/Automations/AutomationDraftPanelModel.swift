@@ -129,7 +129,7 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
     package let sessions: [AutomationSessionPrompt]
     /// Recipe text → the sessions of the newest cached draft with that text
     /// and a dry run (the save card's block); only `load` fills it.
-    package private(set) var dryRunSessions: [String: [AutomationSessionPrompt]] = [:]
+    package private(set) var dryRunSessions: [String: AutomationDryRunSessions] = [:]
 
     package static let empty = Self(entry: nil)
     package static let unreadable = Self(entry: nil, unreadable: true)
@@ -159,13 +159,16 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
     /// Every decodable line of the cache, oldest first, keyed by its recipe
     /// text: the newest line of a text wins, and one without a dry run (or a
     /// refused one) drops the text — its sessions are not known.
-    package static func dryRunSessions(inCache text: String) -> [String: [AutomationSessionPrompt]] {
-        var byText: [String: [AutomationSessionPrompt]] = [:]
+    package static func dryRunSessions(inCache text: String) -> [String: AutomationDryRunSessions] {
+        var byText: [String: AutomationDryRunSessions] = [:]
         for line in text.split(whereSeparator: \.isNewline) {
             guard let entry = try? JSONDecoder().decode(AutomationDraftEntry.self, from: Data(line.utf8)) else {
                 continue
             }
-            byText[entry.recipeText] = sessions(of: entry)
+            byText[entry.recipeText] = sessions(of: entry).map { sessions in
+                // Only a run that went to the end lists every session.
+                AutomationDryRunSessions(sessions: sessions, stoppedEarly: entry.result?.dryRun?.status != "succeeded")
+            }
         }
         return byText
     }

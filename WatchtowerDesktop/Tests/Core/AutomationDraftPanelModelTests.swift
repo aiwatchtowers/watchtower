@@ -198,9 +198,28 @@ final class AutomationDraftPanelModelTests: XCTestCase {
         let panel = model(cache)
         XCTAssertEqual(panel.sessions, [AutomationSessionPrompt(kind: "session", title: "Release", prompt: "Run /deploy")])
         let byText = AutomationDraftPanelModel.dryRunSessions(inCache: cache)
-        XCTAssertEqual(byText["A"], [AutomationSessionPrompt(kind: "session", title: "Release", prompt: "Run /release")])
+        XCTAssertEqual(byText["A"], AutomationDryRunSessions(
+            sessions: [AutomationSessionPrompt(kind: "session", title: "Release", prompt: "Run /release")],
+            stoppedEarly: false))
         XCTAssertNil(byText["B"], "a draft without a dry run shows no sessions")
-        XCTAssertEqual(byText["C"]?.first?.prompt, "Run /deploy")
+        XCTAssertEqual(byText["C"]?.sessions.first?.prompt, "Run /deploy")
         XCTAssertEqual(model("").sessions, [])
+    }
+
+    /// A dry run that ended before the script did (the mcp() draft stop,
+    /// ask #326, or an error) may have more sessions after it.
+    func testDryRunSessionsStoppedEarly() throws {
+        var stopped = sessionDryRun("Run /release")
+        stopped["status"] = "stopped"
+        stopped["error"] = "the draft stops at mcp()"
+        var failed = sessionDryRun("Run /release")
+        failed["status"] = "failed"
+        let cache = [try line(recipe: "A", dryRun: stopped), try line(recipe: "B", dryRun: failed),
+                     try line(recipe: "C", dryRun: sessionDryRun("Run /release"))].joined(separator: "\n")
+        let byText = AutomationDraftPanelModel.dryRunSessions(inCache: cache)
+        XCTAssertEqual(byText["A"]?.stoppedEarly, true)
+        XCTAssertEqual(byText["A"]?.sessions.count, 1, "the sessions before the stop still show")
+        XCTAssertEqual(byText["B"]?.stoppedEarly, true)
+        XCTAssertEqual(byText["C"]?.stoppedEarly, false)
     }
 }

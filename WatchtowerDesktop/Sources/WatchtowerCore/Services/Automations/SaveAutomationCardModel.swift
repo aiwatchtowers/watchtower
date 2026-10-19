@@ -36,14 +36,17 @@ package struct SaveAutomationCardModel {
     /// card's exact text.
     package static let unmatchedSessionsLine = "No dry run of this exact text — the sessions are not shown."
 
+    /// Under a matched block whose dry run ended before the script did.
+    package static let stoppedEarlyLine = "The dry run stopped early — later sessions are not listed."
+
     /// What the card says about the sessions the recipe starts.
     package enum DraftSessions: Equatable, Sendable {
-        /// The main chat: no Draft panel to take them from.
+        /// The main chat (no Draft panel), or a decided card with no match.
         case hidden
-        /// The editor has a draft, but no dry run of this text.
+        /// A pending card: the editor has a draft, but no dry run of this text.
         case unmatched
-        /// The dry run of this exact text (empty: it starts none).
-        case shown([AutomationSessionPrompt])
+        /// The dry run of this exact text (no sessions: it starts none).
+        case shown(AutomationDryRunSessions)
     }
 
     /// The workbench the recipe is saved into; nil for a personal one.
@@ -148,11 +151,16 @@ package struct SaveAutomationCardModel {
 
     /// The sessions block of the card: from the cached dry run whose recipe
     /// text equals this card's (`AutomationDraftPanelModel.dryRunSessions`),
-    /// shown only where a Draft panel exists (`latestDraftText` non-nil).
-    package func draftSessions(latestDraftText: String?,
-                               dryRunSessions: [String: [AutomationSessionPrompt]]) -> DraftSessions {
+    /// shown only where a Draft panel exists (`latestDraftText` non-nil);
+    /// the unmatched line only on a pending card, like the mismatch warning.
+    package func draftSessions(
+        latestDraftText: String?,
+        isPending: Bool,
+        dryRunSessions: [String: AutomationDryRunSessions]
+    ) -> DraftSessions {
         guard latestDraftText != nil else { return .hidden }
-        return dryRunSessions[recipeText].map(DraftSessions.shown) ?? .unmatched
+        if let matched = dryRunSessions[recipeText] { return .shown(matched) }
+        return isPending ? .unmatched : .hidden
     }
 
     /// Whether the text this card confirms differs from `latestDraftText`, the

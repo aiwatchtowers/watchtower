@@ -40,7 +40,7 @@ struct AgentActionCardView: View {
     /// The editor chat's cached dry runs, recipe text → the sessions each
     /// starts (`AutomationDraftPanelModel.dryRunSessions`); the save card
     /// shows the ones of its own text. Unused where `latestDraftText` is nil.
-    var draftSessions: [String: [AutomationSessionPrompt]] = [:]
+    var draftSessions: [String: AutomationDryRunSessions] = [:]
     /// Dismiss on a session call whose outcome is unknown
     /// (`ConnectorCallProposal.awaitsDismissal`), which waits on the Inbox
     /// badge until then. Nil hides the button.
@@ -270,6 +270,7 @@ struct AgentActionCardView: View {
                 SaveAutomationCardDetails(model: save, actionID: action.id,
                                           differsFromDraft: action.isPending && save.differsFromDraft(latestDraftText),
                                           sessions: save.draftSessions(latestDraftText: latestDraftText,
+                                                                       isPending: action.isPending,
                                                                        dryRunSessions: draftSessions))
             } else if let connector {
                 ConnectorCallDetails(proposal: connector, draft: connectorDraftBinding,
@@ -559,15 +560,13 @@ private struct SaveAutomationCardDetails: View {
             Text(summary).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         switch sessions {
-        case .hidden, .shown([]):
+        case .hidden:
             EmptyView()
         case .unmatched:
-            Label(SaveAutomationCardModel.unmatchedSessionsLine, systemImage: "questionmark.circle")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        case let .shown(list):
-            AutomationSessionPromptsBlock(sessions: list)
+            note(SaveAutomationCardModel.unmatchedSessionsLine)
+        case let .shown(run):
+            if !run.sessions.isEmpty { AutomationSessionPromptsBlock(sessions: run.sessions) }
+            if run.stoppedEarly { note(SaveAutomationCardModel.stoppedEarlyLine) }
         }
         if let text = model.newRecipeText {
             // A new recipe has nothing to diff against: its whole text is
@@ -585,6 +584,13 @@ private struct SaveAutomationCardDetails: View {
             .font(.callout)
             .disabled(diff.isIdentical)
         }
+    }
+
+    private func note(_ text: String) -> some View {
+        Label(text, systemImage: "questionmark.circle")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
     }
 
     private func row(_ line: OwnerAskSnapshotDiff.Line) -> some View {

@@ -323,4 +323,20 @@ final class AutomationCardPresentationTests: XCTestCase {
                        [AutomationSessionPrompt(kind: "session", title: "No prompt", prompt: nil)])
         XCTAssertEqual(ACP.sessionPrompts([step(1, "llm", args: "{}")]), [])
     }
+
+    /// Go journals agent()'s instruction clipped to 1 KiB (`agentStepClip`,
+    /// still valid JSON): a row at the clip is marked cut, a shorter one or a
+    /// session prompt is not.
+    func testAgentInstructionCutAtOneKB() {
+        func agent(_ instruction: String) -> AutomationDraftEntry.Step {
+            step(1, "agent", args: #"{"instruction":"\#(instruction)","tier":"light"}"#)
+        }
+        let atClip = String(repeating: "a", count: 1021)
+        XCTAssertEqual(ACP.sessionPrompts([agent(atClip)]),
+                       [AutomationSessionPrompt(kind: "agent", title: "agent", prompt: atClip, isCut: true)])
+        XCTAssertEqual(ACP.sessionPrompts([agent(String(repeating: "a", count: 1020))]).first?.isCut, false)
+        let longSession = step(1, "session", args: #"{"prompt":"\#(atClip)"}"#)
+        XCTAssertEqual(ACP.sessionPrompts([longSession]).first?.isCut, false)
+        XCTAssertEqual(ACP.cutInstructionLine, "(cut at 1 KB — the full instruction is in the recipe)")
+    }
 }

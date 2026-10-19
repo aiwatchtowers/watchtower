@@ -225,6 +225,9 @@ private struct AutomationSessionPromptRow: View {
                         .buttonStyle(.kitQuiet)
                         .controlSize(.small)
                 }
+                if session.isCut {
+                    Text(AutomationCardPresentation.cutInstructionLine).foregroundStyle(.secondary)
+                }
             } else {
                 Text(Self.unavailable).foregroundStyle(.secondary)
             }
