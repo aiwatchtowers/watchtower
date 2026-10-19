@@ -516,6 +516,60 @@ SELECT 1, 'OPS-' || (100 + i), '3' || i, 'OPS', 2, 0, 'Operations work item ' ||
 FROM n;
 `
 
+// seedProductionSize runs the production-size seeds with the per-row
+// messages FTS triggers lifted, then indexes every message in one pass and
+// puts the triggers back as the schema wrote them. Each trigger firing
+// deletes from messages_fts by its UNINDEXED channel_id and ts, a scan of the
+// whole index, so seeding 1,200 messages row by row is quadratic: minutes
+// under -race, where the modernc SQLite engine runs instrumented (#868). The
+// end state is the one the triggers would have left: every live message with
+// text indexed once.
+func seedProductionSize(t *testing.T, d *db.DB, seeds ...string) {
+	t.Helper()
+	const ftsTriggers = `SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND name IN ('messages_ai', 'messages_au')`
+	rows, err := d.Query(ftsTriggers)
+	if err != nil {
+		t.Fatalf("reading the messages FTS triggers: %v", err)
+	}
+	var names, creates []string
+	for rows.Next() {
+		var name, create string
+		if err := rows.Scan(&name, &create); err != nil {
+			t.Fatalf("scanning a messages FTS trigger: %v", err)
+		}
+		names, creates = append(names, name), append(creates, create)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("reading the messages FTS triggers: %v", err)
+	}
+	if len(creates) != 2 {
+		t.Fatalf("messages FTS triggers = %v; want messages_ai and messages_au", names)
+	}
+	for _, name := range names {
+		if _, err := d.Exec(`DROP TRIGGER ` + name); err != nil {
+			t.Fatalf("lifting trigger %s: %v", name, err)
+		}
+	}
+	for _, seed := range seeds {
+		if seed == "" {
+			continue
+		}
+		if _, err := d.Exec(seed); err != nil {
+			t.Fatalf("seeding production-size rows: %v", err)
+		}
+	}
+	if _, err := d.Exec(`DELETE FROM messages_fts;
+INSERT INTO messages_fts (text, channel_id, ts, user_id)
+SELECT text, channel_id, ts, user_id FROM messages WHERE text != '' AND is_deleted = 0`); err != nil {
+		t.Fatalf("indexing the seeded messages: %v", err)
+	}
+	for _, create := range creates {
+		if _, err := d.Exec(create); err != nil {
+			t.Fatalf("restoring a messages FTS trigger: %v", err)
+		}
+	}
+}
+
 // TestTemplates_ProductionSizeReports runs jira-state-report and
 // team-performance-report over production-size data through the executor:
 // every tool result passes the 256 KiB cap, every llm() input the 200 KiB
@@ -556,14 +610,7 @@ func TestTemplates_ProductionSizeReports(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			gen := &automationstest.FakeGenerator{Replies: []string{"## Summary\nA busy week."}}
 			f := newTplFixture(t, gen)
-			if _, err := f.d.Exec(productionSizeSeed); err != nil {
-				t.Fatalf("seeding production-size rows: %v", err)
-			}
-			if c.seed != "" {
-				if _, err := f.d.Exec(c.seed); err != nil {
-					t.Fatalf("seeding more production-size rows: %v", err)
-				}
-			}
+			seedProductionSize(t, f.d, productionSizeSeed, c.seed)
 			a := f.installTemplate(t, c.template, c.params)
 			id := f.enqueue(t, a, db.TriggerSchedule)
 			f.step(t, 1)
