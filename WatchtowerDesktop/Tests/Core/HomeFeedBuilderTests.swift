@@ -179,6 +179,17 @@ final class HomeFeedBuilderTests: XCTestCase {
 
     /// An inbox row with no permalink it can open (empty, or no scheme)
     /// opens Catch-Up instead (final review #717).
+    func testLinearRowSharesTheTrackerKindWithItsOwnChip() {
+        var data = HomeFeedData()
+        data.inbox = [
+            inbox(1, trigger: "linear_assigned", minutesAgo: 1, who: "ACME-9", whereText: "assigned to you"),
+            inbox(2, trigger: "jira_assigned", minutesAgo: 2, who: "ACME-7", whereText: "assigned to you")
+        ]
+        let rows = build(data).waiting
+        XCTAssertEqual(rows.map(\.chip), ["Linear", "Jira"])
+        XCTAssertEqual(rows.map(\.kind), [.jira, .jira])
+    }
+
     func testInboxRowWithoutAPermalinkOpensCatchUp() {
         var data = HomeFeedData()
         data.inbox = [inbox(1, minutesAgo: 1), inbox(2, minutesAgo: 2, permalink: "not a link")]

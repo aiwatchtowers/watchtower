@@ -501,7 +501,8 @@ content width). No migration, no AI, no daemon phase.
 - **Sources.**
   - Inbox (`inboxRows`): `status = 'pending'`, `item_class = 'actionable'`,
     `archived_at IS NULL` (as the briefing's `ListActionableOpen`), trigger in
-    mention/dm/thread_reply/reaction/jira_assigned/jira_comment_mention/email_received,
+    mention/dm/thread_reply/reaction/jira_assigned/jira_comment_mention/
+    linear_assigned/linear_comment_mention/email_received,
     `MAX(created_at, mentioned_at)` within 72 h (`windowHours`), not snoozed
     (`snooze_until = ''` or elapsed), newest first, `LIMIT 200` (`rowLimit`).
     `read_at` never hides a row: a read row stays and renders secondary;
@@ -520,7 +521,8 @@ content width). No migration, no AI, no daemon phase.
     today and the next day's.
 - **Build** — `HomeFeedBuilder.feed`
   (`Sources/WatchtowerCore/Services/HomeFeedBuilder.swift`) is pure. Above
-  NOW: kind order Slack (mention/dm/thread/reaction) → Jira → proposal →
+  NOW: kind order Slack (mention/dm/thread/reaction) → Jira/Linear (one
+  `.jira` kind, chip "Linear" for Linear) → proposal →
   reminder → target → email (`FeedKind`), newest first within a kind, 7 rows
   (`waitingLimit`) and `hiddenWaiting` for "N more" (expanding is
   `HomeCenter.setFeedExpanded`, in place). An inbox row opens its permalink;

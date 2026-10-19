@@ -79,6 +79,8 @@ package enum HomeFeedBuilder {
         case "thread_reply": (.slack, "Thread")
         case "reaction": (.slack, "Reaction")
         case "email_received": (.email, "Email")
+        // Linear shares the tracker slot and colour with Jira.
+        case "linear_assigned", "linear_comment_mention": (.jira, "Linear")
         default: (.jira, "Jira")
         }
         var who = row.who

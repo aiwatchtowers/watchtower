@@ -52,7 +52,8 @@ package enum HomeWorkbenchBuilder {
         }
     }
 
-    /// A session row's click: its terminal; nil for a session outside a workbench.
+    /// A session row's click: the session in its last mode (Terminal or
+    /// Workchat); nil for a session outside a workbench.
     package static func link(for status: SessionAgentStatus) -> HomeLink? {
         status.workbenchID.map {
             .workbench(WorkbenchRoute(projectID: $0, pane: .terminal, subjectID: status.sessionID))

@@ -48,7 +48,8 @@ package enum HomeFeedQueries {
     private static let nextDayHorizon = 3
     private static let feedTriggers = [
         "mention", "dm", "thread_reply", "reaction",
-        "jira_assigned", "jira_comment_mention", "email_received"
+        "jira_assigned", "jira_comment_mention", "linear_assigned", "linear_comment_mention",
+        "email_received"
     ]
 
     /// Every feed source in one read. A source's error is logged and the
@@ -119,7 +120,7 @@ package enum HomeFeedQueries {
     }
 
     private static func who(_ db: Database, _ item: InboxItem) throws -> String {
-        if item.triggerType.hasPrefix("jira_") { return item.channelID }
+        if item.triggerType.hasPrefix("jira_") || item.triggerType.hasPrefix("linear_") { return item.channelID }
         if item.triggerType == "email_received" { return item.senderUserID }
         if item.isAccumulated {
             var names: [String: String] = [:]
@@ -136,8 +137,8 @@ package enum HomeFeedQueries {
 
     private static func whereText(_ db: Database, _ item: InboxItem) throws -> String? {
         switch item.triggerType {
-        case "jira_assigned": return "assigned to you"
-        case "jira_comment_mention": return "mentioned you"
+        case "jira_assigned", "linear_assigned": return "assigned to you"
+        case "jira_comment_mention", "linear_comment_mention": return "mentioned you"
         case "email_received":
             let subject = item.snippet.components(separatedBy: " — ").first ?? ""
             return subject.isEmpty ? nil : subject

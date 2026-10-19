@@ -197,6 +197,17 @@ final class HomeFeedQueriesTests: XCTestCase {
         XCTAssertEqual(byKey["ACME-8"], "mentioned you")
     }
 
+    func testLinearWhoIsTheIssueKeyAndWhereTheReason() throws {
+        try db.write { d in
+            try self.insertItem(d, trigger: "linear_assigned", channelID: "ACME-9")
+            try self.insertItem(d, trigger: "linear_comment_mention", channelID: "ACME-10")
+        }
+        let rows = try read().inbox
+        let byKey = Dictionary(uniqueKeysWithValues: rows.map { ($0.who, $0.whereText) })
+        XCTAssertEqual(byKey["ACME-9"], "assigned to you")
+        XCTAssertEqual(byKey["ACME-10"], "mentioned you")
+    }
+
     // MARK: - Targets
 
     func testProj01_FeedNeverReturnsAProjectTarget() throws {

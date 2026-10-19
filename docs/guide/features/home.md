@@ -14,7 +14,7 @@ Home only reads what the rest of the app has already produced, and refreshes abo
 
 The feed reads top to bottom like your day: above a **NOW** line is everything that waits on you, below it your meetings and what is still to come.
 
-**Above NOW** are, from the last 72 hours: Slack mentions, direct messages, thread replies and reactions, then Jira items, proposals and failed actions from the assistant, due reminders, your own targets that are overdue or due today, and email. Slack, Jira and email rows come from Inbox and follow its detection and snooze. A read row stays, shown dimmer; only acting on it removes it. Newest comes first within each kind; seven rows show, and **N more** opens the rest in place. Workbench targets never appear.
+**Above NOW** are, from the last 72 hours: Slack mentions, direct messages, thread replies and reactions, then Jira and Linear items, proposals and failed actions from the assistant, due reminders, your own targets that are overdue or due today, and email. Rows from Inbox follow its detection and snooze. A read row stays, shown dimmer; only acting on it removes it. Newest comes first within each kind; seven rows show, and **N more** opens the rest in place. Workbench targets never appear.
 
 **Below NOW** are the meeting in progress, then today's remaining meetings, reminders and timed targets in time order. The next meeting says how soon it starts, such as "in 25 min", and shows "Prep ready" when prep exists. After today, a short block shows the first of the next three days that has meetings: **Tomorrow**, or the weekday, with up to three meetings. All-day, cancelled and declined events are left out.
 
@@ -93,7 +93,7 @@ Home ends with the line "Stuck? Press **⌘/** to ask, or open the User Guide." 
 - **A link is missing.** Its tab is hidden or its feature is off or its source isn't connected.
 - **A number is missing.** Its source isn't connected or is off.
 - **No Workbench zone.** No session needs a look and nothing is asked of you.
-- **The feed has no Slack, Jira or email rows.** Inbox detection is off, or nothing arrived in the last 72 hours.
+- **The feed has no Slack, Jira, Linear or email rows.** Inbox detection is off, or nothing arrived in the last 72 hours.
 - **No meetings below NOW.** Calendar isn't connected or its tab is hidden, or the events are all-day, cancelled or declined.
 - **"Couldn't read … — see the log."** A zone (Workbench, the links, or a feed source) says this when the local database couldn't be read. Quit and reopen the app; if it persists, check the app log.
 
