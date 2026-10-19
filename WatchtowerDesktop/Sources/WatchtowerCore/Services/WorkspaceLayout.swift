@@ -246,6 +246,18 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         visiblePanes.contains { Self.sessionID(of: $0) == id }
     }
 
+    /// Whether the other mode of `pane`'s session — its Workchat for its
+    /// terminal, its terminal for its Workchat — is on screen. A session
+    /// pane leaving the screen then keeps the session's room for an ask
+    /// drawer: the other mode holds it now (a swap, or an expansion).
+    package func showsOtherMode(of pane: WorkspacePane) -> Bool {
+        switch pane {
+        case let .session(id): visiblePanes.contains(.sessionChat(id))
+        case let .sessionChat(id): visiblePanes.contains(.session(id))
+        default: false
+        }
+    }
+
     /// Whether `toggleMode` changes what is on screen: not while both modes
     /// sit side by side in a split, unless one of them is expanded.
     package func togglesVisibly(sessionID id: Int64) -> Bool {

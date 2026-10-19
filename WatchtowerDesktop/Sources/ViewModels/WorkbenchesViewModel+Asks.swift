@@ -120,6 +120,17 @@ extension WorkbenchesViewModel {
         if fits { openNewAsk(projectID: projectID) }
     }
 
+    /// A session pane — its terminal or its Workchat — left the screen: the
+    /// session has no room for a drawer, unless its other mode is on screen
+    /// and holds the room now (a swap or an expansion, #711). That pane
+    /// reports its width only when it changes, so clearing the room here
+    /// would stop new asks opening by themselves.
+    func sessionPaneLeft(_ pane: WorkspacePane, projectID: Int64) {
+        guard let id = WorkspaceLayout.sessionID(of: pane),
+              !layout(projectID: projectID).showsOtherMode(of: pane) else { return }
+        asks.setRoomBeside(false, sessionID: id)
+    }
+
     /// Whether an expanded ask drawer covers `sessionID`'s terminal: its own
     /// session's, or every terminal of the page for an ask filed outside the
     /// app. A covered terminal never takes the keyboard (typing into an

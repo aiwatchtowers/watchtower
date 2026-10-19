@@ -588,4 +588,14 @@ final class WorkspaceLayoutTests: XCTestCase {
         l.toggleExpand(.session(7))
         XCTAssertTrue(l.togglesVisibly(sessionID: 7))
     }
+
+    func testShowsOtherMode() {
+        var l = WorkspaceLayout(primary: .session(7), secondary: .sessionChat(7), expanded: nil, dividerFraction: 0.5)
+        XCTAssertTrue(l.showsOtherMode(of: .session(7)))
+        XCTAssertTrue(l.showsOtherMode(of: .sessionChat(7)))
+        l.toggleExpand(.sessionChat(7))
+        XCTAssertTrue(l.showsOtherMode(of: .session(7)), "the expanded Workchat holds the room")
+        XCTAssertFalse(l.showsOtherMode(of: .sessionChat(7)))
+        XCTAssertFalse(l.showsOtherMode(of: .board))
+    }
 }

@@ -604,6 +604,34 @@ final class WorkbenchOwnerPresenceScreenTests: XCTestCase {
         XCTAssertEqual(vm.ownerPresenceScreen(), .init(keyWindowShows: .workbenchSessionWithAskDrawer, selectedSession: session.id))
     }
 
+    /// Expanding the Workchat over its own terminal, or swapping the
+    /// terminal for it, keeps the session's room for an ask drawer: the
+    /// leaving terminal never clears it (the Workchat reports its width only
+    /// when it changes). Leaving the screen altogether clears it (#711).
+    func testExpandingWorkchatKeepsRoomBeside() async throws {
+        let session = try await insertSession("a")
+        let vm = try await page()
+        await vm.showSession(id: session.id)
+        var layout = vm.layout(projectID: projectID)
+        layout.split(with: .sessionChat(session.id))
+        vm.setLayout(layout, projectID: projectID)
+        vm.sessionPaneMeasured(session.id, projectID: projectID, fits: true)
+
+        vm.toggleExpand(.sessionChat(session.id), projectID: projectID)
+        vm.sessionPaneLeft(.session(session.id), projectID: projectID)
+        XCTAssertTrue(vm.asks.roomySessions.contains(session.id), "an expanded Workchat keeps the room")
+
+        vm.toggleExpand(.sessionChat(session.id), projectID: projectID)
+        vm.hideView(.terminal, projectID: projectID)
+        vm.sessionPaneLeft(.session(session.id), projectID: projectID)
+        XCTAssertEqual(vm.layout(projectID: projectID).visiblePanes, [.sessionChat(session.id)])
+        XCTAssertTrue(vm.asks.roomySessions.contains(session.id), "a terminal swapped for its Workchat keeps the room")
+
+        vm.setLayout(.default, projectID: projectID)
+        vm.sessionPaneLeft(.session(session.id), projectID: projectID)
+        XCTAssertFalse(vm.asks.roomySessions.contains(session.id), "off screen, no room")
+    }
+
     func testTheDrawerOfThatSessionIsReported() async throws {
         let session = try await insertSession("a")
         let vm = try await page()

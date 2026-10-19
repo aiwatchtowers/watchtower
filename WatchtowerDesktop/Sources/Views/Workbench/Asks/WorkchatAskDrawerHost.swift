@@ -24,9 +24,6 @@ struct WorkchatAskDrawerHost<Content: View>: View {
                 guard !vm.layout(projectID: projectID).visiblePanes.contains(.session(sessionID)) else { return }
                 vm.sessionPaneMeasured(sessionID, projectID: projectID, fits: fits)
             })
-            .onDisappear {
-                guard !vm.layout(projectID: projectID).visiblePanes.contains(.session(sessionID)) else { return }
-                vm.asks.setRoomBeside(false, sessionID: sessionID)
-            }
+            .onDisappear { vm.sessionPaneLeft(.sessionChat(sessionID), projectID: projectID) }
     }
 }
