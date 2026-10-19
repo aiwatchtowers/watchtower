@@ -84,12 +84,11 @@ package enum HomeNumbersQueries {
 
     // MARK: - Messages
 
-    /// Namespaced `current_user_id` of every Slack account still connected.
+    /// The owner's namespaced Slack user id on every account still connected
+    /// (`OwnerQueries.ownSlackUserIDs`, OWNER-01).
     private static func ownerIDs(_ db: Database) throws -> [String] {
         guard try db.tableExists("slack_accounts") else { return [] }
-        return try String.fetchAll(db, sql: """
-            SELECT current_user_id FROM slack_accounts WHERE status != 'removed' AND current_user_id != ''
-            """)
+        return try OwnerQueries.ownSlackUserIDs(db)
     }
 
     /// To me: not mine, not deleted, in a DM or naming me; sent: mine. Both today only.

@@ -50,6 +50,17 @@ package enum OwnerQueries {
         }
     }
 
+    /// The owner's own user in every Slack workspace still connected
+    /// (namespaced ids, not just account #1's; removed accounts left out) —
+    /// for counts of the owner's own messages (Home's "Today in numbers").
+    /// Not an owner identity: `resolve` stays the one source of that.
+    package static func ownSlackUserIDs(_ db: Database) throws -> [String] {
+        try String.fetchAll(db, sql: """
+            SELECT current_user_id FROM slack_accounts WHERE status != 'removed' AND current_user_id != ''
+            ORDER BY id
+            """)
+    }
+
     /// The one owner identity of this install: Slack account #1 → Google
     /// account #1 → Jira account #1 → Linear account #1 → email account #1.
     /// Every field is enriched from every source, independent of which rung

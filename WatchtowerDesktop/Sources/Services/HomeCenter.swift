@@ -106,8 +106,12 @@ final class HomeCenter {
     @ObservationIgnored private var tickTask: Task<Void, Never>?
     /// Bumped by `beginReading`/`endReading`: a read from an earlier run is dropped.
     @ObservationIgnored private var generation = 0
-    /// Bumped by every read: an older read landing after a newer one is dropped.
+    /// Reads overlap (the observation, the tick, `rereadNow`): one is applied
+    /// only when it started after the last applied read, so a slow older read
+    /// never undoes a newer one — and a read is never dropped merely because a
+    /// newer one is still in flight (`act` relies on its own re-read landing).
     @ObservationIgnored private var readToken = 0
+    @ObservationIgnored private var readApplied = 0
     /// Bumped by every `rebuildSnapshot`: only the newest input tracking may trigger
     /// another one, so registrations don't pile up.
     @ObservationIgnored private var trackingToken = 0
@@ -192,7 +196,8 @@ final class HomeCenter {
             failedFeed.failed = Set(FeedSource.allCases)
             feedValue = failedFeed
         }
-        guard generation == current, readToken == token else { return }
+        guard generation == current, token > readApplied else { return }
+        readApplied = token
         data = value
         feedData = feedValue
         forgetGoneRows()
