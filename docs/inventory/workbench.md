@@ -685,13 +685,21 @@ a cut-short target. The `Stop` hook (`workbench check --workbench N
 input, runs offline (no gh) with an 8 s budget for its git work (the
 database open is never cut off by that budget — it may be applying a
 migration; only Claude Code's own 15 s hook timeout bounds it), and prints
-`{"decision":"block","reason":…}` listing only the certain kinds —
+`{"decision":"block","reason":…}` listing only the certain kinds (it checks
+open targets only — every certain kind is about one, so the verdict is the
+same as the whole board's) —
 `merged_but_open`, `branch_missing`, `pr_closed_unmerged`; never `stale` or
 the offline guess `done_but_unmerged` — and only when `stop_hook_active` is
 false, so it blocks at most once per stop and a turn can never loop on it. It
 always exits 0, a panic included; stdout stays empty on every failure, and a
 real failure (bad id, no config, a missing folder, time ran out) is one
 stderr line, while a deleted workbench's leftover hook says nothing at all.
+Every check walks the open targets before the closed ones, reads all local
+and origin branches with one `for-each-ref` (`%(ahead-behind)` where git has
+it, else one `--merged` listing per base; a failed read falls back to
+per-branch reads), reads each base's first-parent line once, keeps the
+default branch's patch ids across branches, and reads each branch once
+(2026-10-20, owner approved in ask #434; findings unchanged).
 `workbench brief` shows every finding (offline, 4 s budget), and so does the
 Desktop board: `WorkbenchesViewModel.refreshDrift` runs `workbench check --json
 --no-network` when the Board pane appears, on the owner's Refresh, and every

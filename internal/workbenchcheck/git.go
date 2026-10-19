@@ -82,6 +82,32 @@ type gitState struct {
 	// the folder's filter drivers could not be switched off
 	// (gitbin.ErrFilterGuard): Check names it instead of degrading silently.
 	guardNote string
+	// refs is every local and origin branch read by one for-each-ref
+	// (refsRead: tried once); nil when that read failed, and each branch is
+	// then resolved on its own.
+	refs     map[string]refInfo
+	refsRead bool
+	// tips memoises branchState: plan tasks share their feature's branch, so
+	// a board names far fewer branches than it has targets.
+	tips map[string]branchTip
+	// firstParent[base] is base's first-parent line, read once by one
+	// rev-list; nil when that read failed (onFirstParentLine then asks git
+	// per commit).
+	firstParent map[string]map[string]bool
+	// commitPatch is each default-branch commit's patch id ("" for an empty
+	// diff), kept across branches: their squash windows mostly overlap.
+	commitPatch map[string]string
+}
+
+// refInfo is one branch ref as the batch read saw it.
+type refInfo struct {
+	sha       string // "" when the ref does not name a commit: resolved on its own
+	committed time.Time
+	// ahead[i] / behind[i] count the commits the ref has that bases[i]
+	// lacks, and the other way round; -1 when not known. A git before 2.41
+	// has no %(ahead-behind): ahead is then 0 for a ref bases[i] contains
+	// (for-each-ref --merged) and -1 otherwise, behind always -1.
+	ahead, behind []int
 }
 
 func newGitState(ctx context.Context, o Options) *gitState {
@@ -258,27 +284,138 @@ func (g *gitState) tipOf(ctx context.Context, ref string) (sha string, known boo
 	return "", false
 }
 
+// branchRefs reads every local and origin branch — its commit, commit time
+// and, where git has %(ahead-behind), its distance from each base — in one
+// for-each-ref, at most once per check. nil when the read failed.
+func (g *gitState) branchRefs(ctx context.Context) map[string]refInfo {
+	if g.refsRead {
+		return g.refs
+	}
+	g.refsRead = true
+	format := "%(objecttype) %(refname) %(objectname) %(committerdate:unix)"
+	for _, base := range g.bases {
+		format += " %(ahead-behind:" + base + ")"
+	}
+	out, _, err := g.git(ctx, "for-each-ref", "--format="+format, "refs/heads", "refs/remotes/origin")
+	counts := err == nil
+	if err != nil && ctx.Err() == nil {
+		// A git before 2.41 refuses the ahead-behind atom.
+		out, _, err = g.git(ctx, "for-each-ref", "--format=%(objecttype) %(refname) %(objectname) %(committerdate:unix)",
+			"refs/heads", "refs/remotes/origin")
+	}
+	if err != nil {
+		return nil
+	}
+	refs := map[string]refInfo{}
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 4 {
+			continue
+		}
+		info := refInfo{ahead: unknownCounts(len(g.bases)), behind: unknownCounts(len(g.bases))}
+		if f[0] == "commit" {
+			info.sha = f[2]
+			if sec, err := strconv.ParseInt(f[3], 10, 64); err == nil {
+				info.committed = time.Unix(sec, 0)
+			}
+		}
+		if counts && len(f) == 4+2*len(g.bases) {
+			for i := range g.bases {
+				a, errA := strconv.Atoi(f[4+2*i])
+				b, errB := strconv.Atoi(f[5+2*i])
+				if errA == nil && errB == nil {
+					info.ahead[i], info.behind[i] = a, b
+				}
+			}
+		}
+		refs[f[1]] = info
+	}
+	if !counts {
+		g.markMerged(ctx, refs)
+	}
+	g.refs = refs
+	return refs
+}
+
+func unknownCounts(n int) []int {
+	c := make([]int, n)
+	for i := range c {
+		c[i] = -1
+	}
+	return c
+}
+
+// markMerged sets ahead 0 for every ref a base contains, one for-each-ref
+// --merged per base; a failed listing leaves that base's counts unknown.
+func (g *gitState) markMerged(ctx context.Context, refs map[string]refInfo) {
+	for i, base := range g.bases {
+		out, _, err := g.git(ctx, "for-each-ref", "--merged="+base, "--format=%(refname)", "refs/heads", "refs/remotes/origin")
+		if err != nil {
+			continue
+		}
+		for ref := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+			if info, ok := refs[ref]; ok {
+				info.ahead[i] = 0
+			}
+		}
+	}
+}
+
+// lookup is ref from the batch read, else resolved on its own (tipOf):
+// info.sha "" with known=true when ref does not exist.
+func (g *gitState) lookup(ctx context.Context, ref string) (info refInfo, known bool) {
+	if refs := g.branchRefs(ctx); refs != nil {
+		info, ok := refs[ref]
+		if !ok || info.sha != "" {
+			return info, true
+		}
+	}
+	sha, known := g.tipOf(ctx, ref)
+	if sha != "" {
+		n := len(g.bases)
+		return refInfo{sha: sha, committed: g.commitTime(ctx, sha), ahead: unknownCounts(n), behind: unknownCounts(n)}, known
+	}
+	return refInfo{}, known
+}
+
+// branchState is the branch's state, read once per check (a cut-short read
+// is not kept).
 func (g *gitState) branchState(ctx context.Context, branch string) branchTip {
 	if !g.ready() {
 		return branchTip{}
 	}
+	if tip, ok := g.tips[branch]; ok {
+		return tip
+	}
+	tip := g.readBranch(ctx, branch)
+	if ctx.Err() == nil {
+		if g.tips == nil {
+			g.tips = map[string]branchTip{}
+		}
+		g.tips[branch] = tip
+	}
+	return tip
+}
+
+func (g *gitState) readBranch(ctx context.Context, branch string) branchTip {
 	local := true
-	sha, known := g.tipOf(ctx, "refs/heads/"+branch)
-	if known && sha == "" {
+	info, known := g.lookup(ctx, "refs/heads/"+branch)
+	if known && info.sha == "" {
 		local = false
-		sha, known = g.tipOf(ctx, "refs/remotes/origin/"+branch)
+		info, known = g.lookup(ctx, "refs/remotes/origin/"+branch)
 	}
 	switch {
 	case !known:
 		return branchTip{}
-	case sha == "":
+	case info.sha == "":
 		return branchTip{state: tipMissing}
 	}
-	tip := branchTip{state: tipFound, ahead: -1, committed: g.commitTime(ctx, sha)}
+	sha := info.sha
+	tip := branchTip{state: tipFound, ahead: -1, committed: info.committed}
 	allNotMerged := true
 	var rl branchReflog
-	for _, base := range g.bases {
-		v, ahead := g.mergedInto(ctx, branch, sha, base, local, &rl)
+	for i, base := range g.bases {
+		v, ahead := g.mergedInto(ctx, branch, sha, base, local, &rl, info.ahead[i], info.behind[i])
 		if v == merged {
 			tip.merge = merged
 		}
@@ -348,19 +485,20 @@ func (g *gitState) reflogOf(ctx context.Context, branch, sha string) branchReflo
 // already in base by patch id (`git cherry`: a rebase merge, a cherry-pick)
 // or when its whole diff matches one commit base gained since the fork (a
 // squash merge); not merged only when both checks ran and said no.
-func (g *gitState) mergedInto(ctx context.Context, branch, sha, base string, local bool, rl *branchReflog) (verdict, int) {
-	out, _, err := g.git(ctx, "rev-list", "--count", base+".."+sha)
-	if err != nil {
-		return unknown, -1
-	}
-	ahead, err := strconv.Atoi(strings.TrimSpace(out))
-	if err != nil {
-		return unknown, -1
+//
+// ahead and behind are the batch read's counts (base..sha, sha..base), -1
+// when not known: then they are counted here.
+func (g *gitState) mergedInto(ctx context.Context, branch, sha, base string, local bool, rl *branchReflog, ahead, behind int) (verdict, int) {
+	if ahead < 0 {
+		var ok bool
+		if ahead, ok = g.count(ctx, base+".."+sha); !ok {
+			return unknown, -1
+		}
 	}
 	if ahead == 0 {
 		return g.containedVerdict(ctx, branch, sha, base, local, rl), 0
 	}
-	cherry := g.cherryMerged(ctx, sha, base)
+	cherry := g.cherryMerged(ctx, sha, base, behind)
 	if cherry == merged {
 		return merged, ahead
 	}
@@ -372,6 +510,16 @@ func (g *gitState) mergedInto(ctx context.Context, branch, sha, base string, loc
 		return notMerged, ahead
 	}
 	return unknown, ahead
+}
+
+// count is `git rev-list --count <revs>`; ok false when git failed.
+func (g *gitState) count(ctx context.Context, revs string) (int, bool) {
+	out, _, err := g.git(ctx, "rev-list", "--count", revs)
+	if err != nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(out))
+	return n, err == nil
 }
 
 // containedVerdict decides a branch whose tip base already contains. Merged
@@ -407,8 +555,13 @@ func verdictOf(b bool) verdict {
 
 // onFirstParentLine: sha is an ancestor of base; it is on base's first-parent
 // line iff base~k is sha, where k counts the first-parent commits of base
-// that sha cannot reach. ok is false when git failed.
+// that sha cannot reach — the same as sha being on base's first-parent line
+// as one rev-list lists it, which is read once per base. ok is false when
+// git failed.
 func (g *gitState) onFirstParentLine(ctx context.Context, sha, base string) (onLine, ok bool) {
+	if line := g.firstParentLine(ctx, base); line != nil {
+		return line[sha], true
+	}
 	out, _, err := g.git(ctx, "rev-list", "--first-parent", "--count", sha+".."+base)
 	if err != nil {
 		return false, false
@@ -420,12 +573,42 @@ func (g *gitState) onFirstParentLine(ctx context.Context, sha, base string) (onL
 	return strings.TrimSpace(at) == sha, true
 }
 
+// firstParentLine is base's first-parent commits, read at most once per
+// check; nil when the read failed.
+func (g *gitState) firstParentLine(ctx context.Context, base string) map[string]bool {
+	if line, read := g.firstParent[base]; read {
+		return line
+	}
+	if g.firstParent == nil {
+		g.firstParent = map[string]map[string]bool{}
+	}
+	out, _, err := g.git(ctx, "rev-list", "--first-parent", base)
+	if err != nil {
+		if ctx.Err() == nil {
+			g.firstParent[base] = nil
+		}
+		return nil
+	}
+	line := map[string]bool{}
+	for sha := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		line[sha] = true
+	}
+	g.firstParent[base] = line
+	return line
+}
+
 // cherryMerged: `git cherry base sha` marks each of sha's commits "-" when an
 // equivalent patch is already in base. It patch-ids every commit base gained
 // since the fork, so past squashWindow of them it is not run (unknown).
-func (g *gitState) cherryMerged(ctx context.Context, sha, base string) verdict {
-	n, _, err := g.git(ctx, "rev-list", "--count", sha+".."+base)
-	if count, convErr := strconv.Atoi(strings.TrimSpace(n)); err != nil || convErr != nil || count > squashWindow {
+// behind is that count when already known, else -1.
+func (g *gitState) cherryMerged(ctx context.Context, sha, base string, behind int) verdict {
+	if behind < 0 {
+		var ok bool
+		if behind, ok = g.count(ctx, sha+".."+base); !ok {
+			return unknown
+		}
+	}
+	if behind > squashWindow {
 		return unknown
 	}
 	out, _, err := g.git(ctx, "cherry", base, sha)
@@ -467,36 +650,86 @@ func (g *gitState) squashMerged(ctx context.Context, sha, base string) verdict {
 	if !ok || len(want) != 1 {
 		return unknown
 	}
-	log, _, err := g.git(ctx, "log", "-p", "-U0", "--no-merges", "--no-color", "--no-ext-diff", "--no-textconv", "--ignore-submodules=all",
-		"--max-count="+strconv.Itoa(squashWindow), fork+".."+base)
+	window, _, err := g.git(ctx, "rev-list", "--no-merges", "--max-count="+strconv.Itoa(squashWindow), fork+".."+base)
 	if err != nil {
 		return unknown
 	}
-	got, ok := g.patchIDsOf(ctx, []byte(log))
-	if !ok {
+	commits := strings.Fields(window)
+	if !g.readPatches(ctx, commits) {
 		return unknown
 	}
 	for id := range want {
-		return verdictOf(got[id])
+		return verdictOf(slices.ContainsFunc(commits, func(c string) bool { return g.commitPatch[c] == id }))
 	}
 	return unknown
 }
 
-// patchIDsOf runs `git patch-id --stable` over a diff or a log -p stream.
+// readPatches fills commitPatch for the commits not read yet, with one
+// log -p over them.
+func (g *gitState) readPatches(ctx context.Context, commits []string) bool {
+	if g.commitPatch == nil {
+		g.commitPatch = map[string]string{}
+	}
+	var missing []string
+	for _, c := range commits {
+		if _, ok := g.commitPatch[c]; !ok {
+			missing = append(missing, c)
+		}
+	}
+	if len(missing) == 0 {
+		return true
+	}
+	args := append([]string{"log", "-p", "-U0", "--no-walk=unsorted", "--no-color", "--no-ext-diff", "--no-textconv",
+		"--ignore-submodules=all", "--format=commit %H"}, missing...)
+	log, _, err := g.git(ctx, args...)
+	if err != nil {
+		return false
+	}
+	out, ok := g.patchIDLines(ctx, []byte(log))
+	if !ok {
+		return false
+	}
+	found := map[string]string{}
+	for _, f := range out {
+		if len(f) == 2 {
+			found[f[1]] = f[0]
+		}
+	}
+	for _, c := range missing {
+		g.commitPatch[c] = found[c]
+	}
+	return true
+}
+
+// patchIDsOf runs `git patch-id --stable` over a diff.
 func (g *gitState) patchIDsOf(ctx context.Context, patch []byte) (map[string]bool, bool) {
+	lines, ok := g.patchIDLines(ctx, patch)
+	if !ok {
+		return nil, false
+	}
 	ids := map[string]bool{}
+	for _, f := range lines {
+		ids[f[0]] = true
+	}
+	return ids, true
+}
+
+// patchIDLines runs `git patch-id --stable` over a diff or a log -p stream:
+// one "<patch id> <commit id>" line per patch.
+func (g *gitState) patchIDLines(ctx context.Context, patch []byte) ([][]string, bool) {
 	if len(bytes.TrimSpace(patch)) == 0 {
-		return ids, true
+		return nil, true
 	}
 	out, _, err := g.o.Run(ctx, g.o.Folder, patch, "git", "patch-id", "--stable")
 	if err != nil {
 		return nil, false
 	}
+	var lines [][]string
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
 		if f := strings.Fields(sc.Text()); len(f) > 0 {
-			ids[f[0]] = true
+			lines = append(lines, f)
 		}
 	}
-	return ids, true
+	return lines, true
 }

@@ -451,7 +451,7 @@ var setTerminalTurnEnd = (*db.DB).SetTerminalTurnEnd
 func stopHookDrift(ctx context.Context, stdout, stderr io.Writer, database *db.DB, id int64) bool {
 	ctx, cancel := context.WithTimeout(ctx, stopHookBudget)
 	defer cancel()
-	rep, err := checkWorkbench(ctx, database, id, workbenchcheck.Options{})
+	rep, err := checkWorkbench(ctx, database, id, workbenchcheck.Options{OpenOnly: true})
 	switch {
 	case errors.Is(err, db.ErrWorkbenchNotFound):
 		return false // a deleted workbench's leftover hook: nothing to say

@@ -3,6 +3,7 @@ package workbenchcheck
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -248,11 +249,13 @@ func TestProj07_SharedBranchAndParents(t *testing.T) {
 }
 
 // A git call that fails for any reason but "no such ref" is unknown, never
-// a missing branch nor a merge verdict.
+// a missing branch nor a merge verdict. The batch branch read fails too, so
+// each branch is read on its own (TestCheck_BatchReadFailures covers the
+// batch read itself).
 func TestProj07_GitErrorsAreNeverFindings(t *testing.T) {
 	dir := newRepo(t)
 	run := func(ctx context.Context, d string, in []byte, name string, args ...string) ([]byte, int, error) {
-		if len(args) > 0 && (args[0] == "rev-list" || args[0] == "cherry") || (len(args) > 3 && strings.Contains(args[3], "nowhere")) {
+		if len(args) > 0 && (args[0] == "rev-list" || args[0] == "cherry" || args[0] == "for-each-ref") || (len(args) > 3 && strings.Contains(args[3], "nowhere")) {
 			return nil, 128, os.ErrPermission
 		}
 		return ExecRunner(ctx, d, in, name, args...)
@@ -297,12 +300,16 @@ func TestProj07_NoGitCallOutsideARepository(t *testing.T) {
 }
 
 // The deadline hitting mid-walk keeps the findings of the targets checked
-// before it and drops the cut-short one (which would read as missing).
+// before it and drops the cut-short one (which would read as missing). The
+// batch branch read fails, so "nowhere" is looked up on its own.
 func TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly(t *testing.T) {
 	dir := newRepo(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	run := func(c context.Context, d string, in []byte, name string, args ...string) ([]byte, int, error) {
+		if len(args) > 0 && args[0] == "for-each-ref" {
+			return nil, 128, os.ErrPermission
+		}
 		if strings.Contains(strings.Join(args, " "), "nowhere") {
 			cancel()
 			return nil, -1, context.Canceled
@@ -383,7 +390,7 @@ func TestProj07_ReadsNothingButGit(t *testing.T) {
 	if after := countObjects(t, dir); after != objectsBefore {
 		t.Fatalf("the check wrote objects: %s -> %s", objectsBefore, after)
 	}
-	readOnly := []string{"rev-parse", "symbolic-ref", "log", "rev-list", "merge-base", "diff", "patch-id", "cherry", "reflog"}
+	readOnly := []string{"rev-parse", "symbolic-ref", "log", "rev-list", "merge-base", "diff", "patch-id", "cherry", "reflog", "for-each-ref"}
 	for _, n := range names {
 		f := strings.Fields(n)
 		if f[0] != "git" || !slices.Contains(readOnly, f[1]) || (f[1] == "reflog" && f[2] != "show") {
@@ -620,5 +627,90 @@ func TestCheck_FilterGuardFailureIsANote(t *testing.T) {
 	}
 	if got := kinds(r); len(got[2]) != 0 {
 		t.Fatalf("an unread squash is never a finding, got %v", got)
+	}
+}
+
+// The Stop hook checks open targets only: its blocking verdict is the full
+// check's, without the advisory done_but_unmerged.
+func TestCheck_OpenOnlyKeepsTheBlockingVerdict(t *testing.T) {
+	dir := newRepo(t)
+	board := []db.BoardNode{
+		node(1, "done", "open", time.Hour),
+		node(2, "in_progress", "merged", time.Hour),
+		node(3, "in_review", "nowhere", time.Hour),
+		node(4, "done", "squash", time.Hour),
+	}
+	full := Check(context.Background(), 1, board, Options{Folder: dir, Now: testNow})
+	open := Check(context.Background(), 1, board, Options{Folder: dir, Now: testNow, OpenOnly: true})
+	if got, want := kinds(Report{Findings: open.BlockingFindings()}), kinds(Report{Findings: full.BlockingFindings()}); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("open-only blocking %v, full blocking %v", got, want)
+	}
+	if got := kinds(open); len(got[1]) != 0 || len(got[2]) != 1 || len(got[3]) != 1 {
+		t.Fatalf("open-only findings %v", got)
+	}
+}
+
+// gitRulesBoard is TestProj07_GitRules' board and its findings.
+func gitRulesBoard() ([]db.BoardNode, map[int][]string) {
+	board := []db.BoardNode{
+		node(1, "in_progress", "merged", time.Hour), node(2, "in_review", "squash", time.Hour),
+		node(3, "done", "open", time.Hour), node(4, "in_progress", "fresh", time.Hour),
+		node(5, "in_progress", "nowhere", time.Hour), node(12, "done", "squash", time.Hour),
+		node(13, "in_progress", "rebase", time.Hour), node(15, "in_progress", "ff", time.Hour),
+		node(16, "in_progress", "stacked", time.Hour), node(17, "in_progress", "freshold", time.Hour),
+		node(18, "in_progress", "rebasedfresh", time.Hour), node(19, "in_progress", "resetback", time.Hour),
+		node(20, "in_progress", "rebasedmerged", time.Hour), node(21, "in_progress", "synced", time.Hour),
+		node(22, "in_progress", "nearsquash", time.Hour),
+		node(23, "done", "merged", time.Hour), node(24, "in_progress", "merged", time.Hour), // a shared branch, read once
+	}
+	want := map[int][]string{1: {KindMergedOpen}, 2: {KindMergedOpen}, 3: {KindDoneUnmerged}, 5: {KindBranchMissing},
+		13: {KindMergedOpen}, 15: {KindMergedOpen}, 20: {KindMergedOpen}, 21: {KindMergedOpen}, 22: {KindMergedOpen},
+		24: {KindMergedOpen}}
+	return board, want
+}
+
+// The batch branch read gives the same findings as reading each branch on
+// its own: with %(ahead-behind), without it (git before 2.41, refused like
+// an unknown atom), and with no batch read at all.
+func TestCheck_BatchReadMatchesPerBranchReads(t *testing.T) {
+	dir := newRepo(t)
+	board, want := gitRulesBoard()
+	cases := map[string]func(args []string) bool{
+		"ahead-behind": func([]string) bool { return false },
+		"merged lists": func(args []string) bool {
+			return args[0] == "for-each-ref" && strings.Contains(strings.Join(args, " "), "ahead-behind")
+		},
+		"per branch": func(args []string) bool { return args[0] == "for-each-ref" },
+	}
+	for name, refuse := range cases {
+		run := func(ctx context.Context, d string, in []byte, n string, args ...string) ([]byte, int, error) {
+			if n == "git" && len(args) > 0 && refuse(args) {
+				return nil, 128, os.ErrPermission
+			}
+			return ExecRunner(ctx, d, in, n, args...)
+		}
+		r := Check(context.Background(), 1, board, Options{Folder: dir, Now: testNow, Run: run})
+		if got := kinds(r); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("%s: findings %v, want %v", name, got, want)
+		}
+	}
+}
+
+// A deadline during the batch read is an incomplete check with no finding.
+func TestCheck_BatchReadDeadlineIsIncomplete(t *testing.T) {
+	dir := newRepo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	run := func(c context.Context, d string, in []byte, name string, args ...string) ([]byte, int, error) {
+		if len(args) > 0 && args[0] == "for-each-ref" {
+			cancel()
+			return nil, -1, context.Canceled
+		}
+		return ExecRunner(c, d, in, name, args...)
+	}
+	board, _ := gitRulesBoard()
+	r := Check(ctx, 1, board, Options{Folder: dir, Now: testNow, Run: run})
+	if !r.Incomplete || len(r.Findings) != 0 {
+		t.Fatalf("want incomplete with no findings, got incomplete=%v %+v", r.Incomplete, r.Findings)
 	}
 }

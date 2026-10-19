@@ -409,11 +409,11 @@ final class WorkbenchCLITests: XCTestCase {
             .success(Data(#"{"workbench_id":3,"forgot":true}"#.utf8))
         ])
         let cli = WorkbenchCLI(runner: runner)
-        let created = try await cli.worktreeCreate(projectID: 3, name: "a")
-        let ensured = try await cli.worktreeEnsure(projectID: 3, path: "/tmp/acme/wt", branch: "wt/a")
+        let created = try await cli.worktreeCreate(projectID: 3, name: "a", agent: .claude)
+        let ensured = try await cli.worktreeEnsure(projectID: 3, path: "/tmp/acme/wt", branch: "wt/a", agent: nil)
         let forgot = try await cli.worktreeForget(projectID: 3, path: "/tmp/acme/wt")
         XCTAssertEqual(runner.invocations, [
-            ["workbench", "worktree", "create", "--workbench", "3", "--name", "a", "--json"],
+            ["workbench", "worktree", "create", "--workbench", "3", "--name", "a", "--agent", "claude", "--json"],
             ["workbench", "worktree", "ensure", "--workbench", "3", "--path", "/tmp/acme/wt", "--branch", "wt/a", "--json"],
             ["workbench", "worktree", "forget", "--workbench", "3", "--path", "/tmp/acme/wt", "--json"]
         ])
