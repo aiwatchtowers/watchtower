@@ -31,7 +31,7 @@ struct AgentAnalyticsContextView: View {
     }
 
     private func measured(_ context: AgentContextReport) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: Spacing.cozy) {
             if let baseline = context.baseline, let parts = baseline.parts, !parts.isEmpty {
                 Text("Baseline: \(AgentAnalyticsFormat.tokens(baseline.tokens ?? 0)) tokens at session start")
                     .font(.callout)
@@ -43,7 +43,7 @@ struct AgentAnalyticsContextView: View {
             }
             if let sources = context.topSources, !sources.isEmpty {
                 Text("Top sources").font(.callout)
-                LazyVStack(alignment: .leading, spacing: 2) {
+                LazyVStack(alignment: .leading, spacing: Spacing.tight) {
                     ForEach(Array(sources.enumerated()), id: \.offset) { _, row in
                         Text("\(row.tool) \(row.target) — \(AgentAnalyticsFormat.tokens(row.tokens)) tokens · "
                             + "\(row.calls) \(row.calls == 1 ? "call" : "calls") · "
@@ -55,9 +55,9 @@ struct AgentAnalyticsContextView: View {
             }
             if let reads = context.repeatedReads, !reads.isEmpty {
                 Text("Read again and again").font(.callout)
-                LazyVStack(alignment: .leading, spacing: 2) {
+                LazyVStack(alignment: .leading, spacing: Spacing.tight) {
                     ForEach(Array(reads.enumerated()), id: \.offset) { _, row in
-                        HStack(spacing: 6) {
+                        HStack(spacing: Spacing.compact) {
                             Text("\(row.target) — \(row.reads) reads, \(AgentAnalyticsFormat.tokens(row.tokens)) tokens")
                                 .lineLimit(1)
                             AgentSessionLink(uuid: row.sessionUUID, actions: actions)

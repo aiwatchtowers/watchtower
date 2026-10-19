@@ -10,14 +10,14 @@ struct AgentAnalyticsHintsView: View {
     let actions: AgentAnalyticsActions
 
     var body: some View {
-        LazyVStack(alignment: .leading, spacing: 10) {
+        LazyVStack(alignment: .leading, spacing: Spacing.cozy) {
             ForEach(Array(hints.enumerated()), id: \.offset) { _, hint in
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: Spacing.small) {
                     DisclosureGroup {
                         AgentHintEvidenceList(hint: hint, actions: actions)
-                            .padding(.leading, 4)
+                            .padding(.leading, Spacing.small)
                     } label: {
-                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
                             Text(hint.finding).lineLimit(3)
                             Spacer(minLength: 8)
                             Text(Self.estimate(hint))
@@ -26,7 +26,7 @@ struct AgentAnalyticsHintsView: View {
                         }
                     }
                     AgentHintActionLine(hint: hint, actions: actions)
-                        .padding(.leading, 18)
+                        .padding(.leading, Spacing.large + Spacing.tight)
                 }
             }
         }
@@ -50,8 +50,8 @@ struct AgentAnalyticsMainThingCard: View {
     let actions: AgentAnalyticsActions
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
                 Text("The main thing")
                     .font(.subheadline.weight(.semibold))
                     .accessibilityAddTraits(.isHeader)
@@ -64,13 +64,13 @@ struct AgentAnalyticsMainThingCard: View {
             AgentHintActionLine(hint: hint, actions: actions)
             DisclosureGroup("Where") {
                 AgentHintEvidenceList(hint: hint, actions: actions)
-                    .padding(.leading, 4)
+                    .padding(.leading, Spacing.small)
             }
             .font(.callout)
         }
-        .padding(12)
+        .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(.quaternary.opacity(0.5)))
+        .background(RoundedRectangle(cornerRadius: Radius.row).fill(Fill.card))
     }
 }
 
@@ -82,7 +82,7 @@ struct AgentHintActionLine: View {
     var body: some View {
         let action = hint.action ?? ""
         if !action.isEmpty || AgentHintFixAction.make(hint.fix) != nil {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
                 if !action.isEmpty {
                     Text(action).font(.callout).foregroundStyle(.secondary)
                 }
@@ -99,7 +99,7 @@ struct AgentHintEvidenceList: View {
     let actions: AgentAnalyticsActions
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
             if hint.evidence.isEmpty, (hint.moreEvidence ?? 0) == 0 {
                 Text("No evidence listed").foregroundStyle(.secondary)
             }
@@ -148,7 +148,7 @@ struct AgentAnalyticsCappedHints: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: Spacing.small) {
             AgentAnalyticsHintsView(hints: Self.visible(hints, expanded: expanded), actions: actions)
             if hints.count > Self.limit {
                 Button(expanded ? "Show fewer" : "Show all \(hints.count)") { expanded.toggle() }

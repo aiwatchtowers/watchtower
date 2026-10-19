@@ -14,7 +14,7 @@ struct AgentAnalyticsOverviewView: View {
         case .loading:
             ProgressView("Loading analytics…").controlSize(.small)
         case let .failed(error):
-            VStack(spacing: 6) {
+            VStack(spacing: Spacing.compact) {
                 Label("Could not load analytics", systemImage: "exclamationmark.triangle").font(.headline)
                 Text(error).foregroundStyle(.secondary)
             }
@@ -32,7 +32,7 @@ struct AgentAnalyticsOverviewView: View {
     }
 
     private func offView(enabling: Bool, error: String?) -> some View {
-        VStack(spacing: 10) {
+        VStack(spacing: Spacing.cozy) {
             Image(systemName: "chart.bar.xaxis").font(.largeTitle).foregroundStyle(.secondary).accessibilityHidden(true)
             Text("Agent analytics is off").font(.headline)
             Text("Turn it on to see where this folder's agent sessions spend their time and money. "
@@ -53,7 +53,7 @@ struct AgentAnalyticsOverviewView: View {
     }
 
     private func content(_ overview: AgentReportOverview, staleError: String?) -> some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: Spacing.page) {
             if let state = overview.importState, let line = AgentAnalyticsFormat.importLine(state) {
                 if AgentAnalyticsFormat.isImportWarning(state) {
                     Label(line, systemImage: "exclamationmark.triangle")
@@ -87,7 +87,7 @@ struct AgentAnalyticsOverviewView: View {
                 }
             }
             DisclosureGroup {
-                time(overview).padding(.top, 8)
+                time(overview).padding(.top, Spacing.regular)
             } label: {
                 Text("Time")
                     .font(.subheadline.weight(.semibold))
@@ -99,7 +99,7 @@ struct AgentAnalyticsOverviewView: View {
     /// The collapsed Time section: where the time went, then the tasks,
     /// sessions, commands and models.
     private func time(_ overview: AgentReportOverview) -> some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: Spacing.page) {
             section("Where the time went") { AgentTimeBreakdownView(time: overview.time) }
             if overview.oldFormatSessions > 0 {
                 Text("Older sessions — time not analysed: \(overview.oldFormatSessions)")
@@ -135,7 +135,7 @@ struct AgentAnalyticsOverviewView: View {
     }
 
     private func header(_ overview: AgentReportOverview) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
             Text(AgentAnalyticsFormat.periodLabel(overview)).font(.headline)
             if AgentAnalyticsFormat.period(of: overview) != period {
                 Text("Updating…").font(.caption).foregroundStyle(.secondary)
@@ -161,7 +161,7 @@ struct AgentAnalyticsOverviewView: View {
 
     private func tiles(_ overview: AgentReportOverview) -> some View {
         let totals = overview.totals
-        return VStack(alignment: .leading, spacing: 6) {
+        return VStack(alignment: .leading, spacing: Spacing.compact) {
             HStack(spacing: 24) {
                 tile("Cost", AgentAnalyticsFormat.cost(totals.costUSD))
                 tile("Sessions", "\(totals.sessions)")
@@ -180,7 +180,7 @@ struct AgentAnalyticsOverviewView: View {
     }
 
     private func tile(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Text(value).font(.title2.weight(.semibold).monospacedDigit())
         }
@@ -203,7 +203,7 @@ struct AgentAnalyticsSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
             Text(title)
                 .font(.subheadline.weight(.semibold))
                 .accessibilityAddTraits(.isHeader)

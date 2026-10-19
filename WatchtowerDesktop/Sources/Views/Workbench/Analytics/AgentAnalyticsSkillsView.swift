@@ -21,7 +21,7 @@ struct AgentAnalyticsSkillsView: View {
 
     private func measured(_ skills: AgentSkillsReport) -> some View {
         let rows = skills.rows ?? []
-        return VStack(alignment: .leading, spacing: 8) {
+        return VStack(alignment: .leading, spacing: Spacing.regular) {
             Text(Self.usedLine(skills)).font(.callout)
             if !rows.isEmpty {
                 AgentAnalyticsTopRows(rows: rows, shown: Self.shownRows) { rowList($0) }
@@ -37,9 +37,9 @@ struct AgentAnalyticsSkillsView: View {
     }
 
     private func rowList(_ rows: [AgentSkillRow]) -> some View {
-        LazyVStack(alignment: .leading, spacing: 2) {
+        LazyVStack(alignment: .leading, spacing: Spacing.tight) {
             ForEach(rows, id: \.name) { row in
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
                     Text(row.name).font(.callout.monospaced()).lineLimit(1)
                     Text(Self.rowLine(row)).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                 }

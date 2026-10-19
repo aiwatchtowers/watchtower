@@ -13,7 +13,7 @@ struct AgentAnalyticsTopRows<Row, Table: View>: View {
     @State private var expanded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: Spacing.small) {
             table(expanded ? rows : Array(rows.prefix(shown)))
             if rows.count > shown {
                 Button(expanded ? "Show top \(shown)" : "Show all \(rows.count)") { expanded.toggle() }
@@ -116,7 +116,7 @@ struct AgentAnalyticsModelsTable: View {
     let tokens: AgentTokens
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
             Text(tokenLine).font(.caption).foregroundStyle(.secondary)
             if !models.isEmpty {
                 Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 4) {

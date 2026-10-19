@@ -82,9 +82,9 @@ struct AgentShareBar: View {
     private static let palette: [Color] = [.blue, .purple, .teal, .mint, .pink, .green, .indigo, .gray]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: Spacing.small) {
             GeometryReader { proxy in
-                HStack(spacing: 1) {
+                HStack(spacing: Spacing.tight) {
                     ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
                         Rectangle()
                             .fill(Self.color(index))
@@ -93,11 +93,11 @@ struct AgentShareBar: View {
                 }
             }
             .frame(height: 10)
-            .clipShape(RoundedRectangle(cornerRadius: 3))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.mark))
             .accessibilityHidden(true)
-            LazyVStack(alignment: .leading, spacing: 2) {
+            LazyVStack(alignment: .leading, spacing: Spacing.tight) {
                 ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
-                    HStack(spacing: 4) {
+                    HStack(spacing: Spacing.small) {
                         Circle().fill(Self.color(index)).frame(width: 8, height: 8).accessibilityHidden(true)
                         Text("\(part.label) \(AgentAnalyticsFormat.tokens(part.tokens)) · "
                             + AgentAnalyticsFormat.percent(part.share, of: 1))

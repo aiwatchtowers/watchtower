@@ -23,11 +23,11 @@ struct AgentAnalyticsTroubleView: View {
     }
 
     private func measured(_ trouble: AgentTroubleReport) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
             if let classes = trouble.classes, !classes.isEmpty {
-                LazyVStack(alignment: .leading, spacing: 2) {
+                LazyVStack(alignment: .leading, spacing: Spacing.tight) {
                     ForEach(Array(classes.enumerated()), id: \.offset) { _, row in
-                        HStack(spacing: 6) {
+                        HStack(spacing: Spacing.compact) {
                             Text("\(AgentAnalyticsFormat.label(errorClass: row.class)) · \(row.tool) — \(row.count)")
                             if let top = row.sessions.first {
                                 AgentSessionLink(uuid: top.sessionUUID, actions: actions)
@@ -39,7 +39,7 @@ struct AgentAnalyticsTroubleView: View {
             }
             if let denials = trouble.denials, !denials.isEmpty {
                 Text("Denied").font(.callout)
-                LazyVStack(alignment: .leading, spacing: 2) {
+                LazyVStack(alignment: .leading, spacing: Spacing.tight) {
                     ForEach(Array(denials.enumerated()), id: \.offset) { _, row in
                         let what = [row.tool, row.target].filter { !$0.isEmpty }.joined(separator: " ")
                         Text("\(AgentAnalyticsFormat.label(denial: row.kind)) · \(what) — \(row.count)")
@@ -49,7 +49,7 @@ struct AgentAnalyticsTroubleView: View {
                 }
             }
             if (trouble.interrupts ?? 0) > 0 || (trouble.rejections ?? 0) > 0 {
-                HStack(spacing: 6) {
+                HStack(spacing: Spacing.compact) {
                     Text("Interrupts: \(trouble.interrupts ?? 0) · rejections: \(trouble.rejections ?? 0)")
                     if let top = trouble.interruptSessions?.first {
                         AgentSessionLink(uuid: top.sessionUUID, actions: actions)
