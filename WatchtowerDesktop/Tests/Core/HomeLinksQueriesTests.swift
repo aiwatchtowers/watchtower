@@ -52,4 +52,18 @@ final class HomeLinksQueriesTests: XCTestCase {
         XCTAssertNil(data.pendingRecap)
         XCTAssertFalse(data.failed)
     }
+
+    /// The Catch-Up badge's recap: a newer building or failed recap (or an
+    /// acknowledged one) does not hide an older ready, unacknowledged one.
+    func testPendingRecapIsNewestReadyUnacknowledged() throws {
+        try db.write { d in
+            let sql = "INSERT INTO catchup_recaps (period_from, period_to, status, tldr, acknowledged_at) VALUES (?, ?, ?, ?, ?)"
+            let to = self.now.timeIntervalSince1970
+            try d.execute(sql: sql, arguments: [to - 7200, to - 3600, "ready", "Older ready", nil])
+            try d.execute(sql: sql, arguments: [to - 3600, to - 1800, "ready", "Acknowledged", "2026-10-19T00:00:00Z"])
+            try d.execute(sql: sql, arguments: [to - 1800, to, "failed", "Failed", nil])
+            try d.execute(sql: sql, arguments: [to - 1800, to, "building", "Building", nil])
+        }
+        XCTAssertEqual(try read().pendingRecap?.tldr, "Older ready")
+    }
 }

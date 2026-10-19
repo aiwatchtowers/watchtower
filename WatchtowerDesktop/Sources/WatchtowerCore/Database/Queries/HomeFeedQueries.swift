@@ -57,7 +57,7 @@ package enum HomeFeedQueries {
     package static func read(_ db: Database, now: Date, calendar: Calendar) -> HomeFeedData {
         var data = HomeFeedData()
         let nowUTC = ISO8601DateFormatter().string(from: now)
-        let today = HomeTodayBuilder.dayString(now, calendar: calendar)
+        let today = HomeFeedBuilder.dayString(now, calendar: calendar)
         let startOfDay = calendar.startOfDay(for: now)
 
         data.inbox = readSource(.inbox, db, tables: ["inbox_items", "users", "channels"], failed: &data.failed) {

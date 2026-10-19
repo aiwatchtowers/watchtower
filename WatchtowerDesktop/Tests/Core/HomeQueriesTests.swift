@@ -3,8 +3,8 @@ import GRDB
 import WatchtowerTestSupport
 @testable import WatchtowerCore
 
-/// The reads behind Home's Today cards: my targets due today, open asks
-/// across workbenches.
+/// The reads behind Home: my targets due today, open asks across
+/// workbenches, the Workbench zone's read.
 final class HomeQueriesTests: XCTestCase {
     private var db: DatabaseQueue!
 
@@ -233,98 +233,62 @@ final class HomeQueriesTests: XCTestCase {
         XCTAssertNil(outside.subjectID)
     }
 
-    // MARK: - today
+    // MARK: - workbench
 
-    func testTodayEmptyDatabaseReadsNoContent() throws {
-        let data = try db.read { HomeQueries.today($0, now: Date(), calendar: .current) }
-        XCTAssertNil(data.briefing)
+    func testWorkbenchEmptyDatabaseReadsNoContent() throws {
+        let data = try db.read { HomeQueries.workbench($0, now: Date()) }
         XCTAssertTrue(data.asks.rows.isEmpty && data.asks.unreadableIDs.isEmpty)
-        XCTAssertNil(data.pendingRecap)
-        XCTAssertTrue(data.failed.isEmpty)
+        XCTAssertNil(data.suggestion)
+        XCTAssertFalse(data.failed)
     }
 
-    func testTodayReadsEverySource() throws {
-        let now = Date()
+    /// Review Focus 3: a source whose read throws marks the data failed and
+    /// keeps the other; a table missing mid-migration is no content.
+    func testOneFailingSourceKeepsTheOther() throws {
         let data = try db.write { d in
-            try TestDatabase.insertBriefing(d, date: self.day(0), attention: #"[{"text":"Reply to acme"}]"#)
-            let workbench = try TestDatabase.insertWorkbench(d, name: "acme", folder: "/tmp/acme")
-            try TestDatabase.insertOwnerAsk(d, projectID: workbench)
-            try d.execute(sql: "INSERT INTO catchup_recaps (period_from, period_to, status, tldr) VALUES (?, ?, 'ready', 'All quiet')",
-                          arguments: [now.timeIntervalSince1970 - 3600, now.timeIntervalSince1970])
-            return HomeQueries.today(d, now: now, calendar: .current)
-        }
-        XCTAssertEqual(data.briefing?.date, try day(0))
-        XCTAssertEqual(data.asks.rows.map(\.workbenchName), ["acme"])
-        XCTAssertEqual(data.pendingRecap?.tldr, "All quiet")
-        XCTAssertTrue(data.failed.isEmpty)
-    }
-
-    /// Review Focus 3: a card whose read throws is named in `failed` and
-    /// hides only itself; a table missing mid-migration is no content.
-    func testOneFailingCardKeepsTheOthers() throws {
-        let data = try db.write { d in
-            try TestDatabase.insertBriefing(d, date: self.day(0), attention: #"[{"text":"Reply to acme"}]"#)
-            try d.execute(sql: "INSERT INTO catchup_recaps (period_from, period_to, status, tldr) VALUES (0, 1, 'ready', 'All quiet')")
-            try d.execute(sql: "DROP TABLE owner_asks")
-            // The table-recreate dance with `date` renamed: the read's column is gone.
+            let p = try TestDatabase.insertWorkbench(d, name: "acme", folder: "/tmp/acme")
+            try TestDatabase.insertOwnerAsk(d, projectID: p, title: "Check the build")
             try d.execute(sql: """
-                CREATE TABLE briefings_new (id INTEGER PRIMARY KEY, day TEXT NOT NULL, created_at TEXT NOT NULL);
-                INSERT INTO briefings_new (id, day, created_at) SELECT id, date, created_at FROM briefings;
-                DROP TABLE briefings;
-                ALTER TABLE briefings_new RENAME TO briefings;
+                DROP TABLE instruction_suggestions;
+                CREATE TABLE instruction_suggestions (id INTEGER PRIMARY KEY, body TEXT);
                 """)
-            return HomeQueries.today(d, now: Date(), calendar: .current)
+            return HomeQueries.workbench(d, now: Date())
         }
-        XCTAssertEqual(data.failed, [.briefing])
-        XCTAssertNil(data.briefing)
-        XCTAssertTrue(data.asks.rows.isEmpty)
-        XCTAssertEqual(data.pendingRecap?.tldr, "All quiet")
+        XCTAssertTrue(data.failed)
+        XCTAssertNil(data.suggestion)
+        XCTAssertEqual(data.asks.rows.map(\.ask.title), ["Check the build"])
+
+        let missing = try db.write { d in
+            try d.execute(sql: "DROP TABLE instruction_suggestions")
+            return HomeQueries.workbench(d, now: Date())
+        }
+        XCTAssertFalse(missing.failed)
     }
 
-    /// The Catch-Up badge's recap: a newer building or failed recap (or an
-    /// acknowledged one) does not hide an older ready, unacknowledged one.
-    func testSinceYouWereAwayReadsNewestReadyUnacknowledged() throws {
-        let now = Date()
-        let data = try db.write { d in
-            let sql = "INSERT INTO catchup_recaps (period_from, period_to, status, tldr, acknowledged_at) VALUES (?, ?, ?, ?, ?)"
-            let to = now.timeIntervalSince1970
-            try d.execute(sql: sql, arguments: [to - 7200, to - 3600, "ready", "Older ready", nil])
-            try d.execute(sql: sql, arguments: [to - 3600, to - 1800, "ready", "Acknowledged", self.stampAgo(minutesAgo: 1)])
-            try d.execute(sql: sql, arguments: [to - 1800, to, "failed", "Failed", nil])
-            try d.execute(sql: sql, arguments: [to - 1800, to, "building", "Building", nil])
-            return HomeQueries.today(d, now: now, calendar: .current)
-        }
-        XCTAssertEqual(data.pendingRecap?.tldr, "Older ready")
-        let card = HomeTodayBuilder.cards(data, allowed: [.sinceYouWereAway], now: now, calendar: .current).first
-        XCTAssertEqual(card?.body, "Older ready")
-    }
-
-    /// An unreadable ask is a failed read (never an all-clear); the readable
-    /// asks still fill the card.
-    func testUnreadableAskMarksAgentsWaitingFailedAndKeepsReadableRows() throws {
-        let now = Date()
+    /// An unreadable ask is a failed read (never an empty zone); the readable
+    /// asks still show.
+    func testUnreadableAskMarksWorkbenchFailedAndKeepsReadableRows() throws {
         let data = try db.write { d in
             let p = try TestDatabase.insertWorkbench(d, name: "acme", folder: "/tmp/acme")
             try TestDatabase.insertOwnerAsk(d, projectID: p, title: "Check the build")
             try self.insertUnreadableAsk(d, projectID: p)
-            return HomeQueries.today(d, now: now, calendar: .current)
+            return HomeQueries.workbench(d, now: Date())
         }
-        XCTAssertEqual(data.failed, [.agentsWaiting])
-        let card = HomeTodayBuilder.cards(data, allowed: [.agentsWaiting], now: now, calendar: .current).first
-        XCTAssertEqual(card?.kind, .agentsWaiting)
-        XCTAssertEqual(card?.items.map(\.title), ["Check the build"])
+        XCTAssertTrue(data.failed)
+        XCTAssertEqual(data.asks.rows.map(\.ask.title), ["Check the build"])
     }
 
     func testObservedTablesCoverEveryRead() {
-        for table in ["briefings", "owner_asks", "projects", "catchup_recaps", "instruction_suggestions"] {
+        for table in ["owner_asks", "projects", "instruction_suggestions"] {
             XCTAssertTrue(HomeQueries.observedTables.contains(table), table)
         }
     }
 
-    /// The feed owns the inbox, reminder, proposal, target and calendar
-    /// tables; the Today read no longer reads them.
-    func testTodayNoLongerObservesTheFeedTables() {
-        for table in ["agent_actions", "reminders", "targets", "calendar_events", "meeting_prep_cache"] {
+    /// The feed, links and numbers own their tables; the Workbench read does
+    /// not observe them.
+    func testWorkbenchDoesNotObserveTheOtherZonesTables() {
+        for table in ["agent_actions", "reminders", "targets", "calendar_events", "briefings", "catchup_recaps",
+                      "messages"] {
             XCTAssertFalse(HomeQueries.observedTables.contains(table), table)
         }
     }
@@ -342,8 +306,8 @@ final class HomeQueriesTests: XCTestCase {
                 """, arguments: [text, seen, seen, status, text])
     }
 
-    private func suggestionRead() throws -> HomeTodayData {
-        try db.read { HomeQueries.today($0, now: Date(), calendar: .current) }
+    private func suggestionRead() throws -> HomeWorkbenchData {
+        try db.read { HomeQueries.workbench($0, now: Date()) }
     }
 
     func testInstructionSuggestionCardShowsNewest() throws {
@@ -375,20 +339,5 @@ final class HomeQueriesTests: XCTestCase {
         XCTAssertEqual(try suggestionRead().suggestion?.text, "first")
         try db.write { try $0.execute(sql: "UPDATE instruction_suggestions SET status = 'added' WHERE text = 'first'") }
         XCTAssertEqual(try suggestionRead().suggestion?.text, "second")
-    }
-
-    func testFailedSuggestionReadIsNamedAndShowsNoCard() throws {
-        let data = try db.write { d in
-            try d.execute(sql: """
-                DROP TABLE instruction_suggestions;
-                CREATE TABLE instruction_suggestions (id INTEGER PRIMARY KEY, body TEXT);
-                """)
-            return HomeQueries.today(d, now: Date(), calendar: .current)
-        }
-        XCTAssertEqual(data.failed, [.instructionSuggestion])
-        XCTAssertNil(data.suggestion)
-        XCTAssertFalse(HomeTodayBuilder.cards(
-            data, allowed: Set(TodayCardKind.allCases), now: Date(), calendar: .current)
-            .contains { $0.kind == .instructionSuggestion })
     }
 }

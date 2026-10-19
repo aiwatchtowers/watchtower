@@ -27,7 +27,7 @@ struct HomeView: View {
 }
 
 /// Home's page: header, Getting ready, then two columns — the feed on the
-/// left, the remaining cards on the right — or one column below
+/// left, Workbench, links and numbers on the right — or one column below
 /// `twoColumnWidth`. No `@Environment(AppState.self)`: values and closures
 /// only, so ViewInspector can drive it.
 struct HomeContent: View {
@@ -104,9 +104,7 @@ struct HomeContent: View {
         let feed = FeedZoneView(
             feed: snapshot.feed, errors: feedErrors, onLink: onLink, onAct: onAct, onExpand: onExpand, now: today,
             calendar: calendar)
-        let right = TodayZoneView(
-            cards: snapshot.today, readFailed: snapshot.showsReadError, onLink: onLink,
-            onDecideSuggestion: onDecideSuggestion)
+        let right = HomeSideColumn(snapshot: snapshot, onLink: onLink, onDecideSuggestion: onDecideSuggestion)
         return ViewThatFits(in: .horizontal) {
             HStack(alignment: .top, spacing: 20) {
                 feed.frame(minWidth: 520, idealWidth: 520, maxWidth: .infinity)
@@ -155,6 +153,82 @@ struct HomeContent: View {
         formatter.dateFormat = "EEEE, MMMM d"
         return formatter
     }()
+}
+
+/// Home's right column: the Workbench zone, the links zone and today in
+/// numbers, in that order; a zone with nothing to show is left out (numbers
+/// show once their first read lands).
+struct HomeSideColumn: View {
+    let snapshot: HomeSnapshot
+    let onLink: (HomeLink) -> Void
+    let onDecideSuggestion: (Int64, Bool) async -> String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            if snapshot.showsWorkbench {
+                WorkbenchZoneView(
+                    blocks: snapshot.workbench, suggestion: snapshot.suggestion, failed: snapshot.workbenchFailed,
+                    onLink: onLink, onDecideSuggestion: onDecideSuggestion)
+            }
+            if !snapshot.links.isEmpty {
+                LinksZoneView(links: snapshot.links, failed: snapshot.linksFailed, onLink: onLink)
+            }
+            if let numbers = snapshot.numbers {
+                NumbersZoneView(numbers: numbers)
+            }
+        }
+    }
+}
+
+/// A right-column zone's caption: "WORKBENCH", with optional trailing content.
+struct HomeZoneTitle<Trailing: View>: View {
+    let title: String
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .font(.caption.weight(.bold))
+                .kerning(0.6)
+                .foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            trailing
+        }
+        .padding(.bottom, 2)
+    }
+}
+
+extension HomeZoneTitle where Trailing == EmptyView {
+    init(title: String) {
+        self.init(title: title) { EmptyView() }
+    }
+}
+
+/// "Couldn't read <zone> — see the log.": a zone whose read failed says so
+/// and never reads as empty.
+struct HomeZoneErrorLine: View {
+    let zone: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+            Text("Couldn't read \(zone) — see the log.")
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+extension View {
+    /// A right-column zone's surface: the feed's padding and card background.
+    func homeZoneCard() -> some View {
+        padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background(HomeCardBackground())
+    }
 }
 
 /// A zone's header: the title, an optional subtitle and trailing content.
