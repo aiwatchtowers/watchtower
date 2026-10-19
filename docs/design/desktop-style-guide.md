@@ -55,16 +55,20 @@ Shadows exist only on floating buttons (`FloatingButtonLabel`).
 | `.popoverSurface()` | custom popover backgrounds | the body of a popover |
 | `FloatingButtonLabel` | one-off shadows | "Jump to latest" style floating buttons |
 
-<!-- shot: catalog-colours, catalog-spacing, catalog-typography (replaces gallery.png) -->
+![colours](shots/catalog-colours.png)
+![spacing](shots/catalog-spacing.png)
+![typography](shots/catalog-typography.png)
 
-<!-- shot: catalog-actions (replaces buttons.png) -->
+![actions](shots/catalog-actions.png)
 ![workbench-header](shots/workbench-header.png)
 ![workbench-panel-parts](shots/workbench-panel-parts.png)
 ![workbench-board-cards](shots/workbench-board-cards.png)
 ![sessions-panel](shots/sessions-panel.png)
 ![chat-rows](shots/chat-rows.png)
 ![calendar-rows](shots/calendar-rows.png)
-<!-- shot: catalog-inputs, catalog-settings, catalog-panels (replaces kit-new-components.png) -->
+![inputs](shots/catalog-inputs.png)
+![settings](shots/catalog-settings.png)
+![panels](shots/catalog-panels.png)
 
 The design gallery shows every token and component, one page per kind (colours, spacing, radius, strokes, typography, icons, motion, actions, selection, inputs, display, containers, settings, panels, popover). Run `make design-gallery`: it is a separate window and is never part of the app. `make desktop-shots DESKTOP_SHOTS=<dir>` renders the pages as `catalog-<page>` shots. A new kit component adds itself to a catalog page in `Sources/DesignKitCatalog/`.
 

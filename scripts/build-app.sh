@@ -483,12 +483,23 @@ if [ -n "$FLAVOR" ]; then
 fi
 
 # The design gallery is a developer window of its own and never ships: fail
-# if anything of it reached the assembled bundle.
-if [ -n "$(find "$APP_BUNDLE" -name 'DesignGallery*')" ]; then
-    echo "ERROR: the design gallery leaked into the app bundle:" >&2
-    find "$APP_BUNDLE" -name 'DesignGallery*' >&2
-    exit 1
-fi
+# if anything of it reached the assembled bundle, by file name or by symbol
+# in the main executable.
+# BEGIN gallery-bundle-guard
+check_no_gallery() {
+    local bundle="$1" exe="$1/Contents/MacOS/WatchtowerDesktop"
+    if [ -n "$(find "$bundle" -name 'DesignGallery*')" ]; then
+        echo "ERROR: the design gallery leaked into the app bundle:" >&2
+        find "$bundle" -name 'DesignGallery*' >&2
+        return 1
+    fi
+    if nm -gU "$exe" 2>/dev/null | grep -E 'DesignKitCatalog|CatalogPage|GalleryRootView|DesignSystemGallery' >/dev/null; then
+        echo "ERROR: gallery symbols found in $exe" >&2
+        return 1
+    fi
+}
+# END gallery-bundle-guard
+check_no_gallery "$APP_BUNDLE" || exit 1
 
 # Code sign — one path for dev and release.
 # TCC pins permission grants (mic, system audio) to the app's code signature. An

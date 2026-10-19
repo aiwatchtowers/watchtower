@@ -100,8 +100,8 @@ test-race:
 # suite runs as before, followed by the mobile Kit suite (kit-test), so the
 # gate covers both packages.
 test-swift:
-	cd WatchtowerDesktop && swift test $(if $(FILTER),--filter '$(FILTER)',)
-	$(if $(FILTER),,$(MAKE) kit-test)
+	cd WatchtowerDesktop && caffeinate -i swift test $(if $(FILTER),--filter '$(FILTER)',)
+	$(if $(FILTER),,caffeinate -i $(MAKE) kit-test)
 
 # Inner-loop tests for the shared mobile Kit package (WatchtowerSync +
 # WatchtowerKit): make kit-test FILTER=SomeTestClass (a regex alternation
@@ -166,7 +166,7 @@ mobile-shots:
 DESKTOP_SHOTS ?= build/desktop-shots
 desktop-shots:
 	mkdir -p "$(DESKTOP_SHOTS)"
-	cd WatchtowerDesktop && DESKTOP_SHOTS_DIR="$(abspath $(DESKTOP_SHOTS))" swift test --filter DesignShotsTests
+	cd WatchtowerDesktop && DESKTOP_SHOTS_DIR="$(abspath $(DESKTOP_SHOTS))" caffeinate -i swift test --filter DesignShotsTests
 
 # The design gallery (#760): a separate window over the Desktop design kit,
 # one page per token, component and pattern. Never part of the app bundle.
