@@ -53,7 +53,9 @@ final class WorkchatModel {
     /// its echo agree); an empty or whitespace-only one is not sent. The
     /// field clears at once; a line that cannot go comes back to it.
     func send() async {
-        let text = draft.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        // Line breaks stay (owner ask #421); only the ends are trimmed.
+        let text = draft.replacingOccurrences(of: "\r\n", with: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         draft = ""
         let id = UUID()

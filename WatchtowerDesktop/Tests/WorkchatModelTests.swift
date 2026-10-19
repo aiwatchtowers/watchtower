@@ -252,21 +252,31 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertTrue(model.outgoing.isEmpty)
     }
 
-    /// Shift-Return's line break goes as a space (PROJ-12: one line): the
-    /// typed text, the bubble and the echo agree.
-    func testMultilineDraftSentAsOneLine() async throws {
+    /// A Workchat line keeps its line breaks (owner ask #421, PROJ-12
+    /// amended): the typed paste, the bubble and the echo agree.
+    func testMultilineDraftKeepsLineBreaks() async throws {
         let session = try await liveSession()
         setState(session, .stopped)
         let model = try makeModel(session)
-        model.draft = "Fix the test\nand\trun it"
+        model.draft = "Fix the test\r\nand run it \n"
 
         await model.send()
 
-        XCTAssertEqual(model.outgoing.map(\.text), ["Fix the test and run it"])
+        XCTAssertEqual(model.outgoing.map(\.text), ["Fix the test\nand run it"])
         XCTAssertEqual(model.outgoing.first?.state, .sent)
-        XCTAssertTrue(typedText.contains("Fix the test and run it"), "typed as the bubble shows it: \(typedText)")
-        model.reconcile(with: [owner("Fix the test and run it", after: 1)])
+        XCTAssertTrue(typedText.contains("Fix the test\nand run it"), "typed with its line break: \(typedText)")
+        model.reconcile(with: [owner("Fix the test\nand run it", after: 1)])
         XCTAssertTrue(model.outgoing.isEmpty)
+    }
+
+    func testWhitespaceOnlyDraftNotSent() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        model.draft = " \n\t\n "
+        await model.send()
+        XCTAssertTrue(model.outgoing.isEmpty)
+        XCTAssertEqual(typedText, "")
     }
 
     /// The pane was off screen past the window: an echo dated in time still

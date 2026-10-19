@@ -257,7 +257,7 @@ final class SessionLineDelivery {
             return .noSession
         }
         let reread: () async -> Bool = { [weak self] in await self?.ownRead() ?? false }
-        let result = await center.submitPrompt(line, sessionID: sessionID, keepingLineBreaks: false,
+        let result = await center.submitPrompt(line, sessionID: sessionID, keepingLineBreaks: key.keepsLineBreaks,
                                                keepingFormatCharacters: key.keepsFormatCharacters,
                                                delay: center.inputProfile(sessionID).submitSettle,
                                                refresh: reread) { [weak self] in
@@ -327,6 +327,12 @@ extension SessionLineDelivery.LineKey {
         case .input, .workchat: true
         case .ask, .review: false
         }
+    }
+
+    /// Only the Workchat's lines keep their paragraphs (owner ask #421,
+    /// PROJ-12 amended); every other line is pasted as one line.
+    var keepsLineBreaks: Bool {
+        if case .workchat = self { true } else { false }
     }
 
     /// The app log's source: an answer's lines keep `OwnerAsks` (PROJ-12).

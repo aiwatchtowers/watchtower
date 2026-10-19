@@ -1301,7 +1301,7 @@ it again once it was cleared; only Go writes it.
 
 ## PROJ-12 — an ask's answer is submitted only into a session whose hooks reported this run, never into a permission prompt they reported nor over the owner's half-typed text
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-03 as the spec's "PROJ-11", renumbered because PROJ-11 was taken by the session state hooks; amended 2026-10-04 with the owner's approval, board #379 — the owner asked for the answer to go to the agent by itself after answering an ask instead of having to press Enter, see the changelog; amended 2026-10-07 with the owner's approval, board #396 (owner directive 2026-10-05: «send it right away»); amended 2026-10-12 for Codex sessions, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-16 with the owner's approval (spec review ask #179, board #328): the diff reviewer's round line uses the same delivery)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-03 as the spec's "PROJ-11", renumbered because PROJ-11 was taken by the session state hooks; amended 2026-10-04 with the owner's approval, board #379 — the owner asked for the answer to go to the agent by itself after answering an ask instead of having to press Enter, see the changelog; amended 2026-10-07 with the owner's approval, board #396 (owner directive 2026-10-05: «send it right away»); amended 2026-10-12 for Codex sessions, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-16 with the owner's approval (spec review ask #179, board #328): the diff reviewer's round line uses the same delivery; amended 2026-10-19 with the owner's approval (ask #421, board #711/#758): a Workchat line keeps its line breaks (multi-line bracketed paste, like the code-question hand-off); every other line is still pasted as one line)
 
 **Observable:** When the owner answers an ask in the Desktop, the answer is
 stored first — one guarded `UPDATE owner_asks SET status='answered', answer,
@@ -1313,7 +1313,7 @@ get_ask <id> using the watchtower-workbench skill.` (Swift `OwnerAskPrompt`, a
 dual path with Go `asks.DeliveryLine` pinned by `internal/asks/testdata/lines`;
 every control character and newline becomes a space), sent to the ask's own
 running session through `TerminalCenter.submitPrompt` as one bracketed paste
-with no line break or control character inside it, followed after
+with no line break or control character inside it (the Workchat's lines alone keep their line breaks — one multi-line bracketed paste, `SessionLineDelivery.LineKey.keepsLineBreaks`; every other line is one line), followed after
 `answerSubmitDelay` (500 ms) by one Return written on its own — so Claude
 Code submits it (while the agent works, Claude Code queues it). The Return
 follows only when, both before the pause and after it (the states re-read):
@@ -1413,7 +1413,7 @@ keystrokes without bracketed paste — or a half-typed prompt, which it would
 submit together with the answer — hence no Return over the owner's draft.
 Two lines pasted into one prompt would be submitted as one message — hence
 one delivery per session at a time. A line with a line break of its own
-could submit early or split; and a line typed before the answer is stored
+(other than a Workchat line, which is one bracketed paste) could submit early or split; and a line typed before the answer is stored
 would send the agent to read an answer that is not there — the
 `WorkbenchCommentPrompt` rule carried over to asks.
 
@@ -2460,6 +2460,7 @@ owner never saw.
 
 ## Changelog
 
+- 2026-10-19 (board #711/#758, **owner approved in ask #421**): **PROJ-12 amended** for Workchat lines only — a Workchat message keeps its line breaks and is pasted as one multi-line bracketed paste (as the code-question hand-off does); the ask answer, the phone's input and the review round lines are still one line. Heading, other wording and every guard unchanged; `WorkchatModelTests.testMultilineDraftKeepsLineBreaks` and `SessionLineDeliveryTests.testOtherLineKeysStillOneLine` pin it.
 - 2026-10-18 (board #849, **owner approved in ask #350**): agent analytics move to `agentlog.db`. PROJ-02's exception text is amended — unchanged in substance (analytics rows outlive a deleted workbench and are adopted by a workbench later created on the same folder), but they no longer live in `watchtower.db`, so "no rows left in `watchtower.db`" holds without an exception. `TestProj02_DeleteProjectLeavesNoRows` loses its analytics seeding and its two analytics assertions ("the analytics session survives with project_id NULL", "the analytics events survive"); its name and every other assertion are unchanged. The guarantee stays guarded by `TestAgentLog_SurvivesWorkbenchDeleteAndIsAdopted`, now in `internal/agentlogdb` against `agentlog.db`.
 - 2026-10-18 (board #670 phase 2b-1, PR #398): note only — **no contract or assertion changed**. `WorkbenchBoardViewModel`'s owner writes are queued off the main thread; `testStatusWriteReportsTheParentsTheRollupMoved` gained `await vm.writesSettled()` after its synchronous `setStatus`, and `testMoveReportsBothRolledUpParentsAndExpandsTheNewOne` and `testArchivedTargetsShowOnlyWithTheToggleAndReopeningRestoresOne` hoist the awaited `move`/`setStatus` result into a `let`. PROJ-05's rollup reporting and PROJ-15 are unchanged.
 - 2026-10-18 (board #670 phase 2a, heads-up to the owner): **no contract changed and no assertion changed.** `DatabaseManager.wipeLLMData` is `async` (it no longer writes on the main thread). The PROJ-02 guard `testWipeLLMDataPreservesProjectTargets` changes mechanically and only that way: it gains `async`, and the wipe and its setup writes and reads gain `await`. Every assertion is byte-identical.
