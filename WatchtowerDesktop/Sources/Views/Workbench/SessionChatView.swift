@@ -3,7 +3,8 @@ import WatchtowerCore
 
 /// The dialog of an agent session as a chat (`.sessionChat`): the owner
 /// right in a tinted bubble, the agent left without one, Watchtower's own
-/// lines marked "via Watchtower", subagents as cards opening a sheet.
+/// lines marked "via Watchtower", subagents as cards opening in place (the
+/// path bar leads back).
 struct SessionChatView: View {
     @Environment(AppState.self) private var appState
     let vm: WorkbenchesViewModel
@@ -11,7 +12,18 @@ struct SessionChatView: View {
     let projectID: Int64
 
     @StateObject private var store: SessionFeedStore
-    @State private var openedSubagent: SessionFeedEntry?
+    /// The subagents opened in place; empty = the main feed.
+    @State private var path = SessionChatPath()
+    @FocusState private var subagentFocused: Bool
+    /// Per pane, never shared across sessions: parsed text per entry, the
+    /// built slice of a long chat, and which events show their body.
+    @State private var markdown = SessionFeedMarkdownCache()
+    @State private var window = SessionFeedWindow()
+    @State private var expandedEvents: Set<String> = []
+    @State private var follow = ChatFollowTrackerBox()
+    @State private var loadingRowVisible = false
+    private static var bottomID: String { "session-chat-bottom" }
+    private static var scrollSpace: String { "session-chat-scroll" }
 
     init(vm: WorkbenchesViewModel, sessionID: Int64, projectID: Int64) {
         self.vm = vm
@@ -33,42 +45,321 @@ struct SessionChatView: View {
         vm.session(sessionID, projectID: projectID).map { vm.sessionState($0).kind }
     }
 
+    /// The session's composer (#711); nil without the app's `SessionControl`.
+    private var workchat: WorkchatModel? { vm.workchat(sessionID: sessionID) }
+
+    /// A live session that has not finished takes lines; a finished or
+    /// stopped one keeps its history readable only.
+    private var composerShown: Bool {
+        guard let session = vm.session(sessionID, projectID: projectID) else { return false }
+        let state = vm.sessionState(session)
+        return state.live && state.kind != .finished
+    }
+
+    /// A known session that ended shows the finished line; an unknown one
+    /// (the sessions not loaded yet) shows neither it nor the composer.
+    private var finishedShown: Bool {
+        vm.session(sessionID, projectID: projectID) != nil && !composerShown
+    }
+
+    /// The round button is Stop while the agent or its subagents work.
+    private var working: Bool {
+        vm.sessionStatuses[sessionID].map(SessionControl.isWorking) ?? false
+    }
+
+    /// The session's pending prompt, shown only while the session takes
+    /// lines: a finished one's stale row is not answered from here.
+    private var permission: SessionControl.PermissionPrompt? {
+        composerShown ? workchat?.permission : nil
+    }
+
+    /// This session's open asks, oldest first; one leaves once answered.
+    private var openAsks: [OwnerAsk] {
+        (vm.asks.openAsks[projectID] ?? []).filter { $0.sessionID == sessionID }
+    }
+
+    /// A typed or copied line waits for the owner in the terminal.
+    private func showInTerminal() {
+        Task { await vm.showTerminalFromWorkchat(sessionID: sessionID, projectID: projectID) }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             if store.runnerMissing {
                 errorBar(WorkbenchesViewModel.cliMissingMessage, retry: false)
-            } else if let error = store.error {
+            } else if path.isRoot, let error = store.error {
                 errorBar(error, retry: true)
             }
-            if store.entries.isEmpty {
+            if let subagent = path.stack.last {
+                subagentScreen(subagent)
+            } else if store.entries.isEmpty && (workchat?.outgoing.isEmpty ?? true) && permission == nil && openAsks.isEmpty {
                 emptyState
             } else {
                 feed
             }
+            if path.isRoot && finishedShown {
+                // No composer and no Stop once the session ended.
+                Divider()
+                Text("Session finished. The history stays readable.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(Spacing.cozy)
+            } else if path.isRoot, composerShown, let workchat {
+                Divider()
+                // No card to carry it: a failed permission read shows here.
+                if permission == nil, let error = workchat.permissionError {
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, Spacing.large)
+                        .padding(.top, Spacing.compact)
+                }
+                WorkchatComposer(model: workchat, working: working)
+            }
         }
-        .task(id: stateKind) {
+        // Each hook write for the session reads its permission prompt again
+        // (its hook writes the row and the state): keyed on the stamp
+        // too, so a second prompt within one state poll is still read.
+        .task(id: WorkchatModel.PermissionReadKey(vm.sessionStatuses[sessionID])) {
+            await workchat?.refreshPermission()
+        }
+        // The feed shows a sent line: its bubble leaves.
+        .onChange(of: store.entries) { _, entries in workchat?.reconcile(with: entries) }
+        // The main feed is polled only while it is on screen: an open
+        // subagent stops it, and back at the root it is read once.
+        .task(id: MainFollowKey(state: stateKind, root: path.isRoot)) {
+            guard path.isRoot else { return }
             await store.follow(isActive: { isActive }, isOnScreen: { vm.isTabOnScreen() })
         }
         // The app's visibility hub (#731): back on screen after a skipped
         // read, the feed is read at once. Bound to the pane's lifetime.
         .task(id: appState.uiVisibility.isOnScreen) {
+            guard path.isRoot else { return }
             await store.screenChanged(appState.uiVisibility.isOnScreen)
         }
-        .sheet(item: $openedSubagent) { entry in
-            SessionChatSubagentSheet(store: store, entry: entry)
+        .onChange(of: sessionID) { path = SessionChatPath() }
+    }
+
+    private struct MainFollowKey: Hashable {
+        let state: SessionSwitcherPresentation.State.Kind?
+        let root: Bool
+    }
+
+    /// Back on screen or a new session state: the open subagent is read again.
+    private struct SubagentFollowKey: Hashable {
+        let state: SessionSwitcherPresentation.State.Kind?
+        let onScreen: Bool
+    }
+
+    /// One subagent in place of the feed: the path bar, its run, and the
+    /// read-only line where the composer would be.
+    private func subagentScreen(_ subagent: SessionFeedSubagent) -> some View {
+        VStack(spacing: 0) {
+            pathBar(subagent)
+            Divider()
+            SessionChatSubagentView(
+                store: store,
+                subagent: subagent,
+                isActive: { isActive },
+                isOnScreen: { vm.isTabOnScreen() },
+                onOpenSubagent: { path.push($0) },
+                followKey: SubagentFollowKey(state: stateKind, onScreen: appState.uiVisibility.isOnScreen)
+            )
+            .id(path.stack.map(\.toolUseID))
+            Divider()
+            Text("Subagents are read-only. Write to the agent in the main Workchat.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(Spacing.cozy)
+        }
+        // Esc and ⌘[ pop one level while the pane has focus; it takes focus when
+        // a subagent opens, so Esc works without another click.
+        .focusable()
+        .focusEffectDisabled()
+        .focused($subagentFocused)
+        // ⌘[ belongs to the menu's "Back to Workbenches", which runs this
+        // first while this pane has focus.
+        .focusedValue(\.sessionChatPop) { path.pop() }
+        .onKeyPress(.escape) {
+            path.pop()
+            return .handled
+        }
+        .onAppear { subagentFocused = true }
+    }
+
+    /// **‹ Back**, then `Workchat › type › …`: each part opens its level.
+    private func pathBar(_ subagent: SessionFeedSubagent) -> some View {
+        HStack(spacing: Spacing.compact) {
+            Button("‹ Back") { path.pop() }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Spacing.small) {
+                    Button("Workchat") { path.popTo(level: 0) }
+                        .buttonStyle(.link)
+                    ForEach(Array(path.stack.enumerated()), id: \.offset) { index, item in
+                        Text("›").foregroundStyle(.tertiary)
+                        let title = Self.title(item)
+                        if index == path.stack.count - 1 {
+                            Text(title).fontWeight(.semibold)
+                        } else {
+                            Button(title) { path.popTo(level: index + 1) }
+                                .buttonStyle(.link)
+                        }
+                    }
+                }
+            }
+            Spacer(minLength: 4)
+            if let status = statusLabel(subagent) {
+                Text(status).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .font(.callout)
+        .padding(.horizontal, Spacing.cozy)
+        .padding(.vertical, Spacing.compact)
+    }
+
+    private static func title(_ subagent: SessionFeedSubagent) -> String {
+        subagent.type.isEmpty ? "Subagent" : subagent.type
+    }
+
+    /// The marker's status as it was when the subagent opened. "Running"
+    /// only while the session is active: the main feed, which would update
+    /// the marker, is not read while a subagent is open.
+    private func statusLabel(_ subagent: SessionFeedSubagent) -> String? {
+        switch subagent.status {
+        case "running": isActive ? "Running" : nil
+        case "finished": "Finished"
+        default: nil
         }
     }
 
+    /// The newest `window` of entries; the owner scrolling to the top grows
+    /// it, and following the bottom works as in AI Chat (`ChatFollowTracker`).
     private var feed: some View {
-        ScrollView {
-            LazyVStack(spacing: 10) {
-                ForEach(store.entries) { entry in
-                    SessionChatRow(entry: entry) { openedSubagent = entry }
+        ScrollViewReader { proxy in
+            GeometryReader { viewport in
+                ScrollView {
+                    LazyVStack(spacing: Spacing.cozy) {
+                        if window.hasEarlier(total: store.entries.count) {
+                            loadingRow
+                                .onAppear {
+                                    loadingRowVisible = true
+                                    if !loadEarlier(proxy: proxy) { fillIfShort(follow.tracker.lastMetrics) }
+                                }
+                                .onDisappear { loadingRowVisible = false }
+                        }
+                        ForEach(store.entries[window.range(total: store.entries.count)]) { entry in
+                            row(entry).id(entry.id)
+                        }
+                        if let workchat {
+                            ForEach(workchat.outgoing) { line in
+                                WorkchatOutgoingBubble(
+                                    line: line,
+                                    onCancel: { workchat.cancel(line.id) },
+                                    onShowTerminal: showInTerminal
+                                )
+                                .id(line.id)
+                            }
+                            if let permission {
+                                WorkchatPermissionCard(model: workchat, prompt: permission, onShowTerminal: showInTerminal)
+                                    .id("permission-\(permission.id)")
+                            }
+                        }
+                        ForEach(openAsks) { ask in
+                            WorkchatAskCard(ask: ask) { vm.asks.openDrawer(ask) }
+                                .id("ask-\(ask.id)")
+                        }
+                        // The bottom margin: scrolling to it lands at the
+                        // content's true bottom (the `ChatFeedView` rule).
+                        Color.clear.frame(height: 14).id(Self.bottomID)
+                    }
+                    .padding([.top, .horizontal], Spacing.medium)
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear.preference(key: ChatContentFramePreferenceKey.self,
+                                                   value: geo.frame(in: .named(Self.scrollSpace)))
+                        }
+                    )
+                }
+                .coordinateSpace(name: Self.scrollSpace)
+                .defaultScrollAnchor(.bottom)
+                .onPreferenceChange(ChatContentFramePreferenceKey.self) { frame in
+                    guard let frame else { return }
+                    measure(.init(contentTop: frame.minY, contentHeight: frame.height,
+                                  viewportHeight: viewport.size.height), proxy: proxy)
+                }
+                // A height-only resize leaves the content frame unchanged in
+                // the scroll space (the `ChatFeedView` rule).
+                .onChange(of: viewport.size.height) { _, height in
+                    guard let last = follow.tracker.lastMetrics else { return }
+                    measure(.init(contentTop: last.contentTop, contentHeight: last.contentHeight,
+                                  viewportHeight: height), proxy: proxy)
                 }
             }
-            .padding(14)
         }
-        .defaultScrollAnchor(.bottom)
+    }
+
+    private func row(_ entry: SessionFeedEntry) -> some View {
+        SessionChatRow(entry: entry, blocks: markdown.blocks(for: entry),
+                       expanded: expandedEvents.contains(entry.id),
+                       onOpenSubagent: { entry.subagent.map { path.push($0) } },
+                       onToggle: { toggleEvent(entry.id) })
+            .equatable()
+    }
+
+    private var loadingRow: some View {
+        HStack(spacing: Spacing.compact) {
+            ProgressView().controlSize(.mini)
+            Text("Loading earlier messages…")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity)
+    }
+
+    private func toggleEvent(_ id: String) {
+        if expandedEvents.contains(id) { expandedEvents.remove(id) } else { expandedEvents.insert(id) }
+    }
+
+    /// Grows the window by one step and keeps the entry that was at the top
+    /// on screen. Only while the owner reads older text: a following view
+    /// stays at the bottom (the loading row can lay out at open).
+    /// Returns whether the window grew.
+    @discardableResult
+    private func loadEarlier(proxy: ScrollViewProxy) -> Bool {
+        guard !window.following, let anchor = window.grow(entries: store.entries) else { return false }
+        // After the grown rows lay out.
+        DispatchQueue.main.async { proxy.scrollTo(anchor, anchor: .top) }
+        return true
+    }
+
+    /// Feeds one content measurement to the tracker, mirrors its follow bit
+    /// into the window, and pulls a following view down when content grew.
+    private func measure(_ current: ChatAutoScrollPolicy.Metrics, proxy: ScrollViewProxy) {
+        guard current.viewportHeight > 0 else { return }
+        let pull = follow.tracker.observeMeasurement(current)
+        let following = follow.tracker.following
+        if following != window.following {
+            window.setFollowing(following, total: store.entries.count)
+            // The loading row appeared before this scroll registered.
+            if !following && loadingRowVisible { loadEarlier(proxy: proxy) }
+        }
+        if pull { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+        fillIfShort(current)
+    }
+
+    /// Content shorter than the viewport keeps the loading row on screen, so
+    /// its `onAppear` never fires again: grow from the measure path instead.
+    /// Nothing scrolls, so no anchor is kept.
+    private func fillIfShort(_ metrics: ChatAutoScrollPolicy.Metrics?) {
+        guard let metrics,
+              window.needsFill(total: store.entries.count, contentHeight: Double(metrics.contentHeight),
+                               viewportHeight: Double(metrics.viewportHeight))
+        else { return }
+        _ = window.grow(entries: store.entries)
     }
 
     @ViewBuilder
@@ -93,173 +384,5 @@ struct SessionChatView: View {
         }
         .padding(8)
         .background(Color.orange.opacity(0.1))
-    }
-}
-
-/// One message of the chat, shared by the pane and the subagent sheet.
-struct SessionChatRow: View {
-    let entry: SessionFeedEntry
-    var openSubagent: (() -> Void)?
-
-    var body: some View {
-        switch entry.kind {
-        case "owner":
-            ownerBubble(label: nil, title: nil, caption: nil)
-        case "ask_answer":
-            ownerBubble(label: entry.askID.map { "Ask #\($0)" } ?? "Ask", title: entry.title, caption: "via Watchtower")
-        case "watchtower":
-            ownerBubble(label: nil, title: nil, caption: "via Watchtower")
-        case "agent":
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    SessionChatText(text: entry.text)
-                    timeCaption
-                }
-                Spacer(minLength: 48)
-            }
-        case "brief":
-            DisclosureGroup {
-                SessionChatText(text: entry.text).padding(.top, 4)
-            } label: {
-                Text("Watchtower: brief").font(.caption).foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: 360)
-            .frame(maxWidth: .infinity)
-        case "separator":
-            HStack(spacing: 8) {
-                Rectangle().fill(.quaternary).frame(height: 1)
-                Text("New conversation").font(.caption).foregroundStyle(.secondary)
-                Rectangle().fill(.quaternary).frame(height: 1)
-            }
-        case "subagent":
-            if let subagent = entry.subagent {
-                subagentCard(subagent)
-            }
-        default:
-            EmptyView()
-        }
-    }
-
-    private func ownerBubble(label: String?, title: String?, caption: String?) -> some View {
-        HStack {
-            Spacer(minLength: 48)
-            VStack(alignment: .trailing, spacing: 3) {
-                VStack(alignment: .leading, spacing: 4) {
-                    if let label {
-                        Text(label).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    }
-                    if let title, !title.isEmpty {
-                        Text(title).font(.callout.weight(.semibold))
-                    }
-                    SessionChatText(text: entry.text)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(Color.accentColor.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                HStack(spacing: 6) {
-                    if let caption { Text(caption) }
-                    if let at = entry.at { Text(at, format: .dateTime.hour().minute()) }
-                }
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var timeCaption: some View {
-        if let at = entry.at {
-            Text(at, format: .dateTime.hour().minute()).font(.caption2).foregroundStyle(.tertiary)
-        }
-    }
-
-    private func subagentCard(_ subagent: SessionFeedSubagent) -> some View {
-        Button {
-            openSubagent?()
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "person.2").foregroundStyle(.secondary)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(subagent.type.isEmpty ? "Subagent" : subagent.type).font(.callout.weight(.semibold))
-                    if !subagent.description.isEmpty {
-                        Text(subagent.description).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                    }
-                }
-                Spacer(minLength: 4)
-                Text(subagent.status == "running" ? "Running" : subagent.status == "finished" ? "Finished" : "")
-                    .font(.caption).foregroundStyle(.secondary)
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
-            }
-            .padding(10)
-            .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5))
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: 420, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-/// Markdown text: fenced code blocks monospaced, the rest inline Markdown
-/// with its line breaks kept. Parsed once per text, not per render.
-struct SessionChatText: View {
-    private enum Segment {
-        case prose(AttributedString)
-        case code(String)
-    }
-
-    private let segments: [Segment]
-
-    init(text: String) {
-        segments = Self.split(text)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(segments.enumerated()), id: \.offset) { _, segment in
-                switch segment {
-                case let .prose(text):
-                    Text(text).textSelection(.enabled)
-                case let .code(code):
-                    Text(code)
-                        .font(.system(.callout, design: .monospaced))
-                        .textSelection(.enabled)
-                        .padding(8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-                }
-            }
-        }
-    }
-
-    private static func split(_ text: String) -> [Segment] {
-        var result: [Segment] = []
-        var prose: [Substring] = []
-        var code: [Substring] = []
-        var inCode = false
-        func flushProse() {
-            let joined = prose.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            prose = []
-            guard !joined.isEmpty else { return }
-            let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-            result.append(.prose((try? AttributedString(markdown: joined, options: options)) ?? AttributedString(joined)))
-        }
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            if line.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
-                if inCode {
-                    result.append(.code(code.joined(separator: "\n")))
-                    code = []
-                } else {
-                    flushProse()
-                }
-                inCode.toggle()
-            } else if inCode {
-                code.append(line)
-            } else {
-                prose.append(line)
-            }
-        }
-        if inCode { result.append(.code(code.joined(separator: "\n"))) } else { flushProse() }
-        return result
     }
 }

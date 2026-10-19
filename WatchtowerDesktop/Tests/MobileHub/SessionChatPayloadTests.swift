@@ -117,6 +117,13 @@ final class SessionChatPayloadTests: XCTestCase {
         XCTAssertEqual(capped["entries_more"] as? Int, 50)
     }
 
+    func testEventEntryNotPublished() throws {
+        let event = SessionFeedEntry(id: "ev", kind: "event", at: Date(timeIntervalSince1970: 1_700_000_001), text: "body", eventType: "task")
+        let json = try encode([entry(0), event]).json
+        XCTAssertEqual(try items(json).compactMap { $0["id"] as? String }, [entry(0).id])
+        XCTAssertEqual(json["entries_more"] as? Int ?? 0, 0)
+    }
+
     func testIdenticalFetchesAreByteIdentical() throws {
         let entries = (0..<5).map { entry($0) }
         XCTAssertEqual(try encode(entries).data, try encode(entries).data)

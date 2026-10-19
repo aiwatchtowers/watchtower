@@ -34,7 +34,7 @@ struct WorkbenchSessionView: View {
             }, action: { room in
                 vm.sessionPaneMeasured(room.sessionID, projectID: projectID, fits: room.fits)
             })
-            .onDisappear { vm.asks.setRoomBeside(false, sessionID: sessionID) }
+            .onDisappear { vm.sessionPaneLeft(.session(sessionID), projectID: projectID) }
         } else {
             pane
         }

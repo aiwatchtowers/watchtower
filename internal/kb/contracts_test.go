@@ -58,7 +58,7 @@ func dumpKB(t *testing.T, d *db.DB) string {
 
 // kbSourceTables are the tables the indexer reads; it must never write them.
 var kbSourceTables = []string{
-	"messages", "gmail_messages", "imap_messages", "jira_issues", "jira_comments", "calendar_events",
+	"messages", "gmail_messages", "imap_messages", "jira_issues", "jira_comments", "linear_issues", "linear_comments", "calendar_events",
 	"meeting_transcripts", "meeting_recaps", "digests", "digest_topics", "stream_digests", "ideas", "idea_mentions",
 	"ext_documents", "ext_comments", "ext_users", "projects",
 }
@@ -185,6 +185,7 @@ func TestKB03_EveryHitOpensAndAnchors(t *testing.T) {
 		"gmail":         {"бюджет", "solo"},
 		"imap":          {"инвойс"},
 		"jira":          {"стейдж"},
+		"linear":        {"импортёр*"},
 		"calendar":      {"стейдж", "квартальное"},
 		"transcript":    {"миграция"},
 		"recap":         {"ретроспективу", "созвон"},

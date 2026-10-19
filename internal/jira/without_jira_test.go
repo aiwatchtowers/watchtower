@@ -50,7 +50,7 @@ func seedDigest(t *testing.T, d *db.DB, channelID string, periodFrom float64, me
 // seedJiraSlackLink inserts a jira_slack_link row.
 func seedJiraSlackLink(t *testing.T, d *db.DB, issueKey, channelID, detectedAt string) {
 	t.Helper()
-	_, err := d.Exec(`INSERT INTO jira_slack_links (issue_key, channel_id, message_ts, link_type, detected_at)
+	_, err := d.Exec(`INSERT INTO issue_slack_links (issue_key, channel_id, message_ts, link_type, detected_at)
 		VALUES (?, ?, '100.001', 'mention', ?)`,
 		issueKey, channelID, detectedAt)
 	require.NoError(t, err)

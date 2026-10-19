@@ -482,6 +482,13 @@ if [ -n "$FLAVOR" ]; then
     fi
 fi
 
+# Every --dev build carries the marker that turns on the developer-only Design
+# Gallery (DevBuild.isEnabled), a --dev build with a flavor included; a build
+# without --dev (a release, flavored or not) never gets it.
+if $DEV_MODE; then
+    /usr/libexec/PlistBuddy -c "Add :WTDevBuild bool true" "$APP_BUNDLE/Contents/Info.plist"
+fi
+
 # Code sign — one path for dev and release.
 # TCC pins permission grants (mic, system audio) to the app's code signature. An
 # ad-hoc signature has no designated requirement, so the grant keys off the

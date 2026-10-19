@@ -471,6 +471,8 @@ struct WatchtowerApp: App {
             }
             // Issue #288: the workbench page's chords, before Navigate.
             WorkbenchCommands(appState: appState)
+            // #711: ⌃` Show Terminal / Show Workchat, in the View menu.
+            WorkchatCommands()
             // Only while a workbench window is key (spec §10, ruling R36):
             // `keyWorkbench` is the workbench on screen while its window (or
             // its Open Quickly panel) is key. Inside Monaco these chords reach
@@ -522,6 +524,8 @@ struct WatchtowerApp: App {
             KeyboardShortcutsView()
         }
         .defaultSize(width: 620, height: 720)
+
+        DesignGalleryScene()
 
         Window("Logs", id: "logs") {
             LogsSettings()

@@ -79,7 +79,7 @@ read-only old→new tool name map for stored `agent_actions` rows (DEV-06); see
 `WatchtowerDesktop/Sources/WatchtowerCore/{Models/SessionReport,Services/SessionStatePresentation,Services/SessionSwitcherPresentation,Services/SessionReportPresentation}.swift` +
 `WatchtowerDesktop/Sources/WatchtowerCore/{Models/OwnerAsk,Database/Queries/OwnerAskQueries,Services/OwnerAsk*}.swift` +
 `WatchtowerDesktop/Sources/ViewModels/OwnerAsksViewModel.swift` + `WatchtowerDesktop/Sources/Services/SessionLineDelivery.swift` +
-`WatchtowerDesktop/Sources/Services/MobileHub/Handlers/SessionInputHandlers.swift` (PROJ-16) +
+`WatchtowerDesktop/Sources/Services/MobileHub/Handlers/SessionInputHandlers.swift` + `WatchtowerDesktop/Sources/Services/SessionControl.swift` (PROJ-16) +
 `WatchtowerDesktop/Sources/WatchtowerCore/{Services/OwnerPresencePolicy,Services/ChatQuestionEscalationPolicy,Models/ChatQuestionEscalationResult,Database/Queries/OwnerPresenceQueries}.swift` +
 `WatchtowerDesktop/Sources/Services/{OwnerPresenceCenter,ChatQuestionEscalator}.swift` +
 `internal/agentkind/` + `internal/db/migrations/00109_terminal_sessions_codex.sql` + `internal/codex/appserver.go` +
@@ -1301,7 +1301,7 @@ it again once it was cleared; only Go writes it.
 
 ## PROJ-12 — an ask's answer is submitted only into a session whose hooks reported this run, never into a permission prompt they reported nor over the owner's half-typed text
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-03 as the spec's "PROJ-11", renumbered because PROJ-11 was taken by the session state hooks; amended 2026-10-04 with the owner's approval, board #379 — the owner asked for the answer to go to the agent by itself after answering an ask instead of having to press Enter, see the changelog; amended 2026-10-07 with the owner's approval, board #396 (owner directive 2026-10-05: «send it right away»); amended 2026-10-12 for Codex sessions, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-16 with the owner's approval (spec review ask #179, board #328): the diff reviewer's round line uses the same delivery)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-03 as the spec's "PROJ-11", renumbered because PROJ-11 was taken by the session state hooks; amended 2026-10-04 with the owner's approval, board #379 — the owner asked for the answer to go to the agent by itself after answering an ask instead of having to press Enter, see the changelog; amended 2026-10-07 with the owner's approval, board #396 (owner directive 2026-10-05: «send it right away»); amended 2026-10-12 for Codex sessions, owner approved with the Codex design spec in ask #189, board #399; amended 2026-10-16 with the owner's approval (spec review ask #179, board #328): the diff reviewer's round line uses the same delivery; amended 2026-10-19 with the owner's approval (ask #421, board #711/#758): a Workchat line keeps its line breaks (multi-line bracketed paste, like the code-question hand-off); every other line is still pasted as one line)
 
 **Observable:** When the owner answers an ask in the Desktop, the answer is
 stored first — one guarded `UPDATE owner_asks SET status='answered', answer,
@@ -1313,7 +1313,7 @@ get_ask <id> using the watchtower-workbench skill.` (Swift `OwnerAskPrompt`, a
 dual path with Go `asks.DeliveryLine` pinned by `internal/asks/testdata/lines`;
 every control character and newline becomes a space), sent to the ask's own
 running session through `TerminalCenter.submitPrompt` as one bracketed paste
-with no line break or control character inside it, followed after
+with no line break or control character inside it (the Workchat's lines alone keep their line breaks — one multi-line bracketed paste, `SessionLineDelivery.LineKey.keepsLineBreaks`; every other line is one line), followed after
 `answerSubmitDelay` (500 ms) by one Return written on its own — so Claude
 Code submits it (while the agent works, Claude Code queues it). The Return
 follows only when, both before the pause and after it (the states re-read):
@@ -1413,7 +1413,7 @@ keystrokes without bracketed paste — or a half-typed prompt, which it would
 submit together with the answer — hence no Return over the owner's draft.
 Two lines pasted into one prompt would be submitted as one message — hence
 one delivery per session at a time. A line with a line break of its own
-could submit early or split; and a line typed before the answer is stored
+(other than a Workchat line, which is one bracketed paste) could submit early or split; and a line typed before the answer is stored
 would send the agent to read an answer that is not there — the
 `WorkbenchCommentPrompt` rule carried over to asks.
 
@@ -2016,7 +2016,7 @@ loses uncommitted work for good, so every doubt keeps the item.
 
 ## PROJ-21 — a permission prompt is answered from the phone only by the owner's explicit Allow once or Deny, from a device allowed for it on the Mac, through the hook; the answer types nothing, allows one call, and never answers a prompt the Mac answered first
 
-**Status:** Enforced (Go and Desktop; board #517, owner decisions in ask #263, spec approved in ask #265; spec `docs/superpowers/specs/2026-10-17-phone-permission-answers-design.md` §4–§7, plan `docs/superpowers/plans/2026-10-17-phone-permission-answers.md`)
+**Status:** Enforced (Go and Desktop; board #517, owner decisions in ask #263, spec approved in ask #265; spec `docs/superpowers/specs/2026-10-17-phone-permission-answers-design.md` §4–§7, plan `docs/superpowers/plans/2026-10-17-phone-permission-answers.md`; amended 2026-10-19, ask #400: the Workchat card on the Mac answers through the same guarded compare-and-set, `decided_by = "Mac"`, no device grant)
 
 **Observable:** A Claude Code permission prompt of a board `claude`
 session is answered from the phone only through the synchronous
@@ -2113,6 +2113,14 @@ Working, with typing requested and allowed and no pending request.
 The phone's card mirrors the Deny-only rule: a shortened or settings-path
 request shows its note and **Deny** with no **Allow once**.
 
+The Mac's Workchat card (#711) answers the same row through
+`SessionControl.answerPermission` — the one compare-and-set above, with
+`WorkchatModel`'s `decidedBy` `"Mac"` and no device grant (the owner is at
+the Mac) — and the Deny-only blocks (`PermissionAllowBlock`) apply on the
+card too: such a request shows its note, **Deny** and **Show in Terminal**;
+a Workchat deny makes the hook print the message `Denied by the owner at
+the Mac.` instead of the phone's.
+
 The Desktop's expiry of `pending` rows (older than 86400 s, or of a
 session that is not live) treats every session as live until the launch's
 reattach of the session host's runs is done (`SessionLiveness.settled`,
@@ -2130,7 +2138,8 @@ Esc at a prompt rejects it, and an Esc on a later turn interrupts work the
 owner never saw.
 
 **Test guards:**
-- `cmd/workbench_permission_wait_test.go` — `TestProj21_PermissionWaitPhoneAllowPrintsAllow`, `TestProj21_PermissionWaitPhoneDenyPrintsDeny` (the exact decision JSON: allow with no `updatedInput`/`updatedPermissions`, the deny message), `TestProj21_PermissionWaitMacAnswerWins`, `TestProj21_PermissionWaitNotABoardSessionExitsSilently` (no output, under 100 ms), `TestProj21_PermissionWaitDBFailureExitsSilently` (an unreadable config: no decision, one stderr line), `TestProj21_PermissionWaitOpenFailureExitsSilently` (the request cannot be written: no decision, one stderr line), `TestProj21_PermissionWaitCodexRowExitsSilently`, `TestProj21_PermissionWaitOtherWorkbenchExitsSilently`, `TestProj21_PermissionWaitExpiredRequestExitsSilently`, `TestProj21_PermissionWaitNewerPromptClosesTheOlder` (the older row `answered_on_mac`, the newer still `pending`), `TestProj21_PermissionWaitLongCommandIsStoredClipped` (`summary_clipped` and the cut text)
+- `cmd/workbench_permission_wait_test.go` — `TestProj21_PermissionWaitPhoneAllowPrintsAllow`, `TestProj21_PermissionWaitPhoneDenyPrintsDeny` (the exact decision JSON: allow with no `updatedInput`/`updatedPermissions`, the deny message), `TestProj21_PermissionWaitMacAnswerWins`, `TestProj21_PermissionWaitNotABoardSessionExitsSilently` (no output, under 100 ms), `TestProj21_PermissionWaitDBFailureExitsSilently` (an unreadable config: no decision, one stderr line), `TestProj21_PermissionWaitOpenFailureExitsSilently` (the request cannot be written: no decision, one stderr line), `TestProj21_PermissionWaitCodexRowExitsSilently`, `TestProj21_PermissionWaitOtherWorkbenchExitsSilently`, `TestProj21_PermissionWaitExpiredRequestExitsSilently`, `TestProj21_PermissionWaitNewerPromptClosesTheOlder` (the older row `answered_on_mac`, the newer still `pending`), `TestProj21_PermissionWaitLongCommandIsStoredClipped` (`summary_clipped` and the cut text), `TestProj21_PermissionWaitMacWorkchatDenySaysMac` (a `decided_by = "Mac"` deny prints the Mac's message)
+- `WatchtowerDesktop/Tests/WorkchatModelTests.swift` — the Workchat card: `testAllowAppliesAndClears` (`decided_by` `"Mac"`), `testAnsweredElsewhereRemovesCard`, `testAllowBlockedKeepsDenyOnly`, `testAnswerAfterSessionEndsClears`
 - `WatchtowerDesktop/Tests/MobileHub/PermissionAnswerHandlersTests.swift` — `testProj21_AnUngrantedDeviceCannotAnswer`, `testProj21_AnAllowDecidesThePendingRowOnce` (the CAS: a second answer is `not_pending`), `testProj21_RevokeBlocksAnswers`, `testProj21_AnAnswerTypesNothing`, `testProj21_AClippedRequestCannotBeAllowed` and `testProj21_ASettingsPathEditCannotBeAllowed` (the two Deny-only rules: allow refused `answer_on_mac`, row `pending`, deny applied)
 - `WatchtowerDesktop/Tests/MobileHub/PermissionRequestSliceTests.swift::testProj21_GoClippedFlagReachesTheWire`
 - `WatchtowerKit/Tests/WatchtowerSyncTests/PermissionAllowRuleTests.swift` — `testProj21_AClippedRequestCannotBeAllowed`, `testProj21_ASettingsPathEditCannotBeAllowed` (the shared rule, every listed path)
@@ -2460,6 +2469,8 @@ owner never saw.
 
 ## Changelog
 
+- 2026-10-19 (board #711, Workchat final review; **owner approved in ask #400**): **PROJ-21 amended — no guard changed.** The Status line and one Observable paragraph record the Mac's Workchat card as a second writer of `permission_requests`: `SessionControl.answerPermission` with `decided_by = "Mac"`, through the same guarded compare-and-set, with no device grant, and the Deny-only blocks (`PermissionAllowBlock`) on the card too. The Go hook prints a second deny constant, `Denied by the owner at the Mac.`, when `decided_by` is `"Mac"`; the phone's pinned `Denied from the owner's phone.` is unchanged (`TestProj21_PermissionWaitPhoneDenyPrintsDeny` untouched; `TestProj21_PermissionWaitMacWorkchatDenySaysMac` added; the Workchat card's tests in `WorkchatModelTests` are listed under the guards). Note only: the PROJ-16/21 file lists gained `WatchtowerDesktop/Sources/Services/SessionControl.swift` — the line, interrupt and answer gates moved out of the phone handlers into it — and no contract changed.
+- 2026-10-19 (board #711/#758, **owner approved in ask #421**): **PROJ-12 amended** for Workchat lines only — a Workchat message keeps its line breaks and is pasted as one multi-line bracketed paste (as the code-question hand-off does); the ask answer, the phone's input and the review round lines are still one line. Heading, other wording and every guard unchanged; `WorkchatModelTests.testMultilineDraftKeepsLineBreaks` and `SessionLineDeliveryTests.testOtherLineKeysStillOneLine` pin it.
 - 2026-10-18 (board #704, Linear AI-8; no contract change): the sweep plan measures up to 4 worktrees at a time (each keeps its 20 s budget); the hint keeps its ready plan for the sheet its **Clean Up…** opens and forgets it on ✕; the sheet reuses a ready plan or waits for a sheet plan still running, and closing it mid-plan leaves that plan running; a ready plan is reused only within 10 minutes, and a sheet's plan is stopped and fails after 5 minutes. Supporting `testSweepHintShownOnceAboveOneGigabyte` now asserts the hint's plan is kept (it asserted the opposite); new supporting tests `testSheetOpenedFromTheHintReusesItsPlan`, `testClosingTheSheetMidPlanKeepsThePlanForTheNextOpen`, `testStalledSheetPlanFailsAtItsTimeLimit`, `testOldReadyPlanIsPlannedAgain`, `TestPlan_SweepMeasuresWorktreesConcurrently`, `TestPlan_SweepMeasuresAtMostSizeWorkersAtOnce`. No guard changed.
 - 2026-10-18 (board #849, **owner approved in ask #350**): agent analytics move to `agentlog.db`. PROJ-02's exception text is amended — unchanged in substance (analytics rows outlive a deleted workbench and are adopted by a workbench later created on the same folder), but they no longer live in `watchtower.db`, so "no rows left in `watchtower.db`" holds without an exception. `TestProj02_DeleteProjectLeavesNoRows` loses its analytics seeding and its two analytics assertions ("the analytics session survives with project_id NULL", "the analytics events survive"); its name and every other assertion are unchanged. The guarantee stays guarded by `TestAgentLog_SurvivesWorkbenchDeleteAndIsAdopted`, now in `internal/agentlogdb` against `agentlog.db`.
 - 2026-10-18 (board #670 phase 2b-1, PR #398): note only — **no contract or assertion changed**. `WorkbenchBoardViewModel`'s owner writes are queued off the main thread; `testStatusWriteReportsTheParentsTheRollupMoved` gained `await vm.writesSettled()` after its synchronous `setStatus`, and `testMoveReportsBothRolledUpParentsAndExpandsTheNewOne` and `testArchivedTargetsShowOnlyWithTheToggleAndReopeningRestoresOne` hoist the awaited `move`/`setStatus` result into a `let`. PROJ-05's rollup reporting and PROJ-15 are unchanged.

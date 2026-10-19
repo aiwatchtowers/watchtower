@@ -1,9 +1,9 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The workbench header's trailing controls: the automation buttons, then `Terminal ▾ | Session | Board |
-/// Files | Changes | split | ⋯` (spec 2026-10-03-workbench-session-report Part 7, the
-/// owner's pick on board #357).
+/// The workbench header's trailing controls: the automation buttons, then `Terminal | Workchat ▾ |
+/// Session | Board | Files | Analytics | Changes | split | ⋯` (spec 2026-10-03-workbench-session-report
+/// Part 7, the owner's pick on board #357; the twin switch is #711's variant A).
 struct WorkbenchHeaderControls: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
@@ -15,7 +15,7 @@ struct WorkbenchHeaderControls: View {
     /// The ⋯ menu's Clean Up Old Worktrees…: the page shows the sweep sheet.
     let onCleanUpOldWorktrees: () -> Void
     /// The view button under the pointer, and whether the sessions chevron
-    /// is: Terminal and its chevron light up together, as one segment.
+    /// is: Workchat and the chevron after it light up together.
     @State private var hoveredView: WorkspaceView?
     @State private var chevronHovered = false
     @State private var showsWorktreeSetup = false
@@ -40,92 +40,105 @@ struct WorkbenchHeaderControls: View {
         }
     }
 
-    /// Terminal / Session / Board / Files / Changes: on = on screen. Turning one on
-    /// shows it (beside the terminal in a split — the Session view beside
-    /// its own session's terminal); turning it off closes that pane of a
-    /// split. Split then puts two side by side.
+    /// Terminal | Workchat / Session / Board / Files / Analytics / Changes: on = on
+    /// screen. Turning one on shows it (beside the terminal in a split — the
+    /// Session view beside its own session's terminal); turning it off
+    /// closes that pane of a split. Split then puts two side by side.
+    /// Terminal and Workchat are one twin segment sharing the sessions menu:
+    /// on a single pane either half swaps the session's pane in place; in a
+    /// split both can be lit (#711).
     private var viewButtons: some View {
         let layout = vm.layout(projectID: project.id)
         return HStack(spacing: 2) {
-            ForEach(WorkspaceView.allCases, id: \.self) { view in
-                Toggle(isOn: Binding(
-                    get: { layout.isShowing(view) },
-                    set: { on in
-                        if on {
-                            Task { await vm.showView(view, project: project) }
-                        } else {
-                            vm.hideView(view, projectID: project.id)
-                        }
-                    }
-                )) {
-                    Label(view.title, systemImage: view.icon)
-                }
-                .toggleStyle(HeaderSegmentStyle(
-                    joinsChevron: view == .terminal,
-                    isHovered: hoveredView == view || (view == .terminal && chevronHovered)
-                ) { inside in
-                    if inside { hoveredView = view } else if hoveredView == view { hoveredView = nil }
-                })
-                .help(view.help)
-                // No session to review: say so rather than a click that does nothing.
-                .disabled((view == .changes || view == .chat) && !layout.isShowing(view) && vm.sessionViewTarget(projectID: project.id) == nil)
+            // Workchat is drawn inside Terminal's twin, not as a button of its own.
+            ForEach(WorkspaceView.allCases.filter { $0 != .chat }, id: \.self) { view in
+                viewButton(view, layout: layout)
                 if view == .terminal {
-                    sessionMenu(slot: layout.terminalSlot, isOn: layout.isShowing(.terminal))
+                    viewButton(.chat, layout: layout)
+                        // Cancel the capsule's segment gap: Workchat continues Terminal.
+                        .padding(.leading, -2)
+                    sessionMenu(
+                        slot: layout.terminalSlot,
+                        isOn: layout.isShowing(.chat),
+                        isLit: layout.isShowing(.terminal) || layout.isShowing(.chat)
+                    )
                 }
             }
         }
-        .padding(2)
-        .frame(height: 26)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
-        }
+        .segmentCapsule()
     }
 
-    /// The Terminal button's dropdown: which session the terminal pane shows,
-    /// or a new one — the split panes' picker actions, so a single pane can
-    /// switch sessions with the side panel hidden. A chevron, no extra row.
-    private func sessionMenu(slot: WorkspacePane, isOn: Bool) -> some View {
+    private func viewButton(_ view: WorkspaceView, layout: WorkspaceLayout) -> some View {
+        Toggle(isOn: Binding(
+            get: { layout.isShowing(view) },
+            set: { on in
+                if on {
+                    Task { await vm.showView(view, project: project) }
+                } else {
+                    vm.hideView(view, projectID: project.id)
+                }
+            }
+        )) {
+            Label(view.title, systemImage: view.icon)
+        }
+        .toggleStyle(SegmentedToggleStyle(
+            joinsRight: view == .terminal,
+            joinsLeft: view == .chat,
+            joinsChevron: view == .chat,
+            isHovered: hoveredView == view || (view == .chat && chevronHovered)
+        ) { inside in
+            if inside { hoveredView = view } else if hoveredView == view { hoveredView = nil }
+        })
+        .help(view.help)
+        // No session to review: say so rather than a click that does nothing.
+        .disabled((view == .changes || view == .chat) && !layout.isShowing(view) && vm.sessionViewTarget(projectID: project.id) == nil)
+    }
+
+    /// The twin's dropdown, shared by Terminal and Workchat: which session
+    /// the session pane shows — in the mode it was last shown in — or a new
+    /// one; the split panes' picker actions, so a single pane can switch
+    /// sessions with the side panel hidden. A chevron, no extra row.
+    /// `isOn`: Workchat, which it continues, is on; `isLit`: either half is.
+    private func sessionMenu(slot: WorkspacePane, isOn: Bool, isLit: Bool) -> some View {
         Menu {
             ForEach(vm.orderedSessions(projectID: project.id)) { session in
                 Button(session.title) {
                     Task { await vm.showInPane(slot, item: .session(session.id), projectID: project.id) }
                 }
-                .disabled(slot == .session(session.id))
+                .disabled(WorkspaceLayout.sessionID(of: slot) == session.id)
             }
             Divider()
             NewSessionMenuItems(vm: vm, projectID: project.id) { agent, worktree in
                 Task { await vm.newSession(inPane: slot, projectID: project.id, agent: agent, worktree: worktree) }
             }
         } label: {
-            // The Terminal segment's right end: a hairline, then the chevron,
-            // coloured like the segment.
+            // The twin's right end: a hairline, then the chevron, coloured
+            // like the segment.
             HStack(spacing: 4) {
                 Rectangle()
                     .fill(Color(nsColor: .separatorColor))
                     .frame(width: 1, height: 14)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(isLit ? Color.accentColor : Color.secondary)
             }
             .padding(.trailing, 8)
             .frame(height: 22)
             .background(
-                HeaderSegmentStyle.fill(isOn: isOn, isHovered: hoveredView == .terminal || chevronHovered),
+                SegmentedToggleStyle.fill(isOn: isOn, isHovered: hoveredView == .chat || chevronHovered),
                 in: UnevenRoundedRectangle(bottomTrailingRadius: 6, topTrailingRadius: 6, style: .continuous)
             )
             .contentShape(Rectangle())
             .onHover { chevronHovered = $0 }
-            .animation(HeaderSegmentStyle.animation, value: isOn)
+            .animation(SegmentedToggleStyle.animation, value: isOn)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .fixedSize()
-        // Cancel the capsule's segment gap: the chevron continues Terminal.
+        // Cancel the capsule's segment gap: the chevron continues Workchat.
         .padding(.leading, -2)
-        .help("Show another session in the terminal pane, or start a new one")
+        .help("Show another session in the session pane, or start a new one")
         .accessibilityLabel("Sessions")
     }
 
@@ -137,7 +150,7 @@ struct WorkbenchHeaderControls: View {
             // One symbol in both states: the accent highlight says "split on".
             Image(systemName: "rectangle.split.2x1")
         }
-        .buttonStyle(HeaderIconButtonStyle(isOn: isSplit))
+        .buttonStyle(.kitIcon(isOn: isSplit))
         .help(isSplit ? "Show one pane" : "Split: show two panes side by side")
         .accessibilityLabel(isSplit ? "Single Pane" : "Split")
     }
@@ -212,7 +225,7 @@ struct WorkbenchHeaderControls: View {
             Image(systemName: "ellipsis")
         }
         .menuStyle(.button)
-        .buttonStyle(HeaderIconButtonStyle(isOn: false))
+        .buttonStyle(.kitIcon(isOn: false))
         .menuIndicator(.hidden)
         .fixedSize()
         .help("Workbench actions")
@@ -265,92 +278,6 @@ private extension WorkbenchHeaderControls {
     }
 }
 
-/// A view button inside the header capsule: on = accent tint behind an
-/// accent icon, off = secondary with a light highlight under the pointer.
-/// Hover comes from the controls so Terminal and its chevron share it.
-private struct HeaderSegmentStyle: ToggleStyle {
-    static let animation: Animation = .snappy(duration: 0.15)
-
-    /// Terminal's: the sessions chevron continues the segment on the right.
-    var joinsChevron = false
-    var isHovered: Bool
-    var onHover: (Bool) -> Void
-
-    static func fill(isOn: Bool, isHovered: Bool) -> Color {
-        if isOn { return Color.accentColor.opacity(0.20) }
-        return isHovered ? Color.primary.opacity(0.07) : .clear
-    }
-
-    func makeBody(configuration: Configuration) -> some View {
-        let isOn = configuration.isOn
-        let corner: CGFloat = 6
-        let trailing = joinsChevron ? 0 : corner
-        return Button {
-            configuration.isOn.toggle()
-        } label: {
-            HStack(spacing: 6) {
-                configuration.label
-                    .labelStyle(.iconOnly)
-                    .font(.system(size: 14))
-                    .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
-                    // VoiceOver reads the title once, from the copy below.
-                    .accessibilityHidden(true)
-                configuration.label
-                    .labelStyle(.titleOnly)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(isOn || isHovered ? Color.primary : Color.secondary)
-            }
-            .padding(.leading, 10)
-            .padding(.trailing, joinsChevron ? 6 : 10)
-            .frame(height: 22)
-            .background(
-                Self.fill(isOn: isOn, isHovered: isHovered),
-                in: UnevenRoundedRectangle(topLeadingRadius: corner, bottomLeadingRadius: corner,
-                                           bottomTrailingRadius: trailing, topTrailingRadius: trailing,
-                                           style: .continuous)
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover(perform: onHover)
-        .animation(Self.animation, value: isOn)
-        .animation(Self.animation, value: isHovered)
-        // The role `.toggleStyle(.button)` gave the view buttons.
-        .accessibilityAddTraits(isOn ? [.isToggle, .isSelected] : .isToggle)
-    }
-}
-
-/// Split and ⋯ beside the capsule: a 26pt icon square, highlighted under
-/// the pointer; `isOn` (split) tints it like an on segment.
-private struct HeaderIconButtonStyle: ButtonStyle {
-    var isOn: Bool
-
-    func makeBody(configuration: Configuration) -> some View {
-        IconSquare(configuration: configuration, isOn: isOn)
-    }
-
-    private struct IconSquare: View {
-        let configuration: Configuration
-        let isOn: Bool
-        @State private var isHovered = false
-
-        var body: some View {
-            configuration.label
-                .font(.system(size: 14))
-                .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
-                .frame(width: 26, height: 26)
-                .background(
-                    HeaderSegmentStyle.fill(isOn: isOn, isHovered: isHovered || configuration.isPressed),
-                    in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-                )
-                .contentShape(Rectangle())
-                .onHover { isHovered = $0 }
-                .animation(HeaderSegmentStyle.animation, value: isOn)
-                .animation(HeaderSegmentStyle.animation, value: isHovered)
-        }
-    }
-}
-
 extension WorkbenchInstallStatus {
     /// What is installed and what is missing, for the install icons' and
     /// Repair install's help. A folder set up before the Workbench rename
@@ -385,13 +312,13 @@ extension WorkbenchInstallStatus {
 private extension WorkspaceView {
     var help: String {
         switch self {
-        case .terminal: "Show the terminal (in a split, beside the other pane)"
+        case .terminal: "Show the session's terminal, in place of its Workchat (⌃`); in a split, beside the other pane"
         case .report: "Show the session's report (in a split, beside its session's terminal)"
         case .board: "Show the Board (in a split, beside the terminal)"
         case .files: "Show the open files (in a split, beside the terminal)"
         case .analytics: "Agent time, cost and hints for this workbench"
         case .changes: "Review the session's changes"
-        case .chat: "Show the session's dialog as a chat (in a split, beside its session's terminal)"
+        case .chat: "Show the session's Workchat, in place of its terminal (⌃`); in a split, beside its terminal"
         }
     }
 }

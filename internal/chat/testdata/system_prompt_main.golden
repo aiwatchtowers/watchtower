@@ -223,6 +223,7 @@ Workbench
 - Workbench (features/workbench/README.md)
 - Board and targets (features/workbench/board-and-targets.md)
 - Sessions (features/workbench/sessions.md)
+- Workchat (features/workbench/workchat.md)
 - Session report and analytics (features/workbench/session-report.md)
 - Updates and quitting (features/workbench/updates-and-quitting.md)
 - Asks (features/workbench/asks.md)

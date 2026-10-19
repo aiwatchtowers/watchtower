@@ -70,7 +70,7 @@ func (db *DB) ClearSlackData() error {
 		`DELETE FROM channel_settings`,
 
 		// Slack linkage caches.
-		`DELETE FROM jira_slack_links`,
+		`DELETE FROM issue_slack_links`,
 		`DELETE FROM jira_user_map`,
 		`DELETE FROM meeting_prep_cache`,
 

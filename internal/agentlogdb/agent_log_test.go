@@ -1,6 +1,7 @@
 package agentlogdb
 
 import (
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -295,4 +296,112 @@ func TestRepriceAgentLogEvents_SlicesAndPartialFailure(t *testing.T) {
 	assert.Equal(t, 3, n)
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM agent_log_events WHERE price_version = 9`).Scan(&done))
 	assert.Equal(t, 5, done)
+}
+
+func TestWriteBatch_StoresV2Facts(t *testing.T) {
+	d := openTestDB(t)
+	size, pre, post := int64(1234), int64(90000), int64(8000)
+	finished := true
+	call := apiCall("s1", "m1:r1", 50)
+	call.ThinkingTokens = 20
+	comp := AgentLogEvent{SessionUUID: "s1", Key: "compaction:1", Kind: "compaction", TS: "2026-10-01T10:00:01Z",
+		SrcPath: "/x/a.jsonl", PreTokens: &pre, PostTokens: &post}
+	tool := AgentLogEvent{SessionUUID: "s1", Key: "tool:t1", Kind: "tool", Name: "Read", TS: "2026-10-01T10:00:02Z", SrcPath: "/x/a.jsonl"}
+	b := AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 10}, ExpectOffset: -1,
+		Sessions:     []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", testWorkbenchID)},
+		Events:       []AgentLogEvent{call, comp, tool},
+		ToolResults:  []AgentToolResult{{ToolUseID: "t1", TS: "2026-10-01T10:00:03Z", Outcome: "error", ErrorClass: "not_found", ResultBytes: &size}},
+		ContextParts: []AgentContextPart{{SessionUUID: "s1", AgentID: "", Part: "claude_md", Bytes: 500}},
+		SkillListing: []AgentSkillListed{{SessionUUID: "s1", Skill: "review", Bytes: 300}},
+		Subagents:    []AgentSubagent{{SessionUUID: "s1", AgentID: "a1", AgentType: "Explore", Depth: 1, Finished: &finished}}}
+	ok, err := d.ApplyAgentLogBatch(b)
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	var rb, pr, po sql.NullInt64
+	var think int64
+	var errClass string
+	require.NoError(t, d.QueryRow(`SELECT thinking_tokens FROM agent_log_events WHERE key = 'm1:r1'`).Scan(&think))
+	assert.Equal(t, int64(20), think)
+	require.NoError(t, d.QueryRow(`SELECT pre_tokens, post_tokens FROM agent_log_events WHERE key = 'compaction:1'`).Scan(&pr, &po))
+	assert.Equal(t, pre, pr.Int64)
+	assert.Equal(t, post, po.Int64)
+	require.NoError(t, d.QueryRow(`SELECT result_bytes, error_class FROM agent_log_events WHERE key = 'tool:t1'`).Scan(&rb, &errClass))
+	assert.Equal(t, size, rb.Int64)
+	assert.Equal(t, "not_found", errClass)
+	var nullRB sql.NullInt64
+	require.NoError(t, d.QueryRow(`SELECT result_bytes FROM agent_log_events WHERE key = 'm1:r1'`).Scan(&nullRB))
+	assert.False(t, nullRB.Valid, "unmeasured stays NULL")
+
+	// A second batch: smaller sizes keep the larger; the subagent row is replaced.
+	later := false
+	call2 := apiCall("s1", "m1:r1", 60)
+	call2.ThinkingTokens = 30
+	b2 := AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 20}, ExpectOffset: 10,
+		Sessions:     []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", testWorkbenchID)},
+		Events:       []AgentLogEvent{call2},
+		ContextParts: []AgentContextPart{{SessionUUID: "s1", AgentID: "", Part: "claude_md", Bytes: 100}},
+		SkillListing: []AgentSkillListed{{SessionUUID: "s1", Skill: "review", Bytes: 10}},
+		Subagents:    []AgentSubagent{{SessionUUID: "s1", AgentID: "a1", AgentType: "Plan", Depth: 2, Finished: &later}}}
+	ok, err = d.ApplyAgentLogBatch(b2)
+	require.NoError(t, err)
+	require.True(t, ok)
+	var bytes int64
+	require.NoError(t, d.QueryRow(`SELECT bytes FROM agent_log_context_parts WHERE session_uuid = 's1' AND part = 'claude_md'`).Scan(&bytes))
+	assert.Equal(t, int64(500), bytes)
+	require.NoError(t, d.QueryRow(`SELECT bytes FROM agent_log_skill_listing WHERE skill = 'review'`).Scan(&bytes))
+	assert.Equal(t, int64(300), bytes)
+	require.NoError(t, d.QueryRow(`SELECT thinking_tokens FROM agent_log_events WHERE key = 'm1:r1'`).Scan(&think))
+	assert.Equal(t, int64(30), think, "the later, longer message wins")
+	var typ string
+	var depth int
+	var fin sql.NullInt64
+	require.NoError(t, d.QueryRow(`SELECT agent_type, depth, finished FROM agent_log_subagents WHERE agent_id = 'a1'`).Scan(&typ, &depth, &fin))
+	assert.Equal(t, "Plan", typ)
+	assert.Equal(t, 2, depth)
+	assert.True(t, fin.Valid)
+	assert.Zero(t, fin.Int64)
+}
+
+func TestSessionTotals_InterruptNotAnOwnerTurn(t *testing.T) {
+	d := openTestDB(t)
+	var evs []AgentLogEvent
+	for i, trig := range []string{"owner", "interrupt"} {
+		evs = append(evs, AgentLogEvent{SessionUUID: "s1", Key: "owner_turn:" + trig, Kind: "owner_turn", Trigger: trig,
+			TS: "2026-10-01T10:00:0" + string(rune('0'+i)) + "Z", SrcPath: "/x/a.jsonl"})
+	}
+	_, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 10}, ExpectOffset: -1,
+		Sessions: []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", testWorkbenchID)}, Events: evs})
+	require.NoError(t, err)
+	var turns, interrupts int
+	require.NoError(t, d.QueryRow(`SELECT owner_turns, owner_interrupts FROM agent_log_session_totals WHERE session_uuid = 's1'`).Scan(&turns, &interrupts))
+	assert.Equal(t, 1, turns)
+	assert.Equal(t, 1, interrupts)
+}
+
+func TestUpsertAgentSubagent_WritesOnlyOnChange(t *testing.T) {
+	d := openTestDB(t)
+	fin := true
+	a := AgentSubagent{SessionUUID: "s1", AgentID: "a1", AgentType: "Plan", Depth: 1}
+	wrote, err := d.UpsertAgentSubagent(a)
+	require.NoError(t, err)
+	assert.False(t, wrote, "no session row: nothing written, no FK error")
+
+	ok, err := d.ApplyAgentLogBatch(AgentLogBatch{File: AgentLogFile{Path: "/x/a.jsonl", Agent: "claude", ReadOffset: 1}, ExpectOffset: -1,
+		Sessions:  []AgentLogSession{agentSession("s1", "2026-10-01T10:00:00Z", testWorkbenchID)},
+		Subagents: []AgentSubagent{a}})
+	require.NoError(t, err)
+	require.True(t, ok)
+
+	wrote, err = d.UpsertAgentSubagent(a)
+	require.NoError(t, err)
+	assert.False(t, wrote, "identical to the stored row: no write")
+
+	a.Finished = &fin
+	wrote, err = d.UpsertAgentSubagent(a)
+	require.NoError(t, err)
+	assert.True(t, wrote)
+	wrote, err = d.UpsertAgentSubagent(a)
+	require.NoError(t, err)
+	assert.False(t, wrote)
 }

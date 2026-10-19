@@ -13,8 +13,8 @@ struct WorkbenchPanelAsks: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            WorkbenchDetailSectionHeader(title: "Asks", systemImage: "person.crop.circle.badge.questionmark",
-                                         count: vm.selectedAsks.count)
+            SectionHeader(title: "Asks", systemImage: "person.crop.circle.badge.questionmark",
+                          count: vm.selectedAsks.count)
                 .padding(.bottom, 4)
             ForEach(vm.selectedAsks) { ask in
                 Button {

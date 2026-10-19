@@ -262,6 +262,10 @@ func scanFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bool, r
 	start, expect, unchanged := resumePoint(stored, tf)
 	if unchanged {
 		res.FilesSkipped++
+		if tf.Subagent && tf.AgentID != "" { // the meta file can change without the transcript
+			_, err := st.al.UpsertAgentSubagent(subagentRow(tf))
+			return err
+		}
 		return nil
 	}
 	fh, err := os.Open(tf.Path)
@@ -272,7 +276,8 @@ func scanFile(st store, tf TranscriptFile, wb *db.Workbench, stop func() bool, r
 		return err
 	}
 	defer fh.Close()
-	o := ParseOptions{Path: tf.Path, Folder: wb.FolderPath, Subagent: tf.Subagent, AgentID: tf.AgentID, MaxRows: batchRows}
+	o := ParseOptions{Path: tf.Path, Folder: wb.FolderPath, Subagent: tf.Subagent, AgentID: tf.AgentID, MaxRows: batchRows,
+		LaneBaseline: func(sid string) (bool, map[string]int64, error) { return st.al.AgentLaneBaseline(sid, tf.AgentID) }}
 	if prefix := start; prefix > 0 {
 		o.PriorSkills = func() ([]string, error) { return listedSkills(io.NewSectionReader(fh, 0, prefix), prefix) }
 	}
@@ -322,12 +327,30 @@ func storeSlice(st store, tf TranscriptFile, wb *db.Workbench, pr *ParseResult, 
 	if err := resolveTerminalSessions(st.main, sessions); err != nil {
 		return 0, false, fmt.Errorf("storing %s: %w", tf.Path, err)
 	}
-	applied, err := st.al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events,
-		ToolResults: pr.ToolResults, Sessions: sessions})
+	b := agentlogdb.AgentLogBatch{File: f, ExpectOffset: expect, Events: pr.Events,
+		ToolResults: pr.ToolResults, ContextParts: pr.ContextParts, SkillListing: pr.SkillListing, Sessions: sessions}
+	if tf.Subagent && tf.AgentID != "" && hasSession(sessions, tf.SessionUUID) { // the row references its session
+		b.Subagents = []agentlogdb.AgentSubagent{subagentRow(tf)}
+	}
+	applied, err := st.al.ApplyAgentLogBatch(b)
 	if err != nil {
 		return 0, false, fmt.Errorf("storing %s: %w", tf.Path, err)
 	}
 	return f.ReadOffset, applied, nil
+}
+
+func subagentRow(tf TranscriptFile) agentlogdb.AgentSubagent {
+	return agentlogdb.AgentSubagent{SessionUUID: tf.SessionUUID, AgentID: tf.AgentID,
+		AgentType: tf.AgentType, Depth: tf.Depth, Finished: tf.Finished}
+}
+
+func hasSession(sessions []agentlogdb.AgentLogSession, uuid string) bool {
+	for _, s := range sessions {
+		if s.SessionUUID == uuid {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveTerminalSessions sets each session's TerminalSessionID to the Claude

@@ -11,6 +11,7 @@ import (
 	"watchtower/internal/agentlog"
 	"watchtower/internal/agentlogdb"
 	"watchtower/internal/agentreport"
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 )
 
@@ -50,14 +51,10 @@ func init() {
 	rootCmd.AddCommand(agentsCmd)
 }
 
-// openAgentsDBs opens watchtower.db and the agentlog.db beside it, and
-// returns agentlog.db's path. An agentlog.db that fails to open is the
-// command's error: analytics never fall back to watchtower.db.
-func openAgentsDBs() (*db.DB, *agentlogdb.DB, string, error) {
-	cfg, err := workspaceConfigFromFlags()
-	if err != nil {
-		return nil, nil, "", err
-	}
+// openAgentsDBs opens the workspace's watchtower.db and the agentlog.db
+// beside it, and returns agentlog.db's path. An agentlog.db that fails to
+// open is the command's error: analytics never fall back to watchtower.db.
+func openAgentsDBs(cfg *config.Config) (*db.DB, *agentlogdb.DB, string, error) {
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("opening database: %w", err)
@@ -101,7 +98,11 @@ type agentsEnableJSON struct {
 // nudged here to start a cycle now; without a running daemon the import
 // starts when it does.
 func runAgentsEnable(cmd *cobra.Command, _ []string) error {
-	database, al, path, err := openAgentsDBs()
+	cfg, err := workspaceConfigFromFlags()
+	if err != nil {
+		return err
+	}
+	database, al, path, err := openAgentsDBs(cfg)
 	if err != nil {
 		return err
 	}
@@ -114,7 +115,7 @@ func runAgentsEnable(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("%w; analytics stays on for workbench %d and the move retries on the next daemon start or agents scan",
 			err, flagAgentsWorkbench)
 	}
-	nudged := nudgeDaemon(cmd)
+	nudged := nudgeDaemon(cmd, cfg)
 	progress, err := al.ImportProgress(flagAgentsWorkbench)
 	if err != nil {
 		return err
@@ -148,12 +149,8 @@ func importStateText(state string) string {
 // nudgeDaemon asks a running daemon to start a sync cycle now and reports
 // whether one was signalled. No daemon is fine (it imports when it starts);
 // any other failure is only a warning on stderr: analytics is on either way.
-func nudgeDaemon(cmd *cobra.Command) bool {
-	cfg, err := workspaceConfigFromFlags()
-	var pid int
-	if err == nil {
-		pid, err = signalSyncNow(cfg)
-	}
+func nudgeDaemon(cmd *cobra.Command, cfg *config.Config) bool {
+	pid, err := signalSyncNow(cfg)
 	if err != nil {
 		fmt.Fprintf(cmd.ErrOrStderr(), "warning: the daemon was not asked to start the import now: %v\n", err)
 	}
@@ -174,7 +171,11 @@ func runAgentsDisable(cmd *cobra.Command, _ []string) error {
 }
 
 func runAgentsScan(cmd *cobra.Command, _ []string) error {
-	database, al, path, err := openAgentsDBs()
+	cfg, err := workspaceConfigFromFlags()
+	if err != nil {
+		return err
+	}
+	database, al, path, err := openAgentsDBs(cfg)
 	if err != nil {
 		return err
 	}
@@ -223,7 +224,11 @@ type agentsStatsJSON struct {
 }
 
 func runAgentsStats(cmd *cobra.Command, _ []string) error {
-	database, al, _, err := openAgentsDBs()
+	cfg, err := workspaceConfigFromFlags()
+	if err != nil {
+		return err
+	}
+	database, al, _, err := openAgentsDBs(cfg)
 	if err != nil {
 		return err
 	}
@@ -260,7 +265,12 @@ func runAgentsReport(cmd *cobra.Command, _ []string) error {
 	case flagAgentsDays > 0:
 		since = now.AddDate(0, 0, -flagAgentsDays)
 	}
-	database, al, _, err := openAgentsDBs()
+	cfg, err := workspaceConfigFromFlags()
+	if err != nil {
+		return err
+	}
+	lang := agentreport.LangOf(cfg.Digest.Language)
+	database, al, _, err := openAgentsDBs(cfg)
 	if err != nil {
 		return err
 	}
@@ -268,7 +278,7 @@ func runAgentsReport(cmd *cobra.Command, _ []string) error {
 	defer al.Close()
 	out := cmd.OutOrStdout()
 	if flagAgentsSession != "" {
-		det, err := agentreport.BuildSession(database, al, flagAgentsWorkbench, flagAgentsSession, now)
+		det, err := agentreport.BuildSession(database, al, flagAgentsWorkbench, flagAgentsSession, now, lang)
 		if err != nil {
 			return err
 		}
@@ -280,7 +290,7 @@ func runAgentsReport(cmd *cobra.Command, _ []string) error {
 		printReportHints(out, det.Hints)
 		return nil
 	}
-	ov, err := agentreport.BuildOverview(database, al, flagAgentsWorkbench, since, now)
+	ov, err := agentreport.BuildOverview(database, al, flagAgentsWorkbench, since, now, lang)
 	if err != nil {
 		return err
 	}
@@ -306,6 +316,6 @@ func printReportTime(w io.Writer, t agentreport.TimeSplit) {
 
 func printReportHints(w io.Writer, hints []agentreport.Hint) {
 	for _, h := range hints[:min(3, len(hints))] {
-		fmt.Fprintf(w, "- %s\n", h.Finding)
+		fmt.Fprintf(w, "- %s\n  → %s\n", h.Finding, h.Action)
 	}
 }

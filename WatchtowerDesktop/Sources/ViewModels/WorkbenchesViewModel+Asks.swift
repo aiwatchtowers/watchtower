@@ -37,8 +37,9 @@ extension WorkbenchesViewModel {
             if keepKeyboard { terminalCenter?.keepKeyboardOnAttach(sessionID) }
             await revealTerminal(projectID: projectID, sessionID: sessionID, ticket: ticket)
             // A failed open already reports itself; no drawer beside nothing.
+            // Its terminal or its Workchat, whichever mode it opened in (#711).
             guard isLatestSwitch(ticket, projectID: projectID),
-                  layout(projectID: projectID).visiblePanes.contains(.session(sessionID)) else { return true }
+                  layout(projectID: projectID).showsSession(sessionID) else { return true }
         }
         asks.openDrawer(ask)
         return true
@@ -69,7 +70,7 @@ extension WorkbenchesViewModel {
         let result = await asks.answerQuick(ask, with: answer)
         guard result == .notOpen, selectedWorkbenchID == ask.projectID, asks.drawerAskIDs[ask.projectID] == nil,
               let sessionID = ask.sessionID,
-              layout(projectID: ask.projectID).visiblePanes.contains(.session(sessionID)) else { return result }
+              layout(projectID: ask.projectID).showsSession(sessionID) else { return result }
         if let closed = await asks.lookUp(askID: ask.id, projectID: ask.projectID), !closed.isOpen {
             asks.openDrawer(closed)
         }
@@ -102,8 +103,8 @@ extension WorkbenchesViewModel {
     func openNewAsk(projectID: Int64) {
         guard selectedWorkbenchID == projectID, asks.drawerAskIDs[projectID] == nil else { return }
         let onScreen = Set(layout(projectID: projectID).visiblePanes.compactMap { pane -> Int64? in
-            if case let .session(id) = pane, asks.roomySessions.contains(id) { return id }
-            return nil
+            // A terminal or a Workchat (#711).
+            WorkspaceLayout.sessionID(of: pane).flatMap { asks.roomySessions.contains($0) ? $0 : nil }
         })
         guard let ask = asks.stack(projectID: projectID).askToOpen(
             sessionsOnScreen: onScreen, dismissed: asks.dismissedAskIDs[projectID] ?? []
@@ -117,6 +118,17 @@ extension WorkbenchesViewModel {
     func sessionPaneMeasured(_ sessionID: Int64, projectID: Int64, fits: Bool) {
         asks.setRoomBeside(fits, sessionID: sessionID)
         if fits { openNewAsk(projectID: projectID) }
+    }
+
+    /// A session pane — its terminal or its Workchat — left the screen: the
+    /// session has no room for a drawer, unless its other mode is on screen
+    /// and holds the room now (a swap or an expansion, #711). That pane
+    /// reports its width only when it changes, so clearing the room here
+    /// would stop new asks opening by themselves.
+    func sessionPaneLeft(_ pane: WorkspacePane, projectID: Int64) {
+        guard let id = WorkspaceLayout.sessionID(of: pane),
+              !layout(projectID: projectID).showsOtherMode(of: pane) else { return }
+        asks.setRoomBeside(false, sessionID: id)
     }
 
     /// Whether an expanded ask drawer covers `sessionID`'s terminal: its own
@@ -169,5 +181,14 @@ extension WorkbenchesViewModel {
     func showNextAsk(after askID: Int64, projectID: Int64) async {
         guard let next = asks.stack(projectID: projectID).next(after: askID) else { return }
         await showAsk(next.id, projectID: projectID)
+    }
+
+    /// An analytics hint's Open Waiting for You: the sessions panel shown
+    /// and, when an ask waits, the oldest one opened the way a stack row
+    /// click opens it.
+    func showWaitingForYou(projectID: Int64) async {
+        panelVisible = true
+        guard let oldest = asks.stack(projectID: projectID).asks.first else { return }
+        await showAsk(oldest.id, projectID: projectID)
     }
 }

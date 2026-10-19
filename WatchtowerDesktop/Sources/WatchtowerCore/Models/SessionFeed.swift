@@ -39,6 +39,10 @@ package struct SessionFeedSubagent: Decodable, Equatable, Sendable {
 package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
     /// Kinds this app renders; anything else is forward-compatible noise.
     package static let knownKinds: Set<String> = [
+        "owner", "agent", "ask_answer", "watchtower", "brief", "subagent", "separator", "event"
+    ]
+    /// Kinds the phone slice carries (FEED-02); `event` is Desktop only.
+    package static let phoneKinds: Set<String> = [
         "owner", "agent", "ask_answer", "watchtower", "brief", "subagent", "separator"
     ]
 
@@ -51,6 +55,8 @@ package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
     package var askID: Int64?
     package var title: String?
     package var via: String?
+    /// "task" or "teammate" on an `event` entry.
+    package var eventType: String?
     package var subagent: SessionFeedSubagent?
 
     package init(
@@ -62,6 +68,7 @@ package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
         askID: Int64? = nil,
         title: String? = nil,
         via: String? = nil,
+        eventType: String? = nil,
         subagent: SessionFeedSubagent? = nil
     ) {
         self.id = id
@@ -72,12 +79,14 @@ package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
         self.askID = askID
         self.title = title
         self.via = via
+        self.eventType = eventType
         self.subagent = subagent
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, kind, at, text, conversation, title, via, subagent
         case askID = "ask_id"
+        case eventType = "event_type"
     }
 
     package init(from decoder: Decoder) throws {
@@ -90,6 +99,7 @@ package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
         askID = try c.decodeIfPresent(Int64.self, forKey: .askID)
         title = try c.decodeIfPresent(String.self, forKey: .title)
         via = try c.decodeIfPresent(String.self, forKey: .via)
+        eventType = try c.decodeIfPresent(String.self, forKey: .eventType)
         subagent = try c.decodeIfPresent(SessionFeedSubagent.self, forKey: .subagent)
     }
 

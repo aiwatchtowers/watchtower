@@ -1,8 +1,9 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The overview: header, tiles, where the time went, hints, then the
-/// tasks, sessions, commands and models.
+/// The overview: header, tiles, the main thing (the first hint), the
+/// Context, Skills and Trouble blocks, the other hints, then the collapsed
+/// Time section (where the time went, tasks, sessions, commands, models).
 struct AgentAnalyticsOverviewView: View {
     let state: AgentAnalyticsPaneState
     @Binding var period: AgentAnalyticsCenter.Period
@@ -13,7 +14,7 @@ struct AgentAnalyticsOverviewView: View {
         case .loading:
             ProgressView("Loading analytics…").controlSize(.small)
         case let .failed(error):
-            VStack(spacing: 6) {
+            VStack(spacing: Spacing.compact) {
                 Label("Could not load analytics", systemImage: "exclamationmark.triangle").font(.headline)
                 Text(error).foregroundStyle(.secondary)
             }
@@ -31,7 +32,7 @@ struct AgentAnalyticsOverviewView: View {
     }
 
     private func offView(enabling: Bool, error: String?) -> some View {
-        VStack(spacing: 10) {
+        VStack(spacing: Spacing.cozy) {
             Image(systemName: "chart.bar.xaxis").font(.largeTitle).foregroundStyle(.secondary).accessibilityHidden(true)
             Text("Agent analytics is off").font(.headline)
             Text("Turn it on to see where this folder's agent sessions spend their time and money. "
@@ -52,7 +53,7 @@ struct AgentAnalyticsOverviewView: View {
     }
 
     private func content(_ overview: AgentReportOverview, staleError: String?) -> some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: Spacing.page) {
             if let state = overview.importState, let line = AgentAnalyticsFormat.importLine(state) {
                 if AgentAnalyticsFormat.isImportWarning(state) {
                     Label(line, systemImage: "exclamationmark.triangle")
@@ -74,23 +75,56 @@ struct AgentAnalyticsOverviewView: View {
                     .help("The last refresh failed; these numbers are from an earlier run.")
             }
             tiles(overview)
-            section("Where the time went") { AgentTimeBreakdownView(time: overview.time) }
-            if !overview.hints.isEmpty {
-                section("What would save the most") { AgentAnalyticsHintsView(hints: overview.hints, actions: actions) }
+            if let first = overview.hints.first {
+                AgentAnalyticsMainThingCard(hint: first, actions: actions)
             }
+            AgentAnalyticsContextView(context: overview.context, actions: actions)
+            AgentAnalyticsSkillsView(skills: overview.skills)
+            AgentAnalyticsTroubleView(trouble: overview.trouble, actions: actions)
+            if overview.hints.count > 1 {
+                section("What else would save") {
+                    AgentAnalyticsCappedHints(hints: Array(overview.hints.dropFirst()), actions: actions)
+                }
+            }
+            DisclosureGroup {
+                time(overview).padding(.top, Spacing.regular)
+            } label: {
+                Text("Time")
+                    .font(.subheadline.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+            }
+        }
+    }
+
+    /// The collapsed Time section: where the time went, then the tasks,
+    /// sessions, commands and models.
+    private func time(_ overview: AgentReportOverview) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.page) {
+            section("Where the time went") { AgentTimeBreakdownView(time: overview.time) }
             if overview.oldFormatSessions > 0 {
                 Text("Older sessions — time not analysed: \(overview.oldFormatSessions)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             if !overview.tasks.isEmpty {
-                section("Tasks") { AgentAnalyticsTasksTable(tasks: overview.tasks, actions: actions) }
+                section("Tasks") {
+                    AgentAnalyticsTopRows(rows: overview.tasks, shown: 10) { rows in
+                        AgentAnalyticsTasksTable(tasks: rows, actions: actions)
+                    }
+                    if let more = overview.tasksMore, more > 0 {
+                        Text("\(more) more \(more == 1 ? "task" : "tasks") not shown — they cost less")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
             }
             section("Sessions") {
                 if overview.sessions.isEmpty {
                     Text("No agent sessions in this period.").foregroundStyle(.secondary)
                 } else {
-                    AgentAnalyticsSessionsTable(sessions: overview.sessions, actions: actions)
+                    AgentAnalyticsTopRows(rows: overview.sessions, shown: 5) { rows in
+                        AgentAnalyticsSessionsTable(sessions: rows, actions: actions)
+                    }
                 }
             }
             if !overview.commands.isEmpty {
@@ -101,7 +135,7 @@ struct AgentAnalyticsOverviewView: View {
     }
 
     private func header(_ overview: AgentReportOverview) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
             Text(AgentAnalyticsFormat.periodLabel(overview)).font(.headline)
             if AgentAnalyticsFormat.period(of: overview) != period {
                 Text("Updating…").font(.caption).foregroundStyle(.secondary)
@@ -120,17 +154,20 @@ struct AgentAnalyticsOverviewView: View {
                 .font(.caption)
                 .foregroundStyle(.green)
                 .help("Agent analytics is on for this workbench")
+            Button("Discuss in Chat") { actions.discuss(AgentAnalyticsFormat.discussText(overview)) }
+                .help("Open the chat with this report's top findings in the composer")
         }
     }
 
     private func tiles(_ overview: AgentReportOverview) -> some View {
         let totals = overview.totals
-        return VStack(alignment: .leading, spacing: 6) {
+        return VStack(alignment: .leading, spacing: Spacing.compact) {
             HStack(spacing: 24) {
-                tile("Active", AgentAnalyticsFormat.duration(totals.activeMS))
-                tile("Away", AgentAnalyticsFormat.duration(totals.awayMS))
                 tile("Cost", AgentAnalyticsFormat.cost(totals.costUSD))
                 tile("Sessions", "\(totals.sessions)")
+                tile("Active", AgentAnalyticsFormat.duration(totals.activeMS))
+                tile("Cache hit", AgentAnalyticsFormat.cacheHit(totals.tokens))
+                    .help("Input tokens read from the cache, of all input tokens")
             }
             Text(AgentAnalyticsFormat.subagentsLine(overview.subagents))
                 .font(.callout)
@@ -143,7 +180,7 @@ struct AgentAnalyticsOverviewView: View {
     }
 
     private func tile(_ title: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Text(value).font(.title2.weight(.semibold).monospacedDigit())
         }
@@ -166,7 +203,7 @@ struct AgentAnalyticsSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
             Text(title)
                 .font(.subheadline.weight(.semibold))
                 .accessibilityAddTraits(.isHeader)

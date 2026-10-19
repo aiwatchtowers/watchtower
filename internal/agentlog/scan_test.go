@@ -545,11 +545,14 @@ func TestScan_AfterMoveFullyReadFilesStayUnchanged(t *testing.T) {
 	require.Equal(t, 1, f.scan().FilesScanned)
 
 	// watchtower.db as a pre-#849 install left it: the fixture's scan copied
-	// into its agent_log_* tables (same column order as agentlog.db's).
+	// into its agent_log_* tables (watchtower.db's columns only: its tables
+	// predate the agentlog.db v2 facts).
 	_, err := f.d.Exec(`ATTACH DATABASE ? AS src`, filepath.Join(f.dir, "agentlog.db"))
 	require.NoError(t, err)
 	for _, table := range []string{"agent_log_files", "agent_log_sessions", "agent_log_events"} {
-		_, err = f.d.Exec(`INSERT INTO main.` + table + ` SELECT * FROM src.` + table)
+		var list string
+		require.NoError(t, f.d.QueryRow(`SELECT group_concat(name, ', ') FROM main.pragma_table_info(?)`, table).Scan(&list))
+		_, err = f.d.Exec(`INSERT INTO main.` + table + ` (` + list + `) SELECT ` + list + ` FROM src.` + table)
 		require.NoError(t, err)
 	}
 	_, err = f.d.Exec(`DETACH DATABASE src`)
@@ -664,4 +667,121 @@ func TestScan_ImportDoneWithSiblingFolderFiles(t *testing.T) {
 	p := f.importProgress()
 	assert.True(t, p.Complete)
 	assert.Equal(t, 1, p.FilesStored, "the sibling's transcript is not this workbench's")
+}
+
+func TestScan_StoresContextPartsAndSkillListing(t *testing.T) {
+	f := newFixture(t)
+	listing := line(t, map[string]any{"type": "attachment", "sessionId": "s1", "cwd": f.folder, "attachment": map[string]any{
+		"type": "skill_listing", "names": []string{"review", "pdf"}}, "rendered": []map[string]any{{"content": "0123456789"}}})
+	f.write(f.folder, "s1.jsonl", listing+call(t, "s1", f.folder, "u1", "m1", "r1", 5))
+	require.Equal(t, 1, f.scan().FilesScanned)
+	// A grown file is read from its offset: its attachments add no parts, the
+	// stored ones stay.
+	f.write(f.folder, "s1.jsonl", line(t, map[string]any{"type": "attachment", "sessionId": "s1", "cwd": f.folder,
+		"attachment": map[string]any{"type": "instructions"}, "rendered": []map[string]any{{"content": strings.Repeat("x", 100)}}})+
+		call(t, "s1", f.folder, "u2", "m2", "r2", 5))
+	require.Equal(t, 1, f.scan().FilesScanned)
+
+	var parts int
+	require.NoError(t, f.al.QueryRow(`SELECT COUNT(*) FROM agent_log_context_parts`).Scan(&parts))
+	assert.Equal(t, 1, parts, "the incremental read stored no instructions part")
+
+	var part string
+	var bytes int64
+	require.NoError(t, f.al.QueryRow(`SELECT part, bytes FROM agent_log_context_parts WHERE session_uuid = 's1' AND agent_id = ''`).Scan(&part, &bytes))
+	assert.Equal(t, "skills", part)
+	assert.Equal(t, int64(10), bytes)
+	var skills, perSkill int64
+	require.NoError(t, f.al.QueryRow(`SELECT COUNT(*), MAX(bytes) FROM agent_log_skill_listing WHERE session_uuid = 's1'`).Scan(&skills, &perSkill))
+	assert.Equal(t, int64(2), skills)
+	assert.Equal(t, int64(5), perSkill)
+}
+
+// A scan that ends before a lane's first API call stores the baseline parts
+// so far; the next, incremental read continues them up to that call and adds
+// nothing after it.
+func TestScan_ContextPartsAcrossReads(t *testing.T) {
+	f := newFixture(t)
+	attach := func(typ, content string) string {
+		return line(t, map[string]any{"type": "attachment", "sessionId": "s1", "cwd": f.folder,
+			"attachment": map[string]any{"type": typ}, "rendered": []map[string]any{{"content": content}}})
+	}
+	prompt := line(t, map[string]any{"type": "user", "sessionId": "s1", "uuid": "p1", "cwd": f.folder,
+		"timestamp": "2026-10-01T09:00:00Z", "message": map[string]any{"role": "user", "content": "hello"}})
+	f.write(f.folder, "s1.jsonl", prompt+attach("instructions", strings.Repeat("i", 40))+attach("hook_success", "hh"))
+	require.Equal(t, 1, f.scan().FilesScanned)
+	parts := func() map[string]int64 {
+		got := map[string]int64{}
+		rows, err := f.al.Query(`SELECT part, bytes FROM agent_log_context_parts WHERE session_uuid = 's1' AND agent_id = ''`)
+		require.NoError(t, err)
+		defer rows.Close()
+		for rows.Next() {
+			var part string
+			var n int64
+			require.NoError(t, rows.Scan(&part, &n))
+			got[part] = n
+		}
+		require.NoError(t, rows.Err())
+		return got
+	}
+	assert.Equal(t, map[string]int64{"instructions": 40, "hooks": 2}, parts(), "the first turn so far")
+
+	f.write(f.folder, "s1.jsonl", attach("instructions", strings.Repeat("j", 10))+attach("hook_success", "h")+
+		call(t, "s1", f.folder, "u1", "m1", "r1", 5)+attach("instructions", strings.Repeat("x", 100)))
+	require.Equal(t, 1, f.scan().FilesScanned)
+	assert.Equal(t, map[string]int64{"instructions": 50, "hooks": 3}, parts(), "completed up to the first call")
+
+	f.write(f.folder, "s1.jsonl", attach("hook_success", "hhhhhhhh")+call(t, "s1", f.folder, "u2", "m2", "r2", 5))
+	require.Equal(t, 1, f.scan().FilesScanned)
+	assert.Equal(t, map[string]int64{"instructions": 50, "hooks": 3}, parts(), "nothing after the first call")
+}
+
+func TestScan_StoresSubagentMeta(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.folder, "s1.jsonl", call(t, "s1", f.folder, "u1", "m1", "r1", 5))
+	f.write(f.folder, "s1/subagents/agent-a1.jsonl", call(t, "s1", f.folder, "u2", "m2", "r2", 4))
+	f.write(f.folder, "s1/subagents/agent-a1.meta.json", `{"agentType":"Plan","description":"SENTINEL-DESC","spawnDepth":2,"finished":false}`)
+	f.scan()
+	var typ string
+	var depth int
+	var finished sql.NullBool
+	require.NoError(t, f.al.QueryRow(`SELECT agent_type, depth, finished FROM agent_log_subagents WHERE session_uuid = 's1' AND agent_id = 'a1'`).
+		Scan(&typ, &depth, &finished))
+	assert.Equal(t, "Plan", typ)
+	assert.Equal(t, 2, depth)
+	assert.True(t, finished.Valid)
+	assert.False(t, finished.Bool)
+	var n int
+	require.NoError(t, f.al.QueryRow(`SELECT COUNT(*) FROM agent_log_subagents`).Scan(&n))
+	assert.Equal(t, 1, n)
+}
+
+func TestScan_MetaOnlyChangeUpdatesSubagent(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.folder, "s1.jsonl", call(t, "s1", f.folder, "u1", "m1", "r1", 5))
+	f.write(f.folder, "s1/subagents/agent-a1.jsonl", call(t, "s1", f.folder, "u2", "m2", "r2", 4))
+	meta := f.write(f.folder, "s1/subagents/agent-a1.meta.json", `{"agentType":"Plan","spawnDepth":1}`)
+	f.scan()
+	var finished sql.NullBool
+	require.NoError(t, f.al.QueryRow(`SELECT finished FROM agent_log_subagents WHERE agent_id = 'a1'`).Scan(&finished))
+	assert.False(t, finished.Valid)
+
+	require.NoError(t, os.WriteFile(meta, []byte(`{"agentType":"Plan","spawnDepth":1,"finished":true}`), 0o600))
+	f.scan()
+	require.NoError(t, f.al.QueryRow(`SELECT finished FROM agent_log_subagents WHERE agent_id = 'a1'`).Scan(&finished))
+	assert.True(t, finished.Valid && finished.Bool)
+}
+
+func TestScan_SubagentSessionIDMismatch(t *testing.T) {
+	f := newFixture(t)
+	f.write(f.folder, "s1.jsonl", call(t, "s1", f.folder, "u1", "m1", "r1", 5))
+	f.write(f.folder, "s1/subagents/agent-a1.jsonl", call(t, "other", f.folder, "u2", "m2", "r2", 4))
+	f.write(f.folder, "s1/subagents/agent-a1.meta.json", `{"agentType":"Plan","spawnDepth":1}`)
+	f.scan() // the slice carries session "other", not the directory's "s1": no row, no failure
+	var n int
+	require.NoError(t, f.al.QueryRow(`SELECT COUNT(*) FROM agent_log_subagents`).Scan(&n))
+	assert.Equal(t, 0, n)
+	f.scan() // unchanged transcript: the meta is filed under the directory's existing session
+	require.NoError(t, f.al.QueryRow(`SELECT COUNT(*) FROM agent_log_subagents WHERE session_uuid = 's1'`).Scan(&n))
+	assert.Equal(t, 1, n)
 }

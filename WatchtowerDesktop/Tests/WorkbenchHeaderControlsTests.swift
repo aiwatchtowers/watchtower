@@ -103,9 +103,9 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
 
     // MARK: - View buttons
 
-    /// The owner's pick: Terminal ▾ | Session | Board | Files, plus the diff
-    /// reviewer's Changes (board #328); the sessions chevron on the Terminal
-    /// button only.
+    /// The owner's pick: Terminal | Workchat ▾ | Session | Board | Files, plus
+    /// the diff reviewer's Changes (board #328); Workchat is the second half
+    /// of Terminal's twin (#711) and the sessions chevron sits by the twin only.
     func testTheViewButtonsReadTerminalSessionBoardFilesAnalyticsChanges() async throws {
         let s = try await seed()
         let sut = controls(makeVM(), s.project)
@@ -114,10 +114,10 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         // archive setting's choices).
         let buttons = try sut.inspect().find(ViewType.ForEach.self)
         let titles = try buttons.findAll(ViewType.Toggle.self).map(Self.title)
-        XCTAssertEqual(titles, ["Terminal", "Session", "Board", "Files", "Analytics", "Changes", "Chat"])
-        XCTAssertNoThrow(try buttons.tupleView(0).find(ViewType.Menu.self), "the sessions chevron sits by Terminal")
-        for index in 1..<7 {
-            XCTAssertThrowsError(try buttons.tupleView(index).find(ViewType.Menu.self), "no chevron by \(titles[index])")
+        XCTAssertEqual(titles, ["Terminal", "Workchat", "Session", "Board", "Files", "Analytics", "Changes"])
+        XCTAssertNoThrow(try buttons.tupleView(0).find(ViewType.Menu.self), "the sessions chevron sits by the twin")
+        for index in 1..<6 {
+            XCTAssertThrowsError(try buttons.tupleView(index).find(ViewType.Menu.self), "no chevron by \(titles[index + 1])")
         }
     }
 

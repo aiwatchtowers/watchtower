@@ -19,16 +19,43 @@ struct WorkbenchMenuContext {
     /// ⌘[ (board #743): while the workbench list is off screen.
     var canGoBack: Bool { !paletteOpen && vm.canShowAllWorkbenches }
     var panelToggleTitle: String { vm.panelVisible ? "Hide Sessions Panel" : "Show Sessions Panel" }
+
+    enum BackAction: Equatable {
+        case popSubagent, showAllWorkbenches
+    }
+
+    /// What ⌘[ does (#711): the focused session chat pane's open subagent
+    /// pops first; without one, the page goes back to the workbench list.
+    static func backAction(popAvailable: Bool, paletteOpen: Bool, canShowAll: Bool) -> BackAction? {
+        guard !paletteOpen else { return nil }
+        if popAvailable { return .popSubagent }
+        return canShowAll ? .showAllWorkbenches : nil
+    }
+
+    func backAction(popAvailable: Bool) -> BackAction? {
+        Self.backAction(popAvailable: popAvailable, paletteOpen: paletteOpen, canShowAll: vm.canShowAllWorkbenches)
+    }
 }
 
 private struct WorkbenchMenuContextKey: FocusedValueKey {
     typealias Value = WorkbenchMenuContext
 }
 
+/// Published by the focused session chat pane while a subagent is open in
+/// it: pops one level (⌘[ through "Back to Workbenches").
+private struct SessionChatPopKey: FocusedValueKey {
+    typealias Value = () -> Void
+}
+
 extension FocusedValues {
     var workbenchMenu: WorkbenchMenuContext? {
         get { self[WorkbenchMenuContextKey.self] }
         set { self[WorkbenchMenuContextKey.self] = newValue }
+    }
+
+    var sessionChatPop: (() -> Void)? {
+        get { self[SessionChatPopKey.self] }
+        set { self[SessionChatPopKey.self] = newValue }
     }
 }
 
@@ -37,6 +64,7 @@ extension FocusedValues {
 /// the title row keeps its buttons, without shortcuts.
 struct WorkbenchCommands: Commands {
     @FocusedValue(\.workbenchMenu) private var context
+    @FocusedValue(\.sessionChatPop) private var sessionChatPop
     let appState: AppState
 
     /// The page's chords act only while its window itself is key: a sheet
@@ -70,9 +98,18 @@ struct WorkbenchCommands: Commands {
             }
             .keyboardShortcut("s", modifiers: [.command, .option])
             .disabled(context?.canTogglePanel != true)
-            Button("Back to Workbenches") { onPage { $0.vm.showAllWorkbenches() } }
-                .keyboardShortcut("[", modifiers: .command)
-                .disabled(context?.canGoBack != true)
+            // The focused session chat's open subagent pops first (#711).
+            Button("Back to Workbenches") {
+                onPage { context in
+                    switch context.backAction(popAvailable: sessionChatPop != nil) {
+                    case .popSubagent: sessionChatPop?()
+                    case .showAllWorkbenches: context.vm.showAllWorkbenches()
+                    case nil: break
+                    }
+                }
+            }
+            .keyboardShortcut("[", modifiers: .command)
+            .disabled(context?.backAction(popAvailable: sessionChatPop != nil) == nil)
             Divider()
             // Board #412: the one key that may take the keyboard from the
             // terminal — the owner's explicit chord; the bare A stays the
@@ -109,6 +146,9 @@ struct HelpCommands: Commands {
                 .keyboardShortcut("/", modifiers: .command)
             Button("Watchtower User Guide") { NSWorkspace.shared.open(GuideLinks.readme) }
             Button("Keyboard Shortcuts") { openWindow(id: KeyboardShortcutsView.sceneID) }
+            if DevBuild.isEnabled {
+                Button("Design Gallery") { openWindow(id: DesignSystemGallery.sceneID) }
+            }
         }
     }
 }

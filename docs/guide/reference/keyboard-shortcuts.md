@@ -61,6 +61,7 @@ The Workbench menu lists most of these.
 | **⌃⌘A** | Waiting for you, from anywhere in the window, the terminal included |
 | **A** | Waiting for you (nothing focused) |
 | **Esc** | Board: close the target panel, then leave the group |
+| **⌃`** | Switch the session on screen between its terminal and its Workchat |
 
 ### Sessions Panel
 

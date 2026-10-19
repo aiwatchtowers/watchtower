@@ -24,10 +24,12 @@ const (
 	fixtureOldSession = "22222222-aaaa-bbbb-cccc-000000000002"
 )
 
-// seedFixtureDB stores one v2 session that exercises every time category, a
-// background subagent, repeated `make test` runs inside two open board
-// targets (so they share the stretch) and a PR link, plus one old-format session and
-// an import still loading. Placeholders only.
+// seedFixtureDB stores one session with the v3 facts that exercises every
+// time category, a background subagent, repeated `make test` runs inside two
+// open board targets (so they share the stretch), a PR link, baseline parts,
+// a skill listing, sized and failed tool results and an unfinished subagent
+// (so the Context, Skills and Trouble blocks have rows), plus one old-format
+// session and an import still loading. Placeholders only.
 func seedFixtureDB(t *testing.T) (testDBs, int64) {
 	t.Helper()
 	d, wb := buildDB(t)
@@ -70,7 +72,12 @@ func seedFixtureDB(t *testing.T) (testDBs, int64) {
 	}
 	tool := func(id string, v, dur time.Duration, name, target, outcome, agent string) {
 		add(agentlogdb.AgentLogEvent{Key: "tool:" + id, Kind: "tool", Name: name, Target: target, Outcome: "pending", AgentID: agent}, v)
-		results = append(results, agentlogdb.AgentToolResult{ToolUseID: id, TS: at(v + dur), Outcome: outcome})
+		size := int64(4000 + 1000*len(results))
+		r := agentlogdb.AgentToolResult{ToolUseID: id, TS: at(v + dur), Outcome: outcome, ResultBytes: &size}
+		if outcome == "error" {
+			r.ErrorClass = "exit_code"
+		}
+		results = append(results, r)
 	}
 	sec, mn := time.Second, time.Minute
 	add(agentlogdb.AgentLogEvent{Kind: "owner_turn", Trigger: "owner"}, 0)
@@ -95,13 +102,32 @@ func seedFixtureDB(t *testing.T) (testDBs, int64) {
 	add(agentlogdb.AgentLogEvent{Kind: "pr_link", Target: "https://example.com/acme/app/pull/1"}, 20*mn+16*sec)
 	add(agentlogdb.AgentLogEvent{Kind: "owner_turn", Trigger: "owner"}, 60*mn+15*sec)
 	api(60*mn+30*sec, "")
+	tool("t7", 60*mn+20*sec, 1*sec, "Read", "main.go", "ok", "")
+	tool("t8", 60*mn+21*sec, 1*sec, "Read", "big.log", "error", "")
+	results[len(results)-1].ErrorClass = "too_large"
+	tool("t9", 60*mn+22*sec, 1*sec, "Read", "main.go", "ok", "")
+	// The context grows by what the reads returned, under a listed skill.
+	add(agentlogdb.AgentLogEvent{Kind: "api_call", Name: "claude-opus-5-5", InputTokens: 6000, OutputTokens: 50,
+		CacheReadTokens: 0, Skill: "review"}, 60*mn+25*sec)
 	evs[1].CostEstimated = true
+	var parts []agentlogdb.AgentContextPart
+	for i, p := range []string{"system", "tools", "instructions", "skills", "mcp"} {
+		for _, lane := range []string{"", "agent-1"} {
+			parts = append(parts, agentlogdb.AgentContextPart{SessionUUID: fixtureSession, AgentID: lane, Part: p, Bytes: int64(2000 * (i + 1))})
+		}
+	}
+	var listing []agentlogdb.AgentSkillListed
+	for _, k := range []string{"review", "pdf", "brainstorming"} {
+		listing = append(listing, agentlogdb.AgentSkillListed{SessionUUID: fixtureSession, Skill: k, Bytes: 600})
+	}
+	unfinished := false
 
 	_, err = d.al.ApplyAgentLogBatch(agentlogdb.AgentLogBatch{
-		File: agentlogdb.AgentLogFile{Path: path, Agent: "claude", ReadOffset: 10, ParserVersion: 2}, ExpectOffset: -1,
+		File: agentlogdb.AgentLogFile{Path: path, Agent: "claude", ReadOffset: 10, ParserVersion: 4}, ExpectOffset: -1,
 		Sessions: []agentlogdb.AgentLogSession{{SessionUUID: fixtureSession, Agent: "claude", ProjectID: &wb, FolderPath: "/w", HomeCWD: "/w",
 			SourcePath: path, StartedAt: at(0), EndedAt: at(60*mn + 30*sec), Model: "claude-opus-5-5", GitBranch: "feature/widget"}},
-		Events: evs, ToolResults: results,
+		Events: evs, ToolResults: results, ContextParts: parts, SkillListing: listing,
+		Subagents: []agentlogdb.AgentSubagent{{SessionUUID: fixtureSession, AgentID: "agent-1", AgentType: "general-purpose", Depth: 1, Finished: &unfinished}},
 	})
 	require.NoError(t, err)
 
@@ -124,9 +150,9 @@ func seedFixtureDB(t *testing.T) (testDBs, int64) {
 func TestDesktopReportFixtures(t *testing.T) {
 	d, wb := seedFixtureDB(t)
 	now := time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC)
-	ov, err := BuildOverview(d.DB, d.al, wb, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), now)
+	ov, err := BuildOverview(d.DB, d.al, wb, time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC), now, English)
 	require.NoError(t, err)
-	det, err := BuildSession(d.DB, d.al, wb, fixtureSession, now)
+	det, err := BuildSession(d.DB, d.al, wb, fixtureSession, now, English)
 	require.NoError(t, err)
 
 	dir := filepath.Join("..", "..", "WatchtowerDesktop", "Tests", "Core", "Fixtures")

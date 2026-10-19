@@ -226,6 +226,9 @@ type ownJiraComments struct {
 	err    error
 	cached map[string]ownComment
 	loaded map[string]bool
+	// linear makes this the owner's own Linear comments (newOwnLinearComments):
+	// ids are Linear user ids and load reads linear_comments.
+	linear bool
 }
 
 // ownComment is the owner's newest comment activity on one issue, as unix
@@ -292,6 +295,9 @@ func (o *ownJiraComments) latestFor(keys []string) (map[string]ownComment, error
 }
 
 func (o *ownJiraComments) load(keys []string) error {
+	if o.linear {
+		return o.loadLinear(keys)
+	}
 	args := make([]any, 0, len(o.ids)+len(keys))
 	for _, k := range keys {
 		args = append(args, k)
@@ -309,18 +315,24 @@ func (o *ownJiraComments) load(keys []string) error {
 		if err := rows.Scan(&issueKey, &createdAt, &updatedAt); err != nil {
 			return fmt.Errorf("own comment scan: %w", err)
 		}
-		created, ok := db.ParseJiraTime(createdAt)
-		if !ok {
-			continue
-		}
-		touched := created
-		if edited, ok := db.ParseJiraTime(updatedAt); ok && edited > touched {
-			touched = edited
-		}
-		cur := o.cached[issueKey]
-		o.cached[issueKey] = ownComment{created: max(cur.created, created), touched: max(cur.touched, touched)}
+		o.note(issueKey, createdAt, updatedAt)
 	}
 	return rows.Err()
+}
+
+// note folds one own comment into the cache. An unparseable creation time is
+// skipped (ParseJiraTime's defensive-skip contract).
+func (o *ownJiraComments) note(issueKey, createdAt, updatedAt string) {
+	created, ok := db.ParseJiraTime(createdAt)
+	if !ok {
+		return
+	}
+	touched := created
+	if edited, ok := db.ParseJiraTime(updatedAt); ok && edited > touched {
+		touched = edited
+	}
+	cur := o.cached[issueKey]
+	o.cached[issueKey] = ownComment{created: max(cur.created, created), touched: max(cur.touched, touched)}
 }
 
 // ownCommentsQuery reads the owner's comments on a set of issues. Bind

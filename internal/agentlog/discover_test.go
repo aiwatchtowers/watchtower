@@ -2,6 +2,7 @@ package agentlog
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -91,4 +92,38 @@ func TestListTranscripts_SymlinkedSubagentsDirSkipped(t *testing.T) {
 	files, err := ListTranscripts([]string{dir})
 	require.NoError(t, err)
 	assert.Empty(t, files)
+}
+
+func TestListSubagentFiles_ReadsMeta(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "-w")
+	sub := filepath.Join(dir, "s1", "subagents")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "agent-a1.jsonl"), []byte("x\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "agent-a1.meta.json"), []byte(
+		`{"agentType":"Explore","description":"SENTINEL-DESC","toolUseId":"t1","spawnDepth":2,"finished":true}`), 0o600))
+	files, err := ListTranscripts([]string{dir})
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	assert.Equal(t, "Explore", files[0].AgentType)
+	assert.Equal(t, 2, files[0].Depth)
+	require.NotNil(t, files[0].Finished)
+	assert.True(t, *files[0].Finished)
+	assert.NotContains(t, fmt.Sprintf("%+v", files[0]), "SENTINEL")
+}
+
+func TestListSubagentFiles_NoMetaFile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "-w")
+	sub := filepath.Join(dir, "s1", "subagents")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "agent-a1.jsonl"), []byte("x\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "agent-a2.jsonl"), []byte("x\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(sub, "agent-a2.meta.json"), []byte("{not json"), 0o600))
+	files, err := ListTranscripts([]string{dir})
+	require.NoError(t, err)
+	require.Len(t, files, 2)
+	for _, f := range files {
+		assert.Empty(t, f.AgentType)
+		assert.Zero(t, f.Depth)
+		assert.Nil(t, f.Finished)
+	}
 }

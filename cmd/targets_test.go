@@ -849,3 +849,24 @@ func TestLoadSourceContext_UnknownDigestIsEmpty(t *testing.T) {
 
 	assert.Empty(t, loadSourceContext(database, "digest", "999"))
 }
+
+// A target made from a Linear issue shows the issue's badge, like a Jira one.
+func TestRunTargets_LinearBadge(t *testing.T) {
+	cleanup := setupTargetsTestEnv(t)
+	defer cleanup()
+	database, err := openDBFromConfig()
+	require.NoError(t, err)
+	la, err := database.CreateLinearAccount("")
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertLinearIssue(db.LinearIssue{AccountID: la, ID: "l-1", Key: "ENG-3", Title: "Ship",
+		StateName: "In Review", StatusCategory: "in_progress", UpdatedAt: "2026-10-03T00:00:00.000Z"}))
+	_, err = database.CreateTargetFromTrackerIssue(db.TrackerIssue{Tracker: db.TrackerLinear, Key: "ENG-3", Title: "Ship"})
+	require.NoError(t, err)
+	database.Close()
+
+	buf := new(bytes.Buffer)
+	targetsCmd.SetOut(buf)
+	resetTargetsFlags()
+	require.NoError(t, targetsCmd.RunE(targetsCmd, nil))
+	assert.Contains(t, buf.String(), "[ENG-3 In Review]")
+}

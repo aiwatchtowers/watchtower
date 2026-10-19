@@ -84,7 +84,7 @@ struct ReactionCheatSheetView: View {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 8) {
                     Button("Enable Reaction Commands", action: onEnable)
-                        .buttonStyle(.popoverPrimary)
+                        .buttonStyle(.kitPrimary)
                         .disabled(isEnabling)
                     if isEnabling {
                         ProgressView().controlSize(.small)
