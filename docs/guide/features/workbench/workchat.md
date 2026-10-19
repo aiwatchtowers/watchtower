@@ -14,6 +14,8 @@ Each session opens in the mode you last showed it in. A new session always opens
 
 Claude Code's own notices, such as a background task finishing or a message from another session, show as one grey line instead of as your messages. Click one for the details.
 
+Once the session ends, the field gives way to **Session finished. The history stays readable.** You can still scroll and open subagents.
+
 ## Using it
 
 ### Switch between Terminal and Workchat
@@ -25,14 +27,21 @@ Claude Code's own notices, such as a background task finishing or a message from
 
 ### Write to the agent
 
-- Return in the field at the bottom sends your line. Shift-Return adds a line break in the field; the message is sent as one line.
+- Return in the field at the bottom sends your line. Shift-Return adds a line break; the message keeps its line breaks.
 - A line starting with `/` is typed as written, so `/clear` works.
 - While the agent works, your line waits as **Queued · sends when the agent stops**. **Cancel** drops it; quitting drops it too.
-- **Stop** (■), or Esc in the empty field, interrupts the agent.
+- **Stop** (■), or Esc in the empty field, interrupts the agent. If it can't, the reason shows above the field.
+- A line typed into the terminal but not sent says so, with **Show in Terminal**: press Return there.
 
 ### Answer a permission prompt
 
-When the agent asks for a permission, a card shows what it wants to do, with **Allow**, **Deny** and **Show in Terminal**. Codex sessions get no card: answer them in the terminal.
+When the agent asks for a permission, a card such as **Claude wants to run a command** shows the request, with **Allow**, **Deny** and **Show in Terminal**. Your answer counts once, for this one call. Codex sessions get no card: answer them in the terminal.
+
+A shortened request, or an edit of Watchtower or shell settings, gets **Deny** only, with a note. To allow it, click **Show in Terminal** and answer there, where the whole request shows. **Show in Terminal** also makes the terminal the mode the session opens in.
+
+### Answer the agent's asks
+
+Each open ask of the session shows at the end of the chat as a card with its number and title. **Open Ask** opens it in the ask drawer, where you answer it as anywhere else.
 
 ### Read a subagent
 
@@ -40,8 +49,9 @@ A subagent's card opens it in the same pane, with **‹ Back** and a path bar th
 
 ## When it's empty or wrong
 
-- **⌃` does nothing.** No session is on screen: pick one in the sessions panel first.
-- **Stop does nothing.** A permission prompt is open, and Esc would answer it. Use the card or the terminal.
+- **⌃` does nothing.** No session is on screen, or both its modes show side by side in the split. Pick a session in the sessions panel, or turn the split off.
+- **Stop says A permission prompt is open — answer it on the card or in the terminal.** Esc would answer the prompt, so Stop holds back. Use the card or the terminal.
+- **Could not read the permission prompt.** Watchtower could not read its database, so no card shows. Answer in the terminal; the next session update tries again.
 - **No permission card, but the session says Needs approval.** Only prompts the agent's hooks report get a card. Answer in the terminal.
 - **The session opened in the terminal.** It is new, or you last showed it there.
 

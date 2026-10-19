@@ -2016,7 +2016,7 @@ loses uncommitted work for good, so every doubt keeps the item.
 
 ## PROJ-21 — a permission prompt is answered from the phone only by the owner's explicit Allow once or Deny, from a device allowed for it on the Mac, through the hook; the answer types nothing, allows one call, and never answers a prompt the Mac answered first
 
-**Status:** Enforced (Go and Desktop; board #517, owner decisions in ask #263, spec approved in ask #265; spec `docs/superpowers/specs/2026-10-17-phone-permission-answers-design.md` §4–§7, plan `docs/superpowers/plans/2026-10-17-phone-permission-answers.md`)
+**Status:** Enforced (Go and Desktop; board #517, owner decisions in ask #263, spec approved in ask #265; spec `docs/superpowers/specs/2026-10-17-phone-permission-answers-design.md` §4–§7, plan `docs/superpowers/plans/2026-10-17-phone-permission-answers.md`; amended 2026-10-19, ask #400: the Workchat card on the Mac answers through the same guarded compare-and-set, `decided_by = "Mac"`, no device grant)
 
 **Observable:** A Claude Code permission prompt of a board `claude`
 session is answered from the phone only through the synchronous
@@ -2113,6 +2113,14 @@ Working, with typing requested and allowed and no pending request.
 The phone's card mirrors the Deny-only rule: a shortened or settings-path
 request shows its note and **Deny** with no **Allow once**.
 
+The Mac's Workchat card (#711) answers the same row through
+`SessionControl.answerPermission` — the one compare-and-set above, with
+`WorkchatModel`'s `decidedBy` `"Mac"` and no device grant (the owner is at
+the Mac) — and the Deny-only blocks (`PermissionAllowBlock`) apply on the
+card too: such a request shows its note, **Deny** and **Show in Terminal**;
+a Workchat deny makes the hook print the message `Denied by the owner at
+the Mac.` instead of the phone's.
+
 The Desktop's expiry of `pending` rows (older than 86400 s, or of a
 session that is not live) treats every session as live until the launch's
 reattach of the session host's runs is done (`SessionLiveness.settled`,
@@ -2130,7 +2138,8 @@ Esc at a prompt rejects it, and an Esc on a later turn interrupts work the
 owner never saw.
 
 **Test guards:**
-- `cmd/workbench_permission_wait_test.go` — `TestProj21_PermissionWaitPhoneAllowPrintsAllow`, `TestProj21_PermissionWaitPhoneDenyPrintsDeny` (the exact decision JSON: allow with no `updatedInput`/`updatedPermissions`, the deny message), `TestProj21_PermissionWaitMacAnswerWins`, `TestProj21_PermissionWaitNotABoardSessionExitsSilently` (no output, under 100 ms), `TestProj21_PermissionWaitDBFailureExitsSilently` (an unreadable config: no decision, one stderr line), `TestProj21_PermissionWaitOpenFailureExitsSilently` (the request cannot be written: no decision, one stderr line), `TestProj21_PermissionWaitCodexRowExitsSilently`, `TestProj21_PermissionWaitOtherWorkbenchExitsSilently`, `TestProj21_PermissionWaitExpiredRequestExitsSilently`, `TestProj21_PermissionWaitNewerPromptClosesTheOlder` (the older row `answered_on_mac`, the newer still `pending`), `TestProj21_PermissionWaitLongCommandIsStoredClipped` (`summary_clipped` and the cut text)
+- `cmd/workbench_permission_wait_test.go` — `TestProj21_PermissionWaitPhoneAllowPrintsAllow`, `TestProj21_PermissionWaitPhoneDenyPrintsDeny` (the exact decision JSON: allow with no `updatedInput`/`updatedPermissions`, the deny message), `TestProj21_PermissionWaitMacAnswerWins`, `TestProj21_PermissionWaitNotABoardSessionExitsSilently` (no output, under 100 ms), `TestProj21_PermissionWaitDBFailureExitsSilently` (an unreadable config: no decision, one stderr line), `TestProj21_PermissionWaitOpenFailureExitsSilently` (the request cannot be written: no decision, one stderr line), `TestProj21_PermissionWaitCodexRowExitsSilently`, `TestProj21_PermissionWaitOtherWorkbenchExitsSilently`, `TestProj21_PermissionWaitExpiredRequestExitsSilently`, `TestProj21_PermissionWaitNewerPromptClosesTheOlder` (the older row `answered_on_mac`, the newer still `pending`), `TestProj21_PermissionWaitLongCommandIsStoredClipped` (`summary_clipped` and the cut text), `TestProj21_PermissionWaitMacWorkchatDenySaysMac` (a `decided_by = "Mac"` deny prints the Mac's message)
+- `WatchtowerDesktop/Tests/WorkchatModelTests.swift` — the Workchat card: `testAllowAppliesAndClears` (`decided_by` `"Mac"`), `testAnsweredElsewhereRemovesCard`, `testAllowBlockedKeepsDenyOnly`, `testAnswerAfterSessionEndsClears`
 - `WatchtowerDesktop/Tests/MobileHub/PermissionAnswerHandlersTests.swift` — `testProj21_AnUngrantedDeviceCannotAnswer`, `testProj21_AnAllowDecidesThePendingRowOnce` (the CAS: a second answer is `not_pending`), `testProj21_RevokeBlocksAnswers`, `testProj21_AnAnswerTypesNothing`, `testProj21_AClippedRequestCannotBeAllowed` and `testProj21_ASettingsPathEditCannotBeAllowed` (the two Deny-only rules: allow refused `answer_on_mac`, row `pending`, deny applied)
 - `WatchtowerDesktop/Tests/MobileHub/PermissionRequestSliceTests.swift::testProj21_GoClippedFlagReachesTheWire`
 - `WatchtowerKit/Tests/WatchtowerSyncTests/PermissionAllowRuleTests.swift` — `testProj21_AClippedRequestCannotBeAllowed`, `testProj21_ASettingsPathEditCannotBeAllowed` (the shared rule, every listed path)
@@ -2460,6 +2469,7 @@ owner never saw.
 
 ## Changelog
 
+- 2026-10-19 (board #711, Workchat final review; **owner approved in ask #400**): **PROJ-21 amended — no guard changed.** The Status line and one Observable paragraph record the Mac's Workchat card as a second writer of `permission_requests`: `SessionControl.answerPermission` with `decided_by = "Mac"`, through the same guarded compare-and-set, with no device grant, and the Deny-only blocks (`PermissionAllowBlock`) on the card too. The Go hook prints a second deny constant, `Denied by the owner at the Mac.`, when `decided_by` is `"Mac"`; the phone's pinned `Denied from the owner's phone.` is unchanged (`TestProj21_PermissionWaitPhoneDenyPrintsDeny` untouched; `TestProj21_PermissionWaitMacWorkchatDenySaysMac` added; the Workchat card's tests in `WorkchatModelTests` are listed under the guards). Note only: the PROJ-16/21 file lists gained `WatchtowerDesktop/Sources/Services/SessionControl.swift` — the line, interrupt and answer gates moved out of the phone handlers into it — and no contract changed.
 - 2026-10-19 (board #711/#758, **owner approved in ask #421**): **PROJ-12 amended** for Workchat lines only — a Workchat message keeps its line breaks and is pasted as one multi-line bracketed paste (as the code-question hand-off does); the ask answer, the phone's input and the review round lines are still one line. Heading, other wording and every guard unchanged; `WorkchatModelTests.testMultilineDraftKeepsLineBreaks` and `SessionLineDeliveryTests.testOtherLineKeysStillOneLine` pin it.
 - 2026-10-18 (board #849, **owner approved in ask #350**): agent analytics move to `agentlog.db`. PROJ-02's exception text is amended — unchanged in substance (analytics rows outlive a deleted workbench and are adopted by a workbench later created on the same folder), but they no longer live in `watchtower.db`, so "no rows left in `watchtower.db`" holds without an exception. `TestProj02_DeleteProjectLeavesNoRows` loses its analytics seeding and its two analytics assertions ("the analytics session survives with project_id NULL", "the analytics events survive"); its name and every other assertion are unchanged. The guarantee stays guarded by `TestAgentLog_SurvivesWorkbenchDeleteAndIsAdopted`, now in `internal/agentlogdb` against `agentlog.db`.
 - 2026-10-18 (board #670 phase 2b-1, PR #398): note only — **no contract or assertion changed**. `WorkbenchBoardViewModel`'s owner writes are queued off the main thread; `testStatusWriteReportsTheParentsTheRollupMoved` gained `await vm.writesSettled()` after its synchronous `setStatus`, and `testMoveReportsBothRolledUpParentsAndExpandsTheNewOne` and `testArchivedTargetsShowOnlyWithTheToggleAndReopeningRestoresOne` hoist the awaited `move`/`setStatus` result into a `let`. PROJ-05's rollup reporting and PROJ-15 are unchanged.
