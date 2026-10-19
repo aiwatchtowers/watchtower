@@ -207,6 +207,11 @@ func TestWorkbenchWorktree_AgentClaudeSkipsTheCodexInstall(t *testing.T) {
 	require.NoError(t, err, out)
 	assert.NotNil(t, codexFake.ctx, "a codex worktree gets codex's install")
 
+	codexFake.ctx = nil
+	out, err = runWorktree(t, "create", "--workbench", f.idArg, "--name", "both", "--json")
+	require.NoError(t, err, out)
+	assert.NotNil(t, codexFake.ctx, "no named agent installs both")
+
 	_, err = runWorktree(t, "create", "--workbench", f.idArg, "--name", "bad", "--agent", "gpt", "--json")
 	require.Error(t, err)
 }

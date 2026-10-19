@@ -250,8 +250,8 @@ func TestProj07_SharedBranchAndParents(t *testing.T) {
 
 // A git call that fails for any reason but "no such ref" is unknown, never
 // a missing branch nor a merge verdict. The batch branch read fails too, so
-// each branch is read on its own (TestCheck_BatchReadFailures covers the
-// batch read itself).
+// each branch is read on its own (TestProj07_GitErrorsAfterTheBatchReadAreNeverFindings
+// covers the batch read's path).
 func TestProj07_GitErrorsAreNeverFindings(t *testing.T) {
 	dir := newRepo(t)
 	run := func(ctx context.Context, d string, in []byte, name string, args ...string) ([]byte, int, error) {
@@ -682,8 +682,10 @@ func TestCheck_BatchReadMatchesPerBranchReads(t *testing.T) {
 		},
 		"per branch": func(args []string) bool { return args[0] == "for-each-ref" },
 	}
+	calls := map[string]int{}
 	for name, refuse := range cases {
 		run := func(ctx context.Context, d string, in []byte, n string, args ...string) ([]byte, int, error) {
+			calls[name]++
 			if n == "git" && len(args) > 0 && refuse(args) {
 				return nil, 128, os.ErrPermission
 			}
@@ -692,6 +694,48 @@ func TestCheck_BatchReadMatchesPerBranchReads(t *testing.T) {
 		r := Check(context.Background(), 1, board, Options{Folder: dir, Now: testNow, Run: run})
 		if got := kinds(r); fmt.Sprint(got) != fmt.Sprint(want) {
 			t.Fatalf("%s: findings %v, want %v", name, got, want)
+		}
+	}
+	// The batch read is used, not silently dropped for per-branch reads.
+	for _, name := range []string{"ahead-behind", "merged lists"} {
+		if calls[name] >= calls["per branch"] {
+			t.Fatalf("%s ran %d git calls, per branch %d: the batch read was not used", name, calls[name], calls["per branch"])
+		}
+	}
+}
+
+// With the batch read answering, a later git call that fails (first-parent
+// line, counts, reflog, cherry, the squash reads) still gives no merge
+// verdict: only a branch the listing shows missing is a finding.
+func TestProj07_GitErrorsAfterTheBatchReadAreNeverFindings(t *testing.T) {
+	dir := newRepo(t)
+	run := func(ctx context.Context, d string, in []byte, name string, args ...string) ([]byte, int, error) {
+		if len(args) > 0 && !slices.Contains([]string{"for-each-ref", "rev-parse", "symbolic-ref"}, args[0]) {
+			return nil, 128, os.ErrPermission
+		}
+		return ExecRunner(ctx, d, in, name, args...)
+	}
+	board, _ := gitRulesBoard()
+	r := Check(context.Background(), 1, board, Options{Folder: dir, Now: testNow, Run: run})
+	for _, f := range r.Findings {
+		if f.Kind != KindBranchMissing || f.Branch != "nowhere" {
+			t.Fatalf("failed git calls after the batch read must yield no verdict, got %+v", f)
+		}
+	}
+}
+
+// A target naming a branch in another case than its loose ref resolves as
+// git resolves it, never as missing from the batch listing.
+func TestCheck_BranchInAnotherCaseIsLookedUpOnItsOwn(t *testing.T) {
+	dir := newRepo(t)
+	gitRun(t, dir, "branch", "casey", "main")
+	if _, err := os.Stat(filepath.Join(dir, ".git", "refs", "heads", "CASEY")); err != nil {
+		t.Skip("case-sensitive file system: git resolves refs by exact case")
+	}
+	r := Check(context.Background(), 1, []db.BoardNode{node(1, "in_progress", "CASEY", time.Hour)}, Options{Folder: dir, Now: testNow})
+	for _, f := range r.Findings {
+		if f.Kind == KindBranchMissing {
+			t.Fatalf("a loose ref in another case is not missing: %+v", f)
 		}
 	}
 }

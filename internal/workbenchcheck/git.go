@@ -362,12 +362,17 @@ func (g *gitState) markMerged(ctx context.Context, refs map[string]refInfo) {
 }
 
 // lookup is ref from the batch read, else resolved on its own (tipOf):
-// info.sha "" with known=true when ref does not exist.
+// info.sha "" with known=true when ref does not exist. A name the batch read
+// lists only in another case is resolved on its own too: on a
+// case-insensitive file system git resolves a loose ref by any case.
 func (g *gitState) lookup(ctx context.Context, ref string) (info refInfo, known bool) {
 	if refs := g.branchRefs(ctx); refs != nil {
 		info, ok := refs[ref]
-		if !ok || info.sha != "" {
+		if ok && info.sha != "" {
 			return info, true
+		}
+		if !ok && !hasFoldedKey(refs, ref) {
+			return refInfo{}, true
 		}
 	}
 	sha, known := g.tipOf(ctx, ref)
@@ -376,6 +381,15 @@ func (g *gitState) lookup(ctx context.Context, ref string) (info refInfo, known 
 		return refInfo{sha: sha, committed: g.commitTime(ctx, sha), ahead: unknownCounts(n), behind: unknownCounts(n)}, known
 	}
 	return refInfo{}, known
+}
+
+func hasFoldedKey(refs map[string]refInfo, ref string) bool {
+	for k := range refs {
+		if strings.EqualFold(k, ref) {
+			return true
+		}
+	}
+	return false
 }
 
 // branchState is the branch's state, read once per check (a cut-short read
