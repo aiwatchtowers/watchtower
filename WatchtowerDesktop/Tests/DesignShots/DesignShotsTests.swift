@@ -27,7 +27,12 @@ final class DesignShotsTests: XCTestCase {
         }
 
         for shot in shots {
-            let probe = ViewRenderProbe(size: shot.size)
+            // A zero height means "as tall as the content".
+            var size = shot.size
+            if size.height <= 0 {
+                size.height = ViewRenderProbe.fittingHeight(shot.make(), width: size.width)
+            }
+            let probe = ViewRenderProbe(size: size)
             for (suffix, name) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
                 let appearance = try XCTUnwrap(NSAppearance(named: name))
                 let data = try probe.png(shot.make(), appearance)

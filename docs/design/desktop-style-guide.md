@@ -36,7 +36,7 @@ Shadows exist only on floating buttons (`FloatingButtonLabel`).
 | Component | Replaces | Use it for |
 |---|---|---|
 | `.buttonStyle(.kitPrimary)` | `.borderedProminent` | the one prominent action of a screen or popover |
-| `.kitSecondary` | `.bordered` | ordinary actions: card fill, hover fill |
+| `.kitSecondary` | `.bordered` | ordinary actions: card fill, hover fill. `KitButtonMetrics` is the size table shared by the soft and destructive buttons |
 | `.kitQuiet` | `.borderless`, `.plain` text buttons | low-emphasis text actions |
 | `.kitDestructive` | red bordered buttons | delete, discard; confirm first |
 | `.kitIcon(isOn:)` | icon buttons | header and toolbar icon buttons, toggled or not |
