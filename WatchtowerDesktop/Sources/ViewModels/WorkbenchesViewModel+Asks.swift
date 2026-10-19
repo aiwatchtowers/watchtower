@@ -37,8 +37,9 @@ extension WorkbenchesViewModel {
             if keepKeyboard { terminalCenter?.keepKeyboardOnAttach(sessionID) }
             await revealTerminal(projectID: projectID, sessionID: sessionID, ticket: ticket)
             // A failed open already reports itself; no drawer beside nothing.
+            // Its terminal or its Workchat, whichever mode it opened in (#711).
             guard isLatestSwitch(ticket, projectID: projectID),
-                  layout(projectID: projectID).visiblePanes.contains(.session(sessionID)) else { return true }
+                  layout(projectID: projectID).showsSession(sessionID) else { return true }
         }
         asks.openDrawer(ask)
         return true
@@ -69,7 +70,7 @@ extension WorkbenchesViewModel {
         let result = await asks.answerQuick(ask, with: answer)
         guard result == .notOpen, selectedWorkbenchID == ask.projectID, asks.drawerAskIDs[ask.projectID] == nil,
               let sessionID = ask.sessionID,
-              layout(projectID: ask.projectID).visiblePanes.contains(.session(sessionID)) else { return result }
+              layout(projectID: ask.projectID).showsSession(sessionID) else { return result }
         if let closed = await asks.lookUp(askID: ask.id, projectID: ask.projectID), !closed.isOpen {
             asks.openDrawer(closed)
         }
@@ -102,8 +103,8 @@ extension WorkbenchesViewModel {
     func openNewAsk(projectID: Int64) {
         guard selectedWorkbenchID == projectID, asks.drawerAskIDs[projectID] == nil else { return }
         let onScreen = Set(layout(projectID: projectID).visiblePanes.compactMap { pane -> Int64? in
-            if case let .session(id) = pane, asks.roomySessions.contains(id) { return id }
-            return nil
+            // A terminal or a Workchat (#711).
+            WorkspaceLayout.sessionID(of: pane).flatMap { asks.roomySessions.contains($0) ? $0 : nil }
         })
         guard let ask = asks.stack(projectID: projectID).askToOpen(
             sessionsOnScreen: onScreen, dismissed: asks.dismissedAskIDs[projectID] ?? []

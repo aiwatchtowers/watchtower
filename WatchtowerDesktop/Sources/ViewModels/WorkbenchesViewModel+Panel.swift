@@ -286,11 +286,19 @@ extension WorkbenchesViewModel {
         await showSession(id: id)
     }
 
+    /// The session ⌃` acts on: the one on screen, when the toggle would
+    /// change what is on screen (not with both its modes side by side).
+    func workchatToggleSession(projectID: Int64) -> Int64? {
+        guard let id = visibleSessionPane(projectID: projectID).flatMap(WorkspaceLayout.sessionID(of:)),
+              layout(projectID: projectID).togglesVisibly(sessionID: id) else { return nil }
+        return id
+    }
+
     /// ⌃` and the View menu's Show Terminal / Show Workchat (#711): the
     /// session on screen swaps its terminal and its Workchat in place.
-    /// No session on screen: nothing changes.
+    /// No session on screen, or both its modes side by side: nothing changes.
     func toggleWorkchat(projectID: Int64) {
-        guard let id = visibleSessionPane(projectID: projectID).flatMap(WorkspaceLayout.sessionID(of:)) else { return }
+        guard let id = workchatToggleSession(projectID: projectID) else { return }
         beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
         updated.toggleMode(sessionID: id)

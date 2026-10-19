@@ -575,4 +575,17 @@ final class WorkspaceLayoutTests: XCTestCase {
         l.show(.sessionChat(2))
         XCTAssertEqual(l.visiblePanes, [.sessionChat(2), .sessionReport(2)])
     }
+
+    /// Either mode counts as the session on screen; with both side by side
+    /// ⌃` would change nothing visible, unless one of them is expanded.
+    func testShowsSessionAndTogglesVisibly() {
+        var l = WorkspaceLayout(primary: .sessionChat(7), secondary: nil, expanded: nil, dividerFraction: 0.5)
+        XCTAssertTrue(l.showsSession(7))
+        XCTAssertFalse(l.showsSession(8))
+        XCTAssertTrue(l.togglesVisibly(sessionID: 7))
+        l.split(with: .session(7))
+        XCTAssertFalse(l.togglesVisibly(sessionID: 7))
+        l.toggleExpand(.session(7))
+        XCTAssertTrue(l.togglesVisibly(sessionID: 7))
+    }
 }

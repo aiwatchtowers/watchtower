@@ -568,6 +568,42 @@ final class WorkbenchOwnerPresenceScreenTests: XCTestCase {
         XCTAssertEqual(vm.ownerPresenceScreen(), .other)
     }
 
+    /// Workchat is the session's equal mode (#711): shown alone, its session
+    /// is the one on screen, as its terminal would be.
+    func testAWorkchatAloneIsTheWorkbenchSessionScreen() async throws {
+        let session = try await insertSession("a")
+        let vm = try await page()
+        await vm.showWorkchat(sessionID: session.id, projectID: projectID)
+        XCTAssertEqual(vm.layout(projectID: projectID).visiblePanes, [.sessionChat(session.id)])
+
+        XCTAssertEqual(vm.ownerPresenceScreen(), .init(keyWindowShows: .workbenchSession, selectedSession: session.id))
+    }
+
+    /// An ask of a session in Workchat mode opens its drawer beside the
+    /// Workchat, and the owner's mode is not switched to open it (#711).
+    func testShowAskOpensTheDrawerBesideAWorkchat() async throws {
+        let session = try await insertSession("a")
+        let vm = try await page()
+        await vm.showWorkchat(sessionID: session.id, projectID: projectID)
+        let projectID = projectID
+        let askID = try await pool.write {
+            try TestDatabase.insertOwnerAsk(
+                $0, projectID: projectID, sessionID: session.id,
+                payload: #"{"questions":[{"id":"a","question":"Flag?","options":[{"label":"Yes"},{"label":"No"}]}]}"#
+            )
+        }
+        var layout = vm.layout(projectID: projectID)
+        layout.show(.board)
+        vm.setLayout(layout, projectID: projectID)
+
+        let opened = await vm.showAsk(askID, projectID: projectID)
+
+        XCTAssertTrue(opened)
+        XCTAssertEqual(vm.layout(projectID: projectID).visiblePanes, [.sessionChat(session.id)], "its mode is kept")
+        XCTAssertEqual(vm.asks.drawerAsk(projectID: projectID)?.id, askID)
+        XCTAssertEqual(vm.ownerPresenceScreen(), .init(keyWindowShows: .workbenchSessionWithAskDrawer, selectedSession: session.id))
+    }
+
     func testTheDrawerOfThatSessionIsReported() async throws {
         let session = try await insertSession("a")
         let vm = try await page()

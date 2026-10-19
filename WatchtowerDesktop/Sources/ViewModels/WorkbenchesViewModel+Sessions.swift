@@ -96,8 +96,9 @@ extension WorkbenchesViewModel {
         // goes with it. The draft stays, and the drawer comes back with the
         // session once its pane measures itself (board #364,
         // `sessionPaneMeasured`).
+        // Either mode of the session keeps it (#711).
         if let sessionID = asks.drawerAsk(projectID: projectID)?.sessionID,
-           !layout.visiblePanes.contains(.session(sessionID)) {
+           !layout.showsSession(sessionID) {
             asks.hideDrawer(projectID: projectID)
         }
         // A session came on screen: its panel section is kept (#480).

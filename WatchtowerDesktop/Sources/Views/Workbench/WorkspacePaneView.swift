@@ -156,8 +156,10 @@ struct WorkspacePaneView: View {
             WorkbenchSessionReportView(vm: vm, project: project, sessionID: id)
                 .id(id)
         case let .sessionChat(id):
-            SessionChatView(vm: vm, sessionID: id, projectID: project.id)
-                .id(id)
+            WorkchatAskDrawerHost(vm: vm, projectID: project.id, sessionID: id) {
+                SessionChatView(vm: vm, sessionID: id, projectID: project.id)
+            }
+            .id(id)
         case let .changes(id):
             if let model = vm.reviewModel(sessionID: id, projectID: project.id) {
                 ReviewChangesPaneView(

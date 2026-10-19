@@ -25,7 +25,7 @@ Claude Code's own notices, such as a background task finishing or a message from
 
 ### Write to the agent
 
-- Return in the field at the bottom sends your line. Shift-Return adds a line break.
+- Return in the field at the bottom sends your line. Shift-Return adds a line break in the field; the message is sent as one line.
 - A line starting with `/` is typed as written, so `/clear` works.
 - While the agent works, your line waits as **Queued · sends when the agent stops**. **Cancel** drops it; quitting drops it too.
 - **Stop** (■), or Esc in the empty field, interrupts the agent.

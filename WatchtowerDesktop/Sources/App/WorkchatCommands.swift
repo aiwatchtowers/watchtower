@@ -9,10 +9,12 @@ import WatchtowerCore
 struct WorkchatCommands: Commands {
     @FocusedValue(\.workbenchMenu) private var context
 
-    /// The terminal or Workchat pane on screen; nil without one (or while
-    /// the Go to… palette is open).
+    /// The terminal or Workchat pane on screen; nil without one, while the
+    /// Go to… palette is open, or with both modes side by side (⌃` would
+    /// change nothing on screen).
     private var sessionPane: WorkspacePane? {
-        guard let context, !context.paletteOpen, let projectID = context.vm.selectedWorkbenchID else { return nil }
+        guard let context, !context.paletteOpen, let projectID = context.vm.selectedWorkbenchID,
+              context.vm.workchatToggleSession(projectID: projectID) != nil else { return nil }
         return context.vm.visibleSessionPane(projectID: projectID)
     }
 

@@ -240,6 +240,20 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         [primary, secondary].compactMap { $0.flatMap(Self.sessionID(of:)) }
     }
 
+    /// Whether session `id` is on screen, in its terminal or its Workchat:
+    /// the two modes count alike for its asks and the owner's presence.
+    package func showsSession(_ id: Int64) -> Bool {
+        visiblePanes.contains { Self.sessionID(of: $0) == id }
+    }
+
+    /// Whether `toggleMode` changes what is on screen: not while both modes
+    /// sit side by side in a split, unless one of them is expanded.
+    package func togglesVisibly(sessionID id: Int64) -> Bool {
+        let slots = [primary, secondary].compactMap(\.self)
+        guard slots.contains(.session(id)), slots.contains(.sessionChat(id)) else { return true }
+        return expanded == .session(id) || expanded == .sessionChat(id)
+    }
+
     /// Every session the layout names: one in a slot, or one whose
     /// Workchat mode it remembers. A session gone from the list leaves all.
     package var referencedSessionIDs: Set<Int64> {
