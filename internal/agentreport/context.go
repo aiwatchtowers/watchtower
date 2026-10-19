@@ -522,9 +522,6 @@ func median(vs []int64) int64 {
 	return (s[n/2-1] + s[n/2]) / 2
 }
 
-// diskSizes reads the folder's CLAUDE.md (size, lines) and the total size of
-// the regular files under .claude/rules; symlinks inside rules are skipped and
-// anything missing reads as zero.
 // claudeMDReadCap bounds the bytes of CLAUDE.md read to count its lines.
 const claudeMDReadCap = 1 << 20
 
@@ -552,6 +549,9 @@ func claudeMDSize(path string) (int64, int) {
 	return info.Size(), lines
 }
 
+// diskSizes reads the folder's CLAUDE.md (size, lines) and the total size of
+// the regular files under .claude/rules; symlinks inside rules are skipped and
+// anything missing reads as zero.
 func diskSizes(folder string) DiskSizes {
 	var d DiskSizes
 	if folder == "" {

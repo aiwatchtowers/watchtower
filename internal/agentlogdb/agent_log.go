@@ -392,10 +392,12 @@ func (d *DB) AgentLogSessionFolder(sessionUUID string) (string, bool, error) {
 // AgentLaneBaseline reports whether a lane (a session's agent id, "" for the
 // main agent) already has a stored api_call, and, when it has none, the
 // baseline part bytes stored for it so far, so a later read can continue them.
+// "+kind" keeps the planner on the session index: the kind index would walk
+// every api_call when the lane has none.
 func (d *DB) AgentLaneBaseline(sessionUUID, agentID string) (bool, map[string]int64, error) {
 	var called bool
 	if err := d.QueryRow(`SELECT EXISTS (SELECT 1 FROM agent_log_events
-		WHERE session_uuid = ? AND agent_id = ? AND kind = 'api_call')`, sessionUUID, agentID).Scan(&called); err != nil {
+		WHERE session_uuid = ? AND agent_id = ? AND +kind = 'api_call')`, sessionUUID, agentID).Scan(&called); err != nil {
 		return false, nil, fmt.Errorf("lane baseline: %w", err)
 	}
 	parts := map[string]int64{}
