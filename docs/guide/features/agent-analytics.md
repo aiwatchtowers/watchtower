@@ -24,18 +24,6 @@ Only Claude Code transcripts in `~/.claude` are read. Codex sessions are not.
 
 Besides counts, Watchtower stores sizes: how many bytes each tool result and each start-up part of a session held, how many tokens a compaction dropped, and a failure's class (for example "edit did not match"). It turns bytes into tokens with the ratio of the session's first call, so figures like "CLAUDE.md is 1,800 tokens" are estimates.
 
-## What the Analytics view shows
-
-The view opens with **The main thing**: the hint that would save the most, in your assistant's language, with a button. The buttons are **Copy rules** (allow rules for `.claude/settings.json`), **Open session**, **Open Waiting for you** and **Open file**.
-
-- **Context** shows what a session carries before your first message (instructions, skills, tools, hooks) and what grew it afterwards: which tools and files, files read three or more times without an edit, compactions, and the size of your `CLAUDE.md` and rules.
-- **Skills** shows which skills ran and how, and which listed skills never did. Once five sessions over a week were measured, never-used skills are suggested for removal because each one's listing costs tokens in every session.
-- **Trouble** shows failed calls by class, commands that were denied, how often you interrupted or rejected the agent, subagents that never finished and rate limits.
-- **What else would save** lists the remaining hints. The **Time** section, collapsed, keeps the time bar, tasks, sessions and commands.
-- **Discuss in Chat** opens the assistant with the report, so you can ask what to change.
-
-Sessions recorded before this version are shown as **Not measured for sessions before this update** and fill in as the next scan rereads them, while the transcripts still exist (Claude Code removes them after about 30 days).
-
 ## Using it
 
 ```
@@ -62,6 +50,18 @@ Find a workbench's number with `watchtower workbench list`, or use the id in its
 - **Repeated reads look wrong.** A file read in pages counts as read many times, because the page range is not stored.
 - **Image results add nothing to context growth.** Their size is not measured.
 - **`unknown_records` is not 0.** Claude Code writes record types Watchtower does not read. They are skipped and counted, and the totals are unaffected.
+
+## What the Analytics view shows
+
+The view starts with the header and tiles, then **The main thing**: the hint that would save the most, in your assistant's language, with a button. The buttons are **Copy Allow Rules** (for `.claude/settings.json`), **Open Session**, **Open Waiting for You** and **Open <path>**, named after the file it opens.
+
+- **Context** shows what a session carries before your first message (instructions, skills, tools, hooks) and what grew it afterwards: which tools and files, files read three or more times without an edit, compactions, and the size of your `CLAUDE.md` and rules.
+- **Skills** shows which skills ran and how, and which listed skills never did. Once five sessions over a week were measured, never-used skills are suggested for removal because each one's listing costs tokens in every session.
+- **Trouble** shows failed calls by class, commands that were denied, how often you interrupted or rejected the agent, subagents that never finished and rate limits.
+- **What else would save** lists the remaining hints. The **Time** section, collapsed, keeps the time bar, tasks, sessions and commands.
+- **Discuss in Chat** opens the assistant with the report, so you can ask what to change.
+
+Sessions recorded before this version are shown as **Not measured for sessions before this update** and fill in as the next scan rereads them, while the transcripts still exist (Claude Code removes them after about 30 days).
 
 ## Related
 
