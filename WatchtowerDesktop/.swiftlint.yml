@@ -199,7 +199,7 @@ custom_rules:
     severity: error
   kit_no_raw_metrics:
     name: 'kit_no_raw_metrics'
-    regex: '\.padding\((\s*\.\w+\s*,)?\s*[1-9][0-9.]*\s*\)|spacing:\s*[1-9][0-9.]*|cornerRadius:\s*[1-9][0-9.]*|\.system\(size:\s*[0-9]'
+    regex: '\.padding\((\s*\.\w+\s*,)?\s*[1-9][0-9.]*\s*\)|spacing:\s*[1-9][0-9.]*|cornerRadius:\s*[1-9][0-9.]*|\.cornerRadius\(\s*[1-9]|\.system\(size:\s*[0-9]'
     included: '.*/Sources/(Views|App)/.*\.swift'
     excluded: '.*/Sources/Views/DesignSystem/.*'
     message: 'Use Spacing / Radius / IconSize tokens.'

@@ -58,7 +58,7 @@ struct WorkbenchBoardCardView<Trailing: View>: View {
         .padding(.vertical, 8)
         .background(background)
         .overlay(alignment: .leading) { chevron }
-        .card(selected: isSelected)
+        .card(selected: isSelected, fill: nil)
         .opacity(dimming)
         .padding(.leading, CGFloat(min(row.depth, 6)) * 18)
         .contentShape(Rectangle())

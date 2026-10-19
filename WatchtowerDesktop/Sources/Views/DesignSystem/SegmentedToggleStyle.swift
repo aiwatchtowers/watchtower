@@ -14,8 +14,8 @@ struct SegmentedToggleStyle: ToggleStyle {
     var onHover: (Bool) -> Void
 
     static func fill(isOn: Bool, isHovered: Bool) -> Color {
-        if isOn { return Color.accentColor.opacity(0.20) }
-        return isHovered ? Color.primary.opacity(0.07) : .clear
+        if isOn { return Fill.on }
+        return isHovered ? Fill.hover : .clear
     }
 
     func makeBody(configuration: Configuration) -> some View {

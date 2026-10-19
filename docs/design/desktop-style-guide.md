@@ -37,20 +37,21 @@ Shadows exist only on floating buttons (`FloatingButtonLabel`).
 |---|---|---|
 | `.buttonStyle(.kitPrimary)` | `.borderedProminent` | the one prominent action of a screen or popover |
 | `.kitSecondary` | `.bordered` | ordinary actions: card fill, hover fill. `KitButtonMetrics` is the size table shared by the soft and destructive buttons |
-| `.kitQuiet` | `.borderless`, `.plain` text buttons | low-emphasis text actions |
+| `.kitQuiet` | `.borderless`, `.plain` text buttons | low-emphasis text actions. By convention (no lint rule) new code uses `.kitQuiet` / `.kitSecondary` instead of `.borderless` / `.plain` |
 | `.kitDestructive` | red bordered buttons | delete, discard; confirm first |
 | `.kitIcon(isOn:)` | icon buttons | header and toolbar icon buttons, toggled or not |
-| `KitSegmentedPicker` | `Picker` with `.segmented` | pick one of 2–5 values: `KitSegmentedPicker(selection:segments:)`, the Workbench header's capsule with exactly one segment on |
+| `KitSegmentedPicker` | `Picker` with `.segmented` | pick one of 2–5 values in the Workbench header's capsule with exactly one segment on: `KitSegmentedPicker(title: "Range", selection: $range, segments: [KitSegment(value: .day, title: "Day"), KitSegment(value: .week, title: "Week")])`. `title` is the group's VoiceOver label, not drawn |
 | `SegmentedToggleStyle` | — | the multi-toggle header style: a capsule of independent `Toggle`s via `.toggleStyle(SegmentedToggleStyle(...))` (the Workbench header's view buttons); you manage each state yourself |
 | `Chip`, `CountBadge`, `OutlineTag` | hand-drawn capsules | status or priority chip; count badge; outlined tag. Four recipes kept apart on purpose (merging would change pixels) |
 | `MenuLabel` | default `Menu` chrome | the label of a menu or read-only value in a panel |
 | `SectionHeader` | bold `Text` plus `Divider()` | the title of a section, with optional count |
-| `.card(selected:)` | `GroupBox`, ad-hoc rounded backgrounds | a group on a soft fill with a hairline or selection outline |
-| `.kitRow(isSelected:)` | rows separated by dividers | list rows: hover fill, selection fill, row radius |
+| `.card(selected:fill:)` | `GroupBox`, ad-hoc rounded backgrounds | a group on a soft fill (`Fill.card` by default) with a hairline or selection outline, both in one row-radius shape. A card whose fill depends on its state passes `fill: nil` and keeps its own `background` (the board card) |
+| `.kitRow(isSelected:)` | rows separated by dividers | list rows: hover fill, selection fill, row radius. A new recipe, not the side panel's tab row (`panelTab(isSelected:)`) |
 | `.textFieldStyle(.kit)` | `.roundedBorder` | text fields. The `.kit` field ignores `controlSize` (always body size) |
 | `SettingsSection`, `SettingRow` | `Form`, `LabeledContent`, bare `Toggle` | settings blocks of new windows; toggles become small switches |
 | `PanelSplit` (with `PanelSplitWidth`; `PanelResizeHandle` is its drag handle) | sheets and pop-ups for detail | main content plus a resizable side panel, side by side (not the Workbench's overlay panel) |
 | `panelSurface()`, `panelListStyle()`, `panelTab(isSelected:)` | stock list chrome | side-panel lists and tabs |
+| `detailBackground()` | a bare or window-coloured tab background | the root of a new tab: it sits on the detail surface |
 | `.popoverSurface()` | custom popover backgrounds | the body of a popover |
 | `FloatingButtonLabel` | one-off shadows | "Jump to latest" style floating buttons |
 
@@ -67,9 +68,11 @@ Shadows exist only on floating buttons (`FloatingButtonLabel`).
 
 The gallery shows every token and component in light and dark. In a dev build (`make app-dev`) open it from Help, Design Gallery.
 
+Before a release: build with `make app` and check that neither the Help nor the Window menu shows Design Gallery.
+
 ## Lint rules
 
-New code under `Sources/Views/` and `Sources/App/` (not `DesignSystem/`) fails `make lint-swift` on these. There is no inline `swiftlint:disable` for them; existing code is in the baseline.
+New code under `Sources/Views/` and `Sources/App/` (not `DesignSystem/`) fails `make lint-swift` on these. There is no inline `swiftlint:disable` for them: `scripts/kit-lint-guard.sh`, run by `make lint-swift` and by CI, fails on any `swiftlint:disable` (including `:next`, `:this`, `:previous`) there that names a `kit_` rule or `all`. Existing code is in the baseline.
 
 | Rule id | Forbids | Why |
 |---|---|---|
@@ -78,7 +81,7 @@ New code under `Sources/Views/` and `Sources/App/` (not `DesignSystem/`) fails `
 | `kit_no_stock_buttons` | `.buttonStyle(.bordered)`, `.borderedProminent` | clumsy next to the app; use the `.kit*` styles |
 | `kit_no_segmented_picker` | `.pickerStyle(.segmented)` | use `KitSegmentedPicker` (single choice), or a menu `Picker` |
 | `kit_no_rounded_field` | `.textFieldStyle(.roundedBorder)` | use `.textFieldStyle(.kit)` |
-| `kit_no_raw_metrics` | numeric literals in `.padding`, `spacing:`, `cornerRadius:`, `.font(.system(size:))` | eleven paddings and ten radii is how screens drift; use `Spacing`, `Radius`, `IconSize` |
+| `kit_no_raw_metrics` | numeric literals in `.padding`, `spacing:`, `cornerRadius:`, `.cornerRadius(…)`, `.font(.system(size:))` | eleven paddings and ten radii is how screens drift; use `Spacing`, `Radius`, `IconSize` |
 | `kit_no_color_opacity` | `Color.x.opacity(0.n)` fills and tints | use `Fill` and `ChipTint` (the view `.opacity` for dimming is fine) |
 | `kit_no_rgb_color` | `Color(red:)`, `Color(hex)`, `NSColor(calibratedRed:)` | semantic system colours adapt to light and dark |
 
@@ -93,4 +96,4 @@ Every new screen is looked at before it merges.
 3. Open both PNGs and look: soft fills, no hard borders, nothing stock-looking, nothing clipped.
 4. Attach them to the PR. A new window also goes to the owner as a review ask with its shots before merge.
 
-PNGs can be produced without a dev build via `make desktop-shots DESKTOP_SHOTS=<dir>`. The lint baseline is regenerated with `scripts/swiftlint-baseline.sh && make lint-swift`, only when absorbing legacy code, never to hide new violations.
+PNGs can be produced without a dev build via `make desktop-shots DESKTOP_SHOTS=<dir>`. The lint baseline is regenerated with `scripts/swiftlint-baseline.sh && make lint-swift`, only when absorbing legacy code, never to hide new violations. The script refuses a baseline that gains any violation the old one did not have (it lists them and leaves the file alone); a new rule that deliberately absorbs legacy hits passes `--allow-new <rule-id>` (repeatable) for that rule only.

@@ -17,7 +17,7 @@ struct Chip: View {
         .padding(.horizontal, 6)
         .padding(.vertical, 2)
         .foregroundStyle(dot ? Color.primary : color)
-        .background(color.opacity(0.14), in: Capsule())
+        .background(color.opacity(ChipTint.fillOpacity), in: Capsule())
     }
 }
 
@@ -74,13 +74,13 @@ struct MenuLabel: View {
                 .foregroundStyle(.primary)
             if isMenu {
                 Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
+                    .font(.system(size: IconSize.chevron, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
         }
         .padding(.horizontal, 9)
         .padding(.vertical, 4)
-        .background(color.opacity(0.14), in: Capsule())
-        .overlay(Capsule().strokeBorder(color.opacity(0.3), lineWidth: 0.5))
+        .background(color.opacity(ChipTint.fillOpacity), in: Capsule())
+        .overlay(Capsule().strokeBorder(color.opacity(ChipTint.strokeOpacity), lineWidth: ChipTint.strokeWidth))
     }
 }

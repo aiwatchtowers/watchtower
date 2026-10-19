@@ -16,6 +16,6 @@ struct FloatingButtonLabel: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(Color.accentColor, in: Capsule())
-            .shadow(color: .black.opacity(0.2), radius: 3, y: 1)
+            .shadow(color: FloatingShadow.color, radius: FloatingShadow.radius, y: FloatingShadow.y)
     }
 }

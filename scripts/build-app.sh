@@ -482,8 +482,9 @@ if [ -n "$FLAVOR" ]; then
     fi
 fi
 
-# Dev builds carry the marker that turns on the developer-only Design Gallery
-# (DevBuild.isEnabled); release and flavored builds never get it.
+# Every --dev build carries the marker that turns on the developer-only Design
+# Gallery (DevBuild.isEnabled), a --dev build with a flavor included; a build
+# without --dev (a release, flavored or not) never gets it.
 if $DEV_MODE; then
     /usr/libexec/PlistBuddy -c "Add :WTDevBuild bool true" "$APP_BUNDLE/Contents/Info.plist"
 fi

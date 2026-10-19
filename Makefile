@@ -302,6 +302,7 @@ lint-diff: golangci-version-check
 	golangci-lint run --new-from-rev origin/main ./...
 
 lint-swift:
+	bash scripts/kit-lint-guard.sh
 	cd WatchtowerDesktop && swiftlint lint --strict --baseline .swiftlint-baseline.json
 	cd WatchtowerKit && swiftlint lint --strict
 	cd WatchtowerMobile && swiftlint lint --strict

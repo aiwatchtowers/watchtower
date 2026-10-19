@@ -185,7 +185,7 @@ private struct GalleryPicker: View {
     @State private var choice = "Week"
 
     var body: some View {
-        KitSegmentedPicker(selection: $choice, segments: [
+        KitSegmentedPicker(title: "Range", selection: $choice, segments: [
             KitSegment(value: "Day", title: "Day"),
             KitSegment(value: "Week", title: "Week", systemImage: "calendar"),
             KitSegment(value: "Month", title: "Month")
@@ -216,7 +216,7 @@ private struct GallerySectionHeaders: View {
     }
 }
 
-/// The card outline, resting and selected, over a caller-owned fill.
+/// The card, resting and selected: its fill and outline share one shape.
 private struct GalleryCards: View {
     var body: some View {
         HStack(spacing: Spacing.medium) {
@@ -224,7 +224,6 @@ private struct GalleryCards: View {
                 Text(selected ? "Selected" : "Resting")
                     .padding(Spacing.medium)
                     .frame(width: 160, alignment: .leading)
-                    .background(Fill.card)
                     .card(selected: selected)
             }
         }

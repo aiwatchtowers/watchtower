@@ -89,37 +89,62 @@ final class DesignKitNewComponentsTests: XCTestCase {
 
     /// A caller's own `.focused` binding still works on a kit field: setting
     /// it in code reaches the field (the caller sees it true) and the field
-    /// then draws its accent border.
+    /// then draws its accent border, which the same field without focus
+    /// does not draw.
     func testCallersFocusBindingReachesAKitField() async throws {
-        final class Box { var focused = false }
-        struct Harness: View {
-            let box: Box
-            @FocusState private var callerFocus: Bool
-            @State private var text = ""
-            var body: some View {
-                TextField("Search acme", text: $text)
-                    .textFieldStyle(.kit)
-                    .focused($callerFocus)
-                    .onChange(of: callerFocus) { _, new in box.focused = new }
-                    .frame(width: 200, height: 40)
-                    .padding(Spacing.regular)
-                    .task { callerFocus = true }
-            }
+        let unfocused = try await renderKitField(requestFocus: false)
+        XCTAssertFalse(unfocused.focused, "the field took focus nobody asked for")
+        XCTAssertFalse(Self.hasAccentLine(unfocused.rep), "an accent border on the unfocused field")
+
+        let focused = try await renderKitField(requestFocus: true)
+        XCTAssertTrue(focused.focused, "the caller's focus binding did not follow its own write")
+        XCTAssertTrue(Self.hasAccentLine(focused.rep), "no accent border on the focused field")
+    }
+
+    private final class FocusBox { var focused = false }
+
+    private struct FocusHarness: View {
+        let box: FocusBox
+        let requestFocus: Bool
+        @FocusState private var callerFocus: Bool
+        @State private var text = ""
+        var body: some View {
+            TextField("Search acme", text: $text)
+                .textFieldStyle(.kit)
+                .focused($callerFocus)
+                .onChange(of: callerFocus) { _, new in box.focused = new }
+                .frame(width: 200, height: 40)
+                .padding(Spacing.regular)
+                .task { if requestFocus { callerFocus = true } }
         }
-        let box = Box()
-        let host = NSHostingView(rootView: Harness(box: box))
+    }
+
+    /// Hosts the field in a key window, waits (up to 5 s) for a requested
+    /// focus to land, and renders it. Skips when the window cannot become
+    /// key here (a headless runner), since focus then never arrives.
+    private func renderKitField(requestFocus: Bool) async throws -> (focused: Bool, rep: NSBitmapImageRep) {
+        let box = FocusBox()
+        let host = NSHostingView(rootView: FocusHarness(box: box, requestFocus: requestFocus))
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 240, height: 80),
                               styleMask: [.titled], backing: .buffered, defer: false)
         window.contentView = host
         window.appearance = NSAppearance(named: .aqua)
         window.makeKeyAndOrderFront(nil)
         defer { window.orderOut(nil); window.contentView = nil }
-        try await Task.sleep(nanoseconds: 700_000_000)
-        XCTAssertTrue(box.focused, "the caller's focus binding did not follow its own write")
+        let deadline = Date().addingTimeInterval(requestFocus ? 5 : 0.5)
+        while Date() < deadline, !(requestFocus && box.focused) {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        if requestFocus, !box.focused, !window.isKeyWindow {
+            throw XCTSkip("the test window cannot become key here, so focus never arrives")
+        }
         let rep = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
         host.cacheDisplay(in: host.bounds, to: rep)
-        // A long saturated horizontal line: the accent border's top or bottom edge.
-        var found = false
+        return (box.focused, rep)
+    }
+
+    /// A long saturated horizontal line: the accent border's top or bottom edge.
+    private static func hasAccentLine(_ rep: NSBitmapImageRep) -> Bool {
         for y in 0..<rep.pixelsHigh {
             var run = 0
             for x in 0..<rep.pixelsWide {
@@ -127,9 +152,9 @@ final class DesignKitNewComponentsTests: XCTestCase {
                 let spread = max(c.redComponent, c.greenComponent, c.blueComponent)
                     - min(c.redComponent, c.greenComponent, c.blueComponent)
                 run = spread > 0.3 ? run + 1 : 0
-                if run >= 100 { found = true }
+                if run >= 100 { return true }
             }
         }
-        XCTAssertTrue(found, "no accent border on the focused field")
+        return false
     }
 }

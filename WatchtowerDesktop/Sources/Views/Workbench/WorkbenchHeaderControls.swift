@@ -74,13 +74,7 @@ struct WorkbenchHeaderControls: View {
                 }
             }
         }
-        .padding(2)
-        .frame(height: 26)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
-        }
+        .segmentCapsule()
     }
 
     /// The Terminal button's dropdown: which session the terminal pane shows,

@@ -37,12 +37,20 @@ final class DesignKitComponentsTests: XCTestCase {
     }
 
     func testPickerRendersOneToggleOnPerSelection() throws {
-        let picker = KitSegmentedPicker(selection: .constant(2), segments: [
+        let picker = KitSegmentedPicker(title: "Count", selection: .constant(2), segments: [
             KitSegment(value: 1, title: "One"), KitSegment(value: 2, title: "Two", systemImage: "star")
         ])
         let toggles = try picker.inspect().findAll(ViewType.Toggle.self)
         XCTAssertEqual(toggles.count, 2)
         XCTAssertEqual(try toggles.filter { try $0.isOn() }.count, 1)
+    }
+
+    /// The group reads as one container named by the title, its segments inside.
+    func testPickerIsAGroupLabelledByItsTitle() throws {
+        let picker = KitSegmentedPicker(title: "Range", selection: .constant(1), segments: [
+            KitSegment(value: 1, title: "Day"), KitSegment(value: 2, title: "Week")
+        ])
+        XCTAssertEqual(try picker.inspect().hStack().accessibilityLabel().string(), "Range")
     }
 
     func testSectionHeaderHidesAZeroCount() throws {

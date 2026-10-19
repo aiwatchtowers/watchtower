@@ -288,6 +288,11 @@ jobs:
       - name: Install SwiftLint
         run: brew install swiftlint
 
+      # The design kit's rules have no inline swiftlint:disable (the
+      # baseline only absorbs legacy code); same check as `make lint-swift`.
+      - name: Kit lint guard
+        run: bash ../scripts/kit-lint-guard.sh
+
       - name: SwiftLint
         run: swiftlint lint --strict --baseline .swiftlint-baseline.json
 

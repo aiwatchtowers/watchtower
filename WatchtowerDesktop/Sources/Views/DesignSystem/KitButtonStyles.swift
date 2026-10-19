@@ -85,7 +85,8 @@ extension ButtonStyle where Self == KitDestructiveButtonStyle {
 }
 
 /// Split and ⋯ beside the capsule: a 26pt icon square, highlighted under
-/// the pointer; `isOn` (split) tints it like an on segment.
+/// the pointer; `isOn` (split) tints it like an on segment. Disabled, it
+/// dims to half and takes no hover highlight.
 struct KitIconButtonStyle: ButtonStyle {
     var isOn: Bool
 
@@ -99,6 +100,7 @@ struct KitIconButtonStyle: ButtonStyle {
     private struct IconSquare: View {
         let configuration: Configuration
         let isOn: Bool
+        @Environment(\.isEnabled) private var isEnabled
         @State private var isHovered = false
 
         var body: some View {
@@ -107,10 +109,11 @@ struct KitIconButtonStyle: ButtonStyle {
                 .foregroundStyle(isOn ? Color.accentColor : Color.secondary)
                 .frame(width: 26, height: 26)
                 .background(
-                    SegmentedToggleStyle.fill(isOn: isOn, isHovered: isHovered || configuration.isPressed),
+                    SegmentedToggleStyle.fill(isOn: isOn, isHovered: isEnabled && (isHovered || configuration.isPressed)),
                     in: RoundedRectangle(cornerRadius: KitIconButtonStyle.cornerRadius, style: .continuous)
                 )
                 .contentShape(Rectangle())
+                .opacity(isEnabled ? 1 : 0.5)
                 .onHover { isHovered = $0 }
                 .animation(SegmentedToggleStyle.animation, value: isOn)
                 .animation(SegmentedToggleStyle.animation, value: isHovered)

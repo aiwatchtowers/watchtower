@@ -10,13 +10,13 @@ struct KitSegment<Value: Hashable> {
 /// Pick one of 2–5 values in the Workbench header's capsule: the kit's
 /// replacement for `Picker` with `.segmented`. Each segment is a `Toggle`
 /// drawn by `SegmentedToggleStyle`; exactly one is on, and turning the
-/// selected one off does nothing. Option values must be unique.
+/// selected one off does nothing. Option values must be unique. `title`
+/// names the group for VoiceOver; it is not drawn.
 struct KitSegmentedPicker<Value: Hashable>: View {
+    let title: String
     @Binding var selection: Value
     let segments: [KitSegment<Value>]
     @State private var hovered: Value?
-
-    private static var containerFill: Color { Color.primary.opacity(0.05) }
 
     /// The binding behind one segment: on when selected, and only ever turned on.
     static func isOn(_ value: Value, selection: Binding<Value>) -> Binding<Bool> {
@@ -27,7 +27,7 @@ struct KitSegmentedPicker<Value: Hashable>: View {
     }
 
     var body: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: Spacing.tight) {
             ForEach(segments, id: \.value) { segment in
                 Toggle(isOn: Self.isOn(segment.value, selection: $selection)) {
                     if let image = segment.systemImage {
@@ -41,13 +41,27 @@ struct KitSegmentedPicker<Value: Hashable>: View {
                 })
             }
         }
-        .padding(2)
-        .frame(height: 26)
+        .segmentCapsule()
         .fixedSize()
-        .background(Self.containerFill, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 0.5)
-        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title)
     }
+}
+
+extension View {
+    /// The header capsule around a row of segments: a light fill under a
+    /// hairline, 26pt tall. Shared by `KitSegmentedPicker` and the Workbench
+    /// header's view buttons.
+    func segmentCapsule() -> some View {
+        let shape = RoundedRectangle(cornerRadius: Radius.row, style: .continuous)
+        return padding(Spacing.tight)
+            .frame(height: 26)
+            .background(SegmentCapsule.fill, in: shape)
+            .overlay { shape.strokeBorder(Stroke.hairlineColor, lineWidth: Stroke.hairline) }
+    }
+}
+
+/// Off the fill scale on purpose: the capsule sits between `Fill.rest` and `Fill.card`.
+private enum SegmentCapsule {
+    static var fill: Color { Color.primary.opacity(0.05) }
 }
