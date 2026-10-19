@@ -306,7 +306,7 @@ final class HomeFeedActionTests: XCTestCase {
             try Row.fetchAll(db, sql: "SELECT status, snooze_until FROM targets ORDER BY id")
         }
         XCTAssertEqual(rows.map { $0["status"] as String }, ["done", "snoozed"])
-        let tomorrow = HomeTodayBuilder.dayString(
+        let tomorrow = HomeFeedBuilder.dayString(
             LiveHomeFeedPerformer.tomorrowNine(now: Date(), calendar: .current), calendar: .current)
         XCTAssertEqual(rows[1]["snooze_until"] as String, tomorrow)
     }

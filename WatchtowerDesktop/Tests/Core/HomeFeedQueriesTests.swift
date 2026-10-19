@@ -55,7 +55,7 @@ final class HomeFeedQueriesTests: XCTestCase {
     private func insertTarget(
         _ d: Database, _ text: String, status: String = "todo", dueDate: String = "", projectID: Int64? = nil
     ) throws -> Int64 {
-        let today = HomeTodayBuilder.dayString(now, calendar: calendar)
+        let today = HomeFeedBuilder.dayString(now, calendar: calendar)
         try d.execute(
             sql: """
                 INSERT INTO targets (text, level, period_start, period_end, status, ownership, due_date,
@@ -69,7 +69,7 @@ final class HomeFeedQueriesTests: XCTestCase {
 
     private func dayString(_ offset: Int) throws -> String {
         let date = try XCTUnwrap(calendar.date(byAdding: .day, value: offset, to: now))
-        return HomeTodayBuilder.dayString(date, calendar: calendar)
+        return HomeFeedBuilder.dayString(date, calendar: calendar)
     }
 
     private func read() throws -> HomeFeedData {

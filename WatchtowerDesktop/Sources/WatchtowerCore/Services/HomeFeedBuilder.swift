@@ -56,7 +56,7 @@ package enum HomeFeedBuilder {
             let due = dueInstant(target.dueDate, calendar: calendar)
             // Due later today with a time sits below NOW instead.
             if target.dueDate.contains("T"), due > now { continue }
-            let overdue = target.dueDate.contains("T") ? due <= now : String(target.dueDate.prefix(10)) < dayString(now, calendar)
+            let overdue = target.dueDate.contains("T") ? due <= now : String(target.dueDate.prefix(10)) < dayString(now, calendar: calendar)
             rows.append(FeedRow(
                 id: .target(target.id), kind: .target, chip: overdue ? "Overdue" : "Due", who: target.text, whereText: nil,
                 text: "My target", stamp: due, read: false, actions: [.done, .hide], link: .target(id: target.id)))
@@ -170,8 +170,15 @@ package enum HomeFeedBuilder {
 
     // MARK: - Helpers
 
-    private static func dayString(_ date: Date, _ calendar: Calendar) -> String {
-        HomeTodayBuilder.dayString(date, calendar: calendar)
+    /// `date` as "yyyy-MM-dd" in `calendar`'s zone — `TargetQueries.todayDateString()`'s
+    /// form. Gregorian (the POSIX locale's), so it matches the stored columns
+    /// whatever calendar the owner uses.
+    package static func dayString(_ date: Date, calendar: Calendar) -> String {
+        let fmt = DateFormatter()
+        fmt.locale = Locale(identifier: "en_US_POSIX")
+        fmt.timeZone = calendar.timeZone
+        fmt.dateFormat = "yyyy-MM-dd"
+        return fmt.string(from: date)
     }
 
     /// An RFC 3339 UTC stamp as a date; an unparseable one sorts last.

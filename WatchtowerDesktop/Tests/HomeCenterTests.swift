@@ -5,7 +5,8 @@ import Observation
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// Home's inputs for tests: the owner known, every Today card and feed source allowed.
+/// Home's inputs for tests: the owner known, every link and feed source
+/// allowed, no live session.
 @MainActor
 @Observable
 final class FakeHomeEnvironment: HomeEnvironment {
@@ -14,8 +15,9 @@ final class FakeHomeEnvironment: HomeEnvironment {
     var ownerKnown = true
     var ownerPendingSource: String?
     var firstSync: FirstSyncLine?
-    var allowedTodayCards = Set(TodayCardKind.allCases)
+    var linksAllowed = Set(HomeLinkKind.allCases)
     var feedSourcesAllowed = Set(FeedSource.allCases)
+    var workbenchSessions: [SessionAgentStatus] = []
 }
 
 @MainActor
@@ -76,12 +78,40 @@ final class HomeCenterTests: XCTestCase {
         await fulfillment(of: [met], timeout: timeout)
     }
 
-    private func snapshotHas(_ kind: TodayCardKind) -> (HomeSnapshot?) -> Bool {
-        { $0?.today.contains { $0.kind == kind } == true }
+    /// Waits (bounded) until `condition` holds for the center, re-checking on
+    /// every change of its snapshot or numbers read count.
+    private func waitUntilCenter(
+        _ center: HomeCenter,
+        timeout: TimeInterval = 5,
+        _ condition: @escaping (HomeCenter) -> Bool
+    ) async {
+        let met = expectation(description: "center condition")
+        func check() {
+            if condition(center) {
+                met.fulfill()
+                return
+            }
+            withObservationTracking {
+                _ = center.snapshot
+                _ = center.numbersReads
+            } onChange: {
+                Task { @MainActor in check() }
+            }
+        }
+        check()
+        await fulfillment(of: [met], timeout: timeout)
+    }
+
+    private func session(
+        _ id: Int64, workbench: Int64 = 1, _ kind: SessionSwitcherPresentation.State.Kind
+    ) -> SessionAgentStatus {
+        SessionAgentStatus(
+            sessionID: id, workbenchID: workbench, workbenchName: "acme", title: "Session \(id)",
+            state: SessionSwitcherPresentation.State(kind: kind, live: true), at: nil)
     }
 
     private func insertTargetDueToday(_ pool: DatabasePool, text: String = "Ship the feature") throws {
-        let today = HomeTodayBuilder.dayString(Date(), calendar: .current)
+        let today = HomeFeedBuilder.dayString(Date(), calendar: .current)
         try pool.write { db in
             try TestDatabase.insertTarget(db, text: text, level: "day", periodStart: today, periodEnd: today,
                                           dueDate: today)
@@ -128,8 +158,11 @@ final class HomeCenterTests: XCTestCase {
         center.beginReading(pool: try makePool())
         defer { center.endReading() }
         await waitUntil(center) { $0 != nil }
-        XCTAssertEqual(center.snapshot?.today, [])
-        XCTAssertEqual(center.snapshot?.nothingNeedsYou, true)
+        XCTAssertEqual(center.snapshot?.workbench, [])
+        XCTAssertNil(center.snapshot?.suggestion)
+        XCTAssertEqual(center.snapshot?.workbenchFailed, false)
+        XCTAssertEqual(center.snapshot?.links.map(\.kind), HomeLinkKind.allCases)
+        XCTAssertEqual(center.snapshot?.linksFailed, false)
     }
 
     func testInsertingATargetAddsAFeedRow() async throws {
@@ -142,7 +175,6 @@ final class HomeCenterTests: XCTestCase {
         try insertTargetDueToday(pool)
         await waitUntil(center) { $0?.feed.waiting.count == 1 }
         XCTAssertEqual(center.snapshot?.feed.waiting.first?.kind, .target)
-        XCTAssertEqual(center.snapshot?.today, [], "targets live in the feed, not in a card")
     }
 
     func testFeedIsInTheSnapshot() async throws {
@@ -241,7 +273,7 @@ final class HomeCenterTests: XCTestCase {
             try TestDatabase.insertOwnerAsk(db, projectID: workbench)
         }
         try daemonPool.close()
-        await waitUntil(center, snapshotHas(.agentsWaiting))
+        await waitUntil(center) { $0?.workbench.first?.asks.count == 1 }
     }
 
     func testReadinessChangeRebuildsWithoutDBRead() async throws {
@@ -263,8 +295,8 @@ final class HomeCenterTests: XCTestCase {
         XCTAssertEqual(center.todayReads, reads)
     }
 
-    /// A first-sync or allowed-cards change rebuilds from the last read
-    /// without touching the DB.
+    /// A first-sync, allowed-links or live-session change rebuilds from the
+    /// last read without touching the DB.
     func testEnvironmentChangeRebuildsWithoutDBRead() async throws {
         let pool = try makePool()
         try insertAsk(pool)
@@ -272,15 +304,87 @@ final class HomeCenterTests: XCTestCase {
         let center = makeCenter(environment: environment, defaults: try makeDefaults())
         center.beginReading(pool: pool)
         defer { center.endReading() }
-        await waitUntil(center, snapshotHas(.agentsWaiting))
+        await waitUntil(center) { $0?.workbench.count == 1 }
         let reads = center.todayReads
 
         let line = FirstSyncLine(title: "Syncing Slack", detail: "12 of 40 channels")
         environment.firstSync = line
         await waitUntil(center) { $0?.firstSync == line }
-        environment.allowedTodayCards = [.instructionSuggestion]
-        await waitUntil(center) { $0?.today.isEmpty == true }
+        environment.linksAllowed = [.digests]
+        await waitUntil(center) { $0?.links.map(\.kind) == [.digests] }
+        environment.linksAllowed = []
+        await waitUntil(center) { $0?.links.isEmpty == true }
         XCTAssertEqual(center.todayReads, reads)
+    }
+
+    /// A live session in a shown state joins its workbench's block, a
+    /// finished one does not; no DB read either way.
+    func testLiveSessionsFillTheWorkbenchZoneWithoutRead() async throws {
+        let environment = FakeHomeEnvironment()
+        let center = makeCenter(environment: environment, defaults: try makeDefaults())
+        center.beginReading(pool: try makePool())
+        defer { center.endReading() }
+        await waitUntil(center) { $0 != nil }
+        let reads = center.todayReads
+
+        environment.workbenchSessions = [session(1, .working), session(2, .finished), session(3, .needsApproval)]
+        await waitUntil(center) { $0?.workbench.count == 1 }
+        XCTAssertEqual(center.snapshot?.workbench.first?.sessions.map(\.sessionID), [3, 1])
+        environment.workbenchSessions = []
+        await waitUntil(center) { $0?.workbench.isEmpty == true }
+        XCTAssertEqual(center.todayReads, reads)
+    }
+
+    func testSuggestionAndRecapReachTheirZones() async throws {
+        let pool = try makePool()
+        let now = Date()
+        try await pool.write { db in
+            let seen = ISO8601DateFormatter().string(from: now.addingTimeInterval(-3600))
+            try db.execute(sql: """
+                INSERT INTO instruction_suggestions (text, field, first_seen_at, last_seen_at, status, fingerprint)
+                VALUES ('run the linter', 'session', ?, ?, 'open', 'lint')
+                """, arguments: [seen, seen])
+            try db.execute(
+                sql: "INSERT INTO catchup_recaps (period_from, period_to, status, tldr) VALUES (?, ?, 'ready', 'All quiet')",
+                arguments: [now.timeIntervalSince1970 - 3600, now.timeIntervalSince1970])
+        }
+        let center = makeCenter(defaults: try makeDefaults())
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntil(center) { $0 != nil }
+        XCTAssertEqual(center.snapshot?.suggestion?.text, "run the linter")
+        let catchUp = center.snapshot?.links.first { $0.kind == .catchUp }
+        XCTAssertEqual(catchUp?.status, "new recap")
+        XCTAssertEqual(catchUp?.highlighted, true)
+    }
+
+    /// Numbers have their own read and observation: a sync's `messages`
+    /// write re-reads them, never the feed and the other zones.
+    func testMessagesWriteRereadsNumbersNotTheFeed() async throws {
+        let pool = try makePool()
+        let center = makeCenter(defaults: try makeDefaults())
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntilCenter(center) { $0.snapshot?.numbers != nil && $0.numbersReads > 0 }
+        let reads = center.todayReads
+        let numberReads = center.numbersReads
+
+        try await pool.write { db in try TestDatabase.insertMessage(db) }
+        await waitUntilCenter(center) { $0.numbersReads > numberReads }
+        XCTAssertEqual(center.todayReads, reads, "a messages write never re-reads the feed")
+
+        // A feed write re-reads the feed.
+        try insertTargetDueToday(pool)
+        await waitUntil(center) { $0?.feed.waiting.count == 1 }
+        XCTAssertGreaterThan(center.todayReads, reads)
+    }
+
+    /// The tick re-reads the numbers too (the daemon writes from another process).
+    func testTickRereadsNumbers() async throws {
+        let center = makeCenter(defaults: try makeDefaults(), tickInterval: .milliseconds(50))
+        center.beginReading(pool: try makePool())
+        defer { center.endReading() }
+        await waitUntilCenter(center) { $0.numbersReads > 2 }
     }
 
     func testHideGettingReadyPersists() async throws {
@@ -334,37 +438,22 @@ final class HomeCenterTests: XCTestCase {
         }
     }
 
-    func testAllReadsFailedIsNotAllClear() async throws {
-        let pool = try makePool()
-        try breakBriefings(pool)
-        let environment = FakeHomeEnvironment()
-        environment.allowedTodayCards = [.briefing]
-        let center = makeCenter(environment: environment, defaults: try makeDefaults())
-        center.beginReading(pool: pool)
-        defer { center.endReading() }
-        await waitUntil(center) { $0 != nil }
-        XCTAssertEqual(center.snapshot?.todayReadFailed, true)
-        XCTAssertEqual(center.snapshot?.nothingNeedsYou, false)
-    }
-
-    /// One allowed card's read fails and the rest are empty: the read error,
-    /// not the all-clear.
-    func testOneFailedReadIsNotAllClear() async throws {
+    /// A failed links read keeps the rows and says so; the other zones read.
+    func testFailedLinksReadIsSaid() async throws {
         let pool = try makePool()
         try breakBriefings(pool)
         let center = makeCenter(defaults: try makeDefaults())
         center.beginReading(pool: pool)
         defer { center.endReading() }
         await waitUntil(center) { $0 != nil }
-        XCTAssertEqual(center.snapshot?.todayReadFailed, false)
-        XCTAssertEqual(center.snapshot?.todayFailed, [.briefing])
-        XCTAssertEqual(center.snapshot?.showsReadError, true)
-        XCTAssertEqual(center.snapshot?.nothingNeedsYou, false)
+        XCTAssertEqual(center.snapshot?.linksFailed, true)
+        XCTAssertEqual(center.snapshot?.links.count, HomeLinkKind.allCases.count)
+        XCTAssertEqual(center.snapshot?.workbenchFailed, false)
     }
 
-    /// Every open ask unreadable and nothing else to show: the read error,
-    /// never "Nothing needs you right now".
-    func testOnlyUnreadableAsksIsNotAllClear() async throws {
+    /// Every open ask unreadable: the Workbench zone's read error, never an
+    /// empty zone.
+    func testOnlyUnreadableAsksMarksWorkbenchFailed() async throws {
         let pool = try makePool()
         try await pool.write { db in
             let workbench = try TestDatabase.insertWorkbench(db)
@@ -378,53 +467,37 @@ final class HomeCenterTests: XCTestCase {
         center.beginReading(pool: pool)
         defer { center.endReading() }
         await waitUntil(center) { $0 != nil }
-        XCTAssertEqual(center.snapshot?.today, [])
-        XCTAssertEqual(center.snapshot?.todayFailed, [.agentsWaiting])
-        XCTAssertEqual(center.snapshot?.showsReadError, true)
-        XCTAssertEqual(center.snapshot?.nothingNeedsYou, false)
-    }
-
-    /// A failed card the owner's tabs hide does not count.
-    func testFailedReadOutsideAllowedIsIgnored() async throws {
-        let pool = try makePool()
-        try breakBriefings(pool)
-        let environment = FakeHomeEnvironment()
-        environment.allowedTodayCards = [.agentsWaiting]
-        let center = makeCenter(environment: environment, defaults: try makeDefaults())
-        center.beginReading(pool: pool)
-        defer { center.endReading() }
-        await waitUntil(center) { $0 != nil }
-        XCTAssertEqual(center.snapshot?.todayFailed, [])
-        XCTAssertEqual(center.snapshot?.nothingNeedsYou, true)
+        XCTAssertEqual(center.snapshot?.workbench, [])
+        XCTAssertEqual(center.snapshot?.workbenchFailed, true)
     }
 
     /// The pool itself failing before any good read: a snapshot with every
-    /// card failed (the read error, Getting ready), not an endless spinner.
+    /// zone failed (Getting ready, the read errors), not an endless spinner.
     func testFirstPoolFailurePublishesAllFailed() async throws {
         let pool = try makePool()
         try pool.close()
         let center = makeCenter(defaults: try makeDefaults(), tickInterval: .milliseconds(50))
         center.beginReading(pool: pool)
         defer { center.endReading() }
-        await waitUntil(center) { $0 != nil }
-        XCTAssertEqual(center.snapshot?.todayReadFailed, true)
-        XCTAssertEqual(center.snapshot?.todayFailed, Set(TodayCardKind.allCases))
-        XCTAssertEqual(center.snapshot?.showsReadError, true)
-        XCTAssertEqual(center.snapshot?.nothingNeedsYou, false)
+        await waitUntil(center) { $0?.numbers != nil }
+        XCTAssertEqual(center.snapshot?.workbenchFailed, true)
+        XCTAssertEqual(center.snapshot?.linksFailed, true)
+        XCTAssertEqual(center.snapshot?.feed.failed, Set(FeedSource.allCases))
+        XCTAssertEqual(center.snapshot?.numbers?.failed, HomeNumbers.fieldNames)
     }
 
     /// A good read, then the pool failing: the stale read is marked failed,
-    /// never shown as the all-clear.
-    func testPoolFailureAfterGoodReadIsNotAllClear() async throws {
+    /// never shown as current.
+    func testPoolFailureAfterGoodReadIsSaid() async throws {
         let pool = try makePool()
         let center = makeCenter(defaults: try makeDefaults(), tickInterval: .milliseconds(50))
         center.beginReading(pool: pool)
         defer { center.endReading() }
-        await waitUntil(center) { $0?.nothingNeedsYou == true }
+        await waitUntil(center) { $0?.workbenchFailed == false && $0?.numbers?.failed.isEmpty == true }
 
         try pool.close()
-        await waitUntil(center) { $0?.showsReadError == true }
-        XCTAssertEqual(center.snapshot?.nothingNeedsYou, false)
+        await waitUntil(center) { $0?.workbenchFailed == true && $0?.linksFailed == true }
+        await waitUntil(center) { $0?.numbers?.failed == HomeNumbers.fieldNames }
     }
 
     func testStopCancelsObservationAndTick() async throws {
@@ -478,39 +551,27 @@ final class HomeCenterTests: XCTestCase {
                        GettingReadyMemory(hiddenByOwner: true, firstShownAt: shown, completedAt: nil))
     }
 
-    /// Each tab-following card against its own tab's rule, one source or
-    /// feature at a time.
-    func testTodayCardsFollowTheirOwnTab() {
+    /// Each link against its own tab's rule, one source or feature at a time.
+    func testLinksFollowTheirOwnTab() {
         let appState = AppState.isolated()
-        let always: Set<TodayCardKind> = [.agentsWaiting, .instructionSuggestion]
-        let rows: [(ConnectedSources, Set<String>, Set<TodayCardKind>)] = [
-            // Briefings has no source gate; Catch-Up needs any source.
-            (.none, [], always.union([.briefing])),
-            (ConnectedSources(calendar: true), [], always.union([.briefing, .sinceYouWereAway])),
-            (ConnectedSources(slack: true), [], always.union([.briefing, .sinceYouWereAway])),
-            (.all, ["briefing"], Set(TodayCardKind.allCases).subtracting([.briefing])),
+        let all = Set(HomeLinkKind.allCases)
+        let rows: [(ConnectedSources, Set<String>, Set<HomeLinkKind>)] = [
+            // Briefings, Day Plan and Digests have no source gate; Catch-Up needs any source.
+            (.none, [], all.subtracting([.catchUp])),
+            (ConnectedSources(calendar: true), [], all),
+            (ConnectedSources(slack: true), [], all),
+            (.all, ["briefing"], all.subtracting([.briefing])),
+            (.all, ["day-plan"], all.subtracting([.dayPlan])),
+            // Digests needs one of its three features.
+            (.all, ["slack-digests", "stream-digests", "ideas"], all.subtracting([.digests])),
             // Catch-Up needs one of its three features.
-            (.all, ["secretary-inbox", "slack-digests", "stream-digests"],
-             Set(TodayCardKind.allCases).subtracting([.sinceYouWereAway]))
+            (.all, ["secretary-inbox", "slack-digests", "stream-digests"], all.subtracting([.catchUp]))
         ]
         for (connected, disabled, expected) in rows {
             appState.featureVisibility.connectedSources = connected
             appState.featureVisibility.disabledFeatureIDs = disabled
-            XCTAssertEqual(appState.homeTodayCardsAllowed, expected, "\(connected) disabled \(disabled)")
+            XCTAssertEqual(appState.homeLinksAllowed, expected, "\(connected) disabled \(disabled)")
         }
-    }
-
-    /// Briefing and Since you were away follow their tab; Agents waiting and
-    /// the instruction suggestion are always allowed.
-    func testTodayCardsFollowTabVisibility() {
-        let appState = AppState.isolated()
-        appState.featureVisibility.connectedSources = .none
-        appState.featureVisibility.disabledFeatureIDs = ["briefing"]
-        XCTAssertEqual(appState.homeTodayCardsAllowed, [.agentsWaiting, .instructionSuggestion])
-
-        appState.featureVisibility.connectedSources = .all
-        appState.featureVisibility.disabledFeatureIDs = []
-        XCTAssertEqual(appState.homeTodayCardsAllowed, Set(TodayCardKind.allCases))
     }
 
     /// Inbox rows only while attention detection is on, calendar rows only

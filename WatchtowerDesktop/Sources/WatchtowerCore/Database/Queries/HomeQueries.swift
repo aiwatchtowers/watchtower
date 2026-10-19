@@ -1,41 +1,27 @@
 import Foundation
 import GRDB
 
-/// The Today read behind Home's right-column cards: every card's source in
-/// one pass, each card read on its own so one failure hides only that card
-/// (Review Focus 3). The feed has its own read (`HomeFeedQueries`).
+/// The read behind Home's Workbench zone: the open asks across workbenches
+/// and the instruction suggestion, each read on its own so one failure keeps
+/// the other (Review Focus 3). The live sessions come from the app; the feed,
+/// links and numbers have their own reads.
 package enum HomeQueries {
-    /// Tables the Today read uses, for HomeCenter's ValueObservation region.
-    package static let observedTables: [String] = [
-        "briefings", "owner_asks", "projects", "catchup_recaps", "instruction_suggestions"
-    ]
+    /// Tables the Workbench read uses, for HomeCenter's ValueObservation region.
+    package static let observedTables: [String] = ["owner_asks", "projects", "instruction_suggestions"]
 
-    /// Every Today source in one read. Each card's read is caught separately:
-    /// its error is logged (NSLog, card kind + message) and its kind added to
-    /// `failed`; the others still read. A table missing mid-migration reads as
-    /// that card having no content, not as a failure.
-    package static func today(_ db: Database, now: Date, calendar: Calendar) -> HomeTodayData {
-        var data = HomeTodayData()
-        let day = HomeTodayBuilder.dayString(now, calendar: calendar)
-
-        if let value = readCard(.briefing, db, tables: ["briefings"], failed: &data.failed, {
-            try BriefingQueries.fetchByDate(db, date: day)
-        }) {
-            data.briefing = value
-        }
-        data.asks = readCard(.agentsWaiting, db, tables: ["owner_asks", "projects"], failed: &data.failed) {
+    /// Both sources in one read. A read that throws is logged (NSLog, source
+    /// + message) and marks the data failed; an unreadable ask does too, the
+    /// readable rows still show. A table missing mid-migration reads as no
+    /// content, not as a failure.
+    package static func workbench(_ db: Database, now: Date) -> HomeWorkbenchData {
+        var data = HomeWorkbenchData()
+        data.asks = read("asks", db, tables: ["owner_asks", "projects"], failed: &data.failed) {
             try OwnerAskQueries.openAsksAllWorkbenches(db)
         } ?? WorkbenchAskRows(rows: [], unreadableIDs: [])
-        // An unreadable ask is a failed read, never an all-clear; the readable
-        // rows still show in the card.
-        if !data.asks.unreadableIDs.isEmpty { data.failed.insert(.agentsWaiting) }
-        if let value = readCard(.sinceYouWereAway, db, tables: ["catchup_recaps"], failed: &data.failed, {
-            try CatchUpQueries.newestUnacknowledgedReady(db)
+        if !data.asks.unreadableIDs.isEmpty { data.failed = true }
+        if let value = read("instruction suggestion", db, tables: ["instruction_suggestions"], failed: &data.failed, {
+            try newestOpenSuggestion(db, now: now)
         }) {
-            data.pendingRecap = value
-        }
-        if let value = readCard(.instructionSuggestion, db, tables: ["instruction_suggestions"],
-                                failed: &data.failed, { try newestOpenSuggestion(db, now: now) }) {
             data.suggestion = value
         }
         return data
@@ -52,13 +38,13 @@ package enum HomeQueries {
         return row.map { HomeInstructionSuggestion(id: $0["id"], text: $0["text"]) }
     }
 
-    /// One card's read: nil when a table it needs is missing (no content) or
-    /// when it throws (logged, `kind` added to `failed`).
-    private static func readCard<T>(
-        _ kind: TodayCardKind,
+    /// One source's read: nil when a table it needs is missing (no content)
+    /// or when it throws (logged, `failed` set).
+    private static func read<T>(
+        _ source: String,
         _ db: Database,
         tables: [String],
-        failed: inout Set<TodayCardKind>,
+        failed: inout Bool,
         _ body: () throws -> T
     ) -> T? {
         do {
@@ -67,8 +53,8 @@ package enum HomeQueries {
             }
             return try body()
         } catch {
-            NSLog("HomeQueries: the Today %@ read failed: %@", "\(kind)", "\(error)")
-            failed.insert(kind)
+            NSLog("HomeQueries: the Workbench %@ read failed: %@", source, "\(error)")
+            failed = true
             return nil
         }
     }
