@@ -43,6 +43,25 @@ already found attached so the owner can answer in a word.
    an automation "will send" or "will post" on its own; say it will propose
    and the owner approves, unless they turn auto on themselves.
 
+## Wrapping the owner's procedure
+
+When the owner names a skill, a command or a procedure ("use /release", "run
+make deploy"), the recipe hands it over as is.
+
+- Use one `session()` whose prompt names the skill or command and repeats the
+  owner's own requirements in the owner's words. Add no extra stages, no
+  prohibitions ("do not publish") and no split into parallel sessions, unless
+  the owner asked for exactly that.
+- Anything you would add (a check before, a split, a stop condition) is a
+  separate question to the owner, with the reason. Never change the procedure
+  silently.
+- Never guess what a workbench skill or command does. Read it with
+  `workbench_skills` (no `name` lists the workbench's skills and commands; with
+  `name`, for example `"/release"`, it returns the file). If you cannot read
+  it, ask the owner.
+- Write `session()` prompts in the language the owner uses with you, so the
+  owner can read them on the save card.
+
 ## The recipe format
 
 ````markdown
@@ -188,10 +207,12 @@ error ("the script API is synchronous"). Use `log(...)` for notes.
 | `output.target({...create_target args})` | `outputs: [target]` | Proposes a target |
 | `output.slack({...send_slack_message args})` | `outputs: [slack]` AND `slack:write@<account>` | Proposes a Slack message; never sends alone |
 | `ask({kind, title, summary?, questions?, checklist?})` | `ask:owner`, workbench only | Asks the owner and waits |
-| `session({prompt, agent?, title?, wait?})` | `session:start`, workbench only | Starts a visible agent session |
+| `session({prompt, agent?, title?, wait?})` | `session:start`, workbench only | Starts a visible agent session. With `wait: "finish"` (default) it returns `{session_id, status, summary}` plus `error` when `status` is `error`; `status` is `finished`, `stopped`, `deleted` or `error`. With `wait: "none"` it returns only `{session_id}`: there is no `status` or `summary` to read. A launch that fails throws `NotAvailable`. A dry run starts nothing and returns `{status: "dry_run"}`, so a branch on a session's summary is not exercised by a dry run; tell the owner |
 | `shell(cmd)` | `shell:"<cmd>"`, workbench only | Runs one exact command |
 | `log(...)` | none | A note in the run's steps |
 | `trigger` | none | Read-only: `{kind, run_id, scheduled_for?, button?, events?, dry_run}` |
+
+Waiting for a session, an ask or a proposal (`tool(..., {wait: true})`) does not count toward `minutes`: the meter pauses while the run waits. A wait is bounded by `pause_timeout_hours`.
 
 Limits: a tool result larger than 256 KiB fails with `ResultTooLarge`; a title
 is at most 200 characters, a body at most 64 KiB. One run makes at most 2000
@@ -355,6 +376,38 @@ output.report({ title: "Team week", body: report });
 
 ### Release button (workbench, button)
 
+Wraps the owner's own release command as is: one session, no extra stages.
+Name the command the owner named; read it with `workbench_skills` first.
+
+````markdown
+---
+name: Release
+trigger:
+  button: { label: "Release", confirm: true }
+permissions:
+  - session:start
+outputs: [report]
+budget: { tokens: 30000, minutes: 30 }
+---
+Starts a session that runs the workbench's release command, then reports what
+the session said.
+
+```js
+const s = session({
+  title: "Release",
+  prompt: "Run /release."
+});
+output.report({ title: "Release " + s.status, body: s.summary || s.error || "" });
+```
+````
+
+### Release button, a plain command (workbench, button)
+
+Use this only when the owner's release is a shell command, not a skill. The
+permission and the script must match the command byte for byte. The same shape
+serves "Deploy to test" and "Deploy to stage" with `make deploy-test` and
+`make deploy-stage`.
+
 ````markdown
 ---
 name: Release
@@ -362,26 +415,16 @@ trigger:
   button: { label: "Release", confirm: true }
 permissions:
   - shell:"make release"
-  - session:start
-  - llm:light
 outputs: [report]
 budget: { tokens: 30000, minutes: 30 }
 ---
-Runs the release command, then starts a session that checks the result.
-Replace the command with the project's own; the permission and the script
-must match it byte for byte. The same shape serves "Deploy to test" and
-"Deploy to stage" with `make deploy-test` and `make deploy-stage`.
+Runs the release command and reports its output.
 
 ```js
 const res = shell("make release");
 if (res.exit_code !== 0) {
   output.report({ title: "Release failed", body: res.stderr });
 } else {
-  session({
-    title: "Check the release",
-    prompt: "A release just ran. Check that it went out as intended and report anything odd.",
-    wait: "none"
-  });
   output.report({ title: "Release ran", body: res.stdout });
 }
 ```
