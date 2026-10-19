@@ -148,7 +148,7 @@ final class AppRootWiringTests: XCTestCase {
             // Weak: a test may check that a session is freed.
             self?.addTeardownBlock { @MainActor [weak session] in
                 await session?.shutDown()
-                try? session?.store.reader.close()
+                session?.closeDatabases()
             }
             self?.built.append((session, scope, hubID, memory))
             return session
@@ -174,6 +174,8 @@ final class AppRootWiringTests: XCTestCase {
         try beforeLaunch?(paths)
         defaults = try makeDefaults()
         registry = try HubRegistry(path: paths.registryPath)
+        // After the sessions' teardown, before the temp directory's removal.
+        addTeardownBlock { @MainActor [registry] in try? registry?.close() }
         for link in links {
             try registry.upsert(link, now: Date())
             if frozen.contains(link.hubID) {
@@ -909,6 +911,8 @@ final class AppRootWiringTests: XCTestCase {
         addTeardownBlock { @MainActor in
             env.stop()
             await gate.open()
+            await env.shutDown()
+            env.closeDatabases()
         }
         var sent = false
         let flush = Task { @MainActor in
@@ -1222,7 +1226,7 @@ final class AppRootWiringTests: XCTestCase {
             },
             now: { relaunchAt }
         )
-        addTeardownBlock { @MainActor in relaunched.stop() }
+        closeAtTeardown(relaunched)
         try await poll { relaunched.isBootstrapped }
 
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "back next to its row, past the sweep")
@@ -1364,15 +1368,16 @@ final class AppRootWiringTests: XCTestCase {
         let recordings = paths.recordingsDirectory(TestHub.acme)
         let audio = recordings.appendingPathComponent("rec-1.m4a")
         try Data(repeating: 0x5A, count: 256).write(to: audio)
-        let uploader = RecordingUploader(
-            transport: try TestPhone.transport(), store: try TestPhone.replica(path: paths.replicaPath(TestHub.acme)), directory: recordings
-        )
+        let replica = try TestPhone.replica(path: paths.replicaPath(TestHub.acme))
+        let uploader = RecordingUploader(transport: try TestPhone.transport(), store: replica, directory: recordings)
         let now = Date()
         let registered = try await uploader.register(
             fileURL: audio, startedAt: now.addingTimeInterval(-600), endedAt: now.addingTimeInterval(-60), titleHint: "Acme sync"
         )
         let recordingID = try XCTUnwrap(registered).id
         defaults.set(true, forKey: "hub.\(TestHub.acme).device.typingRequested")
+        // Closed before the orphan pass deletes its files.
+        try replica.reader.close()
 
         await root.linking.forget(TestHub.acme)
 
@@ -1603,7 +1608,7 @@ final class AppRootWiringTests: XCTestCase {
             defaults: defaults,
             recordingsDirectory: try makeRecordingsDirectory()
         )
-        addTeardownBlock { @MainActor in session.stop() }
+        closeAtTeardown(session)
         return try AppRoot.demo(AppEnvironment.single(session, defaults: defaults), defaults: defaults)
     }
 
@@ -1816,7 +1821,7 @@ final class AppRootWiringTests: XCTestCase {
             keys: PhoneKeys(store: linked, hubID: e2eHub),
             defaults: try makeDefaults(), recordingsDirectory: try makeRecordingsDirectory()
         )
-        addTeardownBlock { @MainActor in session.stop() }
+        closeAtTeardown(session)
         XCTAssertTrue(session.hasDeviceKeys)
 
         let fresh = InMemoryPhoneKeyStore()
@@ -1826,7 +1831,7 @@ final class AppRootWiringTests: XCTestCase {
             hubID: e2eHub, keys: PhoneKeys(store: fresh, hubID: e2eHub),
             defaults: try makeDefaults(), recordingsDirectory: try makeRecordingsDirectory()
         )
-        addTeardownBlock { @MainActor in unlinked.stop() }
+        closeAtTeardown(unlinked)
         XCTAssertFalse(unlinked.hasDeviceKeys)
         XCTAssertNil(try fresh.deviceID(), "no identity is created outside the link flow")
 
@@ -1858,7 +1863,7 @@ final class AppRootWiringTests: XCTestCase {
             hubID: e2eHub, linkedDevice: device,
             defaults: try makeDefaults(), recordingsDirectory: try makeRecordingsDirectory()
         )
-        addTeardownBlock { @MainActor in session.stop() }
+        closeAtTeardown(session)
         XCTAssertFalse(session.hasDeviceKeys)
 
         do {
