@@ -61,7 +61,7 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
     }
 
     /// The page's one-line purpose, under its title.
-    public var summary: String {
+    var summary: String {
         switch self {
         case .colours: "The app's surfaces, the neutral and accent fills, and the status and priority tones."
         case .spacing: "The closed spacing scale: padding and stack spacing come from these steps only."
@@ -81,8 +81,10 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
         }
     }
 
-    /// The public kit names this page shows, each on exactly one page.
-    public var components: [String] {
+    /// The public kit names this page shows, each on exactly one page: a
+    /// type, or for a style the accessor it is used through (`kitPrimary`,
+    /// `kit`). `DesignGalleryCatalogTests` checks them against the kit's source.
+    var components: [String] {
         switch self {
         case .colours: ["Surface", "Fill", "Tone", "ChipTint", "detailBackground", "panelBackground"]
         case .spacing: ["Spacing"]
@@ -93,12 +95,12 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
         case .motion: ["Motion", "FloatingShadow"]
         case .actions: ["kitPrimary", "kitSecondary", "kitQuiet", "kitDestructive", "kitIcon",
                         "KitButtonMetrics", "FloatingButtonLabel"]
-        case .selection: ["SegmentedToggleStyle", "KitSegmentedPicker", "segmentCapsule"]
-        case .inputs: ["KitFieldStyle"]
+        case .selection: ["SegmentedToggleStyle", "KitSegmentedPicker", "KitSegment", "segmentCapsule"]
+        case .inputs: ["kit"]
         case .display: ["Chip", "CountBadge", "OutlineTag", "MenuLabel", "SectionHeader"]
         case .containers: ["card", "kitRow"]
         case .settings: ["SettingsSection", "SettingRow"]
-        case .panels: ["PanelSplit", "PanelResizeHandle", "panelSurface", "panelTab",
+        case .panels: ["PanelSplit", "PanelSplitWidth", "PanelResizeHandle", "panelSurface", "panelTab",
                        "panelListStyle", "workspaceListStyle", "clearPlainList"]
         case .popover: ["popoverSurface"]
         }

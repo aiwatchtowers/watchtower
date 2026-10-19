@@ -255,6 +255,7 @@ struct StrokesPage: View {
 // MARK: - Typography
 
 struct TypographyPage: View {
+    @Environment(\.galleryFrozenDate) private var frozenDate
     private let roles: [(String, Font, String)] = [
         ("Headline: a card's or a panel's title", .headline, ".font(.headline)"),
         ("Body: running text", .body, ".font(.body)"),
@@ -276,12 +277,10 @@ struct TypographyPage: View {
             PageSection("Numbers") {
                 Sample("Changing numbers keep their width: monospaced digits (left) against proportional (right)",
                        usage: ".font(.caption.monospacedDigit())") {
-                    TimelineView(.periodic(from: .now, by: 0.1)) { context in
-                        let value = Int(context.date.timeIntervalSinceReferenceDate * 10) % 100_000
-                        HStack(spacing: Spacing.wide) {
-                            Text("\(value) tokens").font(.body.monospacedDigit())
-                            Text("\(value) tokens").font(.body)
-                        }
+                    if let frozenDate {
+                        counter(at: frozenDate)
+                    } else {
+                        TimelineView(.periodic(from: .now, by: 0.1)) { counter(at: $0.date) }
                     }
                 }
             }
@@ -309,6 +308,15 @@ struct TypographyPage: View {
                     .card()
                 }
             }
+        }
+    }
+
+    /// A count that changes ten times a second, in both digit styles.
+    private func counter(at date: Date) -> some View {
+        let value = Int(date.timeIntervalSinceReferenceDate * 10) % 100_000
+        return HStack(spacing: Spacing.wide) {
+            Text("\(value) tokens").font(.body.monospacedDigit())
+            Text("\(value) tokens").font(.body)
         }
     }
 }

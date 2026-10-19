@@ -36,10 +36,11 @@ public struct GalleryRootView: View {
             sidebar
         } detail: {
             ScrollView {
-                CatalogPageBody(page: page, options: options)
+                CatalogPageBody(page: page, options: options, showsTitle: false)
             }
             .gallerySurface(surface)
-            .navigationTitle(page.section.title)
+            .navigationTitle(page.title)
+            .navigationSubtitle(page.section.title)
             .toolbar {
                 GalleryToolbar(appearance: $appearance, controlSize: $controlSize,
                                surface: $surface, disabled: $disabled)

@@ -84,6 +84,9 @@ extension EnvironmentValues {
     /// The toolbar's Disabled switch: each `Sample` disables its own content,
     /// so the usage line under it stays selectable.
     @Entry var gallerySamplesDisabled = false
+    /// Set by a shot: pages with a live clock draw this moment instead, so
+    /// the shot is the same on every run.
+    @Entry var galleryFrozenDate: Date?
 }
 
 // MARK: - Toolbar
@@ -112,9 +115,12 @@ struct GalleryToolbar: ToolbarContent {
                 ForEach(GallerySurface.allCases) { Text($0.title).tag($0) }
             }
             .help("The surface the page sits on")
-            Toggle("Disabled", isOn: $disabled)
-                .toggleStyle(.checkbox)
-                .help("Disable every sample")
+            Toggle(isOn: $disabled) {
+                Label("Disabled", systemImage: "nosign")
+            }
+            .toggleStyle(.button)
+            .labelStyle(.iconOnly)
+            .help(disabled ? "Enable the samples" : "Disable every sample")
         }
     }
 }
@@ -123,16 +129,20 @@ struct GalleryToolbar: ToolbarContent {
 
 /// One page as the window shows it, without the scroll view or the surface
 /// behind it (a shot renders this directly and paints its own): the title
-/// and summary, then the page's samples under the toolbar's control size and
+/// (shots only) and summary, then the page's samples under the toolbar's control size and
 /// disabled state.
 struct CatalogPageBody: View {
     let page: CatalogPage
     var options = GalleryOptions()
+    /// The window shows the title in its title bar; a shot has none.
+    var showsTitle = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.wide) {
             VStack(alignment: .leading, spacing: Spacing.small) {
-                Text(page.title).font(.title2.weight(.semibold))
+                if showsTitle {
+                    Text(page.title).font(.title2.weight(.semibold))
+                }
                 Text(page.summary).font(.callout).foregroundStyle(.secondary)
             }
             page.content()
@@ -158,12 +168,13 @@ extension View {
     }
 }
 
-/// The system popover material, as a popover's own window draws it.
+/// The system popover material, blended with the page under it as a
+/// popover over the window would be.
 struct PopoverMaterial: NSViewRepresentable {
     func makeNSView(context: Context) -> NSVisualEffectView {
         let view = NSVisualEffectView()
         view.material = .popover
-        view.blendingMode = .behindWindow
+        view.blendingMode = .withinWindow
         view.state = .active
         return view
     }

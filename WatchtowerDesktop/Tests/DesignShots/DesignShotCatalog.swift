@@ -48,7 +48,11 @@ enum DesignShotCatalog {
             }
         ] + CatalogPage.allCases.map { page in
             DesignShot(name: "catalog-\(page.rawValue)", size: NSSize(width: 900, height: 0)) {
-                AnyView(CatalogPageBody(page: page).shotFrame().detailBackground())
+                // A fixed moment, so the Typography page's live counter is the same every run.
+                AnyView(CatalogPageBody(page: page)
+                    .environment(\.galleryFrozenDate, Date(timeIntervalSinceReferenceDate: 812_345.6))
+                    .shotFrame()
+                    .detailBackground())
             }
         }
     }

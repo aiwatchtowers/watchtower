@@ -117,8 +117,11 @@ struct ActionsPage: View {
 // MARK: - Selection
 
 struct SelectionPage: View {
-    @State private var views: [String: Bool] = ["Board": true, "Terminal": true, "Workchat": false, "Files": false]
+    @State private var views: [String: Bool] = [
+        "Board": true, "Terminal": true, "Workchat": false, "Files": false, "Today": true, "Week": false
+    ]
     @State private var hovered: String?
+    @State private var chevronHovered = false
     @State private var range = "Week"
     @State private var mode = "List"
     @State private var notify = true
@@ -128,14 +131,16 @@ struct SelectionPage: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.hero) {
             PageSection("Header capsule") {
-                Sample("SegmentedToggleStyle: independent view toggles; Terminal and Workchat are a joined twin",
-                       usage: ".toggleStyle(SegmentedToggleStyle(isHovered: hovered == id) { hovered = $0 ? id : nil })") {
+                Sample("SegmentedToggleStyle, the Workbench header: independent view toggles; Terminal and Workchat "
+                       + "are a joined twin (joinsRight / joinsLeft), and Workchat runs on into the sessions chevron (joinsChevron)",
+                       usage: ".toggleStyle(SegmentedToggleStyle(joinsLeft: true, joinsChevron: true, isHovered: …) { … })") {
                     HStack(spacing: Spacing.regular) {
                         HStack(spacing: Spacing.tight) {
                             segment("Board", image: "rectangle.split.3x1")
                             HStack(spacing: 0) {
                                 segment("Terminal", image: "terminal", joinsRight: true)
-                                segment("Workchat", image: "bubble.left.and.bubble.right", joinsLeft: true)
+                                segment("Workchat", image: "bubble.left.and.bubble.right", joinsLeft: true, joinsChevron: true)
+                                sessionsChevron
                             }
                             segment("Files", image: "folder")
                         }
@@ -144,6 +149,14 @@ struct SelectionPage: View {
                             .buttonStyle(.kitIcon(isOn: splitOn))
                         Button {} label: { Image(systemName: "ellipsis") }.buttonStyle(.kitIcon(isOn: false))
                     }
+                }
+                Sample("Title-only segments (showsIcon: false): no icon, so no gap before the title",
+                       usage: ".toggleStyle(SegmentedToggleStyle(showsIcon: false, isHovered: …) { … })") {
+                    HStack(spacing: Spacing.tight) {
+                        segment("Today", image: nil)
+                        segment("Week", image: nil)
+                    }
+                    .segmentCapsule()
                 }
                 Sample("KitSegmentedPicker: exactly one of a few values",
                        usage: "KitSegmentedPicker(title: \"Range\", selection: $range, segments: [KitSegment(value: \"Day\", title: \"Day\"), …])") {
@@ -186,13 +199,55 @@ struct SelectionPage: View {
         }
     }
 
-    private func segment(_ title: String, image: String, joinsRight: Bool = false, joinsLeft: Bool = false) -> some View {
+    /// One view toggle of the capsule; `image: nil` is a title-only segment.
+    private func segment(
+        _ title: String, image: String?, joinsRight: Bool = false, joinsLeft: Bool = false, joinsChevron: Bool = false
+    ) -> some View {
         Toggle(isOn: Binding(get: { views[title] == true }, set: { views[title] = $0 })) {
-            Label(title, systemImage: image)
+            if let image {
+                Label(title, systemImage: image)
+            } else {
+                Label { Text(title) } icon: { EmptyView() }
+            }
         }
-        .toggleStyle(SegmentedToggleStyle(joinsRight: joinsRight, joinsLeft: joinsLeft, isHovered: hovered == title) { inside in
+        .toggleStyle(SegmentedToggleStyle(
+            joinsRight: joinsRight, joinsLeft: joinsLeft, joinsChevron: joinsChevron, showsIcon: image != nil,
+            isHovered: hovered == title || (joinsChevron && chevronHovered)
+        ) { inside in
             if inside { hovered = title } else if hovered == title { hovered = nil }
         })
+    }
+
+    /// The twin's sessions menu, drawn as the Workbench header draws it: a
+    /// hairline, then the chevron, on the fill of the segment it continues.
+    private var sessionsChevron: some View {
+        let isOn = views["Workchat"] == true
+        let isLit = isOn || views["Terminal"] == true
+        return Menu {
+            ForEach(["acme setup", "Billing export", "Login redirect"], id: \.self) { Button($0) {} }
+            Divider()
+            Button("New Session") {}
+        } label: {
+            HStack(spacing: Spacing.small) {
+                Rectangle().fill(Stroke.hairlineColor).frame(width: 1, height: 14)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(isLit ? Color.accentColor : Color.secondary)
+            }
+            .padding(.trailing, Spacing.regular)
+            .frame(height: 22)
+            .background(
+                SegmentedToggleStyle.fill(isOn: isOn, isHovered: hovered == "Workchat" || chevronHovered),
+                in: UnevenRoundedRectangle(bottomTrailingRadius: 6, topTrailingRadius: 6, style: .continuous)
+            )
+            .contentShape(Rectangle())
+            .onHover { chevronHovered = $0 }
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .accessibilityLabel("Sessions")
     }
 }
 
