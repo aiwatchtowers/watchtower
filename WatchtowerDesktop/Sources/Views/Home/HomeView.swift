@@ -12,37 +12,52 @@ struct HomeView: View {
             HomeContent(
                 snapshot: appState.homeCenter.snapshot,
                 today: context.date,
+                feedErrors: appState.homeCenter.feedErrors,
                 digestsTurnOn: appState.digestsTurnOnState,
                 onLink: { appState.openHomeLink($0) },
                 onDecideSuggestion: { await appState.decideInstructionSuggestion(id: $0, add: $1) },
                 onHideGettingReady: { appState.homeCenter.hideGettingReady() },
-                onAsk: { appState.toggleHelpChat() }
+                onAsk: { appState.toggleHelpChat() },
+                onAct: { await appState.homeCenter.act($0, on: $1) },
+                onExpand: { appState.homeCenter.setFeedExpanded($0) }
             )
         }
     }
 }
 
-/// Home's page: header, Getting ready, Today. No `@Environment(AppState.self)`:
-/// values and closures only, so ViewInspector can drive it.
+/// Home's page: header, Getting ready, then two columns — the feed on the
+/// left, the remaining cards on the right — or one column below
+/// `twoColumnWidth`. No `@Environment(AppState.self)`: values and closures
+/// only, so ViewInspector can drive it.
 struct HomeContent: View {
     /// nil until the first read.
     let snapshot: HomeSnapshot?
     let today: Date
+    /// A feed Done / Hide that failed, by row.
+    let feedErrors: [FeedRef: String]
     let digestsTurnOn: DigestsTurnOnState
     let onLink: (HomeLink) -> Void
     let onDecideSuggestion: (Int64, Bool) async -> String?
     let onHideGettingReady: () -> Void
     let onAsk: () -> Void
+    let onAct: (FeedAction, FeedRef) async -> Void
+    let onExpand: (Bool) -> Void
 
     init(
         snapshot: HomeSnapshot?,
         today: Date,
+        feedErrors: [FeedRef: String] = [:],
         digestsTurnOn: DigestsTurnOnState = .idle,
         onLink: @escaping (HomeLink) -> Void,
         onDecideSuggestion: @escaping (Int64, Bool) async -> String? = { _, _ in nil },
         onHideGettingReady: @escaping () -> Void,
-        onAsk: @escaping () -> Void = {}
+        onAsk: @escaping () -> Void = {},
+        onAct: @escaping (FeedAction, FeedRef) async -> Void = { _, _ in },
+        onExpand: @escaping (Bool) -> Void = { _ in }
     ) {
+        self.feedErrors = feedErrors
+        self.onAct = onAct
+        self.onExpand = onExpand
         self.onDecideSuggestion = onDecideSuggestion
         self.snapshot = snapshot
         self.today = today
@@ -60,23 +75,42 @@ struct HomeContent: View {
                     GettingReadyZoneView(
                         zone: snapshot.gettingReady, firstSync: snapshot.firstSync,
                         digestsTurnOn: digestsTurnOn, onLink: onLink, onHide: onHideGettingReady)
-                    TodayZoneView(
-                        cards: snapshot.today, nothingNeedsYou: snapshot.nothingNeedsYou,
-                        readFailed: snapshot.showsReadError, onLink: onLink,
-                        onDecideSuggestion: onDecideSuggestion)
+                    columns(snapshot)
                 } else {
                     ProgressView()
                         .frame(maxWidth: .infinity)
                 }
                 helpLine
             }
-            .frame(maxWidth: 960, alignment: .leading)
+            .frame(maxWidth: 1180, alignment: .leading)
             .padding(.horizontal, 40)
             .padding(.top, 28)
             .padding(.bottom, 48)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .navigationTitle("Home")
+    }
+
+    /// The feed and the right column side by side when the content is at
+    /// least 900 pt wide (520 + 20 + 340 + the page's gutters' slack), else
+    /// one column: feed first.
+    private func columns(_ snapshot: HomeSnapshot) -> some View {
+        let feed = FeedZoneView(
+            feed: snapshot.feed, errors: feedErrors, onLink: onLink, onAct: onAct, onExpand: onExpand, now: today)
+        let right = TodayZoneView(
+            cards: snapshot.today, nothingNeedsYou: snapshot.nothingNeedsYou,
+            readFailed: snapshot.showsReadError, onLink: onLink,
+            onDecideSuggestion: onDecideSuggestion)
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 20) {
+                feed.frame(minWidth: 520, idealWidth: 520, maxWidth: .infinity)
+                right.frame(width: 340)
+            }
+            VStack(alignment: .leading, spacing: 20) {
+                feed
+                right
+            }
+        }
     }
 
     private var helpLine: some View {

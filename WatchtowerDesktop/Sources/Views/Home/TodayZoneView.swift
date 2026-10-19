@@ -1,9 +1,9 @@
 import SwiftUI
 import WatchtowerCore
 
-/// Home's Today zone: the cards in snapshot order, or one line — the
-/// all-clear, or the read error when an allowed read failed (a failed read
-/// is never "nothing needs you").
+/// Home's right column: the remaining Today cards stacked in snapshot order,
+/// or one line — the all-clear, or the read error when an allowed read
+/// failed (a failed read is never "nothing needs you").
 struct TodayZoneView: View {
     let cards: [TodayCard]
     let nothingNeedsYou: Bool
@@ -27,14 +27,11 @@ struct TodayZoneView: View {
 
     var body: some View {
         if !cards.isEmpty || readFailed || nothingNeedsYou {
-            VStack(alignment: .leading, spacing: 12) {
-                HomeZoneHeader(title: "Today")
+            VStack(alignment: .leading, spacing: 20) {
                 if !cards.isEmpty {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 320), spacing: 12, alignment: .top)], spacing: 12) {
-                        ForEach(cards, id: \.kind) { card in
-                            TodayCardView(card: card, onLink: onLink, onDecideSuggestion: onDecideSuggestion)
-                                .id(card.suggestionID)
-                        }
+                    ForEach(cards, id: \.kind) { card in
+                        TodayCardView(card: card, onLink: onLink, onDecideSuggestion: onDecideSuggestion)
+                            .id(card.suggestionID)
                     }
                 } else if readFailed {
                     TodayStatusLine(
