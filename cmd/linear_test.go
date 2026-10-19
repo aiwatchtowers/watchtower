@@ -52,9 +52,27 @@ func TestPrintLinearAccountsJSON(t *testing.T) {
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
 	require.Len(t, rows, 1)
 	assert.Equal(t, "https://linear.app/acme", rows[0]["url"])
-	for _, k := range []string{"id", "label", "org_name", "url", "status", "enabled", "error"} {
+	// The Desktop's Settings → Linear decodes every key, `auth` included
+	// (Swift `LinearAccount`).
+	for _, k := range []string{"id", "label", "org_name", "url", "status", "enabled", "error", "auth"} {
 		assert.Contains(t, rows[0], k)
 	}
+	assert.Len(t, rows[0], 8, "a new key needs its Swift decoder field")
+}
+
+// The Desktop decodes `linear teams --json` (Swift `LinearTeam`): the keys
+// are pinned, and no teams is `[]`, never `null`.
+func TestPrintLinearTeamsJSON(t *testing.T) {
+	var buf bytes.Buffer
+	require.NoError(t, printLinearTeamsJSON(&buf, []db.LinearTeam{{ID: "t1", Key: "ENG", Name: "Engineering", IsSelected: true}}))
+	var rows []map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &rows))
+	require.Len(t, rows, 1)
+	assert.Equal(t, map[string]any{"key": "ENG", "name": "Engineering", "selected": true}, rows[0])
+
+	buf.Reset()
+	require.NoError(t, printLinearTeamsJSON(&buf, nil))
+	assert.Equal(t, "[]", strings.TrimSpace(buf.String()))
 }
 
 func TestLinearCommandsRegistered(t *testing.T) {

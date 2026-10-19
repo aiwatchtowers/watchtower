@@ -3,6 +3,7 @@ package dayplan
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -87,13 +88,15 @@ func formatTargetsSection(targets []db.Target) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-// formatJiraSection renders active Jira issues for the prompt.
-func formatJiraSection(issues []db.JiraIssue) string {
+// formatJiraSection renders the owner's active issues (Jira and Linear) for
+// the prompt's issues section; a Jira line is unchanged.
+func formatJiraSection(issues []db.TrackerIssue) string {
 	if len(issues) == 0 {
 		return "(none)"
 	}
 	var sb strings.Builder
-	for _, iss := range issues {
+	for _, t := range issues {
+		iss := t.AsJiraIssue()
 		fmt.Fprintf(&sb, "- [%s %s] %s", iss.Key, iss.Priority, iss.Summary)
 		if iss.Status != "" {
 			fmt.Fprintf(&sb, " (status: %s)", iss.Status)
@@ -235,11 +238,14 @@ func targetsIDSet(targets []db.Target) map[string]bool {
 	return m
 }
 
-// jiraKeySet builds a set of Jira issue keys from an issue slice.
-func jiraKeySet(issues []db.JiraIssue) map[string]bool {
-	m := make(map[string]bool, len(issues))
+// issueKeyTrackers maps each gathered issue key to the trackers that carry
+// it (a Linear team key equal to a Jira project key makes both possible).
+func issueKeyTrackers(issues []db.TrackerIssue) map[string][]string {
+	m := make(map[string][]string, len(issues))
 	for _, iss := range issues {
-		m[iss.Key] = true
+		if !slices.Contains(m[iss.Key], iss.Tracker) {
+			m[iss.Key] = append(m[iss.Key], iss.Tracker)
+		}
 	}
 	return m
 }

@@ -125,7 +125,7 @@ struct TerminalSessionRow: View {
                 if let badge = row.badge {
                     Text(badge).font(.caption2).foregroundStyle(.secondary)
                 }
-                if let tag = row.agentTag { AgentTag(text: tag) }
+                if let tag = row.agentTag { OutlineTag(text: tag) }
             }
             Spacer(minLength: 0)
             if let opensIn {

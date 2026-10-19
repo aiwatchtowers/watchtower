@@ -525,6 +525,8 @@ struct WatchtowerApp: App {
         }
         .defaultSize(width: 620, height: 720)
 
+        DesignGalleryScene()
+
         Window("Logs", id: "logs") {
             LogsSettings()
                 .environment(appState)

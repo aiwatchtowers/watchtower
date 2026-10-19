@@ -92,4 +92,13 @@ final class SidebarVisibilityTests: XCTestCase {
         }
         XCTAssertEqual(sources, ConnectedSources(mail: true, calendar: true))
     }
+
+    func testLinearIgnoresRemovedAccounts() throws {
+        XCTAssertEqual(try fetch { db in _ = try TestDatabase.insertLinearAccount(db, status: "removed") }, .none)
+        XCTAssertEqual(
+            try fetch { db in _ = try TestDatabase.insertLinearAccount(db, status: "revoked", enabled: false) },
+            ConnectedSources(linear: true), "a paused or revoked workspace still has its synced data")
+        XCTAssertTrue(ConnectedSources(linear: true).provides(.linear))
+        XCTAssertFalse(ConnectedSources(linear: true).provides(.jira))
+    }
 }

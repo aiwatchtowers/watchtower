@@ -1,58 +1,6 @@
 import SwiftUI
 import WatchtowerCore
 
-/// A section title inside the target panel (Description, Sub-tasks, Asks,
-/// Images, Comments), so every section reads the same.
-struct WorkbenchDetailSectionHeader: View {
-    let title: String
-    let systemImage: String
-    var count: Int?
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Label(title, systemImage: systemImage)
-                .font(.subheadline.weight(.semibold))
-            if let count, count > 0 {
-                Text("\(count)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .foregroundStyle(.secondary)
-        .accessibilityAddTraits(.isHeader)
-    }
-}
-
-/// A status or priority menu's label: a tinted capsule with an icon and a
-/// chevron, so it reads as a control rather than a bare tag.
-struct WorkbenchDetailMenuLabel: View {
-    let text: String
-    let systemImage: String
-    let color: Color
-    /// A read-only value (a group's status) drops the chevron.
-    var isMenu = true
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Image(systemName: systemImage)
-                .font(.caption2)
-                .foregroundStyle(color)
-            Text(text)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.primary)
-            if isMenu {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 4)
-        .background(color.opacity(0.14), in: Capsule())
-        .overlay(Capsule().strokeBorder(color.opacity(0.3), lineWidth: 0.5))
-    }
-}
-
 /// The panel's description (spec 2026-10-06 Part 3): folded to six lines
 /// with Show all when longer; a click opens the editor, where ⌘↩ or focus
 /// loss saves and Esc cancels. The draft lives in the view model per target
@@ -83,7 +31,7 @@ struct WorkbenchPanelDescription: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            WorkbenchDetailSectionHeader(title: "Description", systemImage: "text.alignleft")
+            SectionHeader(title: "Description", systemImage: "text.alignleft")
             if isEditing {
                 editor
             } else if intent.isEmpty {

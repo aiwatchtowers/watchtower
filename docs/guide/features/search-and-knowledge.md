@@ -1,6 +1,6 @@
 # Search and knowledge
 
-Watchtower has two kinds of search. The **Search** tab finds Slack messages by words and shows matching pages of this guide above them. Knowledge search is an index of your Slack, mail, Jira, calendar, meetings, notes and chosen Confluence spaces, and it is what the assistant reads when you ask a question about your work.
+Watchtower has two kinds of search. The **Search** tab finds Slack messages by words and shows matching pages of this guide above them. Knowledge search is an index of your Slack, mail, Jira, Linear, calendar, meetings, notes and chosen Confluence spaces, and it is what the assistant reads when you ask a question about your work.
 
 ## Why use it
 
@@ -13,7 +13,7 @@ You remember a thing was discussed, but not where. Ask the assistant "what did w
 **Knowledge search** is a separate full-text index that the daemon keeps up to date on every cycle, with no AI and no cost. It covers:
 
 - the pages of this user guide, from the app itself (the Help block in **Search** and the assistant's help answers use them);
-- Slack threads and channel days, Gmail and IMAP threads, Jira issues with their comments;
+- Slack threads and channel days, Gmail and IMAP threads, Jira and Linear issues with their comments;
 - calendar events, meeting transcripts and recaps, digest topics, ideas and decisions;
 - the text files (`.md`, `.markdown`, `.txt`) of a workbench folder, visible only to that workbench's own sessions;
 - the Confluence spaces you select (pages, blog posts, comments and the text of attachments).
@@ -46,6 +46,6 @@ Memory is not part of this index; the assistant reads it separately. A deleted s
 
 ## Related
 
-- [Jira and Linear](jira-and-linear.md): the Jira data that feeds this index.
+- [Jira and Linear](jira-and-linear.md): the Jira and Linear data that feeds this index.
 
 For developers: [docs/features/knowledge-search.md](../../features/knowledge-search.md), [docs/features/confluence-knowledge-connector.md](../../features/confluence-knowledge-connector.md)

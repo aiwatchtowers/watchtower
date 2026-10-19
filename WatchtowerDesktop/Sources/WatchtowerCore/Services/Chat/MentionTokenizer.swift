@@ -27,7 +27,7 @@ package struct ComposerEdit: Equatable, Sendable {
 /// One thing an `@` mention can point at (spec §6.2).
 package struct MentionCandidate: Equatable, Hashable, Sendable, Identifiable {
     package enum Kind: String, Sendable {
-        case person, channel, jira, target, track
+        case person, channel, jira, linear, target, track
     }
 
     package let kind: Kind
@@ -54,6 +54,7 @@ package struct MentionCandidate: Equatable, Hashable, Sendable, Identifiable {
         case .person: kind = .person
         case .channel: kind = .channel
         case .jiraIssue: kind = .jira
+        case .linearIssue: kind = .linear
         case .target: kind = .target
         case .track: kind = .track
         case .jiraProject, .confluenceSpace: return nil
@@ -63,7 +64,7 @@ package struct MentionCandidate: Equatable, Hashable, Sendable, Identifiable {
 
     package var id: String { referenceToken }
 
-    /// `person:<id>`, `channel:<id>`, `jira:<KEY>`, `target:<id>`, `track:<id>`.
+    /// `person:<id>`, `channel:<id>`, `jira:<KEY>`, `linear:<KEY>`, `target:<id>`, `track:<id>`.
     package var referenceToken: String { "\(kind.rawValue):\(ref)" }
 
     /// What the picker inserts into the composer text.
@@ -147,7 +148,7 @@ package enum MentionTokenizer {
     }
 }
 
-/// `@` picker search (spec §6.2): people, Jira issues, Slack channels,
+/// `@` picker search (spec §6.2): people, Jira and Linear issues, Slack channels,
 /// targets, tracks — prefix match, at most 8 results. Label-prefix hits come
 /// first; ties keep kind order then each kind's own SQL order.
 package enum MentionSearch {

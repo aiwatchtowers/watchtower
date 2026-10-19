@@ -48,7 +48,8 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 
 - [Targets](features/targets.md) — your own to-do list, with a next step per target and an assistant that breaks work down on your instruction
 - [Tracks](features/tracks.md) — the requests and decisions waiting on you, pulled out of Slack digests, plus custom watches on topics you describe
-- [Jira and Linear](features/jira-and-linear.md) — see stuck, late and overloaded work across your Jira boards, and connect Linear
+- [Jira and Linear](features/jira-and-linear.md) — see stuck, late and overloaded work across your Jira boards and Linear teams
+- [Linear](features/linear.md) — connect Linear workspaces, pick teams, and let the assistant read and change Linear issues
 
 ## Insights
 

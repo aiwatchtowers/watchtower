@@ -10,7 +10,7 @@ Your calendar says you have three meetings and nothing else. The Day Plan fits t
 
 The plan is made by the background sync, once a day, right after the briefing step. Like the briefing it runs at or after the plan hour (default **08:00**), on the first sync cycle that finds it due.
 
-It reads your calendar, targets, today's briefing, Jira issues, people context and, when Memory's Day Plan surface is on, open loops. It also reads yesterday's plan and the items you added by hand.
+It reads your calendar, targets, today's briefing, your open Jira issues (and Linear issues when Linear is switched on), people context and, when Memory's Day Plan surface is on, open loops. It also reads yesterday's plan and the items you added by hand.
 
 | Condition | Why |
 |---|---|

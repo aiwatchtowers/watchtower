@@ -242,7 +242,7 @@ struct WorkbenchesView: View {
             }
             Spacer()
             if badge > 0 {
-                WorkbenchCapsuleBadge(text: "\(badge)")
+                CountBadge(text: "\(badge)")
             }
         }
         .padding(.vertical, 2)
