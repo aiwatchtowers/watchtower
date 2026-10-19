@@ -455,7 +455,9 @@ func (s *Server) resize(c *conn, bound *session, p []byte) {
 		c.sendError(fmt.Sprintf("resize: bad request: %v", err))
 		return
 	}
-	if err := bound.resize(req.Cols, req.Rows); err != nil && !errors.Is(err, syscall.ESRCH) {
+	// A session that already exited has no group to signal or a closed
+	// PTY; resizing it is a no-op, not an error.
+	if err := bound.resize(req.Cols, req.Rows); err != nil && !errors.Is(err, syscall.ESRCH) && !errors.Is(err, os.ErrClosed) {
 		c.sendError(err.Error())
 	}
 }

@@ -80,6 +80,16 @@ struct ColoursPage: View {
                         ForEach(priorities, id: \.self) { tint($0, Tone.priority($0)) }
                     }
                 }
+                Sample("Shared states: a warning, an all-clear, an error, the current moment, readable yellow",
+                       usage: "Tone.warning  ·  Tone.success  ·  Tone.error  ·  Tone.now  ·  Tone.amber") {
+                    HStack(spacing: Spacing.compact) {
+                        tint("warning", Tone.warning)
+                        tint("success", Tone.success)
+                        tint("error", Tone.error)
+                        tint("now", Tone.now)
+                        tint("amber", Tone.amber)
+                    }
+                }
                 Sample("A tinted capsule: the tone under a thin outline of itself",
                        usage: "tone.opacity(ChipTint.fillOpacity)  ·  ChipTint.strokeOpacity  ·  ChipTint.strokeWidth") {
                     tint("In review", Tone.status("purple"))

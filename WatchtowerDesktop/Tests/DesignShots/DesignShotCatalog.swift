@@ -45,6 +45,13 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "buttons", size: NSSize(width: 460, height: 64)) {
                 AnyView(DesignShotFixtures.buttons().padding(12).shotFrame().panelBackground())
+            },
+            // Home (#717): two columns from 900 pt of content, one below.
+            DesignShot(name: "home-wide", size: NSSize(width: 1280, height: 960)) {
+                HomeShotFixtures.home()
+            },
+            DesignShot(name: "home-narrow", size: NSSize(width: 780, height: 1440)) {
+                HomeShotFixtures.home()
             }
         ] + CatalogPage.allCases.map { page in
             DesignShot(name: "catalog-\(page.rawValue)", size: NSSize(width: 900, height: 0)) {

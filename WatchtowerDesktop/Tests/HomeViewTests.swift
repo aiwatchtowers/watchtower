@@ -2,7 +2,8 @@ import XCTest
 import SwiftUI
 import Observation
 import ViewInspector
-import WatchtowerCore
+import GRDB
+@testable import WatchtowerCore
 import WatchtowerTestSupport
 @testable import WatchtowerDesktop
 
@@ -29,12 +30,18 @@ final class HomeViewTests: XCTestCase {
     private func viewSnapshot(
         _ zone: GettingReadyZone = .hidden,
         firstSync: FirstSyncLine? = nil,
-        today: [TodayCard] = [],
-        readFailed: Bool = false,
-        failed: Set<TodayCardKind> = []
+        workbench: [HomeWorkbenchBlock] = [],
+        suggestion: HomeInstructionSuggestion? = nil,
+        workbenchFailed: Bool = false,
+        links: [HomeLinkRow] = [],
+        linksFailed: Bool = false,
+        numbers: HomeNumbers? = nil
     ) -> HomeSnapshot {
         HomeSnapshot(
-            gettingReady: zone, firstSync: firstSync, today: today, todayReadFailed: readFailed, todayFailed: failed)
+            gettingReady: zone, firstSync: firstSync,
+            feed: HomeFeedBuilder.feed(HomeFeedData(), now: Date(), calendar: .current, expanded: false, hidden: []),
+            workbench: workbench, suggestion: suggestion, workbenchFailed: workbenchFailed,
+            links: links, linksFailed: linksFailed, numbers: numbers)
     }
 
     private func texts(_ view: some View) throws -> [String] {
@@ -209,63 +216,168 @@ final class HomeViewTests: XCTestCase {
         XCTAssertThrowsError(try hidden.inspect().find(text: "Getting ready"))
     }
 
-    // MARK: - Today
+    // MARK: - Workbench zone
 
-    private static let todayCards = [
-        TodayCard(
-            kind: .waitingOnYou, eyebrow: "WAITING ON YOU · 2",
-            items: [TodayItem(chip: "Proposal", title: "Send the follow-up", detail: nil, tone: nil, link: .inbox)],
-            link: .inbox),
-        TodayCard(
-            kind: .nextMeeting, eyebrow: "NEXT MEETING · IN 25 MIN", title: "Design review",
-            body: "11:30–12:00", link: .calendarEvent(id: "evt-1")),
-        TodayCard(kind: .briefing, eyebrow: "BRIEFING", body: "A lighter day.", link: .briefing(id: 7)),
-        TodayCard(
-            kind: .myTargets, eyebrow: "MY TARGETS",
-            items: [
-                TodayItem(chip: nil, title: "Draft the plan", detail: "In progress", tone: .inProgress, link: .target(id: 11)),
-                TodayItem(chip: nil, title: "Review feedback", detail: "Due today", tone: .dueToday, link: .target(id: 12))
-            ],
-            link: .targets)
+    private static func session(
+        _ id: Int64, title: String, _ kind: SessionSwitcherPresentation.State.Kind
+    ) -> SessionAgentStatus {
+        SessionAgentStatus(
+            sessionID: id, workbenchID: 1, workbenchName: "acme", title: title,
+            state: SessionSwitcherPresentation.State(kind: kind, live: true), at: nil)
+    }
+
+    /// Open asks through the real query, so the rows are real `OwnerAsk`s.
+    private func askRows(_ build: (Database) throws -> Void) throws -> WorkbenchAskRows {
+        let db = try TestDatabase.create()
+        return try db.write { d in
+            try build(d)
+            return try OwnerAskQueries.openAsksAllWorkbenches(d)
+        }
+    }
+
+    private static let suggestion = HomeInstructionSuggestion(id: 5, text: "run the linter before committing")
+
+    func testNoBlocksHidesTheZone() throws {
+        let all = try texts(makeContent(viewSnapshot()))
+        XCTAssertFalse(all.contains("Workbench"))
+        XCTAssertFalse(all.contains("Couldn't read Workbench — see the log."))
+        // The suggestion alone still shows the zone.
+        XCTAssertTrue(try texts(makeContent(viewSnapshot(suggestion: Self.suggestion))).contains("Workbench"))
+    }
+
+    func testWorkbenchBlocksShowSessionsAndAsks() throws {
+        let asks = try askRows { d in
+            let acme = try TestDatabase.insertWorkbench(d, name: "acme", folder: "/tmp/acme")
+            XCTAssertEqual(acme, 1, "the sessions' workbench")
+            let api = try TestDatabase.insertWorkbench(d, name: "acme-api", folder: "/tmp/acme-api")
+            try TestDatabase.insertOwnerAsk(d, projectID: api, kind: "question", title: "Which date format?")
+        }
+        let sessions = [
+            Self.session(1, title: "Fix login redirect", .working),
+            Self.session(2, title: "Export to CSV", .needsApproval)
+        ]
+        let blocks = HomeWorkbenchBuilder.blocks(sessions: sessions, asks: asks)
+        var tapped: [HomeLink] = []
+        let view = makeContent(viewSnapshot(workbench: blocks)) { tapped.append($0) }
+        let all = try texts(view)
+        let order = ["Workbench", "acme", "2 sessions", "Export to CSV", "Needs approval", "Fix login redirect",
+                     "Working", "acme-api", "Question", "Which date format?"]
+        // ViewThatFits holds both layouts; the first one is the two-column.
+        XCTAssertEqual(Array(all.filter(order.contains).prefix(order.count)), order)
+
+        try view.inspect().find(button: "Export to CSV").tap()
+        try view.inspect().find(button: "Which date format?").tap()
+        XCTAssertEqual(tapped.first, .workbench(WorkbenchRoute(projectID: 1, pane: .terminal, subjectID: 2)))
+        XCTAssertEqual(tapped.last, HomeWorkbenchBuilder.link(for: try XCTUnwrap(asks.rows.first)))
+        try view.inspect().find(button: "Open →").tap()
+        XCTAssertEqual(tapped.last, .workbenches)
+    }
+
+    func testSuggestionIsTheLastRow() async throws {
+        let blocks = HomeWorkbenchBuilder.blocks(
+            sessions: [Self.session(1, title: "Rate limiter", .readyToCheck)],
+            asks: WorkbenchAskRows(rows: [], unreadableIDs: []))
+        let decided = expectation(description: "decided")
+        var calls: [(Int64, Bool)] = []
+        let view = HomeContent(
+            snapshot: viewSnapshot(workbench: blocks, suggestion: Self.suggestion), today: Date(), onLink: { _ in },
+            onDecideSuggestion: { id, add in
+                calls.append((id, add))
+                decided.fulfill()
+                return nil
+            },
+            onHideGettingReady: {})
+        let all = try texts(view)
+        let line = "You keep telling agents: \u{201C}run the linter before committing\u{201D}. Add to your instructions?"
+        let rate = try XCTUnwrap(all.firstIndex(of: "Rate limiter"))
+        let suggestionIndex = try XCTUnwrap(all.firstIndex(of: line))
+        XCTAssertLessThan(rate, suggestionIndex)
+        // Only its buttons follow it, up to the next layout's copy.
+        XCTAssertEqual(Array(all[(suggestionIndex + 1)...].prefix(4)), ["Add", "Dismiss", "More\u{2026}", "Waiting on you"])
+        try view.inspect().find(button: "Add").tap()
+        await fulfillment(of: [decided], timeout: 2)
+        XCTAssertEqual(calls.map(\.0), [5])
+        XCTAssertEqual(calls.map(\.1), [true])
+    }
+
+    func testWorkbenchReadFailedIsSaid() throws {
+        let all = try texts(makeContent(viewSnapshot(workbenchFailed: true)))
+        XCTAssertTrue(all.contains("Workbench"))
+        XCTAssertTrue(all.contains("Couldn't read Workbench — see the log."))
+    }
+
+    // MARK: - Links zone
+
+    private static let links = [
+        HomeLinkRow(kind: .briefing, title: "Briefing", status: "ready 08:12", highlighted: false, link: .briefing(id: 7)),
+        HomeLinkRow(kind: .catchUp, title: "Catch-Up", status: "new recap", highlighted: true, link: .catchUp),
+        HomeLinkRow(kind: .dayPlan, title: "Day plan", status: "2 of 6 done", highlighted: false,
+                    link: .feature(.dayPlan)),
+        HomeLinkRow(kind: .digests, title: "Digests", status: nil, highlighted: false, link: .feature(.digests))
     ]
 
-    func testTodayCardsInSnapshotOrder() throws {
-        let view = makeContent(viewSnapshot(today: Self.todayCards))
-        let eyebrows = Self.todayCards.map(\.eyebrow)
-        XCTAssertEqual(try texts(view).filter(eyebrows.contains), eyebrows)
-        XCTAssertNoThrow(try view.inspect().find(text: "Today"))
-        XCTAssertNoThrow(try view.inspect().find(text: "Design review"))
-        XCTAssertNoThrow(try view.inspect().find(text: "A lighter day."))
-        XCTAssertNoThrow(try view.inspect().find(text: "Proposal"))
-        XCTAssertThrowsError(try view.inspect().find(text: "Nothing needs you right now."))
+    func testNoLinksHidesZone() throws {
+        XCTAssertFalse(try texts(makeContent(viewSnapshot())).contains("Links"))
     }
 
-    func testItemRowCallsItsLink() throws {
+    func testLinksRowsInOrderAndOpen() throws {
         var tapped: [HomeLink] = []
-        let view = makeContent(viewSnapshot(today: Self.todayCards)) { tapped.append($0) }
-        try view.inspect().find(button: "Review feedback").tap()
-        XCTAssertEqual(tapped, [.target(id: 12)])
-        // The card's own header goes to the card's link.
-        try view.inspect().find(button: "Design review").tap()
-        XCTAssertEqual(tapped.last, .calendarEvent(id: "evt-1"))
+        let view = makeContent(viewSnapshot(links: Self.links)) { tapped.append($0) }
+        let all = try texts(view)
+        let order = ["Links", "Briefing", "ready 08:12", "Catch-Up", "new recap", "Day plan", "2 of 6 done", "Digests"]
+        XCTAssertEqual(Array(all.filter(order.contains).prefix(order.count)), order)
+        try view.inspect().find(button: "Catch-Up").tap()
+        try view.inspect().find(button: "Day plan").tap()
+        XCTAssertEqual(tapped, [.catchUp, .feature(.dayPlan)])
     }
 
-    func testNothingNeedsYouLine() throws {
-        let view = makeContent(viewSnapshot(.hidden))
-        XCTAssertNoThrow(try view.inspect().find(text: "Nothing needs you right now."))
-        XCTAssertNoThrow(try view.inspect().find(ViewType.Image.self) {
-            try $0.actualImage().name() == "checkmark.circle"
-        })
-        XCTAssertThrowsError(try view.inspect().find(text: "Couldn't read today's items — see the log."))
+    func testLinksReadFailedIsSaid() throws {
+        let all = try texts(makeContent(viewSnapshot(links: Self.links, linksFailed: true)))
+        XCTAssertTrue(all.contains("Couldn't read the links — see the log."))
+        XCTAssertTrue(all.contains("Briefing"))
     }
 
-    func testReadFailedIsNotAllClear() throws {
-        for failed in [viewSnapshot(readFailed: true, failed: [.myTargets]), viewSnapshot(failed: [.briefing])] {
-            XCTAssertTrue(failed.showsReadError)
-            let view = makeContent(failed)
-            XCTAssertNoThrow(try view.inspect().find(text: "Couldn't read today's items — see the log."))
-            XCTAssertThrowsError(try view.inspect().find(text: "Nothing needs you right now."))
+    // MARK: - Numbers zone
+
+    func testNumbersShowValuesLeaveOutNilAndDashFailed() throws {
+        var numbers = HomeNumbers()
+        numbers.messagesToMe = 38
+        numbers.messagesSent = 12
+        numbers.meetings = 4
+        numbers.meetingHours = 3.5
+        numbers.aiSpendUSD = 1.84
+        numbers.plan5h = 41
+        numbers.planWeek = 63
+        numbers.workbenchCreated = 5
+        numbers.workbenchDone = 3
+        numbers.meetingsRecorded = 1
+        let all = try texts(NumbersZoneView(numbers: numbers))
+        for text in ["Today in numbers", "38 / 12", "messages to me / sent", "4 · 3.5 h", "meetings", "$1.84",
+                     "AI spend", "41% · 63%", "Claude 5 h · week", "5 / 3", "workbench targets new / done", "1",
+                     "meeting recorded"] {
+            XCTAssertTrue(all.contains(text), text)
         }
+
+        // Sources off: left out; a failed read: "—".
+        var sparse = HomeNumbers()
+        sparse.meetings = 0
+        sparse.meetingHours = 0
+        sparse.failed = ["aiSpendUSD"]
+        let few = try texts(NumbersZoneView(numbers: sparse))
+        XCTAssertTrue(few.contains("0"))
+        XCTAssertTrue(few.contains("—"))
+        XCTAssertTrue(few.contains("AI spend"))
+        XCTAssertFalse(few.contains("messages to me / sent"))
+        XCTAssertFalse(few.contains { $0.hasPrefix("Claude") })
+        // Nothing at all: the header still shows.
+        XCTAssertTrue(try texts(NumbersZoneView(numbers: HomeNumbers())).contains("Today in numbers"))
+    }
+
+    /// The feed owns the all-clear: the right column never says it.
+    func testOneAllClearInTheFeed() throws {
+        let view = makeContent(viewSnapshot(.hidden, numbers: HomeNumbers()))
+        XCTAssertThrowsError(try view.inspect().find(text: "Nothing needs you right now."))
+        XCTAssertNoThrow(try view.inspect().find(text: "Nothing is waiting for you."))
     }
 
     func testNoCounterText() throws {
@@ -283,6 +395,239 @@ final class HomeViewTests: XCTestCase {
             let range = NSRange(text.startIndex..., in: text)
             XCTAssertNil(counter.firstMatch(in: text, range: range), text)
         }
+    }
+
+    // MARK: - Feed
+
+    private static let feedNow = Date(timeIntervalSince1970: 1_800_000_000)
+
+    private static func row(
+        _ ref: FeedRef,
+        kind: FeedKind = .slack,
+        chip: String = "Mention",
+        who: String,
+        text: String,
+        read: Bool = false,
+        actions: Set<FeedAction> = [.done, .hide]
+    ) -> FeedRow {
+        FeedRow(
+            id: ref, kind: kind, chip: chip, who: who, whereText: "#eng", text: text,
+            stamp: feedNow.addingTimeInterval(-600), read: read, actions: actions,
+            link: .permalink(URL(string: "https://example.com/1")!))
+    }
+
+    private static func event(_ id: String, _ title: String, minutes: Double, chip: String = "Meeting") -> FeedEvent {
+        let start = feedNow.addingTimeInterval(minutes * 60)
+        return FeedEvent(
+            id: .event(id), start: start, end: start.addingTimeInterval(1800), title: title, chip: chip,
+            prepReady: false, isNext: false, isOngoing: false, link: .calendarEvent(id: id))
+    }
+
+    private static func feed(
+        waiting: [FeedRow] = [],
+        hidden: Int = 0,
+        later: [FeedEvent] = [],
+        nextDay: FeedDay? = nil,
+        failed: Set<FeedSource> = []
+    ) -> HomeFeed {
+        HomeFeed(
+            waiting: waiting, hiddenWaiting: hidden, nowLabel: "10:40", ongoing: nil, laterToday: later,
+            nextDay: nextDay, failed: failed)
+    }
+
+    private func feedZone(
+        _ feed: HomeFeed,
+        errors: [FeedRef: String] = [:],
+        onLink: @escaping (HomeLink) -> Void = { _ in },
+        onAct: @escaping (FeedAction, FeedRef) async -> Void = { _, _ in },
+        onExpand: @escaping (Bool) -> Void = { _ in },
+        calendar: Calendar = .current
+    ) -> FeedZoneView {
+        FeedZoneView(
+            feed: feed, errors: errors, onLink: onLink, onAct: onAct, onExpand: onExpand, now: Self.feedNow,
+            calendar: calendar)
+    }
+
+    /// Row stamps and event times use the builder's calendar zone, not the
+    /// process's: 08:00 UTC is 17:00 in UTC+9.
+    func testFeedTimesUseTheCalendarZone() throws {
+        var tokyo = Calendar(identifier: .gregorian)
+        tokyo.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 9 * 3600))
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let feed = Self.feed(
+            waiting: [Self.row(.inbox(1), who: "Ann", text: "hi")],
+            later: [Self.event("e1", "Payments review", minutes: 20)])
+        let east = try texts(feedZone(feed, calendar: tokyo))
+        XCTAssertTrue(east.contains("16:50"), "\(east)")
+        XCTAssertTrue(east.contains("17:20"), "\(east)")
+        let west = try texts(feedZone(feed, calendar: utc))
+        XCTAssertTrue(west.contains("07:50"), "\(west)")
+        XCTAssertTrue(west.contains("08:20"), "\(west)")
+    }
+
+    func testFeedShowsWaitingThenNowThenLater() throws {
+        let feed = Self.feed(
+            waiting: [Self.row(.inbox(1), who: "Ann", text: "is the review done?")],
+            later: [Self.event("e1", "Payments review", minutes: 20)],
+            nextDay: FeedDay(title: "Tomorrow", events: [Self.event("e2", "Daily standup", minutes: 1400)]))
+        let all = try texts(feedZone(feed))
+        // The section header's title, then its count.
+        let order = ["Waiting on you", "1", "is the review done?", "10:40", "Payments review", "Tomorrow", "Daily standup"]
+        XCTAssertEqual(all.filter(order.contains), order)
+        XCTAssertTrue(all.contains("Catch-Up →"))
+        XCTAssertFalse(all.contains("Nothing is waiting for you."))
+        XCTAssertFalse(all.contains("Nothing else today."))
+
+        // The same feed sits in Home's page; the Today header is gone.
+        let snapshot = HomeSnapshot(gettingReady: .hidden, firstSync: nil, feed: feed)
+        let page = try texts(makeContent(snapshot))
+        XCTAssertTrue(page.contains("is the review done?"))
+        XCTAssertFalse(page.contains("Today"))
+    }
+
+    /// Two columns (feed, then the 340 pt side column) when they fit, else one
+    /// column with the feed first; the side column stacks Workbench, links,
+    /// numbers.
+    func testLayoutTwoColumnsThenOneColumn() throws {
+        let snapshot = viewSnapshot(suggestion: Self.suggestion, links: Self.links, numbers: HomeNumbers())
+        let layout = try makeContent(snapshot).inspect().find(ViewType.ViewThatFits.self)
+        let wide = try layout.hStack(0)
+        // The spec's breakpoint: two columns from 900 pt of content width.
+        XCTAssertEqual(try wide.flexFrame().minWidth, 900)
+        XCTAssertNoThrow(try wide.view(FeedZoneView.self, 0))
+        XCTAssertNoThrow(try wide.view(HomeSideColumn.self, 1))
+        let narrow = try layout.vStack(1)
+        XCTAssertNoThrow(try narrow.view(FeedZoneView.self, 0))
+        XCTAssertNoThrow(try narrow.view(HomeSideColumn.self, 1))
+        let side = try wide.view(HomeSideColumn.self, 1)
+        XCTAssertNoThrow(try side.find(WorkbenchZoneView.self))
+        XCTAssertNoThrow(try side.find(LinksZoneView.self))
+        XCTAssertNoThrow(try side.find(NumbersZoneView.self))
+        let all = try texts(makeContent(snapshot))
+        let order = ["Workbench", "Links", "Today in numbers"]
+        XCTAssertEqual(Array(all.filter(order.contains).prefix(3)), order)
+    }
+
+    func testCatchUpLinkAndRowOpen() throws {
+        var tapped: [HomeLink] = []
+        let feed = Self.feed(waiting: [Self.row(.inbox(1), who: "Ann", text: "hi")])
+        let view = feedZone(feed) { tapped.append($0) }
+        try view.inspect().find(button: "Catch-Up →").tap()
+        try view.inspect().find(button: "Open").tap()
+        XCTAssertEqual(tapped, [.catchUp, .permalink(URL(string: "https://example.com/1")!)])
+    }
+
+    func testNMoreExpands() throws {
+        var expanded: [Bool] = []
+        let rows = (1...7).map { Self.row(.inbox($0), who: "Ann", text: "row \($0)") }
+        try feedZone(Self.feed(waiting: rows, hidden: 2)) { _ in } onExpand: { expanded.append($0) }
+            .inspect().find(button: "2 more").tap()
+        XCTAssertEqual(expanded, [true])
+        let folded = try texts(feedZone(Self.feed(waiting: rows, hidden: 2)))
+        let title = try XCTUnwrap(folded.firstIndex(of: "Waiting on you"))
+        XCTAssertEqual(folded[title + 1], "9", "the header counts the folded rows too")
+
+        // Expanded: every row, and Show less collapses.
+        let all = (1...9).map { Self.row(.inbox($0), who: "Ann", text: "row \($0)") }
+        let open = feedZone(Self.feed(waiting: all)) { _ in } onExpand: { expanded.append($0) }
+        XCTAssertThrowsError(try open.inspect().find(button: "0 more"))
+        try open.inspect().find(button: "Show less").tap()
+        XCTAssertEqual(expanded, [true, false])
+        // Seven or fewer rows: neither line.
+        XCTAssertThrowsError(try feedZone(Self.feed(waiting: rows)).inspect().find(button: "Show less"))
+    }
+
+    func testProposalRowHasNoDoneButton() async throws {
+        let proposal = Self.row(.proposal(4), kind: .proposal, chip: "Proposal", who: "Send the note", text: "review in Inbox",
+                                actions: [])
+        let view = feedZone(Self.feed(waiting: [proposal]))
+        XCTAssertNoThrow(try view.inspect().find(button: "Open"))
+        XCTAssertThrowsError(try view.inspect().find(button: "Done"))
+        XCTAssertThrowsError(try view.inspect().find(button: "Hide"))
+
+        // A slack row offers both, and they call onAct with the row's ref.
+        let acted = expectation(description: "acted")
+        acted.expectedFulfillmentCount = 2
+        var calls: [String] = []
+        let slack = feedZone(Self.feed(waiting: [Self.row(.inbox(9), who: "Ann", text: "hi")])) { _ in } onAct: { action, ref in
+            calls.append("\(action) \(ref)")
+            acted.fulfill()
+        }
+        try slack.inspect().find(button: "Done").tap()
+        try slack.inspect().find(button: "Hide").tap()
+        await fulfillment(of: [acted], timeout: 2)
+        XCTAssertEqual(Set(calls), ["done inbox(9)", "hide inbox(9)"])
+    }
+
+    /// The hover buttons are hidden from accessibility while invisible; the
+    /// row offers Open, and Done / Hide only when it has them, as named
+    /// accessibility actions.
+    func testRowActionsReachAccessibility() async throws {
+        let acted = expectation(description: "acted")
+        acted.expectedFulfillmentCount = 2
+        var calls: [String] = []
+        var opened: [HomeLink] = []
+        let slack = feedZone(Self.feed(waiting: [Self.row(.inbox(9), who: "Ann", text: "hi")])) {
+            opened.append($0)
+        } onAct: { action, ref in
+            calls.append("\(action) \(ref)")
+            acted.fulfill()
+        }
+        for title in ["Open", "Done", "Hide"] {
+            XCTAssertTrue(try slack.inspect().find(button: title).accessibilityHidden(), title)
+        }
+        let actions = try slack.inspect().find(FeedRowView.self).hStack().accessibilityActions()
+        try actions.find(button: "Done").tap()
+        try actions.find(button: "Hide").tap()
+        try actions.find(button: "Open").tap()
+        await fulfillment(of: [acted], timeout: 2)
+        XCTAssertEqual(Set(calls), ["done inbox(9)", "hide inbox(9)"])
+        XCTAssertEqual(opened, [.permalink(URL(string: "https://example.com/1")!)])
+
+        let proposal = Self.row(.proposal(4), kind: .proposal, chip: "Proposal", who: "Send the note", text: "review in Inbox",
+                                actions: [])
+        let none = try feedZone(Self.feed(waiting: [proposal])).inspect().find(FeedRowView.self).hStack().accessibilityActions()
+        XCTAssertNoThrow(try none.find(button: "Open"))
+        XCTAssertThrowsError(try none.find(button: "Done"))
+        XCTAssertThrowsError(try none.find(button: "Hide"))
+    }
+
+    func testEmptyFeedLine() throws {
+        let all = try texts(feedZone(Self.feed()))
+        XCTAssertTrue(all.contains("Nothing is waiting for you."))
+        XCTAssertTrue(all.contains("Nothing else today."))
+        // No count at zero: the header's title is followed by its trailing link.
+        let title = try XCTUnwrap(all.firstIndex(of: "Waiting on you"))
+        XCTAssertEqual(all[title + 1], "Catch-Up →")
+        // The NOW line still shows.
+        XCTAssertTrue(all.contains("10:40"))
+    }
+
+    func testFailedInboxShowsErrorNotAllClear() throws {
+        let all = try texts(feedZone(Self.feed(failed: [.inbox, .calendar])))
+        XCTAssertTrue(all.contains("Couldn't read Slack and mail — see the log."))
+        XCTAssertTrue(all.contains("Couldn't read the calendar — see the log."))
+        XCTAssertFalse(all.contains("Nothing is waiting for you."))
+        XCTAssertFalse(all.contains("Nothing else today."))
+        let others = try texts(feedZone(Self.feed(failed: [.reminders, .proposals, .targets])))
+        for name in ["reminders", "proposals", "targets"] {
+            XCTAssertTrue(others.contains("Couldn't read \(name) — see the log."), name)
+        }
+        XCTAssertFalse(others.contains("Nothing is waiting for you."))
+        // A row whose Done failed shows its error.
+        let row = Self.row(.inbox(3), who: "Ann", text: "hi")
+        XCTAssertNoThrow(try feedZone(Self.feed(waiting: [row]), errors: [.inbox(3): "exit 1"]).inspect().find(text: "exit 1"))
+    }
+
+    func testTomorrowTitleNeverToday() throws {
+        let monday = FeedDay(title: "Monday", events: [Self.event("e3", "Planning", minutes: 4000)])
+        let all = try texts(feedZone(Self.feed(nextDay: monday)))
+        XCTAssertTrue(all.contains("Monday"))
+        XCTAssertFalse(all.contains { $0.localizedCaseInsensitiveContains("today") && $0 != "Nothing else today." })
+        let monIndex = try XCTUnwrap(all.firstIndex(of: "Monday"))
+        let nowIndex = try XCTUnwrap(all.firstIndex(of: "10:40"))
+        XCTAssertLessThan(nowIndex, monIndex)
     }
 
     // MARK: - Navigation

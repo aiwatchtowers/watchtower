@@ -15,7 +15,6 @@ final class AppState {
     /// `WatchtowerApp` describes cannot arise. Tests still construct their own
     /// `AppState()` instances.
     static let shared = AppState()
-
     var selectedDestination: SidebarDestination = .home
     /// The ⌘/ chat popup over the current tab (in-app help).
     var isHelpChatShown = false
@@ -68,7 +67,8 @@ final class AppState {
     @ObservationIgnored private(set) lazy var homeCenter = HomeCenter(
         readiness: readinessCenter,
         environment: homeEnvironmentOverride ?? LiveHomeEnvironment(appState: self),
-        store: GettingReadyStore(defaults: homeDefaultsOverride ?? .standard)
+        store: GettingReadyStore(defaults: homeDefaultsOverride ?? .standard),
+        performer: AppHomeFeedPerformer(appState: self)
     )
 
     /// The owner (`OwnerQueries.resolve`, OWNER-01); unknown → `NoOwnerEmptyState` (OWNER-02). Re-read on

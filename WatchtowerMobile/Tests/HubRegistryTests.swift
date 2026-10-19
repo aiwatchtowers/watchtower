@@ -21,6 +21,13 @@ final class HubRegistryTests: XCTestCase {
         XCTAssertThrowsError(try registry.upsert(link("hub-e"), now: now)) { XCTAssertEqual($0 as? HubRegistryError, .full) }
     }
 
+    func testCloseEndsTheRegistryForGood() throws {
+        let registry = try HubRegistry.inMemory()
+        try registry.close()
+        XCTAssertNoThrow(try registry.close(), "closing again does nothing")
+        XCTAssertThrowsError(try registry.rows(), "a call after close throws")
+    }
+
     func testRelinkKeepsTheOrderAndClearsTheRemovedState() throws {
         let registry = try HubRegistry.inMemory()
         let now = Date(timeIntervalSince1970: 1_000)
