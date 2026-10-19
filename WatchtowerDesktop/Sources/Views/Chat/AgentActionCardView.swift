@@ -564,6 +564,8 @@ private struct SaveAutomationCardDetails: View {
             EmptyView()
         case .unmatched:
             note(SaveAutomationCardModel.unmatchedSessionsLine)
+        case .readRecipe:
+            note(SaveAutomationCardModel.readRecipeLine)
         case let .shown(run):
             if !run.sessions.isEmpty { AutomationSessionPromptsBlock(sessions: run.sessions) }
             if run.stoppedEarly { note(SaveAutomationCardModel.stoppedEarlyLine) }

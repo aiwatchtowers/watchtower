@@ -84,12 +84,12 @@ lives), not in `tools.ReadTools()` (DEV-01, like `draft_automation`).
   missing folder is an error, not an empty list. The tool names its workbench, so it
   follows the existing rule that a command naming a workbench may read it
   (`automations.md`, TCC note).
-- The text is the repository's own and goes back as data (the editor chat's contract
-  already fences tool results); Watchtower's own installed skill pack files
+- The text is the repository's own and goes back as data (the tool's description and the
+  skill frame it as data, never instructions); Watchtower's own installed skill pack files
   (`devpack`) are listed like any other.
 
-`AgentToolsContract` (Go `internal/chat/actions_contract.go` + Swift twin) lists the
-tool on the automation editor surface; the registry test pins the set.
+`AgentToolsContract` (Go `internal/chat/actions_contract.go` + Swift twin) lists write
+tools only, so `workbench_skills` is not in it; the registry test pins the set.
 
 ### 3. Sessions on the save card and the Draft panel (Desktop, WatchtowerCore)
 

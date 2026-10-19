@@ -131,6 +131,12 @@ final class SaveAutomationCardModelTests: XCTestCase {
                        .unmatched)
         XCTAssertEqual(model.draftSessions(latestDraftText: text, isPending: false, dryRunSessions: ["other": release]),
                        .hidden, "the unmatched line is for a pending card only")
+        let starting = SaveAutomationCardModel(action: try action(["recipe_text": "---\nname: X\n---\nconst s = session({ prompt: \"x\" });\n"]))
+        XCTAssertEqual(starting.draftSessions(latestDraftText: nil, isPending: true, dryRunSessions: [:]),
+                       .readRecipe, "the main chat has no Draft panel: point at the recipe")
+        XCTAssertEqual(starting.draftSessions(latestDraftText: nil, isPending: false, dryRunSessions: [:]), .hidden)
+        XCTAssertEqual(SaveAutomationCardModel.readRecipeLine,
+                       "This recipe starts agent sessions — read their prompts in the recipe before you approve.")
         XCTAssertEqual(SaveAutomationCardModel.unmatchedSessionsLine,
                        "No dry run of this exact text — the sessions are not shown.")
         XCTAssertEqual(SaveAutomationCardModel.stoppedEarlyLine,

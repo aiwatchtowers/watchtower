@@ -191,8 +191,11 @@ struct AutomationSessionPromptsBlock: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
             SectionHeader(title: Self.title, systemImage: "terminal", count: sessions.count)
-            ForEach(Array(sessions.enumerated()), id: \.offset) { _, session in
+            ForEach(Array(sessions.enumerated()), id: \.offset) { offset, session in
+                // Identity from content as well as position: a changed draft
+                // must not carry one session's expanded state onto another.
                 AutomationSessionPromptRow(session: session)
+                    .id("\(offset)|\(session.title)|\(session.prompt?.hashValue ?? 0)")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

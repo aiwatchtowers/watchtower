@@ -153,7 +153,8 @@ enum AutomationEditorChatSurface {
         } else {
             lines += [
                 "Scope: personal",
-                "Pick a short slug for it (lowercase letters, digits and hyphens) and keep using the same one."
+                "Pick a short slug for it (lowercase letters, digits and hyphens) and keep using the same one.",
+                "If the owner wants it for a workbench, ask them to pick the workbench under **For** at the top of this window."
             ]
         }
         return lines.joined(separator: "\n")

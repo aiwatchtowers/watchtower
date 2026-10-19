@@ -132,6 +132,7 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         XCTAssertTrue(block.contains("Scope: personal"), block)
         XCTAssertFalse(block.contains("workbench_id"), block)
         XCTAssertFalse(block.contains("workbench_skills"), block)
+        XCTAssertTrue(block.contains("pick the workbench under **For** at the top of this window"), block)
     }
 
     func testNewContextBlockWorkbench() {

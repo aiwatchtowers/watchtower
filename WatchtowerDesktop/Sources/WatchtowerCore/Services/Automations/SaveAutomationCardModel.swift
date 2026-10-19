@@ -37,6 +37,8 @@ package struct SaveAutomationCardModel {
     package static let unmatchedSessionsLine = "No dry run of this exact text — the sessions are not shown."
 
     /// Under a matched block whose dry run ended before the script did.
+    package static let readRecipeLine =
+        "This recipe starts agent sessions — read their prompts in the recipe before you approve."
     package static let stoppedEarlyLine = "The dry run stopped early — later sessions are not listed."
 
     /// What the card says about the sessions the recipe starts.
@@ -47,6 +49,10 @@ package struct SaveAutomationCardModel {
         case unmatched
         /// The dry run of this exact text (no sessions: it starts none).
         case shown(AutomationDryRunSessions)
+        /// A pending card on the main chat (no Draft panel) whose recipe
+        /// starts sessions: no prompts are listed, so the card points at the
+        /// recipe text.
+        case readRecipe
     }
 
     /// The workbench the recipe is saved into; nil for a personal one.
@@ -151,14 +157,17 @@ package struct SaveAutomationCardModel {
 
     /// The sessions block of the card: from the cached dry run whose recipe
     /// text equals this card's (`AutomationDraftPanelModel.dryRunSessions`),
-    /// shown only where a Draft panel exists (`latestDraftText` non-nil);
+    /// listed only where a Draft panel exists (`latestDraftText` non-nil); without one, a pending card whose recipe calls `session(`/`agent(` gets the read-the-recipe line;
     /// the unmatched line only on a pending card, like the mismatch warning.
     package func draftSessions(
         latestDraftText: String?,
         isPending: Bool,
         dryRunSessions: [String: AutomationDryRunSessions]
     ) -> DraftSessions {
-        guard latestDraftText != nil else { return .hidden }
+        guard latestDraftText != nil else {
+            let starts = recipeText.contains("session(") || recipeText.contains("agent(")
+            return isPending && starts ? .readRecipe : .hidden
+        }
         if let matched = dryRunSessions[recipeText] { return .shown(matched) }
         return isPending ? .unmatched : .hidden
     }
