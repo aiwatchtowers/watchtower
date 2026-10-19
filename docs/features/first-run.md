@@ -4,7 +4,7 @@ Board #779. Spec `docs/superpowers/specs/2026-10-14-first-run-home-design.md`
 (§1 readiness + empty states = P1, §2 first cycle = P4); plan
 `docs/superpowers/plans/2026-10-14-first-run-p1-p4.md`, whose "Spec corrections
 found while planning" are folded in below. **P2 (Home: Getting ready + Today,
-board #783)** is built from `docs/superpowers/plans/2026-10-15-first-run-p2-home.md`
+board #783; Today's cards retired 2026-10-19 by the zones, #717)** is built from `docs/superpowers/plans/2026-10-15-first-run-p2-home.md`
 (section "Home (P2)" below). **P3 (Try this → Recent work) is not built** (#785).
 
 The problem it closes: right after onboarding most tabs were a blank page or "No
@@ -392,18 +392,23 @@ after `ReadinessCenter` (`AppState.swift:1466`), which both launch and
 - **Inputs.** The Workbench, feed and links reads (`HomeQueries.workbench`, `HomeFeedQueries.read`, `HomeLinksQueries.read`) and the numbers read, `ReadinessCenter`'s map and
   hours, and `HomeEnvironment` (`HomeCenter.swift:8`): `now`, `calendar`,
   `ownerKnown`, `firstSync` (`AppState.firstSyncLine`), the live sessions and the allowed links/feed
-  sources (`AppState.homeLinksAllowed`, `homeFeedSourcesAllowed`, `AppState+Home.swift:32`/`:44`). (Before #717: the Today read and `homeTodayCardsAllowed`.)
-- **When it reads.** A GRDB `ValueObservation` over the Today tables that exist
-  (`HomeQueries.observedTables`; a table missing mid-migration is left out of
-  the region) sees this process' writes; a 30 s tick re-reads for the daemon's
-  writes (another process) and keeps the meeting eyebrow's minutes current. A
-  readiness, owner, first-sync or visibility change rebuilds from the last read
-  without touching the DB (`withObservationTracking`). A failed pool read is
-  logged and publishes the last read (or an empty one, before any good read)
-  with every card marked failed: Home shows the read error and Getting ready,
-  never an endless spinner, and stale content never passes as the all-clear;
-  the next tick tries again. Until the first read lands the snapshot is nil
-  and Home shows a spinner.
+  sources (`AppState.homeLinksAllowed`, `homeFeedSourcesAllowed`, `AppState+Home.swift:32`/`:43`). (Before #717: the Today read and `homeTodayCardsAllowed`.)
+- **When it reads.** One combined read (`pool.read`: Workbench asks and
+  suggestion, feed, links) under a GRDB `ValueObservation` over
+  `HomeQueries.observedTables + HomeFeedQueries.observedTables +
+  HomeLinksQueries.observedTables` (tables that exist; one missing mid-migration
+  is left out of the region) sees this process' writes. The numbers have their
+  own read and observation over `HomeNumbersQueries.observedTables`, with their
+  own token, so a slow count never holds the feed. A 30 s tick re-reads both for
+  the daemon's writes (another process) and keeps the feed's minutes current.
+  Each read takes a token; a read is applied only if it started after the last
+  applied one (`token > landedToken`), so a slow older read never overwrites a
+  newer one. A readiness, owner, first-sync, live-session or visibility change
+  rebuilds from the last reads without touching the DB. A failed pool read is
+  logged and publishes the last data (or an empty one) with each zone saying so
+  ("Couldn't read <zone> — see the log.", numbers show "—"): never an endless
+  spinner, and stale content never passes as the all-clear; the next tick tries
+  again. Until the first read lands the snapshot is nil and Home shows a spinner.
 - **Getting ready memory** — `GettingReadyStore` (`HomeCenter.swift:23`), per
   install in `UserDefaults`; `HomeCenter` is its only writer:
 
@@ -565,7 +570,7 @@ log.") and never reads as empty.
 - **Links** — `HomeLinksQueries.read` (`HomeLinksQueries.swift:28`: today's
   and the latest briefing, `CatchUpQueries.newestUnacknowledgedReady`, today's
   day-plan done/total; each guarded, a throw sets `failed`, a missing table is
-  no content) and `HomeLinksBuilder.links` (`HomeLinksBuilder.swift:27`):
+  no content) and `HomeLinksBuilder.links` (`HomeLinksBuilder.swift:29`):
   Briefing ("ready HH:mm" from `createdAt` in the feed's zone, else the latest
   briefing's weekday), Catch-Up ("new recap", highlighted), Day plan
   ("N of M done"), Digests. Each row only while its tab is visible
@@ -643,8 +648,11 @@ fallback, new recap only when unacknowledged, day-plan counts, hidden tab),
 `HomeLinksQueriesTests` (today vs latest, plan counts, missing table, newest
 ready recap), `HomeNumbersQueriesTests` (DMs and mentions, every owner account,
 no Slack, meeting hours filter, plan only when ok, workbench created/done),
-`HomeQueriesTests`. Desktop: `HomeCenterTests`, `HomeViewTests`.
-Desktop: `HomeCenterTests` (`testAllReadsFailedIsNotAllClear`),
+`HomeQueriesTests`. Desktop: `HomeViewTests`, `HomeCenterTests`
+(`testFirstPoolFailurePublishesAllFailed`, `testPoolFailureAfterGoodReadIsSaid`,
+`testFailedLinksReadIsSaid`, `testOnlyUnreadableAsksMarksWorkbenchFailed`,
+`testDisallowedSourceFailureIsNotNamed`, `testMessagesWriteRereadsNumbersNotTheFeed`,
+`testTickRereadsNumbers`),
 `HomeCenterSurvivesNavigationTests`, `HomeLandingTests` (landing, launch
 default, fallback, re-run keeps the tab), `HomeLinkTests`, `HomeViewTests`.
 

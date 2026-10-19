@@ -26,7 +26,7 @@ The feed reads top to bottom like your day: above a **NOW** line is everything t
 
 ### Workbench
 
-The **WORKBENCH** zone lists your coding-agent sessions that need a look and the questions they have asked you, grouped by workbench, with **Open →** for the Workbench tab. A session shows only while it waits for approval, failed, is ready to check or is working; finished and stopped sessions are left out. Under the sessions come the open questions and review requests, oldest first. Click a session to open its terminal, or a question to open the session that asked it.
+The **WORKBENCH** zone lists your coding-agent sessions that need a look and the questions they have asked you, grouped by workbench, with **Open →** for the Workbench tab. A session shows only while it waits for approval, failed, is ready to check, or is working (or in the background); finished and stopped sessions are left out. Under the sessions come the open questions and review requests, oldest first. Click a session to open its terminal, a question to open its session.
 
 If you keep telling agents the same thing, the last row offers it as an instruction: **Add**, **Dismiss** or **More…**.
 
@@ -50,7 +50,7 @@ The **LINKS** zone has up to four shortcuts, each shown while its tab is visible
 - **workbench targets new / done**: created and finished today.
 - **meetings recorded**: recordings made today.
 
-A number whose source isn't connected or is off is left out, and a number that couldn't be read shows "—".
+**AI spend** always shows. Another number whose source isn't connected or is off is left out, and a number that couldn't be read shows "—".
 
 ### The Getting ready zone
 
