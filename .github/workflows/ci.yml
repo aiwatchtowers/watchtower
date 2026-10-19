@@ -175,7 +175,7 @@ jobs:
     if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true'
     runs-on: ubuntu-latest
     # A hang must fail the job, not run to GitHub's 6 h default. Measured
-    # 2026-10-02: ~7 min on a PR, up to ~36 min on main with the race pass.
+    # 2026-10-02: ~7 min on a PR; the race pass runs in go-test-race.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -199,20 +199,41 @@ jobs:
         timeout-minutes: 25
         run: make test-cover
 
+  # The race pass, split across two parallel jobs: grown past one job's
+  # budget (2026-10-19: ~7.7k CPU-s on a 4-vCPU runner, the 40-minute step
+  # timed out), each shard runs ~half the packages (`make test-race
+  # SHARD=K/2` — the split and how to rebalance it live there).
+  # Race-instrumented pure-Go sqlite is ~10x slower, so the race pass runs
+  # only on pushes to main (i.e. per merged PR — a one-PR bisect window), on
+  # a manual workflow_dispatch (so a branch can prove it before merging), and
+  # in the release workflow, keeping feature-branch CI fast. -timeout is per
+  # package: a package whose tests open in-memory DBs must install
+  # db.InitTestTemplate (pinned by
+  # TestInitTestTemplate_EveryInMemoryPackageInstallsIt), since a fresh goose
+  # migration costs seconds per test under -race. Scope — cmd out,
+  # internal/db's migration tests without -race — is in `make test-race`,
+  # shared with the release workflow.
+  go-test-race:
+    name: Go Test (race ${{ matrix.shard }}/2)
+    needs: gate
+    if: needs.gate.outputs.run == 'true' && needs.gate.outputs.code == 'true' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    strategy:
+      # Both shards report: one shard's race must not hide the other's.
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.9"
+
       - name: Test (race, library packages)
-        # Race-instrumented pure-Go sqlite is ~10x slower, so the race pass
-        # runs only on pushes to main (i.e. per merged PR — a one-PR bisect
-        # window), on a manual workflow_dispatch (so a branch can prove it
-        # before merging), and in the release workflow, keeping
-        # feature-branch CI fast. -timeout is per package: a package whose
-        # tests open in-memory DBs must install db.InitTestTemplate (pinned by
-        # TestInitTestTemplate_EveryInMemoryPackageInstallsIt), since a fresh
-        # goose migration costs seconds per test under -race. Scope — cmd
-        # out, internal/db's migration tests without -race — is in
-        # `make test-race`, shared with the release workflow.
-        if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
-        timeout-minutes: 40
-        run: make test-race
+        timeout-minutes: 30
+        run: make test-race SHARD=${{ matrix.shard }}/2
 
   # Whether this change touches the code index or its grammar modules — the
   # only reason to pay for the full grammar set (codeindex-full below). A
