@@ -30,10 +30,14 @@ extension AppState {
     }
 
     /// Starts (or, with `startOnly` false, restarts) the daemon in the
-    /// background, on the start queue.
+    /// background, on the start queue. The compaction gate is checked when
+    /// enqueued and again when the item runs: an item queued before the step
+    /// started can reach the front while it runs.
     func bringUpDaemonInBackground(startOnly: Bool) {
+        guard !daemonStartBlocked("bringUpDaemonInBackground") else { return }
         let daemon = daemonControl
         enqueueDaemonStart { [weak self] in
+            guard self?.daemonStartBlocked("bringUpDaemonInBackground") != true else { return }
             let up = startOnly && daemon.daemonIsRunning()
                 ? true
                 : await OnboardingFinishPlan.bringUpDaemon(daemon)
@@ -55,13 +59,15 @@ extension AppState {
     /// a daemon still absent then reads "started but stopped again". The
     /// banner says "Starting…" meanwhile, and a second Start is ignored.
     func startDaemonFromBanner() {
-        guard !isStartingDaemon else { return }
+        guard !isStartingDaemon, !daemonStartBlocked("startDaemonFromBanner") else { return }
         isStartingDaemon = true
         let daemon = daemonControl
         let bound = daemonStartWaitBound
         let interval = daemonStartPollInterval
         enqueueDaemonStart { [weak self] in
             defer { self?.isStartingDaemon = false }
+            // Queued before the compaction step, run during it.
+            guard self?.daemonStartBlocked("startDaemonFromBanner") != true else { return }
             if daemon.daemonIsRunning() {
                 guard self?.daemonStartFailure != nil else { return }
                 do {
@@ -109,13 +115,29 @@ extension AppState {
 
     /// A restart on the start queue (a Turn on, the feature offer, Settings,
     /// the Inbox action strip): never in the middle of a banner Start's
-    /// wait. A success clears the banner's failure.
+    /// wait. A success clears the banner's failure. During the compaction
+    /// step — when called, or when its queued item runs — it returns without
+    /// restarting and without an error: the launch's own `ensureDaemonRunning`,
+    /// after the step, starts a daemon that reads the new config.
     func restartOnChain(_ daemon: any DaemonControl) async throws {
-        try await daemonStartQueue.restart { try await daemon.restartWaiting() }
+        guard !daemonStartBlocked("restartOnChain") else { return }
+        let result = await enqueueDaemonStart { [weak self] () -> Result<Bool, any Error> in
+            guard self?.daemonStartBlocked("restartOnChain") != true else { return .success(false) }
+            do {
+                try await daemon.restartWaiting()
+                return .success(true)
+            } catch {
+                return .failure(error)
+            }
+        }.value
+        // A skipped restart is no success: the banner's failure stays.
+        if case .success(true) = result { daemonStartQueue.succeeded() }
+        _ = try result.get()
     }
 
     /// Settings → Slack disconnect as one item: stop, disconnect, start, so
     /// no other start lands between them. Whether the disconnect went through.
+    /// The start is skipped during the compaction step.
     func disconnectSlackOnQueue(
         stop: @escaping @MainActor () async -> Void,
         disconnect: @escaping @MainActor () async -> Bool,
@@ -124,7 +146,7 @@ extension AppState {
         await enqueueDaemonStart { () -> Bool in
             await stop()
             let done = await disconnect()
-            await start()
+            if !self.daemonStartBlocked("Slack disconnect") { await start() }
             return done
         }.value
     }

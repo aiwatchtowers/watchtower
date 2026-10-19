@@ -2119,6 +2119,10 @@ CREATE TABLE IF NOT EXISTS "idea_mentions" (
     said_at     TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
+CREATE TABLE IF NOT EXISTS db_maintenance (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,

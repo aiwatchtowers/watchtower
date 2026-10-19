@@ -26,6 +26,7 @@ final class TrayMenuViewTests: XCTestCase {
         updateVersion: String? = nil,
         updateAction: @escaping () -> Void = {},
         syncNowAction: @escaping () -> Void = {},
+        compactionInProgress: Bool = false,
         runAutomationSections: [TrayRunAutomationMenu.Section]? = nil,
         runAutomationAction: @escaping (Int64) -> Void = { _ in },
         openAutomationsAction: @escaping () -> Void = {},
@@ -39,7 +40,8 @@ final class TrayMenuViewTests: XCTestCase {
         TrayMenuContent(
             isRunning: isRunning, syncProgress: syncProgress, daemonError: daemonError, cliStoreError: cliStoreError,
             voicesPendingCount: voicesPendingCount, updateVersion: updateVersion, updateAction: updateAction,
-            syncNowAction: syncNowAction, runAutomationSections: runAutomationSections,
+            syncNowAction: syncNowAction, compactionInProgress: compactionInProgress,
+            runAutomationSections: runAutomationSections,
             runAutomationAction: runAutomationAction, openAutomationsAction: openAutomationsAction,
             quickCaptureAction: quickCaptureAction,
             voicesAction: voicesAction, reviewVoicesAction: reviewVoicesAction, trainVoicesAction: trainVoicesAction,
@@ -133,6 +135,15 @@ final class TrayMenuViewTests: XCTestCase {
         // that isn't there.
         let stopped = Self.content(isRunning: false)
         XCTAssertTrue(try stopped.inspect().find(button: "Sync Now").isDisabled())
+    }
+
+    /// The launch's database compaction stopped the daemon (#850): Sync Now
+    /// stays off until it ends, even if the poll still sees a process.
+    func testSyncNowDisabledDuringCompaction() throws {
+        let compacting = Self.content(isRunning: true, compactionInProgress: true)
+        XCTAssertTrue(try compacting.inspect().find(button: "Sync Now").isDisabled())
+        let after = Self.content(isRunning: true, compactionInProgress: false)
+        XCTAssertFalse(try after.inspect().find(button: "Sync Now").isDisabled())
     }
 
     /// Builds a heartbeat through the JSON decoder, so the test exercises the

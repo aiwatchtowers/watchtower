@@ -17,7 +17,7 @@ final class LoginEnvironmentCallSiteTests: XCTestCase {
             "await ProcessPipes.offPool { resolvedEnvironment() }",
             "_ = resolvedEnvironment() // the launch-time resolve, cached"
         ],
-        // `migrateAndOpen` runs off the main actor and off the pool (`offPool`).
+        // `runCLIMigrations` runs off the main actor and off the pool (`offPool`).
         "Database/DatabaseManager.swift": [
             "process.environment = Constants.resolvedEnvironment()"
         ]

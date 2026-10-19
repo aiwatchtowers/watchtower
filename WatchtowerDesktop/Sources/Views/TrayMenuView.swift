@@ -39,6 +39,7 @@ struct TrayMenuView: View {
             syncNowAction: {
                 Task { await appState.daemonManager.syncNow() }
             },
+            compactionInProgress: appState.databaseCompactionInProgress,
             runAutomationSections: appState.trayRunAutomationSections(),
             runAutomationAction: { id in
                 Task { await appState.runAutomationFromTray(id) }
@@ -114,6 +115,9 @@ struct TrayMenuContent: View {
     let updateVersion: String?
     let updateAction: () -> Void
     let syncNowAction: () -> Void
+    /// The launch's database compaction runs (#850): the daemon is stopped
+    /// for it, so Sync Now is off.
+    var compactionInProgress = false
     /// The "Run automation ▸" submenu; nil hides it (feature off, or no
     /// quick-run center yet).
     var runAutomationSections: [TrayRunAutomationMenu.Section]?
@@ -175,7 +179,7 @@ struct TrayMenuContent: View {
             }
             Divider()
             Button("Sync Now", action: syncNowAction)
-                .disabled(!isRunning)
+                .disabled(!isRunning || compactionInProgress)
             if let runAutomationSections {
                 runAutomationMenu(runAutomationSections)
             }

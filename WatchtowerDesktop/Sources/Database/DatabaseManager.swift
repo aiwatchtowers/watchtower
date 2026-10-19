@@ -138,16 +138,10 @@ final class DatabaseManager: Sendable {
 
     // MARK: - CLI Migrations
 
-    /// Runs the CLI migrations, then opens the workspace DB. Blocks for up to
-    /// 30 s: call it off the main actor and off the concurrency pool
-    /// (`ProcessPipes.offPool`).
-    static func migrateAndOpen() throws -> DatabaseManager {
-        runCLIMigrations()
-        return try DatabaseManager(path: try resolveDBPath())
-    }
-
     /// Run the bundled Go CLI to apply all pending DB migrations before opening the pool.
     /// The CLI owns all schema migrations — desktop app never writes migrations itself.
+    /// Blocks for up to 30 s: call it off the main actor and off the
+    /// concurrency pool (`ProcessPipes.offPool`).
     /// A failure is not fatal (the DB opens as it is) but is reported — with
     /// the launch error or the CLI's stderr — through `report` (the log).
     static func runCLIMigrations(

@@ -99,7 +99,7 @@ test-cover:
 # (or extend) the list so each shard's heavy sum stays level; a package new
 # to the module needs nothing — it lands in a shard by itself.
 RACE_SKIP := Migration|DownUp|SchemaGolden|DesktopTestSchema
-RACE_HEAVY := automations kb sessionreport tools memory digest db daemon agentlogdb extsync jira repl
+RACE_HEAVY := automations kb sessionreport tools memory digest daemon db agentlogdb extsync jira repl
 RACE_PACKAGES = go list ./... | grep -v -e '^watchtower/cmd$$' | awk -v shard='$(SHARD)' -v heavy='$(RACE_HEAVY)' ' \
 	{ pkgs[NR] = $$0; have[$$0] = 1 } \
 	END { \

@@ -33,7 +33,9 @@ Watchtower uses **goose** migrations (numbered `.sql` files), NOT PRAGMA `user_v
    ```
    Commit the migration AND the updated `internal/db/testdata/*.golden` and `WatchtowerDesktop/Tests/Support/TestDatabase+Schema.swift` (generated from the migrated DB; Desktop tests run against it).
 
-6. **Verify:** `go test ./internal/db/ -run 'TestMigrationIdempotent|TestAllTablesExist|TestSchemaGolden|TestDesktopTestSchema'`.
+6. **Frees a lot of space?** A migration that rewrites or deletes most of a big table (00134 rewrote every `messages.raw_json`) adds its version to `compactAfterMigrations` in `internal/db/compact.go`, so the next launch compacts the file once with `VACUUM` (`docs/features/db-compact.md`). Never put `VACUUM` in the migration itself: the Desktop kills `db migrate` after 30 s.
+
+7. **Verify:** `go test ./internal/db/ -run 'TestMigrationIdempotent|TestAllTablesExist|TestSchemaGolden|TestDesktopTestSchema'`.
 
 ## Gotchas
 

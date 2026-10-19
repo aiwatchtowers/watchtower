@@ -430,8 +430,22 @@ final class AppState {
     /// panel, inspector) — tests pass an isolated suite.
     @ObservationIgnored let workbenchDefaults: UserDefaults
 
-    /// Opens (and migrates) the workspace database.
-    @ObservationIgnored private let openDatabase: @Sendable () throws -> DatabaseManager
+    /// Applies the CLI migrations (`db migrate`); blocks for up to 30 s.
+    @ObservationIgnored let migrateDatabase: @Sendable () -> Void
+    /// Opens the workspace database; `migrateDatabase` runs first.
+    @ObservationIgnored let openDatabase: @Sendable () throws -> DatabaseManager
+
+    /// The launch's compaction step between the migration and the open (#850).
+    let databaseCompaction: DatabaseCompactionStep
+    var databaseCompactionInProgress: Bool { databaseCompaction.isRunning }
+
+    /// A quit landed before or during the compaction step: the launch skips
+    /// the step and starts no daemon (`terminateDatabaseCompactionForQuit`).
+    @ObservationIgnored var quitDuringCompaction = false
+    /// The launch's migrate → compact → open steps run (`daemonStartBlocked`).
+    @ObservationIgnored var launchDatabaseStepsRunning = false
+    /// A restart the launch's database steps refused (`restoreDaemonStoppedForCompaction`).
+    @ObservationIgnored var deferredRestartDuringLaunch = false
 
     /// Test seams for the two steps of finishing onboarding that spawn CLI
     /// children or ask macOS for permissions; nil runs the real thing
@@ -444,15 +458,21 @@ final class AppState {
     /// Test seams: Home's inputs, and the suite its Getting ready memory lives in.
     @ObservationIgnored var homeEnvironmentOverride: (any HomeEnvironment)?
     @ObservationIgnored var homeDefaultsOverride: UserDefaults?
+    /// Test seam: the database path the compaction step checks (no live config).
+    @ObservationIgnored var compactionDBPathOverride: (() throws -> String)?
 
     /// `onboardingDefaults` backs the onboarding step and goals,
-    /// `workbenchDefaults` the workbench page's state, `openDatabase` the
-    /// database open, `peopleRosterRun` the people load, `featureManager` the
-    /// Feature Manager — tests pass isolated suites and fakes.
+    /// `workbenchDefaults` the workbench page's state, `migrateDatabase` and
+    /// `openDatabase` the database migration and open, `databaseCompaction`
+    /// the launch's compaction step (nil: the real one), `peopleRosterRun`
+    /// the people load, `featureManager` the Feature Manager — tests pass
+    /// isolated suites and fakes.
     init(
         onboardingDefaults: UserDefaults = .standard,
         workbenchDefaults: UserDefaults = .standard,
-        openDatabase: @escaping @Sendable () throws -> DatabaseManager = { try DatabaseManager.migrateAndOpen() },
+        migrateDatabase: @escaping @Sendable () -> Void = { DatabaseManager.runCLIMigrations() },
+        openDatabase: @escaping @Sendable () throws -> DatabaseManager = { try DatabaseManager(path: DatabaseManager.resolveDBPath()) },
+        databaseCompaction: DatabaseCompactionStep? = nil,
         peopleRosterRun: @escaping PeopleRosterLoad.Run = PeopleRosterLoad.cliRun,
         featureManager: FeatureManagerService? = nil,
         onboardingGoals: OnboardingGoalsModel? = nil
@@ -464,10 +484,13 @@ final class AppState {
         codeUsagesCenter = CodeUsagesCenter(defaults: workbenchDefaults)
         self.onboardingGoals = onboardingGoals ?? .production(defaults: onboardingDefaults, featureManager: features)
         peopleRoster = PeopleRosterLoad(run: peopleRosterRun)
+        self.migrateDatabase = migrateDatabase
         self.openDatabase = openDatabase
+        self.databaseCompaction = databaseCompaction ?? .production()
         // A daemon that came up after all (a later poll, a Settings start)
         // takes the "did not start" banner with it.
         wireDaemonStartQueue()
+        wireDatabaseCompaction()
         daemonManager.onRunningChanged = { [weak self] running in
             guard running else { return }
             self?.daemonStartFailure = nil
@@ -742,10 +765,7 @@ final class AppState {
             // caches whatever path it first resolves.
             daemonManager.startPolling()
             do {
-                // Off the concurrency pool: the migrate child may run for up
-                // to 30 s (see ProcessPipes).
-                let opened = await ProcessPipes.offPool { [openDatabase] in Result { try openDatabase() } }
-                let manager = try opened.get()
+                let manager = try await migrateCompactOpen().get()
                 ambiguousWorkspaces = []
                 // Before the splash hides, so Day Plan / Briefings never flash
                 // the no-owner state on an install that has one.
@@ -841,7 +861,7 @@ final class AppState {
         }
     }
 
-    @ObservationIgnored private var onboardingDatabaseOpen: Task<String?, Never>?
+    @ObservationIgnored var onboardingDatabaseOpen: Task<String?, Never>?
 
     /// The completion sequence is running: every step's Continue is off, so
     /// a second click cannot run it (or Goals' writes) again.
@@ -913,52 +933,6 @@ final class AppState {
             },
             onRetry: onRetry
         )
-    }
-
-    /// Opens the database for onboarding's Connect step, whose account
-    /// sheets need the account view models — on a fresh install launch could
-    /// not open it (no workspace until Goals' Continue). Only what the steps
-    /// need (`wireOnboardingDatabase`); completion wires the rest. A no-op
-    /// when the database is open; concurrent calls share one open. Returns
-    /// the failure to show, nil on success.
-    func openDatabaseForOnboarding() async -> String? {
-        if databaseManager != nil { return nil }
-        if let onboardingDatabaseOpen { return await onboardingDatabaseOpen.value }
-        let open = Task<String?, Never> { [openDatabase] in
-            let opened = await ProcessPipes.offPool { Result { try openDatabase() } }
-            switch opened {
-            case .failure(let error):
-                return error.localizedDescription
-            case .success(let manager):
-                await wireOnboardingDatabase(manager)
-                return nil
-            }
-        }
-        onboardingDatabaseOpen = open
-        let failure = await open.value
-        onboardingDatabaseOpen = nil
-        return failure
-    }
-
-    /// `initialize()` when the database could not be opened: on a fresh
-    /// install (no workspace yet) that is onboarding's starting point.
-    func handleLaunchDatabaseFailure(_ error: Error) async {
-        print("[AppState] database open failed: \(error.localizedDescription)")
-        errorMessage = error.localizedDescription
-        databaseManager = nil
-        if case WatchtowerDatabaseError.ambiguousWorkspace(let names) = error {
-            ambiguousWorkspaces = names
-        } else {
-            ambiguousWorkspaces = []
-        }
-        // No DB available — if state machine not complete, onboarding needed
-        await reconcileOnboarding(dbPool: nil)
-        if needsOnboarding {
-            // Nothing is connected without a database; only the sidebar of
-            // a finished install keeps failing open.
-            featureVisibility.connectedSources = .none
-        }
-        isLoading = false
     }
 
     /// Launch-time onboarding state: the DB's `onboarding_done` wins over a
@@ -1126,6 +1100,7 @@ final class AppState {
         // The connect that raised the offer may still be restarting the
         // daemon itself: one restart at a time.
         await awaitAccountDaemonRestarts()
+        // Skipped, not failed, during the compaction step: the launch's ensureDaemonRunning applies it.
         let result = await featureManager.enableNow(ids) { try await self.restartOnChain(daemon) }
         if result.busy {
             // Settings → Features is applying its own batch.
@@ -1225,6 +1200,7 @@ final class AppState {
         defer { turningOnFeatureID = nil }
         let daemon = daemonControl
         await awaitAccountDaemonRestarts()
+        // Skipped, not failed, during the compaction step: the launch's ensureDaemonRunning applies it.
         let result = await featureManager.enableNow([featureID]) { try await self.restartOnChain(daemon) }
         if result.busy {
             recordTurnOnError(featureID, Self.featureChangesBusy)
@@ -1455,6 +1431,7 @@ final class AppState {
         let daemon = daemonControl
         let manager = daemonManager
         let item = enqueueDaemonStart {
+            guard !self.daemonStartBlocked("ensureDaemonRunning") else { return } // queued before the step, run in it
             manager.resolvePathIfNeeded()
             if daemon.daemonIsRunning() {
                 await daemon.stopDaemonNow()
@@ -1476,7 +1453,7 @@ final class AppState {
     /// What onboarding's steps need once the database is open: the database
     /// itself, the owner, the connected sources and the account view models
     /// behind the Connect sheets. Nothing here asks macOS for anything.
-    private func wireOnboardingDatabase(_ manager: DatabaseManager) async {
+    func wireOnboardingDatabase(_ manager: DatabaseManager) async {
         databaseManager = manager
         errorMessage = nil
         await refreshOwner()

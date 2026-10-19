@@ -14,9 +14,13 @@ extension AppState {
     /// process, emptied per instance, so a run leaves no per-test plist
     /// behind. Readiness reads a fake environment, never the live config,
     /// workspace directory or stamps; Home's Getting ready memory lives in
-    /// the same suite.
+    /// the same suite. The launch's migration is a no-op and its compaction
+    /// step checks a fake CLI that reports not due, unless a test passes its
+    /// own.
     static func isolated(
+        migrateDatabase: @escaping @Sendable () -> Void = {},
         openDatabase: @escaping @Sendable () throws -> DatabaseManager = { throw CocoaError(.fileNoSuchFile) },
+        databaseCompaction: DatabaseCompactionStep? = nil,
         peopleRosterRun: @escaping PeopleRosterLoad.Run = { _, _ in (0, "") },
         featuresRunner: any CLIRunnerProtocol = FakeCLIRunner(stdout: Data(#"{"features":[]}"#.utf8)),
         onboardingGoals: ((UserDefaults) -> OnboardingGoalsModel)? = nil
@@ -26,7 +30,11 @@ extension AppState {
         let appState = AppState(
             onboardingDefaults: defaults,
             workbenchDefaults: defaults,
+            migrateDatabase: migrateDatabase,
             openDatabase: openDatabase,
+            databaseCompaction: databaseCompaction ?? DatabaseCompactionStep(
+                cli: NotDueCompactionCLI(), stopDaemon: {}, sleep: { _ in }, log: { _ in }
+            ),
             peopleRosterRun: peopleRosterRun,
             featureManager: FeatureManagerService(runner: featuresRunner),
             onboardingGoals: onboardingGoals?(defaults)
@@ -36,6 +44,7 @@ extension AppState {
         appState.wireAppDatabaseOverride = { _ in }
         appState.readinessEnvironmentOverride = FakeReadinessEnvironment()
         appState.homeDefaultsOverride = defaults
+        appState.compactionDBPathOverride = { "/isolated/watchtower.db" }
         isolatedAppStates.append(WeakAppState(appState))
         return appState
     }
@@ -145,6 +154,21 @@ final class FakeDaemon: DaemonControl {
     func releaseRestart() {
         parked?.resume()
         parked = nil
+    }
+}
+
+/// `db compact --check` on a database that needs nothing.
+struct NotDueCompactionCLI: CompactionCLI {
+    struct Unexpected: Error {}
+
+    func check() async throws -> CompactionCheck {
+        CompactionCheck(
+            due: false, reason: "", dbBytes: 0, walBytes: 0, freeDiskBytes: 0, needsDiskBytes: 0, diskOk: true
+        )
+    }
+
+    func startCompact() throws -> any CompactionChild {
+        throw Unexpected()
     }
 }
 
