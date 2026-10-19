@@ -37,6 +37,14 @@ enum AgentAnalyticsFormat {
         ][raw] ?? raw
     }
 
+    /// A context growth source's name (`internal/agentreport/context.go`):
+    /// a tool name as sent, `owner`/`model`/`reminders` named.
+    static func label(growthSource raw: String) -> String {
+        [
+            "owner": "Your turns", "model": "Model output", "reminders": "System reminders & other"
+        ][raw] ?? raw
+    }
+
     /// An error class's name (`internal/agentlog/claude_tools.go`); an
     /// unknown one as sent.
     static func label(errorClass raw: String) -> String {

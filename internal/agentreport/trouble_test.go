@@ -223,6 +223,19 @@ func TestHintT2_NoRuleForUnsafeCommands(t *testing.T) {
 	assert.Equal(t, []string{"Bash", "rm"}, evidence(hs[0], "command"))
 }
 
+// The file-writing tools never get an allow rule, whoever blocked them.
+func TestHintT2_NoRuleForFileWrites(t *testing.T) {
+	s := evset{}
+	for i, tool := range []string{"Write", "Edit", "MultiEdit", "NotebookEdit"} {
+		for j := range 3 {
+			s.add("s1", time.Duration(10*i+j)*sec, denied(tool, "a.go", "automode-blocked", sec))
+		}
+	}
+	hs := hintsOf(Hints(troubleInput(s)), "T2")
+	require.Len(t, hs, 1)
+	assert.Nil(t, hs[0].Fix, "no copy rule for a file write")
+}
+
 // Failed edits of a T1 class are T1's, not an H5 loop; rows with no class
 // (parser v2) still make one.
 func TestHintT1_NotAnH5Loop(t *testing.T) {

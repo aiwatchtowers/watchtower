@@ -3,7 +3,9 @@ package agentreport
 import (
 	"bytes"
 	"cmp"
+	"io"
 	"io/fs"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -448,8 +450,8 @@ func (b *baseAgg) add(sid string, lp laneParts, total int64) {
 func (b *baseAgg) split() BaselineSplit {
 	out := BaselineSplit{Parts: []PartShare{}, Tokens: median(b.totals), lanes: len(b.totals)}
 	var sum float64
-	for _, t := range b.parts {
-		sum += t
+	for _, p := range slices.Sorted(maps.Keys(b.parts)) { // a fixed order: the float sum is the same every run
+		sum += b.parts[p]
 	}
 	if sum > 0 {
 		for p, t := range b.parts {
@@ -523,18 +525,39 @@ func median(vs []int64) int64 {
 // diskSizes reads the folder's CLAUDE.md (size, lines) and the total size of
 // the regular files under .claude/rules; symlinks inside rules are skipped and
 // anything missing reads as zero.
+// claudeMDReadCap bounds the bytes of CLAUDE.md read to count its lines.
+const claudeMDReadCap = 1 << 20
+
+// claudeMDSize is the size and line count of a CLAUDE.md: a regular file only
+// (a symlink to one, such as AGENTS.md, is followed; a FIFO or device is never
+// opened), with the lines counted over its first claudeMDReadCap bytes.
+func claudeMDSize(path string) (int64, int) {
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return 0, 0
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, 0
+	}
+	defer f.Close()
+	b, err := io.ReadAll(io.LimitReader(f, claudeMDReadCap))
+	if err != nil {
+		return 0, 0
+	}
+	lines := bytes.Count(b, []byte{'\n'})
+	if len(b) > 0 && b[len(b)-1] != '\n' {
+		lines++
+	}
+	return info.Size(), lines
+}
+
 func diskSizes(folder string) DiskSizes {
 	var d DiskSizes
 	if folder == "" {
 		return d
 	}
-	if b, err := os.ReadFile(filepath.Join(folder, "CLAUDE.md")); err == nil {
-		d.ClaudeMDBytes = int64(len(b))
-		d.ClaudeMDLines = bytes.Count(b, []byte{'\n'})
-		if len(b) > 0 && b[len(b)-1] != '\n' {
-			d.ClaudeMDLines++
-		}
-	}
+	d.ClaudeMDBytes, d.ClaudeMDLines = claudeMDSize(filepath.Join(folder, "CLAUDE.md"))
 	_ = filepath.WalkDir(filepath.Join(folder, ".claude", "rules"), func(_ string, e fs.DirEntry, err error) error {
 		if err != nil || !e.Type().IsRegular() {
 			return nil //nolint:nilerr // a missing or unreadable entry counts as zero, the walk goes on

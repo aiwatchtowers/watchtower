@@ -365,7 +365,11 @@ func BuildSession(main *db.DB, al *agentlogdb.DB, workbenchID int64, sessionUUID
 		det.Lanes = append(det.Lanes, Lane{AgentID: "", Segments: nonNil(segs)})
 		det.Lanes = append(det.Lanes, b.lanes[sessionUUID]...)
 	}
-	ctx, skills, err := loadBlocks(al, all[i:i+1], by, "")
+	wb, err := main.GetWorkbench(workbenchID)
+	if err != nil {
+		return nil, err
+	}
+	ctx, skills, err := loadBlocks(al, all[i:i+1], by, wb.FolderPath) // the folder: C1's open_file fix
 	if err != nil {
 		return nil, err
 	}

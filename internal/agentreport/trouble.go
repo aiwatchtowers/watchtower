@@ -235,10 +235,17 @@ func addDenial(denials map[DenialRow]*denialAgg, sid string, e agentlogdb.AgentR
 	return d
 }
 
+// fileWriteTools write files; T2 never suggests allowing them.
+var fileWriteTools = map[string]bool{"Write": true, "Edit": true, "MultiEdit": true, "NotebookEdit": true}
+
 // safeToAllow is whether T2 may suggest an allow rule for the call: a tool
-// other than Bash (MCP tools included), or a shell verb of the read & search
-// or build & test class; never a bare "Bash" and never another shell verb.
+// other than Bash and the file-writing tools (MCP tools included), or a shell
+// verb of the read & search or build & test class; never a bare "Bash",
+// never another shell verb and never a file write.
 func safeToAllow(e agentlogdb.AgentReportEvent) bool {
+	if fileWriteTools[e.Name] {
+		return false
+	}
 	if e.Name != "Bash" {
 		return true
 	}

@@ -14,11 +14,11 @@
     ]
   },
   "time": {
-    "model_ms": 82000,
+    "model_ms": 79000,
     "tools": {
       "build_test": 360000,
       "git": 0,
-      "read_search": 0,
+      "read_search": 3000,
       "edit": 0,
       "mcp": 2000,
       "subagents_fg": 0,
@@ -94,7 +94,7 @@
     },
     {
       "id": "H6",
-      "finding": "Session 11111111 cost $15.00 with a 28% cache read share; its context was expensive",
+      "finding": "Session 11111111 cost $15.00 with a 5% cache read share; its context was expensive",
       "action": "Start a new session per task, or /clear between tasks; long sessions re-read their whole context.",
       "fix": {
         "kind": "open_session",
@@ -240,6 +240,34 @@
         },
         {
           "start": "2026-10-01T11:00:15.000Z",
+          "end": "2026-10-01T11:00:20.000Z",
+          "category": "model",
+          "tool_class": "",
+          "verb": ""
+        },
+        {
+          "start": "2026-10-01T11:00:20.000Z",
+          "end": "2026-10-01T11:00:21.000Z",
+          "category": "tool",
+          "tool_class": "read_search",
+          "verb": "Read"
+        },
+        {
+          "start": "2026-10-01T11:00:21.000Z",
+          "end": "2026-10-01T11:00:22.000Z",
+          "category": "tool",
+          "tool_class": "read_search",
+          "verb": "Read"
+        },
+        {
+          "start": "2026-10-01T11:00:22.000Z",
+          "end": "2026-10-01T11:00:23.000Z",
+          "category": "tool",
+          "tool_class": "read_search",
+          "verb": "Read"
+        },
+        {
+          "start": "2026-10-01T11:00:23.000Z",
           "end": "2026-10-01T11:00:30.000Z",
           "category": "model",
           "tool_class": "",
@@ -288,10 +316,10 @@
     {
       "verb": "Read",
       "class": "read_search",
-      "runs": 1,
-      "errors": 0,
-      "total_ms": 5000,
-      "avg_ms": 5000
+      "runs": 4,
+      "errors": 1,
+      "total_ms": 8000,
+      "avg_ms": 2000
     },
     {
       "verb": "mcp__watchtower-workbench__update_target",

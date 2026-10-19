@@ -11,7 +11,7 @@ enum AgentAnalyticsBlockState: Equatable {
     case nothingFound
     case measured
 
-    static let notMeasuredLine = "Not measured for sessions before this update — they fill in as new sessions run."
+    static let notMeasuredLine = "Not measured yet for older sessions — they fill in after the next history scan."
 
     static func make(factsSessions: Int?, hasFindings: Bool) -> Self {
         guard (factsSessions ?? 0) > 0 else { return .notMeasured }

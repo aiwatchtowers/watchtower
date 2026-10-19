@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -233,6 +235,28 @@ func TestContext_DiskSizes(t *testing.T) {
 
 	assert.Equal(t, DiskSizes{}, Context(nil, nil, nil, filepath.Join(dir, "missing")).Disk)
 	assert.Equal(t, DiskSizes{}, Context(nil, nil, nil, "").Disk)
+}
+
+// CLAUDE.md is read only when it is a regular file (a symlink to one is
+// followed), and its lines are counted over the first claudeMDReadCap bytes.
+func TestContext_DiskSizesRegularFileOnly(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("a\nb"), 0o644))
+	require.NoError(t, os.Symlink("AGENTS.md", filepath.Join(dir, "CLAUDE.md")))
+	assert.Equal(t, DiskSizes{ClaudeMDBytes: 3, ClaudeMDLines: 2}, Context(nil, nil, nil, dir).Disk)
+
+	fifo := t.TempDir()
+	require.NoError(t, syscall.Mkfifo(filepath.Join(fifo, "CLAUDE.md"), 0o644))
+	assert.Equal(t, DiskSizes{}, Context(nil, nil, nil, fifo).Disk, "a FIFO is never opened")
+
+	asDir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(asDir, "CLAUDE.md"), 0o755))
+	assert.Equal(t, DiskSizes{}, Context(nil, nil, nil, asDir).Disk)
+
+	big := t.TempDir()
+	body := strings.Repeat("x\n", claudeMDReadCap) // 2 × the cap
+	require.NoError(t, os.WriteFile(filepath.Join(big, "CLAUDE.md"), []byte(body), 0o644))
+	assert.Equal(t, DiskSizes{ClaudeMDBytes: int64(len(body)), ClaudeMDLines: claudeMDReadCap / 2}, Context(nil, nil, nil, big).Disk)
 }
 
 func TestHintC1_InstructionsHeavy(t *testing.T) {

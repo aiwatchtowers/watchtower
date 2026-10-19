@@ -46,14 +46,14 @@ Find a workbench's number with `watchtower workbench list`, or use the id in its
 - **No sessions.** Nothing in `~/.claude/projects/` matched the folder. Sessions run before the folder moved are not found.
 - **Cost is 0 for a model.** The price table does not know it yet. The calls are counted as estimated.
 - **History not moved yet — restart the daemon or run watchtower agents scan.** Analytics from an older version still sit in the main database and moving them failed. Nothing loads until the move succeeds; the daemon retries it every cycle, and the daemon log says why it failed.
-- **A block says "Not measured for sessions before this update".** The session was stored before the sizes were recorded. Wait for the daemon's next cycles, or run `watchtower agents scan`; if the transcript is gone, those sessions stay unmeasured.
+- **A block says "Not measured yet for older sessions".** The session was stored before the sizes were recorded. Wait for the daemon's next cycles, or run `watchtower agents scan`; if the transcript is gone, those sessions stay unmeasured.
 - **Repeated reads look wrong.** A file read in pages counts as read many times, because the page range is not stored.
 - **Image results add nothing to context growth.** Their size is not measured.
 - **`unknown_records` is not 0.** Claude Code writes record types Watchtower does not read. They are skipped and counted, and the totals are unaffected.
 
 ## What the Analytics view shows
 
-The view starts with the header and tiles, then **The main thing**: the hint that would save the most, in your assistant's language, with a button. The buttons are **Copy Allow Rules** (for `.claude/settings.json`), **Open Session**, **Open Waiting for You** and **Open <path>**, named after the file it opens.
+The view starts with the header and tiles, then **The main thing**: the hint that would save the most, in your assistant's language, with a button. The buttons are **Copy Allow Rules** (for `.claude/settings.json`), **Open Session**, **Open Waiting for You** and **Open `<path>`**, named after the file it opens.
 
 - **Context** shows what a session carries before your first message (instructions, skills, tools, hooks) and what grew it afterwards: which tools and files, files read three or more times without an edit, compactions, and the size of your `CLAUDE.md` and rules.
 - **Skills** shows which skills ran and how, and which listed skills never did. Once five sessions over a week were measured, never-used skills are suggested for removal because each one's listing costs tokens in every session.
@@ -61,7 +61,7 @@ The view starts with the header and tiles, then **The main thing**: the hint tha
 - **What else would save** lists the remaining hints. The **Time** section, collapsed, keeps the time bar, tasks, sessions and commands.
 - **Discuss in Chat** opens the assistant with the report, so you can ask what to change.
 
-Sessions recorded before this version are shown as **Not measured for sessions before this update** and fill in as the next scan rereads them, while the transcripts still exist (Claude Code removes them after about 30 days).
+Sessions recorded before this version are shown as **Not measured yet for older sessions** and fill in as the next history scan rereads them, while the transcripts still exist (Claude Code removes them after about 30 days).
 
 ## Related
 

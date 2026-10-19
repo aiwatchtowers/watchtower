@@ -112,7 +112,7 @@ struct AgentAnalyticsOverviewView: View {
                         AgentAnalyticsTasksTable(tasks: rows, actions: actions)
                     }
                     if let more = overview.tasksMore, more > 0 {
-                        Text("\(more) more tasks not shown — they cost less")
+                        Text("\(more) more \(more == 1 ? "task" : "tasks") not shown — they cost less")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

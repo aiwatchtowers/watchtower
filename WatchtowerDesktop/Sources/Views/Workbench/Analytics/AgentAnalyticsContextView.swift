@@ -39,7 +39,7 @@ struct AgentAnalyticsContextView: View {
             }
             if let growth = context.growth, !growth.isEmpty {
                 Text("Growth by source").font(.callout)
-                AgentShareBar(parts: growth.map { ($0.source, $0.tokens, $0.share) })
+                AgentShareBar(parts: growth.map { (AgentAnalyticsFormat.label(growthSource: $0.source), $0.tokens, $0.share) })
             }
             if let sources = context.topSources, !sources.isEmpty {
                 Text("Top sources").font(.callout)

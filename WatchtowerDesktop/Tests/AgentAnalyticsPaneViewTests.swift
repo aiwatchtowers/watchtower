@@ -63,6 +63,18 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         try JSONDecoder().decode(AgentSessionDetail.self, from: fixture("agent-report-session"))
     }
 
+    /// The fixture as a period with no session parsed since the update:
+    /// every v2 block has `facts_sessions` 0.
+    private static func unmeasuredJSON() throws -> [String: Any] {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture("agent-report-overview")) as? [String: Any])
+        for key in ["context", "skills", "trouble"] {
+            var block = try XCTUnwrap(json[key] as? [String: Any])
+            block["facts_sessions"] = 0
+            json[key] = block
+        }
+        return json
+    }
+
     /// The fixture with `enabled` flipped off.
     private static func offOverview() throws -> AgentReportOverview {
         var json = try XCTUnwrap(JSONSerialization.jsonObject(with: fixture("agent-report-overview")) as? [String: Any])
@@ -131,7 +143,7 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
     func testTilesShowActiveCostSessionsAndParallelism() throws {
         let all = try texts(overviewView(.overview(try Self.overview(), staleError: nil)))
         XCTAssertTrue(all.contains("50m"), "active 3 030 000 ms: \(all)")
-        XCTAssertTrue(all.contains("28%"), "cache hit: 400 of 1 410 input tokens")
+        XCTAssertTrue(all.contains("5%"), "cache hit: 400 of 7 410 input tokens")
         XCTAssertTrue(all.contains("$15.50"))
         XCTAssertTrue(all.contains("2"), "sessions")
         XCTAssertTrue(all.contains("Subagents: 1.0 at once on average · peak 1"), "\(all)")
@@ -145,7 +157,7 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         XCTAssertTrue(all.contains("Model 3%"))
         XCTAssertTrue(all.contains("Background agents 26%"))
         XCTAssertTrue(all.contains("You 59%"))
-        XCTAssertTrue(all.contains("build & test 12% · MCP 0% · other 0%"), "\(all)")
+        XCTAssertTrue(all.contains("build & test 12% · read & search 0% · MCP 0% · other 0%"), "\(all)")
         XCTAssertTrue(all.contains("Tool time includes permission prompts."))
     }
 
@@ -195,7 +207,7 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         let all = try texts(overviewView(.overview(try Self.overview(), staleError: nil)))
         XCTAssertTrue(all.contains("make test"))
         XCTAssertTrue(all.contains("claude-opus-5-5"))
-        XCTAssertTrue(all.contains("28%"), "cache read share")
+        XCTAssertTrue(all.contains("5%"), "cache read share")
     }
 
     func testThePeriodLabelComesFromTheReportAndAChangedPickerSaysUpdating() throws {
@@ -292,11 +304,27 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
         XCTAssertEqual(AgentAnalyticsBlockState.make(factsSessions: 2, hasFindings: false), .nothingFound)
         XCTAssertEqual(AgentAnalyticsBlockState.make(factsSessions: 2, hasFindings: true), .measured)
 
-        // The Go fixture predates the facts: every v2 block says so.
-        let all = try texts(overviewView(.overview(try Self.overview(), staleError: nil)))
+        // A period with no measured session: every v2 block says so.
+        let ov = try JSONDecoder().decode(AgentReportOverview.self,
+                                          from: JSONSerialization.data(withJSONObject: try Self.unmeasuredJSON()))
+        let all = try texts(overviewView(.overview(ov, staleError: nil)))
         XCTAssertEqual(all.filter { $0 == AgentAnalyticsBlockState.notMeasuredLine }.count, 3, "\(all)")
         XCTAssertEqual(AgentAnalyticsBlockState.notMeasuredLine,
-                       "Not measured for sessions before this update — they fill in as new sessions run.")
+                       "Not measured yet for older sessions — they fill in after the next history scan.")
+
+        // The Go fixture has a measured session: its blocks show rows.
+        let measured = try texts(overviewView(.overview(try Self.overview(), staleError: nil)))
+        XCTAssertFalse(measured.contains(AgentAnalyticsBlockState.notMeasuredLine), "\(measured)")
+    }
+
+    func testTasksMoreCaptionCountsTasks() throws {
+        for (more, line) in [(1, "1 more task not shown — they cost less"), (3, "3 more tasks not shown — they cost less")] {
+            var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.fixture("agent-report-overview")) as? [String: Any])
+            json["tasks_more"] = more
+            let ov = try JSONDecoder().decode(AgentReportOverview.self, from: JSONSerialization.data(withJSONObject: json))
+            let all = try texts(overviewView(.overview(ov, staleError: nil)))
+            XCTAssertTrue(all.contains(line), "\(all)")
+        }
     }
 
     func testCacheHitShare() throws {
@@ -316,12 +344,15 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
             ("class", "exit_code", "Command failed"), ("class", "isolation_block", "Blocked by worktree isolation"),
             ("class", "429", "Rate limited"), ("class", "brand_new", "brand_new"),
             ("denial", "permission-rule", "Permission rule"), ("denial", "user-rejected", "You declined"),
-            ("denial", "automode-blocked", "Blocked in auto mode"), ("denial", "brand_new", "brand_new")
+            ("denial", "automode-blocked", "Blocked in auto mode"), ("denial", "brand_new", "brand_new"),
+            ("growth", "reminders", "System reminders & other"), ("growth", "owner", "Your turns"),
+            ("growth", "model", "Model output"), ("growth", "Read", "Read")
         ]
         for (kind, raw, want) in cases {
             let got = switch kind {
             case "part": AgentAnalyticsFormat.label(part: raw)
             case "class": AgentAnalyticsFormat.label(errorClass: raw)
+            case "growth": AgentAnalyticsFormat.label(growthSource: raw)
             default: AgentAnalyticsFormat.label(denial: raw)
             }
             XCTAssertEqual(got, want, "\(kind) \(raw)")
@@ -400,7 +431,7 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
     /// Compactions and the files on disk need no new facts: they show even
     /// in a block that is not measured yet.
     func testCompactionsAndDiskShowInAnyState() throws {
-        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.fixture("agent-report-overview")) as? [String: Any])
+        var json = try Self.unmeasuredJSON()
         var context = try XCTUnwrap(json["context"] as? [String: Any])
         context["compactions"] = ["count": 2, "median_pre_tokens": 800, "median_post_tokens": 100, "sessions": 1]
         context["disk"] = ["claude_md_bytes": 2048, "claude_md_lines": 60, "rules_bytes": 0]
@@ -413,9 +444,15 @@ final class AgentAnalyticsPaneViewTests: XCTestCase {
     }
 
     func testBlocksWithFactsButNothingFound() throws {
-        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.fixture("agent-report-overview")) as? [String: Any])
-        for key in ["skills", "trouble"] {
+        var json = try Self.unmeasuredJSON()
+        let empty: [String: [String: Any]] = [
+            "skills": ["rows": [], "never_used": []],
+            "trouble": ["classes": [], "denials": [], "interrupts": 0, "rejections": 0,
+                        "unfinished_subagents": 0, "rate_limited": 0]
+        ]
+        for (key, cleared) in empty {
             var block = try XCTUnwrap(json[key] as? [String: Any])
+            block.merge(cleared) { $1 }
             block["facts_sessions"] = 2
             json[key] = block
         }

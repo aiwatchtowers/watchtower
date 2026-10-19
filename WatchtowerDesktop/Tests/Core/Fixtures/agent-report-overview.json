@@ -10,19 +10,19 @@
     "cost_usd": 15.5,
     "cost_estimated_calls": 1,
     "tokens": {
-      "input": 1010,
-      "output": 505,
+      "input": 7010,
+      "output": 555,
       "cache_read": 400,
       "cache_write_5m": 0,
       "cache_write_1h": 0
     }
   },
   "time": {
-    "model_ms": 82000,
+    "model_ms": 79000,
     "tools": {
       "build_test": 360000,
       "git": 0,
-      "read_search": 0,
+      "read_search": 3000,
       "edit": 0,
       "mcp": 2000,
       "subagents_fg": 0,
@@ -57,10 +57,10 @@
     {
       "verb": "Read",
       "class": "read_search",
-      "runs": 1,
-      "errors": 0,
-      "total_ms": 5000,
-      "avg_ms": 5000
+      "runs": 4,
+      "errors": 1,
+      "total_ms": 8000,
+      "avg_ms": 2000
     },
     {
       "verb": "mcp__watchtower-workbench__update_target",
@@ -84,8 +84,8 @@
       "model": "claude-opus-5-5",
       "main_cost_usd": 12.5,
       "sub_cost_usd": 3,
-      "tokens": 1915,
-      "cache_read_share": 0.28368794326241137
+      "tokens": 7965,
+      "cache_read_share": 0.05398110661268556
     }
   ],
   "hints": [
@@ -141,7 +141,7 @@
     },
     {
       "id": "H6",
-      "finding": "Session 11111111 cost $15.00 with a 28% cache read share; its context was expensive",
+      "finding": "Session 11111111 cost $15.00 with a 5% cache read share; its context was expensive",
       "action": "Start a new session per task, or /clear between tasks; long sessions re-read their whole context.",
       "fix": {
         "kind": "open_session",
@@ -161,19 +161,109 @@
     }
   ],
   "context": {
-    "facts_sessions": 0,
+    "facts_sessions": 1,
     "sessions": 2,
     "baseline": {
-      "tokens": 0,
-      "parts": []
+      "tokens": 140,
+      "parts": [
+        {
+          "part": "mcp",
+          "tokens": 47,
+          "share": 0.3333333333333333
+        },
+        {
+          "part": "skills",
+          "tokens": 37,
+          "share": 0.26666666666666666
+        },
+        {
+          "part": "instructions",
+          "tokens": 28,
+          "share": 0.2
+        },
+        {
+          "part": "tools",
+          "tokens": 19,
+          "share": 0.13333333333333333
+        },
+        {
+          "part": "system",
+          "tokens": 9,
+          "share": 0.06666666666666667
+        }
+      ]
     },
     "subagent_baseline": {
-      "tokens": 0,
-      "parts": []
+      "tokens": 140,
+      "parts": [
+        {
+          "part": "mcp",
+          "tokens": 47,
+          "share": 0.3333333333333333
+        },
+        {
+          "part": "skills",
+          "tokens": 37,
+          "share": 0.26666666666666666
+        },
+        {
+          "part": "instructions",
+          "tokens": 28,
+          "share": 0.2
+        },
+        {
+          "part": "tools",
+          "tokens": 19,
+          "share": 0.13333333333333333
+        },
+        {
+          "part": "system",
+          "tokens": 9,
+          "share": 0.06666666666666667
+        }
+      ]
     },
-    "growth": [],
-    "top_sources": [],
-    "repeated_reads": [],
+    "growth": [
+      {
+        "source": "owner",
+        "tokens": 5642,
+        "share": 0.9627986348122867
+      },
+      {
+        "source": "Read",
+        "tokens": 168,
+        "share": 0.028668941979522185
+      },
+      {
+        "source": "model",
+        "tokens": 50,
+        "share": 0.008532423208191127
+      }
+    ],
+    "top_sources": [
+      {
+        "tool": "Read",
+        "target": "main.go",
+        "tokens": 112,
+        "calls": 3,
+        "sessions": 1
+      },
+      {
+        "tool": "Read",
+        "target": "big.log",
+        "tokens": 56,
+        "calls": 1,
+        "sessions": 1
+      }
+    ],
+    "repeated_reads": [
+      {
+        "target": "main.go",
+        "reads": 3,
+        "session_uuid": "11111111-aaaa-bbbb-cccc-000000000001",
+        "tokens": 112
+      }
+    ],
     "compactions": {
       "count": 0,
       "median_pre_tokens": 0,
@@ -187,22 +277,66 @@
     }
   },
   "skills": {
-    "facts_sessions": 0,
-    "listed": 0,
-    "used": 0,
-    "listing_tokens": 0,
-    "rows": [],
-    "never_used": []
+    "facts_sessions": 1,
+    "listed": 3,
+    "used": 1,
+    "listing_tokens": 9,
+    "rows": [
+      {
+        "name": "review",
+        "invocations": 0,
+        "by_trigger": {
+          "proactive": 0,
+          "read": 0,
+          "slash": 0
+        },
+        "cost_usd": 0,
+        "sessions": 1
+      }
+    ],
+    "never_used": [
+      {
+        "name": "brainstorming",
+        "listing_tokens": 3
+      },
+      {
+        "name": "pdf",
+        "listing_tokens": 3
+      }
+    ]
   },
   "trouble": {
-    "classes": [],
+    "classes": [
+      {
+        "class": "exit_code",
+        "tool": "Bash",
+        "count": 1,
+        "sessions": [
+          {
+            "session_uuid": "11111111-aaaa-bbbb-cccc-000000000001",
+            "count": 1
+          }
+        ]
+      },
+      {
+        "class": "too_large",
+        "tool": "Read",
+        "count": 1,
+        "sessions": [
+          {
+            "session_uuid": "11111111-aaaa-bbbb-cccc-000000000001",
+            "count": 1
+          }
+        ]
+      }
+    ],
     "denials": [],
     "interrupts": 0,
     "rejections": 0,
     "interrupt_sessions": [],
-    "unfinished_subagents": 0,
+    "unfinished_subagents": 1,
     "rate_limited": 0,
-    "facts_sessions": 0
+    "facts_sessions": 1
   },
   "tasks": [
     {
@@ -218,11 +352,11 @@
       },
       "agent_ms": 1515000,
       "time": {
-        "model_ms": 41000,
+        "model_ms": 39500,
         "tools": {
           "build_test": 180000,
           "git": 0,
-          "read_search": 0,
+          "read_search": 1500,
           "edit": 0,
           "mcp": 1000,
           "subagents_fg": 0,
@@ -253,11 +387,11 @@
       },
       "agent_ms": 1515000,
       "time": {
-        "model_ms": 41000,
+        "model_ms": 39500,
         "tools": {
           "build_test": 180000,
           "git": 0,
-          "read_search": 0,
+          "read_search": 1500,
           "edit": 0,
           "mcp": 1000,
           "subagents_fg": 0,
