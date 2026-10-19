@@ -339,8 +339,12 @@ func TestCompact_ConcurrentReaderDoesNotFail(t *testing.T) {
 	if !res.CheckpointBusy {
 		t.Fatalf("got %+v, want checkpoint_busy: the final checkpoint cannot pass the reader", res)
 	}
-	if elapsed > compactBusy+5*time.Second {
-		t.Fatalf("Compact took %v beside a reader, want within the busy timeout", elapsed)
+	// The reader pins the final checkpoint, so Compact waits out the busy
+	// timeout. It must be the shortened one, not the production compactBusy:
+	// any run shorter than that proves it (a wall-clock margin on top of 2 s
+	// flaked under -race on CI).
+	if elapsed >= prevBusy {
+		t.Fatalf("Compact took %v beside a reader, want under the production busy timeout %v", elapsed, prevBusy)
 	}
 	if err := tx.Rollback(); err != nil {
 		t.Fatal(err)
