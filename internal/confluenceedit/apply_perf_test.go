@@ -78,13 +78,19 @@ func TestApplyAdversarialInlineStaysFast(t *testing.T) {
 		n          = 120000
 		perfRuns   = 3
 		maxScaling = 22.6
+		// maxLargeCPU caps the first run at n: a quadratic regression
+		// fails here at once, not near the package timeout after every run.
+		maxLargeCPU = 5 * time.Second
 	)
 	for _, tc := range adversarialInline {
 		small, large := tc.make(n/8), tc.make(n)
 		fastSmall, fastLarge := time.Duration(1<<62), time.Duration(1<<62)
-		for range perfRuns {
+		for i := range perfRuns {
 			fastSmall = min(fastSmall, cpuTime(t, func() { applyAdversarial(t, small) }))
 			fastLarge = min(fastLarge, cpuTime(t, func() { applyAdversarial(t, large) }))
+			if i == 0 && fastLarge > maxLargeCPU {
+				t.Fatalf("%s: one run at n took %v of CPU, over the %v cap: quadratic", tc.name, fastLarge, maxLargeCPU)
+			}
 		}
 		ratio := float64(fastLarge) / float64(max(fastSmall, time.Microsecond))
 		t.Logf("%s: %v at n/8, %v at n, x%.2f", tc.name, fastSmall, fastLarge, ratio)
