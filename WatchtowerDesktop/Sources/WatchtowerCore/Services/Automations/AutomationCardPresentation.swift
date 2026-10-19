@@ -1,5 +1,25 @@
 import Foundation
 
+/// One `session()` or `agent()` call of a dry run, as the editor's Draft
+/// panel and the save card show it before a save: what the recipe would
+/// start and the exact prompt it hands over (an instruction hidden there,
+/// such as "do not publish", is visible before the owner confirms).
+package struct AutomationSessionPrompt: Equatable, Sendable {
+    /// The step kind: `session` or `agent`.
+    package let kind: String
+    /// The call's `title`, else the kind.
+    package let title: String
+    /// The `session()` prompt or the `agent()` instruction; nil when the
+    /// journaled args were clipped (not JSON) or carry none.
+    package let prompt: String?
+
+    package init(kind: String, title: String, prompt: String?) {
+        self.kind = kind
+        self.title = title
+        self.prompt = prompt
+    }
+}
+
 /// The words of the Automations tab (spec §12.1–12.2, approved mockup 1):
 /// list rows, the card's subtitle, **It may**, **Limits per run**, the
 /// History lines and which buttons are live. Pure, so the views stay thin.
@@ -317,6 +337,22 @@ package enum AutomationCardPresentation {
         }
         return Buttons(runNow: automation.isRunnable ? on : off("Needs your confirmation"), dryRun: on,
                        toggleLabel: toggle)
+    }
+
+    // MARK: - Sessions it starts
+
+    /// The `session()` and `agent()` steps of a dry run in seq order
+    /// (`internal/automations/sdk_session.go`: `{agent, prompt, title}`;
+    /// `sdk_agent.go`: `{instruction, …}`); every other step is left out.
+    package static func sessionPrompts(_ steps: [AutomationDraftEntry.Step]) -> [AutomationSessionPrompt] {
+        steps.filter { $0.kind == "session" || $0.kind == "agent" }
+            .sorted { $0.seq < $1.seq }
+            .map { step in
+                let object = (try? JSONSerialization.jsonObject(with: Data(step.args.utf8))) as? [String: Any]
+                let title = (object?["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? step.kind
+                let prompt = (object?["prompt"] as? String) ?? (object?["instruction"] as? String)
+                return AutomationSessionPrompt(kind: step.kind, title: title, prompt: prompt)
+            }
     }
 
     // MARK: - History

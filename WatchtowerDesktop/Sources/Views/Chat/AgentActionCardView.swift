@@ -37,6 +37,10 @@ struct AgentActionCardView: View {
     /// The editor chat's newest draft text (the Draft panel's); a pending
     /// `save_automation` card whose text differs warns. nil elsewhere.
     var latestDraftText: String?
+    /// The editor chat's cached dry runs, recipe text → the sessions each
+    /// starts (`AutomationDraftPanelModel.dryRunSessions`); the save card
+    /// shows the ones of its own text. Unused where `latestDraftText` is nil.
+    var draftSessions: [String: [AutomationSessionPrompt]] = [:]
     /// Dismiss on a session call whose outcome is unknown
     /// (`ConnectorCallProposal.awaitsDismissal`), which waits on the Inbox
     /// badge until then. Nil hides the button.
@@ -264,7 +268,9 @@ struct AgentActionCardView: View {
             header(title: save?.title ?? Self.title(for: action))
             if let save {
                 SaveAutomationCardDetails(model: save, actionID: action.id,
-                                          differsFromDraft: action.isPending && save.differsFromDraft(latestDraftText))
+                                          differsFromDraft: action.isPending && save.differsFromDraft(latestDraftText),
+                                          sessions: save.draftSessions(latestDraftText: latestDraftText,
+                                                                       dryRunSessions: draftSessions))
             } else if let connector {
                 ConnectorCallDetails(proposal: connector, draft: connectorDraftBinding,
                                      approval: connectorApproval(connector))
@@ -526,8 +532,17 @@ private struct SaveAutomationCardDetails: View {
     let model: SaveAutomationCardModel
     let actionID: Int64
     let differsFromDraft: Bool
+    let sessions: SaveAutomationCardModel.DraftSessions
+
+    /// Optional: a card rendered outside the app's window (a design shot)
+    /// names the workbench by id.
+    @Environment(AppState.self) private var appState: AppState?
 
     var body: some View {
+        Text(model.scopeLine { id in
+            appState?.workbenchesViewModel?.summaries.first { $0.project.id == id }?.project.name
+        })
+        .font(.callout)
         if differsFromDraft {
             Label(SaveAutomationCardModel.draftMismatchWarning, systemImage: "exclamationmark.triangle.fill")
                 .font(.callout)
@@ -542,6 +557,17 @@ private struct SaveAutomationCardDetails: View {
         }
         if let summary = model.dryRunSummary {
             Text(summary).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }
+        switch sessions {
+        case .hidden, .shown([]):
+            EmptyView()
+        case .unmatched:
+            Label(SaveAutomationCardModel.unmatchedSessionsLine, systemImage: "questionmark.circle")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        case let .shown(list):
+            AutomationSessionPromptsBlock(sessions: list)
         }
         if let text = model.newRecipeText {
             // A new recipe has nothing to diff against: its whole text is

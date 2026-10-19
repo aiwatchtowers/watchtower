@@ -32,6 +32,23 @@ package struct SaveAutomationCardModel {
     /// it never enables: a new recipe is indexed off, an edit keeps its state.
     package let appliedNote: String
 
+    /// The editor chat has a draft, but none of its cached dry runs has this
+    /// card's exact text.
+    package static let unmatchedSessionsLine = "No dry run of this exact text — the sessions are not shown."
+
+    /// What the card says about the sessions the recipe starts.
+    package enum DraftSessions: Equatable, Sendable {
+        /// The main chat: no Draft panel to take them from.
+        case hidden
+        /// The editor has a draft, but no dry run of this text.
+        case unmatched
+        /// The dry run of this exact text (empty: it starts none).
+        case shown([AutomationSessionPrompt])
+    }
+
+    /// The workbench the recipe is saved into; nil for a personal one.
+    package let workbenchID: Int64?
+
     package static let appliedNewNote = "Saved and confirmed. It's off until you turn it on in Automations."
     package static let appliedEditNote = "Saved and confirmed. Whether it runs is still set by its switch in Automations."
 
@@ -51,12 +68,13 @@ package struct SaveAutomationCardModel {
         var recipeText = ""
         var previousRecipeText = ""
         var dryRunSummary = ""
+        var workbenchID: Int64?
 
         enum CodingKeys: String, CodingKey {
             case name, slug, permissions, outputs, widening, missed, concurrency, path
             case triggerKind = "trigger_kind", budgetTokens = "budget_tokens", budgetMinutes = "budget_minutes"
             case isNew = "is_new", recipeText = "recipe_text", previousRecipeText = "previous_recipe_text"
-            case dryRunSummary = "dry_run_summary"
+            case dryRunSummary = "dry_run_summary", workbenchID = "workbench_id"
         }
 
         init() {}
@@ -78,6 +96,7 @@ package struct SaveAutomationCardModel {
             recipeText = try c.decodeIfPresent(String.self, forKey: .recipeText) ?? ""
             previousRecipeText = try c.decodeIfPresent(String.self, forKey: .previousRecipeText) ?? ""
             dryRunSummary = try c.decodeIfPresent(String.self, forKey: .dryRunSummary) ?? ""
+            workbenchID = try c.decodeIfPresent(Int64.self, forKey: .workbenchID)
         }
     }
 
@@ -117,6 +136,23 @@ package struct SaveAutomationCardModel {
         recipeText = args.recipeText
         newRecipeText = args.isNew ? args.recipeText : nil
         appliedNote = args.isNew ? Self.appliedNewNote : Self.appliedEditNote
+        workbenchID = args.workbenchID
+    }
+
+    /// "For: Personal" / "For: workbench <name>" (`#<id>` when the name is
+    /// not known).
+    package func scopeLine(workbenchName: (Int64) -> String?) -> String {
+        guard let workbenchID else { return "For: Personal" }
+        return "For: workbench \(workbenchName(workbenchID) ?? "#\(workbenchID)")"
+    }
+
+    /// The sessions block of the card: from the cached dry run whose recipe
+    /// text equals this card's (`AutomationDraftPanelModel.dryRunSessions`),
+    /// shown only where a Draft panel exists (`latestDraftText` non-nil).
+    package func draftSessions(latestDraftText: String?,
+                               dryRunSessions: [String: [AutomationSessionPrompt]]) -> DraftSessions {
+        guard latestDraftText != nil else { return .hidden }
+        return dryRunSessions[recipeText].map(DraftSessions.shown) ?? .unmatched
     }
 
     /// Whether the text this card confirms differs from `latestDraftText`, the

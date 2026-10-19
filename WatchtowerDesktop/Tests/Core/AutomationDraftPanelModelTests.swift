@@ -174,4 +174,33 @@ final class AutomationDraftPanelModelTests: XCTestCase {
         try (try line() + "\n").write(to: url, atomically: true, encoding: .utf8)
         XCTAssertEqual(AutomationDraftPanelModel.load(databasePath: dbPath, conversationID: 42).name, "Morning mail")
     }
+
+    // MARK: - Sessions it starts
+
+    private func sessionDryRun(_ prompt: String) -> [String: Any] {
+        [
+            "steps": [
+                ["seq": 1, "kind": "session", "name": "claude", "status": "dry_run",
+                 "args": #"{"agent":"claude","prompt":"\#(prompt)","title":"Release"}"#, "result": "",
+                 "permission": "session:start", "error": "", "tokens": 0]
+            ],
+            "outputs": [], "tokens": 0, "status": "succeeded", "error": ""
+        ]
+    }
+
+    /// The panel shows the newest draft's sessions; the save card looks up
+    /// the newest cached draft with its exact text, among the last five.
+    func testSessionsAndDryRunSessionsByText() throws {
+        let older = try line(recipe: "A", dryRun: sessionDryRun("Run /release"))
+        let noDryRun = try line(recipe: "B", dryRun: nil)
+        let newer = try line(recipe: "C", dryRun: sessionDryRun("Run /deploy"))
+        let cache = [older, noDryRun, newer].joined(separator: "\n") + "\n"
+        let panel = model(cache)
+        XCTAssertEqual(panel.sessions, [AutomationSessionPrompt(kind: "session", title: "Release", prompt: "Run /deploy")])
+        let byText = AutomationDraftPanelModel.dryRunSessions(inCache: cache)
+        XCTAssertEqual(byText["A"], [AutomationSessionPrompt(kind: "session", title: "Release", prompt: "Run /release")])
+        XCTAssertNil(byText["B"], "a draft without a dry run shows no sessions")
+        XCTAssertEqual(byText["C"]?.first?.prompt, "Run /deploy")
+        XCTAssertEqual(model("").sessions, [])
+    }
 }

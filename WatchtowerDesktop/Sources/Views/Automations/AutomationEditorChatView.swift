@@ -69,7 +69,8 @@ struct AutomationEditorChatView: View {
             onReject: { Task { await chat.actionFeed.reject(action.id) } },
             onRetry: { Task { await chat.actionFeed.retry(action.id) } },
             gestureError: chat.actionFeed.rowErrors[action.id],
-            latestDraftText: chat.draft.shownRecipeText
+            latestDraftText: chat.draft.shownRecipeText,
+            draftSessions: chat.draft.dryRunSessions
         )
     }
 }

@@ -52,6 +52,12 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "home-narrow", size: NSSize(width: 780, height: 1440)) {
                 HomeShotFixtures.home()
+            },
+            DesignShot(name: "automation-draft-panel", size: NSSize(width: 560, height: 720)) {
+                AnyView(AutomationShotFixtures.draftPanel().shotFrame().detailBackground())
+            },
+            DesignShot(name: "automation-save-card", size: NSSize(width: 560, height: 520)) {
+                AnyView(AutomationShotFixtures.saveCard().padding(12).shotFrame().detailBackground())
             }
         ] + CatalogPage.allCases.map { page in
             DesignShot(name: "catalog-\(page.rawValue)", size: NSSize(width: 900, height: 0)) {

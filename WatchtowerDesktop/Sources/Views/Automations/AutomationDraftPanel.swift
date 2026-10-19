@@ -44,6 +44,7 @@ struct AutomationDraftPanel: View {
                             box(title: "Each run may spend", value: model.budget, detail: model.lastDryRunTokens)
                         }
                         if !model.permissions.isEmpty || model.cantLine != nil { asksBox }
+                        if !model.sessions.isEmpty { AutomationSessionPromptsBlock(sessions: model.sessions) }
                         dryRunBox
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -175,6 +176,78 @@ struct AutomationDraftPanel: View {
                     .disabled(!canAct || model.isEmpty || model.isUnreadable || !model.errors.isEmpty)
                     .help(actionHelp ?? "")
             }
+        }
+    }
+}
+
+/// "Sessions it starts": every `session()`/`agent()` call of a dry run with
+/// the prompt it hands over, so an instruction hidden there is seen before
+/// the save (the Draft panel and the `save_automation` card).
+struct AutomationSessionPromptsBlock: View {
+    static let title = "Sessions it starts"
+
+    let sessions: [AutomationSessionPrompt]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            SectionHeader(title: Self.title, systemImage: "terminal", count: sessions.count)
+            ForEach(Array(sessions.enumerated()), id: \.offset) { _, session in
+                AutomationSessionPromptRow(session: session)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Spacing.medium)
+        .card()
+    }
+}
+
+/// One session: its title, then its prompt in two lines; **Show all** when
+/// the two lines cut it (measured, so no prompt is cut without a way to
+/// read the rest).
+private struct AutomationSessionPromptRow: View {
+    static let unavailable = "(prompt not available)"
+
+    let session: AutomationSessionPrompt
+    @State private var expanded = false
+    @State private var truncated = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            Text(session.title).font(.callout.weight(.semibold))
+            if let prompt = session.prompt {
+                Text(prompt)
+                    .lineLimit(expanded ? nil : 2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+                    .background { if !expanded { measure(prompt) } }
+                if truncated || expanded {
+                    Button(expanded ? "Show less" : "Show all") { expanded.toggle() }
+                        .buttonStyle(.kitQuiet)
+                        .controlSize(.small)
+                }
+            } else {
+                Text(Self.unavailable).foregroundStyle(.secondary)
+            }
+        }
+        .font(.callout)
+    }
+
+    /// The whole prompt laid out at the shown width, hidden: taller than the
+    /// two shown lines means they cut it.
+    private func measure(_ prompt: String) -> some View {
+        GeometryReader { shown in
+            Text(prompt)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: shown.size.width, alignment: .leading)
+                .hidden()
+                .background {
+                    GeometryReader { full in
+                        let cut = full.size.height > shown.size.height + 1
+                        Color.clear
+                            .onAppear { truncated = cut }
+                            .onChange(of: cut) { _, now in truncated = now }
+                    }
+                }
         }
     }
 }

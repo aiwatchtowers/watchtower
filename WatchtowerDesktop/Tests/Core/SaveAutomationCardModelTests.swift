@@ -99,4 +99,31 @@ final class SaveAutomationCardModelTests: XCTestCase {
         let model = SaveAutomationCardModel(action: try action())
         XCTAssertEqual(model.lines.last, "Budget: 40,000 tokens · 5 min")
     }
+
+    // MARK: - Scope and sessions
+
+    func testScopeLine() throws {
+        let names: (Int64) -> String? = { $0 == 1 ? "watchtower" : nil }
+        XCTAssertEqual(SaveAutomationCardModel(action: try action()).scopeLine(workbenchName: names), "For: Personal")
+        XCTAssertEqual(SaveAutomationCardModel(action: try action(["workbench_id": 1])).scopeLine(workbenchName: names),
+                       "For: workbench watchtower")
+        XCTAssertEqual(SaveAutomationCardModel(action: try action(["workbench_id": 9])).scopeLine(workbenchName: names),
+                       "For: workbench #9")
+    }
+
+    /// The editor chat shows the sessions of the draft whose text the card
+    /// confirms; a draft panel with no such dry run says so; the main chat
+    /// (no Draft panel: `latestDraftText == nil`) shows neither.
+    func testDraftSessions() throws {
+        let model = SaveAutomationCardModel(action: try action())
+        let text = model.recipeText
+        let release = [AutomationSessionPrompt(kind: "session", title: "Release", prompt: "Run /release")]
+        XCTAssertEqual(model.draftSessions(latestDraftText: nil, dryRunSessions: [text: release]), .hidden)
+        XCTAssertEqual(model.draftSessions(latestDraftText: "other", dryRunSessions: [text: release]),
+                       .shown(release), "an older draft with the card's exact text still counts")
+        XCTAssertEqual(model.draftSessions(latestDraftText: text, dryRunSessions: ["other": release]), .unmatched)
+        XCTAssertEqual(model.draftSessions(latestDraftText: text, dryRunSessions: [text: []]), .shown([]))
+        XCTAssertEqual(SaveAutomationCardModel.unmatchedSessionsLine,
+                       "No dry run of this exact text — the sessions are not shown.")
+    }
 }

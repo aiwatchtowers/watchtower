@@ -125,6 +125,11 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
     /// Why there are no (more) dry-run lines: the refusal (ask #271), the
     /// draft stop at mcp() (ask #326) or the run's error.
     package let dryRunNote: String?
+    /// "Sessions it starts": the newest draft's `session()`/`agent()` calls.
+    package let sessions: [AutomationSessionPrompt]
+    /// Recipe text → the sessions of the newest cached draft with that text
+    /// and a dry run (the save card's block); only `load` fills it.
+    package private(set) var dryRunSessions: [String: [AutomationSessionPrompt]] = [:]
 
     package static let empty = Self(entry: nil)
     package static let unreadable = Self(entry: nil, unreadable: true)
@@ -146,7 +151,29 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
         } catch {
             return .unreadable
         }
-        return Self(newest: AutomationDraftEntry.newest(inCache: text))
+        var model = Self(newest: AutomationDraftEntry.newest(inCache: text))
+        model.dryRunSessions = dryRunSessions(inCache: text)
+        return model
+    }
+
+    /// Every decodable line of the cache, oldest first, keyed by its recipe
+    /// text: the newest line of a text wins, and one without a dry run (or a
+    /// refused one) drops the text — its sessions are not known.
+    package static func dryRunSessions(inCache text: String) -> [String: [AutomationSessionPrompt]] {
+        var byText: [String: [AutomationSessionPrompt]] = [:]
+        for line in text.split(whereSeparator: \.isNewline) {
+            guard let entry = try? JSONDecoder().decode(AutomationDraftEntry.self, from: Data(line.utf8)) else {
+                continue
+            }
+            byText[entry.recipeText] = sessions(of: entry)
+        }
+        return byText
+    }
+
+    /// The entry's sessions; nil without a dry run that ran.
+    private static func sessions(of entry: AutomationDraftEntry) -> [AutomationSessionPrompt]? {
+        guard let dryRun = entry.result?.dryRun, dryRun.status != "refused" else { return nil }
+        return AutomationCardPresentation.sessionPrompts(dryRun.steps)
     }
 
     package init(newest: AutomationDraftEntry.Newest) {
@@ -172,6 +199,7 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
             cantLine = nil
             dryRunLines = []
             dryRunNote = nil
+            sessions = []
             return
         }
         isEmpty = false
@@ -188,6 +216,7 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
             cantLine = nil
             dryRunLines = []
             dryRunNote = nil
+            sessions = []
             return
         }
         let manifest = result.manifest
@@ -204,6 +233,7 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
             Permission(manifest: "output: \($0)", plain: AutomationCardPresentation.outputLine($0))
         }
         cantLine = result.ok ? Self.cantLine(permissions: manifest.permissions, outputs: manifest.outputs) : nil
+        sessions = Self.sessions(of: entry) ?? []
         let dryRun = result.dryRun
         if let dryRun, dryRun.status == "refused" {
             dryRunLines = []

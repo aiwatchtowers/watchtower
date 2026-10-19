@@ -293,4 +293,34 @@ final class AutomationCardPresentationTests: XCTestCase {
         XCTAssertNil(ACP.shellWarning(permissions: ["llm:light", "gmail:read@*"]))
         XCTAssertNotNil(ACP.shellWarning(permissions: ["llm:light", #"shell:"make test""#]))
     }
+
+    // MARK: - Sessions it starts
+
+    private func step(_ seq: Int, _ kind: String, args: String) -> AutomationDraftEntry.Step {
+        var step = AutomationDraftEntry.Step()
+        step.seq = seq
+        step.kind = kind
+        step.args = args
+        return step
+    }
+
+    /// Every session()/agent() call of a dry run, in seq order, with the
+    /// prompt the owner must see before saving; a step whose args were
+    /// clipped (not JSON) keeps its row with no prompt.
+    func testSessionPrompts() {
+        let steps = [
+            step(4, "session", args: #"{"agent":"claude","prompt":"Run /rel"#),
+            step(2, "llm", args: #"{"prompt":"Summarise"}"#),
+            step(3, "agent", args: #"{"instruction":"Triage the inbox","tools":[],"tier":"light"}"#),
+            step(1, "session", args: #"{"agent":"claude","title":"Release","prompt":"Run /release"}"#)
+        ]
+        XCTAssertEqual(ACP.sessionPrompts(steps), [
+            AutomationSessionPrompt(kind: "session", title: "Release", prompt: "Run /release"),
+            AutomationSessionPrompt(kind: "agent", title: "agent", prompt: "Triage the inbox"),
+            AutomationSessionPrompt(kind: "session", title: "session", prompt: nil)
+        ])
+        XCTAssertEqual(ACP.sessionPrompts([step(1, "session", args: #"{"title":"No prompt"}"#)]),
+                       [AutomationSessionPrompt(kind: "session", title: "No prompt", prompt: nil)])
+        XCTAssertEqual(ACP.sessionPrompts([step(1, "llm", args: "{}")]), [])
+    }
 }
