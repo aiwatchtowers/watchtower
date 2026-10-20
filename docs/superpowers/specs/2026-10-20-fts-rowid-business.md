@@ -10,7 +10,7 @@ Three full-text search indexes find "their" row by a column the index cannot loo
 
 - **Writes stop slowing down as the database grows.** Each index is keyed by its row's own id, so updating or removing an entry is a direct lookup.
 - **Search works exactly as before** — same results, snippets and order in the app, the chat's message search and the memory search.
-- **One-time rebuild after the update, on the launch screen.** The Slack messages index is filled once from the existing data (the transcripts index is small and is rebuilt inside the update itself). The launch screen shows "Updating search index — 0:42" while it runs, in the same step as the database compaction (#850); "Skip for now" appears after 15 s and the rebuild continues at the next launch. If the rebuild is skipped, search finds only what was synced or written since the update until the rebuild completes at a later launch; nothing is lost. After the rebuild the old index is removed, which also frees space for the compaction that follows. If the app is not opened (daemon only) or the rebuild is skipped, the background sync finishes it in short steps.
+- **One-time rebuild after the update, on the launch screen.** The Slack messages index is filled once from the existing data (the transcripts index is small and is rebuilt inside the update itself). The launch screen shows "Updating search index — 0:42" while it runs, in the same step as the database compaction (#850); "Skip for now" appears after 15 s and the rebuild continues at the next launch. If the rebuild is skipped, search finds only what was synced or written since the update until the rebuild completes at a later launch; nothing is lost. The old index is removed first and the new one is written into the space it frees, so the file does not grow; the compaction that follows reclaims what is left. If the app is not opened (daemon only) or the rebuild is skipped, the background sync finishes it in short steps.
 - Nothing to configure.
 
 ## Decisions for the owner
@@ -21,7 +21,7 @@ My calls, to check while reading:
 - the rebuild runs before the compaction in the same launch step, so the space the old indexes free is reclaimed in the same launch;
 - a skipped or interrupted rebuild resumes where it stopped (it works in chunks), it never starts over;
 - during the gap between the update and the rebuild finishing, search may miss older Slack messages; nothing is lost;
-- the rebuild has its own rules: it is not blocked by the compaction giving up after failures, and it needs less free disk than the compaction;
+- the rebuild has its own rules: it is not blocked by the compaction giving up after failures, and it needs only a small amount of free disk (64 MiB), far less than the compaction;
 - a new rule for future changes: anything that rebuilds the messages table must keep each row's internal id, because the index now relies on it.
 
 ## Out of scope
