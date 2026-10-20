@@ -124,6 +124,31 @@ final class TerminalLaunchTests: XCTestCase {
         XCTAssertFalse(TerminalLaunch.isValidSessionID(""))
     }
 
+    private func finding(_ id: Int, _ kind: String) throws -> WorkbenchDriftFinding {
+        let json = #"{"target_id":\#(id),"title":"t","kind":"\#(kind)","detail":"d","fix":"f"}"#
+        return try JSONDecoder().decode(WorkbenchDriftFinding.self, from: Data(json.utf8))
+    }
+
+    func testDriftFixPromptNamesTheCheckAndEveryFinding() throws {
+        let prompt = TerminalLaunch.driftFixPrompt(
+            workbenchID: 7, findings: [try finding(561, "merged_but_open"), try finding(9, "stale")]
+        )
+        XCTAssertEqual(
+            prompt,
+            "Fix the board drift using the watchtower-workbench skill: run `watchtower workbench check --workbench 7`, "
+                + "then update the board as each finding says. Findings now: #561 merged, still open; #9 no movement."
+        )
+    }
+
+    func testDriftFixPromptWithOneFindingKeepsTheShapeAndALongListIsCapped() throws {
+        let one = TerminalLaunch.driftFixPrompt(workbenchID: 1, findings: [try finding(3, "branch_missing")])
+        XCTAssertTrue(one.hasSuffix("Findings now: #3 branch missing."), one)
+        let many = try (1...25).map { try finding($0, "stale") }
+        let capped = TerminalLaunch.driftFixPrompt(workbenchID: 1, findings: many)
+        XCTAssertTrue(capped.hasSuffix("; and 5 more."), capped)
+        XCTAssertFalse(capped.contains("#21 "))
+    }
+
     func testFixedPromptsHoldNoQuote() {
         XCTAssertFalse(TerminalLaunch.firstRunPrompt.contains("'"))
         XCTAssertFalse(TerminalLaunch.workOnTargetPrompt(targetID: 9_223_372_036_854_775_807).contains("'"))

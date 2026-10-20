@@ -95,6 +95,8 @@ In the page header's **…** menu:
 
 When something disagrees, a line under the Board header reads **Board drift: N out of step with git**, with findings that are only worth a look listed as "to review". Click it for the list and click an entry to open that target. The refresh button checks again; while the Board is open it re-checks by itself, at most every 30 seconds.
 
+Press **Fix** in the list to start an agent session that runs the check and puts the board right for every finding; hover an entry and press its **Fix** to fix just that one. While such a session runs the button reads **Fixing…** and opens that session instead of starting another.
+
 ### Get notified
 
 Watchtower notifies you when an agent asks something in a target comment, finishes a target, or proposes something only you can approve. Several at once in one workbench arrive as one summary.

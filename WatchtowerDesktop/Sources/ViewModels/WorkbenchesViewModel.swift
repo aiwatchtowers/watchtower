@@ -394,6 +394,9 @@ final class WorkbenchesViewModel {
     /// Why the last drift check of a project failed; the next success clears it.
     private(set) var driftErrors: [Int64: String] = [:]
     private var driftCheckedAt: [Int64: Date] = [:]
+    /// The Fix sessions the drift popover started, per workbench, newest
+    /// last (spec 2026-10-20 §4); one is "live" while its process runs.
+    var driftFixSessions: [Int64: [DriftFixSession]] = [:]
     private var checkingDrift: Set<Int64> = []
     /// How often the open Board pane re-runs the check (git work in the folder).
     static let driftMinInterval: TimeInterval = 30

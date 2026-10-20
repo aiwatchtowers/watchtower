@@ -229,6 +229,25 @@ package struct TerminalLaunch: Equatable, Sendable {
         isGroup && skillKnowsGroups ? workOnGroupPrompt(targetID: targetID) : workOnTargetPrompt(targetID: targetID)
     }
 
+    /// How many findings the drift-fix prompt lists; the session runs
+    /// `workbench check` itself, so the list is only a head start.
+    package static let driftFixPromptLimit = 20
+
+    /// The first prompt of a board drift Fix session (spec 2026-10-20 §4):
+    /// the agent re-runs the check, then writes the board as each finding
+    /// says. One finding gives the same shape with one entry.
+    package static func driftFixPrompt(workbenchID: Int64, findings: [WorkbenchDriftFinding]) -> String {
+        let listed = findings.prefix(driftFixPromptLimit).map { finding in
+            let label = finding.kindLabel
+            return "#\(finding.targetID) \(label.prefix(1).lowercased())\(label.dropFirst())"
+        }
+        var list = listed.joined(separator: "; ")
+        if findings.count > driftFixPromptLimit { list += "; and \(findings.count - driftFixPromptLimit) more" }
+        return "Fix the board drift using the \(WorkbenchNames.skill) skill: run "
+            + "`watchtower workbench check --workbench \(workbenchID)`, then update the board as each finding says. "
+            + "Findings now: \(list)."
+    }
+
     /// Follows a session's brief when the owner asked for a plan first (a
     /// start from the phone, mobile POC spec §6.5).
     package static let planFirstSuffix =
