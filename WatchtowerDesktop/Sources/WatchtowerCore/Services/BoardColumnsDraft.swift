@@ -1,11 +1,12 @@
 import Foundation
 
-/// The Board Columns… sheet's editable state (board #267, spec 2026-10-16
-/// §6): a workbench's column definition being edited, never fed to the
-/// Kanban (an unsaved column has no id). `errors` mirrors Go
-/// `validateBoardColumns` (internal/db/board_columns.go) plus the
-/// hide-with-columns refusal, so the sheet shows a refusal before Save;
-/// change both together. Go stays the judge: Save shows its message too.
+/// A workbench's column definition with one edit applied (board #267; edited
+/// on the Kanban's header row since #713 AI-14 §1): built from the stored
+/// definition, changed by one board operation, sent whole as `definition`,
+/// never fed to the Kanban (an unsaved column has no id). `errors` mirrors
+/// Go `validateBoardColumns` (internal/db/board_columns.go) plus the
+/// hide-with-columns refusal, so the board refuses without a write; change
+/// both together. Go stays the judge: its refusal shows too.
 package struct BoardColumnsDraft: Equatable {
     /// One column being edited. `id` is the draft's own (a new column has
     /// no stored id yet); `columnID` the stored column it edits.
@@ -54,6 +55,109 @@ package struct BoardColumnsDraft: Equatable {
     /// - Returns: the new column's draft id.
     @discardableResult
     package mutating func add(to status: String) -> Int {
+        let id = nextID
+        nextID += 1
+        columns.append(Column(id: id, columnID: nil, status: status, title: freeTitle(), description: ""))
+        columns = Self.statuses.flatMap { columns(of: $0) }
+        return id
+    }
+
+    // MARK: - Edits on the board (#713 AI-14 §1)
+    //
+    // A header names its column by the stored id, nil for the status's
+    // implicit one. On an implicit column, Rename and Description define the
+    // status's first column; adding defines two — one under the status's
+    // label first (a card with no stored column shows in a status's first
+    // column, so it keeps the cards) and the new one after it.
+
+    /// The draft column of stored column `columnID`; nil for nil or a stale id.
+    package func draftID(forStored columnID: Int64?) -> Int? {
+        guard let columnID else { return nil }
+        return columns.first { $0.columnID == columnID }?.id
+    }
+
+    package mutating func rename(_ columnID: Int64?, in status: String, to title: String) {
+        if let id = draftID(forStored: columnID) {
+            setTitle(title, of: id)
+        } else if columnID == nil, columns(of: status).isEmpty {
+            add(to: status, title: title)
+        }
+    }
+
+    package mutating func describe(_ columnID: Int64?, in status: String, as description: String) {
+        if let id = draftID(forStored: columnID) {
+            setDescription(description, of: id)
+        } else if columnID == nil, columns(of: status).isEmpty {
+            setDescription(description, of: add(to: status, title: WorkbenchBoardCard.statusLabel(status)))
+        }
+    }
+
+    /// The header's Add Column Left / Right (one Add Column on an implicit
+    /// column, `columnID` nil). Limits are not checked here: `errors`
+    /// refuses the result.
+    /// - Returns: the new column's draft id; nil, with nothing added, for a
+    ///   stored column no longer in the definition.
+    @discardableResult
+    package mutating func insertColumn(beside columnID: Int64?, in status: String, after: Bool) -> Int? {
+        guard let columnID else { return appendColumn(to: status) }
+        guard let anchor = draftID(forStored: columnID),
+              let index = columns.firstIndex(where: { $0.id == anchor }) else { return nil }
+        let id = nextID
+        nextID += 1
+        let column = Column(id: id, columnID: nil, status: columns[index].status, title: freeTitle(), description: "")
+        columns.insert(column, at: after ? index + 1 : index)
+        return id
+    }
+
+    /// The `+` menu's Add column to: at the end of `status`.
+    /// - Returns: the new column's draft id.
+    @discardableResult
+    package mutating func appendColumn(to status: String) -> Int {
+        if columns(of: status).isEmpty {
+            add(to: status, title: WorkbenchBoardCard.statusLabel(status))
+        }
+        return add(to: status)
+    }
+
+    /// Move Left / Right (`offset` -1 / 1): within the column's status only.
+    package func canMove(_ columnID: Int64, by offset: Int) -> Bool {
+        guard let column = columns.first(where: { $0.columnID == columnID }) else { return false }
+        let own = columns(of: column.status)
+        guard let index = own.firstIndex(where: { $0.id == column.id }) else { return false }
+        return own.indices.contains(index + offset)
+    }
+
+    package mutating func move(_ columnID: Int64, by offset: Int) {
+        guard canMove(columnID, by: offset),
+              let index = columns.firstIndex(where: { $0.columnID == columnID }) else { return }
+        // Within one status the columns are adjacent: the neighbour is
+        // `index + offset` in the whole list too.
+        columns.swapAt(index, index + offset)
+    }
+
+    /// Delete Column; deleting a status's last one returns it to implicit.
+    package mutating func deleteColumn(_ columnID: Int64) {
+        columns.removeAll { $0.columnID == columnID }
+    }
+
+    /// The stored id draft column `id` got in `saved` (the definition Go
+    /// answered a save with): same status, same position.
+    package func storedID(of id: Int, in saved: WorkbenchBoardColumns) -> Int64? {
+        guard let column = columns.first(where: { $0.id == id }),
+              let position = columns(of: column.status).firstIndex(where: { $0.id == id }) else { return nil }
+        let stored = saved.columns(of: column.status)
+        return stored.indices.contains(position) ? stored[position].id : nil
+    }
+
+    @discardableResult
+    private mutating func add(to status: String, title: String) -> Int {
+        let id = add(to: status)
+        setTitle(title, of: id)
+        return id
+    }
+
+    /// "New Column", or "New Column N" when that title is taken.
+    private func freeTitle() -> String {
         let taken = Set(columns.map { Self.fold($0.title) })
         var title = "New Column"
         var n = 2
@@ -61,11 +165,7 @@ package struct BoardColumnsDraft: Equatable {
             title = "New Column \(n)"
             n += 1
         }
-        let id = nextID
-        nextID += 1
-        columns.append(Column(id: id, columnID: nil, status: status, title: title, description: ""))
-        columns = Self.statuses.flatMap { columns(of: $0) }
-        return id
+        return title
     }
 
     package mutating func setTitle(_ title: String, of id: Int) {
@@ -76,16 +176,6 @@ package struct BoardColumnsDraft: Equatable {
     package mutating func setDescription(_ description: String, of id: Int) {
         guard let index = columns.firstIndex(where: { $0.id == id }) else { return }
         columns[index].description = description
-    }
-
-    /// The sheet's drag reorder inside one status (`onMove` offsets).
-    package mutating func move(in status: String, fromOffsets source: IndexSet, toOffset destination: Int) {
-        var own = columns(of: status)
-        let moving = source.filter { own.indices.contains($0) }.map { own[$0] }
-        let before = source.filter { $0 < destination }.count
-        for index in source.sorted(by: >) where own.indices.contains(index) { own.remove(at: index) }
-        own.insert(contentsOf: moving, at: min(max(destination - before, 0), own.count))
-        columns = Self.statuses.flatMap { $0 == status ? own : columns(of: $0) }
     }
 
     package mutating func delete(_ id: Int) {
@@ -102,16 +192,20 @@ package struct BoardColumnsDraft: Equatable {
         WorkbenchBoardColumns.hideableStatuses.contains(status) && columns(of: status).isEmpty
     }
 
-    /// A column can be added below the limits, to a status not hidden.
+    /// A column can be added within the limits, to a status not hidden. A
+    /// status without columns needs two free slots: adding there defines
+    /// its first column too (`appendColumn`).
     package func canAdd(to status: String) -> Bool {
-        !hidden.contains(status) && columns(of: status).count < Self.maxPerStatus
-            && columns.count < Self.maxPerWorkbench
+        let own = columns(of: status).count
+        let added = own == 0 ? 2 : 1
+        return !hidden.contains(status) && own + added <= Self.maxPerStatus
+            && columns.count + added <= Self.maxPerWorkbench
     }
 
     // MARK: - Checks
 
     /// Every refusal Go would answer the draft with, in board order; empty
-    /// means Save may run.
+    /// means the definition may be sent.
     package var errors: [String] {
         var out: [String] = []
         for status in WorkbenchBoardColumns.hideableStatuses
@@ -153,7 +247,7 @@ package struct BoardColumnsDraft: Equatable {
         return out
     }
 
-    /// What Save sends: titles and descriptions trimmed, positions 0…n per
+    /// What a save sends: titles and descriptions trimmed, positions 0…n per
     /// status, hidden statuses in the hideable order.
     package var definition: WorkbenchBoardColumns {
         var positions: [String: Int] = [:]
@@ -180,6 +274,10 @@ package struct BoardColumnsDraft: Equatable {
     /// status's first column left (its standard one when none is). nil for
     /// an empty or unsaved column. `cardCounts` is
     /// `WorkbenchQueries.boardColumnCardCounts`.
+    package func deleteNotice(forStored columnID: Int64, cardCounts: [Int64: Int]) -> String? {
+        draftID(forStored: columnID).flatMap { deleteNotice(for: $0, cardCounts: cardCounts) }
+    }
+
     package func deleteNotice(for id: Int, cardCounts: [Int64: Int]) -> String? {
         guard let column = columns.first(where: { $0.id == id }),
               let stored = column.columnID,
