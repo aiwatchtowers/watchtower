@@ -129,18 +129,28 @@ package enum AutomationQueries {
     private static let unreadInbox = "o.kind = 'inbox' AND o.read_at IS NULL AND o.dismissed_at IS NULL"
 
     /// Unread inbox outputs, newest first, with their automation's name;
-    /// `since` keeps only the ones created then or later (Home's window).
+    /// `since` keeps only the ones created then or later and `limit` caps
+    /// the rows (Home's window); the Inbox strip passes neither.
     package static func fetchInboxOutputs(
-        _ db: Database, since: Date? = nil, limit: Int = -1
+        _ db: Database, since: Date? = nil, limit: Int? = nil
     ) throws -> [AutomationOutputCard] {
-        let rows = try Row.fetchAll(db, sql: """
+        var sql = """
             SELECT o.id, o.automation_id, o.run_id, o.title, o.body, o.priority, o.created_at,
                 COALESCE(NULLIF(a.name, ''), a.slug) AS name
             FROM automation_outputs o JOIN automations a ON a.id = o.automation_id
-            WHERE \(unreadInbox) AND o.created_at >= ?
-            ORDER BY o.created_at DESC, o.id DESC
-            LIMIT ?
-            """, arguments: [since.map(AutomationDates.format) ?? "", limit])
+            WHERE \(unreadInbox)
+            """
+        var arguments = StatementArguments()
+        if let since {
+            sql += " AND o.created_at >= ?"
+            arguments += [AutomationDates.format(since)]
+        }
+        sql += " ORDER BY o.created_at DESC, o.id DESC"
+        if let limit {
+            sql += " LIMIT ?"
+            arguments += [limit]
+        }
+        let rows = try Row.fetchAll(db, sql: sql, arguments: arguments)
         return rows.map { row in
             AutomationOutputCard(
                 id: row["id"],

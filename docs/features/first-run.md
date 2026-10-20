@@ -521,7 +521,9 @@ content width). No migration, no AI, no daemon phase.
     `LIMIT 200`. Source `.automations`, tables `automation_outputs` +
     `automations`. A row shows the output's title (or "Automation output"),
     the automation's name as the place, the body, chip "Automation"; a click
-    opens Inbox.
+    opens its run in the Automations tab (`HomeLink.automationRun`) — always
+    visible, unlike Inbox, which hides with no message, tracker or calendar
+    source.
   - Calendar (`events`): today and the next 4 days through
     `isShownEvent` — no all-day, no `cancelled`, none the owner
     declined (attendee email equal to the event's `accountEmail`,

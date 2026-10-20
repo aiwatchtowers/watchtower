@@ -82,6 +82,7 @@ extension AppState {
         case .workbench(let route): navigateToWorkbench(route)
         case .workbenches: selectedDestination = .workbench
         case .catchUp: selectedDestination = .catchUp
+        case let .automationRun(automationID, runID): openAutomationRun(automationID: automationID, runID: runID)
         case .instructionSettings:
             settingsTab = .system
             openSettingsWindow?()

@@ -182,6 +182,32 @@ final class HomeFeedActionTests: XCTestCase {
         XCTAssertFalse(center.hiddenRefs.contains(ref))
     }
 
+    /// An automation output reaches the feed from the database, and a failed
+    /// Done keeps its error once the next read lands (HomeCenter.contains).
+    func testAutomationOutputFailureBringsTheRowBack() async throws {
+        let pool = try makePool()
+        let id = try await pool.write { db -> Int64 in
+            let automation = try TestDatabase.insertAutomation(db)
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
+            return try TestDatabase.insertAutomationOutput(
+                db, automationID: automation, runID: run,
+                createdAt: AutomationDates.format(Date().addingTimeInterval(-60)))
+        }
+        let ref = FeedRef.output(id)
+        let performer = FakeHomeFeedPerformer()
+        performer.error = PerformerFailure()
+        let center = try makeCenter(performer: performer)
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntil(center, shows(ref))
+
+        await center.act(.done, on: ref)
+        await center.rereadNow()
+        XCTAssertTrue(shows(ref)(center.snapshot))
+        XCTAssertEqual(center.feedErrors[ref], "watchtower exited with error: database is locked")
+        XCTAssertFalse(center.hiddenRefs.contains(ref))
+    }
+
     func testASecondPressClearsTheRowsError() async throws {
         let pool = try makePool()
         let ref = try insertMention(pool)

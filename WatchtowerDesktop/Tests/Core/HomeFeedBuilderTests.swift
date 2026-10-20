@@ -95,7 +95,7 @@ final class HomeFeedBuilderTests: XCTestCase {
     }
 
     /// An automation's inbox output: its title over the body, the
-    /// automation's name as the place, Done / Hide, Inbox on a click.
+    /// automation's name as the place, Done / Hide, its run on a click.
     func testAutomationOutputRow() throws {
         var data = HomeFeedData()
         data.outputs = [output(6), output(7, title: "", minutesAgo: 30)]
@@ -108,7 +108,7 @@ final class HomeFeedBuilderTests: XCTestCase {
         XCTAssertEqual(row.whereText, "Mail summary")
         XCTAssertEqual(row.text, "Ann and Bo wait on a reply.")
         XCTAssertEqual(row.actions, [.done, .hide])
-        XCTAssertEqual(row.link, .inbox)
+        XCTAssertEqual(row.link, .automationRun(automationID: 1, runID: 1))
         XCTAssertFalse(row.read)
         XCTAssertEqual(rows[1].who, "Automation output")
         XCTAssertTrue(FeedRef.output(6).hasActions)
