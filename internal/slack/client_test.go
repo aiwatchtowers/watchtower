@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	goslack "github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
@@ -788,7 +792,8 @@ func TestNewHTTPClientBounds(t *testing.T) {
 
 // TestAnsweredCalls_CountsWhatSlackAnswered pins the daemon's Slack progress
 // signal: a success and an API error are answers, a request that died on the
-// wire is not, and ResetAPIStats never moves the count back.
+// wire or broke off mid-body is not, and ResetAPIStats never moves the count
+// back.
 func TestAnsweredCalls_CountsWhatSlackAnswered(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/auth.test", func(w http.ResponseWriter, _ *http.Request) {
@@ -803,6 +808,18 @@ func TestAnsweredCalls_CountsWhatSlackAnswered(t *testing.T) {
 		conn, _, err := w.(http.Hijacker).Hijack()
 		if err == nil {
 			_ = conn.Close() // no response: the request fails on the wire
+		}
+	})
+	mux.HandleFunc("/users.profile.get", func(w http.ResponseWriter, _ *http.Request) {
+		// Headers and part of the body, then the connection drops: slack-go
+		// returns the body read error unwrapped.
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":tr`))
+		w.(http.Flusher).Flush()
+		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			_ = conn.Close()
 		}
 	})
 	c := newUnlimitedTestClient(t, mux)
@@ -820,6 +837,38 @@ func TestAnsweredCalls_CountsWhatSlackAnswered(t *testing.T) {
 	_, err = c.GetUserInfo(context.Background(), "U001")
 	require.Error(t, err)
 	assert.Equal(t, uint64(2), c.AnsweredCalls(), "a request that died on the wire is no answer")
+
+	err = c.doRequest(context.Background(), 4, func() error {
+		_, err := c.api.GetUserProfileContext(context.Background(), &goslack.GetUserProfileParameters{UserID: "U001"})
+		return err
+	})
+	require.Error(t, err)
+	assert.Equal(t, uint64(2), c.AnsweredCalls(), "a response cut off mid-body is no answer")
+}
+
+// TestIsSlackAnswer_ErrorKinds pins each answer kind slack-go returns — a
+// value or a pointer type, so a wrong errors.As target would never match —
+// also when wrapped, and the failures that are no answer.
+func TestIsSlackAnswer_ErrorKinds(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"success", nil, true},
+		{"API error", goslack.SlackErrorResponse{Err: "channel_not_found"}, true},
+		{"429", &goslack.RateLimitedError{RetryAfter: time.Second}, true},
+		{"status error", goslack.StatusCodeError{Code: 502, Status: "502 Bad Gateway"}, true},
+		{"wrapped API error", fmt.Errorf("conversations.info: %w", goslack.SlackErrorResponse{Err: "x"}), true},
+		{"wire error", &url.Error{Op: "Post", URL: "https://slack.com/api/x", Err: errors.New("timeout")}, false},
+		{"body cut off", io.ErrUnexpectedEOF, false},
+		{"cancelled", context.Canceled, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isSlackAnswer(tc.err))
+		})
+	}
 }
 
 // TestCloseIdleConnections_ReachesEveryClient pins the wake handling's half

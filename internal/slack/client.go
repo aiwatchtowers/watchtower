@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"net/url"
 	"sync/atomic"
 	"time"
 
@@ -130,7 +129,7 @@ func (c *Client) doRequest(ctx context.Context, tier int, fn func() error) error
 		err := fn()
 		c.handleError(tier, err) // set backoff BEFORE releasing gate
 		c.rateLimiter.Done(tier)
-		if !isTransportError(err) {
+		if isSlackAnswer(err) {
 			c.answered.Add(1)
 		}
 
@@ -514,20 +513,28 @@ func (c *Client) ResetAPIStats() {
 }
 
 // AnsweredCalls counts the requests Slack answered — a success, an API
-// error, a 429 — over the client's lifetime; one that failed on the wire (a
-// timeout, a dead socket, a cancelled ctx) does not count. Unlike APIStats it
-// is never reset, so a caller that compares two readings sees every answer
-// in between: the daemon reads a change as its Slack sync making progress.
+// error, a 429, an HTTP status error — over the client's lifetime. Any other
+// failure does not count: one on the wire (a timeout, a dead socket, a
+// cancelled ctx) and one that broke off mid-body after the headers came (a
+// truncated or stalled response, which slack-go returns unwrapped). Unlike
+// APIStats it is never reset, so a caller that compares two readings sees
+// every answer in between: the daemon reads a change as its Slack sync
+// making progress.
 func (c *Client) AnsweredCalls() uint64 {
 	return c.answered.Load()
 }
 
-// isTransportError reports whether err is a request that got no answer from
-// Slack: the HTTP client's *url.Error (a timeout, a refused or dead
-// connection, a cancelled ctx), as opposed to a response Slack sent.
-func isTransportError(err error) bool {
-	var urlErr *url.Error
-	return errors.As(err, &urlErr)
+// isSlackAnswer reports whether a request ended with a complete answer from
+// Slack: no error, or one of the errors slack-go builds from a response it
+// read in full (an API error, a 429, a non-2xx status).
+func isSlackAnswer(err error) bool {
+	if err == nil {
+		return true
+	}
+	var apiErr slack.SlackErrorResponse
+	var rateErr *slack.RateLimitedError
+	var statusErr slack.StatusCodeError
+	return errors.As(err, &apiErr) || errors.As(err, &rateErr) || errors.As(err, &statusErr)
 }
 
 // handleError checks for rate limit errors and sets backoff accordingly.
