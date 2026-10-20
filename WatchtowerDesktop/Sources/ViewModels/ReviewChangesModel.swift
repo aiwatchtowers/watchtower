@@ -99,7 +99,7 @@ final class ReviewChangesModel {
     /// Every write of the model, one after another (board #670), and the
     /// periodic save under way.
     @ObservationIgnored private let writes = SerialWrites()
-    private static let log = Logger(subsystem: "watchtower", category: "review")
+    private static let log = Logger(subsystem: Constants.bundleID, category: "review")
     /// How long a write that met a busy database waits before its one retry.
     static let busyRetryDelay: Duration = .milliseconds(300)
     /// Test-only: called before each attempt of a database write with the
@@ -220,7 +220,6 @@ final class ReviewChangesModel {
     /// The message when Go answers that the round was already sent.
     static let alreadySentMessage = "This round was already sent"
 
-    /// Whether `path` is marked Viewed at its current content.
     /// Whether the round has anything to review; an empty diff makes no overview.
     var hasChanges: Bool { !files.isEmpty }
 
@@ -248,6 +247,7 @@ final class ReviewChangesModel {
         return nil
     }
 
+    /// Whether `path` is marked Viewed at its current content.
     func isViewed(_ path: String) -> Bool {
         guard let file = allFiles.first(where: { $0.path == path }) else { return false }
         return viewed[path] == Self.contentKey(file)
@@ -363,7 +363,8 @@ final class ReviewChangesModel {
             // Undo, without an overview on screen a new one is asked for
             // anyway. A model call still running is left to finish
             // (`startOverview`), and followed up when it lands.
-            if regenerateOverview ? overviewTreeSHA != info.treeSha : treeChanged && !overviewShown { startOverview() }
+            // An empty diff drops whatever overview is shown, Undo or not.
+            if !hasChanges || (regenerateOverview ? overviewTreeSHA != info.treeSha : treeChanged && !overviewShown) { startOverview() }
             let roundID = info.id
             let rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
             let stale = rows.filter { ($0.status == .draft || $0.status == .carried) && $0.path != nil && $0.treeSHA != info.treeSha }
@@ -946,6 +947,9 @@ final class ReviewChangesModel {
             generationID = nil
             overviewTreeSHA = round?.treeSha
             overview = .idle
+            lastReadyOverview = nil
+            appliedAIChapters = []
+            aiChaptersPending = false
             return
         }
         guard generationID == nil else { return }

@@ -1544,6 +1544,22 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(after.summary, "After a refresh.")
     }
 
+    func testUndoToAnEmptyDiffDropsTheOverview() async throws {
+        let h = try harness()
+        scriptDeepUndo(h, trees: ["t7", "u7"])
+        h.cli.script("diff", [diffJSON(["a.go"]), diffJSON([])])
+        h.cli.script(["revert-hunk": #"{"ok":true,"revert":{"hunk_id":"0123456789abcdef","path":"a.go"}}"#])
+        h.cli.script("overview", [#"{"ok":true,"overview":{"summary":"Before the undo."},"overview_cached":false}"#])
+        await h.model.open()
+        await awaitOverview(h)
+        guard case .ready = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
+        await h.model.undo(hunkID: "0123456789abcdef")
+        await awaitOverview(h)
+        XCTAssertTrue(h.model.files.isEmpty)
+        XCTAssertEqual(h.model.overview, .idle)
+        XCTAssertEqual(h.cli.calls("overview").count, 1)
+    }
+
     func testRefreshAfterUndoRegeneratesTheOverview() async throws {
         let h = try harness()
         scriptDeepUndo(h, trees: ["t7", "u7", "u7"])
