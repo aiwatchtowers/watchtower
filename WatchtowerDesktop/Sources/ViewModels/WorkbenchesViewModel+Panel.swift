@@ -267,10 +267,27 @@ extension WorkbenchesViewModel {
     /// Changes button puts it.
     func showChanges(sessionID: Int64, projectID: Int64) {
         if selectedWorkbenchID != projectID { selectedWorkbenchID = projectID }
+        showBesideItsSession(.changes(sessionID), sessionID: sessionID, projectID: projectID)
+    }
+
+    /// A session strip's Report or Changes (spec 2026-10-20, call 8): that
+    /// session's `pane` beside its own terminal, the way the header's
+    /// toggle puts the shown session's.
+    func showBesideItsSession(_ pane: WorkspacePane, sessionID: Int64, projectID: Int64) {
         beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
-        Self.placeBesideItsSession(.changes(sessionID), sessionID: sessionID, in: &updated)
+        Self.placeBesideItsSession(pane, sessionID: sessionID, in: &updated)
         setLayout(updated, projectID: projectID)
+    }
+
+    /// A session strip's Terminal or Workchat over that session's report or
+    /// Changes: the slot shows the session instead, in that mode — recorded
+    /// as the mode it opens in — resumed if not running.
+    func showSession(_ id: Int64, workchat: Bool, inPane slot: WorkspacePane, projectID: Int64) async {
+        var updated = layout(projectID: projectID)
+        updated.setMode(workchat, sessionID: id)
+        setLayout(updated, projectID: projectID)
+        await showInPane(slot, item: .session(id), projectID: projectID)
     }
 
     /// A session row's Open in Workchat (#711): its workbench on screen and

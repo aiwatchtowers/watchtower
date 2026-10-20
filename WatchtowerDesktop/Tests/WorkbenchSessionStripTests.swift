@@ -182,7 +182,76 @@ final class WorkbenchSessionStripTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [terminal])
     }
 
+    /// Report and Changes follow the strip's own session: two sessions side
+    /// by side, the second strip's Report puts the second session's report
+    /// on screen and lights on that strip only; Changes is never disabled.
+    func testStripReportAndChangesFollowTheStripsSession() async throws {
+        let (vm, s) = try await loaded()
+        let p = s.project.id
+        let (one, two) = (s.first.id, s.second.id)
+        vm.setLayout(Self.split(.session(one), .session(two)), projectID: p)
+        XCTAssertFalse(try toggle("Changes", strip(vm, s.project, .session(two))).isDisabled())
+
+        try toggle("Report", strip(vm, s.project, .session(two))).tap()
+        let panes = vm.layout(projectID: p).visiblePanes
+        XCTAssertTrue(panes.contains(.sessionReport(two)), "\(panes)")
+        XCTAssertFalse(panes.contains(.sessionReport(one)))
+        XCTAssertTrue(try toggle("Report", strip(vm, s.project, .session(two))).isOn())
+        XCTAssertFalse(try toggle("Report", strip(vm, s.project, .sessionReport(two))).isDisabled())
+
+        vm.setLayout(Self.split(.session(one), .session(two)), projectID: p)
+        try toggle("Changes", strip(vm, s.project, .session(two))).tap()
+        XCTAssertTrue(vm.layout(projectID: p).visiblePanes.contains(.changes(two)))
+        XCTAssertTrue(try toggle("Changes", strip(vm, s.project, .changes(two))).isOn())
+        XCTAssertFalse(try toggle("Changes", strip(vm, s.project, .session(one))).isOn(),
+                       "another session's Changes does not light this strip")
+    }
+
     // MARK: - Its own slot
+
+    /// On a report or Changes pane, Terminal and Workchat put this strip's
+    /// session in this pane only, in the chosen mode; the other pane stays.
+    func testStripModeOnAReportPaneReplacesThisPaneOnly() async throws {
+        let (vm, s) = try await loaded()
+        let p = s.project.id
+        let one = s.first.id
+        vm.setLayout(Self.split(.sessionReport(one), .board), projectID: p)
+        try toggle("Terminal", strip(vm, s.project, .sessionReport(one))).tap()
+        await waitUntil { vm.layout(projectID: p).visiblePanes == [.session(one), .board] }
+
+        vm.setLayout(Self.split(.changes(one), .board), projectID: p)
+        try toggle("Workchat", strip(vm, s.project, .changes(one))).tap()
+        await waitUntil { vm.layout(projectID: p).visiblePanes == [.sessionChat(one), .board] }
+        XCTAssertEqual(vm.layout(projectID: p).pane(forSession: one), .sessionChat(one), "the mode is recorded")
+    }
+
+    /// A mode already on screen in the other pane is disabled on this
+    /// strip, not a click that does nothing or only flips the recorded mode.
+    func testStripModeShownInTheOtherPaneIsDisabled() async throws {
+        let (vm, s) = try await loaded()
+        let p = s.project.id
+        let one = s.first.id
+        vm.setLayout(Self.split(.session(one), .sessionChat(one)), projectID: p)
+        XCTAssertTrue(try toggle("Workchat", strip(vm, s.project, .session(one))).isDisabled())
+        XCTAssertTrue(try toggle("Terminal", strip(vm, s.project, .sessionChat(one))).isDisabled())
+        XCTAssertFalse(try toggle("Terminal", strip(vm, s.project, .session(one))).isDisabled())
+
+        vm.setLayout(Self.split(.session(one), .sessionReport(one)), projectID: p)
+        XCTAssertTrue(try toggle("Terminal", strip(vm, s.project, .sessionReport(one))).isDisabled())
+        XCTAssertFalse(try toggle("Workchat", strip(vm, s.project, .sessionReport(one))).isDisabled())
+    }
+
+    /// The sessions menu ticks off the pane's own session on a report or
+    /// Changes pane too; the other sessions stay enabled.
+    func testStripSessionsMenuDisablesThePanesOwnSession() async throws {
+        let (vm, s) = try await loaded()
+        vm.setLayout(Self.split(.sessionReport(s.first.id), .board), projectID: s.project.id)
+        for pane: WorkspacePane in [.sessionReport(s.first.id), .changes(s.first.id), .sessionChat(s.first.id)] {
+            let menu = try strip(vm, s.project, pane).inspect().find(WorkbenchSessionsMenu.self)
+            XCTAssertTrue(try menu.find(button: "one").isDisabled(), "\(pane)")
+            XCTAssertFalse(try menu.find(button: "two").isDisabled(), "\(pane)")
+        }
+    }
 
     /// In a split, the strip's sessions menu replaces its own slot only.
     func testStripSessionsMenuActsOnItsOwnSlot() async throws {
@@ -230,6 +299,23 @@ final class WorkbenchSessionStripTests: XCTestCase {
         XCTAssertNoThrow(try strip(vm, s.project, .session(s.first.id)).inspect().find(WorkbenchPlaceCrumb.self))
         XCTAssertThrowsError(try strip(vm, s.project, .session(s.second.id)).inspect().find(WorkbenchBranchCrumb.self))
         XCTAssertThrowsError(try strip(vm, s.project, .session(s.second.id)).inspect().find(WorkbenchPlaceCrumb.self))
+    }
+
+    /// The focused session owns the root even when it is the second pane:
+    /// the crumbs move to its strip.
+    func testCrumbsFollowTheFocusedSession() async throws {
+        let (vm, s) = try await loaded()
+        let p = s.project.id
+        await vm.showSession(id: s.first.id)
+        await vm.showSession(id: s.second.id)
+        vm.setLayout(Self.split(.session(s.first.id), .session(s.second.id)), projectID: p)
+        center.focus(s.second.id)
+        XCTAssertEqual(vm.activeSessionID(projectID: p), s.second.id)
+
+        XCTAssertTrue(vm.ownsCodeRoot(sessionID: s.second.id, projectID: p))
+        XCTAssertFalse(vm.ownsCodeRoot(sessionID: s.first.id, projectID: p))
+        XCTAssertNoThrow(try strip(vm, s.project, .session(s.second.id)).inspect().find(WorkbenchBranchCrumb.self))
+        XCTAssertThrowsError(try strip(vm, s.project, .session(s.first.id)).inspect().find(WorkbenchBranchCrumb.self))
     }
 
     // MARK: - Expand and close

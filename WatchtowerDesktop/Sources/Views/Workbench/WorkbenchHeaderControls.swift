@@ -104,7 +104,7 @@ struct WorkbenchHeaderControls: View {
     /// `isOn`: Workchat, which it continues, is on; `isLit`: either half is.
     private func sessionMenu(slot: WorkspacePane, isOn: Bool, isLit: Bool) -> some View {
         Menu {
-            WorkbenchSessionMenuItems(vm: vm, project: project, slot: slot)
+            WorkbenchSessionMenuItems(vm: vm, project: project, slot: slot, current: WorkspaceLayout.sessionID(of: slot))
         } label: {
             // The twin's right end: a hairline, then the chevron, coloured
             // like the segment.

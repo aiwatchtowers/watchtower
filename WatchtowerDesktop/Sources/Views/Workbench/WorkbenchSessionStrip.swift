@@ -43,13 +43,16 @@ struct WorkbenchSessionStrip: View {
         vm.session(sessionID, projectID: project.id)?.title ?? "Session"
     }
 
-    /// One half of `[Terminal | Workchat]`: lit when this pane shows that
-    /// mode. Turning the other half on swaps this pane in place — the other
-    /// pane of a split stays; a report or Changes pane brings the session
-    /// up the way the page header's toggle does. The lit half stays lit:
-    /// the capsule picks a mode, it never empties the pane.
+    /// One half of `[Terminal | Workchat]`, for this strip's session:
+    /// lit when this pane shows that mode. Turning the other half on swaps
+    /// this pane in place — the other pane of a split stays; over the
+    /// session's report or Changes this pane shows the session in that
+    /// mode. A mode already on screen in the other pane is disabled, not a
+    /// click that does nothing; the lit half stays lit — the capsule picks
+    /// a mode, it never empties the pane.
     private func modeToggle(_ label: String, pane mode: WorkspacePane) -> some View {
         let view: WorkspaceView = mode.isWorkchat ? .chat : .terminal
+        let shownElsewhere = pane != mode && vm.layout(projectID: project.id).visiblePanes.contains(mode)
         return Toggle(isOn: Binding(
             get: { pane == mode },
             set: { on in
@@ -57,7 +60,9 @@ struct WorkbenchSessionStrip: View {
                 if WorkspaceLayout.sessionID(of: pane) == sessionID {
                     vm.toggleMode(sessionID: sessionID, projectID: project.id)
                 } else {
-                    Task { await vm.showView(view, project: project) }
+                    Task {
+                        await vm.showSession(sessionID, workchat: mode.isWorkchat, inPane: pane, projectID: project.id)
+                    }
                 }
             }
         )) {
@@ -65,20 +70,22 @@ struct WorkbenchSessionStrip: View {
         }
         .toggleStyle(segmentStyle(label))
         .help(mode.isWorkchat ? "Show this session's Workchat in this pane (⌃`)" : "Show this session's terminal in this pane (⌃`)")
+        .disabled(shownElsewhere)
     }
 
-    /// Report or Changes: today's page-header toggle (on puts it beside its
-    /// session's terminal, off closes that pane of a split), on a capsule
-    /// of its own.
+    /// Report or Changes of this strip's session: lit while it is on
+    /// screen; on puts it beside its session's terminal (a single pane
+    /// splits), off closes it in a split — a single pane is never removed.
     private func viewToggle(_ label: String, view: WorkspaceView) -> some View {
-        let layout = vm.layout(projectID: project.id)
+        let target: WorkspacePane = view == .report ? .sessionReport(sessionID) : .changes(sessionID)
+        let visible = vm.layout(projectID: project.id).visiblePanes
         return Toggle(isOn: Binding(
-            get: { layout.isShowing(view) },
+            get: { visible.contains(target) },
             set: { on in
                 if on {
-                    Task { await vm.showView(view, project: project) }
-                } else {
-                    vm.hideView(view, projectID: project.id)
+                    vm.showBesideItsSession(target, sessionID: sessionID, projectID: project.id)
+                } else if visible.count == 2 {
+                    vm.closePane(target, projectID: project.id)
                 }
             }
         )) {
@@ -86,9 +93,7 @@ struct WorkbenchSessionStrip: View {
         }
         .toggleStyle(segmentStyle(label))
         .segmentCapsule()
-        .help(view == .report ? "Show the session's report beside its terminal" : "Review the session's changes")
-        // No session to review: say so rather than a click that does nothing.
-        .disabled(view == .changes && !layout.isShowing(view) && vm.sessionViewTarget(projectID: project.id) == nil)
+        .help(view == .report ? "Show this session's report beside its terminal" : "Review this session's changes")
     }
 
     private func segmentStyle(_ label: String) -> SegmentedToggleStyle {
@@ -131,7 +136,8 @@ struct WorkbenchSessionsMenu: View {
 
     var body: some View {
         Menu {
-            WorkbenchSessionMenuItems(vm: vm, project: project, slot: slot)
+            // The pane's own session, whatever it shows of it, is the one ticked off.
+            WorkbenchSessionMenuItems(vm: vm, project: project, slot: slot, current: WorkspaceLayout.sessionID(ofAny: slot))
         } label: {
             HStack(spacing: Spacing.small) {
                 Text(title).lineLimit(1).truncationMode(.middle)
@@ -148,19 +154,21 @@ struct WorkbenchSessionsMenu: View {
     }
 }
 
-/// The sessions menus' items: every other session of the workbench, opened
-/// in `slot` (resumed if not running), then the New Session items.
+/// The sessions menus' items: every session of the workbench but
+/// `current` (disabled), opened in `slot` (resumed if not running), then
+/// the New Session items.
 struct WorkbenchSessionMenuItems: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
     let slot: WorkspacePane
+    let current: Int64?
 
     var body: some View {
         ForEach(vm.orderedSessions(projectID: project.id)) { session in
             Button(session.title) {
                 Task { await vm.showInPane(slot, item: .session(session.id), projectID: project.id) }
             }
-            .disabled(WorkspaceLayout.sessionID(of: slot) == session.id)
+            .disabled(current == session.id)
         }
         Divider()
         NewSessionMenuItems(vm: vm, projectID: project.id) { agent, worktree in
