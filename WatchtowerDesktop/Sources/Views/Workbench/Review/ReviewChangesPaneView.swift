@@ -172,15 +172,25 @@ struct ReviewChangesPaneView: View {
                 }
                 diff(path: path)
                 ReviewCommentListView(model: model, path: path)
-                if checklist { ReviewChecklistView(model: model) { compose = $0 } }
+                if checklist { chaptersFoot }
             }
         } else {
             VStack(spacing: 0) {
                 Text(Self.noFileText(model))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if checklist { ReviewChecklistView(model: model) { compose = $0 } }
+                if checklist { chaptersFoot }
             }
+        }
+    }
+
+    /// Chapters' foot: the checklist, then Next: Wrap-up.
+    private var chaptersFoot: some View {
+        VStack(spacing: 0) {
+            ReviewChecklistView(model: model) { compose = $0 }
+            ReviewNextStepButton(model: model)
+                .padding(.horizontal, Spacing.medium)
+                .padding(.vertical, Spacing.regular)
         }
     }
 

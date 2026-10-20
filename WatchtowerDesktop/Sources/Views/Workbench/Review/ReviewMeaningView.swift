@@ -37,13 +37,7 @@ struct ReviewMeaningView: View {
                     Text("None yet").foregroundStyle(.secondary)
                 }
                 ForEach(designComments) { DesignCommentRow(model: model, comment: $0) }
-                HStack {
-                    Spacer()
-                    // A failure lands in lastError.
-                    Button("Next: Chapters →") { Task { try? await model.setPhase(.chapters) } }
-                        .buttonStyle(.kitSecondary)
-                        .controlSize(.small)
-                }
+                ReviewNextStepButton(model: model)
             }
             .frame(maxWidth: Self.columnWidth, alignment: .leading)
             .padding(Spacing.page)

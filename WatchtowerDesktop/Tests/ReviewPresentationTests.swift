@@ -231,4 +231,20 @@ final class ReviewPresentationTests: XCTestCase {
         XCTAssertNoThrow(try empty.find(text: "Nothing to review"))
         XCTAssertThrowsError(try empty.find(button: "Refresh"), "the empty state's Refresh duplicates Start next round")
     }
+
+    func testDeepStepsOfferTheirNextStep() async throws {
+        func nextButtons(phase: String) async throws -> [String] {
+            let f = try ReviewFixture(files: [.init(path: "a.go")], mode: "deep", phase: phase)
+            fixtures.append(f)
+            await f.open()
+            let buttons = try ReviewNextStepButton(model: f.model).inspect().findAll(ViewType.Button.self)
+            return try buttons.map { try $0.labelView().text().string() }
+        }
+        let meaning = try await nextButtons(phase: "meaning")
+        XCTAssertEqual(meaning, ["Next: Chapters →"])
+        let chapters = try await nextButtons(phase: "chapters")
+        XCTAssertEqual(chapters, ["Next: Wrap-up →"])
+        let wrapup = try await nextButtons(phase: "wrapup")
+        XCTAssertEqual(wrapup, [], "Wrap-up's Send is the toolbar's")
+    }
 }
