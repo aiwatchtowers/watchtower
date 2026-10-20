@@ -289,7 +289,7 @@ func compactSkipMessage(name string, res db.CompactResult) string {
 		case "disk":
 			return fmt.Sprintf("not updating the search index of %s: the volume needs one and a half times the old index's size free (pass --force to try anyway)", name)
 		case "interrupted":
-			return fmt.Sprintf("updating the search index of %s was interrupted; it resumes on the next launch", name)
+			return fmt.Sprintf("updating the search index of %s was interrupted; it continues where it stopped on the next run", name)
 		}
 	}
 	skipped := res.Skipped
