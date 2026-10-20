@@ -38,3 +38,20 @@ func SetFTSRebuildChunkHookForTest(fn func(chunk int)) (restore func()) {
 	ftsRebuildChunkHook = fn
 	return func() { ftsRebuildChunkHook = prev }
 }
+
+// SetFTSLegacyDrainRowsForTest sets the rows one drain chunk deletes from
+// every legacy shadow table (ftsLegacyDrain), for the daemon's tests, which
+// cannot reach it. Returns a restore func the caller must invoke (typically
+// via t.Cleanup). Outside a test binary it panics (testing.Testing).
+func SetFTSLegacyDrainRowsForTest(rows int) (restore func()) {
+	if !testing.Testing() {
+		panic("db.SetFTSLegacyDrainRowsForTest called outside a test binary")
+	}
+	prev := ftsLegacyDrain
+	next := append(ftsLegacyDrain[:0:0], ftsLegacyDrain...)
+	for i := range next {
+		next[i].rows = rows
+	}
+	ftsLegacyDrain = next
+	return func() { ftsLegacyDrain = prev }
+}

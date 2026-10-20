@@ -29,6 +29,23 @@ var ftsRebuildChunkGap = 100 * time.Millisecond
 // interrupt and concurrent-write tests). Tests mutate this; no t.Parallel.
 var ftsRebuildChunkHook func(chunk int)
 
+// ftsLegacyDrain lists the legacy index's rowid shadow tables a draining
+// completion empties, with the rows one drain chunk deletes from each: a
+// _data row is a segment page of up to ~4 KB, the others hold one small row
+// per message. On synthetic data one DROP of a 2M-message legacy index held
+// the write lock for about 0.5 s, past a hook's lock budget, while drain
+// chunks of about these sizes held it for tens of milliseconds. Tests mutate
+// this; no t.Parallel.
+var ftsLegacyDrain = []struct {
+	table  string
+	delete string // deletes the table's first ? rows
+	rows   int
+}{
+	{"messages_fts_legacy_data", `DELETE FROM messages_fts_legacy_data WHERE rowid IN (SELECT rowid FROM messages_fts_legacy_data ORDER BY rowid LIMIT ?)`, 150},
+	{"messages_fts_legacy_content", `DELETE FROM messages_fts_legacy_content WHERE rowid IN (SELECT rowid FROM messages_fts_legacy_content ORDER BY rowid LIMIT ?)`, 1500},
+	{"messages_fts_legacy_docsize", `DELETE FROM messages_fts_legacy_docsize WHERE rowid IN (SELECT rowid FROM messages_fts_legacy_docsize ORDER BY rowid LIMIT ?)`, 1500},
+}
+
 // ftsRebuildNeedsDiskBytes is the free space the fill asks for: the new index
 // grows to about the legacy index's size, plus its WAL frames.
 func ftsRebuildNeedsDiskBytes(legacy int64) int64 { return legacy * 3 / 2 }
@@ -156,13 +173,19 @@ func mainDatabaseFile(q *DB) (string, error) {
 type FTSRebuildOptions struct {
 	Budget    time.Duration // 0 = until done; checked between chunks, at least one chunk runs
 	ChunkRows int           // 0 = 5000
+	// DrainLegacy empties messages_fts_legacy's shadow tables in chunk
+	// transactions (ftsLegacyDrain) before the completion drops it, so no
+	// single transaction holds the write lock for the whole legacy index —
+	// for a run beside live writers (the daemon). Without it the completion
+	// drops the table directly (the launch step, daemon stopped).
+	DrainLegacy bool
 }
 
 // FTSRebuildResult is the outcome of RebuildMessagesSearch.
 type FTSRebuildResult struct {
 	Done    bool  // legacy dropped and keys cleared (also true when nothing was pending)
 	Indexed int64 // index rows written by this call
-	Chunks  int
+	Chunks  int   // fill and drain chunks committed by this call
 }
 
 // RebuildMessagesSearch fills the rowid-keyed messages_fts left empty by
@@ -177,7 +200,10 @@ type FTSRebuildResult struct {
 // cursor moves to hi in the same transaction. Bounding by hi rather than
 // limiting the indexable rows moves the cursor past runs of empty or deleted
 // messages. When no row is left past the cursor (an empty messages table
-// included), one transaction drops the legacy table (IF EXISTS: another
+// included) and opts.DrainLegacy is set, each further chunk deletes the next
+// rows of the legacy shadow tables (nothing reads the legacy index any more)
+// until a chunk finds them all below its limits; that chunk, or with
+// DrainLegacy unset the first one past the cursor, drops the legacy table (IF EXISTS: another
 // process may have dropped it) and deletes both keys. The compaction record
 // is not touched: the freed legacy pages make the compaction due on their own.
 //
@@ -211,7 +237,7 @@ func (db *DB) RebuildMessagesSearch(ctx context.Context, opts FTSRebuildOptions)
 		if res.Chunks > 0 && opts.Budget > 0 && time.Since(start) >= opts.Budget {
 			return res, nil
 		}
-		indexed, done, err := db.fillMessagesSearchChunk(ctx, chunkRows)
+		indexed, done, err := db.fillMessagesSearchChunk(ctx, chunkRows, opts.DrainLegacy)
 		if err != nil {
 			if ctx.Err() != nil {
 				return res, fmt.Errorf("filling the messages search index: %w", ctx.Err())
@@ -250,8 +276,10 @@ func waitChunkGap(ctx context.Context) error {
 
 // fillMessagesSearchChunk runs one chunk, or the completion (done true) when
 // no row is left past the cursor or another process has finished the fill
-// since the last chunk — the completion then only clears what is left.
-func (db *DB) fillMessagesSearchChunk(ctx context.Context, chunkRows int) (indexed int64, done bool, err error) {
+// since the last chunk — the completion then only clears what is left. With
+// drain set, a chunk past the cursor deletes legacy shadow rows first and
+// completes only when they are all gone.
+func (db *DB) fillMessagesSearchChunk(ctx context.Context, chunkRows int, drain bool) (indexed int64, done bool, err error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, false, fmt.Errorf("beginning a messages search fill chunk: %w", err)
@@ -272,6 +300,18 @@ func (db *DB) fillMessagesSearchChunk(ctx context.Context, chunkRows int) (index
 		}
 	}
 	if !hi.Valid {
+		if pending && drain {
+			drained, err := drainMessagesSearchLegacy(ctx, tx)
+			if err != nil {
+				return 0, false, err
+			}
+			if !drained {
+				if err := tx.Commit(); err != nil {
+					return 0, false, fmt.Errorf("committing a messages_fts_legacy drain chunk: %w", err)
+				}
+				return 0, false, nil
+			}
+		}
 		if err := completeMessagesSearchFill(ctx, tx); err != nil {
 			return 0, false, err
 		}
@@ -295,6 +335,36 @@ func (db *DB) fillMessagesSearchChunk(ctx context.Context, chunkRows int) (index
 		return 0, false, fmt.Errorf("committing a messages search fill chunk: %w", err)
 	}
 	return indexed, false, nil
+}
+
+// drainMessagesSearchLegacy deletes the next rows of each legacy shadow
+// table, up to its ftsLegacyDrain limit, and reports whether the tables are
+// now empty: every delete stayed below its limit (or the legacy table is
+// gone). Deleting shadow rows directly leaves the FTS5 table inconsistent,
+// which is safe only because nothing reads it and the completion drops it.
+func drainMessagesSearchLegacy(ctx context.Context, tx *sql.Tx) (drained bool, err error) {
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts_legacy')`).Scan(&exists); err != nil {
+		return false, fmt.Errorf("looking up messages_fts_legacy: %w", err)
+	}
+	if !exists {
+		return true, nil
+	}
+	drained = true
+	for _, d := range ftsLegacyDrain {
+		r, err := tx.ExecContext(ctx, d.delete, d.rows)
+		if err != nil {
+			return false, fmt.Errorf("draining %s: %w", d.table, err)
+		}
+		n, err := r.RowsAffected()
+		if err != nil {
+			return false, fmt.Errorf("draining %s: %w", d.table, err)
+		}
+		if n >= int64(d.rows) {
+			drained = false
+		}
+	}
+	return drained, nil
 }
 
 func completeMessagesSearchFill(ctx context.Context, tx *sql.Tx) error {
