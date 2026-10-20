@@ -195,25 +195,27 @@ func TestDaemon_WakeEventTriggersSync(t *testing.T) {
 	cfg := &config.Config{
 		Sync: config.SyncConfig{
 			PollInterval: 10 * time.Second, // long so only wake fires, not poll
-			SyncOnWake:   false,            // we inject wake channel manually
+			SyncOnWake:   true,
 		},
 	}
+	shortenWakeSettle(t)
 
 	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(os.Stderr, "[test-daemon] ", 0))
 
 	// Inject a fake wake channel.
-	wakeCh := make(chan struct{}, 1)
+	wakeCh := make(chan time.Duration, 1)
 	d.wakeCh = wakeCh
 
-	// Send the wake signal once the initial sync is observed, then wait for
-	// the wake-triggered one: initial + wake = at least 2.
+	// Send one wake once the initial sync is observed, then wait for the
+	// wake-triggered one: initial + wake = at least 2. Only one: a wake that
+	// lands mid-cycle cancels that cycle, so a stream of them would cancel
+	// every cycle before it got anywhere.
+	woke := false
 	err := runDaemonUntil(t, d, func() bool {
-		if syncCount.Load() >= 1 {
-			select {
-			case wakeCh <- struct{}{}:
-			default:
-			}
+		if !woke && syncCount.Load() >= 1 {
+			wakeCh <- time.Hour
+			woke = true
 		}
 		return syncCount.Load() >= 2
 	})
@@ -1223,7 +1225,11 @@ func TestDaemon_ClosedTriggerChannelDoesNotSpinSyncs(t *testing.T) {
 		wire func(d *Daemon, ch chan struct{})
 	}{
 		{"trigger", func(d *Daemon, ch chan struct{}) { d.triggerCh = ch }},
-		{"wake", func(d *Daemon, ch chan struct{}) { d.wakeCh = ch }},
+		{"wake", func(d *Daemon, _ chan struct{}) {
+			wake := make(chan time.Duration)
+			close(wake)
+			d.wakeCh = wake
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())

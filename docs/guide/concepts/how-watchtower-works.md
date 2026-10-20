@@ -12,7 +12,7 @@ The AI runs through the Claude Code or Codex command-line tool (or a local serve
 
 ## What one sync cycle does
 
-A small background program, the daemon, runs a cycle every 15 minutes (**Settings → System → Sync → Poll Interval**). A cycle also starts when the daemon starts, when the Mac wakes from sleep, and when you press **Sync Now** in the menu bar. The daemon keeps running when you close the window and stops when you quit the app.
+A small background program, the daemon, runs a cycle every 15 minutes (**Settings → System → Sync → Poll Interval**). A cycle also starts when the daemon starts, about 15 seconds after the Mac wakes from sleep, and when you press **Sync Now** in the menu bar. A cycle the Mac fell asleep in is dropped on wake and replaced by that fresh one, so the digests never run on data the sleep kept from syncing. The daemon keeps running when you close the window and stops when you quit the app.
 
 ```mermaid
 flowchart LR

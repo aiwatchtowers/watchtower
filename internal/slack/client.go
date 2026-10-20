@@ -24,6 +24,11 @@ type Client struct {
 // macOS, long enough to stall a whole sync cycle. The idle-connection pool
 // cannot expire such a socket either: Go's monotonic clock stops while the
 // machine sleeps, so an idle timer that "expired" during sleep never fires.
+// The same clock bounds these timeouts, so they count awake time only: a
+// request caught by a sleep can take far longer in wall time. The daemon
+// therefore cancels a cycle a sleep interrupted and drops the pooled
+// connections (CloseIdleConnections) before the next one
+// (internal/daemon/wake.go).
 const (
 	// httpTimeout is the whole-request ceiling, matching every other
 	// integration in this repo (jira, gmail, calendar, caldav, imap). It is a
@@ -45,8 +50,12 @@ const (
 	h2PingTimeout     = 10 * time.Second
 )
 
-// newHTTPClient builds the bounded HTTP client every Slack call goes through.
-func newHTTPClient() *http.Client {
+// transport is the one connection pool every Slack client shares, so
+// CloseIdleConnections reaches all of them.
+var transport = newTransport()
+
+// newTransport builds the bounded transport behind every Slack call.
+func newTransport() *http.Transport {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = responseHeaderTimeout
 	// HTTP/2 health checks: a ping after ReadIdleTimeout of silence, the
@@ -55,7 +64,18 @@ func newHTTPClient() *http.Client {
 		SendPingTimeout: h2ReadIdleTimeout,
 		PingTimeout:     h2PingTimeout,
 	}
-	return &http.Client{Timeout: httpTimeout, Transport: tr}
+	return tr
+}
+
+// newHTTPClient builds the bounded HTTP client every Slack call goes through.
+func newHTTPClient() *http.Client {
+	return &http.Client{Timeout: httpTimeout, Transport: transport}
+}
+
+// CloseIdleConnections drops every idle pooled Slack connection, so the next
+// call dials afresh instead of writing into a socket a sleep left dead.
+func CloseIdleConnections() {
+	transport.CloseIdleConnections()
 }
 
 // NewClient creates a new rate-limited Slack client.

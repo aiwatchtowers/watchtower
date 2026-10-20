@@ -114,7 +114,7 @@ type Daemon struct {
 	orchestrators       []*sync.Orchestrator
 	config              *config.Config
 	logger              *log.Logger
-	wakeCh              <-chan struct{}
+	wakeCh              <-chan time.Duration // WatchWake: how long the machine slept
 	triggerCh           <-chan struct{}
 	automationWakeCh    <-chan struct{}  // AutomationWakeSignal watcher (WatchAutomationWake)
 	automationScheduler AutomationRunner // nil = automations not wired
@@ -408,8 +408,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 		pollInterval = config.DefaultPollInterval
 	}
 
-	if d.config.Sync.SyncOnWake {
-		d.wakeCh = WatchWake(ctx, pollInterval)
+	// Always watched, whatever sync.sync_on_wake says: a sleep that
+	// interrupts a cycle cancels it (runLoop). Only when not already wired: a
+	// test drives the loop through an injected channel.
+	if d.wakeCh == nil {
+		d.wakeCh = WatchWake(ctx)
 	}
 	// Only when not already wired: a test drives the loop through an injected
 	// channel, and installing the real signal handler would replace it.
@@ -447,49 +450,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// a few API calls per account, accepted on a (re)start for that latency.
 	d.startupCalendarSync(ctx)
 
-	// Run an initial sync immediately on startup.
-	d.runSync(ctx)
-
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			d.logger.Println("shutting down")
-			return nil
-		case <-ticker.C:
-			d.runSync(ctx)
-		// Both watchers close their channel once ctx is cancelled, and a closed
-		// channel is always ready in a select — without the ok check the loop
-		// would keep drawing "events" and re-entering runSync on the dead ctx
-		// until the random select pick landed on ctx.Done(). A closed watcher
-		// is dropped (nil blocks forever) so only ctx.Done() remains.
-		case _, ok := <-d.wakeChannel():
-			if !ok {
-				d.wakeCh = nil
-				continue
-			}
-			d.logger.Println("wake event detected, syncing")
-			d.runSync(ctx)
-			// Reset the ticker so the next poll is a full interval from now.
-			ticker.Reset(pollInterval)
-		case _, ok := <-d.triggerChannel():
-			if !ok {
-				d.triggerCh = nil
-				continue
-			}
-			d.logger.Println("manual sync trigger received, syncing")
-			d.runSync(ctx)
-			// Same as the wake path: the next poll is a full interval from now.
-			ticker.Reset(pollInterval)
-		}
-	}
+	return d.runLoop(ctx, pollInterval)
 }
 
-// wakeChannel returns the wake channel or a nil channel (blocks forever) when
-// wake detection is disabled.
-func (d *Daemon) wakeChannel() <-chan struct{} {
+// wakeChannel returns the wake channel or a nil channel (blocks forever) once
+// the watcher has closed it.
+func (d *Daemon) wakeChannel() <-chan time.Duration {
 	if d.wakeCh != nil {
 		return d.wakeCh
 	}
@@ -961,7 +927,16 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 	if !d.lastJira.IsZero() && time.Since(d.lastJira) < interval {
 		return
 	}
+	prevJira := d.lastJira
 	d.lastJira = time.Now()
+	defer func() {
+		// A cancelled pass (shutdown, or a sleep interrupting the cycle) did
+		// not sync: the next cycle tries again instead of waiting out the
+		// interval.
+		if ctx.Err() != nil {
+			d.lastJira = prevJira
+		}
+	}()
 
 	var firstErr error
 	anyClean := false
@@ -1046,7 +1021,14 @@ func (d *Daemon) phaseLinearSync(ctx context.Context) {
 	if !d.lastLinear.IsZero() && time.Since(d.lastLinear) < interval {
 		return
 	}
+	prevLinear := d.lastLinear
 	d.lastLinear = time.Now()
+	defer func() {
+		// A cancelled pass did not sync (phaseJiraSync's rule).
+		if ctx.Err() != nil {
+			d.lastLinear = prevLinear
+		}
+	}()
 
 	anyClean := false
 	for _, s := range d.linearSyncers {
@@ -1751,7 +1733,11 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 		} else if dispatched > 0 {
 			d.logger.Printf("reaction-commands: dispatched %d", dispatched)
 		}
-		d.lastReactionCmd = now
+		// A cancelled poll did not finish: the next cycle polls again
+		// instead of waiting out the interval.
+		if ctx.Err() == nil {
+			d.lastReactionCmd = now
+		}
 		return pipelineRunStats{items: dispatched, err: err}
 	})
 }

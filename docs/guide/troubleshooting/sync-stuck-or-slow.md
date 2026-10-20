@@ -13,7 +13,7 @@ The menu bar menu shows one of three lines:
 ## Why
 
 - The sync runs in a small background program, the daemon. It stops when you choose **Quit Watchtower**; closing the window leaves it running.
-- A cycle starts every 15 minutes, when the daemon starts, when the Mac wakes and on **Sync Now**. A sleeping Mac syncs nothing until it wakes.
+- A cycle starts every 15 minutes, when the daemon starts, about 15 seconds after the Mac wakes and on **Sync Now**. A sleeping Mac syncs nothing until it wakes. A cycle the Mac fell asleep in is dropped on wake and starts over.
 - Slack calls are limited to 40 a minute, so a big workspace or a first sync takes several minutes. Expect 3 to 5 minutes for the first sync.
 - One failing source does not stop the others. The cause may be a revoked account instead.
 

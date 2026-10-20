@@ -85,6 +85,21 @@ func TestDaemon_PhaseReactionCommands_ExplicitIntervalStillThrottles(t *testing.
 	assert.Equal(t, 1, *polls, "an explicit interval throttles repeat cycles")
 }
 
+// A poll cut off by a cancelled context (shutdown, or a sleep interrupting the
+// cycle) does not stamp the throttle: the next cycle polls again.
+func TestDaemon_PhaseReactionCommands_CancelledPollDoesNotStampTheThrottle(t *testing.T) {
+	cfg := &config.Config{ReactionCommands: config.ReactionCommandsConfig{Enabled: true, IntervalHours: 6}}
+	d, _ := newReactionTestDaemon(t, cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.phaseReactionCommands(ctx)
+	assert.True(t, d.lastReactionCmd.IsZero(), "a cancelled poll must not stamp the throttle")
+
+	d.phaseReactionCommands(context.Background())
+	assert.False(t, d.lastReactionCmd.IsZero())
+}
+
 // TestDaemon_ReactionCommandsDefaultOn pins that a config with no
 // reaction_commands block enables the feature (owner call 2026-09-26; the
 // first-poll seed in internal/reactioncmd is what makes that safe).

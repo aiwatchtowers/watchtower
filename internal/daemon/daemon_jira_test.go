@@ -455,3 +455,22 @@ func TestPhaseJiraSyncSkipsUserResolveOnCancelledContext(t *testing.T) {
 
 	assert.Zero(t, stub.resolveCalls, "a shutdown must not start identity resolution")
 }
+
+// A pass cut off by a cancelled context (shutdown, or a sleep interrupting the
+// cycle) leaves the interval clock where it was, so the next cycle syncs
+// instead of waiting out the interval.
+func TestPhaseJiraSyncCancelledPassKeepsTheIntervalClock(t *testing.T) {
+	d, database, wsDir := newJiraTestDaemon(t)
+	d.config.Jira.SyncIntervalMins = 60
+
+	acct := seedJiraAccountWithBoard(t, database, "c1", "OPS")
+	d.SetJiraSyncers([]*jira.Syncer{jiraSyncerFor(t, database, wsDir, acct)})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.phaseJiraSync(ctx)
+	assert.True(t, d.lastJira.IsZero(), "a cancelled pass must not stamp the interval clock")
+
+	d.phaseJiraSync(context.Background())
+	assert.False(t, d.lastJira.IsZero(), "the next, uncancelled pass stamps it")
+}

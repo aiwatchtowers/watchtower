@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -782,6 +784,43 @@ func TestNewHTTPClientBounds(t *testing.T) {
 	require.NotNil(t, tr.HTTP2, "HTTP/2 keepalive must be configured")
 	assert.Equal(t, h2ReadIdleTimeout, tr.HTTP2.SendPingTimeout, "HTTP/2 idle ping")
 	assert.Equal(t, h2PingTimeout, tr.HTTP2.PingTimeout, "HTTP/2 ping deadline")
+}
+
+// TestCloseIdleConnections_ReachesEveryClient pins the wake handling's half
+// in this package: every client shares one transport, and
+// CloseIdleConnections drops its pooled connections, so the call after it
+// dials afresh instead of reusing a socket a sleep may have killed.
+func TestCloseIdleConnections_ReachesEveryClient(t *testing.T) {
+	a, b := newHTTPClient(), newHTTPClient()
+	assert.Same(t, a.Transport, b.Transport, "one pool for every Slack client")
+
+	var dials atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	srv.Config.ConnState = func(_ net.Conn, st http.ConnState) {
+		if st == http.StateNew {
+			dials.Add(1)
+		}
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	t.Cleanup(CloseIdleConnections)
+
+	get := func(c *http.Client) {
+		t.Helper()
+		resp, err := c.Get(srv.URL)
+		require.NoError(t, err)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		require.NoError(t, resp.Body.Close())
+	}
+	get(a)
+	get(b)
+	assert.Equal(t, int32(1), dials.Load(), "the second client reuses the pooled connection")
+
+	CloseIdleConnections()
+	get(a)
+	assert.Equal(t, int32(2), dials.Load(), "after CloseIdleConnections the next call dials afresh")
 }
 
 func TestPostMessage_SendsTextAndThread(t *testing.T) {
