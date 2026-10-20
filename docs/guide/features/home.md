@@ -14,15 +14,15 @@ Home only reads what the rest of the app has already produced, and refreshes abo
 
 The feed reads top to bottom like your day: above a **NOW** line is everything that waits on you, below it your meetings and what is still to come.
 
-**Above NOW** are, from the last 72 hours: Slack mentions, direct messages, thread replies and reactions, then Jira and Linear items, proposals and failed actions from the assistant, due reminders, your own targets that are overdue or due today, and email. Rows from Inbox follow its detection and snooze. A read row stays, shown dimmer; only acting on it removes it. Newest comes first within each kind; seven rows show, and **N more** opens the rest in place. Workbench targets never appear.
+**Above NOW** are, from the last 72 hours: Slack mentions, direct messages, thread replies and reactions, then Jira and Linear items, proposals and failed actions from the assistant, notes your automations left for you, due reminders, your own targets that are overdue or due today, and email. Rows from Inbox follow its detection and snooze. A read row stays, shown dimmer; only acting on it removes it. Newest comes first within each kind; seven rows show, and **N more** opens the rest in place. Workbench targets never appear.
 
 **Below NOW** are the meeting in progress, then today's remaining meetings, reminders and timed targets in time order. The next meeting says how soon it starts, such as "in 25 min", and shows "Prep ready" when prep exists. After today, a short block shows the first of the next three days that has meetings: **Tomorrow**, or the weekday, with up to three meetings. All-day, cancelled and declined events are left out.
 
 ### Done and Hide
 
-- Press **Done** on a row to resolve it, or **Hide** to put it away. A hidden reminder or target comes back tomorrow at 09:00. Proposals and meetings have no buttons: open them instead.
+- Press **Done** on a row to resolve it, or **Hide** to put it away. A hidden reminder or target comes back tomorrow at 09:00. On an automation note, **Done** marks it read and **Hide** dismisses it, the same as **Done** and **Dismiss** in Inbox. Proposals and meetings have no buttons: open them instead.
 - A row leaves the feed at once. If the action fails it comes back with the error under it; press again to retry.
-- Click a row to open it: a Slack, Jira or email row opens its source, the rest open Inbox, the target or the meeting in Calendar.
+- Click a row to open it: a Slack, Jira or email row opens its source, the rest open Inbox (automation notes too), the target or the meeting in Calendar.
 
 ### Workbench
 

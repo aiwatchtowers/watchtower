@@ -20,6 +20,8 @@ package struct HomeFeedData: Equatable, Sendable {
     /// Pending reminders that fire later today.
     package var laterReminders: [Reminder] = []
     package var proposals: [AgentAction] = []
+    /// Unread automation inbox outputs, newest first.
+    package var outputs: [AutomationOutputCard] = []
     /// Overdue or due today, never a workbench target (PROJ-01).
     package var targets: [Target] = []
     /// Today and the next days, only the events `HomeFeedQueries.isShownEvent` accepts.
@@ -37,7 +39,7 @@ package struct HomeFeedData: Equatable, Sendable {
 package enum HomeFeedQueries {
     /// Tables the feed read uses, for HomeCenter's ValueObservation region.
     package static let observedTables: [String] = [
-        "inbox_items", "reminders", "agent_actions", "targets",
+        "inbox_items", "reminders", "agent_actions", "automation_outputs", "automations", "targets",
         "calendar_events", "calendar_calendars", "google_accounts", "meeting_prep_cache"
     ]
 
@@ -74,6 +76,10 @@ package enum HomeFeedQueries {
         }
         data.proposals = readSource(.proposals, db, tables: ["agent_actions"], failed: &data.failed) {
             try AgentActionQueries.awaitingOwner(db, limit: rowLimit)
+        } ?? []
+        let cutoff = now.addingTimeInterval(-windowHours * 3600)
+        data.outputs = readSource(.automations, db, tables: ["automation_outputs", "automations"], failed: &data.failed) {
+            try AutomationQueries.fetchInboxOutputs(db, since: cutoff, limit: rowLimit)
         } ?? []
         data.targets = readSource(.targets, db, tables: ["targets"], failed: &data.failed) {
             try dueTargets(db, today: today)

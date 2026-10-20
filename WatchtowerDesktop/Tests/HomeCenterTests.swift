@@ -575,11 +575,11 @@ final class HomeCenterTests: XCTestCase {
     }
 
     /// Inbox rows only while attention detection is on, calendar rows only
-    /// while the Calendar tab is visible; reminders, proposals and targets
-    /// always.
+    /// while the Calendar tab is visible; reminders, proposals, automation
+    /// outputs and targets always.
     func testFeedSourcesFollowAttentionDetectionAndCalendar() {
         let appState = AppState.isolated()
-        let always: Set<FeedSource> = [.reminders, .proposals, .targets]
+        let always: Set<FeedSource> = [.reminders, .proposals, .automations, .targets]
         let rows: [(ConnectedSources, Set<String>, Set<FeedSource>)] = [
             (.all, [], always.union([.inbox, .calendar])),
             (.all, ["secretary-inbox"], always.union([.calendar])),

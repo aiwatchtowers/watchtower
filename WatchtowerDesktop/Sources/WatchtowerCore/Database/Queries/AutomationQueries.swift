@@ -128,14 +128,19 @@ package enum AutomationQueries {
 
     private static let unreadInbox = "o.kind = 'inbox' AND o.read_at IS NULL AND o.dismissed_at IS NULL"
 
-    /// Unread inbox outputs, newest first, with their automation's name.
-    package static func fetchInboxOutputs(_ db: Database) throws -> [AutomationOutputCard] {
+    /// Unread inbox outputs, newest first, with their automation's name;
+    /// `since` keeps only the ones created then or later (Home's window).
+    package static func fetchInboxOutputs(
+        _ db: Database, since: Date? = nil, limit: Int = -1
+    ) throws -> [AutomationOutputCard] {
         let rows = try Row.fetchAll(db, sql: """
             SELECT o.id, o.automation_id, o.run_id, o.title, o.body, o.priority, o.created_at,
                 COALESCE(NULLIF(a.name, ''), a.slug) AS name
             FROM automation_outputs o JOIN automations a ON a.id = o.automation_id
-            WHERE \(unreadInbox) ORDER BY o.created_at DESC, o.id DESC
-            """)
+            WHERE \(unreadInbox) AND o.created_at >= ?
+            ORDER BY o.created_at DESC, o.id DESC
+            LIMIT ?
+            """, arguments: [since.map(AutomationDates.format) ?? "", limit])
         return rows.map { row in
             AutomationOutputCard(
                 id: row["id"],

@@ -514,6 +514,14 @@ content width). No migration, no AI, no daemon phase.
     read up to the same 200 rows as the inbox: the builder caps what shows,
     so a target due later today (last by `due_date`) still reaches the part
     below NOW.
+  - Automation inbox outputs (2026-10-20, ask #444):
+    `AutomationQueries.fetchInboxOutputs(since:limit:)` — `kind = 'inbox'`,
+    `read_at` and `dismissed_at` NULL (the Inbox strip's "From your
+    automations" cards), `created_at` within the same 72 h, newest first,
+    `LIMIT 200`. Source `.automations`, tables `automation_outputs` +
+    `automations`. A row shows the output's title (or "Automation output"),
+    the automation's name as the place, the body, chip "Automation"; a click
+    opens Inbox.
   - Calendar (`events`): today and the next 4 days through
     `isShownEvent` — no all-day, no `cancelled`, none the owner
     declined (attendee email equal to the event's `accountEmail`,
@@ -522,7 +530,7 @@ content width). No migration, no AI, no daemon phase.
 - **Build** — `HomeFeedBuilder.feed`
   (`Sources/WatchtowerCore/Services/HomeFeedBuilder.swift`) is pure. Above
   NOW: kind order Slack (mention/dm/thread/reaction) → Jira/Linear (one
-  `.jira` kind, chip "Linear" for Linear) → proposal →
+  `.jira` kind, chip "Linear" for Linear) → proposal → automation output →
   reminder → target → email (`FeedKind`), newest first within a kind, 7 rows
   (`waitingLimit`) and `hiddenWaiting` for "N more" (expanding is
   `HomeCenter.setFeedExpanded`, in place). An inbox row opens its permalink;
@@ -534,8 +542,8 @@ content width). No migration, no AI, no daemon phase.
   over at midnight because the day is computed from `now`.
 - **Allowed sources** — `AppState.homeFeedSourcesAllowed`
   (`AppState+Home.swift`): inbox follows Attention detection's feature,
-  calendar follows the Calendar tab's visibility; reminders, proposals and
-  targets are always allowed. `HomeCenter.makeFeed` empties a source
+  calendar follows the Calendar tab's visibility; reminders, proposals,
+  automation outputs (Automations is always on) and targets are always allowed. `HomeCenter.makeFeed` empties a source
   Home may not show and drops its failure too.
 - **Done / Hide** — `HomeCenter.act` hides the row at once
   (`hiddenRefs`), then runs `LiveHomeFeedPerformer.perform`
@@ -548,7 +556,10 @@ content width). No migration, no AI, no daemon phase.
   to tomorrow 09:00 local. A reminder stores that instant as RFC 3339 UTC; a
   target stores it as a UTC `yyyy-MM-ddTHH:mm` minute, the form Go's
   `UnsnoozeExpiredTargets` compares against (a bare date would come back at
-  00:00 UTC, the same evening west of UTC). Proposals and events have no
+  00:00 UTC, the same evening west of UTC). Automation outputs through
+  `AutomationQueries.markOutputRead` (Done) / `dismissOutput` (Hide — no
+  snooze, the output is dismissed as in Inbox); an output closed elsewhere
+  matches no row, which is success. Proposals and events have no
   action: `HomeCenter.act` ignores them (`FeedRef.hasActions`). A failure un-hides the
   row and stores the message in `feedErrors` (a second press clears it). An
   item already gone (Go's resolve/dismiss exit 0 on a missing row;
