@@ -30,6 +30,17 @@ Cards show the status, title, number, priority and badges: a blue bubble for unr
 
 The search field in the Board header matches title or intent. `#163` finds target 163 only; a bare `163` also finds titles containing it.
 
+### Add a task
+
+**New Task** in the Board header opens a panel; right-click a card for **New Sub-task…** to add one under it. Inside a group, the new task goes under that group.
+
+1. The chip at the top shows where the task goes, such as **acme › #249 Billing export** or **acme › Top level**. Click it to search the board's open targets and pick another parent.
+2. Type the title. Return moves to the description.
+3. Set the priority chip (High, Medium, Low) and the column chip. The column chip lists the board's To Do and In Progress columns and starts on the first To Do column.
+4. Press **Create Task** or ⌘↩. Esc closes the panel without creating anything.
+
+The new task opens in the side panel. Turn on **Create more** to add several in a row: the panel stays open with the same parent and chips, and only the text clears.
+
 ### Switch to Kanban
 
 The **List | Kanban** switch lays tasks out as columns. By default each top-level feature is a lane. The **Lanes** menu switches between **By group** and **None** (flat columns).

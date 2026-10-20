@@ -700,13 +700,45 @@ final class WorkbenchBoardViewModel {
         newTargetRequest = WorkbenchNewTargetRequest(parentID: parentID ?? scopeNode?.target.id)
     }
 
+    /// The statuses a new target may start in (AI-14 §2): the open work
+    /// columns, never review, blocked or closed.
+    static let newTargetStatuses: Set<String> = ["todo", "in_progress"]
+
+    /// The New Task panel's column chip (AI-14 §2): the board's To Do and
+    /// In Progress columns as the Kanban lays them out — a status without
+    /// defined columns its implicit one. The first, a To Do column, is the
+    /// default: the column a new target lands in without a write.
+    var newTargetColumns: [BoardColumnSlot] {
+        BoardColumnLayout.slots(boardColumns, occupiedStatuses: [], showDismissed: false)
+            .filter { Self.newTargetStatuses.contains($0.status) }
+    }
+
+    /// The New Task panel's parent picker: the board's open targets in board
+    /// order with their depth, narrowed by `query` (the board search's rules,
+    /// a match keeping its ancestors). Closed and archived targets stay out.
+    func newTargetParents(matching query: String) -> [WorkbenchBoardRow] {
+        WorkbenchBoardOutline.rows(roots, collapsed: [], showDone: false, showArchived: false, query: query)
+            .filter { !$0.node.archived && !["done", "dismissed"].contains($0.node.target.status) }
+    }
+
     /// Creates a target through `addTarget`, then reports it and every parent
-    /// the rollup moved (PROJ-05) as the owner's write, expands the parent and
-    /// opens the new target.
+    /// the rollup moved (PROJ-05) as the owner's write and expands the parent.
+    /// A `column` other than the default one is written right after, through
+    /// the Kanban drop's write (`moveCard`). Then the sheet closes and the new
+    /// target opens — unless `keepOpen` (the panel's Create more), which
+    /// leaves the request and the selection alone.
     /// - Returns: whether the target was created (a refusal or failure sets
-    ///   `errorMessage` and keeps the sheet's text).
+    ///   `errorMessage` and keeps the sheet's text; a failed column write
+    ///   after it sets `errorMessage` too, the target stays created).
     @discardableResult
-    func createTarget(title rawTitle: String, intent rawIntent: String, priority: String, parentID: Int?) async -> Bool {
+    func createTarget(
+        title rawTitle: String,
+        intent rawIntent: String,
+        priority: String,
+        parentID: Int?,
+        column: BoardColumnSlot? = nil,
+        keepOpen: Bool = false
+    ) async -> Bool {
         let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty, !isCreatingTarget else { return false }
         guard title.unicodeScalars.count <= WorkbenchNewTargetRequest.titleLimit else {
@@ -714,6 +746,7 @@ final class WorkbenchBoardViewModel {
             return false
         }
         guard WorkbenchBoardCard.editablePriorities.contains(priority) else { return false }
+        if let column, !Self.newTargetStatuses.contains(column.status) { return false }
         guard let addTarget else {
             errorMessage = "Could not create the target: the watchtower CLI is not available."
             return false
@@ -745,9 +778,16 @@ final class WorkbenchBoardViewModel {
             onOwnerWrite?(projectID, .target(id))
         }
         if let parentID { collapsed.remove(parentID) }
-        newTargetRequest = nil
         load()
-        select(Int(newID))
+        // The default column writes nothing (moveCard compares with where
+        // the new target already shows).
+        if let column {
+            await moveCard(Int(newID), status: column.status, columnID: column.columnID)
+        }
+        if !keepOpen {
+            newTargetRequest = nil
+            select(Int(newID))
+        }
         return true
     }
 

@@ -895,4 +895,159 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         XCTAssertNotNil(vm.newTargetRequest, "a failed create keeps the sheet and the owner's text")
         XCTAssertFalse(vm.isCreatingTarget)
     }
+
+    // MARK: - New Task panel (AI-14 §2)
+
+    nonisolated private static func insertColumn(
+        _ db: Database, project: Int64, status: String, title: String, position: Int
+    ) throws -> Int64 {
+        try db.execute(
+            sql: """
+                INSERT INTO workbench_board_columns (project_id, status, title, description, position, created_at)
+                VALUES (?, ?, ?, '', ?, '2026-10-20T10:00:00Z')
+                """,
+            arguments: [project, status, title, position]
+        )
+        return db.lastInsertedRowID
+    }
+
+    /// A stub of Go's writer: the new target goes into the DB as a To Do.
+    private func stubAddTarget(_ vm: WorkbenchBoardViewModel, project pid: Int64) {
+        let pool = dbManager.dbPool
+        vm.addTarget = { title, _, _, parentID in
+            try await pool.write { db in try Self.insertTarget(db, project: pid, text: title, parent: parentID) }
+        }
+    }
+
+    /// The column chip offers the To Do and In Progress columns of the
+    /// board's definition — a status without defined columns its implicit
+    /// one — and defaults to the first To Do column.
+    func testNewTargetColumnsAreTodoAndInProgress() throws {
+        let pid = try dbManager.dbPool.write { db -> Int64 in
+            let pid = try Self.insertWorkbench(db)
+            _ = try Self.insertColumn(db, project: pid, status: "in_progress", title: "Spec", position: 0)
+            _ = try Self.insertColumn(db, project: pid, status: "in_progress", title: "Code", position: 1)
+            _ = try Self.insertColumn(db, project: pid, status: "in_review", title: "Review", position: 0)
+            return pid
+        }
+        let empty = makeVM(project: try dbManager.dbPool.write { try Self.insertWorkbench($0, name: "plain") })
+        empty.load()
+        XCTAssertEqual(empty.newTargetColumns.map(\.title), ["To Do", "In Progress"])
+        XCTAssertEqual(empty.newTargetColumns.first?.status, "todo")
+
+        let vm = makeVM(project: pid)
+        vm.load()
+        XCTAssertEqual(vm.newTargetColumns.map(\.title), ["To Do", "Spec", "Code"])
+        XCTAssertEqual(vm.newTargetColumns.first?.status, "todo", "the default is the first To Do column")
+    }
+
+    /// A column other than the default is written right after creation —
+    /// the Kanban drop's write, so status and column land together.
+    func testCreateTargetInAColumnWritesItsColumn() async throws {
+        let (pid, code) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            _ = try Self.insertColumn(db, project: pid, status: "in_progress", title: "Spec", position: 0)
+            return (pid, try Self.insertColumn(db, project: pid, status: "in_progress", title: "Code", position: 1))
+        }
+        let vm = makeVM(project: pid)
+        stubAddTarget(vm, project: pid)
+        var reported: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in reported.append(subject) }
+        vm.load()
+        vm.beginNewTarget()
+        let column = try XCTUnwrap(vm.newTargetColumns.first { $0.columnID == code })
+
+        let created = await vm.createTarget(
+            title: "Wire it", intent: "", priority: "medium", parentID: nil, column: column
+        )
+
+        XCTAssertTrue(created)
+        let newID = try XCTUnwrap(vm.selectedTargetID)
+        let placed = try await dbManager.dbPool.read { db in
+            try Row.fetchOne(db, sql: "SELECT status, board_column_id FROM targets WHERE id = ?", arguments: [newID])
+        }
+        XCTAssertEqual(placed?["status"] as String?, "in_progress")
+        XCTAssertEqual(placed?["board_column_id"] as Int64?, code)
+        XCTAssertEqual(Set(reported), [.target(Int64(newID))], "both writes are the owner's")
+        XCTAssertNil(vm.errorMessage)
+    }
+
+    /// An implicit In Progress column is a plain status move; the default
+    /// To Do column writes nothing after the creation.
+    func testCreateTargetInImplicitColumns() async throws {
+        let pid = try await dbManager.dbPool.write { db in try Self.insertWorkbench(db) }
+        let vm = makeVM(project: pid)
+        stubAddTarget(vm, project: pid)
+        var reported: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in reported.append(subject) }
+        vm.load()
+        let todo = try XCTUnwrap(vm.newTargetColumns.first)
+        let doing = try XCTUnwrap(vm.newTargetColumns.last)
+
+        vm.beginNewTarget()
+        let first = await vm.createTarget(title: "Plain", intent: "", priority: "low", parentID: nil, column: todo)
+        XCTAssertTrue(first)
+        XCTAssertEqual(reported.count, 1, "the default column is the creation alone")
+        let plainID = try XCTUnwrap(vm.selectedTargetID)
+
+        vm.beginNewTarget()
+        let second = await vm.createTarget(title: "Busy", intent: "", priority: "low", parentID: nil, column: doing)
+        XCTAssertTrue(second)
+        let busyID = try XCTUnwrap(vm.selectedTargetID)
+        let statuses = try await dbManager.dbPool.read { db in
+            try [Int64: String](
+                uniqueKeysWithValues: Row.fetchAll(db, sql: "SELECT id, status FROM targets").map { ($0["id"], $0["status"]) }
+            )
+        }
+        XCTAssertEqual(statuses[Int64(plainID)], "todo")
+        XCTAssertEqual(statuses[Int64(busyID)], "in_progress")
+    }
+
+    /// Create more: the target is written and reported, the sheet's request
+    /// stays (same id, same parent) and nothing opens over it.
+    func testCreateMoreKeepsTheRequestOpen() async throws {
+        let (pid, parent) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            return (pid, try Self.insertTarget(db, project: pid, text: "Feature"))
+        }
+        let vm = makeVM(project: pid)
+        stubAddTarget(vm, project: pid)
+        var reported: [WorkbenchSubject] = []
+        vm.onOwnerWrite = { _, subject in reported.append(subject) }
+        vm.load()
+        vm.collapsed.insert(Int(parent))
+        vm.beginNewTarget(under: Int(parent))
+        let request = try XCTUnwrap(vm.newTargetRequest)
+
+        let created = await vm.createTarget(
+            title: "One", intent: "", priority: "medium", parentID: Int(parent), keepOpen: true
+        )
+
+        XCTAssertTrue(created)
+        XCTAssertEqual(vm.newTargetRequest, request, "the panel stays open")
+        XCTAssertNil(vm.selectedTargetID, "nothing opens behind the panel")
+        XCTAssertEqual(reported.count, 1)
+        XCTAssertFalse(vm.collapsed.contains(Int(parent)), "the new task shows under its parent")
+        XCTAssertEqual(WorkbenchBoardOutline.find(Int(parent), in: vm.roots)?.children.count, 1)
+    }
+
+    /// The parent picker lists the board's open targets, archived and
+    /// closed ones left out, narrowed by the search.
+    func testNewTargetParentsAreOpenTargets() throws {
+        let (pid, feature, task) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            let feature = try Self.insertTarget(db, project: pid, text: "Feature")
+            let task = try Self.insertTarget(db, project: pid, text: "Write docs", parent: feature)
+            _ = try Self.insertTarget(db, project: pid, text: "Shipped", status: "done")
+            _ = try Self.insertTarget(db, project: pid, text: "Dropped docs", status: "dismissed")
+            return (pid, feature, task)
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        XCTAssertEqual(vm.newTargetParents(matching: "").map(\.id), [Int(feature), Int(task)])
+        XCTAssertEqual(vm.newTargetParents(matching: "docs").map(\.id), [Int(feature), Int(task)],
+                       "a match keeps its ancestors; a closed match stays out")
+        XCTAssertEqual(vm.newTargetParents(matching: "#\(task)").map(\.id), [Int(feature), Int(task)])
+        XCTAssertEqual(vm.newTargetParents(matching: "nothing").map(\.id), [])
+    }
 }
