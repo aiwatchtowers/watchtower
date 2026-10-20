@@ -48,8 +48,10 @@ const (
 )
 
 // CompactCheck is the outcome of CheckCompaction, printed by
-// `db compact --check --json`. Reason is "migration:<v>", "freelist",
-// "schema_pending", "gave_up" or "".
+// `db compact --check --json`. Reason is "fts_rebuild", "migration:<v>",
+// "freelist", "schema_pending", "gave_up" or "". While the messages search
+// fill is pending (FTSRebuildPending) it is due for "fts_rebuild" and the
+// disk fields are the fill's rule, not the compaction's.
 type CompactCheck struct {
 	Due            bool   `json:"due"`
 	Reason         string `json:"reason"`
@@ -58,6 +60,9 @@ type CompactCheck struct {
 	FreeDiskBytes  int64  `json:"free_disk_bytes"`
 	NeedsDiskBytes int64  `json:"needs_disk_bytes"`
 	DiskOK         bool   `json:"disk_ok"`
+	// FTSRebuildPending is filled whenever the schema is current, so a
+	// gave_up outcome still reports it.
+	FTSRebuildPending bool `json:"fts_rebuild_pending"`
 }
 
 // freeDiskBytes returns the bytes available to an unprivileged writer on the
@@ -77,7 +82,9 @@ func SetFreeDiskBytesForTest(fn func(dir string) (int64, error)) (restore func()
 // CheckCompaction reports whether the database at dbPath is due for a
 // compaction, by reads only: it opens with OpenExisting, so it never creates
 // the file, migrates or writes. No file → not due, disk OK. version is the CLI
-// build version, compared with compact_failures_version.
+// build version, compared with compact_failures_version. A pending messages
+// search fill comes before the failure cap: it has its own rule and is not
+// stopped by failed compactions.
 func CheckCompaction(dbPath, version string) (CompactCheck, error) {
 	info, err := os.Stat(dbPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -109,6 +116,15 @@ func CheckCompaction(dbPath, version string) (CompactCheck, error) {
 	}
 	if !current {
 		c.Reason = "schema_pending"
+		return c, nil
+	}
+	fts, err := d.CheckMessagesSearchRebuild()
+	if err != nil {
+		return CompactCheck{}, err
+	}
+	if c.FTSRebuildPending = fts.Pending; fts.Pending {
+		c.Due, c.Reason = true, "fts_rebuild"
+		c.NeedsDiskBytes, c.DiskOK = fts.NeedsDiskBytes, fts.DiskOK
 		return c, nil
 	}
 	gaveUp, err := compactGaveUp(d, version)
@@ -239,6 +255,7 @@ type CompactOptions struct {
 // CompactResult is the outcome of Compact, printed by `db compact --json`.
 // Skipped is "not_due", "disk", "daemon_running", "interrupted" or
 // "schema_pending" (not_due and daemon_running are set by the command).
+// RebuildMessagesSearchAt returns the same shape with FTSRebuilt.
 type CompactResult struct {
 	Compacted   bool   `json:"compacted"`
 	Skipped     string `json:"skipped,omitempty"`
@@ -252,6 +269,8 @@ type CompactResult struct {
 	// CheckpointBusy: the final checkpoint could not pass a reader's
 	// snapshot, so part of the space is reclaimed at the next checkpoint.
 	CheckpointBusy bool `json:"checkpoint_busy,omitempty"`
+	// FTSRebuilt: the messages search fill completed in this run.
+	FTSRebuilt bool `json:"fts_rebuilt,omitempty"`
 }
 
 // compactVacuumHook, nil in production, runs right before the VACUUM Exec

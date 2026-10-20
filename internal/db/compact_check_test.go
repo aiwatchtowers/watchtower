@@ -1,10 +1,14 @@
 package db
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // compactFixture migrates a database file in a temp dir, stubs the free disk
@@ -286,4 +290,62 @@ func TestCheckCompaction_NamesHighestListedMigration(t *testing.T) {
 	if c := checkCompaction(t, path, "1.0.0"); c.Due {
 		t.Fatalf("reason = %q after recording 134, want not due", c.Reason)
 	}
+}
+
+func TestCheckCompaction_FTSRebuildDue(t *testing.T) {
+	d, path, _ := pendingFillDB(t)
+	fill, err := d.CheckMessagesSearchRebuild()
+	require.NoError(t, err)
+	require.NoError(t, d.Close())
+
+	c := checkCompaction(t, path, "1.0.0")
+	assert.True(t, c.Due)
+	assert.Equal(t, "fts_rebuild", c.Reason)
+	assert.True(t, c.FTSRebuildPending)
+	assert.Equal(t, fill.NeedsDiskBytes, c.NeedsDiskBytes)
+	assert.NotEqual(t, 2*c.DBBytes, c.NeedsDiskBytes)
+	assert.True(t, c.DiskOK)
+}
+
+func TestCheckCompaction_FTSRebuildBeatsGaveUp(t *testing.T) {
+	d, path, _ := pendingFillDB(t)
+	for key, value := range map[string]string{maintCompactFailures: "3", maintCompactFailuresVersion: "1.0.0"} {
+		_, err := d.Exec(`INSERT INTO db_maintenance (key, value) VALUES (?, ?)`, key, value)
+		require.NoError(t, err)
+	}
+	if c := checkCompaction(t, path, "1.0.0"); !c.Due || c.Reason != "fts_rebuild" {
+		t.Fatalf("pending and gave up: got due=%v reason=%q, want due fts_rebuild", c.Due, c.Reason)
+	}
+
+	_, err := d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{})
+	require.NoError(t, err)
+	c := checkCompaction(t, path, "1.0.0")
+	if c.Due || c.Reason != "gave_up" || c.FTSRebuildPending {
+		t.Fatalf("after the fill: got due=%v reason=%q pending=%v, want not due gave_up", c.Due, c.Reason, c.FTSRebuildPending)
+	}
+}
+
+// Nothing pending reads false and leaves the compaction rules alone.
+func TestCheckCompaction_FTSRebuildPendingFalseWhenDone(t *testing.T) {
+	path := compactFixture(t)
+	setMaintenance(t, path, maintLastCompactedVersion, strconv.FormatInt(highestAppliedVersion(t, path), 10))
+	c := checkCompaction(t, path, "1.0.0")
+	assert.False(t, c.FTSRebuildPending)
+	assert.False(t, c.Due)
+}
+
+func TestCheckCompaction_FTSRebuildDiskShort(t *testing.T) {
+	d, path, _ := pendingFillDB(t)
+	fill, err := d.CheckMessagesSearchRebuild()
+	require.NoError(t, err)
+	require.NoError(t, d.Close())
+	stubFreeDisk(t, fill.NeedsDiskBytes-1)
+
+	c := checkCompaction(t, path, "1.0.0")
+	assert.True(t, c.Due)
+	assert.Equal(t, "fts_rebuild", c.Reason)
+	assert.False(t, c.DiskOK)
+
+	stubFreeDisk(t, fill.NeedsDiskBytes)
+	assert.True(t, checkCompaction(t, path, "1.0.0").DiskOK, "exactly the need")
 }

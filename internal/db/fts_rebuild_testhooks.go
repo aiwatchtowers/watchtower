@@ -24,3 +24,17 @@ func ReplayMessagesSearchUpgradeForTest(d *DB) error {
 	}
 	return d.migrate()
 }
+
+// SetFTSRebuildChunkHookForTest installs fn as the hook RebuildMessagesSearch
+// runs after each committed chunk, for cmd's `db compact` tests, which cannot
+// reach ftsRebuildChunkHook. Returns a restore func the caller must invoke
+// (typically via t.Cleanup). Outside a test binary it panics
+// (testing.Testing).
+func SetFTSRebuildChunkHookForTest(fn func(chunk int)) (restore func()) {
+	if !testing.Testing() {
+		panic("db.SetFTSRebuildChunkHookForTest called outside a test binary")
+	}
+	prev := ftsRebuildChunkHook
+	ftsRebuildChunkHook = fn
+	return func() { ftsRebuildChunkHook = prev }
+}
