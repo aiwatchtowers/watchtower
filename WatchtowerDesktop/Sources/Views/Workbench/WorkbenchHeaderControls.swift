@@ -23,7 +23,6 @@ struct WorkbenchHeaderControls: View {
     @State private var hoveredTab: String?
     @State private var showsWorktreeSetup = false
     @State private var showsAgentSettings = false
-    @State private var showsBoardColumns = false
 
     var body: some View {
         HStack(spacing: Spacing.regular) {
@@ -51,9 +50,6 @@ struct WorkbenchHeaderControls: View {
         }
         .sheet(isPresented: $showsAgentSettings) {
             AgentSettingsSheet(vm: vm, project: project)
-        }
-        .sheet(isPresented: $showsBoardColumns) {
-            BoardColumnsSheet(vm: vm, project: project)
         }
     }
 
@@ -183,11 +179,11 @@ struct WorkbenchHeaderControls: View {
             }
             .help("The methodology, the ask guard and the finish check this workbench's agents run under")
             Button {
-                showsBoardColumns = true
+                vm.editColumnsOnKanban(projectID: project.id)
             } label: {
-                Label("Board Columns…", systemImage: "rectangle.split.3x1")
+                Label("Edit Columns on the Kanban", systemImage: "rectangle.split.3x1")
             }
-            .help("Name the board's columns inside each status, and hide In Review or Blocked")
+            .help("Opens the Board in Kanban: right-click a column header to rename, add, move, delete or hide columns")
             Divider()
             Button {
                 onCleanUpOldWorktrees()
@@ -293,14 +289,18 @@ extension WorkbenchInstallStatus {
     }
 }
 
-private extension WorkspaceView {
+extension WorkspaceView {
+    /// The session strip's Review button label; the pane itself is `title` (Branch review).
+    var reviewButtonTitle: String { "Review" }
+
     var help: String {
         switch self {
         case .board: "Show the Board (in a split, beside the terminal)"
         case .files: "Show the open files (in a split, beside the terminal)"
         case .analytics: "Agent time, cost and hints for this workbench"
-        // The session views are the strip's and the Session tab's, with help of their own.
-        case .terminal, .report, .changes, .chat: title
+        case .changes: "Review this session's branch"
+        // The other session views are the strip's and the Session tab's, with help of their own.
+        case .terminal, .report, .chat: title
         }
     }
 }

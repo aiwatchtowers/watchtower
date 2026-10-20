@@ -182,6 +182,32 @@ final class HomeFeedActionTests: XCTestCase {
         XCTAssertFalse(center.hiddenRefs.contains(ref))
     }
 
+    /// An automation output reaches the feed from the database, and a failed
+    /// Done keeps its error once the next read lands (HomeCenter.contains).
+    func testAutomationOutputFailureBringsTheRowBack() async throws {
+        let pool = try makePool()
+        let id = try await pool.write { db -> Int64 in
+            let automation = try TestDatabase.insertAutomation(db)
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
+            return try TestDatabase.insertAutomationOutput(
+                db, automationID: automation, runID: run,
+                createdAt: AutomationDates.format(Date().addingTimeInterval(-60)))
+        }
+        let ref = FeedRef.output(id)
+        let performer = FakeHomeFeedPerformer()
+        performer.error = PerformerFailure()
+        let center = try makeCenter(performer: performer)
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntil(center, shows(ref))
+
+        await center.act(.done, on: ref)
+        await center.rereadNow()
+        XCTAssertTrue(shows(ref)(center.snapshot))
+        XCTAssertEqual(center.feedErrors[ref], "watchtower exited with error: database is locked")
+        XCTAssertFalse(center.hiddenRefs.contains(ref))
+    }
+
     func testASecondPressClearsTheRowsError() async throws {
         let pool = try makePool()
         let ref = try insertMention(pool)
@@ -286,6 +312,31 @@ final class HomeFeedActionTests: XCTestCase {
     }
 
     // MARK: - LiveHomeFeedPerformer
+
+    /// Done marks an automation output read, Hide dismisses it, both through
+    /// GRDB; a second press on a closed output is quiet.
+    func testAutomationOutputDoneReadsAndHideDismisses() async throws {
+        let pool = try makePool()
+        let (done, hidden) = try await pool.write { db -> (Int64, Int64) in
+            let id = try TestDatabase.insertAutomation(db)
+            let run = try TestDatabase.insertAutomationRun(db, automationID: id)
+            return (try TestDatabase.insertAutomationOutput(db, automationID: id, runID: run),
+                    try TestDatabase.insertAutomationOutput(db, automationID: id, runID: run))
+        }
+        let runner = RecordingRunner()
+        let performer = LiveHomeFeedPerformer(runner: runner, pool: pool)
+        try await performer.perform(.done, on: .output(done), now: Date(), calendar: .current)
+        try await performer.perform(.hide, on: .output(hidden), now: Date(), calendar: .current)
+        try await performer.perform(.hide, on: .output(done), now: Date(), calendar: .current)
+        let rows = try await pool.read { db in
+            try Row.fetchAll(db, sql: "SELECT id, read_at, dismissed_at FROM automation_outputs ORDER BY id")
+        }
+        XCTAssertNotNil(rows[0]["read_at"] as String?)
+        XCTAssertNil(rows[0]["dismissed_at"] as String?)
+        XCTAssertNil(rows[1]["read_at"] as String?)
+        XCTAssertNotNil(rows[1]["dismissed_at"] as String?)
+        XCTAssertTrue(runner.calls.isEmpty)
+    }
 
     func testInboxDoneRunsResolve() async throws {
         let runner = RecordingRunner()

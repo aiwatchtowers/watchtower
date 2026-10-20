@@ -31,6 +31,12 @@ enum DesignShotCatalog {
             DesignShot(name: "workbench-board-cards", size: NSSize(width: 480, height: 280)) {
                 AnyView(DesignShotFixtures.boardCards().padding(12).shotFrame().detailBackground())
             },
+            DesignShot(name: "workbench-kanban-columns", size: NSSize(width: 1380, height: 220)) {
+                AnyView(BoardColumnsShotFixtures.kanbanColumns().shotFrame().detailBackground())
+            },
+            DesignShot(name: "workbench-new-task", size: NSSize(width: 620, height: 240)) {
+                AnyView(DesignShotFixtures.newTask().shotFrame().panelBackground())
+            },
             DesignShot(name: "workbench-panel-parts", size: NSSize(width: 440, height: 120)) {
                 AnyView(DesignShotFixtures.panelParts().padding(12).shotFrame().detailBackground())
             },
@@ -61,6 +67,19 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "automation-new-sheet-workbench", size: NSSize(width: 960, height: 640)) {
                 AnyView(AutomationShotFixtures.newSheetForWorkbench().detailBackground())
+            },
+            // Branch review (#712, artboards A–C).
+            DesignShot(name: "branch-review-changes", size: NSSize(width: 1180, height: 760)) {
+                ReviewShotFixtures.changes()
+            },
+            DesignShot(name: "branch-review-empty", size: NSSize(width: 1180, height: 520)) {
+                ReviewShotFixtures.empty()
+            },
+            DesignShot(name: "branch-review-default-branch", size: NSSize(width: 1180, height: 520)) {
+                ReviewShotFixtures.defaultBranch()
+            },
+            DesignShot(name: "branch-review-deep-meaning", size: NSSize(width: 1180, height: 760)) {
+                ReviewShotFixtures.deepMeaning()
             }
         ] + CatalogPage.allCases.map { page in
             DesignShot(name: "catalog-\(page.rawValue)", size: NSSize(width: 900, height: 0)) {
@@ -88,13 +107,18 @@ private extension View {
 @MainActor
 enum DesignShotFixtures {
     private static var poolPath: String?
-    private static let defaultsSuite = "DesignShotsTests"
+    private static var newTaskPoolPath: String?
+    /// Every fixture's defaults suite, removed by `cleanUp`.
+    static let defaultsSuite = "DesignShotsTests"
 
     /// Removes the header's database and layout defaults (`DesignShotsTests`
     /// calls it once, after the class).
     static func cleanUp() {
         if let poolPath { TestDatabase.cleanup(path: poolPath) }
         poolPath = nil
+        ReviewShotFixtures.cleanUp()
+        if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
+        newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)
     }
 
@@ -155,6 +179,28 @@ enum DesignShotFixtures {
                 }
                 Spacer(minLength: 0)
             })
+        } catch {
+            return failure(error)
+        }
+    }
+
+    /// The New Task panel (AI-14 §2), opened for a sub-task of a group.
+    static func newTask() -> AnyView {
+        do {
+            let (pool, path) = try TestDatabase.createPool()
+            if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
+            newTaskPoolPath = path
+            let (pid, parent) = try pool.write { db -> (Int64, Int64) in
+                let pid = try TestDatabase.insertWorkbench(db, folder: "/tmp/acme")
+                let parent = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, text: "Billing export for acme",
+                                                                    status: "in_progress", priority: "high")
+                return (pid, parent)
+            }
+            let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid)
+            vm.load()
+            return AnyView(WorkbenchNewTargetSheet(
+                request: WorkbenchNewTargetRequest(parentID: Int(parent)), vm: vm, workbenchName: "acme"
+            ))
         } catch {
             return failure(error)
         }

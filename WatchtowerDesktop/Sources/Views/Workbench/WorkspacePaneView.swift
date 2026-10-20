@@ -29,7 +29,7 @@ struct WorkspaceAreaView: View {
 }
 
 /// One pane: Board, Files, Analytics, or a session's terminal, Workchat,
-/// report or Changes. A session's pane always has its session strip
+/// report or Branch review. A session's pane always has its session strip
 /// (`WorkbenchSessionStrip`, spec 2026-10-20 §2); any other pane has a strip
 /// of the same look in a split only (its own picker, expand and close, §3)
 /// — a single one has none, the title row's lit tab or Analytics icon says
@@ -89,7 +89,7 @@ struct WorkspacePaneView: View {
             Button("Files") { show(.files) }.disabled(pane == .files)
             Button("Analytics") { show(.analytics) }.disabled(pane == .analytics)
             if let id = currentSessionID {
-                Button("Changes") { show(.changes(id)) }.disabled(pane == .changes(id))
+                Button("Branch review") { show(.changes(id)) }.disabled(pane == .changes(id))
                 Button("Workchat") { show(.sessionChat(id)) }.disabled(pane == .sessionChat(id))
             }
             Divider()
@@ -120,7 +120,7 @@ struct WorkspacePaneView: View {
         .help("Show something else in this pane")
     }
 
-    /// The session the pane picker's Changes reviews: the one in a slot (in
+    /// The session the pane picker's Branch review reviews: the one in a slot (in
     /// its terminal or its Workchat), else the active one.
     private var currentSessionID: Int64? {
         vm.layout(projectID: project.id).shownSessionIDs.first ?? vm.activeSessionID(projectID: project.id)
@@ -164,6 +164,7 @@ struct WorkspacePaneView: View {
             if let model = vm.reviewModel(sessionID: id, projectID: project.id) {
                 ReviewChangesPaneView(
                     model: model,
+                    identity: reviewIdentity(sessionID: id),
                     agentStateKind: vm.session(id, projectID: project.id).map { vm.sessionState($0).kind },
                     lessons: vm.reviewLessonsModel(projectID: project.id)
                 )
@@ -174,6 +175,25 @@ struct WorkspacePaneView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+    }
+}
+
+extension WorkspacePaneView {
+    /// The Branch review's identity bar inputs (#712): the session's row,
+    /// where its agent works and the main folder's status; the title opens
+    /// the session in its recorded mode, the ⋯ menu's Open in Terminal its terminal.
+    func reviewIdentity(sessionID id: Int64) -> ReviewSessionIdentity {
+        let session = vm.session(id, projectID: project.id)
+        let projectID = project.id
+        return ReviewSessionIdentity(
+            row: session.flatMap { vm.sessionRows([$0]).first },
+            place: vm.sessionPlaces.currentPlace(sessionID: id),
+            stale: vm.sessionPlaces.isPlaceStale(sessionID: id),
+            mainStatus: vm.gitStatus[projectID],
+            agentName: session?.kind.agent?.displayName ?? "Agent",
+            openSession: { [vm] in Task { await vm.showSession(id: id) } },
+            openTerminal: { [vm] in Task { await vm.showTerminal(sessionID: id, projectID: projectID) } }
+        )
     }
 }
 
@@ -279,7 +299,7 @@ extension WorkspaceView {
         case .board: "Board"
         case .files: "Files"
         case .analytics: "Analytics"
-        case .changes: "Changes"
+        case .changes: "Branch review"
         case .chat: "Workchat"
         }
     }

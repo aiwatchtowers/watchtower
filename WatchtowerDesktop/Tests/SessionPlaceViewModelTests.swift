@@ -140,6 +140,24 @@ final class SessionPlaceViewModelTests: XCTestCase {
         XCTAssertEqual(vm.sessionRows([session]).first?.place?.text, "⑂ mobile-a · feature/x")
     }
 
+    /// A session strip's Review button reads the session's worktree status, not the
+    /// main folder's: a clean `main` worktree hides it, a feature branch shows it.
+    func testShowsReviewButtonUsesTheWorktreeStatus() async throws {
+        let runner = RoutingRunner(workbenchID: project.id)
+        let (vm, _, _) = makeVM(runner)
+        await vm.loadSessions(projectID: project.id)
+        vm.gitStatus[project.id] = WorkbenchGitStatus(branch: "main")
+        await vm.startGitWatching(project: project)
+        await waitUntil { self.worktreeName(vm) == "mobile-a" }
+
+        XCTAssertTrue(vm.showsReviewButton(sessionID: sessionID, projectID: project.id), "the worktree is on feature/x")
+        runner.setBranch("main", folder: worktreeA)
+        await vm.sessionPlaces.refreshPlaces(workbenchID: project.id).value
+        await waitUntil { self.shownBranch(vm) == "main" }
+        XCTAssertFalse(vm.showsReviewButton(sessionID: sessionID, projectID: project.id), "a clean main worktree has nothing to review")
+        vm.stopGitWatching(projectID: project.id)
+    }
+
     /// Leaving the page unfollows: a later state change reads nothing.
     func testStoppingTheGitWatchUnfollows() async throws {
         let runner = RoutingRunner(workbenchID: project.id)

@@ -67,7 +67,7 @@ Session or ask stuck? See [A Workbench session or ask is stuck](../../troublesho
 - [Code viewer](code-viewer.md): the Files pane, Open Quickly and go to definition.
 - [Switching branches](branches.md): switch, fetch and check out branches safely.
 - [Worktrees and cleanup](worktrees-and-cleanup.md): own worktree per session, cleaning up after a session.
-- [Diff review](diff-review.md): guided review of a session's changes.
+- [Branch review](diff-review.md): guided review of a session's changes.
 - [Methodology](methodology.md): the workflow file and **Agent Settings…**.
 - [Your instructions](instructions.md): standing directions every agent follows, and suggestions from what you repeat.
 - [Codex](codex.md): using Codex as the agent.

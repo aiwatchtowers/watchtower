@@ -107,7 +107,8 @@ package enum KeyboardShortcutCatalog {
             Entry("⌃⌘← / ⌃⌘→", "Back / forward"),
             Entry("⌘S", "Save now"),
             Entry("⌥⌘Return", "Hand to Session (an Ask AI answer)"),
-            Entry("⌥⌘M", "Comment on the selected lines (Changes pane)")
+            Entry("⌥⌘M", "Comment on the selected lines (Branch review pane)"),
+            Entry("⌥⌘↑ / ⌥⌘↓", "Previous / next unviewed file (Branch review pane)")
         ]),
         Area("Open Quickly", [
             Entry("↑ / ↓", "Move"),

@@ -83,3 +83,189 @@ final class WorkbenchesViewModelDriftTests: XCTestCase {
         XCTAssertNil(vm.drift[2])
     }
 }
+
+/// The drift popover's Fix: one new agent session with the fix prompt, and
+/// "Fixing…" (the live session opened, none started) while it runs.
+@MainActor
+final class WorkbenchesViewModelDriftFixTests: XCTestCase {
+    private var pool: DatabasePool!
+    private var path: String!
+    private var defaults: UserDefaults!
+    private var folder: URL!
+    private var processes: [FakeTerminalSession] = []
+    private var center: TerminalCenter!
+
+    override func setUpWithError() throws {
+        (pool, path) = try TestDatabase.createPool()
+        defaults = try XCTUnwrap(UserDefaults(suiteName: "WorkbenchesViewModelDriftFixTests-\(UUID().uuidString)"))
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent("wt fix \(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("acme"), withIntermediateDirectories: true)
+        processes = []
+        center = TerminalCenter { [weak self] in
+            let process = FakeTerminalSession(pid: 0)
+            self?.processes.append(process)
+            return process
+        }
+        center.shell = { "/bin/zsh" }
+        center.transcriptExists = { _ in true }
+    }
+
+    override func tearDown() {
+        try? FileManager.default.removeItem(at: folder)
+        TestDatabase.cleanup(path: path)
+        super.tearDown()
+    }
+
+    private func makeVM(agentStates: SessionAgentStateCenter? = nil) -> WorkbenchesViewModel {
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults,
+                                      terminalCenter: center, agentStates: agentStates)
+        vm.titleService = { _ in .init(title: "", written: false) }
+        return vm
+    }
+
+    private func finding(_ id: Int64, _ kind: String = "merged_but_open") throws -> WorkbenchDriftFinding {
+        let json = #"{"target_id":\#(id),"title":"t","kind":"\#(kind)","detail":"d","fix":"f"}"#
+        return try JSONDecoder().decode(WorkbenchDriftFinding.self, from: Data(json.utf8))
+    }
+
+    private func setUpBoard() async throws -> (project: Int64, targets: [Int64]) {
+        let acme = folder.appendingPathComponent("acme").path
+        return try await pool.write {
+            let p = try TestDatabase.insertWorkbench($0, name: "acme", folder: acme)
+            return (p, [try TestDatabase.insertWorkbenchTarget($0, projectID: p, text: "One"),
+                        try TestDatabase.insertWorkbenchTarget($0, projectID: p, text: "Two")])
+        }
+    }
+
+    func testFixStartsOneSessionWithThePromptAndASecondPressOpensItInstead() async throws {
+        let (p, t) = try await setUpBoard()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        let findings = [try finding(t[0]), try finding(t[1], "stale")]
+
+        await vm.fixDrift(projectID: p, findings: findings)
+        XCTAssertEqual(processes.count, 1)
+        let live = try XCTUnwrap(vm.liveDriftFix(projectID: p))
+        XCTAssertEqual(center.states[live], .running)
+        let rows = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: p) }
+        XCTAssertEqual(rows.map(\.title), [WorkbenchesViewModel.driftFixTitle])
+        let prompt = TerminalLaunch.driftFixPrompt(workbenchID: p, findings: findings)
+        XCTAssertEqual(processes.flatMap(\.launches).last?.environment.last, "WATCHTOWER_FIRST_PROMPT=\(prompt)")
+        XCTAssertTrue(prompt.contains("#\(t[1]) no movement"))
+
+        await vm.fixDrift(projectID: p, findings: findings)
+        XCTAssertEqual(processes.count, 1, "Fixing… opens the live session, no second one")
+        let after = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: p) }
+        XCTAssertEqual(after.count, 1)
+    }
+
+    /// A row's Fix starts a session for its target only; the header still
+    /// offers Fix (a one-finding session is not the all-findings one) and
+    /// starts its own.
+    func testARowFixStartsASessionForThatTargetOnly() async throws {
+        let (p, t) = try await setUpBoard()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        let findings = [try finding(t[0]), try finding(t[1])]
+
+        await vm.fixDrift(projectID: p, findings: findings, targetID: t[0])
+        let row = try XCTUnwrap(vm.liveDriftFix(projectID: p, targetID: t[0]))
+        XCTAssertNil(vm.liveDriftFix(projectID: p, targetID: t[1]), "the other row still offers Fix")
+        XCTAssertNil(vm.liveDriftFix(projectID: p), "the header still offers Fix for every finding")
+        let rows = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: p) }
+        XCTAssertEqual(rows.first?.targetID, t[0])
+
+        await vm.fixDrift(projectID: p, findings: findings)
+        XCTAssertEqual(processes.count, 2, "the header starts the all-findings session")
+        let all = try XCTUnwrap(vm.liveDriftFix(projectID: p))
+        XCTAssertNotEqual(all, row)
+    }
+
+    /// While the all-findings session works, every row reads Fixing… and
+    /// opens it: it covers their findings too.
+    func testARowFixOpensTheWorkingAllFindingsSession() async throws {
+        let (p, t) = try await setUpBoard()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        let findings = [try finding(t[0]), try finding(t[1])]
+
+        await vm.fixDrift(projectID: p, findings: findings)
+        let all = try XCTUnwrap(vm.liveDriftFix(projectID: p))
+        XCTAssertEqual(vm.liveDriftFix(projectID: p, targetID: t[0]), all)
+        XCTAssertEqual(vm.liveDriftFix(projectID: p, targetID: t[1]), all)
+
+        await vm.fixDrift(projectID: p, findings: findings, targetID: t[0])
+        XCTAssertEqual(processes.count, 1, "the row opens the all-findings session, no second one")
+    }
+
+    /// Two presses while the first start is still in flight start one
+    /// session.
+    func testASecondPressWhileTheStartIsInFlightStartsNothing() async throws {
+        let (p, t) = try await setUpBoard()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        let findings = [try finding(t[0])]
+
+        async let first: Void = vm.fixDrift(projectID: p, findings: findings)
+        async let second: Void = vm.fixDrift(projectID: p, findings: findings)
+        _ = await (first, second)
+
+        XCTAssertEqual(processes.count, 1)
+        let rows = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: p) }
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertTrue(vm.startingDriftFix.isEmpty, "the guard clears once the start settled")
+    }
+
+    /// Fixing… means the agent works: once its turn ended at the prompt the
+    /// terminal may stay open, but Fix starts a new session.
+    func testAFixWhoseAgentEndedItsTurnIsNoLongerLive() async throws {
+        let (p, t) = try await setUpBoard()
+        let states = SessionAgentStateCenter(
+            dbPool: pool, terminalCenter: center, interval: .seconds(3600), notifier: RecordingSessionNotifier(),
+            defaults: defaults, notificationCenter: NotificationCenter()
+        )
+        let vm = makeVM(agentStates: states)
+        vm.selectedWorkbenchID = p
+        let findings = [try finding(t[0])]
+        await vm.fixDrift(projectID: p, findings: findings)
+        let live = try XCTUnwrap(vm.liveDriftFix(projectID: p))
+
+        try await setAgentState(live, "working")
+        await states.poll()
+        XCTAssertEqual(vm.liveDriftFix(projectID: p), live, "a working agent keeps Fixing…")
+
+        try await setAgentState(live, "waiting")
+        await states.poll()
+        XCTAssertEqual(states.statuses[live]?.state.kind, .stopped)
+        XCTAssertEqual(center.states[live], .running, "the terminal stays open at the prompt")
+        XCTAssertNil(vm.liveDriftFix(projectID: p))
+
+        await vm.fixDrift(projectID: p, findings: findings)
+        XCTAssertEqual(processes.count, 2, "Fix starts a new session")
+    }
+
+    /// The state hook's write, stamped after the run started.
+    private func setAgentState(_ id: Int64, _ state: String) async throws {
+        try await pool.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE terminal_sessions
+                    SET agent_state = ?, agent_state_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+1 hour'),
+                        claude_session_id = COALESCE(claude_session_id, 'fix-conversation')
+                    WHERE id = ?
+                    """,
+                arguments: [state, id]
+            )
+        }
+    }
+
+    func testAFinishedFixSessionIsNoLongerLive() async throws {
+        let (p, t) = try await setUpBoard()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = p
+        await vm.fixDrift(projectID: p, findings: [try finding(t[0])])
+        let live = try XCTUnwrap(vm.liveDriftFix(projectID: p))
+        await center.close(sessionID: live)
+        XCTAssertNil(vm.liveDriftFix(projectID: p))
+    }
+}

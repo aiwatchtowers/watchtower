@@ -123,7 +123,7 @@ final class WorkbenchSessionStripTests: XCTestCase {
 
     // MARK: - Where it shows
 
-    /// Every pane of a session — terminal, Workchat, report, Changes — has
+    /// Every pane of a session — terminal, Workchat, report, Branch review — has
     /// the strip, single and split; a Files pane (Board's and Analytics'
     /// twin here) has none single and keeps the old picker header in a split.
     func testStripShowsOnEverySessionPaneOnly() async throws {
@@ -147,13 +147,63 @@ final class WorkbenchSessionStripTests: XCTestCase {
 
     // MARK: - Toggles
 
-    func testStripTogglesReadTerminalWorkchatReportChanges() async throws {
+    /// With something to review the strip reads Terminal | Workchat, Report,
+    /// Review (board #712); the old Changes title is gone.
+    func testStripTogglesReadTerminalWorkchatReportReview() async throws {
         let (vm, s) = try await loaded()
+        vm.gitStatus[s.project.id] = Self.status(branch: "feature/x", dirty: false)
         let titles = try strip(vm, s.project, .session(s.first.id))
             .inspect()
             .findAll(ViewType.Toggle.self)
             .map(Self.title)
-        XCTAssertEqual(titles, ["Terminal", "Workchat", "Report", "Changes"])
+        XCTAssertEqual(titles, ["Terminal", "Workchat", "Report", "Review"])
+    }
+
+    private static func status(branch: String, dirty: Bool) -> WorkbenchGitStatus {
+        WorkbenchGitStatus(branch: branch, dirty: dirty, changes: dirty ? 2 : 0)
+    }
+
+    /// The Review button (board #712, spec §5) shows only with something to
+    /// review: an unread status or a clean `main` hide it; a dirty tree or a
+    /// feature branch shows it; this session's open Branch review pane keeps
+    /// it, lit — on that session's strips only, not on another session's
+    /// (spec 2026-10-20 call 8).
+    func testStripReviewShowsOnlyWithSomethingToReview() async throws {
+        let (vm, s) = try await loaded()
+        let p = s.project.id
+        let (one, two) = (s.first.id, s.second.id)
+        XCTAssertThrowsError(try toggle("Review", strip(vm, s.project, .session(one))), "status not read yet: absent")
+
+        vm.gitStatus[p] = Self.status(branch: "main", dirty: false)
+        XCTAssertThrowsError(try toggle("Review", strip(vm, s.project, .session(one))), "clean main: absent")
+        vm.gitStatus[p] = Self.status(branch: "main", dirty: true)
+        XCTAssertFalse(try toggle("Review", strip(vm, s.project, .session(one))).isOn(), "dirty main: present, off")
+        vm.gitStatus[p] = Self.status(branch: "feature/x", dirty: false)
+        XCTAssertNoThrow(try toggle("Review", strip(vm, s.project, .session(one))), "feature branch: present")
+        XCTAssertThrowsError(try toggle("Changes", strip(vm, s.project, .session(one))), "the old Changes button is gone")
+
+        vm.gitStatus[p] = Self.status(branch: "main", dirty: false)
+        vm.setLayout(Self.split(.session(two), .changes(two)), projectID: p)
+        XCTAssertTrue(try toggle("Review", strip(vm, s.project, .session(two))).isOn(), "pane on screen: present and on")
+        XCTAssertTrue(try toggle("Review", strip(vm, s.project, .changes(two))).isOn(), "on the review pane's own strip too")
+        vm.setLayout(Self.split(.session(one), .changes(two)), projectID: p)
+        XCTAssertThrowsError(try toggle("Review", strip(vm, s.project, .session(one))),
+                             "another session's open review does not show this strip's button")
+    }
+
+    /// The strip's Review drives its session's Branch review pane: on puts
+    /// it beside the session's terminal, off closes it.
+    func testStripReviewShowsAndHidesTheBranchReviewPane() async throws {
+        let (vm, s) = try await loaded()
+        let p = s.project.id
+        let terminal = WorkspacePane.session(s.first.id)
+        vm.gitStatus[p] = Self.status(branch: "feature/x", dirty: false)
+        vm.setLayout(Self.split(terminal, .board), projectID: p)
+        try toggle("Review", strip(vm, s.project, terminal)).tap()
+        await waitUntil { vm.layout(projectID: p).visiblePanes == [terminal, .changes(s.first.id)] }
+        XCTAssertEqual(try toggle("Review", strip(vm, s.project, terminal)).help().string(), "Review this session's branch")
+        try toggle("Review", strip(vm, s.project, terminal)).tap()
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [terminal])
     }
 
     /// Each strip lights its own half: the terminal pane's Terminal, the
@@ -182,18 +232,19 @@ final class WorkbenchSessionStripTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [terminal])
     }
 
-    /// Report and Changes follow the strip's own session: two sessions side
+    /// Report and Review follow the strip's own session: two sessions side
     /// by side, the second strip's Report puts the second session's report
     /// beside the second session's own terminal — the pane the strip sits
     /// on stays, the other one gives way — and lights on that strip only;
-    /// the same from the second session's Workchat; Changes is never
+    /// the same from the second session's Workchat; Review is never
     /// disabled.
-    func testStripReportAndChangesFollowTheStripsSession() async throws {
+    func testStripReportAndReviewFollowTheStripsSession() async throws {
         let (vm, s) = try await loaded()
         let p = s.project.id
         let (one, two) = (s.first.id, s.second.id)
+        vm.gitStatus[p] = Self.status(branch: "feature/x", dirty: false)
         vm.setLayout(Self.split(.session(one), .session(two)), projectID: p)
-        XCTAssertFalse(try toggle("Changes", strip(vm, s.project, .session(two))).isDisabled())
+        XCTAssertFalse(try toggle("Review", strip(vm, s.project, .session(two))).isDisabled())
 
         try toggle("Report", strip(vm, s.project, .session(two))).tap()
         XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.sessionReport(two), .session(two)])
@@ -201,12 +252,12 @@ final class WorkbenchSessionStripTests: XCTestCase {
         XCTAssertFalse(try toggle("Report", strip(vm, s.project, .sessionReport(two))).isDisabled())
 
         vm.setLayout(Self.split(.session(one), .session(two)), projectID: p)
-        try toggle("Changes", strip(vm, s.project, .session(two))).tap()
+        try toggle("Review", strip(vm, s.project, .session(two))).tap()
         XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.changes(two), .session(two)])
-        XCTAssertTrue(try toggle("Changes", strip(vm, s.project, .changes(two))).isOn())
+        XCTAssertTrue(try toggle("Review", strip(vm, s.project, .changes(two))).isOn())
         vm.setLayout(Self.split(.session(one), .changes(two)), projectID: p)
-        XCTAssertFalse(try toggle("Changes", strip(vm, s.project, .session(one))).isOn(),
-                       "another session's Changes does not light this strip")
+        XCTAssertFalse(try toggle("Review", strip(vm, s.project, .session(one))).isOn(),
+                       "another session's Branch review does not light this strip")
 
         vm.setLayout(Self.split(.session(one), .sessionChat(two)), projectID: p)
         try toggle("Report", strip(vm, s.project, .sessionChat(two))).tap()

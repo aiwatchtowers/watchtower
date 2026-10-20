@@ -126,6 +126,20 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         XCTAssertThrowsError(try sut.inspect().find(WorkbenchSessionsMenu.self), "the sessions menu is the strip's")
     }
 
+    /// Review belongs to the session (board #712 on the 2026-10-20 header):
+    /// even with something to review the title row has no Review button —
+    /// the session strip carries it.
+    func testTheTitleRowHasNoReviewButton() async throws {
+        let s = try await seed()
+        let vm = makeVM()
+        await vm.loadSessions(projectID: s.project.id)
+        vm.gitStatus[s.project.id] = WorkbenchGitStatus(branch: "feature/x", dirty: true, changes: 2)
+        vm.setLayout(Self.split(.session(s.first.id), .changes(s.first.id)), projectID: s.project.id)
+
+        let titles = try controls(vm, s.project).inspect().findAll(ViewType.Toggle.self).compactMap { try? Self.title($0) }
+        XCTAssertEqual(titles, ["Session", "Board", "Files"])
+    }
+
     // MARK: - Branch crumb
 
     /// The place and branch crumbs are on screen once: in the title row
@@ -346,6 +360,19 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         await waitUntil { runner.invocations.contains(["workbench", "resync", String(p), "--json"]) }
         try sut.inspect().find(button: "Delete…").tap()
         XCTAssertEqual(deletes, 1)
+    }
+
+    /// The ⋯ menu's Edit Columns on the Kanban (board #712, replacing the
+    /// Board Columns… sheet) puts the Board on screen and asks it for Kanban once.
+    func testEditColumnsOnTheKanbanShowsTheBoardInKanban() async throws {
+        let s = try await seed()
+        let vm = makeVM()
+        vm.setLayout(Self.split(.session(s.first.id), .files), projectID: s.project.id)
+
+        try controls(vm, s.project).inspect().find(button: "Edit Columns on the Kanban").tap()
+        XCTAssertTrue(vm.layout(projectID: s.project.id).isShowing(.board))
+        XCTAssertTrue(vm.takeKanbanRequest(projectID: s.project.id))
+        XCTAssertThrowsError(try controls(vm, s.project).inspect().find(button: "Board Columns…"), "the sheet is gone")
     }
 
     /// "Clean Up Old Worktrees…" opens the sweep (board #535); off without a

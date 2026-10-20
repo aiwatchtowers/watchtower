@@ -1615,6 +1615,26 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertFalse(vm.layout.workchatSessions.contains(one.id), "the terminal is the mode from now on")
     }
 
+    /// The Branch review title (#712, final review F4): it opens the
+    /// session the way a panel click does, so a session remembered in
+    /// Workchat mode comes back in its Workchat and keeps that mode.
+    func testReviewTitleKeepsTheSessionsWorkchatMode() async throws {
+        let p = try await workbenchWithFolder()
+        let one = try await liveSession(p, "one")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        await vm.showWorkchat(sessionID: one.id, projectID: p)
+        vm.showChanges(sessionID: one.id, projectID: p)
+        XCTAssertTrue(vm.layout.visiblePanes.contains(.changes(one.id)))
+
+        await vm.showSession(id: one.id)
+
+        XCTAssertTrue(vm.layout.visiblePanes.contains(.sessionChat(one.id)), "\(vm.layout.visiblePanes)")
+        XCTAssertFalse(vm.layout.visiblePanes.contains(.session(one.id)))
+        XCTAssertEqual(vm.layout.workchatSessions, [one.id], "the recorded mode stays Workchat")
+    }
+
     /// A Workchat beside Board: its slot shows the terminal, Board stays.
     func testShowTerminalFromWorkchatBesideBoardKeepsTheBoard() async throws {
         let p = try await workbenchWithFolder()

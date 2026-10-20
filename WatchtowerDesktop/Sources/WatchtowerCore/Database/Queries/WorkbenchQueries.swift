@@ -337,7 +337,7 @@ package enum WorkbenchQueries {
     /// Per defined column of workbench `projectID`, the leaf targets that
     /// show in it (`BoardColumnLayout.effectiveColumn`: a NULL or foreign
     /// column counts for its status's first column) — what deleting the
-    /// column moves (the Board Columns… sheet). A parent is no card.
+    /// column moves (Delete Column on the Kanban header). A parent is no card.
     package static func boardColumnCardCounts(_ db: Database, projectID: Int64) throws -> [Int64: Int] {
         let def = try boardColumns(db, projectID: projectID)
         guard !def.columns.isEmpty else { return [:] }

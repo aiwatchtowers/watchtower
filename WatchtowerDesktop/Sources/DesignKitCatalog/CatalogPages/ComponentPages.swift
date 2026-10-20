@@ -40,6 +40,12 @@ struct ActionsPage: View {
                     Button("Show more") {}.buttonStyle(.kitQuiet).disabled(true)
                 }
             }
+            Sample("kitQuiet in the text colour: a name that opens something (a session title)",
+                   usage: ".buttonStyle(KitQuietButtonStyle(label: .primary))") {
+                Button("Fix the record capsule overlap") {}
+                    .buttonStyle(KitQuietButtonStyle(label: .primary))
+                    .font(.headline)
+            }
             Sample("kitDestructive: stop or discard, white on red in every state",
                    usage: ".buttonStyle(.kitDestructive)") {
                 HStack(spacing: Spacing.cozy) {

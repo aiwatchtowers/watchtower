@@ -2,8 +2,8 @@ import SwiftUI
 import WatchtowerCore
 
 /// The slim bar on top of every pane of a session — its terminal, Workchat,
-/// report or Changes (spec 2026-10-20-workbench-header §2): `session ▾`,
-/// the place and branch crumbs, `[Terminal | Workchat]`, Report, Changes,
+/// report or Branch review (spec 2026-10-20-workbench-header §2): `session ▾`,
+/// the place and branch crumbs, `[Terminal | Workchat]`, Report, Review,
 /// and in a split expand and close. Each strip acts on its own pane and
 /// session (call 8); the crumbs show only on the strip whose session sets
 /// the page's code root (call 9); no pane picker (call 10).
@@ -33,7 +33,11 @@ struct WorkbenchSessionStrip: View {
             .fixedSize()
             .layoutPriority(1)
             viewToggle("Report", view: .report)
-            viewToggle("Changes", view: .changes)
+            // Review only while this session has something to review or its
+            // Branch review pane is on screen (board #712, spec §5).
+            if vm.showsReviewButton(sessionID: sessionID, projectID: project.id) {
+                viewToggle(WorkspaceView.changes.reviewButtonTitle, view: .changes)
+            }
             if isSplit {
                 WorkspacePaneButtons(vm: vm, project: project, pane: pane, isExpanded: isExpanded)
             }
@@ -47,7 +51,7 @@ struct WorkbenchSessionStrip: View {
     /// One half of `[Terminal | Workchat]`, for this strip's session:
     /// lit when this pane shows that mode. Turning the other half on swaps
     /// this pane in place — the other pane of a split stays; over the
-    /// session's report or Changes this pane shows the session in that
+    /// session's report or Branch review this pane shows the session in that
     /// mode. A mode already on screen in the other pane is disabled, not a
     /// click that does nothing; the lit half stays lit — the capsule picks
     /// a mode, it never empties the pane.
@@ -74,7 +78,7 @@ struct WorkbenchSessionStrip: View {
         .disabled(shownElsewhere)
     }
 
-    /// Report or Changes of this strip's session: lit while it is on
+    /// Report or Review (its Branch review pane) of this strip's session: lit while it is on
     /// screen; on puts it beside its session's terminal (a single pane
     /// splits), off closes it in a split — a single pane is never removed.
     private func viewToggle(_ label: String, view: WorkspaceView) -> some View {
@@ -94,7 +98,7 @@ struct WorkbenchSessionStrip: View {
         }
         .toggleStyle(segmentStyle(label))
         .segmentCapsule()
-        .help(view == .report ? "Show this session's report beside its terminal" : "Review this session's changes")
+        .help(view == .report ? "Show this session's report beside its terminal" : WorkspaceView.changes.help)
     }
 
     private func segmentStyle(_ label: String) -> SegmentedToggleStyle {

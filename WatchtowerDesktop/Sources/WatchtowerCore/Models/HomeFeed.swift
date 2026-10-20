@@ -2,7 +2,7 @@ import Foundation
 
 /// What a feed row is, in the order the kinds sit above NOW (the raw value).
 package enum FeedKind: Int, Comparable, Sendable {
-    case slack, jira, proposal, reminder, target, email
+    case slack, jira, proposal, automation, reminder, target, email
 
     package static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
 }
@@ -12,14 +12,17 @@ package enum FeedRef: Hashable, Sendable {
     case inbox(Int)
     case reminder(Int64)
     case proposal(Int64)
+    /// An automation's inbox output (`automation_outputs.id`).
+    case output(Int64)
     case target(Int)
     case event(String)
 
-    /// Whether Done / Hide exist for this kind: inbox, reminder and target
-    /// rows have both; a proposal (decided in Inbox) and an event have none.
+    /// Whether Done / Hide exist for this kind: inbox, reminder, automation
+    /// output and target rows have both; a proposal (decided in Inbox) and an
+    /// event have none.
     package var hasActions: Bool {
         switch self {
-        case .inbox, .reminder, .target: true
+        case .inbox, .reminder, .output, .target: true
         case .proposal, .event: false
         }
     }
@@ -35,7 +38,7 @@ package struct FeedRow: Equatable, Identifiable, Sendable {
     package let id: FeedRef
     package let kind: FeedKind
     /// "Mention", "DM", "Thread", "Reaction", "Jira", "Proposal", "Failed",
-    /// "Reminder", "Overdue", "Due", "Email".
+    /// "Automation", "Reminder", "Overdue", "Due", "Email".
     package let chip: String
     package let who: String
     /// "#eng", an email subject, "assigned to you"; nil when there is none.
@@ -110,7 +113,7 @@ package struct FeedEvent: Equatable, Identifiable, Sendable {
 
 /// A feed source, for naming the ones whose read failed.
 package enum FeedSource: CaseIterable, Hashable, Sendable {
-    case inbox, reminders, proposals, targets, calendar
+    case inbox, reminders, proposals, automations, targets, calendar
 }
 
 /// The first later day with meetings.

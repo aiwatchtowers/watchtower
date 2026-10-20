@@ -280,7 +280,13 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
 
     // MARK: - Status Display
 
-    package var statusIcon: String {
+    package var statusIcon: String { Self.statusIcon(status) }
+
+    package var statusColor: String { Self.statusColor(status) }
+
+    /// `status`'s glyph, for a status with no target yet (the New Task
+    /// panel's column chip).
+    package static func statusIcon(_ status: String) -> String {
         switch status {
         case "todo":       return "circle"
         case "in_progress": return "circle.dotted.circle"
@@ -293,7 +299,8 @@ package struct Target: FetchableRecord, TableRecord, Codable, Identifiable, Equa
         }
     }
 
-    package var statusColor: String {
+    /// `status`'s colour name (`Tone.status`).
+    package static func statusColor(_ status: String) -> String {
         switch status {
         case "todo":       return "secondary"
         case "in_progress": return "blue"

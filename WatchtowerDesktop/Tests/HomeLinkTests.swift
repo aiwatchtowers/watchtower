@@ -32,6 +32,7 @@ final class HomeLinkTests: XCTestCase {
         let route = WorkbenchRoute(projectID: 3, pane: .board)
         let cases: [(HomeLink, Landing)] = [
             (.inbox, Landing(destination: .inbox)),
+            (.automationRun(automationID: 1, runID: 2), Landing(destination: .automations)),
             (.calendarEvent(id: "evt-acme"), Landing(destination: .calendar, calendarEventID: "evt-acme")),
             (.briefing(id: 7), Landing(destination: .briefings, briefingID: 7)),
             (.targets, Landing(destination: .targets)),

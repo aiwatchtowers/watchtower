@@ -2,12 +2,15 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// The Changes pane (board #328, spec §10): a session's review round — the
-/// file list on the left, the selected file's Monaco diff and its comments
-/// on the right. The round is re-read when the window becomes key and when
-/// the session's turn ends, while the round is open and the pane on screen.
+/// The Branch review pane (board #328, #712 spec §4): whose work it is
+/// (the identity bar), the toolbar, then a session's review round — the
+/// file list on the left, the selected file's header, Monaco diff and its
+/// comments on the right — or one "Nothing to review" state on an empty
+/// branch. The round is re-read when the window becomes key and when the
+/// session's turn ends, while the round is open and the pane on screen.
 struct ReviewChangesPaneView: View {
     let model: ReviewChangesModel
+    let identity: ReviewSessionIdentity
     /// The session's state kind, for the turn-over refresh; nil = not known.
     var agentStateKind: SessionSwitcherPresentation.State.Kind?
     /// Find Repeats' model (the workbench's lessons); nil = not available.
@@ -18,6 +21,8 @@ struct ReviewChangesPaneView: View {
     @State private var findingRepeats = false
     @State private var pageError: String?
     @State private var onScreen = false
+    /// The pane's height; 0 until the first layout (no cap then).
+    @State private var paneHeight: CGFloat = 0
     @State private var pace = ReviewPaceWiring()
 
     /// What the shared comment sheet asks for and does with the answer: a line
@@ -62,32 +67,79 @@ struct ReviewChangesPaneView: View {
         .stopped, .finished, .failed, .waitingOnAsk, .background
     ]
 
-    @ViewBuilder private var content: some View {
+    private var content: some View {
+        VStack(spacing: 0) {
+            // The target cards take at most a third of the pane (Deep's Meaning).
+            ReviewIdentityBar(identity: identity, model: model,
+                              maxCardsHeight: paneHeight > 0 ? paneHeight / 3 : .infinity)
+            Divider()
+            if showsToolbar {
+                ReviewToolbar(
+                    model: model, inline: $inline,
+                    refresh: { Task { await refreshOrNextRound() } },
+                    findRepeats: lessons == nil ? nil : { findingRepeats = true },
+                    // The session gone (no row): nothing to open.
+                    openTerminal: identity.row == nil ? nil : identity.openTerminal
+                )
+                Divider()
+            }
+            ReviewBanners(model: model)
+            if let pageError {
+                ReviewBanner(text: pageError, isError: true) { self.pageError = nil }
+            }
+            state
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { paneHeight = $0 }
+    }
+
+    /// An open round with nothing to review shows no toolbar; a sent one
+    /// does, for Start next round.
+    private var showsToolbar: Bool {
+        guard model.load == .ready, let round = model.round else { return false }
+        return model.hasChanges || round.status != "open"
+    }
+
+    /// Nothing on the branch to review (spec §4.6): the round's whole diff is empty.
+    private var nothingToReview: Bool {
+        model.load == .ready && !model.hasChanges
+    }
+
+    @ViewBuilder private var state: some View {
         switch model.load {
         case .idle, .loading:
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         case let .failed(message):
-            VStack(spacing: 8) {
+            VStack(spacing: Spacing.regular) {
                 Text(message).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 Button("Retry") { Task { await openRound() } }
+                    .buttonStyle(.kitSecondary)
             }
             .padding()
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .ready:
-            VStack(spacing: 0) {
-                ReviewChangesHeader(
-                    model: model, inline: $inline,
-                    refresh: { Task { await refreshOrNextRound() } },
-                    findRepeats: lessons == nil ? nil : { findingRepeats = true }
-                )
-                if model.mode == .deep { ReviewPhaseStrip(model: model) }
-                if let pageError {
-                    ReviewBanner(text: pageError, isError: true) { self.pageError = nil }
+            if nothingToReview {
+                ContentUnavailableView {
+                    Label("Nothing to review", systemImage: "checkmark.circle")
+                } description: {
+                    Text(emptyDescription)
+                } actions: {
+                    // A sent round's toolbar has Start next round instead.
+                    if model.round?.status == "open" {
+                        Button("Refresh") { Task { await refreshOrNextRound() } }
+                            .buttonStyle(.kitSecondary)
+                            .disabled(model.sending || model.refreshing)
+                    }
                 }
-                Divider()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
                 body(for: model.mode == .deep ? model.phase : nil)
             }
         }
+    }
+
+    /// The empty state's line, from the identity bar's branch line.
+    private var emptyDescription: String {
+        ReviewIdentityPresentation.emptyDescription(identity.branchLine(model))
     }
 
     /// Quick mode (nil phase) and Deep's Chapters show the file column and the diff.
@@ -115,18 +167,46 @@ struct ReviewChangesPaneView: View {
     @ViewBuilder private func detail(checklist: Bool) -> some View {
         if let path = model.selectedPath {
             VStack(spacing: 0) {
+                if let file = model.files.first(where: { $0.path == path }) {
+                    ReviewFileHeader(model: model, file: file)
+                    Divider()
+                }
                 diff(path: path)
                 ReviewCommentListView(model: model, path: path)
-                if checklist { ReviewChecklistView(model: model) { compose = $0 } }
+                if checklist { chaptersFoot }
             }
         } else {
             VStack(spacing: 0) {
-                Text(model.files.isEmpty ? "No changes yet" : "Pick a file")
+                Text(Self.noFileText(model))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                if checklist { ReviewChecklistView(model: model) { compose = $0 } }
+                if checklist { chaptersFoot }
             }
         }
+    }
+
+    /// Chapters' foot: the checklist, then Next: Wrap-up.
+    private var chaptersFoot: some View {
+        VStack(spacing: 0) {
+            ReviewChecklistView(model: model) { compose = $0 }
+            ReviewNextStepButton(model: model)
+                .padding(.horizontal, Spacing.medium)
+                .padding(.vertical, Spacing.regular)
+        }
+    }
+
+    /// The detail without a file picked: never "No changes yet" while the
+    /// branch has changes (spec §4.6).
+    static func noFileText(_ model: ReviewChangesModel) -> String {
+        guard model.files.isEmpty else { return "Pick a file" }
+        return nothingNewText(model) ?? "No changes yet"
+    }
+
+    /// The Since view with nothing new on a branch that has changes: the
+    /// detail and the file column say so, not "No changes".
+    static func nothingNewText(_ model: ReviewChangesModel) -> String? {
+        guard model.hasChanges, model.view == .sinceLastRound, let round = model.round else { return nil }
+        return "Nothing new since round \(round.prevRoundId)"
     }
 
     @ViewBuilder private func diff(path: String) -> some View {

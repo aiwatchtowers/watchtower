@@ -1,9 +1,10 @@
 import SwiftUI
 import WatchtowerCore
 
-/// Deep mode, step 1 (board #328): what the session works on — each linked
-/// target with its intent and plan task — and the design comments on the
-/// round so far, with a way to add one.
+/// Deep mode, step 1 (board #328): the AI overview, the agent's
+/// walkthrough and the design comments on the round so far, with a way to
+/// add one. What the session works on is the identity bar's For list,
+/// unfolded in this step (#712 spec §6), not a second copy here.
 struct ReviewMeaningView: View {
     let model: ReviewChangesModel
     let compose: (ReviewChangesPaneView.ComposeRequest) -> Void
@@ -14,17 +15,12 @@ struct ReviewMeaningView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: Spacing.large) {
                 ReviewOverviewView(model: model)
+                    .padding(Spacing.medium)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .card()
                 ReviewNotesWalkthrough(model: model)
-                Text("What this change is for").font(.headline)
-                if model.context.isEmpty {
-                    Text("No targets are linked to this session").foregroundStyle(.secondary)
-                }
-                ForEach(Array(model.context.enumerated()), id: \.offset) { _, item in
-                    MeaningCard(item: item)
-                }
-                Divider()
                 HStack {
                     Text("Design comments").font(.headline)
                     Spacer()
@@ -33,49 +29,24 @@ struct ReviewMeaningView: View {
                             try await model.addDesignComment(body: body, lens: lens)
                         })
                     }
+                    .buttonStyle(.kitSecondary)
+                    .controlSize(.small)
                     .disabled(model.round?.status != "open")
                 }
                 if designComments.isEmpty {
                     Text("None yet").foregroundStyle(.secondary)
                 }
                 ForEach(designComments) { DesignCommentRow(model: model, comment: $0) }
+                ReviewNextStepButton(model: model)
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: Self.columnWidth, alignment: .leading)
+            .padding(Spacing.page)
+            .frame(maxWidth: .infinity)
         }
     }
-}
 
-private struct MeaningCard: View {
-    let item: ReviewContextItem
-    @State private var expanded = true
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(item.text).font(.callout.weight(.medium))
-            if !item.intent.isEmpty {
-                Text(item.intent).font(.callout).foregroundStyle(.secondary)
-            }
-            if let missing = item.missing {
-                Label(missing == "plan" ? "plan file not found" : "task not found in the plan",
-                      systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-            if let plan = item.planText, !plan.isEmpty {
-                DisclosureGroup("Plan task", isExpanded: $expanded) {
-                    Text(plan)
-                        .font(.caption.monospaced())
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .font(.caption)
-            }
-        }
-        .padding(8)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 6))
-    }
+    /// One readable column, centred in a wide pane (style guide).
+    private static let columnWidth: CGFloat = 760
 }
 
 /// A design comment: a draft is edited in place or deleted; others are read-only.

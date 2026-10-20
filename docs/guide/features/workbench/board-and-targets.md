@@ -30,11 +30,36 @@ Cards show the status, title, number, priority and badges: a blue bubble for unr
 
 The search field in the Board header matches title or intent. `#163` finds target 163 only; a bare `163` also finds titles containing it.
 
+### Add a task
+
+**New Task** in the Board header opens a panel; a card's right-click **New Sub-task…** adds one under it.
+
+1. The top chip shows where the task goes, such as **acme › Top level**. Click it to pick another parent.
+2. Type the title. Return moves to the description.
+3. Set the priority and column chips. The column chip offers the To Do and In Progress columns.
+4. Press **Create Task** or ⌘↩. Esc closes the panel without creating anything.
+
+**Create more** keeps the panel open with the same parent and chips for the next task.
+
 ### Switch to Kanban
 
 The **List | Kanban** switch lays tasks out as columns. By default each top-level feature is a lane. The **Lanes** menu switches between **By group** and **None** (flat columns).
 
 Drag a card to another column to change its status. In lanes a card moves only between the columns of its own lane; use **Move to…** to change its feature.
+
+### Name your Kanban columns
+
+Edit columns on the Kanban's header row; each change saves at once. Right-click a column header, or click the **…** that appears on hover:
+
+1. **Rename** turns the title into a field. Return saves, Esc cancels.
+2. **Description…** sets the header's tooltip, which agents also read as guidance.
+3. **Add Column Right** / **Add Column Left** adds a column in the same status, ready to rename. **Move Left** / **Move Right** reorder within the status.
+4. **Delete Column** asks first when cards are in it and says where they go: the status's first column.
+5. **Hide In Review** / **Hide Blocked** removes an empty status from the board.
+
+A status without columns shows one column under its own name. Renaming it names the status's column. **Add Column** on it makes two: one under the status's name that keeps the cards, and the new one. Deleting the last column brings the status's own back.
+
+The **+** at the end of the row adds a column to any status, and brings back a hidden one with **Show In Review** / **Show Blocked**. A refused change, such as a duplicate title, shows its reason under the row. From the List, the workbench's **⋯** menu has **Edit Columns on the Kanban**.
 
 ### Open a target
 
@@ -69,6 +94,8 @@ In the **…** menu of the workbench's title row:
 ### Read the drift line
 
 When something disagrees, a line under the Board header reads **Board drift: N out of step with git**, with findings that are only worth a look listed as "to review". Click it for the list and click an entry to open that target. The refresh button checks again; while the Board is open it re-checks by itself, at most every 30 seconds.
+
+Press **Fix** in the list to start an agent session that runs the check and puts the board right for every finding; hover an entry and press its **Fix** to fix just that one. While that agent works the button reads **Fixing…** and opens that session instead of starting another.
 
 ### Get notified
 

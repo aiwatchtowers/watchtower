@@ -46,6 +46,12 @@ struct TerminalSessionRow: View {
                     .accessibilityLabel("\(openAsks) open ask\(openAsks == 1 ? "" : "s")")
             }
             closedAsks
+            if showsDelete, row.state.kind == .readyToCheck, session.projectID != nil,
+               let reviewChanges = actions.reviewChanges {
+                Button("Review Branch") { reviewChanges(session) }
+                    .buttonStyle(.kitQuiet)
+                    .help("Review this session's branch")
+            }
             if showsDelete, let quickDelete {
                 SessionRowDeleteButton {
                     deleteButtonTakesKeyboard?()
@@ -75,7 +81,7 @@ struct TerminalSessionRow: View {
                 }
             }
             if session.projectID != nil, let reviewChanges = actions.reviewChanges {
-                Button("Review Changes") { reviewChanges(session) }
+                Button("Review Branch") { reviewChanges(session) }
             }
             if session.projectID != nil, session.kind.isAgent, let openIn = actions.openIn {
                 Button("Open in Terminal") { openIn(session, false) }
