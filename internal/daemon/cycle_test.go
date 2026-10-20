@@ -822,7 +822,10 @@ func TestIsLoopCancelErr(t *testing.T) {
 
 // startCycle resets the section marker and the progress stamp on the loop
 // goroutine, before the cycle's goroutine runs: a trigger right after it
-// never reads the previous cycle's state.
+// never reads the previous cycle's state. The cycle may already have moved
+// on to its other fetches (no Slack orchestrator here), but it blocks in the
+// IMAP probe, so it never reaches its pipelines: a pipelines section or a
+// stall read right after startCycle is the previous cycle's.
 func TestStartCycle_ResetsTheCycleStateFirst(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	d := newDaemon(nil, &config.Config{})
@@ -837,9 +840,12 @@ func TestStartCycle_ResetsTheCycleStateFirst(t *testing.T) {
 	mono.advance(time.Hour)
 
 	c := d.startCycle(context.Background(), true)
-	assert.Equal(t, sectionSlackFetch, d.section())
-	assert.Zero(t, d.fetchStalledFor())
+	assert.Contains(t, []cycleSection{sectionSlackFetch, sectionOtherFetch}, d.section(),
+		"no previous cycle's section")
+	assert.Zero(t, d.fetchStalledFor(), "no previous cycle's stall")
 	recv(t, probe.started, "the cycle")
+	assert.Equal(t, sectionOtherFetch, d.section(), "held in the IMAP probe")
+	assert.Zero(t, d.fetchStalledFor(), "the clock has not moved since startCycle")
 	c.cancelFetch(errCycleRestart)
 	recv(t, c.done, "the cycle's end")
 }
