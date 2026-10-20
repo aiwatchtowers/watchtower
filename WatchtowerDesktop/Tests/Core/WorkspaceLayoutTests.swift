@@ -399,15 +399,6 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertEqual(other, split(), "a view not on screen changes nothing")
     }
 
-    func testTerminalSlotIsTheVisibleSessionElseTheLastVisiblePane() {
-        XCTAssertEqual(split().terminalSlot, .session(1))
-        XCTAssertEqual(WorkspaceLayout.default.terminalSlot, .board, "a single pane is replaced")
-        var views = WorkspaceLayout(primary: .board, secondary: .files, expanded: nil, dividerFraction: 0.5)
-        XCTAssertEqual(views.terminalSlot, .files, "the first view stays, as with the Terminal button")
-        views.toggleExpand(.board)
-        XCTAssertEqual(views.terminalSlot, .board, "only what is on screen")
-    }
-
     func testWorkspaceViewOfAPane() {
         XCTAssertEqual(WorkspaceView(.session(3)), .terminal)
         XCTAssertEqual(WorkspaceView(.board), .board)
@@ -613,9 +604,6 @@ final class WorkspaceLayoutTests: XCTestCase {
             XCTAssertFalse(l.isShowingSessionView, "\(pane)")
         }
         XCTAssertTrue(split().isShowingSessionView)
-        XCTAssertTrue(WorkspaceView.terminal.isSessionView && WorkspaceView.chat.isSessionView)
-        XCTAssertTrue(WorkspaceView.report.isSessionView && WorkspaceView.changes.isSessionView)
-        XCTAssertFalse(WorkspaceView.board.isSessionView || WorkspaceView.files.isSessionView || WorkspaceView.analytics.isSessionView)
     }
 
     func testHideSessionViewsLeavesTheOtherPaneAlone() {

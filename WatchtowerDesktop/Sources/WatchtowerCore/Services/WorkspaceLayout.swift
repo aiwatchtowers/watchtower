@@ -29,8 +29,9 @@ extension WorkspacePane {
     }
 }
 
-/// The project page header's view buttons: a terminal (any session), the
-/// Session view, the Board, the Files or a session's Changes.
+/// What kind of view a pane shows: a session's terminal, report, Changes
+/// or Workchat, the Board, the Files or the Analytics — what the title
+/// row's tabs and the session strip's toggles show and hide.
 package enum WorkspaceView: CaseIterable, Sendable {
     case terminal
     /// A session's report (the Session view).
@@ -60,15 +61,6 @@ package enum WorkspaceView: CaseIterable, Sendable {
 
     package func matches(_ pane: WorkspacePane) -> Bool {
         Self(pane) == self
-    }
-
-    /// Whether this view belongs to a session: its terminal, Workchat,
-    /// report or changes — what the header's Session tab stands for.
-    package var isSessionView: Bool {
-        switch self {
-        case .terminal, .chat, .report, .changes: true
-        case .board, .files, .analytics: false
-        }
     }
 }
 
@@ -211,14 +203,6 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
     package mutating func showWorkbenchView(_ pane: WorkspacePane) {
         let session = [primary, secondary].compactMap(\.self).first { Self.sessionID(of: $0) != nil }
         reveal(pane, keeping: session ?? primary)
-    }
-
-    /// The pane the header's session menu puts a session into: the session
-    /// on screen, in its terminal or its Workchat (#711), else the last pane
-    /// on screen — the one the Terminal button replaces too (it keeps the
-    /// first).
-    package var terminalSlot: WorkspacePane {
-        visiblePanes.first { Self.sessionID(of: $0) != nil } ?? visiblePanes.last ?? primary
     }
 
     /// A header view button turned off: in a split on screen, the pane it
