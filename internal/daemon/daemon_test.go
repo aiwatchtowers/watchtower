@@ -1303,6 +1303,34 @@ func TestSyncHeartbeat_StampsFetchProgressOnlyWhenItMoves(t *testing.T) {
 	eventually(t, func() bool { return d.fetchStalledFor() == 0 }, "a beat stamping the moved progress")
 }
 
+// A Slack sync cancelled by the loop (a sleep, a Sync Now restart) is no sync
+// result: no last_sync.json, whose mtime the Desktop reads as "a sync
+// finished", and no error row in pipeline_runs.
+func TestPhaseSlackSync_CancelledRunWritesNoResult(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	orch, _ := newTestOrchestrator(t, new(atomic.Int32))
+	cfg := &config.Config{
+		ActiveWorkspace: "test-workspace",
+		Workspaces:      map[string]*config.WorkspaceConfig{"test-workspace": {SlackToken: "xoxp-test-token"}},
+	}
+	d := newDaemon(orch, cfg)
+	logs := &lockedLog{}
+	d.SetLogger(log.New(logs, "", 0))
+	d.db = db.OpenTestDB(t)
+
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(errCycleSlept)
+	syncErr, _ := d.phaseSlackSync(ctx)
+	require.ErrorIs(t, syncErr, context.Canceled)
+
+	_, err := os.Stat(filepath.Join(cfg.WorkspaceDir(), "last_sync.json"))
+	assert.True(t, os.IsNotExist(err), "a cancelled run writes no last_sync.json")
+	var errMsg string
+	require.NoError(t, d.db.QueryRow(`SELECT COALESCE(error_msg, '') FROM pipeline_runs WHERE pipeline = 'slack-sync'`).Scan(&errMsg))
+	assert.Empty(t, errMsg, "a cancelled run is no failed run")
+	assert.Equal(t, 1, logs.count("slack sync: stopped by sleep"))
+}
+
 // TestInbox09_RevokedAccountSyncErrorDoesNotFreeze guards INBOX-09's
 // revoked-token carve-out (owner-approved 2026-10-01): a revoked Slack
 // account's sync error does not freeze the shared inbox watermark — it fails

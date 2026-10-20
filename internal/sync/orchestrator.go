@@ -602,8 +602,14 @@ func (o *Orchestrator) ownsID(id string) bool {
 // finishWithInboxReactions is both sync paths' tail: sync reactions for
 // pending inbox items so auto-resolve can detect them, then finishSync. A
 // reaction failure does not skip finishSync — the cycle's messages did land,
-// so the "last synced" stamp is true — and is returned after it.
+// so the "last synced" stamp is true — and is returned after it. A cancelled
+// ctx returns its error before either: phases that log and swallow their
+// errors can reach this point having fetched nothing since the cancel, and
+// that run must not stamp "last synced" or auto-mark anything read.
 func (o *Orchestrator) finishWithInboxReactions(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("sync cancelled: %w", err)
+	}
 	reactErr := o.syncInboxReactions(ctx)
 	o.finishSync()
 	return reactErr

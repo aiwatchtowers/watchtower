@@ -1170,6 +1170,37 @@ func TestSyncInboxReactionsWriteFailureFailsTheRun(t *testing.T) {
 	assert.False(t, replied, "nothing was written")
 }
 
+// A run cancelled before its tail (a sleep or a Sync Now restart cancelling
+// the daemon's fetches, a shutdown) is no finished sync, even when the phases
+// before it logged and swallowed their errors: no reactions listing, no
+// "sync complete", no synced_at stamp, and the cancel is returned.
+func TestFinishWithInboxReactionsCancelledContextSkipsFinishSync(t *testing.T) {
+	mux := baseMux()
+	var listed atomic.Int32
+	mux.HandleFunc("/reactions.list", func(w http.ResponseWriter, _ *http.Request) {
+		listed.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "items": []any{}})
+	})
+	ts := newTestSetup(t, mux)
+	require.NoError(t, ts.orch.ensureWorkspace(context.Background()))
+	_, err := ts.db.CreateInboxItem(db.InboxItem{
+		ChannelID: ts.ns("C001"), MessageTS: "1700000001.000000",
+		SenderUserID: ts.ns("U001"), TriggerType: "mention",
+	})
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = ts.orch.finishWithInboxReactions(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.NotEqual(t, PhaseDone, ts.orch.progress.Phase(), "finishSync must not run")
+	assert.Zero(t, listed.Load(), "no reactions listing on a cancelled run")
+	var stamped int
+	require.NoError(t, ts.db.QueryRow(`SELECT COUNT(*) FROM workspace WHERE COALESCE(synced_at, '') != ''`).Scan(&stamped))
+	assert.Zero(t, stamped, "synced_at must not be stamped")
+}
+
 // TestSyncInboxReactionsScopedToOwnAccount reproduces the exact collision
 // syncInboxReactions must not touch: two connected accounts share a colliding
 // raw channel id ("C001"), each with its own pending inbox item. Before the

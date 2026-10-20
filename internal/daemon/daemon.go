@@ -766,9 +766,22 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 			snaps = append(snaps, snap)
 			messages += snap.MessagesFetched
 		}
-		return pipelineRunStats{items: messages, err: firstErr}
+		reportErr := firstErr
+		if isBenignShutdownErr(ctx, firstErr) {
+			// Cancelled, not failed: the run did not finish, and the next
+			// cycle resumes from the watermarks it left (the knowledge-index
+			// precedent). No "context canceled" error row.
+			d.logger.Printf("slack sync: stopped by %s", fetchStopReason(ctx))
+			reportErr = nil
+		}
+		return pipelineRunStats{items: messages, err: reportErr}
 	})
 	d.writeSyncProgress(sync.IdleProgress())
+	if ctx.Err() != nil {
+		// A cancelled run is no sync result: the Desktop reads last_sync.json's
+		// mtime as "a sync finished".
+		return firstErr, errors.Join(freezing...)
+	}
 	resultPath := filepath.Join(d.config.WorkspaceDir(), "last_sync.json")
 	if err := sync.WriteSyncResult(resultPath, sync.ResultFromSnapshots(snaps, firstErr)); err != nil {
 		d.logger.Printf("failed to write sync result: %v", err)
@@ -1023,8 +1036,12 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 			totalAPI += api
 		}
 		if inTok > 0 || outTok > 0 {
+			reportErr := firstErr
+			if isBenignShutdownErr(ctx, firstErr) {
+				reportErr = nil // cancelled, not failed (the slack-sync row's rule)
+			}
 			d.trackedPipelineRun("jira-boards", func() pipelineRunStats {
-				return pipelineRunStats{inTok: inTok, outTok: outTok, totalAPI: totalAPI, err: firstErr}
+				return pipelineRunStats{inTok: inTok, outTok: outTok, totalAPI: totalAPI, err: reportErr}
 			})
 		}
 	}
