@@ -1029,6 +1029,145 @@ final class ReviewChangesModelTests: XCTestCase {
         }
     }
 
+    // MARK: - Empty diff, busy retry, quiet state writes, next unviewed (#712)
+
+    private func overviewCalls(_ h: Harness) -> Int { h.cli.calls("overview").count }
+
+    func testEmptyDiffStartsNoOverview() async throws {
+        let quick = try harness()
+        quick.baseScript(paths: [])
+        await quick.model.open()
+        XCTAssertEqual(quick.model.load, .ready)
+        XCTAssertFalse(quick.model.hasChanges)
+        XCTAssertEqual(quick.model.overview, .idle)
+        XCTAssertEqual(overviewCalls(quick), 0)
+
+        let deep = try harness()
+        await openDeep(deep, paths: [])
+        XCTAssertEqual(deep.model.mode, .deep)
+        XCTAssertEqual(deep.model.overview, .idle)
+        XCTAssertEqual(overviewCalls(deep), 0)
+        try await quick.model.setMode(.deep)
+        XCTAssertEqual(quick.model.overview, .idle)
+        XCTAssertEqual(overviewCalls(quick), 0)
+    }
+
+    func testRefreshToAnEmptyDiffDropsTheOverview() async throws {
+        let h = try harness()
+        h.baseScript(paths: ["cmd/x.go", "pkg/y.go"])
+        h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 7, prev: 0, tree: "u"), startJSON(id: 7, prev: 0, tree: "v")])
+        h.cli.script("diff", [diffJSON(["cmd/x.go"]), diffJSON([]), diffJSON(["cmd/x.go"])])
+        h.cli.script("overview", [overviewJSON(), #"{"ok":true}"#])
+        await h.model.open()
+        try await h.model.setMode(.deep)
+        await awaitOverview(h)
+        guard case .ready = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
+        let before = overviewCalls(h)
+        await h.model.refresh(regenerateOverview: true)
+        await awaitOverview(h)
+        XCTAssertTrue(h.model.files.isEmpty)
+        XCTAssertEqual(h.model.overview, .idle)
+        XCTAssertEqual(overviewCalls(h), before, "no new call for an empty diff")
+        // Back to a diff with files: the overview starts again.
+        await h.model.refresh()
+        await awaitOverview(h)
+        XCTAssertEqual(overviewCalls(h), before + 1)
+    }
+
+    func testModelCallRunningWhenTheDiffEmptiesNeverLands() async throws {
+        let h = try harness()
+        h.baseScript(paths: ["cmd/x.go"])
+        h.cli.script("start", [startJSON(id: 7, prev: 0), startJSON(id: 7, prev: 0, tree: "u")])
+        h.cli.script("diff", [diffJSON(["cmd/x.go"]), diffJSON([])])
+        h.cli.script("overview", [overviewJSON()])
+        h.cli.hold("overview")
+        await h.model.open()
+        try await h.model.setMode(.deep)
+        await h.cli.waitPending("overview", count: 2)
+        await h.model.refresh()
+        h.cli.release("overview")
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.overview, .idle)
+        XCTAssertEqual(overviewCalls(h), 2, "neither a follow-up nor a new call")
+    }
+
+    func testMakeAndRetryOverviewOnAnEmptyDiffDoNothing() async throws {
+        let h = try harness()
+        h.baseScript(paths: [])
+        await h.model.open()
+        h.model.makeOverview()
+        h.model.retryOverview()
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.overview, .idle)
+        XCTAssertEqual(overviewCalls(h), 0)
+    }
+
+    func testViewedRetriesOnceOnBusy() async throws {
+        let h = try harness()
+        h.baseScript()
+        await h.model.open()
+        var attempts: [Int] = []
+        h.model.writeHook = { attempt in
+            attempts.append(attempt)
+            if attempt == 0 { throw DatabaseError(resultCode: .SQLITE_BUSY) }
+        }
+        try await h.model.toggleViewed("a.go")
+        XCTAssertEqual(attempts, [0, 1])
+        XCTAssertTrue(h.model.isViewed("a.go"))
+        XCTAssertNil(h.model.lastError)
+    }
+
+    func testViewedBusyTwiceShowsTheError() async throws {
+        let h = try harness()
+        h.baseScript()
+        await h.model.open()
+        var attempts: [Int] = []
+        h.model.writeHook = { attempt in
+            attempts.append(attempt)
+            throw DatabaseError(resultCode: .SQLITE_BUSY)
+        }
+        await assertThrowsAsync { try await h.model.toggleViewed("a.go") }
+        XCTAssertEqual(attempts, [0, 1], "exactly one retry")
+        XCTAssertNotNil(h.model.lastError)
+        XCTAssertFalse(h.model.isViewed("a.go"))
+    }
+
+    func testFlushStateFailureSetsNoError() async throws {
+        let h = try harness()
+        h.baseScript()
+        await h.model.open()
+        h.model.writeHook = { _ in throw DatabaseError(resultCode: .SQLITE_IOERR) }
+        await h.model.flushState()
+        XCTAssertNil(h.model.lastError)
+        h.model.writeHook = nil
+        h.model.noteInteraction()
+        await h.model.flushState()
+        XCTAssertNil(h.model.lastError, "the next flush writes again")
+    }
+
+    func testNextAndPreviousUnviewed() async throws {
+        let h = try harness()
+        let collapsed = #"{"path":"d.go","status":"modified","additions":1,"deletions":1,"binary":true,"#
+            + #""collapsed_reason":"generated","new_blob":"d","new_mode":"100644","hunks":null}"#
+        let plain = diffJSON(["a.go", "b.go", "c.go"]).replacingOccurrences(of: #"],"truncated""#, with: ",\(collapsed)],\"truncated\"")
+        h.cli.script(["start": startJSON(id: 7, prev: 0), "context": #"{"ok":true,"items":[]}"#, "diff": plain])
+        await h.model.open()
+        XCTAssertEqual(h.model.files.map(\.path), ["a.go", "b.go", "c.go", "d.go"])
+        try await h.model.toggleViewed("b.go")
+        XCTAssertEqual(h.model.nextUnviewed(after: "a.go"), "c.go")
+        XCTAssertEqual(h.model.nextUnviewed(after: "c.go"), "a.go", "wraps, skipping the collapsed file")
+        XCTAssertEqual(h.model.previousUnviewed(before: "a.go"), "c.go")
+        XCTAssertEqual(h.model.previousUnviewed(before: "c.go"), "a.go")
+        XCTAssertEqual(h.model.nextUnviewed(after: nil), "a.go")
+        XCTAssertEqual(h.model.previousUnviewed(before: nil), "c.go")
+        try await h.model.toggleViewed("a.go")
+        XCTAssertEqual(h.model.nextUnviewed(after: "a.go"), "c.go")
+        XCTAssertNil(h.model.nextUnviewed(after: "c.go"), "no other unviewed file")
+        try await h.model.toggleViewed("c.go")
+        XCTAssertNil(h.model.nextUnviewed(after: nil))
+        XCTAssertNil(h.model.previousUnviewed(before: "a.go"))
+    }
+
     func testOpenStartsTheOverviewAndChaptersFollowIt() async throws {
         let h = try harness()
         h.cli.script(["overview": overviewJSON()])

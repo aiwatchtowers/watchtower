@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import GRDB
 import Observation
+import os
 import WatchtowerCore
 
 /// Where a review round's line goes (board #328): `SessionLineDelivery` in
@@ -98,6 +99,13 @@ final class ReviewChangesModel {
     /// Every write of the model, one after another (board #670), and the
     /// periodic save under way.
     @ObservationIgnored private let writes = SerialWrites()
+    private static let log = Logger(subsystem: "watchtower", category: "review")
+    /// How long a write that met a busy database waits before its one retry.
+    static let busyRetryDelay: Duration = .milliseconds(300)
+    /// Test-only: called before each attempt of a database write with the
+    /// attempt's index (0 first, 1 the retry); a throw stands in for the
+    /// database's answer.
+    @ObservationIgnored var writeHook: ((Int) throws -> Void)?
     @ObservationIgnored private var periodicSave: Task<Void, Never>?
     /// A mode, phase or chapter asked for and not saved yet. A round-state
     /// save writes these when its turn comes, so a save queued earlier
@@ -213,6 +221,33 @@ final class ReviewChangesModel {
     static let alreadySentMessage = "This round was already sent"
 
     /// Whether `path` is marked Viewed at its current content.
+    /// Whether the round has anything to review; an empty diff makes no overview.
+    var hasChanges: Bool { !files.isEmpty }
+
+    /// The next file after `path` (the first when nil) that is shown and not
+    /// Viewed, in list order, wrapping around; nil when no other one is left.
+    func nextUnviewed(after path: String?) -> String? {
+        unviewed(from: path, step: 1)
+    }
+
+    /// The previous such file before `path` (the last when nil), wrapping around.
+    func previousUnviewed(before path: String?) -> String? {
+        unviewed(from: path, step: -1)
+    }
+
+    private func unviewed(from path: String?, step: Int) -> String? {
+        let count = files.count
+        guard count > 0 else { return nil }
+        let start = path.flatMap { p in files.firstIndex { $0.path == p } }
+        // Without a start the walk begins just off the list's end it moves away from.
+        let origin = start ?? (step > 0 ? -1 : count)
+        for offset in 1...count {
+            let file = files[((origin + step * offset) % count + count) % count]
+            if file.path != path, file.collapsedReason == nil, !isViewed(file.path) { return file.path }
+        }
+        return nil
+    }
+
     func isViewed(_ path: String) -> Bool {
         guard let file = allFiles.first(where: { $0.path == path }) else { return false }
         return viewed[path] == Self.contentKey(file)
@@ -772,7 +807,8 @@ final class ReviewChangesModel {
         do {
             try await saveState()
         } catch {
-            lastError = error.localizedDescription
+            // A background save: the next flush writes it again, nothing to show.
+            Self.log.error("review state save failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -798,7 +834,20 @@ final class ReviewChangesModel {
     /// A database write in the model's chain (board #670): it starts only
     /// once every write asked for before it finished.
     private func write<T: Sendable>(_ body: @escaping @Sendable (Database) throws -> T) async throws -> T {
-        try await writes.runThrowing { try await self.db.write(body) }
+        try await writes.runThrowing { try await self.retryingBusy { try await self.db.write(body) } }
+    }
+
+    /// Runs one database write, and once more after `busyRetryDelay` when
+    /// the database answered busy; a second busy throws.
+    private func retryingBusy<T>(_ attempt: () async throws -> T) async throws -> T {
+        do {
+            try writeHook?(0)
+            return try await attempt()
+        } catch let error as DatabaseError where error.resultCode == .SQLITE_BUSY {
+            try await Task.sleep(for: Self.busyRetryDelay)
+            try writeHook?(1)
+            return try await attempt()
+        }
     }
 
     /// Saves the round state in the chain. What it writes is read when its
@@ -813,9 +862,11 @@ final class ReviewChangesModel {
         let phase = pendingPhase ?? self.phase
         let chapterKey = pendingChapterKey ?? persistedChapterKey
         let seconds = pace.activeSeconds
-        let saved = try await db.write {
-            try ReviewQueries.saveRoundState($0, roundID: info.id, mode: mode.rawValue, phase: phase,
-                                             chapterKey: chapterKey ?? "", activeSeconds: seconds)
+        let saved = try await retryingBusy {
+            try await db.write {
+                try ReviewQueries.saveRoundState($0, roundID: info.id, mode: mode.rawValue, phase: phase,
+                                                 chapterKey: chapterKey ?? "", activeSeconds: seconds)
+            }
         }
         guard saved else {
             // The row is no longer open: stop writing to it.
@@ -888,6 +939,15 @@ final class ReviewChangesModel {
     /// overview by itself; Quick only reads a cached one unless the owner
     /// asked (`generate`: Make overview, or Retry of a failed model call).
     private func startOverview(generate: Bool = false, earlier: ReviewOverview? = nil) {
+        guard hasChanges else {
+            // Nothing to summarise: no CLI call of either kind. A model call
+            // still running is cancelled, and its result is dropped on landing.
+            overviewTask?.cancel()
+            generationID = nil
+            overviewTreeSHA = round?.treeSha
+            overview = .idle
+            return
+        }
         guard generationID == nil else { return }
         overviewTask?.cancel()
         overviewTreeSHA = round?.treeSha
