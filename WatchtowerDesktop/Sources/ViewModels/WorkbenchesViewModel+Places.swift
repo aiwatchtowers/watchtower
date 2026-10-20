@@ -123,6 +123,13 @@ extension WorkbenchesViewModel {
         return CodeRootPolicy.directoryExists(folder)
     }
 
+    /// Whether session `sessionID`'s place sets the page's root (D6): its
+    /// session strip carries the place and branch crumbs, which follow that
+    /// root (spec 2026-10-20, call 9).
+    func ownsCodeRoot(sessionID: Int64, projectID: Int64) -> Bool {
+        pageSessionID(projectID: projectID) == sessionID
+    }
+
     /// The session whose place sets the page's root (D6), nil without one.
     private func pageSessionID(projectID: Int64) -> Int64? {
         let focused = activeSessionID(projectID: projectID).map { [$0] } ?? []

@@ -104,16 +104,7 @@ struct WorkbenchHeaderControls: View {
     /// `isOn`: Workchat, which it continues, is on; `isLit`: either half is.
     private func sessionMenu(slot: WorkspacePane, isOn: Bool, isLit: Bool) -> some View {
         Menu {
-            ForEach(vm.orderedSessions(projectID: project.id)) { session in
-                Button(session.title) {
-                    Task { await vm.showInPane(slot, item: .session(session.id), projectID: project.id) }
-                }
-                .disabled(WorkspaceLayout.sessionID(of: slot) == session.id)
-            }
-            Divider()
-            NewSessionMenuItems(vm: vm, projectID: project.id) { agent, worktree in
-                Task { await vm.newSession(inPane: slot, projectID: project.id, agent: agent, worktree: worktree) }
-            }
+            WorkbenchSessionMenuItems(vm: vm, project: project, slot: slot)
         } label: {
             // The twin's right end: a hairline, then the chevron, coloured
             // like the segment.

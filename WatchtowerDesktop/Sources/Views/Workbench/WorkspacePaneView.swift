@@ -28,11 +28,11 @@ struct WorkspaceAreaView: View {
     }
 }
 
-/// One pane: Board, Files, a session's terminal or its report (the Session
-/// view). In a split it has a
-/// slim header (its own picker, expand and close); a single pane has none —
-/// the page header's view buttons and the panel's session list cover it, so
-/// the terminal gets the height.
+/// One pane: Board, Files, Analytics, or a session's terminal, Workchat,
+/// report or Changes. A session's pane always has its session strip
+/// (`WorkbenchSessionStrip`, spec 2026-10-20 §2); any other pane has a slim
+/// header in a split only (its own picker, expand and close) — a single
+/// one has none, the page header's view buttons cover it.
 struct WorkspacePaneView: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
@@ -46,7 +46,12 @@ struct WorkspacePaneView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if isSplit {
+            if let sessionID = WorkspaceLayout.sessionID(ofAny: pane) {
+                WorkbenchSessionStrip(
+                    vm: vm, project: project, pane: pane, sessionID: sessionID, isSplit: isSplit, isExpanded: isExpanded
+                )
+                Divider()
+            } else if isSplit {
                 header
                 Divider()
             }
@@ -61,7 +66,7 @@ struct WorkspacePaneView: View {
         }
     }
 
-    /// Shown only in a split (`body`).
+    /// Shown only in a split, on a pane that is not a session's (`body`).
     private var header: some View {
         HStack(spacing: 6) {
             picker

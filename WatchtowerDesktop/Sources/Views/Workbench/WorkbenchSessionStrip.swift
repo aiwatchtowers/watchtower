@@ -1,0 +1,170 @@
+import SwiftUI
+import WatchtowerCore
+
+/// The slim bar on top of every pane of a session — its terminal, Workchat,
+/// report or Changes (spec 2026-10-20-workbench-header §2): `session ▾`,
+/// the place and branch crumbs, `[Terminal | Workchat]`, Report, Changes,
+/// and in a split expand and close. Each strip acts on its own pane and
+/// session (call 8); the crumbs show only on the strip whose session sets
+/// the page's code root (call 9); no pane picker (call 10).
+struct WorkbenchSessionStrip: View {
+    @Bindable var vm: WorkbenchesViewModel
+    let project: Workbench
+    let pane: WorkspacePane
+    let sessionID: Int64
+    let isSplit: Bool
+    let isExpanded: Bool
+    @State private var hovered: String?
+
+    var body: some View {
+        HStack(spacing: Spacing.regular) {
+            WorkbenchSessionsMenu(vm: vm, project: project, slot: pane, title: title)
+            if vm.ownsCodeRoot(sessionID: sessionID, projectID: project.id) {
+                WorkbenchPlaceCrumb(vm: vm, project: project)
+                WorkbenchBranchCrumb(vm: vm, project: project)
+            }
+            Spacer(minLength: Spacing.small)
+            HStack(spacing: Spacing.tight) {
+                modeToggle("Terminal", pane: .session(sessionID))
+                modeToggle("Workchat", pane: .sessionChat(sessionID))
+            }
+            .segmentCapsule()
+            viewToggle("Report", view: .report)
+            viewToggle("Changes", view: .changes)
+            if isSplit { paneButtons }
+        }
+        .font(.caption)
+        .controlSize(.small)
+        .padding(.horizontal, Spacing.regular)
+        .padding(.vertical, Spacing.tight)
+    }
+
+    private var title: String {
+        vm.session(sessionID, projectID: project.id)?.title ?? "Session"
+    }
+
+    /// One half of `[Terminal | Workchat]`: lit when this pane shows that
+    /// mode. Turning the other half on swaps this pane in place — the other
+    /// pane of a split stays; a report or Changes pane brings the session
+    /// up the way the page header's toggle does. The lit half stays lit:
+    /// the capsule picks a mode, it never empties the pane.
+    private func modeToggle(_ label: String, pane mode: WorkspacePane) -> some View {
+        let view: WorkspaceView = mode.isWorkchat ? .chat : .terminal
+        return Toggle(isOn: Binding(
+            get: { pane == mode },
+            set: { on in
+                guard on else { return }
+                if WorkspaceLayout.sessionID(of: pane) == sessionID {
+                    vm.toggleMode(sessionID: sessionID, projectID: project.id)
+                } else {
+                    Task { await vm.showView(view, project: project) }
+                }
+            }
+        )) {
+            Label(label, systemImage: view.icon)
+        }
+        .toggleStyle(segmentStyle(label))
+        .help(mode.isWorkchat ? "Show this session's Workchat in this pane (⌃`)" : "Show this session's terminal in this pane (⌃`)")
+    }
+
+    /// Report or Changes: today's page-header toggle (on puts it beside its
+    /// session's terminal, off closes that pane of a split), on a capsule
+    /// of its own.
+    private func viewToggle(_ label: String, view: WorkspaceView) -> some View {
+        let layout = vm.layout(projectID: project.id)
+        return Toggle(isOn: Binding(
+            get: { layout.isShowing(view) },
+            set: { on in
+                if on {
+                    Task { await vm.showView(view, project: project) }
+                } else {
+                    vm.hideView(view, projectID: project.id)
+                }
+            }
+        )) {
+            Label(label, systemImage: view.icon)
+        }
+        .toggleStyle(segmentStyle(label))
+        .segmentCapsule()
+        .help(view == .report ? "Show the session's report beside its terminal" : "Review the session's changes")
+        // No session to review: say so rather than a click that does nothing.
+        .disabled(view == .changes && !layout.isShowing(view) && vm.sessionViewTarget(projectID: project.id) == nil)
+    }
+
+    private func segmentStyle(_ label: String) -> SegmentedToggleStyle {
+        SegmentedToggleStyle(showsIcon: false, isHovered: hovered == label) { inside in
+            if inside { hovered = label } else if hovered == label { hovered = nil }
+        }
+    }
+
+    /// The split pane's expand and close, as the old split-pane header had them.
+    @ViewBuilder private var paneButtons: some View {
+        Button {
+            vm.toggleExpand(pane, projectID: project.id)
+        } label: {
+            Image(systemName: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+        }
+        .buttonStyle(.kitIcon(isOn: isExpanded))
+        .help(isExpanded ? "Back to the split" : "Expand this pane")
+        .accessibilityLabel(isExpanded ? "Back to the split" : "Expand this pane")
+        if !isExpanded {
+            Button {
+                vm.closePane(pane, projectID: project.id)
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.kitIcon(isOn: false))
+            .help("Close this pane")
+            .accessibilityLabel("Close this pane")
+        }
+    }
+}
+
+/// `session ▾`: which session a pane shows — in the mode it was last shown
+/// in — or a new one there. The session strip's menu; its items are the
+/// page header's twin chevron's too.
+struct WorkbenchSessionsMenu: View {
+    @Bindable var vm: WorkbenchesViewModel
+    let project: Workbench
+    let slot: WorkspacePane
+    let title: String
+
+    var body: some View {
+        Menu {
+            WorkbenchSessionMenuItems(vm: vm, project: project, slot: slot)
+        } label: {
+            HStack(spacing: Spacing.small) {
+                Text(title).lineLimit(1).truncationMode(.middle)
+                Image(systemName: "chevron.down").imageScale(.small)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .help("Show another session in this pane, or start a new one")
+        .accessibilityLabel("Sessions")
+    }
+}
+
+/// The sessions menus' items: every other session of the workbench, opened
+/// in `slot` (resumed if not running), then the New Session items.
+struct WorkbenchSessionMenuItems: View {
+    @Bindable var vm: WorkbenchesViewModel
+    let project: Workbench
+    let slot: WorkspacePane
+
+    var body: some View {
+        ForEach(vm.orderedSessions(projectID: project.id)) { session in
+            Button(session.title) {
+                Task { await vm.showInPane(slot, item: .session(session.id), projectID: project.id) }
+            }
+            .disabled(WorkspaceLayout.sessionID(of: slot) == session.id)
+        }
+        Divider()
+        NewSessionMenuItems(vm: vm, projectID: project.id) { agent, worktree in
+            Task { await vm.newSession(inPane: slot, projectID: project.id, agent: agent, worktree: worktree) }
+        }
+    }
+}

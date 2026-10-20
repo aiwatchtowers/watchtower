@@ -322,6 +322,13 @@ extension WorkbenchesViewModel {
     /// No session on screen, or both its modes side by side: nothing changes.
     func toggleWorkchat(projectID: Int64) {
         guard let id = workchatToggleSession(projectID: projectID) else { return }
+        toggleMode(sessionID: id, projectID: projectID)
+    }
+
+    /// ⌃` and a session strip's Terminal | Workchat (spec 2026-10-20, call
+    /// 8): the slot holding session `id` shows its other mode, in place —
+    /// the other pane of a split stays — and that mode is recorded.
+    func toggleMode(sessionID id: Int64, projectID: Int64) {
         beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
         updated.toggleMode(sessionID: id)
