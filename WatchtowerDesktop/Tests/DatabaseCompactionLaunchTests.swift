@@ -280,6 +280,35 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
         XCTAssertThrowsError(try splash.inspect().find(text: "This happens rarely, usually after an update."))
     }
 
+    /// A pending search index rebuild shows its own line first; the compact
+    /// phase line swaps in the compaction line, its clock back at 0:00, and
+    /// Skip stays.
+    func testSplashShowsSearchIndexThenCompaction() async throws {
+        let made = makeAppState(due: true, dbBytes: 2_000_000_000, ftsRebuildPending: true)
+        let step = made.appState.databaseCompaction
+        let launch = Task { await made.appState.migrateCompactOpen() }
+        await until { self.sleeper.pendingCount == 1 }
+
+        let splash = SplashView(compaction: step)
+        XCTAssertNoThrow(try splash.inspect().find(text: "Updating search index — 0:00"))
+        XCTAssertNoThrow(try splash.inspect().find(text: "This happens rarely, usually after an update."))
+        for elapsed in 1...15 {
+            sleeper.releaseOne()
+            await until { step.elapsedSeconds == elapsed && self.sleeper.pendingCount == 1 }
+        }
+        XCTAssertNoThrow(try splash.inspect().find(text: "Updating search index — 0:15"))
+        XCTAssertNoThrow(try splash.inspect().find(button: "Skip for now"))
+
+        child.onPhase?(.compact)
+        await until { step.phase == .compacting(dbBytes: 2_000_000_000) }
+        let line = DatabaseCompactionStep.progressLine(dbBytes: 2_000_000_000, elapsedSeconds: 0)
+        XCTAssertNoThrow(try splash.inspect().find(text: line))
+        XCTAssertNoThrow(try splash.inspect().find(button: "Skip for now"))
+
+        child.exit(status: 0)
+        _ = await launch.value
+    }
+
     func testNoticeDismisses() throws {
         var dismissed = false
         let notice = DatabaseCompactionNoticeView(text: "Watchtower could not optimize its database.") {
@@ -307,12 +336,15 @@ final class DatabaseCompactionLaunchTests: XCTestCase {
     private func makeAppState(
         due: Bool,
         dbBytes: Int64 = 1_000,
+        ftsRebuildPending: Bool = false,
         calls: LaunchLog? = nil,
         migrateGate: DispatchSemaphore? = nil
     ) -> (appState: AppState, daemon: FakeDaemon) {
         let calls = calls ?? self.calls
         let sleeper = sleeper
-        let cli = LaunchFakeCLI(calls: calls, due: due, dbBytes: dbBytes, child: child)
+        let cli = LaunchFakeCLI(
+            calls: calls, due: due, dbBytes: dbBytes, ftsRebuildPending: ftsRebuildPending, child: child
+        )
         child.calls = calls
         let step = DatabaseCompactionStep(
             cli: cli,
@@ -362,18 +394,22 @@ private struct LaunchFakeCLI: CompactionCLI {
     let calls: LaunchLog
     let due: Bool
     let dbBytes: Int64
+    var ftsRebuildPending = false
     let child: LaunchFakeChild
 
     func check() async throws -> CompactionCheck {
         calls.append("check")
+        let reason = ftsRebuildPending ? "fts_rebuild" : "migration:134"
         return CompactionCheck(
-            due: due, reason: due ? "migration:134" : "", dbBytes: dbBytes, walBytes: 0,
-            freeDiskBytes: 10 * dbBytes, needsDiskBytes: 2 * dbBytes, diskOk: true
+            due: due, reason: due ? reason : "", dbBytes: dbBytes, walBytes: 0,
+            freeDiskBytes: 10 * dbBytes, needsDiskBytes: 2 * dbBytes, diskOk: true,
+            ftsRebuildPending: ftsRebuildPending
         )
     }
 
-    func startCompact() throws -> any CompactionChild {
+    func startCompact(onPhase: @escaping @Sendable (CompactionRunPhase) -> Void) throws -> any CompactionChild {
         calls.append("startCompact")
+        child.onPhase = onPhase
         return child
     }
 }
@@ -387,6 +423,12 @@ private final class LaunchFakeChild: CompactionChild, @unchecked Sendable {
     private var terminates = 0
     private var exitOnTerminate = false
     private var log: LaunchLog?
+    private var phaseHandler: (@Sendable (CompactionRunPhase) -> Void)?
+
+    var onPhase: (@Sendable (CompactionRunPhase) -> Void)? {
+        get { lock.withLock { phaseHandler } }
+        set { lock.withLock { phaseHandler = newValue } }
+    }
 
     var calls: LaunchLog? {
         get { lock.withLock { log } }

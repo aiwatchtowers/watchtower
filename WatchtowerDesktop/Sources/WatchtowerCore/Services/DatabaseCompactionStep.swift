@@ -4,16 +4,21 @@ import Observation
 // MARK: - Wire models (`watchtower db compact --json`)
 
 /// `db compact --check --json`: whether compaction is due and the disk rule's
-/// numbers (`needs_disk_bytes` = 2 × `db_bytes`).
+/// numbers (`needs_disk_bytes` = 2 × `db_bytes`, or the search index fill's
+/// need while `fts_rebuild_pending`).
 package struct CompactionCheck: Decodable, Equatable, Sendable {
     package let due: Bool
-    /// `migration:<version>`, `freelist`, `schema_pending`, `gave_up` or empty.
+    /// `migration:<version>`, `freelist`, `schema_pending`, `gave_up`,
+    /// `fts_rebuild` or empty.
     package let reason: String
     package let dbBytes: Int64
     package let walBytes: Int64
     package let freeDiskBytes: Int64
     package let needsDiskBytes: Int64
     package let diskOk: Bool
+    /// The search index rebuild (#872) has not finished: the run fills it
+    /// first. Absent (an older CLI) reads false.
+    package let ftsRebuildPending: Bool
 
     enum CodingKeys: String, CodingKey {
         case due, reason
@@ -22,6 +27,19 @@ package struct CompactionCheck: Decodable, Equatable, Sendable {
         case freeDiskBytes = "free_disk_bytes"
         case needsDiskBytes = "needs_disk_bytes"
         case diskOk = "disk_ok"
+        case ftsRebuildPending = "fts_rebuild_pending"
+    }
+
+    package init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        due = try container.decode(Bool.self, forKey: .due)
+        reason = try container.decode(String.self, forKey: .reason)
+        dbBytes = try container.decode(Int64.self, forKey: .dbBytes)
+        walBytes = try container.decode(Int64.self, forKey: .walBytes)
+        freeDiskBytes = try container.decode(Int64.self, forKey: .freeDiskBytes)
+        needsDiskBytes = try container.decode(Int64.self, forKey: .needsDiskBytes)
+        diskOk = try container.decode(Bool.self, forKey: .diskOk)
+        ftsRebuildPending = try container.decodeIfPresent(Bool.self, forKey: .ftsRebuildPending) ?? false
     }
 
     package init(
@@ -31,7 +49,8 @@ package struct CompactionCheck: Decodable, Equatable, Sendable {
         walBytes: Int64,
         freeDiskBytes: Int64,
         needsDiskBytes: Int64,
-        diskOk: Bool
+        diskOk: Bool,
+        ftsRebuildPending: Bool = false
     ) {
         self.due = due
         self.reason = reason
@@ -40,6 +59,7 @@ package struct CompactionCheck: Decodable, Equatable, Sendable {
         self.freeDiskBytes = freeDiskBytes
         self.needsDiskBytes = needsDiskBytes
         self.diskOk = diskOk
+        self.ftsRebuildPending = ftsRebuildPending
     }
 }
 
@@ -61,6 +81,8 @@ package struct CompactionRunOutput: Decodable, Equatable, Sendable {
     /// The final checkpoint could not pass a reader: part of the space is
     /// reclaimed at the next checkpoint. Absent reads false.
     package let checkpointBusy: Bool
+    /// The run finished the search index rebuild. Absent reads false.
+    package let ftsRebuilt: Bool
 
     enum CodingKeys: String, CodingKey {
         case compacted, skipped, reason, error, failures
@@ -69,6 +91,7 @@ package struct CompactionRunOutput: Decodable, Equatable, Sendable {
         case durationMs = "duration_ms"
         case gaveUp = "gave_up"
         case checkpointBusy = "checkpoint_busy"
+        case ftsRebuilt = "fts_rebuilt"
     }
 
     package init(from decoder: any Decoder) throws {
@@ -83,6 +106,41 @@ package struct CompactionRunOutput: Decodable, Equatable, Sendable {
         failures = try container.decodeIfPresent(Int.self, forKey: .failures)
         gaveUp = try container.decodeIfPresent(Bool.self, forKey: .gaveUp) ?? false
         checkpointBusy = try container.decodeIfPresent(Bool.self, forKey: .checkpointBusy) ?? false
+        ftsRebuilt = try container.decodeIfPresent(Bool.self, forKey: .ftsRebuilt) ?? false
+    }
+}
+
+/// A `{"phase":…}` line `db compact --if-due --json` prints on stdout as a
+/// run moves on, before its result line.
+package enum CompactionRunPhase: String, Sendable {
+    case ftsRebuild = "fts_rebuild"
+    case compact
+}
+
+/// Splits stdout chunks into lines, keeping a partial line until its newline;
+/// returns the phases of complete `{"phase":…}` lines. Any other line (a
+/// preamble, the result, an unknown phase) is skipped.
+package struct CompactionPhaseScanner: Sendable {
+    private struct PhaseLine: Decodable {
+        let phase: String
+    }
+
+    private var partial = Data()
+
+    package init() {}
+
+    package mutating func feed(_ chunk: Data) -> [CompactionRunPhase] {
+        partial.append(chunk)
+        var phases: [CompactionRunPhase] = []
+        while let newline = partial.firstIndex(of: UInt8(ascii: "\n")) {
+            let line = partial[partial.startIndex..<newline]
+            partial.removeSubrange(partial.startIndex...newline)
+            if let decoded = try? JSONDecoder().decode(PhaseLine.self, from: line),
+               let phase = CompactionRunPhase(rawValue: decoded.phase) {
+                phases.append(phase)
+            }
+        }
+        return phases
     }
 }
 
@@ -116,8 +174,9 @@ package protocol CompactionCLI: Sendable {
     /// `db compact --check --json`, 30 s timeout; throws on spawn failure,
     /// timeout, non-zero exit or undecodable output.
     func check() async throws -> CompactionCheck
-    /// Spawns `db compact --if-due --json` with no timeout.
-    func startCompact() throws -> any CompactionChild
+    /// Spawns `db compact --if-due --json` with no timeout. `onPhase` gets
+    /// each phase line as it arrives, on a background thread.
+    func startCompact(onPhase: @escaping @Sendable (CompactionRunPhase) -> Void) throws -> any CompactionChild
 }
 
 package struct CompactionOutputError: Error, LocalizedError {
@@ -142,17 +201,25 @@ package func decodeLastJSONLine<T: Decodable>(_ type: T.Type, from stdout: Data)
 /// daemon and runs `db compact --if-due` while the splash shows progress.
 /// Best effort throughout: every failure is logged and the launch continues.
 ///
+/// While the search index rebuild (#872) is pending, the child first fills
+/// the index (`.updatingSearchIndex`) and then compacts; its phase lines move
+/// the step from one to the other.
+///
 /// Elapsed time counts the injected `sleep(1 s)` calls, never the wall clock:
 /// `elapsedSeconds` goes up by one after each completed sleep, so an action
-/// taken between two ticks lies anywhere inside that second.
+/// taken between two ticks lies anywhere inside that second. The splash shows
+/// `phaseElapsedSeconds`; Skip and the SIGKILL count from the child's start.
 @MainActor @Observable
 package final class DatabaseCompactionStep {
     package enum Phase: Equatable {
-        case idle, checking, compacting(dbBytes: Int64), finished
+        case idle, checking, updatingSearchIndex(dbBytes: Int64), compacting(dbBytes: Int64), finished
     }
 
     package private(set) var phase: Phase = .idle
     package private(set) var elapsedSeconds = 0
+    /// `elapsedSeconds` when the current running phase began.
+    private var phaseStartedAt = 0
+    package var phaseElapsedSeconds: Int { elapsedSeconds - phaseStartedAt }
     /// A non-blocking notice for the owner, shown once per launch.
     package private(set) var notice: String?
     /// The step stopped the daemon: a launch that then cannot open the
@@ -167,14 +234,22 @@ package final class DatabaseCompactionStep {
 
     package var isRunning: Bool {
         switch phase {
-        case .checking, .compacting: true
+        case .checking, .updatingSearchIndex, .compacting: true
         case .idle, .finished: false
         }
     }
 
     package var canSkip: Bool {
-        guard case .compacting = phase else { return false }
+        guard childIsRunning else { return false }
         return elapsedSeconds >= Self.skipAfterSeconds && skipRequestedAt == nil
+    }
+
+    /// The `db compact --if-due` child runs (either of its phases).
+    private var childIsRunning: Bool {
+        switch phase {
+        case .updatingSearchIndex, .compacting: true
+        case .idle, .checking, .finished: false
+        }
     }
 
     package static let skipAfterSeconds = 15
@@ -238,8 +313,9 @@ package final class DatabaseCompactionStep {
         guard !quitRequested else { return }
         guard check.due else { return }
         guard check.diskOk else {
-            log("DB compaction skipped: \(check.needsDiskBytes) bytes of free disk needed, \(check.freeDiskBytes) available")
-            notice = Self.diskNotice(needs: check.needsDiskBytes, available: check.freeDiskBytes)
+            let skipped = check.ftsRebuildPending ? "DB search index rebuild skipped" : "DB compaction skipped"
+            log("\(skipped): \(check.needsDiskBytes) bytes of free disk needed, \(check.freeDiskBytes) available")
+            notice = diskNotice(for: check, searchIndexRebuilt: false)
             return
         }
 
@@ -248,13 +324,17 @@ package final class DatabaseCompactionStep {
         guard !quitRequested else { return }
         let child: any CompactionChild
         do {
-            child = try cli.startCompact()
+            child = try cli.startCompact { [weak self] runPhase in
+                Task { @MainActor in self?.enter(runPhase) }
+            }
         } catch {
             log("DB compaction could not start: \(error.localizedDescription)")
             return
         }
         self.child = child
-        phase = .compacting(dbBytes: check.dbBytes)
+        phase = check.ftsRebuildPending
+            ? .updatingSearchIndex(dbBytes: check.dbBytes)
+            : .compacting(dbBytes: check.dbBytes)
         let ticker = Task { await self.tick() }
         let exit = await child.waitForExit()
         ticker.cancel()
@@ -315,12 +395,21 @@ package final class DatabaseCompactionStep {
         notice = nil
     }
 
+    /// A phase line of the running child. Only the search index phase moves
+    /// on (to compaction); a line in any other phase — a late one after the
+    /// child exited included — changes nothing.
+    private func enter(_ runPhase: CompactionRunPhase) {
+        guard case let .updatingSearchIndex(dbBytes) = phase, runPhase == .compact else { return }
+        phase = .compacting(dbBytes: dbBytes)
+        phaseStartedAt = elapsedSeconds
+    }
+
     // MARK: Ticking
 
     private func tick() async {
         while !Task.isCancelled {
             await sleep(.seconds(1))
-            guard !Task.isCancelled, case .compacting = phase else { return }
+            guard !Task.isCancelled, childIsRunning else { return }
             elapsedSeconds += 1
             if let skipAt = skipRequestedAt, !killed,
                elapsedSeconds - skipAt > Self.killAfterSkipSeconds {
@@ -346,6 +435,9 @@ package final class DatabaseCompactionStep {
             log("DB compaction: the child was killed by signal \(exit.status): \(stderr)")
             return
         }
+        if output?.ftsRebuilt == true {
+            log("DB search index rebuilt")
+        }
         // Exits 2–5 count only when the result line names the same skip; any
         // other combination is logged with stderr.
         switch (exit.status, output?.skipped) {
@@ -367,8 +459,14 @@ package final class DatabaseCompactionStep {
             log("DB compaction failed: \(output?.error ?? stderr)")
             if output?.gaveUp ?? false { notice = Self.gaveUpNotice }
         case (2, "disk"):
-            log("DB compaction skipped for disk space")
-            notice = Self.diskNotice(needs: check.needsDiskBytes, available: check.freeDiskBytes)
+            // The run got past the fill when it says so or printed the
+            // compact phase line: the skip is then the compaction's own.
+            var scanner = CompactionPhaseScanner()
+            let rebuilt = output?.ftsRebuilt == true || scanner.feed(exit.stdout).contains(.compact)
+            log(check.ftsRebuildPending && !rebuilt
+                ? "DB search index rebuild skipped for disk space"
+                : "DB compaction skipped for disk space")
+            notice = diskNotice(for: check, searchIndexRebuilt: rebuilt)
         case (3, "daemon_running"):
             log("DB compaction skipped: the daemon is still running")
         case (4, "interrupted"):
@@ -378,6 +476,20 @@ package final class DatabaseCompactionStep {
         default:
             log("DB compaction ended with exit status \(exit.status) (\(output?.skipped ?? "no result line")): \(stderr)")
         }
+    }
+
+    /// The disk notice for a skip for disk space. While the rebuild is
+    /// pending the check's numbers are the fill's: the search index's notice
+    /// until the fill is done; after it, the compaction's own rule
+    /// (2 × `db_bytes`) against the check's free disk.
+    private func diskNotice(for check: CompactionCheck, searchIndexRebuilt: Bool) -> String {
+        guard check.ftsRebuildPending else {
+            return Self.diskNotice(needs: check.needsDiskBytes, available: check.freeDiskBytes)
+        }
+        guard searchIndexRebuilt else {
+            return Self.searchIndexDiskNotice(needs: check.needsDiskBytes, available: check.freeDiskBytes)
+        }
+        return Self.diskNotice(needs: 2 * check.dbBytes, available: check.freeDiskBytes)
     }
 
     // MARK: Strings
@@ -393,6 +505,18 @@ package final class DatabaseCompactionStep {
         size: (Int64) -> String = byteText
     ) -> String {
         "Optimizing database — \(size(dbBytes)), \(elapsedText(seconds: elapsedSeconds))"
+    }
+
+    package nonisolated static func searchIndexLine(elapsedSeconds: Int) -> String {
+        "Updating search index — \(elapsedText(seconds: elapsedSeconds))"
+    }
+
+    package nonisolated static func searchIndexDiskNotice(
+        needs: Int64,
+        available: Int64,
+        size: (Int64) -> String = byteText
+    ) -> String {
+        "Watchtower could not update its search index: it needs \(size(needs)) free, \(size(available)) available."
     }
 
     package nonisolated static func diskNotice(

@@ -167,7 +167,7 @@ struct NotDueCompactionCLI: CompactionCLI {
         )
     }
 
-    func startCompact() throws -> any CompactionChild {
+    func startCompact(onPhase: @escaping @Sendable (CompactionRunPhase) -> Void) throws -> any CompactionChild {
         throw Unexpected()
     }
 }
