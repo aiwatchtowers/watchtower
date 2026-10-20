@@ -13,7 +13,7 @@ The menu bar menu shows one of three lines:
 ## Why
 
 - The sync runs in a small background program, the daemon. It stops when you choose **Quit Watchtower**; closing the window leaves it running.
-- A cycle starts every 15 minutes, when the daemon starts, about 15 seconds after the Mac wakes and on **Sync Now**. A sleeping Mac syncs nothing until it wakes. A cycle the Mac fell asleep in is dropped on wake and starts over.
+- A cycle starts every 15 minutes, when the daemon starts, about 15 seconds after the Mac wakes and on **Sync Now**. A sleeping Mac syncs nothing until it wakes. A cycle the Mac fell asleep in while fetching stops on wake and starts over.
 - Slack calls are limited to 40 a minute, so a big workspace or a first sync takes several minutes. Expect 3 to 5 minutes for the first sync.
 - One failing source does not stop the others. The cause may be a revoked account instead.
 
@@ -22,7 +22,7 @@ The menu bar menu shows one of three lines:
 1. Open the menu bar icon and read the status line.
 2. **Sync daemon not running:** open Watchtower. Launching the app starts the daemon. If it keeps stopping, the error is printed under the line.
 3. **Syncing, counter moving:** wait. The counter refreshes every few seconds.
-4. **Idle, but data is old:** choose **Sync Now**. A cycle that has been fetching for over a minute is stopped and a fresh one starts at once. A younger cycle, or one already building digests, finishes first and then syncs again.
+4. **Idle, but data is old:** choose **Sync Now**. A cycle whose fetching has made no progress for over a minute is stopped and a fresh one starts at once. A cycle still making progress, or one already building digests, finishes first and then syncs again.
 5. **Counter frozen for 10 minutes or more (a rule of thumb, not a limit):** choose **Quit Watchtower** and open the app again. This restarts the daemon.
 6. **Quit hangs:** in a terminal run `watchtower sync stop`, and if it says it is still shutting down, `watchtower sync stop --force`. Then open Watchtower.
 7. Run `watchtower status` for the last sync time and `watchtower logs` for the log. A line naming one source points at [An account needs attention](account-needs-attention.md).
