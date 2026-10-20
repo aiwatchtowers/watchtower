@@ -32,14 +32,14 @@ The search field in the Board header matches title or intent. `#163` finds targe
 
 ### Add a task
 
-**New Task** in the Board header opens a panel; right-click a card for **New Sub-task…** to add one under it. Inside a group, the new task goes under that group.
+**New Task** in the Board header opens a panel; a card's right-click **New Sub-task…** adds one under it.
 
-1. The chip at the top shows where the task goes, such as **acme › #249 Billing export** or **acme › Top level**. Click it to search the board's open targets and pick another parent.
+1. The top chip shows where the task goes, such as **acme › Top level**. Click it to pick another parent.
 2. Type the title. Return moves to the description.
-3. Set the priority chip (High, Medium, Low) and the column chip. The column chip lists the board's To Do and In Progress columns and starts on the first To Do column.
+3. Set the priority and column chips. The column chip offers the To Do and In Progress columns.
 4. Press **Create Task** or ⌘↩. Esc closes the panel without creating anything.
 
-The new task opens in the side panel. Turn on **Create more** to add several in a row: the panel stays open with the same parent and chips, and only the text clears.
+**Create more** keeps the panel open with the same parent and chips for the next task.
 
 ### Switch to Kanban
 
@@ -49,7 +49,7 @@ Drag a card to another column to change its status. In lanes a card moves only b
 
 ### Name your Kanban columns
 
-You edit columns right on the Kanban's header row; each change saves at once. Right-click a column header, or click the **…** that appears on hover:
+Edit columns on the Kanban's header row; each change saves at once. Right-click a column header, or click the **…** that appears on hover:
 
 1. **Rename** turns the title into a field. Return saves, Esc cancels.
 2. **Description…** sets the header's tooltip, which agents also read as guidance.
@@ -59,7 +59,7 @@ You edit columns right on the Kanban's header row; each change saves at once. Ri
 
 A status without columns shows one column under its own name. Renaming it names the status's column. **Add Column** on it makes two: one under the status's name that keeps the cards, and the new one. Deleting the last column brings the status's own back.
 
-The **+** at the end of the row adds a column to any status, and brings back a hidden one with **Show In Review** / **Show Blocked**. A refused change, such as a duplicate title or more than 6 columns in a status, shows its reason under the row and the board stays as it was. From the List, the workbench's **⋯** menu has **Edit Columns on the Kanban**.
+The **+** at the end of the row adds a column to any status, and brings back a hidden one with **Show In Review** / **Show Blocked**. A refused change, such as a duplicate title, shows its reason under the row. From the List, the workbench's **⋯** menu has **Edit Columns on the Kanban**.
 
 ### Open a target
 
