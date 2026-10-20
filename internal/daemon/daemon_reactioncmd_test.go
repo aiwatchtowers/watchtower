@@ -100,6 +100,26 @@ func TestDaemon_PhaseReactionCommands_CancelledPollDoesNotStampTheThrottle(t *te
 	assert.False(t, d.lastReactionCmd.IsZero())
 }
 
+// A poll cut off by the loop's cancel records its reaction-commands row
+// without an error: cancelled, not failed (the slack-sync row's rule).
+func TestDaemon_PhaseReactionCommands_CancelledPollIsNoErrorRow(t *testing.T) {
+	cfg := &config.Config{ReactionCommands: config.ReactionCommandsConfig{Enabled: true}}
+	d, _ := newReactionTestDaemon(t, cfg)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	accountsFn := func(context.Context) ([]reactioncmd.Account, error) {
+		cancel(errCycleSlept)
+		return nil, ctx.Err()
+	}
+	d.SetReactionCommandsPipeline(reactioncmd.New(d.db, cfg, nil, nil, accountsFn, nil))
+
+	d.phaseReactionCommands(ctx)
+
+	var status, errMsg string
+	require.NoError(t, d.db.QueryRow(`SELECT status, COALESCE(error_msg, '') FROM pipeline_runs
+		WHERE pipeline = 'reaction-commands'`).Scan(&status, &errMsg))
+	assert.Empty(t, errMsg, "a cancelled poll is no failure")
+}
+
 // TestDaemon_ReactionCommandsDefaultOn pins that a config with no
 // reaction_commands block enables the feature (owner call 2026-09-26; the
 // first-poll seed in internal/reactioncmd is what makes that safe).

@@ -519,8 +519,8 @@ func (o *Orchestrator) refreshDue(last time.Time, every time.Duration) bool {
 //     the first digest generation (without waiting for a second sync cycle).
 //
 // A per-channel failure is logged and skipped, but a pass that could not
-// list its channels or updated none of them returns an error so the caller's
-// throttle does not record it as a refresh.
+// list its channels, updated none of them or was cut off by a cancelled ctx
+// returns an error so the caller's throttle does not record it as a refresh.
 func (o *Orchestrator) syncChannelReadState(ctx context.Context) error {
 	o.logger.Println("syncing channel read state")
 
@@ -552,6 +552,9 @@ func (o *Orchestrator) syncChannelReadState(ctx context.Context) error {
 
 	var updated, failed int
 	for _, chID := range channelIDs {
+		if err := ctx.Err(); err != nil {
+			break // reported below
+		}
 		_, rawID, _ := watchtowerslack.SplitAccountID(chID)
 		lastRead, err := o.slackClient.GetChannelReadCursor(ctx, rawID)
 		if err != nil {
@@ -570,6 +573,11 @@ func (o *Orchestrator) syncChannelReadState(ctx context.Context) error {
 		updated++
 	}
 	o.logger.Printf("channel read state: %d/%d channels updated (via conversations.info)", updated, len(channelIDs))
+	if err := ctx.Err(); err != nil {
+		// A pass cut off by a cancel is not a refresh: the caller must not
+		// stamp it, or the channels it never reached wait out the hour.
+		return fmt.Errorf("channel read state cancelled: %w", err)
+	}
 	if updated == 0 && failed > 0 {
 		return fmt.Errorf("all %d read-cursor updates failed", failed)
 	}
@@ -608,6 +616,10 @@ func (o *Orchestrator) ownsID(id string) bool {
 // that run must not stamp "last synced" or auto-mark anything read.
 func (o *Orchestrator) finishWithInboxReactions(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
+		// finishSync would have logged and reset the run's API stats: reset
+		// them here, or the next run's "sync complete" line counts this
+		// run's calls too.
+		o.slackClient.ResetAPIStats()
 		return fmt.Errorf("sync cancelled: %w", err)
 	}
 	reactErr := o.syncInboxReactions(ctx)

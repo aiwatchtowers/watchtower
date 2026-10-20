@@ -1192,9 +1192,14 @@ func TestFinishWithInboxReactionsCancelledContextSkipsFinishSync(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
+	counts, _ := ts.orch.slackClient.APIStats()
+	require.NotEmpty(t, counts, "the run made API calls")
 	err = ts.orch.finishWithInboxReactions(ctx)
 	require.ErrorIs(t, err, context.Canceled)
 	assert.NotEqual(t, PhaseDone, ts.orch.progress.Phase(), "finishSync must not run")
+	counts, retries := ts.orch.slackClient.APIStats()
+	assert.Empty(t, counts, "the cancelled run's API stats are reset, as finishSync would")
+	assert.Zero(t, retries)
 	assert.Zero(t, listed.Load(), "no reactions listing on a cancelled run")
 	var stamped int
 	require.NoError(t, ts.db.QueryRow(`SELECT COUNT(*) FROM workspace WHERE COALESCE(synced_at, '') != ''`).Scan(&stamped))
@@ -1418,6 +1423,36 @@ func TestSearchSyncReadStateFailureRetriesNextCycle(t *testing.T) {
 	now = now.Add(15 * time.Minute)
 	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
 	assert.Equal(t, 2*first, infoCalls.Load(), "once a pass succeeded the hourly throttle holds")
+}
+
+// TestSyncChannelReadStateCancelledPassIsNoRefresh: a pass cut off by a
+// cancel (a sleep, a Sync Now restart) returns the cancel even though it
+// updated a channel before it, so the caller does not stamp the hourly
+// throttle and the channels it never reached wait out the hour.
+func TestSyncChannelReadStateCancelledPassIsNoRefresh(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var infoCalls atomic.Int32
+	mux := defaultMux()
+	mux.HandleFunc("/conversations.info", func(w http.ResponseWriter, r *http.Request) {
+		if infoCalls.Add(1) == 2 {
+			cancel()
+		}
+		_ = r.ParseForm()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "channel": map[string]any{"id": r.Form.Get("channel"), "last_read": "1700000001.000000"}})
+	})
+	ts := newTestSetup(t, mux)
+	for _, raw := range []string{"C001", "C002", "C003"} {
+		ch := watchtowerslack.Namespace(ts.accountID, raw)
+		require.NoError(t, ts.db.UpsertChannel(db.Channel{ID: ch, Name: raw, Type: "public", IsMember: true}))
+		_, err := ts.db.UpsertDigest(db.Digest{ChannelID: ch, Type: "channel", Summary: "s", PeriodFrom: 1700000100, PeriodTo: 1700000200, MessageCount: 1})
+		require.NoError(t, err)
+	}
+
+	err := ts.orch.syncChannelReadState(ctx)
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, int32(2), infoCalls.Load(), "no call after the cancel")
 }
 
 // TestSyncInboxReactionsDegenerateInputs pins the clean-exit branches of the

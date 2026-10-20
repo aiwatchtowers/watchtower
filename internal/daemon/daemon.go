@@ -1794,9 +1794,14 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 	sink := d.reactionEventSink()
 	d.trackedPipelineRun("reaction-commands", func() pipelineRunStats {
 		dispatched, err := d.reactionCmdPipe.Run(ctx, sink)
-		if err != nil {
+		switch {
+		case isBenignShutdownErr(ctx, err):
+			// Cancelled, not failed (the slack-sync row's rule).
+			d.logger.Printf("reaction-commands: stopped by %s", fetchStopReason(ctx))
+			err = nil
+		case err != nil:
 			d.logger.Printf("reaction-commands error: %v", err)
-		} else if dispatched > 0 {
+		case dispatched > 0:
 			d.logger.Printf("reaction-commands: dispatched %d", dispatched)
 		}
 		// A cancelled poll did not finish: the next cycle polls again
