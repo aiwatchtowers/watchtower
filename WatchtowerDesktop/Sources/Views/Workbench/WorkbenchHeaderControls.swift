@@ -286,13 +286,11 @@ extension WorkbenchInstallStatus {
 private extension WorkspaceView {
     var help: String {
         switch self {
-        case .terminal: "Show the session's terminal, in place of its Workchat (⌃`); in a split, beside the other pane"
-        case .report: "Show the session's report (in a split, beside its session's terminal)"
         case .board: "Show the Board (in a split, beside the terminal)"
         case .files: "Show the open files (in a split, beside the terminal)"
         case .analytics: "Agent time, cost and hints for this workbench"
-        case .changes: "Review the session's changes"
-        case .chat: "Show the session's Workchat, in place of its terminal (⌃`); in a split, beside its terminal"
+        // The session views are the strip's and the Session tab's, with help of their own.
+        case .terminal, .report, .changes, .chat: title
         }
     }
 }

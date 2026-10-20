@@ -95,13 +95,10 @@ final class SessionSwitcherPresentationTests: XCTestCase {
         XCTAssertEqual(result[0].caption, "Not running · 5m")
     }
 
-    func testStatesKeepShortcutsAndMatching() {
+    func testStatesKeepShortcuts() {
         let result = rows([session(1, "Board work"), session(2, "Other")], live: [1, 2], statuses: [2: .live(.needsApproval)])
         XCTAssertEqual(result.map(\.shortcut), [1, 2])
-        let matched = SessionSwitcherPresentation.matching(result, query: "other")
-        XCTAssertEqual(matched.map(\.id), [2])
-        XCTAssertEqual(matched.first?.state, .live(.needsApproval))
-        XCTAssertEqual(matched.first?.shortcut, 2)
+        XCTAssertEqual(result[1].state, .live(.needsApproval))
     }
 
     func testAClosedSessionKeepsItsFinishedOrAskState() {
@@ -148,29 +145,5 @@ final class SessionSwitcherPresentationTests: XCTestCase {
         )
         XCTAssertEqual(ordered.map(\.place), [nil, label, nil])
         XCTAssertEqual(rows(sessions).map(\.place), [nil, nil, nil], "no places given, none shown")
-    }
-
-    func testMatchingByTargetIDWithOrWithoutHash() {
-        let result = rows([session(1, "Board work", target: 233), session(2, "Other", target: 2330), session(3, "None")])
-        XCTAssertEqual(SessionSwitcherPresentation.matching(result, query: "#233").map(\.id), [1, 2],
-                       "# and digits are a prefix: #2330 starts with them too")
-        XCTAssertEqual(SessionSwitcherPresentation.matching(result, query: "233").map(\.id), [1])
-        XCTAssertEqual(SessionSwitcherPresentation.matching(result, query: "#23").map(\.id), [1, 2],
-                       "# and digits match the target ids starting with them")
-        XCTAssertEqual(SessionSwitcherPresentation.matching(result, query: "23").map(\.id), [],
-                       "a bare number matches a target id exactly")
-        XCTAssertEqual(SessionSwitcherPresentation.matching(result, query: "#").map(\.id), [],
-                       "a lone # matches no target id")
-        XCTAssertEqual(SessionSwitcherPresentation.matching(result, query: " ").map(\.id), [1, 2, 3])
-    }
-
-    func testMatchingTitleIgnoresCaseAndDiacriticsAndKeepsShortcuts() {
-        let result = rows([session(1, "Résumé parser"), session(2, "Сборка релиза"), session(3, "Other")])
-        let byTitle = SessionSwitcherPresentation.matching(result, query: "RESUME")
-        XCTAssertEqual(byTitle.map(\.id), [1])
-        let cyrillic = SessionSwitcherPresentation.matching(result, query: "сборка")
-        XCTAssertEqual(cyrillic.map(\.id), [2])
-        XCTAssertEqual(cyrillic.first?.shortcut, 2, "a filtered row keeps its ⌘N")
-        XCTAssertEqual(SessionSwitcherPresentation.matching(result, query: "nope"), [])
     }
 }

@@ -29,6 +29,9 @@ struct WorkbenchSessionStrip: View {
                 modeToggle("Workchat", pane: .sessionChat(sessionID))
             }
             .segmentCapsule()
+            // The toggles never truncate; the session name and the crumbs do.
+            .fixedSize()
+            .layoutPriority(1)
             viewToggle("Report", view: .report)
             viewToggle("Changes", view: .changes)
             if isSplit { paneButtons }

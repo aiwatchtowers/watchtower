@@ -27,10 +27,6 @@ package enum WorkbenchAutomationButtonsModel {
         }
     }
 
-    package static func isDimmed(_ button: AutomationHeaderButton) -> Bool {
-        button.state != .runnable
-    }
-
     /// What a click does instead of a run, or why the button is dimmed; nil
     /// for a runnable one (the view says "Run <label>"). An active run wins,
     /// as it does in `action(for:)`.

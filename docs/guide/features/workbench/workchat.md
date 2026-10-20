@@ -20,7 +20,7 @@ Once the session ends, the field gives way to **Session finished. The history st
 
 ### Switch between Terminal and Workchat
 
-- **Terminal | Workchat** in the page header swaps the session on screen between the two. The ▾ beside it picks the session or starts a new one.
+- **Terminal | Workchat** on the session's strip swaps the session in that pane between the two. The session name with ▾ at the strip's left picks another session or starts a new one.
 - ⌃` does the same, as does View → **Show Terminal** / **Show Workchat**.
 - With the split on, both show side by side: the terminal on the left, the Workchat on the right.
 - A small glyph on each session row shows the mode it opens in. Right-click a row for **Open in Terminal** or **Open in Workchat**.

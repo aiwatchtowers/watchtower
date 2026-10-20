@@ -557,6 +557,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-20 (board #788, workbench header redesign): controls moved (header → title row / session strip, header buttons → ⚡ menu); no contract, guard test or status changed.
 
 - 2026-10-18 (Linear tools, board #694): **AUTO-01 gains the `linear` capability** (`linear:read|write@<TEAM>|*`; a strengthening of the grammar, no guard relaxed). Linear reads and the five Linear writes are scoped by the team key; issue tools by the issue's **current** team (a moved issue answers to its new team); a list call without `team` is the absent scope and needs `linear:read@*` or `tool:<name>`. Guards: `TestManifest_LinearCapability`, `TestLinearScope_MovedIssueUsesCurrentTeam`, `TestLinearScope_TeamArgsAndTeamsList`, `TestLinearScope_RowsWithoutTeamKeyAreAbsentScope`, `TestLinearScope_WriteTools`. `list_linear_cycles` is offered on the `automation` surface only (like `list_jira_sprints`).
 - 2026-10-18 (board #568, **AGENT-07 amended, owner approved in ask #357**): strengthening, no guard changed. The owner gestures this file lists as refused under an AI-agent marker stay refused there; without a marker they now also need the owner's Confirm in the running Desktop, whose window shows the whole recipe (trigger, permissions, outputs, text), and no Desktop is a refusal. See AGENT-07 in `agent-actions.md`.

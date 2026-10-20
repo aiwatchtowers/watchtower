@@ -357,12 +357,18 @@ struct WorkbenchTitleRow<Controls: View>: View {
                 WorkbenchBackButton(action: switcherActions.showAll)
             }
             if let project = vm.headerSwitcherWorkbench {
-                WorkbenchSwitcher(vm: vm, project: project, actions: switcherActions, fillsWidth: false)
+                // The panel is hidden here: the switcher's tooltip also names the folder.
+                WorkbenchSwitcher(vm: vm, project: project, actions: switcherActions, fillsWidth: false,
+                                  folderPath: project.folderPath)
             } else {
-                Text(vm.selectedStandalone?.title ?? vm.selectedWorkbench?.name ?? "Workbench")
+                let title = Text(vm.selectedStandalone?.title ?? vm.selectedWorkbench?.name ?? "Workbench")
                     .font(.headline)
                     .lineLimit(1)
-                    .help(vm.selectedStandalone == nil ? vm.selectedWorkbench?.folderPath ?? "" : "")
+                if vm.selectedStandalone == nil, let path = vm.selectedWorkbench?.folderPath {
+                    title.help(path)
+                } else {
+                    title
+                }
             }
             // The rest of the row, at a lower priority than the name: the
             // name takes what it needs of what the controls leave, and only

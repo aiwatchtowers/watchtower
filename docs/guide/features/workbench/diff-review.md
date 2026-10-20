@@ -8,7 +8,7 @@ A pull request review needs a pull request. Here you review before anything is c
 
 ## How it works
 
-**Review Changes** in a session's row menu opens the **Changes** pane and starts a round. Watchtower snapshots the folder's working tree (tracked and untracked files, not ignored ones) and compares it with a base, the point where the branch left the default branch. The snapshot only writes git objects. It touches no branch, no index and no file.
+**Review Changes** in a session's row menu, or **Changes** on its strip, opens the **Changes** pane and starts a round. Watchtower snapshots the folder's working tree (tracked and untracked files, not ignored ones) and compares it with a base, the point where the branch left the default branch. The snapshot only writes git objects. It touches no branch, no index and no file.
 
 The pane has a file list, a diff, and a list of comments. Files show added, modified, deleted or renamed, their line counts and a **Viewed** checkbox. Lockfiles, generated files and very large files are folded by name. Binary and oversized files show a placeholder.
 

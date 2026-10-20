@@ -364,6 +364,28 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         )
     }
 
+    /// In the title row the switcher's tooltip also names the folder; the
+    /// standalone terminal's title has no tooltip at all, not an empty one.
+    func testTheTitleRowTooltips() async throws {
+        let a = try await workbench("alpha")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: a)
+        let actions = WorkbenchSwitcherActions(openFolder: {}, showAll: {})
+        let switcherHelp = { (row: WorkbenchTitleRow<EmptyView>) in
+            try row.inspect().find(WorkbenchSwitcherButton.self).find(ViewType.Button.self).help().string()
+        }
+
+        vm.panelVisible = false
+        XCTAssertEqual(try switcherHelp(WorkbenchTitleRow(vm: vm, switcherActions: actions) {}),
+                       "\(try XCTUnwrap(vm.selectedWorkbench).folderPath)\nalpha — Switch Workbench")
+
+        await vm.newStandalone(kind: .shell, folder: folder)
+        let title = try WorkbenchTitleRow(vm: vm, switcherActions: actions) {}.inspect()
+            .find(ViewType.Text.self) { try $0.attributes().font() == .headline }
+        XCTAssertThrowsError(try title.help(), "no path, no tooltip")
+    }
+
     /// ⌘[ (board #743, the Workbench menu since issue #288): on while the
     /// list is off screen, off under the Go to… palette.
     func testCommandBracketGoesBackWhileTheListIsOffScreen() async throws {

@@ -105,17 +105,16 @@ final class WorkbenchHeaderAutomationButtonsTests: XCTestCase {
     // MARK: - Pure model
 
     func testRunnableStatesAndActions() {
-        let cases: [(AutomationHeaderButton, Model.Action, Bool, String?)] = [
-            (button(confirm: true), .confirmThenRun(label: "Deploy"), false, nil),
-            (button(), .run, false, nil),
-            (button(activeRunID: 42), .openRun(42), false, "Running — show the run"),
-            (button(state: .needsConfirmation), .openConfirmSheet, true, "Needs your confirmation"),
-            (button(state: .disabled), .openCard, true, "Disabled"),
-            (button(state: .parseError), .openCard, true, "Parse error")
+        let cases: [(AutomationHeaderButton, Model.Action, String?)] = [
+            (button(confirm: true), .confirmThenRun(label: "Deploy"), nil),
+            (button(), .run, nil),
+            (button(activeRunID: 42), .openRun(42), "Running — show the run"),
+            (button(state: .needsConfirmation), .openConfirmSheet, "Needs your confirmation"),
+            (button(state: .disabled), .openCard, "Disabled"),
+            (button(state: .parseError), .openCard, "Parse error")
         ]
-        for (b, action, dimmed, help) in cases {
+        for (b, action, help) in cases {
             XCTAssertEqual(Model.action(for: b), action, "\(b.state)")
-            XCTAssertEqual(Model.isDimmed(b), dimmed, "\(b.state)")
             XCTAssertEqual(Model.help(for: b), help, "\(b.state)")
         }
     }

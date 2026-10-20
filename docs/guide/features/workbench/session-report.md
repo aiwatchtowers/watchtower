@@ -4,7 +4,7 @@ Watchtower reads what each Claude Code session did: the target it works on, its 
 
 ## Why use it
 
-Three agents ran overnight. The progress line under each session name, the **Session** view and the **Analytics** view tell you which one finished, which opened a pull request and which spent the most.
+Three agents ran overnight. The progress line under each session name, the **Report** view and the **Analytics** view tell you which one finished, which opened a pull request and which spent the most.
 
 ## How it works
 
@@ -18,7 +18,7 @@ Pull request details need the GitHub CLI (`gh`). Without it, only whether a bran
 
 ### Read the Session view
 
-The **Session** button in the page header shows the report of one Claude Code session next to its terminal:
+The **Report** button on a session's strip shows the report of one Claude Code session next to its terminal:
 
 - **On you**: the session's open asks, each with **Open**.
 - **Now**: tasks in progress, in review or blocked.
@@ -30,7 +30,7 @@ It refreshes every 30 seconds while on screen, and when the session's state chan
 
 ### Read the Analytics view
 
-The **Analytics** button in the page header (or **Analytics** in a pane's title menu) shows where this folder's Claude Code sessions spent their time and money:
+The **Analytics** icon in the title row shows where this folder's Claude Code sessions spent their time and money:
 
 - Pick **7 days**, **30 days** or **All**. The first time, press **Turn On**: it returns at once, and the daemon loads the history in the background. Until it is done, **Loading history — N files so far** sits above the numbers loaded so far.
 - **The main thing** card names the one change that would save the most, with a button that does it. **Context**, **Skills** and **Trouble** show what loads before the first message, which skills never ran and which calls failed. See [Agent analytics](../agent-analytics.md#what-the-analytics-view-shows).
@@ -39,7 +39,7 @@ The **Analytics** button in the page header (or **Analytics** in a pane's title 
 
 ## When it's empty or wrong
 
-- **"Pick a session" in the Session view.** No Claude Code session is selected, or it is a plain shell, or it was deleted.
+- **"Pick a session" in the Report view.** No Claude Code session is selected, or it is a plain shell, or it was deleted.
 - **"· stale" at the end of the progress line.** The last refresh failed; the line updates again on the next one.
 - **Pull requests show no details.** Install the GitHub CLI (`gh`); without it only whether a branch is merged is known.
 

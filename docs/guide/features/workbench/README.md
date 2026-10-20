@@ -28,11 +28,19 @@ Nothing here changes your own terminal workflow. A session started in your own t
 3. Start work on a target with **Work on It** on its card. The agent takes it from there.
 4. Check back on the board and answer asks as they come.
 
-### Run a workbench automation from the header
+### Find your way around the workbench
 
-Each of the workbench's automations that runs **When I press a button** gets a button at the start of the header's right-hand controls, before **Terminal ▾**: up to four, the rest under **More**. A click starts the run; one set to ask first shows "Run <label>?" with **Run** and **Cancel**. While a run is going, the button spins and a click shows the run in Automations.
+The window's title row carries the workbench: its name (click it to switch workbench), then the **Session**, **Board** and **Files** tabs. At the right are the ⚡ automations menu, the **Analytics** icon, the split button and **…**. In **…**, **Show in Finder** comes first. Hover the name to see the folder's path.
 
-A dimmed button says why: **Needs your confirmation** opens the confirmation sheet, **Disabled** or **Parse error** opens its card. If the run could not start, "Could not run <label>" says why. See [Recipes and templates](../automations-recipes.md#workbench-recipes).
+**Session** shows a session; with none open it opens the most recent one, or starts one. **Board** and **Files** each show their view. With the split on, a tab shows its view beside the other pane, and turning it off closes that pane.
+
+Each session pane has a strip on top with the session's name and a ▾ to pick another session or start a new one, the branch, **Terminal | Workchat**, **Report** and **Changes**.
+
+### Run a workbench automation from the ⚡ menu
+
+Every automation of the workbench that runs **When I press a button** is an item in the ⚡ menu, in the order of their file names. A click starts the run; one set to ask first shows "Run <label>?" with **Run** and **Cancel**. While a run is going, the ⚡ icon spins and its item shows the run in Automations.
+
+An item that says why it is not runnable: **Needs your confirmation** opens the confirmation sheet, **Disabled** or **Parse error** opens its card. If the run could not start, "Could not run <label>" says why. See [Recipes and templates](../automations-recipes.md#workbench-recipes).
 
 A folder inside Documents, Desktop, Downloads or a cloud-synced folder shows a warning first, because macOS may ask to allow access. The warning comes before anything is created.
 
@@ -41,8 +49,8 @@ The agent writes board text in the language you use with it. Write to it in anot
 ## When it's empty or wrong
 
 - **"No workbenches yet".** You have not added a folder. Press **Add a folder** and pick one.
-- **A session shows only a green dot, no state caption.** The folder was set up by an older Watchtower. In the page header's **…** menu, **Repair install** adds what is missing, or **Re-run Setup** brings it fully up to date. It only adds: the board, comments, asks and description stay as they are.
-- **An orange install icon in the header.** Something in the folder install is missing. Hover it for the list, then use **Repair install**.
+- **A session shows only a green dot, no state caption.** The folder was set up by an older Watchtower. In the title row's **…** menu, **Repair install** adds what is missing, or **Re-run Setup** brings it fully up to date. It only adds: the board, comments, asks and description stay as they are.
+- **An orange install icon next to the workbench name.** Something in the folder install is missing. Hover it for the list, then use **Repair install**.
 - **An orange install icon saying "Set up under the old Projects name".** The folder was set up before the rename to Workbench, and that setup no longer runs: its hooks only tell the agent to ask you for Repair, and its `watchtower-project` connection fails to start. Choose **Repair install** (or **Re-run Setup**) in the **…** menu; it migrates the folder, and keeps your own edited copy of the old skill, which you then delete.
 - **A state shows only for sessions started in Watchtower's terminal.** A session in your own terminal app, or in a standalone terminal under **Terminals**, reports no state and has no board tools.
 - **Workbench targets do not show elsewhere.** They live only on their board, not in Targets, the day plan or Catch Up. The daily briefing mentions workbench activity on its own.
