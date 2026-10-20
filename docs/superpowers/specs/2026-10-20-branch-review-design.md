@@ -169,7 +169,7 @@ The comment list under the diff is unchanged.
 | State | What shows |
 |---|---|
 | Opening the round | the identity bar (it needs no round) and a spinner below |
-| **Nothing to review** (empty diff, round open) | identity bar, then one `ContentAwareEmptyState` across the whole body: "Nothing to review on this branch" / "No commits past main and no uncommitted edits." with **Refresh**; on the default branch: "No uncommitted edits in the main folder." No file column, no summary card, no Send. |
+| **Nothing to review** (empty diff, round open) | identity bar, then one `ContentUnavailableView` across the whole body: "Nothing to review on this branch" / "No commits past main and no uncommitted edits." with **Refresh**; on the default branch: "No uncommitted edits in the main folder." No file column, no summary card, no Send. |
 | Changes, no file picked | the file column and, on the right, "Pick a file" — never "No changes yet" while files exist |
 | Round failed to open | identity bar, then the reason and **Retry** (as today) |
 | Sent round | toolbar shows `Round N · sent`, Send becomes **Start next round** (today's Refresh-after-send, now named) |
