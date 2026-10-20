@@ -14,6 +14,8 @@ struct ReviewToolbar: View {
     let refresh: () -> Void
     /// Find Repeats…: nil = no lessons model (no CLI), the item is off.
     var findRepeats: (() -> Void)?
+    /// Open in Terminal: the session's terminal beside the pane; nil = the item is off.
+    var openTerminal: (() -> Void)?
 
     private var roundOpen: Bool { model.round?.status == "open" }
     /// Quick and Deep's Chapters show a diff, so Inline applies.
@@ -81,6 +83,9 @@ struct ReviewToolbar: View {
                 .help("Propose house rules from comments you keep repeating")
             Button("Show in Finder", action: showInFinder)
                 .disabled(model.round?.folderRoot.isEmpty ?? true)
+            Button("Open in Terminal") { openTerminal?() }
+                .disabled(openTerminal == nil)
+                .help("Show the session's terminal beside the review")
         } label: {
             Image(systemName: "ellipsis")
         }

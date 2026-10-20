@@ -69,6 +69,9 @@ enum DesignShotCatalog {
             DesignShot(name: "branch-review-empty", size: NSSize(width: 1180, height: 520)) {
                 ReviewShotFixtures.empty()
             },
+            DesignShot(name: "branch-review-default-branch", size: NSSize(width: 1180, height: 520)) {
+                ReviewShotFixtures.defaultBranch()
+            },
             DesignShot(name: "branch-review-deep-meaning", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.deepMeaning()
             }

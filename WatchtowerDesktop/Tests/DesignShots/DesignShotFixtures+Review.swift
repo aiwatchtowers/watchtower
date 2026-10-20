@@ -142,7 +142,7 @@ struct ReviewFixture {
         )
         let row = SessionSwitcherPresentation.rows([session], liveIDs: [session.id], statuses: [session.id: status], now: Date()).first
         return ReviewSessionIdentity(row: row, place: place, stale: false, mainStatus: mainStatus,
-                                     agentName: AgentKind.claude.displayName) {}
+                                     agentName: AgentKind.claude.displayName, openSession: {}, openTerminal: {})
     }
 
     func cleanUp() {
@@ -181,8 +181,8 @@ struct ReviewFixture {
 }
 
 /// The Branch review pane's shots (board #712, artboards A–C): a branch
-/// with changes in Quick, the default branch with nothing to review, and
-/// Deep's Meaning. Each fixture is built once and reused for light and dark.
+/// with changes in Quick, the default branch with nothing to review, the
+/// default branch with uncommitted edits, and Deep's Meaning. Each fixture is built once and reused for light and dark.
 @MainActor
 enum ReviewShotFixtures {
     private static var built: [String: (fixture: ReviewFixture, identity: ReviewSessionIdentity)] = [:]
@@ -255,7 +255,17 @@ enum ReviewShotFixtures {
         pane("empty") {
             let fixture = try ReviewFixture(files: [], context: context)
             fixture.openNow()
-            return (fixture, fixture.identity(place: .main, mainStatus: WorkbenchGitStatus(branch: "main")))
+            return (fixture, fixture.identity(place: .main, mainStatus: WorkbenchGitStatus(branch: "main", head: "b1")))
+        }
+    }
+
+    /// The main folder on main with uncommitted edits: the notice on the branch line, the edits listed.
+    static func defaultBranch() -> AnyView {
+        pane("default-branch") {
+            let fixture = try ReviewFixture(files: Array(files[0...2]))
+            fixture.openNow()
+            let status = WorkbenchGitStatus(branch: "main", head: "b1", dirty: true, changes: 3)
+            return (fixture, fixture.identity(place: .main, mainStatus: status))
         }
     }
 

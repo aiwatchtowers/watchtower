@@ -7,7 +7,7 @@ package enum ReviewIdentityPresentation {
     /// Branches that are the base of work, not work: reviewing them shows only uncommitted edits.
     package static let defaultBranchNames: Set<String> = ["main", "master"]
 
-    /// The branch line: `feature/x ← main · 8 files · +212 −40 · 2 uncommitted · worktree x`.
+    /// The branch line: `feature/x → main · 8 files · +212 −40 · 2 uncommitted · worktree x`.
     package struct BranchLine: Equatable, Sendable {
         package var branch: String
         /// The base without `origin/`; nil on the default branch, an empty tree or no round.
@@ -44,12 +44,7 @@ package enum ReviewIdentityPresentation {
         let branch = branchName(status)
         let rawBase = round.map { $0.baseLabel.hasPrefix("origin/") ? String($0.baseLabel.dropFirst("origin/".count)) : $0.baseLabel }
         let base = (rawBase?.isEmpty ?? true) ? nil : rawBase
-        let onDefault: Bool
-        if round != nil {
-            onDefault = base != nil && base == branch
-        } else {
-            onDefault = defaultBranchNames.contains(branch)
-        }
+        let onDefault = onDefaultBranch(branch: branch, base: base, status: status, round: round)
         var help = (round?.baseSha.isEmpty ?? true) ? "empty tree" : (round?.baseSha ?? "empty tree")
         if stale { help += "\n" + SessionPlacePresentation.staleNote }
         var uncommitted: String?
@@ -65,17 +60,43 @@ package enum ReviewIdentityPresentation {
         )
     }
 
+    /// The default branch with nothing committed past its base: with a round,
+    /// the branch is the base and HEAD is the base commit; without one, a
+    /// default branch name with no unpushed commits. A `main` ahead of
+    /// `origin/main` has commits to review, so it shows the normal line.
+    private static func onDefaultBranch(
+        branch: String,
+        base: String?,
+        status: WorkbenchGitStatus?,
+        round: ReviewRoundInfo?
+    ) -> Bool {
+        guard let status, !status.detached else { return false }
+        if let round {
+            guard let base, base == branch, !status.head.isEmpty else { return false }
+            return round.baseSha.hasPrefix(status.head)
+        }
+        return defaultBranchNames.contains(branch) && status.ahead == 0
+    }
+
+    /// The empty state's line under "Nothing to review": the default branch
+    /// has only uncommitted edits to review; any other branch, commits past its base too.
+    package static func emptyDescription(_ line: BranchLine) -> String {
+        if line.onDefaultBranch { return "No uncommitted edits in the main folder." }
+        return "No commits past \(line.base ?? "the base") and no uncommitted edits."
+    }
+
     package static func forLine(_ items: [ReviewContextItem]) -> ForLine? {
         guard let first = items.first else { return nil }
         return ForLine(first: first, more: items.count - 1)
     }
 
     /// An agent session shows the header Review button when its work is not
-    /// plainly the default branch with nothing to review; the open pane always does.
+    /// plainly the default branch with nothing to review (no edits, no
+    /// unpushed commits); the open pane always does.
     package static func showsReviewButton(isAgent: Bool, status: WorkbenchGitStatus?, paneOnScreen: Bool) -> Bool {
         if paneOnScreen { return true }
         guard isAgent, let status else { return false }
-        return status.dirty || status.detached || !defaultBranchNames.contains(status.branch)
+        return status.dirty || status.detached || status.ahead > 0 || !defaultBranchNames.contains(status.branch)
     }
 
     private static func branchName(_ status: WorkbenchGitStatus?) -> String {

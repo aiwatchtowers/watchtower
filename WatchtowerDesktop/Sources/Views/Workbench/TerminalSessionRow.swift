@@ -48,7 +48,7 @@ struct TerminalSessionRow: View {
             closedAsks
             if showsDelete, row.state.kind == .readyToCheck, session.projectID != nil,
                let reviewChanges = actions.reviewChanges {
-                Button("Review") { reviewChanges(session) }
+                Button("Review Branch") { reviewChanges(session) }
                     .buttonStyle(.kitQuiet)
                     .help("Review this session's branch")
             }

@@ -3,7 +3,8 @@ import WatchtowerCore
 
 /// Whose work a Branch review shows (board #712, spec §4.2): the session's
 /// panel row, where its agent works and the main folder's git status, as
-/// `WorkspacePaneView` reads them; `openSession` puts its terminal on screen.
+/// `WorkspacePaneView` reads them. `openSession` opens the session in its
+/// recorded mode (the title); `openTerminal` puts its terminal on screen (⋯).
 struct ReviewSessionIdentity {
     /// nil = the session is gone: the session line is left out.
     var row: SessionSwitcherPresentation.Row?
@@ -13,6 +14,16 @@ struct ReviewSessionIdentity {
     var mainStatus: WorkbenchGitStatus?
     var agentName: String
     var openSession: () -> Void
+    var openTerminal: () -> Void
+
+    /// The branch line for the model's round: the one place the bar and the
+    /// pane's empty state read it from.
+    @MainActor func branchLine(_ model: ReviewChangesModel) -> ReviewIdentityPresentation.BranchLine {
+        let status = ReviewIdentityPresentation.status(place: place, mainStatus: mainStatus)
+        return ReviewIdentityPresentation.branchLine(
+            place: place, status: status, round: model.round, files: model.wholeDiffFiles, stale: stale
+        )
+    }
 }
 
 /// The top of the Branch review pane (spec §4.2): the caption and round,
@@ -21,6 +32,8 @@ struct ReviewSessionIdentity {
 struct ReviewIdentityBar: View {
     let identity: ReviewSessionIdentity
     let model: ReviewChangesModel
+    /// The most the unfolded target cards may take; past it they scroll.
+    var maxCardsHeight: CGFloat = .infinity
     @State private var forExpanded = false
 
     var body: some View {
@@ -39,7 +52,7 @@ struct ReviewIdentityBar: View {
             branchLine
             // Deep's Meaning shows the targets unfolded: its intent card is this list (spec §6).
             ReviewForLine(items: model.context, alwaysOpen: model.mode == .deep && model.phase == .meaning,
-                          expanded: $forExpanded)
+                          expanded: $forExpanded, maxCardsHeight: maxCardsHeight)
         }
         .padding(Spacing.medium)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -66,7 +79,7 @@ struct ReviewIdentityBar: View {
             }
             .buttonStyle(KitQuietButtonStyle(label: .primary))
             .font(.headline)
-            .help("Show the session's terminal")
+            .help("Show the session")
             SessionStateLabel(state: row.state, caption: row.caption)
                 .layoutPriority(1)
             if let age = TimeFormatting.shortAge(from: row.session.lastActiveAt, now: Date()) {
@@ -79,10 +92,7 @@ struct ReviewIdentityBar: View {
     }
 
     @ViewBuilder private var branchLine: some View {
-        let status = ReviewIdentityPresentation.status(place: identity.place, mainStatus: identity.mainStatus)
-        let line = ReviewIdentityPresentation.branchLine(
-            place: identity.place, status: status, round: model.round, files: model.wholeDiffFiles, stale: identity.stale
-        )
+        let line = identity.branchLine(model)
         HStack(spacing: Spacing.compact) {
             if !line.branch.isEmpty {
                 Label(line.branch, systemImage: "arrow.triangle.branch")
@@ -109,10 +119,15 @@ struct ReviewIdentityBar: View {
 /// `For #128 <title>  +2 more ▾`: the session's first linked target; the
 /// chevron unfolds every target's card in place. `alwaysOpen` shows the
 /// cards without the chevron (Deep's Meaning). Nothing without targets.
+/// Cards taller than `maxCardsHeight` scroll inside it, so many targets
+/// never push the pane's body off screen.
 struct ReviewForLine: View {
     let items: [ReviewContextItem]
     let alwaysOpen: Bool
     @Binding var expanded: Bool
+    var maxCardsHeight: CGFloat = .infinity
+    /// The cards' own height, measured; nil before the first layout.
+    @State private var cardsHeight: CGFloat?
 
     var body: some View {
         if let line = ReviewIdentityPresentation.forLine(items) {
@@ -128,15 +143,27 @@ struct ReviewForLine: View {
                     .font(.caption)
                 }
                 if alwaysOpen || expanded {
-                    ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                        ReviewIntentCard(item: item)
-                            .padding(Spacing.regular)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .card()
+                    // The cards as they are when they fit, else a scroll at the cap.
+                    if let cardsHeight, cardsHeight > maxCardsHeight {
+                        ScrollView { cards }.frame(height: maxCardsHeight)
+                    } else {
+                        cards
                     }
                 }
             }
         }
+    }
+
+    private var cards: some View {
+        VStack(alignment: .leading, spacing: Spacing.compact) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                ReviewIntentCard(item: item)
+                    .padding(Spacing.regular)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .card()
+            }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { cardsHeight = $0 }
     }
 
     /// `+N more ▾` with more targets; a bare chevron folds the one card.

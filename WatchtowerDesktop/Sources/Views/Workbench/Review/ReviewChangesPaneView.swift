@@ -21,6 +21,8 @@ struct ReviewChangesPaneView: View {
     @State private var findingRepeats = false
     @State private var pageError: String?
     @State private var onScreen = false
+    /// The pane's height; 0 until the first layout (no cap then).
+    @State private var paneHeight: CGFloat = 0
     @State private var pace = ReviewPaceWiring()
 
     /// What the shared comment sheet asks for and does with the answer: a line
@@ -67,13 +69,17 @@ struct ReviewChangesPaneView: View {
 
     private var content: some View {
         VStack(spacing: 0) {
-            ReviewIdentityBar(identity: identity, model: model)
+            // The target cards take at most a third of the pane (Deep's Meaning).
+            ReviewIdentityBar(identity: identity, model: model,
+                              maxCardsHeight: paneHeight > 0 ? paneHeight / 3 : .infinity)
             Divider()
             if showsToolbar {
                 ReviewToolbar(
                     model: model, inline: $inline,
                     refresh: { Task { await refreshOrNextRound() } },
-                    findRepeats: lessons == nil ? nil : { findingRepeats = true }
+                    findRepeats: lessons == nil ? nil : { findingRepeats = true },
+                    // The session gone (no row): nothing to open.
+                    openTerminal: identity.row == nil ? nil : identity.openTerminal
                 )
                 Divider()
             }
@@ -83,6 +89,7 @@ struct ReviewChangesPaneView: View {
             }
             state
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { paneHeight = $0 }
     }
 
     /// An open round with nothing to review shows no toolbar; a sent one
@@ -130,15 +137,9 @@ struct ReviewChangesPaneView: View {
         }
     }
 
-    /// The empty state's line: the default branch has only uncommitted
-    /// edits to review; any other branch, commits past its base too.
+    /// The empty state's line, from the identity bar's branch line.
     private var emptyDescription: String {
-        let status = ReviewIdentityPresentation.status(place: identity.place, mainStatus: identity.mainStatus)
-        let line = ReviewIdentityPresentation.branchLine(
-            place: identity.place, status: status, round: model.round, files: model.wholeDiffFiles, stale: identity.stale
-        )
-        if line.onDefaultBranch { return "No uncommitted edits in the main folder." }
-        return "No commits past \(line.base ?? "the base") and no uncommitted edits."
+        ReviewIdentityPresentation.emptyDescription(identity.branchLine(model))
     }
 
     /// Quick mode (nil phase) and Deep's Chapters show the file column and the diff.
@@ -198,10 +199,14 @@ struct ReviewChangesPaneView: View {
     /// branch has changes (spec §4.6).
     static func noFileText(_ model: ReviewChangesModel) -> String {
         guard model.files.isEmpty else { return "Pick a file" }
-        if model.hasChanges, model.view == .sinceLastRound, let round = model.round {
-            return "Nothing new since round \(round.prevRoundId)"
-        }
-        return "No changes yet"
+        return nothingNewText(model) ?? "No changes yet"
+    }
+
+    /// The Since view with nothing new on a branch that has changes: the
+    /// detail and the file column say so, not "No changes".
+    static func nothingNewText(_ model: ReviewChangesModel) -> String? {
+        guard model.hasChanges, model.view == .sinceLastRound, let round = model.round else { return nil }
+        return "Nothing new since round \(round.prevRoundId)"
     }
 
     @ViewBuilder private func diff(path: String) -> some View {

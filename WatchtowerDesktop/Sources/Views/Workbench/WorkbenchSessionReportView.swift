@@ -113,7 +113,8 @@ struct SessionReportActions {
     /// A PR row with a known GitHub URL.
     let openURL: (URL) -> Void
     /// **Review Branch**: the session's Branch review pane beside its
-    /// terminal (board #712); nil = no button (not an agent session).
+    /// terminal (board #712), shown while the session is Ready to check;
+    /// nil = no button (not an agent session).
     var reviewBranch: (() -> Void)?
 }
 
@@ -173,9 +174,10 @@ struct SessionReportContent: View {
             }
             HStack(spacing: Spacing.medium) {
                 analyticsLine
-                if let reviewBranch = actions.reviewBranch {
+                // Ready to check only (spec §5): the work waits for the owner's review.
+                if state.kind == .readyToCheck, let reviewBranch = actions.reviewBranch {
                     Button("Review Branch", action: reviewBranch)
-                        .buttonStyle(.link)
+                        .buttonStyle(.kitQuiet)
                         .font(.caption)
                         .help("Review this session's branch")
                 }

@@ -15,7 +15,9 @@ struct ReviewFileListView: View {
             }
             header("Files", systemImage: "doc.on.doc", detail: filesDetail)
             if shown.isEmpty {
-                Text("No changes").foregroundStyle(.secondary).reviewListRow()
+                Text(ReviewChangesPaneView.nothingNewText(model) ?? "No changes")
+                    .foregroundStyle(.secondary)
+                    .reviewListRow()
             }
             ForEach(shown) { file in row(file) }
             if !folded.isEmpty {

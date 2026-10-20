@@ -183,8 +183,8 @@ struct WorkspacePaneView: View {
 
 extension WorkspacePaneView {
     /// The Branch review's identity bar inputs (#712): the session's row,
-    /// where its agent works and the main folder's status; the title shows
-    /// the session's terminal.
+    /// where its agent works and the main folder's status; the title opens
+    /// the session in its recorded mode, the ⋯ menu's Open in Terminal its terminal.
     func reviewIdentity(sessionID id: Int64) -> ReviewSessionIdentity {
         let session = vm.session(id, projectID: project.id)
         let projectID = project.id
@@ -193,10 +193,10 @@ extension WorkspacePaneView {
             place: vm.sessionPlaces.currentPlace(sessionID: id),
             stale: vm.sessionPlaces.isPlaceStale(sessionID: id),
             mainStatus: vm.gitStatus[projectID],
-            agentName: session?.kind.agent?.displayName ?? "Agent"
-        ) { [vm] in
-            Task { await vm.showTerminal(sessionID: id, projectID: projectID) }
-        }
+            agentName: session?.kind.agent?.displayName ?? "Agent",
+            openSession: { [vm] in Task { await vm.showSession(id: id) } },
+            openTerminal: { [vm] in Task { await vm.showTerminal(sessionID: id, projectID: projectID) } }
+        )
     }
 }
 

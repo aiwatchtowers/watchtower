@@ -1136,13 +1136,21 @@ final class ReviewChangesModelTests: XCTestCase {
         let h = try harness()
         h.baseScript()
         await h.model.open()
+        let t0 = Date(timeIntervalSince1970: 1_000_000)
+        h.model.noteInteraction(at: t0)
+        h.model.tick(at: t0, isKey: true)
+        h.model.noteInteraction(at: t0.addingTimeInterval(12))
+        h.model.tick(at: t0.addingTimeInterval(12), isKey: true)
         h.model.writeHook = { _ in throw DatabaseError(resultCode: .SQLITE_IOERR) }
         await h.model.flushState()
         XCTAssertNil(h.model.lastError)
+        let failed = try await activeSeconds(h)
+        XCTAssertEqual(failed, 0, "the failing flush wrote nothing")
         h.model.writeHook = nil
-        h.model.noteInteraction()
         await h.model.flushState()
-        XCTAssertNil(h.model.lastError, "the next flush writes again")
+        XCTAssertNil(h.model.lastError)
+        let saved = try await activeSeconds(h)
+        XCTAssertEqual(saved, 12, "the next flush writes again")
     }
 
     func testNextAndPreviousUnviewed() async throws {

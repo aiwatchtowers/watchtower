@@ -332,6 +332,24 @@ final class WorkbenchSessionReportViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(text: "Shipped the sheet."))
     }
 
+    /// **Review Branch** (#712 spec §5): only while the session is Ready to
+    /// check, as a quiet kit button.
+    func testReviewBranchShowsOnlyWhileReadyToCheck() throws {
+        let report = try Self.report(Self.full)
+        let log = ReportActionLog()
+        var reviewed = 0
+        var actions = log.actions
+        actions.reviewBranch = { reviewed += 1 }
+        func view(_ state: SessionSwitcherPresentation.State) -> SessionReportContent {
+            SessionReportContent(report: report, state: state, staleError: nil, pullRequestURL: { _ in nil },
+                                 actions: actions)
+        }
+        let ready = view(.live(.readyToCheck, openAsks: 1, openQuestionAsks: 0, openReviewAsks: 1))
+        try ready.inspect().find(button: "Review Branch").tap()
+        XCTAssertEqual(reviewed, 1)
+        XCTAssertThrowsError(try view(.live(.stopped)).inspect().find(button: "Review Branch"), "a stopped session has none")
+    }
+
     // MARK: - Links
 
     /// **Open** on an ask opens the asks drawer on that ask, beside its

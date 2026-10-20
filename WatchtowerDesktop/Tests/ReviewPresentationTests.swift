@@ -148,7 +148,8 @@ final class ReviewPresentationTests: XCTestCase {
     func testEmptyRoundShowsOneEmptyStateAndNoToolbar() async throws {
         let f = try await fixture([])
         XCTAssertEqual(f.model.load, .ready)
-        let pane = ReviewChangesPaneView(model: f.model, identity: f.identity(place: .main, mainStatus: WorkbenchGitStatus(branch: "main")))
+        let onMain = WorkbenchGitStatus(branch: "main", head: "b1")
+        let pane = ReviewChangesPaneView(model: f.model, identity: f.identity(place: .main, mainStatus: onMain))
         let all = try texts(pane)
         XCTAssertEqual(all.filter { $0 == "Nothing to review" }.count, 1, "\(all)")
         XCTAssertTrue(all.contains("No uncommitted edits in the main folder."), "\(all)")
@@ -218,6 +219,9 @@ final class ReviewPresentationTests: XCTestCase {
         let f = try await fixture([.init(path: "a.go")], since: [])
         XCTAssertTrue(f.model.hasChanges)
         XCTAssertEqual(ReviewChangesPaneView.noFileText(f.model), "Nothing new since round 1")
+        let column = try texts(ReviewFileListView(model: f.model))
+        XCTAssertTrue(column.contains("Nothing new since round 1"), "\(column)")
+        XCTAssertFalse(column.contains("No changes"), "\(column)")
         await f.model.setView(.all)
         f.model.selectedPath = nil
         XCTAssertEqual(ReviewChangesPaneView.noFileText(f.model), "Pick a file")
@@ -225,7 +229,8 @@ final class ReviewPresentationTests: XCTestCase {
 
     func testSentEmptyRoundOffersOnlyStartNextRound() async throws {
         let f = try await fixture([], status: "sent")
-        let pane = ReviewChangesPaneView(model: f.model, identity: f.identity(place: .main, mainStatus: WorkbenchGitStatus(branch: "main")))
+        let onMain = WorkbenchGitStatus(branch: "main", head: "b1")
+        let pane = ReviewChangesPaneView(model: f.model, identity: f.identity(place: .main, mainStatus: onMain))
         XCTAssertNoThrow(try pane.inspect().find(button: "Start next round"))
         let empty = try pane.inspect().find(ViewType.ContentUnavailableView.self)
         XCTAssertNoThrow(try empty.find(text: "Nothing to review"))

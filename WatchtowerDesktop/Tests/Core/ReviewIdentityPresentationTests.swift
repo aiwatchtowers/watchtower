@@ -41,16 +41,34 @@ final class ReviewIdentityPresentationTests: XCTestCase {
     }
 
     func testOnTheDefaultBranch() throws {
-        let status = WorkbenchGitStatus(branch: "main")
-        let line = Identity.branchLine(place: .main, status: status, round: try round(baseLabel: "origin/main"),
+        // HEAD is the base commit: nothing committed past it.
+        let status = WorkbenchGitStatus(branch: "main", head: "abc1234")
+        let line = Identity.branchLine(place: .main, status: status,
+                                       round: try round(baseLabel: "origin/main", baseSha: "abc1234def5678"),
                                        files: files([(1, 1)]), stale: false)
         XCTAssertTrue(line.onDefaultBranch)
         XCTAssertNil(line.base)
         XCTAssertEqual(line.size, "On main — only uncommitted edits are reviewed")
+        XCTAssertEqual(Identity.emptyDescription(line), "No uncommitted edits in the main folder.")
 
         let noRound = Identity.branchLine(place: .main, status: status, round: nil, files: [], stale: false)
         XCTAssertTrue(noRound.onDefaultBranch)
         XCTAssertEqual(noRound.size, "On main — only uncommitted edits are reviewed")
+    }
+
+    func testMainAheadOfOriginShowsTheBranchLine() throws {
+        let status = WorkbenchGitStatus(branch: "main", head: "fff0001", ahead: 2)
+        let line = Identity.branchLine(place: .main, status: status,
+                                       round: try round(baseLabel: "origin/main", baseSha: "abc1234def5678"),
+                                       files: files([(3, 1)]), stale: false)
+        XCTAssertFalse(line.onDefaultBranch)
+        XCTAssertEqual(line.base, "main")
+        XCTAssertEqual(line.size, "1 file · +3 −1")
+        XCTAssertEqual(Identity.emptyDescription(line), "No commits past main and no uncommitted edits.")
+
+        let noRound = Identity.branchLine(place: .main, status: status, round: nil, files: [], stale: false)
+        XCTAssertFalse(noRound.onDefaultBranch)
+        XCTAssertNil(noRound.size)
     }
 
     func testUnknownPlaceReadsAsMainFolder() {
@@ -104,5 +122,15 @@ final class ReviewIdentityPresentationTests: XCTestCase {
         XCTAssertTrue(Identity.showsReviewButton(isAgent: true, status: feature, paneOnScreen: false))
         XCTAssertFalse(Identity.showsReviewButton(isAgent: true, status: clean, paneOnScreen: false))
         XCTAssertFalse(Identity.showsReviewButton(isAgent: true, status: WorkbenchGitStatus(branch: "master"), paneOnScreen: false))
+    }
+
+    func testReviewButtonShowsForUnpushedCommits() {
+        let ahead = WorkbenchGitStatus(branch: "main", ahead: 2)
+        XCTAssertTrue(Identity.showsReviewButton(isAgent: true, status: ahead, paneOnScreen: false))
+    }
+
+    func testDirtyWithZeroChangesShowsTheButton() {
+        let dirty = WorkbenchGitStatus(branch: "main", dirty: true, changes: 0)
+        XCTAssertTrue(Identity.showsReviewButton(isAgent: true, status: dirty, paneOnScreen: false))
     }
 }
