@@ -164,6 +164,7 @@ struct WorkspacePaneView: View {
             if let model = vm.reviewModel(sessionID: id, projectID: project.id) {
                 ReviewChangesPaneView(
                     model: model,
+                    identity: reviewIdentity(sessionID: id),
                     agentStateKind: vm.session(id, projectID: project.id).map { vm.sessionState($0).kind },
                     lessons: vm.reviewLessonsModel(projectID: project.id)
                 )
@@ -173,6 +174,25 @@ struct WorkspacePaneView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        }
+    }
+}
+
+extension WorkspacePaneView {
+    /// The Branch review's identity bar inputs (#712): the session's row,
+    /// where its agent works and the main folder's status; the title shows
+    /// the session's terminal.
+    func reviewIdentity(sessionID id: Int64) -> ReviewSessionIdentity {
+        let session = vm.session(id, projectID: project.id)
+        let projectID = project.id
+        return ReviewSessionIdentity(
+            row: session.flatMap { vm.sessionRows([$0]).first },
+            place: vm.sessionPlaces.currentPlace(sessionID: id),
+            stale: vm.sessionPlaces.isPlaceStale(sessionID: id),
+            mainStatus: vm.gitStatus[projectID],
+            agentName: session?.kind.agent?.displayName ?? "Agent"
+        ) { [vm] in
+            Task { await vm.showTerminal(sessionID: id, projectID: projectID) }
         }
     }
 }

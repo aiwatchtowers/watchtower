@@ -49,7 +49,7 @@ struct ReviewWrapUpView: View {
                 HStack {
                     Spacer()
                     Button("Send review (\(model.draftCount))") { Task { await model.send() } }
-                        .disabled(!ReviewChangesHeader.canSend(model))
+                        .disabled(!ReviewToolbar.canSend(model))
                 }
             }
             .padding(12)

@@ -1,3 +1,5 @@
+import SwiftUI
+import ViewInspector
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
@@ -7,6 +9,25 @@ import WatchtowerCore
 /// page's Undo message check.
 @MainActor
 final class ReviewPresentationTests: XCTestCase {
+    private var fixtures: [ReviewFixture] = []
+
+    override func tearDown() {
+        fixtures.forEach { $0.cleanUp() }
+        fixtures = []
+        super.tearDown()
+    }
+
+    private func fixture(_ files: [ReviewFixture.File], status: String = "open") async throws -> ReviewFixture {
+        let fixture = try ReviewFixture(files: files, status: status)
+        fixtures.append(fixture)
+        await fixture.open()
+        return fixture
+    }
+
+    private func texts(_ view: some View) throws -> [String] {
+        try view.inspect().findAll(ViewType.Text.self).map { try $0.string() }
+    }
+
     private func note(_ id: Int64, path: String, start: Int, end: Int, kind: String = "note") throws -> ReviewNote {
         let json = """
         {"id":\(id),"kind":"\(kind)","ord":\(id),"path":"\(path)","start_line":\(start),"end_line":\(end),"quote":"q",
@@ -116,5 +137,64 @@ final class ReviewPresentationTests: XCTestCase {
         XCTAssertNil(Coordinator.undoTarget("0123456789abcde", shown: shown), "too short")
         XCTAssertNil(Coordinator.undoTarget(["0123456789abcdef"], shown: shown), "not a string")
         XCTAssertNil(Coordinator.undoTarget(nil, shown: shown))
+    }
+
+    // MARK: - Branch review pane (board #712)
+
+    func testEmptyRoundShowsOneEmptyStateAndNoToolbar() async throws {
+        let f = try await fixture([])
+        XCTAssertEqual(f.model.load, .ready)
+        let pane = ReviewChangesPaneView(model: f.model, identity: f.identity(place: .main, mainStatus: WorkbenchGitStatus(branch: "main")))
+        let all = try texts(pane)
+        XCTAssertEqual(all.filter { $0 == "Nothing to review" }.count, 1, "\(all)")
+        XCTAssertTrue(all.contains("No uncommitted edits in the main folder."), "\(all)")
+        XCTAssertFalse(all.contains { $0.hasPrefix("Send review") }, "no toolbar on an empty round: \(all)")
+        XCTAssertFalse(all.contains("Files"), "no file column on an empty round: \(all)")
+    }
+
+    func testIdentityBarNamesSessionBranchAndPlace() async throws {
+        let f = try await fixture([.init(path: "a.go")])
+        let place = SessionPlace.worktree(name: "x", root: URL(fileURLWithPath: "/tmp/acme-x"),
+                                          status: WorkbenchGitStatus(branch: "feature/x", dirty: true, changes: 2))
+        let all = try texts(ReviewIdentityBar(identity: f.identity(place: place), model: f.model)).joined(separator: " | ")
+        for part in ["Fix the record capsule overlap", "feature/x", "main", "worktree x", "2 uncommitted", "Round 2 · open"] {
+            XCTAssertTrue(all.contains(part), "\(part) missing from \(all)")
+        }
+    }
+
+    func testForLineFoldsExtraTargets() throws {
+        let items = [
+            ReviewContextItem(targetId: 128, text: "Capsule covers the controls", intent: "intent A"),
+            ReviewContextItem(targetId: 131, text: "Move the capsule", intent: "intent B"),
+            ReviewContextItem(targetId: 133, text: "Corner in Settings", intent: "intent C")
+        ]
+        var expanded = false
+        let binding = Binding(get: { expanded }, set: { expanded = $0 })
+        let folded = ReviewForLine(items: items, alwaysOpen: false, expanded: binding)
+        XCTAssertNoThrow(try folded.inspect().find(text: "#128"))
+        XCTAssertThrowsError(try folded.inspect().find(text: "intent B"), "the cards are folded")
+        try folded.inspect().find(button: "+2 more").tap()
+        XCTAssertTrue(expanded)
+        let open = ReviewForLine(items: items, alwaysOpen: false, expanded: binding)
+        XCTAssertNoThrow(try open.inspect().find(text: "intent B"))
+        XCTAssertNoThrow(try open.inspect().find(text: "Corner in Settings"))
+    }
+
+    func testSentRoundOffersStartNextRound() async throws {
+        let f = try await fixture([.init(path: "a.go")], status: "sent")
+        var refreshed = false
+        let toolbar = ReviewToolbar(model: f.model, inline: .constant(false)) { refreshed = true }
+        try toolbar.inspect().find(button: "Start next round").tap()
+        XCTAssertTrue(refreshed)
+        XCTAssertThrowsError(try toolbar.inspect().find(text: "Send review (0)"))
+    }
+
+    func testFileHeaderViewedTogglesTheMark() async throws {
+        let f = try await fixture([.init(path: "a.go"), .init(path: "b.go")])
+        let file = try XCTUnwrap(f.model.files.first)
+        XCTAssertFalse(f.model.isViewed("a.go"))
+        try ReviewFileHeader(model: f.model, file: file).inspect().find(ViewType.Toggle.self).tap()
+        for _ in 0..<200 where !f.model.isViewed("a.go") { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertTrue(f.model.isViewed("a.go"))
     }
 }

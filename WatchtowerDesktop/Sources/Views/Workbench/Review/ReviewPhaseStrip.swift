@@ -1,8 +1,9 @@
 import SwiftUI
 import WatchtowerCore
 
-/// Deep mode's three steps under the header (board #328): Meaning, Chapters,
-/// Wrap-up. Each step is clickable; Next moves on, and Wrap-up shows Send.
+/// Deep mode's three steps in the toolbar (board #328, #712 spec §6):
+/// Meaning, Chapters, Wrap-up as a segmented picker, the progress line, and
+/// Next to the following step. Send is the toolbar's own.
 struct ReviewPhaseStrip: View {
     let model: ReviewChangesModel
 
@@ -11,31 +12,25 @@ struct ReviewPhaseStrip: View {
     ]
 
     var body: some View {
-        HStack(spacing: 6) {
-            ForEach(ReviewPhase.allCases, id: \.self) { phase in
-                Button(Self.titles[phase] ?? phase.rawValue) { Task { try? await model.setPhase(phase) } } // a failure lands in lastError
-                    .buttonStyle(.plain)
-                    .fontWeight(phase == model.phase ? .semibold : .regular)
-                    .foregroundStyle(phase == model.phase ? Color.accentColor : Color.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(phase == model.phase ? Color.accentColor.opacity(0.15) : Color.clear, in: Capsule())
-                    .accessibilityAddTraits(phase == model.phase ? .isSelected : [])
-                if phase != ReviewPhase.allCases.last { Text("·").foregroundStyle(.secondary) }
-            }
-            Spacer()
+        HStack(spacing: Spacing.cozy) {
+            KitSegmentedPicker(
+                title: "Phase",
+                // A failure lands in lastError.
+                selection: Binding(get: { model.phase }, set: { phase in Task { try? await model.setPhase(phase) } }),
+                segments: ReviewPhase.allCases.map { KitSegment(value: $0, title: Self.titles[$0] ?? $0.rawValue) }
+            )
+            Text(ReviewToolbar.progressLine(model))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
             if let next {
-                Button("Next") { Task { try? await model.setPhase(next) } }
-            } else {
-                Button("Send") { Task { await model.send() } }
-                    .disabled(!ReviewChangesHeader.canSend(model))
+                Button("Next →") { Task { try? await model.setPhase(next) } }
+                    .buttonStyle(.kitQuiet)
+                    .help("Go on to \(Self.titles[next] ?? next.rawValue)")
+                    .fixedSize()
             }
         }
-        .font(.callout)
-        .controlSize(.small)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(Color.primary.opacity(0.03))
     }
 
     private var next: ReviewPhase? {

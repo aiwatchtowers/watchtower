@@ -220,8 +220,10 @@ final class ReviewChangesModel {
     /// The message when Go answers that the round was already sent.
     static let alreadySentMessage = "This round was already sent"
 
-    /// Whether the round has anything to review; an empty diff makes no overview.
-    var hasChanges: Bool { !files.isEmpty }
+    /// Whether the round has anything to review — its whole base..tree diff,
+    /// whatever view is shown (an empty Since view of a branch with changes
+    /// still has them); an empty diff makes no overview.
+    var hasChanges: Bool { !allFiles.isEmpty }
 
     /// The next file after `path` (the first when nil) that is shown and not
     /// Viewed, in list order, wrapping around; nil when no other one is left.

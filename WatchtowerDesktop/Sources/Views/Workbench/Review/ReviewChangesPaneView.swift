@@ -2,12 +2,15 @@ import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// The Changes pane (board #328, spec §10): a session's review round — the
-/// file list on the left, the selected file's Monaco diff and its comments
-/// on the right. The round is re-read when the window becomes key and when
-/// the session's turn ends, while the round is open and the pane on screen.
+/// The Branch review pane (board #328, #712 spec §4): whose work it is
+/// (the identity bar), the toolbar, then a session's review round — the
+/// file list on the left, the selected file's header, Monaco diff and its
+/// comments on the right — or one "Nothing to review" state on an empty
+/// branch. The round is re-read when the window becomes key and when the
+/// session's turn ends, while the round is open and the pane on screen.
 struct ReviewChangesPaneView: View {
     let model: ReviewChangesModel
+    let identity: ReviewSessionIdentity
     /// The session's state kind, for the turn-over refresh; nil = not known.
     var agentStateKind: SessionSwitcherPresentation.State.Kind?
     /// Find Repeats' model (the workbench's lessons); nil = not available.
@@ -62,32 +65,77 @@ struct ReviewChangesPaneView: View {
         .stopped, .finished, .failed, .waitingOnAsk, .background
     ]
 
-    @ViewBuilder private var content: some View {
-        switch model.load {
-        case .idle, .loading:
-            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-        case let .failed(message):
-            VStack(spacing: 8) {
-                Text(message).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                Button("Retry") { Task { await openRound() } }
-            }
-            .padding()
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        case .ready:
-            VStack(spacing: 0) {
-                ReviewChangesHeader(
+    private var content: some View {
+        VStack(spacing: 0) {
+            ReviewIdentityBar(identity: identity, model: model)
+            Divider()
+            if showsToolbar {
+                ReviewToolbar(
                     model: model, inline: $inline,
                     refresh: { Task { await refreshOrNextRound() } },
                     findRepeats: lessons == nil ? nil : { findingRepeats = true }
                 )
-                if model.mode == .deep { ReviewPhaseStrip(model: model) }
-                if let pageError {
-                    ReviewBanner(text: pageError, isError: true) { self.pageError = nil }
-                }
                 Divider()
+            }
+            ReviewBanners(model: model)
+            if let pageError {
+                ReviewBanner(text: pageError, isError: true) { self.pageError = nil }
+            }
+            state
+        }
+    }
+
+    /// An open round with nothing to review shows no toolbar; a sent one
+    /// does, for Start next round.
+    private var showsToolbar: Bool {
+        guard model.load == .ready, let round = model.round else { return false }
+        return model.hasChanges || round.status != "open"
+    }
+
+    /// Nothing on the branch to review (spec §4.6): the round's whole diff is empty.
+    private var nothingToReview: Bool {
+        model.load == .ready && !model.hasChanges
+    }
+
+    @ViewBuilder private var state: some View {
+        switch model.load {
+        case .idle, .loading:
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        case let .failed(message):
+            VStack(spacing: Spacing.regular) {
+                Text(message).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                Button("Retry") { Task { await openRound() } }
+                    .buttonStyle(.kitSecondary)
+            }
+            .padding()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        case .ready:
+            if nothingToReview {
+                ContentUnavailableView {
+                    Label("Nothing to review", systemImage: "checkmark.circle")
+                } description: {
+                    Text(emptyDescription)
+                } actions: {
+                    Button("Refresh") { Task { await refreshOrNextRound() } }
+                        .buttonStyle(.kitSecondary)
+                        .disabled(model.sending || model.refreshing)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
                 body(for: model.mode == .deep ? model.phase : nil)
             }
         }
+    }
+
+    /// The empty state's line: the default branch has only uncommitted
+    /// edits to review; any other branch, commits past its base too.
+    private var emptyDescription: String {
+        let status = ReviewIdentityPresentation.status(place: identity.place, mainStatus: identity.mainStatus)
+        let line = ReviewIdentityPresentation.branchLine(
+            place: identity.place, status: status, round: model.round, files: model.files, stale: identity.stale
+        )
+        if line.onDefaultBranch { return "No uncommitted edits in the main folder." }
+        return "No commits past \(line.base ?? "the base") and no uncommitted edits."
     }
 
     /// Quick mode (nil phase) and Deep's Chapters show the file column and the diff.
@@ -115,6 +163,10 @@ struct ReviewChangesPaneView: View {
     @ViewBuilder private func detail(checklist: Bool) -> some View {
         if let path = model.selectedPath {
             VStack(spacing: 0) {
+                if let file = model.files.first(where: { $0.path == path }) {
+                    ReviewFileHeader(model: model, file: file)
+                    Divider()
+                }
                 diff(path: path)
                 ReviewCommentListView(model: model, path: path)
                 if checklist { ReviewChecklistView(model: model) { compose = $0 } }
