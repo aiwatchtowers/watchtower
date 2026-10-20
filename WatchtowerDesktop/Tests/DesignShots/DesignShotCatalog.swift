@@ -31,6 +31,9 @@ enum DesignShotCatalog {
             DesignShot(name: "workbench-board-cards", size: NSSize(width: 480, height: 280)) {
                 AnyView(DesignShotFixtures.boardCards().padding(12).shotFrame().detailBackground())
             },
+            DesignShot(name: "workbench-new-task", size: NSSize(width: 620, height: 240)) {
+                AnyView(DesignShotFixtures.newTask().shotFrame().panelBackground())
+            },
             DesignShot(name: "workbench-panel-parts", size: NSSize(width: 440, height: 120)) {
                 AnyView(DesignShotFixtures.panelParts().padding(12).shotFrame().detailBackground())
             },
@@ -88,6 +91,7 @@ private extension View {
 @MainActor
 enum DesignShotFixtures {
     private static var poolPath: String?
+    private static var newTaskPoolPath: String?
     private static let defaultsSuite = "DesignShotsTests"
 
     /// Removes the header's database and layout defaults (`DesignShotsTests`
@@ -95,6 +99,8 @@ enum DesignShotFixtures {
     static func cleanUp() {
         if let poolPath { TestDatabase.cleanup(path: poolPath) }
         poolPath = nil
+        if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
+        newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)
     }
 
@@ -155,6 +161,28 @@ enum DesignShotFixtures {
                 }
                 Spacer(minLength: 0)
             })
+        } catch {
+            return failure(error)
+        }
+    }
+
+    /// The New Task panel (AI-14 §2), opened for a sub-task of a group.
+    static func newTask() -> AnyView {
+        do {
+            let (pool, path) = try TestDatabase.createPool()
+            if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
+            newTaskPoolPath = path
+            let (pid, parent) = try pool.write { db -> (Int64, Int64) in
+                let pid = try TestDatabase.insertWorkbench(db, folder: "/tmp/acme")
+                let parent = try TestDatabase.insertWorkbenchTarget(db, projectID: pid, text: "Billing export for acme",
+                                                                    status: "in_progress", priority: "high")
+                return (pid, parent)
+            }
+            let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid)
+            vm.load()
+            return AnyView(WorkbenchNewTargetSheet(
+                request: WorkbenchNewTargetRequest(parentID: Int(parent)), vm: vm, workbenchName: "acme"
+            ))
         } catch {
             return failure(error)
         }

@@ -23,6 +23,11 @@ struct WorkbenchBoardView: View {
     /// where a card click focuses nothing.
     @FocusState private var pathBarFocused: Bool
 
+    /// The New Task panel's first crumb: this workbench's name.
+    private var workbenchName: String {
+        appState.workbenchesViewModel?.summaries.first { $0.project.id == projectID }?.project.name ?? "Board"
+    }
+
     var body: some View {
         Group {
             if let vm = viewModel {
@@ -49,7 +54,7 @@ struct WorkbenchBoardView: View {
                 // terminal in the other split pane.
                 .onExitCommand { _ = escape(vm) }
                 .sheet(item: Binding(get: { vm.newTargetRequest }, set: { vm.newTargetRequest = $0 })) { request in
-                    WorkbenchNewTargetSheet(request: request, vm: vm)
+                    WorkbenchNewTargetSheet(request: request, vm: vm, workbenchName: workbenchName)
                 }
             } else {
                 ProgressView()
