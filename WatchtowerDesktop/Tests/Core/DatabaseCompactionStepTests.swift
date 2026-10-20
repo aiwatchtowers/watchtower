@@ -556,6 +556,73 @@ final class DatabaseCompactionStepTests: XCTestCase {
         }, "\(logs.items)")
     }
 
+    // The launch step gave up on the fill (the daemon keeps trying) while the
+    // freelist rule is due: the run is compaction only, so the splash, the
+    // disk notice and the logs are the compaction's though the rebuild is
+    // still pending.
+
+    func testGaveUpFillWithFreelistStartsInCompaction() async {
+        let step = makeStep(check: .success(.fixture(dbBytes: 2_000, reason: "freelist", ftsRebuildPending: true)))
+        let run = await startCompacting(step)
+        XCTAssertEqual(step.phase, .compacting(dbBytes: 2_000))
+        await tick(2, step)
+        child.emit(.compact)
+        await drainMainActor()
+        XCTAssertEqual(step.phaseElapsedSeconds, 2, "the compact line does not restart the clock")
+        child.exit(status: 1, stdout: "{\"phase\":\"compact\"}\n{\"compacted\":false,\"error\":\"disk I/O error\"}\n")
+        await run.value
+        XCTAssertTrue(logs.items.contains("DB compaction failed: disk I/O error"), "\(logs.items)")
+    }
+
+    func testGaveUpFillWithFreelistFailureBeforeCompactLineLogsCompaction() async {
+        let step = makeStep(check: .success(.fixture(reason: "freelist", ftsRebuildPending: true)))
+        let run = await startCompacting(step)
+        child.exit(status: 4, stdout: #"{"compacted":false,"skipped":"interrupted"}"#)
+        await run.value
+        XCTAssertTrue(logs.items.contains("DB compaction interrupted; it is due again next launch"), "\(logs.items)")
+    }
+
+    func testGaveUpFillWithFreelistDiskShortShowsCompactionNotice() async {
+        let step = makeStep(check: .success(.fixture(
+            dbBytes: 3_000, reason: "freelist", ftsRebuildPending: true,
+            diskOk: false, freeDiskBytes: 4_000, needsDiskBytes: 6_000
+        )))
+        await step.run { "/db" }
+        XCTAssertEqual(calls.items, ["check"], "no daemon stop, no child")
+        XCTAssertTrue(logs.items.contains(
+            "DB compaction skipped: 6000 bytes of free disk needed, 4000 available"
+        ), "\(logs.items)")
+        XCTAssertEqual(step.notice, DatabaseCompactionStep.diskNotice(needs: 6_000, available: 4_000))
+    }
+
+    func testGaveUpFillWithFreelistDiskExitShowsCompactionNotice() async {
+        let step = makeStep(check: .success(.fixture(
+            dbBytes: 3_000, reason: "freelist", ftsRebuildPending: true, freeDiskBytes: 9_000, needsDiskBytes: 6_000
+        )))
+        let run = await startCompacting(step)
+        child.exit(status: 2, stdout: #"{"compacted":false,"skipped":"disk"}"#)
+        await run.value
+        XCTAssertEqual(step.notice, DatabaseCompactionStep.diskNotice(needs: 6_000, available: 9_000))
+        XCTAssertTrue(logs.items.contains("DB compaction skipped for disk space"), "\(logs.items)")
+    }
+
+    func testGaveUpFillNotDueStartsNothing() async {
+        let step = makeStep(check: .success(CompactionCheck(
+            due: false, reason: "fts_rebuild_gave_up", dbBytes: 1_000, walBytes: 0,
+            freeDiskBytes: 10_000, needsDiskBytes: 2_000, diskOk: true, ftsRebuildPending: true
+        )))
+        await step.run { "/db" }
+        XCTAssertEqual(calls.items, ["check"])
+        XCTAssertEqual(step.phase, .finished)
+        XCTAssertNil(step.notice)
+    }
+
+    func testFillDueKeysOnReasonNotPending() {
+        XCTAssertTrue(CompactionCheck.fixture(reason: "fts_rebuild", ftsRebuildPending: true).fillDue)
+        XCTAssertFalse(CompactionCheck.fixture(reason: "freelist", ftsRebuildPending: true).fillDue)
+        XCTAssertFalse(CompactionCheck.fixture(reason: "migration:134").fillDue)
+    }
+
     func testPhaseScannerJoinsSplitLines() {
         var scanner = CompactionPhaseScanner()
         XCTAssertEqual(scanner.feed(Data(#"{"pha"#.utf8)), [])

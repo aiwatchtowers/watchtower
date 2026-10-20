@@ -5,20 +5,29 @@ import Observation
 
 /// `db compact --check --json`: whether compaction is due and the disk rule's
 /// numbers (`needs_disk_bytes` = 2 × `db_bytes`, or the search index fill's
-/// need while `fts_rebuild_pending`).
+/// need while the fill is due, `reason` = `fts_rebuild`).
 package struct CompactionCheck: Decodable, Equatable, Sendable {
     package let due: Bool
     /// `migration:<version>`, `freelist`, `schema_pending`, `gave_up`,
-    /// `fts_rebuild` or empty.
+    /// `fts_rebuild`, `fts_rebuild_gave_up` or empty.
     package let reason: String
     package let dbBytes: Int64
     package let walBytes: Int64
     package let freeDiskBytes: Int64
     package let needsDiskBytes: Int64
     package let diskOk: Bool
-    /// The search index rebuild (#872) has not finished: the run fills it
-    /// first. Absent (an older CLI) reads false.
+    /// The search index rebuild (#872) has not finished. It does not mean
+    /// this run fills it: after the launch step gave up on the fill the
+    /// daemon keeps trying, and a due run is compaction only — see
+    /// `fillDue`. Absent (an older CLI) reads false.
     package let ftsRebuildPending: Bool
+
+    /// The run fills the search index before compacting (`reason` =
+    /// `fts_rebuild`); the splash, the disk notice and the failure logs key
+    /// on this, never on `ftsRebuildPending`.
+    package var fillDue: Bool {
+        reason == CompactionRunPhase.ftsRebuild.rawValue
+    }
 
     enum CodingKeys: String, CodingKey {
         case due, reason
@@ -313,7 +322,7 @@ package final class DatabaseCompactionStep {
         guard !quitRequested else { return }
         guard check.due else { return }
         guard check.diskOk else {
-            let skipped = check.ftsRebuildPending ? "DB search index rebuild skipped" : "DB compaction skipped"
+            let skipped = check.fillDue ? "DB search index rebuild skipped" : "DB compaction skipped"
             log("\(skipped): \(check.needsDiskBytes) bytes of free disk needed, \(check.freeDiskBytes) available")
             notice = diskNotice(for: check, searchIndexRebuilt: false)
             return
@@ -332,7 +341,7 @@ package final class DatabaseCompactionStep {
             return
         }
         self.child = child
-        phase = check.ftsRebuildPending
+        phase = check.fillDue
             ? .updatingSearchIndex(dbBytes: check.dbBytes)
             : .compacting(dbBytes: check.dbBytes)
         let ticker = Task { await self.tick() }
@@ -442,7 +451,7 @@ package final class DatabaseCompactionStep {
         // phase line; until then an exit is the search index rebuild's own.
         var scanner = CompactionPhaseScanner()
         let rebuilt = output?.ftsRebuilt == true || scanner.feed(exit.stdout).contains(.compact)
-        let inFill = check.ftsRebuildPending && !rebuilt
+        let inFill = check.fillDue && !rebuilt
         let subject = inFill ? "DB search index rebuild" : "DB compaction"
         // Exits 2–5 count only when the result line names the same skip; any
         // other combination is logged with stderr.
@@ -480,12 +489,12 @@ package final class DatabaseCompactionStep {
         }
     }
 
-    /// The disk notice for a skip for disk space. While the rebuild is
-    /// pending the check's numbers are the fill's: the search index's notice
+    /// The disk notice for a skip for disk space. While the fill is due the
+    /// check's numbers are the fill's: the search index's notice
     /// until the fill is done; after it, the compaction's own rule
     /// (2 × `db_bytes`) against the check's free disk.
     private func diskNotice(for check: CompactionCheck, searchIndexRebuilt: Bool) -> String {
-        guard check.ftsRebuildPending else {
+        guard check.fillDue else {
             return Self.diskNotice(needs: check.needsDiskBytes, available: check.freeDiskBytes)
         }
         guard searchIndexRebuilt else {
