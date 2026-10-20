@@ -144,15 +144,19 @@ final class WorkbenchHeaderAutomationButtonsTests: XCTestCase {
         XCTAssertEqual(runner.invocations, [["automations", "run", "1", "--json"]])
     }
 
-    func testMaxFourVisibleRestInOverflowSlugOrder() {
-        let slugs = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot"]
-        let buttons = slugs.enumerated().map { button($1, label: $1, id: Int64($0 + 1)) }
-        let (visible, overflow) = Model.layout(buttons)
-        XCTAssertEqual(visible.map(\.slug), ["alpha", "bravo", "charlie", "delta"])
-        XCTAssertEqual(overflow.map(\.slug), ["echo", "foxtrot"])
-        let few = Model.layout(Array(buttons.prefix(3)))
-        XCTAssertEqual(few.visible.count, 3)
-        XCTAssertTrue(few.overflow.isEmpty)
+    func testIsAnyActive() {
+        let idle = [button("alpha", label: "Alpha", id: 1), button("bravo", label: "Bravo", id: 2)]
+        XCTAssertFalse(Model.isAnyActive(idle, busy: []))
+        let running = idle + [button("charlie", label: "Charlie", activeRunID: 9, id: 3)]
+        XCTAssertTrue(Model.isAnyActive(running, busy: []))
+        XCTAssertTrue(Model.isAnyActive(idle, busy: [2]))
+    }
+
+    func testMenuTitleCarriesTheHelp() {
+        XCTAssertEqual(Model.menuTitle(for: button("release", label: "Release")), "Release")
+        XCTAssertEqual(
+            Model.menuTitle(for: button("release", label: "Release", activeRunID: 5)),
+            "Release — Running — show the run")
     }
 
     func testActiveRunShowsSpinnerAndOpensRun() async {

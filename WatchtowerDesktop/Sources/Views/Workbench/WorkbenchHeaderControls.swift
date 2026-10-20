@@ -1,15 +1,15 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The workbench header's trailing controls: the automation buttons, then `Terminal | Workchat ▾ |
+/// The workbench header's trailing controls: the ⚡ automations menu, then `Terminal | Workchat ▾ |
 /// Session | Board | Files | Analytics | Changes | split | ⋯` (spec 2026-10-03-workbench-session-report
 /// Part 7, the owner's pick on board #357; the twin switch is #711's variant A).
 struct WorkbenchHeaderControls: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
-    /// The workbench's automation buttons, built by the page (nil: none —
+    /// The workbench's ⚡ automations menu, built by the page (nil: none —
     /// the Automations view model is not up yet).
-    var automationButtons: WorkbenchAutomationButtons?
+    var automations: WorkbenchAutomationsMenu?
     /// The ⋯ menu's Delete…: the page reads the counts and confirms.
     let onDelete: () -> Void
     /// The ⋯ menu's Clean Up Old Worktrees…: the page shows the sweep sheet.
@@ -27,7 +27,7 @@ struct WorkbenchHeaderControls: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            if let automationButtons { automationButtons }
+            if let automations { automations }
             viewButtons
             splitToggle
             moreMenu
