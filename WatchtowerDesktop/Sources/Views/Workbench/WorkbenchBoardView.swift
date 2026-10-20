@@ -164,7 +164,12 @@ struct WorkbenchBoardView: View {
                     report: projects.drift[projectID],
                     error: projects.driftErrors[projectID],
                     onSelect: { vm.select($0) },
-                    onRefresh: { Task { await projects.refreshDrift(projectID: projectID, force: true) } }
+                    onRefresh: { Task { await projects.refreshDrift(projectID: projectID, force: true) } },
+                    onFix: { target in
+                        let findings = projects.drift[projectID]?.findings ?? []
+                        Task { await projects.fixDrift(projectID: projectID, findings: findings, targetID: target) }
+                    },
+                    liveFix: { projects.liveDriftFix(projectID: projectID, targetID: $0) != nil }
                 )
                 .padding(.horizontal, 8)
                 .padding(.bottom, 6)
