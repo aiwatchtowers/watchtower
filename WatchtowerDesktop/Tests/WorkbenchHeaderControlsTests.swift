@@ -6,7 +6,7 @@ import ViewInspector
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// The workbench header's `Terminal ▾ | Session | Board | Files | Changes | split | ⋯`
+/// The workbench header's `Terminal ▾ | Session | Board | Files | Analytics | Review | split | ⋯`
 /// (spec 2026-10-03-workbench-session-report Part 7, the owner's pick on
 /// board #357): the buttons' order, what each toggle does, the Session
 /// view's pairing with its session in a split, and the ⋯ menu's actions.
@@ -108,7 +108,7 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
     /// The owner's pick: Terminal | Workchat ▾ | Session | Board | Files, plus
     /// the diff reviewer's Changes (board #328); Workchat is the second half
     /// of Terminal's twin (#711) and the sessions chevron sits by the twin only.
-    func testTheViewButtonsReadTerminalSessionBoardFilesAnalyticsChanges() async throws {
+    func testTheViewButtonsReadTerminalSessionBoardFilesAnalytics() async throws {
         let s = try await seed()
         let sut = controls(makeVM(), s.project)
 
@@ -116,16 +116,17 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         // archive setting's choices).
         let buttons = try sut.inspect().find(ViewType.ForEach.self)
         let titles = try buttons.findAll(ViewType.Toggle.self).map(Self.title)
-        XCTAssertEqual(titles, ["Terminal", "Workchat", "Session", "Board", "Files", "Analytics", "Changes"])
+        XCTAssertEqual(titles, ["Terminal", "Workchat", "Session", "Board", "Files", "Analytics"])
         XCTAssertNoThrow(try buttons.tupleView(0).find(ViewType.Menu.self), "the sessions chevron sits by the twin")
-        for index in 1..<6 {
+        for index in 1..<5 {
             XCTAssertThrowsError(try buttons.tupleView(index).find(ViewType.Menu.self), "no chevron by \(titles[index + 1])")
         }
     }
 
-    /// Changes with no session to review is disabled, not a click that does
-    /// nothing; with a session listed it is enabled.
-    func testTheChangesButtonIsDisabledWithoutASession() async throws {
+    /// The Review button (board #712, spec §5) shows only with something to
+    /// review: no session, a clean `main` or an unread status hide it; a dirty
+    /// tree or a feature branch shows it; an open pane keeps it, lit.
+    func testTheReviewButtonShowsOnlyWithSomethingToReview() async throws {
         let dir = folder.appendingPathComponent("empty", isDirectory: true).path
         let empty = try await pool.write { d in
             let p = try TestDatabase.insertWorkbench(d, name: "empty", folder: dir)
@@ -134,13 +135,43 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         let vm = makeVM()
         await vm.loadSessions(projectID: empty.id)
         XCTAssertNil(vm.sessionViewTarget(projectID: empty.id))
-        XCTAssertTrue(try toggle("Changes", controls(vm, empty)).isDisabled())
-        XCTAssertFalse(try toggle("Board", controls(vm, empty)).isDisabled())
+        XCTAssertThrowsError(try toggle("Review", controls(vm, empty)), "no session: absent")
+        XCTAssertThrowsError(try toggle("Changes", controls(vm, empty)), "the old Changes button is gone")
 
         let s = try await seed()
+        let p = s.project.id
+        await vm.loadSessions(projectID: p)
+        XCTAssertNotNil(vm.sessionViewTarget(projectID: p))
+        XCTAssertThrowsError(try toggle("Review", controls(vm, s.project)), "status not read yet: absent")
+
+        vm.gitStatus[p] = Self.status(branch: "main", dirty: false)
+        XCTAssertThrowsError(try toggle("Review", controls(vm, s.project)), "clean main: absent")
+        vm.gitStatus[p] = Self.status(branch: "main", dirty: true)
+        XCTAssertFalse(try toggle("Review", controls(vm, s.project)).isOn(), "dirty main: present, off")
+        vm.gitStatus[p] = Self.status(branch: "feature/x", dirty: false)
+        XCTAssertNoThrow(try toggle("Review", controls(vm, s.project)), "feature branch: present")
+
+        vm.gitStatus[p] = Self.status(branch: "main", dirty: false)
+        vm.setLayout(Self.split(.session(s.first.id), .changes(s.first.id)), projectID: p)
+        XCTAssertTrue(try toggle("Review", controls(vm, s.project)).isOn(), "pane on screen: present and on")
+    }
+
+    private static func status(branch: String, dirty: Bool) -> WorkbenchGitStatus {
+        WorkbenchGitStatus(branch: branch, dirty: dirty, changes: dirty ? 2 : 0)
+    }
+
+    /// The Review toggle drives the Branch review pane: on shows it, off hides it.
+    func testTheReviewToggleShowsAndHidesTheBranchReviewPane() async throws {
+        let s = try await seed()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = s.project.id
         await vm.loadSessions(projectID: s.project.id)
-        XCTAssertNotNil(vm.sessionViewTarget(projectID: s.project.id))
-        XCTAssertFalse(try toggle("Changes", controls(vm, s.project)).isDisabled())
+        let p = s.project.id
+        vm.gitStatus[p] = Self.status(branch: "feature/x", dirty: false)
+        try toggle("Review", controls(vm, s.project)).tap()
+        await waitUntil { vm.layout(projectID: p).isShowing(.changes) }
+        try toggle("Review", controls(vm, s.project)).tap()
+        XCTAssertFalse(vm.layout(projectID: p).isShowing(.changes))
     }
 
     /// Every view button toggles its view as before, the Session button

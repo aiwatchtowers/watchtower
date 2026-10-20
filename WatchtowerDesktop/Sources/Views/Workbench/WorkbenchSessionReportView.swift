@@ -56,7 +56,9 @@ struct WorkbenchSessionReportView: View {
                     actions: .init(
                         openAsk: { id in Task { await vm.showAsk(id, projectID: project.id) } },
                         openTarget: { vm.showTargetOnBoard($0, projectID: project.id) },
-                        openURL: { NSWorkspace.shared.open($0) }
+                        openURL: { NSWorkspace.shared.open($0) },
+                        reviewBranch: session.kind.isAgent
+                            ? { vm.showChanges(sessionID: sessionID, projectID: project.id) } : nil
                     )
                 )
                 .frame(maxWidth: 760, alignment: .leading)
@@ -110,6 +112,9 @@ struct SessionReportActions {
     let openTarget: (Int64) -> Void
     /// A PR row with a known GitHub URL.
     let openURL: (URL) -> Void
+    /// **Review Branch**: the session's Branch review pane beside its
+    /// terminal (board #712); nil = no button (not an agent session).
+    var reviewBranch: (() -> Void)?
 }
 
 /// The report's sections in the Part 1 order: state and size, On you, Now,
@@ -166,7 +171,15 @@ struct SessionReportContent: View {
                     .font(.caption.monospaced())
                     .foregroundStyle(.secondary)
             }
-            analyticsLine
+            HStack(spacing: Spacing.medium) {
+                analyticsLine
+                if let reviewBranch = actions.reviewBranch {
+                    Button("Review Branch", action: reviewBranch)
+                        .buttonStyle(.link)
+                        .font(.caption)
+                        .help("Review this session's branch")
+                }
+            }
             Text(SessionReportPresentation.heroLine(report.progress))
                 .font(.title2.weight(.semibold))
             ProgressView(value: SessionReportPresentation.progressFraction(report.progress))

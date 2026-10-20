@@ -65,6 +65,20 @@ extension WorkbenchesViewModel {
         }
     }
 
+    /// Whether the header shows its Review button (board #712, spec §5): the
+    /// page's session is an agent and its place is not plainly a clean
+    /// default branch, or the Branch review pane is on screen. The status is
+    /// the session's worktree's own, the main folder's otherwise.
+    func showsReviewButton(projectID: Int64) -> Bool {
+        let paneOnScreen = layout(projectID: projectID).isShowing(.changes)
+        guard let sessionID = sessionViewTarget(projectID: projectID) else { return false }
+        let isAgent = session(sessionID, projectID: projectID)?.kind.isAgent ?? false
+        let status = ReviewIdentityPresentation.status(
+            place: sessionPlaces.currentPlace(sessionID: sessionID), mainStatus: gitStatus[projectID]
+        )
+        return ReviewIdentityPresentation.showsReviewButton(isAgent: isAgent, status: status, paneOnScreen: paneOnScreen)
+    }
+
     /// The code root the page's FILES, Files pane, git marks and code
     /// navigation work in (spec D6, §6.3): the root of the session the
     /// layout holds (`codeRoot(sessionID:project:)`); the main folder for a

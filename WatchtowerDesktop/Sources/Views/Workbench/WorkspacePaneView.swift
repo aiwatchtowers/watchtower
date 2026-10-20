@@ -97,7 +97,7 @@ struct WorkspacePaneView: View {
             Button("Files") { show(.files) }.disabled(pane == .files)
             Button("Analytics") { show(.analytics) }.disabled(pane == .analytics)
             if let id = currentSessionID {
-                Button("Changes") { show(.changes(id)) }.disabled(pane == .changes(id))
+                Button("Branch review") { show(.changes(id)) }.disabled(pane == .changes(id))
                 Button("Workchat") { show(.sessionChat(id)) }.disabled(pane == .sessionChat(id))
             }
             Divider()
@@ -132,6 +132,9 @@ struct WorkspacePaneView: View {
 
     private var title: String {
         if case let .session(id) = pane { return vm.session(id, projectID: project.id)?.title ?? "Session" }
+        if case let .changes(id) = pane {
+            return "Branch review · " + (vm.session(id, projectID: project.id)?.title ?? "Session")
+        }
         return WorkspaceView(pane).title
     }
 
@@ -299,7 +302,7 @@ extension WorkspaceView {
         case .board: "Board"
         case .files: "Files"
         case .analytics: "Analytics"
-        case .changes: "Changes"
+        case .changes: "Branch review"
         case .chat: "Workchat"
         }
     }
