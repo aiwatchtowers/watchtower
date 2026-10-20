@@ -215,7 +215,6 @@ struct WorkbenchBoardView: View {
 
     private func header(_ vm: WorkbenchBoardViewModel, kanban: WorkbenchBoardKanban?) -> some View {
         HStack(spacing: 10) {
-            Text("Board").font(.headline)
             Button { vm.beginNewTarget() } label: { Label("New Task", systemImage: "plus") }
                 .help(vm.scopeNode.map { "New task in \(WorkbenchTargetNumber.label($0.target.id))" } ?? "New task")
             Picker("View", selection: Binding(get: { vm.mode }, set: { vm.mode = $0 })) {
