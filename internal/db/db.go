@@ -584,7 +584,8 @@ func (db *DB) migrate() error {
 	// is the safety net — it handles an empty messages table and drops the
 	// legacy table with DROP TABLE IF EXISTS — so Open goes on.
 	if err := dropEmptyMessagesSearchLegacy(db.DB); err != nil {
-		slog.Warn("could not drop the empty legacy messages search index; the search fill will", "error", err)
+		path, _ := mainDatabaseFile(db) // best effort, for the log line only
+		slog.Warn("could not drop the empty legacy messages search index; the search fill will", "path", path, "error", err)
 	}
 	return nil
 }
