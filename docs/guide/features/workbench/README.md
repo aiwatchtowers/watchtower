@@ -30,15 +30,15 @@ Nothing here changes your own terminal workflow. A session started in your own t
 
 ### Find your way around the workbench
 
-The window's title row carries the workbench: its name (click it to switch workbench), then the **Session**, **Board** and **Files** tabs. At the right are the ⚡ automations menu, the **Analytics** icon, the split button and **…**. In **…**, **Show in Finder** comes first. Hover the name to see the folder's path.
+The window's title row carries the workbench: its name (with the sessions panel hidden, click it to switch workbench), then the **Session**, **Board** and **Files** tabs. At the right are the ⚡ automations menu, the **Analytics** icon, the split button and **…**. In **…**, **Show in Finder** comes first. Hover the name to see the folder's path.
 
 **Session** shows a session; with none open it opens the most recent one, or starts one. **Board** and **Files** each show their view. With the split on, a tab shows its view beside the other pane, and turning it off closes that pane.
 
-Each session pane has a strip on top with the session's state dot and name and a ▾ to pick another session or start a new one, the branch, **Terminal | Workchat**, **Report** and **Changes**. The ▾ lists sessions in the panel's order, finished ones last. The branch shows once: on the strip of the session whose folder the page follows, or in the title row when no such pane is on screen. In a split, a Board, Files or Analytics pane gets a strip of the same look with a picker, expand and close.
+Each session pane has a strip on top with the session's state dot and name and a ▾ to pick another session or start a new one, the branch, **Terminal | Workchat**, **Report** and **Review**. **Review** shows only when the session has something to review; see [Branch review](diff-review.md). The ▾ lists sessions in the panel's order, finished ones last. The branch shows once: on the strip of the session whose folder the page follows, or in the title row when no such pane is on screen. In a split, a Board, Files or Analytics pane gets a strip of the same look with a picker, expand and close.
 
 ### Run a workbench automation from the ⚡ menu
 
-Every automation of the workbench that runs **When I press a button** is an item in the ⚡ menu, in the order of their file names. A click starts the run; one set to ask first shows "Run <label>?" with **Run** and **Cancel**. While a run is going, the ⚡ icon spins and its item shows the run in Automations.
+Every automation of the workbench that runs **When I press a button** is an item in the ⚡ menu, in the order of their file names. **New Automation…** at its end makes a new one for this workbench. A click starts the run; one set to ask first shows "Run <label>?" with **Run** and **Cancel**. While a run is going, the ⚡ icon spins and its item shows the run in Automations.
 
 An item that says why it is not runnable: **Needs your confirmation** opens the confirmation sheet, **Disabled** or **Parse error** opens its card. If the run could not start, "Could not run <label>" says why. See [Recipes and templates](../automations-recipes.md#workbench-recipes).
 

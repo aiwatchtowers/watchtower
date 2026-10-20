@@ -82,13 +82,16 @@ the since view), and Send, which types the line once. After Send the round is cl
 in the model too: adding or editing a comment is refused, and Refresh on it opens the
 next round through `open()` (the one path that creates a round and carries); Go
 answering `sent: false` shows "This round was already sent". The header **Changes**
-button is disabled while there is no session to review.
+button was disabled while there was no session to review (since 2026-10-20 the
+session strip's **Review** shows only when there is something to review; see
+"Branch review UI" below).
 
 **The Changes pane (Task 9, built in parallel).** A workspace pane `Changes` (a
 `WorkspacePane.changes(sessionID)`, picked in the pane picker) with a file list (status,
 Viewed, comment counts, collapsed files) and a Monaco diff page (`diff.html`) in
 side-by-side or inline mode; selecting lines offers **Comment**. It opens from the
-session row menu **Review Changes**; one model per session.
+session row menu **Review Changes**; one model per session. (Since 2026-10-20, #712:
+the pane is **Branch review** and the row item **Review Branch**; see "Branch review UI".)
 
 ## What Plan 2 ships (Deep mode)
 
@@ -328,7 +331,7 @@ to the key window (owner ruling, ask #221).
   blanked, REVIEW-05), so LFS files show their pointer or raw bytes.
 - No PR source (the `source` column accepts `pr`).
 - Active review time counts the owner's input anywhere in the window, not only in the
-  Changes pane (owner ruling, ask #221).
+  Branch review pane (owner ruling, ask #221).
 - Keep is implicit: a hunk not undone is kept; there is no explicit Keep mark.
 - Undo is not LFS-aware: filters are blanked (REVIEW-05), so an LFS file is checked and
   patched on its raw content, as it was snapshotted. Renamed, binary, symlink, submodule,

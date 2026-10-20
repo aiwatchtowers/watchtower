@@ -606,6 +606,16 @@ final class WorkbenchesViewModelTests: XCTestCase {
         XCTAssertEqual(vm.layout.visiblePanes, [.board])
     }
 
+    /// Home's click on a session ready to check: that session's Branch
+    /// review beside its terminal, the way the strip's Review button puts it.
+    func testRevealReviewShowsTheSessionsChangesBesideItsTerminal() {
+        let vm = makeVM()
+        vm.selectedWorkbenchID = 3
+        vm.reveal(WorkbenchRoute(projectID: 4, pane: .review, subjectID: 9))
+        XCTAssertEqual(vm.selectedWorkbenchID, 4)
+        XCTAssertEqual(vm.layout(projectID: 4).visiblePanes, [.session(9), .changes(9)])
+    }
+
     /// House rule: an async operation started from a screen survives leaving
     /// it. The VM lives on AppState, so the create keeps running while the
     /// owner is on another tab and the result is there when they return.
