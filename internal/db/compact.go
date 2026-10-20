@@ -269,7 +269,9 @@ type CompactResult struct {
 	// CheckpointBusy: the final checkpoint could not pass a reader's
 	// snapshot, so part of the space is reclaimed at the next checkpoint.
 	CheckpointBusy bool `json:"checkpoint_busy,omitempty"`
-	// FTSRebuilt: the messages search fill completed in this run.
+	// FTSRebuilt: the messages search fill is complete — this run finished
+	// it, or another process did while this run waited on it. It does not
+	// say this run did the work.
 	FTSRebuilt bool `json:"fts_rebuilt,omitempty"`
 }
 
@@ -398,22 +400,24 @@ func fileSize(path string) (int64, error) {
 }
 
 // recordCompaction stores the highest applied goose version and the time in
-// one write transaction and clears the failure counter.
+// one write transaction and clears the failure counter. While the messages
+// search fill is pending it only clears the counter: a recorded compaction
+// would hide the space the dropped legacy index frees, so the compaction
+// after the fill must still find its migration due.
 func recordCompaction(d *DB) error {
 	tx, err := d.Begin()
 	if err != nil {
 		return fmt.Errorf("recording the compaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var version int64
-	if err := tx.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&version); err != nil {
-		return fmt.Errorf("recording the compaction: reading goose version: %w", err)
-	}
-	if err := writeMaintenance(tx, maintLastCompactedVersion, strconv.FormatInt(version, 10)); err != nil {
+	ftsPending, _, err := messagesSearchPending(tx)
+	if err != nil {
 		return fmt.Errorf("recording the compaction: %w", err)
 	}
-	if err := writeMaintenance(tx, maintCompactedAt, time.Now().UTC().Format(time.RFC3339)); err != nil {
-		return fmt.Errorf("recording the compaction: %w", err)
+	if !ftsPending {
+		if err := writeCompactionRecord(tx); err != nil {
+			return fmt.Errorf("recording the compaction: %w", err)
+		}
 	}
 	if _, err := tx.Exec(`DELETE FROM db_maintenance WHERE key IN (?, ?)`, maintCompactFailures, maintCompactFailuresVersion); err != nil {
 		return fmt.Errorf("recording the compaction: clearing the failure counter: %w", err)
@@ -422,6 +426,19 @@ func recordCompaction(d *DB) error {
 		return fmt.Errorf("recording the compaction: %w", err)
 	}
 	return nil
+}
+
+// writeCompactionRecord writes last_compacted_version (the highest applied
+// goose version) and compacted_at.
+func writeCompactionRecord(tx *sql.Tx) error {
+	var version int64
+	if err := tx.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&version); err != nil {
+		return fmt.Errorf("reading goose version: %w", err)
+	}
+	if err := writeMaintenance(tx, maintLastCompactedVersion, strconv.FormatInt(version, 10)); err != nil {
+		return err
+	}
+	return writeMaintenance(tx, maintCompactedAt, time.Now().UTC().Format(time.RFC3339))
 }
 
 // compactFailed counts cause in compact_failures — restarting at 1 when

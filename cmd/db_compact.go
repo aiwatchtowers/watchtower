@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,13 +28,22 @@ var dbCompactCmd = &cobra.Command{
 	Short: "Rewrite the database file to return its free pages to the disk (VACUUM)",
 	Long: `Compacts watchtower.db with VACUUM. Never migrates and never creates the file.
 
---check reports whether a compaction is due and writes nothing. --if-due
-compacts only when due. Without --force it refuses while the daemon runs or
-when the volume has less than twice the file's size free.
+When an update left the search index of messages to rebuild, the run
+rebuilds it first, then compacts — even when earlier compactions failed and
+gave up, since the rebuild has its own rule. An interrupted rebuild resumes
+on the next run.
+
+--check reports whether a compaction or the search index rebuild is due and
+writes nothing. --if-due runs only when due. Without --force it refuses while
+the daemon runs, when the volume has less than twice the file's size free
+for the compaction, or less than one and a half times the old search index's
+size for the rebuild.
 
 Exit codes: 0 compacted or not due, 1 error, 2 not enough disk space,
 3 the daemon is running, 4 interrupted, 5 migrations pending
-(run 'watchtower db migrate'). With --json the result is the last stdout line.`,
+(run 'watchtower db migrate'). With --json a {"phase":"fts_rebuild"} or
+{"phase":"compact"} line comes before each step, and the result is the last
+stdout line.`,
 	Args: cobra.NoArgs,
 	// Not the root's ensureSchemaFormat: compaction never migrates or
 	// upgrades, and --check writes nothing — the config included.
@@ -96,31 +106,99 @@ func compactSetupFailed(out io.Writer, err error) error {
 	return err
 }
 
-// compactDatabase runs the --if-due check, the daemon rule and Compact under
-// the shutdown context, so SIGTERM anywhere in it — the check included —
-// ends as interrupted (exit 4).
+// compactDatabase runs the check, the daemon rule, the messages search fill
+// when it is pending and then Compact, all under the shutdown context, so
+// SIGTERM anywhere in it — the checks and the fill included — ends as
+// interrupted (exit 4). A manual run reads the check only for the pending
+// fill. A fill that is skipped or fails ends the run with Reason
+// "fts_rebuild": the VACUUM never runs before the fill is complete, and a
+// fill error is not counted in compact_failures (Compact's cap is its own).
+// After the fill, --if-due checks again: the dropped legacy index may or may
+// not make a compaction due.
 func compactDatabase(cmd *cobra.Command, cfg *config.Config, dbPath string) (db.CompactResult, error) {
 	ctx, cancel := notifyShutdownContext(cmd.Context(), stderrLogf)
 	defer cancel()
+	out, name := cmd.OutOrStdout(), filepath.Base(dbPath)
+	c, res, done, err := compactCheckStep(ctx, dbPath)
+	if done {
+		return res, err
+	}
 	reason := "manual"
 	if dbCompactFlagIfDue {
-		c, err := db.CheckCompaction(dbPath, Version)
-		if ctx.Err() != nil {
-			return db.CompactResult{Skipped: "interrupted"}, nil
-		}
-		if err != nil {
-			return db.CompactResult{}, err
-		}
-		// schema_pending and gave_up are not due either: the check said no.
-		if !c.Due {
-			return db.CompactResult{Skipped: "not_due"}, nil
-		}
 		reason = c.Reason
 	}
 	if !dbCompactFlagForce && daemonRunningForCompact(cfg) {
 		return db.CompactResult{Skipped: "daemon_running", Reason: reason}, nil
 	}
-	return db.Compact(ctx, dbPath, db.CompactOptions{Force: dbCompactFlagForce, Reason: reason, Version: Version})
+	ftsRebuilt := false
+	if c.FTSRebuildPending {
+		if err := printCompactPhase(out, name, "fts_rebuild"); err != nil {
+			return db.CompactResult{Reason: "fts_rebuild"}, err
+		}
+		fill, err := db.RebuildMessagesSearchAt(ctx, dbPath, db.FTSRebuildRunOptions{Force: dbCompactFlagForce})
+		if err != nil || fill.Skipped != "" {
+			fill.Reason = "fts_rebuild"
+			return fill, err
+		}
+		// Complete, whether this run or another process finished it.
+		ftsRebuilt = true
+		if dbCompactFlagIfDue {
+			c, res, done, err = compactCheckStep(ctx, dbPath)
+			if done {
+				res.FTSRebuilt = true
+				return res, err
+			}
+			reason = c.Reason
+		}
+	}
+	if err := printCompactPhase(out, name, "compact"); err != nil {
+		return db.CompactResult{Reason: reason, FTSRebuilt: ftsRebuilt}, err
+	}
+	res, err = db.Compact(ctx, dbPath, db.CompactOptions{Force: dbCompactFlagForce, Reason: reason, Version: Version})
+	res.FTSRebuilt = ftsRebuilt
+	return res, err
+}
+
+// compactCheckStep runs CheckCompaction for compactDatabase. done reports
+// that the run ends here with (res, err): interrupted, a failed check, or —
+// with --if-due — not due (schema_pending and gave_up are not due either:
+// the check said no).
+func compactCheckStep(ctx context.Context, dbPath string) (c db.CompactCheck, res db.CompactResult, done bool, err error) {
+	c, err = db.CheckCompaction(dbPath, Version)
+	if ctx.Err() != nil {
+		return c, db.CompactResult{Skipped: "interrupted"}, true, nil //nolint:nilerr // a shutdown is a skip (exit 4), not an error
+	}
+	if err != nil {
+		return c, db.CompactResult{}, true, err
+	}
+	if dbCompactFlagIfDue && !c.Due {
+		return c, db.CompactResult{Skipped: "not_due"}, true, nil
+	}
+	return c, db.CompactResult{}, false, nil
+}
+
+// compactPhaseLine is the {"phase":…} line --json prints before each step of
+// a run; the Desktop's launch splash reads it. Phases: "fts_rebuild",
+// "compact".
+type compactPhaseLine struct {
+	Phase string `json:"phase"`
+}
+
+// printCompactPhase announces the step a run starts: with --json a phase line
+// on stdout (the result line still comes last), otherwise a human line for
+// the search index fill and nothing for the compaction.
+func printCompactPhase(out io.Writer, name, phase string) error {
+	var err error
+	switch {
+	case dbCompactFlagJSON:
+		err = json.NewEncoder(out).Encode(compactPhaseLine{Phase: phase})
+	case phase == "fts_rebuild":
+		_, err = fmt.Fprintf(out, "Updating the search index of %s…\n", name)
+	}
+	if err != nil {
+		return fmt.Errorf("printing the phase: %w", err)
+	}
+	return nil
 }
 
 // compactExitCode maps a result/err to 0..5 per the spec.
@@ -146,6 +224,13 @@ func printCompactCheck(out io.Writer, name string, c db.CompactCheck) error {
 		return json.NewEncoder(out).Encode(c)
 	}
 	switch {
+	case c.Reason == "fts_rebuild" && !c.DiskOK:
+		_, err := fmt.Fprintf(out, "%s needs its search index rebuilt (fts_rebuild) but needs %s free, %s available.\n",
+			name, humanBytes(c.NeedsDiskBytes), humanBytes(c.FreeDiskBytes))
+		return err
+	case c.Reason == "fts_rebuild":
+		_, err := fmt.Fprintf(out, "%s needs its search index rebuilt (fts_rebuild).\n", name)
+		return err
 	case c.Due && !c.DiskOK:
 		_, err := fmt.Fprintf(out, "%s is due for compacting (%s) but needs %s free, %s available.\n",
 			name, c.Reason, humanBytes(c.NeedsDiskBytes), humanBytes(c.FreeDiskBytes))
@@ -178,7 +263,7 @@ func reportCompact(out io.Writer, name string, res db.CompactResult, err error) 
 	case err != nil:
 		return err
 	case code != 0:
-		return &exitCodeError{code: code, err: errors.New(compactSkipMessage(name, res.Skipped))}
+		return &exitCodeError{code: code, err: errors.New(compactSkipMessage(name, res))}
 	case dbCompactFlagJSON:
 		return nil
 	case res.Compacted:
@@ -188,12 +273,26 @@ func reportCompact(out io.Writer, name string, res db.CompactResult, err error) 
 		}
 		_, err := fmt.Fprintf(out, "Compacted %s: %s → %s in %s\n", name, humanBytes(res.BytesBefore), humanBytes(res.BytesAfter), d)
 		return err
+	case res.FTSRebuilt:
+		_, err := fmt.Fprintf(out, "Updated the search index of %s; it does not need compacting.\n", name)
+		return err
 	}
 	_, err = fmt.Fprintf(out, "%s does not need compacting.\n", name)
 	return err
 }
 
-func compactSkipMessage(name, skipped string) string {
+// compactSkipMessage explains a skip; a skip of the search index fill
+// carries Reason "fts_rebuild" (compactDatabase).
+func compactSkipMessage(name string, res db.CompactResult) string {
+	if res.Reason == "fts_rebuild" {
+		switch res.Skipped {
+		case "disk":
+			return fmt.Sprintf("not updating the search index of %s: the volume needs one and a half times the old index's size free (pass --force to try anyway)", name)
+		case "interrupted":
+			return fmt.Sprintf("updating the search index of %s was interrupted; it resumes on the next launch", name)
+		}
+	}
+	skipped := res.Skipped
 	switch skipped {
 	case "disk":
 		return fmt.Sprintf("not compacting %s: the volume needs twice the file's size free (pass --force to try anyway)", name)
