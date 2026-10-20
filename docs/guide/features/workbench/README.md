@@ -34,7 +34,7 @@ The window's title row carries the workbench: its name (click it to switch workb
 
 **Session** shows a session; with none open it opens the most recent one, or starts one. **Board** and **Files** each show their view. With the split on, a tab shows its view beside the other pane, and turning it off closes that pane.
 
-Each session pane has a strip on top with the session's name and a ▾ to pick another session or start a new one, the branch, **Terminal | Workchat**, **Report** and **Changes**.
+Each session pane has a strip on top with the session's state dot and name and a ▾ to pick another session or start a new one, the branch, **Terminal | Workchat**, **Report** and **Changes**. The ▾ lists sessions in the panel's order, finished ones last. The branch shows once: on the strip of the session whose folder the page follows, or in the title row when no such pane is on screen. In a split, a Board, Files or Analytics pane gets a strip of the same look with a picker, expand and close.
 
 ### Run a workbench automation from the ⚡ menu
 
@@ -65,7 +65,7 @@ Session or ask stuck? See [A Workbench session or ask is stuck](../../troublesho
 - [Workchat](workchat.md): a session's dialog as a chat you can drive it from.
 - [Asks](asks.md): reviews, checks and questions, and how answers reach the agent.
 - [Code viewer](code-viewer.md): the Files pane, Open Quickly and go to definition.
-- [Branches in the header](branches.md): switch, fetch and check out branches safely.
+- [Switching branches](branches.md): switch, fetch and check out branches safely.
 - [Worktrees and cleanup](worktrees-and-cleanup.md): own worktree per session, cleaning up after a session.
 - [Diff review](diff-review.md): guided review of a session's changes.
 - [Methodology](methodology.md): the workflow file and **Agent Settings…**.

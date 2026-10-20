@@ -18,7 +18,7 @@ Two overrides sit in the new-session menus and the card's **Work on It** menu: *
 
 A file named `.worktreeinclude` at the repository root lists ignored files, such as `.env`, to copy into each new worktree. Only files that match it and that git ignores are copied, as cheap copy-on-write clones.
 
-Under **…** in the page header, **Worktree Setup Command…** sets one shell command that runs in each new worktree before the agent starts, for example a dependency install. A failure prints a line and the agent starts anyway. It does not run on resume.
+In the title row's **…** menu, **Worktree Setup Command…** sets one shell command that runs in each new worktree before the agent starts, for example a dependency install. A failure prints a line and the agent starts anyway. It does not run on resume.
 
 A session row shows where the agent works, and **Show Worktree in Finder** opens it. Resuming a session whose worktree was deleted re-creates it from its branch. If the branch is gone too, the row says to start a new session.
 
@@ -35,7 +35,7 @@ Each item is either ticked for removal or greyed out with the reason it is kept.
 
 - **Delete…** on a session row (just **Delete Session** when there is nothing to clean) asks "Checking what this session left…" first. **Delete and Clean Up** removes the session and the worktrees and branches that can go; **Delete Only** leaves them. The quick ✕ and ⌘⌫ never clean up.
 - **Clean Up…** in the row menu cleans up without deleting the session. Untick anything you want to keep.
-- **Clean Up Old Worktrees…** under **…** in the page header lists every worktree and branch of the repository, with an owner hint. Nothing is ticked at first. Working out the sizes of a big repository can take a while; you can close the sheet and keep working, and reopening it picks up where it got to.
+- **Clean Up Old Worktrees…** in the title row's **…** menu lists every worktree and branch of the repository, with an owner hint. Nothing is ticked at first. Working out the sizes of a big repository can take a while; you can close the sheet and keep working, and reopening it picks up where it got to.
 - A banner "Old worktrees use ~N GB." appears when removable worktrees exceed 1 GB. It appears once, after the page has been open for 30 seconds, and never again for that workbench after you open the sweep. Its **Clean Up…** opens the list it already worked out, without checking again.
 - When a session that Watchtower put in a worktree exits on its own, the same cleanup runs automatically for that worktree.
 
