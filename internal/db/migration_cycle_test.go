@@ -37,8 +37,10 @@ func TestMigrationsDownAllUpAllRoundTrip(t *testing.T) {
 		t.Fatalf("goose version after down-all = %d (err %v), want 0", v, err)
 	}
 
-	if err := gooseUp(d.DB, "migrations"); err != nil {
-		t.Fatalf("goose up after down-all: %v", err)
+	// Up through migrate, as Open does: its post-goose step (00146's legacy
+	// cleanup) is part of what a fresh migrate leaves behind.
+	if err := d.migrate(); err != nil {
+		t.Fatalf("migrate after down-all: %v", err)
 	}
 	if v, err := goose.GetDBVersion(d.DB); err != nil || v != latest {
 		t.Fatalf("goose version after up-all = %d (err %v), want %d", v, err, latest)

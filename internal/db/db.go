@@ -575,7 +575,12 @@ func (db *DB) migrate() error {
 	}
 	gooseMu.Lock()
 	defer gooseMu.Unlock()
-	return goose.Up(db.DB, "migrations")
+	if err := goose.Up(db.DB, "migrations"); err != nil {
+		return err
+	}
+	// After goose: the conditional half of 00146 (see
+	// dropEmptyMessagesSearchLegacy).
+	return dropEmptyMessagesSearchLegacy(db.DB)
 }
 
 // SetBusyTimeout replaces Open's 5 s busy_timeout on the connection: how long

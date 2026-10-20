@@ -3167,50 +3167,50 @@ END
 trigger	meeting_transcripts_ad
 CREATE TRIGGER meeting_transcripts_ad AFTER DELETE ON meeting_transcripts
 BEGIN
-DELETE FROM transcripts_fts WHERE transcript_id = OLD.id;
+DELETE FROM transcripts_fts WHERE rowid = OLD.id;
 END
 
 trigger	meeting_transcripts_ai
 CREATE TRIGGER meeting_transcripts_ai AFTER INSERT ON meeting_transcripts
 WHEN NEW.transcript_text != ''
 BEGIN
-DELETE FROM transcripts_fts WHERE transcript_id = NEW.id;
-INSERT INTO transcripts_fts(text, transcript_id, title)
-VALUES (NEW.transcript_text, NEW.id, NEW.title);
+DELETE FROM transcripts_fts WHERE rowid = NEW.id;
+INSERT INTO transcripts_fts(rowid, text, transcript_id, title)
+VALUES (NEW.id, NEW.transcript_text, NEW.id, NEW.title);
 END
 
 trigger	meeting_transcripts_au
 CREATE TRIGGER meeting_transcripts_au AFTER UPDATE OF transcript_text, title ON meeting_transcripts
 WHEN OLD.transcript_text != NEW.transcript_text OR OLD.title != NEW.title
 BEGIN
-DELETE FROM transcripts_fts WHERE transcript_id = OLD.id;
-INSERT INTO transcripts_fts(text, transcript_id, title)
-SELECT NEW.transcript_text, NEW.id, NEW.title
+DELETE FROM transcripts_fts WHERE rowid = OLD.id;
+INSERT INTO transcripts_fts(rowid, text, transcript_id, title)
+SELECT NEW.id, NEW.transcript_text, NEW.id, NEW.title
 WHERE NEW.transcript_text != '';
 END
 
 trigger	messages_ad
 CREATE TRIGGER messages_ad AFTER DELETE ON messages
 BEGIN
-DELETE FROM messages_fts WHERE channel_id = OLD.channel_id AND ts = OLD.ts;
+DELETE FROM messages_fts WHERE rowid = OLD.rowid;
 END
 
 trigger	messages_ai
 CREATE TRIGGER messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN
-DELETE FROM messages_fts WHERE channel_id = NEW.channel_id AND ts = NEW.ts;
-INSERT INTO messages_fts(text, channel_id, ts, user_id)
-VALUES (NEW.text, NEW.channel_id, NEW.ts, NEW.user_id);
+DELETE FROM messages_fts WHERE rowid = NEW.rowid;
+INSERT INTO messages_fts(rowid, text, channel_id, ts, user_id)
+VALUES (NEW.rowid, NEW.text, NEW.channel_id, NEW.ts, NEW.user_id);
 END
 
 trigger	messages_au
 CREATE TRIGGER messages_au AFTER UPDATE OF text, is_deleted ON messages
 WHEN OLD.text != NEW.text OR OLD.is_deleted != NEW.is_deleted
 BEGIN
-DELETE FROM messages_fts WHERE channel_id = OLD.channel_id AND ts = OLD.ts;
-INSERT INTO messages_fts(text, channel_id, ts, user_id)
-SELECT NEW.text, NEW.channel_id, NEW.ts, NEW.user_id
+DELETE FROM messages_fts WHERE rowid = OLD.rowid;
+INSERT INTO messages_fts(rowid, text, channel_id, ts, user_id)
+SELECT NEW.rowid, NEW.text, NEW.channel_id, NEW.ts, NEW.user_id
 WHERE NEW.text != '' AND NEW.is_deleted = 0;
 END
 
