@@ -2,7 +2,7 @@ import SwiftUI
 import WatchtowerCore
 
 /// The workbench header's trailing controls: the automation buttons, then `Terminal | Workchat ▾ |
-/// Session | Board | Files | Analytics | Changes | split | ⋯` (spec 2026-10-03-workbench-session-report
+/// Session | Board | Files | Analytics | Review | split | ⋯` (spec 2026-10-03-workbench-session-report
 /// Part 7, the owner's pick on board #357; the twin switch is #711's variant A).
 struct WorkbenchHeaderControls: View {
     @Bindable var vm: WorkbenchesViewModel
@@ -21,6 +21,7 @@ struct WorkbenchHeaderControls: View {
     /// is: Workchat and the chevron after it light up together.
     @State private var hoveredView: WorkspaceView?
     @State private var chevronHovered = false
+    @State private var reviewHovered = false
     @State private var showsWorktreeSetup = false
     @State private var showsAgentSettings = false
 
@@ -28,6 +29,7 @@ struct WorkbenchHeaderControls: View {
         HStack(spacing: 8) {
             if let automationButtons { automationButtons }
             viewButtons
+            reviewButton
             splitToggle
             moreMenu
         }
@@ -39,7 +41,7 @@ struct WorkbenchHeaderControls: View {
         }
     }
 
-    /// Terminal | Workchat / Session / Board / Files / Analytics / Changes: on = on
+    /// Terminal | Workchat / Session / Board / Files / Analytics: on = on
     /// screen. Turning one on shows it (beside the terminal in a split — the
     /// Session view beside its own session's terminal); turning it off
     /// closes that pane of a split. Split then puts two side by side.
@@ -50,7 +52,7 @@ struct WorkbenchHeaderControls: View {
         let layout = vm.layout(projectID: project.id)
         return HStack(spacing: 2) {
             // Workchat is drawn inside Terminal's twin, not as a button of its own.
-            ForEach(WorkspaceView.allCases.filter { $0 != .chat }, id: \.self) { view in
+            ForEach(WorkspaceView.allCases.filter { $0 != .chat && $0 != .changes }, id: \.self) { view in
                 viewButton(view, layout: layout)
                 if view == .terminal {
                     viewButton(.chat, layout: layout)
@@ -89,8 +91,31 @@ struct WorkbenchHeaderControls: View {
             if inside { hoveredView = view } else if hoveredView == view { hoveredView = nil }
         })
         .help(view.help)
-        // No session to review: say so rather than a click that does nothing.
-        .disabled((view == .changes || view == .chat) && !layout.isShowing(view) && vm.sessionViewTarget(projectID: project.id) == nil)
+        // No session to show: say so rather than a click that does nothing.
+        .disabled(view == .chat && !layout.isShowing(view) && vm.sessionViewTarget(projectID: project.id) == nil)
+    }
+
+    /// **Review**, right of the capsule (board #712, spec §5): only while the
+    /// session has something to review, or its Branch review pane is on
+    /// screen; on = that pane is showing.
+    @ViewBuilder
+    private var reviewButton: some View {
+        if vm.showsReviewButton(projectID: project.id) {
+            Toggle(isOn: Binding(
+                get: { vm.layout(projectID: project.id).isShowing(.changes) },
+                set: { on in
+                    if on {
+                        Task { await vm.showView(.changes, project: project) }
+                    } else {
+                        vm.hideView(.changes, projectID: project.id)
+                    }
+                }
+            )) {
+                Label(WorkspaceView.changes.reviewButtonTitle, systemImage: WorkspaceView.changes.icon)
+            }
+            .toggleStyle(SegmentedToggleStyle(isHovered: reviewHovered) { reviewHovered = $0 })
+            .help(WorkspaceView.changes.help)
+        }
     }
 
     /// The twin's dropdown, shared by Terminal and Workchat: which session
@@ -315,7 +340,10 @@ extension WorkbenchInstallStatus {
     }
 }
 
-private extension WorkspaceView {
+extension WorkspaceView {
+    /// The header button's label; the pane itself is `title` (Branch review).
+    var reviewButtonTitle: String { "Review" }
+
     var help: String {
         switch self {
         case .terminal: "Show the session's terminal, in place of its Workchat (⌃`); in a split, beside the other pane"
@@ -323,7 +351,7 @@ private extension WorkspaceView {
         case .board: "Show the Board (in a split, beside the terminal)"
         case .files: "Show the open files (in a split, beside the terminal)"
         case .analytics: "Agent time, cost and hints for this workbench"
-        case .changes: "Review the session's changes"
+        case .changes: "Review this session's branch"
         case .chat: "Show the session's Workchat, in place of its terminal (⌃`); in a split, beside its terminal"
         }
     }

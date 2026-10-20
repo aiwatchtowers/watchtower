@@ -1,51 +1,69 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The Changes pane's left column (board #328): what the session works on
-/// (the intent card), then the changed files — glyph, path, `+a −d`, Viewed,
-/// comment count; folded files (lockfiles, generated, too large) last.
+/// The Branch review's file column (board #328, #712 spec §4.4): the
+/// Summary card (the AI overview folded, with the reading order inside),
+/// then the changed files — glyph, path, `+a −d`, Viewed, comment count —
+/// and the folded ones (lockfiles, generated, too large) last.
 struct ReviewFileListView: View {
     let model: ReviewChangesModel
 
     var body: some View {
         List {
-            overviewSection
-            if !model.context.isEmpty {
-                Section("Working on") {
-                    ForEach(Array(model.context.enumerated()), id: \.offset) { _, item in
-                        ReviewIntentCard(item: item)
-                    }
-                }
+            if model.hasChanges, showsSummary {
+                summaryCard.reviewListRow()
             }
-            Section("Files") {
-                if shown.isEmpty {
-                    Text("No changes").foregroundStyle(.secondary)
-                }
-                ForEach(shown) { file in row(file) }
+            header("Files", systemImage: "doc.on.doc", detail: filesDetail)
+            if shown.isEmpty {
+                Text(ReviewChangesPaneView.nothingNewText(model) ?? "No changes")
+                    .foregroundStyle(.secondary)
+                    .reviewListRow()
             }
+            ForEach(shown) { file in row(file) }
             if !folded.isEmpty {
-                Section("Folded") {
-                    ForEach(folded) { file in row(file) }
-                }
+                header("Folded", systemImage: "rectangle.compress.vertical", detail: "\(folded.count)")
+                ForEach(folded) { file in row(file) }
             }
         }
-        .listStyle(.sidebar)
+        .panelListStyle()
+        .panelSurface()
     }
 
-    /// The collapsed overview and, when the agent or the AI ordered the files, the reading order.
-    @ViewBuilder private var overviewSection: some View {
-        let ordered = model.chapters.contains { $0.source != .mechanical }
-        if model.overview != .idle || ordered {
-            Section("Overview") {
-                ReviewOverviewView(model: model, style: .compact)
-                if ordered {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Reading order").font(.caption.weight(.semibold))
-                        ForEach(Array(model.chapters.enumerated()), id: \.element.key) { index, chapter in
-                            Text("\(index + 1). \(chapter.title)").font(.caption).lineLimit(1).truncationMode(.middle)
-                        }
-                    }
-                }
+    /// `8 · 3 viewed`.
+    private var filesDetail: String {
+        "\(shown.count) · \(shown.filter { model.isViewed($0.path) }.count) viewed"
+    }
+
+    private func header(_ title: String, systemImage: String, detail: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+            SectionHeader(title: title, systemImage: systemImage)
+            Text(detail).font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
+        }
+        .padding(.top, Spacing.regular)
+        .padding(.horizontal, Spacing.regular)
+        .reviewListRow()
+    }
+
+    /// The agent or the AI ordered the files: the reading order is worth showing.
+    private var ordered: Bool { model.chapters.contains { $0.source != .mechanical } }
+    private var showsSummary: Bool { model.overview != .idle || ordered }
+
+    /// The overview folded into one card; the reading order sits inside it.
+    private var summaryCard: some View {
+        ReviewOverviewView(model: model, style: .compact) {
+            if ordered { readingOrder }
+        }
+        .padding(Spacing.cozy)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
+        .padding(.bottom, Spacing.small)
+    }
+
+    private var readingOrder: some View {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            Text("Reading order").font(.caption.weight(.semibold))
+            ForEach(Array(model.chapters.enumerated()), id: \.element.key) { index, chapter in
+                Text("\(index + 1). \(chapter.title)").font(.caption).lineLimit(1).truncationMode(.middle)
             }
         }
     }
@@ -66,6 +84,16 @@ struct ReviewFileListView: View {
             select: { Task { await model.select(file.path) } },
             toggleViewed: { Task { try? await model.toggleViewed(file.path) } } // a failure lands in lastError
         )
+    }
+}
+
+private extension View {
+    /// A row of the review's plain lists: no separator, no stock background,
+    /// the content's own insets.
+    func reviewListRow() -> some View {
+        listRowInsets(EdgeInsets(top: Spacing.tight, leading: Spacing.regular, bottom: Spacing.tight, trailing: Spacing.regular))
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
     }
 }
 
@@ -100,7 +128,7 @@ struct ReviewFileRow: View {
                 Text("\(comments)")
                     .font(.caption2.weight(.semibold))
                     .padding(.horizontal, 5)
-                    .background(Color.accentColor.opacity(0.2), in: Capsule())
+                    .background(Fill.on, in: Capsule())
                     .accessibilityLabel("\(comments) comment\(comments == 1 ? "" : "s")")
             }
             Text("+\(file.additions) −\(file.deletions)")
@@ -112,10 +140,9 @@ struct ReviewFileRow: View {
                 .help(viewed ? "Viewed" : "Mark as viewed")
         }
         .opacity(viewed ? 0.6 : 1)
-        .padding(.vertical, 1)
-        .contentShape(Rectangle())
+        .kitRow(isSelected: selected)
         .onTapGesture(perform: select)
-        .listRowBackground(selected ? Color.accentColor.opacity(0.15) : Color.clear)
+        .reviewListRow()
         .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
     }
 
@@ -144,35 +171,5 @@ struct ReviewFileRow: View {
         case "too_large": "Too large"
         default: reason
         }
-    }
-}
-
-/// One task the session works on: its text, intent, and the plan task's
-/// text folded to three lines.
-private struct ReviewIntentCard: View {
-    let item: ReviewContextItem
-    @State private var expanded = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(item.text).font(.callout.weight(.medium))
-            if !item.intent.isEmpty {
-                Text(item.intent).font(.caption).foregroundStyle(.secondary)
-            }
-            if let missing = item.missing {
-                Label(missing == "plan" ? "plan file missing" : "task not found", systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-            if let plan = item.planText, !plan.isEmpty {
-                Text(plan)
-                    .font(.caption)
-                    .lineLimit(expanded ? nil : 3)
-                Button(expanded ? "less" : "more") { expanded.toggle() }
-                    .buttonStyle(.link)
-                    .font(.caption)
-            }
-        }
-        .padding(.vertical, 2)
     }
 }

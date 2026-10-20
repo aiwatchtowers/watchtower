@@ -1,8 +1,10 @@
 import SwiftUI
 import WatchtowerCore
 
-/// Deep mode's three steps under the header (board #328): Meaning, Chapters,
-/// Wrap-up. Each step is clickable; Next moves on, and Wrap-up shows Send.
+/// Deep mode's three steps in the toolbar (board #328, #712 spec §6):
+/// Meaning, Chapters, Wrap-up as a segmented picker and the progress line.
+/// Send is the toolbar's own; each step's foot has its Next
+/// (`ReviewNextStepButton`).
 struct ReviewPhaseStrip: View {
     let model: ReviewChangesModel
 
@@ -11,36 +13,41 @@ struct ReviewPhaseStrip: View {
     ]
 
     var body: some View {
-        HStack(spacing: 6) {
-            ForEach(ReviewPhase.allCases, id: \.self) { phase in
-                Button(Self.titles[phase] ?? phase.rawValue) { Task { try? await model.setPhase(phase) } } // a failure lands in lastError
-                    .buttonStyle(.plain)
-                    .fontWeight(phase == model.phase ? .semibold : .regular)
-                    .foregroundStyle(phase == model.phase ? Color.accentColor : Color.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .background(phase == model.phase ? Color.accentColor.opacity(0.15) : Color.clear, in: Capsule())
-                    .accessibilityAddTraits(phase == model.phase ? .isSelected : [])
-                if phase != ReviewPhase.allCases.last { Text("·").foregroundStyle(.secondary) }
-            }
-            Spacer()
-            if let next {
-                Button("Next") { Task { try? await model.setPhase(next) } }
-            } else {
-                Button("Send") { Task { await model.send() } }
-                    .disabled(!ReviewChangesHeader.canSend(model))
+        HStack(spacing: Spacing.cozy) {
+            KitSegmentedPicker(
+                title: "Phase",
+                // A failure lands in lastError.
+                selection: Binding(get: { model.phase }, set: { phase in Task { try? await model.setPhase(phase) } }),
+                segments: ReviewPhase.allCases.map { KitSegment(value: $0, title: Self.titles[$0] ?? $0.rawValue) }
+            )
+            Text(ReviewToolbar.progressLine(model))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+    }
+}
+
+/// Deep's way forward at the foot of a step (#712, artboard C): Meaning →
+/// Chapters, Chapters → Wrap-up, right-aligned; nothing on Wrap-up, whose
+/// Send is the toolbar's.
+struct ReviewNextStepButton: View {
+    let model: ReviewChangesModel
+
+    private static let next: [ReviewPhase: (phase: ReviewPhase, title: String)] = [
+        .meaning: (.chapters, "Next: Chapters →"), .chapters: (.wrapup, "Next: Wrap-up →")
+    ]
+
+    var body: some View {
+        if let next = Self.next[model.phase] {
+            HStack {
+                Spacer()
+                // A failure lands in lastError.
+                Button(next.title) { Task { try? await model.setPhase(next.phase) } }
+                    .buttonStyle(.kitSecondary)
+                    .controlSize(.small)
             }
         }
-        .font(.callout)
-        .controlSize(.small)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .background(Color.primary.opacity(0.03))
-    }
-
-    private var next: ReviewPhase? {
-        let all = ReviewPhase.allCases
-        guard let index = all.firstIndex(of: model.phase), index + 1 < all.count else { return nil }
-        return all[index + 1]
     }
 }

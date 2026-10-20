@@ -67,6 +67,19 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "automation-new-sheet-workbench", size: NSSize(width: 960, height: 640)) {
                 AnyView(AutomationShotFixtures.newSheetForWorkbench().detailBackground())
+            },
+            // Branch review (#712, artboards A–C).
+            DesignShot(name: "branch-review-changes", size: NSSize(width: 1180, height: 760)) {
+                ReviewShotFixtures.changes()
+            },
+            DesignShot(name: "branch-review-empty", size: NSSize(width: 1180, height: 520)) {
+                ReviewShotFixtures.empty()
+            },
+            DesignShot(name: "branch-review-default-branch", size: NSSize(width: 1180, height: 520)) {
+                ReviewShotFixtures.defaultBranch()
+            },
+            DesignShot(name: "branch-review-deep-meaning", size: NSSize(width: 1180, height: 760)) {
+                ReviewShotFixtures.deepMeaning()
             }
         ] + CatalogPage.allCases.map { page in
             DesignShot(name: "catalog-\(page.rawValue)", size: NSSize(width: 900, height: 0)) {
@@ -103,6 +116,7 @@ enum DesignShotFixtures {
     static func cleanUp() {
         if let poolPath { TestDatabase.cleanup(path: poolPath) }
         poolPath = nil
+        ReviewShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)

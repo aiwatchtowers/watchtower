@@ -13,12 +13,18 @@ public struct KitSecondaryButtonStyle: ButtonStyle {
     }
 }
 
-/// See `KitSecondaryButtonStyle`.
+/// See `KitSecondaryButtonStyle`. `label` other than the accent is for a
+/// name that opens something and reads as text (the Branch review's
+/// session title, #712): the same hover and press, in that colour.
 public struct KitQuietButtonStyle: ButtonStyle {
-    public init() {}
+    let label: Color
+
+    public init(label: Color = .accentColor) {
+        self.label = label
+    }
 
     public func makeBody(configuration: Configuration) -> some View {
-        KitSoftButton(configuration: configuration, restFill: .clear, label: .accentColor)
+        KitSoftButton(configuration: configuration, restFill: .clear, label: label)
     }
 }
 

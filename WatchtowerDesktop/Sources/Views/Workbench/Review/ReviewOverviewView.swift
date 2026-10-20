@@ -5,36 +5,42 @@ import WatchtowerCore
 /// mode when none is cached (board #585), a spinner while it is
 /// prepared, the reason and Retry when it failed, else the summary, how the
 /// intent is covered, the files outside the intent and the size. Deep shows
-/// it whole in Meaning; Quick folds it into one disclosure line.
-struct ReviewOverviewView: View {
+/// it whole in Meaning; Quick's Summary card (#712) folds it to its first
+/// line and risk line, with `extra` (the reading order) inside the fold.
+struct ReviewOverviewView<Extra: View>: View {
     enum Style { case full, compact }
 
     let model: ReviewChangesModel
     var style = Style.full
+    @ViewBuilder var extra: () -> Extra
     @State private var expanded = false
 
     var body: some View {
         switch model.overview {
         case .idle:
-            EmptyView()
+            if style == .compact { extra() }
         case .onRequest:
-            makeRow("An AI summary, intent coverage, risk and reading order — one strong-model call.")
+            makeRow(style == .compact
+                ? "AI summary, intent coverage and risk"
+                : "An AI summary, intent coverage, risk and reading order — one strong-model call.")
+            if style == .compact { extra() }
         case let .outdated(earlier):
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: Spacing.small) {
                 makeRow("This overview is for an earlier version of the changes. A new one is one strong-model call.")
                 Text(ReviewPresentation.firstLine(earlier.summary)).font(.callout).lineLimit(2).foregroundStyle(.secondary)
+                if style == .compact { extra() }
             }
         case .loading:
-            HStack(spacing: 6) {
+            HStack(spacing: Spacing.compact) {
                 ProgressView().controlSize(.small)
                 Text("Preparing the AI overview…").font(.callout).foregroundStyle(.secondary)
             }
         case let .failed(reason):
-            HStack(alignment: .top, spacing: 6) {
-                Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+            HStack(alignment: .top, spacing: Spacing.compact) {
+                Image(systemName: "exclamationmark.triangle").foregroundStyle(Tone.warning)
                 Text("The AI overview failed: \(reason)").font(.callout).foregroundStyle(.secondary)
-                Spacer(minLength: 4)
-                Button("Retry") { model.retryOverview() }.controlSize(.small)
+                Spacer(minLength: Spacing.small)
+                Button("Retry") { model.retryOverview() }.buttonStyle(.kitSecondary).controlSize(.small)
             }
         case let .ready(overview):
             switch style {
@@ -45,21 +51,35 @@ struct ReviewOverviewView: View {
     }
 
     private func makeRow(_ note: String) -> some View {
-        HStack(alignment: .top, spacing: 6) {
+        HStack(alignment: .top, spacing: Spacing.compact) {
             Text(note).font(.callout).foregroundStyle(.secondary)
-            Spacer(minLength: 4)
-            Button("Make overview") { model.makeOverview() }.controlSize(.small)
+            Spacer(minLength: Spacing.small)
+            Button("Make overview") { model.makeOverview() }.buttonStyle(.kitSecondary).controlSize(.small)
         }
     }
 
+    /// The card's fold: its own chevron inside the card (a `DisclosureGroup`
+    /// in a List draws its chevron at the list's edge, outside the card).
     private func compact(_ overview: ReviewOverview) -> some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            full(overview).padding(.top, 4)
-        } label: {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(ReviewPresentation.firstLine(overview.summary)).font(.callout).lineLimit(2)
-                let risk = ReviewPresentation.riskLine(overview)
-                if !risk.isEmpty { Text(risk).font(.caption).foregroundStyle(.orange) }
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: IconSize.chevron, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: Spacing.tight) {
+                    Text(ReviewPresentation.firstLine(overview.summary)).font(.callout.weight(.medium)).lineLimit(2)
+                    let risk = ReviewPresentation.riskLine(overview)
+                    if !risk.isEmpty { Text(risk).font(.caption).foregroundStyle(Tone.warning) }
+                }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { withAnimation(Motion.panel) { expanded.toggle() } }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint(expanded ? "Folds the overview" : "Shows the whole overview")
+            if expanded {
+                full(overview)
+                extra()
             }
         }
     }
@@ -136,6 +156,12 @@ struct ReviewOverviewView: View {
         case .partial: "Partly"
         case .notFound: "Not found"
         }
+    }
+}
+
+extension ReviewOverviewView where Extra == EmptyView {
+    init(model: ReviewChangesModel, style: Style = .full) {
+        self.init(model: model, style: style) { EmptyView() }
     }
 }
 
