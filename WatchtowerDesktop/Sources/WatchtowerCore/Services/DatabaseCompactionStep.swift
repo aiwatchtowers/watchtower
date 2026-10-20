@@ -438,6 +438,12 @@ package final class DatabaseCompactionStep {
         if output?.ftsRebuilt == true {
             log("DB search index rebuilt")
         }
+        // The run got past the fill when it says so or printed the compact
+        // phase line; until then an exit is the search index rebuild's own.
+        var scanner = CompactionPhaseScanner()
+        let rebuilt = output?.ftsRebuilt == true || scanner.feed(exit.stdout).contains(.compact)
+        let inFill = check.ftsRebuildPending && !rebuilt
+        let subject = inFill ? "DB search index rebuild" : "DB compaction"
         // Exits 2–5 count only when the result line names the same skip; any
         // other combination is logged with stderr.
         switch (exit.status, output?.skipped) {
@@ -456,25 +462,21 @@ package final class DatabaseCompactionStep {
                 log("DB compaction: nothing done (\(output.skipped ?? "no reason given"))")
             }
         case (1, _):
-            log("DB compaction failed: \(output?.error ?? stderr)")
+            log("\(subject) failed: \(output?.error ?? stderr)")
             if output?.gaveUp ?? false { notice = Self.gaveUpNotice }
         case (2, "disk"):
-            // The run got past the fill when it says so or printed the
-            // compact phase line: the skip is then the compaction's own.
-            var scanner = CompactionPhaseScanner()
-            let rebuilt = output?.ftsRebuilt == true || scanner.feed(exit.stdout).contains(.compact)
-            log(check.ftsRebuildPending && !rebuilt
-                ? "DB search index rebuild skipped for disk space"
-                : "DB compaction skipped for disk space")
+            log("\(subject) skipped for disk space")
             notice = diskNotice(for: check, searchIndexRebuilt: rebuilt)
         case (3, "daemon_running"):
             log("DB compaction skipped: the daemon is still running")
         case (4, "interrupted"):
-            log("DB compaction interrupted; it is due again next launch")
+            log(inFill
+                ? "DB search index rebuild interrupted; it resumes at the next launch"
+                : "DB compaction interrupted; it is due again next launch")
         case (5, "schema_pending"):
-            log("DB compaction skipped: schema migrations are pending")
+            log("\(subject) skipped: schema migrations are pending")
         default:
-            log("DB compaction ended with exit status \(exit.status) (\(output?.skipped ?? "no result line")): \(stderr)")
+            log("\(subject) ended with exit status \(exit.status) (\(output?.skipped ?? "no result line")): \(stderr)")
         }
     }
 

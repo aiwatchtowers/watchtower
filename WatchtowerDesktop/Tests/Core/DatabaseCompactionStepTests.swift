@@ -465,6 +465,97 @@ final class DatabaseCompactionStepTests: XCTestCase {
         if let rebuilt, let nothingDone { XCTAssertLessThan(rebuilt, nothingDone) }
     }
 
+    // An exit before the run got past the fill is logged as the search index
+    // rebuild's; one after the compact line or `fts_rebuilt` as the compaction's.
+
+    func testFailureDuringFillLogsSearchIndexRebuild() async {
+        let step = makeStep(check: .success(.fixture(reason: "fts_rebuild", ftsRebuildPending: true)))
+        let run = await startCompacting(step)
+        child.exit(status: 1, stdout: #"{"compacted":false,"error":"disk I/O error","failures":1}"#)
+        await run.value
+        XCTAssertTrue(logs.items.contains("DB search index rebuild failed: disk I/O error"), "\(logs.items)")
+        XCTAssertNil(step.notice)
+    }
+
+    func testFailureAfterCompactLineLogsCompaction() async {
+        let step = makeStep(check: .success(.fixture(reason: "fts_rebuild", ftsRebuildPending: true)))
+        let run = await startCompacting(step)
+        child.exit(status: 1, stdout: "{\"phase\":\"compact\"}\n{\"compacted\":false,\"error\":\"disk I/O error\"}\n")
+        await run.value
+        XCTAssertTrue(logs.items.contains("DB compaction failed: disk I/O error"), "\(logs.items)")
+    }
+
+    func testFailureAfterRebuiltLogsCompaction() async {
+        let step = makeStep(check: .success(.fixture(reason: "fts_rebuild", ftsRebuildPending: true)))
+        let run = await startCompacting(step)
+        child.exit(status: 1, stdout: #"{"compacted":false,"fts_rebuilt":true,"error":"disk I/O error"}"#)
+        await run.value
+        XCTAssertTrue(logs.items.contains("DB compaction failed: disk I/O error"), "\(logs.items)")
+    }
+
+    func testGaveUpDuringFillKeepsGaveUpNotice() async {
+        let step = makeStep(check: .success(.fixture(reason: "fts_rebuild", ftsRebuildPending: true)))
+        let run = await startCompacting(step)
+        child.exit(status: 1, stdout: #"{"compacted":false,"error":"locked","failures":3,"gave_up":true}"#)
+        await run.value
+        XCTAssertTrue(logs.items.contains("DB search index rebuild failed: locked"), "\(logs.items)")
+        XCTAssertEqual(step.notice, DatabaseCompactionStep.gaveUpNotice)
+    }
+
+    func testInterruptDuringFillLogsSearchIndexRebuild() async {
+        let step = makeStep(check: .success(.fixture(reason: "fts_rebuild", ftsRebuildPending: true)))
+        let run = await startCompacting(step)
+        child.exit(status: 4, stdout: #"{"compacted":false,"skipped":"interrupted"}"#)
+        await run.value
+        XCTAssertTrue(
+            logs.items.contains("DB search index rebuild interrupted; it resumes at the next launch"), "\(logs.items)"
+        )
+    }
+
+    func testInterruptAfterCompactLineLogsCompaction() async {
+        let step = makeStep(check: .success(.fixture(reason: "fts_rebuild", ftsRebuildPending: true)))
+        let run = await startCompacting(step)
+        child.exit(status: 4, stdout: "{\"phase\":\"compact\"}\n{\"compacted\":false,\"skipped\":\"interrupted\"}\n")
+        await run.value
+        XCTAssertTrue(logs.items.contains("DB compaction interrupted; it is due again next launch"), "\(logs.items)")
+    }
+
+    func testInterruptWithoutPendingRebuildLogsCompaction() async {
+        let step = makeStep(check: .success(.fixture()))
+        let run = await startCompacting(step)
+        child.exit(status: 4, stdout: #"{"compacted":false,"skipped":"interrupted"}"#)
+        await run.value
+        XCTAssertTrue(logs.items.contains("DB compaction interrupted; it is due again next launch"), "\(logs.items)")
+    }
+
+    func testSchemaPendingDuringFillLogsSearchIndexRebuild() async {
+        let step = makeStep(check: .success(.fixture(reason: "fts_rebuild", ftsRebuildPending: true)))
+        let run = await startCompacting(step)
+        child.exit(status: 5, stdout: #"{"compacted":false,"skipped":"schema_pending"}"#)
+        await run.value
+        XCTAssertTrue(
+            logs.items.contains("DB search index rebuild skipped: schema migrations are pending"), "\(logs.items)"
+        )
+    }
+
+    func testSchemaPendingWithoutPendingRebuildLogsCompaction() async {
+        let step = makeStep(check: .success(.fixture()))
+        let run = await startCompacting(step)
+        child.exit(status: 5, stdout: #"{"compacted":false,"skipped":"schema_pending"}"#)
+        await run.value
+        XCTAssertTrue(logs.items.contains("DB compaction skipped: schema migrations are pending"), "\(logs.items)")
+    }
+
+    func testUnexpectedExitDuringFillNamesThePhase() async {
+        let step = makeStep(check: .success(.fixture(reason: "fts_rebuild", ftsRebuildPending: true)))
+        let run = await startCompacting(step)
+        child.exit(status: 7, stderr: "boom")
+        await run.value
+        XCTAssertTrue(logs.items.contains {
+            $0.hasPrefix("DB search index rebuild ended with exit status 7") && $0.contains("boom")
+        }, "\(logs.items)")
+    }
+
     func testPhaseScannerJoinsSplitLines() {
         var scanner = CompactionPhaseScanner()
         XCTAssertEqual(scanner.feed(Data(#"{"pha"#.utf8)), [])
