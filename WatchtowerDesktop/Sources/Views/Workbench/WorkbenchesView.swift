@@ -62,19 +62,25 @@ struct WorkbenchesView: View {
                 PanelResizeHandle(width: $panelWidth, liveWidth: $dragPanelWidth)
             }
             VStack(spacing: 0) {
-                WorkbenchTitleRow(vm: vm, switcherActions: switcherActions, paletteOpen: goToOpen) { goToOpen = true }
-                Divider()
-                Group {
-                    if let standalone = vm.selectedStandalone {
-                        StandaloneTerminalView(session: standalone, actions: sessionActions)
-                            .id(standalone.id)
-                    } else if let project = vm.selectedWorkbench {
-                        WorkbenchPageView(vm: vm, project: project)
-                    } else {
-                        emptyState
+                // A workbench page draws its own title row: the workbench's
+                // controls are its (spec 2026-10-20 call 14).
+                if let project = vm.selectedWorkbench, vm.selectedStandalone == nil {
+                    WorkbenchPageView(
+                        vm: vm, project: project, switcherActions: switcherActions, paletteOpen: goToOpen
+                    ) { goToOpen = true }
+                } else {
+                    WorkbenchTitleRow(vm: vm, switcherActions: switcherActions, paletteOpen: goToOpen) { goToOpen = true }
+                    Divider()
+                    Group {
+                        if let standalone = vm.selectedStandalone {
+                            StandaloneTerminalView(session: standalone, actions: sessionActions)
+                                .id(standalone.id)
+                        } else {
+                            emptyState
+                        }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
             // With the panel hidden, the delete's Undo shows over the page.
@@ -88,7 +94,7 @@ struct WorkbenchesView: View {
         // ⌥⌘S, the title row's toggle, "All Workbenches" and the switchers' "Show
         // Sessions Panel" all slide the panel the same way.
         .animation(.easeInOut(duration: 0.2), value: vm.panelVisible)
-        // The workspace — title row, page header, the terminal (transparent
+        // The workspace — title row, the terminal (transparent
         // under dark), Board and Files — on the detail backdrop, as AI
         // Chat's conversation is; the panel paints its own lighter surface.
         .detailBackground()
@@ -324,19 +330,22 @@ struct WorkbenchesView: View {
 /// The chat's inline title row (`ChatSplitView.toolbar`) instead of a
 /// window toolbar, which would add a tall title-bar strip above the tab.
 /// It stays visible with the panel hidden: its toggle is the way back, and
-/// then on a workbench page it carries `▦ <workbench> ▾ › ● <session> ▾`
-/// (board #251, variant H) instead of the plain title. At its right, Go
-/// to… opens the go-to palette (⌘K, board #252). The tab's chords are the
-/// Workbench menu's (`WorkbenchCommands`, issue #288), on through the scene
-/// value `WorkbenchesView` publishes.
-struct WorkbenchTitleRow: View {
+/// then on a workbench page it carries `▦ <workbench> ▾` (board #251) instead
+/// of the plain title. A workbench page passes its `controls` — the install
+/// status and the workbench row's tabs and icons (spec 2026-10-20 §1) —
+/// drawn after the name; the standalone terminal and the empty state pass
+/// none. At its right, Go to… opens the go-to palette (⌘K, board #252).
+/// The tab's chords are the Workbench menu's (`WorkbenchCommands`, issue
+/// #288), on through the scene value `WorkbenchesView` publishes.
+struct WorkbenchTitleRow<Controls: View>: View {
     @Bindable var vm: WorkbenchesViewModel
     let switcherActions: WorkbenchSwitcherActions
     var paletteOpen = false
     let openGoTo: () -> Void
+    @ViewBuilder let controls: () -> Controls
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: Spacing.cozy) {
             Button { vm.panelVisible.toggle() } label: {
                 Image(systemName: "sidebar.leading")
             }
@@ -349,19 +358,21 @@ struct WorkbenchTitleRow: View {
             }
             if let project = vm.headerSwitcherWorkbench {
                 WorkbenchSwitcher(vm: vm, project: project, actions: switcherActions, fillsWidth: false)
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .accessibilityHidden(true)
-                SessionSwitcher(vm: vm, project: project)
             } else {
                 Text(vm.selectedStandalone?.title ?? vm.selectedWorkbench?.name ?? "Workbench")
                     .font(.headline)
                     .lineLimit(1)
+                    .help(vm.selectedStandalone == nil ? vm.selectedWorkbench?.folderPath ?? "" : "")
             }
-            Spacer()
+            // The rest of the row, at a lower priority than the name: the
+            // name takes what it needs of what the controls leave, and only
+            // then do they spread. Their tabs are fixed in size, so a narrow
+            // window truncates the name first and never a tab.
+            HStack(spacing: Spacing.cozy) { controls() }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(-1)
             Button(action: openGoTo) {
-                HStack(spacing: 4) {
+                HStack(spacing: Spacing.small) {
                     Image(systemName: "magnifyingglass")
                     Text("Go to…")
                     Text("⌘K").foregroundStyle(.secondary)
@@ -369,25 +380,42 @@ struct WorkbenchTitleRow: View {
             }
             .help("Go to… (⌘K)")
             .accessibilityLabel("Go to…")
+            .fixedSize()
         }
         .buttonStyle(.borderless)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, Spacing.medium)
+        .padding(.vertical, Spacing.regular)
         // A, with no field focused: "Waiting for you" takes the keyboard
         // (board #412); never under the open palette. Labelled: a trailing
         // closure would be `onKey`.
         // swiftlint:disable:next trailing_closure
         .background(OwnerAskKeyCatcher(onPress: { [vm, paletteOpen] press in
-            Self.pressOnPage(press, vm: vm, paletteOpen: paletteOpen)
+            WorkbenchTitleRowKeys.pressOnPage(press, vm: vm, paletteOpen: paletteOpen)
         }))
     }
+}
 
+extension WorkbenchTitleRow where Controls == EmptyView {
+    /// The plain row: the standalone terminal's and the empty state's.
+    init(
+        vm: WorkbenchesViewModel,
+        switcherActions: WorkbenchSwitcherActions,
+        paletteOpen: Bool = false,
+        openGoTo: @escaping () -> Void
+    ) {
+        self.init(vm: vm, switcherActions: switcherActions, paletteOpen: paletteOpen, openGoTo: openGoTo) { EmptyView() }
+    }
+}
+
+/// The title row's key handling (a static on the generic row would need its
+/// parameter spelled at every call).
+@MainActor
+enum WorkbenchTitleRowKeys {
     /// A bare key the page's catcher offers (board #412): A opens the stack,
     /// never under the open palette; anything else stays the window's.
     static func pressOnPage(_ press: OwnerAskKeyMap.Press, vm: WorkbenchesViewModel, paletteOpen: Bool) -> Bool {
         !paletteOpen && OwnerAskKeyMap.mappedAction(for: press, at: .page) == .openStack && vm.openStackFromKeyboard()
     }
-
 }
 
 /// The worktrees a workbench delete kept because work was in them: a

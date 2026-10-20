@@ -126,8 +126,8 @@ struct WorkbenchSessionStrip: View {
 }
 
 /// `session ▾`: which session a pane shows — in the mode it was last shown
-/// in — or a new one there. The session strip's menu; its items are the
-/// page header's twin chevron's too.
+/// in — or a new one there. The session strip's menu, the only session
+/// switcher on the page (spec 2026-10-20 call 5).
 struct WorkbenchSessionsMenu: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench

@@ -265,6 +265,21 @@ final class WorkbenchSessionStripTests: XCTestCase {
         await waitUntil { vm.layout(projectID: p).visiblePanes == [.session(s.second.id), .board] }
     }
 
+    /// A split of a terminal and its report stays paired when the session
+    /// changes, from the terminal strip's sessions menu and from a panel click.
+    func testASplitKeepsTheTerminalAndItsReportPairedWhenTheSessionChanges() async throws {
+        let (vm, s) = try await loaded()
+        let p = s.project.id
+        vm.setLayout(Self.split(.session(s.first.id), .sessionReport(s.first.id)), projectID: p)
+
+        let sessions = try strip(vm, s.project, .session(s.first.id)).inspect().find(WorkbenchSessionsMenu.self)
+        try sessions.find(button: "two").tap()
+        await waitUntil { vm.layout(projectID: p).visiblePanes == [.session(s.second.id), .sessionReport(s.second.id)] }
+
+        await vm.showSession(id: s.first.id)
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(s.first.id), .sessionReport(s.first.id)])
+    }
+
     /// Terminal | Workchat swaps this pane only: in place on a single pane,
     /// and in a split the other pane stays.
     func testStripTerminalWorkchatSwapsThisPaneOnly() async throws {
