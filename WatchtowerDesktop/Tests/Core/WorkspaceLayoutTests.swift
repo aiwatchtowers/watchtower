@@ -598,4 +598,52 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertFalse(l.showsOtherMode(of: .sessionChat(7)))
         XCTAssertFalse(l.showsOtherMode(of: .board))
     }
+
+    // MARK: - Session tab
+
+    func testSessionTabLitForEverySessionFamilyPane() {
+        for pane in [WorkspacePane.session(1), .sessionChat(1), .sessionReport(1), .changes(1)] {
+            var l = WorkspaceLayout.default
+            l.show(pane)
+            XCTAssertTrue(l.isShowingSessionView, "\(pane)")
+        }
+        for pane in [WorkspacePane.board, .files, .analytics] {
+            var l = WorkspaceLayout.default
+            l.show(pane)
+            XCTAssertFalse(l.isShowingSessionView, "\(pane)")
+        }
+        XCTAssertTrue(split().isShowingSessionView)
+        XCTAssertTrue(WorkspaceView.terminal.isSessionView && WorkspaceView.chat.isSessionView)
+        XCTAssertTrue(WorkspaceView.report.isSessionView && WorkspaceView.changes.isSessionView)
+        XCTAssertFalse(WorkspaceView.board.isSessionView || WorkspaceView.files.isSessionView || WorkspaceView.analytics.isSessionView)
+    }
+
+    func testHideSessionViewsLeavesTheOtherPaneAlone() {
+        var l = split()
+        l.hideSessionViews()
+        XCTAssertEqual(l.visiblePanes, [.board])
+        XCTAssertFalse(l.isSplit)
+    }
+
+    func testHideSessionViewsNeverEmptiesThePage() {
+        var single = WorkspaceLayout.default
+        single.show(.session(1))
+        let before = single
+        single.hideSessionViews()
+        XCTAssertEqual(single, before)
+
+        var two = WorkspaceLayout.default
+        two.show(.session(1))
+        two.split(with: .sessionReport(1))
+        let both = two
+        two.hideSessionViews()
+        XCTAssertEqual(two, both)
+    }
+
+    func testSessionIDOfAnySessionPane() {
+        for pane in [WorkspacePane.session(7), .sessionChat(7), .sessionReport(7), .changes(7)] {
+            XCTAssertEqual(WorkspaceLayout.sessionID(ofAny: pane), 7)
+        }
+        XCTAssertNil(WorkspaceLayout.sessionID(ofAny: .board))
+    }
 }

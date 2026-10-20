@@ -61,6 +61,15 @@ package enum WorkspaceView: CaseIterable, Sendable {
     package func matches(_ pane: WorkspacePane) -> Bool {
         Self(pane) == self
     }
+
+    /// Whether this view belongs to a session: its terminal, Workchat,
+    /// report or changes — what the header's Session tab stands for.
+    package var isSessionView: Bool {
+        switch self {
+        case .terminal, .chat, .report, .changes: true
+        case .board, .files, .analytics: false
+        }
+    }
 }
 
 /// Which panes a project page shows, persisted per project under
@@ -220,6 +229,21 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         remove(pane)
     }
 
+    /// Whether any pane on screen belongs to a session: the Session tab is on.
+    package var isShowingSessionView: Bool {
+        visiblePanes.contains { Self.sessionID(ofAny: $0) != nil }
+    }
+
+    /// The Session tab turned off: in a split with exactly one pane that is
+    /// not a session's, that pane stays alone (an expansion goes with the
+    /// split). Otherwise nothing moves, so the page never empties.
+    package mutating func hideSessionViews() {
+        let slots = [primary, secondary].compactMap(\.self)
+        let sessionPanes = slots.filter { Self.sessionID(ofAny: $0) != nil }
+        guard isSplit, sessionPanes.count == 1 else { return }
+        remove(sessionPanes[0])
+    }
+
     package mutating func setDividerFraction(_ fraction: Double) {
         dividerFraction = min(max(fraction, Self.dividerRange.lowerBound), Self.dividerRange.upperBound)
     }
@@ -277,6 +301,15 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         switch pane {
         case let .session(id), let .sessionChat(id): id
         default: nil
+        }
+    }
+
+    /// The session of any session-family pane — terminal, Workchat, report
+    /// or changes; nil for the Board, Files and Analytics.
+    package static func sessionID(ofAny pane: WorkspacePane) -> Int64? {
+        switch pane {
+        case let .session(id), let .sessionChat(id), let .sessionReport(id), let .changes(id): id
+        case .board, .files, .analytics: nil
         }
     }
 
