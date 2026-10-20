@@ -116,6 +116,8 @@ enum HomeShotFixtures {
                 minutesAgo: 180),
             row(.proposal(9), .proposal, "Proposal", "Reply to Ann in #billing", nil,
                 "Drafted by the assistant \u{00B7} review in Inbox", minutesAgo: 30, actions: []),
+            row(.output(7), .automation, "Automation", "Two threads need you", "Mail summary",
+                "Ann and Bob wait on a reply about the acme export.", minutesAgo: 45),
             row(.target(4), .target, "Overdue", "Send the Q4 plan to Bob", nil, "My target", minutesAgo: 1500),
             row(.inbox(5), .email, "Email", "billing@example.com", "Invoice #2041", "Your invoice is ready",
                 minutesAgo: 240)

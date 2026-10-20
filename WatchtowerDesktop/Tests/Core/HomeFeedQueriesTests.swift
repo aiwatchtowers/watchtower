@@ -347,6 +347,31 @@ final class HomeFeedQueriesTests: XCTestCase {
         XCTAssertEqual(try read().proposals.count, 8)
     }
 
+    // MARK: - Automation outputs
+
+    /// Unread inbox outputs of the last 72 hours; read, dismissed, older and
+    /// report / briefing outputs stay out.
+    func testAutomationOutputsAreUnreadInboxOnesOfTheWindow() throws {
+        let shown = try db.write { d -> Int64 in
+            let id = try TestDatabase.insertAutomation(d, name: "Mail summary")
+            let run = try TestDatabase.insertAutomationRun(d, automationID: id)
+            let shown = try TestDatabase.insertAutomationOutput(
+                d, automationID: id, runID: run, title: "shown", createdAt: self.hoursAgo(71))
+            try TestDatabase.insertAutomationOutput(d, automationID: id, runID: run, createdAt: self.hoursAgo(73))
+            try TestDatabase.insertAutomationOutput(
+                d, automationID: id, runID: run, kind: "report", createdAt: self.hoursAgo(1))
+            try TestDatabase.insertAutomationOutput(
+                d, automationID: id, runID: run, createdAt: self.hoursAgo(2), readAt: self.hoursAgo(1))
+            try TestDatabase.insertAutomationOutput(
+                d, automationID: id, runID: run, createdAt: self.hoursAgo(2), dismissedAt: self.hoursAgo(1))
+            return shown
+        }
+        let data = try read()
+        XCTAssertEqual(data.outputs.map(\.id), [shown])
+        XCTAssertEqual(data.outputs.first?.automationName, "Mail summary")
+        XCTAssertTrue(data.failed.isEmpty)
+    }
+
     // MARK: - Failure
 
     /// One source that throws is named in `failed` and hides only itself.

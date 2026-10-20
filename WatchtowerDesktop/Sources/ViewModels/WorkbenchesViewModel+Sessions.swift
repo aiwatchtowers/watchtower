@@ -243,6 +243,7 @@ extension WorkbenchesViewModel {
     /// new session id (`--session-id`), Codex with none (it mints its own),
     /// in the main folder or its own worktree (`worktree`, spec
     /// 2026-10-14-session-worktrees §4).
+    @discardableResult
     func startNewSession(
         project: Workbench,
         title: String,
@@ -251,7 +252,7 @@ extension WorkbenchesViewModel {
         ticket: Int? = nil,
         agent: AgentKind,
         worktree: WorktreeChoice = .auto
-    ) async {
+    ) async -> TerminalSession? {
         await createAndStart(
             .init(projectID: project.id, kind: TerminalSession.Kind(agent), title: title,
                   folderPath: project.folderPath, claudeSessionID: agent == .claude ? Self.newClaudeSessionID() : nil),
@@ -756,7 +757,7 @@ extension WorkbenchesViewModel {
         UUID().uuidString.lowercased()
     }
 
-    private func project(id: Int64) async -> Workbench? {
+    func project(id: Int64) async -> Workbench? {
         if let known = summaries.first(where: { $0.id == id })?.project { return known }
         do {
             let fetched = try await dbPool.read { try WorkbenchQueries.fetch($0, id: id) }

@@ -135,6 +135,25 @@ final class AutomationQueriesTests: XCTestCase {
         XCTAssertEqual(try queue.read { db in try AutomationQueries.inboxOutputCount(db) }, 2)
     }
 
+    /// `since` and `limit` narrow the read (Home); without them every unread
+    /// inbox output comes back, however old (the Inbox strip).
+    func testInboxOutputsSinceAndLimit() throws {
+        let queue = try TestDatabase.create()
+        let ids = try queue.write { db -> [Int64] in
+            let id = try TestDatabase.insertAutomation(db)
+            let run = try TestDatabase.insertAutomationRun(db, automationID: id)
+            return try ["2026-09-01T09:00:00Z", "2026-10-02T09:00:00Z", "2026-10-03T09:00:00Z"].map {
+                try TestDatabase.insertAutomationOutput(db, automationID: id, runID: run, createdAt: $0)
+            }
+        }
+        let since = try XCTUnwrap(AutomationDates.parse("2026-10-02T09:00:00Z"))
+        try queue.read { db in
+            XCTAssertEqual(try AutomationQueries.fetchInboxOutputs(db).map(\.id), ids.reversed())
+            XCTAssertEqual(try AutomationQueries.fetchInboxOutputs(db, since: since).map(\.id), [ids[2], ids[1]])
+            XCTAssertEqual(try AutomationQueries.fetchInboxOutputs(db, since: since, limit: 1).map(\.id), [ids[2]])
+        }
+    }
+
     func testOutputWritesTouchOnlyReadAndDismissed() throws {
         let queue = try TestDatabase.create()
         let (read, dismissed) = try queue.write { db -> (Int64, Int64) in

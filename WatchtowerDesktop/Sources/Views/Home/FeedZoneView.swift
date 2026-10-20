@@ -19,7 +19,7 @@ struct FeedZoneView: View {
     var calendar: Calendar = .current
 
     /// The sources of the rows above NOW, in the order their failure lines show.
-    private static let waitingSources: [FeedSource] = [.inbox, .proposals, .reminders, .targets]
+    private static let waitingSources: [FeedSource] = [.inbox, .proposals, .automations, .reminders, .targets]
 
     var body: some View {
         HomeZone(title: "Waiting on you", systemImage: "tray", count: feed.waiting.count + feed.hiddenWaiting) {
@@ -96,6 +96,7 @@ struct FeedZoneView: View {
         case .inbox: "Slack and mail"
         case .reminders: "reminders"
         case .proposals: "proposals"
+        case .automations: "automation notes"
         case .targets: "targets"
         case .calendar: "the calendar"
         }

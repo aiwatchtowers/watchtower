@@ -615,6 +615,9 @@ final class HomeViewTests: XCTestCase {
             XCTAssertTrue(others.contains("Couldn't read \(name) — see the log."), name)
         }
         XCTAssertFalse(others.contains("Nothing is waiting for you."))
+        let automations = try texts(feedZone(Self.feed(failed: [.automations])))
+        XCTAssertTrue(automations.contains("Couldn't read automation notes — see the log."))
+        XCTAssertFalse(automations.contains("Nothing is waiting for you."))
         // A row whose Done failed shows its error.
         let row = Self.row(.inbox(3), who: "Ann", text: "hi")
         XCTAssertNoThrow(try feedZone(Self.feed(waiting: [row]), errors: [.inbox(3): "exit 1"]).inspect().find(text: "exit 1"))
