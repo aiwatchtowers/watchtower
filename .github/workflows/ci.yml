@@ -19,10 +19,11 @@ concurrency:
 
 jobs:
   # Skips the push-triggered run only when the pull_request-triggered run of
-  # the same commit exists — it does the work instead. A conflicting PR gets
-  # no pull_request run at all, and one sometimes never fires, so a push run
-  # with an open PR waits up to ~2 min for that run and goes ahead without
-  # it; any gh/API error also lets the run go ahead (fail-open).
+  # the same commit on the same branch exists (not cancelled) — it does the
+  # work instead. A conflicting PR gets no pull_request run at all, and one
+  # sometimes never fires, so a push run with an open PR waits up to ~2 min
+  # for that run and goes ahead without it; any gh/API error also lets the
+  # run go ahead (fail-open). See scripts/ci-dedupe-gate.sh.
   # On a pull request it also says which jobs the change can affect:
   #   code   — anything but docs: Go and Swift test each other (Swift Test
   #            builds the CLI, Go tests read Swift sources and the generated
@@ -63,31 +64,18 @@ jobs:
             guide:
               - 'docs/guide/**'
 
+      # Only the gate script: the job stays a few seconds long.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/ci-dedupe-gate.sh
+          sparse-checkout-cone-mode: false
+
+      # scripts/ci-dedupe-gate.sh, tested by scripts/tests/test-ci-dedupe-gate.sh.
       - id: check
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
-        run: |
-          run=true
-          if [ "$EVENT" = "push" ] && [ "$GITHUB_REF_NAME" != "main" ]; then
-            # Empty when there is no open PR or gh fails: run here.
-            mergeable=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$GITHUB_REF_NAME" --state open \
-              --json mergeable --jq '.[0].mergeable // ""') || mergeable=""
-            if [ -n "$mergeable" ] && [ "$mergeable" != "CONFLICTING" ]; then
-              for i in $(seq 12); do
-                n=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event pull_request \
-                  --commit "$GITHUB_SHA" --json databaseId --jq length) || break
-                if [ "$n" -gt 0 ] 2>/dev/null; then
-                  echo "the pull_request run covers this commit"
-                  run=false
-                  break
-                fi
-                [ "$i" -lt 12 ] && sleep 10
-              done
-            fi
-            [ "$run" = true ] && echo "open PR state '${mergeable}', no pull_request run found — running here"
-          fi
-          echo "run=$run" >> "$GITHUB_OUTPUT"
+        run: bash scripts/ci-dedupe-gate.sh
 
   # The user guide is a Go package (docs/guide): its links, anchors and page
   # sizes are checked by its tests. Runs on its own, so a guide-only PR gets

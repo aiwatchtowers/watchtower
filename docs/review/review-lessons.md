@@ -2096,3 +2096,12 @@ Entry format:
 - weak-dimension: 7 — the drift-fix tests encode the cross-scope match as intent, the create-with-column test uses `Set(reported)` (hides a missing report), and no test covers a failed column write after create.
 - rule-gap (candidate, dim 6): *a search field whose result list keeps non-matching ancestors for context must not submit `rows.first` on Return; submit the first row that matches itself, with a test.* Also candidate (dim 6): *an "in progress / open instead" button over an agent session keys off the agent's turn state, not the PTY being alive.*
 - outcome: TBD
+
+## 2026-10-20 — fix/ci-speed (board #876: CI speed-up — the dedupe gate skips a feature/* push run only when a pull_request run for the same SHA exists (≤ 2 min wait, fail-open, skipped for a CONFLICTING PR), `actions: read`; five more packages seed fresh file DBs from the migrated template (`InitTestFileTemplate`, a superset of `InitTestTemplate`), kb huge-day fixture drops `messages_ai`, automations production-size seed uses `zeroblob`; panel: prosecutor (2) + codex (0) + all 3 specialists; judge verified against 5fc03a8af by reading, grep and a `bash -e -o pipefail` repro of the gate's trailing `&&` lists; judge synthesis, round 1) — verdict: approve
+
+- contested (F1 / silent-failure MEDIUM, 2 lanes, held minor): "any pull_request run for the SHA" can match a cancelled or another PR's run. Push runs fire only on `main`/`feature/*`, and the per-event concurrency groups cancel the push and PR runs of a superseded SHA together, so the realistic hole is a manual cancel or a second PR at the same SHA; main's gate (skip on any open PR) was strictly looser. Adding `--branch "$GITHUB_REF_NAME"` is cheap hardening, not a blocker. **Judge a CI dedupe gate against the trigger filter and concurrency groups before rating its false-skip cases.** [6/9]
+- false-positive: none dismissed; test-analyzer gaps were all ≤ 4 (shell gate without an automated test, no guard for a future package missing the file template, identical zeroblob rows, `.[0]` with several PRs) and stay nits.
+- miss: none; codex returned clean on the gate (mocked shell), prosecutor alone ran the Go packages.
+- weak-dimension: 7 — the gate is inline workflow shell with no test; extracting it to a script with a stubbed `gh` is the only way to pin its fail-open branches.
+- rule-gap (candidate, dim 7): *non-trivial workflow shell (loops, API polling, fail-open branches) lives in `scripts/` with a stub-`gh` test rather than inline YAML.*
+- outcome: TBD
