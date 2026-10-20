@@ -189,6 +189,9 @@ type Daemon struct {
 	heartbeatErrLogged atomic.Bool // one-shot latch for sync_progress.json write failures
 	agentLogSkipLogged atomic.Bool // one-shot latch for the analytics phase's nil-agentlog.db skip line
 	agentLogMoveLogged atomic.Bool // one-shot latch for the analytics phase's failed-move line
+	// searchRebuildDiskLogged is the one-shot latch for the search fill's
+	// not-enough-disk line.
+	searchRebuildDiskLogged atomic.Bool
 
 	lockStats sql.DBStats // pool stats at the last cycle's lock sample (sampleLockStats)
 }
@@ -550,6 +553,10 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.phaseUnsnooze()
 	d.phaseTranscriptAudioCleanup()
 	d.phaseKnowledgeIndex(ctx)
+	// After the knowledge index: the fill is mechanical (no AI) and needs no
+	// fresh sync — Slack sync's own writes already reach the new index
+	// through the triggers — so it runs once the cycle's sync is done.
+	d.phaseMessagesSearchRebuild(ctx)
 
 	d.phaseCustomTrackScan(ctx) // before auto extraction so folds land
 
