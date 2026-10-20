@@ -114,7 +114,8 @@ With a workbench page on screen; the Navigate menu lists most of these.
 | **⌃⌘← / ⌃⌘→** | Back / forward |
 | **⌘S** | Save now |
 | **⌥⌘Return** | Hand to Session (an Ask AI answer) |
-| **⌥⌘M** | Comment on the selected lines (Changes pane) |
+| **⌥⌘M** | Comment on the selected lines (Branch review pane) |
+| **⌥⌘↑** / **⌥⌘↓** | Previous / next unviewed file (Branch review pane) |
 
 ### Open Quickly
 

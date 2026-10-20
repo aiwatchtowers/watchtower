@@ -1,6 +1,6 @@
-# Diff review
+# Branch review
 
-Diff review lets you read what an agent session changed, comment on lines, and send your comments back to the agent as one round. You use it when a session says it is done and you want to check the code, not the story.
+Branch review lets you read what an agent session changed, comment on lines, and send your comments back to the agent as one round. You use it when a session says it is done and you want to check the code, not the story.
 
 ## Why use it
 
@@ -8,7 +8,7 @@ A pull request review needs a pull request. Here you review before anything is c
 
 ## How it works
 
-**Review Changes** in a session's row menu opens the **Changes** pane and starts a round. Watchtower snapshots the folder's working tree (tracked and untracked files, not ignored ones) and compares it with a base, the point where the branch left the default branch. The snapshot only writes git objects. It touches no branch, no index and no file.
+**Review** in the workbench header opens the **Branch review** pane and starts a round. At the top, an identity bar names the branch and its base (`feature/x ← main`), the files and lines changed, the uncommitted edits, the worktree the session works in, and the targets the work is for. Watchtower snapshots the folder's working tree (tracked and untracked files, not ignored ones) and compares it with a base, the point where the branch left the default branch. The snapshot only writes git objects. It touches no branch, no index and no file.
 
 The pane has a file list, a diff, and a list of comments. Files show added, modified, deleted or renamed, their line counts and a **Viewed** checkbox. Lockfiles, generated files and very large files are folded by name. Binary and oversized files show a placeholder.
 
@@ -16,7 +16,7 @@ A round moves through three states: you collect drafts, **Send review** stores t
 
 ### The AI overview
 
-The AI overview is a short summary of the round: whether the changes cover the linked targets, which files fall outside them, a risk mark per file and a reading order. Each overview is one call to the strong model, saved per snapshot, so reopening the same snapshot costs nothing. The **Quick** / **Deep** switch in the header decides when it runs:
+The AI overview is a short summary of the round: whether the changes cover the linked targets, which files fall outside them, a risk mark per file and a reading order. Each overview is one call to the strong model, saved per snapshot, so reopening the same snapshot costs nothing. The **Quick** / **Deep** switch in the toolbar decides when it runs:
 
 - **Deep** makes it by itself when the round opens and whenever **Refresh** finds new changes.
 - **Quick** shows a saved overview at once, and otherwise offers **Make overview**. Until you press it, files are grouped by the agent's chapters or by folder.
@@ -24,24 +24,29 @@ The AI overview is a short summary of the round: whether the changes cover the l
 
 If it fails, the reason shows with **Retry**, and the review works without it.
 
+### Deep phases
+
+**Deep** walks three phases: **1 Meaning**, **2 Chapters**, **3 Wrap-up**. **Next: Chapters** sits at the foot of Meaning and **Next: Wrap-up** at the foot of Chapters. Wrap-up has no Send of its own; use **Send review** in the toolbar.
+
 ### Next rounds
 
-After a send, **Refresh** opens the next round. The view switch then offers **All** and **Since round N**. Comments not yet resolved are carried to the new round and follow their quoted lines when the code moved. A comment whose lines are gone stays, marked outdated. A file keeps its **Viewed** mark while its content and mode are unchanged.
+After a send, the toolbar offers **Start next round** (the same as **Refresh**). The view switch then offers **All** and **Since round N**. Comments not yet resolved are carried to the new round and follow their quoted lines when the code moved. A comment whose lines are gone stays, marked outdated. A file keeps its **Viewed** mark while its content and mode are unchanged.
 
 ## Using it
 
-1. Row menu, **Review Changes**.
+1. Press **Review** in the header, or choose **Review Branch** in a session's row menu.
 2. Click a file. Read the diff. **Inline** switches to one column.
 3. To comment, select lines, right-click and choose **Comment**, type your note and press **Add**. Comments on the removed side are allowed in the **All** view.
-4. Tick **Viewed** on files you have read.
+4. Tick **Viewed** on files you have read. ⌥⌘↑ and ⌥⌘↓ jump to the previous and next unviewed file.
 5. **Send review (n)**. A banner tells you what happened to the line: "Line pasted — press Return in the terminal", "Will be sent when the agent's turn ends", or "Copied — paste it into the terminal".
 
 A draft has **Delete**. A carried comment has **Edit** and **Resolve**, and an outdated one has **Resolve**. Resolved comments are not carried again.
 
 ## When it's empty or wrong
 
-- **"No changes yet".** The folder matches the base. Make or wait for edits, then **Refresh**.
-- **The changes button is off.** There is no session to review. Use the row menu of a session.
+- **"Nothing to review".** The folder matches the base. Make or wait for edits, then **Refresh**. No overview is made for an empty round.
+- **"Nothing new since round N".** The **Since** view found no change after that send.
+- **The Review button is not there.** It shows when the session on screen has uncommitted edits, works on a branch other than main or master, or is on a detached HEAD, and while the pane is open. Use **Review Branch** in the row menu otherwise.
 - **"Round N's snapshot is gone — showing all changes".** Git pruned the old snapshot. You lose only the **Since round** view.
 - **"The diff is too large; later files show without hunks".** The diff hit its size limit. Open those files in the [code viewer](code-viewer.md).
 - **"This round was already sent".** Press **Refresh** to open the next round.

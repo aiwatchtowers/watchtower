@@ -341,3 +341,14 @@ to the key window (owner ruling, ask #221).
   uncommitted changes.
 - The overview cache key does not include the lens file: editing `.watchtower/review.md`
   does not re-run the overview until the tree changes.
+
+## Branch review UI (board #712, 2026-10-20)
+
+The pane formerly called Changes is **Branch review**; the header button is **Review**, the row menu item **Review Branch** (a Ready-to-check row also carries a **Review** button). Spec: `docs/superpowers/specs/2026-10-20-branch-review-design.md`.
+
+- **Identity bar** (`ReviewIdentityBar`, pure lines in `ReviewIdentityPresentation`): `branch ← base · N files · +a −d · n uncommitted · worktree x`. The branch, uncommitted count and place come from the session's `SessionPlace` and git status (`status(place:mainStatus:)`: a worktree's own status, else the main folder's); base and base commit from the round; size from the diff files. On the default branch (`main`/`master`, or base equal to branch) the base is dropped and the line says only uncommitted edits are reviewed. A failed status read adds the place-label stale note. The first linked target shows as the For line.
+- **Header button** (`showsReviewButton`): "± Review", right of the view capsule, for an agent session with uncommitted edits, a branch other than main/master, or a detached HEAD, and always while the pane is on screen.
+- **Empty-diff guard**: no `review overview` call while the round's diff has no files, also after an Undo refresh empties it.
+- **Busy write**: a write that hits `SQLITE_BUSY` is retried once after 300 ms; the state flush on pane changes is quiet (no error banner).
+- **`hasChanges`** reads the whole diff, not the selected file or the Since view.
+- Deep: Next buttons at the foot of Meaning and Chapters; Wrap-up has no Send (the toolbar's Send review); a sent round shows **Start next round**; the Since view with nothing new says "Nothing new since round N"; ⌥⌘↑ / ⌥⌘↓ go to the previous / next unviewed file.
