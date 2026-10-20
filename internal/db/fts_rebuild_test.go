@@ -13,7 +13,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The tests here mutate ftsRebuildChunkHook and freeDiskBytes; no t.Parallel.
+// The tests here mutate ftsRebuildChunkHook, ftsRebuildChunkGap and
+// freeDiskBytes; no t.Parallel.
+
+// noChunkGap drops the pause between fill chunks for the test.
+func noChunkGap(t testing.TB) {
+	t.Helper()
+	prev := ftsRebuildChunkGap
+	ftsRebuildChunkGap = 0
+	t.Cleanup(func() { ftsRebuildChunkGap = prev })
+}
 
 // ftsFillQueries are the searches compared before the upgrade and after the
 // fill.
@@ -43,6 +52,7 @@ func seedFillMessages(t *testing.T, d *DB) {
 // and the search results captured before the upgrade.
 func pendingFillDB(t *testing.T) (*DB, string, map[string][]Message) {
 	t.Helper()
+	noChunkGap(t)
 	path := compactFixture(t)
 	d, err := Open(path)
 	require.NoError(t, err)
@@ -353,4 +363,111 @@ func TestCheckMessagesSearchRebuild_InMemoryReadsDiskOK(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, c.Pending)
 	assert.True(t, c.DiskOK)
+}
+
+// Another process finishing the fill between two of this call's chunks ends
+// the call at its next chunk: no cursor written back, no rescan.
+func TestRebuildMessagesSearch_OtherProcessFinishesFirst(t *testing.T) {
+	b, path, _ := pendingFillDB(t)
+	a, err := Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = a.Close() })
+	fired := false
+	setChunkHook(t, func(int) {
+		if fired {
+			return
+		}
+		fired = true
+		res, err := a.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{})
+		require.NoError(t, err)
+		require.True(t, res.Done)
+	})
+
+	res, err := b.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{ChunkRows: 4})
+	require.NoError(t, err)
+	assert.Equal(t, FTSRebuildResult{Done: true, Indexed: 3, Chunks: 1}, res)
+	assertIndexMatchesMessages(t, b)
+	assertFillFinished(t, b)
+}
+
+// A message above the cursor edited during the fill is indexed by the
+// trigger and skipped by the fill: one index row, with the new text.
+func TestRebuildMessagesSearch_EditAboveCursorIndexedOnce(t *testing.T) {
+	d, _, _ := pendingFillDB(t)
+	var above int64
+	require.NoError(t, d.QueryRow(`SELECT rowid FROM messages ORDER BY rowid LIMIT 1 OFFSET 20`).Scan(&above))
+	setChunkHook(t, func(chunk int) {
+		if chunk == 1 {
+			_, err := d.Exec(`UPDATE messages SET text = 'reworded upstream note' WHERE rowid = ?`, above)
+			require.NoError(t, err)
+		}
+	})
+
+	res, err := d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{ChunkRows: 4})
+	require.NoError(t, err)
+	require.True(t, res.Done)
+	assert.Equal(t, 1, queryInt(t, d, `SELECT COUNT(*) FROM messages_fts WHERE rowid = ?`, above))
+	assert.Equal(t, 1, queryInt(t, d, `SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'reworded'`))
+	assert.Equal(t, 19, int(res.Indexed), "the edited row is the trigger's, not the fill's")
+	assertIndexMatchesMessages(t, d)
+}
+
+// The pause between chunks ends early when ctx is cancelled.
+func TestRebuildMessagesSearch_GapHonoursCancel(t *testing.T) {
+	d, _, _ := pendingFillDB(t)
+	ftsRebuildChunkGap = time.Hour // noChunkGap's cleanup restores it
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	setChunkHook(t, func(int) { cancel() })
+
+	start := time.Now()
+	res, err := d.RebuildMessagesSearch(ctx, FTSRebuildOptions{ChunkRows: 4})
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 1, res.Chunks)
+	assert.Less(t, time.Since(start), time.Minute)
+}
+
+// BenchmarkMessagesSearchFillChunk times default-size chunks — each one write
+// lock hold — walking a synthetic 200k-message file database from the start,
+// so later chunks merge into an index that has grown:
+// go test ./internal/db -run '^$' -bench MessagesSearchFillChunk -benchtime 40x
+func BenchmarkMessagesSearchFillChunk(b *testing.B) {
+	noChunkGap(b)
+	prev := freeDiskBytes
+	freeDiskBytes = func(string) (int64, error) { return 1 << 50, nil }
+	b.Cleanup(func() { freeDiskBytes = prev })
+	d, err := Open(filepath.Join(b.TempDir(), "bench.db"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { _ = d.Close() })
+	tx, err := d.Begin()
+	if err != nil {
+		b.Fatal(err)
+	}
+	pad := "please review the rollout plan for the payments service before friday and leave comments on the open questions in the doc"
+	const chunks = 40
+	if b.N > chunks {
+		b.Skipf("-benchtime at most %dx: the table holds %d chunks", chunks, chunks)
+	}
+	for i := range chunks * ftsRebuildChunkRows {
+		if _, err := tx.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES (?, ?, 'U1', ?)`,
+			fmt.Sprintf("C%d", i%50), fmt.Sprintf("%d.000001", 1700000000+i), fmt.Sprintf("%d %s topic%d", i, pad, i%997)); err != nil {
+			b.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		b.Fatal(err)
+	}
+	if err := ReplayMessagesSearchUpgradeForTest(d); err != nil {
+		b.Fatal(err)
+	}
+	ctx := context.Background()
+	b.ResetTimer()
+	for range b.N {
+		indexed, done, err := d.fillMessagesSearchChunk(ctx, ftsRebuildChunkRows)
+		if err != nil || done || indexed != ftsRebuildChunkRows {
+			b.Fatalf("chunk: indexed=%d done=%v err=%v", indexed, done, err)
+		}
+	}
 }

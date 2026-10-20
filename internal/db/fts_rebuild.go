@@ -18,6 +18,12 @@ const (
 // walks.
 const ftsRebuildChunkRows = 5000
 
+// ftsRebuildChunkGap is the pause after each committed chunk, so a writer
+// waiting on the lock gets in: SQLite's busy handler sleeps in steps that
+// grow to 100 ms, and a waiter only takes the lock if it wakes while it is
+// free. Tests set it to 0; they mutate it, no t.Parallel.
+var ftsRebuildChunkGap = 100 * time.Millisecond
+
 // ftsRebuildChunkHook, nil in production, runs after each committed fill
 // chunk with the chunk's 1-based number within the call (test seam for the
 // interrupt and concurrent-write tests). Tests mutate this; no t.Parallel.
@@ -49,9 +55,8 @@ func (db *DB) CheckMessagesSearchRebuild() (MessagesSearchCheck, error) {
 	}
 	c := MessagesSearchCheck{Pending: true}
 	if hasLegacy {
-		// Aggregate mode: one row per table or index, summed from its pages.
-		if err := db.QueryRow(`SELECT COALESCE(SUM(pgsize), 0) FROM dbstat('main', 1) WHERE name LIKE 'messages_fts_legacy%'`).Scan(&c.LegacyBytes); err != nil {
-			return MessagesSearchCheck{}, fmt.Errorf("measuring messages_fts_legacy: %w", err)
+		if c.LegacyBytes, err = legacySearchBytes(db); err != nil {
+			return MessagesSearchCheck{}, err
 		}
 	}
 	c.NeedsDiskBytes = ftsRebuildNeedsDiskBytes(c.LegacyBytes)
@@ -68,6 +73,47 @@ func (db *DB) CheckMessagesSearchRebuild() (MessagesSearchCheck, error) {
 	}
 	c.DiskOK = c.FreeDiskBytes >= c.NeedsDiskBytes
 	return c, nil
+}
+
+// legacySearchBytes sums the pages of messages_fts_legacy and its shadow
+// tables. dbstat is asked one name at a time: it pushes `name =` down into
+// its scan, while a LIKE would walk every b-tree of the file.
+func legacySearchBytes(db *DB) (int64, error) {
+	names, err := legacySearchTables(db)
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, name := range names {
+		var n int64
+		// Aggregate mode: one row per table, summed from its pages.
+		if err := db.QueryRow(`SELECT COALESCE(SUM(pgsize), 0) FROM dbstat('main', 1) WHERE name = ?`, name).Scan(&n); err != nil {
+			return 0, fmt.Errorf("measuring %s: %w", name, err)
+		}
+		total += n
+	}
+	return total, nil
+}
+
+// legacySearchTables lists messages_fts_legacy and its shadow tables.
+func legacySearchTables(db *DB) ([]string, error) {
+	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'messages_fts_legacy%'`)
+	if err != nil {
+		return nil, fmt.Errorf("listing the messages_fts_legacy tables: %w", err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("listing the messages_fts_legacy tables: %w", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing the messages_fts_legacy tables: %w", err)
+	}
+	return names, nil
 }
 
 // messagesSearchPending reads the pending key and whether the legacy table
@@ -138,9 +184,11 @@ type FTSRebuildResult struct {
 // Nothing pending (see CheckMessagesSearchRebuild) returns Done with no
 // writes. Budget stops the call between chunks, Done false, err nil; the next
 // call resumes from the cursor. A cancelled ctx rolls back the chunk in
-// flight and returns ctx's error, wrapped; committed chunks stay. Safe to run
-// from two processes at once: each chunk re-reads the cursor in its write
-// transaction.
+// flight, or ends the pause between chunks (ftsRebuildChunkGap), and returns
+// ctx's error, wrapped; committed chunks stay. Two processes may run it at
+// once: each chunk re-reads the pending state and the cursor in its write
+// transaction, and one that finds the fill finished by the other completes
+// without writing a cursor.
 func (db *DB) RebuildMessagesSearch(ctx context.Context, opts FTSRebuildOptions) (FTSRebuildResult, error) {
 	var res FTSRebuildResult
 	pending, _, err := messagesSearchPending(db)
@@ -179,24 +227,49 @@ func (db *DB) RebuildMessagesSearch(ctx context.Context, opts FTSRebuildOptions)
 		if ftsRebuildChunkHook != nil {
 			ftsRebuildChunkHook(res.Chunks)
 		}
+		if err := waitChunkGap(ctx); err != nil {
+			return res, fmt.Errorf("filling the messages search index: %w", err)
+		}
 	}
 }
 
-// fillMessagesSearchChunk runs one chunk, or the completion when no row is
-// left past the cursor (done true).
+// waitChunkGap waits ftsRebuildChunkGap, or until ctx is done.
+func waitChunkGap(ctx context.Context) error {
+	if ftsRebuildChunkGap <= 0 {
+		return ctx.Err()
+	}
+	t := time.NewTimer(ftsRebuildChunkGap)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+// fillMessagesSearchChunk runs one chunk, or the completion (done true) when
+// no row is left past the cursor or another process has finished the fill
+// since the last chunk — the completion then only clears what is left.
 func (db *DB) fillMessagesSearchChunk(ctx context.Context, chunkRows int) (indexed int64, done bool, err error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, false, fmt.Errorf("beginning a messages search fill chunk: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	cursor, err := readMaintenanceInt(tx, maintFTSRebuildCursor)
+	pending, _, err := messagesSearchPending(tx)
 	if err != nil {
 		return 0, false, err
 	}
+	var cursor int64
 	var hi sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT MAX(rowid) FROM (SELECT rowid FROM messages WHERE rowid > ? ORDER BY rowid LIMIT ?)`, cursor, chunkRows).Scan(&hi); err != nil {
-		return 0, false, fmt.Errorf("finding the next messages search fill chunk: %w", err)
+	if pending {
+		if cursor, err = readMaintenanceInt(tx, maintFTSRebuildCursor); err != nil {
+			return 0, false, err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT MAX(rowid) FROM (SELECT rowid FROM messages WHERE rowid > ? ORDER BY rowid LIMIT ?)`, cursor, chunkRows).Scan(&hi); err != nil {
+			return 0, false, fmt.Errorf("finding the next messages search fill chunk: %w", err)
+		}
 	}
 	if !hi.Valid {
 		if err := completeMessagesSearchFill(ctx, tx); err != nil {
@@ -242,30 +315,29 @@ type FTSRebuildRunOptions struct{ Force bool } // Force skips the disk rule
 
 // RebuildMessagesSearchAt runs the messages search fill on the database at
 // dbPath to the end, for `db compact`. It never creates the file or
-// migrates. Unless opts.Force, a volume with less free space than
-// ftsRebuildNeedsDiskBytes of the legacy index is skipped as disk, read
-// through OpenExisting before anything is opened for writing. Then it opens
-// with OpenExistingRW; a schema that is not current is skipped as
-// schema_pending. A cancelled ctx is skipped as interrupted (committed chunks
+// migrates. A read-only look through OpenExisting comes first, so nothing is
+// opened for writing when there is nothing to do: a schema that is not
+// current is skipped as schema_pending, nothing pending returns the zero
+// result, and unless opts.Force a volume with less free space than
+// ftsRebuildNeedsDiskBytes of the legacy index is skipped as disk. Then it
+// opens with OpenExistingRW and checks the schema again. A cancelled ctx is skipped as interrupted (committed chunks
 // stay; the next run resumes). Skips return (result, nil); FTSRebuilt is set
 // when a pending fill completed, and a call with nothing pending returns the
 // zero result.
 func RebuildMessagesSearchAt(ctx context.Context, dbPath string, opts FTSRebuildRunOptions) (CompactResult, error) {
 	var res CompactResult
-	if !opts.Force {
-		ro, err := OpenExisting(dbPath, compactCheckBusy)
-		if err != nil {
-			return res, err
-		}
-		check, err := ro.CheckMessagesSearchRebuild()
-		_ = ro.Close()
-		if err != nil {
-			return res, err
-		}
-		if !check.DiskOK {
-			res.Skipped = "disk"
-			return res, nil
-		}
+	ro, err := OpenExisting(dbPath, compactCheckBusy)
+	if err != nil {
+		return res, err
+	}
+	skipped, pending, err := checkMessagesSearchRun(ro, opts)
+	_ = ro.Close()
+	if err != nil {
+		return res, err
+	}
+	if skipped != "" || !pending {
+		res.Skipped = skipped
+		return res, nil
 	}
 
 	d, err := OpenExistingRW(dbPath, compactBusy)
@@ -281,10 +353,6 @@ func RebuildMessagesSearchAt(ctx context.Context, dbPath string, opts FTSRebuild
 		res.Skipped = "schema_pending"
 		return res, nil
 	}
-	pending, _, err := messagesSearchPending(d)
-	if err != nil || !pending {
-		return res, err
-	}
 	if _, err := d.RebuildMessagesSearch(ctx, FTSRebuildOptions{}); err != nil {
 		if ctx.Err() != nil {
 			res.Skipped = "interrupted"
@@ -294,4 +362,24 @@ func RebuildMessagesSearchAt(ctx context.Context, dbPath string, opts FTSRebuild
 	}
 	res.FTSRebuilt = true
 	return res, nil
+}
+
+// checkMessagesSearchRun is RebuildMessagesSearchAt's read-only look: the
+// skip reason (schema_pending, disk), or "" with whether the fill is pending.
+func checkMessagesSearchRun(ro *DB, opts FTSRebuildRunOptions) (skipped string, pending bool, err error) {
+	current, err := ro.schemaCurrentErr()
+	if err != nil {
+		return "", false, err
+	}
+	if !current {
+		return "schema_pending", false, nil
+	}
+	check, err := ro.CheckMessagesSearchRebuild()
+	if err != nil {
+		return "", false, err
+	}
+	if check.Pending && !opts.Force && !check.DiskOK {
+		return "disk", true, nil
+	}
+	return "", check.Pending, nil
 }
