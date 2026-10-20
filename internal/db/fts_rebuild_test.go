@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,6 +109,67 @@ func TestRebuildMessagesSearch_FillsAndDropsLegacy(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, before[q], hits, q)
 	}
+	assertIndexMatchesMessages(t, d)
+	assertFillFinished(t, d)
+}
+
+// setChunkTextBytes sets the fill chunk's text budget for the test.
+func setChunkTextBytes(t *testing.T, n int64) {
+	t.Helper()
+	prev := ftsRebuildChunkTextBytes
+	ftsRebuildChunkTextBytes = n
+	t.Cleanup(func() { ftsRebuildChunkTextBytes = prev })
+}
+
+// pendingLongFillDB opens a file database holding seedFillMessages followed
+// by one message per entry of sizes (each that many bytes of text) with the
+// fill pending.
+func pendingLongFillDB(t *testing.T, sizes ...int) *DB {
+	t.Helper()
+	noChunkGap(t)
+	d, err := Open(compactFixture(t))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	seedFillMessages(t, d)
+	for i, n := range sizes {
+		text := strings.Repeat("rollout ", n/8+1)[:n]
+		_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C9', ?, 'U1', ?)`,
+			fmt.Sprintf("%d.000001", 1800000000+i), text)
+		require.NoError(t, err)
+	}
+	require.NoError(t, ReplayMessagesSearchUpgradeForTest(d))
+	return d
+}
+
+func TestRebuildMessagesSearch_ChunkBoundedByTextBytes(t *testing.T) {
+	// The 20 short indexable messages hold well under 1000 bytes. With a
+	// 4000-byte budget the first chunk takes them and two 3000-byte messages
+	// (the text before the second is under the budget), the second the other
+	// two: a rows-only bound would fill everything in one chunk.
+	d := pendingLongFillDB(t, 3000, 3000, 3000, 3000)
+	setChunkTextBytes(t, 4000)
+
+	res, err := d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{})
+	require.NoError(t, err)
+	assert.Equal(t, FTSRebuildResult{Done: true, Indexed: 24, Chunks: 3, DrainChunks: 1}, res, "one drop, then 2 fill chunks")
+	hits, err := d.SearchMessages("rollout", SearchOpts{})
+	require.NoError(t, err)
+	assert.Len(t, hits, 4)
+	assertIndexMatchesMessages(t, d)
+	assertFillFinished(t, d)
+}
+
+func TestRebuildMessagesSearch_MessageOverTextBudgetProgresses(t *testing.T) {
+	// Each long message alone exceeds the budget: every chunk still takes at
+	// least one row, so each gets a chunk of its own after the short ones.
+	d := pendingLongFillDB(t, 5000, 5000)
+	setChunkTextBytes(t, 100)
+
+	res, err := d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{})
+	require.NoError(t, err)
+	assert.True(t, res.Done)
+	assert.EqualValues(t, 22, res.Indexed)
+	assert.Greater(t, res.Chunks-res.DrainChunks, 2, "the long messages in chunks of their own")
 	assertIndexMatchesMessages(t, d)
 	assertFillFinished(t, d)
 }

@@ -32,6 +32,17 @@ const ftsRebuildMaxFailures = 3
 // walks.
 const ftsRebuildChunkRows = 5000
 
+// ftsRebuildChunkTextBytes bounds the indexable text one fill chunk inserts,
+// beside ChunkRows: a Slack message holds up to ~40k characters, so 5000 long
+// ones would be hundreds of MB in one transaction. The index here keeps its
+// own copy of the text (_content) beside the inverted index, and the WAL takes
+// whole pages, so a chunk writes a small multiple of its text: about 16 MiB
+// of frames for 4 MiB, a quarter of ftsRebuildMinFreeBytes. A chunk takes rows
+// while the text before them is under the budget, so its text stays under the
+// budget plus one message, and a single message larger than the budget still
+// fills a chunk of its own. Tests mutate this; no t.Parallel.
+var ftsRebuildChunkTextBytes int64 = 4 << 20
+
 // ftsRebuildChunkGap is the pause after each committed chunk, so a writer
 // waiting on the lock gets in: SQLite's busy handler sleeps in steps that
 // grow to 100 ms, and a waiter only takes the lock if it wakes while it is
@@ -64,7 +75,7 @@ var ftsLegacyDrain = []struct {
 // the legacy index before it writes the new one (dropped, or drained and then
 // dropped), and the new index, about the legacy one's size, reuses the freed
 // pages, so the file does not grow. What needs room is the WAL: a chunk's
-// frames (a few MB for 5000 rows) beside the other writers' frames until the
+// frames (a few MB; ftsRebuildChunkTextBytes bounds them) beside the other writers' frames until the
 // next checkpoint. 64 MiB is that headroom many times over and still lets a
 // nearly full volume rebuild. Tests mutate this; no t.Parallel.
 var ftsRebuildMinFreeBytes int64 = 64 << 20
@@ -205,7 +216,9 @@ const (
 //
 // A fill chunk is one short write transaction over the next ChunkRows
 // messages rows past the cursor (fts_rebuild_cursor_messages), indexable or
-// not: hi is the highest rowid among them, every indexable row in (cursor,
+// not, cut short once their indexable text reaches ftsRebuildChunkTextBytes
+// (at least one row is taken): hi is the highest rowid among them, every
+// indexable row in (cursor,
 // hi] not already indexed is inserted under its rowid — the triggers index
 // new and edited messages since the migration, so NOT EXISTS skips them —
 // and the cursor moves to hi in the same transaction. Bounding by hi rather
@@ -325,7 +338,7 @@ func (db *DB) fillMessagesSearchChunk(ctx context.Context, chunkRows int, drain 
 		if cursor, err = readMaintenanceInt(tx, maintFTSRebuildCursor); err != nil {
 			return 0, chunkFilled, err
 		}
-		if err := tx.QueryRowContext(ctx, `SELECT MAX(rowid) FROM (SELECT rowid FROM messages WHERE rowid > ? ORDER BY rowid LIMIT ?)`, cursor, chunkRows).Scan(&hi); err != nil {
+		if err := tx.QueryRowContext(ctx, fillChunkBoundQuery, cursor, chunkRows, ftsRebuildChunkTextBytes).Scan(&hi); err != nil {
 			return 0, chunkFilled, fmt.Errorf("finding the next messages search fill chunk: %w", err)
 		}
 	}
@@ -354,6 +367,17 @@ func (db *DB) fillMessagesSearchChunk(ctx context.Context, chunkRows int, drain 
 	}
 	return indexed, chunkFilled, nil
 }
+
+// fillChunkBoundQuery finds a fill chunk's hi: the highest rowid of the next
+// ? (ChunkRows) messages rows past the cursor whose preceding indexable text
+// in that window is under ? bytes. The first row's preceding sum is NULL, so
+// it is always taken. It walks the rowid index and reads at most ChunkRows
+// rows, the ones the chunk's INSERT reads anyway.
+const fillChunkBoundQuery = `SELECT MAX(rowid) FROM (
+	SELECT rowid, SUM(CASE WHEN text != '' AND is_deleted = 0 THEN octet_length(text) ELSE 0 END)
+		OVER (ORDER BY rowid ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS before
+	FROM (SELECT rowid, text, is_deleted FROM messages WHERE rowid > ? ORDER BY rowid LIMIT ?)
+) WHERE before IS NULL OR before < ?`
 
 // freeMessagesSearchLegacy frees the existing legacy table in tx and commits:
 // with drain, it deletes the next legacy shadow rows (chunkDrained) unless
