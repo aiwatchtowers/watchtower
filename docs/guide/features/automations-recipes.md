@@ -41,7 +41,7 @@ Personal recipes sit in the `automations` folder inside Watchtower's workspace f
 ### Workbench recipes
 A recipe can also live in a Workbench folder, in `.watchtower/automations/`, so it travels with the repository. There it can do what a personal one can't: run an exact command listed in its settings in the folder, open an agent session there, or ask you something. Its card says "workbench" where a personal one says "personal"; **Edit**, **Change in words** and confirming work the same, and the new version is saved in the workbench folder.
 
-Because the file belongs to the repository, it can arrive with a `git pull` or be changed by someone else. Watchtower notices when you open the workbench, and as the file changes once the workbench's files have been shown. Such a recipe shows **Needs your confirmation** on its card and its header button, and does not run until you confirm it.
+Because the file belongs to the repository, it can arrive with a `git pull` or be changed by someone else. Watchtower notices when you open the workbench, and as the file changes once the workbench's files have been shown. Such a recipe shows **Needs your confirmation** on its card and in the workbench's ⚡ menu, and does not run until you confirm it.
 
 ## Using it
 1. In **Automations**, click **Templates** (or **Browse templates** on an empty tab).

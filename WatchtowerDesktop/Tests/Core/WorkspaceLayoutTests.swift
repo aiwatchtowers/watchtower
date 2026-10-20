@@ -399,15 +399,6 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertEqual(other, split(), "a view not on screen changes nothing")
     }
 
-    func testTerminalSlotIsTheVisibleSessionElseTheLastVisiblePane() {
-        XCTAssertEqual(split().terminalSlot, .session(1))
-        XCTAssertEqual(WorkspaceLayout.default.terminalSlot, .board, "a single pane is replaced")
-        var views = WorkspaceLayout(primary: .board, secondary: .files, expanded: nil, dividerFraction: 0.5)
-        XCTAssertEqual(views.terminalSlot, .files, "the first view stays, as with the Terminal button")
-        views.toggleExpand(.board)
-        XCTAssertEqual(views.terminalSlot, .board, "only what is on screen")
-    }
-
     func testWorkspaceViewOfAPane() {
         XCTAssertEqual(WorkspaceView(.session(3)), .terminal)
         XCTAssertEqual(WorkspaceView(.board), .board)
@@ -597,5 +588,50 @@ final class WorkspaceLayoutTests: XCTestCase {
         XCTAssertTrue(l.showsOtherMode(of: .session(7)), "the expanded Workchat holds the room")
         XCTAssertFalse(l.showsOtherMode(of: .sessionChat(7)))
         XCTAssertFalse(l.showsOtherMode(of: .board))
+    }
+
+    // MARK: - Session tab
+
+    func testSessionTabLitForEverySessionFamilyPane() {
+        for pane in [WorkspacePane.session(1), .sessionChat(1), .sessionReport(1), .changes(1)] {
+            var l = WorkspaceLayout.default
+            l.show(pane)
+            XCTAssertTrue(l.isShowingSessionView, "\(pane)")
+        }
+        for pane in [WorkspacePane.board, .files, .analytics] {
+            var l = WorkspaceLayout.default
+            l.show(pane)
+            XCTAssertFalse(l.isShowingSessionView, "\(pane)")
+        }
+        XCTAssertTrue(split().isShowingSessionView)
+    }
+
+    func testHideSessionViewsLeavesTheOtherPaneAlone() {
+        var l = split()
+        l.hideSessionViews()
+        XCTAssertEqual(l.visiblePanes, [.board])
+        XCTAssertFalse(l.isSplit)
+    }
+
+    func testHideSessionViewsNeverEmptiesThePage() {
+        var single = WorkspaceLayout.default
+        single.show(.session(1))
+        let before = single
+        single.hideSessionViews()
+        XCTAssertEqual(single, before)
+
+        var two = WorkspaceLayout.default
+        two.show(.session(1))
+        two.split(with: .sessionReport(1))
+        let both = two
+        two.hideSessionViews()
+        XCTAssertEqual(two, both)
+    }
+
+    func testSessionIDOfAnySessionPane() {
+        for pane in [WorkspacePane.session(7), .sessionChat(7), .sessionReport(7), .changes(7)] {
+            XCTAssertEqual(WorkspaceLayout.sessionID(ofAny: pane), 7)
+        }
+        XCTAssertNil(WorkspaceLayout.sessionID(ofAny: .board))
     }
 }

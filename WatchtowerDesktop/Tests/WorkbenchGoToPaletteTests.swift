@@ -336,7 +336,10 @@ final class WorkbenchGoToPaletteTests: XCTestCase {
         XCTAssertThrowsError(try palette.inspect().find(ViewType.Text.self) { try $0.string().hasPrefix("Not running") },
                              "no caption text")
         XCTAssertFalse(try palette.inspect().findAll(SessionLiveDot.self).isEmpty)
-        XCTAssertNoThrow(try palette.inspect().find(viewWithAccessibilityLabel: "Not running"))
+        // The dot's accessibility label is the state's caption (ViewInspector cannot read it here).
+        XCTAssertNoThrow(try palette.inspect().find(SessionLiveDot.self) {
+            SessionStatePresentation.caption(for: try $0.actualView().state) == "Not running"
+        })
     }
 
     /// No workbench page (the empty state): no first section.
@@ -360,7 +363,7 @@ final class WorkbenchGoToPaletteTests: XCTestCase {
             vm: vm, switcherActions: WorkbenchSwitcherActions(openFolder: {}, showAll: {})
         ) { opened += 1 }
 
-        try row.inspect().find(viewWithAccessibilityLabel: "Go to…").button().tap()
+        try row.inspect().find(ViewType.Button.self) { try $0.help().string() == "Go to… (⌘K)" }.tap()
 
         XCTAssertEqual(opened, 1)
     }
@@ -376,10 +379,10 @@ final class WorkbenchGoToPaletteTests: XCTestCase {
         let closed = try WorkbenchTitleRow(vm: vm, switcherActions: actions, paletteOpen: false) {}
             .inspect().findAll(ViewType.Button.self)
 
-        let label = { (button: InspectableView<ViewType.Button>) in try? button.accessibilityLabel().string() }
-        XCTAssertTrue(try XCTUnwrap(open.first { label($0) == "Hide Sessions Panel" }).isDisabled())
-        XCTAssertFalse(try XCTUnwrap(open.first { label($0) == "Go to…" }).isDisabled())
-        XCTAssertFalse(try XCTUnwrap(closed.first { label($0) == "Hide Sessions Panel" }).isDisabled())
+        let help = { (button: InspectableView<ViewType.Button>) in try? button.help().string() }
+        XCTAssertTrue(try XCTUnwrap(open.first { help($0) == "Hide Sessions Panel (⌥⌘S)" }).isDisabled())
+        XCTAssertFalse(try XCTUnwrap(open.first { help($0) == "Go to… (⌘K)" }).isDisabled())
+        XCTAssertFalse(try XCTUnwrap(closed.first { help($0) == "Hide Sessions Panel (⌥⌘S)" }).isDisabled())
     }
 
     /// The Workbench menu's chords act only with the page's window itself

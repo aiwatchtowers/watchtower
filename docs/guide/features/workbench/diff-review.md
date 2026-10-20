@@ -8,7 +8,7 @@ A pull request review needs a pull request. Here you review before anything is c
 
 ## How it works
 
-**Review** in the workbench header opens the **Branch review** pane and starts a round. At the top, an identity bar names the branch and its base (`feature/x → main`), the files and lines changed, the uncommitted edits, the worktree the session works in, and the targets the work is for. Watchtower snapshots the folder's working tree (tracked and untracked files, not ignored ones) and compares it with a base, the point where the branch left the default branch. The snapshot only writes git objects. It touches no branch, no index and no file.
+**Review** on a session's strip, or **Review Branch** in its row menu, opens the **Branch review** pane and starts a round. At the top, an identity bar names the branch and its base (`feature/x → main`), the files and lines changed, the uncommitted edits, the worktree the session works in, and the targets the work is for. Watchtower snapshots the folder's working tree (tracked and untracked files, not ignored ones) and compares it with a base, the point where the branch left the default branch. The snapshot only writes git objects. It touches no branch, no index and no file.
 
 The pane has a file list, a diff, and a list of comments. Files show added, modified, deleted or renamed, their line counts and a **Viewed** checkbox. Lockfiles, generated files and very large files are folded by name. Binary and oversized files show a placeholder.
 
@@ -34,7 +34,7 @@ After a send, the toolbar offers **Start next round** (the same as **Refresh**).
 
 ## Using it
 
-1. Press **Review** in the header, or choose **Review Branch** in a session's row menu.
+1. Press **Review** on the session's strip, or choose **Review Branch** in a session's row menu.
 2. Click a file. Read the diff. **Inline** switches to one column.
 3. To comment, select lines, right-click and choose **Comment**, type your note and press **Add**. Comments on the removed side are allowed in the **All** view.
 4. Tick **Viewed** on files you have read. ⌥⌘↑ and ⌥⌘↓ jump to the previous and next unviewed file.
@@ -46,7 +46,7 @@ A draft has **Delete**. A carried comment has **Edit** and **Resolve**, and an o
 
 - **"Nothing to review".** The folder matches the base. Make or wait for edits, then **Refresh**. No overview is made for an empty round.
 - **"Nothing new since round N".** The **Since** view found no change after that send.
-- **The Review button is not there.** It shows when the session on screen has uncommitted edits or unpushed commits, works on a branch other than main or master, or is on a detached HEAD, and while the pane is open. Use **Review Branch** in the row menu otherwise.
+- **The Review button is not there.** It shows on a session's strip when that session has uncommitted edits or unpushed commits, works on a branch other than main or master, or is on a detached HEAD, and while its pane is open. Use **Review Branch** in the row menu otherwise.
 - **"Round N's snapshot is gone — showing all changes".** Git pruned the old snapshot. You lose only the **Since round** view.
 - **"The diff is too large; later files show without hunks".** The diff hit its size limit. Open those files in the [code viewer](code-viewer.md).
 - **"This round was already sent".** Press **Refresh** to open the next round.

@@ -1510,8 +1510,8 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
                        "the layout is persisted")
     }
 
-    /// The header's session menu in a single pane: another session replaces
-    /// the terminal on screen, "New session" starts one there.
+    /// The session strip's sessions menu in a single pane: another session
+    /// replaces the terminal on screen, "New session" starts one there.
     func testHeaderSessionMenuSwitchesTheSinglePaneSession() async throws {
         let p = try await workbenchWithFolder()
         let one = try await liveSession(p, "one")
@@ -1522,10 +1522,10 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         await vm.showSession(id: one.id)
         XCTAssertEqual(vm.layout.visiblePanes, [.session(one.id)])
 
-        await vm.showInPane(vm.layout.terminalSlot, item: .session(two.id), projectID: p)
+        await vm.showInPane(vm.layout.primary, item: .session(two.id), projectID: p)
         XCTAssertEqual(vm.layout.visiblePanes, [.session(two.id)])
 
-        await vm.newSession(inPane: vm.layout.terminalSlot, projectID: p)
+        await vm.newSession(inPane: vm.layout.primary, projectID: p)
         let fresh = try XCTUnwrap(vm.sessions.first { $0.id != one.id && $0.id != two.id })
         XCTAssertEqual(vm.layout.visiblePanes, [.session(fresh.id)])
     }
@@ -1559,8 +1559,8 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.layout.visiblePanes, [.session(two.id)], "another session opens in its own mode")
         await vm.showSession(id: one.id)
         XCTAssertEqual(vm.layout.visiblePanes, [.sessionChat(one.id)], "the remembered mode")
-        await vm.showInPane(vm.layout.terminalSlot, item: .session(two.id), projectID: p)
-        XCTAssertEqual(vm.layout.visiblePanes, [.session(two.id)], "the shared ▾ menu replaces the Workchat slot")
+        await vm.showInPane(vm.layout.primary, item: .session(two.id), projectID: p)
+        XCTAssertEqual(vm.layout.visiblePanes, [.session(two.id)], "the strip's ▾ menu replaces the Workchat slot")
 
         await vm.showTerminal(sessionID: one.id, projectID: p)
         XCTAssertEqual(vm.layout.visiblePanes, [.session(one.id)])
@@ -1569,7 +1569,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: p), WorkspaceLayout.decode(defaults.data(forKey: WorkspaceLayout.key(workbenchID: p))),
                        "the mode is persisted with the layout")
 
-        await vm.newSession(inPane: vm.layout.terminalSlot, projectID: p)
+        await vm.newSession(inPane: vm.layout.primary, projectID: p)
         let fresh = try XCTUnwrap(vm.sessions.first { $0.id != one.id && $0.id != two.id })
         XCTAssertEqual(vm.layout.visiblePanes, [.session(fresh.id)], "a new session opens in its terminal")
         XCTAssertEqual(vm.layout.workchatSessions, [one.id])

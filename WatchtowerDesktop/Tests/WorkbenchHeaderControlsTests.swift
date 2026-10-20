@@ -6,10 +6,10 @@ import ViewInspector
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// The workbench header's `Terminal ▾ | Session | Board | Files | Analytics | Review | split | ⋯`
-/// (spec 2026-10-03-workbench-session-report Part 7, the owner's pick on
-/// board #357): the buttons' order, what each toggle does, the Session
-/// view's pairing with its session in a split, and the ⋯ menu's actions.
+/// The workbench row's `[Session | Board | Files] … ⚡ ▥ ◫ ⋯` (spec
+/// 2026-10-20-workbench-header §1, calls 2 and 7): the tabs, the Session
+/// tab's lit rule, Analytics and split as icons, the ⚡ menu's New
+/// Automation… and the ⋯ menu's actions.
 @MainActor
 final class WorkbenchHeaderControlsTests: XCTestCase {
     private var pool: DatabasePool!
@@ -74,22 +74,28 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
     private func controls(
         _ vm: WorkbenchesViewModel,
         _ project: Workbench,
+        automations: WorkbenchAutomationsMenu? = nil,
         onCleanUp: @escaping () -> Void = {},
-        onNewAutomation: (() -> Void)? = nil,
         onDelete: @escaping () -> Void = {}
     ) -> WorkbenchHeaderControls {
-        WorkbenchHeaderControls(vm: vm, project: project, onDelete: onDelete, onCleanUpOldWorktrees: onCleanUp,
-                                onNewAutomation: onNewAutomation)
+        WorkbenchHeaderControls(vm: vm, project: project, automations: automations, onDelete: onDelete,
+                                onCleanUpOldWorktrees: onCleanUp)
     }
 
     private static func title(_ toggle: InspectableView<ViewType.Toggle>) throws -> String {
         try toggle.labelView().label().title().text().string()
     }
 
-    /// The view button titled `title`, read off a fresh body (each body
-    /// captures the layout it was drawn for).
+    /// The tab capsule's toggle titled `title`, read off a fresh body (each
+    /// body captures the layout it was drawn for).
     private func toggle(_ title: String, _ sut: WorkbenchHeaderControls) throws -> InspectableView<ViewType.Toggle> {
         try sut.inspect().find(ViewType.Toggle.self) { try Self.title($0) == title }
+    }
+
+    /// The icon button whose help is `help` (ViewInspector reads a Button's
+    /// help, not its accessibility label, on this SDK).
+    private func button(help: String, _ sut: WorkbenchHeaderControls) throws -> InspectableView<ViewType.Button> {
+        try sut.inspect().find(ViewType.Button.self) { try $0.help().string() == help }
     }
 
     private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
@@ -103,81 +109,79 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         }
     }
 
-    // MARK: - View buttons
+    private static let analyticsHelp = "Agent time, cost and hints for this workbench"
 
-    /// The owner's pick: Terminal | Workchat ▾ | Session | Board | Files, plus
-    /// the diff reviewer's Changes (board #328); Workchat is the second half
-    /// of Terminal's twin (#711) and the sessions chevron sits by the twin only.
-    func testTheViewButtonsReadTerminalSessionBoardFilesAnalytics() async throws {
+    // MARK: - View tabs
+
+    /// The tab capsule holds exactly Session | Board | Files (spec
+    /// 2026-10-20 §1): Terminal, Workchat, Report and Changes moved to the
+    /// session strip, Analytics is an icon. The ⋯ menu's archive choices are
+    /// plain-titled toggles, not tabs.
+    func testTheViewTabsReadSessionBoardFiles() async throws {
         let s = try await seed()
         let sut = controls(makeVM(), s.project)
 
-        // The view buttons' own ForEach: the … menu holds toggles too (the
-        // archive setting's choices).
-        let buttons = try sut.inspect().find(ViewType.ForEach.self)
-        let titles = try buttons.findAll(ViewType.Toggle.self).map(Self.title)
-        XCTAssertEqual(titles, ["Terminal", "Workchat", "Session", "Board", "Files", "Analytics"])
-        XCTAssertNoThrow(try buttons.tupleView(0).find(ViewType.Menu.self), "the sessions chevron sits by the twin")
-        for index in 1..<5 {
-            XCTAssertThrowsError(try buttons.tupleView(index).find(ViewType.Menu.self), "no chevron by \(titles[index + 1])")
-        }
+        let titles = try sut.inspect().findAll(ViewType.Toggle.self).compactMap { try? Self.title($0) }
+        XCTAssertEqual(titles, ["Session", "Board", "Files"])
+        XCTAssertThrowsError(try sut.inspect().find(WorkbenchSessionsMenu.self), "the sessions menu is the strip's")
     }
 
-    /// The Review button (board #712, spec §5) shows only with something to
-    /// review: no session, a clean `main` or an unread status hide it; a dirty
-    /// tree or a feature branch shows it; an open pane keeps it, lit.
-    func testTheReviewButtonShowsOnlyWithSomethingToReview() async throws {
-        let dir = folder.appendingPathComponent("empty", isDirectory: true).path
-        let empty = try await pool.write { d in
-            let p = try TestDatabase.insertWorkbench(d, name: "empty", folder: dir)
-            return try XCTUnwrap(try Workbench.fetchOne(d, sql: "SELECT * FROM projects WHERE id = ?", arguments: [p]))
-        }
-        let vm = makeVM()
-        await vm.loadSessions(projectID: empty.id)
-        XCTAssertNil(vm.sessionViewTarget(projectID: empty.id))
-        XCTAssertThrowsError(try toggle("Review", controls(vm, empty)), "no session: absent")
-        XCTAssertThrowsError(try toggle("Changes", controls(vm, empty)), "the old Changes button is gone")
-
+    /// Review belongs to the session (board #712 on the 2026-10-20 header):
+    /// even with something to review the title row has no Review button —
+    /// the session strip carries it.
+    func testTheTitleRowHasNoReviewButton() async throws {
         let s = try await seed()
-        let p = s.project.id
-        await vm.loadSessions(projectID: p)
-        XCTAssertNotNil(vm.sessionViewTarget(projectID: p))
-        XCTAssertThrowsError(try toggle("Review", controls(vm, s.project)), "status not read yet: absent")
+        let vm = makeVM()
+        await vm.loadSessions(projectID: s.project.id)
+        vm.gitStatus[s.project.id] = WorkbenchGitStatus(branch: "feature/x", dirty: true, changes: 2)
+        vm.setLayout(Self.split(.session(s.first.id), .changes(s.first.id)), projectID: s.project.id)
 
-        vm.gitStatus[p] = Self.status(branch: "main", dirty: false)
-        XCTAssertThrowsError(try toggle("Review", controls(vm, s.project)), "clean main: absent")
-        vm.gitStatus[p] = Self.status(branch: "main", dirty: true)
-        XCTAssertFalse(try toggle("Review", controls(vm, s.project)).isOn(), "dirty main: present, off")
-        vm.gitStatus[p] = Self.status(branch: "feature/x", dirty: false)
-        XCTAssertNoThrow(try toggle("Review", controls(vm, s.project)), "feature branch: present")
-
-        vm.gitStatus[p] = Self.status(branch: "main", dirty: false)
-        vm.setLayout(Self.split(.session(s.first.id), .changes(s.first.id)), projectID: p)
-        XCTAssertTrue(try toggle("Review", controls(vm, s.project)).isOn(), "pane on screen: present and on")
+        let titles = try controls(vm, s.project).inspect().findAll(ViewType.Toggle.self).compactMap { try? Self.title($0) }
+        XCTAssertEqual(titles, ["Session", "Board", "Files"])
     }
 
-    private static func status(branch: String, dirty: Bool) -> WorkbenchGitStatus {
-        WorkbenchGitStatus(branch: branch, dirty: dirty, changes: dirty ? 2 : 0)
-    }
+    // MARK: - Branch crumb
 
-    /// The Review toggle drives the Branch review pane: on shows it, off hides it.
-    func testTheReviewToggleShowsAndHidesTheBranchReviewPane() async throws {
+    /// The place and branch crumbs are on screen once: in the title row
+    /// while no session strip carries them (a Board page, a lone Changes
+    /// pane, a session hidden under an expanded Board), on the owning
+    /// session's strip otherwise — never in both.
+    func testTheTitleRowCarriesTheCrumbsOnlyWithoutAnOwningSessionPane() async throws {
         let s = try await seed()
         let vm = makeVM()
         vm.selectedWorkbenchID = s.project.id
         await vm.loadSessions(projectID: s.project.id)
         let p = s.project.id
-        vm.gitStatus[p] = Self.status(branch: "feature/x", dirty: false)
-        try toggle("Review", controls(vm, s.project)).tap()
-        await waitUntil { vm.layout(projectID: p).isShowing(.changes) }
-        try toggle("Review", controls(vm, s.project)).tap()
-        XCTAssertFalse(vm.layout(projectID: p).isShowing(.changes))
+        let hasCrumbs = { () throws -> Bool in
+            let sut = try self.controls(vm, s.project).inspect()
+            let branch = (try? sut.find(WorkbenchBranchCrumb.self)) != nil
+            XCTAssertEqual(branch, (try? sut.find(WorkbenchPlaceCrumb.self)) != nil, "the crumbs go together")
+            return branch
+        }
+        let single = { (pane: WorkspacePane) -> WorkspaceLayout in
+            var layout = WorkspaceLayout.default
+            layout.show(pane)
+            return layout
+        }
+
+        vm.setLayout(.default, projectID: p)
+        XCTAssertTrue(try hasCrumbs(), "a Board-only page: the main folder's branch is in the title row")
+        vm.setLayout(single(.changes(s.first.id)), projectID: p)
+        XCTAssertTrue(try hasCrumbs(), "a lone Changes pane")
+        var expanded = Self.split(.session(s.first.id), .board)
+        expanded.toggleExpand(.board)
+        vm.setLayout(expanded, projectID: p)
+        XCTAssertTrue(try hasCrumbs(), "the session under an expanded Board draws no strip")
+
+        vm.setLayout(single(.session(s.first.id)), projectID: p)
+        XCTAssertFalse(try hasCrumbs(), "the session pane's strip carries them")
+        vm.setLayout(Self.split(.board, .session(s.first.id)), projectID: p)
+        XCTAssertFalse(try hasCrumbs())
     }
 
-    /// Every view button toggles its view as before, the Session button
-    /// included: on puts it beside the terminal in a split (the Session view
-    /// beside its own session), off closes that pane of the split.
-    func testEveryViewButtonTogglesItsView() async throws {
+    /// Analytics is an icon button: in a split it shows the Analytics view
+    /// beside the session, and a second click closes it again.
+    func testAnalyticsIsAnIconToggle() async throws {
         let s = try await seed()
         let vm = makeVM()
         vm.selectedWorkbenchID = s.project.id
@@ -187,52 +191,119 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         vm.setLayout(Self.split(terminal, .board), projectID: p)
         let panes = { vm.layout(projectID: p).visiblePanes }
 
-        XCTAssertTrue(try toggle("Board", controls(vm, s.project)).isOn())
-        XCTAssertFalse(try toggle("Session", controls(vm, s.project)).isOn())
-        try toggle("Session", controls(vm, s.project)).tap()
-        await waitUntil { panes() == [terminal, .sessionReport(s.first.id)] }
-        XCTAssertTrue(try toggle("Session", controls(vm, s.project)).isOn())
-        XCTAssertFalse(try toggle("Board", controls(vm, s.project)).isOn())
-
-        try toggle("Session", controls(vm, s.project)).tap()
-        XCTAssertEqual(panes(), [terminal], "off closes the Session pane, the terminal stays")
-
-        vm.toggleSplit(projectID: p)
-        try toggle("Files", controls(vm, s.project)).tap()
-        await waitUntil { panes() == [terminal, .files] }
-        try toggle("Board", controls(vm, s.project)).tap()
-        await waitUntil { panes() == [terminal, .board] }
-        try toggle("Board", controls(vm, s.project)).tap()
-        XCTAssertEqual(panes(), [terminal])
-
-        try toggle("Session", controls(vm, s.project)).tap()
-        await waitUntil { panes() == [terminal, .sessionReport(s.first.id)] }
-        XCTAssertTrue(vm.layout(projectID: p).isSplit, "from a single pane: the terminal and its report")
-        try toggle("Terminal", controls(vm, s.project)).tap()
-        XCTAssertEqual(panes(), [.sessionReport(s.first.id)], "Terminal off closes the terminal pane")
-        try toggle("Session", controls(vm, s.project)).tap()
-        XCTAssertEqual(panes(), [.sessionReport(s.first.id)], "a single pane is never removed")
-        try toggle("Terminal", controls(vm, s.project)).tap()
-        await waitUntil { vm.layout(projectID: p).isShowing(.terminal) }
+        try button(help: Self.analyticsHelp, controls(vm, s.project)).tap()
+        await waitUntil { panes() == [terminal, .analytics] }
+        try button(help: Self.analyticsHelp, controls(vm, s.project)).tap()
+        XCTAssertEqual(panes(), [terminal], "off closes the Analytics pane, the session stays")
     }
 
-    /// A split of a terminal and its report stays paired when the session
-    /// changes, from the Terminal ▾ menu and from a panel click.
-    func testASplitKeepsTheTerminalAndItsReportPairedWhenTheSessionChanges() async throws {
+    /// Call 7: Session is lit while any pane shows a session view. In a
+    /// split, off leaves the other pane alone; on a single pane the tabs
+    /// pick — an unlit Session shows a session in its remembered mode, the
+    /// lit one does nothing.
+    func testSessionTabFollowsTheLitRule() async throws {
         let s = try await seed()
         let vm = makeVM()
         vm.selectedWorkbenchID = s.project.id
         await vm.loadSessions(projectID: s.project.id)
         let p = s.project.id
-        vm.setLayout(Self.split(.session(s.first.id), .sessionReport(s.first.id)), projectID: p)
+        let layout = { vm.layout(projectID: p) }
 
-        let sessions = try controls(vm, s.project).inspect()
-            .find(ViewType.Menu.self) { try $0.accessibilityLabel().string() == "Sessions" }
-        try sessions.find(button: "two").tap()
-        await waitUntil { vm.layout(projectID: p).visiblePanes == [.session(s.second.id), .sessionReport(s.second.id)] }
+        vm.setLayout(Self.split(.session(s.first.id), .board), projectID: p)
+        XCTAssertTrue(try toggle("Session", controls(vm, s.project)).isOn())
+        XCTAssertTrue(try toggle("Board", controls(vm, s.project)).isOn())
+        try toggle("Session", controls(vm, s.project)).tap()
+        XCTAssertEqual(layout().visiblePanes, [.board])
+        XCTAssertFalse(layout().isSplit)
 
-        await vm.showSession(id: s.first.id)
-        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(s.first.id), .sessionReport(s.first.id)])
+        XCTAssertFalse(try toggle("Session", controls(vm, s.project)).isOn())
+        try toggle("Session", controls(vm, s.project)).tap()
+        await waitUntil { layout().isShowingSessionView }
+        XCTAssertFalse(layout().isSplit, "a single pane is replaced")
+        XCTAssertFalse(layout().isShowing(.board))
+
+        let single = layout()
+        XCTAssertTrue(try toggle("Session", controls(vm, s.project)).isOn())
+        try toggle("Session", controls(vm, s.project)).tap()
+        XCTAssertEqual(layout().visiblePanes, single.visiblePanes, "the lit tab never empties the page")
+
+        // A session last shown in Workchat comes back in Workchat.
+        var board = WorkspaceLayout.default
+        board.workchatSessions = [s.first.id, s.second.id]
+        vm.setLayout(board, projectID: p)
+        try toggle("Session", controls(vm, s.project)).tap()
+        await waitUntil { layout().isShowingSessionView }
+        XCTAssertEqual(layout().visiblePanes.count, 1)
+        XCTAssertTrue(layout().visiblePanes[0].isWorkchat, "the remembered mode: \(layout().visiblePanes)")
+    }
+
+    /// Call 7 in a split of two non-session views: Session on shows the
+    /// session beside the first pane, in its remembered mode — the
+    /// terminal or the Workchat — and never replaces both panes.
+    func testSessionTabInABoardFilesSplitKeepsTheFirstPane() async throws {
+        let s = try await seed()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = s.project.id
+        await vm.loadSessions(projectID: s.project.id)
+        let p = s.project.id
+        let panes = { vm.layout(projectID: p).visiblePanes }
+        let isTerminal = { (pane: WorkspacePane) in if case .session = pane { true } else { false } }
+
+        vm.setLayout(Self.split(.board, .files), projectID: p)
+        try toggle("Session", controls(vm, s.project)).tap()
+        await waitUntil { panes().count == 2 && isTerminal(panes()[1]) }
+        XCTAssertEqual(panes().first, .board, "terminal mode: \(panes())")
+
+        var chat = Self.split(.board, .files)
+        chat.workchatSessions = [s.first.id, s.second.id]
+        vm.setLayout(chat, projectID: p)
+        try toggle("Session", controls(vm, s.project)).tap()
+        await waitUntil { panes().count == 2 && panes()[1].isWorkchat }
+        XCTAssertEqual(panes().first, .board, "Workchat mode: \(panes())")
+    }
+
+    /// With no session, Session is not disabled: it runs today's Terminal
+    /// path (`showView(.terminal)`), which opens the most recent session —
+    /// here a new one, as there is none.
+    func testSessionTabWithNoSessionDoesWhatTerminalDid() async throws {
+        let dir = folder.appendingPathComponent("empty", isDirectory: true).path
+        let empty = try await pool.write { d in
+            let p = try TestDatabase.insertWorkbench(d, name: "empty", folder: dir)
+            return try XCTUnwrap(try Workbench.fetchOne(d, sql: "SELECT * FROM projects WHERE id = ?", arguments: [p]))
+        }
+        let vm = makeVM()
+        vm.selectedWorkbenchID = empty.id
+        await vm.loadSessions(projectID: empty.id)
+        XCTAssertNil(vm.sessionViewTarget(projectID: empty.id))
+        let session = try toggle("Session", controls(vm, empty))
+        XCTAssertFalse(try session.isDisabled())
+        XCTAssertFalse(try session.isOn())
+
+        try session.tap()
+        await waitUntil { vm.layout(projectID: empty.id).isShowingSessionView }
+        let rows = try await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: empty.id) }
+        XCTAssertEqual(rows.count, 1, "Terminal's path with none: the most recent session, here a new one")
+    }
+
+    /// Board and Files toggle their views as before: on puts the view
+    /// beside the session in a split, off closes that pane.
+    func testBoardAndFilesToggleTheirViews() async throws {
+        let s = try await seed()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = s.project.id
+        await vm.loadSessions(projectID: s.project.id)
+        let p = s.project.id
+        let terminal = WorkspacePane.session(s.first.id)
+        vm.setLayout(Self.split(terminal, .board), projectID: p)
+        let panes = { vm.layout(projectID: p).visiblePanes }
+
+        try toggle("Files", controls(vm, s.project)).tap()
+        await waitUntil { panes() == [terminal, .files] }
+        XCTAssertFalse(try toggle("Board", controls(vm, s.project)).isOn())
+        try toggle("Board", controls(vm, s.project)).tap()
+        await waitUntil { panes() == [terminal, .board] }
+        try toggle("Board", controls(vm, s.project)).tap()
+        XCTAssertEqual(panes(), [terminal])
     }
 
     // MARK: - Split
@@ -249,25 +320,28 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         vm.toggleSplit(projectID: p)
         XCTAssertFalse(vm.layout(projectID: p).isSplit)
 
-        let split = { (label: String) in
-            try self.controls(vm, s.project)
-                .inspect()
-                .find(ViewType.Button.self) { try $0.accessibilityLabel().string() == label }
-        }
-        try split("Split").tap()
+        XCTAssertThrowsError(try button(help: "Show one pane", controls(vm, s.project)))
+        try button(help: "Split: show two panes side by side", controls(vm, s.project)).tap()
         XCTAssertTrue(vm.layout(projectID: p).isSplit)
 
-        let single = try split("Single Pane")
-        XCTAssertEqual(try single.help().string(), "Show one pane")
+        XCTAssertNoThrow(try button(help: "Show one pane", controls(vm, s.project)))
+        XCTAssertThrowsError(try button(help: "Split: show two panes side by side", controls(vm, s.project)))
     }
 
     // MARK: - ⋯ menu
 
+    /// Show in Finder leads the menu (call 2: the folder crumb is gone);
     /// Repair install, Re-run Setup and Delete… keep their actions; Repair
     /// stays off while nothing needs repairing.
     func testTheMoreMenuItemsKeepTheirActions() async throws {
         let s = try await seed()
         let p = s.project.id
+        let more = try controls(makeVM(), s.project).inspect()
+            .find(ViewType.Menu.self) { try $0.help().string() == "Workbench actions" }
+        let first = try more.find(ViewType.Button.self)
+        XCTAssertEqual(try first.labelView().label().title().text().string(), "Show in Finder")
+        XCTAssertEqual(try first.help().string(), "\(s.project.folderPath)\nShow in Finder")
+
         let healthy = makeVM(FakeCLIRunner(stdout: Data(#"{"skill":"unchanged","hook":true,"mcp":true}"#.utf8)))
         await healthy.refreshInstallStatus(projectID: p)
         XCTAssertThrowsError(try controls(healthy, s.project).inspect().find(button: "Repair install").tap(),
@@ -288,6 +362,19 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         XCTAssertEqual(deletes, 1)
     }
 
+    /// The ⋯ menu's Edit Columns on the Kanban (board #712, replacing the
+    /// Board Columns… sheet) puts the Board on screen and asks it for Kanban once.
+    func testEditColumnsOnTheKanbanShowsTheBoardInKanban() async throws {
+        let s = try await seed()
+        let vm = makeVM()
+        vm.setLayout(Self.split(.session(s.first.id), .files), projectID: s.project.id)
+
+        try controls(vm, s.project).inspect().find(button: "Edit Columns on the Kanban").tap()
+        XCTAssertTrue(vm.layout(projectID: s.project.id).isShowing(.board))
+        XCTAssertTrue(vm.takeKanbanRequest(projectID: s.project.id))
+        XCTAssertThrowsError(try controls(vm, s.project).inspect().find(button: "Board Columns…"), "the sheet is gone")
+    }
+
     /// "Clean Up Old Worktrees…" opens the sweep (board #535); off without a
     /// cleanup center.
     func testCleanUpOldWorktreesOpensTheSweep() async throws {
@@ -302,17 +389,27 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         XCTAssertEqual(opened, 1)
     }
 
-    /// "New Automation…" (spec 2026-10-20 §4) opens the New automation sheet
-    /// for this workbench; off until the page supplies the hook.
+    /// "New Automation…" lives in the ⚡ menu (spec 2026-10-20 §1) and
+    /// opens the New automation sheet for this workbench; no ⚡ menu (the
+    /// Automations view model not up yet), no item — the ⋯ menu has none.
     func testNewAutomationOpensTheSheetForThisWorkbench() async throws {
         let s = try await seed()
         let vm = makeVM(FakeCLIRunner())
-        XCTAssertTrue(try controls(vm, s.project).inspect().find(button: "New Automation…").isDisabled())
+        XCTAssertThrowsError(try controls(vm, s.project).inspect().find(button: "New Automation…"))
 
         var opened = 0
-        let open = { opened += 1 }
-        try controls(vm, s.project, onNewAutomation: open).inspect().find(button: "New Automation…").tap()
+        let automations = WorkbenchAutomationsMenu(
+            project: s.project,
+            vm: AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: FakeCLIRunner())) { _ in },
+            openRun: { _, _ in },
+            onNewAutomation: { opened += 1 }
+        )
+        let sut = controls(vm, s.project, automations: automations)
+        let bolt = try sut.inspect().find(ViewType.Menu.self) { try $0.help().string() == "Automations of this workbench" }
+        try bolt.find(button: "New Automation…").tap()
         XCTAssertEqual(opened, 1)
+        let items = try sut.inspect().findAll(ViewType.Text.self) { try $0.string() == "New Automation…" }
+        XCTAssertEqual(items.count, 1, "only the ⚡ menu has it")
     }
 
     /// "Archive Closed Targets Now" sets the stamp and a second press moves

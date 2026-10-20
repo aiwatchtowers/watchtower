@@ -73,11 +73,11 @@ The run waits until the session finishes. If you stop it or its process ends, th
 
 ### Read a session's report and analytics
 
-The progress line under the caption, the **Session** view and the **Analytics** view have their own page: [Session report and analytics](session-report.md).
+The progress line under the caption, the **Report** view and the **Analytics** view have their own page: [Session report and analytics](session-report.md).
 
 ### Drive a session from its Workchat
 
-Workchat is a session's second mode: its dialog as a chat that you can write to, in the same place as its terminal. **Terminal | Workchat** in the page header or ⌃` switches between them, and each session opens in the mode you last used. See [Workchat](workchat.md).
+Workchat is a session's second mode: its dialog as a chat that you can write to, in the same place as its terminal. **Terminal | Workchat** on the session's strip or ⌃` switches between them, and each session opens in the mode you last used. See [Workchat](workchat.md).
 
 ### Get notified
 
@@ -87,7 +87,7 @@ While Watchtower is in the background, a running session that stops, needs appro
 
 - **Only a green dot.** The workbench needs **Repair install** or **Re-run Setup**; see [Workbench](README.md).
 - **"state hooks missing" on the install icon.** The same fix. Without them the agent count drops only at the agent's next turn.
-- **"Pick a session" in the Session view.** No Claude Code session is selected, or it is a plain shell, or it was deleted.
+- **"Pick a session" in the Report view.** No Claude Code session is selected, or it is a plain shell, or it was deleted.
 - **A session says Working but nothing happens.** You may have interrupted it with Esc; send a prompt.
 
 Session not reporting a state? See [A Workbench session or ask is stuck](../../troubleshooting/workbench-session-or-ask-stuck.md).

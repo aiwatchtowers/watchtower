@@ -24,7 +24,7 @@ Differences from Claude Code you may notice:
 ## Using it
 
 1. Install Codex. Set **Default Agent** to Codex if you want it by default.
-2. In a workbench that predates Codex, click **Set up Codex** in the header notice or the **…** menu. Use **Repair install** only if Codex hooks are not trusted.
+2. In a workbench that predates Codex, click **Set up Codex** in the notice next to the workbench name or in the **…** menu. Use **Repair install** only if Codex hooks are not trusted.
 3. Start a session with **+**, or **Work on It**, and pick Codex from the menu if it is not the default.
 
 ## When it's empty or wrong
