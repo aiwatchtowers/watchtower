@@ -72,6 +72,30 @@ func fetchStopReason(fetchCtx context.Context) string {
 	}
 }
 
+// isLoopCancelErr is isBenignShutdownErr narrowed to the cancels the daemon
+// makes itself: ctx was cancelled by runLoop (a sleep, a Sync Now restart) or
+// by the shutdown — its cause says which, through any child contexts — and
+// every leaf of err is context.Canceled. A deadline is never one: ctx's own,
+// such as the history backfill's budget, or a call's timeout inside it is a
+// failure, recorded as such.
+func isLoopCancelErr(ctx context.Context, err error) bool {
+	cause := context.Cause(ctx)
+	if err == nil || (!errors.Is(cause, errCycleSlept) && !errors.Is(cause, errCycleRestart) &&
+		!errors.Is(cause, context.Canceled)) {
+		return false
+	}
+	leaves := []error{err}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		leaves = joined.Unwrap()
+	}
+	for _, e := range leaves {
+		if !errors.Is(e, context.Canceled) {
+			return false
+		}
+	}
+	return len(leaves) > 0
+}
+
 // syncCycle is one runSync running in its own goroutine, so the loop stays
 // responsive while it runs and can cancel its source fetches.
 type syncCycle struct {

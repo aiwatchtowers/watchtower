@@ -81,7 +81,7 @@ func (d *Daemon) phaseHistoryBackfill(ctx context.Context) {
 		u0 := d.historyBackfillUsage()
 		err := r.Step(ctx)
 		switch {
-		case isBenignShutdownErr(ctx, err):
+		case isLoopCancelErr(ctx, err):
 			d.logger.Printf("history backfill: stopped by %s", fetchStopReason(ctx))
 			err = nil // cancelled, not failed (the slack-sync row's rule)
 		case err != nil:
@@ -250,8 +250,10 @@ func (d *Daemon) onSlackBackfillDone(ctx context.Context, floor time.Time) error
 					firstErr = err
 				}
 			}
+			// ctx is the runner's budget ctx: only the loop's cancel or the
+			// shutdown is benign, its passed deadline is a failure.
 			reportErr := err
-			if isBenignShutdownErr(ctx, err) {
+			if isLoopCancelErr(ctx, err) {
 				reportErr = nil // cancelled, not failed: no stamp, retried on a later Step
 			}
 			inTok, outTok, cost, totalAPI := d.peoplePipe.AccumulatedUsage()

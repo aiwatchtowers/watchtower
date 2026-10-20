@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -771,6 +772,50 @@ func TestRunSync_CancelledFetchSkipsPipelinesNamingTheCause(t *testing.T) {
 
 			d.runSync(ctx, fetchCtx)
 			assert.Equal(t, 1, logs.count("source syncs stopped by "+tc.want+", skipping pipelines"))
+		})
+	}
+}
+
+// isLoopCancelErr accepts only the daemon's own cancels — the loop's (a
+// sleep, a Sync Now restart) and the shutdown, also seen through a child
+// context with a budget — and never a deadline, the budget's own or a
+// call's, nor a real error joined with a cancel.
+func TestIsLoopCancelErr(t *testing.T) {
+	cancelled := func(cause error) context.Context {
+		parent, cancel := context.WithCancel(context.Background())
+		fetchCtx, cancelFetch := context.WithCancelCause(parent)
+		t.Cleanup(func() { cancelFetch(nil) })
+		bctx, cancelBudget := context.WithTimeout(fetchCtx, time.Hour) // the backfill's budget ctx
+		t.Cleanup(cancelBudget)
+		if cause == nil {
+			cancel() // the shutdown
+		} else {
+			cancelFetch(cause)
+			cancel()
+		}
+		return bctx
+	}
+	expired, cancelExpired := context.WithTimeout(context.Background(), -time.Second)
+	defer cancelExpired()
+	wrapped := fmt.Errorf("people: %w", context.Canceled)
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want bool
+	}{
+		{"sleep", cancelled(errCycleSlept), wrapped, true},
+		{"restart", cancelled(errCycleRestart), context.Canceled, true},
+		{"shutdown", cancelled(nil), wrapped, true},
+		{"joined cancels", cancelled(errCycleSlept), errors.Join(context.Canceled, wrapped), true},
+		{"no error", cancelled(errCycleSlept), nil, false},
+		{"live ctx", context.Background(), context.Canceled, false},
+		{"budget deadline", expired, context.DeadlineExceeded, false},
+		{"a call's timeout under a sleep", cancelled(errCycleSlept), fmt.Errorf("gen: %w", context.DeadlineExceeded), false},
+		{"real error joined", cancelled(errCycleSlept), errors.Join(context.Canceled, errors.New("disk full")), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isLoopCancelErr(tc.ctx, tc.err))
 		})
 	}
 }
