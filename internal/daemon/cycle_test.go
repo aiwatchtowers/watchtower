@@ -382,9 +382,15 @@ func TestRunLoop_SleepDuringPipelinesLetsThemFinish(t *testing.T) {
 	drops := countDrops(t)
 	inPipeline := make(chan context.Context, 1)
 	finish := make(chan struct{})
-	var mined atomic.Int32
+	var mined, calls atomic.Int32
 	prev := runInstructionMiner
 	runInstructionMiner = func(ctx context.Context, _ *instructions.Miner) (int, *digest.Usage, error) {
+		// Only the first call is the cycle under test. A later cycle reaches
+		// the miner again only when the run straddles local midnight (the
+		// phase's daily gate): it returns at once and is not counted.
+		if calls.Add(1) > 1 {
+			return 0, nil, nil
+		}
 		inPipeline <- ctx
 		select {
 		case <-finish:
@@ -414,10 +420,10 @@ func TestRunLoop_SleepDuringPipelinesLetsThemFinish(t *testing.T) {
 	assert.Equal(t, int32(1), mined.Load(), "the pipeline ran to its end")
 	// The cycle after the wake may skip its pipelines on the shutdown.
 	assert.Zero(t, h.logs.count(logSkipsForSleep), "the slept cycle did not skip its pipelines")
-	var done int
-	require.NoError(t, h.d.db.QueryRow(`SELECT COUNT(*) FROM pipeline_runs
-		WHERE pipeline = 'instruction-suggestions' AND COALESCE(error_msg, '') = ''`).Scan(&done))
-	assert.Equal(t, 1, done, "the pipeline's run is recorded without an error")
+	var firstErr string
+	require.NoError(t, h.d.db.QueryRow(`SELECT COALESCE(error_msg, '') FROM pipeline_runs
+		WHERE pipeline = 'instruction-suggestions' ORDER BY id LIMIT 1`).Scan(&firstErr))
+	assert.Empty(t, firstErr, "the pipeline's run is recorded without an error")
 }
 
 // Shutdown mid-cycle: Run waits for the cycle to stop and starts no other.
