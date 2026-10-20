@@ -69,3 +69,16 @@ func SetFTSRebuildChunkGapForTest(gap time.Duration) (restore func()) {
 	ftsRebuildChunkGap = gap
 	return func() { ftsRebuildChunkGap = prev }
 }
+
+// SetFTSRebuildMinFreeBytesForTest sets the fill's free-space floor
+// (ftsRebuildMinFreeBytes), for the daemon's tests, which cannot reach it.
+// Returns a restore func the caller must invoke (typically via t.Cleanup).
+// Outside a test binary it panics (testing.Testing).
+func SetFTSRebuildMinFreeBytesForTest(n int64) (restore func()) {
+	if !testing.Testing() {
+		panic("db.SetFTSRebuildMinFreeBytesForTest called outside a test binary")
+	}
+	prev := ftsRebuildMinFreeBytes
+	ftsRebuildMinFreeBytes = n
+	return func() { ftsRebuildMinFreeBytes = prev }
+}

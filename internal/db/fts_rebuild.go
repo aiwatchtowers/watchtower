@@ -3,16 +3,30 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"time"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
-// db_maintenance keys of the messages search fill (migration 00146).
+// db_maintenance keys of the messages search fill: the fill's own
+// (migration 00146), and the launch step's fill failure counter.
 const (
-	maintFTSRebuildPending = "fts_rebuild_pending"
-	maintFTSRebuildCursor  = "fts_rebuild_cursor_messages"
+	maintFTSRebuildPending         = "fts_rebuild_pending"
+	maintFTSRebuildCursor          = "fts_rebuild_cursor_messages"
+	maintFTSRebuildFailures        = "fts_rebuild_failures"
+	maintFTSRebuildFailuresVersion = "fts_rebuild_failures_version"
 )
+
+// ftsRebuildMaxFailures consecutive fill failures of the launch step
+// (RebuildMessagesSearchAt) for one CLI version stop CheckCompaction from
+// reporting the fill as due until the version changes. The daemon keeps
+// filling regardless.
+const ftsRebuildMaxFailures = 3
 
 // ftsRebuildChunkRows is the default number of messages rows one fill chunk
 // walks.
@@ -46,19 +60,19 @@ var ftsLegacyDrain = []struct {
 	{"messages_fts_legacy_docsize", `DELETE FROM messages_fts_legacy_docsize WHERE rowid IN (SELECT rowid FROM messages_fts_legacy_docsize ORDER BY rowid LIMIT ?)`, 1500},
 }
 
-// ftsRebuildNeedsDiskBytes is the free space the fill asks for: the new index
-// grows to about the legacy index's size, plus its WAL frames.
-func ftsRebuildNeedsDiskBytes(legacy int64) int64 { return legacy * 3 / 2 }
+// ftsRebuildMinFreeBytes is the free space the fill asks for. The fill frees
+// the legacy index before it writes the new one (dropped, or drained and then
+// dropped), and the new index, about the legacy one's size, reuses the freed
+// pages, so the file does not grow. What needs room is the WAL: a chunk's
+// frames (a few MB for 5000 rows) beside the other writers' frames until the
+// next checkpoint. 64 MiB is that headroom many times over and still lets a
+// nearly full volume rebuild. Tests mutate this; no t.Parallel.
+var ftsRebuildMinFreeBytes int64 = 64 << 20
 
 // MessagesSearchCheck is the outcome of CheckMessagesSearchRebuild.
 type MessagesSearchCheck struct {
-	Pending bool
-	// FillDone: the cursor is past the last message, so only dropping (or
-	// draining) the legacy index is left. Freeing space needs none: no
-	// sizes are read and DiskOK is true.
-	FillDone       bool
-	LegacyBytes    int64
-	NeedsDiskBytes int64 // ftsRebuildNeedsDiskBytes(LegacyBytes)
+	Pending        bool
+	NeedsDiskBytes int64 // ftsRebuildMinFreeBytes while pending
 	FreeDiskBytes  int64
 	DiskOK         bool
 }
@@ -67,97 +81,46 @@ type MessagesSearchCheck struct {
 // pending and whether the volume has room for it, by reads only (it works on
 // an OpenExisting handle). The fill is pending while fts_rebuild_pending is
 // set or messages_fts_legacy exists: a legacy table left without its key is
-// still filled and dropped. Not pending or FillDone reads DiskOK with no
-// sizes (FillDone skips the dbstat walk of the legacy pages); an in-memory
-// database reads DiskOK.
+// still dropped and filled. Not pending reads DiskOK with no disk read; an
+// in-memory database reads DiskOK.
 func (db *DB) CheckMessagesSearchRebuild() (MessagesSearchCheck, error) {
-	pending, hasLegacy, err := messagesSearchPending(db)
+	pending, _, err := messagesSearchPending(db)
 	if err != nil || !pending {
 		return MessagesSearchCheck{Pending: pending, DiskOK: true}, err
 	}
-	c := MessagesSearchCheck{Pending: true}
-	if c.FillDone, err = messagesSearchFillDone(db); err != nil {
-		return MessagesSearchCheck{}, err
-	}
-	if c.FillDone {
-		c.DiskOK = true
-		return c, nil
-	}
-	if hasLegacy {
-		if c.LegacyBytes, err = legacySearchBytes(db); err != nil {
-			return MessagesSearchCheck{}, err
-		}
-	}
-	c.NeedsDiskBytes = ftsRebuildNeedsDiskBytes(c.LegacyBytes)
 	file, err := mainDatabaseFile(db)
 	if err != nil {
 		return MessagesSearchCheck{}, err
 	}
 	if file == "" {
-		c.DiskOK = true
-		return c, nil
+		return MessagesSearchCheck{Pending: true, NeedsDiskBytes: ftsRebuildMinFreeBytes, DiskOK: true}, nil
 	}
-	if c.FreeDiskBytes, err = freeDiskBytes(filepath.Dir(file)); err != nil {
+	free, err := freeDiskBytes(filepath.Dir(file))
+	if err != nil {
 		return MessagesSearchCheck{}, fmt.Errorf("checking free disk space: %w", err)
 	}
-	c.DiskOK = c.FreeDiskBytes >= c.NeedsDiskBytes
-	return c, nil
+	return pendingMessagesSearchCheck(free), nil
 }
 
-// messagesSearchFillDone reports whether the fill cursor has reached the
-// highest messages rowid (an empty messages table included). Both reads are
-// O(log n).
-func messagesSearchFillDone(q queryRower) (bool, error) {
-	cursor, err := readMaintenanceInt(q, maintFTSRebuildCursor)
+// pendingMessagesSearchCheck applies the fill's disk rule to free bytes.
+func pendingMessagesSearchCheck(free int64) MessagesSearchCheck {
+	return MessagesSearchCheck{
+		Pending: true, NeedsDiskBytes: ftsRebuildMinFreeBytes,
+		FreeDiskBytes: free, DiskOK: free >= ftsRebuildMinFreeBytes,
+	}
+}
+
+// MessagesSearchPendingAt reports whether the messages search fill is pending
+// in the database at dbPath, by reads only (OpenExisting): the one thing a
+// manual `db compact` reads before it runs.
+func MessagesSearchPendingAt(dbPath string) (bool, error) {
+	d, err := OpenExisting(dbPath, compactCheckBusy)
 	if err != nil {
 		return false, err
 	}
-	var maxRowid int64
-	if err := q.QueryRow(`SELECT COALESCE(MAX(rowid), 0) FROM messages`).Scan(&maxRowid); err != nil {
-		return false, fmt.Errorf("reading the last messages rowid: %w", err)
-	}
-	return cursor >= maxRowid, nil
-}
-
-// legacySearchBytes sums the pages of messages_fts_legacy and its shadow
-// tables. dbstat is asked one name at a time: it pushes `name =` down into
-// its scan, while a LIKE would walk every b-tree of the file.
-func legacySearchBytes(db *DB) (int64, error) {
-	names, err := legacySearchTables(db)
-	if err != nil {
-		return 0, err
-	}
-	var total int64
-	for _, name := range names {
-		var n int64
-		// Aggregate mode: one row per table, summed from its pages.
-		if err := db.QueryRow(`SELECT COALESCE(SUM(pgsize), 0) FROM dbstat('main', 1) WHERE name = ?`, name).Scan(&n); err != nil {
-			return 0, fmt.Errorf("measuring %s: %w", name, err)
-		}
-		total += n
-	}
-	return total, nil
-}
-
-// legacySearchTables lists messages_fts_legacy and its shadow tables.
-func legacySearchTables(db *DB) ([]string, error) {
-	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'messages_fts_legacy%'`)
-	if err != nil {
-		return nil, fmt.Errorf("listing the messages_fts_legacy tables: %w", err)
-	}
-	defer rows.Close()
-	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, fmt.Errorf("listing the messages_fts_legacy tables: %w", err)
-		}
-		names = append(names, name)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("listing the messages_fts_legacy tables: %w", err)
-	}
-	return names, nil
+	defer d.Close()
+	pending, _, err := messagesSearchPending(d)
+	return pending, err
 }
 
 // messagesSearchPending reads the pending key and whether the legacy table
@@ -201,19 +164,20 @@ type FTSRebuildOptions struct {
 	Budget    time.Duration // 0 = until done; checked between chunks, at least one chunk runs
 	ChunkRows int           // 0 = 5000
 	// DrainLegacy empties messages_fts_legacy's shadow tables in chunk
-	// transactions (ftsLegacyDrain) before the completion drops it, so no
-	// single transaction holds the write lock for the whole legacy index —
-	// for a run beside live writers (the daemon). Without it the completion
-	// drops the table directly (the launch step, daemon stopped).
+	// transactions (ftsLegacyDrain) before dropping it, so no single
+	// transaction holds the write lock for the whole legacy index — for a
+	// run beside live writers (the daemon). Without it the first chunk drops
+	// the table directly (the launch step, daemon stopped).
 	DrainLegacy bool
 }
 
 // FTSRebuildResult is the outcome of RebuildMessagesSearch.
 type FTSRebuildResult struct {
-	Done    bool  // legacy dropped and keys cleared (also true when nothing was pending)
+	Done    bool  // legacy dropped, fill complete and keys cleared (also true when nothing was pending)
 	Indexed int64 // index rows written by this call
-	Chunks  int   // fill and drain chunks committed by this call
-	// DrainChunks of Chunks deleted legacy shadow rows (DrainLegacy).
+	Chunks  int   // drain, drop and fill chunks committed by this call
+	// DrainChunks of Chunks freed the legacy index: drain deletes
+	// (DrainLegacy) and the drop.
 	DrainChunks int
 }
 
@@ -223,36 +187,44 @@ type fillChunkKind int
 const (
 	chunkFilled    fillChunkKind = iota // indexed the next rows past the cursor
 	chunkDrained                        // deleted legacy shadow rows
-	chunkCompleted                      // dropped the legacy table and cleared the keys
+	chunkDropped                        // dropped the legacy table
+	chunkCompleted                      // cleared the keys: nothing left to fill
 )
 
-// RebuildMessagesSearch fills the rowid-keyed messages_fts left empty by
-// migration 00146, in chunks, and then drops messages_fts_legacy and clears
-// the fill keys.
+// RebuildMessagesSearch frees messages_fts_legacy, then fills the rowid-keyed
+// messages_fts left empty by migration 00146, in chunks, and clears the fill
+// keys.
 //
-// A chunk is one short write transaction over the next ChunkRows messages
-// rows past the cursor (fts_rebuild_cursor_messages), indexable or not: hi is
-// the highest rowid among them, every indexable row in (cursor, hi] not
-// already indexed is inserted under its rowid — the triggers index new and
-// edited messages since the migration, so NOT EXISTS skips them — and the
-// cursor moves to hi in the same transaction. Bounding by hi rather than
-// limiting the indexable rows moves the cursor past runs of empty or deleted
-// messages. When no row is left past the cursor (an empty messages table
-// included) and opts.DrainLegacy is set, each further chunk deletes the next
-// rows of the legacy shadow tables (nothing reads the legacy index any more)
-// until a chunk finds them all below its limits; that chunk, or with
-// DrainLegacy unset the first one past the cursor, drops the legacy table (IF EXISTS: another
-// process may have dropped it) and deletes both keys. The compaction record
-// is not touched: the freed legacy pages make the compaction due on their own.
+// The legacy index goes first, so the new index reuses its pages and the
+// file does not grow (ftsRebuildMinFreeBytes). With opts.DrainLegacy each
+// chunk deletes the next rows of the legacy shadow tables (nothing reads the
+// legacy index any more) until a chunk finds them all below its limits; that
+// chunk, or with DrainLegacy unset the first chunk, drops the legacy table
+// and sets fts_rebuild_pending, so a legacy table that was the only pending
+// mark still leads to the fill.
+//
+// A fill chunk is one short write transaction over the next ChunkRows
+// messages rows past the cursor (fts_rebuild_cursor_messages), indexable or
+// not: hi is the highest rowid among them, every indexable row in (cursor,
+// hi] not already indexed is inserted under its rowid — the triggers index
+// new and edited messages since the migration, so NOT EXISTS skips them —
+// and the cursor moves to hi in the same transaction. Bounding by hi rather
+// than limiting the indexable rows moves the cursor past runs of empty or
+// deleted messages. The fill is complete when the legacy table is gone and
+// no row is left past the cursor (an empty messages table included); that
+// chunk deletes the fill keys and the launch step's failure counter. The
+// compaction record is not touched: the freed legacy pages make the
+// compaction due on their own.
 //
 // Nothing pending (see CheckMessagesSearchRebuild) returns Done with no
 // writes. Budget stops the call between chunks, Done false, err nil; the next
-// call resumes from the cursor. A cancelled ctx rolls back the chunk in
-// flight, or ends the pause between chunks (ftsRebuildChunkGap), and returns
-// ctx's error, wrapped; committed chunks stay. Two processes may run it at
-// once: each chunk re-reads the pending state and the cursor in its write
-// transaction, and one that finds the fill finished by the other completes
-// without writing a cursor.
+// call resumes. A cancelled ctx rolls back the chunk in flight, or ends the
+// pause between chunks (ftsRebuildChunkGap), and returns ctx's error,
+// wrapped; committed chunks stay. A chunk error other than the cancellation
+// itself that comes with a cancelled ctx is logged, not lost. Two processes
+// may run it at once: each chunk re-reads the pending state, the legacy
+// table and the cursor in its write transaction, and one that finds the fill
+// finished by the other completes without writing a cursor.
 func (db *DB) RebuildMessagesSearch(ctx context.Context, opts FTSRebuildOptions) (FTSRebuildResult, error) {
 	var res FTSRebuildResult
 	pending, _, err := messagesSearchPending(db)
@@ -278,6 +250,9 @@ func (db *DB) RebuildMessagesSearch(ctx context.Context, opts FTSRebuildOptions)
 		indexed, kind, err := db.fillMessagesSearchChunk(ctx, chunkRows, opts.DrainLegacy)
 		if err != nil {
 			if ctx.Err() != nil {
+				if !isInterruption(err) {
+					slog.Warn("a messages search fill chunk failed while the fill was being cancelled", "error", err)
+				}
 				return res, fmt.Errorf("filling the messages search index: %w", ctx.Err())
 			}
 			return res, err
@@ -288,7 +263,7 @@ func (db *DB) RebuildMessagesSearch(ctx context.Context, opts FTSRebuildOptions)
 		}
 		res.Chunks++
 		res.Indexed += indexed
-		if kind == chunkDrained {
+		if kind != chunkFilled {
 			res.DrainChunks++
 		}
 		if ftsRebuildChunkHook != nil {
@@ -298,6 +273,16 @@ func (db *DB) RebuildMessagesSearch(ctx context.Context, opts FTSRebuildOptions)
 			return res, fmt.Errorf("filling the messages search index: %w", err)
 		}
 	}
+}
+
+// isInterruption reports whether err is a cancellation: a context error, or
+// SQLite's SQLITE_INTERRUPT from a statement the cancelled ctx interrupted.
+func isInterruption(err error) bool {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var se *sqlite.Error
+	return errors.As(err, &se) && se.Code()&0xff == sqlite3.SQLITE_INTERRUPT
 }
 
 // waitChunkGap waits ftsRebuildChunkGap, or until ctx is done.
@@ -315,20 +300,24 @@ func waitChunkGap(ctx context.Context) error {
 	}
 }
 
-// fillMessagesSearchChunk runs one chunk, or the completion when
-// no row is left past the cursor or another process has finished the fill
-// since the last chunk — the completion then only clears what is left. With
-// drain set, a chunk past the cursor deletes legacy shadow rows first and
-// completes only when they are all gone.
+// fillMessagesSearchChunk runs one chunk: a drain or the drop of the legacy
+// table while it exists (freeMessagesSearchLegacy), else the fill of the next
+// rows past the cursor, or the completion when no row is left past it or
+// another process has finished the fill since the last chunk — the
+// completion then only clears what is left.
 func (db *DB) fillMessagesSearchChunk(ctx context.Context, chunkRows int, drain bool) (indexed int64, kind fillChunkKind, err error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, chunkFilled, fmt.Errorf("beginning a messages search fill chunk: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	pending, _, err := messagesSearchPending(tx)
+	pending, hasLegacy, err := messagesSearchPending(tx)
 	if err != nil {
 		return 0, chunkFilled, err
+	}
+	if hasLegacy {
+		kind, err := freeMessagesSearchLegacy(ctx, tx, drain)
+		return 0, kind, err
 	}
 	var cursor int64
 	var hi sql.NullInt64
@@ -341,18 +330,6 @@ func (db *DB) fillMessagesSearchChunk(ctx context.Context, chunkRows int, drain 
 		}
 	}
 	if !hi.Valid {
-		if pending && drain {
-			drained, err := drainMessagesSearchLegacy(ctx, tx)
-			if err != nil {
-				return 0, chunkFilled, err
-			}
-			if !drained {
-				if err := tx.Commit(); err != nil {
-					return 0, chunkFilled, fmt.Errorf("committing a messages_fts_legacy drain chunk: %w", err)
-				}
-				return 0, chunkDrained, nil
-			}
-		}
 		if err := completeMessagesSearchFill(ctx, tx); err != nil {
 			return 0, chunkFilled, err
 		}
@@ -378,22 +355,45 @@ func (db *DB) fillMessagesSearchChunk(ctx context.Context, chunkRows int, drain 
 	return indexed, chunkFilled, nil
 }
 
+// freeMessagesSearchLegacy frees the existing legacy table in tx and commits:
+// with drain, it deletes the next legacy shadow rows (chunkDrained) unless
+// they are all gone already; then, or at once without drain, it drops the
+// table and sets fts_rebuild_pending (chunkDropped), so the fill still runs
+// when the legacy table was the only pending mark.
+func freeMessagesSearchLegacy(ctx context.Context, tx *sql.Tx, drain bool) (fillChunkKind, error) {
+	if drain {
+		drained, err := drainMessagesSearchLegacy(ctx, tx)
+		if err != nil {
+			return chunkDrained, err
+		}
+		if !drained {
+			if err := tx.Commit(); err != nil {
+				return chunkDrained, fmt.Errorf("committing a messages_fts_legacy drain chunk: %w", err)
+			}
+			return chunkDrained, nil
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DROP TABLE messages_fts_legacy`); err != nil {
+		return chunkDropped, fmt.Errorf("dropping messages_fts_legacy: %w", err)
+	}
+	if err := writeMaintenance(tx, maintFTSRebuildPending, "1"); err != nil {
+		return chunkDropped, err
+	}
+	if err := tx.Commit(); err != nil {
+		return chunkDropped, fmt.Errorf("committing the messages_fts_legacy drop: %w", err)
+	}
+	return chunkDropped, nil
+}
+
 // drainMessagesSearchLegacy deletes the next rows of each legacy shadow
 // table, up to its ftsLegacyDrain limit, and reports whether the tables are
-// now empty: every delete stayed below its limit (or the legacy table is
-// gone). Deleting shadow rows directly leaves the FTS5 table inconsistent:
-// until the completion drops it, PRAGMA integrity_check reports "malformed
-// inverted index for FTS5 table main.messages_fts_legacy". Nothing in the
-// app runs integrity_check or reads the legacy index, and a DROP of the
-// half-drained table (the launch step's direct completion included) works.
+// now empty: every delete stayed below its limit. Deleting shadow rows
+// directly leaves the FTS5 table inconsistent: until the drop, PRAGMA
+// integrity_check reports "malformed inverted index for FTS5 table
+// main.messages_fts_legacy". Nothing in the app runs integrity_check or reads
+// the legacy index, and a DROP of the half-drained table (the launch step's
+// direct drop included) works.
 func drainMessagesSearchLegacy(ctx context.Context, tx *sql.Tx) (drained bool, err error) {
-	var exists bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts_legacy')`).Scan(&exists); err != nil {
-		return false, fmt.Errorf("looking up messages_fts_legacy: %w", err)
-	}
-	if !exists {
-		return true, nil
-	}
 	drained = true
 	for _, d := range ftsLegacyDrain {
 		r, err := tx.ExecContext(ctx, d.delete, d.rows)
@@ -411,11 +411,11 @@ func drainMessagesSearchLegacy(ctx context.Context, tx *sql.Tx) (drained bool, e
 	return drained, nil
 }
 
+// completeMessagesSearchFill deletes the fill keys and the launch step's
+// fill failure counter in tx and commits.
 func completeMessagesSearchFill(ctx context.Context, tx *sql.Tx) error {
-	if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS messages_fts_legacy`); err != nil {
-		return fmt.Errorf("dropping messages_fts_legacy: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM db_maintenance WHERE key IN (?, ?)`, maintFTSRebuildPending, maintFTSRebuildCursor); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM db_maintenance WHERE key IN (?, ?, ?, ?)`,
+		maintFTSRebuildPending, maintFTSRebuildCursor, maintFTSRebuildFailures, maintFTSRebuildFailuresVersion); err != nil {
 		return fmt.Errorf("clearing the messages search fill keys: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -425,19 +425,29 @@ func completeMessagesSearchFill(ctx context.Context, tx *sql.Tx) error {
 }
 
 // FTSRebuildRunOptions configures RebuildMessagesSearchAt.
-type FTSRebuildRunOptions struct{ Force bool } // Force skips the disk rule
+type FTSRebuildRunOptions struct {
+	Force   bool   // skip the disk rule
+	Version string // CLI build version, for the fill failure counter
+}
 
 // RebuildMessagesSearchAt runs the messages search fill on the database at
 // dbPath to the end, for `db compact`. It never creates the file or
 // migrates. A read-only look through OpenExisting comes first, so nothing is
 // opened for writing when there is nothing to do: a schema that is not
 // current is skipped as schema_pending, nothing pending returns the zero
-// result, and unless opts.Force a volume with less free space than
-// ftsRebuildNeedsDiskBytes of the legacy index is skipped as disk. Then it
-// opens with OpenExistingRW and checks the schema again. A cancelled ctx is skipped as interrupted (committed chunks
-// stay; the next run resumes). Skips return (result, nil); FTSRebuilt is set
-// when a pending fill completed, and a call with nothing pending returns the
-// zero result.
+// result, and unless opts.Force a volume with less than
+// ftsRebuildMinFreeBytes free is skipped as disk. Then it opens with
+// OpenExistingRW and checks the schema again. A cancelled ctx is skipped as
+// interrupted (committed chunks stay; the next run resumes). Skips return
+// (result, nil); FTSRebuilt is set when a pending fill completed, and a call
+// with nothing pending returns the zero result.
+//
+// A fill error is counted in fts_rebuild_failures under opts.Version (a new
+// version restarts the count, the fill's completion clears it); at
+// ftsRebuildMaxFailures CheckCompaction stops reporting the fill as due. A
+// busy error (another process's lock) is not counted, as for the
+// compaction. The error is returned either way; the count is not reported
+// in the result.
 func RebuildMessagesSearchAt(ctx context.Context, dbPath string, opts FTSRebuildRunOptions) (CompactResult, error) {
 	var res CompactResult
 	ro, err := OpenExisting(dbPath, compactCheckBusy)
@@ -471,6 +481,12 @@ func RebuildMessagesSearchAt(ctx context.Context, dbPath string, opts FTSRebuild
 		if ctx.Err() != nil {
 			res.Skipped = "interrupted"
 			return res, nil
+		}
+		if IsBusy(err) {
+			return res, fmt.Errorf("the database is busy (another process holds its lock); not counted as a failure: %w", err)
+		}
+		if _, cerr := countFailure(d, maintFTSRebuildFailures, maintFTSRebuildFailuresVersion, opts.Version); cerr != nil {
+			return res, errors.Join(err, fmt.Errorf("recording the search index rebuild failure: %w", cerr))
 		}
 		return res, err
 	}

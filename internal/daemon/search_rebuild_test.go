@@ -97,7 +97,13 @@ func TestPhaseMessagesSearchRebuild_FillsAcrossCycles(t *testing.T) {
 	d, database, logs := newSearchRebuildTestDaemon(t)
 	seedPendingSearchFill(t, database, 10)
 	setSearchRebuildSeams(t, time.Nanosecond, 3)
+	fillKeys := func() int {
+		return searchRebuildQueryInt(t, database, `SELECT COUNT(*) FROM db_maintenance WHERE key LIKE 'fts_rebuild_%'`)
+	}
 
+	d.phaseMessagesSearchRebuild(context.Background())
+	assert.False(t, hasLegacySearchTable(t, database), "cycle 1 frees the small legacy index in one chunk")
+	assert.Contains(t, logs.String(), "search index: clearing the old index, continuing next cycle")
 	d.phaseMessagesSearchRebuild(context.Background())
 	check, err := database.CheckMessagesSearchRebuild()
 	require.NoError(t, err)
@@ -105,16 +111,14 @@ func TestPhaseMessagesSearchRebuild_FillsAcrossCycles(t *testing.T) {
 	assert.Positive(t, searchRebuildQueryInt(t, database, `SELECT CAST(value AS INTEGER) FROM db_maintenance WHERE key = 'fts_rebuild_cursor_messages'`))
 	assert.Contains(t, logs.String(), "search index: 3 messages indexed, continuing next cycle")
 
-	for cycle := 2; cycle <= 5 && hasLegacySearchTable(t, database); cycle++ {
+	for cycle := 3; cycle <= 7 && fillKeys() > 0; cycle++ {
 		d.phaseMessagesSearchRebuild(context.Background())
 	}
 
-	assert.False(t, hasLegacySearchTable(t, database), "the fill must finish within 5 cycles")
+	assert.Zero(t, fillKeys(), "the fill must finish within 7 cycles")
 	assert.Equal(t, 10, searchRebuildQueryInt(t, database, `SELECT COUNT(*) FROM messages_fts`))
 	assert.Equal(t, 10, searchRebuildQueryInt(t, database, `SELECT COUNT(DISTINCT rowid) FROM messages_fts`))
-	assert.Zero(t, searchRebuildQueryInt(t, database, `SELECT COUNT(*) FROM db_maintenance WHERE key LIKE 'fts_rebuild_%'`))
 	assert.Contains(t, logs.String(), "search index: rebuilt")
-	assert.NotContains(t, logs.String(), "clearing the old index", "no cycle ran a drain chunk")
 	assert.Zero(t, searchRebuildQueryInt(t, database, `SELECT COUNT(*) FROM pipeline_runs`))
 }
 
@@ -149,59 +153,118 @@ func TestPhaseMessagesSearchRebuild_DiskShortLogsOnce(t *testing.T) {
 }
 
 // TestPhaseMessagesSearchRebuild_DrainsLegacyBeforeDrop pins the daemon's
-// completion: the legacy index is emptied over several cycles of short
-// transactions before it is dropped, never in one DROP beside live writers.
+// order: the legacy index is emptied over several cycles of short
+// transactions and dropped, never in one DROP beside live writers, before
+// any row of the new index is filled.
 func TestPhaseMessagesSearchRebuild_DrainsLegacyBeforeDrop(t *testing.T) {
 	d, database, logs := newSearchRebuildTestDaemon(t)
 	seedPendingSearchFill(t, database, 6)
 	setSearchRebuildSeams(t, time.Nanosecond, 100)
 	t.Cleanup(db.SetFTSLegacyDrainRowsForTest(2))
 
-	d.phaseMessagesSearchRebuild(context.Background())
-	require.Equal(t, 6, searchRebuildQueryInt(t, database, `SELECT COUNT(*) FROM messages_fts`), "cycle 1 fills every row")
-	require.True(t, hasLegacySearchTable(t, database))
-
-	drainCycles := 0
+	freeCycles := 0
 	for range 20 {
 		if !hasLegacySearchTable(t, database) {
 			break
 		}
 		d.phaseMessagesSearchRebuild(context.Background())
-		drainCycles++
+		freeCycles++
+		require.Zero(t, searchRebuildQueryInt(t, database, `SELECT COUNT(*) FROM messages_fts`), "filled before the legacy index was gone")
 	}
-
 	assert.False(t, hasLegacySearchTable(t, database), "the drain never finished")
-	assert.GreaterOrEqual(t, drainCycles, 3, "6 content rows at 2 per chunk need several cycles")
+	assert.GreaterOrEqual(t, freeCycles, 3, "6 content rows at 2 per chunk need several cycles")
 	assert.Contains(t, logs.String(), "search index: clearing the old index, continuing next cycle")
+
+	d.phaseMessagesSearchRebuild(context.Background())
+	assert.Equal(t, 6, searchRebuildQueryInt(t, database, `SELECT COUNT(*) FROM messages_fts`), "one chunk fills every row")
+	d.phaseMessagesSearchRebuild(context.Background())
 	assert.Contains(t, logs.String(), "search index: rebuilt")
 	assert.Zero(t, searchRebuildQueryInt(t, database, `SELECT COUNT(*) FROM db_maintenance WHERE key LIKE 'fts_rebuild_%'`))
 }
 
-// TestPhaseMessagesSearchRebuild_DrainIgnoresDiskRule pins that the disk
-// rule gates the fill only: once the cursor is past the last message, a
-// full volume still lets the daemon free the legacy index.
-func TestPhaseMessagesSearchRebuild_DrainIgnoresDiskRule(t *testing.T) {
+// stubSearchFillDisk sets the fill's free-space floor and the free space the
+// check reads.
+func stubSearchFillDisk(t *testing.T, floor, free int64) {
+	t.Helper()
+	t.Cleanup(db.SetFTSRebuildMinFreeBytesForTest(floor))
+	t.Cleanup(db.SetFreeDiskBytesForTest(func(string) (int64, error) { return free, nil }))
+}
+
+// TestPhaseMessagesSearchRebuild_ShortDiskAboveFloorCompletes pins the fix
+// for a volume with less free space than the legacy index: the daemon frees
+// the legacy index first and fills into its pages, so free space just above
+// the small floor is enough, even with a Slack sync adding a message before
+// every cycle (phaseSlackSync runs before this phase). The old rule — free
+// space for the whole new index next to the legacy one — skipped such a
+// volume forever.
+func TestPhaseMessagesSearchRebuild_ShortDiskAboveFloorCompletes(t *testing.T) {
 	d, database, logs := newSearchRebuildTestDaemon(t)
 	seedPendingSearchFill(t, database, 6)
+	legacyBytes := searchRebuildQueryInt(t, database, `SELECT SUM(pgsize) FROM dbstat WHERE name LIKE 'messages_fts_legacy%'`)
+	const floor = 4096
+	require.Greater(t, legacyBytes, 2*floor, "the free space must be well below the legacy index's size")
+	stubSearchFillDisk(t, floor, floor+1)
 	setSearchRebuildSeams(t, time.Nanosecond, 100)
 	t.Cleanup(db.SetFTSLegacyDrainRowsForTest(2))
 
-	d.phaseMessagesSearchRebuild(context.Background()) // fills all 6 rows
-	require.True(t, hasLegacySearchTable(t, database))
-	t.Cleanup(db.SetFreeDiskBytesForTest(func(string) (int64, error) { return 0, nil }))
-	check, err := database.CheckMessagesSearchRebuild()
-	require.NoError(t, err)
-	require.True(t, check.FillDone)
-	require.True(t, check.DiskOK)
-
-	for range 20 {
-		if !hasLegacySearchTable(t, database) {
-			break
-		}
+	syncMessage := func(i int) {
+		_, err := database.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C2', ?, 'U1', ?)`,
+			fmt.Sprintf("%d.000001", 1800000000+i), fmt.Sprintf("synced note %d", i))
+		require.NoError(t, err)
+	}
+	cycles := 0
+	for ; cycles < 20 && hasLegacySearchTable(t, database); cycles++ {
+		syncMessage(cycles)
 		d.phaseMessagesSearchRebuild(context.Background())
 	}
+	require.False(t, hasLegacySearchTable(t, database), "the legacy index was never freed")
+	require.GreaterOrEqual(t, cycles, 2, "the drain must take several cycles")
 
-	assert.False(t, hasLegacySearchTable(t, database), "a full volume blocked the drain")
+	searchRebuildBudget = time.Minute // setSearchRebuildSeams restores it
+	syncMessage(cycles)
+	d.phaseMessagesSearchRebuild(context.Background())
+
+	indexable := searchRebuildQueryInt(t, database, `SELECT COUNT(*) FROM messages WHERE text != '' AND is_deleted = 0`)
+	assert.Equal(t, indexable, searchRebuildQueryInt(t, database, `SELECT COUNT(DISTINCT rowid) FROM messages_fts`))
+	assert.Equal(t, indexable, searchRebuildQueryInt(t, database, `SELECT COUNT(*) FROM messages_fts`))
+	assert.Zero(t, searchRebuildQueryInt(t, database, `SELECT COUNT(*) FROM db_maintenance WHERE key LIKE 'fts_rebuild_%'`))
 	assert.NotContains(t, logs.String(), "rebuild needs")
 	assert.Contains(t, logs.String(), "search index: rebuilt")
+}
+
+// TestPhaseMessagesSearchRebuild_BelowFloorSkipsAndRelogs pins the floor and
+// the log latch: below the floor nothing is written and the line is logged
+// once; a cycle that finds room resets the latch, so a later short volume is
+// logged again.
+func TestPhaseMessagesSearchRebuild_BelowFloorSkipsAndRelogs(t *testing.T) {
+	d, database, logs := newSearchRebuildTestDaemon(t)
+	seedPendingSearchFill(t, database, 30)
+	setSearchRebuildSeams(t, time.Nanosecond, 3)
+	free := int64(4095)
+	t.Cleanup(db.SetFTSRebuildMinFreeBytesForTest(4096))
+	t.Cleanup(db.SetFreeDiskBytesForTest(func(string) (int64, error) { return free, nil }))
+
+	d.phaseMessagesSearchRebuild(context.Background())
+	d.phaseMessagesSearchRebuild(context.Background())
+	assert.Equal(t, 1, strings.Count(logs.String(), "search index: rebuild needs"), logs.String())
+	assert.True(t, hasLegacySearchTable(t, database), "a cycle below the floor wrote")
+
+	free = 4096
+	d.phaseMessagesSearchRebuild(context.Background())
+	assert.False(t, hasLegacySearchTable(t, database), "a cycle at the floor must drop the legacy index")
+
+	free = 4095
+	d.phaseMessagesSearchRebuild(context.Background())
+	assert.Equal(t, 2, strings.Count(logs.String(), "search index: rebuild needs"), logs.String())
+}
+
+// TestDaemon_RunSync_RebuildsSearchIndex pins that runSync runs the fill
+// phase, after the Slack sync whose messages the triggers index.
+func TestDaemon_RunSync_RebuildsSearchIndex(t *testing.T) {
+	order := runSyncCallOrder(t)
+	rebuild, ok := order["phaseMessagesSearchRebuild"]
+	require.True(t, ok, "runSync must call phaseMessagesSearchRebuild")
+	slackSync, ok := order["phaseSlackSync"]
+	require.True(t, ok, "runSync must call phaseSlackSync")
+	assert.Greater(t, rebuild, slackSync)
 }

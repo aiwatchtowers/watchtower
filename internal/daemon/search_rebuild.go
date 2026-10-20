@@ -18,12 +18,12 @@ var searchRebuildChunkRows = 0
 
 // phaseMessagesSearchRebuild finishes a pending messages search fill
 // (migration 00146) in the background, for installs whose launch step
-// (`db compact --if-due`) did not run or did not finish. Mechanical, no AI,
-// no pipeline_runs row; independent of the compaction's failure cap. It is
-// inert when nothing is pending. A volume without room for the fill is
-// logged once per daemon run and skipped every cycle; once the fill has
-// reached the last message, only freeing the legacy index is left and the
-// disk rule no longer applies (CheckMessagesSearchRebuild's FillDone).
+// (`db compact --if-due`) did not run, did not finish or gave up after
+// failures. Mechanical, no AI, no pipeline_runs row; independent of the
+// compaction's and the launch fill's failure caps. It is inert when nothing
+// is pending. A volume below the fill's small free-space floor is skipped
+// every cycle and logged once, again after a cycle found room. The fill
+// frees the legacy index first, so it never needs room for both indexes.
 func (d *Daemon) phaseMessagesSearchRebuild(ctx context.Context) {
 	if d.db == nil || ctx.Err() != nil {
 		return
@@ -43,6 +43,7 @@ func (d *Daemon) phaseMessagesSearchRebuild(ctx context.Context) {
 		}
 		return
 	}
+	d.searchRebuildDiskLogged.Store(false)
 	// DrainLegacy: hooks, MCP and the Desktop write beside the daemon, and one
 	// DROP of a large legacy index would hold the write lock past their
 	// budgets.
@@ -51,10 +52,10 @@ func (d *Daemon) phaseMessagesSearchRebuild(ctx context.Context) {
 	})
 	switch {
 	case err != nil && isBenignShutdownErr(ctx, err):
-		// Committed chunks keep their cursor; the next run resumes.
+		// Committed chunks stay; the next run resumes.
 		d.logger.Printf("search index: stopped by shutdown")
 	case err != nil:
-		d.logger.Printf("search index: %v", err)
+		d.logger.Printf("search index: %v (this cycle: %d messages indexed in %d chunks)", err, res.Indexed, res.Chunks)
 	case res.Done:
 		d.logger.Printf("search index: rebuilt")
 	case res.DrainChunks == 0:
@@ -62,6 +63,7 @@ func (d *Daemon) phaseMessagesSearchRebuild(ctx context.Context) {
 	case res.Indexed == 0:
 		d.logger.Printf("search index: clearing the old index, continuing next cycle")
 	default:
-		d.logger.Printf("search index: %d messages indexed, clearing the old index, continuing next cycle", res.Indexed)
+		// Fill chunks run only once the old index is gone.
+		d.logger.Printf("search index: old index cleared, %d messages indexed, continuing next cycle", res.Indexed)
 	}
 }

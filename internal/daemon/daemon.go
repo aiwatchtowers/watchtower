@@ -189,8 +189,8 @@ type Daemon struct {
 	heartbeatErrLogged atomic.Bool // one-shot latch for sync_progress.json write failures
 	agentLogSkipLogged atomic.Bool // one-shot latch for the analytics phase's nil-agentlog.db skip line
 	agentLogMoveLogged atomic.Bool // one-shot latch for the analytics phase's failed-move line
-	// searchRebuildDiskLogged is the one-shot latch for the search fill's
-	// not-enough-disk line.
+	// searchRebuildDiskLogged latches the search fill's not-enough-disk line:
+	// logged once while the disk stays short, again after a cycle found room.
 	searchRebuildDiskLogged atomic.Bool
 
 	lockStats sql.DBStats // pool stats at the last cycle's lock sample (sampleLockStats)

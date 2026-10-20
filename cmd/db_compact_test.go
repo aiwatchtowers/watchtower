@@ -402,7 +402,7 @@ func seedPendingFill(t *testing.T, cfg *config.Config) db.MessagesSearchCheck {
 	c, err := d.CheckMessagesSearchRebuild()
 	require.NoError(t, err)
 	require.True(t, c.Pending)
-	require.Positive(t, c.LegacyBytes)
+	require.Positive(t, c.NeedsDiskBytes)
 	return c
 }
 
@@ -445,7 +445,7 @@ func TestDBCompact_CheckReportsFTSRebuild(t *testing.T) {
 	assert.True(t, c.Due)
 	assert.Equal(t, "fts_rebuild", c.Reason)
 	assert.True(t, c.FTSRebuildPending)
-	assert.Equal(t, fill.LegacyBytes*3/2, c.NeedsDiskBytes)
+	assert.Equal(t, fill.NeedsDiskBytes, c.NeedsDiskBytes)
 	assert.True(t, c.DiskOK)
 	assert.Equal(t, maintBefore, compactTableRows(t, cfg.DBPath(), "db_maintenance"), "--check wrote db_maintenance")
 
@@ -538,7 +538,7 @@ func TestDBCompact_InterruptDuringFillExit4(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	restore := db.SetFTSRebuildChunkHookForTest(func(chunk int) {
-		if chunk == 1 {
+		if chunk == 2 { // the legacy drop, then the first fill chunk
 			cancel()
 		}
 	})
@@ -660,4 +660,71 @@ func TestDBCompact_PhaseLinesOnlyWithJSON(t *testing.T) {
 		assert.False(t, strings.HasPrefix(line, `{"phase"`), "phase line without --json: %q", line)
 	}
 	assert.Regexp(t, `^Updating the search index of watchtower\.db…\nCompacted watchtower\.db: \S+ \S+ → \S+ \S+ in \S+\n$`, stdout)
+}
+
+// setCompactMaintenance writes db_maintenance key = value without migrating.
+func setCompactMaintenance(t *testing.T, cfg *config.Config, key, value string) {
+	t.Helper()
+	d, err := db.OpenExistingRW(cfg.DBPath(), 5*time.Second)
+	require.NoError(t, err)
+	defer d.Close()
+	_, err = d.Exec(`INSERT INTO db_maintenance (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	require.NoError(t, err)
+}
+
+// After three failed launch fills for this version, --if-due leaves the fill
+// to the daemon: the check reports fts_rebuild_gave_up, not due, and the run
+// prints no phase line. A manual run still fills.
+func TestDBCompact_FillGaveUpLeftToDaemon(t *testing.T) {
+	cfg := setupCompactTestEnv(t)
+	recordCompactionForTest(t)
+	seedPendingFill(t, cfg)
+	setCompactMaintenance(t, cfg, "fts_rebuild_cursor_messages", "not-a-number")
+	for i := range 3 {
+		stdout, line, code := execDBCompact(t, "--if-due", "--json")
+		require.Equal(t, 1, code, "run %d: %s", i+1, stdout)
+		assert.Equal(t, "fts_rebuild", decodeCompactResult(t, line).Reason)
+	}
+
+	_, line, code := execDBCompact(t, "--check", "--json")
+	require.Equal(t, 0, code, line)
+	var c db.CompactCheck
+	require.NoError(t, json.Unmarshal([]byte(line), &c), line)
+	assert.False(t, c.Due)
+	assert.Equal(t, "fts_rebuild_gave_up", c.Reason)
+	assert.True(t, c.FTSRebuildPending)
+	stdout, _, code := execDBCompact(t, "--check")
+	require.Equal(t, 0, code)
+	assert.Equal(t, "watchtower.db is not due for compacting; its search index rebuild failed repeatedly at launch and is left to the background sync (fts_rebuild_gave_up).\n", stdout)
+
+	stdout, line, code = execDBCompact(t, "--if-due", "--json")
+	require.Equal(t, 0, code, stdout)
+	assert.Equal(t, []string{line}, compactStdoutLines(stdout), "no phase line")
+	assert.JSONEq(t, `{"compacted":false,"skipped":"not_due"}`, line)
+
+	setCompactMaintenance(t, cfg, "fts_rebuild_cursor_messages", "0")
+	stdout, line, code = execDBCompact(t, "--json")
+	require.Equal(t, 0, code, stdout)
+	assert.True(t, decodeCompactResult(t, line).FTSRebuilt, "a manual run fills despite the cap")
+	pending, indexed := compactFillState(t, cfg)
+	assert.False(t, pending)
+	assert.Equal(t, 4, indexed)
+}
+
+// A manual run reads only whether the fill is pending: a check that would
+// fail (a malformed compaction counter) does not stop it.
+func TestDBCompact_ManualIgnoresCheckErrors(t *testing.T) {
+	cfg := setupCompactTestEnv(t)
+	setCompactMaintenance(t, cfg, "compact_failures", "not-a-number")
+	setCompactMaintenance(t, cfg, "compact_failures_version", Version)
+	_, line, code := execDBCompact(t, "--check", "--json")
+	require.Equal(t, 1, code, "precondition: the check fails")
+	require.NotEmpty(t, decodeCompactResult(t, line).Error)
+
+	stdout, line, code := execDBCompact(t, "--json")
+	require.Equal(t, 0, code, stdout)
+	res := decodeCompactResult(t, line)
+	assert.True(t, res.Compacted)
+	assert.Equal(t, "manual", res.Reason)
 }
