@@ -2,8 +2,10 @@
 
 **Status:** design for owner review. Desktop only; the review engine
 (`internal/reviewdiff`, rounds, comments, `get_review`, Undo, the AI
-overview — `docs/features/diff-reviewer.md`) is unchanged. Mockups:
-`2026-10-20-branch-review-mockups.html` (next to this file). Calls marked
+overview — `docs/features/diff-reviewer.md`) is unchanged. Visual design
+(ask #446 asked for it first): the claude.ai design canvas "Branch Review
+Design" — A branch with changes, B nothing to review, C Deep Meaning,
+D the header states; low-fi mockups: `2026-10-20-branch-review-mockups.html`. Calls marked
 **(my call)** are the designer's, not the owner's.
 
 ## 1. Why
@@ -235,13 +237,11 @@ not a second copy.
   empty and button sections), `keyboard-shortcuts.md` (pane name, ⌥⌘↑/↓),
   `docs/features/diff-reviewer.md` (a "Branch review UI" section).
 
-## 8. Open questions for the owner
+## 8. Owner decisions (ask #447, 2026-10-20)
 
-1. **The header button.** Contextual **Review** next to the capsule (my
-   recommendation), or no header button at all — only the row menu, Ready
-   to check and the pane picker?
-2. **What the review compares.** Keep "work tree vs the merge-base with the
-   default branch" (committed branch work + uncommitted edits), as today
-   (my recommendation), or add a switch "Only uncommitted edits"?
-3. **Name in the capsule.** "Review" (short) or "Branch review" (the pane's
-   name, wider)?
+1. **The header button:** the contextual **Review** button next to the
+   capsule (§5).
+2. **What the review compares:** the whole branch against `main` — the work
+   tree vs the merge-base with the default branch, as today; no
+   "only uncommitted" switch.
+3. **Name in the header:** "Review"; the pane is "Branch review".
