@@ -130,9 +130,13 @@ func (d *Daemon) runLoop(ctx context.Context, pollInterval time.Duration) error 
 			cycle = nil
 			switch {
 			case finished.interrupted:
-				dropPooledConnections()
+				dropConnections()
 				settle = time.NewTimer(wakeSettleDelay)
 			case finished.restart || triggerQueued:
+				if finished.restart {
+					// A fetch stuck that long most likely sits on a dead socket.
+					dropConnections()
+				}
 				triggerQueued = false
 				cycle = d.startCycle(ctx, true)
 			case finished.resetTicker:
@@ -167,11 +171,11 @@ func (d *Daemon) runLoop(ctx context.Context, pollInterval time.Duration) error 
 				}
 			case settle != nil:
 				d.logger.Printf("sleep detected (slept ~%s), starting the %s post-wake wait over", sleptFor, wakeSettleDelay)
-				dropPooledConnections()
+				dropConnections()
 				settle.Reset(wakeSettleDelay)
 			default:
 				d.logger.Printf("sleep detected (slept ~%s), waiting %s for the network", sleptFor, wakeSettleDelay)
-				dropPooledConnections()
+				dropConnections()
 				settle = time.NewTimer(wakeSettleDelay)
 			}
 		case _, ok := <-triggerC:
@@ -198,6 +202,9 @@ func (d *Daemon) runLoop(ctx context.Context, pollInterval time.Duration) error 
 		}
 	}
 }
+
+// dropConnections is dropPooledConnections, a var so tests can count calls.
+var dropConnections = dropPooledConnections
 
 // dropPooledConnections closes the idle pooled HTTP connections a sleep may
 // have left dead, so the next cycle dials afresh: http.DefaultTransport's —

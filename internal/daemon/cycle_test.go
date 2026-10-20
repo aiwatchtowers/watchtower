@@ -83,6 +83,17 @@ func setWakeSettle(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { wakeSettleDelay = prev })
 }
 
+// countDrops counts dropConnections calls for one test. Call it before
+// startLoop, so the loop has stopped before the cleanup restores the var.
+func countDrops(t *testing.T) *atomic.Int32 {
+	t.Helper()
+	var n atomic.Int32
+	prev := dropConnections
+	dropConnections = func() { n.Add(1) }
+	t.Cleanup(func() { dropConnections = prev })
+	return &n
+}
+
 // shortenWakeSettle keeps a wake-driven test from waiting the real delay.
 func shortenWakeSettle(t *testing.T) {
 	t.Helper()
@@ -277,6 +288,7 @@ func (h *loopHarness) releaseProbe(t *testing.T) {
 // post-wake delay.
 func TestRunLoop_TriggerLateInSourceSyncsRestartsTheCycle(t *testing.T) {
 	setWakeSettle(t, time.Hour)
+	drops := countDrops(t)
 	h := startLoop(t, true, make(chan time.Duration, 1), true)
 
 	recv(t, h.probe.started, "the initial cycle")
@@ -287,12 +299,14 @@ func TestRunLoop_TriggerLateInSourceSyncsRestartsTheCycle(t *testing.T) {
 	recv(t, h.probe.started, "the fresh cycle")
 	h.stop(t)
 
+	assert.Equal(t, int32(1), drops.Load(), "the pooled connections are dropped before the fresh cycle")
 	assert.Equal(t, 1, h.logs.count("manual sync trigger received 1m0s into the cycle's source syncs, cancelling it and syncing afresh"))
 }
 
 // Sync Now within manualRestartAfter of the cycle's start is queued: the
 // cycle finishes and one more runs right after it.
 func TestRunLoop_TriggerEarlyInSourceSyncsWaitsForTheCycle(t *testing.T) {
+	drops := countDrops(t)
 	h := startLoop(t, true, make(chan time.Duration, 1), true)
 
 	recv(t, h.probe.started, "the initial cycle")
@@ -306,6 +320,7 @@ func TestRunLoop_TriggerEarlyInSourceSyncsWaitsForTheCycle(t *testing.T) {
 	recv(t, h.probe.started, "the queued cycle")
 	h.stop(t)
 	assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
+	assert.Zero(t, drops.Load(), "a queued trigger leaves the connections alone")
 }
 
 // Sync Now while the cycle runs its pipelines is queued whatever its age: the
