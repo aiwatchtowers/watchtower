@@ -127,23 +127,21 @@ func shortenWakeSettle(t *testing.T) {
 	setWakeSettle(t, 10*time.Millisecond)
 }
 
-// fakeWall is runLoop's wall clock in a test, moved by hand.
-type fakeWall struct {
-	base   time.Time
-	offset atomic.Int64
-}
+// fakeMono is runLoop's monotonic clock in a test, moved by hand: it moves
+// only by awake time, so a test models a sleep by not advancing it.
+type fakeMono struct{ elapsed atomic.Int64 }
 
-func (w *fakeWall) now() time.Time           { return w.base.Add(time.Duration(w.offset.Load())) }
-func (w *fakeWall) advance(by time.Duration) { w.offset.Add(int64(by)) }
+func (m *fakeMono) now() time.Duration       { return time.Duration(m.elapsed.Load()) }
+func (m *fakeMono) advance(by time.Duration) { m.elapsed.Add(int64(by)) }
 
 // loopHarness is a running daemon loop with a probe in its source-sync
-// section, injected wake and trigger channels and a fake wall clock.
+// section, injected wake and trigger channels and a fake monotonic clock.
 type loopHarness struct {
 	d       *Daemon
 	probe   *cycleProbe
 	wake    chan time.Duration
 	trigger chan struct{} // unbuffered: a send returns once the loop took it
-	wall    *fakeWall
+	mono    *fakeMono
 	logs    *lockedLog
 	cancel  context.CancelFunc
 	done    chan error
@@ -181,11 +179,11 @@ func startLoop(t *testing.T, o loopOpts) *loopHarness {
 	d.wakeCh = o.wake
 	trigger := make(chan struct{})
 	d.triggerCh = trigger
-	wall := &fakeWall{base: time.Now().Round(0)}
-	d.loopNow = wall.now
+	mono := &fakeMono{}
+	d.loopMono = mono.now
 
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &loopHarness{d: d, probe: probe, wake: o.wake, trigger: trigger, wall: wall, logs: logs, cancel: cancel, done: make(chan error, 1)}
+	h := &loopHarness{d: d, probe: probe, wake: o.wake, trigger: trigger, mono: mono, logs: logs, cancel: cancel, done: make(chan error, 1)}
 	go func() { h.done <- d.Run(ctx) }()
 	t.Cleanup(func() {
 		cancel()
@@ -253,7 +251,7 @@ const (
 	logSkipsForSleep  = "source syncs stopped by sleep, skipping pipelines"
 	logQueuedFetching = "manual sync trigger received during the cycle's source syncs, syncing after it"
 	logQueuedSettling = "manual sync trigger received during the post-wake wait, syncing after it"
-	logRestarts       = "without source-sync progress, cancelling them and syncing afresh"
+	logRestarts       = "without Slack sync progress, cancelling the source syncs and syncing afresh"
 )
 
 // A sleep detected while a cycle hangs in its source syncs cancels them, the
@@ -328,7 +326,7 @@ func TestRunLoop_SleepDuringPipelinesLetsThemFinish(t *testing.T) {
 
 	recv(t, h.probe.started, "the initial cycle")
 	h.probe.block.Store(false)
-	h.d.cycleInPipelines.Store(true) // as runSync marks it past the source syncs
+	h.d.setSection(sectionPipelines) // as runSync marks it past the source syncs
 	h.wake <- 10 * time.Minute
 	h.logs.waitLog(t, "during the cycle's pipelines, letting them finish", 1)
 	assert.Equal(t, int32(1), drops.Load(), "the idle connections are dropped at once")
@@ -386,17 +384,22 @@ func (h *loopHarness) releaseProbe(t *testing.T) {
 	}
 }
 
-// Sync Now while a cycle's source syncs have made no progress for
-// manualRestartAfter cancels them and starts a fresh cycle at once — no
-// post-wake delay.
-func TestRunLoop_TriggerOnStalledSourceSyncsRestartsTheCycle(t *testing.T) {
+// inSlackSync marks the cycle blocked in the probe as in its Slack sync: the
+// probe, an IMAP syncer, stands in for a Slack sync hung on a dead socket.
+func (h *loopHarness) inSlackSync() { h.d.setSection(sectionSlackFetch) }
+
+// Sync Now while a cycle's Slack sync has made no progress for
+// manualRestartAfter cancels the source syncs and starts a fresh cycle at
+// once — no post-wake delay.
+func TestRunLoop_TriggerOnStalledSlackSyncRestartsTheCycle(t *testing.T) {
 	setWakeSettle(t, time.Hour)
 	drops := countDrops(t)
 	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
 
 	recv(t, h.probe.started, "the initial cycle")
 	h.probe.block.Store(false)
-	h.wall.advance(manualRestartAfter)
+	h.inSlackSync()
+	h.mono.advance(manualRestartAfter)
 	h.trigger <- struct{}{}
 	recv(t, h.probe.cancelled, "the stalled cycle's cancellation")
 	recv(t, h.probe.started, "the fresh cycle")
@@ -407,17 +410,17 @@ func TestRunLoop_TriggerOnStalledSourceSyncsRestartsTheCycle(t *testing.T) {
 	assert.Equal(t, 1, h.logs.count("source syncs stopped by Sync Now restart, skipping pipelines"))
 }
 
-// Sync Now on an old cycle whose source syncs still make progress (a long
-// first sync, a slow Jira pass) is queued: the cycle finishes and one more
-// runs right after it.
-func TestRunLoop_TriggerOnMovingSourceSyncsWaitsForTheCycle(t *testing.T) {
+// Sync Now on an old cycle whose Slack sync still makes progress (a long
+// first sync) is queued: the cycle finishes and one more runs right after it.
+func TestRunLoop_TriggerOnMovingSlackSyncWaitsForTheCycle(t *testing.T) {
 	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
 
 	recv(t, h.probe.started, "the initial cycle")
 	h.probe.block.Store(false)
-	h.wall.advance(10 * manualRestartAfter)
+	h.inSlackSync()
+	h.mono.advance(10 * manualRestartAfter)
 	h.d.markFetchProgress() // as the Slack heartbeat does when its counters move
-	h.wall.advance(manualRestartAfter - time.Second)
+	h.mono.advance(manualRestartAfter - time.Second)
 	h.pressSyncNow(t, logQueuedFetching)
 	assert.Zero(t, h.logs.count("afresh"), "a cycle still making progress is not cancelled")
 
@@ -435,7 +438,8 @@ func TestRunLoop_TriggerEarlyInSourceSyncsWaitsForTheCycle(t *testing.T) {
 
 	recv(t, h.probe.started, "the initial cycle")
 	h.probe.block.Store(false)
-	h.wall.advance(manualRestartAfter - time.Second)
+	h.inSlackSync()
+	h.mono.advance(manualRestartAfter - time.Second)
 	h.pressSyncNow(t, logQueuedFetching)
 	h.pressSyncNow(t, logQueuedFetching)
 	assert.Zero(t, h.logs.count("afresh"), "a young cycle is not cancelled")
@@ -448,6 +452,50 @@ func TestRunLoop_TriggerEarlyInSourceSyncsWaitsForTheCycle(t *testing.T) {
 	assert.Zero(t, drops.Load(), "a queued trigger leaves the connections alone")
 }
 
+// Sync Now during a source fetch after the Slack sync (calendars, mail, Jira,
+// Linear, Confluence: 30 s client timeouts, no in-phase progress) is queued
+// however long ago the last progress stamp was.
+func TestRunLoop_TriggerOnOtherFetchWaitsForTheCycle(t *testing.T) {
+	drops := countDrops(t)
+	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
+
+	recv(t, h.probe.started, "the initial cycle")
+	h.probe.block.Store(false)
+	require.Equal(t, sectionOtherFetch, h.d.section(), "the IMAP probe runs after the Slack sync")
+	h.mono.advance(10 * manualRestartAfter)
+	h.pressSyncNow(t, logQueuedFetching)
+	assert.Zero(t, h.logs.count("afresh"), "only a stalled Slack sync is restarted")
+
+	h.releaseProbe(t)
+	recv(t, h.probe.started, "the queued cycle")
+	h.stop(t)
+	assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
+	assert.Zero(t, drops.Load(), "a queued trigger leaves the connections alone")
+}
+
+// Sync Now right after the Mac woke, before the wake watcher reported the
+// sleep, is queued: the stall is measured in awake time, so the half hour the
+// Mac slept through a Slack sync is no stall. The wake report then cancels
+// the cycle as a sleep.
+func TestRunLoop_TriggerAfterSleepBeforeTheWakeReportIsQueued(t *testing.T) {
+	shortenWakeSettle(t)
+	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
+
+	recv(t, h.probe.started, "the initial cycle")
+	h.probe.block.Store(false)
+	h.inSlackSync()
+	h.mono.advance(5 * time.Second) // awake time; the 30-minute sleep moves only the wall clock
+	h.pressSyncNow(t, logQueuedFetching)
+	assert.Zero(t, h.logs.count("afresh"), "the sleep is not a stall")
+
+	h.wake <- 30 * time.Minute
+	recv(t, h.probe.cancelled, "the sleep's cancellation")
+	h.logs.waitLog(t, logSleptCycleEnds, 1)
+	recv(t, h.probe.started, "the cycle after the delay")
+	h.stop(t)
+	assert.Zero(t, h.logs.count("Sync Now restart"), "the cycle was cancelled by the sleep, not restarted")
+}
+
 // Sync Now while the cycle runs its pipelines is queued whatever its stall:
 // the sources are already fetched.
 func TestRunLoop_TriggerDuringPipelinesWaitsForTheCycle(t *testing.T) {
@@ -455,8 +503,8 @@ func TestRunLoop_TriggerDuringPipelinesWaitsForTheCycle(t *testing.T) {
 
 	recv(t, h.probe.started, "the initial cycle")
 	h.probe.block.Store(false)
-	h.d.cycleInPipelines.Store(true) // as runSync marks it past the source syncs
-	h.wall.advance(10 * manualRestartAfter)
+	h.d.setSection(sectionPipelines) // as runSync marks it past the source syncs
+	h.mono.advance(10 * manualRestartAfter)
 	h.pressSyncNow(t, "during the cycle's pipelines, syncing after it")
 	assert.Zero(t, h.logs.count("afresh"), "a cycle in its pipelines is not cancelled")
 
@@ -475,7 +523,8 @@ func TestRunLoop_RestartThenSleepStillSyncsAfterTheDelay(t *testing.T) {
 
 	recv(t, h.probe.started, "the initial cycle")
 	h.probe.block.Store(false)
-	h.wall.advance(manualRestartAfter)
+	h.inSlackSync()
+	h.mono.advance(manualRestartAfter)
 	h.trigger <- struct{}{}
 	recv(t, h.probe.cancelled, "the restart's cancellation")
 	h.wake <- 10 * time.Minute
@@ -529,21 +578,22 @@ func TestRunLoop_TriggerDuringSettleRunsOneCycleAfterIt(t *testing.T) {
 	}
 }
 
-// runSync clears the pipelines marker for its source syncs and sets it before
-// the pipelines.
-func TestRunSync_MarksThePipelinesSection(t *testing.T) {
+// runSync moves the section marker along: the fetches after the Slack sync
+// are not the Slack sync (a trigger never restarts them), and the pipelines
+// are marked before they run.
+func TestRunSync_MarksTheSections(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	d := newDaemon(nil, &config.Config{})
 	d.SetLogger(log.New(&lockedLog{}, "", 0))
-	d.cycleInPipelines.Store(true) // left over from the previous cycle
+	d.setSection(sectionPipelines) // left over from the previous cycle
 	probe := newCycleProbe()
-	var duringSync atomic.Bool
-	probe.onSync = func() { duringSync.Store(d.cycleInPipelines.Load()) }
+	var duringSync atomic.Int32
+	probe.onSync = func() { duringSync.Store(int32(d.section())) }
 	d.imapSyncers = []mailSyncer{probe}
 
 	d.runSync(context.Background(), context.Background())
-	assert.False(t, duringSync.Load(), "the source syncs run outside the pipelines section")
-	assert.True(t, d.cycleInPipelines.Load(), "the pipelines section is marked")
+	assert.Equal(t, sectionOtherFetch, cycleSection(duringSync.Load()), "the IMAP sync runs in the other-fetch section")
+	assert.Equal(t, sectionPipelines, d.section(), "the pipelines section is marked")
 }
 
 // A cancelled fetch context skips the pipelines, and the log names why.
@@ -574,24 +624,24 @@ func TestRunSync_CancelledFetchSkipsPipelinesNamingTheCause(t *testing.T) {
 	}
 }
 
-// startCycle resets the pipelines marker and the progress stamp on the loop
+// startCycle resets the section marker and the progress stamp on the loop
 // goroutine, before the cycle's goroutine runs: a trigger right after it
 // never reads the previous cycle's state.
 func TestStartCycle_ResetsTheCycleStateFirst(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	d := newDaemon(nil, &config.Config{})
 	d.SetLogger(log.New(&lockedLog{}, "", 0))
-	wall := &fakeWall{base: time.Now().Round(0)}
-	d.loopNow = wall.now
+	mono := &fakeMono{}
+	d.loopMono = mono.now
 	probe := newCycleProbe()
 	probe.block.Store(true)
 	d.imapSyncers = []mailSyncer{probe}
-	d.cycleInPipelines.Store(true)
+	d.setSection(sectionPipelines)
 	d.markFetchProgress()
-	wall.advance(time.Hour)
+	mono.advance(time.Hour)
 
 	c := d.startCycle(context.Background(), true)
-	assert.False(t, d.cycleInPipelines.Load())
+	assert.Equal(t, sectionSlackFetch, d.section())
 	assert.Zero(t, d.fetchStalledFor())
 	recv(t, probe.started, "the cycle")
 	c.cancelFetch(errCycleRestart)
@@ -616,14 +666,14 @@ func TestOnSleep_Paths(t *testing.T) {
 		defer settle.Stop()
 		d.onSleep(nil, &settle, time.Minute)
 	})
-	newCycle := func(inPipelines bool) (*syncCycle, context.Context) {
+	newCycle := func(s cycleSection) (*syncCycle, context.Context) {
 		fetchCtx, cancel := context.WithCancelCause(context.Background())
 		t.Cleanup(func() { cancel(nil) })
-		d.cycleInPipelines.Store(inPipelines)
+		d.setSection(s)
 		return &syncCycle{cancelFetch: cancel}, fetchCtx
 	}
 	t.Run("fetching", func(t *testing.T) {
-		c, fetchCtx := newCycle(false)
+		c, fetchCtx := newCycle(sectionOtherFetch)
 		var settle *time.Timer
 		d.onSleep(c, &settle, time.Minute)
 		assert.True(t, c.slept)
@@ -631,7 +681,7 @@ func TestOnSleep_Paths(t *testing.T) {
 		assert.Nil(t, settle, "the delay starts once the cycle returns")
 	})
 	t.Run("pipelines", func(t *testing.T) {
-		c, fetchCtx := newCycle(true)
+		c, fetchCtx := newCycle(sectionPipelines)
 		var settle *time.Timer
 		d.onSleep(c, &settle, time.Minute)
 		assert.True(t, c.slept)
@@ -640,9 +690,9 @@ func TestOnSleep_Paths(t *testing.T) {
 	assert.Equal(t, int32(4), drops.Load(), "every path drops the pooled connections")
 }
 
-// wallNow's default is the wall clock with no monotonic reading: the
-// fetch-progress stall it measures must count the time a sleep took.
-func TestWallNow_DefaultHasNoMonotonicReading(t *testing.T) {
-	d := newQuietDaemon(t)
-	assert.NotContains(t, d.wallNow().String(), "m=")
+// monoNow's default measures from an epoch that carries a monotonic
+// reading: without one, time.Since would subtract wall clocks and a sleep
+// would count as a fetch stall.
+func TestMonoEpoch_HasMonotonicReading(t *testing.T) {
+	assert.Contains(t, monoEpoch.String(), "m=")
 }

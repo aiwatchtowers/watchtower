@@ -1288,14 +1288,14 @@ func TestSyncHeartbeat_StampsFetchProgressOnlyWhenItMoves(t *testing.T) {
 	orch, _ := newTestOrchestrator(t, new(atomic.Int32))
 	d := newDaemon(orch, &config.Config{Sync: config.SyncConfig{PollInterval: time.Second}})
 	d.SetLogger(log.New(io.Discard, "", 0))
-	wall := &fakeWall{base: time.Now().Round(0)}
-	d.loopNow = wall.now
+	mono := &fakeMono{}
+	d.loopMono = mono.now
 
 	stop := d.startSyncHeartbeat(orch)
 	defer stop()
 	assert.Zero(t, d.fetchStalledFor(), "the first beat stamps the progress")
 
-	wall.advance(time.Minute)
+	mono.advance(time.Minute)
 	time.Sleep(20 * syncHeartbeatInterval) // beats with nothing new
 	assert.Equal(t, time.Minute, d.fetchStalledFor(), "a beat with nothing new leaves the stamp")
 

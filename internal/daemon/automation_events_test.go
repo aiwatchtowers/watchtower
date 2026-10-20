@@ -509,14 +509,25 @@ func TestDaemon_NilOrFailingBusLeavesRunSyncUnchanged(t *testing.T) {
 }
 
 func TestDaemon_ReactionCommandsPublishToCycleBus(t *testing.T) {
-	// Statically: phaseReactionCommands(fetchCtx) is the statement right
-	// after the observed phaseSlackSync, guarded by fetchCtx.Err() == nil.
+	// Statically: phaseReactionCommands(fetchCtx) follows the observed
+	// phaseSlackSync with nothing but the cycle-section bookkeeping between
+	// them, guarded by fetchCtx.Err() == nil.
 	file, err := parser.ParseFile(token.NewFileSet(), "daemon.go", nil, 0)
 	require.NoError(t, err)
 	body := runSyncBody(t, file)
 	order := runSyncCallOrder(t)
 	slack, reactions := order["phaseSlackSync"], order["phaseReactionCommands"]
-	assert.Equal(t, slack+1, reactions, "the poll still follows the Slack sync directly")
+	require.Less(t, slack, reactions, "the poll follows the Slack sync")
+	for _, between := range body.List[slack+1 : reactions] {
+		stmt, ok := between.(*ast.ExprStmt)
+		require.True(t, ok, "only bookkeeping calls sit between the Slack sync and the poll")
+		call, ok := stmt.X.(*ast.CallExpr)
+		require.True(t, ok, "only bookkeeping calls sit between the Slack sync and the poll")
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		require.True(t, ok, "only bookkeeping calls sit between the Slack sync and the poll")
+		assert.Contains(t, []string{"setSection", "markFetchProgress"}, sel.Sel.Name,
+			"the poll still follows the Slack sync directly")
+	}
 	guard, ok := body.List[reactions].(*ast.IfStmt)
 	require.True(t, ok, "the poll keeps its ctx.Err() guard")
 	stmt, ok := guard.Body.List[0].(*ast.ExprStmt)

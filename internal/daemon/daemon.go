@@ -192,14 +192,13 @@ type Daemon struct {
 
 	lockStats sql.DBStats // pool stats at the last cycle's lock sample (sampleLockStats)
 
-	// cycleInPipelines is set once the running cycle has left its
-	// source-fetch section for the pipelines (runSync), and fetchProgressAt
-	// (wall-clock UnixNano, markFetchProgress) whenever its fetches move on;
-	// runLoop reads both from its own goroutine to decide whether a manual
-	// trigger restarts the cycle.
-	cycleInPipelines atomic.Bool
-	fetchProgressAt  atomic.Int64
-	loopNow          func() time.Time // runLoop's wall clock, nil = time.Now; a seam for tests
+	// cycleSection is the running cycle's cycleSection (runSync moves it
+	// along), and fetchProgressAt (monoNow, markFetchProgress) is stamped
+	// whenever its fetches move on; runLoop reads both from its own goroutine
+	// to decide what a sleep or a manual trigger does to the cycle.
+	cycleSection    atomic.Int32
+	fetchProgressAt atomic.Int64
+	loopMono        func() time.Duration // runLoop's monotonic clock, nil = time.Since(monoEpoch); a seam for tests
 }
 
 // New creates a Daemon. Slack orchestrators are attached separately via
@@ -485,9 +484,10 @@ func (d *Daemon) triggerChannel() <-chan struct{} {
 // ctx. fetchCtx derives from ctx; runLoop cancels it alone (a sleep, a Sync
 // Now restart), which stops the fetches and skips the pipelines but never
 // cuts off pipelines already running — their attempt budgets, throttle stamps
-// and pipeline_runs rows see a cancel only on shutdown.
+// and pipeline_runs rows see a cancel only on shutdown. It moves
+// d.cycleSection along for runLoop.
 func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
-	d.cycleInPipelines.Store(false)
+	d.setSection(sectionSlackFetch)
 	d.markFetchProgress()
 	d.sampleLockStats(fetchCtx)
 	// Every source sync below starts after this instant, so the data the
@@ -496,6 +496,10 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	d.cycleEvents = d.beginAutomationEvents()
 	var syncErr, inboxSyncErr error
 	d.observePhase(fetchCtx, automations.SlackSource(d.db), func() { syncErr, inboxSyncErr = d.phaseSlackSync(fetchCtx) })
+	// From here a manual trigger waits for the cycle: no other fetch shows
+	// progress while it runs (manualRestartAfter).
+	d.setSection(sectionOtherFetch)
+	d.markFetchProgress()
 	// Owner commands first: the reaction poll needs only the freshly synced
 	// Slack messages (thread context) and is what `Sync Now` is usually pressed
 	// for, so it runs before the other source syncs (Jira alone can take
@@ -503,7 +507,6 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	if fetchCtx.Err() == nil {
 		d.phaseReactionCommands(fetchCtx)
 	}
-	d.markFetchProgress()
 	// One calendar snapshot spans both calendar phases.
 	d.observePhase(fetchCtx, automations.CalendarSource(d.db, automations.RealClock{}), func() {
 		d.phaseCalendarSync(fetchCtx)
@@ -524,10 +527,9 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// Once per cycle, also on a cancelled ctx: it only queues rows.
 	d.flushAutomationEvents(syncStart)
 	d.phaseAgentAnalytics(fetchCtx)
-	// The source-fetch section ends here: a manual trigger from now on waits
-	// for this cycle instead of restarting it, and a sleep lets it finish
-	// (runLoop).
-	d.cycleInPipelines.Store(true)
+	// The source-fetch section ends here: a sleep from now on lets the
+	// pipelines finish (runLoop).
+	d.setSection(sectionPipelines)
 
 	// Run pipelines even if sync had a non-fatal error (e.g. rate-limited,
 	// partial fetch). The DB still has messages that need processing.
