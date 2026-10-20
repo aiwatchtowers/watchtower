@@ -1,6 +1,7 @@
 package db
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"os"
@@ -40,7 +41,7 @@ func TestSearchIdx01_MigrationsKeepMessagesRowid(t *testing.T) {
 // replaceIntoMessages matches a REPLACE write to the messages table. REPLACE
 // deletes the conflicting row and inserts a new one under a new rowid, which
 // orphans its messages_fts row.
-var replaceIntoMessages = regexp.MustCompile(`(?i)(insert\s+or\s+replace|replace)\s+into\s+messages\b`)
+var replaceIntoMessages = regexp.MustCompile("(?i)(insert\\s+or\\s+replace|replace)\\s+into\\s+(main\\.)?[\"`\\[]?messages\\b")
 
 // searchIdxScanMinFiles is the coverage floor: a scan pointed at the wrong
 // root walks nothing and passes for the wrong reason.
@@ -78,10 +79,10 @@ func TestSearchIdx01_NoReplaceIntoMessages(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			for i, line := range strings.Split(string(body), "\n") {
-				if replaceIntoMessages.MatchString(line) {
-					t.Errorf("%s:%d: writes messages with REPLACE — use ON CONFLICT … DO UPDATE so the rowid (the search index key) stays (SEARCHIDX-01)", path, i+1)
-				}
+			// The whole body, so a statement split across lines still matches.
+			for _, m := range replaceIntoMessages.FindAllIndex(body, -1) {
+				line := 1 + bytes.Count(body[:m[0]], []byte("\n"))
+				t.Errorf("%s:%d: writes messages with REPLACE — use ON CONFLICT … DO UPDATE so the rowid (the search index key) stays (SEARCHIDX-01)", path, line)
 			}
 			return nil
 		})
