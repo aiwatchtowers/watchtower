@@ -84,6 +84,17 @@ final class HomeWorkbenchBuilderTests: XCTestCase {
             .workbench(WorkbenchRoute(projectID: 3, pane: .terminal, subjectID: 7))
         )
         XCTAssertNil(HomeWorkbenchBuilder.link(for: session(7, workbench: nil, name: nil, .working)))
+        XCTAssertEqual(
+            HomeWorkbenchBuilder.link(for: session(7, workbench: 3, .readyToCheck)),
+            .workbench(WorkbenchRoute(projectID: 3, pane: .review, subjectID: 7)),
+            "a session ready to check opens in its Branch review"
+        )
+        for kind: SessionSwitcherPresentation.State.Kind in [.needsApproval, .failed, .background] {
+            XCTAssertEqual(
+                HomeWorkbenchBuilder.link(for: session(7, workbench: 3, kind)),
+                .workbench(WorkbenchRoute(projectID: 3, pane: .terminal, subjectID: 7)), "\(kind)"
+            )
+        }
         let rows = try asks { d in
             let id = try TestDatabase.insertWorkbench(d)
             _ = try TestDatabase.insertOwnerAsk(d, projectID: id)

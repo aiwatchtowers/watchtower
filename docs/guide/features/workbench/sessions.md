@@ -66,6 +66,7 @@ The run waits until the session finishes. If you stop it or its process ends, th
 
 - A session that is finished with no open ask moves into **▸ N finished** at the bottom, most recent first. The group remembers whether it is open. A session you are looking at never jumps.
 - Drag a session to reorder it. Right-click for **Rename…** and **Delete…**.
+- Hover a **Ready to check** session for **Review Branch**, which opens its [Branch review](diff-review.md); the right-click menu has it for every session.
 - Hover a session that is finished, stopped, failed or not running to get a **✕**. One click deletes it without a dialog. Any other session (working, agents working, ready to check, waiting, asking for a permission, or running with no state yet) needs **Delete…**.
 - After a delete, **Undo** in the bar brings it back with its report, target links and asks. It stays for about five seconds.
 - If you quit before the bar goes away, the delete still happens. When the database is busy this can hold the quit for a few seconds, with a small "Finishing session deletes…" window.

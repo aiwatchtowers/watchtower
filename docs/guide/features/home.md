@@ -26,7 +26,7 @@ The feed reads top to bottom like your day: above a **NOW** line is everything t
 
 ### Workbench
 
-The **Workbench** zone lists your coding-agent sessions that need a look and the questions they have asked you, grouped by workbench, with **Open →** for the Workbench tab. A session shows only while it waits for approval, failed, is ready to check, or is working (or in the background); finished and stopped sessions are left out. Under the sessions come the open questions and review requests, oldest first. Click a session to open its terminal, a question to open its session.
+The **Workbench** zone lists your coding-agent sessions that need a look and the questions they have asked you, grouped by workbench, with **Open →** for the Workbench tab. Finished and stopped sessions are left out; others show while they wait for approval, failed, are ready to check, or work (or in the background). Then open questions and review requests, oldest first. Click a session for its terminal (plus its Branch review when ready to check), a question for its session.
 
 If you keep telling agents the same thing, the last row offers it as an instruction: **Add**, **Dismiss** or **More…**.
 

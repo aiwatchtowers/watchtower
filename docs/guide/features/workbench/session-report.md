@@ -16,7 +16,7 @@ Pull request details need the GitHub CLI (`gh`). Without it, only whether a bran
 
 ## Using it
 
-### Read the Session view
+### Read the Report view
 
 The **Report** button on a session's strip shows the report of one Claude Code session next to its terminal:
 
@@ -25,6 +25,8 @@ The **Report** button on a session's strip shows the report of one Claude Code s
 - **Pull requests**: each one's state and size, or "no PR yet" or "not checked".
 - **Done**: one line per phase.
 - **Agent's last word**: the summary the agent wrote when it finished. It becomes **Previous summary** once you send a new prompt.
+
+While the session is **Ready to check**, **Review Branch** next to its analytics line opens its [Branch review](diff-review.md).
 
 It refreshes every 30 seconds while on screen, and when the session's state changes. With nothing to show it says "Pick a session".
 
