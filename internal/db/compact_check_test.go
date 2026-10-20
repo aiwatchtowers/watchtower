@@ -415,6 +415,8 @@ func TestCheckCompaction_FTSRebuildGaveUpFreelistStillDue(t *testing.T) {
 	assert.True(t, c.Due)
 	assert.Equal(t, "freelist", c.Reason)
 	assert.True(t, c.FTSRebuildPending)
+	// The Desktop's disk notice reads this: the compaction's rule, not the fill's floor.
+	assert.Equal(t, needsDiskBytes(c.DBBytes), c.NeedsDiskBytes)
 }
 
 // TestCheckCompaction_FTSRebuildUsesCompactionStatfs pins that the fill's
