@@ -76,7 +76,7 @@ If the disk is short, the app opens normally and says **Watchtower could not opt
 
 Some updates also rebuild the search index of your Slack messages. Then the splash first shows **Updating search index —** with the time so far, and moves on to **Optimizing database** when the index is done. **Skip for now** works the same: the rebuild continues where it stopped at the next launch, or in the background while Watchtower syncs.
 
-Until the rebuild finishes, search may miss older Slack messages; nothing is lost, and new messages are searchable right away. If the disk is short for it, the app says **Watchtower could not update its search index**, with the free space it needs (one and a half times the old index's size) and what is available.
+Until the rebuild finishes, search may miss older Slack messages; nothing is lost, and new messages are searchable right away. The rebuild removes the old index first and writes the new one into the space it frees, so it needs only 64 MiB free; with less, the app says **Watchtower could not update its search index**, with the free space it needs and what is available. If the rebuild fails three times at launch, the app stops trying it there and the background sync finishes it.
 
 After three failed tries it waits for the next update and says so. You can also run it yourself with `watchtower db compact` ([Command line](../reference/cli.md)).
 

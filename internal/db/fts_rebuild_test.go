@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -100,7 +101,7 @@ func TestRebuildMessagesSearch_FillsAndDropsLegacy(t *testing.T) {
 
 	res, err := d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{ChunkRows: 4})
 	require.NoError(t, err)
-	assert.Equal(t, FTSRebuildResult{Done: true, Indexed: 20, Chunks: 7}, res)
+	assert.Equal(t, FTSRebuildResult{Done: true, Indexed: 20, Chunks: 8, DrainChunks: 1}, res, "one drop, then 7 fill chunks")
 
 	for _, q := range ftsFillQueries {
 		hits, err := d.SearchMessages(q, SearchOpts{})
@@ -116,14 +117,14 @@ func TestRebuildMessagesSearch_ResumesAfterInterrupt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	setChunkHook(t, func(chunk int) {
-		if chunk == 2 {
+		if chunk == 3 { // the drop, then two fill chunks
 			cancel()
 		}
 	})
 
 	res, err := d.RebuildMessagesSearch(ctx, FTSRebuildOptions{ChunkRows: 4})
 	require.ErrorIs(t, err, context.Canceled)
-	assert.Equal(t, 2, res.Chunks)
+	assert.Equal(t, 3, res.Chunks)
 	assert.False(t, res.Done)
 	var eighth, cursor int64
 	require.NoError(t, d.QueryRow(`SELECT rowid FROM messages ORDER BY rowid LIMIT 1 OFFSET 7`).Scan(&eighth))
@@ -133,7 +134,7 @@ func TestRebuildMessagesSearch_ResumesAfterInterrupt(t *testing.T) {
 	pending, _, err := readMaintenance(d, maintFTSRebuildPending)
 	require.NoError(t, err)
 	assert.Equal(t, "1", pending)
-	assert.True(t, hasSchemaTable(t, d, "messages_fts_legacy"))
+	assert.False(t, hasSchemaTable(t, d, "messages_fts_legacy"), "the legacy index goes before the fill")
 
 	res, err = d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{ChunkRows: 4})
 	require.NoError(t, err)
@@ -165,7 +166,7 @@ func TestRebuildMessagesSearch_ConcurrentWritesBetweenChunks(t *testing.T) {
 	}
 	below, tombstone, gone := rowidAt(1), rowidAt(9), rowidAt(13)
 	setChunkHook(t, func(chunk int) {
-		if chunk != 1 {
+		if chunk != 2 { // the drop, then the first fill chunk
 			return
 		}
 		for _, stmt := range []struct {
@@ -221,39 +222,47 @@ func legacyShadowRows(t *testing.T, d *DB) int {
 	return n
 }
 
-// TestRebuildMessagesSearch_DrainLegacyInChunks pins the daemon's completion:
+// TestRebuildMessagesSearch_DrainLegacyInChunks pins the daemon's path:
 // with DrainLegacy the legacy shadow rows go in chunk transactions, the
-// table stays until they are gone, and the search results are unchanged.
+// table stays until they are gone, nothing is filled before it is dropped,
+// and the search results are unchanged at the end.
 func TestRebuildMessagesSearch_DrainLegacyInChunks(t *testing.T) {
 	d, _, before := pendingFillDB(t)
 	t.Cleanup(SetFTSLegacyDrainRowsForTest(4))
 	opts := FTSRebuildOptions{Budget: time.Nanosecond, ChunkRows: 100, DrainLegacy: true}
-
-	res, err := d.RebuildMessagesSearch(context.Background(), opts)
-	require.NoError(t, err)
-	require.False(t, res.Done)
-	require.Equal(t, int64(20), res.Indexed, "one chunk fills all 25 rows")
 	left := legacyShadowRows(t, d)
 	require.Greater(t, left, 8, "the fixture must need more than one drain chunk")
 
-	drainCalls := 0
+	freeCalls := 0
 	for range 30 {
-		res, err = d.RebuildMessagesSearch(context.Background(), opts)
-		require.NoError(t, err)
-		if res.Done {
+		if !hasSchemaTable(t, d, "messages_fts_legacy") {
 			break
 		}
-		drainCalls++
-		assert.Zero(t, res.Indexed)
-		assert.Equal(t, 1, res.DrainChunks)
-		require.True(t, hasSchemaTable(t, d, "messages_fts_legacy"), "dropped before the drain finished")
-		now := legacyShadowRows(t, d)
-		require.Less(t, now, left, "a drain chunk deleted nothing")
-		left = now
+		res, err := d.RebuildMessagesSearch(context.Background(), opts)
+		require.NoError(t, err)
+		require.False(t, res.Done)
+		assert.Zero(t, res.Indexed, "filled before the legacy index was gone")
+		assert.Equal(t, FTSRebuildResult{Chunks: 1, DrainChunks: 1}, res)
+		freeCalls++
+		if hasSchemaTable(t, d, "messages_fts_legacy") {
+			now := legacyShadowRows(t, d)
+			require.Less(t, now, left, "a drain chunk deleted nothing")
+			left = now
+		}
 	}
-	require.True(t, res.Done, "the drain never finished")
-	assert.GreaterOrEqual(t, drainCalls, 2)
-	assert.Zero(t, res.DrainChunks, "the completing call drained nothing more")
+	require.False(t, hasSchemaTable(t, d, "messages_fts_legacy"), "the drain never finished")
+	assert.GreaterOrEqual(t, freeCalls, 3, "two drain chunks at least, then the drop")
+	assert.Zero(t, queryInt(t, d, `SELECT COUNT(*) FROM messages_fts`))
+	pending, _, err := readMaintenance(d, maintFTSRebuildPending)
+	require.NoError(t, err)
+	assert.Equal(t, "1", pending, "the fill is still pending after the drop")
+
+	res, err := d.RebuildMessagesSearch(context.Background(), opts)
+	require.NoError(t, err)
+	assert.Equal(t, FTSRebuildResult{Indexed: 20, Chunks: 1}, res, "one chunk fills all 25 rows")
+	res, err = d.RebuildMessagesSearch(context.Background(), opts)
+	require.NoError(t, err)
+	assert.Equal(t, FTSRebuildResult{Done: true}, res)
 	assertFillFinished(t, d)
 	assertIndexMatchesMessages(t, d)
 	for _, q := range ftsFillQueries {
@@ -264,46 +273,41 @@ func TestRebuildMessagesSearch_DrainLegacyInChunks(t *testing.T) {
 }
 
 // TestRebuildMessagesSearch_NoDrainDropsDirectly pins the launch step's
-// completion: without DrainLegacy the first call past the cursor drops the
-// untouched legacy table in one transaction.
+// path: without DrainLegacy the first chunk drops the untouched legacy table
+// in one transaction, before any fill chunk.
 func TestRebuildMessagesSearch_NoDrainDropsDirectly(t *testing.T) {
 	d, _, _ := pendingFillDB(t)
-	opts := FTSRebuildOptions{Budget: time.Nanosecond, ChunkRows: 100}
-
-	res, err := d.RebuildMessagesSearch(context.Background(), opts)
-	require.NoError(t, err)
-	require.False(t, res.Done)
 	require.Positive(t, legacyShadowRows(t, d))
 
-	res, err = d.RebuildMessagesSearch(context.Background(), opts)
+	res, err := d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{Budget: time.Nanosecond, ChunkRows: 100})
 	require.NoError(t, err)
-	assert.Equal(t, FTSRebuildResult{Done: true}, res)
+	assert.Equal(t, FTSRebuildResult{Chunks: 1, DrainChunks: 1}, res)
+	assert.False(t, hasSchemaTable(t, d, "messages_fts_legacy"))
+	assert.Zero(t, queryInt(t, d, `SELECT COUNT(*) FROM messages_fts`))
+
+	res, err = d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{ChunkRows: 100})
+	require.NoError(t, err)
+	assert.Equal(t, FTSRebuildResult{Done: true, Indexed: 20, Chunks: 1}, res)
 	assertFillFinished(t, d)
 	assertIndexMatchesMessages(t, d)
 }
 
 // TestRebuildMessagesSearch_DirectDropAfterPartialDrain pins the cross-path
 // case: the daemon drained part of the legacy shadow tables, then the launch
-// step (no DrainLegacy) completes with its direct DROP.
+// step (no DrainLegacy) drops the rest directly and fills.
 func TestRebuildMessagesSearch_DirectDropAfterPartialDrain(t *testing.T) {
 	d, _, before := pendingFillDB(t)
 	t.Cleanup(SetFTSLegacyDrainRowsForTest(4))
-	daemon := FTSRebuildOptions{Budget: time.Nanosecond, ChunkRows: 100, DrainLegacy: true}
-
-	res, err := d.RebuildMessagesSearch(context.Background(), daemon) // fill
-	require.NoError(t, err)
-	require.False(t, res.Done)
 	full := legacyShadowRows(t, d)
-	res, err = d.RebuildMessagesSearch(context.Background(), daemon) // one drain chunk
+	res, err := d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{Budget: time.Nanosecond, ChunkRows: 100, DrainLegacy: true})
 	require.NoError(t, err)
-	require.False(t, res.Done)
-	require.Equal(t, 1, res.DrainChunks)
+	require.Equal(t, FTSRebuildResult{Chunks: 1, DrainChunks: 1}, res)
 	require.Less(t, legacyShadowRows(t, d), full)
 	require.Positive(t, legacyShadowRows(t, d), "the drain must be partial")
 
 	res, err = d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{})
 	require.NoError(t, err)
-	assert.Equal(t, FTSRebuildResult{Done: true}, res)
+	assert.Equal(t, FTSRebuildResult{Done: true, Indexed: 20, Chunks: 2, DrainChunks: 1}, res)
 	assertFillFinished(t, d)
 	assertIndexMatchesMessages(t, d)
 	for _, q := range ftsFillQueries {
@@ -313,28 +317,19 @@ func TestRebuildMessagesSearch_DirectDropAfterPartialDrain(t *testing.T) {
 	}
 }
 
-// TestCheckMessagesSearchRebuild_FillDoneSkipsDiskRule pins that once the
-// cursor is past the last message the check reads no sizes and the disk rule
-// no longer applies: dropping or draining the legacy index frees space.
-func TestCheckMessagesSearchRebuild_FillDoneSkipsDiskRule(t *testing.T) {
+// TestCheckMessagesSearchRebuild_FixedFloor pins the fill's disk rule: a
+// fixed floor of free space, whatever the legacy index's size.
+func TestCheckMessagesSearchRebuild_FixedFloor(t *testing.T) {
 	d, _, _ := pendingFillDB(t)
-	stubFreeDisk(t, 0)
+	stubFreeDisk(t, ftsRebuildMinFreeBytes-1)
 	c, err := d.CheckMessagesSearchRebuild()
 	require.NoError(t, err)
-	assert.False(t, c.FillDone)
-	assert.False(t, c.DiskOK, "before the fill the disk rule applies")
+	assert.Equal(t, MessagesSearchCheck{Pending: true, NeedsDiskBytes: ftsRebuildMinFreeBytes, FreeDiskBytes: ftsRebuildMinFreeBytes - 1}, c)
 
-	res, err := d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{Budget: time.Nanosecond, ChunkRows: 100})
-	require.NoError(t, err)
-	require.False(t, res.Done)
+	stubFreeDisk(t, ftsRebuildMinFreeBytes)
 	c, err = d.CheckMessagesSearchRebuild()
 	require.NoError(t, err)
-	assert.Equal(t, MessagesSearchCheck{Pending: true, FillDone: true, DiskOK: true}, c)
-
-	require.NoError(t, d.UpsertMessage(Message{ChannelID: "C9", TS: "1800000000.000001", UserID: "U1", Text: "late arrival"}))
-	c, err = d.CheckMessagesSearchRebuild()
-	require.NoError(t, err)
-	assert.False(t, c.FillDone, "a message past the cursor reopens the fill")
+	assert.True(t, c.DiskOK, "exactly the floor")
 }
 
 func TestRebuildMessagesSearch_NotPendingIsNoOp(t *testing.T) {
@@ -356,7 +351,7 @@ func TestRebuildMessagesSearch_PendingWithEmptyMessagesCompletes(t *testing.T) {
 
 	res, err := d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{})
 	require.NoError(t, err)
-	assert.Equal(t, FTSRebuildResult{Done: true}, res)
+	assert.Equal(t, FTSRebuildResult{Done: true, Chunks: 1, DrainChunks: 1}, res)
 	assertFillFinished(t, d)
 }
 
@@ -387,7 +382,7 @@ func TestRebuildMessagesSearch_LegacyWithoutKeyIsFilled(t *testing.T) {
 
 	res, err := d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{ChunkRows: 4})
 	require.NoError(t, err)
-	assert.Equal(t, FTSRebuildResult{Done: true, Indexed: 20, Chunks: 7}, res)
+	assert.Equal(t, FTSRebuildResult{Done: true, Indexed: 20, Chunks: 8, DrainChunks: 1}, res, "the drop sets the pending key")
 	assertIndexMatchesMessages(t, d)
 	assertFillFinished(t, d)
 }
@@ -455,7 +450,7 @@ func TestRebuildMessagesSearchAt_SchemaPending(t *testing.T) {
 	assert.Equal(t, maintBefore, maintAfter, "the run wrote db_maintenance")
 }
 
-func TestCheckMessagesSearchRebuild_ReadsOnlyLegacyPages(t *testing.T) {
+func TestCheckMessagesSearchRebuild_ReadsOnly(t *testing.T) {
 	d, path, _ := pendingFillDB(t)
 	require.NoError(t, d.Close())
 	info, err := os.Stat(path)
@@ -467,13 +462,7 @@ func TestCheckMessagesSearchRebuild_ReadsOnlyLegacyPages(t *testing.T) {
 	defer ro.Close()
 	c, err := ro.CheckMessagesSearchRebuild()
 	require.NoError(t, err)
-	assert.True(t, c.Pending)
-	assert.Positive(t, c.LegacyBytes)
-	assert.Equal(t, c.LegacyBytes*3/2, c.NeedsDiskBytes)
-	assert.True(t, c.DiskOK)
-	assert.Equal(t, int64(1<<50), c.FreeDiskBytes)
-	dbBytes := info.Size()
-	assert.Less(t, c.LegacyBytes, dbBytes, "the legacy size is the whole file, not its pages")
+	assert.Equal(t, MessagesSearchCheck{Pending: true, NeedsDiskBytes: ftsRebuildMinFreeBytes, FreeDiskBytes: 1 << 50, DiskOK: true}, c)
 
 	after, err := os.Stat(path)
 	require.NoError(t, err)
@@ -500,8 +489,8 @@ func TestRebuildMessagesSearch_OtherProcessFinishesFirst(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = a.Close() })
 	fired := false
-	setChunkHook(t, func(int) {
-		if fired {
+	setChunkHook(t, func(chunk int) {
+		if fired || chunk != 2 { // the drop, then the first fill chunk
 			return
 		}
 		fired = true
@@ -512,7 +501,7 @@ func TestRebuildMessagesSearch_OtherProcessFinishesFirst(t *testing.T) {
 
 	res, err := b.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{ChunkRows: 4})
 	require.NoError(t, err)
-	assert.Equal(t, FTSRebuildResult{Done: true, Indexed: 3, Chunks: 1}, res)
+	assert.Equal(t, FTSRebuildResult{Done: true, Indexed: 3, Chunks: 2, DrainChunks: 1}, res)
 	assertIndexMatchesMessages(t, b)
 	assertFillFinished(t, b)
 }
@@ -554,6 +543,110 @@ func TestRebuildMessagesSearch_GapHonoursCancel(t *testing.T) {
 	assert.Less(t, time.Since(start), time.Minute)
 }
 
+// TestRebuildMessagesSearch_FileDoesNotGrow pins the order that lets the
+// fill run on a nearly full volume: the legacy index is freed before the new
+// one is written, so the new index reuses its pages and the file never holds
+// both. page_count is sampled after every chunk; the slack (a tenth of the
+// legacy index) covers FTS5 segment merges and freelist trunk pages. Filling
+// first would grow the file by about the whole legacy index.
+func TestRebuildMessagesSearch_FileDoesNotGrow(t *testing.T) {
+	noChunkGap(t)
+	path := compactFixture(t)
+	d, err := Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.Close() })
+	tx, err := d.Begin()
+	require.NoError(t, err)
+	for i := range 4000 {
+		_, err := tx.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES (?, ?, 'U1', ?)`,
+			fmt.Sprintf("C%d", i%7), fmt.Sprintf("%d.000001", 1700000000+i),
+			fmt.Sprintf("note %d about the topic%d rollout, word%d and word%d, owner%d", i, i%311, i%523, i%977, i%41))
+		require.NoError(t, err)
+	}
+	require.NoError(t, tx.Commit())
+	require.NoError(t, ReplayMessagesSearchUpgradeForTest(d))
+	pages := func() int { return queryInt(t, d, `PRAGMA page_count`) }
+	legacyPages := queryInt(t, d, `SELECT COUNT(*) FROM dbstat WHERE name LIKE 'messages_fts_legacy%'`)
+	require.Greater(t, legacyPages, 100, "the fixture's legacy index must be large enough to measure")
+	before := pages()
+	most := before
+	setChunkHook(t, func(int) { most = max(most, pages()) })
+
+	res, err := d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{ChunkRows: 500})
+	require.NoError(t, err)
+	require.True(t, res.Done)
+	most = max(most, pages())
+	assert.LessOrEqual(t, most, before+legacyPages/10,
+		"the file grew by %d pages during the fill (legacy index: %d pages)", most-before, legacyPages)
+	assertIndexMatchesMessages(t, d)
+}
+
+// TestRebuildMessagesSearch_SearchAfterCompact pins that a compaction after
+// the fill keeps the index in step with messages: VACUUM keeps the rowids
+// the index is keyed by, so search returns the same results.
+func TestRebuildMessagesSearch_SearchAfterCompact(t *testing.T) {
+	d, path, before := pendingFillDB(t)
+	res, err := d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{})
+	require.NoError(t, err)
+	require.True(t, res.Done)
+	_, err = d.Exec(`DELETE FROM messages WHERE rowid IN (SELECT rowid FROM messages ORDER BY rowid LIMIT 2)`)
+	require.NoError(t, err)
+	want := map[string][]Message{}
+	for _, q := range ftsFillQueries {
+		hits, err := d.SearchMessages(q, SearchOpts{})
+		require.NoError(t, err)
+		require.NotEmpty(t, hits, q)
+		want[q] = hits
+	}
+	require.NotEqual(t, before, want, "the deletes must change some results")
+	require.NoError(t, d.Close())
+
+	cres, err := Compact(context.Background(), path, CompactOptions{Reason: "manual", Version: "1.0.0"})
+	require.NoError(t, err)
+	require.True(t, cres.Compacted)
+
+	d2, err := Open(path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d2.Close() })
+	for _, q := range ftsFillQueries {
+		hits, err := d2.SearchMessages(q, SearchOpts{})
+		require.NoError(t, err)
+		assert.Equal(t, want[q], hits, q)
+	}
+	assertIndexMatchesMessages(t, d2)
+}
+
+func TestMessagesSearchPendingAt(t *testing.T) {
+	d, path, _ := pendingFillDB(t)
+	pending, err := MessagesSearchPendingAt(path)
+	require.NoError(t, err)
+	assert.True(t, pending)
+
+	res, err := d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{})
+	require.NoError(t, err)
+	require.True(t, res.Done)
+	pending, err = MessagesSearchPendingAt(path)
+	require.NoError(t, err)
+	assert.False(t, pending)
+
+	_, err = MessagesSearchPendingAt(filepath.Join(t.TempDir(), "missing.db"))
+	assert.Error(t, err)
+}
+
+func TestIsInterruption(t *testing.T) {
+	assert.True(t, isInterruption(context.Canceled))
+	assert.True(t, isInterruption(fmt.Errorf("chunk: %w", context.DeadlineExceeded)))
+	assert.False(t, isInterruption(errors.New("disk I/O error")))
+
+	// A statement the cancelled ctx interrupts.
+	d := openTestDB(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { time.Sleep(20 * time.Millisecond); cancel() }()
+	_, err := d.ExecContext(ctx, `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT COUNT(*) FROM n`)
+	require.Error(t, err)
+	assert.True(t, isInterruption(err), "%v", err)
+}
+
 // BenchmarkMessagesSearchFillChunk times default-size chunks — each one write
 // lock hold — walking a synthetic 200k-message file database from the start,
 // so later chunks merge into an index that has grown:
@@ -590,6 +683,9 @@ func BenchmarkMessagesSearchFillChunk(b *testing.B) {
 		b.Fatal(err)
 	}
 	ctx := context.Background()
+	if _, kind, err := d.fillMessagesSearchChunk(ctx, ftsRebuildChunkRows, false); err != nil || kind != chunkDropped {
+		b.Fatalf("legacy drop: kind=%v err=%v", kind, err)
+	}
 	b.ResetTimer()
 	for range b.N {
 		indexed, kind, err := d.fillMessagesSearchChunk(ctx, ftsRebuildChunkRows, false)
