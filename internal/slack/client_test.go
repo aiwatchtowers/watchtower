@@ -786,6 +786,42 @@ func TestNewHTTPClientBounds(t *testing.T) {
 	assert.Equal(t, h2PingTimeout, tr.HTTP2.PingTimeout, "HTTP/2 ping deadline")
 }
 
+// TestAnsweredCalls_CountsWhatSlackAnswered pins the daemon's Slack progress
+// signal: a success and an API error are answers, a request that died on the
+// wire is not, and ResetAPIStats never moves the count back.
+func TestAnsweredCalls_CountsWhatSlackAnswered(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth.test", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "user_id": "U001", "team_id": "T001"})
+	})
+	mux.HandleFunc("/conversations.info", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "channel_not_found"})
+	})
+	mux.HandleFunc("/users.info", func(w http.ResponseWriter, _ *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = conn.Close() // no response: the request fails on the wire
+		}
+	})
+	c := newUnlimitedTestClient(t, mux)
+
+	_, err := c.AuthTest(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), c.AnsweredCalls(), "a success is an answer")
+	c.ResetAPIStats()
+	assert.Equal(t, uint64(1), c.AnsweredCalls(), "ResetAPIStats leaves the count alone")
+
+	_, err = c.GetChannelReadCursor(context.Background(), "C001")
+	require.Error(t, err)
+	assert.Equal(t, uint64(2), c.AnsweredCalls(), "an API error is an answer")
+
+	_, err = c.GetUserInfo(context.Background(), "U001")
+	require.Error(t, err)
+	assert.Equal(t, uint64(2), c.AnsweredCalls(), "a request that died on the wire is no answer")
+}
+
 // TestCloseIdleConnections_ReachesEveryClient pins the wake handling's half
 // in this package: every client shares one transport, and
 // CloseIdleConnections drops its pooled connections, so the call after it

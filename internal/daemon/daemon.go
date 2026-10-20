@@ -823,14 +823,19 @@ func (d *Daemon) writeSyncProgress(p sync.SyncProgress) {
 // startSyncHeartbeat publishes one orchestrator's live progress until the
 // returned stop function is called; stop waits for the writer to finish, so
 // the caller can immediately publish a final state without racing it. A beat
-// whose progress moved stamps the cycle's fetch progress (markFetchProgress),
-// so a long but moving Slack sync is never taken for a stalled one.
+// whose progress moved, or that sees a Slack API call answered since the last
+// one (the read-state, deletion-sweep and reaction passes move no progress
+// counter), stamps the cycle's fetch progress (markFetchProgress), so a long
+// but moving Slack sync is never taken for a stalled one.
 func (d *Daemon) startSyncHeartbeat(o *sync.Orchestrator) (stop func()) {
-	var last sync.Snapshot // touched by write only: the call below, then the writer goroutine
+	// Touched by write only: the call below, then the writer goroutine.
+	var last sync.Snapshot
+	var lastAnswered uint64
 	write := func() {
 		snap := o.Progress().Snapshot()
-		if snap != last {
-			last = snap
+		answered := o.SlackCallsAnswered()
+		if snap != last || answered != lastAnswered {
+			last, lastAnswered = snap, answered
 			d.markFetchProgress()
 		}
 		d.writeSyncProgress(sync.ProgressFromSnapshot(snap))

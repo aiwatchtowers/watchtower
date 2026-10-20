@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/url"
+	"sync/atomic"
 	"time"
 
 	"github.com/slack-go/slack"
@@ -16,6 +18,7 @@ type Client struct {
 	api         *slack.Client
 	rateLimiter *RateLimiter
 	logger      *log.Logger
+	answered    atomic.Uint64 // AnsweredCalls
 }
 
 // Timeouts bounding every Slack API request. slack-go's default client has no
@@ -127,6 +130,9 @@ func (c *Client) doRequest(ctx context.Context, tier int, fn func() error) error
 		err := fn()
 		c.handleError(tier, err) // set backoff BEFORE releasing gate
 		c.rateLimiter.Done(tier)
+		if !isTransportError(err) {
+			c.answered.Add(1)
+		}
 
 		if err == nil {
 			return nil
@@ -505,6 +511,23 @@ func (c *Client) APIStats() (counts map[int]int, retries int) {
 // ResetAPIStats clears all request counters.
 func (c *Client) ResetAPIStats() {
 	c.rateLimiter.ResetStats()
+}
+
+// AnsweredCalls counts the requests Slack answered — a success, an API
+// error, a 429 — over the client's lifetime; one that failed on the wire (a
+// timeout, a dead socket, a cancelled ctx) does not count. Unlike APIStats it
+// is never reset, so a caller that compares two readings sees every answer
+// in between: the daemon reads a change as its Slack sync making progress.
+func (c *Client) AnsweredCalls() uint64 {
+	return c.answered.Load()
+}
+
+// isTransportError reports whether err is a request that got no answer from
+// Slack: the HTTP client's *url.Error (a timeout, a refused or dead
+// connection, a cancelled ctx), as opposed to a response Slack sent.
+func isTransportError(err error) bool {
+	var urlErr *url.Error
+	return errors.As(err, &urlErr)
 }
 
 // handleError checks for rate limit errors and sets backoff accordingly.

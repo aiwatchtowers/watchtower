@@ -89,6 +89,14 @@ func testMux() *http.ServeMux {
 
 func newTestOrchestrator(t *testing.T, syncCount *atomic.Int32) (*sync.Orchestrator, *httptest.Server) {
 	t.Helper()
+	orch, srv, _ := newTestOrchestratorWithClient(t, syncCount)
+	return orch, srv
+}
+
+// newTestOrchestratorWithClient is newTestOrchestrator plus the orchestrator's
+// Slack client, so a test can make the calls a sync pass would.
+func newTestOrchestratorWithClient(t *testing.T, syncCount *atomic.Int32) (*sync.Orchestrator, *httptest.Server, *watchtowerslack.Client) {
+	t.Helper()
 
 	mux := testMux()
 
@@ -134,7 +142,7 @@ func newTestOrchestrator(t *testing.T, syncCount *atomic.Int32) (*sync.Orchestra
 	orch := sync.NewOrchestrator(database, slackClient, cfg, 1)
 	orch.SetLogger(log.New(os.Stderr, "[test] ", 0))
 
-	return orch, srv
+	return orch, srv, slackClient
 }
 
 func TestDaemon_RunsInitialSync(t *testing.T) {
@@ -1301,6 +1309,35 @@ func TestSyncHeartbeat_StampsFetchProgressOnlyWhenItMoves(t *testing.T) {
 
 	orch.Progress().AddMessages(1)
 	eventually(t, func() bool { return d.fetchStalledFor() == 0 }, "a beat stamping the moved progress")
+}
+
+// The Slack passes that move no Progress counter — the read-state refresh
+// (one conversations.info per channel, minutes at the rate limit), the
+// deletion sweep, the inbox reactions — still make progress: every call
+// Slack answers stamps it, even across a ResetAPIStats, so Sync Now never
+// restarts (and repeated presses never livelock) such a pass.
+func TestSyncHeartbeat_StampsFetchProgressOnAnsweredSlackCalls(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	prev := syncHeartbeatInterval
+	syncHeartbeatInterval = 2 * time.Millisecond
+	t.Cleanup(func() { syncHeartbeatInterval = prev })
+
+	orch, _, client := newTestOrchestratorWithClient(t, new(atomic.Int32))
+	d := newDaemon(orch, &config.Config{Sync: config.SyncConfig{PollInterval: time.Second}})
+	d.SetLogger(log.New(io.Discard, "", 0))
+	mono := &fakeMono{}
+	d.loopMono = mono.now
+
+	stop := d.startSyncHeartbeat(orch)
+	defer stop()
+	snap := orch.Progress().Snapshot()
+	for i := range 3 {
+		mono.advance(manualRestartAfter)
+		_, _ = client.GetChannelReadCursor(context.Background(), "C001") // answered, here with an error
+		client.ResetAPIStats()
+		eventually(t, func() bool { return d.fetchStalledFor() == 0 }, fmt.Sprintf("a beat stamping read-state call %d", i+1))
+	}
+	assert.Equal(t, snap, orch.Progress().Snapshot(), "only API calls moved")
 }
 
 // A Slack sync cancelled by the loop (a sleep, a Sync Now restart) is no sync

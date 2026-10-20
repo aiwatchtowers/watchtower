@@ -252,6 +252,11 @@ func (o *Orchestrator) fetchRoster(ctx context.Context) error {
 // AccountID is the slack_accounts row this orchestrator syncs.
 func (o *Orchestrator) AccountID() int64 { return o.accountID }
 
+// SlackCallsAnswered is the Slack client's AnsweredCalls: it moves with every
+// API call Slack answers, including the passes that move no Progress counter
+// (the read-state refresh, the deletion sweep, the inbox reactions).
+func (o *Orchestrator) SlackCallsAnswered() uint64 { return o.slackClient.AnsweredCalls() }
+
 // SearchIncomplete reports whether the last Run returned without error but
 // left messages of its search window unfetched — Slack rate-limited the
 // search, or its pagination broke after page 1. The next Run re-covers them,

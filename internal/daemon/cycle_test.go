@@ -477,6 +477,35 @@ func TestRunLoop_TriggerOnMovingSlackSyncWaitsForTheCycle(t *testing.T) {
 	assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
 }
 
+// Sync Now long into a Slack read-state pass — one conversations.info per
+// channel, minutes at the rate limit, no Progress counter moving — is queued
+// while Slack keeps answering: the heartbeat stamps every answered call.
+func TestRunLoop_TriggerDuringMovingReadStatePassWaitsForTheCycle(t *testing.T) {
+	prev := syncHeartbeatInterval
+	syncHeartbeatInterval = 2 * time.Millisecond
+	t.Cleanup(func() { syncHeartbeatInterval = prev })
+	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
+	orch, _, client := newTestOrchestratorWithClient(t, new(atomic.Int32))
+
+	recv(t, h.probe.started, "the initial cycle")
+	h.probe.block.Store(false)
+	h.inSlackSync()
+	stopBeat := h.d.startSyncHeartbeat(orch)
+	for range 3 {
+		h.mono.advance(manualRestartAfter)
+		_, _ = client.GetChannelReadCursor(context.Background(), "C001")
+		eventually(t, func() bool { return h.d.fetchStalledFor() == 0 }, "a beat stamping the answered call")
+		h.pressSyncNow(t, logQueuedFetching)
+	}
+	stopBeat()
+	assert.Zero(t, h.logs.count("afresh"), "a pass Slack keeps answering is not restarted")
+
+	h.releaseProbe(t)
+	recv(t, h.probe.started, "the queued cycle")
+	h.stop(t)
+	assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
+}
+
 // Sync Now within manualRestartAfter of the cycle's start is queued: the
 // cycle finishes and one more runs right after it.
 func TestRunLoop_TriggerEarlyInSourceSyncsWaitsForTheCycle(t *testing.T) {

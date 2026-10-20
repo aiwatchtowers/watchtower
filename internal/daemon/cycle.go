@@ -125,8 +125,8 @@ func (d *Daemon) monoNow() time.Duration {
 }
 
 // markFetchProgress stamps the running cycle's last source-fetch progress:
-// a fetch phase boundary in runSync, a Slack sync whose counters moved
-// (startSyncHeartbeat).
+// a fetch phase boundary in runSync, a Slack sync whose counters moved or
+// that Slack answered a call for (startSyncHeartbeat).
 func (d *Daemon) markFetchProgress() {
 	d.fetchProgressAt.Store(int64(d.monoNow()))
 }
