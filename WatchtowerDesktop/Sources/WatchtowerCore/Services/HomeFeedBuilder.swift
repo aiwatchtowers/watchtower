@@ -52,6 +52,14 @@ package enum HomeFeedBuilder {
                 whereText: nil, text: "Drafted by the assistant \u{00B7} review in Inbox",
                 stamp: instant(action.createdAt), read: false, actions: [], link: .inbox)
         }
+        rows += data.outputs.map { output in
+            FeedRow(
+                id: .output(output.id), kind: .automation, chip: "Automation",
+                who: output.title.isEmpty ? "Automation output" : output.title,
+                whereText: output.automationName, text: output.body,
+                stamp: output.createdAt, read: false, actions: [.done, .hide],
+                link: .automationRun(automationID: output.automationID, runID: output.runID))
+        }
         for target in data.targets {
             let due = dueInstant(target.dueDate, calendar: calendar)
             // Due later today with a time sits below NOW instead.

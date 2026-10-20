@@ -4,7 +4,7 @@ import WatchtowerCore
 
 extension AppState {
     /// Feed sources with no tab or feature of their own to follow.
-    static let homeFeedAlwaysAllowed: Set<FeedSource> = [.reminders, .proposals, .targets]
+    static let homeFeedAlwaysAllowed: Set<FeedSource> = [.reminders, .proposals, .automations, .targets]
 
     /// Each Home link's tab: the link shows only while its tab does.
     private static let homeLinkTabs: [(HomeLinkKind, SidebarDestination)] = [
@@ -39,7 +39,7 @@ extension AppState {
 
     /// The feed sources Home may show: inbox rows only while attention
     /// detection is on, calendar rows only while the Calendar tab is visible;
-    /// reminders, proposals and targets always.
+    /// reminders, proposals, automation outputs and targets always.
     var homeFeedSourcesAllowed: Set<FeedSource> {
         let disabled = featureVisibility.disabledFeatureIDs
         var allowed = Self.homeFeedAlwaysAllowed
@@ -82,6 +82,7 @@ extension AppState {
         case .workbench(let route): navigateToWorkbench(route)
         case .workbenches: selectedDestination = .workbench
         case .catchUp: selectedDestination = .catchUp
+        case let .automationRun(automationID, runID): openAutomationRun(automationID: automationID, runID: runID)
         case .instructionSettings:
             settingsTab = .system
             openSettingsWindow?()

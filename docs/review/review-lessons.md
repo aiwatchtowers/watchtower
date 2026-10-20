@@ -2066,3 +2066,13 @@ Entry format:
 - weak-dimension: 7 — a perf change whose equivalence test passes equally on the slow fallback, with no call-count assertion to pin the win.
 - rule-gap (candidate, dim 7): *a performance change that adds a fast path with a fallback ships a test that asserts the fast path was taken (call count or a fallback hook), and every inventory guard over that function keeps at least one case on the fast path.*
 - outcome: TBD
+
+## 2026-10-20 — feature/home-automation-inbox (Home feed: unread automation inbox outputs as "Automation" rows with Done = read / Hide = dismissed through GRDB, `FeedSource.automations` always allowed, 72 h window + row cap on `fetchInboxOutputs`; 21 files +222/−31; panel: prosecutor (6) + codex (1), 3 specialists DOWN (not installed); judge verified against 6b291eb50 plus the uncommitted working tree by reading and grep, no runs; judge synthesis, round 1) — verdict: changes-needed
+
+- contested (codex P2 / prosecutor F3, held major on the commit): a row link to a tab that can hide (`.inbox` has `requiredSources`) from a source that is always allowed (`homeFeedAlwaysAllowed`) is a dead click — `applyFeatureFallback` bounces it back to Home. Codex rated it P2, the prosecutor minor; the visibility mismatch is mechanical, so major. **When a Home feed source is always allowed, its link must land on an always-visible tab (`SidebarDestination` without `requiredSources`).** [6]
+- contested: the working-tree fix adds `HomeLink.automationRun` but does not extend `HomeLinkTests.testEveryLinkLandsOnItsTab`; the builder test pins the link value, nothing pins the landing. A new `HomeLink` case lands with its row in that table. [7]
+- false-positive: none dismissed outright; F5 (sentinel `>= ''` / `LIMIT -1`) was real but a nit, and the working tree already replaced it with conditional clauses. Swift `AutomationDates.format` and Go `automationTimeLayout` both write `…:SSZ` UTC, so the string `created_at >= ?` compare is sound.
+- miss: the dead-click link was caught first by codex (raised by 2 lanes); the prosecutor saw it but under-rated it.
+- weak-dimension: 7 — the first commit shipped the always-allowed source without a failed-read view assertion, a center-level `.output` round trip or a `since`/`limit` query test; all three arrived only as review fixes.
+- rule-gap (candidate, dim 6): *a feed/notification row from an always-shown source links only to a destination that is always visible; a test asserts each `HomeLink` case's landing tab.*
+- outcome: TBD
