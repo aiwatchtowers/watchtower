@@ -15,6 +15,8 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
+	"watchtower/internal/instructions"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -173,6 +175,7 @@ type loopOpts struct {
 	// backfill row for the probe's account, whose fetch is fetchRange.
 	backfill   bool
 	fetchRange func(ctx context.Context) error
+	withDB     bool // a test DB and a workspace, no backfill row (implied by backfill)
 }
 
 func startLoop(t *testing.T, o loopOpts) *loopHarness {
@@ -188,8 +191,11 @@ func startLoop(t *testing.T, o loopOpts) *loopHarness {
 	d := newDaemon(nil, cfg)
 	logs := &lockedLog{}
 	d.SetLogger(log.New(logs, "", 0))
-	if o.backfill {
+	switch {
+	case o.backfill:
 		seedLoopBackfill(t, d)
+	case o.withDB:
+		d.SetDB(newLoopDB(t, d))
 	}
 	probe := newCycleProbe()
 	probe.fetchRange = o.fetchRange
@@ -225,10 +231,8 @@ func startLoop(t *testing.T, o loopOpts) *loopHarness {
 // history backfill row for the probe's account (id 1).
 func seedLoopBackfill(t *testing.T, d *Daemon) {
 	t.Helper()
-	d.config.ActiveWorkspace = "test-ws"
 	d.config.Sync.BackfillDays = 30
-	require.NoError(t, os.MkdirAll(d.config.WorkspaceDir(), 0o755))
-	database := db.OpenTestDB(t)
+	database := newLoopDB(t, d)
 	acct, err := database.CreateEmailAccount(db.EmailAccount{Provider: "imap", EmailAddress: "me@example.com",
 		Host: "imap.example.com", Port: 993, Security: "ssl", Folder: "INBOX"})
 	require.NoError(t, err)
@@ -238,6 +242,14 @@ func seedLoopBackfill(t *testing.T, d *Daemon) {
 		float64(now.AddDate(0, 0, -3).Unix()), now)
 	require.NoError(t, err)
 	d.SetDB(database)
+}
+
+// newLoopDB gives d's config a workspace and returns a test DB for d.
+func newLoopDB(t *testing.T, d *Daemon) *db.DB {
+	t.Helper()
+	d.config.ActiveWorkspace = "test-ws"
+	require.NoError(t, os.MkdirAll(d.config.WorkspaceDir(), 0o755))
+	return db.OpenTestDB(t)
 }
 
 // stop cancels the daemon and requires Run to return promptly.
@@ -360,30 +372,51 @@ func TestRunLoop_SleepDuringSettleRestartsTheDelay(t *testing.T) {
 
 // A sleep detected while the cycle runs its pipelines never cuts them off
 // (they run on the daemon's context): the cycle finishes them, and a fresh
-// one follows the settle delay. The backfill after them is skipped (the fetch
-// context is cancelled, TestOnSleep_Paths).
+// one follows the settle delay. The cycle here genuinely reaches its
+// pipelines — the instruction-suggestions miner, its last one, holds it
+// there. The backfill after the pipelines is skipped (the fetch context is
+// cancelled, TestOnSleep_Paths).
 func TestRunLoop_SleepDuringPipelinesLetsThemFinish(t *testing.T) {
 	shortenWakeSettle(t)
 	drops := countDrops(t)
-	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true, hold: true})
+	inPipeline := make(chan context.Context, 1)
+	finish := make(chan struct{})
+	var mined atomic.Int32
+	prev := runInstructionMiner
+	runInstructionMiner = func(ctx context.Context, _ *instructions.Miner) (int, *digest.Usage, error) {
+		inPipeline <- ctx
+		select {
+		case <-finish:
+			mined.Add(1)
+		case <-ctx.Done(): // shutdown, only on a failed test
+		}
+		return 0, nil, ctx.Err()
+	}
+	t.Cleanup(func() { runInstructionMiner = prev })
+	h := startLoop(t, loopOpts{syncOnWake: true, withDB: true})
 
 	recv(t, h.probe.started, "the initial cycle")
-	h.probe.block.Store(false)
-	h.d.setSection(sectionPipelines) // as runSync marks it past the source syncs
+	pipelineCtx := recv(t, inPipeline, "the cycle's last pipeline")
+	require.Equal(t, sectionPipelines, h.d.section())
 	h.wake <- 10 * time.Minute
 	h.logs.waitLog(t, "during the cycle's pipelines, letting them finish", 1)
 	assert.Equal(t, int32(1), drops.Load(), "the idle connections are dropped at once")
+	require.NoError(t, pipelineCtx.Err(), "a sleep never cancels a running pipeline")
 
-	// The probe stands in for a pipeline, but it sits on the fetch context,
-	// so it does see the cancel; held there, it shows the loop still waits
-	// for the cycle to return.
-	recv(t, h.probe.cancelled, "the fetch context's cancel")
 	requireNone(t, h.probe.started, 50*time.Millisecond, "a cycle before the running one returned")
-	assert.Zero(t, h.logs.count(logSleptCycleEnds), "the loop waits for the cycle")
-	h.letGo(t)
+	assert.Zero(t, h.logs.count(logSleptCycleEnds), "the loop waits for the pipelines")
+	close(finish)
 	h.logs.waitLog(t, logSleptCycleEnds, 1)
 	recv(t, h.probe.started, "the cycle after the wake")
 	h.stop(t)
+
+	assert.Equal(t, int32(1), mined.Load(), "the pipeline ran to its end")
+	// The cycle after the wake may skip its pipelines on the shutdown.
+	assert.Zero(t, h.logs.count(logSkipsForSleep), "the slept cycle did not skip its pipelines")
+	var done int
+	require.NoError(t, h.d.db.QueryRow(`SELECT COUNT(*) FROM pipeline_runs
+		WHERE pipeline = 'instruction-suggestions' AND COALESCE(error_msg, '') = ''`).Scan(&done))
+	assert.Equal(t, 1, done, "the pipeline's run is recorded without an error")
 }
 
 // Shutdown mid-cycle: Run waits for the cycle to stop and starts no other.
