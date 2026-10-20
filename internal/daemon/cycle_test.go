@@ -41,25 +41,34 @@ func (l *lockedLog) count(s string) int {
 
 // cycleProbe is an IMAP syncer that reports each cycle reaching it and, while
 // block is set, holds the cycle there until its context is cancelled — a
-// request hung on a socket a sleep killed.
+// request hung on a socket a sleep killed — or release lets it go.
 type cycleProbe struct {
 	started   chan time.Time // one send per Sync
 	cancelled chan struct{}  // one send per blocked Sync whose ctx was cancelled
+	release   chan struct{}  // a send ends one blocked Sync normally
 	block     atomic.Bool
+	onSync    func() // run at the start of each Sync, nil = nothing
 }
 
 func newCycleProbe() *cycleProbe {
-	return &cycleProbe{started: make(chan time.Time, 16), cancelled: make(chan struct{}, 16)}
+	return &cycleProbe{started: make(chan time.Time, 16), cancelled: make(chan struct{}, 16), release: make(chan struct{})}
 }
 
 func (p *cycleProbe) Sync(ctx context.Context) (int, error) {
+	if p.onSync != nil {
+		p.onSync()
+	}
 	p.started <- time.Now()
 	if !p.block.Load() {
 		return 0, nil
 	}
-	<-ctx.Done()
-	p.cancelled <- struct{}{}
-	return 0, ctx.Err()
+	select {
+	case <-ctx.Done():
+		p.cancelled <- struct{}{}
+		return 0, ctx.Err()
+	case <-p.release:
+		return 0, nil
+	}
 }
 
 func (p *cycleProbe) FetchRange(context.Context, time.Time, time.Time) (int, error) { return 0, nil }
@@ -80,14 +89,26 @@ func shortenWakeSettle(t *testing.T) {
 	setWakeSettle(t, 10*time.Millisecond)
 }
 
+// fakeWall is runLoop's wall clock in a test, moved by hand.
+type fakeWall struct {
+	base   time.Time
+	offset atomic.Int64
+}
+
+func (w *fakeWall) now() time.Time           { return w.base.Add(time.Duration(w.offset.Load())) }
+func (w *fakeWall) advance(by time.Duration) { w.offset.Add(int64(by)) }
+
 // loopHarness is a running daemon loop with a probe in its source-sync
-// section and an injected wake channel.
+// section, injected wake and trigger channels and a fake wall clock.
 type loopHarness struct {
-	probe  *cycleProbe
-	wake   chan time.Duration
-	logs   *lockedLog
-	cancel context.CancelFunc
-	done   chan error
+	d       *Daemon
+	probe   *cycleProbe
+	wake    chan time.Duration
+	trigger chan struct{} // unbuffered: a send returns once the loop took it
+	wall    *fakeWall
+	logs    *lockedLog
+	cancel  context.CancelFunc
+	done    chan error
 }
 
 func startLoop(t *testing.T, syncOnWake bool, wake chan time.Duration, blockFirst bool) *loopHarness {
@@ -101,10 +122,13 @@ func startLoop(t *testing.T, syncOnWake bool, wake chan time.Duration, blockFirs
 	probe.block.Store(blockFirst)
 	d.imapSyncers = []mailSyncer{probe}
 	d.wakeCh = wake
-	d.triggerCh = make(chan struct{})
+	trigger := make(chan struct{})
+	d.triggerCh = trigger
+	wall := &fakeWall{base: time.Now().Round(0)}
+	d.loopNow = wall.now
 
 	ctx, cancel := context.WithCancel(context.Background())
-	h := &loopHarness{probe: probe, wake: wake, logs: logs, cancel: cancel, done: make(chan error, 1)}
+	h := &loopHarness{d: d, probe: probe, wake: wake, trigger: trigger, wall: wall, logs: logs, cancel: cancel, done: make(chan error, 1)}
 	go func() { h.done <- d.Run(ctx) }()
 	t.Cleanup(func() {
 		cancel()
@@ -227,4 +251,95 @@ func TestRunLoop_ShutdownDuringSettleStartsNoCycle(t *testing.T) {
 	h.wake <- 10 * time.Minute
 	h.stop(t)
 	requireNone(t, h.probe.started, 100*time.Millisecond, "cycle after shutdown")
+}
+
+// pressSyncNow sends a manual trigger and returns once the loop has handled
+// it: a second send on the unbuffered channel is taken only after the loop
+// is back in its select (the second trigger collapses into the first).
+func (h *loopHarness) pressSyncNow() {
+	h.trigger <- struct{}{}
+	h.trigger <- struct{}{}
+}
+
+// releaseProbe ends the blocked Sync normally; it fails, rather than hangs,
+// when no Sync is blocked (the cycle was cancelled after all).
+func (h *loopHarness) releaseProbe(t *testing.T) {
+	t.Helper()
+	select {
+	case h.probe.release <- struct{}{}:
+	case <-time.After(loopWait):
+		t.Fatal("no blocked Sync to release: the cycle did not run on")
+	}
+}
+
+// Sync Now while a cycle has been stuck in its source syncs for
+// manualRestartAfter cancels it and starts a fresh cycle at once — no
+// post-wake delay.
+func TestRunLoop_TriggerLateInSourceSyncsRestartsTheCycle(t *testing.T) {
+	setWakeSettle(t, time.Hour)
+	h := startLoop(t, true, make(chan time.Duration, 1), true)
+
+	recv(t, h.probe.started, "the initial cycle")
+	h.probe.block.Store(false)
+	h.wall.advance(manualRestartAfter)
+	h.trigger <- struct{}{}
+	recv(t, h.probe.cancelled, "the stuck cycle's cancellation")
+	recv(t, h.probe.started, "the fresh cycle")
+	h.stop(t)
+
+	assert.Equal(t, 1, h.logs.count("manual sync trigger received 1m0s into the cycle's source syncs, cancelling it and syncing afresh"))
+}
+
+// Sync Now within manualRestartAfter of the cycle's start is queued: the
+// cycle finishes and one more runs right after it.
+func TestRunLoop_TriggerEarlyInSourceSyncsWaitsForTheCycle(t *testing.T) {
+	h := startLoop(t, true, make(chan time.Duration, 1), true)
+
+	recv(t, h.probe.started, "the initial cycle")
+	h.probe.block.Store(false)
+	h.wall.advance(manualRestartAfter - time.Second)
+	h.pressSyncNow()
+	assert.Equal(t, 0, h.logs.count("afresh"), "a young cycle is not cancelled")
+	assert.Equal(t, 2, h.logs.count("during the cycle's source syncs, syncing after it"))
+
+	h.releaseProbe(t)
+	recv(t, h.probe.started, "the queued cycle")
+	h.stop(t)
+	assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
+}
+
+// Sync Now while the cycle runs its pipelines is queued whatever its age: the
+// sources are already fetched.
+func TestRunLoop_TriggerDuringPipelinesWaitsForTheCycle(t *testing.T) {
+	h := startLoop(t, true, make(chan time.Duration, 1), true)
+
+	recv(t, h.probe.started, "the initial cycle")
+	h.probe.block.Store(false)
+	h.d.cycleInPipelines.Store(true) // as runSync marks it past the source syncs
+	h.wall.advance(10 * manualRestartAfter)
+	h.pressSyncNow()
+	assert.Equal(t, 0, h.logs.count("afresh"), "a cycle in its pipelines is not cancelled")
+	assert.Equal(t, 2, h.logs.count("during the cycle's pipelines, syncing after it"))
+
+	h.releaseProbe(t)
+	recv(t, h.probe.started, "the queued cycle")
+	h.stop(t)
+	assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
+}
+
+// runSync clears the pipelines marker for its source syncs and sets it before
+// the pipelines.
+func TestRunSync_MarksThePipelinesSection(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	d := newDaemon(nil, &config.Config{})
+	d.SetLogger(log.New(&lockedLog{}, "", 0))
+	d.cycleInPipelines.Store(true) // left over from the previous cycle
+	probe := newCycleProbe()
+	var duringSync atomic.Bool
+	probe.onSync = func() { duringSync.Store(d.cycleInPipelines.Load()) }
+	d.imapSyncers = []mailSyncer{probe}
+
+	d.runSync(context.Background())
+	assert.False(t, duringSync.Load(), "the source syncs run outside the pipelines section")
+	assert.True(t, d.cycleInPipelines.Load(), "the pipelines section is marked")
 }

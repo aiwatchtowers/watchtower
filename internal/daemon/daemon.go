@@ -191,6 +191,12 @@ type Daemon struct {
 	agentLogMoveLogged atomic.Bool // one-shot latch for the analytics phase's failed-move line
 
 	lockStats sql.DBStats // pool stats at the last cycle's lock sample (sampleLockStats)
+
+	// cycleInPipelines is set once the running cycle has left its
+	// source-fetch section for the pipelines (runSync); runLoop reads it from
+	// its own goroutine to decide whether a manual trigger restarts the cycle.
+	cycleInPipelines atomic.Bool
+	loopNow          func() time.Time // runLoop's wall clock, nil = time.Now; a seam for tests
 }
 
 // New creates a Daemon. Slack orchestrators are attached separately via
@@ -473,6 +479,7 @@ func (d *Daemon) triggerChannel() <-chan struct{} {
 }
 
 func (d *Daemon) runSync(ctx context.Context) {
+	d.cycleInPipelines.Store(false)
 	d.sampleLockStats(ctx)
 	// Every source sync below starts after this instant, so the data the
 	// inbox scans at the end of the cycle is complete up to it (INBOX-09).
@@ -500,6 +507,9 @@ func (d *Daemon) runSync(ctx context.Context) {
 	// Once per cycle, also on a cancelled ctx: it only queues rows.
 	d.flushAutomationEvents(syncStart)
 	d.phaseAgentAnalytics(ctx)
+	// The source-fetch section ends here: a manual trigger from now on waits
+	// for this cycle instead of restarting it (runLoop).
+	d.cycleInPipelines.Store(true)
 
 	// Run pipelines even if sync had a non-fatal error (e.g. rate-limited,
 	// partial fetch). The DB still has messages that need processing.
