@@ -184,7 +184,10 @@ final class WorkbenchSessionStripTests: XCTestCase {
 
     /// Report and Changes follow the strip's own session: two sessions side
     /// by side, the second strip's Report puts the second session's report
-    /// on screen and lights on that strip only; Changes is never disabled.
+    /// beside the second session's own terminal — the pane the strip sits
+    /// on stays, the other one gives way — and lights on that strip only;
+    /// the same from the second session's Workchat; Changes is never
+    /// disabled.
     func testStripReportAndChangesFollowTheStripsSession() async throws {
         let (vm, s) = try await loaded()
         let p = s.project.id
@@ -193,18 +196,27 @@ final class WorkbenchSessionStripTests: XCTestCase {
         XCTAssertFalse(try toggle("Changes", strip(vm, s.project, .session(two))).isDisabled())
 
         try toggle("Report", strip(vm, s.project, .session(two))).tap()
-        let panes = vm.layout(projectID: p).visiblePanes
-        XCTAssertTrue(panes.contains(.sessionReport(two)), "\(panes)")
-        XCTAssertFalse(panes.contains(.sessionReport(one)))
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.sessionReport(two), .session(two)])
         XCTAssertTrue(try toggle("Report", strip(vm, s.project, .session(two))).isOn())
         XCTAssertFalse(try toggle("Report", strip(vm, s.project, .sessionReport(two))).isDisabled())
 
         vm.setLayout(Self.split(.session(one), .session(two)), projectID: p)
         try toggle("Changes", strip(vm, s.project, .session(two))).tap()
-        XCTAssertTrue(vm.layout(projectID: p).visiblePanes.contains(.changes(two)))
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.changes(two), .session(two)])
         XCTAssertTrue(try toggle("Changes", strip(vm, s.project, .changes(two))).isOn())
+        vm.setLayout(Self.split(.session(one), .changes(two)), projectID: p)
         XCTAssertFalse(try toggle("Changes", strip(vm, s.project, .session(one))).isOn(),
                        "another session's Changes does not light this strip")
+
+        vm.setLayout(Self.split(.session(one), .sessionChat(two)), projectID: p)
+        try toggle("Report", strip(vm, s.project, .sessionChat(two))).tap()
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.sessionReport(two), .sessionChat(two)],
+                       "beside the session's Workchat, which stays")
+
+        vm.setLayout(Self.split(.session(one), .board), projectID: p)
+        try toggle("Report", strip(vm, s.project, .session(one))).tap()
+        XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [.session(one), .sessionReport(one)],
+                       "the first pane's session keeps its place too")
     }
 
     // MARK: - Its own slot
@@ -301,19 +313,47 @@ final class WorkbenchSessionStripTests: XCTestCase {
 
     // MARK: - Crumbs
 
+    private func hasCrumbs(_ vm: WorkbenchesViewModel, _ project: Workbench, _ pane: WorkspacePane) throws -> Bool {
+        let sut = try strip(vm, project, pane).inspect()
+        let branch = (try? sut.find(WorkbenchBranchCrumb.self)) != nil
+        let place = (try? sut.find(WorkbenchPlaceCrumb.self)) != nil
+        XCTAssertEqual(branch, place, "the place and branch crumbs go together")
+        return branch
+    }
+
     /// Two sessions side by side: the crumbs sit on the strip of the
     /// focused session only — the one whose place sets the page's root.
     func testCrumbsOnlyOnTheStripThatOwnsTheCodeRoot() async throws {
         let (vm, s) = try await loaded()
         let p = s.project.id
         vm.setLayout(Self.split(.session(s.first.id), .session(s.second.id)), projectID: p)
-        XCTAssertTrue(vm.ownsCodeRoot(sessionID: s.first.id, projectID: p), "with no focus the first held session owns it")
-        XCTAssertFalse(vm.ownsCodeRoot(sessionID: s.second.id, projectID: p))
+        XCTAssertEqual(vm.crumbsPane(projectID: p), .session(s.first.id), "with no focus the first held session owns it")
+        XCTAssertTrue(try hasCrumbs(vm, s.project, .session(s.first.id)))
+        XCTAssertFalse(try hasCrumbs(vm, s.project, .session(s.second.id)))
+    }
 
-        XCTAssertNoThrow(try strip(vm, s.project, .session(s.first.id)).inspect().find(WorkbenchBranchCrumb.self))
-        XCTAssertNoThrow(try strip(vm, s.project, .session(s.first.id)).inspect().find(WorkbenchPlaceCrumb.self))
-        XCTAssertThrowsError(try strip(vm, s.project, .session(s.second.id)).inspect().find(WorkbenchBranchCrumb.self))
-        XCTAssertThrowsError(try strip(vm, s.project, .session(s.second.id)).inspect().find(WorkbenchPlaceCrumb.self))
+    /// One session in both panes — its terminal or Workchat beside its
+    /// report or Changes: the crumbs show once, on the terminal's or the
+    /// Workchat's strip, whichever side it is on; a report beside its own
+    /// Changes carries them on the first pane.
+    func testCrumbsShowOnceInASameSessionSplit() async throws {
+        let (vm, s) = try await loaded()
+        let p = s.project.id
+        let one = s.first.id
+        let cases: [(WorkspacePane, WorkspacePane, WorkspacePane)] = [
+            (.session(one), .sessionReport(one), .session(one)),
+            (.sessionReport(one), .session(one), .session(one)),
+            (.session(one), .changes(one), .session(one)),
+            (.changes(one), .sessionChat(one), .sessionChat(one)),
+            (.sessionChat(one), .sessionReport(one), .sessionChat(one)),
+            (.sessionReport(one), .changes(one), .sessionReport(one))
+        ]
+        for (first, second, owner) in cases {
+            vm.setLayout(Self.split(first, second), projectID: p)
+            XCTAssertEqual(vm.crumbsPane(projectID: p), owner, "\(first) | \(second)")
+            XCTAssertEqual(try hasCrumbs(vm, s.project, first), first == owner, "\(first) | \(second)")
+            XCTAssertEqual(try hasCrumbs(vm, s.project, second), second == owner, "\(first) | \(second)")
+        }
     }
 
     /// The focused session owns the root even when it is the second pane:
@@ -327,10 +367,21 @@ final class WorkbenchSessionStripTests: XCTestCase {
         center.focus(s.second.id)
         XCTAssertEqual(vm.activeSessionID(projectID: p), s.second.id)
 
-        XCTAssertTrue(vm.ownsCodeRoot(sessionID: s.second.id, projectID: p))
-        XCTAssertFalse(vm.ownsCodeRoot(sessionID: s.first.id, projectID: p))
-        XCTAssertNoThrow(try strip(vm, s.project, .session(s.second.id)).inspect().find(WorkbenchBranchCrumb.self))
-        XCTAssertThrowsError(try strip(vm, s.project, .session(s.first.id)).inspect().find(WorkbenchBranchCrumb.self))
+        XCTAssertEqual(vm.crumbsPane(projectID: p), .session(s.second.id))
+        XCTAssertTrue(try hasCrumbs(vm, s.project, .session(s.second.id)))
+        XCTAssertFalse(try hasCrumbs(vm, s.project, .session(s.first.id)))
+    }
+
+    // MARK: - Session state
+
+    /// The sessions menu's label carries the session's live dot and state,
+    /// as the title row's switcher did before the strip.
+    func testSessionsMenuLabelCarriesTheLiveDot() async throws {
+        let (vm, s) = try await loaded()
+        let sessions = try strip(vm, s.project, .session(s.first.id)).inspect().find(WorkbenchSessionsMenu.self)
+        let dot = try sessions.find(SessionLiveDot.self).actualView()
+        XCTAssertEqual(dot.state, vm.sessionState(s.first))
+        XCTAssertEqual(try sessions.find(SessionStateLabel.self).actualView().state, vm.sessionState(s.first))
     }
 
     // MARK: - Expand and close

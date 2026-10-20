@@ -3,7 +3,8 @@ import SwiftUI
 import WatchtowerCore
 
 /// The workbench row's controls in the window's title row (spec
-/// 2026-10-20-workbench-header §1): the `Session | Board | Files` tabs, then
+/// 2026-10-20-workbench-header §1): the place and branch crumbs while no
+/// session strip carries them, the `Session | Board | Files` tabs, then
 /// at the trailing edge the ⚡ automations menu, the Analytics icon, split
 /// and ⋯. What belongs to one session — Terminal | Workchat, report,
 /// Changes, the sessions menu — is that session pane's strip
@@ -26,6 +27,15 @@ struct WorkbenchHeaderControls: View {
 
     var body: some View {
         HStack(spacing: Spacing.regular) {
+            // No session strip on screen carries the place and branch
+            // crumbs (a Board, Files or Analytics page, a lone Changes
+            // pane): they sit here, after the install icons, so the main
+            // folder's branch switcher is always one click away — and on
+            // screen once.
+            if vm.crumbsPane(projectID: project.id) == nil {
+                WorkbenchPlaceCrumb(vm: vm, project: project)
+                WorkbenchBranchCrumb(vm: vm, project: project)
+            }
             tabs
                 // The tabs never truncate; the name before them does.
                 .fixedSize()

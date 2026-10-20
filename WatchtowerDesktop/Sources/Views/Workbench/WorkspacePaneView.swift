@@ -30,9 +30,10 @@ struct WorkspaceAreaView: View {
 
 /// One pane: Board, Files, Analytics, or a session's terminal, Workchat,
 /// report or Changes. A session's pane always has its session strip
-/// (`WorkbenchSessionStrip`, spec 2026-10-20 §2); any other pane has a slim
-/// header in a split only (its own picker, expand and close) — a single
-/// one has none, the page header's view buttons cover it.
+/// (`WorkbenchSessionStrip`, spec 2026-10-20 §2); any other pane has a strip
+/// of the same look in a split only (its own picker, expand and close, §3)
+/// — a single one has none, the title row's lit tab or Analytics icon says
+/// what it is.
 struct WorkspacePaneView: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
@@ -66,34 +67,20 @@ struct WorkspacePaneView: View {
         }
     }
 
-    /// Shown only in a split, on a pane that is not a session's (`body`).
+    /// Shown only in a split, on a pane that is not a session's (`body`):
+    /// its picker, expand and close, at the session strip's height and look
+    /// (spec 2026-10-20 §3) — same fonts, control size, paddings and icon
+    /// buttons.
     private var header: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: Spacing.regular) {
             picker
-            Spacer(minLength: 4)
-            Button {
-                vm.toggleExpand(pane, projectID: project.id)
-            } label: {
-                Image(systemName: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-            }
-            .buttonStyle(.borderless)
-            .help(isExpanded ? "Back to the split" : "Expand this pane")
-            .accessibilityLabel(isExpanded ? "Back to the split" : "Expand this pane")
-            if !isExpanded {
-                Button {
-                    vm.closePane(pane, projectID: project.id)
-                } label: {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(.borderless)
-                .help("Close this pane")
-                .accessibilityLabel("Close this pane")
-            }
+            Spacer(minLength: Spacing.small)
+            WorkspacePaneButtons(vm: vm, project: project, pane: pane, isExpanded: isExpanded)
         }
         .font(.caption)
         .controlSize(.small)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 2)
+        .padding(.horizontal, Spacing.regular)
+        .padding(.vertical, Spacing.tight)
     }
 
     private var picker: some View {
@@ -118,9 +105,17 @@ struct WorkspacePaneView: View {
                 }
             }
         } label: {
-            Label(title, systemImage: icon).font(.subheadline)
+            // The session strip's `session ▾` look.
+            HStack(spacing: Spacing.small) {
+                Label(title, systemImage: icon).lineLimit(1)
+                Image(systemName: "chevron.down").imageScale(.small)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
         .fixedSize()
         .help("Show something else in this pane")
     }
@@ -298,6 +293,36 @@ extension WorkspaceView {
         case .analytics: "chart.bar.xaxis"
         case .changes: "plus.forwardslash.minus"
         case .chat: "bubble.left.and.bubble.right"
+        }
+    }
+}
+
+/// A split pane's expand and close, on its strip — the session strip's and
+/// the Board, Files and Analytics panes' alike. Expanded, only the way back.
+struct WorkspacePaneButtons: View {
+    @Bindable var vm: WorkbenchesViewModel
+    let project: Workbench
+    let pane: WorkspacePane
+    let isExpanded: Bool
+
+    var body: some View {
+        Button {
+            vm.toggleExpand(pane, projectID: project.id)
+        } label: {
+            Image(systemName: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+        }
+        .buttonStyle(.kitIcon(isOn: isExpanded))
+        .help(isExpanded ? "Back to the split" : "Expand this pane")
+        .accessibilityLabel(isExpanded ? "Back to the split" : "Expand this pane")
+        if !isExpanded {
+            Button {
+                vm.closePane(pane, projectID: project.id)
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.kitIcon(isOn: false))
+            .help("Close this pane")
+            .accessibilityLabel("Close this pane")
         }
     }
 }

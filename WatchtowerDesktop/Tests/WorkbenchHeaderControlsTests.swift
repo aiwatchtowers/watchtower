@@ -126,6 +126,45 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         XCTAssertThrowsError(try sut.inspect().find(WorkbenchSessionsMenu.self), "the sessions menu is the strip's")
     }
 
+    // MARK: - Branch crumb
+
+    /// The place and branch crumbs are on screen once: in the title row
+    /// while no session strip carries them (a Board page, a lone Changes
+    /// pane, a session hidden under an expanded Board), on the owning
+    /// session's strip otherwise — never in both.
+    func testTheTitleRowCarriesTheCrumbsOnlyWithoutAnOwningSessionPane() async throws {
+        let s = try await seed()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = s.project.id
+        await vm.loadSessions(projectID: s.project.id)
+        let p = s.project.id
+        let hasCrumbs = { () throws -> Bool in
+            let sut = try self.controls(vm, s.project).inspect()
+            let branch = (try? sut.find(WorkbenchBranchCrumb.self)) != nil
+            XCTAssertEqual(branch, (try? sut.find(WorkbenchPlaceCrumb.self)) != nil, "the crumbs go together")
+            return branch
+        }
+        let single = { (pane: WorkspacePane) -> WorkspaceLayout in
+            var layout = WorkspaceLayout.default
+            layout.show(pane)
+            return layout
+        }
+
+        vm.setLayout(.default, projectID: p)
+        XCTAssertTrue(try hasCrumbs(), "a Board-only page: the main folder's branch is in the title row")
+        vm.setLayout(single(.changes(s.first.id)), projectID: p)
+        XCTAssertTrue(try hasCrumbs(), "a lone Changes pane")
+        var expanded = Self.split(.session(s.first.id), .board)
+        expanded.toggleExpand(.board)
+        vm.setLayout(expanded, projectID: p)
+        XCTAssertTrue(try hasCrumbs(), "the session under an expanded Board draws no strip")
+
+        vm.setLayout(single(.session(s.first.id)), projectID: p)
+        XCTAssertFalse(try hasCrumbs(), "the session pane's strip carries them")
+        vm.setLayout(Self.split(.board, .session(s.first.id)), projectID: p)
+        XCTAssertFalse(try hasCrumbs())
+    }
+
     /// Analytics is an icon button: in a split it shows the Analytics view
     /// beside the session, and a second click closes it again.
     func testAnalyticsIsAnIconToggle() async throws {

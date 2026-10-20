@@ -18,8 +18,8 @@ struct WorkbenchSessionStrip: View {
 
     var body: some View {
         HStack(spacing: Spacing.regular) {
-            WorkbenchSessionsMenu(vm: vm, project: project, slot: pane, title: title)
-            if vm.ownsCodeRoot(sessionID: sessionID, projectID: project.id) {
+            WorkbenchSessionsMenu(vm: vm, project: project, slot: pane)
+            if vm.crumbsPane(projectID: project.id) == pane {
                 WorkbenchPlaceCrumb(vm: vm, project: project)
                 WorkbenchBranchCrumb(vm: vm, project: project)
             }
@@ -34,16 +34,14 @@ struct WorkbenchSessionStrip: View {
             .layoutPriority(1)
             viewToggle("Report", view: .report)
             viewToggle("Changes", view: .changes)
-            if isSplit { paneButtons }
+            if isSplit {
+                WorkspacePaneButtons(vm: vm, project: project, pane: pane, isExpanded: isExpanded)
+            }
         }
         .font(.caption)
         .controlSize(.small)
         .padding(.horizontal, Spacing.regular)
         .padding(.vertical, Spacing.tight)
-    }
-
-    private var title: String {
-        vm.session(sessionID, projectID: project.id)?.title ?? "Session"
     }
 
     /// One half of `[Terminal | Workchat]`, for this strip's session:
@@ -104,46 +102,44 @@ struct WorkbenchSessionStrip: View {
             if inside { hovered = label } else if hovered == label { hovered = nil }
         }
     }
-
-    /// The split pane's expand and close, as the old split-pane header had them.
-    @ViewBuilder private var paneButtons: some View {
-        Button {
-            vm.toggleExpand(pane, projectID: project.id)
-        } label: {
-            Image(systemName: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-        }
-        .buttonStyle(.kitIcon(isOn: isExpanded))
-        .help(isExpanded ? "Back to the split" : "Expand this pane")
-        .accessibilityLabel(isExpanded ? "Back to the split" : "Expand this pane")
-        if !isExpanded {
-            Button {
-                vm.closePane(pane, projectID: project.id)
-            } label: {
-                Image(systemName: "xmark")
-            }
-            .buttonStyle(.kitIcon(isOn: false))
-            .help("Close this pane")
-            .accessibilityLabel("Close this pane")
-        }
-    }
 }
 
-/// `session ▾`: which session a pane shows — in the mode it was last shown
-/// in — or a new one there. The session strip's menu, the only session
-/// switcher on the page (spec 2026-10-20 call 5).
+/// `● session ▾`: which session a pane shows — in the mode it was last
+/// shown in — or a new one there. The session strip's menu, the only session
+/// switcher on the page (spec 2026-10-20 call 5); its label carries the
+/// session's live dot and state, as the title row's switcher did. The
+/// sessions are listed in the panel's order (PROJ-11(b)): the main list,
+/// then every finished one, folded in the panel or not — as Go to… lists them.
 struct WorkbenchSessionsMenu: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
     let slot: WorkspacePane
-    let title: String
 
     var body: some View {
+        // The pane's own session, whatever it shows of it: named and ticked off.
+        let current = WorkspaceLayout.sessionID(ofAny: slot)
+        let session = current.flatMap { vm.session($0, projectID: project.id) }
         Menu {
-            // The pane's own session, whatever it shows of it, is the one ticked off.
-            WorkbenchSessionMenuItems(vm: vm, project: project, slot: slot, current: WorkspaceLayout.sessionID(ofAny: slot))
+            ForEach(vm.panelOrderedSessions(projectID: project.id)) { row in
+                Button(row.title) {
+                    Task { await vm.showInPane(slot, item: .session(row.id), projectID: project.id) }
+                }
+                .disabled(current == row.id)
+            }
+            Divider()
+            NewSessionMenuItems(vm: vm, projectID: project.id) { agent, worktree in
+                Task { await vm.newSession(inPane: slot, projectID: project.id, agent: agent, worktree: worktree) }
+            }
         } label: {
             HStack(spacing: Spacing.small) {
-                Text(title).lineLimit(1).truncationMode(.middle)
+                if let session {
+                    SessionLiveDot(state: vm.sessionState(session))
+                }
+                Text(session?.title ?? "Session").lineLimit(1).truncationMode(.middle)
+                if let session {
+                    SessionStateLabel(state: vm.sessionState(session))
+                        .layoutPriority(-1)
+                }
                 Image(systemName: "chevron.down").imageScale(.small)
             }
             .font(.caption)
@@ -154,28 +150,5 @@ struct WorkbenchSessionsMenu: View {
         .menuIndicator(.hidden)
         .help("Show another session in this pane, or start a new one")
         .accessibilityLabel("Sessions")
-    }
-}
-
-/// The sessions menus' items: every session of the workbench but
-/// `current` (disabled), opened in `slot` (resumed if not running), then
-/// the New Session items.
-struct WorkbenchSessionMenuItems: View {
-    @Bindable var vm: WorkbenchesViewModel
-    let project: Workbench
-    let slot: WorkspacePane
-    let current: Int64?
-
-    var body: some View {
-        ForEach(vm.orderedSessions(projectID: project.id)) { session in
-            Button(session.title) {
-                Task { await vm.showInPane(slot, item: .session(session.id), projectID: project.id) }
-            }
-            .disabled(current == session.id)
-        }
-        Divider()
-        NewSessionMenuItems(vm: vm, projectID: project.id) { agent, worktree in
-            Task { await vm.newSession(inPane: slot, projectID: project.id, agent: agent, worktree: worktree) }
-        }
     }
 }

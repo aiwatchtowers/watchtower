@@ -123,11 +123,17 @@ extension WorkbenchesViewModel {
         return CodeRootPolicy.directoryExists(folder)
     }
 
-    /// Whether session `sessionID`'s place sets the page's root (D6): its
-    /// session strip carries the place and branch crumbs, which follow that
-    /// root (spec 2026-10-20, call 9).
-    func ownsCodeRoot(sessionID: Int64, projectID: Int64) -> Bool {
-        pageSessionID(projectID: projectID) == sessionID
+    /// The one pane on screen whose session strip carries the place and
+    /// branch crumbs, which follow the page's root (spec 2026-10-20, call
+    /// 9): a pane of the session whose place sets that root (D6) — its
+    /// terminal or Workchat first, else the first of its panes, so a split
+    /// of one session's terminal and its report draws them once. nil when
+    /// no pane on screen is that session's (no session, an expanded other
+    /// pane, a lone Changes pane): the title row carries them then.
+    func crumbsPane(projectID: Int64) -> WorkspacePane? {
+        guard let owner = pageSessionID(projectID: projectID) else { return nil }
+        let panes = layout(projectID: projectID).visiblePanes.filter { WorkspaceLayout.sessionID(ofAny: $0) == owner }
+        return panes.first { WorkspaceLayout.sessionID(of: $0) != nil } ?? panes.first
     }
 
     /// The session whose place sets the page's root (D6), nil without one.

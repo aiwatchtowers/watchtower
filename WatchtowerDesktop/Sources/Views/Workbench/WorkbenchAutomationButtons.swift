@@ -46,6 +46,7 @@ struct WorkbenchAutomationsMenu: View {
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .help("Automations of this workbench")
+                .accessibilityLabel("Automations")
             }
         }
         // The poll is slow off the Automations tab: opening a workbench
