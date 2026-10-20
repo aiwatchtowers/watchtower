@@ -710,7 +710,7 @@ func TestDaemon_AutoMarkReadAfterDigests(t *testing.T) {
 	d.SetDB(database)
 
 	// Call runSync directly (not Run which starts a loop).
-	d.runSync(context.Background())
+	d.runSync(context.Background(), context.Background())
 
 	// Verify digest is now marked as read.
 	digests, err = database.GetDigests(db.DigestFilter{Type: "channel"})
@@ -1147,7 +1147,7 @@ func TestDaemon_RunSyncInvokesAllTrackedPhases(t *testing.T) {
 	// Force people pipeline past its 24h throttle.
 	d.lastPeople = time.Time{}
 
-	d.runSync(context.Background())
+	d.runSync(context.Background(), context.Background())
 
 	// phaseSlackSync must have run.
 	assert.GreaterOrEqual(t, syncCount.Load(), int32(1), "phaseSlackSync did not run")
@@ -1276,6 +1276,33 @@ func TestSyncHeartbeat_PublishesLiveProgress(t *testing.T) {
 	assert.False(t, progress.IsSyncing(time.Now()))
 }
 
+// A heartbeat whose Slack progress moved stamps the cycle's fetch progress,
+// so Sync Now never restarts a long sync that is still moving; a beat with
+// nothing new leaves the stamp, so a stuck one still reads as stalled.
+func TestSyncHeartbeat_StampsFetchProgressOnlyWhenItMoves(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	prev := syncHeartbeatInterval
+	syncHeartbeatInterval = 2 * time.Millisecond
+	t.Cleanup(func() { syncHeartbeatInterval = prev })
+
+	orch, _ := newTestOrchestrator(t, new(atomic.Int32))
+	d := newDaemon(orch, &config.Config{Sync: config.SyncConfig{PollInterval: time.Second}})
+	d.SetLogger(log.New(io.Discard, "", 0))
+	wall := &fakeWall{base: time.Now().Round(0)}
+	d.loopNow = wall.now
+
+	stop := d.startSyncHeartbeat(orch)
+	defer stop()
+	assert.Zero(t, d.fetchStalledFor(), "the first beat stamps the progress")
+
+	wall.advance(time.Minute)
+	time.Sleep(20 * syncHeartbeatInterval) // beats with nothing new
+	assert.Equal(t, time.Minute, d.fetchStalledFor(), "a beat with nothing new leaves the stamp")
+
+	orch.Progress().AddMessages(1)
+	eventually(t, func() bool { return d.fetchStalledFor() == 0 }, "a beat stamping the moved progress")
+}
+
 // TestInbox09_RevokedAccountSyncErrorDoesNotFreeze guards INBOX-09's
 // revoked-token carve-out (owner-approved 2026-10-01): a revoked Slack
 // account's sync error does not freeze the shared inbox watermark — it fails
@@ -1376,7 +1403,7 @@ func TestInbox09_RunSyncBoundsAndFreezesInboxWatermark(t *testing.T) {
 	}
 
 	d, database := newCycle(slow)
-	d.runSync(context.Background())
+	d.runSync(context.Background(), context.Background())
 	wm, err := database.GetInboxLastProcessedTS()
 	require.NoError(t, err)
 	assert.Greater(t, wm, 1000.0, "a clean cycle advances the watermark")
@@ -1384,7 +1411,7 @@ func TestInbox09_RunSyncBoundsAndFreezesInboxWatermark(t *testing.T) {
 		"the watermark stops at the cycle's sync start − 30 min, not at now − 30 min")
 
 	d, database = newCycle(http.NewServeMux()) // every Slack call fails
-	d.runSync(context.Background())
+	d.runSync(context.Background(), context.Background())
 	wm, err = database.GetInboxLastProcessedTS()
 	require.NoError(t, err)
 	assert.Equal(t, 1000.0, wm, "a failed account sync freezes the watermark")

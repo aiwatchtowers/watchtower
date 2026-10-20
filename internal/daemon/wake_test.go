@@ -146,3 +146,17 @@ func TestWatchWake_ClosesOnCancel(t *testing.T) {
 		t.Fatal("wake channel was not closed after context cancellation")
 	}
 }
+
+// The real clock's wall reading carries no monotonic reading: with one, the
+// watcher's wall subtraction would use the monotonic clock, which stops in
+// sleep, and the detector would never fire. Its monotonic side advances.
+func TestSystemSleepClock_WallIsStrippedMonoAdvances(t *testing.T) {
+	clock := systemSleepClock()
+	wall, mono := clock()
+	assert.NotContains(t, wall.String(), "m=", "the wall reading must carry no monotonic reading")
+	assert.Equal(t, wall.Round(0), wall)
+
+	time.Sleep(time.Millisecond)
+	_, later := clock()
+	assert.Greater(t, later, mono, "the monotonic reading advances")
+}

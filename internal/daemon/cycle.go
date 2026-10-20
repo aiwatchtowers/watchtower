@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -15,37 +16,67 @@ import (
 // on into the next real wake. A var so tests can shorten it.
 var wakeSettleDelay = 15 * time.Second
 
-// manualRestartAfter is how long (wall clock) a cycle must have been in its
-// source-fetch section before a manual trigger cancels it and starts a fresh
-// one at once. A cycle fetching that long is likely stuck behind a slow or
-// dead source, and the owner pressing Sync Now wants fresh data now; a younger
-// cycle will bring it soon, and one already in its pipelines has fetched.
+// manualRestartAfter is how long (wall clock) a cycle's source fetches must
+// have made no progress before a manual trigger cancels them and starts a
+// fresh cycle at once. Fetches stalled that long most likely sit on a slow or
+// dead source, and the owner pressing Sync Now wants fresh data now; fetches
+// still moving (a first sync, a long Jira pass) will finish on their own, and
+// a cycle already in its pipelines has fetched.
 const manualRestartAfter = 60 * time.Second
 
-// syncCycle is one runSync running in its own goroutine under its own
-// context, so the loop stays responsive while it runs and can cancel it.
+// The causes a cycle's fetch context is cancelled with, so the logs name what
+// stopped it (fetchStopReason). A daemon shutdown cancels the parent context:
+// its cause is context.Canceled.
+var (
+	errCycleSlept   = errors.New("the machine slept")
+	errCycleRestart = errors.New("Sync Now restarted the cycle")
+)
+
+// fetchStopReason names what cancelled a cycle's fetch context, for the log.
+func fetchStopReason(fetchCtx context.Context) string {
+	switch cause := context.Cause(fetchCtx); {
+	case errors.Is(cause, errCycleSlept):
+		return "sleep"
+	case errors.Is(cause, errCycleRestart):
+		return "Sync Now restart"
+	default:
+		return "shutdown"
+	}
+}
+
+// syncCycle is one runSync running in its own goroutine, so the loop stays
+// responsive while it runs and can cancel its source fetches.
 type syncCycle struct {
-	cancel context.CancelFunc
-	done   chan struct{} // closed once runSync has returned
+	// cancelFetch cancels the cycle's fetch context only: the source syncs
+	// stop and the pipelines are skipped, while pipelines already running
+	// (they run on the daemon's context) are never cut off.
+	cancelFetch context.CancelCauseFunc
+	done        chan struct{} // closed once runSync has returned
 	// resetTicker makes the next poll a full interval after this cycle ends
 	// (the initial, wake and trigger cycles).
 	resetTicker bool
-	started     time.Time // wall clock (wallNow)
-	// interrupted is set when a detected sleep cancelled the cycle, restart
-	// when a manual trigger did. Both touched only by the loop goroutine.
-	interrupted bool
-	restart     bool
+	// slept is set when a sleep was detected while the cycle ran (its
+	// fetches cancelled, or its pipelines left to finish), restart when a
+	// manual trigger cancelled its fetches. Both touched only by the loop
+	// goroutine.
+	slept   bool
+	restart bool
 }
 
-// startCycle runs runSync in a goroutine under a context derived from ctx, so
-// a daemon shutdown cancels it too.
+// startCycle runs runSync in a goroutine: its pipelines on ctx, its source
+// fetches on a context derived from ctx that the loop can cancel. A daemon
+// shutdown cancels both.
 func (d *Daemon) startCycle(ctx context.Context, resetTicker bool) *syncCycle {
-	cycleCtx, cancel := context.WithCancel(ctx)
-	c := &syncCycle{cancel: cancel, done: make(chan struct{}), resetTicker: resetTicker, started: d.wallNow()}
+	fetchCtx, cancel := context.WithCancelCause(ctx)
+	// Set here, on the loop goroutine, so a trigger right after this never
+	// reads the previous cycle's state.
+	d.cycleInPipelines.Store(false)
+	d.markFetchProgress()
+	c := &syncCycle{cancelFetch: cancel, done: make(chan struct{}), resetTicker: resetTicker}
 	go func() {
 		defer close(c.done)
-		defer cancel()
-		d.runSync(cycleCtx)
+		defer cancel(nil)
+		d.runSync(ctx, fetchCtx)
 	}()
 	return c
 }
@@ -59,34 +90,53 @@ func (d *Daemon) wallNow() time.Time {
 	return time.Now().Round(0)
 }
 
+// markFetchProgress stamps the running cycle's last source-fetch progress:
+// a fetch phase boundary in runSync, a Slack sync whose counters moved
+// (startSyncHeartbeat).
+func (d *Daemon) markFetchProgress() {
+	d.fetchProgressAt.Store(d.wallNow().UnixNano())
+}
+
+// fetchStalledFor is how long (wall clock) the running cycle's source fetches
+// have made no progress.
+func (d *Daemon) fetchStalledFor() time.Duration {
+	return d.wallNow().Sub(time.Unix(0, d.fetchProgressAt.Load()))
+}
+
 // triggerRestarts reports whether a manual trigger arriving now cancels the
-// running cycle c and starts a fresh one: c is still in its source-fetch
-// section (runSync has not reached the pipelines) and has been in it for at
-// least manualRestartAfter, and nothing has cancelled it yet.
+// running cycle c's source fetches and starts a fresh cycle: c is still in
+// its source-fetch section (runSync has not reached the pipelines), those
+// fetches have made no progress for at least manualRestartAfter, and nothing
+// has cancelled them yet.
 func (d *Daemon) triggerRestarts(c *syncCycle) bool {
-	return !c.interrupted && !c.restart && !d.cycleInPipelines.Load() &&
-		d.wallNow().Sub(c.started) >= manualRestartAfter
+	return !c.slept && !c.restart && !d.cycleInPipelines.Load() &&
+		d.fetchStalledFor() >= manualRestartAfter
 }
 
 // runLoop runs the initial cycle, then one cycle per poll tick, manual trigger
 // and (with sync.sync_on_wake) wake, never two at once. It returns once ctx is
 // cancelled and the running cycle, if any, has returned.
 //
-// A sleep detected while a cycle runs cancels it, whatever sync_on_wake says:
-// Go's timeouts count awake time only, so a request caught by a sleep can
-// hang for half an hour of wall time across Power Nap wakes, and the cycle
-// would then run its pipelines on data its failed syncs never refreshed. The
-// cancelled cycle skips its pipelines (runSync); the loop waits for it to
-// return, drops the pooled connections the sleep may have killed, and after
+// A cycle's source fetches run on their own context, which the loop cancels;
+// its pipelines run on ctx and always finish (a cancelled fetch skips them
+// instead). A sleep detected while a cycle fetches cancels the fetches,
+// whatever sync_on_wake says: Go's timeouts count awake time only, so a
+// request caught by a sleep can hang for half an hour of wall time across
+// Power Nap wakes, and the cycle would then run its pipelines on data its
+// failed syncs never refreshed. A sleep detected during the pipelines lets
+// them finish. Either way the loop drops the pooled connections the sleep may
+// have killed at once, waits for the cycle to return, and after
 // wakeSettleDelay starts a fresh cycle (sync_on_wake on) or lets the next
-// tick run one (off). A sleep while the loop is idle takes the same path minus
-// the cancel. Another sleep during the delay starts the delay over.
+// tick run one (off). A sleep while the loop is idle takes the same path
+// minus the cycle. Another sleep during the delay starts the delay over.
 //
-// A manual trigger while a cycle runs cancels it and starts a fresh one at
-// once, without the delay, when triggerRestarts says so; otherwise it is
-// queued (collapsed into one) and served right after the cycle. Ticks are not
-// read while a cycle runs or the delay counts down, nor triggers during the
-// delay, so they wait (collapsed into one) and are served right after.
+// A manual trigger while a cycle runs cancels its fetches and starts a fresh
+// cycle as soon as it returns, without the delay, when triggerRestarts says
+// so (fetches stalled); otherwise it is queued (collapsed into one) and
+// served right after the cycle. A trigger during the delay is folded into the
+// one cycle the delay ends with, sync_on_wake on or off. Ticks are not read
+// while a cycle runs or the delay counts down, so they wait (collapsed into
+// one) and are served right after.
 func (d *Daemon) runLoop(ctx context.Context, pollInterval time.Duration) error {
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
@@ -94,7 +144,7 @@ func (d *Daemon) runLoop(ctx context.Context, pollInterval time.Duration) error 
 	// The initial cycle, right away.
 	cycle := d.startCycle(ctx, true)
 	var settle *time.Timer // the post-wake delay, nil when not counting down
-	triggerQueued := false // a trigger that arrived mid-cycle and waits for it
+	triggerQueued := false // a trigger that waits for the running cycle or the delay
 	defer func() {
 		if settle != nil {
 			settle.Stop()
@@ -105,21 +155,18 @@ func (d *Daemon) runLoop(ctx context.Context, pollInterval time.Duration) error 
 		var cycleDone <-chan struct{}
 		var settleC <-chan time.Time
 		var tickC <-chan time.Time
-		var triggerC <-chan struct{}
 		switch {
 		case cycle != nil:
 			cycleDone = cycle.done
-			triggerC = d.triggerChannel()
 		case settle != nil:
 			settleC = settle.C
 		default:
 			tickC = ticker.C
-			triggerC = d.triggerChannel()
 		}
 
 		select {
 		case <-ctx.Done():
-			// The cycle's context derives from ctx: it is already cancelled.
+			// The cycle's contexts derive from ctx: both are already cancelled.
 			if cycle != nil {
 				<-cycle.done
 			}
@@ -129,12 +176,16 @@ func (d *Daemon) runLoop(ctx context.Context, pollInterval time.Duration) error 
 			finished := cycle
 			cycle = nil
 			switch {
-			case finished.interrupted:
-				dropConnections()
+			case finished.slept:
+				// A restart the sleep overtook still runs, after the delay.
+				if finished.restart {
+					triggerQueued = true
+				}
+				d.logger.Printf("cycle ended after a sleep, waiting %s for the network", wakeSettleDelay)
 				settle = time.NewTimer(wakeSettleDelay)
 			case finished.restart || triggerQueued:
 				if finished.restart {
-					// A fetch stuck that long most likely sits on a dead socket.
+					// A fetch stalled that long most likely sits on a dead socket.
 					dropConnections()
 				}
 				triggerQueued = false
@@ -161,45 +212,70 @@ func (d *Daemon) runLoop(ctx context.Context, pollInterval time.Duration) error 
 				d.wakeCh = nil
 				continue
 			}
-			sleptFor := slept.Round(time.Second)
-			switch {
-			case cycle != nil:
-				if !cycle.interrupted {
-					d.logger.Printf("sleep detected (slept ~%s), cancelling the running cycle", sleptFor)
-					cycle.interrupted = true
-					cycle.cancel()
-				}
-			case settle != nil:
-				d.logger.Printf("sleep detected (slept ~%s), starting the %s post-wake wait over", sleptFor, wakeSettleDelay)
-				dropConnections()
-				settle.Reset(wakeSettleDelay)
-			default:
-				d.logger.Printf("sleep detected (slept ~%s), waiting %s for the network", sleptFor, wakeSettleDelay)
-				dropConnections()
-				settle = time.NewTimer(wakeSettleDelay)
-			}
-		case _, ok := <-triggerC:
+			d.onSleep(cycle, &settle, slept.Round(time.Second))
+		case _, ok := <-d.triggerChannel():
 			if !ok {
 				d.triggerCh = nil
 				continue
 			}
-			switch {
-			case cycle == nil:
-				d.logger.Println("manual sync trigger received, syncing")
-				cycle = d.startCycle(ctx, true)
-			case d.triggerRestarts(cycle):
-				d.logger.Printf("manual sync trigger received %s into the cycle's source syncs, cancelling it and syncing afresh",
-					d.wallNow().Sub(cycle.started).Round(time.Second))
-				cycle.restart = true
-				cycle.cancel()
-			case d.cycleInPipelines.Load():
-				d.logger.Println("manual sync trigger received during the cycle's pipelines, syncing after it")
-				triggerQueued = true
-			default:
-				d.logger.Println("manual sync trigger received during the cycle's source syncs, syncing after it")
+			if d.onTrigger(ctx, &cycle, settle != nil) {
 				triggerQueued = true
 			}
 		}
+	}
+}
+
+// onSleep is runLoop's answer to a detected sleep: it drops the pooled
+// connections the sleep may have killed (idle ones only, so it is safe
+// mid-cycle) and then cancels the running cycle's fetches, lets its pipelines
+// finish, or starts (over) the post-wake delay.
+func (d *Daemon) onSleep(cycle *syncCycle, settle **time.Timer, sleptFor time.Duration) {
+	dropConnections()
+	switch {
+	case cycle != nil && cycle.slept:
+		d.logger.Printf("sleep detected (slept ~%s), the running cycle already ends in a post-wake wait", sleptFor)
+	case cycle != nil && d.cycleInPipelines.Load():
+		d.logger.Printf("sleep detected (slept ~%s) during the cycle's pipelines, letting them finish", sleptFor)
+		cycle.slept = true
+	case cycle != nil:
+		d.logger.Printf("sleep detected (slept ~%s), cancelling the running cycle's source syncs", sleptFor)
+		cycle.slept = true
+		cycle.cancelFetch(errCycleSlept)
+	case *settle != nil:
+		d.logger.Printf("sleep detected (slept ~%s), starting the %s post-wake wait over", sleptFor, wakeSettleDelay)
+		(*settle).Reset(wakeSettleDelay)
+	default:
+		d.logger.Printf("sleep detected (slept ~%s), waiting %s for the network", sleptFor, wakeSettleDelay)
+		*settle = time.NewTimer(wakeSettleDelay)
+	}
+}
+
+// onTrigger is runLoop's answer to a manual trigger: it starts a cycle when
+// the loop is idle, cancels a running cycle's stalled fetches (the loop
+// starts a fresh cycle once it returns), and otherwise reports that the
+// trigger waits for the running cycle or the post-wake delay.
+func (d *Daemon) onTrigger(ctx context.Context, cycle **syncCycle, settling bool) (queued bool) {
+	c := *cycle
+	switch {
+	case c == nil && settling:
+		d.logger.Println("manual sync trigger received during the post-wake wait, syncing after it")
+		return true
+	case c == nil:
+		d.logger.Println("manual sync trigger received, syncing")
+		*cycle = d.startCycle(ctx, true)
+		return false
+	case d.triggerRestarts(c):
+		d.logger.Printf("manual sync trigger received after %s without source-sync progress, cancelling them and syncing afresh",
+			d.fetchStalledFor().Round(time.Second))
+		c.restart = true
+		c.cancelFetch(errCycleRestart)
+		return false
+	case d.cycleInPipelines.Load():
+		d.logger.Println("manual sync trigger received during the cycle's pipelines, syncing after it")
+		return true
+	default:
+		d.logger.Println("manual sync trigger received during the cycle's source syncs, syncing after it")
+		return true
 	}
 }
 
@@ -207,7 +283,7 @@ func (d *Daemon) runLoop(ctx context.Context, pollInterval time.Duration) error 
 var dropConnections = dropPooledConnections
 
 // dropPooledConnections closes the idle pooled HTTP connections a sleep may
-// have left dead, so the next cycle dials afresh: http.DefaultTransport's —
+// have left dead, so the next requests dial afresh: http.DefaultTransport's —
 // every integration whose client leaves Transport nil, and the oauth2 clients
 // layered on it — and the Slack clients' shared transport.
 func dropPooledConnections() {
