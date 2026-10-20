@@ -59,6 +59,13 @@ final class HomeFeedBuilderTests: XCTestCase {
         ]))
     }
 
+    private func output(_ id: Int64, title: String = "Two threads need you", minutesAgo: Double = 15) -> AutomationOutputCard {
+        AutomationOutputCard(
+            id: id, automationID: 1, automationName: "Mail summary", runID: 1, title: title,
+            body: "Ann and Bo wait on a reply.", priority: "medium",
+            createdAt: now.addingTimeInterval(-minutesAgo * 60))
+    }
+
     private func target(_ id: Int, due: String) -> Target {
         Target(row: Row(["id": id, "text": "Ship it", "status": "todo", "due_date": due]))
     }
@@ -81,8 +88,30 @@ final class HomeFeedBuilderTests: XCTestCase {
         data.dueReminders = [reminder(3, at: now.addingTimeInterval(-300))]
         data.targets = [target(4, due: "2026-10-19")]
         data.proposals = [proposal(5)]
+        data.outputs = [output(6)]
         let feed = build(data)
-        XCTAssertEqual(feed.waiting.map(\.id), [.inbox(2), .proposal(5), .reminder(3), .target(4), .inbox(1)])
+        XCTAssertEqual(feed.waiting.map(\.id),
+                       [.inbox(2), .proposal(5), .output(6), .reminder(3), .target(4), .inbox(1)])
+    }
+
+    /// An automation's inbox output: its title over the body, the
+    /// automation's name as the place, Done / Hide, its run on a click.
+    func testAutomationOutputRow() throws {
+        var data = HomeFeedData()
+        data.outputs = [output(6), output(7, title: "", minutesAgo: 30)]
+        let rows = build(data).waiting
+        XCTAssertEqual(rows.map(\.id), [.output(6), .output(7)])
+        let row = rows[0]
+        XCTAssertEqual(row.kind, .automation)
+        XCTAssertEqual(row.chip, "Automation")
+        XCTAssertEqual(row.who, "Two threads need you")
+        XCTAssertEqual(row.whereText, "Mail summary")
+        XCTAssertEqual(row.text, "Ann and Bo wait on a reply.")
+        XCTAssertEqual(row.actions, [.done, .hide])
+        XCTAssertEqual(row.link, .automationRun(automationID: 1, runID: 1))
+        XCTAssertFalse(row.read)
+        XCTAssertEqual(rows[1].who, "Automation output")
+        XCTAssertTrue(FeedRef.output(6).hasActions)
     }
 
     func testCapAtSevenAndNMore() {

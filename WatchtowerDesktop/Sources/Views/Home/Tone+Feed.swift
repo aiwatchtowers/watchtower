@@ -10,6 +10,7 @@ extension Tone {
         case .slack: .purple
         case .jira: .blue
         case .proposal: amber
+        case .automation: .indigo
         case .reminder: .secondary
         case .target: .red
         case .email: .teal

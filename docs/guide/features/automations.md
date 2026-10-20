@@ -17,7 +17,7 @@ A recipe never runs until you confirm it, every run has its own token and time b
 ### Make one
 
 1. Open **Automations** in the sidebar and click **+ New**.
-2. Pick who it is **For**: **Personal** or one of your workbenches (the picker shows only when you have a workbench; the workbench's ⋯ menu also has **New Automation…**). Then pick **Describe in words** and tell the assistant what you want, or **Template** (see [Recipes and templates](automations-recipes.md)). **Form** is the manual route and makes personal automations only.
+2. Pick who it is **For**: **Personal** or one of your workbenches (the picker shows only when you have a workbench; the workbench's **…** menu also has **New Automation…**). Then pick **Describe in words** and tell the assistant what you want, or **Template** (see [Recipes and templates](automations-recipes.md)). **Form** is the manual route and makes personal automations only.
 3. Check the **Draft** panel: when it runs, **Each run may spend**, what it asks to do and **Sessions it starts**, each with its title and prompt. If a dry run has not covered the exact text, the card says so, and likewise when it stopped early. **Dry run** shows what it would do and writes nothing. A draft does not call Quick Connections or start agents: it stops at the first Quick Connection call and says so. Save it and use **Dry run** on its card to see the rest.
 4. Save. The save card says whether it is **For: Personal** or **For: workbench** with its name. The confirmation sheet lists what the recipe may do and the script; **Confirm** approves it; a disabled recipe also offers **Confirm and enable**.
 
@@ -41,7 +41,7 @@ The **Automations** badge counts automations whose last run failed, until you op
 
 ### Where results land
 
-- Inbox: **From your automations** cards with **Done** and **Dismiss**.
+- Inbox: **From your automations** cards with **Done** and **Dismiss**. Those from the last 72 hours also show in the [Home](home.md) feed, with **Done** and **Hide**.
 - Reports: **Latest reports** on the card.
 - Briefing: notes reach the next daily briefing, from the last 7 days at most.
 
