@@ -4,11 +4,11 @@ Home is the page Watchtower opens on. It shows what needs you right now and, on 
 
 ## Why use it
 
-You open the app after a meeting and want one answer: what is waiting for me? Home puts the mentions, mail and reminders that need you, then your meetings, in one feed. Next to it sit your coding agents' sessions and questions, shortcuts to your briefing and recap, and a few numbers for today.
+You open the app after a meeting and want one answer: what is waiting for me? Home puts what needs you, then your meetings, in one feed. Next to it sit your coding agents' sessions and questions, shortcuts to your briefing and recap, and a few numbers for today.
 
 ## How it works
 
-Home only reads what the rest of the app has already produced, and refreshes about every 30 seconds. The feed is on the left. On the right, top to bottom, are **Workbench**, **Links** and **Today in numbers**. In a narrow window everything is one column in the same order: feed, Workbench, links, numbers. A zone with nothing to show is left out.
+Home only reads what the rest of the app has produced, and refreshes about every 30 seconds. The feed is on the left. On the right, top to bottom, are **Workbench**, **Links** and **Today in numbers**. In a narrow window everything is one column in the same order: feed, Workbench, links, numbers. A zone with nothing to show is left out.
 
 ### The feed
 
@@ -20,9 +20,9 @@ The feed reads top to bottom like your day: above a **NOW** line is everything t
 
 ### Done and Hide
 
-- Press **Done** on a row to resolve it, or **Hide** to put it away. A hidden reminder or target comes back tomorrow at 09:00. On an automation note, **Done** marks it read and **Hide** dismisses it, the same as **Done** and **Dismiss** in Inbox. Proposals and meetings have no buttons: open them instead.
+- Press **Done** on a row to resolve it, or **Hide** to put it away. A hidden reminder or target comes back tomorrow at 09:00; a hidden automation note is dismissed, as in Inbox. Proposals and meetings have no buttons: open them instead.
 - A row leaves the feed at once. If the action fails it comes back with the error under it; press again to retry.
-- Click a row to open it: a Slack, Jira or email row opens its source, an automation note opens its run in Automations, the rest open Inbox, the target or the meeting in Calendar.
+- Click a row to open it: Slack, Jira and email open their source, an automation note its run, the rest Inbox, the target or the meeting.
 
 ### Workbench
 
@@ -41,7 +41,7 @@ The **Links** zone has up to four shortcuts, each shown while its tab is visible
 
 ### Today in numbers
 
-**Today in numbers** is a quiet grid of counts for the current day:
+**Today in numbers** counts the current day:
 
 - **messages to me / sent**: Slack direct messages and mentions from others, and the messages you sent, in every connected workspace.
 - **meetings**: today's meetings and their hours; all-day, cancelled and declined events don't count.
@@ -50,7 +50,7 @@ The **Links** zone has up to four shortcuts, each shown while its tab is visible
 - **workbench targets new / done**: created and finished today.
 - **meetings recorded**: recordings made today.
 
-**AI spend** always shows. Another number whose source isn't connected or is off is left out, and a number that couldn't be read shows "—".
+**AI spend** always shows. A number whose source is off or not connected is left out; one that couldn't be read shows "—".
 
 ### The Getting ready zone
 
@@ -65,7 +65,7 @@ When every card is ready or retrying on its own, the zone shrinks to "Everything
 ## Using it
 
 - Click a row to open that item, or **Open →** to open the Workbench tab.
-- Click **×** in the Getting ready header to hide the zone for good.
+- Click **×** in the Getting ready header to hide it for good.
 - When a tab you were on is turned off or its source is disconnected, you land on Home.
 
 ### The menu on the left
