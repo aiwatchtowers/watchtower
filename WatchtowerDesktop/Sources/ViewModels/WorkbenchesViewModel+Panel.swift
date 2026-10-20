@@ -489,11 +489,22 @@ extension WorkbenchesViewModel {
     /// The title row's Session tab turned on (spec 2026-10-20 call 7): the
     /// session view target in the mode it was last shown in — its Workchat
     /// or its terminal — the way today's Workchat / Terminal buttons put it
-    /// (`showView`). With no session, Terminal's path.
+    /// (`showView`). In a split a Workchat takes the second pane and the
+    /// first stays, as the terminal does (`revealTerminal`). With no
+    /// session, Terminal's path.
     func showSessionTab(project: Workbench) async {
-        let layout = layout(projectID: project.id)
-        let workchat = sessionViewTarget(projectID: project.id).map { layout.pane(forSession: $0).isWorkchat } ?? false
-        await showView(workchat ? .chat : .terminal, project: project)
+        var updated = layout(projectID: project.id)
+        guard let id = sessionViewTarget(projectID: project.id), updated.pane(forSession: id).isWorkchat else {
+            await showView(.terminal, project: project)
+            return
+        }
+        guard updated.isSplit else {
+            await showView(.chat, project: project)
+            return
+        }
+        updated.reveal(.sessionChat(id), keeping: updated.visiblePanes.first ?? updated.primary)
+        beginSwitch(projectID: project.id)
+        setLayout(updated, projectID: project.id)
     }
 
     /// The Session tab turned off: a split's session pane closes, the other

@@ -184,6 +184,31 @@ final class WorkbenchHeaderControlsTests: XCTestCase {
         XCTAssertTrue(layout().visiblePanes[0].isWorkchat, "the remembered mode: \(layout().visiblePanes)")
     }
 
+    /// Call 7 in a split of two non-session views: Session on shows the
+    /// session beside the first pane, in its remembered mode — the
+    /// terminal or the Workchat — and never replaces both panes.
+    func testSessionTabInABoardFilesSplitKeepsTheFirstPane() async throws {
+        let s = try await seed()
+        let vm = makeVM()
+        vm.selectedWorkbenchID = s.project.id
+        await vm.loadSessions(projectID: s.project.id)
+        let p = s.project.id
+        let panes = { vm.layout(projectID: p).visiblePanes }
+        let isTerminal = { (pane: WorkspacePane) in if case .session = pane { true } else { false } }
+
+        vm.setLayout(Self.split(.board, .files), projectID: p)
+        try toggle("Session", controls(vm, s.project)).tap()
+        await waitUntil { panes().count == 2 && isTerminal(panes()[1]) }
+        XCTAssertEqual(panes().first, .board, "terminal mode: \(panes())")
+
+        var chat = Self.split(.board, .files)
+        chat.workchatSessions = [s.first.id, s.second.id]
+        vm.setLayout(chat, projectID: p)
+        try toggle("Session", controls(vm, s.project)).tap()
+        await waitUntil { panes().count == 2 && panes()[1].isWorkchat }
+        XCTAssertEqual(panes().first, .board, "Workchat mode: \(panes())")
+    }
+
     /// With no session, Session is not disabled: it runs today's Terminal
     /// path (`showView(.terminal)`), which opens the most recent session —
     /// here a new one, as there is none.
