@@ -480,12 +480,12 @@ func (d *Daemon) triggerChannel() <-chan struct{} {
 	return nil
 }
 
-// runSync runs one cycle: the source fetches on fetchCtx, the pipelines on
-// ctx. fetchCtx derives from ctx; runLoop cancels it alone (a sleep, a Sync
-// Now restart), which stops the fetches and skips the pipelines but never
-// cuts off pipelines already running — their attempt budgets, throttle stamps
-// and pipeline_runs rows see a cancel only on shutdown. It moves
-// d.cycleSection along for runLoop.
+// runSync runs one cycle: the source fetches and the history backfill on
+// fetchCtx, the pipelines on ctx. fetchCtx derives from ctx; runLoop cancels
+// it alone (a sleep, a Sync Now restart), which stops the fetches and skips
+// the pipelines but never cuts off pipelines already running — their attempt
+// budgets, throttle stamps and pipeline_runs rows see a cancel only on
+// shutdown. It moves d.cycleSection along for runLoop.
 func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	d.setSection(sectionSlackFetch)
 	d.markFetchProgress()
@@ -585,7 +585,13 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 
 	// Last, and alone: it shares the digest pipeline and the ideas lock with
 	// the forward phases above, so it must stay out of any parallel group.
-	d.phaseHistoryBackfill(ctx)
+	// It fetches, so it runs on fetchCtx: a sleep cancels it (or, detected
+	// during the pipelines, skips it), while a trigger waits for it.
+	if fetchCtx.Err() == nil {
+		d.setSection(sectionBackfill)
+		d.phaseHistoryBackfill(fetchCtx)
+		d.setSection(sectionPipelines)
+	}
 	d.phaseInstructionSuggestions(ctx)
 }
 

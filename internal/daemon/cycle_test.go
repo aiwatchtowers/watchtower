@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"strings"
 	gosync "sync"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -72,6 +74,9 @@ type cycleProbe struct {
 	hold      chan struct{}  // nil = a cancelled Sync returns at once
 	block     atomic.Bool
 	onSync    func() // run at the start of each Sync, nil = nothing
+	// fetchRange is FetchRange's body (the history backfill's fetch), nil =
+	// nothing to fetch.
+	fetchRange func(ctx context.Context) error
 }
 
 func newCycleProbe() *cycleProbe {
@@ -82,8 +87,11 @@ func (p *cycleProbe) Sync(ctx context.Context) (int, error) {
 	if p.onSync != nil {
 		p.onSync()
 	}
+	// Read before the started send: a test clears block right after it
+	// receives that send, for the next cycle, not this one.
+	blocked := p.block.Load()
 	p.started <- time.Now()
-	if !p.block.Load() {
+	if !blocked {
 		return 0, nil
 	}
 	select {
@@ -98,9 +106,15 @@ func (p *cycleProbe) Sync(ctx context.Context) (int, error) {
 	}
 }
 
-func (p *cycleProbe) FetchRange(context.Context, time.Time, time.Time) (int, error) { return 0, nil }
-func (p *cycleProbe) AccountID() int64                                              { return 1 }
-func (p *cycleProbe) FirstSyncFrom() (time.Time, bool)                              { return time.Time{}, false }
+func (p *cycleProbe) FetchRange(ctx context.Context, _, _ time.Time) (int, error) {
+	if p.fetchRange == nil {
+		return 0, nil
+	}
+	return 0, p.fetchRange(ctx)
+}
+
+func (p *cycleProbe) AccountID() int64                 { return 1 }
+func (p *cycleProbe) FirstSyncFrom() (time.Time, bool) { return time.Time{}, false }
 
 // setWakeSettle sets wakeSettleDelay for one test.
 func setWakeSettle(t *testing.T, d time.Duration) {
@@ -155,6 +169,10 @@ type loopOpts struct {
 	blockFirst bool
 	hold       bool          // cancelled Syncs wait for probe.hold
 	poll       time.Duration // 0 = an hour
+	// backfill gives the daemon a test DB with a running IMAP history
+	// backfill row for the probe's account, whose fetch is fetchRange.
+	backfill   bool
+	fetchRange func(ctx context.Context) error
 }
 
 func startLoop(t *testing.T, o loopOpts) *loopHarness {
@@ -170,7 +188,11 @@ func startLoop(t *testing.T, o loopOpts) *loopHarness {
 	d := newDaemon(nil, cfg)
 	logs := &lockedLog{}
 	d.SetLogger(log.New(logs, "", 0))
+	if o.backfill {
+		seedLoopBackfill(t, d)
+	}
 	probe := newCycleProbe()
+	probe.fetchRange = o.fetchRange
 	probe.block.Store(o.blockFirst)
 	if o.hold {
 		probe.hold = make(chan struct{})
@@ -197,6 +219,25 @@ func startLoop(t *testing.T, o loopOpts) *loopHarness {
 		}
 	})
 	return h
+}
+
+// seedLoopBackfill gives d a test DB and a workspace with one running IMAP
+// history backfill row for the probe's account (id 1).
+func seedLoopBackfill(t *testing.T, d *Daemon) {
+	t.Helper()
+	d.config.ActiveWorkspace = "test-ws"
+	d.config.Sync.BackfillDays = 30
+	require.NoError(t, os.MkdirAll(d.config.WorkspaceDir(), 0o755))
+	database := db.OpenTestDB(t)
+	acct, err := database.CreateEmailAccount(db.EmailAccount{Provider: "imap", EmailAddress: "me@example.com",
+		Host: "imap.example.com", Port: 993, Security: "ssl", Folder: "INBOX"})
+	require.NoError(t, err)
+	require.Equal(t, int64(1), acct, "the probe's account")
+	now := time.Now()
+	_, err = database.StartHistoryBackfill("imap", acct, float64(now.AddDate(0, 0, -30).Unix()),
+		float64(now.AddDate(0, 0, -3).Unix()), now)
+	require.NoError(t, err)
+	d.SetDB(database)
 }
 
 // stop cancels the daemon and requires Run to return promptly.
@@ -317,12 +358,14 @@ func TestRunLoop_SleepDuringSettleRestartsTheDelay(t *testing.T) {
 	assert.Equal(t, int32(2), drops.Load(), "each sleep drops the pooled connections")
 }
 
-// A sleep detected while the cycle runs its pipelines cancels nothing: the
-// cycle finishes them, and a fresh one follows the settle delay.
+// A sleep detected while the cycle runs its pipelines never cuts them off
+// (they run on the daemon's context): the cycle finishes them, and a fresh
+// one follows the settle delay. The backfill after them is skipped (the fetch
+// context is cancelled, TestOnSleep_Paths).
 func TestRunLoop_SleepDuringPipelinesLetsThemFinish(t *testing.T) {
 	shortenWakeSettle(t)
 	drops := countDrops(t)
-	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true})
+	h := startLoop(t, loopOpts{syncOnWake: true, blockFirst: true, hold: true})
 
 	recv(t, h.probe.started, "the initial cycle")
 	h.probe.block.Store(false)
@@ -330,13 +373,17 @@ func TestRunLoop_SleepDuringPipelinesLetsThemFinish(t *testing.T) {
 	h.wake <- 10 * time.Minute
 	h.logs.waitLog(t, "during the cycle's pipelines, letting them finish", 1)
 	assert.Equal(t, int32(1), drops.Load(), "the idle connections are dropped at once")
-	assert.Empty(t, h.probe.cancelled, "the cycle is not cancelled")
 
-	h.releaseProbe(t)
+	// The probe stands in for a pipeline, but it sits on the fetch context,
+	// so it does see the cancel; held there, it shows the loop still waits
+	// for the cycle to return.
+	recv(t, h.probe.cancelled, "the fetch context's cancel")
+	requireNone(t, h.probe.started, 50*time.Millisecond, "a cycle before the running one returned")
+	assert.Zero(t, h.logs.count(logSleptCycleEnds), "the loop waits for the cycle")
+	h.letGo(t)
+	h.logs.waitLog(t, logSleptCycleEnds, 1)
 	recv(t, h.probe.started, "the cycle after the wake")
 	h.stop(t)
-	assert.Zero(t, h.logs.count("skipping pipelines"), "the cycle ran its pipelines")
-	assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
 }
 
 // Shutdown mid-cycle: Run waits for the cycle to stop and starts no other.
@@ -514,6 +561,48 @@ func TestRunLoop_TriggerDuringPipelinesWaitsForTheCycle(t *testing.T) {
 	assert.Empty(t, h.probe.cancelled, "no cycle was cancelled before shutdown")
 }
 
+// The history backfill runs on the cycle's fetch context: Sync Now during it
+// is queued however long it runs (its 5-minute budget bounds the wait), a
+// sleep cancels it, and the cancelled chunk is no strike and leaves no error
+// on the history-backfill row.
+func TestRunLoop_BackfillQueuesTriggersAndSleepCancelsIt(t *testing.T) {
+	shortenWakeSettle(t)
+	inFetch := make(chan struct{}, 1)
+	var fetched atomic.Bool
+	h := startLoop(t, loopOpts{syncOnWake: true, backfill: true, fetchRange: func(ctx context.Context) error {
+		if fetched.Swap(true) {
+			return nil // the later cycles' chunks fetch at once
+		}
+		inFetch <- struct{}{}
+		<-ctx.Done()
+		return ctx.Err()
+	}})
+
+	recv(t, h.probe.started, "the initial cycle")
+	recv(t, inFetch, "the backfill's fetch")
+	require.Equal(t, sectionBackfill, h.d.section())
+	h.mono.advance(10 * manualRestartAfter)
+	h.pressSyncNow(t, "manual sync trigger received during the history backfill, syncing after it")
+	assert.Zero(t, h.logs.count("afresh"), "a trigger never cancels the backfill")
+
+	h.wake <- 10 * time.Minute
+	h.logs.waitLog(t, "cancelling the running cycle's history backfill", 1)
+	h.logs.waitLog(t, logSleptCycleEnds, 1)
+	recv(t, h.probe.started, "the cycle after the delay")
+	h.stop(t)
+	assert.Equal(t, 1, h.logs.count("history backfill: stopped by sleep"))
+
+	rows, err := h.d.db.ListHistoryBackfills()
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Zero(t, rows[0].ChunkFailures, "a cancelled chunk is no strike")
+	assert.Nil(t, rows[0].HeldSince, "a cancelled chunk is no hold")
+	var errored int
+	require.NoError(t, h.d.db.QueryRow(`SELECT COUNT(*) FROM pipeline_runs
+		WHERE pipeline = 'history-backfill' AND COALESCE(error_msg, '') != ''`).Scan(&errored))
+	assert.Zero(t, errored, "a cancelled Step leaves no error row")
+}
+
 // A sleep that lands after Sync Now restarted the cycle, before it returned,
 // does not lose the restart: the fresh cycle runs after the settle delay even
 // with sync_on_wake off.
@@ -685,9 +774,18 @@ func TestOnSleep_Paths(t *testing.T) {
 		var settle *time.Timer
 		d.onSleep(c, &settle, time.Minute)
 		assert.True(t, c.slept)
-		assert.NoError(t, fetchCtx.Err(), "pipelines are never cancelled")
+		// The pipelines run on the daemon's context; the cancel only skips
+		// the history backfill after them.
+		assert.ErrorIs(t, context.Cause(fetchCtx), errCycleSlept)
 	})
-	assert.Equal(t, int32(4), drops.Load(), "every path drops the pooled connections")
+	t.Run("backfill", func(t *testing.T) {
+		c, fetchCtx := newCycle(sectionBackfill)
+		var settle *time.Timer
+		d.onSleep(c, &settle, time.Minute)
+		assert.True(t, c.slept)
+		assert.ErrorIs(t, context.Cause(fetchCtx), errCycleSlept)
+	})
+	assert.Equal(t, int32(5), drops.Load(), "every path drops the pooled connections")
 }
 
 // monoNow's default measures from an epoch that carries a monotonic

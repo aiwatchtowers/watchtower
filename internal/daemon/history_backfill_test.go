@@ -1081,3 +1081,40 @@ func TestHistoryBackfill_AccountStateJira(t *testing.T) {
 	d.config.Jira.Enabled = false
 	assert.Equal(t, historybackfill.AccountGone, d.accountState("jira", ok), "jira.enabled=false: never wired")
 }
+
+// A sleep cancelling the Step mid-chunk (runSync passes the cycle's fetch
+// context) is no strike and no hold, even when the source reports the cut as
+// a network error, and leaves no error on the history-backfill row.
+func TestPhaseHistoryBackfill_SleepCancelIsNoFailure(t *testing.T) {
+	d, database, logs := newBackfillDaemon(t)
+	acct, err := database.CreateEmailAccount(db.EmailAccount{Provider: "imap", EmailAddress: "me@example.com",
+		Host: "imap.example.com", Port: 993, Security: "ssl", Folder: "INBOX"})
+	require.NoError(t, err)
+	now := time.Now()
+	_, err = database.StartHistoryBackfill("imap", acct, float64(now.AddDate(0, 0, -30).Unix()),
+		float64(now.AddDate(0, 0, -3).Unix()), now)
+	require.NoError(t, err)
+
+	fetchCtx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	probe := newCycleProbe()
+	probe.fetchRange = func(context.Context) error {
+		cancel(errCycleSlept)
+		return &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}
+	}
+	d.imapSyncers = []mailSyncer{probe}
+
+	d.phaseHistoryBackfill(fetchCtx)
+
+	rows, err := database.ListHistoryBackfills()
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Zero(t, rows[0].ChunkFailures, "a cancelled chunk is no strike")
+	assert.Nil(t, rows[0].HeldSince, "a cancelled chunk is no hold")
+	assert.Empty(t, rows[0].LastError)
+	var status, errMsg string
+	require.NoError(t, database.QueryRow(`SELECT status, COALESCE(error_msg, '') FROM pipeline_runs
+		WHERE pipeline = 'history-backfill'`).Scan(&status, &errMsg))
+	assert.Empty(t, errMsg, "cancelled, not failed")
+	assert.Contains(t, logs.String(), "history backfill: stopped by sleep")
+}
