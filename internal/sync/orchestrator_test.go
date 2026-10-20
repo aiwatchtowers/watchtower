@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1192,18 +1193,41 @@ func TestFinishWithInboxReactionsCancelledContextSkipsFinishSync(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	counts, _ := ts.orch.slackClient.APIStats()
-	require.NotEmpty(t, counts, "the run made API calls")
 	err = ts.orch.finishWithInboxReactions(ctx)
 	require.ErrorIs(t, err, context.Canceled)
 	assert.NotEqual(t, PhaseDone, ts.orch.progress.Phase(), "finishSync must not run")
-	counts, retries := ts.orch.slackClient.APIStats()
-	assert.Empty(t, counts, "the cancelled run's API stats are reset, as finishSync would")
-	assert.Zero(t, retries)
 	assert.Zero(t, listed.Load(), "no reactions listing on a cancelled run")
 	var stamped int
 	require.NoError(t, ts.db.QueryRow(`SELECT COUNT(*) FROM workspace WHERE COALESCE(synced_at, '') != ''`).Scan(&stamped))
 	assert.Zero(t, stamped, "synced_at must not be stamped")
+}
+
+// A run cancelled early — here during its search phase, long before the
+// tail — never reaches finishSync, so Run itself resets the API stats: the
+// next run's "sync complete" line counts only its own calls.
+func TestRunCancelledEarlyResetsTheAPIStats(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	inner := defaultMux()
+	var searched atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/search.messages" && searched.Add(1) == 1 {
+			cancel()
+		}
+		inner.ServeHTTP(w, r)
+	})
+	ts := newTestSetup(t, mux)
+	var logs bytes.Buffer
+	ts.orch.SetLogger(log.New(&logs, "", 0))
+
+	err := ts.orch.Run(ctx, SyncOptions{})
+	require.ErrorIs(t, err, context.Canceled)
+	require.NotZero(t, searched.Load(), "the run reached its search phase")
+	assert.NotContains(t, logs.String(), "sync complete", "finishSync never ran")
+	counts, retries := ts.orch.slackClient.APIStats()
+	assert.Empty(t, counts, "the cancelled run's API stats are reset")
+	assert.Zero(t, retries)
 }
 
 // TestSyncInboxReactionsScopedToOwnAccount reproduces the exact collision

@@ -176,12 +176,20 @@ func (o *Orchestrator) resolveWorkerCount(requested int) int {
 // per-page swallow) never reaches this point, so a token that dies mid-run
 // after an earlier phase already succeeded may still record "ok" until a
 // later cycle's failure surfaces at the top level.
+//
+// A run cancelled at any point (a sleep or a Sync Now restart cancelling the
+// daemon's fetches, a shutdown) never reaches finishSync, which logs and
+// resets the run's API stats: Run resets them itself, or the next run's
+// "sync complete" line counts this run's calls too.
 func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	o.searchGapNote = ""
 	o.searchRateLimited = false
 	o.searchIncomplete = false
 	o.firstSyncFrom = time.Time{}
 	err := o.run(ctx, opts)
+	if ctx.Err() != nil {
+		o.slackClient.ResetAPIStats()
+	}
 	o.recordAuthResult(ctx, err)
 	return err
 }
@@ -616,11 +624,7 @@ func (o *Orchestrator) ownsID(id string) bool {
 // that run must not stamp "last synced" or auto-mark anything read.
 func (o *Orchestrator) finishWithInboxReactions(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
-		// finishSync would have logged and reset the run's API stats: reset
-		// them here, or the next run's "sync complete" line counts this
-		// run's calls too.
-		o.slackClient.ResetAPIStats()
-		return fmt.Errorf("sync cancelled: %w", err)
+		return fmt.Errorf("sync cancelled: %w", err) // Run resets the API stats
 	}
 	reactErr := o.syncInboxReactions(ctx)
 	o.finishSync()
