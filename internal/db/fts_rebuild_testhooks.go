@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/pressly/goose/v3"
 )
@@ -54,4 +55,17 @@ func SetFTSLegacyDrainRowsForTest(rows int) (restore func()) {
 	}
 	ftsLegacyDrain = next
 	return func() { ftsLegacyDrain = prev }
+}
+
+// SetFTSRebuildChunkGapForTest sets the pause between fill chunks
+// (ftsRebuildChunkGap), for the daemon's tests, which cannot reach it.
+// Returns a restore func the caller must invoke (typically via t.Cleanup).
+// Outside a test binary it panics (testing.Testing).
+func SetFTSRebuildChunkGapForTest(gap time.Duration) (restore func()) {
+	if !testing.Testing() {
+		panic("db.SetFTSRebuildChunkGapForTest called outside a test binary")
+	}
+	prev := ftsRebuildChunkGap
+	ftsRebuildChunkGap = gap
+	return func() { ftsRebuildChunkGap = prev }
 }

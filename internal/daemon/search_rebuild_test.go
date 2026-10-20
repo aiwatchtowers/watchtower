@@ -17,7 +17,7 @@ import (
 )
 
 // The tests here mutate searchRebuildBudget, searchRebuildChunkRows and the
-// db's free-disk seam; no t.Parallel.
+// db's free-disk, chunk-gap and drain seams; no t.Parallel.
 
 // newSearchRebuildTestDaemon builds a Daemon over a file database (the
 // fill's disk rule reads the volume; an in-memory database always fits) and
@@ -32,6 +32,7 @@ func newSearchRebuildTestDaemon(t *testing.T) (*Daemon, *db.DB, *bytes.Buffer) {
 	d := newDaemon(orch, cfg)
 	d.SetLogger(log.New(logs, "", 0))
 	d.SetDB(database)
+	t.Cleanup(db.SetFTSRebuildChunkGapForTest(0))
 	return d, database, logs
 }
 
@@ -113,6 +114,7 @@ func TestPhaseMessagesSearchRebuild_FillsAcrossCycles(t *testing.T) {
 	assert.Equal(t, 10, searchRebuildQueryInt(t, database, `SELECT COUNT(DISTINCT rowid) FROM messages_fts`))
 	assert.Zero(t, searchRebuildQueryInt(t, database, `SELECT COUNT(*) FROM db_maintenance WHERE key LIKE 'fts_rebuild_%'`))
 	assert.Contains(t, logs.String(), "search index: rebuilt")
+	assert.NotContains(t, logs.String(), "clearing the old index", "no cycle ran a drain chunk")
 	assert.Zero(t, searchRebuildQueryInt(t, database, `SELECT COUNT(*) FROM pipeline_runs`))
 }
 
@@ -173,4 +175,33 @@ func TestPhaseMessagesSearchRebuild_DrainsLegacyBeforeDrop(t *testing.T) {
 	assert.Contains(t, logs.String(), "search index: clearing the old index, continuing next cycle")
 	assert.Contains(t, logs.String(), "search index: rebuilt")
 	assert.Zero(t, searchRebuildQueryInt(t, database, `SELECT COUNT(*) FROM db_maintenance WHERE key LIKE 'fts_rebuild_%'`))
+}
+
+// TestPhaseMessagesSearchRebuild_DrainIgnoresDiskRule pins that the disk
+// rule gates the fill only: once the cursor is past the last message, a
+// full volume still lets the daemon free the legacy index.
+func TestPhaseMessagesSearchRebuild_DrainIgnoresDiskRule(t *testing.T) {
+	d, database, logs := newSearchRebuildTestDaemon(t)
+	seedPendingSearchFill(t, database, 6)
+	setSearchRebuildSeams(t, time.Nanosecond, 100)
+	t.Cleanup(db.SetFTSLegacyDrainRowsForTest(2))
+
+	d.phaseMessagesSearchRebuild(context.Background()) // fills all 6 rows
+	require.True(t, hasLegacySearchTable(t, database))
+	t.Cleanup(db.SetFreeDiskBytesForTest(func(string) (int64, error) { return 0, nil }))
+	check, err := database.CheckMessagesSearchRebuild()
+	require.NoError(t, err)
+	require.True(t, check.FillDone)
+	require.True(t, check.DiskOK)
+
+	for range 20 {
+		if !hasLegacySearchTable(t, database) {
+			break
+		}
+		d.phaseMessagesSearchRebuild(context.Background())
+	}
+
+	assert.False(t, hasLegacySearchTable(t, database), "a full volume blocked the drain")
+	assert.NotContains(t, logs.String(), "rebuild needs")
+	assert.Contains(t, logs.String(), "search index: rebuilt")
 }

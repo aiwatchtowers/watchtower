@@ -21,7 +21,9 @@ var searchRebuildChunkRows = 0
 // (`db compact --if-due`) did not run or did not finish. Mechanical, no AI,
 // no pipeline_runs row; independent of the compaction's failure cap. It is
 // inert when nothing is pending. A volume without room for the fill is
-// logged once per daemon run and skipped every cycle.
+// logged once per daemon run and skipped every cycle; once the fill has
+// reached the last message, only freeing the legacy index is left and the
+// disk rule no longer applies (CheckMessagesSearchRebuild's FillDone).
 func (d *Daemon) phaseMessagesSearchRebuild(ctx context.Context) {
 	if d.db == nil || ctx.Err() != nil {
 		return
@@ -55,9 +57,11 @@ func (d *Daemon) phaseMessagesSearchRebuild(ctx context.Context) {
 		d.logger.Printf("search index: %v", err)
 	case res.Done:
 		d.logger.Printf("search index: rebuilt")
-	case res.Indexed > 0:
+	case res.DrainChunks == 0:
 		d.logger.Printf("search index: %d messages indexed, continuing next cycle", res.Indexed)
-	default:
+	case res.Indexed == 0:
 		d.logger.Printf("search index: clearing the old index, continuing next cycle")
+	default:
+		d.logger.Printf("search index: %d messages indexed, clearing the old index, continuing next cycle", res.Indexed)
 	}
 }
