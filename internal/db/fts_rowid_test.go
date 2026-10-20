@@ -175,6 +175,19 @@ func TestFTSWrites_UseRowidLookup(t *testing.T) {
 		assert.Contains(t, byRowid, "VIRTUAL TABLE INDEX 0:=", c.rowid)
 		assert.NotEqual(t, byRowid, byColumn, "the rowid plan must differ from the column scan")
 	}
+	// The triggers issue the rowid form.
+	for trig, want := range map[string]string{
+		"messages_ai":            "DELETE FROM messages_fts WHERE rowid = NEW.rowid",
+		"messages_au":            "DELETE FROM messages_fts WHERE rowid = OLD.rowid",
+		"messages_ad":            "DELETE FROM messages_fts WHERE rowid = OLD.rowid",
+		"meeting_transcripts_ai": "DELETE FROM transcripts_fts WHERE rowid = NEW.id",
+		"meeting_transcripts_au": "DELETE FROM transcripts_fts WHERE rowid = OLD.id",
+		"meeting_transcripts_ad": "DELETE FROM transcripts_fts WHERE rowid = OLD.id",
+	} {
+		var body string
+		require.NoError(t, d.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?`, trig).Scan(&body))
+		assert.Contains(t, body, want, trig)
+	}
 }
 
 // cpuTime is the CPU time the whole process spends in f (user + system).
@@ -216,8 +229,7 @@ func insertMessages(t *testing.T, d *DB, ch string, n int) {
 // lookup grows as log n, a scan of the index as n. With the index eight
 // times larger, a scan would take ~8x as long; the bound is the geometric
 // mean of 1 and 8. Mutation check (the column-keyed DELETE restored in
-// messages_ai) measured a ratio of about 6.9 against about 1.0 with the
-// rowid trigger.
+// messages_ai): ratio 6.0 against 0.9 with the rowid trigger.
 func TestMessagesFTS_WriteCostDoesNotGrowWithIndex(t *testing.T) {
 	if raceSlowdown > 1 {
 		t.Skip("CPU-time scaling check: the race detector distorts it")
