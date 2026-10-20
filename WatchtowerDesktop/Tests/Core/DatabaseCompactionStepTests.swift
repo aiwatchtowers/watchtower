@@ -349,7 +349,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         let run = await startCompacting(step)
         await tick(3, step)
         child.emit(.compact)
-        await yieldMainActor()
+        await drainMainActor()
         XCTAssertEqual(step.phase, .compacting(dbBytes: 1_000))
         XCTAssertEqual(step.phaseElapsedSeconds, 3)
         child.exit(status: 0)
@@ -382,7 +382,7 @@ final class DatabaseCompactionStepTests: XCTestCase {
         XCTAssertEqual(step.phase, .finished)
         child.emit(.compact)
         child.emit(.ftsRebuild)
-        await yieldMainActor()
+        await drainMainActor()
         XCTAssertEqual(step.phase, .finished)
         XCTAssertFalse(step.isRunning)
     }
@@ -394,6 +394,9 @@ final class DatabaseCompactionStepTests: XCTestCase {
         )))
         await step.run { "/db" }
         XCTAssertEqual(calls.items, ["check"], "no daemon stop, no child")
+        XCTAssertTrue(logs.items.contains(
+            "DB search index rebuild skipped: 4400000000 bytes of free disk needed, 2000000000 available"
+        ), "\(logs.items)")
         XCTAssertEqual(step.notice, DatabaseCompactionStep.searchIndexDiskNotice(
             needs: 4_400_000_000, available: 2_000_000_000
         ))
@@ -412,6 +415,42 @@ final class DatabaseCompactionStepTests: XCTestCase {
         child.exit(status: 2, stdout: #"{"compacted":false,"skipped":"disk"}"#)
         await run.value
         XCTAssertEqual(step.notice, DatabaseCompactionStep.searchIndexDiskNotice(needs: 8_000, available: 9_000))
+        XCTAssertTrue(logs.items.contains("DB search index rebuild skipped for disk space"), "\(logs.items)")
+    }
+
+    /// The fill finished and the compaction's own 2 × rule then failed: the
+    /// compaction's notice, against 2 × the database, not the fill's.
+    func testDiskExitAfterRebuildShowsCompactionNotice() async {
+        let step = makeStep(check: .success(.fixture(
+            dbBytes: 5_000, reason: "fts_rebuild", ftsRebuildPending: true,
+            freeDiskBytes: 9_000, needsDiskBytes: 3_000
+        )))
+        let run = await startCompacting(step)
+        child.emit(.ftsRebuild)
+        child.emit(.compact)
+        await until { step.phase == .compacting(dbBytes: 5_000) }
+        child.exit(status: 2, stdout: #"""
+        {"phase":"fts_rebuild"}
+        {"phase":"compact"}
+        {"compacted":false,"fts_rebuilt":true,"skipped":"disk"}
+        """#)
+        await run.value
+        XCTAssertEqual(step.notice, DatabaseCompactionStep.diskNotice(needs: 10_000, available: 9_000))
+        XCTAssertTrue(logs.items.contains("DB search index rebuilt"), "\(logs.items)")
+        XCTAssertTrue(logs.items.contains("DB compaction skipped for disk space"), "\(logs.items)")
+    }
+
+    /// A result without `fts_rebuilt` still counts the fill as done once the
+    /// compact phase line was printed.
+    func testDiskExitAfterCompactLineShowsCompactionNotice() async {
+        let step = makeStep(check: .success(.fixture(
+            dbBytes: 5_000, reason: "fts_rebuild", ftsRebuildPending: true,
+            freeDiskBytes: 9_000, needsDiskBytes: 3_000
+        )))
+        let run = await startCompacting(step)
+        child.exit(status: 2, stdout: "{\"phase\":\"compact\"}\n{\"compacted\":false,\"skipped\":\"disk\"}\n")
+        await run.value
+        XCTAssertEqual(step.notice, DatabaseCompactionStep.diskNotice(needs: 10_000, available: 9_000))
     }
 
     func testFtsRebuiltIsLogged() async {
@@ -544,9 +583,11 @@ final class DatabaseCompactionStepTests: XCTestCase {
         }
     }
 
-    /// Lets queued main-actor work (a phase line's hop) run.
-    private func yieldMainActor() async {
-        for _ in 0..<100 { await Task.yield() }
+    /// Returns once the main-actor jobs queued before it — a phase line's
+    /// hop from `emit` — have run: the main actor runs its jobs in order on
+    /// the main queue.
+    private func drainMainActor() async {
+        await Task { @MainActor in }.value
     }
 
     /// Yields the main actor until `condition` holds; fails after a bounded

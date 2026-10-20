@@ -47,12 +47,13 @@ final class ProcessCompactionCLITests: XCTestCase {
     }
 
     /// Phase lines reach `onPhase` while the child still runs, in order; the
-    /// result stays the last stdout line.
+    /// result stays the last stdout line. The stub prints the second phase
+    /// only once the test creates `goFilePath`.
     func testStartCompactReportsPhaseLinesAsTheyArrive() async throws {
         let stub = try makeStub("""
         #!/bin/sh
         echo '{"phase":"fts_rebuild"}'
-        sleep 1
+        while [ ! -f "\(goFilePath)" ]; do sleep 0.05; done
         echo '{"phase":"compact"}'
         echo '{"compacted":true,"fts_rebuilt":true}'
         """)
@@ -66,7 +67,8 @@ final class ProcessCompactionCLITests: XCTestCase {
         while phases.withLock({ $0.isEmpty }), ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertEqual(phases.withLock { $0 }, [.ftsRebuild], "the first line arrives before the stub's sleep ends")
+        XCTAssertEqual(phases.withLock { $0 }, [.ftsRebuild], "the first line arrives while the stub waits")
+        try Data().write(to: URL(fileURLWithPath: goFilePath))
 
         let exit = await child.waitForExit()
         XCTAssertEqual(exit.status, 0)
@@ -175,6 +177,10 @@ final class ProcessCompactionCLITests: XCTestCase {
 
     private var pidFilePath: String {
         directory?.appendingPathComponent("stub.pid").path ?? "/dev/null"
+    }
+
+    private var goFilePath: String {
+        directory?.appendingPathComponent("go").path ?? "/dev/null"
     }
 
     private func stubPID() -> pid_t? {

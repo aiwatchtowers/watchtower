@@ -257,8 +257,6 @@ package final class DatabaseCompactionStep {
     /// How long a quit waits for the child to exit on SIGTERM before SIGKILL.
     package static let quitGrace: Duration = .seconds(3)
     package static let subtitle = "This happens rarely, usually after an update."
-    /// The check's reason while the search index rebuild is pending.
-    private static let ftsRebuildReason = "fts_rebuild"
     package static let gaveUpNotice =
         "Watchtower could not optimize its database after 3 attempts. It will try again after the next update."
 
@@ -315,8 +313,9 @@ package final class DatabaseCompactionStep {
         guard !quitRequested else { return }
         guard check.due else { return }
         guard check.diskOk else {
-            log("DB compaction skipped: \(check.needsDiskBytes) bytes of free disk needed, \(check.freeDiskBytes) available")
-            notice = diskNotice(for: check)
+            let skipped = check.ftsRebuildPending ? "DB search index rebuild skipped" : "DB compaction skipped"
+            log("\(skipped): \(check.needsDiskBytes) bytes of free disk needed, \(check.freeDiskBytes) available")
+            notice = diskNotice(for: check, searchIndexRebuilt: false)
             return
         }
 
@@ -436,6 +435,9 @@ package final class DatabaseCompactionStep {
             log("DB compaction: the child was killed by signal \(exit.status): \(stderr)")
             return
         }
+        if output?.ftsRebuilt == true {
+            log("DB search index rebuilt")
+        }
         // Exits 2–5 count only when the result line names the same skip; any
         // other combination is logged with stderr.
         switch (exit.status, output?.skipped) {
@@ -443,9 +445,6 @@ package final class DatabaseCompactionStep {
             guard let output else {
                 log("DB compaction: exit 0 without a result line: \(stderr)")
                 return
-            }
-            if output.ftsRebuilt {
-                log("DB search index rebuilt")
             }
             if output.compacted {
                 let sizes = "\(output.bytesBefore ?? 0) → \(output.bytesAfter ?? 0) bytes"
@@ -460,8 +459,14 @@ package final class DatabaseCompactionStep {
             log("DB compaction failed: \(output?.error ?? stderr)")
             if output?.gaveUp ?? false { notice = Self.gaveUpNotice }
         case (2, "disk"):
-            log("DB compaction skipped for disk space")
-            notice = diskNotice(for: check)
+            // The run got past the fill when it says so or printed the
+            // compact phase line: the skip is then the compaction's own.
+            var scanner = CompactionPhaseScanner()
+            let rebuilt = output?.ftsRebuilt == true || scanner.feed(exit.stdout).contains(.compact)
+            log(check.ftsRebuildPending && !rebuilt
+                ? "DB search index rebuild skipped for disk space"
+                : "DB compaction skipped for disk space")
+            notice = diskNotice(for: check, searchIndexRebuilt: rebuilt)
         case (3, "daemon_running"):
             log("DB compaction skipped: the daemon is still running")
         case (4, "interrupted"):
@@ -473,14 +478,18 @@ package final class DatabaseCompactionStep {
         }
     }
 
-    /// The disk notice for a check that found too little free disk: the
-    /// search index's while its rebuild is pending (the check's numbers are
-    /// the fill's then), else the compaction's.
-    private func diskNotice(for check: CompactionCheck) -> String {
-        if check.ftsRebuildPending || check.reason == Self.ftsRebuildReason {
+    /// The disk notice for a skip for disk space. While the rebuild is
+    /// pending the check's numbers are the fill's: the search index's notice
+    /// until the fill is done; after it, the compaction's own rule
+    /// (2 × `db_bytes`) against the check's free disk.
+    private func diskNotice(for check: CompactionCheck, searchIndexRebuilt: Bool) -> String {
+        guard check.ftsRebuildPending else {
+            return Self.diskNotice(needs: check.needsDiskBytes, available: check.freeDiskBytes)
+        }
+        guard searchIndexRebuilt else {
             return Self.searchIndexDiskNotice(needs: check.needsDiskBytes, available: check.freeDiskBytes)
         }
-        return Self.diskNotice(needs: check.needsDiskBytes, available: check.freeDiskBytes)
+        return Self.diskNotice(needs: 2 * check.dbBytes, available: check.freeDiskBytes)
     }
 
     // MARK: Strings
