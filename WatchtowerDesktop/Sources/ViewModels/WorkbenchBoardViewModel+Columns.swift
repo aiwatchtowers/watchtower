@@ -73,6 +73,7 @@ extension WorkbenchBoardViewModel {
             let counts = try dbPool.read { try WorkbenchQueries.boardColumnCardCounts($0, projectID: pid) }
             return columnsDraft.deleteNotice(forStored: columnID, cardCounts: counts)
         } catch {
+            NSLog("[WorkbenchBoard] column \(columnID) card counts failed: \(error.localizedDescription)")
             return "Its cards move to the status's first column."
         }
     }

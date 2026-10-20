@@ -56,7 +56,7 @@ struct WorkbenchBoardColumnMenu: View {
         Task { await vm.editColumns { change(&$0); return nil } }
     }
 
-    private func add(_ insert: @escaping @MainActor (inout BoardColumnsDraft) -> Int) {
+    private func add(_ insert: @escaping @MainActor (inout BoardColumnsDraft) -> Int?) {
         Task { await vm.editColumns { insert(&$0) } }
     }
 }

@@ -192,6 +192,37 @@ final class BoardColumnsDraftTests: XCTestCase {
         XCTAssertEqual(full.errors, ["To Do: at most 6 columns"])
     }
 
+    /// An implicit status defines two columns on Add, so it needs two free
+    /// slots; a status with columns needs one.
+    func testCanAddCountsTheTwoColumnsAnImplicitStatusDefines() {
+        var draft = BoardColumnsDraft(.empty)
+        // 19 columns: six in each of To Do, In Progress and Done, one in Blocked.
+        for status in ["todo", "in_progress", "done"] {
+            for _ in 0..<5 { draft.appendColumn(to: status) }
+        }
+        draft.appendColumn(to: "blocked")
+        draft.delete(draft.columns(of: "blocked")[1].id)
+        XCTAssertEqual(draft.columns.count, 19)
+        XCTAssertTrue(draft.canAdd(to: "blocked"), "19 + 1 is the cap")
+        XCTAssertFalse(draft.canAdd(to: "in_review"), "an implicit status would make 21")
+
+        draft.appendColumn(to: "blocked")
+        XCTAssertEqual(draft.columns.count, 20)
+        XCTAssertEqual(draft.errors, [])
+        XCTAssertFalse(draft.canAdd(to: "blocked"), "20 is full")
+
+        var five = BoardColumnsDraft(.empty)
+        for _ in 0..<4 { five.appendColumn(to: "todo") }
+        XCTAssertEqual(five.columns(of: "todo").count, 5)
+        XCTAssertTrue(five.canAdd(to: "todo"), "a sixth column fits")
+    }
+
+    func testInsertBesideAStaleStoredColumnAddsNothing() {
+        var draft = BoardColumnsDraft(WorkbenchBoardColumns(columns: [column(1, "todo", "Ready")], hidden: []))
+        XCTAssertNil(draft.insertColumn(beside: 99, in: "todo", after: true))
+        XCTAssertEqual(titles(draft, "todo"), ["Ready"])
+    }
+
     func testMoveStaysInsideItsStatus() {
         var draft = BoardColumnsDraft(WorkbenchBoardColumns(columns: [
             column(1, "todo", "Ready", 0),
@@ -231,9 +262,9 @@ final class BoardColumnsDraftTests: XCTestCase {
         XCTAssertEqual(draft.definition.hidden, [])
     }
 
-    func testStoredIDOfANewColumnAfterSave() {
+    func testStoredIDOfANewColumnAfterSave() throws {
         var draft = BoardColumnsDraft(WorkbenchBoardColumns(columns: [column(1, "todo", "Ready")], hidden: []))
-        let new = draft.insertColumn(beside: 1, in: "todo", after: false)
+        let new = try XCTUnwrap(draft.insertColumn(beside: 1, in: "todo", after: false))
         let saved = WorkbenchBoardColumns(
             columns: [column(8, "todo", "New Column", 0), column(1, "todo", "Ready", 1)], hidden: []
         )

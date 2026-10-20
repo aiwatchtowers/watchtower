@@ -93,12 +93,15 @@ package struct BoardColumnsDraft: Equatable {
     }
 
     /// The header's Add Column Left / Right (one Add Column on an implicit
-    /// column). Limits are not checked here: `errors` refuses the result.
-    /// - Returns: the new column's draft id.
+    /// column, `columnID` nil). Limits are not checked here: `errors`
+    /// refuses the result.
+    /// - Returns: the new column's draft id; nil, with nothing added, for a
+    ///   stored column no longer in the definition.
     @discardableResult
-    package mutating func insertColumn(beside columnID: Int64?, in status: String, after: Bool) -> Int {
+    package mutating func insertColumn(beside columnID: Int64?, in status: String, after: Bool) -> Int? {
+        guard let columnID else { return appendColumn(to: status) }
         guard let anchor = draftID(forStored: columnID),
-              let index = columns.firstIndex(where: { $0.id == anchor }) else { return appendColumn(to: status) }
+              let index = columns.firstIndex(where: { $0.id == anchor }) else { return nil }
         let id = nextID
         nextID += 1
         let column = Column(id: id, columnID: nil, status: columns[index].status, title: freeTitle(), description: "")
@@ -189,10 +192,14 @@ package struct BoardColumnsDraft: Equatable {
         WorkbenchBoardColumns.hideableStatuses.contains(status) && columns(of: status).isEmpty
     }
 
-    /// A column can be added below the limits, to a status not hidden.
+    /// A column can be added within the limits, to a status not hidden. A
+    /// status without columns needs two free slots: adding there defines
+    /// its first column too (`appendColumn`).
     package func canAdd(to status: String) -> Bool {
-        !hidden.contains(status) && columns(of: status).count < Self.maxPerStatus
-            && columns.count < Self.maxPerWorkbench
+        let own = columns(of: status).count
+        let added = own == 0 ? 2 : 1
+        return !hidden.contains(status) && own + added <= Self.maxPerStatus
+            && columns.count + added <= Self.maxPerWorkbench
     }
 
     // MARK: - Checks

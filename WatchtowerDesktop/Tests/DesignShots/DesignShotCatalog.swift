@@ -95,7 +95,8 @@ private extension View {
 enum DesignShotFixtures {
     private static var poolPath: String?
     private static var newTaskPoolPath: String?
-    private static let defaultsSuite = "DesignShotsTests"
+    /// Every fixture's defaults suite, removed by `cleanUp`.
+    static let defaultsSuite = "DesignShotsTests"
 
     /// Removes the header's database and layout defaults (`DesignShotsTests`
     /// calls it once, after the class).

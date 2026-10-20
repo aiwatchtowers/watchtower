@@ -33,8 +33,8 @@ enum BoardColumnsShotFixtures {
                                                        status: "in_progress", priority: "high")
                 return (pid, code)
             }
-            let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid,
-                                             defaults: UserDefaults(suiteName: "BoardColumnsShot-\(UUID().uuidString)") ?? .standard)
+            let defaults = try XCTUnwrap(UserDefaults(suiteName: DesignShotFixtures.defaultsSuite))
+            let vm = WorkbenchBoardViewModel(dbPool: pool, projectID: pid, defaults: defaults)
             vm.lanesMode = .none
             vm.load()
             vm.renamingColumnKey = BoardColumnLayout.key(code)

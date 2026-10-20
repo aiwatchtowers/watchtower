@@ -968,8 +968,47 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
         }
         XCTAssertEqual(placed?["status"] as String?, "in_progress")
         XCTAssertEqual(placed?["board_column_id"] as Int64?, code)
-        XCTAssertEqual(Set(reported), [.target(Int64(newID))], "both writes are the owner's")
+        XCTAssertEqual(reported, [.target(Int64(newID)), .target(Int64(newID))],
+                       "the creation and the column write are both the owner's")
         XCTAssertNil(vm.errorMessage)
+    }
+
+    /// A column write that fails after the creation says so once the new
+    /// target opened (whose `open` clears the message): the target exists,
+    /// the move's reason shows.
+    func testCreateTargetWhoseColumnWriteFailsSaysSo() async throws {
+        let (pid, code) = try await dbManager.dbPool.write { db -> (Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            return (pid, try Self.insertColumn(db, project: pid, status: "in_progress", title: "Code", position: 0))
+        }
+        let vm = makeVM(project: pid)
+        let pool = dbManager.dbPool
+        vm.addTarget = { title, _, _, parentID in
+            try await pool.write { db in
+                let id = try Self.insertTarget(db, project: pid, text: title, parent: parentID)
+                try db.execute(sql: """
+                    CREATE TEMP TRIGGER refuse_move BEFORE UPDATE OF status ON targets
+                    BEGIN SELECT RAISE(ABORT, 'disk is full'); END
+                    """)
+                return id
+            }
+        }
+        vm.load()
+        vm.beginNewTarget()
+        let column = try XCTUnwrap(vm.newTargetColumns.first { $0.columnID == code })
+
+        let created = await vm.createTarget(title: "Wire it", intent: "", priority: "medium", parentID: nil, column: column)
+
+        XCTAssertTrue(created, "the target exists")
+        let newID = try XCTUnwrap(vm.selectedTargetID, "the new target opens")
+        XCTAssertNil(vm.newTargetRequest)
+        let message = try XCTUnwrap(vm.errorMessage)
+        XCTAssertTrue(message.hasPrefix("Created #\(newID), but could not move it to Code: "), message)
+        XCTAssertTrue(message.contains("disk is full"), message)
+        let status = try await pool.read { db in
+            try String.fetchOne(db, sql: "SELECT status FROM targets WHERE id = ?", arguments: [newID])
+        }
+        XCTAssertEqual(status, "todo")
     }
 
     /// An implicit In Progress column is a plain status move; the default
@@ -1049,5 +1088,22 @@ final class WorkbenchBoardViewModelTests: XCTestCase {
                        "a match keeps its ancestors; a closed match stays out")
         XCTAssertEqual(vm.newTargetParents(matching: "#\(task)").map(\.id), [Int(feature), Int(task)])
         XCTAssertEqual(vm.newTargetParents(matching: "nothing").map(\.id), [])
+    }
+
+    /// Return in the parent picker takes the first target that matches the
+    /// search itself, not the ancestor listed above it for context.
+    func testNewTargetParentPickIsTheFirstRealMatch() throws {
+        let (pid, feature, task) = try dbManager.dbPool.write { db -> (Int64, Int64, Int64) in
+            let pid = try Self.insertWorkbench(db)
+            let feature = try Self.insertTarget(db, project: pid, text: "Feature")
+            return (pid, feature, try Self.insertTarget(db, project: pid, text: "Write docs", parent: feature))
+        }
+        let vm = makeVM(project: pid)
+        vm.load()
+        XCTAssertEqual(vm.newTargetParentPick(matching: "#\(task)")?.id, Int(task))
+        XCTAssertEqual(vm.newTargetParentPick(matching: "docs")?.id, Int(task))
+        XCTAssertEqual(vm.newTargetParentPick(matching: "feature")?.id, Int(feature))
+        XCTAssertNil(vm.newTargetParentPick(matching: "nothing"))
+        XCTAssertNil(vm.newTargetParentPick(matching: "  "), "a blank search picks nothing")
     }
 }

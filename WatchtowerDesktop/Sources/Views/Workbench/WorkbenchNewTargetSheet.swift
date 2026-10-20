@@ -214,7 +214,7 @@ struct WorkbenchNewTargetSheet: View {
     }
 
     /// The picked column, or the default once it left the definition (a
-    /// Board Columns… save meanwhile).
+    /// column edited away on the Kanban meanwhile).
     private var column: BoardColumnSlot? {
         let columns = vm.newTargetColumns
         return columns.first { $0.key == columnKey } ?? columns.first
@@ -254,8 +254,9 @@ struct WorkbenchNewTargetSheet: View {
                 column: column, keepOpen: more
             )
             // Create more: ready for the next one, unless the owner already
-            // started typing it while this one was written.
-            guard created, more, title == sent.0, intent == sent.1 else { return }
+            // started typing it while this one was written, or an error
+            // (a failed column write) shows about the text just sent.
+            guard created, more, vm.errorMessage == nil, title == sent.0, intent == sent.1 else { return }
             title = ""
             intent = ""
             focus = .title
@@ -284,7 +285,7 @@ private struct WorkbenchNewTargetParentPicker: View {
             TextField("Search targets", text: $query)
                 .textFieldStyle(.kit)
                 .focused($searchFocused)
-                .onSubmit { if let first = rows.first { onPick(first.id) } }
+                .onSubmit { if let match = vm.newTargetParentPick(matching: query) { onPick(match.id) } }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     if query.isEmpty {

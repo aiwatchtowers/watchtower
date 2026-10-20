@@ -721,15 +721,25 @@ final class WorkbenchBoardViewModel {
             .filter { !$0.node.archived && !["done", "dismissed"].contains($0.node.target.status) }
     }
 
+    /// The parent picker's Return: the first listed target that itself
+    /// matches `query` — never an ancestor kept for context. A blank query
+    /// picks nothing.
+    func newTargetParentPick(matching query: String) -> WorkbenchBoardRow? {
+        guard let search = WorkbenchBoardSearch(query) else { return nil }
+        return newTargetParents(matching: query).first { search.matches($0.node.target) }
+    }
+
     /// Creates a target through `addTarget`, then reports it and every parent
     /// the rollup moved (PROJ-05) as the owner's write and expands the parent.
     /// A `column` other than the default one is written right after, through
-    /// the Kanban drop's write (`moveCard`). Then the sheet closes and the new
-    /// target opens — unless `keepOpen` (the panel's Create more), which
-    /// leaves the request and the selection alone.
+    /// the Kanban drop's write. Then the sheet closes and the new target
+    /// opens — unless `keepOpen` (the panel's Create more), which leaves the
+    /// request and the selection alone.
     /// - Returns: whether the target was created (a refusal or failure sets
-    ///   `errorMessage` and keeps the sheet's text; a failed column write
-    ///   after it sets `errorMessage` too, the target stays created).
+    ///   `errorMessage` and keeps the sheet's text). A failed column write
+    ///   after the creation still returns true — the target exists — and
+    ///   sets `errorMessage` to "Created #N, but could not move it to …"
+    ///   with the write's reason, after the new target opened.
     @discardableResult
     func createTarget(
         title rawTitle: String,
@@ -779,16 +789,39 @@ final class WorkbenchBoardViewModel {
         }
         if let parentID { collapsed.remove(parentID) }
         load()
-        // The default column writes nothing (moveCard compares with where
-        // the new target already shows).
-        if let column {
-            await moveCard(Int(newID), status: column.status, columnID: column.columnID)
-        }
+        let columnFailure = await placeNewTarget(Int(newID), in: column)
         if !keepOpen {
             newTargetRequest = nil
             select(Int(newID))
         }
+        // After `select`, whose `open` clears the message.
+        if let columnFailure, let column {
+            let number = WorkbenchTargetNumber.label(Int(newID))
+            errorMessage = "Created \(number), but could not move it to \(column.title): \(columnFailure)"
+        }
         return true
+    }
+
+    /// Writes a new target's `column` through the Kanban drop's write
+    /// (`cardWrite`). The default column writes nothing (the write compares
+    /// with where the target already shows).
+    /// - Returns: why the write failed, nil when it landed or had nothing
+    ///   to write.
+    private func placeNewTarget(_ id: Int, in column: BoardColumnSlot?) async -> String? {
+        guard let column else { return nil }
+        guard WorkbenchBoardOutline.find(id, in: roots) != nil else {
+            // The reload after the creation failed: the board does not
+            // show the new target yet, so nothing can be compared or moved.
+            return errorMessage ?? "the board did not reload"
+        }
+        guard let write = cardWrite(id, status: column.status, columnID: column.columnID) else { return nil }
+        guard !(await write.value) else { return nil }
+        let message = errorMessage ?? "the write failed"
+        // Keep the move's reason, not its "Could not … :" lead.
+        for lead in ["Could not move the card: ", "Could not change the status: "] where message.hasPrefix(lead) {
+            return String(message.dropFirst(lead.count))
+        }
+        return message
     }
 
     /// `parentID` and its ancestors' statuses (empty at the top level or on

@@ -395,8 +395,12 @@ final class WorkbenchesViewModel {
     private(set) var driftErrors: [Int64: String] = [:]
     private var driftCheckedAt: [Int64: Date] = [:]
     /// The Fix sessions the drift popover started, per workbench, newest
-    /// last (spec 2026-10-20 §4); one is "live" while its process runs.
+    /// last (spec 2026-10-20 §4); one is "live" while its agent works
+    /// (`liveDriftFix`).
     var driftFixSessions: [Int64: [DriftFixSession]] = [:]
+    /// The workbenches whose Fix start is in flight: a second press then
+    /// starts nothing.
+    var startingDriftFix: Set<Int64> = []
     private var checkingDrift: Set<Int64> = []
     /// How often the open Board pane re-runs the check (git work in the folder).
     static let driftMinInterval: TimeInterval = 30

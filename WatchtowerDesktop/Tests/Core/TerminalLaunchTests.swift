@@ -149,10 +149,13 @@ final class TerminalLaunchTests: XCTestCase {
         XCTAssertFalse(capped.contains("#21 "))
     }
 
-    func testFixedPromptsHoldNoQuote() {
+    func testFixedPromptsHoldNoQuote() throws {
         XCTAssertFalse(TerminalLaunch.firstRunPrompt.contains("'"))
         XCTAssertFalse(TerminalLaunch.workOnTargetPrompt(targetID: 9_223_372_036_854_775_807).contains("'"))
         XCTAssertFalse(TerminalLaunch.workOnGroupPrompt(targetID: 9_223_372_036_854_775_807).contains("'"))
+        let kinds = ["merged_but_open", "done_but_unmerged", "branch_missing", "pr_closed_unmerged", "stale"]
+        let findings = try kinds.map { try finding(Int(Int32.max), $0) }
+        XCTAssertFalse(TerminalLaunch.driftFixPrompt(workbenchID: 9_223_372_036_854_775_807, findings: findings).contains("'"))
     }
 
     /// Board #476: the group wording goes only to a skill that knows it; any
