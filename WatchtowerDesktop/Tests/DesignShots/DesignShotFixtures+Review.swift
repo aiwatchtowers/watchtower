@@ -15,8 +15,10 @@ final class ReviewStubRunner: CLIRunnerProtocol, @unchecked Sendable {
         self.answers = answers
     }
 
+    /// `diff --since` answers from `diff-since` when that is scripted.
     func run(args: [String]) async throws -> Data {
-        let sub = args.count > 2 ? args[2] : ""
+        var sub = args.count > 2 ? args[2] : ""
+        if sub == "diff", args.contains("--since"), answers["diff-since"] != nil { sub = "diff-since" }
         return Data((answers[sub] ?? #"{"ok":false,"error":"unscripted \#(sub)"}"#).utf8)
     }
 }
@@ -48,9 +50,11 @@ struct ReviewFixture {
     let session: TerminalSession
     let model: ReviewChangesModel
 
-    /// `status` and `mode`/`phase` are round 2's; `drafts` line comments go on the first file.
+    /// `status` and `mode`/`phase` are round 2's; `drafts` line comments go
+    /// on the first file; `sinceFiles` is the Since round 1 diff (default: `files`).
     init(
         files: [File],
+        sinceFiles: [File]? = nil,
         context: [(id: Int64, text: String, intent: String)] = [],
         status: String = "open",
         mode: String = "quick",
@@ -92,6 +96,7 @@ struct ReviewFixture {
             "start": Self.startJSON(status: status, mode: mode, phase: phase),
             "context": Self.contextJSON(context),
             "diff": Self.diffJSON(files),
+            "diff-since": Self.diffJSON(sinceFiles ?? files),
             "file": #"{"ok":true,"old":\#(Self.side("a")),"new":\#(Self.side("b"))}"#,
             "overview": overview.map { #"{"ok":true,"overview":\#($0)}"# } ?? #"{"ok":true}"#
         ])

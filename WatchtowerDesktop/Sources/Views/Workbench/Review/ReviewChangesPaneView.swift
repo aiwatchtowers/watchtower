@@ -116,9 +116,12 @@ struct ReviewChangesPaneView: View {
                 } description: {
                     Text(emptyDescription)
                 } actions: {
-                    Button("Refresh") { Task { await refreshOrNextRound() } }
-                        .buttonStyle(.kitSecondary)
-                        .disabled(model.sending || model.refreshing)
+                    // A sent round's toolbar has Start next round instead.
+                    if model.round?.status == "open" {
+                        Button("Refresh") { Task { await refreshOrNextRound() } }
+                            .buttonStyle(.kitSecondary)
+                            .disabled(model.sending || model.refreshing)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -132,7 +135,7 @@ struct ReviewChangesPaneView: View {
     private var emptyDescription: String {
         let status = ReviewIdentityPresentation.status(place: identity.place, mainStatus: identity.mainStatus)
         let line = ReviewIdentityPresentation.branchLine(
-            place: identity.place, status: status, round: model.round, files: model.files, stale: identity.stale
+            place: identity.place, status: status, round: model.round, files: model.wholeDiffFiles, stale: identity.stale
         )
         if line.onDefaultBranch { return "No uncommitted edits in the main folder." }
         return "No commits past \(line.base ?? "the base") and no uncommitted edits."
@@ -173,12 +176,22 @@ struct ReviewChangesPaneView: View {
             }
         } else {
             VStack(spacing: 0) {
-                Text(model.files.isEmpty ? "No changes yet" : "Pick a file")
+                Text(Self.noFileText(model))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if checklist { ReviewChecklistView(model: model) { compose = $0 } }
             }
         }
+    }
+
+    /// The detail without a file picked: never "No changes yet" while the
+    /// branch has changes (spec §4.6).
+    static func noFileText(_ model: ReviewChangesModel) -> String {
+        guard model.files.isEmpty else { return "Pick a file" }
+        if model.hasChanges, model.view == .sinceLastRound, let round = model.round {
+            return "Nothing new since round \(round.prevRoundId)"
+        }
+        return "No changes yet"
     }
 
     @ViewBuilder private func diff(path: String) -> some View {

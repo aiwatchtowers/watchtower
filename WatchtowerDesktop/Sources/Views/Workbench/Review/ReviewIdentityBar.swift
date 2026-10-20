@@ -58,12 +58,15 @@ struct ReviewIdentityBar: View {
         HStack(spacing: Spacing.regular) {
             SessionLiveDot(state: row.state)
             OutlineTag(text: identity.agentName)
-            Button(row.session.title, action: identity.openSession)
-                .buttonStyle(.kitQuiet)
-                .font(.headline)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .help("Show the session's terminal")
+            // The quiet button's hover and press, in the text colour (artboard A).
+            Button(action: identity.openSession) {
+                Text(row.session.title)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .buttonStyle(KitQuietButtonStyle(label: .primary))
+            .font(.headline)
+            .help("Show the session's terminal")
             SessionStateLabel(state: row.state, caption: row.caption)
                 .layoutPriority(1)
             if let age = TimeFormatting.shortAge(from: row.session.lastActiveAt, now: Date()) {
@@ -78,7 +81,7 @@ struct ReviewIdentityBar: View {
     @ViewBuilder private var branchLine: some View {
         let status = ReviewIdentityPresentation.status(place: identity.place, mainStatus: identity.mainStatus)
         let line = ReviewIdentityPresentation.branchLine(
-            place: identity.place, status: status, round: model.round, files: model.files, stale: identity.stale
+            place: identity.place, status: status, round: model.round, files: model.wholeDiffFiles, stale: identity.stale
         )
         HStack(spacing: Spacing.compact) {
             if !line.branch.isEmpty {
@@ -114,16 +117,16 @@ struct ReviewForLine: View {
     var body: some View {
         if let line = ReviewIdentityPresentation.forLine(items) {
             VStack(alignment: .leading, spacing: Spacing.compact) {
-                HStack(spacing: Spacing.compact) {
-                    Text("For").foregroundStyle(.secondary)
-                    // Unfolded, the cards name every target, the first too.
-                    if !alwaysOpen {
+                // Always open, the cards name every target: no line above them.
+                if !alwaysOpen {
+                    HStack(spacing: Spacing.compact) {
+                        Text("For").foregroundStyle(.secondary)
                         Text("#\(line.first.targetId)").fontWeight(.semibold)
                         Text(line.first.text).lineLimit(1).truncationMode(.tail)
                         toggle(more: line.more)
                     }
+                    .font(.caption)
                 }
-                .font(.caption)
                 if alwaysOpen || expanded {
                     ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                         ReviewIntentCard(item: item)

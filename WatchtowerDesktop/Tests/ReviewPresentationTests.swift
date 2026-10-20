@@ -17,8 +17,12 @@ final class ReviewPresentationTests: XCTestCase {
         super.tearDown()
     }
 
-    private func fixture(_ files: [ReviewFixture.File], status: String = "open") async throws -> ReviewFixture {
-        let fixture = try ReviewFixture(files: files, status: status)
+    private func fixture(
+        _ files: [ReviewFixture.File],
+        since: [ReviewFixture.File]? = nil,
+        status: String = "open"
+    ) async throws -> ReviewFixture {
+        let fixture = try ReviewFixture(files: files, sinceFiles: since, status: status)
         fixtures.append(fixture)
         await fixture.open()
         return fixture
@@ -196,5 +200,35 @@ final class ReviewPresentationTests: XCTestCase {
         try ReviewFileHeader(model: f.model, file: file).inspect().find(ViewType.Toggle.self).tap()
         for _ in 0..<200 where !f.model.isViewed("a.go") { try await Task.sleep(nanoseconds: 10_000_000) }
         XCTAssertTrue(f.model.isViewed("a.go"))
+    }
+
+    func testBranchLineSizeIsTheWholeDiffInTheSinceView() async throws {
+        let all: [ReviewFixture.File] = [.init(path: "a.go", additions: 10, deletions: 2),
+                                         .init(path: "b.go", additions: 5, deletions: 1)]
+        let f = try await fixture(all, since: [all[0]])
+        XCTAssertEqual(f.model.view, .sinceLastRound)
+        XCTAssertEqual(f.model.files.count, 1, "the Since view shows fewer files")
+        let place = SessionPlace.worktree(name: "x", root: URL(fileURLWithPath: "/tmp/acme-x"),
+                                          status: WorkbenchGitStatus(branch: "feature/x"))
+        let all1 = try texts(ReviewIdentityBar(identity: f.identity(place: place), model: f.model))
+        XCTAssertTrue(all1.contains("2 files · +15 −3"), "\(all1)")
+    }
+
+    func testSinceViewWithNothingNewSaysSo() async throws {
+        let f = try await fixture([.init(path: "a.go")], since: [])
+        XCTAssertTrue(f.model.hasChanges)
+        XCTAssertEqual(ReviewChangesPaneView.noFileText(f.model), "Nothing new since round 1")
+        await f.model.setView(.all)
+        f.model.selectedPath = nil
+        XCTAssertEqual(ReviewChangesPaneView.noFileText(f.model), "Pick a file")
+    }
+
+    func testSentEmptyRoundOffersOnlyStartNextRound() async throws {
+        let f = try await fixture([], status: "sent")
+        let pane = ReviewChangesPaneView(model: f.model, identity: f.identity(place: .main, mainStatus: WorkbenchGitStatus(branch: "main")))
+        XCTAssertNoThrow(try pane.inspect().find(button: "Start next round"))
+        let empty = try pane.inspect().find(ViewType.ContentUnavailableView.self)
+        XCTAssertNoThrow(try empty.find(text: "Nothing to review"))
+        XCTAssertThrowsError(try empty.find(button: "Refresh"), "the empty state's Refresh duplicates Start next round")
     }
 }

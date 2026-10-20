@@ -161,6 +161,9 @@ final class ReviewChangesModel {
     /// The base..tree diff: the Viewed keys always come from it, whatever view is shown.
     private var allFiles: [ReviewDiffFile] = []
 
+    /// The round's whole diff, whatever view is shown: the branch's size (#712 spec §4.2).
+    var wholeDiffFiles: [ReviewDiffFile] { allFiles }
+
     private let projectID: Int64
     private let sessionID: Int64
     private let db: DatabasePool
