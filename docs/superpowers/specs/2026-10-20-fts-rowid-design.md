@@ -11,7 +11,7 @@ Board #872 (group #527). Business spec: `2026-10-20-fts-rowid-business.md` (owne
 - G1. Each index's rowid equals its source row's rowid; every trigger/Go write to the index addresses it by rowid (O(log n)).
 - G2. Search results unchanged: same columns, `snippet()`, `rank`, readers' joins keep working (Go `internal/db/search.go`, Swift `SearchQueries.swift`, memory search `memory.go` ~509/532, transcripts search readers).
 - G3. The one-time fill of the messages index runs outside goose (the Desktop kills `db migrate` at 30 s): in the launch step of #850, chunked, resumable, before the compaction; the daemon finishes it in the background if the launch step never runs it. Transcripts are small and backfill inside the migration.
-- G4. memory_fts is OUT of scope (pending owner confirmation, ask on review): its body exists only in memory_fts and the vault (no body column in memory_nodes), memory_nodes' implicit rowid has already been rebuilt once (00018), and an empty index would zero link counts that feed importance scores and eviction. It is small, so its per-write scan is cheap; revisit if it grows.
+- G4. memory_fts is OUT of scope (owner approved, ask #364): its body exists only in memory_fts and the vault (no body column in memory_nodes), memory_nodes' implicit rowid has already been rebuilt once (00018), and an empty index would zero link counts that feed importance scores and eviction. It is small, so its per-write scan is cheap; revisit if it grows.
 
 ## Non-goals
 

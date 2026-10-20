@@ -15,7 +15,7 @@ Three full-text search indexes find "their" row by a column the index cannot loo
 
 ## Decisions for the owner
 
-One open (asked with this review): the memory index. Its notes' text lives only in that index and the vault files, so rebuilding it carries a real risk (an empty index would make the assistant rank memories as unimportant and could evict them), while it is small enough that its slowness does not matter today. My proposal: leave it as is in this work and revisit if it grows. This departs from "fix all three together" (ask #362), so it is your call.
+Decided (ask #364): the memory index stays as is. Its notes' text lives only in that index and the vault files, so rebuilding it carries a real risk (an empty index would make the assistant rank memories as unimportant and could evict them), while it is small enough that its slowness does not matter today. It is left as is in this work and revisited if it grows (a departure from "fix all three together", ask #362, approved).
 
 My calls, to check while reading:
 - the rebuild runs before the compaction in the same launch step, so the space the old indexes free is reclaimed in the same launch;
