@@ -975,8 +975,9 @@ func (d *Daemon) phaseImapSync(ctx context.Context) {
 // left off the row entirely — a rate limit, a dropped connection or a failing
 // local read says nothing about the grant, and stamping it would strand a red
 // badge that only a re-login could clear. A cancelled context (shutdown, or
-// runLoop cancelling the cycle's fetches) is checked first for the same reason. Errors still accumulate into
-// firstErr, which is what the jira-boards pipeline_runs row records.
+// runLoop cancelling the cycle's fetches) is checked first for the same
+// reason. Errors still accumulate into firstErr, which is what the
+// jira-boards pipeline_runs row records.
 func (d *Daemon) phaseJiraSync(ctx context.Context) {
 	if len(d.jiraSyncers) == 0 {
 		return

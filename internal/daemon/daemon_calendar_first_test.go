@@ -96,27 +96,31 @@ func calledMethods(fn *ast.FuncDecl) map[string]bool {
 
 // Run wires the wake watcher whatever sync.sync_on_wake says: a sleep that
 // interrupts a cycle cancels its fetches either way (runLoop). Pinned
-// statically, like the test above: no SyncOnWake read guards the WatchWake
-// call.
+// statically, like the test above: no statement of Run up to and including
+// the WatchWake call reads SyncOnWake — not a guard around the call, and not
+// an early return or a flag before it.
 func TestDaemon_Run_WatchesWakeRegardlessOfSyncOnWake(t *testing.T) {
-	file, err := parser.ParseFile(token.NewFileSet(), "daemon.go", nil, 0)
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "daemon.go", nil, 0)
 	require.NoError(t, err)
 
 	found := false
 	for _, stmt := range daemonFunc(t, file, "Run", true).Body.List {
-		calls, guarded := false, false
+		calls, reads := false, false
 		ast.Inspect(stmt, func(n ast.Node) bool {
 			switch n := n.(type) {
 			case *ast.Ident:
 				calls = calls || n.Name == "WatchWake"
 			case *ast.SelectorExpr:
-				guarded = guarded || n.Sel.Name == "SyncOnWake"
+				reads = reads || n.Sel.Name == "SyncOnWake"
 			}
 			return true
 		})
+		require.False(t, reads, "Run reads SyncOnWake at or before its WatchWake call (daemon.go:%d)",
+			fset.Position(stmt.Pos()).Line)
 		if calls {
 			found = true
-			assert.False(t, guarded, "the WatchWake call must not depend on SyncOnWake")
+			break
 		}
 	}
 	assert.True(t, found, "Run must start WatchWake")
