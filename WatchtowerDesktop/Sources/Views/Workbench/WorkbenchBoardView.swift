@@ -72,14 +72,21 @@ struct WorkbenchBoardView: View {
                         )
                     }
                 }
+                vm.saveColumns = { [weak projects = appState.workbenchesViewModel, projectID] def in
+                    guard let projects else { throw WorkbenchBoardColumnsError.cliUnavailable }
+                    return try await projects.saveBoardColumns(def, projectID: projectID)
+                }
                 vm.load()
                 viewModel = vm
             }
             takeFocus()
+            takeKanbanRequest()
             viewModel?.startPolling()
         }
         // A target id in the Session view opens its card here.
         .onChange(of: appState.workbenchesViewModel?.boardFocus[projectID]) { _, _ in takeFocus() }
+        // The header menu's Edit Columns on the Kanban (#713 AI-14 §1).
+        .onChange(of: appState.workbenchesViewModel?.kanbanRequests.contains(projectID)) { _, _ in takeKanbanRequest() }
         .onDisappear { viewModel?.stopPolling() }
         // The header's "Archive Closed Targets After" and "Archive Closed
         // Targets Now" / "Undo Archive Now" apply at once, not at the next poll
@@ -135,6 +142,11 @@ struct WorkbenchBoardView: View {
     private func takeFocus() {
         guard let vm = viewModel, let id = appState.workbenchesViewModel?.takeBoardFocus(projectID: projectID) else { return }
         vm.select(Int(id))
+    }
+
+    private func takeKanbanRequest() {
+        guard let vm = viewModel, appState.workbenchesViewModel?.takeKanbanRequest(projectID: projectID) == true else { return }
+        vm.mode = .kanban
     }
 
     // MARK: - Board (list or kanban)

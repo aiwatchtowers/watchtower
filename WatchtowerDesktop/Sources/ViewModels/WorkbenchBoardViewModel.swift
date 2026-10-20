@@ -15,9 +15,20 @@ final class WorkbenchBoardViewModel {
     let projectID: Int64
     private(set) var roots: [WorkbenchBoardNode] = []
     /// The workbench's stored board column definition (board #267), read
-    /// with the board. Only the stored one ever reaches the Kanban — the
-    /// Board Columns… sheet's unsaved draft never does.
+    /// with the board. Only the stored one ever reaches the Kanban — an
+    /// edit's draft never does (`editColumns`).
     private(set) var boardColumns: WorkbenchBoardColumns = .empty
+    /// The column writer (#713 AI-14 §1): `WorkbenchesViewModel.saveBoardColumns`,
+    /// Go's `workbench columns --set -`. Set by the view; nil (no CLI) refuses.
+    var saveColumns: ((WorkbenchBoardColumns) async throws -> WorkbenchBoardColumns)?
+    /// The last column edit's refusal, under the Kanban's header row; the
+    /// next edit or its ✕ clears it.
+    var columnsError: String?
+    /// The column header whose title is an inline field: its Kanban key.
+    var renamingColumnKey: String?
+    /// Column edits, one after another: each builds on the definition the
+    /// previous one stored.
+    @ObservationIgnored let columnWrites = SerialWrites()
     var collapsed: Set<Int> = []
     var showDone = false
     /// The toolbar's "Archive (K)" (board #301): archived targets back on
@@ -192,7 +203,7 @@ final class WorkbenchBoardViewModel {
     var newTargetRequest: WorkbenchNewTargetRequest?
     private(set) var isCreatingTarget = false
 
-    private let dbPool: DatabasePool
+    let dbPool: DatabasePool
     /// Every owner write, one after another (board #670, see Edits).
     @ObservationIgnored private let writes = SerialWrites()
     /// The comment composers' one-send-at-a-time guard.
@@ -345,9 +356,8 @@ final class WorkbenchBoardViewModel {
             sql: "SELECT archive_after_days, archived_through, board_hidden_statuses FROM projects WHERE id = ?",
             arguments: [projectID]
         )
-        // The column definition (board #267, at most 20 rows): a Save in
-        // the Board Columns… sheet, from this window or another, re-lays
-        // the Kanban.
+        // The column definition (board #267, at most 20 rows): a column
+        // edit on the Kanban, from this window or another, re-lays it.
         let columns = try Row.fetchOne(
             db,
             sql: """

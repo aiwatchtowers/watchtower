@@ -203,6 +203,9 @@ final class WorkbenchesViewModel {
     /// own view model (Work on It's status, board #499): the Board reloads at
     /// once instead of at its next poll.
     var boardReloads: [Int64: Int] = [:]
+    /// Workbenches whose Board should switch to Kanban once on screen
+    /// (`editColumnsOnKanban`); the Board takes it (`takeKanbanRequest`).
+    var kanbanRequests: Set<Int64> = []
     /// Each workbench's GitHub repository from its `origin` remote, for the
     /// Session view's PR links; `.some(nil)` = read, not on GitHub.
     var gitHubRepositories: [Int64: URL?] = [:]
@@ -1226,22 +1229,27 @@ final class WorkbenchesViewModel {
         }
     }
 
-    /// The Board Columns… sheet's read (board #267): the stored definition
-    /// through `watchtower workbench columns` and, per defined column, the
-    /// cards that show in it (what deleting it moves).
-    func loadBoardColumns(projectID: Int64) async throws -> (WorkbenchBoardColumns, [Int64: Int]) {
-        guard let cli else { throw WorkbenchBoardColumnsError.cliUnavailable }
-        let def = try await cli.boardColumns(projectID: projectID)
-        let counts = try await dbPool.read { try WorkbenchQueries.boardColumnCardCounts($0, projectID: projectID) }
-        return (def, counts)
-    }
-
-    /// The sheet's Save: Go replaces the whole definition or refuses it
-    /// (nothing written). The board picks a saved definition up through its
-    /// fingerprint.
+    /// The Kanban header row's column write (board #267, #713 AI-14 §1;
+    /// `WorkbenchBoardViewModel.editColumns`): Go replaces the whole
+    /// definition or refuses it (nothing written).
     func saveBoardColumns(_ def: WorkbenchBoardColumns, projectID: Int64) async throws -> WorkbenchBoardColumns {
         guard let cli else { throw WorkbenchBoardColumnsError.cliUnavailable }
         return try await cli.setBoardColumns(projectID: projectID, def)
+    }
+
+    /// The header menu's Edit Columns on the Kanban: the Board goes on
+    /// screen in Kanban, where the columns are edited (`takeKanbanRequest`).
+    func editColumnsOnKanban(projectID: Int64) {
+        kanbanRequests.insert(projectID)
+        beginSwitch(projectID: projectID)
+        var updated = layout(projectID: projectID)
+        updated.showWorkbenchView(.board)
+        setLayout(updated, projectID: projectID)
+    }
+
+    /// The Board of `projectID` takes a pending switch to Kanban, once.
+    func takeKanbanRequest(projectID: Int64) -> Bool {
+        kanbanRequests.remove(projectID) != nil
     }
 
     /// A refused definition's own message (Go prints it alone on stderr);
@@ -1287,7 +1295,7 @@ final class WorkbenchesViewModel {
     }
 }
 
-/// Why the Board Columns… sheet could not run its CLI call.
+/// Why a board column edit could not run its CLI call.
 enum WorkbenchBoardColumnsError: LocalizedError {
     case cliUnavailable
 

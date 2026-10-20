@@ -36,6 +36,20 @@ The **List | Kanban** switch lays tasks out as columns. By default each top-leve
 
 Drag a card to another column to change its status. In lanes a card moves only between the columns of its own lane; use **Move to…** to change its feature.
 
+### Name your Kanban columns
+
+You edit columns right on the Kanban's header row; each change saves at once. Right-click a column header, or click the **…** that appears on hover:
+
+1. **Rename** turns the title into a field. Return saves, Esc cancels.
+2. **Description…** sets the header's tooltip, which agents also read as guidance.
+3. **Add Column Right** / **Add Column Left** adds a column in the same status, ready to rename. **Move Left** / **Move Right** reorder within the status.
+4. **Delete Column** asks first when cards are in it and says where they go: the status's first column.
+5. **Hide In Review** / **Hide Blocked** removes an empty status from the board.
+
+A status without columns shows one column under its own name. Renaming it names the status's column. **Add Column** on it makes two: one under the status's name that keeps the cards, and the new one. Deleting the last column brings the status's own back.
+
+The **+** at the end of the row adds a column to any status, and brings back a hidden one with **Show In Review** / **Show Blocked**. A refused change, such as a duplicate title or more than 6 columns in a status, shows its reason under the row and the board stays as it was. From the List, the workbench's **⋯** menu has **Edit Columns on the Kanban**.
+
 ### Open a target
 
 Click a card to open it in the panel on the right. The board stays live behind it.

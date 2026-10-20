@@ -31,6 +31,9 @@ enum DesignShotCatalog {
             DesignShot(name: "workbench-board-cards", size: NSSize(width: 480, height: 280)) {
                 AnyView(DesignShotFixtures.boardCards().padding(12).shotFrame().detailBackground())
             },
+            DesignShot(name: "workbench-kanban-columns", size: NSSize(width: 1380, height: 220)) {
+                AnyView(BoardColumnsShotFixtures.kanbanColumns().shotFrame().detailBackground())
+            },
             DesignShot(name: "workbench-panel-parts", size: NSSize(width: 440, height: 120)) {
                 AnyView(DesignShotFixtures.panelParts().padding(12).shotFrame().detailBackground())
             },
