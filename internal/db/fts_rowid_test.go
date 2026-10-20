@@ -375,3 +375,41 @@ func TestSchemaDrift_ToleratesLegacyTable(t *testing.T) {
 	require.True(t, hasSchemaTable(t, d, "messages_fts_legacy"))
 	assert.NoError(t, d.CheckSchemaDrift())
 }
+
+// A failed post-goose cleanup does not fail migrate: the legacy table and
+// the pending key stay for the fill to finish.
+func TestMigration146_CleanupFailureDoesNotFailMigrate(t *testing.T) {
+	t.Parallel()
+	d := rawFileDBAt(t, 146)
+	require.True(t, hasSchemaTable(t, d, "messages_fts_legacy"), "goose alone keeps the legacy table")
+	// Without db_maintenance the cleanup's DELETE fails and its tx rolls back.
+	_, err := d.Exec(`DROP TABLE db_maintenance`)
+	require.NoError(t, err)
+
+	require.NoError(t, d.migrate())
+
+	assert.True(t, hasSchemaTable(t, d, "messages_fts_legacy"), "the failed cleanup rolled back")
+}
+
+// While the fill is pending, new and edited messages go to the new index
+// only; the legacy index is left as the migration renamed it.
+func TestMessagesFTS_WritesDuringPendingFillSkipLegacy(t *testing.T) {
+	t.Parallel()
+	d := openTestDB(t)
+	require.NoError(t, d.UpsertMessage(Message{ChannelID: "C1", TS: "1.000001", UserID: "U1", Text: "old wording"}))
+	require.NoError(t, ReplayMessagesSearchUpgradeForTest(d))
+	require.True(t, hasSchemaTable(t, d, "messages_fts_legacy"))
+	require.Equal(t, 1, queryInt(t, d, `SELECT COUNT(*) FROM messages_fts_legacy`))
+	require.Zero(t, queryInt(t, d, `SELECT COUNT(*) FROM messages_fts`))
+
+	require.NoError(t, d.UpsertMessage(Message{ChannelID: "C1", TS: "1.000002", UserID: "U1", Text: "brand new"}))
+	require.NoError(t, d.UpsertMessage(Message{ChannelID: "C1", TS: "1.000001", UserID: "U1", Text: "edited wording"}))
+
+	assert.Equal(t, 2, queryInt(t, d, `SELECT COUNT(*) FROM messages_fts`))
+	assert.Equal(t, 1, queryInt(t, d, `SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'brand'`))
+	assert.Equal(t, 1, queryInt(t, d, `SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'edited'`))
+	assert.Zero(t, queryInt(t, d, messagesIndexMismatches))
+	assert.Equal(t, 1, queryInt(t, d, `SELECT COUNT(*) FROM messages_fts_legacy`))
+	assert.Equal(t, 1, queryInt(t, d, `SELECT COUNT(*) FROM messages_fts_legacy WHERE messages_fts_legacy MATCH 'old'`))
+	assert.Zero(t, queryInt(t, d, `SELECT COUNT(*) FROM messages_fts_legacy WHERE messages_fts_legacy MATCH 'brand OR edited'`))
+}

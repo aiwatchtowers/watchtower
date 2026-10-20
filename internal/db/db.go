@@ -579,8 +579,14 @@ func (db *DB) migrate() error {
 		return err
 	}
 	// After goose: the conditional half of 00146 (see
-	// dropEmptyMessagesSearchLegacy).
-	return dropEmptyMessagesSearchLegacy(db.DB)
+	// dropEmptyMessagesSearchLegacy). Best effort: a failure leaves the
+	// legacy table and the pending key behind, and the messages search fill
+	// is the safety net — it handles an empty messages table and drops the
+	// legacy table with DROP TABLE IF EXISTS — so Open goes on.
+	if err := dropEmptyMessagesSearchLegacy(db.DB); err != nil {
+		slog.Warn("could not drop the empty legacy messages search index; the search fill will", "error", err)
+	}
+	return nil
 }
 
 // SetBusyTimeout replaces Open's 5 s busy_timeout on the connection: how long
