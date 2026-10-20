@@ -1,4 +1,5 @@
 import Foundation
+import os
 @testable import WatchtowerCore
 import XCTest
 
@@ -34,7 +35,7 @@ final class ProcessCompactionCLITests: XCTestCase {
         echo '{"compacted":false,"skipped":"disk"}'
         exit 2
         """)
-        let child = try ProcessCompactionCLI(executablePath: stub).startCompact()
+        let child = try ProcessCompactionCLI(executablePath: stub).startCompact { _ in }
         self.child = child
 
         let exit = await child.waitForExit()
@@ -45,6 +46,36 @@ final class ProcessCompactionCLITests: XCTestCase {
         XCTAssertEqual(output.skipped, "disk")
     }
 
+    /// Phase lines reach `onPhase` while the child still runs, in order; the
+    /// result stays the last stdout line.
+    func testStartCompactReportsPhaseLinesAsTheyArrive() async throws {
+        let stub = try makeStub("""
+        #!/bin/sh
+        echo '{"phase":"fts_rebuild"}'
+        sleep 1
+        echo '{"phase":"compact"}'
+        echo '{"compacted":true,"fts_rebuilt":true}'
+        """)
+        let phases = OSAllocatedUnfairLock<[CompactionRunPhase]>(initialState: [])
+        let child = try ProcessCompactionCLI(executablePath: stub).startCompact { phase in
+            phases.withLock { $0.append(phase) }
+        }
+        self.child = child
+
+        let deadline = ContinuousClock.now + .seconds(10)
+        while phases.withLock({ $0.isEmpty }), ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(phases.withLock { $0 }, [.ftsRebuild], "the first line arrives before the stub's sleep ends")
+
+        let exit = await child.waitForExit()
+        XCTAssertEqual(exit.status, 0)
+        XCTAssertEqual(phases.withLock { $0 }, [.ftsRebuild, .compact])
+        let output = try decodeLastJSONLine(CompactionRunOutput.self, from: exit.stdout)
+        XCTAssertTrue(output.compacted)
+        XCTAssertTrue(output.ftsRebuilt)
+    }
+
     /// SIGTERM reaches the child's handler: the CLI's interrupt path exits 4.
     func testTerminateEndsCompactWithItsTrapStatus() async throws {
         let stub = try makeStub("""
@@ -53,7 +84,7 @@ final class ProcessCompactionCLITests: XCTestCase {
         echo $$ > "\(pidFilePath)"
         while :; do sleep 0.05; done
         """)
-        let child = try ProcessCompactionCLI(executablePath: stub).startCompact()
+        let child = try ProcessCompactionCLI(executablePath: stub).startCompact { _ in }
         self.child = child
         try await waitForStubPID()
 
@@ -72,7 +103,7 @@ final class ProcessCompactionCLITests: XCTestCase {
         echo $$ > "\(pidFilePath)"
         while :; do :; done
         """)
-        let child = try ProcessCompactionCLI(executablePath: stub).startCompact()
+        let child = try ProcessCompactionCLI(executablePath: stub).startCompact { _ in }
         self.child = child
         let pid = try await waitForStubPID()
 
