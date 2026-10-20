@@ -176,7 +176,6 @@ struct WorkbenchBoardColumnDescriptionEditor: View {
         }
         .padding(Spacing.medium)
         .frame(width: 320)
-        .popoverSurface()
     }
 
     private func save() {

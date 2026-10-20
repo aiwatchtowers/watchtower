@@ -183,6 +183,7 @@ private struct WorkbenchBoardKanbanColumnHeader: View {
         .contextMenu { if editable { menu } }
         .popover(isPresented: $editsDescription, arrowEdge: .bottom) {
             WorkbenchBoardColumnDescriptionEditor(column: column, vm: vm) { editsDescription = false }
+                .popoverSurface()
         }
         .alert(
             "Delete \(column.title)?",
