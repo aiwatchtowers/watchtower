@@ -37,6 +37,7 @@ func TestIdeas_CreateGetListRoundTrip(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("GetIdea returned nil for a created idea")
+		return // staticcheck SA5011 on CI does not always see t.Fatal as terminating
 	}
 	if got.Title != "Ship dark mode" || got.Kind != "idea" || got.Status != "proposed" || got.Source != "mined" {
 		t.Errorf("round-trip mismatch: %+v", got)

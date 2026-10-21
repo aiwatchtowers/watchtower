@@ -578,6 +578,7 @@ func TestTargetsExtractCmdHasJSONFlag(t *testing.T) {
 	flag := targetsExtractCmd.Flags().Lookup("json")
 	if flag == nil {
 		t.Fatal("targets extract should have --json flag")
+		return // staticcheck SA5011 on CI does not always see t.Fatal as terminating
 	}
 	if flag.DefValue != "false" {
 		t.Errorf("--json default should be false, got %q", flag.DefValue)
@@ -599,6 +600,7 @@ func TestTargetsSuggestLinksCmdHasJSONFlag(t *testing.T) {
 	flag := targetsSuggestLinksCmd.Flags().Lookup("json")
 	if flag == nil {
 		t.Fatal("targets suggest-links should have --json flag")
+		return // staticcheck SA5011 on CI does not always see t.Fatal as terminating
 	}
 	if flag.DefValue != "false" {
 		t.Errorf("--json default should be false, got %q", flag.DefValue)
