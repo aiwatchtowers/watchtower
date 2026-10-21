@@ -71,7 +71,7 @@ final class TargetWatchesViewModelTests: XCTestCase {
             target: target,
             dbManager: manager,
             scanService: TrackScanService(runner: FakeCLIRunner(stdout: Data("[]".utf8))),
-            targetsViewModel: TargetsViewModel(dbManager: manager),
+            actionRunner: FakeCLIRunner(),
             scanCenter: TrackScanCenter()
         )
         XCTAssertTrue(vm.events.isEmpty)
@@ -90,7 +90,7 @@ final class TargetWatchesViewModelTests: XCTestCase {
         XCTAssertEqual(vm.events.map(\.summary), ["new update"], "the feed must reflect the CLI's write without an active observation")
     }
 
-    func testApplyActionMutatesTargetAndMarksApplied() async throws {
+    func testApplyActionPressesThroughTheRegistryAndShowsApplied() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
 
@@ -109,11 +109,16 @@ final class TargetWatchesViewModelTests: XCTestCase {
 
         let targetRow = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: targetID) }
         let target = try XCTUnwrap(targetRow)
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"applied_ok":true,"error":""}"#.utf8))
+        let pool = manager.dbPool
+        runner.onRun = { _ in  // Go's side effect: the event is applied
+            try? await pool.write { db in try db.execute(sql: "UPDATE track_events SET action_status = 'applied'") }
+        }
         let vm = TargetWatchesViewModel(
             target: target,
             dbManager: manager,
             scanService: TrackScanService(runner: FakeCLIRunner(stdout: Data("[]".utf8))),
-            targetsViewModel: TargetsViewModel(dbManager: manager),
+            actionRunner: runner,
             scanCenter: TrackScanCenter()
         )
         let eventRow = try await manager.dbPool.read { db in
@@ -122,13 +127,13 @@ final class TargetWatchesViewModelTests: XCTestCase {
         let event = try XCTUnwrap(eventRow)
         await vm.applyAction(for: event)
 
+        XCTAssertNil(vm.errorMessage)
+        XCTAssertEqual(runner.invocations, [TrackActionPress.arguments(eventID: eventID)])
+        XCTAssertEqual(vm.events.map(\.actionStatus), ["applied"], "the feed shows the CLI's write")
+        // The Desktop itself no longer writes the target.
         let status = try await manager.dbPool.read { db in
             try String.fetchOne(db, sql: "SELECT status FROM targets WHERE id = ?", arguments: [targetID])
         }
-        XCTAssertEqual(status, "done")
-        let evStatus = try await manager.dbPool.read { db in
-            try String.fetchOne(db, sql: "SELECT action_status FROM track_events WHERE id = ?", arguments: [eventID])
-        }
-        XCTAssertEqual(evStatus, "applied")
+        XCTAssertEqual(status, "todo")
     }
 }

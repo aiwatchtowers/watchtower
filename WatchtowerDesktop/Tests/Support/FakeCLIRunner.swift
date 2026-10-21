@@ -29,6 +29,9 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
     /// can be tested against "cancelled AND the runner still handed back
     /// data" rather than only "cancelled AND the runner threw".
     package var returnDataOnCancelInsteadOfThrowing = false
+    /// Runs inside every `run`, before it answers — a stand-in for the CLI's
+    /// side effects (a row it writes) and for a call that takes time.
+    package var onRun: (@Sendable ([String]) async -> Void)?
     /// Every call's arguments, in order. A locked snapshot — safe to read
     /// while `run` is still being called concurrently.
     package var invocations: [[String]] {
@@ -66,6 +69,7 @@ package final class FakeCLIRunner: CLIRunnerProtocol, @unchecked Sendable {
 
     package func run(args: [String]) async throws -> Data {
         record(args)
+        if let onRun { await onRun(args) }
         if blockUntilCancelled {
             await waitForCancellation()
             if !returnDataOnCancelInsteadOfThrowing {
