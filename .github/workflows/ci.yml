@@ -88,6 +88,12 @@ jobs:
         with:
           go-version: "1.26.9"
 
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
+      # macOS build uses CommonCrypto); install it explicitly so a runner
+      # image change cannot break the cgo build quietly.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
+
       - name: Guide check
         # internal/chat pins guide.Map() in the prompt golden and internal/kb
         # searches every guide page, so a guide-only PR must run both.
@@ -104,6 +110,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
+      # macOS build uses CommonCrypto); install it explicitly so a runner
+      # image change cannot break the cgo build quietly.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
@@ -184,6 +196,12 @@ jobs:
         with:
           go-version: "1.26.9"
 
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
+      # macOS build uses CommonCrypto); install it explicitly so a runner
+      # image change cannot break the cgo build quietly.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
+
       - name: Build
         run: go build ./...
 
@@ -204,7 +222,7 @@ jobs:
   # timed out; two shards then put tools, kb and db on one runner and timed
   # out at 25 m), each shard runs ~a third of the packages (`make test-race
   # SHARD=K/3` — the split and how to rebalance it live there).
-  # Race-instrumented pure-Go sqlite is ~10x slower, so the race pass runs
+  # The race-instrumented suite is many times slower, so the race pass runs
   # only on pushes to main (i.e. per merged PR — a one-PR bisect window), on
   # a manual workflow_dispatch (so a branch can prove it before merging), and
   # in the release workflow, keeping feature-branch CI fast. -timeout is per
@@ -231,6 +249,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
+      # macOS build uses CommonCrypto); install it explicitly so a runner
+      # image change cannot break the cgo build quietly.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Test (race, library packages)
         timeout-minutes: 30
@@ -283,6 +307,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
+      # macOS build uses CommonCrypto); install it explicitly so a runner
+      # image change cannot break the cgo build quietly.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Test (full grammar set)
         run: make test-codeindex-full
