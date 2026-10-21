@@ -65,8 +65,10 @@ func (c *SQLiteConn) Deserialize(b []byte, schema string) error {
 	}
 	copy(unsafe.Slice((*byte)(unsafe.Pointer(tmpBuf)), len(b)), b)
 
+	// watchtower: RESIZEABLE, so a database loaded from an image can grow
+	// (internal/db's test template clones are written to).
 	rc := C.sqlite3_deserialize(c.db, zSchema, tmpBuf, C.sqlite3_int64(len(b)),
-		C.sqlite3_int64(len(b)), C.SQLITE_DESERIALIZE_FREEONCLOSE)
+		C.sqlite3_int64(len(b)), C.SQLITE_DESERIALIZE_FREEONCLOSE|C.SQLITE_DESERIALIZE_RESIZEABLE)
 	if rc != C.SQLITE_OK {
 		return fmt.Errorf("deserialize failed with return %v", rc)
 	}

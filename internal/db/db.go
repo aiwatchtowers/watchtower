@@ -17,11 +17,10 @@ import (
 	"time"
 
 	"github.com/pressly/goose/v3"
-	"modernc.org/sqlite"
-	sqlite3 "modernc.org/sqlite/lib"
 
 	"watchtower/internal/db/lockmetrics"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/sqlcipher"
 )
 
 // DB wraps a *sql.DB connection to the watchtower SQLite database.
@@ -32,15 +31,14 @@ type DB struct {
 	connector *pragmaConnector
 }
 
-// pragmaConnector opens each pool connection from dsn — the driver runs the
-// DSN's _pragma params on it — and then re-runs the pragmas SetBusyTimeout
-// and SetReadOnly set on the handle. database/sql drops a connection after a
-// context-cancelled statement (modernc reports it bad while interrupted) and
-// opens a fresh one; a pragma run once with Exec would be lost there for the
-// rest of the process.
+// pragmaConnector opens each pool connection through base — the engine
+// runs the DSN's pragma params (_busy_timeout, _foreign_keys, …) on it —
+// and then re-runs the pragmas SetBusyTimeout and SetReadOnly set on the
+// handle. database/sql replaces a pool connection it found bad (or closed
+// as idle) with a fresh one; a pragma run once with Exec would be lost there
+// for the rest of the process.
 type pragmaConnector struct {
-	drv driver.Driver
-	dsn string
+	base driver.Connector
 
 	mu    sync.Mutex
 	state connState
@@ -54,7 +52,7 @@ type connState struct {
 }
 
 func (c *pragmaConnector) Connect(ctx context.Context) (driver.Conn, error) {
-	conn, err := c.drv.Open(c.dsn)
+	conn, err := c.base.Connect(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -85,37 +83,31 @@ func (c *pragmaConnector) Connect(ctx context.Context) (driver.Conn, error) {
 	return conn, nil
 }
 
-func (c *pragmaConnector) Driver() driver.Driver { return c.drv }
+func (c *pragmaConnector) Driver() driver.Driver { return c.base.Driver() }
 
-// metricsDriver is the registered lock-metrics driver every watchtower.db
-// handle opens through; plainDriver is the bare SQLite driver a sidecar
-// database opens through (OpenSidecar).
-var (
-	metricsDriver = registeredDriver(lockmetrics.DriverName)
-	plainDriver   = registeredDriver("sqlite")
-)
+// engineConnector is the SQLite engine's connector for dsn, with no key:
+// the path (or file: URI) before the first '?', the params after it.
+func engineConnector(dsn string) *sqlcipher.Connector {
+	path, params, _ := strings.Cut(dsn, "?")
+	return &sqlcipher.Connector{Path: path, Params: params}
+}
 
-// registeredDriver resolves a registered database/sql driver by name
-// (sql.Open never connects; it only resolves the name).
-func registeredDriver(name string) driver.Driver {
-	probe, err := sql.Open(name, "")
-	if err != nil {
-		panic("db: driver " + name + " not registered: " + err.Error())
-	}
-	defer probe.Close()
-	return probe.Driver()
+// metricsConnector is dsn's engine connector wrapped by the lock metrics:
+// every watchtower.db handle opens through it.
+func metricsConnector(dsn string) driver.Connector {
+	return lockmetrics.Wrap(engineConnector(dsn), dsn)
 }
 
 // openPool opens dsn as a one-connection pool through pragmaConnector and
-// the lock-metrics driver. One connection: an in-memory database is private
-// to its connection, and SQLite serializes writes anyway.
+// the lock metrics. One connection: an in-memory database is private to its
+// connection, and SQLite serializes writes anyway.
 func openPool(dsn string) *DB {
-	return openPoolWith(metricsDriver, dsn)
+	return openPoolWith(metricsConnector(dsn))
 }
 
-// openPoolWith is openPool over drv.
-func openPoolWith(drv driver.Driver, dsn string) *DB {
-	c := &pragmaConnector{drv: drv, dsn: dsn}
+// openPoolWith is openPool over base.
+func openPoolWith(base driver.Connector) *DB {
+	c := &pragmaConnector{base: base}
 	sqlDB := sql.OpenDB(c)
 	sqlDB.SetMaxOpenConns(1)
 	return &DB{DB: sqlDB, connector: c}
@@ -125,8 +117,8 @@ func openPoolWith(drv driver.Driver, dsn string) *DB {
 // FOREIGN KEY constraint failure (extended code SQLITE_CONSTRAINT_FOREIGNKEY),
 // so a caller can tell a vanished parent row from any other write failure.
 func IsForeignKeyViolation(err error) bool {
-	var sqliteErr *sqlite.Error
-	return errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_FOREIGNKEY
+	var se sqlcipher.Error
+	return errors.As(err, &se) && se.ExtendedCode == sqlcipher.ErrConstraintForeignKey
 }
 
 // openMemoryHook, when non-nil, is called instead of the normal migration path
@@ -150,24 +142,27 @@ var seedNewFileHook func(dbPath string) error
 // plain path before opening the file (see sqliteDSN).
 const immediateTxDSN = "?_txlock=immediate"
 
-// connPragmas are the per-connection pragmas of a writing handle (Open,
-// OpenExistingRW) besides busy_timeout, which each opener sets itself; in
-// the "name(value)" form both a DSN _pragma param and a PRAGMA statement take.
-var connPragmas = []string{"foreign_keys(1)", "synchronous(NORMAL)"}
+// connPragma is one per-connection pragma of a writing handle (Open,
+// OpenExistingRW) besides busy_timeout, which each opener sets itself.
+type connPragma struct{ name, value string }
 
-// connPragmaParams is connPragmas as DSN params ("_pragma=…").
+// connPragmas are those pragmas: the engine runs them from the DSN on every
+// pool connection (connPragmaParams), setPragmas as statements.
+var connPragmas = []connPragma{{"foreign_keys", "1"}, {"synchronous", "NORMAL"}}
+
+// connPragmaParams is connPragmas as the engine's DSN params ("_name=value").
 func connPragmaParams() []string {
 	out := make([]string, len(connPragmas))
 	for i, p := range connPragmas {
-		out[i] = "_pragma=" + p
+		out[i] = "_" + p.name + "=" + p.value
 	}
 	return out
 }
 
 // openDSN is Open's DSN params: the tx lock mode plus the per-connection
-// pragmas, which the driver runs on every new pool connection (journal_mode
+// pragmas, which the engine runs on every new pool connection (journal_mode
 // WAL is stored in the file, so setPragmas runs it once).
-var openDSN = fmt.Sprintf("%s&_pragma=busy_timeout(%d)&%s",
+var openDSN = fmt.Sprintf("%s&_busy_timeout=%d&%s",
 	immediateTxDSN, busyTimeoutMS, strings.Join(connPragmaParams(), "&"))
 
 // busyTimeoutMS is how long a connection waits for another process's write
@@ -252,7 +247,7 @@ func OpenSidecar(path string, migrations fs.FS) (*sql.DB, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("creating database directory: %w", err)
 	}
-	d := openPoolWith(plainDriver, sqliteDSN(path, openDSN))
+	d := openPoolWith(engineConnector(sqliteDSN(path, openDSN)))
 	if err := d.setupSidecarSchema(path, migrations); err != nil {
 		d.Close()
 		return nil, err
@@ -305,14 +300,14 @@ func (db *DB) setupSidecarSchema(path string, migrations fs.FS) error {
 // (when no other connection has them open) and checkpoint on close; neither
 // changes the database's content.
 func OpenExisting(dbPath string, busy time.Duration) (*DB, error) {
-	return openExistingDSN(dbPath, existingDSN(dbPath, busy, "_pragma=query_only(1)"))
+	return openExistingDSN(dbPath, existingDSN(dbPath, busy, "_query_only=1"))
 }
 
 // existingDSN is the DSN of the hook openers: a file: URI so mode=rw (open,
 // never create) reaches SQLite, a busy timeout of busy, and params (each
-// "key=value"); the driver applies the _pragma params on every connection.
+// "key=value"); the engine applies the pragma params on every connection.
 func existingDSN(dbPath string, busy time.Duration, params ...string) string {
-	q := append([]string{"mode=rw", fmt.Sprintf("_pragma=busy_timeout(%d)", busy.Milliseconds())}, params...)
+	q := append([]string{"mode=rw", fmt.Sprintf("_busy_timeout=%d", busy.Milliseconds())}, params...)
 	return "file:" + (&url.URL{Path: dbPath}).EscapedPath() + "?" + strings.Join(q, "&")
 }
 
@@ -405,7 +400,7 @@ func tightenDBFilePerms(dbPath string) {
 func (db *DB) setPragmas() error {
 	pragmas := []string{"PRAGMA journal_mode=WAL", fmt.Sprintf("PRAGMA busy_timeout=%d", busyTimeoutMS)}
 	for _, p := range connPragmas {
-		pragmas = append(pragmas, "PRAGMA "+p)
+		pragmas = append(pragmas, "PRAGMA "+p.name+"="+p.value)
 	}
 	for _, p := range pragmas {
 		if _, err := db.Exec(p); err != nil {

@@ -10,10 +10,12 @@ import (
 )
 
 // interruptQuery runs a query that cannot finish before its context
-// deadline, so SQLite interrupts it. modernc then reports the connection as
-// bad and database/sql replaces it with a fresh one on the next call —
-// which interruptQuery checks with a per-connection marker (cache_size, a
-// pragma no opener sets and query_only does not refuse), so the callers'
+// deadline, so SQLite interrupts it, and then drops the pool's connection
+// the way database/sql does with one it found bad or closed as idle
+// (SetMaxIdleConns(0) closes it): the next call opens a fresh one. The
+// engine keeps an interrupted connection usable, so the drop is explicit.
+// A per-connection marker (cache_size, a pragma no opener sets and
+// query_only does not refuse) proves the replacement, so the callers'
 // assertions never run against the old connection.
 func interruptQuery(t *testing.T, d *DB) {
 	t.Helper()
@@ -37,6 +39,8 @@ func interruptQuery(t *testing.T, d *DB) {
 	if !errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 		t.Fatalf("query failed for another reason: %v", err)
 	}
+	d.SetMaxIdleConns(0)
+	d.SetMaxIdleConns(2) // database/sql's default
 }
 
 func pragmaInt(t *testing.T, d *DB, name string) int64 {
@@ -72,8 +76,8 @@ func openTemp(t *testing.T) (*DB, string) {
 	return d, path
 }
 
-// TestPragmasSurviveInterruptedQuery*: a context-cancelled query makes the
-// pool drop its connection; the replacement must carry the same pragmas —
+// TestPragmasSurviveInterruptedQuery*: after a context-cancelled query the
+// pool's connection is replaced; the replacement must carry the same pragmas —
 // Open's busy_timeout, foreign_keys and synchronous, and whatever
 // SetBusyTimeout and SetReadOnly set on the handle afterwards.
 func TestPragmasSurviveInterruptedQuery_Open(t *testing.T) {

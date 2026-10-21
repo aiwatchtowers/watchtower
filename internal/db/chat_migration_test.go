@@ -8,7 +8,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	_ "modernc.org/sqlite"
 )
 
 // The two chat table shapes the Desktop app has ever created (GRDB
@@ -47,7 +46,7 @@ const (
 // rawDBAt opens a bare in-memory database migrated only up to version.
 func rawDBAt(t *testing.T, version int64) *sql.DB {
 	t.Helper()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = raw.Close() })
 	raw.SetMaxOpenConns(1)

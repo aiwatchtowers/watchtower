@@ -521,7 +521,7 @@ FROM n;
 // puts the triggers back as the schema wrote them. Each trigger firing
 // deletes from messages_fts by its UNINDEXED channel_id and ts, a scan of the
 // whole index, so seeding 1,200 messages row by row is quadratic: minutes
-// under -race, where the modernc SQLite engine runs instrumented (#868). The
+// under -race (#868). The
 // end state is the one the triggers would have left: every live message with
 // text indexed once.
 func seedProductionSize(t *testing.T, d *db.DB, seeds ...string) {
