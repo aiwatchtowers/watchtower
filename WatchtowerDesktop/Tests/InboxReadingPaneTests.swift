@@ -15,14 +15,15 @@ final class InboxReadingPaneTests: XCTestCase {
         link: String = "",
         pressedAction: Int? = nil,
         pressedRunID: Int64? = nil,
-        recipeState: AutomationHeaderButton.State = .runnable
+        recipeState: AutomationHeaderButton.State = .runnable,
+        recipeRemoved: Bool = false
     ) -> AutomationOutputCard {
         AutomationOutputCard(
             id: 5, automationID: 2, automationName: "Issue triage", runID: 212,
             title: "ACME-482: crash when importing CSV", body: "**Verdict:** bug, high priority.",
             priority: "high", createdAt: Date(timeIntervalSinceReferenceDate: 800_000_000),
             link: link, actionsJSON: actions, pressedAction: pressedAction, pressedRunID: pressedRunID,
-            recipeState: recipeState
+            recipeState: recipeState, recipeRemoved: recipeRemoved
         )
     }
 
@@ -85,7 +86,8 @@ final class InboxReadingPaneTests: XCTestCase {
         try sut.inspect().find(button: "Ask").tap()
         try sut.inspect().find(button: "Backlog").tap()
 
-        XCTAssertEqual(commands, [.agent(card: shown, task: "Fix it", workbench: .id(3)),
+        XCTAssertEqual(commands, [.agent(card: shown, task: InboxCardTexts.agentActionTask(shown, task: "Fix it"),
+                                         workbench: .id(3)),
                                   .reply(outputID: 5, action: 2)])
     }
 
@@ -105,6 +107,12 @@ final class InboxReadingPaneTests: XCTestCase {
             try sut.inspect().find(button: "Move to Backlog").tap()
             XCTAssertEqual(commands, [.openAutomation(shown)], caption)
         }
+
+        // A removed recipe: nothing to confirm or turn on, so no press.
+        let removed = pane(card(actions: reply, recipeState: .disabled, recipeRemoved: true))
+        XCTAssertNoThrow(try removed.inspect().find(text: "Recipe removed"))
+        XCTAssertThrowsError(try removed.inspect().find(text: "Off"))
+        XCTAssertTrue(try removed.inspect().find(button: "Move to Backlog").isDisabled())
     }
 
     func testLinkButtonRefusedByPolicyIsDisabled() throws {
@@ -190,7 +198,7 @@ final class InboxAgentPressTests: XCTestCase {
 
         XCTAssertEqual(commands, [
             .agent(card: own, task: InboxCardTexts.handToAgentTask(own), workbench: .id(3)),
-            .agent(card: own, task: "Fix", workbench: .id(4))
+            .agent(card: own, task: InboxCardTexts.agentActionTask(own, task: "Fix"), workbench: .id(4))
         ])
     }
 

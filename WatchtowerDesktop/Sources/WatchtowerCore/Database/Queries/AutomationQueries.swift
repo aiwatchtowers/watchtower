@@ -145,6 +145,7 @@ package enum AutomationQueries {
             SELECT o.id, o.automation_id, o.run_id, o.title, o.body, o.priority, o.created_at, o.link,
                 o.actions_json, o.read_at, o.pressed_action, o.pressed_run_id,
                 COALESCE(NULLIF(a.name, ''), a.slug) AS name, a.project_id, a.parse_error,
+                a.removed_at IS NOT NULL AS removed,
                 (a.parse_error = '' AND a.removed_at IS NULL AND a.confirmed_hash != a.approval_hash)
                     AS needs_confirmation,
                 (a.parse_error = '' AND a.enabled AND a.removed_at IS NULL AND a.confirmed_hash != ''
@@ -182,7 +183,8 @@ package enum AutomationQueries {
                 recipeState: AutomationHeaderButton.state(
                     parseError: row["parse_error"], needsConfirmation: row["needs_confirmation"],
                     runnable: row["runnable"]
-                )
+                ),
+                recipeRemoved: row["removed"]
             )
         }
     }

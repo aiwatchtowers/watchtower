@@ -455,6 +455,9 @@ package struct AutomationOutputCard: Identifiable, Equatable, Sendable {
     /// The automation's `project_id`: nil for a personal recipe.
     package let workbenchID: Int64?
     package let recipeState: AutomationHeaderButton.State
+    /// The recipe's file is gone (`removed_at`): its card stays, its Reply
+    /// buttons cannot send.
+    package let recipeRemoved: Bool
 
     /// The badge and the unread dot: never opened.
     package var isUnread: Bool { readAt == nil }
@@ -474,7 +477,8 @@ package struct AutomationOutputCard: Identifiable, Equatable, Sendable {
         pressedAction: Int? = nil,
         pressedRunID: Int64? = nil,
         workbenchID: Int64? = nil,
-        recipeState: AutomationHeaderButton.State = .runnable
+        recipeState: AutomationHeaderButton.State = .runnable,
+        recipeRemoved: Bool = false
     ) {
         self.id = id
         self.automationID = automationID
@@ -491,6 +495,7 @@ package struct AutomationOutputCard: Identifiable, Equatable, Sendable {
         self.pressedRunID = pressedRunID
         self.workbenchID = workbenchID
         self.recipeState = recipeState
+        self.recipeRemoved = recipeRemoved
     }
 }
 

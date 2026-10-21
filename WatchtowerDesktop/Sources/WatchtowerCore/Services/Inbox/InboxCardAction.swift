@@ -77,9 +77,11 @@ package struct InboxCardAction: Equatable, Sendable {
     }
 
     /// What the card's Reply buttons can do now: a press already made wins,
-    /// then the recipe's state (the CLI refuses a recipe that cannot run).
+    /// then a removed recipe, then the recipe's state (the CLI refuses a
+    /// recipe that cannot run).
     package static func replyState(_ card: AutomationOutputCard) -> InboxReplyState {
         if card.pressedAction != nil { return .sent(runID: card.pressedRunID) }
+        if card.recipeRemoved { return .removed }
         switch card.recipeState {
         case .runnable: return .ready
         case .needsConfirmation: return .needsConfirmation
@@ -97,4 +99,6 @@ package enum InboxReplyState: Equatable, Sendable {
     case needsConfirmation
     case off
     case unreadable
+    /// The recipe's file is gone: nothing to confirm or turn on.
+    case removed
 }

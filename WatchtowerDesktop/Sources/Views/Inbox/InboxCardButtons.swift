@@ -75,7 +75,7 @@ struct InboxCardButtons: View {
         let button = Button(Self.label(action, card: card, reply: reply)) { press(action, reply: reply) }
             .disabled(isDisabled(action, reply: reply))
             .help(Self.help(action))
-            .popover(isPresented: isPicking(action.index), arrowEdge: .bottom) { workbenchPicker }
+            .popover(isPresented: isPicking(action.index), arrowEdge: .bottom) { workbenchPicker.popoverSurface() }
         if action.primary {
             button.buttonStyle(.kitPrimary)
         } else {
@@ -90,7 +90,9 @@ struct InboxCardButtons: View {
         case .chat(let message):
             onCommand(.chat(card: card, message: message))
         case let .agent(task, workbench):
-            handToAgent(task: task, ref: workbench, anchor: action.index)
+            // The recipe's task, then the card fenced as data (as Hand to
+            // Agent… sends it): a card can quote anyone.
+            handToAgent(task: InboxCardTexts.agentActionTask(card, task: task), ref: workbench, anchor: action.index)
         case .reply:
             // A recipe that cannot run: its card is where it is confirmed or
             // turned on (spec B3).
@@ -109,8 +111,10 @@ struct InboxCardButtons: View {
         case .chat, .agent:
             return false
         case .reply:
-            if case .sent = reply { return true }
-            return isWriting
+            switch reply {
+            case .sent, .removed: return true
+            case .ready, .needsConfirmation, .off, .unreadable: return isWriting
+            }
         }
     }
 
@@ -130,6 +134,7 @@ struct InboxCardButtons: View {
         case .needsConfirmation: "Needs confirmation"
         case .off: "Off"
         case .unreadable: "Recipe can't be read"
+        case .removed: "Recipe removed"
         }
     }
 
@@ -137,7 +142,7 @@ struct InboxCardButtons: View {
         switch action.kind {
         case .link(let url): url.absoluteString
         case .chat: "Opens AI Chat with this card"
-        case .agent: "Hands this card to an agent"
+        case let .agent(task, _): InboxCardTexts.agentActionHelp(task)
         case .reply: "Sends this choice to the automation"
         }
     }
@@ -160,7 +165,7 @@ struct InboxCardButtons: View {
                 Button("Hand to Agent…") {
                     handToAgent(task: InboxCardTexts.handToAgentTask(card), ref: nil, anchor: Self.commonRowAnchor)
                 }
-                .popover(isPresented: isPicking(Self.commonRowAnchor), arrowEdge: .bottom) { workbenchPicker }
+                .popover(isPresented: isPicking(Self.commonRowAnchor), arrowEdge: .bottom) { workbenchPicker.popoverSurface() }
             }
             HStack(spacing: Spacing.regular) {
                 Button("Done", action: onDone)
@@ -210,7 +215,6 @@ extension InboxCardButtons {
         }
         .controlSize(.small)
         .padding(Spacing.medium)
-        .popoverSurface()
     }
 }
 

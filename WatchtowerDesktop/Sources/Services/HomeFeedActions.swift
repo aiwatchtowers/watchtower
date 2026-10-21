@@ -25,7 +25,7 @@ enum HomeFeedActionError: LocalizedError, Equatable {
 }
 
 /// The production writes: inbox rows through the Go CLI (`inbox resolve` /
-/// `inbox dismiss`), reminders, automation outputs (Done = read, Hide =
+/// `inbox dismiss`), reminders, automation outputs (Done = `done_at`, Hide =
 /// dismissed) and targets through GRDB, the same writes the Inbox, the
 /// action strip and Targets make. Proposals and events have no
 /// action on Home; a call for one does nothing.

@@ -42,8 +42,9 @@ package enum InboxCardTexts {
     /// Discuss in Chat's first message, put in the composer and not sent. It
     /// names the card by its title only: the body travels in the chat
     /// attachment (`attachmentMarkdown`), which the chat treats as data.
+    /// The title's whitespace runs (line breaks too) are one space there.
     package static func discussMessage(_ card: AutomationOutputCard) -> String {
-        "Let's discuss the Inbox card \"\(card.title)\" from \(card.automationName)."
+        "Let's discuss the Inbox card \"\(flattened(card.title))\" from \(card.automationName)."
     }
 
     /// Hand to Agent…'s task. The title, its whitespace runs (line breaks
@@ -51,17 +52,37 @@ package enum InboxCardTexts {
     /// itself, automation output that may quote anyone, is fenced after
     /// `dataNotice` with a fence no backtick run inside can close.
     package static func handToAgentTask(_ card: AutomationOutputCard) -> String {
+        fencedTask(lead: flattened(card.title), card: card)
+    }
+
+    /// An Agent action's task: the recipe's task first (its first line is
+    /// the target's title), then the same provenance line, `dataNotice` and
+    /// fenced card as Hand to Agent…, so the agent reads the card as data.
+    package static func agentActionTask(_ card: AutomationOutputCard, task: String) -> String {
+        fencedTask(lead: task, card: card)
+    }
+
+    /// An Agent button's help: the first line of its task, as one line.
+    package static func agentActionHelp(_ task: String) -> String {
+        let line = flattened(targetTitle(fromTask: task))
+        return line.isEmpty ? "Hands this card to an agent" : "Hands this card to an agent: \(line)"
+    }
+
+    private static func fencedTask(lead: String, card: AutomationOutputCard) -> String {
         var data = [card.title, card.body]
         if !card.link.isEmpty { data.append("Source: \(card.link)") }
         let inner = data.filter { !$0.isEmpty }.joined(separator: "\n\n")
         let fence = String(repeating: "`", count: max(3, longestBacktickRun(inner) + 1))
-        let titleLine = card.title.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         return [
-            titleLine,
+            lead,
             "From the Inbox card of the automation \(card.automationName), run #\(card.runID).",
             dataNotice,
             "\(fence)text\n\(inner)\n\(fence)"
         ].joined(separator: "\n\n")
+    }
+
+    private static func flattened(_ text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
     }
 
     private static func longestBacktickRun(_ text: String) -> Int {

@@ -61,6 +61,7 @@ Its permissions include `inbox:reply` and its outputs include `inbox`. In the sc
 - **A Reply button is dimmed with "Needs confirmation".** The recipe isn't confirmed (or changed since you confirmed it). Open the automation, review and confirm it; the button works again.
 - **Dimmed with "Off".** The automation is turned off. Turn it on from its card.
 - **"Recipe can't be read".** The file has a parse error; fix it in the editor.
+- **Dimmed with "Recipe removed".** The automation's file is gone, so its Reply buttons can't send. Done or Dismiss the card.
 - **`output.inbox` fails with PermissionDenied.** A Reply button needs `inbox:reply` in the recipe's permissions.
 - **A link does nothing.** Only `http`, `https` and `watchtower-nav://` links open. `output.inbox` refuses any other when the card is written.
 - **Hand to Agent… asks which workbench.** The recipe names none, or the name matches none or two. Pick one.

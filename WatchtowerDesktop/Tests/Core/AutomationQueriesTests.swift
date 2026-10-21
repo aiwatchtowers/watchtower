@@ -150,6 +150,33 @@ final class AutomationQueriesTests: XCTestCase {
         XCTAssertEqual(try queue.read { db in try AutomationQueries.inboxOutputCount(db) }, 2)
     }
 
+    /// A card's recipe state: an unreadable recipe reads as such, a removed
+    /// one is marked removed (its Reply cannot send), a runnable one is both
+    /// runnable and present.
+    func testInboxOutputsCarryParseErrorAndRemovedRecipes() throws {
+        let queue = try TestDatabase.create()
+        let (broken, removed, live) = try queue.write { db -> (Int64, Int64, Int64) in
+            func card(_ automation: Int64, _ at: String) throws -> Int64 {
+                let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
+                return try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run, createdAt: at)
+            }
+            let broken = try TestDatabase.insertAutomation(db, slug: "broken", parseError: "bad frontmatter")
+            let removed = try TestDatabase.insertAutomation(db, slug: "gone", removedAt: "2026-10-03T00:00:00Z")
+            let live = try TestDatabase.insertAutomation(db, slug: "live")
+            return (try card(broken, "2026-10-01T09:00:00Z"), try card(removed, "2026-10-02T09:00:00Z"),
+                    try card(live, "2026-10-03T09:00:00Z"))
+        }
+        let cards = try queue.read { db in try AutomationQueries.fetchInboxOutputs(db) }
+        let byID = Dictionary(uniqueKeysWithValues: cards.map { ($0.id, $0) })
+        XCTAssertEqual(byID[broken]?.recipeState, .parseError)
+        XCTAssertEqual(byID[broken]?.recipeRemoved, false)
+        XCTAssertEqual(byID[removed]?.recipeRemoved, true)
+        XCTAssertEqual(byID[removed].map(InboxCardAction.replyState), .removed)
+        XCTAssertEqual(byID[live]?.recipeState, .runnable)
+        XCTAssertEqual(byID[live]?.recipeRemoved, false)
+        XCTAssertEqual(byID[broken].map(InboxCardAction.replyState), .unreadable)
+    }
+
     /// `since` and `limit` narrow the read (Home); without them every unread
     /// inbox output comes back, however old (the Inbox strip).
     func testInboxOutputsSinceAndLimit() throws {
