@@ -718,6 +718,16 @@ extension WorkbenchesViewModel {
         }
     }
 
+    /// The launch sweep of old pasted Workchat files (#711), once the
+    /// launch's reattach is done (`hostReattach`): only then does `liveIDs`
+    /// hold every run that survived the restart, and those keep theirs.
+    func sweepAttachmentsAfterReattach() async {
+        await hostReattach?.value
+        guard let store = attachmentStore, let center = terminalCenter else { return }
+        let live = center.liveIDs
+        await Task.detached(priority: .utility) { store.sweep(keepingSessions: live) }.value
+    }
+
     /// Adopts the runs the session host still holds (board #496): asks the
     /// host for its list, reads the rows it names, and lets the terminal
     /// center adopt, stop or report each (`TerminalCenter.reattach`). Without
