@@ -2,6 +2,7 @@ package automations
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -57,13 +58,14 @@ var sessionOptionKeys = []string{"prompt", "agent", "title", "wait"}
 func SessionModule(b Backends) Module {
 	return sdkModule{name: "session", fns: map[string]SDKFunc{"session": func(env *Env, call goja.FunctionCall, rt *goja.Runtime) (any, error) {
 		req, reqErr := parseSessionCall(env, rt, call)
+		key := req.replayKey() // before resolve fills the default agent and the label
 		if reqErr == nil && sessionsStarted(env.Journal) >= MaxSessionCalls {
 			reqErr = validationf("session() already started %d sessions in this run; the limit is %d", MaxSessionCalls, MaxSessionCalls)
 		}
 		if reqErr == nil {
 			reqErr = req.resolve(env, b)
 		}
-		return env.Call(StepKindSession, req.agent, req.stepArgs(), func(step *Step) (any, error) {
+		return env.CallWithReplayKey(StepKindSession, req.agent, req.stepArgs(), key, func(step *Step) (any, error) {
 			if reqErr != nil {
 				return nil, reqErr
 			}
@@ -88,6 +90,13 @@ func sessionsStarted(j *Journal) int {
 type sessionCall struct {
 	prompt, agent, title string // title: the script's until resolve formats it
 	wait                 string
+}
+
+// replayKey is what the script asked session() for (its own agent and
+// title, or none): the workbench's default agent may change while the run
+// waits, and a resumed call keeps the agent it started with.
+func (r sessionCall) replayKey() map[string]any {
+	return map[string]any{"prompt": r.prompt, "agent": r.agent, "title": r.title, "wait": r.wait}
 }
 
 func (r sessionCall) stepArgs() map[string]any {
@@ -174,6 +183,14 @@ func (r *sessionCall) resolve(env *Env, b Backends) error {
 
 // runSession runs one validated session() call.
 func runSession(env *Env, b Backends, step *Step, req sessionCall) (any, error) {
+	if args, ok := step.ResumedArgs(); ok {
+		// A resumed run re-enters the wait of the session it started: the
+		// agent and title it resolved then, whatever the default is now.
+		var started struct{ Agent, Title string }
+		if err := json.Unmarshal([]byte(args), &started); err == nil && started.Agent != "" {
+			req.agent, req.title = started.Agent, started.Title
+		}
+	}
 	m, err := manifestOf(env)
 	if err != nil {
 		return nil, err

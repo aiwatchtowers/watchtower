@@ -43,6 +43,10 @@ type Env struct {
 	Buffer     *CommitBuffer
 	Wait       Waiter
 	Trigger    TriggerInfo
+	// Replay records a live run's replay log and plays a resumed run's back
+	// (nil = neither: a dry run, a test env). The sandbox's clock reads
+	// through it.
+	Replay *Replay
 }
 
 // Binding is the registry binding of this run's tool calls (spec §6.1). A
@@ -72,7 +76,42 @@ type encodedResult json.RawMessage
 // write, a proposal). A result beyond MaxSDKResultBytes fails the call and
 // the step with ResultTooLarge; nothing is truncated. A run's call past
 // MaxStepsPerRun is an error step and ends the run (errStepCap).
+//
+// A live run records the call in its replay log with the step's close. A
+// resumed run's call that the log already holds is answered from it: fn
+// does not run and no step is written (AUTO-11); the call it waited in runs
+// fn on its adopted open step, which re-enters the wait.
 func (e *Env) Call(kind, name string, args any, fn func(step *Step) (any, error)) (any, error) {
+	return e.call(kind, name, args, callOpts{}, fn)
+}
+
+// CallWithReplayKey is Call for an SDK function whose step args hold values
+// it derived (a carved budget, a resolved default agent, the provider's
+// name): the replay checks a resumed run's call by key — what the script
+// itself asked for — and its kind, not by the derived args and name, which
+// may differ in the next daemon life without the script having changed.
+func (e *Env) CallWithReplayKey(kind, name string, args, key any, fn func(step *Step) (any, error)) (any, error) {
+	return e.call(kind, name, args, callOpts{keyed: true, key: key}, fn)
+}
+
+// callOpts tunes one call's replay: buffered (CallBuffered) or keyed by key
+// (CallWithReplayKey).
+type callOpts struct {
+	buffered bool
+	keyed    bool
+	key      any
+}
+
+// CallBuffered is Call for an SDK function whose only effect is on the
+// run's commit buffer (state.set, a buffered output): a resumed run's replay
+// runs fn again on a scratch step that is never written, so the buffer the
+// run commits is rebuilt (AUTO-04), and the call's record is still what the
+// script gets.
+func (e *Env) CallBuffered(kind, name string, args any, fn func(step *Step) (any, error)) (any, error) {
+	return e.call(kind, name, args, callOpts{buffered: true}, fn)
+}
+
+func (e *Env) call(kind, name string, args any, opts callOpts, fn func(step *Step) (any, error)) (any, error) {
 	if e.Journal.Count() >= MaxStepsPerRun {
 		// The call past the cap is journaled, then ends the run (the
 		// sandbox aborts on the ScriptError): a looping script cannot
@@ -80,14 +119,25 @@ func (e *Env) Call(kind, name string, args any, fn func(step *Step) (any, error)
 		e.Journal.Begin(kind, name, args).Fail(errStepCap)
 		return nil, errStepCap
 	}
-	step := e.Journal.Begin(kind, name, args)
+	step, played, err := e.beginStep(kind, name, args, opts)
+	if err != nil {
+		return nil, err
+	}
+	if played != nil {
+		return e.replayCall(kind, name, opts.buffered, played, fn)
+	}
 	step.holdFinish()
 	v, err := fn(step)
+	if errors.Is(err, errDaemonStopping) {
+		step.dropHold() // the step stays open and waiting for the resume
+		return nil, err
+	}
 	var encErr error
 	if err == nil {
 		v, encErr = encodeSDKResult(v)
 		err = encErr
 	}
+	step.recordOutcome(v, err)
 	if step.releaseFinish(encErr) {
 		return v, err // fn closed the step; a failed encoding re-closes it as error
 	}
@@ -100,6 +150,48 @@ func (e *Env) Call(kind, name string, args any, fn func(step *Step) (any, error)
 		step.Fail(err)
 	}
 	return v, err
+}
+
+// beginStep begins the call's step. A recorded run's step starts its replay
+// row; a resumed run's playback answers the call from its log (played) or
+// adopts the open waiting step, or reports a divergence.
+func (e *Env) beginStep(kind, name string, args any, opts callOpts) (*Step, *replayed, error) {
+	r := e.Replay
+	if r == nil || e.DryRun {
+		return e.Journal.Begin(kind, name, args), nil, nil
+	}
+	hash := argsHash(args)
+	if opts.keyed {
+		hash = argsHash(map[string]any{"replay_key": opts.key})
+	}
+	if r.Live() {
+		step := e.Journal.Begin(kind, name, args)
+		clock, ok := r.takeClock()
+		step.record(hash, clock, ok)
+		return step, nil, nil
+	}
+	step, played, err := r.next(e.Journal, kind, name, hash, !opts.keyed)
+	if step != nil {
+		if rw, ok := e.Ctx.Value(runWaitKey{}).(*runWait); ok {
+			rw.resumeAt(step.started) // pause_timeout_hours counts from the original wait
+		}
+	}
+	return step, played, err
+}
+
+// replayCall answers a call from the resumed run's log. A buffered call runs
+// fn on a scratch step first, so the commit buffer is rebuilt; an outcome
+// that differs from the record (it threw then, not now, or the other way)
+// is a divergence.
+func (e *Env) replayCall(kind, name string, buffered bool, played *replayed,
+	fn func(step *Step) (any, error)) (any, error) {
+	if buffered {
+		_, err := fn(NewMemoryJournal().Begin(kind, name, nil))
+		if (err != nil) != (played.rec.ErrorJSON != "") {
+			return nil, played.r.diverge(played.rec.Seq)
+		}
+	}
+	return played.value()
 }
 
 // ModelUsage is what one model call reports.
