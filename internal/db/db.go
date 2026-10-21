@@ -113,6 +113,21 @@ func openPoolWith(base driver.Connector) *DB {
 	return &DB{DB: sqlDB, connector: c}
 }
 
+// idleCloseAfter is how long a file handle's pool connection may sit idle
+// before database/sql closes it (the next query opens a fresh one, which
+// pragmaConnector brings back to the handle's pragmas). An idle long-lived
+// process — an MCP server, a warm ai session — then holds no file handle,
+// so compaction and a later one-time encryption do not fight it. The
+// daemon keeps its connection (KeepConnectionWarm). In-memory handles never
+// idle-close: their data lives in the connection. A var so a test can
+// shorten it.
+var idleCloseAfter = 30 * time.Second
+
+// KeepConnectionWarm turns the idle close off for this handle: its
+// connection, and the page cache it holds, stays open while idle. Only the
+// daemon's watchtower.db handle uses it.
+func (db *DB) KeepConnectionWarm() { db.SetConnMaxIdleTime(0) }
+
 // IsForeignKeyViolation reports whether err (or an error it wraps) is SQLite's
 // FOREIGN KEY constraint failure (extended code SQLITE_CONSTRAINT_FOREIGNKEY),
 // so a caller can tell a vanished parent row from any other write failure.
@@ -216,6 +231,9 @@ func Open(dbPath string) (*DB, error) {
 	}
 
 	db := openPool(sqliteDSN(dbPath, openDSN))
+	if dbPath != ":memory:" {
+		db.SetConnMaxIdleTime(idleCloseAfter)
+	}
 
 	if err := db.setupSchema(dbPath); err != nil {
 		db.Close()
@@ -248,6 +266,7 @@ func OpenSidecar(path string, migrations fs.FS) (*sql.DB, error) {
 		return nil, fmt.Errorf("creating database directory: %w", err)
 	}
 	d := openPoolWith(engineConnector(sqliteDSN(path, openDSN)))
+	d.SetConnMaxIdleTime(idleCloseAfter)
 	if err := d.setupSidecarSchema(path, migrations); err != nil {
 		d.Close()
 		return nil, err
@@ -314,6 +333,7 @@ func existingDSN(dbPath string, busy time.Duration, params ...string) string {
 // openExistingDSN opens dsn on one connection and checks the file is there.
 func openExistingDSN(dbPath, dsn string) (*DB, error) {
 	d := openPool(dsn)
+	d.SetConnMaxIdleTime(idleCloseAfter)
 	if err := d.Ping(); err != nil {
 		d.Close()
 		return nil, fmt.Errorf("opening database %s: %w", dbPath, err)
