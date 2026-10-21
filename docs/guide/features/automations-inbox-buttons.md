@@ -17,7 +17,7 @@ A card is written by `output.inbox({title, body, link?, actions?})`. `actions` h
 | Agent | `agent: {task, workbench?}` | Adds a target to the workbench and starts a session on it. |
 | Reply | `reply: "<value>", data?: {…}` | Queues one run of the same recipe. |
 
-The first button is the prominent one. Set `primary: false` on it to make it plain; `primary` can't be `true`. `chat` and `task` take up to 4 KB, a reply `value` up to 100 characters and `data` up to 8 KB of JSON.
+The first button is the prominent one. Set `primary: false` on the first one to make it plain; `primary` is refused anywhere else and can't be `true`. `chat` and `task` take up to 4 KB, a reply `value` up to 100 characters and `data` up to 8 KB of JSON.
 
 A button never grants a permission. Link, Chat and Agent only navigate or prepare. A Reply runs the recipe you confirmed, under the permissions you confirmed. Links are checked when the recipe writes the card and again when you press.
 
@@ -45,7 +45,7 @@ output.inbox({
   link: "https://example.com/browse/PAY-12",
   actions: [
     {label: "Nudge the owner", reply: "nudge", data: {issue: "PAY-12"}},
-    {label: "Open PAY-12", open: "https://example.com/browse/PAY-12", primary: false}
+    {label: "Open PAY-12", open: "https://example.com/browse/PAY-12"}
   ]
 })
 ```
@@ -58,7 +58,7 @@ Its permissions include `inbox:reply` and its outputs include `inbox`. In the sc
 
 ## When it's empty or wrong
 
-- **A Reply button is dimmed with "Needs confirmation".** The recipe changed since you confirmed it. Open the automation, review and confirm it; the button works again.
+- **A Reply button is dimmed with "Needs confirmation".** The recipe isn't confirmed (or changed since you confirmed it). Open the automation, review and confirm it; the button works again.
 - **Dimmed with "Off".** The automation is turned off. Turn it on from its card.
 - **"Recipe can't be read".** The file has a parse error; fix it in the editor.
 - **`output.inbox` fails with PermissionDenied.** A Reply button needs `inbox:reply` in the recipe's permissions.

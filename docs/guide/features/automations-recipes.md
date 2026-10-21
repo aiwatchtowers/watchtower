@@ -9,7 +9,7 @@ A template gives you a working recipe to adapt; the parts tell you what you are 
 The top of the file holds the settings:
 - **Trigger**, exactly one of: a `schedule` (five-field cron, local time), an `event` (see [Event triggers](#event-triggers)), a `button` (with a label of 1 to 24 characters, and optionally `confirm`), or `manual: true` (only when you run it). **Form** calls the button option **When I press a button**. It makes the recipe appear under its name in **Run Automation…** (**⌃⌘R**) and in the tray's **Run automation** submenu, and a workbench recipe is also an item in its workbench's ⚡ menu; with `confirm` it asks before running.
 - **Permissions**, such as `gmail:read@work`, `jira:read@PAY`, `llm:light`, `llm:strong`, `tool:create_jira_issue`. Reading all Slack messages or all calendar events needs `slack:read@*` or `calendar:read@*`. Linear uses team keys: `linear:read@ENG`, `linear:write@ENG`.
-- **Outputs**, any of `inbox`, `briefing`, `report`, `target`, `slack`. Posting to Slack also needs `slack:write@<account>`.
+- **Outputs**, any of `inbox`, `briefing`, `report`, `target`, `slack`. Posting to Slack also needs `slack:write@<account>`; Reply buttons on Inbox cards need `inbox:reply` ([buttons](automations-inbox-buttons.md)).
 - **Budget**: tokens (1,000 to 2,000,000) and minutes (1 to 60).
 - Optionally, how many runs may overlap (1 to 4) and what to do about a missed slot.
 
