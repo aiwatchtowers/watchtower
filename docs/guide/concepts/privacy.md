@@ -51,12 +51,12 @@ A phone pairs only after you confirm it on the Mac with a four-digit code. An iP
 
 ## When something is deleted at the source
 
-A message, mail or comment you delete at its source disappears from Watchtower too, and from search.
+A message, mail, comment or Jira issue you delete at its source disappears from Watchtower too, and from search.
 
 - **Slack:** a message deleted today disappears within a sync cycle or two (the newest two hours are not checked yet). Older days are checked one stored day per sync cycle, so a deletion in an older message can take longer to show. If Slack still returns the message later, it comes back.
 - **Gmail:** mail you delete or trash disappears within a day. Archived mail stays.
 - **IMAP:** mail you delete or move out of the synced folder disappears on the next sync.
-- **Jira:** a deleted comment disappears the next time that issue is synced.
+- **Jira:** a deleted comment disappears the next time that issue is synced. A deleted issue, or one moved to a project you do not sync, disappears within about a day. If you lose access to a single issue, it disappears too; if you lose access to a whole project, its issues stay.
 
 Inbox items made from a deleted message or mail stay, with their text removed. If you leave a Slack channel or lose access to it, its messages stay in Watchtower: only a deletion counts. Summaries, memory notes, ideas and briefings already written from the text are kept as they are. A safety check skips a deletion when the source returns an empty or suspiciously short list, so nothing vanishes because of a bad response.
 

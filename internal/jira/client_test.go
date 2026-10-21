@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -154,4 +155,144 @@ func TestClient_GetMyself_NonOKError(t *testing.T) {
 	_, err := c.GetMyself(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fetching myself")
+}
+
+// TestSearchIssueKeys_PagesToLast: two pages joined by a token come back as
+// one complete listing, and every request asks for keys only.
+func TestSearchIssueKeys_PagesToLast(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		assert.Equal(t, "/rest/api/3/search/jql", r.URL.Path)
+		q := r.URL.Query()
+		assert.Equal(t, "key", q.Get("fields"))
+		assert.Equal(t, "5000", q.Get("maxResults"))
+		assert.Equal(t, "project = PROJ ORDER BY key ASC", q.Get("jql"))
+		if q.Get("nextPageToken") == "" {
+			_, _ = w.Write([]byte(`{"issues":[{"id":"1","key":"PROJ-1"},{"id":"2","key":"PROJ-2"}],"isLast":false,"nextPageToken":"t2"}`))
+			return
+		}
+		assert.Equal(t, "t2", q.Get("nextPageToken"))
+		_, _ = w.Write([]byte(`{"issues":[{"id":"3","key":"PROJ-3"}],"isLast":true}`))
+	}))
+	defer srv.Close()
+
+	c := makeTestClient(t, srv.URL)
+	keys, complete, err := c.searchIssueKeys(context.Background(), "project = PROJ ORDER BY key ASC")
+	require.NoError(t, err)
+	assert.True(t, complete)
+	assert.Equal(t, []string{"PROJ-1", "PROJ-2", "PROJ-3"}, keys)
+	assert.Equal(t, 2, calls)
+}
+
+func TestSearchIssueKeys_IncompleteWithoutToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"issues":[{"id":"1","key":"PROJ-1"}],"isLast":false}`))
+	}))
+	defer srv.Close()
+
+	c := makeTestClient(t, srv.URL)
+	keys, complete, err := c.searchIssueKeys(context.Background(), "project = PROJ")
+	require.NoError(t, err)
+	assert.False(t, complete)
+	assert.Equal(t, []string{"PROJ-1"}, keys)
+}
+
+func TestSearchIssueKeys_IncompleteOnMissingKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"issues":[{"id":"1","key":"PROJ-1"},{"id":"2"}],"isLast":true}`))
+	}))
+	defer srv.Close()
+
+	c := makeTestClient(t, srv.URL)
+	_, complete, err := c.searchIssueKeys(context.Background(), "project = PROJ")
+	require.NoError(t, err)
+	assert.False(t, complete)
+}
+
+func TestSearchIssueKeys_IncompleteOnRepeatedToken(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"issues":[{"id":"%d","key":"PROJ-%d"}],"isLast":false,"nextPageToken":"same"}`, calls, calls)))
+	}))
+	defer srv.Close()
+
+	c := makeTestClient(t, srv.URL)
+	_, complete, err := c.searchIssueKeys(context.Background(), "project = PROJ")
+	require.NoError(t, err)
+	assert.False(t, complete)
+	assert.Equal(t, 2, calls, "the repeated token stops the loop on the second page")
+}
+
+func TestSearchIssueKeys_IncompleteAfterMaxPages(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"issues":[{"id":"%d","key":"PROJ-%d"}],"isLast":false,"nextPageToken":"t%d"}`, calls, calls, calls)))
+	}))
+	defer srv.Close()
+
+	c := makeTestClient(t, srv.URL)
+	c.rateLimiter = &RateLimiter{tokens: 1000, maxTokens: 1000, refillRate: 1000, lastRefill: time.Now()}
+	keys, complete, err := c.searchIssueKeys(context.Background(), "project = PROJ")
+	require.NoError(t, err)
+	assert.False(t, complete, "a listing that never reaches its last page is incomplete")
+	assert.Equal(t, maxKeyPages, calls)
+	assert.Len(t, keys, maxKeyPages)
+}
+
+func TestSearchIssueKeys_ErrorIsReturned(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := makeTestClient(t, srv.URL)
+	keys, complete, err := c.searchIssueKeys(context.Background(), "project = PROJ")
+	require.Error(t, err)
+	assert.False(t, complete)
+	assert.Empty(t, keys)
+}
+
+func TestIssueCurrentKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "key", r.URL.Query().Get("fields"))
+		switch r.URL.Path {
+		case "/rest/api/3/issue/PROJ-404":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"errorMessages":["Issue does not exist or you do not have permission to see it."]}`))
+		case "/rest/api/3/issue/PROJ-1":
+			_, _ = w.Write([]byte(`{"id":"1","key":"PROJ-1"}`))
+		case "/rest/api/3/issue/PROJ-6":
+			_, _ = w.Write([]byte(`{"id":"6","key":"OTHER-9"}`))
+		case "/rest/api/3/issue/PROJ-7":
+			_, _ = w.Write([]byte(`{"id":"7"}`))
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer srv.Close()
+
+	c := makeTestClient(t, srv.URL)
+	ctx := context.Background()
+
+	got, err := c.issueCurrentKey(ctx, "PROJ-404")
+	require.NoError(t, err)
+	assert.Equal(t, "", got)
+
+	got, err = c.issueCurrentKey(ctx, "PROJ-1")
+	require.NoError(t, err)
+	assert.Equal(t, "PROJ-1", got)
+
+	got, err = c.issueCurrentKey(ctx, "PROJ-6")
+	require.NoError(t, err)
+	assert.Equal(t, "OTHER-9", got)
+
+	_, err = c.issueCurrentKey(ctx, "PROJ-500")
+	require.Error(t, err)
+
+	got, err = c.issueCurrentKey(ctx, "PROJ-7")
+	require.Error(t, err, "a 200 without a key is never read as deleted")
+	assert.Equal(t, "", got)
 }
