@@ -104,7 +104,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
 );
 
 -- Triggers to keep FTS index in sync with messages table. The index is keyed
--- by rowid: messages_fts.rowid = messages.rowid (migration 00146).
+-- by rowid: messages_fts.rowid = messages.rowid (migration 00147).
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN
@@ -1416,7 +1416,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts USING fts5(
 
 -- Triggers to keep the FTS index in sync with meeting_transcripts. The index
 -- is keyed by rowid: transcripts_fts.rowid = meeting_transcripts.id
--- (migration 00146).
+-- (migration 00147).
 CREATE TRIGGER IF NOT EXISTS meeting_transcripts_ai AFTER INSERT ON meeting_transcripts
 WHEN NEW.transcript_text != ''
 BEGIN
@@ -3142,7 +3142,7 @@ CREATE INDEX IF NOT EXISTS idx_instruction_suggestions_status ON instruction_sug
 -- Database maintenance (00145, #850): compaction state for `watchtower db compact`.
 -- Keys: last_compacted_version, compacted_at (RFC 3339 UTC), compact_failures,
 -- compact_failures_version. Absent key = never compacted / no failures.
--- Messages search fill (00146, #872): fts_rebuild_pending ('1' while the old
+-- Messages search fill (00147, #872): fts_rebuild_pending ('1' while the old
 -- index messages_fts_legacy is being copied into messages_fts) and
 -- fts_rebuild_cursor_messages (last messages.rowid covered). Absent = not
 -- pending / cursor 0.

@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// dropEmptyMessagesSearchLegacy finishes migration 00146 when nothing is left
+// dropEmptyMessagesSearchLegacy finishes migration 00147 when nothing is left
 // to fill: the migration keeps the old messages index as messages_fts_legacy
 // and marks fts_rebuild_pending unconditionally, since goose SQL cannot drop a
 // table conditionally. With no indexable message (fresh install, or only

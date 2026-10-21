@@ -38,7 +38,7 @@ func TestMigrationsDownAllUpAllRoundTrip(t *testing.T) {
 	}
 
 	// Up through migrate, as Open does, not bare gooseUp: the fresh schema
-	// above came from Open, whose migrate runs a post-goose step (00146's
+	// above came from Open, whose migrate runs a post-goose step (00147's
 	// legacy cleanup). Bare goose would leave messages_fts_legacy on this
 	// empty database and the round trip would differ for a reason that is
 	// not a broken Down.

@@ -14,7 +14,7 @@ import (
 )
 
 // db_maintenance keys of the messages search fill: the fill's own
-// (migration 00146), and the launch step's fill failure counter.
+// (migration 00147), and the launch step's fill failure counter.
 const (
 	maintFTSRebuildPending         = "fts_rebuild_pending"
 	maintFTSRebuildCursor          = "fts_rebuild_cursor_messages"
@@ -203,7 +203,7 @@ const (
 )
 
 // RebuildMessagesSearch frees messages_fts_legacy, then fills the rowid-keyed
-// messages_fts left empty by migration 00146, in chunks, and clears the fill
+// messages_fts left empty by migration 00147, in chunks, and clears the fill
 // keys.
 //
 // The legacy index goes first, so the new index reuses its pages and the

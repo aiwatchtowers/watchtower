@@ -50,7 +50,7 @@ func seedFillMessages(t *testing.T, d *DB) {
 }
 
 // pendingFillDB opens a file database holding seedFillMessages with the fill
-// pending (the real 00146 upgrade replayed), and returns it with its path
+// pending (the real 00147 upgrade replayed), and returns it with its path
 // and the search results captured before the upgrade.
 func pendingFillDB(t *testing.T) (*DB, string, map[string][]Message) {
 	t.Helper()
@@ -407,7 +407,7 @@ func TestRebuildMessagesSearch_NotPendingIsNoOp(t *testing.T) {
 // or it failed) on an install with no message: the pending key and the
 // legacy table are there over an empty messages table. The fill converges.
 func TestRebuildMessagesSearch_PendingWithEmptyMessagesCompletes(t *testing.T) {
-	d := rawFileDBAt(t, 146)
+	d := rawFileDBAt(t, 147)
 	require.True(t, hasSchemaTable(t, d, "messages_fts_legacy"))
 	require.Equal(t, 1, maintenanceKeyCount(t, d))
 
@@ -493,7 +493,7 @@ func TestRebuildMessagesSearchAt_SchemaPending(t *testing.T) {
 	raw, err := sql.Open("sqlite", path)
 	require.NoError(t, err)
 	raw.SetMaxOpenConns(1)
-	require.NoError(t, gooseUpTo(raw, "migrations", 145))
+	require.NoError(t, gooseUpTo(raw, "migrations", 146))
 	require.NoError(t, raw.Close())
 	stubFreeDisk(t, 1<<50)
 	versions := func() (int, int) {

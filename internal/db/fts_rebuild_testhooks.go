@@ -9,7 +9,7 @@ import (
 	"github.com/pressly/goose/v3"
 )
 
-// ReplayMessagesSearchUpgradeForTest takes d back below migration 00146 and
+// ReplayMessagesSearchUpgradeForTest takes d back below migration 00147 and
 // migrates it again — the real upgrade path over the messages d holds — so a
 // test outside this package can build an install with the messages search
 // fill pending. Outside a test binary it refuses (testing.Testing).
@@ -18,10 +18,10 @@ func ReplayMessagesSearchUpgradeForTest(d *DB) error {
 		return errors.New("db.ReplayMessagesSearchUpgradeForTest called outside a test binary")
 	}
 	gooseMu.Lock()
-	err := goose.DownTo(d.DB, "migrations", 145)
+	err := goose.DownTo(d.DB, "migrations", 146)
 	gooseMu.Unlock()
 	if err != nil {
-		return fmt.Errorf("migrating down to 145: %w", err)
+		return fmt.Errorf("migrating down to 146: %w", err)
 	}
 	return d.migrate()
 }

@@ -16,11 +16,11 @@ import (
 
 // TestSearchIdx01_MigrationsKeepMessagesRowid pins SEARCHIDX-01's migration
 // half: messages_fts rows are keyed by messages.rowid, so every migration
-// after 00146 that rebuilds messages must copy rowid. The seed leaves rowid
+// after 00147 that rebuilds messages must copy rowid. The seed leaves rowid
 // gaps, which a rebuild without rowid would close and so shift every key.
 func TestSearchIdx01_MigrationsKeepMessagesRowid(t *testing.T) {
 	t.Parallel()
-	d := rawFileDBAt(t, 146)
+	d := rawFileDBAt(t, 147)
 	for i := range 50 {
 		_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', ?, 'U1', ?)`,
 			fmt.Sprintf("1.%06d", i), fmt.Sprintf("indexed words %d", i))

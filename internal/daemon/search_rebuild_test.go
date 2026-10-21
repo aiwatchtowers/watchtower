@@ -36,7 +36,7 @@ func newSearchRebuildTestDaemon(t *testing.T) (*Daemon, *db.DB, *bytes.Buffer) {
 	return d, database, logs
 }
 
-// seedPendingSearchFill inserts n indexable messages and replays the 00146
+// seedPendingSearchFill inserts n indexable messages and replays the 00147
 // upgrade, so the fill is pending with an empty new index.
 func seedPendingSearchFill(t *testing.T, database *db.DB, n int) {
 	t.Helper()

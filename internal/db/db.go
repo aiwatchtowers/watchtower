@@ -578,7 +578,7 @@ func (db *DB) migrate() error {
 	if err := goose.Up(db.DB, "migrations"); err != nil {
 		return err
 	}
-	// After goose: the conditional half of 00146 (see
+	// After goose: the conditional half of 00147 (see
 	// dropEmptyMessagesSearchLegacy). Best effort: a failure leaves the
 	// legacy table and the pending key behind, and the messages search fill
 	// is the safety net — it handles an empty messages table and drops the

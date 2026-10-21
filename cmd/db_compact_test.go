@@ -386,7 +386,7 @@ func TestDBCompact_NoDatabase(t *testing.T) {
 }
 
 // seedPendingFill adds messages to the test database and replays migration
-// 00146 over them, so the messages search fill is pending, and returns the
+// 00147 over them, so the messages search fill is pending, and returns the
 // fill check.
 func seedPendingFill(t *testing.T, cfg *config.Config) db.MessagesSearchCheck {
 	t.Helper()

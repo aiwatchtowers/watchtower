@@ -17,7 +17,7 @@ var searchRebuildBudget = 30 * time.Second
 var searchRebuildChunkRows = 0
 
 // phaseMessagesSearchRebuild finishes a pending messages search fill
-// (migration 00146) in the background, for installs whose launch step
+// (migration 00147) in the background, for installs whose launch step
 // (`db compact --if-due`) did not run, did not finish or gave up after
 // failures. Mechanical, no AI, no pipeline_runs row; independent of the
 // compaction's and the launch fill's failure caps. It is inert when nothing

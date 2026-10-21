@@ -10,7 +10,7 @@
 > proposed change that would break a guard test or remove a contract must be
 > raised as a question before touching code.
 
-**Module:** `internal/db/migrations/00146_fts_rowid.sql`, `internal/db/fts_rebuild.go`, `internal/db/messages.go`, `internal/db/search.go`
+**Module:** `internal/db/migrations/00147_fts_rowid.sql`, `internal/db/fts_rebuild.go`, `internal/db/messages.go`, `internal/db/search.go`
 **Last full audit:** 2026-10-20
 
 ## SEARCHIDX-01 — Search index rows are keyed by their source row's rowid

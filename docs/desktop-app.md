@@ -150,7 +150,7 @@ CREATE VIRTUAL TABLE messages_fts USING fts5(
     tokenize='porter unicode61'
 );
 ```
-Kept in sync by triggers on `messages`, keyed by rowid (`messages_fts.rowid = messages.rowid`, migration 00146; SEARCHIDX-01). Only a message with text that is not deleted is indexed:
+Kept in sync by triggers on `messages`, keyed by rowid (`messages_fts.rowid = messages.rowid`, migration 00147; SEARCHIDX-01). Only a message with text that is not deleted is indexed:
 ```sql
 CREATE TRIGGER messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
@@ -174,7 +174,7 @@ BEGIN
     WHERE NEW.text != '' AND NEW.is_deleted = 0;
 END;
 ```
-The Desktop never writes `messages` with `INSERT OR REPLACE`/`REPLACE INTO`: REPLACE gives the row a new rowid and orphans its index row. After an upgrade to 00146 the index fills in the background (see `docs/features/db-compact.md`, "Search index rebuild"), so until then older messages may be missing from it. App can query directly:
+The Desktop never writes `messages` with `INSERT OR REPLACE`/`REPLACE INTO`: REPLACE gives the row a new rowid and orphans its index row. After an upgrade to 00147 the index fills in the background (see `docs/features/db-compact.md`, "Search index rebuild"), so until then older messages may be missing from it. App can query directly:
 ```sql
 SELECT m.* FROM messages m
 JOIN messages_fts fts ON fts.channel_id = m.channel_id AND fts.ts = m.ts

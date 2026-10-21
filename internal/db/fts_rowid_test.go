@@ -271,9 +271,9 @@ func rawFileDBAt(t *testing.T, version int64) *DB {
 	return &DB{DB: raw}
 }
 
-func TestMigration146_UpgradeKeepsLegacyAndMarksPending(t *testing.T) {
+func TestMigration147_UpgradeKeepsLegacyAndMarksPending(t *testing.T) {
 	t.Parallel()
-	d := rawFileDBAt(t, 145)
+	d := rawFileDBAt(t, 146)
 	for i := range 10 {
 		_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', ?, 'U1', ?)`,
 			fmt.Sprintf("1.%06d", i), fmt.Sprintf("indexable %d", i))
@@ -306,7 +306,7 @@ func TestMigration146_UpgradeKeepsLegacyAndMarksPending(t *testing.T) {
 	assert.Equal(t, hitsBefore, hitsAfter)
 }
 
-func TestMigration146_FreshInstallHasNoLegacy(t *testing.T) {
+func TestMigration147_FreshInstallHasNoLegacy(t *testing.T) {
 	t.Parallel()
 	d := openTestDB(t)
 	assert.Zero(t, queryInt(t, d, `SELECT COUNT(*) FROM sqlite_master WHERE name LIKE 'messages_fts_legacy%'`))
@@ -319,9 +319,9 @@ func TestMigration146_FreshInstallHasNoLegacy(t *testing.T) {
 	assert.Zero(t, maintenanceKeyCount(t, f))
 }
 
-func TestMigration146_OnlyNonIndexableRowsDropsLegacy(t *testing.T) {
+func TestMigration147_OnlyNonIndexableRowsDropsLegacy(t *testing.T) {
 	t.Parallel()
-	d := rawFileDBAt(t, 145)
+	d := rawFileDBAt(t, 146)
 	_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, is_deleted) VALUES
 		('C1', '1.000001', 'U1', '', 0), ('C1', '1.000002', 'U1', 'tombstoned', 1)`)
 	require.NoError(t, err)
@@ -332,7 +332,7 @@ func TestMigration146_OnlyNonIndexableRowsDropsLegacy(t *testing.T) {
 	assert.Zero(t, maintenanceKeyCount(t, d))
 }
 
-func TestMigration146_DownRestoresColumnKeyedIndexes(t *testing.T) {
+func TestMigration147_DownRestoresColumnKeyedIndexes(t *testing.T) {
 	t.Parallel()
 	d := openTestDB(t)
 	_, err := d.Exec(`INSERT INTO messages (channel_id, ts, user_id, text, is_deleted) VALUES
@@ -346,7 +346,7 @@ func TestMigration146_DownRestoresColumnKeyedIndexes(t *testing.T) {
 	_, err = d.Exec(`INSERT INTO db_maintenance (key, value) VALUES ('fts_rebuild_cursor_messages', '1')`)
 	require.NoError(t, err)
 
-	require.NoError(t, gooseDownTo(d.DB, "migrations", 145))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 146))
 
 	assert.False(t, hasSchemaTable(t, d, "messages_fts_legacy"))
 	assert.Equal(t, 2, queryInt(t, d, `SELECT COUNT(*) FROM messages_fts`))
@@ -378,9 +378,9 @@ func TestSchemaDrift_ToleratesLegacyTable(t *testing.T) {
 
 // A failed post-goose cleanup does not fail migrate: the legacy table and
 // the pending key stay for the fill to finish.
-func TestMigration146_CleanupFailureDoesNotFailMigrate(t *testing.T) {
+func TestMigration147_CleanupFailureDoesNotFailMigrate(t *testing.T) {
 	t.Parallel()
-	d := rawFileDBAt(t, 146)
+	d := rawFileDBAt(t, 147)
 	require.True(t, hasSchemaTable(t, d, "messages_fts_legacy"), "goose alone keeps the legacy table")
 	// Without db_maintenance the cleanup's DELETE fails and its tx rolls back.
 	_, err := d.Exec(`DROP TABLE db_maintenance`)
