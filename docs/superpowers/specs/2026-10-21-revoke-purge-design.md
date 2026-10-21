@@ -1,7 +1,10 @@
 # Revoked access wipes the account's data — design (board #601)
 
-Part of board group #595 (corporate data on the Mac). Status: draft for the
-owner's review.
+Part of board group #595 (corporate data on the Mac). Status: approved by the
+owner 2026-10-21 (ask #474) with the recommended answer to every question:
+Q1 on in the corp build and under MDM, opt-in elsewhere; Q2 (a); Q3 72 h;
+Q4 30 days → purge with the same notice. The LINEAR-03 amendment in §6 is
+approved with it.
 
 ## Goal
 
