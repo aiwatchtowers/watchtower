@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UniformTypeIdentifiers
 import WatchtowerCore
 
 /// What the Workchat asks of `SessionControl`: its gates and the permission
@@ -30,6 +31,9 @@ final class WorkchatModel {
 
     let sessionID: Int64
     var draft = ""
+    /// Files and pasted images waiting to go with the next line, as the
+    /// composer's chips; in memory only (negative ids, `path` absolute).
+    private(set) var attachments: [ChatAttachment] = []
     /// The lines sent from here and not yet shown by the feed, oldest first.
     private(set) var outgoing: [WorkchatOutgoing] = []
     /// Why the last Stop did not go (refused, or not checked); the next Stop clears it.
@@ -48,6 +52,11 @@ final class WorkchatModel {
     @ObservationIgnored private let control: any WorkchatControl
     @ObservationIgnored private let lineDelivery: SessionLineDelivery
     @ObservationIgnored private let now: () -> Date
+    /// Where pasted bytes are saved; nil → a paste stays a text paste.
+    @ObservationIgnored private let attachmentStore: WorkchatAttachmentStore?
+    @ObservationIgnored private var attachmentCounter: Int64 = 0
+    /// The chips of a line on its way, to bring back if it cannot go.
+    @ObservationIgnored private var sentAttachments: [UUID: [ChatAttachment]] = [:]
     /// Codex has not been verified to queue a Return typed mid-turn, and an
     /// unknown kind is not trusted to: both keep the phone's busy hold.
     @ObservationIgnored private let kind: TerminalSession.Kind?
@@ -67,9 +76,11 @@ final class WorkchatModel {
         control: any WorkchatControl,
         lineDelivery: SessionLineDelivery,
         kind: TerminalSession.Kind? = nil,
+        attachmentStore: WorkchatAttachmentStore? = nil,
         now: @escaping () -> Date = Date.init
     ) {
         self.sessionID = sessionID
+        self.attachmentStore = attachmentStore
         self.kind = kind
         self.control = control
         self.lineDelivery = lineDelivery
@@ -83,12 +94,18 @@ final class WorkchatModel {
     /// that cannot go comes back to it.
     func send() async {
         // Line breaks stay (owner ask #421); only the ends are trimmed.
-        let text = draft.replacingOccurrences(of: "\r\n", with: "\n")
+        let typed = draft.replacingOccurrences(of: "\r\n", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        guard !typed.isEmpty || !attachments.isEmpty else { return }
+        let paths = attachments.map(\.path)
+        let text = ([typed].filter { !$0.isEmpty } + paths.map(Self.quoted)).joined(separator: "\n")
         draft = ""
         let id = UUID()
-        outgoing.append(WorkchatOutgoing(id: id, text: text, sentAt: now(), state: .sending))
+        sentAttachments[id] = attachments
+        attachments = []
+        outgoing.append(WorkchatOutgoing(
+            id: id, text: text, sentAt: now(), state: .sending, typedText: typed, attachmentPaths: paths
+        ))
         let delivery = await lineDelivery.deliverLine(
             text, key: .workchat(id), sessionID: sessionID,
             gate: { [weak control, busyHold = holdsUntilIdle] in
@@ -100,6 +117,50 @@ final class WorkchatModel {
             }
         )
         settle(id, delivery)
+    }
+
+    // MARK: - Attachments
+
+    /// Files from Finder or a drop: sent as their own paths.
+    func attach(files: [URL]) {
+        for url in files {
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey])
+            addChip(path: url.path, name: url.lastPathComponent, size: Int64(values?.fileSize ?? 0))
+        }
+    }
+
+    /// Pasted image or PDF bytes, saved under the session's folder and sent
+    /// as that path. False → the paste is not taken (no store, or a write
+    /// failed: logged) and ⌘V falls back to its text.
+    func attach(data: Data, name: String) async -> Bool {
+        guard let attachmentStore else { return false }
+        do {
+            let url = try attachmentStore.save(data, name: name, sessionID: sessionID)
+            addChip(path: url.path, name: name, size: Int64(data.count))
+            return true
+        } catch {
+            NSLog("WorkchatModel: saving a pasted file for session %lld failed: %@", sessionID, String(describing: error))
+            return false
+        }
+    }
+
+    func removeAttachment(_ id: Int64) {
+        attachments.removeAll { $0.id == id }
+    }
+
+    private func addChip(path: String, name: String, size: Int64) {
+        attachmentCounter -= 1
+        let mime = UTType(filenameExtension: (path as NSString).pathExtension)?.preferredMIMEType
+            ?? "application/octet-stream"
+        attachments.append(ChatAttachment(
+            id: attachmentCounter, conversationID: nil, projectID: nil, messageID: nil, name: name,
+            mime: mime, size: size, path: path, sha256: "", createdAt: now().timeIntervalSince1970
+        ))
+    }
+
+    /// A path with a space goes in double quotes, as a terminal reads it.
+    private static func quoted(_ path: String) -> String {
+        path.contains(" ") ? "\"\(path)\"" : path
     }
 
     /// Drops a queued line before it goes. A line already on its way (its
@@ -273,11 +334,15 @@ final class WorkchatModel {
         if state == .sent, !holdsUntilIdle { outgoing[index].sentWhileBusy = control.isWorking(sessionID) }
         switch state {
         case .sent, .typed, .copied:
+            sentAttachments[id] = nil
             outgoing[index].deliveredAt = now()
             // The feed read that holds its echo may have come while it was
             // still on its way; no later read would bring it again.
             reconcile(with: lastEntries)
-        case .notSent: if draft.isEmpty { draft = outgoing[index].text }
+        case .notSent:
+            if draft.isEmpty { draft = outgoing[index].typedText }
+            if attachments.isEmpty, let chips = sentAttachments[id] { attachments = chips }
+            sentAttachments[id] = nil
         case .sending, .queued: break
         }
     }

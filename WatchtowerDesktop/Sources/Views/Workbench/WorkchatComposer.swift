@@ -25,7 +25,12 @@ struct WorkchatComposer: View {
                 onSend: send,
                 onStop: stop,
                 placeholder: "Message the agent… (/ for commands)",
-                onEscape: escape
+                onEscape: escape,
+                attachments: model.attachments,
+                onAttachFiles: { model.attach(files: $0) },
+                onPasteData: { await model.attach(data: $0, name: $1) },
+                onRemoveAttachment: { model.removeAttachment($0) },
+                hasPendingContent: !model.attachments.isEmpty
             )
         }
     }

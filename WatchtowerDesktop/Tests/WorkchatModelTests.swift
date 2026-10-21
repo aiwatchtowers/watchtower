@@ -68,7 +68,10 @@ final class WorkchatModelTests: XCTestCase {
     private func makeModel(_ sessionID: Int64, control: (any WorkchatControl)? = nil) throws -> WorkchatModel {
         let clock = try XCTUnwrap(clock)
         let control = try control ?? makeControl()
-        return WorkchatModel(sessionID: sessionID, control: control, lineDelivery: delivery, kind: .claude) { clock.now }
+        return WorkchatModel(
+            sessionID: sessionID, control: control, lineDelivery: delivery, kind: .claude,
+            attachmentStore: WorkchatAttachmentStore(root: folder.appendingPathComponent("att"))
+        ) { clock.now }
     }
 
     /// Lets one test make the permission read, the answer or the interrupt
@@ -169,6 +172,81 @@ final class WorkchatModelTests: XCTestCase {
 
     private func owner(_ text: String, after seconds: TimeInterval) -> SessionFeedEntry {
         SessionFeedEntry(id: UUID().uuidString, kind: "owner", at: clock.now.addingTimeInterval(seconds), text: text)
+    }
+
+    // MARK: - Attachments
+
+    func testPasteImageAddsChip() async throws {
+        let model = try makeModel(try await liveSession())
+
+        let taken = await model.attach(data: Data([1, 2]), name: "Pasted image.png")
+
+        XCTAssertTrue(taken)
+        let chip = try XCTUnwrap(model.attachments.first)
+        XCTAssertLessThan(chip.id, 0)
+        XCTAssertEqual(chip.name, "Pasted image.png")
+        XCTAssertEqual(chip.mime, "image/png")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: chip.path))
+        model.removeAttachment(chip.id)
+        XCTAssertTrue(model.attachments.isEmpty)
+    }
+
+    func testAttachFilesUsesPathsAsIs() async throws {
+        let model = try makeModel(try await liveSession())
+        let file = folder.appendingPathComponent("a b.png")
+        try Data([9]).write(to: file)
+
+        model.attach(files: [file])
+
+        XCTAssertEqual(model.attachments.first?.path, file.path)
+        XCTAssertEqual(model.attachments.first?.size, 1)
+    }
+
+    func testSendComposesTextAndQuotedPaths() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        let file = folder.appendingPathComponent("a b.png")
+        try Data([9]).write(to: file)
+        model.attach(files: [file])
+        model.draft = "look"
+
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.first?.text, "look\n\"\(file.path)\"")
+        XCTAssertEqual(model.outgoing.first?.typedText, "look")
+        XCTAssertTrue(model.attachments.isEmpty, "chips clear on send")
+    }
+
+    func testAttachmentsOnlySends() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        _ = await model.attach(data: Data([1]), name: "x.png")
+        let path = try XCTUnwrap(model.attachments.first?.path)
+
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.first?.text, path.contains(" ") ? "\"\(path)\"" : path)
+        XCTAssertEqual(model.outgoing.first?.state, .sent)
+    }
+
+    func testNotSentRestoresAttachments() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let model = try makeModel(session)
+        _ = await model.attach(data: Data([1]), name: "x.png")
+        model.draft = "look"
+        await model.send()
+        XCTAssertTrue(model.attachments.isEmpty)
+
+        processes[0].onExit?(0)
+        statuses[session] = nil
+        await delivery.deliverHeld()
+
+        XCTAssertEqual(model.outgoing.first?.state, .notSent)
+        XCTAssertEqual(model.draft, "look")
+        XCTAssertEqual(model.attachments.count, 1)
     }
 
     // MARK: - Send

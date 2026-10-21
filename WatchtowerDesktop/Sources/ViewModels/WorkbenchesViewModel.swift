@@ -489,6 +489,8 @@ final class WorkbenchesViewModel {
     /// lines survive pane switches; dropped with the session
     /// (`forgetProcessState`). Created during a view's body, hence not observed.
     @ObservationIgnored var workchatModels: [Int64: WorkchatModel] = [:]
+    /// `<workspace>/workchat-attachments`, next to the open database.
+    @ObservationIgnored var attachmentStore: WorkchatAttachmentStore?
     /// Find Repeats' model per workbench, made on first use.
     @ObservationIgnored var reviewLessonModels: [Int64: ReviewLessonsModel] = [:]
 

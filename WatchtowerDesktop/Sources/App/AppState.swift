@@ -1744,6 +1744,15 @@ final class AppState {
             terminalCenter: terminalCenter, agentStates: agentStates, lineDelivery: lineDelivery,
             sessionControl: makeSessionControl(dbPool: dbPool, agentStates: agentStates, lineDelivery: lineDelivery)
         )
+        let attachments = WorkchatAttachmentStore(
+            root: URL(fileURLWithPath: dbPool.path).deletingLastPathComponent()
+                .appendingPathComponent("workchat-attachments", isDirectory: true)
+        )
+        vm.attachmentStore = attachments
+        // Old pasted files go; sessions running now keep theirs (the terminal
+        // center's live ids at this point — the simplest source, no DB read).
+        let live = terminalCenter.liveIDs
+        Task.detached(priority: .utility) { attachments.sweep(keepingSessions: live) }
         // Settings → Workbench → Default agent (board #399, D1), read at each launch.
         vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() }
         vm.automationsReady = { [weak self] in self?.automationsReady ?? false }
