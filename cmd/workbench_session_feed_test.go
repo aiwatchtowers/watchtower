@@ -104,11 +104,14 @@ func TestSessionFeedJSON_PinnedKeys(t *testing.T) {
 			"message": map[string]any{"id": "m2", "role": "assistant", "content": []map[string]any{{
 				"type": "tool_use", "id": "toolu_1", "name": "Agent",
 				"input": map[string]any{"subagent_type": "Explore", "description": "look around"}}}}}),
+		jsonRec(map[string]any{"type": "user", "uuid": "r1", "timestamp": "2026-10-01T10:00:07Z",
+			"message": map[string]any{"role": "user", "content": []map[string]any{{
+				"type": "tool_result", "tool_use_id": "toolu_1", "content": "done"}}}}),
 		feedUser("u2", "Ask #9 answered (Q: A) — read it with get_ask 9 using the skill."),
 		feedUser("u3", "<task-notification>\n<task-id>t1</task-id>\n<summary>CI done</summary>\n</task-notification>"),
 	)
 	got := fx.feedJSON(t)
-	assert.Equal(t, []string{"cursor", "entries", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(got))
+	assert.Equal(t, []string{"activity", "cursor", "entries", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(got))
 	entries := got["entries"].([]any)
 	require.Len(t, entries, 5)
 	assert.Equal(t, []string{"at", "conversation", "id", "kind", "text"}, feedKeys(entries[0].(map[string]any)))
@@ -122,6 +125,7 @@ func TestSessionFeedJSON_PinnedKeys(t *testing.T) {
 	sub := entries[2].(map[string]any)
 	assert.Equal(t, []string{"agent_id", "description", "status", "tool_use_id", "type"}, feedKeys(sub["subagent"].(map[string]any)))
 	assert.Len(t, got["subagents"], 1)
+	assert.Nil(t, got["activity"], "every call in this transcript is closed")
 	assert.NotEmpty(t, got["cursor"])
 	assert.Equal(t, map[string]any{}, got["unknown_records"])
 }
@@ -219,7 +223,7 @@ func TestSessionFeed_SubagentDrillIn(t *testing.T) {
 
 	top := fx.feedJSON(t, "--subagent", "toolu_1")
 	assert.Equal(t, "", top["cursor"])
-	assert.Equal(t, []string{"cursor", "entries", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(top))
+	assert.Equal(t, []string{"activity", "cursor", "entries", "session_id", "skipped", "subagents", "unknown_records"}, feedKeys(top))
 	assert.Len(t, top["subagents"], 1)
 	assert.Equal(t, "toolu_2", top["subagents"].([]any)[0].(map[string]any)["id"])
 
@@ -277,4 +281,58 @@ func TestSessionFeed_CodexSessionReturnsEntries(t *testing.T) {
 	assert.Equal(t, "hello codex", entries[0].(map[string]any)["text"])
 	assert.Equal(t, "agent", entries[1].(map[string]any)["kind"])
 	assert.NotEmpty(t, got["cursor"])
+}
+
+func feedToolUse(uuid, id, name string, input map[string]any) string {
+	return jsonRec(map[string]any{"type": "assistant", "uuid": uuid, "timestamp": "2026-10-01T10:00:09Z",
+		"message": map[string]any{"id": "m-" + uuid, "role": "assistant", "content": []map[string]any{{
+			"type": "tool_use", "id": id, "name": name, "input": input}}}})
+}
+
+func TestSessionFeed_ActivityOpenTool(t *testing.T) {
+	fx := newSessionFeedFx(t, "conv-1")
+	fx.transcript(t, "conv-1", feedUser("u1", "go"),
+		feedToolUse("a2", "toolu_b", "Bash", map[string]any{"command": "make test"}))
+	got := fx.feedJSON(t)
+	act, ok := got["activity"].(map[string]any)
+	require.True(t, ok, "%v", got["activity"])
+	assert.Equal(t, []string{"more", "started_at", "summary", "tool"}, feedKeys(act))
+	assert.Equal(t, "Bash", act["tool"])
+	assert.Equal(t, "make test", act["summary"])
+	assert.Equal(t, "2026-10-01T10:00:09Z", act["started_at"])
+}
+
+func TestActivity_EmptyTailKeepsOpenTool(t *testing.T) {
+	fx := newSessionFeedFx(t, "conv-1")
+	fx.transcript(t, "conv-1", feedUser("u1", "go"),
+		feedToolUse("a2", "toolu_b", "Bash", map[string]any{"command": "make test"}))
+	first := fx.feedJSON(t)
+	again := fx.feedJSON(t, "--after", first["cursor"].(string))
+	assert.Empty(t, again["entries"])
+	act, ok := again["activity"].(map[string]any)
+	require.True(t, ok, "%v", again["activity"])
+	assert.Equal(t, "Bash", act["tool"])
+}
+
+func TestSessionFeed_SubagentActivity(t *testing.T) {
+	fx := newSessionFeedFx(t, "conv-1")
+	fx.transcript(t, "conv-1", feedUser("u1", "go"),
+		feedToolUse("a1", "toolu_1", "Agent", map[string]any{"subagent_type": "Explore", "description": "look"}))
+	subDir := filepath.Join(fx.dir, "conv-1", "subagents")
+	require.NoError(t, os.MkdirAll(subDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(subDir, "agent-aa.meta.json"),
+		[]byte(`{"toolUseId":"toolu_1","finished":false,"agentType":"Explore"}`), 0o600))
+	side := func(line string) string {
+		var m map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &m))
+		m["isSidechain"] = true
+		return jsonRec(m)
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(subDir, "agent-aa.jsonl"),
+		[]byte(side(feedUser("s1", "task"))+side(feedToolUse("s2", "toolu_r", "Read", map[string]any{"file_path": "/x/y.go"}))), 0o600))
+	got := fx.feedJSON(t, "--subagent", "toolu_1")
+	act, ok := got["activity"].(map[string]any)
+	require.True(t, ok, "%v", got["activity"])
+	assert.Equal(t, "Read", act["tool"])
+	assert.Equal(t, "y.go", act["summary"])
 }
