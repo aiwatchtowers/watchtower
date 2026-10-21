@@ -33,46 +33,46 @@ final class DayPlanViewModel {
 
     // MARK: - Load
 
+    /// The date whose plan (or its absence) `plan`/`items` show; nil before
+    /// the first load. One view model serves whichever day is on screen, so a
+    /// view checks this before it shows the plan as its date's.
+    private(set) var loadedDate: String?
+
     func loadFor(date: String) async {
         currentDate = date
         await reload()
     }
 
+    /// Reads the plan, its items and their calendar events in one read and
+    /// shows them together. A load of another date that started meanwhile
+    /// wins: this one's result (or error) is dropped, so one date's items
+    /// never show under another date's plan.
     private func reload() async {
+        let date = currentDate
         do {
-            let fetchedPlan = try await dbPool.read { [currentDate] db in
-                try DayPlanQueries.fetchByDate(db, date: currentDate)
+            let snapshot = try await dbPool.read { db -> (DayPlan?, [DayPlanItem], [String: CalendarEvent]) in
+                guard let fetched = try DayPlanQueries.fetchByDate(db, date: date) else { return (nil, [], [:]) }
+                let items = try DayPlanQueries.fetchItems(db, planId: fetched.id)
+                return (fetched, items, try Self.calendarEvents(db, for: items))
             }
-            plan = fetchedPlan
-            if let p = fetchedPlan {
-                items = try await dbPool.read { db in
-                    try DayPlanQueries.fetchItems(db, planId: p.id)
-                }
-                calendarEventsByID = try await loadCalendarEvents(for: items)
-            } else {
-                items = []
-                calendarEventsByID = [:]
-            }
+            guard date == currentDate else { return }
+            (plan, items, calendarEventsByID) = snapshot
+            loadedDate = date
         } catch {
+            guard date == currentDate else { return }
             generationError = error.localizedDescription
         }
     }
 
-    private func loadCalendarEvents(for items: [DayPlanItem]) async throws -> [String: CalendarEvent] {
-        let ids = items.compactMap { item -> String? in
-            guard item.sourceType == .calendar, let sid = item.sourceId, !sid.isEmpty else { return nil }
-            return sid
-        }
-        guard !ids.isEmpty else { return [:] }
-        return try await dbPool.read { db in
-            var map: [String: CalendarEvent] = [:]
-            for id in ids {
-                if let ev = try CalendarQueries.fetchEvent(db, id: id) {
-                    map[id] = ev
-                }
+    nonisolated private static func calendarEvents(_ db: Database, for items: [DayPlanItem]) throws -> [String: CalendarEvent] {
+        var map: [String: CalendarEvent] = [:]
+        for item in items where item.sourceType == .calendar {
+            guard let sid = item.sourceId, !sid.isEmpty else { continue }
+            if let event = try CalendarQueries.fetchEvent(db, id: sid) {
+                map[sid] = event
             }
-            return map
         }
+        return map
     }
 
     // MARK: - Computed Views

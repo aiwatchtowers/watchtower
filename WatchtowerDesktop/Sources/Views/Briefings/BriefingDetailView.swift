@@ -60,10 +60,15 @@ struct BriefingSectionsView: View {
             teamPulseSection
             coachingSection
         }
-        .onAppear {
-            jiraConnected = JiraQueries.isConnected()
-            jiraSiteURL = JiraConfigHelper.readSiteURL()
-        }
+        .task { await loadJiraConfig() }
+    }
+
+    /// Jira link badges need the connection and site; both are read off the
+    /// main thread (a directory listing and a database read), once per
+    /// appearance.
+    private func loadJiraConfig() async {
+        jiraConnected = await Task.detached { JiraQueries.isConnected() }.value
+        jiraSiteURL = await JiraConfigHelper.siteURL()
     }
 
     private func makeTask(_ source: BriefingTaskSource) {

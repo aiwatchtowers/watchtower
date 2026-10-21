@@ -31,7 +31,8 @@ struct InboxDayPane: View {
                 header
                 // The view model holds one date; until it has read this
                 // card's, the plan half waits rather than show another day.
-                if plan.plan?.planDate == card.date {
+                // Today with no plan yet still shows it, to make one.
+                if showsPlan {
                     InboxDayPlanBlock(
                         plan: plan,
                         isToday: card.date == today,
@@ -51,6 +52,11 @@ struct InboxDayPane: View {
             openRow = nil
             await plan.loadFor(date: card.date)
         }
+    }
+
+    private var showsPlan: Bool {
+        guard plan.loadedDate == card.date else { return false }
+        return plan.plan != nil || (card.date == today && owner.isKnown)
     }
 
     private var header: some View {

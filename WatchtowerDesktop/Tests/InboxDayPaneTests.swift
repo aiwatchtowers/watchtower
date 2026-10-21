@@ -220,13 +220,115 @@ final class InboxDayPaneTests: XCTestCase {
         XCTAssertThrowsError(try calm.inspect().find(DayPlanConflictBanner.self))
     }
 
+    /// A past day with only its briefing, or today's without an owner to
+    /// make a plan: the brief alone, no plan header.
     func testBriefingOnlyCard() async throws {
+        try await insertBriefing(date: Self.yesterday)
+        let past = try await pane(date: Self.yesterday)
+        XCTAssertNoThrow(try past.inspect().find(text: "Needs you"))
+        XCTAssertThrowsError(try past.inspect().find(text: "Plan"))
+        XCTAssertThrowsError(try past.inspect().find(viewWithAccessibilityLabel: "Add to the plan"))
+
+        try await insertBriefing(date: Self.today)
+        let noOwner = try await pane(date: Self.today, owner: .unknown)
+        XCTAssertNoThrow(try noOwner.inspect().find(text: "Needs you"))
+        XCTAssertThrowsError(try noOwner.inspect().find(text: "Plan"))
+    }
+
+    /// G4: with the Day Plan screen gone, today's card without a plan still
+    /// makes one — above the brief, with no Add or Regenerate until it exists.
+    func testTodayWithoutAPlanOffersMakeTodaysPlan() async throws {
         try await insertBriefing(date: Self.today)
         let sut = try await pane(date: Self.today)
 
+        XCTAssertNoThrow(try sut.inspect().find(button: "Make today's plan"))
         XCTAssertNoThrow(try sut.inspect().find(text: "Needs you"))
-        XCTAssertThrowsError(try sut.inspect().find(text: "Plan"))
         XCTAssertThrowsError(try sut.inspect().find(viewWithAccessibilityLabel: "Add to the plan"))
+        XCTAssertThrowsError(try sut.inspect().find(button: "Regenerate with feedback…"))
+    }
+
+    func testMakeTodaysPlanShowsTheCLIRefusal() async throws {
+        let refusal = "Morning brief is running now — try again in a minute"
+        cli.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: refusal)
+        await plan.loadFor(date: Self.today)
+        var row: InboxDayPlanRow?
+        let binding = Binding(get: { row }, set: { row = $0 })
+
+        await block(row: binding).submitGenerate()
+
+        XCTAssertEqual(cli.invocations, [["day-plan", "generate", "--date", Self.today]])
+        let shown = block(row: binding)
+        XCTAssertTrue(try texts(shown).contains { $0.contains(refusal) }, "the CLI's stderr is shown on the card")
+        XCTAssertNoThrow(try shown.inspect().find(button: "Make today's plan"), "the owner can try again")
+    }
+
+    /// G4: the Day Plan screen's Reset plan, as an inline confirm row.
+    func testResetIsAnInlineConfirmRow() async throws {
+        try await insertPlan(date: Self.today)
+        await plan.loadFor(date: Self.today)
+        var row: InboxDayPlanRow?
+        let binding = Binding(get: { row }, set: { row = $0 })
+
+        try block(row: binding).inspect().find(button: "Reset plan…").tap()
+        XCTAssertEqual(row, .reset)
+        let open = block(row: binding)
+        XCTAssertNoThrow(try open.inspect().find(
+            text: "Reset — today's plan is deleted, with the items you added. Your targets are not touched."
+        ))
+        XCTAssertNoThrow(try open.inspect().find(button: "Cancel"))
+        XCTAssertNoThrow(try open.inspect().find(button: "Reset"))
+
+        cli.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "database is locked")
+        await open.submitReset()
+        XCTAssertEqual(row, .reset, "a refusal keeps the row")
+        XCTAssertTrue(try texts(block(row: binding)).contains { $0.contains("database is locked") })
+
+        cli.shouldThrow = nil
+        await block(row: binding).submitReset()
+        XCTAssertEqual(cli.invocations.last, ["day-plan", "reset", Self.today])
+        XCTAssertNil(row)
+    }
+
+    /// Switching cards fast: two loads of the shared view model overlap and
+    /// the later one wins; its plan and items always belong together, and
+    /// the earlier day's card shows no plan meanwhile.
+    func testFastSwitchingNeverMixesDays() async throws {
+        try await pool.write { db in
+            for date in [Self.yesterday, Self.today] {
+                let planID = try TestDatabase.insertDayPlan(db, planDate: date)
+                try TestDatabase.insertDayPlanItem(db, dayPlanID: planID, kind: "backlog", title: "Item of \(date)")
+            }
+        }
+        let first = Task { await plan.loadFor(date: Self.yesterday) }
+        let second = Task { await plan.loadFor(date: Self.today) }
+        await first.value
+        await second.value
+
+        XCTAssertEqual(plan.loadedDate, Self.today)
+        XCTAssertEqual(plan.plan?.planDate, Self.today)
+        XCTAssertEqual(plan.items.map(\.title), ["Item of \(Self.today)"])
+        XCTAssertTrue(plan.items.allSatisfy { $0.dayPlanId == plan.plan?.id })
+
+        let yesterdayCard = InboxDayCard(date: Self.yesterday, briefing: nil, plan: nil, planDone: 0, planTotal: 1, stamp: Date())
+        let sut = InboxDayPane(card: yesterdayCard, today: Self.today, plan: plan, owner: Self.owner,
+                               onDone: {}, onCommand: { _ in }, onOpenSource: { _ in })
+        XCTAssertThrowsError(try sut.inspect().find(text: "Item of \(Self.today)"), "today's items never show on yesterday's card")
+    }
+
+    func testAddRowTakesTheTimesOnThePlansDate() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let late = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 10, day: 23, hour: 23, minute: 0)))
+        let later = late.addingTimeInterval(30 * 60)
+
+        let range = try XCTUnwrap(InboxDayPlanAddRow.timeRange(on: Self.today, start: late, end: later, calendar: calendar))
+        XCTAssertEqual(calendar.dateComponents([.year, .month, .day, .hour, .minute], from: range.0),
+                       DateComponents(year: 2026, month: 10, day: 22, hour: 23, minute: 0))
+        XCTAssertEqual(calendar.dateComponents([.day, .hour, .minute], from: range.1),
+                       DateComponents(day: 22, hour: 23, minute: 30))
+        XCTAssertNil(InboxDayPlanAddRow.timeRange(on: Self.today, start: later, end: late, calendar: calendar),
+                     "an end before the start is refused")
+        XCTAssertNil(InboxDayPlanAddRow.timeRange(on: Self.today, start: late, end: late, calendar: calendar))
     }
 
     func testPlanOnlyCard() async throws {

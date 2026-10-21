@@ -130,13 +130,17 @@ extension AppState {
             )
         }
         let title = TargetComposerLogic.deriveTitle(from: prefill.text)
+        // A cut title keeps the item's whole text in the intent.
+        let fullText = prefill.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let intent = title == fullText ? prefill.intent : [fullText, prefill.intent]
+            .filter { !$0.isEmpty }.joined(separator: "\n\n")
         let today = Self.makeTaskDay.string(from: Date())
         do {
             let id = try await db.dbPool.write { dbConn in
                 try TargetQueries.create(
                     dbConn,
                     text: title,
-                    intent: prefill.intent,
+                    intent: intent,
                     periodStart: today,
                     periodEnd: today,
                     sourceType: prefill.sourceType,
