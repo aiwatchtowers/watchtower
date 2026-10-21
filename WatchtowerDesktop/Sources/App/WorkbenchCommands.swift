@@ -113,7 +113,7 @@ struct WorkbenchCommands: Commands {
             Divider()
             // Board #412: the one key that may take the keyboard from the
             // terminal — the owner's explicit chord; the bare A stays the
-            // page's (`WorkbenchTitleRow.pressOnPage`). Gated on the key
+            // page's (`WorkbenchTitleRowKeys.pressOnPage`). Gated on the key
             // window's workbench, as the Navigate menu is (ruling R36).
             Button("Show Waiting for You") { _ = appState.workbenchesViewModel?.openStackFromKeyboard() }
                 .keyboardShortcut("a", modifiers: [.control, .command])

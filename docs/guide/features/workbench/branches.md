@@ -1,6 +1,6 @@
-# Branches in the header
+# Switching branches
 
-The branch button in a workbench page's header shows the folder's git branch and opens a menu to switch, create or fetch branches. This page is for anyone who changes branches without leaving Watchtower.
+The branch button shows the folder's git branch and opens a menu to switch, create or fetch branches. It sits on the strip on top of the session pane whose folder the page follows, or in the title row after the workbench name when no such pane is on screen. This page is for anyone who changes branches without leaving Watchtower.
 
 ## Why use it
 
@@ -10,7 +10,7 @@ Switching branches swaps every file in the folder. Done blindly, it can bury you
 
 ### What the button shows
 
-The branch name, an orange dot for uncommitted changes, and `↑2`/`↓1` when the branch is ahead of or behind its upstream. On a detached HEAD it shows the short commit hash. When the page shows a session that works in its own worktree, the button is that worktree's. There is no button in a folder that is not a git repository, or on a Mac without git; Watchtower never asks you to install anything.
+The branch name, an orange dot for uncommitted changes, and `↑2`/`↓1` when the branch is ahead of or behind its upstream. On a detached HEAD it shows the short commit hash. When the page shows a session that works in its own worktree, the button is that worktree's and sits on that session's strip. There is no button in a folder that is not a git repository, or on a Mac without git; Watchtower never asks you to install anything.
 
 ### How a switch keeps your work
 

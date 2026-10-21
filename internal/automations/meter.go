@@ -21,6 +21,7 @@ type Meter struct {
 	runRemaining int64
 	crossed      InterruptReason
 	rearm        chan struct{}
+	carried      time.Duration // active time a resumed run spent before the restart
 }
 
 // NewMeter starts the meter now.
@@ -135,13 +136,26 @@ func (m *Meter) deadlineLocked() time.Time {
 	return m.start.Add(time.Duration(m.budget.Minutes)*time.Minute + paused)
 }
 
-// ActiveMS is the active time spent so far, in milliseconds.
+// ActiveMS is the active time this meter measured so far, in
+// milliseconds (a resumed run's carried time is not in it: it is already on
+// the run).
 func (m *Meter) ActiveMS() int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	budget := time.Duration(m.budget.Minutes) * time.Minute
 	left := m.deadlineLocked().Sub(m.clock.Now())
-	return (budget - left).Milliseconds()
+	return (budget - left - m.carried).Milliseconds()
+}
+
+// carry charges a resumed run's spend before the restart: its tokens come
+// off the run budget and its active time off the deadline.
+func (m *Meter) carry(tokens int64, active time.Duration) {
+	m.mu.Lock()
+	m.runRemaining -= tokens
+	m.start = m.start.Add(-active)
+	m.carried += active
+	m.mu.Unlock()
+	m.signalRearm()
 }
 
 // Remaining is what is left of the run's budget: tokens and whole minutes of

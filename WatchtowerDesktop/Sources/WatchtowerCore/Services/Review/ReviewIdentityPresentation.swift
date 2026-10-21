@@ -90,7 +90,7 @@ package enum ReviewIdentityPresentation {
         return ForLine(first: first, more: items.count - 1)
     }
 
-    /// An agent session shows the header Review button when its work is not
+    /// An agent session shows its strip's Review button when its work is not
     /// plainly the default branch with nothing to review (no edits, no
     /// unpushed commits); the open pane always does.
     package static func showsReviewButton(isAgent: Bool, status: WorkbenchGitStatus?, paneOnScreen: Bool) -> Bool {

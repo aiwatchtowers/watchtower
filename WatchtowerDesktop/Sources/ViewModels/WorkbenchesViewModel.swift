@@ -768,6 +768,13 @@ final class WorkbenchesViewModel {
             let projectID = route.projectID
             let sessionID = route.subjectID
             Task { await revealTerminal(projectID: projectID, sessionID: sessionID) }
+        case .review:
+            let projectID = route.projectID
+            guard let sessionID = route.subjectID else {
+                Task { await revealTerminal(projectID: projectID) }
+                return
+            }
+            showChanges(sessionID: sessionID, projectID: projectID)
         }
     }
 

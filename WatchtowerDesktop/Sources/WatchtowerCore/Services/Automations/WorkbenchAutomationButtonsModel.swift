@@ -1,7 +1,7 @@
 import Foundation
 
-/// The workbench header's automation buttons (spec §12.4): which show, what
-/// a click does, how each looks. A click on a runnable button only queues
+/// The workbench header's ⚡ automations menu (spec §12.4): what a click
+/// does, how each item looks. A click on a runnable button only queues
 /// a run through `AutomationsViewModel.runNow` (`automations run <id>
 /// --json`, AUTO-09); every other state opens something instead.
 package enum WorkbenchAutomationButtonsModel {
@@ -16,14 +16,6 @@ package enum WorkbenchAutomationButtonsModel {
         case openCard
     }
 
-    /// The first `maxVisible` in the header, the rest in the "More" menu —
-    /// both in the given (slug) order.
-    package static func layout(
-        _ buttons: [AutomationHeaderButton], maxVisible: Int = 4
-    ) -> (visible: [AutomationHeaderButton], overflow: [AutomationHeaderButton]) {
-        (Array(buttons.prefix(maxVisible)), Array(buttons.dropFirst(maxVisible)))
-    }
-
     /// An active run wins over the recipe's state: it is what the owner
     /// wants to see, and a second click must not start another.
     package static func action(for button: AutomationHeaderButton) -> Action {
@@ -33,10 +25,6 @@ package enum WorkbenchAutomationButtonsModel {
         case .needsConfirmation: return .openConfirmSheet
         case .disabled, .parseError: return .openCard
         }
-    }
-
-    package static func isDimmed(_ button: AutomationHeaderButton) -> Bool {
-        button.state != .runnable
     }
 
     /// What a click does instead of a run, or why the button is dimmed; nil
@@ -55,6 +43,16 @@ package enum WorkbenchAutomationButtonsModel {
     /// A queued, running or waiting run, or the run call still in flight.
     package static func isSpinning(_ button: AutomationHeaderButton, busy: Bool) -> Bool {
         button.activeRunID != nil || busy
+    }
+
+    /// Any button spinning: the ⚡ menu's label shows progress instead of the bolt.
+    package static func isAnyActive(_ buttons: [AutomationHeaderButton], busy: Set<Int64>) -> Bool {
+        buttons.contains { isSpinning($0, busy: busy.contains($0.automationID)) }
+    }
+
+    /// A menu item's text: the label, plus what a click does instead of a run.
+    package static func menuTitle(for button: AutomationHeaderButton) -> String {
+        help(for: button).map { "\(button.label) — \($0)" } ?? button.label
     }
 
     package static func confirmTitle(label: String) -> String {

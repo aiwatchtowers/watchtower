@@ -26,9 +26,9 @@ The feed reads top to bottom like your day: above a **NOW** line is everything t
 
 ### Workbench
 
-The **Workbench** zone lists your coding-agent sessions that need a look and the questions they have asked you, grouped by workbench, with **Open →** for the Workbench tab. A session shows only while it waits for approval, failed, is ready to check, or is working (or in the background); finished and stopped sessions are left out. Under the sessions come the open questions and review requests, oldest first. Click a session to open its terminal, a question to open its session.
+The **Workbench** zone lists your coding-agent sessions that need a look and the questions they have asked you, grouped by workbench, with **Open →** for the Workbench tab. Finished and stopped sessions are left out; others show while they wait for approval, failed, are ready to check, or work (or in the background). Then open questions and review requests, oldest first. Click a session for its terminal (plus its Branch review when ready to check), a question for its session.
 
-If you keep telling agents the same thing, the last row offers it as an instruction: **Add**, **Dismiss** or **More…**.
+If you keep telling agents the same thing, the last row offers it as an instruction: **Add** or **Dismiss**.
 
 ### Links
 
@@ -54,13 +54,13 @@ The **Links** zone has up to four shortcuts, each shown while its tab is visible
 
 ### The Getting ready zone
 
-On a new install a **Getting ready** zone sits above the feed and the right column, one card per feature that is on and has its source. Each card carries the feature's own status line, such as "Preparing now", "Within ~15 min" or "Today at 08:00". A finished feature shows **Ready** and **Open**. If the background sync has been stopped for 30 seconds or more, unfinished cards say "Watchtower isn't running"; the banner has **Start**.
+On a new install a **Getting ready** zone sits above the columns, its header counting the ready ones ("6 of 11 ready"). Each feature that is on and not ready yet gets a line with its status, such as "Preparing now" or "Within ~15 min". Finished features share one **Ready** line; click a name to open it. If the background sync has been stopped for 30 seconds or more, unfinished features say "Watchtower isn't running"; the banner has **Start**.
 
-While no account tells Watchtower who you are, the Inbox, Briefing and Day Plan cards say "Connect Slack, Google, Jira, Linear or an email account to get this" instead of a time, with **Open Connections**. A Jira site or Linear workspace that has not reported who you are yet shows "Waiting for your Jira identity…" (or Linear) instead.
+While no account tells Watchtower who you are, the Inbox, Briefing and Day Plan lines say "Connect Slack, Google, Jira, Linear or an email account to get this" instead of a time, with **Open Connections**. A Jira site or Linear workspace that has not reported who you are yet shows "Waiting for your Jira identity…" (or Linear) instead.
 
-A source you haven't connected becomes one dashed row ("Connect Jira to get Boards, Workload, Blockers, Project Map and Releases") with a **Connect** button. A connected Jira with no board picked keeps a card with **Choose Jira boards**, which opens **Boards**.
+A source you haven't connected becomes one dashed row ("Connect Jira to get Boards, Workload, Blockers, Project Map and Releases") with a **Connect** button. A connected Jira with no board picked keeps a line with **Choose Jira boards**, which opens **Boards**.
 
-When every card is ready or retrying on its own, the zone shrinks to "Everything's ready" for the rest of that launch. It also folds three days after it first showed, whatever is still waiting. An install that was already ready never sees it.
+When every feature is ready or retrying on its own, the zone shrinks to "Everything's ready" for the rest of that launch. It also folds three days after it first showed, whatever is still waiting. An install that was already ready never sees it.
 
 ## Using it
 
