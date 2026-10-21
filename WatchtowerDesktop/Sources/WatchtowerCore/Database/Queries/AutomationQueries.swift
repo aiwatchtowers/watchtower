@@ -2,8 +2,8 @@ import Foundation
 import GRDB
 
 /// Reads of the automation tables. The only Swift writes are an inbox
-/// output's `read_at` and `dismissed_at` (spec §9.6); everything else goes
-/// through `AutomationsCLI`.
+/// output's `read_at`, `done_at` and `dismissed_at` (spec §9.6, ask #475);
+/// everything else goes through `AutomationsCLI`.
 package enum AutomationQueries {
     /// R-P3-6: "tokens this week" is the CLI's rolling 7 days.
     package static let tokenWindow: TimeInterval = 7 * 24 * 60 * 60
@@ -126,19 +126,31 @@ package enum AutomationQueries {
 
     // MARK: - Inbox outputs
 
-    private static let unreadInbox = "o.kind = 'inbox' AND o.read_at IS NULL AND o.dismissed_at IS NULL"
+    /// An open card: an inbox output neither done nor dismissed. Read or not
+    /// is a third, separate state (`read_at`, written when the owner opens it).
+    private static let openInbox = "o.kind = 'inbox' AND o.done_at IS NULL AND o.dismissed_at IS NULL"
+    private static let unreadInbox = "\(openInbox) AND o.read_at IS NULL"
 
-    /// Unread inbox outputs, newest first, with their automation's name;
-    /// `since` keeps only the ones created then or later and `limit` caps
-    /// the rows (Home's window); the Inbox strip passes neither.
+    /// Open inbox outputs, newest first, with their automation's name, its
+    /// workbench and the recipe's state; unread ones only unless `includeRead`
+    /// (the Inbox lists read cards too, Home only unread ones). `since` keeps
+    /// only the ones created then or later and `limit` caps the rows (Home's
+    /// window); the Inbox passes neither.
     package static func fetchInboxOutputs(
-        _ db: Database, since: Date? = nil, limit: Int? = nil
+        _ db: Database, since: Date? = nil, limit: Int? = nil, includeRead: Bool = false
     ) throws -> [AutomationOutputCard] {
+        // needs_confirmation and runnable are `Automation.needsConfirmation`
+        // and `Automation.isRunnable` (Go `Runnable()`), in SQL.
         var sql = """
-            SELECT o.id, o.automation_id, o.run_id, o.title, o.body, o.priority, o.created_at,
-                COALESCE(NULLIF(a.name, ''), a.slug) AS name
+            SELECT o.id, o.automation_id, o.run_id, o.title, o.body, o.priority, o.created_at, o.link,
+                o.actions_json, o.read_at, o.pressed_action, o.pressed_run_id,
+                COALESCE(NULLIF(a.name, ''), a.slug) AS name, a.project_id, a.parse_error,
+                (a.parse_error = '' AND a.removed_at IS NULL AND a.confirmed_hash != a.approval_hash)
+                    AS needs_confirmation,
+                (a.parse_error = '' AND a.enabled AND a.removed_at IS NULL AND a.confirmed_hash != ''
+                    AND a.confirmed_hash = a.approval_hash) AS runnable
             FROM automation_outputs o JOIN automations a ON a.id = o.automation_id
-            WHERE \(unreadInbox)
+            WHERE \(includeRead ? openInbox : unreadInbox)
             """
         var arguments = StatementArguments()
         if let since {
@@ -160,26 +172,47 @@ package enum AutomationQueries {
                 title: row["title"],
                 body: row["body"],
                 priority: row["priority"],
-                createdAt: AutomationDates.parse(row["created_at"]) ?? .distantPast
+                createdAt: AutomationDates.parse(row["created_at"]) ?? .distantPast,
+                link: row["link"],
+                actionsJSON: row["actions_json"],
+                readAt: AutomationDates.parse(row["read_at"]),
+                pressedAction: row["pressed_action"],
+                pressedRunID: row["pressed_run_id"],
+                workbenchID: row["project_id"],
+                recipeState: AutomationHeaderButton.state(
+                    parseError: row["parse_error"], needsConfirmation: row["needs_confirmation"],
+                    runnable: row["runnable"]
+                )
             )
         }
     }
 
+    /// The badge and Home: unread open cards.
     package static func inboxOutputCount(_ db: Database) throws -> Int {
         try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM automation_outputs o WHERE \(unreadInbox)") ?? 0
     }
 
-    /// Done on an inbox output card: writes `read_at` only, once.
-    package static func markOutputRead(_ db: Database, id: Int64, now: Date) throws {
-        try db.execute(sql: """
-            UPDATE automation_outputs SET read_at = ? WHERE id = ? AND read_at IS NULL AND dismissed_at IS NULL
-            """, arguments: [AutomationDates.format(now), id])
+    /// The owner opened a card: writes `read_at` only, once, on an open card.
+    package static func markOutputOpened(_ db: Database, id: Int64, now: Date) throws {
+        try stampOnce(db, column: "read_at", id: id, now: now, extra: " AND read_at IS NULL")
     }
 
-    /// Dismiss on an inbox output card: writes `dismissed_at` only, once.
+    /// Done on a card: writes `done_at` only, once.
+    package static func markOutputDone(_ db: Database, id: Int64, now: Date) throws {
+        try stampOnce(db, column: "done_at", id: id, now: now)
+    }
+
+    /// Dismiss on a card: writes `dismissed_at` only, once.
     package static func dismissOutput(_ db: Database, id: Int64, now: Date) throws {
+        try stampOnce(db, column: "dismissed_at", id: id, now: now)
+    }
+
+    /// Stamps one state column of an open card (neither done nor dismissed); a
+    /// closed card changes nothing.
+    private static func stampOnce(_ db: Database, column: String, id: Int64, now: Date, extra: String = "") throws {
         try db.execute(sql: """
-            UPDATE automation_outputs SET dismissed_at = ? WHERE id = ? AND read_at IS NULL AND dismissed_at IS NULL
+            UPDATE automation_outputs SET \(column) = ?
+            WHERE id = ? AND done_at IS NULL AND dismissed_at IS NULL\(extra)
             """, arguments: [AutomationDates.format(now), id])
     }
 

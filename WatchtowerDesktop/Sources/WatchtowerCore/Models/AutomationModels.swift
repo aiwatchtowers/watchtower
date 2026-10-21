@@ -434,7 +434,10 @@ package struct AutomationOutput: FetchableRecord, Identifiable, Equatable, Senda
     }
 }
 
-/// An unread `kind='inbox'` output as the Inbox action strip shows it.
+/// An open `kind='inbox'` output (neither done nor dismissed) as the Inbox
+/// shows it: read or unread, with its link, its actions (`actions_json`,
+/// decoded by the view), the button the owner pressed and its run, and the
+/// recipe's state now (a press needs a runnable recipe).
 package struct AutomationOutputCard: Identifiable, Equatable, Sendable {
     package let id: Int64
     package let automationID: Int64
@@ -444,6 +447,17 @@ package struct AutomationOutputCard: Identifiable, Equatable, Sendable {
     package let body: String
     package let priority: String
     package let createdAt: Date
+    package let link: String
+    package let actionsJSON: String
+    package let readAt: Date?
+    package let pressedAction: Int?
+    package let pressedRunID: Int64?
+    /// The automation's `project_id`: nil for a personal recipe.
+    package let workbenchID: Int64?
+    package let recipeState: AutomationHeaderButton.State
+
+    /// The badge and the unread dot: never opened.
+    package var isUnread: Bool { readAt == nil }
 
     package init(
         id: Int64,
@@ -453,7 +467,14 @@ package struct AutomationOutputCard: Identifiable, Equatable, Sendable {
         title: String,
         body: String,
         priority: String,
-        createdAt: Date
+        createdAt: Date,
+        link: String = "",
+        actionsJSON: String = "[]",
+        readAt: Date? = nil,
+        pressedAction: Int? = nil,
+        pressedRunID: Int64? = nil,
+        workbenchID: Int64? = nil,
+        recipeState: AutomationHeaderButton.State = .runnable
     ) {
         self.id = id
         self.automationID = automationID
@@ -463,6 +484,13 @@ package struct AutomationOutputCard: Identifiable, Equatable, Sendable {
         self.body = body
         self.priority = priority
         self.createdAt = createdAt
+        self.link = link
+        self.actionsJSON = actionsJSON
+        self.readAt = readAt
+        self.pressedAction = pressedAction
+        self.pressedRunID = pressedRunID
+        self.workbenchID = workbenchID
+        self.recipeState = recipeState
     }
 }
 
@@ -607,8 +635,15 @@ package struct AutomationHeaderButton: Identifiable, Equatable, Sendable {
     /// A parse error first (nothing else about the recipe is known), then
     /// needs confirmation, then disabled — the list badges' order.
     package static func state(of automation: Automation) -> State {
-        if !automation.parseError.isEmpty { return .parseError }
-        if automation.needsConfirmation { return .needsConfirmation }
-        return automation.isRunnable ? .runnable : .disabled
+        state(parseError: automation.parseError, needsConfirmation: automation.needsConfirmation,
+              runnable: automation.isRunnable)
+    }
+
+    /// The precedence `state(of:)` applies, for a read that has only the
+    /// three facts (the Inbox cards' query).
+    package static func state(parseError: String, needsConfirmation: Bool, runnable: Bool) -> State {
+        if !parseError.isEmpty { return .parseError }
+        if needsConfirmation { return .needsConfirmation }
+        return runnable ? .runnable : .disabled
     }
 }

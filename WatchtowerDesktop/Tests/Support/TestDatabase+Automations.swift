@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-/// Fixtures for the automation tables (migrations 00113, 00117).
+/// Fixtures for the automation tables (migrations 00113, 00117, 00147).
 extension TestDatabase {
     /// A personal recipe; defaults to a confirmed, enabled manual recipe.
     @discardableResult
@@ -88,13 +88,20 @@ extension TestDatabase {
         priority: String = "medium",
         createdAt: String = "2026-10-01T09:00:05Z",
         readAt: String? = nil,
-        dismissedAt: String? = nil
+        dismissedAt: String? = nil,
+        doneAt: String? = nil,
+        link: String = "",
+        actionsJSON: String = "[]",
+        pressedAction: Int? = nil,
+        pressedRunID: Int64? = nil,
+        pressedAt: String? = nil
     ) throws -> Int64 {
         try db.execute(sql: """
             INSERT INTO automation_outputs (automation_id, run_id, kind, title, body, priority, created_at,
-                read_at, dismissed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, arguments: [automationID, runID, kind, title, body, priority, createdAt, readAt, dismissedAt])
+                read_at, dismissed_at, done_at, link, actions_json, pressed_action, pressed_run_id, pressed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, arguments: [automationID, runID, kind, title, body, priority, createdAt, readAt, dismissedAt,
+                             doneAt, link, actionsJSON, pressedAction, pressedRunID, pressedAt])
         return db.lastInsertedRowID
     }
 
