@@ -17,6 +17,15 @@ final class AutomationsCLITests: XCTestCase {
         XCTAssertFalse(result.daemonRunning)
     }
 
+    func testReplyArgs() async throws {
+        let (cli, runner) = cli(#"{"run_id":7,"daemon_running":false}"#)
+        let result = try await cli.reply(outputID: 5, action: 1)
+        XCTAssertEqual(runner.invocations, [["automations", "reply", "--output", "5", "--action", "1", "--json"]])
+        XCTAssertEqual(AutomationsCLI.args(.reply(outputID: 5, action: 1)),
+                       ["automations", "reply", "--output", "5", "--action", "1", "--json"])
+        XCTAssertEqual(result, AutomationsCLI.ReplyResult(runID: 7, daemonRunning: false))
+    }
+
     func testRerunArgs() async throws {
         let (cli, runner) = cli(#"{"run_id":13,"coalesced":false,"daemon_running":true}"#)
         let result = try await cli.run(7, rerunOf: 3)

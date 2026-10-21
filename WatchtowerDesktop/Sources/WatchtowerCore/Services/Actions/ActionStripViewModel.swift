@@ -44,6 +44,8 @@ package final class ActionStripViewModel {
     package var lastError: String?
 
     private let dbPool: DatabasePool
+    /// nil = the installed CLI, found at press time.
+    private let cliRunner: CLIRunnerProtocol?
     /// One write per card (board #670).
     private let pendingWrites = PendingWrites()
     /// Exposed so a view can reuse its `inFlight`/card helpers if it ever
@@ -56,6 +58,7 @@ package final class ActionStripViewModel {
         automationsWake: (() async throws -> Void)? = nil
     ) {
         self.dbPool = dbPool
+        self.cliRunner = cliRunner
         self.actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner, automationsWake: automationsWake)
     }
 
@@ -134,7 +137,8 @@ package final class ActionStripViewModel {
         pendingWrites.isPending(CardKey.reminder(id))
     }
 
-    /// An output's Done or Dismiss is being written: its buttons wait.
+    /// An output's opening, Done, Dismiss or Reply press is under way: its
+    /// buttons wait.
     package func isWriting(output id: Int64) -> Bool {
         pendingWrites.isPending(CardKey.output(id))
     }
@@ -173,6 +177,29 @@ package final class ActionStripViewModel {
         let now = Date()
         await write(.output(id), { try AutomationQueries.dismissOutput($0, id: id, now: now) },
                     onSuccess: { self.deselect(.output(id)) })
+    }
+
+    /// A Reply button: `watchtower automations reply` records the press and
+    /// queues one run, then wakes the daemon (AUTO-09); the Desktop writes
+    /// nothing for it (STRIP-02). One press per card at a time; the card then
+    /// shows its sent state, and a refusal ("Sent — run #7", a recipe that
+    /// cannot run) keeps it and says why.
+    package func pressReply(outputID: Int64, action: Int) async {
+        let runner = cliRunner
+        await pendingWrites.run(CardKey.output(outputID)) {
+            lastError = nil
+            guard let runner = runner ?? ProcessCLIRunner.makeDefault() else {
+                lastError = CLIRunnerError.binaryNotFound.localizedDescription
+                return
+            }
+            do {
+                _ = try await AutomationsCLI(runner: runner).reply(outputID: outputID, action: action)
+                refresh()
+            } catch {
+                refresh()
+                lastError = AutomationsViewModel.message(for: error)
+            }
+        }
     }
 
     /// A card that left the Inbox is no longer shown.

@@ -307,7 +307,7 @@ package enum AutomationCardPresentation {
         }
     }
 
-    /// The model, agent, ask and session capabilities.
+    /// The model, agent, ask, session and Inbox-button capabilities.
     private static func runtimeLine(cap: String, verb: String, scope: String?) -> String? {
         switch (cap, verb, scope) {
         case ("llm", "light", nil): "Use the light model"
@@ -317,6 +317,7 @@ package enum AutomationCardPresentation {
         case ("session", "start", nil): "Start agent sessions"
         case ("session", "start", "claude"): "Start Claude Code sessions"
         case ("session", "start", "codex"): "Start Codex sessions"
+        case ("inbox", "reply", nil): "Reacts to its own Inbox buttons"
         default: nil
         }
     }
@@ -396,6 +397,7 @@ package enum AutomationCardPresentation {
         case "button": return "Button"
         case "event": return "Event"
         case "manual": return "Run now"
+        case "reply": return "Inbox button"
         case "dry_run": return "Dry run"
         default: return run.trigger
         }
