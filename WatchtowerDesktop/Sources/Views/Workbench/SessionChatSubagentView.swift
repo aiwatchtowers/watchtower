@@ -12,17 +12,23 @@ struct SessionChatSubagentView: View {
     let isActive: () -> Bool
     let isOnScreen: () -> Bool
     let onOpenSubagent: (SessionFeedSubagent) -> Void
+    /// The subagent's own live line from its activity and entries; nil = none.
+    let liveLine: (SessionFeedActivity?, [SessionFeedEntry]) -> WorkchatActivityPresenter.Line?
     /// Restarts the follow: the session's state or the screen changed.
     let followKey: AnyHashable
 
     @State private var entries: [SessionFeedEntry] = []
+    @State private var activity: SessionFeedActivity?
     @State private var loading = true
     @State private var error: String?
     @State private var markdown = SessionFeedMarkdownCache()
     @State private var expandedEvents: Set<String> = []
 
     var body: some View {
-        content
+        VStack(spacing: 0) {
+            content
+            if let line = liveLine(activity, entries) { WorkchatActivityLine(line: line) }
+        }
             .task(id: followKey) {
                 await store.followSubagent(
                     subagent.toolUseID,
@@ -32,6 +38,7 @@ struct SessionChatSubagentView: View {
                         entries = $0
                         loading = false
                     },
+                    onActivity: { activity = $0 },
                     onError: {
                         error = $0
                         if $0 != nil { loading = false }

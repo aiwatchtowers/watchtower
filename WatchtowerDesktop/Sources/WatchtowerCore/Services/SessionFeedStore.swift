@@ -8,6 +8,9 @@ import Foundation
 package final class SessionFeedStore: ObservableObject {
     @Published package private(set) var entries: [SessionFeedEntry] = []
     @Published package private(set) var error: String?
+    /// The agent's open tool call from the last good read (an empty read
+    /// included); the live line shows it, it is never an entry.
+    @Published package private(set) var activity: SessionFeedActivity?
 
     /// No CLI binary was found: the pane shows the error and never polls.
     package let runnerMissing: Bool
@@ -71,6 +74,7 @@ package final class SessionFeedStore: ObservableObject {
             merge(payload.entries)
             merge(payload.subagents)
             cursor = payload.cursor
+            activity = payload.activity
             error = nil
         } catch {
             self.error = error.localizedDescription
@@ -79,8 +83,8 @@ package final class SessionFeedStore: ObservableObject {
 
     /// A subagent opened in the pane: one read now, then while `isRunning`
     /// (its marker says `running`) one more every `interval`. Reads due while
-    /// `isOnScreen` is false are skipped. Each good read hands its entries to
-    /// `onEntries` and clears the error; a failed one reports it to
+    /// `isOnScreen` is false are skipped. Each good read hands its entries and
+    /// activity to `onEntries`/`onActivity` and clears the error; a failed one reports it to
     /// `onError`. Returns when finished or cancelled.
     package func followSubagent(
         _ toolUseID: String,
@@ -88,15 +92,17 @@ package final class SessionFeedStore: ObservableObject {
         isRunning: () -> Bool,
         isOnScreen: () -> Bool,
         onEntries: ([SessionFeedEntry]) -> Void,
+        onActivity: (SessionFeedActivity?) -> Void = { _ in },
         onError: (String?) -> Void = { _ in }
     ) async {
         guard !runnerMissing else { return }
         func tick() async {
             guard isOnScreen() else { return }
             do {
-                let entries = try await subagentFeed(toolUseID)
+                let read = try await subagentFeed(toolUseID)
                 if Task.isCancelled { return }
-                onEntries(entries)
+                onEntries(read.entries)
+                onActivity(read.activity)
                 onError(nil)
             } catch {
                 if !Task.isCancelled { onError(error.localizedDescription) }
@@ -110,12 +116,14 @@ package final class SessionFeedStore: ObservableObject {
         }
     }
 
-    /// The feed of one subagent run; not merged into the main feed.
-    package func subagentFeed(_ toolUseID: String) async throws -> [SessionFeedEntry] {
+    /// The feed of one subagent run with its own open tool call; not merged
+    /// into the main feed.
+    package func subagentFeed(_ toolUseID: String) async throws -> (entries: [SessionFeedEntry], activity: SessionFeedActivity?) {
         let data = try await read([
             "workbench", "session-feed", "--session", String(sessionID), "--subagent", toolUseID, "--json"
         ])
-        return try Self.decode(data).entries.filter { SessionFeedEntry.knownKinds.contains($0.kind) }
+        let payload = try Self.decode(data)
+        return (payload.entries.filter { SessionFeedEntry.knownKinds.contains($0.kind) }, payload.activity)
     }
 
     /// Runs one CLI read after the one before it has finished. The read

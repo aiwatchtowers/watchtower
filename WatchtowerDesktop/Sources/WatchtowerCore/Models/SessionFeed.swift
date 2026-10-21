@@ -105,7 +105,7 @@ package struct SessionFeedEntry: Decodable, Identifiable, Equatable, Sendable {
 
     /// RFC 3339 with or without fractional seconds; Go's zero time and
     /// anything unparsable mean "no time".
-    private static func parseDate(_ s: String?) -> Date? {
+    package static func parseDate(_ s: String?) -> Date? {
         guard let s, !s.isEmpty, !s.hasPrefix("0001-01-01") else { return nil }
         let plain = ISO8601DateFormatter()
         if let d = plain.date(from: s) { return d }
@@ -123,10 +123,12 @@ package struct SessionFeedPayload: Decodable, Sendable {
     /// Current state of the subagent markers (status changes after the marker
     /// was first emitted).
     package var subagents: [SessionFeedEntry]
+    /// The agent's open tool call; nil = none (or an older CLI).
+    package var activity: SessionFeedActivity?
 
     private enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
-        case cursor, entries, subagents
+        case cursor, entries, subagents, activity
     }
 
     package init(from decoder: Decoder) throws {
@@ -135,5 +137,6 @@ package struct SessionFeedPayload: Decodable, Sendable {
         cursor = try c.decodeIfPresent(String.self, forKey: .cursor) ?? ""
         entries = try c.decodeIfPresent([SessionFeedEntry].self, forKey: .entries) ?? []
         subagents = try c.decodeIfPresent([SessionFeedEntry].self, forKey: .subagents) ?? []
+        activity = try c.decodeIfPresent(SessionFeedActivity.self, forKey: .activity)
     }
 }

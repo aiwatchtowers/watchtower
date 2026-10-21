@@ -67,6 +67,32 @@ struct SessionChatView: View {
         vm.sessionStatuses[sessionID].map(SessionControl.isWorking) ?? false
     }
 
+    /// The live line (Task 6): the agent's open step, Agents working or
+    /// Thinking…, from the main feed's `activity`. The permission card
+    /// replaces it while it shows.
+    private var activityLine: WorkchatActivityPresenter.Line? {
+        guard permission == nil else { return nil }
+        return Self.activityLine(
+            activity: store.activity, working: working, background: stateKind == .background,
+            status: vm.sessionStatuses[sessionID],
+            entries: store.entries,
+            runningSubagents: store.entries.count { $0.kind == "subagent" && $0.subagent?.status == "running" })
+    }
+
+    static func activityLine(
+        activity: SessionFeedActivity?,
+        working: Bool,
+        background: Bool,
+        status: SessionAgentStatus?,
+        entries: [SessionFeedEntry],
+        runningSubagents: Int
+    ) -> WorkchatActivityPresenter.Line? {
+        let lastAgent = entries.last { $0.kind == "agent" }
+        return WorkchatActivityPresenter.line(
+            activity: activity, working: working, background: background, runningSubagents: runningSubagents,
+            stateAt: SessionFeedEntry.parseDate(status?.at), lastAgentAt: lastAgent?.at)
+    }
+
     /// The session's pending prompt, shown only while the session takes
     /// lines: a finished one's stale row is not answered from here.
     private var permission: SessionControl.PermissionPrompt? {
@@ -106,6 +132,7 @@ struct SessionChatView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(Spacing.cozy)
             } else if path.isRoot, composerShown, let workchat {
+                if let activityLine { WorkchatActivityLine(line: activityLine) }
                 Divider()
                 // No card to carry it: a failed permission read shows here.
                 if permission == nil, let error = workchat.permissionError {
@@ -166,6 +193,11 @@ struct SessionChatView: View {
                 isActive: { isActive },
                 isOnScreen: { vm.isTabOnScreen() },
                 onOpenSubagent: { path.push($0) },
+                liveLine: { activity, entries in
+                    Self.activityLine(
+                        activity: activity, working: working, background: false,
+                        status: vm.sessionStatuses[sessionID], entries: entries, runningSubagents: 0)
+                },
                 followKey: SubagentFollowKey(state: stateKind, onScreen: appState.uiVisibility.isOnScreen)
             )
             .id(path.stack.map(\.toolUseID))
