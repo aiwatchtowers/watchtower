@@ -20,7 +20,7 @@ final class AgentActionCardLabelTests: XCTestCase {
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        vm.refresh()
+        await vm.refresh()
 
         XCTAssertEqual(vm.actionLabels[actionID], "⚙ Mail summary · run #12")
         XCTAssertNil(vm.lastError)
@@ -40,7 +40,7 @@ final class AgentActionCardLabelTests: XCTestCase {
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        vm.refresh()
+        await vm.refresh()
 
         XCTAssertEqual(vm.actionRows.count, 2)
         for id in ids { XCTAssertNil(vm.actionLabels[id]) }
@@ -56,7 +56,7 @@ final class AgentActionCardLabelTests: XCTestCase {
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        vm.refresh()
+        await vm.refresh()
 
         XCTAssertEqual(vm.actionLabels[actionID], "⚙ automation · run #12")
     }

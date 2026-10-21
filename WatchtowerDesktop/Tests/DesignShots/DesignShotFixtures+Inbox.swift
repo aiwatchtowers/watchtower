@@ -70,7 +70,7 @@ enum InboxShotFixtures {
                     link: "https://example.com/acme/issue/482", actionsJSON: actions)
             }
             let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-            vm.refresh()
+            refreshed(vm)
             vm.selection = .output(selected)
             return AnyView(InboxSplitView(
                 vm: vm,
@@ -114,7 +114,7 @@ enum InboxShotFixtures {
                     createdAt: "2026-10-21T10:12:00Z")
             }
             let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-            vm.refresh()
+            refreshed(vm)
             vm.selection = .proposal(selected)
             return AnyView(InboxSplitView(
                 vm: vm,
@@ -182,7 +182,7 @@ enum InboxShotFixtures {
             let defaults = UserDefaults(suiteName: suite) ?? .standard
             defaults.removePersistentDomain(forName: suite)
             let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults)
-            vm.refresh()
+            refreshed(vm)
             vm.selection = .message(Int(selected))
             return AnyView(ActionStripActionsView(
                 vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,
@@ -192,6 +192,21 @@ enum InboxShotFixtures {
         } catch {
             XCTFail("inbox message shot fixture failed: \(error)")
             return AnyView(Text("fixture failed: \(String(describing: error))").foregroundStyle(.red))
+        }
+    }
+
+    /// The shot renders at once, so the strip's async read is waited for
+    /// here by running the main run loop (the test-side `spin` precedent).
+    private static func refreshed(_ vm: ActionStripViewModel) {
+        final class Flag { var done = false }
+        let flag = Flag()
+        Task { @MainActor in
+            await vm.refresh()
+            flag.done = true
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while !flag.done, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
         }
     }
 }
