@@ -41,6 +41,8 @@ type Syncer struct {
 	changelogLimit   int                // max issues whose status/assignee history is fetched per pass (0 = disabled)
 	OnProgress       func(SyncProgress) // optional progress callback
 	firstSyncFrom    time.Time          // set by Sync when it was the account's first; see FirstSyncFrom
+
+	deletionsCheckedAt map[string]time.Time // project key → last completed CheckDeletedIssues; in memory per daemon run
 }
 
 // NewSyncer creates a Syncer for one Jira account.
@@ -52,6 +54,8 @@ func NewSyncer(client *Client, database *db.DB, mapper *UserMapper, boardIDs []i
 		logger:    log.New(os.Stderr, "[jira-sync] ", log.LstdFlags),
 		boardIDs:  boardIDs,
 		accountID: accountID,
+
+		deletionsCheckedAt: map[string]time.Time{},
 	}
 }
 
