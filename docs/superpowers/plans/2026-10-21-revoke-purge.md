@@ -60,15 +60,24 @@ lease with the same notice; the LINEAR-03 amendment.
   not `removed`/`purged`) all have `access_ok_at` older than
   `30d − 72h`, every live account of it gets a row with
   `due_at = max(access_ok_at) + 30d`. Disabled-but-not-removed accounts count
-  (literal spec; see open question).
+  (owner decision, ask #477). An empty `access_ok_at` is no evidence of
+  staleness: a source with any live account whose `access_ok_at` is empty is
+  never lease-scheduled. Removed (ask #477): a `removed` account whose
+  `access_ok_at` is non-empty and older than 30 days gets its own row
+  (`reason = 'lease'`) with `due_at = now + 72h`; removed accounts are not
+  part of their source's live set.
 - **Cancel.** A scheduled revoked row is cancelled when the account's status is
   `ok`. A scheduled lease row is cancelled when the source's
-  `max(access_ok_at) + 30d` moves past the row's `due_at`. Every scheduled row
+  `max(access_ok_at) + 30d` moves past the row's `due_at`. A scheduled lease
+  row of a removed account is cancelled when its `access_ok_at` is fresh
+  again (younger than 30 days) or the account is no longer `removed` (it
+  joined the live set again; the source rule then applies). Every scheduled row
   is cancelled when purge is turned off. A `running` row is never cancelled: it
   finishes and the account ends `purged`.
 - **Run.** A due revoked row runs only if the account is still `revoked`
   (an `error` status waits — it is "not still revoked on the latest attempt",
-  and not proof of access either). A due lease row re-checks staleness.
+  and not proof of access either). A due lease row re-checks staleness (the
+  removed-account rule for a removed account).
 - **After a purge** the account row stays with `status = 'purged'`, `error`
   cleared, `enabled = 0` (Google: `gmail_enabled = 0, calendar_enabled = 0`),
   its token files deleted, its `history_backfill` rows deleted. A purged row
@@ -94,7 +103,9 @@ Follow `.claude/skills/add-migration`. Next free number: `00146` (last is
   - `ALTER TABLE {slack,google,jira,linear}_accounts ADD COLUMN access_ok_at TEXT NOT NULL DEFAULT ''`
     and `ADD COLUMN revoked_at TEXT NOT NULL DEFAULT ''`.
   - Backfill so an upgrade starts every clock at the upgrade, never in the
-    past: `UPDATE <t> SET access_ok_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE status != 'removed'`;
+    past: `UPDATE <t> SET access_ok_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')` for
+    every row, removed ones included (ask #477: a removed account's lease
+    clock starts at the upgrade too);
     `UPDATE <t> SET revoked_at = <now> WHERE status = 'revoked'`.
   - Ledger:
     ```sql
@@ -125,7 +136,7 @@ Follow `.claude/skills/add-migration`. Next free number: `00146` (last is
   (`internal/db/db_test.go`), regenerate
   `go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`.
 - Tests (`internal/db`): migration backfill (an `ok` account gets
-  `access_ok_at`, a `removed` one does not, a `revoked` one gets `revoked_at`);
+  `access_ok_at`, a `removed` one too, a `revoked` one gets `revoked_at`);
   the open-row unique index refuses a second scheduled row for one account and
   allows one after `done`.
 
@@ -203,7 +214,8 @@ Depends on: Task 1, Task 3.
   - `type AccountPurge struct` (all ledger columns) and
     `type PurgeAccount struct { Source string; ID int64; Label string; Status string; Enabled bool; AccessOKAt, RevokedAt string }`.
   - `ListPurgeAccounts() ([]PurgeAccount, error)` — one `UNION ALL` over the
-    four tables, status `!= 'removed'` (labels via the existing label columns).
+    four tables, every status (removed accounts take part in the lease, ask
+    #477; labels via the existing label columns).
   - `ScheduleAccountPurge(source, id, reason, dueAt)` — `INSERT … ON CONFLICT DO NOTHING`
     on the open-row index; returns whether a row was inserted.
   - `CancelAccountPurge(id)` (only `state='scheduled'`), `CancelAllScheduledPurges()`,
@@ -224,7 +236,10 @@ Depends on: Task 1, Task 3.
   cancelled), `TestPurge01_LeaseSchedulesWhenAllStale` (one fresh account of
   the source blocks it), `TestPurge01_LeaseCancelledByFreshAccess`,
   `TestPurge01_OffCancelsScheduledKeepsRunning`, `TestPurge01_RunningNeverCancelled`,
-  `TestPurge01_RemovedAccountsIgnored`.
+  `TestPurge01_RemovedAccountLease` (a removed account stale for 30 days is
+  scheduled at now + 72 h, a fresh one is not, and a removed account never
+  blocks or joins its source's live lease),
+  `TestPurge01_RemovedLeaseCancelledWhenReadded`.
 
 ## Task 5: Chunked purge executor
 
@@ -415,7 +430,9 @@ Depends on: Task 6, Task 7, Task 9.
 
 - `docs/inventory/account-purge.md`:
   - **PURGE-01 — Schedule and cancel**: Observable (notice from scheduling,
-    72 h grace, 30-day lease, reconnect cancels, off = nothing scheduled and
+    72 h grace, 30-day lease — disabled accounts count, removed accounts get
+    their own lease row due 72 h after scheduling (SLACK-01 unchanged: remove
+    keeps the data) —, reconnect cancels, off = nothing scheduled and
     open rows cancelled, running finishes, purged accepts only `ok`),
     Mechanism (`purge.Plan`/`Apply`, `Set*AccountAuthState` SQL,
     `MarkAccountAccessOK`, `purge.Enabled` order), guards from Tasks 2–4 and 6.
@@ -435,10 +452,14 @@ Depends on: Task 6, Task 7, Task 9.
   "when purge on revoked access is enabled (PURGE-01), a revoked account's
   data is deleted after the 72 h grace unless the owner logs in again";
   Mechanism notes the `revoked_at`/`access_ok_at` columns and that a pass still
-  never writes `status = ok`; guards gain `TestLinear03_PurgeOffKeepsData` and
+  never writes `status = ok`; Observable also notes that a removed workspace's
+  rows are kept by the remove and deleted only by an enabled lease purge
+  30 days after its last confirmed access; guards gain `TestLinear03_PurgeOffKeepsData` and
   `TestLinear03_PurgeScheduledCancelledByReconnect`; an amendment-log line
   (2026-10-21, board #601, ask #474). SLACK-01 untouched — add a note line in
-  `slack-accounts.md` that revocation is not removal.
+  `slack-accounts.md` that revocation is not removal and that a removed
+  account's data, kept by the remove, is deleted by an enabled lease purge
+  30 days after its last confirmed access (PURGE-01).
 - `docs/features/revoke-purge.md`: the decisions above, the step order per
   source and what each source keeps, the corp-profile line
   `WATCHTOWER_PURGE_DEFAULT=on`, the `--json` keys, the policy seam for #608,
@@ -454,8 +475,6 @@ Depends on: Task 6, Task 7, Task 9.
 
 ## Open questions
 
-- Lease and disabled accounts: the plan counts a disabled (not removed)
-  account in the lease, so pausing a source for 30 days on an install with
-  purge on deletes its data. Removed accounts (`slack/jira/linear remove`,
-  soft by SLACK-01/LINEAR-03) are never purged and keep their data. Confirm
-  both, or exclude disabled accounts from the lease.
+- Resolved 2026-10-21 (ask #477): the lease counts disabled (not removed)
+  accounts, and removed accounts are covered by the lease too (Decisions,
+  Schedule/Cancel). `remove` stays soft; SLACK-01 is unchanged.

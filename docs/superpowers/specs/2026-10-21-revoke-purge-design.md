@@ -4,7 +4,9 @@ Part of board group #595 (corporate data on the Mac). Status: approved by the
 owner 2026-10-21 (ask #474) with the recommended answer to every question:
 Q1 on in the corp build and under MDM, opt-in elsewhere; Q2 (a); Q3 72 h;
 Q4 30 days → purge with the same notice. The LINEAR-03 amendment in §6 is
-approved with it.
+approved with it. Plan approved 2026-10-21 (ask #477) with two decisions:
+the lease counts disabled (not removed) accounts, and removed accounts are
+covered by the lease too (§2).
 
 ## Goal
 
@@ -62,6 +64,13 @@ purge, `state` = `scheduled|running|done|cancelled`.
 - **Lease (offline):** no account of a source has a fresh `access_ok_at` for
   **N** days (**Q4**, proposed 30). Time without a network connection counts —
   that is the point of a lease. The same grace notice applies before it fires.
+  A disabled (not removed) account counts as a live account of its source
+  (owner decision 2026-10-21, ask #477).
+- **Removed accounts (lease):** a `removed` account whose `access_ok_at` is
+  older than 30 days gets the same scheduled purge and notice, due 72 h after
+  scheduling (owner decision 2026-10-21, ask #477). `remove` itself stays soft
+  and SLACK-01 is unchanged: the remove keeps the data; only this later lease
+  purge deletes it, and only while the purge is on.
 
 Scheduling runs as a cheap check at the start of each daemon cycle
 (`phaseAccountPurge`), reading the account rows only.
