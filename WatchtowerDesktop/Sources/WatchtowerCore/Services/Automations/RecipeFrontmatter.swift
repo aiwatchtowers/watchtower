@@ -5,7 +5,7 @@ import Foundation
 /// recipe.go`), every string a YAML double-quoted scalar; `splice` swaps the
 /// leading `---…---` block of a recipe and keeps the rest byte-identical.
 /// Comments inside the old frontmatter are not kept (v1 limit, said in the
-/// form's footer). Go parses what `render` writes: the shared fixture
+/// form, under its fields). Go parses what `render` writes: the shared fixture
 /// `internal/automations/testdata/recipes/swift_written.md` is pinned on both
 /// sides (`RecipeFrontmatterTests`, `TestRecipe_ParsesSwiftWrittenFrontmatter`).
 package struct RecipeFrontmatter: Equatable, Sendable {

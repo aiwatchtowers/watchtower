@@ -148,11 +148,11 @@ struct WorkbenchPageView: View {
             .padding(.bottom, Spacing.small)
     }
 
-    /// **New Automation…**: the Automations tab's New automation sheet
-    /// with this workbench picked; nil until the tab's view model is up.
+    /// **New Automation…**: the Automations tab's New automation panel for
+    /// this workbench; nil until the tab's view model is up.
     private func newAutomation(_ project: Workbench) -> (() -> Void)? {
         guard appState.automationsViewModel != nil else { return nil }
-        return { [appState] in appState.newAutomation(forWorkbench: project.id) }
+        return { [appState] in appState.newAutomation(forWorkbench: project) }
     }
 
     private func automationsMenu(_ project: Workbench) -> WorkbenchAutomationsMenu? {

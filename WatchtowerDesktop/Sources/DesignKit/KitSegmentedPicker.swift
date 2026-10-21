@@ -5,11 +5,22 @@ public struct KitSegment<Value: Hashable> {
     let value: Value
     let title: String
     var systemImage: String?
+    /// False greys the segment out; `help` then says why.
+    var isEnabled: Bool
+    var help: String?
 
-    public init(value: Value, title: String, systemImage: String? = nil) {
+    public init(
+        value: Value,
+        title: String,
+        systemImage: String? = nil,
+        isEnabled: Bool = true,
+        help: String? = nil
+    ) {
         self.value = value
         self.title = title
         self.systemImage = systemImage
+        self.isEnabled = isEnabled
+        self.help = help
     }
 }
 
@@ -38,19 +49,36 @@ public struct KitSegmentedPicker<Value: Hashable>: View {
         )
     }
 
+    /// One segment; a disabled one gets no hover fill.
+    private func toggle(_ segment: KitSegment<Value>) -> some View {
+        Toggle(isOn: Self.isOn(segment.value, selection: $selection)) {
+            if let image = segment.systemImage {
+                Label(segment.title, systemImage: image)
+            } else {
+                Label { Text(segment.title) } icon: { EmptyView() }
+            }
+        }
+        .toggleStyle(SegmentedToggleStyle(
+            showsIcon: segment.systemImage != nil,
+            isHovered: segment.isEnabled && hovered == segment.value
+        ) { inside in
+            if inside, segment.isEnabled {
+                hovered = segment.value
+            } else if hovered == segment.value {
+                hovered = nil
+            }
+        })
+        .disabled(!segment.isEnabled)
+    }
+
     public var body: some View {
         HStack(spacing: Spacing.tight) {
             ForEach(segments, id: \.value) { segment in
-                Toggle(isOn: Self.isOn(segment.value, selection: $selection)) {
-                    if let image = segment.systemImage {
-                        Label(segment.title, systemImage: image)
-                    } else {
-                        Label { Text(segment.title) } icon: { EmptyView() }
-                    }
+                if let help = segment.help {
+                    toggle(segment).help(help)
+                } else {
+                    toggle(segment)
                 }
-                .toggleStyle(SegmentedToggleStyle(showsIcon: segment.systemImage != nil, isHovered: hovered == segment.value) { inside in
-                    if inside { hovered = segment.value } else if hovered == segment.value { hovered = nil }
-                })
             }
         }
         .segmentCapsule()

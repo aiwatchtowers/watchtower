@@ -37,15 +37,19 @@ enum AutomationEditFixtures {
 
     static func validateJSON(
         approval: String,
+        name: String = "Digest",
         contentHash: String = "c2",
         widening: [String] = [],
         ok: Bool = true,
         errors: [String] = []
     ) throws -> Data {
         let object: [String: Any] = [
-            "ok": ok, "errors": errors, "slug": "digest", "name": "Digest", "scope": "personal",
+            "ok": ok, "errors": errors, "slug": "digest", "name": name, "scope": "personal",
             "approval_hash": approval, "content_hash": contentHash, "permissions": ["jira:read@ACME"],
-            "outputs": ["report"], "widening": widening
+            "outputs": ["report"], "widening": widening,
+            // Go writes `{}` for text that does not parse.
+            "fields": ok ? ["trigger": "schedule: 0 16 * * 5", "missed": "run_once", "concurrency": "1",
+                            "budget": ["tokens": 50000, "minutes": 5]] as [String: Any] : [:]
         ]
         return try JSONSerialization.data(withJSONObject: object)
     }
@@ -60,43 +64,87 @@ enum AutomationEditFixtures {
     }
 }
 
+/// Answers `show` with the fixture and `validate` with `approval`.
+private final class KeepAutoRunner: CLIRunnerProtocol, @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: String
+
+    init(approval: String) {
+        current = approval
+    }
+
+    var approval: String {
+        get { lock.withLock { current } }
+        set { lock.withLock { current = newValue } }
+    }
+
+    func run(args: [String]) async throws -> Data {
+        switch args.count > 1 ? args[1] : "" {
+        case "show": try AutomationEditFixtures.showJSON()
+        case "validate": try AutomationEditFixtures.validateJSON(approval: approval)
+        default: Data()
+        }
+    }
+}
+
 @MainActor
 final class AutomationFormTests: XCTestCase {
     private typealias Fixtures = AutomationEditFixtures
 
     // MARK: - Save plan
 
-    func testWideningSheetShownOnlyOnWidening() throws {
-        let current = try Fixtures.detail()
-        let quiet = AutomationSavePlan.make(validated: try Fixtures.validated(approval: "h1"), current: current, grants: [])
-        XCTAssertFalse(quiet.needsSheet, "no widening, confirmed, same hash, no grants: Save saves at once")
-
-        let wider = AutomationSavePlan.make(validated: try Fixtures.validated(approval: "h1", widening: ["jira:read@*"]),
-                                            current: current, grants: [])
-        XCTAssertTrue(wider.needsSheet)
-    }
-
-    func testUnconfirmedRecipeAlwaysShowsSheet() throws {
+    func testUnconfirmedRecipeIsNotConfirmed() throws {
         let plan = AutomationSavePlan.make(validated: try Fixtures.validated(approval: "h1"),
                                            current: try Fixtures.detail(approval: "h1", confirmed: ""), grants: [])
         XCTAssertFalse(plan.wasConfirmed)
-        XCTAssertTrue(plan.needsSheet)
     }
 
-    func testAuto03_KeepAutoBoxesUncheckedByDefault() throws {
+    func testAuto03_KeepAutoBoxesUncheckedByDefault() async throws {
         let grants = [Fixtures.grant("create_jira_issue", hash: "h1"), Fixtures.grant("add_comment", hash: "h1"),
                       Fixtures.grant("send_slack_message", hash: "h0")]
         let plan = AutomationSavePlan.make(validated: try Fixtures.validated(approval: "h2"), current: try Fixtures.detail(), grants: grants)
         XCTAssertEqual(plan.pausedGrants, ["add_comment", "create_jira_issue"],
                        "the grants active under the current hash, an already paused one left out")
         XCTAssertEqual(plan.keepAuto, [], "no Keep auto box is checked by default")
-        XCTAssertTrue(plan.needsSheet)
+        // The sheet is gone (spec A4): the draft column shows a Keep auto box
+        // for each paused grant before any save.
+        let column = AutomationDraftColumnModel(text: "x", validated: plan.validated, isChecking: false,
+                                                newestChatEntry: nil, confirmedText: nil, isNew: false, plan: plan)
+        XCTAssertEqual(column.pausedGrants, ["add_comment", "create_jira_issue"])
+
+        // The boxes the panel binds to live in the editor center: none is
+        // checked by default, and a check that measures a new hash unchecks
+        // every box checked under the old one.
+        let runner = KeepAutoRunner(approval: "h2")
+        let center = AutomationEditorCenter(cli: AutomationsCLI(runner: runner), grants: { _ in grants },
+                                            refresh: { _ in },
+                                            sleep: { _ in try? await Task.sleep(for: .seconds(3600)) })
+        await center.beginEdit(7, chatNewestText: nil)
+        let form = try XCTUnwrap(center.drafts[7])
+        form.fields.budgetTokens = 120_000
+        await center.check(7)
+        guard case let .review(shown) = center.saving[7] else { return XCTFail("not checked: \(String(describing: center.saving[7]))") }
+        XCTAssertEqual(shown.pausedGrants, ["add_comment", "create_jira_issue"], "a box for each paused grant")
+        XCTAssertEqual(center.keepAuto[7] ?? [], [], "no Keep auto box is checked by default")
+        center.setKeepAuto(7, tool: "add_comment", on: true)
+        center.setKeepAuto(7, tool: "send_slack_message", on: true)
+        XCTAssertEqual(center.keepAuto[7], ["add_comment"], "only a paused grant has a box")
+
+        await center.check(7)
+        XCTAssertEqual(center.keepAuto[7], ["add_comment"], "a re-check of the same hash keeps the box")
+
+        runner.approval = "h3"
+        form.fields.budgetTokens = 130_000
+        await center.check(7)
+        guard case let .review(again) = center.saving[7] else { return XCTFail("not re-checked") }
+        XCTAssertEqual(again.validated.approvalHash, "h3")
+        XCTAssertEqual(center.keepAuto[7] ?? [], [], "a new hash unchecks every box")
     }
 
     /// D26: a trigger, missed, budget or concurrency edit is spliced into the
-    /// recipe and changes the approval hash Go returns, so the sheet shows and
-    /// the active grants are paused.
-    func testScheduleOrBudgetEditShowsSheetAndPausesGrants() throws {
+    /// recipe and changes the approval hash Go returns, so the active grants
+    /// are paused.
+    func testScheduleOrBudgetEditPausesGrants() throws {
         let edits: [(String, (inout RecipeFrontmatter) -> Void, String)] = [
             ("trigger", { $0.trigger = .schedule("0 16 * * 1-5") }, "  schedule: \"0 16 * * 1-5\"\n"),
             ("missed", { $0.missed = "skip" }, "missed: \"skip\"\n"),
@@ -112,7 +160,6 @@ final class AutomationFormTests: XCTestCase {
 
             let plan = AutomationSavePlan.make(validated: try Fixtures.validated(approval: "h2"), current: form.detail,
                                                grants: [Fixtures.grant("create_jira_issue", hash: "h1")])
-            XCTAssertTrue(plan.needsSheet, name)
             XCTAssertEqual(plan.pausedGrants, ["create_jira_issue"], name)
         }
     }
@@ -124,7 +171,6 @@ final class AutomationFormTests: XCTestCase {
         let plan = AutomationSavePlan.make(validated: try Fixtures.validated(approval: "h1"), current: form.detail,
                                            grants: [Fixtures.grant("create_jira_issue", hash: "h1")])
         XCTAssertEqual(plan.pausedGrants, [])
-        XCTAssertFalse(plan.needsSheet)
     }
 
     /// R-P3-5 lifted in P5 part 2 (PROJ-03 amendment, ask #272): the form

@@ -1467,36 +1467,6 @@ CREATE TABLE IF NOT EXISTS automations (
     updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')), disabled_reason TEXT NOT NULL DEFAULT '', disabled_at TEXT,
     CHECK ((scope = 'workbench') = (project_id IS NOT NULL))
 );
-CREATE TABLE IF NOT EXISTS automation_runs (
-    id                INTEGER PRIMARY KEY AUTOINCREMENT,
-    automation_id     INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
-    trigger           TEXT NOT NULL CHECK (trigger IN ('schedule','catch_up','button','event','manual','dry_run')),
-    scheduled_for     TEXT,
-    event_cycle       TEXT,
-    event_json        TEXT NOT NULL DEFAULT '',
-    rerun_of          INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL,
-    status            TEXT NOT NULL DEFAULT 'queued'
-                      CHECK (status IN ('queued','running','waiting','succeeded','failed','budget_exceeded',
-                                        'timed_out','cancelled','expired')),
-    waiting_reason    TEXT NOT NULL DEFAULT '' CHECK (waiting_reason IN ('','approval','ask','session','app')),
-    recipe_hash       TEXT NOT NULL DEFAULT '',              -- approval_hash at claim
-    recipe_snapshot   TEXT NOT NULL DEFAULT '',              -- recipe_text at claim
-    budget_tokens     INTEGER NOT NULL DEFAULT 0,            -- snapshotted at claim
-    budget_minutes    INTEGER NOT NULL DEFAULT 0,            -- snapshotted at claim
-    input_tokens      INTEGER NOT NULL DEFAULT 0,
-    output_tokens     INTEGER NOT NULL DEFAULT 0,
-    tokens_estimated  INTEGER NOT NULL DEFAULT 0,            -- 1 when any call's usage was estimated
-    reported_cost_usd REAL,                                  -- display only; NULL when no provider reported one
-    active_ms         INTEGER NOT NULL DEFAULT 0,
-    error             TEXT NOT NULL DEFAULT '',
-    error_kind        TEXT NOT NULL DEFAULT ''
-                      CHECK (error_kind IN ('','script','permission','budget','daily_cap','timeout','interrupted',
-                                            'not_runnable','expired','cancelled','backend')),
-    summary           TEXT NOT NULL DEFAULT '',              -- clipped 1 KiB
-    queued_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    started_at        TEXT,
-    finished_at       TEXT
-, resume_pending INTEGER NOT NULL DEFAULT 0 CHECK (resume_pending IN (0, 1)), not_resumable INTEGER NOT NULL DEFAULT 0 CHECK (not_resumable IN (0, 1)), random_seed INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS automation_run_steps (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id            INTEGER NOT NULL REFERENCES automation_runs(id) ON DELETE CASCADE,
@@ -1539,7 +1509,7 @@ CREATE TABLE IF NOT EXISTS automation_outputs (
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     read_at       TEXT,                                      -- Desktop-written
     dismissed_at  TEXT                                       -- Desktop-written
-);
+, link TEXT NOT NULL DEFAULT '', actions_json TEXT NOT NULL DEFAULT '[]', done_at TEXT, pressed_action INTEGER, pressed_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, pressed_at TEXT);
 CREATE TABLE IF NOT EXISTS plan_usage_samples (
     taken_at   TEXT NOT NULL,
     limit_key  TEXT NOT NULL,
@@ -2150,6 +2120,39 @@ CREATE TABLE IF NOT EXISTS account_purges (
     error        TEXT NOT NULL DEFAULT '',
     failures     INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS "automation_runs" (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    automation_id     INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+    trigger           TEXT NOT NULL CHECK (trigger IN ('schedule','catch_up','button','event','manual','dry_run','reply')),
+    scheduled_for     TEXT,
+    event_cycle       TEXT,
+    event_json        TEXT NOT NULL DEFAULT '',
+    rerun_of          INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL,
+    status            TEXT NOT NULL DEFAULT 'queued'
+                      CHECK (status IN ('queued','running','waiting','succeeded','failed','budget_exceeded',
+                                        'timed_out','cancelled','expired')),
+    waiting_reason    TEXT NOT NULL DEFAULT '' CHECK (waiting_reason IN ('','approval','ask','session','app')),
+    recipe_hash       TEXT NOT NULL DEFAULT '',
+    recipe_snapshot   TEXT NOT NULL DEFAULT '',
+    budget_tokens     INTEGER NOT NULL DEFAULT 0,
+    budget_minutes    INTEGER NOT NULL DEFAULT 0,
+    input_tokens      INTEGER NOT NULL DEFAULT 0,
+    output_tokens     INTEGER NOT NULL DEFAULT 0,
+    tokens_estimated  INTEGER NOT NULL DEFAULT 0,
+    reported_cost_usd REAL,
+    active_ms         INTEGER NOT NULL DEFAULT 0,
+    error             TEXT NOT NULL DEFAULT '',
+    error_kind        TEXT NOT NULL DEFAULT ''
+                      CHECK (error_kind IN ('','script','permission','budget','daily_cap','timeout','interrupted',
+                                            'not_runnable','expired','cancelled','backend')),
+    summary           TEXT NOT NULL DEFAULT '',
+    queued_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    started_at        TEXT,
+    finished_at       TEXT,
+    resume_pending    INTEGER NOT NULL DEFAULT 0 CHECK (resume_pending IN (0, 1)),
+    not_resumable     INTEGER NOT NULL DEFAULT 0 CHECK (not_resumable IN (0, 1)),
+    random_seed       INTEGER NOT NULL DEFAULT 0
+);
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,
@@ -2399,14 +2402,6 @@ CREATE INDEX IF NOT EXISTS idx_terminal_session_targets_target ON terminal_sessi
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_project ON terminal_sessions(project_id, last_active_at);
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_target ON terminal_sessions(target_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_automations_scope_slug ON automations(scope, COALESCE(project_id, 0), slug);
-CREATE INDEX IF NOT EXISTS idx_automation_runs_automation_status ON automation_runs(automation_id, status);
-CREATE INDEX IF NOT EXISTS idx_automation_runs_status_queued ON automation_runs(status, queued_at);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_event_cycle ON automation_runs(automation_id, event_cycle)
-    WHERE event_cycle IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_queued_trigger ON automation_runs(automation_id, trigger)
-    WHERE status = 'queued';
-CREATE INDEX IF NOT EXISTS idx_automation_runs_rerun_of ON automation_runs(rerun_of);
-CREATE INDEX IF NOT EXISTS idx_automation_runs_started_at ON automation_runs(started_at);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_kind ON automation_outputs(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_automation ON automation_outputs(automation_id);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_run ON automation_outputs(run_id);
@@ -2479,6 +2474,14 @@ CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
 CREATE INDEX IF NOT EXISTS idx_idea_mentions_ref ON idea_mentions(source, ref);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_account_purges_open
     ON account_purges(source, account_id) WHERE state IN ('scheduled','running');
+CREATE INDEX IF NOT EXISTS idx_automation_runs_automation_status ON automation_runs(automation_id, status);
+CREATE INDEX IF NOT EXISTS idx_automation_runs_status_queued ON automation_runs(status, queued_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_event_cycle ON automation_runs(automation_id, event_cycle)
+    WHERE event_cycle IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_queued_trigger ON automation_runs(automation_id, trigger)
+    WHERE status = 'queued' AND trigger <> 'reply';
+CREATE INDEX IF NOT EXISTS idx_automation_runs_rerun_of ON automation_runs(rerun_of);
+CREATE INDEX IF NOT EXISTS idx_automation_runs_started_at ON automation_runs(started_at);
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;
@@ -2735,12 +2738,6 @@ BEGIN
             COALESCE(NEW.status_actor, 'owner'));
     UPDATE targets SET status_actor = NULL WHERE id = NEW.id AND status_actor IS NOT NULL;
 END;
-CREATE TRIGGER IF NOT EXISTS automation_runs_replay_cleanup AFTER UPDATE OF status ON automation_runs
-WHEN NEW.status NOT IN ('queued','running','waiting')
-BEGIN
-    DELETE FROM automation_run_replay WHERE run_id = NEW.id;
-    UPDATE automation_runs SET resume_pending = 0 WHERE id = NEW.id AND resume_pending = 1;
-END;
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN
@@ -2778,6 +2775,12 @@ BEGIN
     INSERT INTO transcripts_fts(rowid, text, transcript_id, title)
     SELECT NEW.id, NEW.transcript_text, NEW.id, NEW.title
     WHERE NEW.transcript_text != '';
+END;
+CREATE TRIGGER IF NOT EXISTS automation_runs_replay_cleanup AFTER UPDATE OF status ON automation_runs
+WHEN NEW.status NOT IN ('queued','running','waiting')
+BEGIN
+    DELETE FROM automation_run_replay WHERE run_id = NEW.id;
+    UPDATE automation_runs SET resume_pending = 0 WHERE id = NEW.id AND resume_pending = 1;
 END;
 """#
 }

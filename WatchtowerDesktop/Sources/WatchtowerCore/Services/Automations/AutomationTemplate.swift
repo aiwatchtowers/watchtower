@@ -51,42 +51,4 @@ package enum AutomationTemplateGallery {
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
     }
-
-    /// A workbench a workbench template can go into.
-    package struct InstallTarget: Equatable, Sendable, Identifiable {
-        package let id: Int64
-        package let name: String
-
-        package init(id: Int64, name: String) {
-            self.id = id
-            self.name = name
-        }
-    }
-
-    /// What **Use template** does (#582). The gallery passes no `--param`:
-    /// `install-template` chooses a param's value itself.
-    package enum InstallChoice: Equatable, Sendable {
-        /// Install at once (a personal template, or the only workbench).
-        case install(workbenchID: Int64?)
-        /// A workbench template with several workbenches: the button is a menu of them.
-        case pickWorkbench([InstallTarget])
-        /// A workbench template and no workbench yet: the button is off.
-        case needsWorkbench
-    }
-
-    /// "Covers: PAY, OPS" from `install-template --json` `params`, values in
-    /// install order, keys sorted; nil when the template had no param.
-    package static func coverageLine(_ params: [String: [String]]) -> String? {
-        let values = params.keys.sorted().flatMap { params[$0] ?? [] }
-        return values.isEmpty ? nil : "Covers: " + values.joined(separator: ", ")
-    }
-
-    package static func installChoice(_ template: AutomationTemplate, workbenches: [InstallTarget]) -> InstallChoice {
-        guard template.scope == "workbench" else { return .install(workbenchID: nil) }
-        switch workbenches.count {
-        case 0: return .needsWorkbench
-        case 1: return .install(workbenchID: workbenches[0].id)
-        default: return .pickWorkbench(workbenches)
-        }
-    }
 }

@@ -122,33 +122,11 @@ final class AutomationCardPresentationTests: XCTestCase {
                        "On new Gmail · waiting for your confirmation")
     }
 
-    func testStatusPillAndBadges() {
-        let healthy = item(automation(), lastRun: run(.succeeded))
-        XCTAssertEqual(ACP.statusPill(healthy), ACP.Pill(text: "Succeeded", badge: .green))
-        let running = item(automation(), lastRun: run(.failed), activeRun: run(.running))
-        XCTAssertEqual(ACP.statusPill(running), ACP.Pill(text: "Running", badge: .blue))
-        XCTAssertNil(ACP.statusPill(item(automation())))
+    func testStatusText() {
         XCTAssertEqual(ACP.statusText(.budgetExceeded), "Budget exceeded")
-        XCTAssertEqual(ACP.badgeText(.needsConfirmation), "Needs your confirmation")
-        XCTAssertEqual(ACP.badgeText(.autoPaused), "Auto paused")
-        XCTAssertEqual(ACP.badgeText(.disabled), "Disabled")
-        XCTAssertEqual(ACP.badgeText(.parseError), "Parse error")
     }
 
     // MARK: - Card
-
-    func testSubtitle() {
-        XCTAssertEqual(ACP.subtitle(automation(), workbenchName: nil), "Every weekday at 09:00 · personal · enabled")
-        let workbench = Automation(id: 1, slug: "s", scope: .workbench, projectID: 4, triggerKind: "manual",
-                                   triggerSpecJSON: #"{"manual":true}"#)
-        XCTAssertEqual(ACP.subtitle(workbench, workbenchName: "acme-api"),
-                       "Only when you run it · acme-api · disabled")
-        XCTAssertEqual(ACP.subtitle(workbench, workbenchName: nil), "Only when you run it · workbench · disabled")
-        XCTAssertEqual(ACP.subtitle(automation(cron: "30 8 * * 1"), workbenchName: nil),
-                       "Every Monday at 08:30 · personal · enabled")
-        XCTAssertEqual(ACP.subtitle(automation(cron: "0 9 * * *"), workbenchName: nil),
-                       "Every day at 09:00 · personal · enabled")
-    }
 
     func testLimitsLines() {
         XCTAssertEqual(ACP.limitsLines(automation()),
@@ -173,6 +151,7 @@ final class AutomationCardPresentationTests: XCTestCase {
         XCTAssertEqual(ACP.permissionLine("mcp:github/list_*"), "Use list_* from github (Quick Connection)")
         XCTAssertEqual(ACP.permissionLine(#"shell:"make release""#), "Run the command make release")
         XCTAssertEqual(ACP.permissionLine("session:start@codex"), "Start Codex sessions")
+        XCTAssertEqual(ACP.permissionLine("inbox:reply"), "Reacts to its own Inbox buttons")
         XCTAssertEqual(ACP.permissionLine("weird"), "weird")
         XCTAssertEqual(ACP.outputLine("inbox"), "Put cards in your Inbox")
         XCTAssertEqual(ACP.outputLine("report"), "Add reports to this automation")
@@ -207,6 +186,11 @@ final class AutomationCardPresentationTests: XCTestCase {
         XCTAssertNil(ACP.reportedCostText(nil))
         XCTAssertEqual(ACP.reportedCostText(0.4211), "$0.42 reported")
         XCTAssertEqual(ACP.reportedCostText(0), "$0.00 reported")
+    }
+
+    func testToggleMenuTitle() {
+        XCTAssertEqual(ACP.toggleMenuTitle(enabled: true), "Turn Off")
+        XCTAssertEqual(ACP.toggleMenuTitle(enabled: false), "Turn On")
     }
 
     func testButtonsForStates() {
@@ -269,6 +253,7 @@ final class AutomationCardPresentationTests: XCTestCase {
         XCTAssertEqual(ACP.triggerLabel(run(.succeeded)), "Scheduled")
         XCTAssertEqual(ACP.triggerLabel(run(.succeeded, trigger: "dry_run")), "Dry run")
         XCTAssertEqual(ACP.triggerLabel(run(.succeeded, trigger: "catch_up")), "Caught up after sleep")
+        XCTAssertEqual(ACP.triggerLabel(run(.succeeded, trigger: "reply")), "Inbox button")
         XCTAssertEqual(ACP.triggerLabel(AutomationRun(id: 9, automationID: 7, rerunOf: 3, status: .running)), "Rerun of #3")
     }
 

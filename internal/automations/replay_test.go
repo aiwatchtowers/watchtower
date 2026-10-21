@@ -557,3 +557,60 @@ func TestAuto08_KeptRunChangedBeforeItsClaimIsNotResumed(t *testing.T) {
 		})
 	}
 }
+
+// seedReplyWait seeds a workbench recipe with ask:owner and inbox:reply whose
+// script waits on an ask, queues a reply run of it and stops the executor
+// while the run waits.
+func (w *writeFixture) seedReplyWait(t *testing.T) (db.Automation, int64) {
+	t.Helper()
+	a := w.seedWorkbenchOutput(t, "triage", []string{"ask:owner", "inbox:reply"}, "inbox",
+		`log("a"); `+resumeAskCall+`; return trigger.kind + ":" + trigger.reply.value + ":" + trigger.reply.data.id`)
+	id := w.enqueueReply(t, a)
+	w.stopWhileWaiting(t, id)
+	return a, id
+}
+
+// TestAuto08_ResumedReplyRunKeepsTriggerReply: a resumed reply run sees the
+// same trigger.reply, rebuilt from its stored payload.
+func TestAuto08_ResumedReplyRunKeepsTriggerReply(t *testing.T) {
+	w := newWriteFixture(t)
+	a, id := w.seedReplyWait(t)
+	ask := w.onlyAsk(t, a.ProjectID)
+	w.restart()
+	stop := runExecutor(t, w.exFixture)
+	defer stop()
+	w.waitStatus(t, id, db.RunWaiting)
+	w.answerAsk(t, ask.ID)
+	w.e.Wake()
+	r := w.waitEnded(t, id)
+	if r.Status != db.RunSucceeded || r.Summary != "reply:backlog:A-1" {
+		t.Fatalf("run = %s/%s %q (%s); want succeeded reply:backlog:A-1", r.Status, r.ErrorKind, r.Summary, r.Error)
+	}
+}
+
+// TestAuto08_ResumedReplyRunIsCheckedForInboxReply: the inbox:reply check
+// runs on a resume too — a snapshot without the entry ends the resumed run
+// failed/permission before any of its script replays.
+func TestAuto08_ResumedReplyRunIsCheckedForInboxReply(t *testing.T) {
+	w := newWriteFixture(t)
+	_, id := w.seedReplyWait(t)
+	res, err := w.d.Exec(`UPDATE automation_runs SET recipe_snapshot = replace(recipe_snapshot, '  - inbox:reply'||char(10), '')
+		WHERE id = ?`, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 || strings.Contains(w.run(t, id).RecipeSnapshot, "inbox:reply") {
+		t.Fatal("the snapshot still carries inbox:reply")
+	}
+	w.restart()
+	stop := runExecutor(t, w.exFixture)
+	defer stop()
+	r := w.waitEnded(t, id)
+	if r.Status != db.RunFailed || r.ErrorKind != db.ErrKindPermission {
+		t.Fatalf("run = %s/%s (%s); want failed/permission", r.Status, r.ErrorKind, r.Error)
+	}
+	mustContain(t, "error", r.Error, "inbox:reply")
+	if got := stepSeqsAndKinds(w.steps(t, id)); got != "1:log:ok,2:ask:error" {
+		t.Fatalf("steps = %s; want nothing replayed", got)
+	}
+}

@@ -563,7 +563,7 @@ content width). No migration, no AI, no daemon phase.
   target stores it as a UTC `yyyy-MM-ddTHH:mm` minute, the form Go's
   `UnsnoozeExpiredTargets` compares against (a bare date would come back at
   00:00 UTC, the same evening west of UTC). Automation outputs through
-  `AutomationQueries.markOutputRead` (Done) / `dismissOutput` (Hide — no
+  `AutomationQueries.markOutputDone` (Done, writes `done_at`) / `dismissOutput` (Hide — no
   snooze, the output is dismissed as in Inbox); an output closed elsewhere
   matches no row, which is success. Proposals and events have no
   action: `HomeCenter.act` ignores them (`FeedRef.hasActions`). A failure un-hides the

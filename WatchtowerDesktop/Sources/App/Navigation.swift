@@ -245,15 +245,7 @@ struct MainNavigationView: View {
         }
     }
 
-    /// Redirects away from the current tab when it becomes hidden — a
-    /// feature was just disabled, or a persisted selection from a previous
-    /// launch points at a tab that's now gated off. Runs once at appear
-    /// (stale persisted selection), on every live feature-list or
-    /// connected-source change, and on every selection change, sharing the
-    /// same pure `fallbackDestination` rule.
-    /// The Automations tab's hooks into other surfaces; later tasks add
-    /// the New/Templates/Change in words ones. Edit and the confirmation
-    /// sheet are the tab's own (`AutomationEditorCenter`).
+    /// The Automations tab's links out of a run's steps.
     private var automationsTabActions: AutomationsTabActions {
         var actions = AutomationsTabActions()
         actions.onOpenInbox = { _ in appState.selectedDestination = .inbox }
@@ -270,18 +262,29 @@ struct MainNavigationView: View {
         return actions
     }
 
-    private var automationEditorChatHooks: AutomationEditorChatHooks {
+    private func automationHooks(_ vm: AutomationsViewModel) -> AutomationEditorChatHooks {
         // Personal recipes live in <workspace>/automations, beside the database.
-        let workspaceDir = (appState.databaseManager?.dbPool.path as NSString?)?.deletingLastPathComponent
+        let workspaceDir = (appState.databaseManager?.dbPool.path as NSString?)?.deletingLastPathComponent ?? ""
+        let workbenches = (appState.workbenchesViewModel?.summaries ?? []).map { AutomationScopeChoice.forWorkbench($0.project) }
+        let panels = appState.automationTemplatePanels
+        let template = { (name: String) in vm.templates.first { $0.name == name } }
         return AutomationEditorChatHooks(
-            open: { try await appState.automationEditorChat(automationID: $0) },
-            openNew: { try await appState.newAutomationEditorChat(workbenchID: $0) },
-            automationsDir: (workspaceDir as NSString?)?.appendingPathComponent("automations"),
-            unavailableHelp: AutomationEditorChatSurface.toolsAvailable(provider: nil)
-                ? nil : AutomationEditorChatSurface.unavailableHelp
+            scopes: [.personal] + workbenches,
+            workspaceDir: workspaceDir,
+            draftContextID: { appState.draftContextID(for: $0) },
+            makeNewChat: { try await appState.newAutomationEditorChat(contextID: $0, scope: $1) },
+            makeEditChat: { try await appState.automationEditorChat(automationID: $0) },
+            templatePanel: { name, scope in template(name).flatMap { panels?.panel(for: $0, scope: scope) } },
+            startTemplate: { name, scope in template(name).flatMap { panels?.start($0, scope: scope) } }
         )
     }
 
+    /// Redirects away from the current tab when it becomes hidden — a
+    /// feature was just disabled, or a persisted selection from a previous
+    /// launch points at a tab that's now gated off. Runs once at appear
+    /// (stale persisted selection), on every live feature-list or
+    /// connected-source change, and on every selection change, sharing the
+    /// same pure `fallbackDestination` rule.
     private func applyFeatureFallback() {
         if let fallback = SidebarDestination.fallbackDestination(
             current: appState.selectedDestination,
@@ -364,15 +367,9 @@ struct MainNavigationView: View {
                 AutomationsView(
                     vm: vm,
                     actions: automationsTabActions,
-                    workbenchName: { id in
-                        appState.workbenchesViewModel?.summaries.first { $0.project.id == id }?.project.name
-                    },
-                    workbenches: (appState.workbenchesViewModel?.summaries ?? []).map {
-                        AutomationTemplateGallery.InstallTarget(id: $0.project.id, name: $0.project.name)
-                    },
                     emptyStateContext: appState.emptyStateContext,
                     editor: appState.automationEditorCenter,
-                    chats: automationEditorChatHooks,
+                    hooks: automationHooks(vm),
                     tracksVisible: SidebarDestination.tracks.isVisible(
                         disabledFeatures: appState.featureVisibility.disabledFeatureIDs,
                         connected: appState.featureVisibility.connectedSources

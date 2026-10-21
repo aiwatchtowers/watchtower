@@ -26,6 +26,7 @@ type installJSONOut struct {
 		Slug         string `json:"slug"`
 		Path         string `json:"path"`
 		ParseError   string `json:"parse_error"`
+		ApprovalHash string `json:"approval_hash"`
 	} `json:"installed"`
 	Params map[string][]string `json:"params"`
 }
@@ -352,4 +353,96 @@ func TestInstallTemplate_PrintsTemplateNotes(t *testing.T) {
 	text, err := runAutomations(t, "install-template", "new-mail-summary")
 	require.NoError(t, err, text)
 	assert.Contains(t, text, "Note: A run by hand or on a schedule has no mail-sync event: list your mailboxes in scheduledAccounts in the script first.")
+}
+
+// renderOut decodes `install-template --render --json`.
+type renderOut struct {
+	Name   string              `json:"name"`
+	Scope  string              `json:"scope"`
+	Params map[string][]string `json:"params"`
+	Files  []struct {
+		Slug     string `json:"slug"`
+		Text     string `json:"text"`
+		Validate struct {
+			OK           bool   `json:"ok"`
+			Scope        string `json:"scope"`
+			ApprovalHash string `json:"approval_hash"`
+		} `json:"validate"`
+	} `json:"files"`
+}
+
+func renderTemplate(t *testing.T, args ...string) renderOut {
+	t.Helper()
+	out, _, err := runAutomationsStreams(t, append(append([]string{"install-template"}, args...), "--render", "--json")...)
+	require.NoError(t, err, out)
+	var got renderOut
+	require.NoError(t, json.Unmarshal([]byte(out), &got), out)
+	return got
+}
+
+func TestInstallTemplate_RenderWritesNothing(t *testing.T) {
+	c := newAutoCLI(t)
+	got := renderTemplate(t, "team-performance-report")
+	require.Len(t, got.Files, 1)
+	assert.Equal(t, "team-performance-report", got.Files[0].Slug)
+	assert.True(t, got.Files[0].Validate.OK)
+	assert.NotEmpty(t, got.Files[0].Validate.ApprovalHash)
+	assert.NotEmpty(t, got.Files[0].Text)
+	assert.NoFileExists(t, filepath.Join(c.personal, "team-performance-report.md"))
+	_, err := c.d.GetAutomationBySlug("personal", 0, "team-performance-report")
+	assert.ErrorIs(t, err, db.ErrAutomationNotFound)
+}
+
+func TestInstallTemplate_RenderHashMatchesInstall(t *testing.T) {
+	c := newAutoCLI(t)
+	id, _ := templateWorkbench(t, c)
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		slugs []string
+		scope string
+	}{
+		{"team-performance-report", nil, []string{"team-performance-report"}, "personal"},
+		{"release-buttons", []string{"--workbench", idArg(id)}, []string{"release", "deploy-test", "deploy-stage"}, "workbench"},
+	} {
+		args := append([]string{tc.name}, tc.args...)
+		rendered := renderTemplate(t, args...)
+		installed := installTemplate(t, args...)
+		require.Len(t, rendered.Files, len(tc.slugs), tc.name)
+		require.Len(t, installed.Installed, len(tc.slugs), tc.name)
+		for i, slug := range tc.slugs {
+			assert.Equal(t, slug, rendered.Files[i].Slug)
+			assert.Equal(t, slug, installed.Installed[i].Slug)
+			assert.Equal(t, tc.scope, rendered.Scope)
+			assert.True(t, strings.HasPrefix(rendered.Files[i].Validate.Scope, tc.scope), "validate.scope %q (Scope.String: workbench:<id>)", rendered.Files[i].Validate.Scope)
+			assert.NotEmpty(t, installed.Installed[i].ApprovalHash)
+			assert.Equal(t, installed.Installed[i].ApprovalHash, rendered.Files[i].Validate.ApprovalHash, slug)
+		}
+	}
+}
+
+func TestInstallTemplate_RenderJSONKeys(t *testing.T) {
+	newAutoCLI(t)
+	m := runAutomationsJSON(t, "install-template", "team-performance-report", "--render", "--json")
+	wantKeys(t, m, "name", "scope", "params", "files")
+	files, _ := m["files"].([]any)
+	require.Len(t, files, 1)
+	wantKeys(t, files[0].(map[string]any), "slug", "text", "validate")
+
+	newAutoCLI(t)
+	p := runAutomationsJSON(t, "install-template", "team-performance-report", "--json")
+	inst, _ := p["installed"].([]any)
+	require.Len(t, inst, 1)
+	wantKeys(t, inst[0].(map[string]any), "automation_id", "slug", "path", "parse_error", "approval_hash")
+}
+
+func TestInstallTemplate_RenderRefusesLikeInstall(t *testing.T) {
+	c := newAutoCLI(t)
+	out, err := runAutomations(t, "install-template", "jira-state-report", "--render", "--json")
+	require.Error(t, err, out)
+	assert.ErrorIs(t, err, automations.ErrNoActiveJiraProject)
+	out, err = runAutomations(t, "install-template", "pr-review-rounds", "--render", "--json")
+	require.Error(t, err, out)
+	assert.Contains(t, err.Error(), "is a workbench template")
+	assert.NoFileExists(t, filepath.Join(c.personal, "jira-state-report.md"))
 }

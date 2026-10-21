@@ -154,7 +154,7 @@ final class QuickRunCenterTests: XCTestCase {
 
         let first = await center.activate(try row(center, unconfirmed), origin: .palette)
         XCTAssertEqual(first, .openedConfirmation)
-        XCTAssertEqual(vm.pendingConfirmID, unconfirmed, "the tab opens the confirmation sheet")
+        XCTAssertEqual(vm.pendingConfirmID, unconfirmed, "the tab opens its card, whose banner leads to the editor")
         XCTAssertEqual(vm.selectedID, unconfirmed)
 
         let second = await center.activate(try row(center, disabled), origin: .palette)

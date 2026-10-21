@@ -25,7 +25,7 @@ enum HomeFeedActionError: LocalizedError, Equatable {
 }
 
 /// The production writes: inbox rows through the Go CLI (`inbox resolve` /
-/// `inbox dismiss`), reminders, automation outputs (Done = read, Hide =
+/// `inbox dismiss`), reminders, automation outputs (Done = `done_at`, Hide =
 /// dismissed) and targets through GRDB, the same writes the Inbox, the
 /// action strip and Targets make. Proposals and events have no
 /// action on Home; a call for one does nothing.
@@ -72,10 +72,10 @@ final class LiveHomeFeedPerformer: HomeFeedPerforming {
                 }
             }
         case .output(let id):
-            // Already read or dismissed elsewhere: the update changes nothing, which is success.
+            // Already done or dismissed elsewhere: the update changes nothing, which is success.
             try await pool.write { db in
                 switch action {
-                case .done: try AutomationQueries.markOutputRead(db, id: id, now: now)
+                case .done: try AutomationQueries.markOutputDone(db, id: id, now: now)
                 case .hide: try AutomationQueries.dismissOutput(db, id: id, now: now)
                 }
             }

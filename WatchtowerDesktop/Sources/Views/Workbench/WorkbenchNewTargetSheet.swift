@@ -5,7 +5,7 @@ import WatchtowerCore
 struct WorkbenchNewTargetRequest: Identifiable, Equatable {
     /// Go's `workbench target add` cap, counted in Unicode scalars as Go
     /// counts runes.
-    static let titleLimit = 200
+    static let titleLimit = InboxCardTexts.targetTitleLimit
 
     let id = UUID()
     /// The parent target; nil = the top level.
