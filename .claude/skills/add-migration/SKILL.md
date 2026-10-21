@@ -47,6 +47,7 @@ Watchtower uses **goose** migrations (numbered `.sql` files), NOT PRAGMA `user_v
 - **Down must be real.** Tests replay migrations; a stub Down that loses data fails idempotence.
 - **Recreate every index** after a table-recreation, or queries silently lose their index.
 - **Generated columns** (e.g. `messages.ts_unix GENERATED ALWAYS AS ...`) must be reproduced in the new table def; never INSERT into them.
+- **Rebuilding `messages` copies `rowid`.** `messages` has no `INTEGER PRIMARY KEY`, and `messages_fts` rows are keyed by `messages.rowid` (`transcripts_fts` by `meeting_transcripts.id`), so a plain `INSERT INTO messages_new SELECT ...` renumbers the rows and points every index row at the wrong message. Write `INSERT INTO messages_new(rowid, ...) SELECT rowid, ... FROM messages`, and recreate the rowid-keyed triggers (copy them from `schema.sql`). Never write `messages` with `INSERT OR REPLACE`/`REPLACE INTO`: it gives the row a new rowid. SEARCHIDX-01 (`docs/inventory/search-indexes.md`); `TestSearchIdx01_MigrationsKeepMessagesRowid` fails on a rebuild that loses the rowid.
 - **Contract change?** If the table is covered by `docs/inventory/`, update/add a guard test in `internal/db/schema_contracts_test.go` — and if a guard would weaken, **stop and ask the owner** (per CLAUDE.md).
 
 ## Reference files
