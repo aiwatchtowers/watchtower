@@ -2903,6 +2903,7 @@ CREATE TRIGGER IF NOT EXISTS automation_runs_replay_cleanup AFTER UPDATE OF stat
 WHEN NEW.status NOT IN ('queued','running','waiting')
 BEGIN
     DELETE FROM automation_run_replay WHERE run_id = NEW.id;
+    UPDATE automation_runs SET resume_pending = 0 WHERE id = NEW.id AND resume_pending = 1;
 END;
 
 -- The state a script keeps between runs; replaced only by a succeeded run.

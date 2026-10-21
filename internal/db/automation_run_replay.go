@@ -27,8 +27,7 @@ type AutomationRunReplay struct {
 // confirmed at the hash the run was claimed with.
 const resumableRunSQL = `status = 'waiting' AND trigger != 'dry_run' AND not_resumable = 0
 	AND EXISTS (SELECT 1 FROM automations a WHERE a.id = automation_runs.automation_id
-		AND a.parse_error = '' AND a.enabled = 1 AND a.removed_at IS NULL AND a.confirmed_hash != ''
-		AND a.confirmed_hash = a.approval_hash AND a.confirmed_hash = automation_runs.recipe_hash)
+		AND ` + runnableAutomationSQL + ` AND a.confirmed_hash = automation_runs.recipe_hash)
 	AND EXISTS (SELECT 1 FROM automation_run_steps w WHERE w.run_id = automation_runs.id
 		AND w.finished_at IS NULL AND w.status = 'waiting'
 		AND w.seq = (SELECT MAX(m.seq) FROM automation_run_steps m WHERE m.run_id = automation_runs.id)
@@ -74,22 +73,6 @@ func (db *DB) ClaimResumeAutomationRun(runID int64, maxRunning int) (bool, error
 	return n == 1, nil
 }
 
-// ReturnAutomationRunToWaiting moves a running run back to waiting with
-// reason (a resume the daemon's stop cut short before its replay reached the
-// wait: the next start judges it again). ErrRunNotActive when it is not
-// running.
-func (db *DB) ReturnAutomationRunToWaiting(runID int64, reason string) error {
-	if !waitReasons[reason] {
-		return fmt.Errorf("automation run %d: unknown waiting reason %q", runID, reason)
-	}
-	res, err := db.Exec(`UPDATE automation_runs SET status = 'waiting', waiting_reason = ?
-		WHERE id = ? AND status = 'running'`, reason, runID)
-	if err != nil {
-		return fmt.Errorf("returning automation run %d to waiting: %w", runID, err)
-	}
-	return requireRunTransition(db, res, runID, ErrRunNotActive)
-}
-
 // SetAutomationRunNotResumable flags the run's replay log incomplete: a
 // restart ends it instead of resuming it.
 func (db *DB) SetAutomationRunNotResumable(runID int64) error {
@@ -110,17 +93,17 @@ func (db *DB) ListAutomationRunReplay(runID int64) ([]AutomationRunReplay, error
 	out := []AutomationRunReplay{}
 	for rows.Next() {
 		var (
-			r        AutomationRunReplay
-			res, err sql.NullString
+			r                AutomationRunReplay
+			resJSON, errJSON sql.NullString
 		)
-		if scanErr := rows.Scan(&r.RunID, &r.Seq, &r.Kind, &r.Name, &r.ArgsHash, &res, &err, &r.ClockJSON,
-			&r.Pending); scanErr != nil {
-			return nil, fmt.Errorf("listing the replay log of automation run %d: %w", runID, scanErr)
+		if err := rows.Scan(&r.RunID, &r.Seq, &r.Kind, &r.Name, &r.ArgsHash, &resJSON, &errJSON, &r.ClockJSON,
+			&r.Pending); err != nil {
+			return nil, fmt.Errorf("listing the replay log of automation run %d: %w", runID, err)
 		}
-		if res.Valid {
-			r.ResultJSON = &res.String
+		if resJSON.Valid {
+			r.ResultJSON = &resJSON.String
 		}
-		r.ErrorJSON = err.String
+		r.ErrorJSON = errJSON.String
 		out = append(out, r)
 	}
 	if err := rows.Err(); err != nil {

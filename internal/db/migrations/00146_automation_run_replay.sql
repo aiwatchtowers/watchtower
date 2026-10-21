@@ -34,12 +34,13 @@ CREATE TABLE IF NOT EXISTS automation_run_replay (
 );
 
 -- The log lives only while its run is active: any terminal status deletes
--- it in the same statement's transaction.
+-- it, and clears resume_pending, in the same statement's transaction.
 -- +goose StatementBegin
 CREATE TRIGGER IF NOT EXISTS automation_runs_replay_cleanup AFTER UPDATE OF status ON automation_runs
 WHEN NEW.status NOT IN ('queued','running','waiting')
 BEGIN
     DELETE FROM automation_run_replay WHERE run_id = NEW.id;
+    UPDATE automation_runs SET resume_pending = 0 WHERE id = NEW.id AND resume_pending = 1;
 END;
 -- +goose StatementEnd
 

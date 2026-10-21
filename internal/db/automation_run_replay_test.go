@@ -119,11 +119,20 @@ func TestAuto08_ReplayLogDeletedOnFinish(t *testing.T) {
 		if n := countReplay(t, d, id); n != 2 {
 			t.Fatalf("%s: replay rows = %d; want 2", name, n)
 		}
+		if _, err := d.MarkInterruptedAutomationRuns(runTestNow); err != nil {
+			t.Fatal(err)
+		}
+		if r := mustGetAutomationRun(t, d, id); !r.ResumePending {
+			t.Fatalf("%s: the start sweep did not keep the run", name)
+		}
 		if err := end(id); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
 		if n := countReplay(t, d, id); n != 0 {
 			t.Errorf("%s: replay rows after the end = %d; want 0", name, n)
+		}
+		if r := mustGetAutomationRun(t, d, id); r.ResumePending {
+			t.Errorf("%s: resume_pending still set after the end", name)
 		}
 	}
 	_, swept := seedResumableRun(t, d, "swept")
@@ -160,7 +169,7 @@ func TestClaimResumeAutomationRun_SlotAndState(t *testing.T) {
 	if ok, err := d.ClaimResumeAutomationRun(id, 2); err != nil || ok {
 		t.Fatalf("second claim = (%v, %v); want false", ok, err)
 	}
-	if err := d.ReturnAutomationRunToWaiting(id, WaitAsk); err != nil {
+	if err := d.SetAutomationRunWaiting(id, WaitAsk); err != nil { // a stop during the replay
 		t.Fatal(err)
 	}
 	wantAutomationRun(t, d, id, RunWaiting, "")
