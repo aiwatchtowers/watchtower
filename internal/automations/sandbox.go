@@ -82,7 +82,24 @@ type encodedResult json.RawMessage
 // does not run and no step is written (AUTO-11); the call it waited in runs
 // fn on its adopted open step, which re-enters the wait.
 func (e *Env) Call(kind, name string, args any, fn func(step *Step) (any, error)) (any, error) {
-	return e.call(kind, name, args, false, fn)
+	return e.call(kind, name, args, callOpts{}, fn)
+}
+
+// CallWithReplayKey is Call for an SDK function whose step args hold values
+// it derived (a carved budget, a resolved default agent, the provider's
+// name): the replay checks a resumed run's call by key — what the script
+// itself asked for — and its kind, not by the derived args and name, which
+// may differ in the next daemon life without the script having changed.
+func (e *Env) CallWithReplayKey(kind, name string, args, key any, fn func(step *Step) (any, error)) (any, error) {
+	return e.call(kind, name, args, callOpts{keyed: true, key: key}, fn)
+}
+
+// callOpts tunes one call's replay: buffered (CallBuffered) or keyed by key
+// (CallWithReplayKey).
+type callOpts struct {
+	buffered bool
+	keyed    bool
+	key      any
 }
 
 // CallBuffered is Call for an SDK function whose only effect is on the
@@ -91,10 +108,10 @@ func (e *Env) Call(kind, name string, args any, fn func(step *Step) (any, error)
 // run commits is rebuilt (AUTO-04), and the call's record is still what the
 // script gets.
 func (e *Env) CallBuffered(kind, name string, args any, fn func(step *Step) (any, error)) (any, error) {
-	return e.call(kind, name, args, true, fn)
+	return e.call(kind, name, args, callOpts{buffered: true}, fn)
 }
 
-func (e *Env) call(kind, name string, args any, buffered bool, fn func(step *Step) (any, error)) (any, error) {
+func (e *Env) call(kind, name string, args any, opts callOpts, fn func(step *Step) (any, error)) (any, error) {
 	if e.Journal.Count() >= MaxStepsPerRun {
 		// The call past the cap is journaled, then ends the run (the
 		// sandbox aborts on the ScriptError): a looping script cannot
@@ -102,12 +119,12 @@ func (e *Env) call(kind, name string, args any, buffered bool, fn func(step *Ste
 		e.Journal.Begin(kind, name, args).Fail(errStepCap)
 		return nil, errStepCap
 	}
-	step, played, err := e.beginStep(kind, name, args)
+	step, played, err := e.beginStep(kind, name, args, opts)
 	if err != nil {
 		return nil, err
 	}
 	if played != nil {
-		return e.replayCall(kind, name, buffered, played, fn)
+		return e.replayCall(kind, name, opts.buffered, played, fn)
 	}
 	step.holdFinish()
 	v, err := fn(step)
@@ -138,19 +155,22 @@ func (e *Env) call(kind, name string, args any, buffered bool, fn func(step *Ste
 // beginStep begins the call's step. A recorded run's step starts its replay
 // row; a resumed run's playback answers the call from its log (played) or
 // adopts the open waiting step, or reports a divergence.
-func (e *Env) beginStep(kind, name string, args any) (*Step, *replayed, error) {
+func (e *Env) beginStep(kind, name string, args any, opts callOpts) (*Step, *replayed, error) {
 	r := e.Replay
 	if r == nil || e.DryRun {
 		return e.Journal.Begin(kind, name, args), nil, nil
 	}
 	hash := argsHash(args)
+	if opts.keyed {
+		hash = argsHash(map[string]any{"replay_key": opts.key})
+	}
 	if r.Live() {
 		step := e.Journal.Begin(kind, name, args)
 		clock, ok := r.takeClock()
 		step.record(hash, clock, ok)
 		return step, nil, nil
 	}
-	step, played, err := r.next(e.Journal, kind, name, hash)
+	step, played, err := r.next(e.Journal, kind, name, hash, !opts.keyed)
 	if step != nil {
 		if rw, ok := e.Ctx.Value(runWaitKey{}).(*runWait); ok {
 			rw.resumeAt(step.started) // pause_timeout_hours counts from the original wait

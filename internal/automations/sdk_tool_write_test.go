@@ -36,8 +36,16 @@ func newWriteFixture(t *testing.T) *writeFixture {
 // newWriteFixtureWith is newWriteFixture with extra test modules.
 func newWriteFixtureWith(t *testing.T, modules func(f *exFixture) []automations.Module) *writeFixture {
 	t.Helper()
+	return newWriteFixtureOpts(t, exOpts{modules: modules})
+}
+
+// newWriteFixtureOpts is newWriteFixture with o's modules, generator and
+// backends (its database and registry are the write fixture's).
+func newWriteFixtureOpts(t *testing.T, o exOpts) *writeFixture {
+	t.Helper()
 	w := &writeFixture{}
-	w.exFixture = newExFixture(t, exOpts{fileDB: true, modules: modules, registry: func(d *db.DB) automations.ToolRegistry {
+	o.fileDB = true
+	o.registry = func(d *db.DB) automations.ToolRegistry {
 		w.reg = tools.New(d)
 		for _, tl := range []*tools.Tool{tools.NewCreateTarget(), tools.NewCreateIdea(), tools.NewCreateJiraIssue(nil), editNoteTool(t)} {
 			if err := w.reg.Register(tl); err != nil {
@@ -45,7 +53,8 @@ func newWriteFixtureWith(t *testing.T, modules func(f *exFixture) []automations.
 			}
 		}
 		return w.reg
-	}})
+	}
+	w.exFixture = newExFixture(t, o)
 	return w
 }
 

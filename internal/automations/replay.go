@@ -199,9 +199,10 @@ type jsError struct {
 // next answers the script's next call during playback: a recorded call
 // returns its record (the journal gains the stored step in memory only); the
 // waiting call returns the adopted open step and the player turns live. A
-// call that does not match its record — kind, name, args hash or the clock
-// reads before it — is a divergence.
-func (r *Replay) next(j *Journal, kind, name, argsHash string) (*Step, *replayed, error) {
+// call that does not match its record — kind, name (unless checkName is
+// false: a keyed call), args hash or the clock reads before it — is a
+// divergence.
+func (r *Replay) next(j *Journal, kind, name, argsHash string, checkName bool) (*Step, *replayed, error) {
 	r.mu.Lock()
 	seq := r.pos + 1
 	if r.diverged != 0 {
@@ -209,7 +210,7 @@ func (r *Replay) next(j *Journal, kind, name, argsHash string) (*Step, *replayed
 		return nil, nil, &replayDivergence{seq: r.diverged}
 	}
 	rec := r.records[seq-1]
-	if rec.Kind != kind || rec.Name != name || rec.ArgsHash != argsHash || len(r.segment) != 0 {
+	if rec.Kind != kind || (checkName && rec.Name != name) || rec.ArgsHash != argsHash || len(r.segment) != 0 {
 		r.diverged = seq
 		r.mu.Unlock()
 		return nil, nil, &replayDivergence{seq: seq}
@@ -233,7 +234,7 @@ func (r *Replay) next(j *Journal, kind, name, argsHash string) (*Step, *replayed
 	}
 	r.segment = seg
 	r.mu.Unlock()
-	j.appendStored(r.steps[seq-1])
+	j.appendStored(r.steps[seq-1], &rec)
 	return nil, &replayed{r: r, rec: rec}, nil
 }
 

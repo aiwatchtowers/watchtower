@@ -128,10 +128,15 @@ func (j *Journal) Begin(kind, name string, args any) *Step {
 }
 
 // appendStored adds a step a resumed run's replay answered: the stored row,
-// in memory only (AUTO-11: the call already has its one step).
-func (j *Journal) appendStored(row db.AutomationRunStep) {
+// in memory only (AUTO-11: the call already has its one step). rec, its
+// replay record, counts toward MaxReplayLogBytes, so the cap holds across
+// daemon lives.
+func (j *Journal) appendStored(row db.AutomationRunStep, rec *db.AutomationRunReplay) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if rec != nil {
+		j.replayBytes += replayRecordBytes(rec)
+	}
 	j.steps = append(j.steps, row)
 	if j.kinds == nil {
 		j.kinds = map[string]int{}
@@ -144,10 +149,21 @@ func (j *Journal) appendStored(row db.AutomationRunStep) {
 // adopt takes over a resumed run's open waiting step: the call re-enters its
 // wait on this step (its links, its start), and its replay row is rec.
 func (j *Journal) adopt(row db.AutomationRunStep, rec db.AutomationRunReplay) *Step {
-	j.appendStored(row)
+	j.appendStored(row, nil) // its record counts once its outcome is in (recordOutcome)
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	return &Step{j: j, idx: len(j.steps) - 1, id: row.ID, started: row.StartedAt, rec: &rec, adopted: true}
+}
+
+// ResumedArgs is the stored args_json of a resumed run's adopted waiting
+// step, ok false for any other step.
+func (s *Step) ResumedArgs() (string, bool) {
+	if !s.adopted {
+		return "", false
+	}
+	s.j.mu.Lock()
+	defer s.j.mu.Unlock()
+	return s.j.steps[s.idx].ArgsJSON, true
 }
 
 // Resumed returns the links of a resumed run's adopted waiting step (the
@@ -192,11 +208,9 @@ func (s *Step) recordOutcome(v any, err error) {
 		return
 	}
 	s.rec.Pending, s.rec.ResultJSON, s.rec.ErrorJSON = false, nil, ""
-	size := len(s.rec.ClockJSON)
 	switch {
 	case err != nil:
 		s.rec.ErrorJSON = errorRecord(err)
-		size += len(s.rec.ErrorJSON)
 	case v != nil:
 		text := marshalForStep(v)
 		if len(text) > MaxReplayResultBytes {
@@ -204,14 +218,23 @@ func (s *Step) recordOutcome(v any, err error) {
 			return
 		}
 		s.rec.ResultJSON = &text
-		size += len(text)
 	}
+	size := replayRecordBytes(s.rec)
 	if j.replayBytes+size > MaxReplayLogBytes {
 		j.stopReplayLocked()
 		return
 	}
 	j.replayBytes += size
 	s.recDone = true
+}
+
+// replayRecordBytes is what one record weighs against MaxReplayLogBytes.
+func replayRecordBytes(rec *db.AutomationRunReplay) int {
+	n := len(rec.ClockJSON) + len(rec.ErrorJSON)
+	if rec.ResultJSON != nil {
+		n += len(*rec.ResultJSON)
+	}
+	return n
 }
 
 // stopReplayLocked makes the run not resumable (once); the caller holds mu.

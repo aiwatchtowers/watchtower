@@ -10,6 +10,7 @@ import (
 	"github.com/dop251/goja"
 
 	"watchtower/internal/automations"
+	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/db"
 )
 
@@ -370,5 +371,171 @@ func TestAuto08_ResumedWaitKeepsItsPauseTimeout(t *testing.T) {
 	r := w.waitEnded(t, id)
 	if r.Status != db.RunExpired || r.ErrorKind != db.ErrKindExpired {
 		t.Fatalf("run = %s/%s (%s); want expired", r.Status, r.ErrorKind, r.Error)
+	}
+}
+
+// TestAuto08_ResumeAfterAgent: agent()'s step records a budget carved from
+// what the run had left, which differs once the meter carries the first
+// life's spend; the replay checks what the script asked, so the run resumes
+// and the agent runs once.
+func TestAuto08_ResumeAfterAgent(t *testing.T) {
+	agent := &automationstest.FakeAgent{ModelCalls: [][2]int{{10, 5}}, Result: automations.AgentResult{Text: "triaged"}}
+	w := newWriteFixtureOpts(t, exOpts{backends: func(_ *exFixture, b *automations.Backends) { b.Agent = agent }})
+	a := w.seedWorkbenchOutput(t, "deploy", []string{"ask:owner", "agent:run", "llm:light"}, "inbox",
+		`agent("triage the inbox"); `+resumeAskCall+`; return 1`)
+	id := w.enqueue(t, a, db.TriggerManual)
+	w.stopWhileWaiting(t, id)
+	w.restart()
+	stop := runExecutor(t, w.exFixture)
+	defer stop()
+	w.waitStatus(t, id, db.RunWaiting)
+	w.answerAsk(t, w.onlyAsk(t, a.ProjectID).ID)
+	w.e.Wake()
+	r := w.waitEnded(t, id)
+	if r.Status != db.RunSucceeded {
+		t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+	}
+	if got := stepSeqsAndKinds(w.steps(t, id)); got != "1:agent:ok,2:ask:ok" {
+		t.Fatalf("steps = %s; want each call once", got)
+	}
+	if n := len(agent.Requests()); n != 1 {
+		t.Fatalf("agent runs = %d; want 1", n)
+	}
+}
+
+// TestAuto08_ResumeAfterDefaultAgentChanged: a session() without its own
+// agent resolved the workbench default; a default changed while the run
+// waited neither diverges the replay nor changes the session it waits on.
+func TestAuto08_ResumeAfterDefaultAgentChanged(t *testing.T) {
+	s := newSessFixture(t, "claude")
+	a := s.seedSession(t, []string{"session:start"}, "", sessScript)
+	id := s.enqueue(t, a, db.TriggerManual)
+	stop := runExecutor(t, s.exFixture)
+	s.waitReason(t, id, db.WaitApp)
+	sess := s.launch(t, id, s.sessionStep(t, id).ID)
+	s.waitReason(t, id, db.WaitSession)
+	stop()
+	s.agent = "codex"
+	s.restart()
+	stop = runExecutor(t, s.exFixture)
+	defer stop()
+	s.waitReason(t, id, db.WaitSession)
+	s.setSession(t, sess, `finished_at = '2026-10-14T12:30:00.000Z', finish_summary = 'Two findings filed'`)
+	s.e.Wake()
+	r := s.waitEnded(t, id)
+	if r.Status != db.RunSucceeded {
+		t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+	}
+	if st := s.sessionStep(t, id); !strings.Contains(st.ArgsJSON, `"agent":"claude"`) || st.Name != "claude" {
+		t.Fatalf("session step = %s %s; want the agent it started with", st.Name, st.ArgsJSON)
+	}
+}
+
+// loopScript waits on an ask after a log; once external() is non-zero (set
+// before the restart) the replay spins between the two, so a test can act
+// while the replay has not reached the wait.
+const loopScript = `log("a"); if (external() > 0) { while (true) {} } ` + resumeAskCall + `; return 1`
+
+// TestAuto08_StopDuringReplayReturnsToWaiting: a daemon stop before the
+// replay reached the wait puts the run back to waiting (its ask open, this
+// life's active time recorded), and the next start resumes it.
+func TestAuto08_StopDuringReplayReturnsToWaiting(t *testing.T) {
+	var v atomic.Int64
+	w := newWriteFixtureWith(t, func(*exFixture) []automations.Module { return []automations.Module{externalModule(&v)} })
+	a := w.seedWorkbenchOutput(t, "deploy", []string{"ask:owner"}, "inbox", loopScript)
+	id := w.enqueue(t, a, db.TriggerManual)
+	w.stopWhileWaiting(t, id)
+	before := w.run(t, id).ActiveMS
+	v.Store(1)
+	w.restart()
+	stop := runExecutor(t, w.exFixture)
+	w.waitStatus(t, id, db.RunRunning)
+	w.clock.Advance(30 * time.Second)
+	stop()
+	r := w.wantRun(t, id, db.RunWaiting, "")
+	if r.WaitingReason != db.WaitAsk || r.ActiveMS < before+30000 {
+		t.Fatalf("run = reason %q active_ms %d (was %d); want ask and 30 s more", r.WaitingReason, r.ActiveMS, before)
+	}
+	ask := w.onlyAsk(t, a.ProjectID)
+	if ask.Status != "open" {
+		t.Fatalf("ask = %s; want open", ask.Status)
+	}
+	v.Store(0)
+	w.restart()
+	stop = runExecutor(t, w.exFixture)
+	defer stop()
+	w.waitStatus(t, id, db.RunWaiting)
+	w.answerAsk(t, ask.ID)
+	w.e.Wake()
+	if r := w.waitEnded(t, id); r.Status != db.RunSucceeded {
+		t.Fatalf("run = %s/%s (%s); want succeeded", r.Status, r.ErrorKind, r.Error)
+	}
+}
+
+// TestAuto08_DeadlineDuringReplayKeepsItsEnd: a resumed run whose carried
+// active time already spent its budget ends timed_out, not as a divergence.
+func TestAuto08_DeadlineDuringReplayKeepsItsEnd(t *testing.T) {
+	var v atomic.Int64
+	w := newWriteFixtureWith(t, func(*exFixture) []automations.Module { return []automations.Module{externalModule(&v)} })
+	a := w.seedWorkbenchOutput(t, "deploy", []string{"ask:owner"}, "inbox", loopScript)
+	id := w.enqueue(t, a, db.TriggerManual)
+	w.stopWhileWaiting(t, id)
+	if err := w.d.AddAutomationRunUsage(id, db.RunUsage{ActiveMS: (6 * time.Minute).Milliseconds()}); err != nil {
+		t.Fatal(err) // past the 5-minute budget
+	}
+	v.Store(1)
+	w.restart()
+	stop := runExecutor(t, w.exFixture)
+	defer stop()
+	if r := w.waitEnded(t, id); r.Status != db.RunTimedOut || r.ErrorKind != db.ErrKindTimeout {
+		t.Fatalf("run = %s/%s (%s); want timed_out/timeout", r.Status, r.ErrorKind, r.Error)
+	}
+}
+
+// TestAuto08_ClockReadOverflowMakesTheRunNotResumable: more clock reads
+// between two calls than the log keeps flag the run, and a stop while it
+// waits ends it as before.
+func TestAuto08_ClockReadOverflowMakesTheRunNotResumable(t *testing.T) {
+	w := newWriteFixture(t)
+	a := w.seedWorkbenchOutput(t, "deploy", []string{"ask:owner"}, "inbox",
+		`for (let i = 0; i < 10001; i++) { Date.now(); } `+resumeAskCall+`; return 1`)
+	id := w.enqueue(t, a, db.TriggerManual)
+	stop := runExecutor(t, w.exFixture)
+	w.waitStatus(t, id, db.RunWaiting)
+	if !w.run(t, id).NotResumable {
+		t.Fatal("the run is not flagged not resumable after 10 001 clock reads")
+	}
+	stop()
+	w.wantRun(t, id, db.RunFailed, db.ErrKindInterrupted)
+}
+
+// TestAuto08_KeptRunChangedBeforeItsClaimIsNotResumed: a run the start kept
+// whose automation is re-confirmed at another hash, or disabled, before the
+// poll claims it is ended failed/interrupted, not resumed.
+func TestAuto08_KeptRunChangedBeforeItsClaimIsNotResumed(t *testing.T) {
+	changes := map[string]string{
+		"reconfirmed": `UPDATE automations SET approval_hash = 'h-new', confirmed_hash = 'h-new' WHERE id = ?`,
+		"disabled":    `UPDATE automations SET enabled = 0 WHERE id = ?`,
+	}
+	for name, change := range changes {
+		t.Run(name, func(t *testing.T) {
+			w := newWriteFixture(t)
+			a := w.seedWorkbenchOutput(t, "deploy", []string{"ask:owner"}, "inbox", `log("a"); `+resumeAskCall+`; return 1`)
+			id := w.enqueue(t, a, db.TriggerManual)
+			w.stopWhileWaiting(t, id)
+			w.restart()
+			if _, err := w.d.MarkInterruptedAutomationRuns(w.clock.Now()); err != nil { // the start sweep
+				t.Fatal(err)
+			}
+			if !w.run(t, id).ResumePending {
+				t.Fatal("the start sweep did not keep the run")
+			}
+			if _, err := w.d.Exec(change, a.ID); err != nil {
+				t.Fatal(err)
+			}
+			w.stepNoWait(t, 0)
+			r := w.wantRun(t, id, db.RunFailed, db.ErrKindInterrupted)
+			mustContain(t, "error", r.Error, "so the run was not resumed")
+		})
 	}
 }

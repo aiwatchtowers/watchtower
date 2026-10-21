@@ -81,10 +81,14 @@ func (e *Executor) leftWaiting(ctx context.Context, env *Env, how claimKind) boo
 		e.logger.Printf("automations: run %d stays waiting; the next daemon start resumes it", env.Run.ID)
 		return true
 	case how.resumeReason != "" && ctx.Err() != nil && env.Replay != nil && !env.Replay.Live():
-		if err := e.db.ReturnAutomationRunToWaiting(env.Run.ID, how.resumeReason); err != nil {
+		if err := e.db.SetAutomationRunWaiting(env.Run.ID, how.resumeReason); err != nil {
 			e.logger.Printf("automations: run %d: returning it to waiting: %v", env.Run.ID, err)
 			return false
 		}
+		if err := e.db.AddAutomationRunUsage(env.Run.ID, db.RunUsage{ActiveMS: env.Meter.ActiveMS()}); err != nil {
+			e.logger.Printf("automations: run %d: recording its active time: %v", env.Run.ID, err)
+		}
+		e.logger.Printf("automations: run %d stopped during its replay; it stays waiting for the next start", env.Run.ID)
 		return true
 	}
 	return false
@@ -283,13 +287,12 @@ func (e *Executor) runEnded(runID int64) (bool, error) {
 // cancelled.
 func (e *Executor) outcome(ctx context.Context, env *Env, v any, runErr error, inline bool) (db.RunFinish, *db.RunCommit, bool) {
 	f := db.RunFinish{ActiveMS: env.Meter.ActiveMS()}
-	if env.Replay != nil && !env.Replay.Live() {
-		// A resumed run's script ended before it reached the call it waited
-		// in: it ran differently, and nothing it did was executed.
+	if env.Replay != nil && !env.Replay.Live() && ranDifferently(runErr) {
+		// A resumed run's script diverged from its log, or ended before it
+		// reached the call it waited in: nothing it did was executed.
 		f.Status, f.ErrorKind = db.RunFailed, db.ErrKindScript
 		f.Error = (&replayDivergence{seq: env.Replay.replayPos()}).Error()
-		var ri *RunInterrupted
-		return f, nil, errors.As(runErr, &ri) && ri.Abandoned
+		return f, nil, false
 	}
 	jerr := env.Journal.Err()
 	if jerr != nil {
@@ -315,6 +318,21 @@ func (e *Executor) outcome(ctx context.Context, env *Env, v any, runErr error, i
 	}
 	f.Status, f.ErrorKind, f.Error = end.status, end.kind, end.msg
 	return f, nil, end.abandoned
+}
+
+// ranDifferently reports whether a resumed run's replay ended because its
+// script ran differently: a divergence, a return, or an uncaught exception
+// before its waiting call. A deadline, budget, cancel or memory interrupt,
+// the step cap or an abandoned script keep their own end.
+func ranDifferently(runErr error) bool {
+	if runErr == nil {
+		return true
+	}
+	var se *ScriptError
+	if !errors.As(runErr, &se) {
+		return false
+	}
+	return se.Message != errTooMuchMemory().Message && se.Message != errTooManySteps().Message
 }
 
 // stoppedMessage is the error of a run whose executor's ctx ended under it.

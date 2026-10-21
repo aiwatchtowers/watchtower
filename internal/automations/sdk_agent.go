@@ -41,7 +41,7 @@ func AgentModule(b Backends) Module {
 		if b.Agent != nil {
 			name = b.Agent.Name()
 		}
-		return env.Call(StepKindAgent, name, req.stepArgs(), func(step *Step) (any, error) {
+		return env.CallWithReplayKey(StepKindAgent, name, req.stepArgs(), req.replayKey(), func(step *Step) (any, error) {
 			if reqErr != nil {
 				return nil, reqErr
 			}
@@ -68,6 +68,13 @@ func (r agentCall) stepArgs() map[string]any {
 		"budget":      map[string]int{"tokens": r.budget.Tokens, "minutes": r.budget.Minutes},
 		"tier":        r.tier,
 	}
+}
+
+// replayKey is what the script asked agent() for: the carve, the effective
+// tools and the provider are derived and may differ after a restart.
+func (r agentCall) replayKey() map[string]any {
+	return map[string]any{"instruction": r.instruction, "tools": r.tools, "tier": r.tier,
+		"tokens": r.tokens, "minutes": r.minutes}
 }
 
 // carve sets the call's budget from the run's remainder: tokens and minutes
