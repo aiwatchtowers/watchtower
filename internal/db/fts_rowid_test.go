@@ -261,7 +261,7 @@ func TestMessagesFTS_WriteCostDoesNotGrowWithIndex(t *testing.T) {
 // rawFileDBAt opens a new database file migrated to version with goose alone.
 func rawFileDBAt(t *testing.T, version int64) *DB {
 	t.Helper()
-	raw, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "wt.db"))
+	raw, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "wt.db"))
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = raw.Close() })
 	raw.SetMaxOpenConns(1)

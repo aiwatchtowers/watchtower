@@ -3,8 +3,6 @@ package db
 import (
 	"database/sql"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 // TestMigration00148_BackfillsAccessClocks replays goose to 00147, seeds
@@ -13,7 +11,7 @@ import (
 // lease, ask #477) gets access_ok_at, only a revoked one gets revoked_at.
 func TestMigration00148_BackfillsAccessClocks(t *testing.T) {
 	t.Parallel()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

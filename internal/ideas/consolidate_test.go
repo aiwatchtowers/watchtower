@@ -461,7 +461,7 @@ func TestIdeas02_MessageLookupError_FailsRunFloorsUntouched(t *testing.T) {
 	assert.Zero(t, dFloor, "an unverifiable run consumes nothing")
 }
 
-// sqliteMaxVariables is modernc.org/sqlite's SQLITE_MAX_VARIABLE_NUMBER. A
+// sqliteMaxVariables is the engine's SQLITE_MAX_VARIABLE_NUMBER. A
 // statement carrying MORE bound parameters than this fails to prepare with
 // "too many SQL variables" — which is how the test below forces the SECOND of
 // two topics to fail its messages lookup while the first one renders cleanly,

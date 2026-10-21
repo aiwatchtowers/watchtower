@@ -3,8 +3,6 @@ package db
 import (
 	"database/sql"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 // openRawDBAtVersion opens a raw in-memory connection migrated with goose up
@@ -12,7 +10,7 @@ import (
 // apply the next migration with goose.UpByOne.
 func openRawDBAtVersion(t *testing.T, version int64) *sql.DB {
 	t.Helper()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

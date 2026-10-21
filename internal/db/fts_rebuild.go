@@ -9,8 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"modernc.org/sqlite"
-	sqlite3 "modernc.org/sqlite/lib"
+	"watchtower/internal/sqlcipher"
 )
 
 // db_maintenance keys of the messages search fill: the fill's own
@@ -297,8 +296,8 @@ func isInterruption(err error) bool {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
-	var se *sqlite.Error
-	return errors.As(err, &se) && se.Code()&0xff == sqlite3.SQLITE_INTERRUPT
+	var se sqlcipher.Error
+	return errors.As(err, &se) && se.Code == sqlcipher.ErrInterrupt
 }
 
 // waitChunkGap waits ftsRebuildChunkGap, or until ctx is done.

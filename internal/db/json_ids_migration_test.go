@@ -3,8 +3,6 @@ package db
 import (
 	"database/sql"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 // TestMigration00054_TracksChannelIDs replays goose up to 00053 on a raw
@@ -57,7 +55,7 @@ func TestMigration00054_TracksChannelIDs(t *testing.T) {
 // only $.user_id is rewritten, every other field of the object (name,
 // stance) survives untouched, and the rebuilt element is still a genuine
 // JSON object rather than a double-encoded string — the specific failure
-// mode json_group_array(json_set(...)) could produce if this modernc build
+// mode json_group_array(json_set(...)) could produce if this SQLite build
 // did not preserve the JSON subtype through the aggregate.
 func TestMigration00054_TracksParticipants(t *testing.T) {
 	t.Parallel()
@@ -387,7 +385,7 @@ func TestMigration00054DownUpCycle(t *testing.T) {
 // registered via t.Cleanup rather than left to the caller's defer.
 func openMigratedTo(t *testing.T, version int64) *sql.DB {
 	t.Helper()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

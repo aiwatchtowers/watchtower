@@ -49,18 +49,19 @@ func InitTestTemplate() error {
 // runs; this package's TestMain also seeds new database files from it.
 var templateSnapshot []byte
 
-// serializer / deserializer are the modernc.org/sqlite driver connection's
-// snapshot methods, reached through sql.Conn.Raw.
-type serializer interface{ Serialize() ([]byte, error) }
-type deserializer interface{ Deserialize([]byte) error }
+// serializer / deserializer are the engine connection's snapshot methods
+// (on schema "main"), reached through sql.Conn.Raw.
+type serializer interface {
+	Serialize(schema string) ([]byte, error)
+}
+type deserializer interface {
+	Deserialize(b []byte, schema string) error
+}
 
 // migratedSnapshot migrates a throw-away in-memory DB and returns its
 // serialized image.
 func migratedSnapshot() ([]byte, error) {
-	sqlDB, err := sql.Open("sqlite", ":memory:"+openDSN)
-	if err != nil {
-		return nil, fmt.Errorf("opening template DB: %w", err)
-	}
+	sqlDB := sql.OpenDB(engineConnector(":memory:" + openDSN))
 	sqlDB.SetMaxOpenConns(1)
 	defer sqlDB.Close()
 
@@ -73,13 +74,13 @@ func migratedSnapshot() ([]byte, error) {
 	}
 
 	var snapshot []byte
-	err = withDriverConn(sqlDB, func(dc any) error {
+	err := withDriverConn(sqlDB, func(dc any) error {
 		s, ok := dc.(serializer)
 		if !ok {
 			return errors.New("sqlite driver connection does not support Serialize")
 		}
 		var serr error
-		snapshot, serr = s.Serialize()
+		snapshot, serr = s.Serialize("main")
 		return serr
 	})
 	if err != nil {
@@ -96,18 +97,15 @@ func migratedSnapshot() ([]byte, error) {
 // snapshot is loaded into is the one every later query uses — an in-memory
 // database is private to its connection.
 func cloneFromSnapshot(snapshot []byte) (*DB, error) {
-	dst, err := sql.Open("sqlite", ":memory:"+openDSN)
-	if err != nil {
-		return nil, fmt.Errorf("opening clone DB: %w", err)
-	}
+	dst := sql.OpenDB(engineConnector(":memory:" + openDSN))
 	dst.SetMaxOpenConns(1)
 
-	err = withDriverConn(dst, func(dc any) error {
+	err := withDriverConn(dst, func(dc any) error {
 		d, ok := dc.(deserializer)
 		if !ok {
 			return errors.New("sqlite driver connection does not support Deserialize")
 		}
-		return d.Deserialize(snapshot)
+		return d.Deserialize(snapshot, "main")
 	})
 	if err != nil {
 		dst.Close()

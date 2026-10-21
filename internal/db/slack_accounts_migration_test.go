@@ -3,8 +3,6 @@ package db
 import (
 	"database/sql"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 func TestMigration00048SlackAccounts(t *testing.T) {
@@ -59,7 +57,7 @@ func TestMigration00048_FreshDBHasNoSeedRow(t *testing.T) {
 // unrelated Gmail-scoped inbox row left untouched by the "1:" rewrite.
 func TestMigration00048_UpgradesLegacySingleAccount(t *testing.T) {
 	t.Parallel()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -175,7 +173,7 @@ func TestMigration00048_UpgradesLegacySingleAccount(t *testing.T) {
 // upgrade — full-text search over all pre-migration history breaks.
 func TestMigration00048_PreservesSearchOverExistingMessages(t *testing.T) {
 	t.Parallel()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -223,7 +221,7 @@ func TestMigration00048_PreservesSearchOverExistingMessages(t *testing.T) {
 // were, or a previously-taught mute/boost preference silently stops matching.
 func TestMigration00048_PreservesGmailJiraSenderLearnedRules(t *testing.T) {
 	t.Parallel()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -287,7 +285,7 @@ func TestMigration00048_PreservesGmailJiraSenderLearnedRules(t *testing.T) {
 // scope_key. Then re-applies Up and asserts re-namespacing.
 func TestMigration00048DownUpCycle(t *testing.T) {
 	t.Parallel()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

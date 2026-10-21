@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -222,7 +223,7 @@ func TestCompact_InterruptLeavesDBIntact(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	prev := compactVacuumHook
-	compactVacuumHook = cancel
+	compactVacuumHook = func(*sql.Conn) { cancel() }
 	t.Cleanup(func() { compactVacuumHook = prev })
 
 	res, err := Compact(ctx, path, CompactOptions{Version: "1.0.0"})
@@ -245,6 +246,28 @@ func TestCompact_InterruptLeavesDBIntact(t *testing.T) {
 		if v, ok := keys[k]; ok {
 			t.Fatalf("%s = %q written on an interrupt", k, v)
 		}
+	}
+}
+
+// The engine keeps temporary data in memory (SQLITE_TEMP_STORE=2); the
+// compaction's VACUUM runs on a connection set to temp_store = FILE, so its
+// temporary copy of the file never sits in RAM.
+func TestCompact_VacuumRunsWithTempStoreFile(t *testing.T) {
+	path := compactFixture(t)
+	prev := compactVacuumHook
+	got := int64(-1)
+	compactVacuumHook = func(conn *sql.Conn) {
+		if err := conn.QueryRowContext(context.Background(), `PRAGMA temp_store`).Scan(&got); err != nil {
+			t.Errorf("reading temp_store: %v", err)
+		}
+	}
+	t.Cleanup(func() { compactVacuumHook = prev })
+
+	if res, err := Compact(context.Background(), path, CompactOptions{Version: "1.0.0"}); err != nil || !res.Compacted {
+		t.Fatalf("got (%+v, %v), want compacted", res, err)
+	}
+	if got != 1 {
+		t.Fatalf("temp_store on the VACUUM connection = %d, want 1 (FILE)", got)
 	}
 }
 
