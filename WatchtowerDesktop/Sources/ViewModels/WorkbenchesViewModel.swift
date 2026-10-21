@@ -570,8 +570,8 @@ final class WorkbenchesViewModel {
         asks.isTabOnScreen = { [weak self] in self?.isTabOnScreen() ?? false }
         asks.watchedProjectID = { [weak self] in self?.selectedWorkbenchID }
         asks.onLoaded = { [weak self] projectID in self?.openNewAsk(projectID: projectID) }
-        asks.onDelivered = { [weak self] projectID, sessionID in
-            self?.showAnsweredSession(sessionID, projectID: projectID)
+        asks.onDelivered = { [weak self] projectID, sessionID, delivery in
+            self?.showAnsweredSession(sessionID, projectID: projectID, delivery: delivery)
         }
         // A closed session's ring follows its open asks without a poll.
         asks.onAnswered = { [weak agentStates] in await agentStates?.poll() }
@@ -784,11 +784,17 @@ final class WorkbenchesViewModel {
     /// Return. Keyed by the ask's own workbench, never the selection. Takes
     /// a switch ticket: a slower session switch still pending must not land
     /// afterwards and move the keyboard off the line (board #187).
-    func showAnsweredSession(_ sessionID: Int64, projectID: Int64) {
+    /// A line the owner must still press or paste (`typed`, `copied`) needs
+    /// the terminal; a submitted, held or queued one shows the session in
+    /// the mode it was last shown in, and only a terminal takes the keyboard.
+    func showAnsweredSession(_ sessionID: Int64, projectID: Int64, delivery: SessionLineDelivery.Delivery) {
         beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
-        updated.show(.session(sessionID))
+        let ownerActs = delivery == .typed || delivery == .copied
+        let pane: WorkspacePane = ownerActs ? .session(sessionID) : updated.pane(forSession: sessionID)
+        updated.show(pane)
         setLayout(updated, projectID: projectID)
+        guard pane == .session(sessionID) else { return }
         terminalCenter?.focus(sessionID)
         terminalCenter?.requestKeyboardFocus(sessionID)
     }

@@ -193,7 +193,7 @@ final class WorkbenchSessionSwitchTests: XCTestCase {
         let projectID = projectID
 
         let click = Task { await vm.showSession(id: slow.id) }
-        let answer = Task { vm.showAnsweredSession(a.id, projectID: projectID) }
+        let answer = Task { vm.showAnsweredSession(a.id, projectID: projectID, delivery: .typed) }
         _ = await (click.value, answer.value)
 
         XCTAssertEqual(onScreen(vm), .session(a.id))

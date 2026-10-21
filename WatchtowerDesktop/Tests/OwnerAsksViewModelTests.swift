@@ -1522,6 +1522,48 @@ final class OwnerAsksViewModelTests: XCTestCase {
         XCTAssertEqual(r.vm.asks.drawerAskIDs[r.project], r.ask)
     }
 
+    /// After an answer's line is delivered the session comes on screen in
+    /// its remembered mode; only a line the owner must press (typed, copied)
+    /// needs the terminal.
+    private func answeredSession(
+        workchat: Bool, delivery: SessionLineDelivery.Delivery
+    ) async throws -> (vm: WorkbenchesViewModel, project: Int64, session: Int64) {
+        let (p, s, _) = try await seed()
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: p)
+        var layout = vm.layout(projectID: p)
+        layout.setMode(workchat, sessionID: s.id)
+        layout.show(.board)
+        vm.setLayout(layout, projectID: p)
+        vm.showAnsweredSession(s.id, projectID: p, delivery: delivery)
+        return (vm, p, s.id)
+    }
+
+    func testAnswerSubmittedKeepsWorkchat() async throws {
+        let r = try await answeredSession(workchat: true, delivery: .submitted)
+        XCTAssertEqual(r.vm.layout(projectID: r.project).visiblePanes, [.sessionChat(r.session)])
+        XCTAssertNil(center.keyboardFocusSerial(for: r.session), "no terminal keyboard request")
+    }
+
+    func testAnswerHeldKeepsWorkchat() async throws {
+        let r = try await answeredSession(workchat: true, delivery: .held)
+        XCTAssertEqual(r.vm.layout(projectID: r.project).visiblePanes, [.sessionChat(r.session)])
+        XCTAssertNil(center.keyboardFocusSerial(for: r.session))
+    }
+
+    func testAnswerTypedShowsTerminal() async throws {
+        let r = try await answeredSession(workchat: true, delivery: .typed)
+        XCTAssertEqual(r.vm.layout(projectID: r.project).visiblePanes, [.session(r.session)])
+        XCTAssertNotNil(center.keyboardFocusSerial(for: r.session))
+    }
+
+    func testAnswerSubmittedTerminalModeFocusesTerminal() async throws {
+        let r = try await answeredSession(workchat: false, delivery: .submitted)
+        XCTAssertEqual(r.vm.layout(projectID: r.project).visiblePanes, [.session(r.session)])
+        XCTAssertNotNil(center.keyboardFocusSerial(for: r.session))
+    }
+
     func testRouteForAskKeepsWorkchat() async throws {
         let r = try await showAskOfSession(workchat: true, live: true, via: true)
         let panes = r.vm.layout(projectID: r.project).visiblePanes
