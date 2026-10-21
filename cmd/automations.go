@@ -41,6 +41,8 @@ type automationsFlags struct {
 	Error             string   // session-ended
 	Params            []string // install-template --param
 	Render            bool     // install-template --render
+	Output            int64    // reply --output
+	Action            int      // reply --action
 }
 
 var autoFlags automationsFlags
@@ -88,8 +90,10 @@ func init() {
 	auto := newAutomationsSubcommand("auto <id|slug> <tool> on|off",
 		"Turn a tool's auto grant on (owner only, at the current approval hash) or off", cobra.ExactArgs(3),
 		runAutomationsAuto)
+	reply := newAutomationsSubcommand("reply", "Press a Reply button on an Inbox card: queue its run (owner only)",
+		cobra.NoArgs, runAutomationsReply)
 
-	for _, c := range []*cobra.Command{list, show, validate, rescan, run, dryRun, runs, steps, save, outputs, auto} {
+	for _, c := range []*cobra.Command{list, show, validate, rescan, run, dryRun, runs, steps, save, outputs, auto, reply} {
 		c.Flags().BoolVar(&autoFlags.JSON, "json", false, "output as JSON")
 	}
 	for _, c := range []*cobra.Command{list, show, validate, rescan, auto} {
@@ -109,8 +113,10 @@ func init() {
 	runs.Flags().IntVar(&autoFlags.Limit, "limit", 0, "how many runs (default 20)")
 	outputs.Flags().IntVar(&autoFlags.Limit, "limit", 0, "how many outputs (default 20)")
 	outputs.Flags().StringVar(&autoFlags.Kind, "kind", "", "only outputs of this kind (inbox, briefing, report)")
+	reply.Flags().Int64Var(&autoFlags.Output, "output", 0, "the Inbox card's output id (required)")
+	reply.Flags().IntVar(&autoFlags.Action, "action", 0, "the 0-based index of the card's Reply button (required)")
 	automationsCmd.AddCommand(list, show, validate, rescan, run, dryRun, cancel, runs, steps, enable, disable,
-		confirm, save, del, outputs, wake, auto)
+		confirm, save, del, outputs, wake, auto, reply)
 }
 
 // openAutomationsCmd loads the config and opens the database with the

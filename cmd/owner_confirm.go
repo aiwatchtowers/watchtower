@@ -138,6 +138,28 @@ func automationConfirmDetail(arg string) string {
 	return recipeConfirmDetail(a)
 }
 
+// inboxReplyConfirmDetail is the window's text for a Reply press: the
+// automation, the card's title and the button's label and value.
+func inboxReplyConfirmDetail(database *db.DB, outputID int64, index int) string {
+	o, err := database.GetAutomationOutput(outputID)
+	if err != nil {
+		return detailUnavailable(err)
+	}
+	if index < 0 || index >= len(o.Actions) {
+		return detailUnavailable(fmt.Errorf("inbox card %d has no button %d", outputID, index))
+	}
+	a, err := database.GetAutomation(o.AutomationID)
+	if err != nil {
+		return detailUnavailable(err)
+	}
+	name := a.Name
+	if name == "" {
+		name = a.Slug
+	}
+	act := o.Actions[index]
+	return fmt.Sprintf("Automation #%d %q\nCard: %s\nButton: %s (sends %q)", a.ID, name, o.Title, act.Label, act.Reply)
+}
+
 // lessonConfirmDetail is the window's text for the --lesson of a workbench.
 func lessonConfirmDetail(database *db.DB, workbenchID int64) string {
 	l, err := database.GetReviewLesson(workbenchID, reviewFlagLesson)

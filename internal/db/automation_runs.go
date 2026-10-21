@@ -1184,6 +1184,27 @@ func (db *DB) ListAutomationOutputs(kind string, limit int) ([]AutomationOutput,
 	return out, nil
 }
 
+// GetAutomationOutput returns one output by id; a miss wraps
+// ErrOutputNotFound.
+func (db *DB) GetAutomationOutput(id int64) (*AutomationOutput, error) {
+	rows, err := db.Query(`SELECT `+automationOutputCols+` FROM automation_outputs WHERE id = ?`, id)
+	if err != nil {
+		return nil, fmt.Errorf("reading automation output %d: %w", id, err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("reading automation output %d: %w", id, err)
+		}
+		return nil, fmt.Errorf("automation output %d: %w", id, ErrOutputNotFound)
+	}
+	o, err := scanAutomationOutput(rows)
+	if err != nil {
+		return nil, err
+	}
+	return &o, nil
+}
+
 // NamedAutomationOutput is an automation output with the name of the
 // automation that wrote it (its slug when the recipe has no name).
 type NamedAutomationOutput struct {

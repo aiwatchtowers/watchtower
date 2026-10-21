@@ -315,27 +315,57 @@ func newAutomationStepsJSON(steps []db.AutomationRunStep) []automationStepJSON {
 	return out
 }
 
-// automationOutputJSON is one row of `outputs --json`.
+// automationOutputJSON is one row of `outputs --json`. Actions is never
+// null; Press is null until the card's one Reply press.
 type automationOutputJSON struct {
-	ID           int64      `json:"id"`
-	AutomationID int64      `json:"automation_id"`
-	RunID        int64      `json:"run_id"`
-	Kind         string     `json:"kind"`
-	Title        string     `json:"title"`
-	Body         string     `json:"body"`
-	Priority     string     `json:"priority"`
-	CreatedAt    time.Time  `json:"created_at"`
-	ReadAt       *time.Time `json:"read_at"`
-	DismissedAt  *time.Time `json:"dismissed_at"`
+	ID           int64                `json:"id"`
+	AutomationID int64                `json:"automation_id"`
+	RunID        int64                `json:"run_id"`
+	Kind         string               `json:"kind"`
+	Title        string               `json:"title"`
+	Body         string               `json:"body"`
+	Priority     string               `json:"priority"`
+	CreatedAt    time.Time            `json:"created_at"`
+	ReadAt       *time.Time           `json:"read_at"`
+	DismissedAt  *time.Time           `json:"dismissed_at"`
+	Link         string               `json:"link"`
+	Actions      []db.InboxAction     `json:"actions"`
+	DoneAt       *time.Time           `json:"done_at"`
+	Press        *automationPressJSON `json:"press"`
+}
+
+// automationPressJSON is a card's Reply press; RunID is null once the run it
+// queued was deleted.
+type automationPressJSON struct {
+	Action    int       `json:"action"`
+	RunID     *int64    `json:"run_id"`
+	PressedAt time.Time `json:"pressed_at"`
 }
 
 func newAutomationOutputsJSON(outs []db.AutomationOutput) []automationOutputJSON {
 	out := make([]automationOutputJSON, 0, len(outs))
 	for _, o := range outs {
+		actions := o.Actions
+		if actions == nil {
+			actions = []db.InboxAction{}
+		}
 		out = append(out, automationOutputJSON{
 			ID: o.ID, AutomationID: o.AutomationID, RunID: o.RunID, Kind: o.Kind, Title: o.Title, Body: o.Body,
 			Priority: o.Priority, CreatedAt: o.CreatedAt, ReadAt: o.ReadAt, DismissedAt: o.DismissedAt,
+			Link: o.Link, Actions: actions, DoneAt: o.DoneAt, Press: newAutomationPressJSON(o),
 		})
 	}
 	return out
+}
+
+func newAutomationPressJSON(o db.AutomationOutput) *automationPressJSON {
+	if o.PressedAt == nil || o.PressedAction == nil {
+		return nil
+	}
+	p := &automationPressJSON{Action: *o.PressedAction, PressedAt: *o.PressedAt}
+	if o.PressedRunID != 0 {
+		runID := o.PressedRunID
+		p.RunID = &runID
+	}
+	return p
 }

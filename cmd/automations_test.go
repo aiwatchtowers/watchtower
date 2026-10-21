@@ -578,7 +578,7 @@ func TestAutomationsCLI_RunsStepsOutputsJSONKeys(t *testing.T) {
 	outs := runAutomationsJSONList(t, "outputs")
 	require.Len(t, outs, 1)
 	wantKeys(t, outs[0], "id", "automation_id", "run_id", "kind", "title", "body", "priority", "created_at",
-		"read_at", "dismissed_at")
+		"read_at", "dismissed_at", "link", "actions", "done_at", "press")
 
 	fresh := c.indexRecipe(t, "fresh", autoCLIRecipeText(`return 1`))
 	for _, args := range [][]string{{"runs", idArg(fresh.ID)}, {"steps", idArg(committed)}} {

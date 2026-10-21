@@ -22,10 +22,16 @@ var (
 )
 
 // AlreadyPressedError refuses a second press of a card: it carries the run
-// the first press queued.
+// the first press queued, 0 when that run was since deleted
+// (pressed_run_id ON DELETE SET NULL).
 type AlreadyPressedError struct{ RunID int64 }
 
-func (e *AlreadyPressedError) Error() string { return fmt.Sprintf("Sent — run #%d", e.RunID) }
+func (e *AlreadyPressedError) Error() string {
+	if e.RunID == 0 {
+		return "Sent — its run was since deleted"
+	}
+	return fmt.Sprintf("Sent — run #%d", e.RunID)
+}
 
 // ReplyPayload is the event_json of a trigger='reply' run.
 type ReplyPayload struct {
@@ -73,10 +79,11 @@ type pressTarget struct {
 
 func readPressTargetTx(tx *sql.Tx, outputID int64) (pressTarget, error) {
 	var p pressTarget
+	// runnableAutomationSQL's columns are unqualified; none of them is an
+	// automation_outputs column, so they resolve to a.
 	err := tx.QueryRow(`SELECT o.automation_id, o.title, o.link, o.actions_json,
 			o.done_at IS NOT NULL OR o.dismissed_at IS NOT NULL,
-			a.parse_error = '' AND a.enabled = 1 AND a.removed_at IS NULL
-				AND a.confirmed_hash != '' AND a.confirmed_hash = a.approval_hash,
+			`+runnableAutomationSQL+`,
 			o.pressed_at IS NOT NULL, o.pressed_run_id
 		FROM automation_outputs o JOIN automations a ON a.id = o.automation_id
 		WHERE o.id = ? AND o.kind = 'inbox'`, outputID).Scan(&p.automationID, &p.title, &p.link, &p.actions,
@@ -106,8 +113,8 @@ func replyActionAt(p pressTarget, outputID int64, index int) (InboxAction, error
 // at actionIndex of inbox card outputID and queues its trigger='reply' run,
 // in one transaction. Refusals, checked in this order, write nothing:
 // ErrOutputNotFound, ErrOutputClosed (done or dismissed), ErrNotAReplyAction,
-// ErrOutputAutomationNotRunnable, and *AlreadyPressedError for a card
-// already pressed. The run's ReplyPayload is built from the stored row.
+// *AlreadyPressedError for a card already pressed, and
+// ErrOutputAutomationNotRunnable. The run's ReplyPayload is built from the stored row.
 func (db *DB) PressInboxOutputAction(outputID int64, actionIndex int, now time.Time) (runID int64, err error) {
 	if err := requireRunTime(now, fmt.Sprintf("pressing inbox card %d", outputID)); err != nil {
 		return 0, err
@@ -129,11 +136,13 @@ func (db *DB) PressInboxOutputAction(outputID int64, actionIndex int, now time.T
 	if err != nil {
 		return 0, err
 	}
-	if !p.runnable {
-		return 0, fmt.Errorf("inbox card %d: %w", outputID, ErrOutputAutomationNotRunnable)
-	}
+	// Already pressed before not runnable: a pressed card whose automation
+	// was later turned off or edited still reports its sent state.
 	if p.pressed {
 		return 0, &AlreadyPressedError{RunID: p.pressedRunID.Int64}
+	}
+	if !p.runnable {
+		return 0, fmt.Errorf("inbox card %d: %w", outputID, ErrOutputAutomationNotRunnable)
 	}
 
 	data := action.Data

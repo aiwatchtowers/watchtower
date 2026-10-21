@@ -214,3 +214,48 @@ func TestPressInboxOutputAction_DataComesFromTheStoredRow(t *testing.T) {
 		t.Errorf("data = %s; want null", got)
 	}
 }
+
+func TestPressInboxOutputAction_PressedReportedBeforeNotRunnable(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunnableAutomation(t, d, "triage")
+	out := seedInboxCard(t, d, a, "Bug", "", replyActionsJSON)
+	runID, err := d.PressInboxOutputAction(out, 0, runTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`UPDATE automations SET enabled = 0 WHERE id = ?`, a); err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.PressInboxOutputAction(out, 0, runTestNow.Add(time.Second))
+	var already *AlreadyPressedError
+	if !errors.As(err, &already) || already.RunID != runID {
+		t.Fatalf("press of a pressed card of a disabled automation = %v; want AlreadyPressedError{%d}", err, runID)
+	}
+}
+
+func TestPressInboxOutputAction_PressedRunDeletedSaysSentWithoutNumber(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunnableAutomation(t, d, "triage")
+	out := seedInboxCard(t, d, a, "Bug", "", replyActionsJSON)
+	runID, err := d.PressInboxOutputAction(out, 0, runTestNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Exec(`DELETE FROM automation_runs WHERE id = ?`, runID); err != nil {
+		t.Fatal(err)
+	}
+	if p := readPress(t, d, out); p.runID != nil || p.at == nil {
+		t.Fatalf("press after the run's delete = %+v; want pressed_at kept, pressed_run_id NULL", p)
+	}
+	_, err = d.PressInboxOutputAction(out, 0, runTestNow.Add(time.Second))
+	var already *AlreadyPressedError
+	if !errors.As(err, &already) || already.RunID != 0 {
+		t.Fatalf("second press = %v; want AlreadyPressedError{0}", err)
+	}
+	if got, want := already.Error(), "Sent — its run was since deleted"; got != want {
+		t.Errorf("Error() = %q; want %q", got, want)
+	}
+	if n := countReplyRuns(t, d); n != 0 {
+		t.Errorf("reply runs = %d; want 0", n)
+	}
+}
