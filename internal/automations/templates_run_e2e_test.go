@@ -789,14 +789,16 @@ func llmInputOf(t *testing.T, user string) string {
 // 200 more PAY issues, each with a 20 KiB raw payload, 20 KiB of custom
 // field values, an 8 KiB description and two status changes this week; 40
 // people with full cards (about 6 KiB each) and 30 messages of 2 KiB each.
+// The filler is hex(zeroblob(n)): only its size matters, and randomblob's
+// ChaCha20 ran instrumented under -race for ~20 s of every seeding.
 const productionSizeSeed = `
 WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200)
 INSERT INTO jira_issues (account_id, key, id, project_key, board_id, sprint_id, summary, description_text, issue_type, status,
     status_category, assignee_display_name, priority, created_at, updated_at, synced_at, raw_json, custom_fields_json)
-SELECT 1, 'PAY-' || (100 + i), '2' || i, 'PAY', 1, 0, 'Payments work item ' || i || ' ' || hex(randomblob(40)),
-    hex(randomblob(4096)), 'Story', 'In Progress', 'indeterminate', 'colleague A', 'Medium',
+SELECT 1, 'PAY-' || (100 + i), '2' || i, 'PAY', 1, 0, 'Payments work item ' || i || ' ' || hex(zeroblob(40)),
+    hex(zeroblob(4096)), 'Story', 'In Progress', 'indeterminate', 'colleague A', 'Medium',
     '2026-09-01T09:00:00Z', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 days'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-    '{"fields":{"blob":"' || hex(randomblob(10240)) || '"}}', '{"customfield_10010":"' || hex(randomblob(10240)) || '"}'
+    '{"fields":{"blob":"' || hex(zeroblob(10240)) || '"}}', '{"customfield_10010":"' || hex(zeroblob(10240)) || '"}'
 FROM n;
 
 INSERT INTO jira_issue_changelog (account_id, issue_key, history_id, field, from_string, to_string, author_display_name, changed_at)
@@ -815,15 +817,15 @@ SELECT '1:U9' || printf('%07d', i), 'person-' || i, 'person ' || i, 'person ' ||
 WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 40)
 INSERT INTO people_cards (user_id, period_from, period_to, message_count, summary, communication_style, decision_role,
     red_flags, highlights, accomplishments, communication_guide, decision_style, tactics, relationship_context, status)
-SELECT '1:U9' || printf('%07d', i), 1759820400, 1760425200 + i, 120, hex(randomblob(512)), 'driver', 'contributor',
-    '["' || hex(randomblob(256)) || '"]', '["' || hex(randomblob(256)) || '"]', '["' || hex(randomblob(256)) || '"]',
-    hex(randomblob(512)), hex(randomblob(150)), '["' || hex(randomblob(512)) || '"]', hex(randomblob(256)), 'active'
+SELECT '1:U9' || printf('%07d', i), 1759820400, 1760425200 + i, 120, hex(zeroblob(512)), 'driver', 'contributor',
+    '["' || hex(zeroblob(256)) || '"]', '["' || hex(zeroblob(256)) || '"]', '["' || hex(zeroblob(256)) || '"]',
+    hex(zeroblob(512)), hex(zeroblob(150)), '["' || hex(zeroblob(512)) || '"]', hex(zeroblob(256)), 'active'
 FROM n;
 
 WITH RECURSIVE p(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM p WHERE i < 40),
      m(j) AS (SELECT 1 UNION ALL SELECT j + 1 FROM m WHERE j < 30)
 INSERT INTO messages (channel_id, ts, user_id, text)
-SELECT '1:C0REL', (1760500000 + i * 100 + j) || '.000100', '1:U9' || printf('%07d', i), hex(randomblob(1024))
+SELECT '1:C0REL', (1760500000 + i * 100 + j) || '.000100', '1:U9' || printf('%07d', i), hex(zeroblob(1024))
 FROM p, m;
 `
 
@@ -833,10 +835,10 @@ const productionSizeOpsSeed = `
 WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 200)
 INSERT INTO jira_issues (account_id, key, id, project_key, board_id, sprint_id, summary, description_text, issue_type, status,
     status_category, assignee_display_name, priority, created_at, updated_at, synced_at, raw_json, custom_fields_json)
-SELECT 1, 'OPS-' || (100 + i), '3' || i, 'OPS', 2, 0, 'Operations work item ' || i || ' ' || hex(randomblob(40)),
-    hex(randomblob(4096)), 'Task', 'In Progress', 'indeterminate', 'colleague B', 'Medium',
+SELECT 1, 'OPS-' || (100 + i), '3' || i, 'OPS', 2, 0, 'Operations work item ' || i || ' ' || hex(zeroblob(40)),
+    hex(zeroblob(4096)), 'Task', 'In Progress', 'indeterminate', 'colleague B', 'Medium',
     '2026-09-01T09:00:00Z', strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-1 days'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
-    '{"fields":{"blob":"' || hex(randomblob(10240)) || '"}}', '{"customfield_10010":"' || hex(randomblob(10240)) || '"}'
+    '{"fields":{"blob":"' || hex(zeroblob(10240)) || '"}}', '{"customfield_10010":"' || hex(zeroblob(10240)) || '"}'
 FROM n;
 `
 
@@ -864,8 +866,8 @@ func TestTemplates_ProductionSizeReports(t *testing.T) {
 	// cap. (150 issues and no description keep list_jira_issues under its
 	// 256 KiB result cap.)
 	ampOpsSeed := strings.NewReplacer(
-		`'Operations work item ' || i || ' ' || hex(randomblob(40)),
-    hex(randomblob(4096))`, `replace(hex(zeroblob(80)), '0', '&'), ''`,
+		`'Operations work item ' || i || ' ' || hex(zeroblob(40)),
+    hex(zeroblob(4096))`, `replace(hex(zeroblob(80)), '0', '&'), ''`,
 		"WHERE i < 200", "WHERE i < 150",
 	).Replace(productionSizeOpsSeed)
 	if ampOpsSeed == productionSizeOpsSeed {
