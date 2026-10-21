@@ -20,7 +20,7 @@ extension NotificationService: AccountPurgeNotifying {}
 @Observable
 final class AccountPurgeCenter {
     static let pollInterval: Duration = .seconds(30)
-    /// How long a done purge stays listed (and its done line shown).
+    /// How long a done or failed purge stays listed (and its line shown).
     static let recentWindow: TimeInterval = 7 * 24 * 3600
 
     private(set) var openRows: [AccountPurge] = []
@@ -103,7 +103,7 @@ final class AccountPurgeCenter {
 
     /// The account's latest done purge within the recent window.
     func doneRow(source: String, accountID: Int64) -> AccountPurge? {
-        recentRows.first { $0.source == source && $0.accountID == accountID }
+        recentRows.first { $0.source == source && $0.accountID == accountID && $0.isDone }
     }
 
     /// A row counts as sent once it is handed to the notifier, even if

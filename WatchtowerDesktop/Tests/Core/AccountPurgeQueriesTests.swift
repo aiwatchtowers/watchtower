@@ -48,6 +48,22 @@ final class AccountPurgeQueriesTests: XCTestCase {
         XCTAssertTrue(rows[0].isRemovedAccount)
     }
 
+    /// A failed purge is finished: recent lists it with the done rows (review #601).
+    func testRecentListsFailedRows() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            try db.execute(sql: """
+                INSERT INTO account_purges (id, source, account_id, reason, due_at, state, finished_at, error) VALUES
+                (8, 'slack', 1, 'revoked', '2026-10-15T09:00:00Z', 'failed', '2026-10-16T09:00:00Z', 'disk full')
+                """)
+        }
+        let since = try XCTUnwrap(PlanUsageDates.parse("2026-10-14T09:00:00Z"))
+        let rows = try db.read { try AccountPurgeQueries.recent($0, since: since) }
+        XCTAssertEqual(rows.map(\.id), [8])
+        XCTAssertTrue(rows[0].isFailed)
+        XCTAssertFalse(rows[0].isDone)
+    }
+
     func testEmptyLedger() throws {
         let db = try TestDatabase.create()
         XCTAssertEqual(try db.read { try AccountPurgeQueries.open($0) }, [])
@@ -98,7 +114,8 @@ final class AccountPurgeStatusDecodingTests: XCTestCase {
             AccountPurgeStatus.removeDialogMessage(
                 kept, status: AccountPurgeStatus(enabled: true, enabledBy: "build", leaseDays: 14)
             ),
-            kept + " Because deleting data on revoked access is on, it is deleted after 14 days without access."
+            kept + " Because deleting data on revoked access is on, it is deleted about 14 days after the account "
+                + "was last reached, plus 72 hours' notice."
         )
     }
 }

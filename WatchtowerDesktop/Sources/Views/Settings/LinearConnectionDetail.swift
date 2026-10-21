@@ -111,7 +111,8 @@ struct LinearConnectionDetail: View {
                                 Task { await vm.relogin(account) }
                             }
                         }
-                        .disabled(vm.isBusy)
+                        .help(reloginBlocked(account.id) ?? "")
+                        .disabled(vm.isBusy || reloginBlocked(account.id) != nil)
                     }
                     Button("Remove") { pendingRemoval = account }
                         .buttonStyle(.plain)
@@ -209,6 +210,12 @@ struct LinearConnectionDetail: View {
         }
         .padding(20)
         .frame(width: 380)
+    }
+
+    /// Why Re-login is off for the account (its purge is running), or nil.
+    private func reloginBlocked(_ id: Int64) -> String? {
+        AccountPurgeLine.reloginBlockedReason(
+            center: appState.accountPurgeCenter, source: "linear", accountID: id)
     }
 
     private func statusColor(_ account: LinearAccount) -> Color {

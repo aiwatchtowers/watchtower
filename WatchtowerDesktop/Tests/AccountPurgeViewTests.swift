@@ -51,6 +51,25 @@ final class AccountPurgeViewTests: XCTestCase {
         XCTAssertNil(AccountPurgeLine.make(center: nil, source: "linear", accountID: 1, isPurged: false))
     }
 
+    /// Review #601: a failed purge shows its line on the account.
+    func testFailedAccountLine() throws {
+        let failed = AccountPurge(id: 3, source: "slack", accountID: 1, accountLabel: "Acme", state: "failed",
+                                  error: "disk full")
+        let line = try XCTUnwrap(AccountPurgeLine.make(open: nil, recent: [failed], isPurged: false))
+        XCTAssertFalse(line.deleted)
+        XCTAssertEqual(line.text, AccountPurgeNoticePolicy.failedLine(failed))
+    }
+
+    /// Review #601: Re-login is blocked while that account's purge runs.
+    func testReloginBlockedWhileRunning() {
+        let running = AccountPurge(id: 1, source: "slack", accountID: 1, state: "running")
+        XCTAssertEqual(
+            AccountPurgeLine.reloginBlockedReason(running),
+            "Watchtower is deleting this account's data. Re-login once it finishes.")
+        XCTAssertNil(AccountPurgeLine.reloginBlockedReason(AccountPurge(id: 1, source: "slack", accountID: 1)))
+        XCTAssertNil(AccountPurgeLine.reloginBlockedReason(nil))
+    }
+
     func testPrivacySwitchSetByPolicyIsDisabled() throws {
         let policy = PrivacySettingsContent(
             isOn: .constant(true), status: AccountPurgeStatus(enabled: true, enabledBy: "policy"), statusError: nil)

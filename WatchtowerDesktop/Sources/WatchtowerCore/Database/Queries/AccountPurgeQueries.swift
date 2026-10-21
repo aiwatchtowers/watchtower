@@ -33,12 +33,13 @@ package enum AccountPurgeQueries {
             """)
     }
 
-    /// Purges finished at or after `since`, newest first. `finished_at` is
-    /// fixed-width UTC (`%Y-%m-%dT%H:%M:%SZ`), so text order is time order.
+    /// Purges finished (done or failed) at or after `since`, newest first.
+    /// `finished_at` is fixed-width UTC (`%Y-%m-%dT%H:%M:%SZ`), so text order
+    /// is time order.
     package static func recent(_ db: Database, since: Date) throws -> [AccountPurge] {
         try AccountPurge.fetchAll(db, sql: selectSQL + """
 
-            WHERE p.state = 'done' AND p.finished_at >= ? ORDER BY p.id DESC
+            WHERE p.state IN ('done', 'failed') AND p.finished_at >= ? ORDER BY p.id DESC
             """, arguments: [PlanUsageDates.format(since)])
     }
 }

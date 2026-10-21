@@ -10,11 +10,11 @@ package struct AccountPurgeNotice: Equatable, Sendable {
 }
 
 /// The owner-facing text of the purge ledger (board #601): the red line on an
-/// account and on Home, the done line, and which notifications are due — one
-/// per row when it is scheduled and one when it is done. Pure; the caller
-/// persists `sent` and delivers the notices.
+/// account and on Home, the done and failed lines, and which notifications
+/// are due — one per row when it is scheduled, one when it is done and one
+/// when it failed. Pure; the caller persists `sent` and delivers the notices.
 package enum AccountPurgeNoticePolicy {
-    /// `[String]` of `"<id>:scheduled"` / `"<id>:done"`.
+    /// `[String]` of `"<id>:scheduled"` / `"<id>:done"` / `"<id>:failed"`.
     package static let sentKey = "accountPurges.noticesSent"
 
     /// The line for an open row: what happens, when, and how to stop it.
@@ -30,13 +30,33 @@ package enum AccountPurgeNoticePolicy {
             let since = p.accessOkAt.map { "since \(date($0, zone: zone))" } ?? "in a long time"
             return "Watchtower has not reached \(label) \(since). Its data will be deleted on \(due) unless you reconnect."
         }
+        if p.accountStatus == "error" {
+            // The daemon waits while the account reports an error (PURGE-01):
+            // the due date may already be past.
+            return "Access to \(label) was revoked. Deleting its data is on hold while the account reports an error; "
+                + "reconnect to cancel it."
+        }
         return "Access to \(label) was revoked. Its data will be deleted on \(due) unless you reconnect."
     }
 
-    /// "<account>'s data was deleted on <date>."
+    /// "<account>'s data was deleted on <date>." A done row with a note is a
+    /// purge whose account came back during the run (Go's
+    /// `FinishAccountPurge`): the account was kept.
     package static func doneLine(_ p: AccountPurge, zone: TimeZone = .current) -> String {
+        if !p.error.isEmpty {
+            return "\(p.displayLabel) came back while its data was being deleted: "
+                + "the account was kept and syncs again from the start."
+        }
         let when = p.finishedAt.map { " on \(date($0, zone: zone))" } ?? ""
         return "\(p.displayLabel)'s data was deleted\(when)."
+    }
+
+    /// The line of a failed purge: it stopped after repeated errors and the
+    /// account keeps syncing; another attempt is scheduled with a new notice.
+    package static func failedLine(_ p: AccountPurge, zone: TimeZone = .current) -> String {
+        let why = p.error.isEmpty ? "" : " (\(p.error))"
+        return "Watchtower could not finish deleting \(p.displayLabel)'s data\(why). "
+            + "Any new attempt comes with a new notice."
     }
 
     /// The line of a `purged` account in Settings → Connections: the done line
@@ -70,6 +90,11 @@ package enum AccountPurgeNoticePolicy {
                 notice = AccountPurgeNotice(
                     identifier: "accountPurge.\(key)", source: row.source, title: "\(row.sourceName) account data deleted",
                     body: doneLine(row, zone: zone))
+            case "failed":
+                key = "\(row.id):failed"
+                notice = AccountPurgeNotice(
+                    identifier: "accountPurge.\(key)", source: row.source,
+                    title: "\(row.sourceName) account data deletion failed", body: failedLine(row, zone: zone))
             default:
                 continue
             }

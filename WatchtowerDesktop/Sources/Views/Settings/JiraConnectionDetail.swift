@@ -67,7 +67,8 @@ struct JiraConnectionDetail: View {
                                 Button("Re-login") {
                                     Task { await vm.relogin(account) }
                                 }
-                                .disabled(vm.isConnecting)
+                                .help(reloginBlocked(account.id) ?? "")
+                                .disabled(vm.isConnecting || reloginBlocked(account.id) != nil)
                             }
                             Button("Rename…") {
                                 accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
@@ -165,6 +166,12 @@ struct JiraConnectionDetail: View {
                 title: sites.count > 1 ? "Confluence — \(account.displayName)" : "Confluence"
             )
         }
+    }
+
+    /// Why Re-login is off for the account (its purge is running), or nil.
+    private func reloginBlocked(_ id: Int) -> String? {
+        AccountPurgeLine.reloginBlockedReason(
+            center: appState.accountPurgeCenter, source: "jira", accountID: Int64(id))
     }
 
     private func jiraAccountStatusColor(_ account: JiraAccount) -> Color {

@@ -20,7 +20,7 @@ package struct AccountPurge: FetchableRecord, Identifiable, Equatable, Sendable 
     package let accessOkAt: Date?
     /// "revoked" | "lease"
     package let reason: String
-    /// "scheduled" | "running" | "done" | "cancelled"
+    /// "scheduled" | "running" | "done" | "cancelled" | "failed"
     package let state: String
     package let dueAt: Date?
     package let finishedAt: Date?
@@ -72,6 +72,8 @@ package struct AccountPurge: FetchableRecord, Identifiable, Equatable, Sendable 
 
     package var isOpen: Bool { state == "scheduled" || state == "running" }
     package var isDone: Bool { state == "done" }
+    /// Three chunk failures in a row ended it; the account was not purged.
+    package var isFailed: Bool { state == "failed" }
     /// A lease row of an account that was removed (or whose row is gone):
     /// reconnecting means adding it again.
     package var isRemovedAccount: Bool { accountStatus == "removed" || accountStatus.isEmpty }
@@ -121,12 +123,13 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
 
     /// A Slack, Jira or Linear Remove dialog's message: `kept` says the
     /// synced data stays; with the purge effectively on, one sentence adds
-    /// the removed account's own lease. An unknown status (the CLI has not
-    /// answered) adds nothing.
+    /// the removed account's own lease (scheduled once the account was not
+    /// reached for the lease, deleted after the notice). An unknown status
+    /// (the CLI has not answered) adds nothing.
     package static func removeDialogMessage(_ kept: String, status: Self?) -> String {
         guard let status, status.enabled else { return kept }
-        return kept + " Because deleting data on revoked access is on, it is deleted after "
-            + "\(status.leaseDays) days without access."
+        return kept + " Because deleting data on revoked access is on, it is deleted about "
+            + "\(status.leaseDays) days after the account was last reached, plus \(status.graceHours) hours' notice."
     }
 
     package static func decode(_ data: Data) throws -> Self {

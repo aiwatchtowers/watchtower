@@ -243,8 +243,11 @@ struct SlackConnectionDetail: View {
                             Button(account.isOK ? "Reconnect" : "Re-login") {
                                 Task { await vm.relogin(account) }
                             }
-                            .help("Sign in to this workspace again (grants new permissions such as sending messages)")
-                            .disabled(vm.isConnecting)
+                            .help(
+                                reloginBlocked(account.id)
+                                    ?? "Sign in to this workspace again (grants new permissions such as sending messages)"
+                            )
+                            .disabled(vm.isConnecting || reloginBlocked(account.id) != nil)
                             Button("Rename…") {
                                 accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
                             }
@@ -321,6 +324,12 @@ struct SlackConnectionDetail: View {
                 Button("Open") { appState.navigateToAutomations(section: .reactions) }
             }
         }
+    }
+
+    /// Why Re-login is off for the account (its purge is running), or nil.
+    private func reloginBlocked(_ id: Int) -> String? {
+        AccountPurgeLine.reloginBlockedReason(
+            center: appState.accountPurgeCenter, source: "slack", accountID: Int64(id))
     }
 
     private func slackAccountStatusColor(_ account: SlackAccount) -> Color {
