@@ -54,12 +54,18 @@ struct GoogleConnectionDetail: View {
                                 }
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                                if let line = AccountPurgeLine.make(
+                                    center: appState.accountPurgeCenter, source: "google", accountID: Int64(account.id),
+                                    isPurged: account.isPurged
+                                ) {
+                                    line
+                                }
                             }
                             Spacer()
                             Circle()
                                 .fill(googleAccountStatusColor(account))
                                 .frame(width: 8, height: 8)
-                                .help(account.isOK ? "Connected" : account.error)
+                                .help(account.isOK ? "Connected" : (account.isPurged ? "Data deleted" : account.error))
                             if !account.isOK {
                                 Button("Re-login") {
                                     vm.relogin(account, daemonPolicy: appState.accountDaemonPolicy)
@@ -133,6 +139,7 @@ struct GoogleConnectionDetail: View {
     private func googleAccountStatusColor(_ account: GoogleAccount) -> Color {
         if account.isOK { return .green }
         if account.isRevoked { return .red }
+        if account.isPurged { return .gray }
         return .orange
     }
 

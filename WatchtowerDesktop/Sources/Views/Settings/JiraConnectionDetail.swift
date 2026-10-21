@@ -42,12 +42,18 @@ struct JiraConnectionDetail: View {
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                 }
+                                if let line = AccountPurgeLine.make(
+                                    center: appState.accountPurgeCenter, source: "jira", accountID: Int64(account.id),
+                                    isPurged: account.isPurged
+                                ) {
+                                    line
+                                }
                             }
                             Spacer()
                             Circle()
                                 .fill(jiraAccountStatusColor(account))
                                 .frame(width: 8, height: 8)
-                                .help(account.isOK ? "Connected" : (account.error.isEmpty ? account.status : account.error))
+                                .help(accountStatusHelp(account))
                             Toggle("Enabled", isOn: Binding(
                                 get: { account.enabled },
                                 set: { newValue in
@@ -56,7 +62,7 @@ struct JiraConnectionDetail: View {
                             ))
                             .toggleStyle(.switch)
                             .controlSize(.mini)
-                            .disabled(vm.isConnecting)
+                            .disabled(vm.isConnecting || account.isPurged)
                             if !account.isOK {
                                 Button("Re-login") {
                                     Task { await vm.relogin(account) }
@@ -163,6 +169,13 @@ struct JiraConnectionDetail: View {
     private func jiraAccountStatusColor(_ account: JiraAccount) -> Color {
         if account.isOK { return .green }
         if account.isRevoked { return .red }
+        if account.isPurged { return .gray }
         return .orange
+    }
+
+    private func accountStatusHelp(_ account: JiraAccount) -> String {
+        if account.isOK { return "Connected" }
+        if account.isPurged { return "Data deleted" }
+        return account.error.isEmpty ? account.status : account.error
     }
 }

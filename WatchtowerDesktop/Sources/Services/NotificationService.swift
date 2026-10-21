@@ -340,6 +340,19 @@ final class NotificationService: Sendable {
             UNNotificationRequest(identifier: notice.identifier, content: content, trigger: nil))
     }
 
+    /// An account's data purge was scheduled or is done (board #601); a click
+    /// opens the account's connection in Settings. One identifier per row and
+    /// state (`AccountPurgeNoticePolicy`).
+    func sendAccountPurgeNotice(_ notice: AccountPurgeNotice) {
+        let content = UNMutableNotificationContent()
+        content.title = String(notice.title.prefix(200))
+        content.body = String(notice.body.prefix(200))
+        content.sound = .default
+        content.userInfo = ["type": "account_purge", "source": notice.source]
+        post(
+            UNNotificationRequest(identifier: notice.identifier, content: content, trigger: nil))
+    }
+
     /// A run started from the "Run Automation…" palette or the tray ended
     /// (spec §12.7); one identifier per run, so a second post replaces the
     /// first. The texts come from `AutomationRunNotifier`.

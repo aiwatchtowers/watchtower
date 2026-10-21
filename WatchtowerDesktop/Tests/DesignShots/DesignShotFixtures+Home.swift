@@ -20,13 +20,13 @@ enum HomeShotFixtures {
     private static let now = Date(timeIntervalSince1970: 1_792_406_400) // 2026-10-19 10:40 UTC
 
     /// `gettingReady`: a first run still preparing, as on a new install.
-    static func home(gettingReady: Bool = false) -> AnyView {
+    static func home(gettingReady: Bool = false, purges: [AccountPurge] = []) -> AnyView {
         do {
             return AnyView(HomeContent(
                 snapshot: try snapshot(gettingReady: gettingReady ? Self.gettingReady : .hidden),
                 today: now, calendar: calendar,
                 feedErrors: [.target(4): "The database is locked."],
-                onLink: { _ in }, onHideGettingReady: {}))
+                onLink: { _ in }, onHideGettingReady: {}, purges: purges))
         } catch {
             XCTFail("home shot fixture failed: \(error)")
             return AnyView(Text("fixture failed: \(String(describing: error))").foregroundStyle(.red))
@@ -159,5 +159,36 @@ enum HomeShotFixtures {
                 event("one", "1:1 with Bob", minutes: 1460)
             ]),
             failed: [])
+    }
+}
+
+/// The account purge notice (board #601): a revoked Slack workspace and a
+/// removed Jira site on the lease.
+extension HomeShotFixtures {
+    static let purges: [AccountPurge] = [
+        AccountPurge(id: 2, source: "slack", accountID: 1, accountLabel: "Acme",
+                     dueAt: now.addingTimeInterval(60 * 3600)),
+        AccountPurge(id: 1, source: "jira", accountID: 2, accountLabel: "acme.example.com", accountStatus: "removed",
+                     accessOkAt: now.addingTimeInterval(-31 * 86400), reason: "lease",
+                     dueAt: now.addingTimeInterval(70 * 3600))
+    ]
+
+    /// Settings → System → Privacy and the connection lines, in the grouped form they sit in.
+    static func privacySettings() -> AnyView {
+        AnyView(Form {
+            PrivacySettingsContent(
+                isOn: .constant(true), status: AccountPurgeStatus(enabled: true, enabledBy: "build"), statusError: nil)
+            Section("Slack Workspaces") {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Acme")
+                    AccountPurgeLine(text: AccountPurgeNoticePolicy.line(purges[0], zone: calendar.timeZone))
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Acme Labs")
+                    AccountPurgeLine(text: AccountPurgeNoticePolicy.purgedLine(nil), deleted: true)
+                }
+            }
+        }
+        .formStyle(.grouped))
     }
 }

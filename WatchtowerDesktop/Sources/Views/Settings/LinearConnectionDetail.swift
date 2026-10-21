@@ -81,19 +81,25 @@ struct LinearConnectionDetail: View {
                                 .foregroundStyle(.red)
                                 .lineLimit(2)
                         }
+                        if let line = AccountPurgeLine.make(
+                            center: appState.accountPurgeCenter, source: "linear", accountID: account.id,
+                            isPurged: account.isPurged
+                        ) {
+                            line
+                        }
                     }
                     Spacer()
                     Circle()
                         .fill(statusColor(account))
                         .frame(width: 8, height: 8)
-                        .help(account.isOK ? "Connected" : account.status)
+                        .help(account.isOK ? "Connected" : (account.isPurged ? "Data deleted" : account.status))
                     Toggle("Enabled", isOn: Binding(
                         get: { account.enabled },
                         set: { value in Task { await vm.setEnabled(account, enabled: value) } }
                     ))
                     .toggleStyle(.switch)
                     .controlSize(.mini)
-                    .disabled(vm.isBusy)
+                    .disabled(vm.isBusy || account.isPurged)
                     if !account.isOK || account.auth == "error" {
                         Button("Re-login") {
                             if account.usesAPIKey {
@@ -205,6 +211,7 @@ struct LinearConnectionDetail: View {
     private func statusColor(_ account: LinearAccount) -> Color {
         if account.isOK { return .green }
         if account.status == "revoked" { return .red }
+        if account.isPurged { return .gray }
         return .orange
     }
 }

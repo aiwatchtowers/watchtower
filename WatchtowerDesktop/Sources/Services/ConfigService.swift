@@ -66,6 +66,11 @@ final class ConfigService {
     /// `digestEnabled`.
     var ideasEnabled: Bool = true
     var ideasMineIntervalHours: Int = 6
+    /// `privacy.purge_revoked_data` (board #601): nil = absent, the build
+    /// default applies. Written only once the owner sets it; the effective
+    /// value (policy > this > build default) comes from Go,
+    /// `watchtower accounts purges --json`.
+    var purgeRevokedData: Bool? // swiftlint:disable:this discouraged_optional_boolean
     var parseError: String?
 
     private let configPath: String
@@ -194,6 +199,8 @@ final class ConfigService {
                 minBacklog = (dayPlan["min_backlog"] as? Int) ?? 3
                 maxBacklog = (dayPlan["max_backlog"] as? Int) ?? 8
             }
+
+            purgeRevokedData = (yaml["privacy"] as? [String: Any])?["purge_revoked_data"] as? Bool
 
             parseError = nil
         } catch {
@@ -342,6 +349,13 @@ final class ConfigService {
         if let val = codexPath, !val.isEmpty { yaml["codex_path"] = val } else { yaml.removeValue(forKey: "codex_path") }
 
         applyWorkbenchSection(to: &yaml)
+
+        // Privacy section: absent stays absent until the owner sets it.
+        if let purgeRevokedData {
+            var privacy = (yaml["privacy"] as? [String: Any]) ?? [:]
+            privacy["purge_revoked_data"] = purgeRevokedData
+            yaml["privacy"] = privacy
+        }
 
         let output = try Yams.dump(object: yaml, allowUnicode: true)
 

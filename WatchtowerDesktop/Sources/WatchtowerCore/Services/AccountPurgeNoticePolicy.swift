@@ -3,6 +3,8 @@ import Foundation
 /// One macOS notification about an account purge.
 package struct AccountPurgeNotice: Equatable, Sendable {
     package let identifier: String
+    /// The row's source, so a click opens its connection.
+    package let source: String
     package let title: String
     package let body: String
 }
@@ -61,12 +63,12 @@ package enum AccountPurgeNoticePolicy {
             case "scheduled":
                 key = "\(row.id):scheduled"
                 notice = AccountPurgeNotice(
-                    identifier: "accountPurge.\(key)", title: "\(row.sourceName) account data will be deleted",
+                    identifier: "accountPurge.\(key)", source: row.source, title: "\(row.sourceName) account data will be deleted",
                     body: line(row, zone: zone))
             case "done":
                 key = "\(row.id):done"
                 notice = AccountPurgeNotice(
-                    identifier: "accountPurge.\(key)", title: "\(row.sourceName) account data deleted",
+                    identifier: "accountPurge.\(key)", source: row.source, title: "\(row.sourceName) account data deleted",
                     body: doneLine(row, zone: zone))
             default:
                 continue

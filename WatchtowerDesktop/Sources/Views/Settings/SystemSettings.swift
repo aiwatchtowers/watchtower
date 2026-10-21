@@ -25,6 +25,7 @@ struct SystemSettings: View {
             DaemonSettings()
             DataSettings()
                 .environment(appState)
+            PrivacySettings(config: config)
             logsSection
             updateSection
             usageLinkSection
