@@ -148,8 +148,29 @@ func TestActivity_CodexOpenCall(t *testing.T) {
 	a, err := ActivityOf(filepath.Join("testdata", "codex", "open_call.jsonl"), true, false)
 	require.NoError(t, err)
 	require.NotNil(t, a)
-	assert.Equal(t, "shell", a.Tool)
-	assert.Equal(t, "go test ./...", a.Summary)
-	assert.Equal(t, 0, a.More)
-	assert.Equal(t, time.Date(2026, 10, 12, 12, 0, 3, 0, time.UTC), a.StartedAt)
+	// the newest open call is the custom tool call; the function_call is the other open one
+	assert.Equal(t, "exec", a.Tool)
+	assert.Equal(t, "ls -la", a.Summary)
+	assert.Equal(t, 1, a.More)
+	assert.Equal(t, time.Date(2026, 10, 12, 12, 0, 4, 0, time.UTC), a.StartedAt)
+}
+
+func TestActivity_CodexCustomToolCall(t *testing.T) {
+	call := `{"timestamp":"2026-10-12T12:00:01.000Z","type":"response_item","payload":{"type":"custom_tool_call","status":"completed","call_id":"call_9","name":"exec","input":"const r = await tools.exec_command({cmd:\"git diff --stat\\nmore\", workdir:\"/x\"});"}}` + "\n"
+	out := `{"timestamp":"2026-10-12T12:00:02.000Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"call_9","output":"ok"}}` + "\n"
+	p := writeActivity(t, call)
+	a, err := ActivityOf(p, true, false)
+	require.NoError(t, err)
+	require.NotNil(t, a)
+	assert.Equal(t, "exec", a.Tool)
+	assert.Equal(t, "git diff --stat", a.Summary)
+	p = writeActivity(t, call, out)
+	a, err = ActivityOf(p, true, false)
+	require.NoError(t, err)
+	assert.Nil(t, a)
+	p = writeActivity(t, strings.Replace(call, "cmd:", "other:", 1))
+	a, err = ActivityOf(p, true, false)
+	require.NoError(t, err)
+	require.NotNil(t, a)
+	assert.Equal(t, "exec", a.Summary)
 }

@@ -197,7 +197,9 @@ func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *s
 func sessionFeedActivity(path string, codex, sidechain bool) *sessionfeed.Activity {
 	a, err := sessionfeed.ActivityOf(path, codex, sidechain)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "session-feed: activity: %v\n", err)
+		if !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "session-feed: activity: %v\n", err)
+		}
 		return nil
 	}
 	return a

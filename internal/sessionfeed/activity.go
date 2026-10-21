@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -151,6 +152,7 @@ func codexOpenCalls(tail []byte) []openCall {
 			Type      string `json:"type"`
 			Name      string `json:"name"`
 			Arguments string `json:"arguments"`
+			Input     string `json:"input"`
 			CallID    string `json:"call_id"`
 		}
 		if json.Unmarshal(l.Payload, &p) != nil || p.CallID == "" {
@@ -160,26 +162,50 @@ func codexOpenCalls(tail []byte) []openCall {
 		case "function_call":
 			at, _ := time.Parse(time.RFC3339Nano, l.Timestamp)
 			open = append(open, openCall{id: p.CallID, tool: p.Name, summary: codexSummary(p.Name, p.Arguments), at: at})
-		case "function_call_output":
+		case "custom_tool_call":
+			at, _ := time.Parse(time.RFC3339Nano, l.Timestamp)
+			open = append(open, openCall{id: p.CallID, tool: p.Name, summary: customToolSummary(p.Name, p.Input), at: at})
+		case "function_call_output", "custom_tool_call_output":
 			open = dropCall(open, p.CallID)
 		}
 	}
 	return open
 }
 
+// customCmdRe finds the first `cmd: "..."` string literal in a custom tool
+// call's JS source.
+var customCmdRe = regexp.MustCompile(`\bcmd\s*:\s*("(?:[^"\\]|\\.)*")`)
+
+func customToolSummary(name, input string) string {
+	if m := customCmdRe.FindStringSubmatch(input); m != nil {
+		var cmd string
+		if json.Unmarshal([]byte(m[1]), &cmd) == nil {
+			if cmd = firstLine(cmd); cmd != "" {
+				return clipSummary(cmd)
+			}
+		}
+	}
+	return clipSummary(name)
+}
+
 func codexSummary(name, arguments string) string {
 	var args struct {
 		Command json.RawMessage `json:"command"`
+		Cmd     json.RawMessage `json:"cmd"`
 	}
 	if json.Unmarshal([]byte(arguments), &args) != nil {
 		return clipSummary(name)
 	}
+	raw := args.Command
+	if len(raw) == 0 {
+		raw = args.Cmd
+	}
 	var s string
 	var parts []string
 	switch {
-	case json.Unmarshal(args.Command, &parts) == nil && len(parts) > 0:
+	case json.Unmarshal(raw, &parts) == nil && len(parts) > 0:
 		s = strings.Join(parts, " ")
-	case json.Unmarshal(args.Command, &s) == nil:
+	case json.Unmarshal(raw, &s) == nil:
 	}
 	if s = firstLine(s); s == "" {
 		return clipSummary(name)
@@ -201,7 +227,7 @@ func toolSummary(name string, input json.RawMessage) string {
 	s := ""
 	switch name {
 	case "Bash":
-		s = strings.TrimSpace(in.Description)
+		s = firstLine(in.Description)
 		if s == "" {
 			s = firstLine(in.Command)
 		}
@@ -226,7 +252,7 @@ func toolSummary(name string, input json.RawMessage) string {
 			}
 		}
 	}
-	if s = strings.TrimSpace(s); s == "" {
+	if s = firstLine(s); s == "" {
 		s = name
 	}
 	return clipSummary(s)
