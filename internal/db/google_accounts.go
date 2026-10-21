@@ -133,6 +133,19 @@ func (db *DB) SetGoogleAccountAuthState(accountID int64, status, errMsg string) 
 	return db.setAccountAuthState("google_accounts", `, updated_at = `+nowSQL, accountID, status, errMsg)
 }
 
+// ClearGoogleAccountError clears a plain recorded error (status error, no
+// revocation behind it) back to ok without touching the access facts: for a
+// local change that made no authenticated call (a service disconnect), so it
+// proves no access and must not move access_ok_at or revoked_at (#601). A
+// revoked or purged row is left alone.
+func (db *DB) ClearGoogleAccountError(accountID int64) error {
+	if _, err := db.Exec(`UPDATE google_accounts SET status = 'ok', error = '', updated_at = `+nowSQL+`
+		WHERE id = ? AND status = 'error' AND revoked_at = ''`, accountID); err != nil {
+		return fmt.Errorf("clearing google account %d error: %w", accountID, err)
+	}
+	return nil
+}
+
 // GetGmailAccountWatermark returns the Gmail sync watermark (unix seconds, 0
 // if unset or the account is missing) for accountID — the per-account
 // replacement for the old workspace.gmail_last_internal_date scalar.

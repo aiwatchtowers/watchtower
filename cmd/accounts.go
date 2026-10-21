@@ -137,7 +137,7 @@ func purgeLine(p accountPurgeJSON) string {
 	}
 	parts := []string{fmt.Sprintf("%s %s", p.Source, label), p.Reason, p.State}
 	switch p.State {
-	case "done", "cancelled":
+	case "done", "cancelled", "failed":
 		parts = append(parts, p.FinishedAt)
 	default:
 		parts = append(parts, "due "+p.DueAt)

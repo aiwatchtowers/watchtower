@@ -584,8 +584,12 @@ func disconnectGoogleService(cmd *cobra.Command, cfg *config.Config, database *d
 		return acct.ID, nil
 	}
 
-	// Clear any previously recorded auth failure so the Desktop popup dismisses.
-	_ = database.SetGoogleAccountAuthState(acct.ID, "ok", "")
+	// Clear a previously recorded plain error so the Desktop popup dismisses.
+	// No authenticated call was made: the access facts stay (a revocation, and
+	// a purge it scheduled, are not cleared by a disconnect, #601).
+	if err := database.ClearGoogleAccountError(acct.ID); err != nil {
+		return 0, err
+	}
 	fmt.Fprintf(out, "%s disconnected.\n", googleServiceLabel(service))
 	return acct.ID, nil
 }

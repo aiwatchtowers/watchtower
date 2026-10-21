@@ -76,3 +76,38 @@ func TestCalendarLogout_NoGoogleAccountIsANoop(t *testing.T) {
 	assert.Contains(t, out, "No Google account connected")
 	assert.True(t, calendarEventExists(t, database, "evt-caldav"))
 }
+
+// Review #601: disconnecting one Google service makes no authenticated call,
+// so it must not stamp access_ok_at or clear revoked_at — that would cancel
+// a scheduled purge without proof of access. A plain error (no revocation)
+// is still cleared, so the Desktop's prompt goes away.
+func TestGoogleDisconnect_NoAccessProof(t *testing.T) {
+	database := writeActionsConfig(t)
+	id, err := database.CreateGoogleAccount(db.GoogleAccount{Email: "a@example.com", CalendarEnabled: true, GmailEnabled: true})
+	require.NoError(t, err)
+	const old = "2026-01-01T00:00:00Z"
+	_, err = database.Exec(`UPDATE google_accounts SET status = 'revoked', error = 'gone', revoked_at = ?, access_ok_at = ? WHERE id = ?`, old, old, id)
+	require.NoError(t, err)
+
+	out, err := runCalendarCLI(t, "logout")
+	require.NoError(t, err, out)
+
+	var status, revokedAt, okAt string
+	read := func() {
+		require.NoError(t, database.QueryRow(`SELECT status, revoked_at, access_ok_at FROM google_accounts WHERE id = ?`, id).
+			Scan(&status, &revokedAt, &okAt))
+	}
+	read()
+	assert.Equal(t, "revoked", status, "a disconnect proves nothing about the grant")
+	assert.Equal(t, old, revokedAt)
+	assert.Equal(t, old, okAt)
+
+	// An error without a revocation is cleared, clocks untouched.
+	_, err = database.Exec(`UPDATE google_accounts SET status = 'error', error = 'scope', revoked_at = '', gmail_enabled = 1, calendar_enabled = 1 WHERE id = ?`, id)
+	require.NoError(t, err)
+	out, err = runCalendarCLI(t, "logout")
+	require.NoError(t, err, out)
+	read()
+	assert.Equal(t, "ok", status)
+	assert.Equal(t, old, okAt, "no access stamp without an authenticated call")
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -75,4 +76,14 @@ func TestAccountsPurgesTextEmpty(t *testing.T) {
 	assert.Equal(t, false, top["enabled"])
 	assert.Equal(t, "default", top["enabled_by"])
 	assert.Equal(t, []any{}, top["purges"], "an empty ledger is an empty array, not null")
+}
+
+// A failed purge is finished: its line shows when it stopped and why, not a
+// due date (review #601).
+func TestAccountsPurgeLineFailed(t *testing.T) {
+	line := purgeLine(accountPurgeJSON{Source: "slack", AccountID: 1, Reason: "revoked", State: "failed",
+		DueAt: "2026-01-01T00:00:00Z", FinishedAt: "2026-01-04T00:00:00Z", Error: "disk full"})
+	if strings.Contains(line, "due ") || !strings.Contains(line, "2026-01-04T00:00:00Z") || !strings.Contains(line, "disk full") {
+		t.Fatalf("failed line = %q", line)
+	}
 }
