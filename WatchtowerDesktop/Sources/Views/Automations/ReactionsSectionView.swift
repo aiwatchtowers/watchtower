@@ -43,13 +43,14 @@ struct ReactionCommandsOffNote: View {
     }
 }
 
-/// Automations → Reactions: the dictionary editor, the recipes that listen to
-/// reactions, and **New reaction automation**.
+/// Automations → Reactions: the dictionary editor, and the recipes that
+/// listen to reactions with **+** for a new one.
 struct ReactionsSectionView: View {
     @Environment(AppState.self) private var appState
     let items: [AutomationListItem]
     var onOpenAutomation: (Int64) -> Void
-    var onNew: (() -> Void)?
+    /// **+**: a new personal automation, its composer prefilled for a reaction.
+    var onNew: () -> Void
 
     var body: some View {
         ScrollView {
@@ -72,8 +73,12 @@ struct ReactionsSectionView: View {
                     HStack {
                         Text("Automations that listen to reactions").font(.headline)
                         Spacer()
-                        Button("New reaction automation") { onNew?() }
-                            .disabled(onNew == nil)
+                        Button(action: onNew) {
+                            Image(systemName: "plus")
+                        }
+                        .buttonStyle(.kitIcon(isOn: false))
+                        .help("New reaction automation")
+                        .accessibilityLabel("New reaction automation")
                     }
                     let rows = ReactionAutomationRows.rows(from: items)
                     if rows.isEmpty {

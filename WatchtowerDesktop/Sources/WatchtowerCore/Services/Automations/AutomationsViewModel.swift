@@ -49,6 +49,16 @@ package final class AutomationsViewModel {
     @ObservationIgnored package var onInboxOutputCountChanged: (() -> Void)?
     /// The automation whose card is open. Set it through `select(_:)` to load the card.
     package var selectedID: Int64?
+    /// What the right panel shows: the empty state, a card, the New flow, a
+    /// template, or the editor. `select(_:)` and `showCard(_:)` set a card,
+    /// `showNew(_:)` the New flow, `showEditor(_:composerPrefill:)` the editor.
+    package var panel: AutomationsPanel = .empty
+    /// The New flow's composer text for the editor it continues to: put into
+    /// an empty chat once; any other panel drops it.
+    package private(set) var composerPrefill: String?
+    /// New automation chats with a draft on disk (`AutomationDraftRows`),
+    /// read with the list.
+    package private(set) var draftRows: [AutomationDraftRow] = []
     /// Run ids whose steps are shown in the history.
     package private(set) var expandedRuns: Set<Int64> = []
     /// Keyed by automation id.
@@ -72,12 +82,7 @@ package final class AutomationsViewModel {
     /// `lastError` came from the list's own read: the next read that works
     /// clears it (a CLI failure stays until dismissed).
     @ObservationIgnored private var lastErrorIsRead = false
-    /// The "New automation" chat's draft: its conversation is keyed by this
-    /// id, so a half-written draft survives closing the sheet. A new one
-    /// starts after a draft is saved (`startNewDraft`).
-    package private(set) var newDraftID = UUID().uuidString
-
-    // MARK: Templates (plan Task 13)
+    // MARK: Templates
 
     /// `automations templates --json`; empty while the CLI has none (or P6's
     /// subcommand does not exist yet).
@@ -85,26 +90,11 @@ package final class AutomationsViewModel {
     package private(set) var templatesLoading = false
     /// Why the template list could not be read; nil for "no templates".
     package private(set) var templatesError: String?
-    /// The template being installed (one at a time).
-    package private(set) var installingTemplate: String?
-    /// The last failed install's stderr; cleared by the next install.
-    package private(set) var installError: String?
-    /// The freshly installed automation whose edit form the tab opens (the
-    /// copy stays unconfirmed, so Save confirms it). The tab clears it once
-    /// the form is up; held here so an install finishing while the tab is
-    /// off screen still opens the form on return.
-    package var pendingEditID: Int64?
-    /// What a template copy installed in this session covers ("Covers: PAY,
-    /// OPS"), keyed by automation id; the edit form shows it (#582).
-    package private(set) var installCoverage: [Int64: String] = [:]
-    /// An unconfirmed recipe picked in the "Run Automation…" palette: the
-    /// tab opens its confirmation sheet and clears this (held here so the
-    /// sheet opens when the tab appears).
+    /// An unconfirmed recipe picked in the "Run Automation…" palette or a
+    /// header button: the tab opens its card (whose banner leads to the
+    /// editor) through `consumePendingConfirm()`; held here so it opens when
+    /// the tab appears.
     package var pendingConfirmID: Int64?
-    /// **New Automation…** in a workbench's header menu: the tab opens the
-    /// New automation sheet with this workbench picked under "For" and
-    /// clears it (held here so the sheet opens when the tab appears).
-    package var pendingNewWorkbenchID: Int64?
     /// Quick run's finish watch (`QuickRunCenter` registers itself): each
     /// poll tick checks it, and the poll stays fast while it watches a run.
     @ObservationIgnored package weak var runWatcher: QuickRunCenter?
@@ -136,11 +126,6 @@ package final class AutomationsViewModel {
         self.isOwnerLooking = isOwnerLooking
         self.now = now
         self.sleep = sleep
-    }
-
-    /// The next **+ New** opens a fresh chat; the saved draft's stays on disk.
-    package func startNewDraft() {
-        newDraftID = UUID().uuidString
     }
 
     // MARK: - Poll
@@ -205,8 +190,10 @@ package final class AutomationsViewModel {
             let expanded = expandedRuns
             let date = now()
             let failures = failureWatch != nil
+            let databasePath = dbPool.path
             let snapshot = try dbPool.read { db in
-                try Snapshot.read(db, now: date, selected: selected, expanded: expanded, failures: failures)
+                try Snapshot.read(db, now: date, selected: selected, expanded: expanded, failures: failures,
+                                  databasePath: databasePath)
             }
             apply(snapshot)
             if lastErrorIsRead {
@@ -229,6 +216,7 @@ package final class AutomationsViewModel {
         var allIDs: Set<Int64>
         var card: Card?
         var steps: [Int64: [AutomationRunStep]]
+        var drafts: [AutomationDraftRow]
 
         struct Card {
             let automationID: Int64
@@ -237,7 +225,14 @@ package final class AutomationsViewModel {
             let grants: [AutomationToolGrant]
         }
 
-        static func read(_ db: Database, now: Date, selected: Int64?, expanded: Set<Int64>, failures: Bool) throws -> Self {
+        static func read(
+            _ db: Database,
+            now: Date,
+            selected: Int64?,
+            expanded: Set<Int64>,
+            failures: Bool,
+            databasePath: String
+        ) throws -> Self {
             var card: Card?
             if let selected {
                 card = Card(
@@ -252,6 +247,7 @@ package final class AutomationsViewModel {
                 steps[runID] = try AutomationQueries.fetchSteps(db, runID: runID)
             }
             let items = try AutomationQueries.fetchList(db, now: now)
+            let workbenchIDs = try WorkbenchQueries.allIDs(db)
             return Self(
                 items: items,
                 attentionCount: try AutomationQueries.attentionCount(db),
@@ -260,13 +256,15 @@ package final class AutomationsViewModel {
                 endedRuns: failures ? try AutomationQueries.newestEndedRuns(db) : [:],
                 allIDs: failures ? try AutomationQueries.allIDs(db) : [],
                 card: card,
-                steps: steps
+                steps: steps,
+                drafts: try AutomationDraftRows.load(db, databasePath: databasePath, liveWorkbenchIDs: workbenchIDs)
             )
         }
     }
 
     private func apply(_ snapshot: Snapshot) {
         items = snapshot.items
+        if draftRows != snapshot.drafts { draftRows = snapshot.drafts }
         attentionCount = snapshot.attentionCount
         headerButtonsByProject = snapshot.headerButtons
         if snapshot.inboxOutputCount != inboxOutputCount {
@@ -305,7 +303,90 @@ package final class AutomationsViewModel {
     package func select(_ id: Int64?) {
         if id != selectedID { expandedRuns = [] }
         selectedID = id
+        panel = id.map(AutomationsPanel.card) ?? .empty
+        composerPrefill = nil
         if id != nil { refresh() }
+    }
+
+    /// Shows an automation's card in the panel and selects its row.
+    package func showCard(_ id: Int64) {
+        select(id)
+    }
+
+    /// Opens the New automation flow; no row stays selected meanwhile.
+    package func showNew(_ flow: AutomationNewFlow) {
+        if selectedID != nil { expandedRuns = [] }
+        selectedID = nil
+        panel = .new(flow)
+        composerPrefill = nil
+    }
+
+    /// Opens a template's panel; no row stays selected meanwhile.
+    package func showTemplate(name: String, scope: AutomationScopeChoice) {
+        if selectedID != nil { expandedRuns = [] }
+        selectedID = nil
+        panel = .template(name: name, scope: scope)
+        composerPrefill = nil
+    }
+
+    /// A template panel's install finished with `firstID` as its first copy:
+    /// that card opens, but only while this template's panel is the one
+    /// shown — a finished panel seen again opens it once, never from elsewhere.
+    package func templateFinished(name: String, scope: AutomationScopeChoice, firstID: Int64) {
+        guard panel == .template(name: name, scope: scope) else { return }
+        showCard(firstID)
+    }
+
+    /// Opens the editor: an edit keeps its row selected, a new draft selects
+    /// none (its draft row, if any, shows as selected). `composerPrefill`
+    /// goes into the editor chat's empty composer once.
+    package func showEditor(_ target: AutomationEditorTarget, composerPrefill: String? = nil) {
+        let id: Int64? = if case let .existing(id, _) = target { id } else { nil }
+        if id != selectedID { expandedRuns = [] }
+        selectedID = id
+        panel = .editor(target)
+        self.composerPrefill = composerPrefill
+        if id != nil { refresh() }
+    }
+
+    /// The list's first row (`first`) is shown while the panel is empty, or
+    /// in place of a card whose automation is gone; New, a template and the
+    /// editor are never replaced by a list change.
+    package func autoSelect(first: Int64?) {
+        switch panel {
+        case .empty:
+            if let first { select(first) }
+        case let .card(id) where !items.map(\.id).contains(id):
+            select(first)
+        case .card, .new, .template, .editor:
+            break
+        }
+    }
+
+    /// `pendingConfirmID` opens that automation's card and is cleared.
+    package func consumePendingConfirm() {
+        guard let id = pendingConfirmID else { return }
+        pendingConfirmID = nil
+        showCard(id)
+    }
+
+    /// **Discard Draft** of a new draft: its cache file goes (so it is no
+    /// longer a row) and the panel empties. A draft never drafted by the
+    /// assistant has no file; its in-memory draft is the editor center's.
+    package func discardDraft(contextID: String) {
+        if let row = draftRows.first(where: { $0.contextID == contextID }) {
+            let url = AutomationDraftEntry.cacheURL(databasePath: dbPool.path, conversationID: row.conversationID)
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch CocoaError.fileNoSuchFile {
+                // Already gone.
+            } catch {
+                lastError = "Could not remove the draft: \(error.localizedDescription)"
+                lastErrorIsRead = false
+            }
+            draftRows.removeAll { $0.contextID == contextID }
+        }
+        if case let .editor(.newDraft(current, _, _)) = panel, current == contextID { select(nil) }
     }
 
     /// Shows or hides a run's steps in the history.
@@ -329,6 +410,8 @@ package final class AutomationsViewModel {
     package func open(automationID: Int64, runID: Int64?) {
         if automationID != selectedID { expandedRuns = [] }
         selectedID = automationID
+        panel = .card(automationID)
+        composerPrefill = nil
         if let runID { expandedRuns.insert(runID) }
         refresh()
     }
@@ -365,28 +448,6 @@ package final class AutomationsViewModel {
             let message = Self.message(for: error)
             let unknown = ["unknown command", "unknown flag"].contains { message.localizedCaseInsensitiveContains($0) }
             templatesError = unknown ? nil : message
-        }
-    }
-
-    /// Installs a template copy (unconfirmed, disabled), selects it and asks
-    /// the tab to open its edit form. A workbench template passes the
-    /// workbench id. Returns false when the install failed.
-    @discardableResult
-    package func installTemplate(_ template: AutomationTemplate, workbenchID: Int64? = nil) async -> Bool {
-        guard installingTemplate == nil else { return false }
-        installingTemplate = template.name
-        installError = nil
-        defer { installingTemplate = nil }
-        do {
-            let result = try await cli.installTemplate(template.name, workbenchID: workbenchID)
-            installCoverage[result.automationID] = AutomationTemplateGallery.coverageLine(result.params)
-            refresh()
-            select(result.automationID)
-            pendingEditID = result.automationID
-            return true
-        } catch {
-            installError = Self.message(for: error)
-            return false
         }
     }
 

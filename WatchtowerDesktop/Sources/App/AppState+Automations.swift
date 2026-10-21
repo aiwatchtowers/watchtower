@@ -7,20 +7,38 @@ private let automationsLog = Logger(subsystem: Constants.bundleID, category: "au
 
 /// Navigation into the Automations tab, and quick run's entry point (spec
 /// §12.7): the "Run Automation…" menu item (⌃⌘R) opens the palette here.
+/// Every entry that opens something in the panel also switches the tab to
+/// its Automations section (`navigateToAutomations`), so the panel is seen.
 extension AppState {
     /// Opens an automation's card, with one run's steps open when given
     /// (a run notification, an Inbox card's label).
     func openAutomationRun(automationID: Int64, runID: Int64?) {
-        selectedDestination = .automations
+        navigateToAutomations(section: .automations)
         automationsViewModel?.open(automationID: automationID, runID: runID)
     }
 
     /// **New Automation…** in a workbench's header menu: the Automations
-    /// tab opens the New automation sheet with that workbench picked.
-    func newAutomation(forWorkbench id: Int64) {
+    /// tab opens the New automation panel for that workbench (its scope
+    /// fixed, so "What is it for?" is skipped).
+    func newAutomation(forWorkbench workbench: Workbench) {
         guard let automationsViewModel else { return }
-        automationsViewModel.pendingNewWorkbenchID = id
-        selectedDestination = .automations
+        automationsViewModel.showNew(AutomationNewFlow(fixedScope: .forWorkbench(workbench)))
+        navigateToAutomations(section: .automations)
+    }
+
+    /// Opens the Automations tab's editor panel on `target` (an edit, or a
+    /// new draft with its start text).
+    func openAutomationEditor(_ target: AutomationEditorTarget) {
+        guard let automationsViewModel else { return }
+        automationsViewModel.showEditor(target)
+        navigateToAutomations(section: .automations)
+    }
+
+    /// Opens the editor panel on a fresh new draft in `scope` that starts
+    /// from `text` (a recipe proposed elsewhere, e.g. an Inbox card): its
+    /// column shows every hashed field, and only the owner's press saves.
+    func openAutomationDraft(text: String, scope: AutomationScopeChoice) {
+        openAutomationEditor(.newDraft(contextID: draftContextID(for: scope), scope: scope, startText: text))
     }
 
     /// An Inbox proposal card's automation label: opens the run's
@@ -152,9 +170,9 @@ extension AppState {
             center.cancelConfirm()
             alerts.showRefusal(message)
         case .openedConfirmation, .openedCard, .openedRun:
-            // `activate` already opened the card, run or sheet in the view model.
+            // `activate` already opened the card or run in the view model.
             bringMainWindowForward()
-            selectedDestination = .automations
+            navigateToAutomations(section: .automations)
         case let .refused(message):
             alerts.showRefusal(message)
         }

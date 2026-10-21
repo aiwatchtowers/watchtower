@@ -63,14 +63,32 @@ enum DesignShotCatalog {
             DesignShot(name: "home-getting-ready", size: NSSize(width: 1800, height: 1100)) {
                 HomeShotFixtures.home(gettingReady: true)
             },
-            DesignShot(name: "automation-draft-panel", size: NSSize(width: 560, height: 720)) {
-                AnyView(AutomationShotFixtures.draftPanel().shotFrame().detailBackground())
+            DesignShot(name: "automation-list", size: NSSize(width: 1280, height: 760)) {
+                AutomationShotFixtures.list()
+            },
+            DesignShot(name: "automation-card", size: NSSize(width: 900, height: 720)) {
+                AnyView(AutomationShotFixtures.card().detailBackground())
+            },
+            DesignShot(name: "automation-draft-column", size: NSSize(width: 560, height: 760)) {
+                AnyView(AutomationShotFixtures.draftColumn().shotFrame().detailBackground())
             },
             DesignShot(name: "automation-save-card", size: NSSize(width: 560, height: 520)) {
                 AnyView(AutomationShotFixtures.saveCard().padding(12).shotFrame().detailBackground())
             },
-            DesignShot(name: "automation-new-sheet-workbench", size: NSSize(width: 960, height: 640)) {
-                AnyView(AutomationShotFixtures.newSheetForWorkbench().detailBackground())
+            DesignShot(name: "automation-new-panel", size: NSSize(width: 900, height: 640)) {
+                AnyView(AutomationShotFixtures.newPanel(fixedToAcme: false).detailBackground())
+            },
+            DesignShot(name: "automation-new-panel-workbench", size: NSSize(width: 900, height: 640)) {
+                AnyView(AutomationShotFixtures.newPanel(fixedToAcme: true).detailBackground())
+            },
+            DesignShot(name: "automation-template-panel", size: NSSize(width: 1000, height: 760)) {
+                AnyView(AutomationShotFixtures.templatePanel().detailBackground())
+            },
+            DesignShot(name: "automation-editor-panel", size: NSSize(width: 1280, height: 800)) {
+                AnyView(AutomationShotFixtures.editorPanel(review: false).detailBackground())
+            },
+            DesignShot(name: "automation-editor-review", size: NSSize(width: 1280, height: 800)) {
+                AnyView(AutomationShotFixtures.editorPanel(review: true).detailBackground())
             },
             // Branch review (#712, artboards A–C).
             DesignShot(name: "branch-review-changes", size: NSSize(width: 1180, height: 760)) {
@@ -121,6 +139,7 @@ enum DesignShotFixtures {
         if let poolPath { TestDatabase.cleanup(path: poolPath) }
         poolPath = nil
         ReviewShotFixtures.cleanUp()
+        AutomationShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)

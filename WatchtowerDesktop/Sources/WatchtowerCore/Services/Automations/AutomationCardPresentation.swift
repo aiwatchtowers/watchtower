@@ -39,19 +39,9 @@ package struct AutomationDryRunSessions: Equatable, Sendable {
 }
 
 /// The words of the Automations tab (spec §12.1–12.2, approved mockup 1):
-/// list rows, the card's subtitle, **It may**, **Limits per run**, the
+/// list rows, **It may**, **Limits per run**, the
 /// History lines and which buttons are live. Pure, so the views stay thin.
 package enum AutomationCardPresentation {
-    package struct Pill: Equatable, Sendable {
-        package let text: String
-        package let badge: StatusBadge
-
-        package init(text: String, badge: StatusBadge) {
-            self.text = text
-            self.badge = badge
-        }
-    }
-
     package struct PermissionLine: Equatable, Sendable {
         package let text: String
         /// In `show --json`'s `widening`: not covered by the confirmation.
@@ -163,12 +153,6 @@ package enum AutomationCardPresentation {
         }
     }
 
-    /// The status pill of a row without badges: the active run's, else the last run's.
-    package static func statusPill(_ item: AutomationListItem) -> Pill? {
-        guard let run = item.activeRun ?? item.lastRun else { return nil }
-        return Pill(text: statusText(run.status), badge: run.status.badge)
-    }
-
     package static func statusText(_ status: AutomationRunStatus) -> String {
         switch status {
         case .queued: "Queued"
@@ -183,23 +167,7 @@ package enum AutomationCardPresentation {
         }
     }
 
-    package static func badgeText(_ badge: AutomationRowBadge) -> String {
-        switch badge {
-        case .needsConfirmation: "Needs your confirmation"
-        case .autoPaused: "Auto paused"
-        case .disabled: "Disabled"
-        case .parseError: "Parse error"
-        }
-    }
-
     // MARK: - Card
-
-    /// "<schedule in words> · <personal | workbench name> · <enabled | disabled>".
-    package static func subtitle(_ automation: Automation, workbenchName: String?) -> String {
-        let when = AutomationTriggerText.sentence(kind: automation.triggerKind, specJSON: automation.triggerSpecJSON)
-        let scope = automation.scope == .personal ? "personal" : (workbenchName ?? "workbench")
-        return [when, scope, automation.enabled ? "enabled" : "disabled"].joined(separator: " · ")
-    }
 
     /// **Limits per run**.
     package static func limitsLines(_ automation: Automation) -> [String] {
@@ -258,8 +226,9 @@ package enum AutomationCardPresentation {
             ?? permission
     }
 
-    /// Shown in the confirm sheet when the recipe has `shell:` entries (board #560, ask #304): the
-    /// confirmation covers the command text only, not the files the command runs. nil without `shell:`.
+    /// Shown in the draft column's It may box, on every screen that confirms, when the recipe has
+    /// `shell:` entries (board #560, ask #304): the confirmation covers the command text only, not the
+    /// files the command runs. nil without `shell:`.
     package static func shellWarning(permissions: [String]) -> String? {
         guard permissions.contains(where: { $0.hasPrefix("shell:") }) else { return nil }
         return "Confirming approves the command text only. The scripts or Makefile it runs can change "
@@ -330,6 +299,11 @@ package enum AutomationCardPresentation {
         case "slack": "Send Slack messages"
         default: "Write \(output)"
         }
+    }
+
+    /// The card's ⋯ menu item that turns the automation off or on.
+    package static func toggleMenuTitle(enabled: Bool) -> String {
+        enabled ? "Turn Off" : "Turn On"
     }
 
     /// Run now and Dry run for the card. Run now follows Go's `Runnable()`

@@ -120,3 +120,17 @@ struct AutomationRunHistoryView: View {
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
     }
 }
+
+extension StatusBadge {
+    /// Spec §12.1's colours: succeeded green, running/waiting blue,
+    /// failed/timed_out/expired red, budget_exceeded orange, cancelled grey.
+    var color: Color {
+        switch self {
+        case .green: .green
+        case .blue: .blue
+        case .red: .red
+        case .orange: .orange
+        case .grey: .secondary
+        }
+    }
+}

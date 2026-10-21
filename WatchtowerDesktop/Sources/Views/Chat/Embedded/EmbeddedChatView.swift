@@ -19,6 +19,8 @@ struct EmbeddedChatView<Accessory: View, Footer: View>: View {
     /// Esc in the composer; nil stops the running answer (a popover closes
     /// itself instead).
     var onEscape: (() -> Void)?
+    /// Focus the composer when it appears.
+    var autoFocus = false
     @ViewBuilder var accessory: (ChatThreadItem) -> Accessory
     @ViewBuilder var footer: () -> Footer
 
@@ -30,7 +32,8 @@ struct EmbeddedChatView<Accessory: View, Footer: View>: View {
             footer()
             if showsComposer {
                 EmbeddedChatComposer(engine: engine, placeholder: placeholder,
-                                     dictationTargetID: dictationTargetID, density: density, onEscape: onEscape)
+                                     dictationTargetID: dictationTargetID, density: density, onEscape: onEscape,
+                                     autoFocus: autoFocus)
             }
         }
     }
@@ -148,9 +151,8 @@ struct EmbeddedChatComposer: View {
     var dictationTargetID: String?
     var density: ChatDensity = .regular
     var onEscape: (() -> Void)?
+    var autoFocus = false
 
-    // Every closure here is a named role (send, stop, escape); none is "the" trailing one.
-    // swiftlint:disable trailing_closure
     var body: some View {
         ChatComposerBar(
             status: status,
@@ -164,11 +166,11 @@ struct EmbeddedChatComposer: View {
                 placeholder: placeholder,
                 dictationTargetID: dictationTargetID,
                 maxHeight: density.composerMaxHeight,
-                onEscape: { if let onEscape { onEscape() } else { engine.stop() } }
+                onEscape: { if let onEscape { onEscape() } else { engine.stop() } },
+                autoFocus: autoFocus
             )
         )
     }
-    // swiftlint:enable trailing_closure
 
     private var status: ChatComposerStatus? {
         if engine.isQueued { return .queued }

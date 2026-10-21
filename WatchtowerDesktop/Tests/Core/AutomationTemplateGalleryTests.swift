@@ -3,51 +3,23 @@ import GRDB
 @testable import WatchtowerCore
 import WatchtowerTestSupport
 
-/// A CLI double answering by subcommand (`args[1]`); `hold` parks the named
-/// subcommand until `release()`.
+/// A CLI double answering by subcommand (`args[1]`), recording each call.
 private final class TemplateRunner: CLIRunnerProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var answers: [String: Result<Data, CLIRunnerError>] = [:]
     private var recorded: [[String]] = []
-    private var heldSubcommand: String?
-    private var gate: CheckedContinuation<Void, Never>?
-    private var gateOpened = false
 
     var invocations: [[String]] { lock.withLock { recorded } }
-    var isHolding: Bool { lock.withLock { gate != nil } }
 
     func answer(_ subcommand: String, _ result: Result<Data, CLIRunnerError>) {
         lock.withLock { answers[subcommand] = result }
     }
 
-    func hold(_ subcommand: String) {
-        lock.withLock { heldSubcommand = subcommand }
-    }
-
-    func release() {
-        let waiting: CheckedContinuation<Void, Never>? = lock.withLock {
-            gateOpened = true
-            defer { gate = nil }
-            return gate
-        }
-        waiting?.resume()
-    }
-
     func run(args: [String]) async throws -> Data {
         let sub = args.count > 1 ? args[1] : ""
-        let (answer, held) = lock.withLock { () -> (Result<Data, CLIRunnerError>?, Bool) in
+        let answer = lock.withLock { () -> Result<Data, CLIRunnerError>? in
             recorded.append(args)
-            return (answers[sub], heldSubcommand == sub)
-        }
-        if held {
-            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                let resumeNow = lock.withLock {
-                    if gateOpened { return true }
-                    gate = continuation
-                    return false
-                }
-                if resumeNow { continuation.resume() }
-            }
+            return answers[sub]
         }
         return try answer?.get() ?? Data()
     }
@@ -66,7 +38,6 @@ final class AutomationTemplateGalleryTests: XCTestCase {
     }
 
     override func tearDown() async throws {
-        runner.release()
         pool = nil
         TestDatabase.cleanup(path: path)
         try await super.tearDown()
@@ -74,18 +45,6 @@ final class AutomationTemplateGalleryTests: XCTestCase {
 
     private func makeViewModel() -> AutomationsViewModel {
         AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: runner)) { _ in }
-    }
-
-    private func waitUntil(timeout: TimeInterval = 5, _ condition: @MainActor () -> Bool) async {
-        let deadline = Date().addingTimeInterval(timeout)
-        while !condition() {
-            if Date() > deadline {
-                XCTFail("timed out")
-                return
-            }
-            await Task.yield()
-            try? await Task.sleep(for: .milliseconds(5))
-        }
     }
 
     /// The shape `watchtower automations templates --json` prints (P6 part 2).
@@ -101,11 +60,6 @@ final class AutomationTemplateGalleryTests: XCTestCase {
     """#
 
     private static func ok(_ text: String) -> Result<Data, CLIRunnerError> { .success(Data(text.utf8)) }
-
-    private func template(_ name: String = "new-mail-summary", scope: String = "personal") throws -> AutomationTemplate {
-        let json = #"{"name":"\#(name)","title":"T","description":"D","scope":"\#(scope)","trigger_text":"x","permissions":[],"outputs":[]}"#
-        return try JSONDecoder().decode(AutomationTemplate.self, from: Data(json.utf8))
-    }
 
     func testDecodesTemplatesAndEmptyArray() async {
         runner.answer("templates", Self.ok(Self.mailJSON))
@@ -125,72 +79,6 @@ final class AutomationTemplateGalleryTests: XCTestCase {
         await vm.loadTemplates()
         XCTAssertEqual(vm.templates, [])
         XCTAssertNil(vm.templatesError)
-    }
-
-    func testInstallPersonalArgs() async throws {
-        runner.answer("install-template", Self.ok(#"{"automation_id":4,"path":"/x/a.md"}"#))
-        let vm = makeViewModel()
-        let installed = await vm.installTemplate(try template())
-        XCTAssertTrue(installed)
-        XCTAssertEqual(runner.invocations, [["automations", "install-template", "new-mail-summary", "--json"]])
-    }
-
-    func testInstallWorkbenchArgs() async throws {
-        runner.answer("install-template", Self.ok(#"{"automation_id":4,"path":"/x/a.md"}"#))
-        let vm = makeViewModel()
-        await vm.installTemplate(try template("release-buttons", scope: "workbench"), workbenchID: 3)
-        XCTAssertEqual(runner.invocations,
-                       [["automations", "install-template", "release-buttons", "--workbench", "3", "--json"]])
-    }
-
-    /// #582: every template installs from the gallery — a workbench one into
-    /// the only workbench, or one picked from a menu; never with a param.
-    func testInstallChoice() throws {
-        typealias Gallery = AutomationTemplateGallery
-        let personal = try template()
-        let workbench = try template("release-buttons", scope: "workbench")
-        let acme = Gallery.InstallTarget(id: 3, name: "acme")
-        let docs = Gallery.InstallTarget(id: 5, name: "docs")
-        XCTAssertEqual(Gallery.installChoice(personal, workbenches: []), .install(workbenchID: nil))
-        XCTAssertEqual(Gallery.installChoice(personal, workbenches: [acme]), .install(workbenchID: nil))
-        XCTAssertEqual(Gallery.installChoice(workbench, workbenches: []), .needsWorkbench)
-        XCTAssertEqual(Gallery.installChoice(workbench, workbenches: [acme]), .install(workbenchID: 3))
-        XCTAssertEqual(Gallery.installChoice(workbench, workbenches: [acme, docs]), .pickWorkbench([acme, docs]))
-    }
-
-    /// #582: the projects the CLI chose come back in `params`; the edit form
-    /// says what the copy covers.
-    func testInstallKeepsTheCoverage() async throws {
-        runner.answer("install-template",
-                      Self.ok(#"{"automation_id":4,"path":"/x/a.md","params":{"PROJECT":["PAY","OPS"]}}"#))
-        let vm = makeViewModel()
-        await vm.installTemplate(try template("jira-state-report"))
-        XCTAssertEqual(vm.installCoverage[4], "Covers: PAY, OPS")
-        XCTAssertNil(AutomationTemplateGallery.coverageLine([:]))
-    }
-
-    func testInstallSelectsAndOpensForm() async throws {
-        let id = try await pool.write { db in
-            try TestDatabase.insertAutomation(db, slug: "new-mail-summary", approvalHash: "h1", confirmedHash: "")
-        }
-        runner.answer("install-template", Self.ok(#"{"automation_id":\#(id),"path":"/x/a.md"}"#))
-        let vm = makeViewModel()
-        await vm.installTemplate(try template())
-        XCTAssertEqual(vm.selectedID, id)
-        XCTAssertEqual(vm.pendingEditID, id)
-        XCTAssertEqual(vm.items.map(\.id), [id])
-        XCTAssertNil(vm.installError)
-    }
-
-    func testFailedInstallKeepsTheStderrAndOpensNothing() async throws {
-        let refusal = "not installed: automation #3 already uses the slug new-mail-summary (/x/a.md); delete it first"
-        runner.answer("install-template", .failure(.nonZeroExit(code: 1, stderr: refusal + "\n")))
-        let vm = makeViewModel()
-        let installed = await vm.installTemplate(try template())
-        XCTAssertFalse(installed)
-        XCTAssertEqual(vm.installError, refusal)
-        XCTAssertNil(vm.pendingEditID)
-        XCTAssertNil(vm.selectedID)
     }
 
     func testUnknownCommandShowsEmptyState() async {
@@ -216,30 +104,5 @@ final class AutomationTemplateGalleryTests: XCTestCase {
         let vm = makeViewModel()
         await vm.loadTemplates()
         XCTAssertEqual(vm.templatesError, "database is locked")
-    }
-
-    func testInstallSurvivesNavigation() async throws {
-        let id = try await pool.write { db in try TestDatabase.insertAutomation(db, slug: "new-mail-summary") }
-        runner.answer("install-template", Self.ok(#"{"automation_id":\#(id),"path":"/x/a.md"}"#))
-        runner.hold("install-template")
-        let vm = makeViewModel()
-        vm.setTabVisible(true)
-
-        let mail = try template()
-        let task = Task { await vm.installTemplate(mail) }
-        await waitUntil { self.runner.isHolding }
-        XCTAssertEqual(vm.installingTemplate, "new-mail-summary")
-
-        // The owner leaves the tab; the gallery sheet is gone.
-        vm.setTabVisible(false)
-        vm.select(nil)
-
-        runner.release()
-        _ = await task.value
-
-        vm.setTabVisible(true)
-        XCTAssertNil(vm.installingTemplate)
-        XCTAssertEqual(vm.selectedID, id)
-        XCTAssertEqual(vm.pendingEditID, id, "the form opens when the tab returns")
     }
 }
