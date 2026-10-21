@@ -147,7 +147,9 @@ struct InboxSplitView: View {
         let next = InboxListBuilder.selection(after: id, in: sections)
         Task {
             await write(id)
-            guard !isListed(id), vm.selection == nil || vm.selection == id else { return }
+            // The refresh after the write may already have moved the
+            // selection to `next`; opening it still writes its read mark.
+            guard !isListed(id), vm.selection == nil || vm.selection == id || vm.selection == next else { return }
             await vm.select(next)
         }
     }

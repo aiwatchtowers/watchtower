@@ -16,9 +16,8 @@ final class SidebarCountsViewModel {
     var recommendationCount: Int = 0
     var activeTaskCount: Int = 0
     var overdueTaskCount: Int = 0
-    /// What the Inbox tab actually shows since it became the action strip:
-    /// proposals awaiting the owner + due reminders + unread automation inbox
-    /// outputs (`ActionStripViewModel.badgeCount`).
+    /// The Inbox badge (R1, `ActionStripViewModel.badgeCount`): Needs your
+    /// decision + unread messages + an unread latest briefing + due reminders.
     var inboxStripCount: Int = 0
 
     /// Pending memory dispute flags — beliefs waiting for the owner's verdict.
@@ -154,10 +153,13 @@ final class SidebarCountsViewModel {
             // output's Done/Dismiss changes no count, but GRDB re-fetches
             // on any write to a tracked table and nothing drops
             // duplicates, so it still refreshes the badge.
+            // inbox_items is the badge's Messages term (C1, a message's
+            // read_at re-fires it); day_plans is the Day cards' other half.
             let tables = ["tracks", "briefings", "targets", "digests",
                           "stream_digests", "catchup_recaps",
                           "memory_dispute_flags", "ideas",
-                          "agent_actions", "reminders", "automation_outputs"]
+                          "agent_actions", "reminders", "automation_outputs",
+                          "inbox_items", "day_plans"]
             return tables.map { (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \($0)")) ?? 0 }
         }
         return AsyncThrowingStream { continuation in

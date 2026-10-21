@@ -71,12 +71,12 @@ final class SidebarCountsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.catchUpTotalCount, 0, "only a finished recap asks to be read")
     }
 
-    /// The Inbox badge counts what the action strip shows — proposals awaiting
-    /// the owner (pending + failed) and due reminders — and nothing else. The
-    /// frozen situations backlog and the detector's `inbox_items` feed have no
-    /// screen of their own since the inbox demolition, so neither may badge the
-    /// tab: both are inserted here precisely to prove they contribute zero.
-    func testInboxBadgeCountsStripOnly() async throws {
+    /// The Inbox badge follows R1 (C1): proposals awaiting the owner (pending
+    /// + failed), due reminders and unread open messages (`inbox_items`, the
+    /// Messages cards since C1). The frozen situations backlog has no screen,
+    /// so it is inserted here to prove it contributes zero; an applied
+    /// proposal and a reminder not yet due count zero too.
+    func testInboxBadgeCountsTheInboxCards() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
 
@@ -99,7 +99,7 @@ final class SidebarCountsViewModelTests: XCTestCase {
         let vm = SidebarCountsViewModel(dbPool: manager.dbPool)
         await vm.loadInitial()
 
-        XCTAssertEqual(vm.inboxStripCount, 3, "2 proposals awaiting the owner + 1 due reminder")
+        XCTAssertEqual(vm.inboxStripCount, 4, "2 proposals awaiting the owner + 1 due reminder + 1 unread message")
     }
 
     func testInboxBadgeIsZeroOnEmptyDB() async throws {

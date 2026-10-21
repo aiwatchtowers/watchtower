@@ -251,6 +251,10 @@ final class AppState {
     /// filters and selection survive navigating away from and back to the tab.
     private(set) var ideasViewModel: IdeasViewModel?
 
+    /// Tracks ViewModel the Inbox's track card reads — AppState-owned like
+    /// `ideasViewModel`, so its state survives moving between cards.
+    private(set) var tracksViewModel: TracksViewModel?
+
     /// Secretary Profile ViewModel — persists across tab switches so an
     /// in-flight "Generate" style-sample run survives navigating away from
     /// and back to the Profile tab.
@@ -1525,6 +1529,7 @@ final class AppState {
         initCatchUp(dbPool: manager.dbPool)
         initMemory(dbPool: manager.dbPool)
         initIdeas(dbManager: manager)
+        initTracks(dbManager: manager)
         initBriefings(dbManager: manager)
         initSecretaryProfile(dbManager: manager)
         initExternalConnections(dbPool: manager.dbPool)
@@ -1582,6 +1587,12 @@ final class AppState {
         let vm = IdeasViewModel(dbManager: dbManager)
         vm.startObserving()
         ideasViewModel = vm
+    }
+
+    func initTracks(dbManager: DatabaseManager) {
+        let vm = TracksViewModel(dbManager: dbManager)
+        vm.startObserving()
+        tracksViewModel = vm
     }
 
     /// Not marked `private` (the `initSecretaryProfile` precedent) so XCTest can
