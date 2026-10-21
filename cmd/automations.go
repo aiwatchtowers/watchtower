@@ -40,6 +40,7 @@ type automationsFlags struct {
 	Status            string   // session-ended
 	Error             string   // session-ended
 	Params            []string // install-template --param
+	Render            bool     // install-template --render
 }
 
 var autoFlags automationsFlags
