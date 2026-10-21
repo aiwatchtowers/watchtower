@@ -462,7 +462,7 @@ func TestAutomationsCLI_ValidateJSONKeys(t *testing.T) {
 	for _, text := range []string{autoCLIRecipeText(`return 1`), "broken"} {
 		path := writeRecipe(t, t.TempDir(), "digest", text)
 		wantKeys(t, runAutomationsJSON(t, "validate", path), "ok", "errors", "slug", "name", "scope",
-			"approval_hash", "content_hash", "permissions", "outputs", "widening", "feeds_sources_to_llm")
+			"approval_hash", "content_hash", "permissions", "outputs", "widening", "feeds_sources_to_llm", "changes", "changes_known", "fields")
 	}
 }
 
@@ -578,7 +578,7 @@ func TestAutomationsCLI_RunsStepsOutputsJSONKeys(t *testing.T) {
 	outs := runAutomationsJSONList(t, "outputs")
 	require.Len(t, outs, 1)
 	wantKeys(t, outs[0], "id", "automation_id", "run_id", "kind", "title", "body", "priority", "created_at",
-		"read_at", "dismissed_at")
+		"read_at", "dismissed_at", "link", "actions", "done_at", "press")
 
 	fresh := c.indexRecipe(t, "fresh", autoCLIRecipeText(`return 1`))
 	for _, args := range [][]string{{"runs", idArg(fresh.ID)}, {"steps", idArg(committed)}} {
@@ -789,6 +789,52 @@ func TestAutomationsCLI_ValidateAgainstComputesWidening(t *testing.T) {
 	require.Error(t, err, "--against and --workbench are mutually exclusive")
 	_, err = runAutomations(t, "validate", src, "--against", "999999", "--json")
 	require.ErrorIs(t, err, db.ErrAutomationNotFound)
+}
+
+func TestAutomationsCLI_ValidateAgainstReportsChangesSinceConfirmed(t *testing.T) {
+	c := newAutoCLI(t)
+	text := autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000)
+	a := c.confirmedRecipe(t, "pay", text)
+	c.runOnce(t, a, a.ApprovalHash) // the confirmed text is known from the run snapshot
+
+	src := writeRecipe(t, t.TempDir(), "pay", strings.Replace(text, "0 9 * * 1-5", "0 16 * * 1-5", 1))
+	v := runAutomationsJSON(t, "validate", src, "--against", idArg(a.ID))
+	require.Equal(t, true, v["ok"], v["errors"])
+	assert.Equal(t, true, v["changes_known"])
+	changes, ok := v["changes"].([]any)
+	require.True(t, ok)
+	require.Len(t, changes, 1)
+	ch := changes[0].(map[string]any)
+	assert.Equal(t, "trigger", ch["field"])
+	assert.Contains(t, ch["old"], "0 9 * * 1-5")
+	assert.Contains(t, ch["new"], "0 16 * * 1-5")
+
+	src = writeRecipe(t, t.TempDir(), "pay", strings.Replace(text, "return 1", "return 2", 1))
+	v = runAutomationsJSON(t, "validate", src, "--against", idArg(a.ID))
+	assert.Equal(t, []any{map[string]any{"field": "script", "old": "", "new": ""}}, v["changes"])
+}
+
+func TestAutomationsCLI_ValidateAgainstUnchangedHasEmptyChanges(t *testing.T) {
+	c := newAutoCLI(t)
+	text := autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000)
+	a := c.confirmedRecipe(t, "pay", text)
+	c.runOnce(t, a, a.ApprovalHash)
+	src := writeRecipe(t, t.TempDir(), "pay", text)
+	v := runAutomationsJSON(t, "validate", src, "--against", idArg(a.ID))
+	assert.Equal(t, []any{}, v["changes"])
+	assert.Equal(t, true, v["changes_known"])
+}
+
+func TestAutomationsCLI_ValidateChangesUnknownWithoutAgainst(t *testing.T) {
+	newAutoCLI(t)
+	for _, text := range []string{autoCLIRecipeText(`return 1`), "broken"} {
+		path := writeRecipe(t, t.TempDir(), "digest", text)
+		out, err := runAutomations(t, "validate", path, "--json")
+		require.NoError(t, err, out)
+		compact := strings.Join(strings.Fields(out), "")
+		assert.Contains(t, compact, `"changes":[]`)
+		assert.Contains(t, compact, `"changes_known":false`)
+	}
 }
 
 func TestAutomationsCLI_ValidateAgainstEmptyWideningIsArray(t *testing.T) {
@@ -1043,4 +1089,27 @@ func TestAutomationsCLI_ShowChangesIgnoresButtonLabel(t *testing.T) {
 	changes, known, _, _ = showChanges(t, a.ID)
 	assert.Equal(t, []any{change("budget_tokens", "40000", "30000")}, changes, "no trigger entry for the label")
 	assert.True(t, known)
+}
+
+func TestAutomationsCLI_ValidateJSONFields(t *testing.T) {
+	newAutoCLI(t)
+	recipe := func(trigger string) string {
+		return "---\nname: Acme\n" + trigger + "missed: skip\nconcurrency: 2\nbudget:\n  tokens: 50000\n  minutes: 3\n---\n```js\nreturn 1\n```\n"
+	}
+	cases := []struct{ name, trigger, want string }{
+		{"schedule", "trigger:\n  schedule: \"0 9 * * 1-5\"\n", "schedule: 0 9 * * 1-5"},
+		{"event", "trigger:\n  event:\n    type: slack.new_messages\n    where:\n      channel: acme-*\n      account: acme\n", "event: slack.new_messages where account=acme, channel=acme-*"},
+		{"manual", "trigger:\n  manual: true\n", "manual"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := writeRecipe(t, t.TempDir(), "acme", recipe(c.trigger))
+			v := runAutomationsJSON(t, "validate", path)
+			require.Equal(t, true, v["ok"], "%v", v["errors"])
+			assert.Equal(t, map[string]any{"trigger": c.want, "missed": "skip", "concurrency": "2",
+				"budget": map[string]any{"tokens": float64(50000), "minutes": float64(3)}}, v["fields"])
+		})
+	}
+	bad := runAutomationsJSON(t, "validate", writeRecipe(t, t.TempDir(), "acme", "broken"))
+	assert.Equal(t, map[string]any{}, bad["fields"])
 }

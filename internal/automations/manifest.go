@@ -66,7 +66,14 @@ var capabilitySpecs = map[string]capabilitySpec{
 	"agent":       {verbs: []string{"run"}},
 	"ask":         {verbs: []string{"owner"}, workbenchOnly: true},
 	"session":     {verbs: []string{"start"}, scope: scopeOptional, scopeValues: []string{"claude", "codex"}, workbenchOnly: true},
+	// inbox:reply lets the recipe's Inbox cards carry Reply actions; a
+	// press queues a new run of the recipe (spec B3). It needs
+	// outputs: [inbox] (ParseManifest).
+	"inbox": {verbs: []string{"reply"}},
 }
+
+// entryInboxReply is the normalised inbox:reply entry.
+const entryInboxReply = "inbox:reply"
 
 // removedCapabilities are capability names refused with a pointer to the
 // tool: entries to list instead: their tools read across sources, so only an
@@ -291,6 +298,14 @@ func ParseManifest(entries []string, outputs []string, scope Scope) (*Manifest, 
 		}
 	}
 	slices.Sort(m.outputs)
+	if !slices.Contains(m.outputs, outputKindInbox) {
+		for i, e := range entries {
+			if p, _ := ParsePermission(e); p.String() == entryInboxReply {
+				return nil, &ManifestError{Field: "permissions", Index: i,
+					Msg: fmt.Sprintf("%q needs outputs: [inbox]", e)}
+			}
+		}
+	}
 	return m, nil
 }
 
@@ -564,6 +579,11 @@ func (m *Manifest) AllowOutput(kind string) (string, error) {
 		return "output:" + kind, nil
 	}
 	return "", denied("output:" + kind)
+}
+
+// AllowInboxReply checks a Reply action on an output.inbox card.
+func (m *Manifest) AllowInboxReply() (string, error) {
+	return m.allowUnscoped("inbox", "reply")
 }
 
 // AllowCapability checks a non-tool capability call (agent:run, ask:owner,

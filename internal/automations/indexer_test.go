@@ -791,3 +791,22 @@ func TestRescan_OversizedUnchangedFileIsNotReread(t *testing.T) {
 		t.Errorf("after an mtime change content_hash = %s, want the re-read hash", got)
 	}
 }
+
+// TestApprovalHash_InboxReplyIsHashed: inbox:reply is a manifest entry, so
+// adding it to a confirmed recipe changes approval_hash and the row waits for
+// the owner's confirmation again (AUTO-06).
+func TestApprovalHash_InboxReplyIsHashed(t *testing.T) {
+	f := newIndexerFixture(t)
+	base := recipeText("d", `log("hi")`)
+	f.write(t, "mail.md", base)
+	f.rescan(t)
+	f.confirmEnable(t, "mail")
+	before := f.row(t, "mail")
+	f.write(t, "mail.md", strings.Replace(base, "  - llm:light\n", "  - llm:light\n  - inbox:reply\n", 1))
+	rep := f.rescan(t)
+	a := f.row(t, "mail")
+	if a.ApprovalHash == before.ApprovalHash || a.Runnable() || len(rep.NeedConfirmation) != 1 {
+		t.Fatalf("hash changed=%v runnable=%v need=%v; want a new hash waiting for confirmation",
+			a.ApprovalHash != before.ApprovalHash, a.Runnable(), rep.NeedConfirmation)
+	}
+}

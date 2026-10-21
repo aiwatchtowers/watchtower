@@ -297,7 +297,9 @@ func validSDKPath(path string) bool {
 }
 
 // TriggerInfo is the script's read-only `trigger` object. Events is nil
-// (trigger.events undefined) for every run but an event run.
+// (trigger.events undefined) for every run but an event run; Reply is nil
+// (trigger.reply undefined) for every run but a reply run, where it holds
+// output_id, action, value, data and card {title, link}.
 type TriggerInfo struct {
 	Kind         string
 	RunID        int64
@@ -307,6 +309,7 @@ type TriggerInfo struct {
 	Events       []map[string]any
 	Truncated    bool
 	DryRun       bool
+	Reply        map[string]any
 }
 
 func (t TriggerInfo) jsObject() map[string]any {
@@ -321,6 +324,9 @@ func (t TriggerInfo) jsObject() map[string]any {
 	}
 	if t.Events != nil {
 		m["events"] = t.Events
+	}
+	if t.Reply != nil {
+		m["reply"] = t.Reply
 	}
 	return m
 }

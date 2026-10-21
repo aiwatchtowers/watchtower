@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,15 +38,69 @@ type validateJSON struct {
 	// FeedsSourcesToLLM is Manifest.FeedsSourcesToLLM of the validated text
 	// (#559): the Save sheet warns next to "Keep auto for <tool>".
 	FeedsSourcesToLLM bool `json:"feeds_sources_to_llm"`
+	// Changes lists the hashed fields that differ from the confirmed text, like
+	// show's; ChangesKnown is false (and Changes empty) without --against, with
+	// no known confirmed text, or when the text does not parse.
+	Changes      []automationChangeJSON `json:"changes"`
+	ChangesKnown bool                   `json:"changes_known"`
+	// Fields is the hashed, non-manifest part of the parsed recipe as owner
+	// text (AUTO-06: the panel shows these as Go parsed them); {} when the text
+	// does not parse.
+	Fields validateFieldsJSON `json:"fields"`
+}
+
+// validateFieldsJSON is the approval hash's non-manifest fields (trigger,
+// missed, budget, concurrency; the manifest, scope and script have their own
+// keys or are the text itself). Empty values are omitted.
+type validateFieldsJSON struct {
+	Trigger     string              `json:"trigger,omitempty"`
+	Missed      string              `json:"missed,omitempty"`
+	Concurrency string              `json:"concurrency,omitempty"`
+	Budget      *validateBudgetJSON `json:"budget,omitempty"`
+}
+
+type validateBudgetJSON struct {
+	Tokens  int `json:"tokens"`
+	Minutes int `json:"minutes"`
+}
+
+// triggerLine is the trigger in one owner-readable line: the schedule text, an
+// event type with its where filters as key=value, a button (noting a confirm
+// prompt) or "manual".
+func triggerLine(t automations.Trigger) string {
+	switch t.Kind {
+	case automations.TriggerSchedule:
+		return "schedule: " + t.Schedule
+	case automations.TriggerEvent:
+		if t.Event == nil {
+			return "event"
+		}
+		parts := make([]string, 0, len(t.Event.Where))
+		for _, k := range slices.Sorted(maps.Keys(t.Event.Where)) {
+			parts = append(parts, k+"="+t.Event.Where[k])
+		}
+		if len(parts) == 0 {
+			return "event: " + t.Event.Type
+		}
+		return "event: " + t.Event.Type + " where " + strings.Join(parts, ", ")
+	case automations.TriggerButton:
+		if t.Button != nil && t.Button.Confirm {
+			return "button (asks before running)"
+		}
+		return "button"
+	default:
+		return "manual"
+	}
 }
 
 // validateRecipe parses data as the recipe slug in scope. A parse error is a
 // result (ok:false), not an error. widening is what the normalised
-// permissions add to baseline — every one of them for a recipe validated on
-// its own (nil baseline).
-func validateRecipe(slug string, data []byte, contentHash string, scope automations.Scope, baseline []string) validateJSON {
+// permissions add to the confirmed recipe's — every one of them for a recipe
+// validated on its own (nil confirmed); changes is the confirmed recipe's
+// field diff.
+func validateRecipe(slug string, data []byte, contentHash string, scope automations.Scope, confirmed *automations.Recipe) validateJSON {
 	v := validateJSON{Errors: []string{}, Slug: slug, Scope: scope.String(), ContentHash: contentHash,
-		Permissions: []string{}, Outputs: []string{}, Widening: []string{}}
+		Permissions: []string{}, Outputs: []string{}, Widening: []string{}, Changes: []automationChangeJSON{}}
 	r, err := automations.ParseRecipe(slug, data, scope)
 	if err != nil {
 		v.Errors = append(v.Errors, err.Error())
@@ -56,8 +112,21 @@ func validateRecipe(slug string, data []byte, contentHash string, scope automati
 		return v
 	}
 	v.OK, v.Name, v.ApprovalHash = true, r.Name, automations.ApprovalHash(r)
+	v.Fields = validateFieldsJSON{Trigger: triggerLine(r.Trigger), Missed: string(r.Missed),
+		Concurrency: strconv.Itoa(r.Concurrency), Budget: &validateBudgetJSON{Tokens: r.Budget.Tokens, Minutes: r.Budget.Minutes}}
 	v.Permissions = append(v.Permissions, m.Normalized()...)
 	v.Outputs = append(v.Outputs, slices.Compact(slices.Sorted(slices.Values(r.Outputs)))...)
+	var baseline []string
+	if confirmed != nil {
+		cm, err := automations.ParseManifest(confirmed.Permissions, confirmed.Outputs, confirmed.Scope)
+		if err != nil { // ParseRecipe validated the manifest already
+			v.OK = false
+			v.Errors = append(v.Errors, fmt.Sprintf("confirmed manifest: %v", err))
+			return v
+		}
+		baseline = cm.Normalized()
+		v.Changes, v.ChangesKnown = diffApprovalFields(confirmed, r), true
+	}
 	v.Widening = automations.Covers(baseline, v.Permissions)
 	v.FeedsSourcesToLLM = m.FeedsSourcesToLLM()
 	return v
@@ -69,7 +138,7 @@ func runAutomationsValidate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer database.Close()
-	scope, baseline, err := validateScope(database)
+	scope, confirmed, err := validateScope(database)
 	if err != nil {
 		return err
 	}
@@ -77,7 +146,7 @@ func runAutomationsValidate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	v := validateRecipe(recipeSlugOf(args[0]), data, contentHash, scope, baseline)
+	v := validateRecipe(recipeSlugOf(args[0]), data, contentHash, scope, confirmed)
 	w := cmd.OutOrStdout()
 	if autoFlags.JSON {
 		return writeJSON(w, v) // ok:false exits 0: the Desktop decodes it
@@ -90,13 +159,13 @@ func runAutomationsValidate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// validateScope is the scope validate parses in and the permissions its
-// widening starts from: with --against, that automation's scope and the
-// permissions the owner last confirmed for it (automations.ConfirmedRecipe —
-// never an unconfirmed hand edit's; none known → nil, so every permission
-// widens, like draft_automation/save_automation); otherwise --workbench's
-// scope (personal by default) and none.
-func validateScope(database *db.DB) (automations.Scope, []string, error) {
+// validateScope is the scope validate parses in and the recipe its widening
+// and changes start from: with --against, that automation's scope and the text
+// the owner last confirmed for it (automations.ConfirmedRecipe — never an
+// unconfirmed hand edit's; none known → nil, so every permission widens, like
+// draft_automation/save_automation); otherwise --workbench's scope (personal
+// by default) and nil.
+func validateScope(database *db.DB) (automations.Scope, *automations.Recipe, error) {
 	if autoFlags.Against == 0 {
 		scope, _, err := workbenchScope(database, autoFlags.Workbench)
 		return scope, nil, err
@@ -115,14 +184,7 @@ func validateScope(database *db.DB) (automations.Scope, []string, error) {
 	if err != nil {
 		return automations.Scope{}, nil, fmt.Errorf("automation %d: reading its confirmed text: %w", a.ID, err)
 	}
-	if confirmed == nil {
-		return automationScopeOf(a), nil, nil
-	}
-	m, err := automations.ParseManifest(confirmed.Permissions, confirmed.Outputs, confirmed.Scope)
-	if err != nil { // ParseRecipe validated the manifest already
-		return automations.Scope{}, nil, fmt.Errorf("automation %d confirmed manifest: %w", a.ID, err)
-	}
-	return automationScopeOf(a), m.Normalized(), nil
+	return automationScopeOf(a), confirmed, nil
 }
 
 // rescanFolderJSON is one folder of `rescan --json`.

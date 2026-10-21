@@ -62,6 +62,23 @@ const (
 	MaxEventsPerRun = 100
 )
 
+// Inbox card fields of output.inbox (panel and Inbox spec B2).
+const (
+	// MaxInboxActions caps a card's actions.
+	MaxInboxActions = 4
+	// MaxInboxActionLabelChars caps an action's label, in characters.
+	MaxInboxActionLabelChars = 40
+	// MaxInboxActionTextBytes caps a chat action's first message and an
+	// agent action's task.
+	MaxInboxActionTextBytes = 4 * 1024
+	// MaxInboxActionDataBytes caps a reply action's data, as canonical JSON.
+	MaxInboxActionDataBytes = 8 * 1024
+	// MaxInboxLinkBytes caps a card's link and a link action's open.
+	MaxInboxLinkBytes = 2048
+	// MaxInboxReplyValueChars caps a reply action's value, in characters.
+	MaxInboxReplyValueChars = 100
+)
+
 // Executor and scheduler (spec §7).
 const (
 	// MaxConcurrentRuns is the number of runs executing at once (waiting runs
