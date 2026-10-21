@@ -435,8 +435,9 @@ Depends on: Task 6. Heavy Swift, one lane.
   `make mobile-test MOBILE_FILTER=<a replica/HubRegistry test class>`,
   `make lint-swift`, and `bash scripts/tests/test-build-app-<new>.sh`.
 - One `make app-dev` (ad-hoc) build, launched once on a **copy** of an
-  install's workspace (`WATCHTOWER_…` workspace override, or a scratch
-  config). Check that the app opens, Search returns FTS hits and the menu bar
+  install's workspace (a scratch config through `WATCHTOWER_CONFIG_PATH`,
+  which `cmd/root.go` and the Desktop's `Constants.swift` both honour, whose
+  workspace directory holds the copy). Check that the app opens, Search returns FTS hits and the menu bar
   works. This is the only check that the framework embedding loads at run
   time.
 
@@ -529,11 +530,12 @@ Depends on: all tasks.
 - A `workflow_dispatch` CI run on the branch: the race shards on Linux, plus
   every Ubuntu job with OpenSSL.
 - A copy check: `sqlite3 .backup` an install's `watchtower.db` and
-  `agentlog.db` into the scratchpad. Point a repo-built CLI at the copy with
-  `--db` and the workspace flags, and run `watchtower db migrate`,
-  `watchtower db compact --force --json`, `watchtower search …`,
-  `watchtower agents stats` and one `sync --now` with network off (it
-  should fail cleanly). Then open the copy in the `make app-dev` build. The
+  `agentlog.db` into the scratchpad. Point a repo-built CLI at the copy
+  through a scratch config (`WATCHTOWER_CONFIG_PATH` or `--config`) and run
+  `watchtower db migrate`, `watchtower db compact --force --json`,
+  `watchtower kb search …`, `watchtower agents stats` and
+  `watchtower db lockstats --json`. Never run `sync` or `sync --now`: they
+  signal or start a daemon, which could be the live one. Then open the copy in the `make app-dev` build. The
   live file is never touched.
 - Spot timings on the copy: an `OpenExisting` hook open, and the inbox
   mentions scan. The spike expects plaintext reads 20–45 % faster than on
