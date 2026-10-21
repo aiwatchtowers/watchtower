@@ -5,9 +5,9 @@ import XCTest
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// The automation editor before a save: the Draft panel with "Sessions it
-/// starts" (one prompt long enough to fold, one clipped), and a pending
-/// `save_automation` card of the same text with its scope line and sessions.
+/// The automation editor before a save: the draft column of an edit, and a
+/// pending `save_automation` card with its scope line and "Sessions it
+/// starts" (one prompt long enough to fold, one clipped).
 @MainActor
 enum AutomationShotFixtures {
     private static let recipe = "---\nname: \"Release button\"\ntrigger:\n  button: \"Release\"\n---\n"
@@ -41,11 +41,69 @@ enum AutomationShotFixtures {
         return try XCTUnwrap(String(data: data, encoding: .utf8))
     }
 
-    static func draftPanel() -> AnyView {
+    private static let digest = """
+    ---
+    name: "acme digest"
+    trigger:
+      schedule: "0 9 * * 1-5"
+    missed: "skip"
+    permissions:
+      - "gmail:read@work"
+      - "llm:light"
+    outputs:
+      - "inbox"
+    budget:
+      tokens: 40000
+      minutes: 5
+    ---
+    Summarises the morning mail.
+
+    ```js
+    const mail = tool("list_emails", {account: "work"})
+    output.inbox({title: "Digest", body: llm("Summarise", mail)})
+    ```
+
+    """
+
+    /// The draft column on an edit of "acme digest": one widening, one
+    /// change line and a dry run of the same text.
+    static func draftColumn() -> AnyView {
         do {
-            let model = AutomationDraftPanelModel(newest: AutomationDraftEntry.newest(inCache: try cacheLine()))
-            return AnyView(AutomationDraftPanel(model: model, canAct: true, actionHelp: nil,
-                                                onCancel: {}, onDryRunAgain: {}, onSave: {}))
+            let changes = #"[{"field":"trigger","old":"{\"schedule\":\"0 8 * * 1-5\"}","#
+                + #""new":"{\"schedule\":\"0 9 * * 1-5\"}"}]"#
+            let json = #"{"ok":true,"errors":[],"slug":"acme-digest","name":"acme digest","scope":"personal","#
+                + #""approval_hash":"h2","content_hash":"c2","permissions":["gmail:read@work","llm:light"],"#
+                + #""outputs":["inbox"],"widening":["gmail:read@work"],"changes":\#(changes),"changes_known":true}"#
+            let validated = try JSONDecoder().decode(AutomationsCLI.ValidateResult.self, from: Data(json.utf8))
+            let entry: [String: Any] = [
+                "recipe_text": digest,
+                "result": [
+                    "ok": true, "errors": [],
+                    "manifest": ["name": "acme digest", "slug": "acme-digest", "trigger_kind": "schedule",
+                                 "trigger": "0 9 * * 1-5", "permissions": ["gmail:read@work", "llm:light"],
+                                 "outputs": ["inbox"], "budget_tokens": 40000, "budget_minutes": 5],
+                    "dry_run": [
+                        "steps": [
+                            ["seq": 1, "kind": "tool", "name": "list_emails", "status": "ok", "args": "{}",
+                             "result": "17", "permission": "gmail:read@work", "error": "", "tokens": 0],
+                            ["seq": 2, "kind": "llm", "name": "light", "status": "ok", "args": "{}",
+                             "result": "", "permission": "llm:light", "error": "", "tokens": 1200],
+                            ["seq": 3, "kind": "output", "name": "inbox", "status": "dry_run",
+                             "args": #"{"title":"Digest"}"#, "result": "", "permission": "", "error": "",
+                             "tokens": 0]
+                        ],
+                        "tokens": 1200, "status": "succeeded", "error": ""
+                    ]
+                ],
+                "at": "2026-10-20T09:00:00Z"
+            ]
+            let newest = try JSONDecoder().decode(AutomationDraftEntry.self,
+                                                  from: try JSONSerialization.data(withJSONObject: entry))
+            let confirmed = digest.replacingOccurrences(of: "0 9 * * 1-5", with: "0 8 * * 1-5")
+            let model = AutomationDraftColumnModel(text: digest, validated: validated, isChecking: false,
+                                                   newestChatEntry: newest, confirmedText: confirmed, isNew: false,
+                                                   plan: nil)
+            return AnyView(AutomationDraftColumn(model: model, keepAuto: .constant([])) {})
         } catch {
             return failure(error)
         }
