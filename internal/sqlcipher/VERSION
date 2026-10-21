@@ -1,0 +1,4 @@
+mattn/go-sqlite3 v1.14.52
+sqlcipher v4.19.0
+sqlite 3.53.4
+sqlite3-binding.c sha256 77044ff1d11a8fe7adda43178bd53ed6b276f6cbf777c7b36d84dadb57a3c612
