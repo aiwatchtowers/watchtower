@@ -65,9 +65,27 @@ final class HomeViewTests: XCTestCase {
         XCTAssertThrowsError(try loading.inspect().find(text: "Nothing needs you right now."))
     }
 
+    // MARK: - Layout
+
+    /// The columns share the whole width about 60/40 (the mockup's 1.55 : 1).
+    func testColumnsSplitTheWidth() {
+        let layout = HomeColumnsLayout(spacing: 20)
+        XCTAssertEqual(layout.columnWidths(1_040), [620, 400])
+        XCTAssertEqual(layout.columnWidths(HomeContent.twoColumnWidth), [535, 345])
+    }
+
+    /// The two columns never report narrower than 900 pt, so `ViewThatFits`
+    /// takes the one-column stack below it.
+    func testColumnsNeverNarrowerThanTheBreakpoint() {
+        XCTAssertEqual(HomeColumnsLayout.resolvedWidth(780), 900)
+        XCTAssertEqual(HomeColumnsLayout.resolvedWidth(1_040), 1_040)
+        XCTAssertEqual(HomeColumnsLayout.resolvedWidth(nil), 900)
+        XCTAssertEqual(HomeColumnsLayout.resolvedWidth(.infinity), 900)
+    }
+
     // MARK: - Getting ready
 
-    func testGettingReadyShownRendersCardsInOrder() throws {
+    func testGettingReadyShownRendersRowsInOrder() throws {
         let cards = [
             Self.card(.briefing, "Briefing", .waitingForSync(detail: nil)),
             Self.card(.digests, "Digests", .preparing(detail: nil)),
@@ -77,20 +95,25 @@ final class HomeViewTests: XCTestCase {
         let all = try texts(view)
         XCTAssertEqual(all.filter(["Briefing", "Digests", "Tracks"].contains), ["Briefing", "Digests", "Tracks"])
         XCTAssertTrue(all.contains("Getting ready"))
-        XCTAssertTrue(all.contains("Watchtower is preparing these from your sources"))
-        XCTAssertTrue(all.contains("Digests sentence."))
+        XCTAssertTrue(all.contains("· 0 of 3 ready"))
     }
 
-    func testReadyCardShowsOpenAndCallsLink() throws {
+    func testProgressDetail() {
+        XCTAssertEqual(GettingReadyZoneView.progressDetail(ready: 6, of: 11), "6 of 11 ready")
+        XCTAssertNil(GettingReadyZoneView.progressDetail(ready: 0, of: 0))
+    }
+
+    func testReadyFeaturesAreLinksOnTheReadyLine() throws {
         var tapped: HomeLink?
         let cards = [Self.card(.digests, "Digests", .ready), Self.card(.tracks, "Tracks", .preparing(detail: nil))]
         let view = makeContent(viewSnapshot(.shown(cards: cards, sourceRows: []))) { tapped = $0 }
         XCTAssertNoThrow(try view.inspect().find(text: "Ready"))
+        XCTAssertNoThrow(try view.inspect().find(text: "· 1 of 2 ready"))
         XCTAssertThrowsError(try view.inspect().find(text: "Ready — Open"))
-        let open = try view.inspect().find(button: "Open")
-        XCTAssertEqual(try open.accessibilityLabel().string(), "Open Digests")
+        let open = try view.inspect().find(button: "Digests")
         try open.tap()
         XCTAssertEqual(tapped, .feature(.digests))
+        XCTAssertEqual(try open.accessibilityLabel().string(), "Open Digests")
     }
 
     func testPreparingCardShowsReadinessLine() throws {
@@ -98,8 +121,8 @@ final class HomeViewTests: XCTestCase {
         let cards = [Self.card(.digests, "Digests", preparing), Self.card(.memory, "Memory", nil)]
         let view = makeContent(viewSnapshot(.shown(cards: cards, sourceRows: [])))
         XCTAssertNoThrow(try view.inspect().find(text: FeatureReadiness.line(preparing)))
-        // A nil readiness shows no line and no Open.
-        XCTAssertThrowsError(try view.inspect().find(button: "Open"))
+        // A nil readiness shows no line and is not a ready link.
+        XCTAssertThrowsError(try view.inspect().find(button: "Memory"))
         XCTAssertNoThrow(try view.inspect().find(text: "Memory"))
     }
 
@@ -200,10 +223,7 @@ final class HomeViewTests: XCTestCase {
         var hidden = 0
         let cards = [Self.card(.digests, "Digests", .preparing(detail: nil))]
         let view = makeContent(viewSnapshot(.shown(cards: cards, sourceRows: []))) { _ in } onHide: { hidden += 1 }
-        let hide = try view.inspect().find(ViewType.Button.self) {
-            try $0.accessibilityLabel().string() == "Hide Getting ready"
-        }
-        try hide.tap()
+        try view.inspect().find(button: "Hide").tap()
         XCTAssertEqual(hidden, 1)
     }
 
@@ -293,7 +313,7 @@ final class HomeViewTests: XCTestCase {
         let suggestionIndex = try XCTUnwrap(all.firstIndex(of: line))
         XCTAssertLessThan(rate, suggestionIndex)
         // Only its buttons follow it, up to the next layout's copy.
-        XCTAssertEqual(Array(all[(suggestionIndex + 1)...].prefix(4)), ["Add", "Dismiss", "More\u{2026}", "Waiting on you"])
+        XCTAssertEqual(Array(all[(suggestionIndex + 1)...].prefix(3)), ["Add", "Dismiss", "Waiting on you"])
         try view.inspect().find(button: "Add").tap()
         await fulfillment(of: [decided], timeout: 2)
         XCTAssertEqual(calls.map(\.0), [5])
@@ -380,6 +400,8 @@ final class HomeViewTests: XCTestCase {
         XCTAssertNoThrow(try view.inspect().find(text: "Nothing is waiting for you."))
     }
 
+    /// No counters on the rows; the header's "N of M ready" is the one
+    /// (owner, ask #432).
     func testNoCounterText() throws {
         let cards = [
             Self.card(.digests, "Digests", .ready),
@@ -391,7 +413,7 @@ final class HomeViewTests: XCTestCase {
         let rows = [GettingReadySourceRow(source: .jira, features: [.jira])]
         let view = makeContent(viewSnapshot(.shown(cards: cards, sourceRows: rows), firstSync: Self.firstSync))
         let counter = try NSRegularExpression(pattern: #"\d+ of \d+"#)
-        for text in try texts(view) {
+        for text in try texts(view) where text != "· 1 of 5 ready" {
             let range = NSRange(text.startIndex..., in: text)
             XCTAssertNil(counter.firstMatch(in: text, range: range), text)
         }
@@ -472,8 +494,8 @@ final class HomeViewTests: XCTestCase {
             later: [Self.event("e1", "Payments review", minutes: 20)],
             nextDay: FeedDay(title: "Tomorrow", events: [Self.event("e2", "Daily standup", minutes: 1400)]))
         let all = try texts(feedZone(feed))
-        // The section header's title, then its count.
-        let order = ["Waiting on you", "1", "is the review done?", "10:40", "Payments review", "Tomorrow", "Daily standup"]
+        // The zone's title, then its count.
+        let order = ["Waiting on you", "· 1", "is the review done?", "10:40", "Payments review", "Tomorrow", "Daily standup"]
         XCTAssertEqual(all.filter(order.contains), order)
         XCTAssertTrue(all.contains("Catch-Up →"))
         XCTAssertFalse(all.contains("Nothing is waiting for you."))
@@ -492,15 +514,14 @@ final class HomeViewTests: XCTestCase {
     func testLayoutTwoColumnsThenOneColumn() throws {
         let snapshot = viewSnapshot(suggestion: Self.suggestion, links: Self.links, numbers: HomeNumbers())
         let layout = try makeContent(snapshot).inspect().find(ViewType.ViewThatFits.self)
-        let wide = try layout.hStack(0)
-        // The spec's breakpoint: two columns from 900 pt of content width.
-        XCTAssertEqual(try wide.flexFrame().minWidth, 900)
-        XCTAssertNoThrow(try wide.view(FeedZoneView.self, 0))
-        XCTAssertNoThrow(try wide.view(HomeSideColumn.self, 1))
+        // Both branches hold the feed and the side column (the breakpoint
+        // itself: `testColumnsNeverNarrowerThanTheBreakpoint`).
+        XCTAssertEqual(layout.findAll(FeedZoneView.self).count, 2)
+        XCTAssertEqual(layout.findAll(HomeSideColumn.self).count, 2)
         let narrow = try layout.vStack(1)
         XCTAssertNoThrow(try narrow.view(FeedZoneView.self, 0))
         XCTAssertNoThrow(try narrow.view(HomeSideColumn.self, 1))
-        let side = try wide.view(HomeSideColumn.self, 1)
+        let side = try narrow.view(HomeSideColumn.self, 1)
         XCTAssertNoThrow(try side.find(WorkbenchZoneView.self))
         XCTAssertNoThrow(try side.find(LinksZoneView.self))
         XCTAssertNoThrow(try side.find(NumbersZoneView.self))
@@ -526,7 +547,7 @@ final class HomeViewTests: XCTestCase {
         XCTAssertEqual(expanded, [true])
         let folded = try texts(feedZone(Self.feed(waiting: rows, hidden: 2)))
         let title = try XCTUnwrap(folded.firstIndex(of: "Waiting on you"))
-        XCTAssertEqual(folded[title + 1], "9", "the header counts the folded rows too")
+        XCTAssertEqual(folded[title + 1], "· 9", "the header counts the folded rows too")
 
         // Expanded: every row, and Show less collapses.
         let all = (1...9).map { Self.row(.inbox($0), who: "Ann", text: "row \($0)") }

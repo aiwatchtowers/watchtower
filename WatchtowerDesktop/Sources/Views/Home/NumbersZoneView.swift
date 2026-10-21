@@ -17,7 +17,7 @@ struct NumbersZoneView: View {
     }
 
     var body: some View {
-        HomeZone(title: "Today in numbers", systemImage: "chart.bar") {
+        HomeZone(title: "Today in numbers") {
             LazyVGrid(columns: Self.columns, alignment: .leading, spacing: Spacing.cozy) {
                 ForEach(Self.cells(numbers), id: \.caption) { cell in
                     VStack(alignment: .leading, spacing: Spacing.tight) {

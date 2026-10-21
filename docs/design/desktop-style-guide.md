@@ -8,7 +8,7 @@ The reference is the app's own good screens: Workbench, Calendar and AI Chat. A 
 
 - **Compact by default.** `.controlSize(.small)`, secondary text `.caption`.
 - **Panels, not pop-ups.** Detail opens in a resizable side panel (`PanelSplit`). A sheet is only for a short blocking flow: a confirmation, connecting an account, a one-field form. A popover is only a small picker anchored to its control.
-- **One readable column.** Long text and feeds keep a maximum width (Chat: 760 pt) and centre in wide windows.
+- **One readable column.** Long text and feeds keep a maximum width (Chat: 760 pt) and centre in wide windows. Exception: Home's two columns fill the window, about 60/40 (owner, ask #432).
 - **Structure from space and fills, not lines.** Spacing and a section header separate sections; a soft card fill separates groups. A hairline separates panes, never rows. No `Divider()` between rows, never two in a row.
 - **Actions appear where they apply.** Row actions show on hover. At most one prominent action per screen.
 - **Empty, loading and error states** use `FeatureEmptyState`, `TabEmptyState` or `ContentAwareEmptyState` (see `docs/features/first-run.md`). Also shared and part of the kit: `SearchField`, `ResizeHandle`, `WriteErrorBanner`.
@@ -27,6 +27,7 @@ Use the token, never the number. The scale is closed: a screen that needs a new 
 | `Surface` | `detail`, `window`, `text`, `control` |
 | `Tone` | `status(_:)` and `priority(_:)` colour map |
 | `IconSize` | `chevron` 8, `header` 14, `composer` 16, `composerLarge` 24 |
+| `Tracking` | `caps` 0.6 (small uppercase labels) |
 | `Motion` | `toggle` (`.snappy` 0.15 s), `panel` (`.easeInOut` 0.2 s) |
 
 Shadows exist only on floating buttons (`FloatingButtonLabel`).

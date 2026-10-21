@@ -21,8 +21,13 @@ struct FeedZoneView: View {
     /// The sources of the rows above NOW, in the order their failure lines show.
     private static let waitingSources: [FeedSource] = [.inbox, .proposals, .automations, .reminders, .targets]
 
+    /// The header's count; nothing waiting shows none.
+    static func countDetail(_ count: Int) -> String? {
+        count > 0 ? "\(count)" : nil
+    }
+
     var body: some View {
-        HomeZone(title: "Waiting on you", systemImage: "tray", count: feed.waiting.count + feed.hiddenWaiting) {
+        HomeZone(title: "Waiting on you", detail: Self.countDetail(feed.waiting.count + feed.hiddenWaiting)) {
             Button("Catch-Up →") { onLink(.catchUp) }
         } content: {
             waitingPart
