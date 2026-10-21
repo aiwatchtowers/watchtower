@@ -224,13 +224,21 @@ package final class AgentActionFeed {
     /// surfaces regardless of `ok`/`applied_ok`, so an approve/apply that
     /// exits 0 but failed to execute still reports.
     package struct Envelope: Decodable {
-        package let ok: Bool?
-        package let appliedOK: Bool?
+        /// A missing `ok` / `applied_ok` reads as true: only an explicit false is a failure.
+        package let ok: Bool
+        package let appliedOK: Bool
         package let error: String?
 
         enum CodingKeys: String, CodingKey {
             case ok, error
             case appliedOK = "applied_ok"
+        }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            ok = try c.decodeIfPresent(Bool.self, forKey: .ok) ?? true
+            appliedOK = try c.decodeIfPresent(Bool.self, forKey: .appliedOK) ?? true
+            error = try c.decodeIfPresent(String.self, forKey: .error)
         }
     }
 

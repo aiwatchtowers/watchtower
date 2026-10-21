@@ -43,7 +43,7 @@ package struct TrackActionPress {
             throw Refusal(message: "watchtower returned an unreadable answer.")
         }
         if let err = env.error, !err.isEmpty { throw Refusal(message: err) }
-        if env.ok == false || env.appliedOK == false {
+        if !env.ok || !env.appliedOK {
             throw Refusal(message: "The change was not applied.")
         }
     }
