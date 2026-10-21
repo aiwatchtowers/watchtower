@@ -28,6 +28,7 @@ final class OwnerQueriesTests: XCTestCase {
     private struct JiraSeed {
         var cloudID: String
         var enabled: Bool
+        var status = "ok"
         var ownerAccountID: String
         var ownerEmail = ""
         var ownerDisplayName = ""
@@ -52,6 +53,7 @@ final class OwnerQueriesTests: XCTestCase {
         var slack: [SlackSeed] = []      // inserted in order as slack_accounts id 1, 2, …
         var slackUser: UserSeed?
         var google: [String] = []        // google_accounts emails, in id order
+        var purgedGoogle: Set<String> = []  // of those, the emails whose account is purged
         var jira: [JiraSeed] = []
         var jiraUserMap: [UserMapSeed] = []
         var linear: [LinearSeed] = []    // linear_accounts, in id order
@@ -72,10 +74,13 @@ final class OwnerQueriesTests: XCTestCase {
             )
         }
         for email in s.google {
-            _ = try TestDatabase.insertGoogleAccount(db, email: email)
+            // A finished purge leaves the row purged with both services off.
+            _ = try TestDatabase.insertGoogleAccount(db, email: email, status: s.purgedGoogle.contains(email) ? "purged" : "ok")
         }
         for j in s.jira {
-            let id = try TestDatabase.insertJiraAccount(db, cloudID: j.cloudID, enabled: j.enabled)
+            // A finished purge also turns the account off.
+            let id = try TestDatabase.insertJiraAccount(db, cloudID: j.cloudID, status: j.status,
+                                                        enabled: j.enabled && j.status != "purged")
             try db.execute(sql: """
                 UPDATE jira_accounts SET owner_account_id = ?, owner_email = ?, owner_display_name = ?
                 WHERE id = ?
@@ -85,7 +90,7 @@ final class OwnerQueriesTests: XCTestCase {
             try db.execute(sql: """
                 INSERT INTO linear_accounts (enabled, status, owner_user_id, owner_email, owner_display_name)
                 VALUES (?, ?, ?, ?, ?)
-                """, arguments: [l.enabled, l.status, l.ownerUserID, l.ownerEmail, l.ownerDisplayName])
+                """, arguments: [l.enabled && l.status != "purged", l.status, l.ownerUserID, l.ownerEmail, l.ownerDisplayName])
         }
         for m in s.mailboxes {
             try TestDatabase.insertEmailAccount(db, provider: m.provider, emailAddress: m.address)
@@ -129,6 +134,9 @@ final class OwnerQueriesTests: XCTestCase {
                                      linearUserIDs: ["user-1"])),
             ("removed linear is skipped",
              OwnerSeed(linear: [LinearSeed(status: "removed", ownerUserID: "user-1")]),
+             Owner.unknown),
+            ("purged linear is skipped",
+             OwnerSeed(linear: [LinearSeed(status: "purged", ownerUserID: "user-1")]),
              Owner.unknown),
             ("disabled linear is skipped",
              OwnerSeed(linear: [LinearSeed(enabled: false, ownerUserID: "user-1")]),
@@ -177,6 +185,17 @@ final class OwnerQueriesTests: XCTestCase {
                                SlackSeed(teamID: "T2", currentUserID: "2:U2")],
                        google: ["me@x.com"]),
              Self.owner(id: "google:me@x.com", source: .google, email: "me@x.com", displayName: "me")),
+            ("purged slack is skipped like removed (ask #491)",
+             OwnerSeed(slack: [SlackSeed(teamID: "T1", currentUserID: "1:U1", status: "purged"),
+                               SlackSeed(teamID: "T2", currentUserID: "2:U2")],
+                       google: ["me@x.com"]),
+             Self.owner(id: "google:me@x.com", source: .google, email: "me@x.com", displayName: "me")),
+            ("purged google is skipped",
+             OwnerSeed(google: ["old@x.com", "b@x.com"], purgedGoogle: ["old@x.com"]),
+             Self.owner(id: "google:b@x.com", source: .google, email: "b@x.com", displayName: "b")),
+            ("purged jira is skipped",
+             OwnerSeed(jira: [JiraSeed(cloudID: "c1", enabled: true, status: "purged", ownerAccountID: "acc-9")]),
+             Owner.unknown),
             ("disabled jira is skipped",
              OwnerSeed(jira: [JiraSeed(cloudID: "c1", enabled: false, ownerAccountID: "acc-9")]),
              Owner.unknown),
@@ -197,7 +216,7 @@ final class OwnerQueriesTests: XCTestCase {
                        jiraUserMap: [UserMapSeed(jiraAccountID: "acc-bare", slackUserID: "U123")]),
              Self.owner(id: "1:U123", source: .slack, slackUserID: "1:U123", jiraAccountID: "acc-bare"))
         ] + Self.linearLadderCases
-        XCTAssertEqual(cases.count, 20, "the Go ladder table has twenty cases; copy every one")
+        XCTAssertEqual(cases.count, 24, "the Go ladder table has twenty-four cases; copy every one")
 
         for c in cases {
             let db = try TestDatabase.create()
