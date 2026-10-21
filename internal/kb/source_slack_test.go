@@ -178,6 +178,12 @@ func TestSlack_HugeDayRendersAllMessagesIntoManyChunks(t *testing.T) {
 	d := db.OpenTestDB(t)
 	exec(t, d, `INSERT INTO channels (id, name, type) VALUES ('1:C2','alerts','public')`)
 	exec(t, d, `INSERT INTO users (id, name) VALUES ('1:U1','bot')`)
+	// messages_ai's DELETE from messages_fts matches on UNINDEXED columns,
+	// so each insert scans the whole FTS table: 3000 rows cost ~90 s under
+	// -race. The day doc renders from messages alone, so the fixture goes in
+	// without the FTS mirror. The workaround goes away with #872 (search
+	// indexes keyed by rowid).
+	exec(t, d, `DROP TRIGGER messages_ai`)
 	tx, err := d.Begin()
 	require.NoError(t, err)
 	for i := range 3000 {
