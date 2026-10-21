@@ -333,4 +333,51 @@ final class AutomationTemplatePanelModelTests: XCTestCase {
         XCTAssertEqual(AutomationTemplatePanels.key(template: "a", scope: .workbench(id: 3, name: "x", folder: "/x")),
                        "a|workbench:3")
     }
+
+    func testIsRenderingWhileANewerRenderIsPending() async throws {
+        let model = try await renderedModel(["h1"])
+        XCTAssertFalse(model.isRendering)
+        XCTAssertEqual(model.columns.first?.status, .ready)
+
+        model.params["PROJECT"] = "OPS"
+        model.paramsChanged()
+        XCTAssertTrue(model.isRendering, "a re-render is pending")
+        XCTAssertEqual(model.columns.first?.status, .checking, "the shown column says Checking…")
+        XCTAssertFalse(model.columns.first?.showsAllFields ?? true)
+
+        await waitUntil { self.sleeper.calls == 1 }
+        sleeper.fire()
+        await waitUntil { !model.isRendering }
+        XCTAssertEqual(model.columns.first?.status, .ready)
+        XCTAssertTrue(model.canSave)
+    }
+
+    func testIsRenderingClearsAfterAFailedRender() async throws {
+        runner.answer("install-template", .failure(.nonZeroExit(code: 1, stderr: "no active Jira project")))
+        let model = try makeModel()
+        await model.appear()
+        XCTAssertFalse(model.isRendering)
+    }
+
+    func testStartingAFinishedTemplateAgainResetsThePanel() async throws {
+        runner.answer("install-template", Self.renderJSON(["h1"]))
+        let cli = AutomationsCLI(runner: runner)
+        let panels = AutomationTemplatePanels { template, scope in
+            AutomationTemplatePanelModel(template: template, scope: scope, cli: cli) { _ in }
+        }
+        let template = try Self.template()
+        let first = panels.panel(for: template, scope: .personal)
+        XCTAssertTrue(panels.panel(for: template, scope: .personal) === first, "an open panel is kept")
+        await first.appear()
+        runner.answer("install-template", Self.installJSON(["h1"]))
+        await first.saveAndTurnOn()
+        XCTAssertEqual(first.state, .done(firstID: 11))
+
+        XCTAssertTrue(panels.panel(for: template, scope: .personal) === first,
+                      "the finished panel stays until it is started again")
+        let again = panels.start(template, scope: .personal)
+        XCTAssertFalse(again === first, "starting a finished template again gives a fresh panel")
+        XCTAssertEqual(again.state, .rendering)
+        XCTAssertTrue(panels.start(template, scope: .personal) === again, "an unfinished panel is reused")
+    }
 }

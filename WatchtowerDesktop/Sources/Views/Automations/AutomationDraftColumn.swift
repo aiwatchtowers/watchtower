@@ -13,63 +13,73 @@ struct AutomationDraftColumn: View {
     let onDryRunAgain: (() -> Void)?
     /// Names the read-only recipe page's model; unique on screen.
     var recipeModelID: Int64 = -1
+    /// True inside a page that scrolls and pads itself (the template
+    /// panel's file columns): no scroll view and no padding of its own.
+    var embedded = false
+    /// False where nothing is dry-run (a template's rendered file).
+    var showsDryRun = true
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Spacing.medium) {
-                statusLine
-                box(title: "When", systemImage: "clock") {
-                    Text(model.when).fontWeight(.semibold)
-                    if let detail = model.whenDetail { secondary(detail) }
-                }
-                box(title: "It may", systemImage: "checkmark.shield") {
-                    if let placeholder = model.placeholder {
-                        secondary(placeholder)
-                    } else if model.mayDo.isEmpty {
-                        secondary("Nothing beyond its own state")
-                    }
-                    ForEach(Array(model.mayDo.enumerated()), id: \.offset) { _, line in
-                        HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                            Text(line.text).fixedSize(horizontal: false, vertical: true)
-                            if line.isNew {
-                                Chip(text: AutomationDraftColumnModel.newMark, color: Tone.warning)
-                            }
-                        }
-                    }
-                }
-                box(title: "Sends", systemImage: "paperplane") {
-                    if let placeholder = model.placeholder {
-                        secondary(placeholder)
-                    } else if model.sends.isEmpty {
-                        secondary("Nothing")
-                    }
-                    ForEach(Array(model.sends.enumerated()), id: \.offset) { _, line in Text(line) }
-                }
-                HStack(alignment: .top, spacing: Spacing.medium) {
-                    box(title: "Each run", systemImage: "gauge.with.dots.needle.33percent") {
-                        Text(model.eachRun)
-                    }
-                    box(title: "Missed and Concurrency", systemImage: "arrow.triangle.2.circlepath") {
-                        Text(model.missedAndConcurrency).fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-                .fixedSize(horizontal: false, vertical: true)
-                if !model.changes.isEmpty {
-                    box(title: "Changed", systemImage: "arrow.left.arrow.right") {
-                        ForEach(Array(model.changes.enumerated()), id: \.offset) { _, line in
-                            Text(line).fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                }
-                dryRunBox
-                if !model.sessions.isEmpty { AutomationSessionPromptsBlock(sessions: model.sessions) }
-                recipe
-                if !model.pausedGrants.isEmpty { pausedGrants }
-            }
-            .font(.callout)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(Spacing.large)
+        if embedded {
+            content
+        } else {
+            ScrollView { content.padding(Spacing.large) }
         }
+    }
+
+    private var content: some View {
+        VStack(alignment: .leading, spacing: Spacing.medium) {
+            statusLine
+            box(title: "When", systemImage: "clock") {
+                Text(model.when).fontWeight(.semibold)
+                if let detail = model.whenDetail { secondary(detail) }
+            }
+            box(title: "It may", systemImage: "checkmark.shield") {
+                if let placeholder = model.placeholder {
+                    secondary(placeholder)
+                } else if model.mayDo.isEmpty {
+                    secondary("Nothing beyond its own state")
+                }
+                ForEach(Array(model.mayDo.enumerated()), id: \.offset) { _, line in
+                    HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                        Text(line.text).fixedSize(horizontal: false, vertical: true)
+                        if line.isNew {
+                            Chip(text: AutomationDraftColumnModel.newMark, color: Tone.warning)
+                        }
+                    }
+                }
+            }
+            box(title: "Sends", systemImage: "paperplane") {
+                if let placeholder = model.placeholder {
+                    secondary(placeholder)
+                } else if model.sends.isEmpty {
+                    secondary("Nothing")
+                }
+                ForEach(Array(model.sends.enumerated()), id: \.offset) { _, line in Text(line) }
+            }
+            HStack(alignment: .top, spacing: Spacing.medium) {
+                box(title: "Each run", systemImage: "gauge.with.dots.needle.33percent") {
+                    Text(model.eachRun)
+                }
+                box(title: "Missed and Concurrency", systemImage: "arrow.triangle.2.circlepath") {
+                    Text(model.missedAndConcurrency).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            if !model.changes.isEmpty {
+                box(title: "Changed", systemImage: "arrow.left.arrow.right") {
+                    ForEach(Array(model.changes.enumerated()), id: \.offset) { _, line in
+                        Text(line).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            if showsDryRun { dryRunBox }
+            if !model.sessions.isEmpty { AutomationSessionPromptsBlock(sessions: model.sessions) }
+            recipe
+            if !model.pausedGrants.isEmpty { pausedGrants }
+        }
+        .font(.callout)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder private var statusLine: some View {

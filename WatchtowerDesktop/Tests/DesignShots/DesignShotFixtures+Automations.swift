@@ -8,7 +8,7 @@ import WatchtowerTestSupport
 /// The automation editor before a save: the draft column of an edit, and a
 /// pending `save_automation` card with its scope line and "Sessions it
 /// starts" (one prompt long enough to fold, one clipped); the New automation
-/// panel.
+/// panel; the template panel.
 @MainActor
 enum AutomationShotFixtures {
     private static let recipe = "---\nname: \"Release button\"\ntrigger:\n  button: \"Release\"\n---\n"
@@ -162,6 +162,65 @@ enum AutomationShotFixtures {
             ]
             let flow = AutomationNewFlow(fixedScope: fixedToAcme ? acme : nil)
             return AnyView(AutomationNewPanel(flow: flow, scopes: scopes, templates: templates) { _, _ in })
+        } catch {
+            return failure(error)
+        }
+    }
+
+    private static let stateReport = """
+    ---
+    name: "Jira state report"
+    trigger:
+      schedule: "0 9 * * 1"
+    permissions:
+      - "jira:read"
+      - "llm:light"
+    outputs:
+      - "report"
+      - "briefing"
+    budget:
+      tokens: 60000
+      minutes: 10
+    ---
+    Every Monday, a report on your active Jira projects.
+
+    ```js
+    const issues = tool("list_jira_issues", {})
+    output.report({title: "Jira state", body: llm("Group by state", issues)})
+    ```
+
+    """
+
+    /// The template panel on `jira-state-report`: PROJECT empty (placeholder
+    /// PAY), one note, the rendered file's column (a FakeCLIRunner answers
+    /// `--render`).
+    static func templatePanel() -> AnyView {
+        do {
+            let templateJSON = #"{"name":"jira-state-report","title":"Jira state report","#
+                + #""description":"Every Monday, a report on your active Jira projects: in progress, stuck, done "#
+                + #"and needing a decision, with a short version in your briefing.","scope":"personal","#
+                + #""trigger_text":"Mondays 09:00","permissions":["reads Jira"],"outputs":["report"],"#
+                + #""params":[{"key":"PROJECT","label":"Jira project key","example":"PAY"}],"#
+                + #""notes":["Leave the key empty to report on every active project."]}"#
+            let template = try JSONDecoder().decode(AutomationTemplate.self, from: Data(templateJSON.utf8))
+            let text = try XCTUnwrap(String(data: try JSONEncoder().encode(stateReport), encoding: .utf8))
+            let hash = AutomationDraftColumnModel.contentHash(stateReport)
+            let render = #"{"name":"jira-state-report","scope":"personal","params":{},"files":[{"#
+                + #""slug":"jira-state-report","text":\#(text),"validate":{"ok":true,"errors":[],"#
+                + #""slug":"jira-state-report","name":"Jira state report","scope":"personal","#
+                + #""approval_hash":"h1","content_hash":"\#(hash)","permissions":["jira:read","llm:light"],"#
+                + #""outputs":["report","briefing"],"widening":[],"#
+                + #""fields":{"trigger":"schedule: 0 9 * * 1","missed":"skip","concurrency":"1","#
+                + #""budget":{"tokens":60000,"minutes":10}}}}]}"#
+            let cli = AutomationsCLI(runner: FakeCLIRunner(stdout: Data(render.utf8)))
+            let model = AutomationTemplatePanelModel(template: template, scope: .personal, cli: cli) { _ in }
+            Task { await model.appear() }
+            let deadline = Date().addingTimeInterval(5)
+            while !model.canSave, Date() < deadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            }
+            XCTAssertTrue(model.canSave, "the fixture's render did not land: \(model.state)")
+            return AnyView(AutomationTemplatePanel(model: model, onAdjustInChat: { _ in }, onDone: { _ in }))
         } catch {
             return failure(error)
         }

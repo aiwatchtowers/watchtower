@@ -75,6 +75,9 @@ enum DesignShotCatalog {
             DesignShot(name: "automation-new-panel-workbench", size: NSSize(width: 900, height: 640)) {
                 AnyView(AutomationShotFixtures.newPanel(fixedToAcme: true).detailBackground())
             },
+            DesignShot(name: "automation-template-panel", size: NSSize(width: 1000, height: 760)) {
+                AnyView(AutomationShotFixtures.templatePanel().detailBackground())
+            },
             // Branch review (#712, artboards A–C).
             DesignShot(name: "branch-review-changes", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.changes()

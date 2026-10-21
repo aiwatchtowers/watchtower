@@ -43,8 +43,16 @@ package final class AutomationTemplatePanelModel {
     /// the CLI (the field's placeholder is the param's `example`).
     package var params: [String: String] = [:]
     package private(set) var state: State = .rendering
-    /// One column per rendered file, in the render's order.
+    /// One column per rendered file, in the render's order; each says
+    /// "Checking…" while `isRendering`.
     package private(set) var columns: [AutomationDraftColumnModel] = []
+    /// The shown render's files (their slugs title the columns), the source
+    /// of `columns`.
+    package private(set) var renderedFiles: [AutomationsCLI.RenderedFile] = []
+    /// A render newer than the shown one is pending (debounced or running).
+    package private(set) var isRendering = false {
+        didSet { if isRendering != oldValue { rebuildColumns() } }
+    }
 
     @ObservationIgnored private let cli: AutomationsCLI
     @ObservationIgnored private let refresh: @MainActor (Int64?) async -> Void
@@ -112,6 +120,7 @@ package final class AutomationTemplatePanelModel {
     package func paramsChanged() {
         guard !isInstallingOrInstalled else { return }
         renderTask?.cancel()
+        isRendering = true
         let delay = checkDelay
         let sleep = sleep
         renderTask = Task { [weak self] in
@@ -131,6 +140,7 @@ package final class AutomationTemplatePanelModel {
         generation += 1
         let mine = generation
         let request = Self.normalized(params)
+        isRendering = true
         if renderedRequest == nil { state = .rendering }
         let outcome: Result<AutomationsCLI.RenderResult, Error>
         do {
@@ -143,15 +153,21 @@ package final class AutomationTemplatePanelModel {
         switch outcome {
         case let .success(result):
             renderedRequest = request
-            columns = result.files.map {
-                AutomationDraftColumnModel(text: $0.text, validated: $0.validate, isChecking: false,
-                                           newestChatEntry: nil, confirmedText: nil, isNew: true, plan: nil)
-            }
+            renderedFiles = result.files
             state = .rendered(result)
         case let .failure(error):
             renderedRequest = nil
-            columns = []
+            renderedFiles = []
             state = .failed(AutomationsViewModel.message(for: error))
+        }
+        if isRendering { isRendering = false } else { rebuildColumns() }
+    }
+
+    private func rebuildColumns() {
+        let checking = isRendering
+        columns = renderedFiles.map {
+            AutomationDraftColumnModel(text: $0.text, validated: $0.validate, isChecking: checking,
+                                       newestChatEntry: nil, confirmedText: nil, isNew: true, plan: nil)
         }
     }
 
@@ -163,6 +179,7 @@ package final class AutomationTemplatePanelModel {
         guard canSave, case let .rendered(shown) = state else { return }
         renderTask?.cancel()
         renderTask = nil
+        isRendering = false
         state = .installing
         let installParams = shown.params.mapValues { $0.joined(separator: ",") }
         let installed: [AutomationsCLI.InstalledRecipe]
@@ -233,7 +250,18 @@ package final class AutomationTemplatePanels {
         }
     }
 
-    /// The panel for `template` in `scope`, made on first use.
+    /// **Continue** on a template in the New automation panel: the panel
+    /// for `template` in `scope`, a fresh one when the last one finished
+    /// (`.done`), so the same template can be added again.
+    package func start(_ template: AutomationTemplate, scope: AutomationScopeChoice)
+        -> AutomationTemplatePanelModel {
+        let key = Self.key(template: template.name, scope: scope)
+        if let panel = panels[key], case .done = panel.state { panels[key] = nil }
+        return panel(for: template, scope: scope)
+    }
+
+    /// The panel for `template` in `scope`, made on first use; kept as it
+    /// is (a finished one too) until `start` is called again.
     package func panel(for template: AutomationTemplate, scope: AutomationScopeChoice)
         -> AutomationTemplatePanelModel {
         let key = Self.key(template: template.name, scope: scope)
