@@ -428,3 +428,19 @@ func TestCheckDeletedIssues_AuthRevokedAborts(t *testing.T) {
 	assert.True(t, errors.Is(err, ErrAuthRevoked), "got %v", err)
 	assert.Len(t, storedKeys(t, database, 1), 6)
 }
+
+// SRCDEL-01 supporting: an empty listing deletes nothing even below the Slack
+// floor — a small project the user lost access to keeps its issues although
+// every lookup would answer 404.
+func TestCheckDeletedIssues_EmptyListingSmallProjectDeletesNothing(t *testing.T) {
+	database := deletionsDB(t, projectKeys(3))
+	fake := &deletionsServer{}
+	s := deletionsSyncer(t, database, fake.start(t), 1)
+
+	removed, err := s.CheckDeletedIssues(context.Background(), deletionsNow)
+	require.NoError(t, err)
+	_, _, lookups := fake.requests()
+	assert.Equal(t, 0, removed)
+	assert.Len(t, storedKeys(t, database, 1), 3)
+	assert.Empty(t, lookups)
+}

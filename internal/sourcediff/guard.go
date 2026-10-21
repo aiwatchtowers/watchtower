@@ -10,10 +10,10 @@ type Floors struct{ EmptyMin, HalfMin int }
 // SlackFloors refuses on 0 hits over >=5 rows and on more than half of >=10 rows.
 var SlackFloors = Floors{EmptyMin: 5, HalfMin: 10}
 
-// IssueFloors refuses on 0 keys over >=5 stored Jira issues and on more than
-// half of >=10: the Slack numbers, so a small project stays judgeable — every
-// deletion is also confirmed per key with Jira before it happens.
-var IssueFloors = Floors{EmptyMin: 5, HalfMin: 10}
+// IssueFloors refuses on 0 keys while any Jira issue is stored — a project the
+// user can no longer see may list empty and answer 404 per key, so an empty
+// listing never deletes — and on more than half of >=10 stored issues.
+var IssueFloors = Floors{EmptyMin: 1, HalfMin: 10}
 
 // MailFloors refuses on 0 IDs while any is stored and on more than half.
 var MailFloors = Floors{EmptyMin: 1, HalfMin: 1}
