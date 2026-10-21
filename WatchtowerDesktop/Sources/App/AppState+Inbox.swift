@@ -45,7 +45,7 @@ extension AppState {
     }
 
     /// Discuss in Chat and a Chat action: a new AI Chat with the card of any
-    /// kind attached as `subject.attachmentName` (the chat reads it as data) and
+    /// kind attached (`inboxChatAttachment`; the chat reads it as data) and
     /// `message` in the composer, which takes the keyboard. Nothing is sent;
     /// text the owner had typed is kept.
     func openChatAboutInboxCard(_ subject: InboxCardSubject, message: String) async {
@@ -53,14 +53,33 @@ extension AppState {
         guard let chat = chatViewModel else { return }
         // A failed create says why on the chat itself.
         if await chat.newConversation() != nil {
-            let markdown = InboxCardTexts.attachmentMarkdown(subject)
-            if await !chat.attachPasted(Data(markdown.utf8), name: subject.attachmentName) {
+            let attachment = Self.inboxChatAttachment(subject, outputs: actionStripViewModel?.outputRows ?? [])
+            if await !chat.attachPasted(Data(attachment.markdown.utf8), name: attachment.name) {
                 chat.errorMessage = "Couldn't attach the Inbox card to this chat."
             }
             chat.draft = HelpChatPrefill.merge(draft: chat.draft, prefill: message)
         }
         selectedDestination = .chat
         chat.requestComposerFocus()
+    }
+
+    /// The chat attachment of a card: an automation card keeps B's file
+    /// (`inbox-card-<id>.md`, `attachmentMarkdown(card)` with its `ϟ X · run #N`
+    /// line); every other kind is the subject's (`inbox-card-<kind>-<id>.md`).
+    nonisolated static func inboxChatAttachment(
+        _ subject: InboxCardSubject, outputs: [AutomationOutputCard]
+    ) -> (name: String, markdown: String) {
+        if case .output(let id) = subject.selection, let card = outputs.first(where: { $0.id == id }) {
+            return ("inbox-card-\(id).md", InboxCardTexts.attachmentMarkdown(card))
+        }
+        return (subject.attachmentName, InboxCardTexts.attachmentMarkdown(subject))
+    }
+
+    /// A target's title when the card's has none: an automation card keeps
+    /// its id ("Inbox card #5").
+    nonisolated static func inboxTargetFallbackTitle(_ subject: InboxCardSubject) -> String {
+        if case .output(let id) = subject.selection { return "Inbox card #\(id)" }
+        return "Inbox card"
     }
 
     /// Hand to Agent… and an Agent action: a target on `workbenchID`'s board
@@ -72,7 +91,7 @@ extension AppState {
             return
         }
         let firstLine = InboxCardTexts.targetTitle(fromTask: task)
-        let title = firstLine.isEmpty ? "Inbox card" : firstLine
+        let title = firstLine.isEmpty ? Self.inboxTargetFallbackTitle(subject) : firstLine
         let priority = WorkbenchBoardCard.editablePriorities.contains(subject.priority) ? subject.priority : "medium"
         let targetID: Int64
         do {

@@ -4,6 +4,7 @@ import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 /// The pane with the day, track and idea placeholders (before Tasks 8–10).
 private typealias PlaceholderPane = InboxReadingPane<InboxCardPlaceholder, InboxCardPlaceholder, InboxCardPlaceholder>
@@ -246,8 +247,8 @@ final class InboxReadingPaneTests: XCTestCase {
 
     func testHeaderMoreMenuOffersLearnedRulesAndProfile() throws {
         var opened: [InboxAuxPane] = []
-        let sut = InboxFilterBar(filter: .constant(.all), cheatSheetRows: [], showsCheatSheetButton: true,
-                                 onOpenSettings: {}, onOpenAux: { opened.append($0) })
+        let sut = InboxFilterBar(filter: .constant(.all), showsCheatSheetButton: true,
+                                 onOpenAux: { opened.append($0) }) // swiftlint:disable:this trailing_closure
 
         try sut.inspect().find(button: "Learned Rules").tap()
         try sut.inspect().find(button: "Assistant Profile").tap()
@@ -256,17 +257,103 @@ final class InboxReadingPaneTests: XCTestCase {
         for filter in InboxFilter.allCases {
             XCTAssertNoThrow(try sut.inspect().find(text: filter.title), filter.title)
         }
-        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
+    }
+
+    /// The `?` opens the cheat sheet in the reading pane; the header has no pop-up.
+    func testCheatSheetButtonOpensTheReadingPane() throws {
+        var opened: [InboxAuxPane] = []
+        let sut = InboxFilterBar(filter: .constant(.messages), showsCheatSheetButton: true,
+                                 onOpenAux: { opened.append($0) }) // swiftlint:disable:this trailing_closure
+
+        try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton").button().tap()
+
+        XCTAssertEqual(opened, [.reactionCommands])
+        XCTAssertThrowsError(try sut.inspect().find(ViewType.Popover.self))
+    }
+
+    // MARK: - The header's panes in the reading pane
+
+    func testAuxPanesRenderInTheReadingPane() throws {
+        let cheatSheet = InboxAuxPaneView(pane: .reactionCommands, cheatSheet: ReactionCheatSheetView(rows: []),
+                                          learnedRulesDB: nil, profile: nil) {}
+        XCTAssertNoThrow(try cheatSheet.inspect().find(text: "Reaction Commands"))
+        XCTAssertNoThrow(try cheatSheet.inspect().find(ReactionCheatSheetView.self))
+
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        var closed = 0
+        let rules = InboxAuxPaneView(pane: .learnedRules, cheatSheet: nil, learnedRulesDB: pool, profile: nil) {
+            closed += 1
+        }
+        XCTAssertNoThrow(try rules.inspect().find(InboxLearnedRulesView.self))
+        try rules.inspect().find(button: "Close").tap()
+        XCTAssertEqual(closed, 1)
+
+        let profile = InboxAuxPaneView(pane: .profile, cheatSheet: nil, learnedRulesDB: nil, profile: nil) {}
+        XCTAssertNoThrow(try profile.inspect().find(text: "Assistant Profile"))
+        XCTAssertNoThrow(try profile.inspect().find(text: "Database unavailable"))
+    }
+
+    func testSplitViewShowsTheOpenedPaneInsteadOfTheCard() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        let sut = InboxSplitView(
+            vm: vm, proposalCard: Self.proposalCard,
+            onCardAction: { _ in }, aux: .constant(.reactionCommands), cheatSheet: ReactionCheatSheetView(rows: []),
+            emptyList: { Text("Nothing here") }) // swiftlint:disable:this trailing_closure
+
+        XCTAssertNoThrow(try sut.inspect().find(ReactionCheatSheetView.self))
+        XCTAssertThrowsError(try sut.inspect().find(text: "Select a card"))
+        XCTAssertNoThrow(try sut.inspect().find(text: "Nothing here"), "the empty list stays on the left")
+    }
+
+    /// Learned Rules adds a rule inline under its `+`, never in a sheet.
+    func testLearnedRulesAddsInline() throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let sut = InboxLearnedRulesView(db: pool)
+        XCTAssertNoThrow(try sut.inspect().find(button: "Add Rule"))
+        XCTAssertThrowsError(try sut.inspect().find(AddRuleSheet.self), "the form opens on +")
+        XCTAssertThrowsError(try sut.inspect().vStack().sheet())
+    }
+
+    private static func proposalCard(_ action: AgentAction) -> AgentActionCardView {
+        AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+    }
+
+    // MARK: - Chat attachments
+
+    /// An automation card keeps B's attachment; other kinds carry their subject's.
+    func testChatAttachmentKeepsTheAutomationCardsFile() throws {
+        let output = card()
+        let automation = AppState.inboxChatAttachment(InboxCardSubject(output), outputs: [output])
+        XCTAssertEqual(automation.name, "inbox-card-5.md")
+        XCTAssertEqual(automation.markdown, """
+            # ACME-482: crash when importing CSV
+
+            ϟ Issue triage · run #212
+
+            **Verdict:** bug, high priority.
+            """)
+
+        let message = InboxCardSubject(message: try message())
+        let other = AppState.inboxChatAttachment(message, outputs: [output])
+        XCTAssertEqual(other.name, "inbox-card-message-9.md")
+        XCTAssertEqual(other.markdown, InboxCardTexts.attachmentMarkdown(message))
+
+        XCTAssertEqual(AppState.inboxTargetFallbackTitle(InboxCardSubject(output)), "Inbox card #5")
+        XCTAssertEqual(AppState.inboxTargetFallbackTitle(message), "Inbox card")
     }
 
     func testIdeasHeaderShowsOnlyOnTheIdeasFilter() throws {
-        let ideas = InboxFilterBar(filter: .constant(.ideas), cheatSheetRows: [], showsCheatSheetButton: false,
-                                   onOpenSettings: {}, onOpenAux: { _ in }, ideasHeader: { Text("New idea slot") })
+        let ideas = InboxFilterBar(filter: .constant(.ideas), showsCheatSheetButton: false,
+                                   onOpenAux: { _ in }, ideasHeader: { Text("New idea slot") })
         XCTAssertNoThrow(try ideas.inspect().find(text: "New idea slot"))
         XCTAssertThrowsError(try ideas.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
 
-        let all = InboxFilterBar(filter: .constant(.all), cheatSheetRows: [], showsCheatSheetButton: true,
-                                 onOpenSettings: {}, onOpenAux: { _ in }, ideasHeader: { Text("New idea slot") })
+        let all = InboxFilterBar(filter: .constant(.all), showsCheatSheetButton: true,
+                                 onOpenAux: { _ in }, ideasHeader: { Text("New idea slot") })
         XCTAssertThrowsError(try all.inspect().find(text: "New idea slot"))
     }
 }

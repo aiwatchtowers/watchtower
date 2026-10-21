@@ -4,6 +4,7 @@ import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
 @testable import WatchtowerCore
+import WatchtowerTestSupport
 
 /// A message card in the Inbox reading pane (C1 §6.2, R5): who, where, the
 /// text as plain text, Open in <source> only with a permalink, Discuss in
@@ -102,5 +103,49 @@ final class InboxMessagePaneTests: XCTestCase {
         let sut = pane(row(snippet: text))
         XCTAssertNoThrow(try sut.inspect().find(text: text))
         XCTAssertThrowsError(try sut.inspect().find(ViewType.Link.self))
+    }
+
+    // MARK: - The split view's routes
+
+    /// Done, Hide and a Snooze choice on the shown message run
+    /// `watchtower inbox resolve|dismiss|snooze` for that row (R5).
+    func testDoneHideAndSnoozeRouteToTheInboxCLI() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let id = try await pool.write { db in try TestDatabase.insertInboxItem(db, snippet: "Review please") }
+        let suite = "InboxMessagePaneTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let runner = FakeCLIRunner()
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner, defaults: defaults)
+        await vm.refresh()
+        vm.selection = .message(Int(id))
+        let sut = InboxSplitView(
+            vm: vm, proposalCard: card,
+            onCardAction: { _ in }, emptyList: { EmptyView() })
+
+        let presses: [(press: () throws -> Void, args: [String])] = [
+            ({ try sut.inspect().find(button: "Done").tap() }, ["inbox", "resolve", "\(id)"]),
+            ({ try sut.inspect().find(button: "Hide").tap() }, ["inbox", "dismiss", "\(id)"]),
+            ({ try sut.inspect().find(ViewType.Menu.self).find(button: "Next week").tap() },
+             ["inbox", "snooze", "\(id)", "1w"])
+        ]
+        for (index, step) in presses.enumerated() {
+            let ran = expectation(description: step.args.joined(separator: " "))
+            runner.onRun = { _ in ran.fulfill() }
+            try step.press()
+            await fulfillment(of: [ran], timeout: 5)
+            XCTAssertEqual(runner.invocations.count, index + 1)
+            XCTAssertEqual(runner.invocations.last, step.args)
+            // The card's buttons wait for its press; the next press comes after.
+            for _ in 0..<500 where vm.isWriting(.message(Int(id))) {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertFalse(vm.isWriting(.message(Int(id))))
+        }
+    }
+
+    private func card(_ action: AgentAction) -> AgentActionCardView {
+        AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
     }
 }

@@ -93,15 +93,23 @@ struct InboxListRow: View {
 
     /// "Your day · Wed 22 Oct".
     static func daySource(_ card: InboxDayCard) -> String {
-        let parser = DateFormatter()
-        parser.locale = Locale(identifier: "en_US_POSIX")
-        parser.dateFormat = "yyyy-MM-dd"
-        guard let date = parser.date(from: card.date) else { return "Your day · \(card.date)" }
+        guard let date = dayParser.date(from: card.date) else { return "Your day · \(card.date)" }
+        return "Your day · \(dayFormatter.string(from: date))"
+    }
+
+    private static let dayParser: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }()
+
+    private static let dayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "EEE d MMM"
-        return "Your day · \(formatter.string(from: date))"
-    }
+        return formatter
+    }()
 
     private static func dayPreview(_ card: InboxDayCard) -> String {
         card.plan == nil ? "" : "Plan: \(card.planDone) of \(card.planTotal) done"
@@ -116,7 +124,13 @@ struct InboxListRow: View {
     /// its text.
     static func messageTitle(_ row: HomeFeedInboxRow) -> String {
         if row.item.isAccumulated { return row.item.mentionCountTitle }
-        let line = row.item.snippet.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        var text = row.item.snippet
+        // A mail's snippet is "<subject> — <text>" and the source line already
+        // names the subject (`HomeFeedQueries.whereText`).
+        if row.item.triggerType == "email_received", let range = text.range(of: " — ") {
+            text = String(text[range.upperBound...])
+        }
+        let line = text.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
         return line.isEmpty ? "Message" : line
     }
 

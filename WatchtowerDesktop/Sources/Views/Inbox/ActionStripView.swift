@@ -106,8 +106,8 @@ struct ActionStripView: View {
 /// (`InboxSplitView`), or — when the filter has nothing and no editor is
 /// open — the filter's empty state in its place. The empty All list keeps
 /// the reaction cheat sheet inline (B); otherwise the cheat sheet stays one
-/// `?` click away in a popover, never inline (a card-shaped help block among
-/// real cards would read as something waiting on the owner).
+/// `?` click away in the reading pane, never among the cards (a card-shaped
+/// help block there would read as something waiting on the owner).
 /// Split out of `ActionStripView` so it takes plain inputs and can be tested
 /// without an `AppState`.
 struct ActionStripActionsView: View {
@@ -155,9 +155,7 @@ struct ActionStripActionsView: View {
             }
             InboxFilterBar(
                 filter: filter,
-                cheatSheetRows: cheatSheetRows,
                 showsCheatSheetButton: !(isEmpty && vm.filter == .all),
-                onOpenSettings: onOpenSettings,
                 onOpenAux: openAux
             )
             if isEmpty && aux == nil {
@@ -174,6 +172,7 @@ struct ActionStripActionsView: View {
                     onCardAction: onCardAction,
                     onOpenAutomationRun: onOpenAutomationRun,
                     aux: $aux,
+                    cheatSheet: cheatSheet,
                     learnedRulesDB: learnedRulesDB,
                     profile: profile
                 ) {
@@ -187,7 +186,19 @@ struct ActionStripActionsView: View {
         Binding(get: { vm.filter }, set: { vm.filter = $0 })
     }
 
-    /// An editor opens in the reading pane in place of the selected card.
+    /// The reaction cheat sheet with the feature's enable/status line.
+    private var cheatSheet: ReactionCheatSheetView {
+        ReactionCheatSheetView(
+            rows: cheatSheetRows,
+            feature: feature,
+            isEnabling: isEnabling,
+            error: featureError,
+            onEnable: onEnable,
+            onOpenSettings: onOpenSettings
+        )
+    }
+
+    /// The header's pane opens in the reading pane in place of the selected card.
     private func openAux(_ pane: InboxAuxPane) {
         aux = pane
         Task { await vm.select(nil) }
@@ -202,15 +213,7 @@ struct ActionStripActionsView: View {
                 NoOwnerEmptyState(openConnections: onOpenConnections)
             }
             if vm.filter == .all {
-                ReactionCheatSheetView(
-                    rows: cheatSheetRows,
-                    feature: feature,
-                    isEnabling: isEnabling,
-                    error: featureError,
-                    onEnable: onEnable,
-                    onOpenSettings: onOpenSettings
-                )
-                .frame(maxWidth: .infinity)
+                cheatSheet.frame(maxWidth: .infinity)
             }
         }
     }

@@ -1,13 +1,15 @@
 import SwiftUI
 import WatchtowerCore
 
-/// What the Inbox header's ⋯ menu opens in the reading pane (R7): the two
-/// editors the old Learned / Profile segments held.
+/// What the Inbox header opens in the reading pane: the reaction cheat sheet
+/// (`?`), and from the ⋯ menu the two editors the old Learned / Profile
+/// segments held (R7). Nothing in the Inbox header is a pop-up.
 enum InboxAuxPane: Equatable {
-    case learnedRules, profile
+    case reactionCommands, learnedRules, profile
 
     var title: String {
         switch self {
+        case .reactionCommands: "Reaction Commands"
         case .learnedRules: "Learned Rules"
         case .profile: "Assistant Profile"
         }
@@ -16,31 +18,23 @@ enum InboxAuxPane: Equatable {
 
 /// The Inbox header (spec C1 §6.1): the six filter segments (R8), the Ideas
 /// filter's own controls (`ideasHeader`, empty until Task 10 fills it), the
-/// reaction cheat sheet one `?` away, and the ⋯ menu with Learned Rules and
-/// Assistant Profile.
+/// reaction cheat sheet one `?` away and the ⋯ menu with Learned Rules and
+/// Assistant Profile — each opens in the reading pane.
 struct InboxFilterBar<IdeasHeader: View>: View {
     @Binding var filter: InboxFilter
-    let cheatSheetRows: [ReactionCheatSheet.Row]
     /// False while the empty All list shows the cheat sheet inline.
     let showsCheatSheetButton: Bool
-    let onOpenSettings: () -> Void
     let onOpenAux: (InboxAuxPane) -> Void
     let ideasHeader: IdeasHeader
 
-    @State private var showsCheatSheet = false
-
     init(
         filter: Binding<InboxFilter>,
-        cheatSheetRows: [ReactionCheatSheet.Row],
         showsCheatSheetButton: Bool,
-        onOpenSettings: @escaping () -> Void,
         onOpenAux: @escaping (InboxAuxPane) -> Void,
         @ViewBuilder ideasHeader: () -> IdeasHeader
     ) {
         _filter = filter
-        self.cheatSheetRows = cheatSheetRows
         self.showsCheatSheetButton = showsCheatSheetButton
-        self.onOpenSettings = onOpenSettings
         self.onOpenAux = onOpenAux
         self.ideasHeader = ideasHeader()
     }
@@ -68,7 +62,7 @@ struct InboxFilterBar<IdeasHeader: View>: View {
 
     private var cheatSheetButton: some View {
         Button {
-            showsCheatSheet = true
+            onOpenAux(.reactionCommands)
         } label: {
             Image(systemName: "questionmark.circle")
         }
@@ -76,11 +70,6 @@ struct InboxFilterBar<IdeasHeader: View>: View {
         .help("Reaction commands")
         .accessibilityLabel("Reaction commands")
         .accessibilityIdentifier("actionStrip.cheatSheetButton")
-        .popover(isPresented: $showsCheatSheet, arrowEdge: .bottom) {
-            ReactionCheatSheetView(rows: cheatSheetRows, onOpenSettings: onOpenSettings)
-                .frame(width: 440)
-                .popoverSurface()
-        }
     }
 
     private var moreMenu: some View {
@@ -101,14 +90,9 @@ struct InboxFilterBar<IdeasHeader: View>: View {
 }
 
 extension InboxFilterBar where IdeasHeader == EmptyView {
-    init(
-        filter: Binding<InboxFilter>,
-        cheatSheetRows: [ReactionCheatSheet.Row],
-        showsCheatSheetButton: Bool,
-        onOpenSettings: @escaping () -> Void,
-        onOpenAux: @escaping (InboxAuxPane) -> Void
-    ) {
-        self.init(filter: filter, cheatSheetRows: cheatSheetRows, showsCheatSheetButton: showsCheatSheetButton,
-                  onOpenSettings: onOpenSettings, onOpenAux: onOpenAux) { EmptyView() }
+    init(filter: Binding<InboxFilter>, showsCheatSheetButton: Bool, onOpenAux: @escaping (InboxAuxPane) -> Void) {
+        self.init(filter: filter, showsCheatSheetButton: showsCheatSheetButton, onOpenAux: onOpenAux) {
+            EmptyView()
+        }
     }
 }

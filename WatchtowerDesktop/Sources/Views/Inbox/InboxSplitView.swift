@@ -5,7 +5,8 @@ import WatchtowerCore
 /// The Inbox read like mail (spec B1, C1 §6.1): the list on the left —
 /// Needs your decision, Today, Earlier, for the chosen filter, or the
 /// filter's empty state — and the reading pane on the right, which also
-/// holds Learned Rules and Assistant Profile when the header's ⋯ opens one.
+/// holds the reaction cheat sheet, Learned Rules or Assistant Profile when
+/// the header opens one.
 /// Arrow keys move the selection, Escape clears it, and opening a card marks
 /// it read (`ActionStripViewModel.select`). Done, Dismiss, Hide or Snooze on
 /// the shown card opens the next row.
@@ -21,8 +22,10 @@ struct InboxSplitView<EmptyList: View>: View {
     let onOpenAutomationRun: ((Int64) -> Void)?
     /// The moment Today starts from; nil is now (design shots fix it).
     let now: Date?
-    /// The editor the ⋯ menu opened in the reading pane; nil shows the card.
+    /// What the header opened in the reading pane; nil shows the card.
     @Binding var aux: InboxAuxPane?
+    /// The reaction cheat sheet the `?` opens; nil says it is unavailable.
+    let cheatSheet: ReactionCheatSheetView?
     /// Learned Rules' database; nil says it is unavailable.
     let learnedRulesDB: DatabasePool?
     /// Assistant Profile's view model; nil says it is unavailable.
@@ -41,6 +44,7 @@ struct InboxSplitView<EmptyList: View>: View {
         onOpenAutomationRun: ((Int64) -> Void)? = nil,
         now: Date? = nil,
         aux: Binding<InboxAuxPane?> = .constant(nil),
+        cheatSheet: ReactionCheatSheetView? = nil,
         learnedRulesDB: DatabasePool? = nil,
         profile: SecretaryProfileViewModel? = nil,
         @ViewBuilder emptyList: () -> EmptyList
@@ -53,6 +57,7 @@ struct InboxSplitView<EmptyList: View>: View {
         self.onOpenAutomationRun = onOpenAutomationRun
         self.now = now
         _aux = aux
+        self.cheatSheet = cheatSheet
         self.learnedRulesDB = learnedRulesDB
         self.profile = profile
         self.emptyList = emptyList()
@@ -65,7 +70,8 @@ struct InboxSplitView<EmptyList: View>: View {
             list(sections, now: now)
         } panel: {
             if let aux {
-                InboxAuxPaneView(pane: aux, learnedRulesDB: learnedRulesDB, profile: profile) { self.aux = nil }
+                InboxAuxPaneView(pane: aux, cheatSheet: cheatSheet, learnedRulesDB: learnedRulesDB,
+                                 profile: profile) { self.aux = nil }
             } else {
                 pane(sections, now: now)
             }
@@ -193,7 +199,10 @@ struct InboxSplitView<EmptyList: View>: View {
     private func snooze(_ id: InboxSelection, _ duration: String) async {
         switch id {
         case .reminder(let reminder):
-            let until = ISO8601DateFormatter().string(from: Date().addingTimeInterval(3600))
+            // The reminder pane offers only Snooze 1h ("1h").
+            let seconds: TimeInterval = duration == "1h" ? 3600 : 0
+            guard seconds > 0 else { return }
+            let until = ISO8601DateFormatter().string(from: Date().addingTimeInterval(seconds))
             await vm.snoozeReminder(reminder, until: until)
         case .message(let message): await vm.snoozeMessage(message, duration: duration)
         case .proposal, .output, .day, .track, .idea: break
@@ -204,10 +213,11 @@ struct InboxSplitView<EmptyList: View>: View {
 /// The reading pane's width, shared by every `InboxSplitView`.
 private let inboxPaneWidth = PanelSplitWidth(key: "inbox.readingPaneWidth", range: 420...900, ideal: 560)
 
-/// Learned Rules or Assistant Profile in the reading pane, under a title
-/// with a close button back to the card.
-private struct InboxAuxPaneView: View {
+/// The reaction cheat sheet, Learned Rules or Assistant Profile in the
+/// reading pane, under a title with a close button back to the card.
+struct InboxAuxPaneView: View {
     let pane: InboxAuxPane
+    let cheatSheet: ReactionCheatSheetView?
     let learnedRulesDB: DatabasePool?
     let profile: SecretaryProfileViewModel?
     let onClose: () -> Void
@@ -231,6 +241,14 @@ private struct InboxAuxPaneView: View {
     @ViewBuilder
     private var content: some View {
         switch pane {
+        case .reactionCommands:
+            if let cheatSheet {
+                ScrollView {
+                    cheatSheet.padding(Spacing.medium)
+                }
+            } else {
+                unavailable
+            }
         case .learnedRules:
             if let learnedRulesDB {
                 InboxLearnedRulesView(db: learnedRulesDB)

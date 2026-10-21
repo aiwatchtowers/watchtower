@@ -135,12 +135,13 @@ package enum HomeFeedQueries {
         return try rows.map { row in
             let item = InboxItem(row: row)
             let stamp: String = row["stamp"] ?? ""
+            let names = try senderNames(db, item)
             return HomeFeedInboxRow(
                 item: item,
                 stamp: parse(stamp) ?? now,
-                who: try who(db, item),
+                who: try who(db, item, senderNames: names),
                 whereText: try whereText(db, item),
-                senderNames: try senderNames(db, item)
+                senderNames: names
             )
         }
     }
@@ -149,11 +150,12 @@ package enum HomeFeedQueries {
         ["mention", "dm", "thread_reply", "reaction"].contains(item.triggerType)
     }
 
-    package static func who(_ db: Database, _ item: InboxItem) throws -> String {
+    /// The sender; an accumulated item's from its `senderNames`.
+    package static func who(_ db: Database, _ item: InboxItem, senderNames: [String: String]) throws -> String {
         if item.triggerType.hasPrefix("jira_") || item.triggerType.hasPrefix("linear_") { return item.channelID }
         if item.triggerType == "email_received" { return item.senderUserID }
         if item.isAccumulated {
-            return item.mentionSendersLabel(names: try senderNames(db, item))
+            return item.mentionSendersLabel(names: senderNames)
         }
         // fetchByID, not fetchDisplayName: a raw id would read as noise.
         return try UserQueries.fetchByID(db, id: item.senderUserID)?.bestName ?? ""
