@@ -106,6 +106,8 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
     package static let unreadableHint = "Couldn't read the draft. Ask the assistant to draft it again."
     package static let footer = "Saving asks for your confirmation. It won't run until you confirm."
 
+    /// The newest cached entry this was made from; nil when none decodes.
+    package let entry: AutomationDraftEntry?
     /// No draft yet.
     package let isEmpty: Bool
     /// The cache file exists but could not be read, or its newest line does
@@ -188,6 +190,7 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
     }
 
     package init(entry: AutomationDraftEntry?, unreadable: Bool = false) {
+        self.entry = entry
         isUnreadable = entry == nil && unreadable
         guard let entry else {
             isEmpty = !unreadable
@@ -274,8 +277,14 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
             return parts[1].trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
                 == "skip"
         }
-        return skips ? "Your local time · if the Mac was asleep, skips that time"
-                     : "Your local time · if the Mac was asleep, runs once when it wakes"
+        return missedDetail(skips: skips)
+    }
+
+    /// A schedule's detail line: local time, and what a time missed while
+    /// the Mac slept does (the Draft panel and the draft column).
+    package static func missedDetail(skips: Bool) -> String {
+        skips ? "Your local time · if the Mac was asleep, skips that time"
+              : "Your local time · if the Mac was asleep, runs once when it wakes"
     }
 
     /// "It can't …" over the writes the draft does not declare among mail

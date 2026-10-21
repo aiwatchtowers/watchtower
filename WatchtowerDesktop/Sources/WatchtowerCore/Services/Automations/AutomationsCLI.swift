@@ -12,7 +12,7 @@ package struct AutomationsCLI {
         case run(Int64, rerunOf: Int64? = nil)
         case dryRun(Int64)
         case show(Int64)
-        case validate(file: String, against: Int64?)
+        case validate(file: String, against: Int64?, workbench: Int64? = nil)
         case save(file: String, path: String, confirmHash: String, expectContentHash: String)
         case confirm(Int64, hash: String)
         case setEnabled(Int64, Bool)
@@ -21,7 +21,8 @@ package struct AutomationsCLI {
         case cancel(runID: Int64)
         case wake
         case templates
-        case installTemplate(name: String, workbenchID: Int64?)
+        case installTemplate(name: String, workbenchID: Int64?, params: [String: String] = [:])
+        case renderTemplate(name: String, workbenchID: Int64?, params: [String: String])
         case sessionLaunched(step: Int64, session: Int64)
         case sessionEnded(step: Int64, status: SessionEnd, error: String?)
         case rescan(workbenchID: Int64)
@@ -53,9 +54,11 @@ package struct AutomationsCLI {
             return ["automations", "dry-run", String(id), "--json"]
         case let .show(id):
             return ["automations", "show", String(id), "--json"]
-        case let .validate(file, against):
+        case let .validate(file, against, workbench):
+            precondition(against == nil || workbench == nil, "validate takes --against or --workbench, not both")
             var out = ["automations", "validate", file]
             if let against { out += ["--against", String(against)] }
+            if let workbench { out += ["--workbench", String(workbench)] }
             return out + ["--json"]
         case let .save(file, path, confirmHash, expectContentHash):
             // --expect-content-hash is always passed: "" means the file must not exist.
@@ -77,10 +80,10 @@ package struct AutomationsCLI {
             return ["automations", "wake"]
         case .templates:
             return ["automations", "templates", "--json"]
-        case let .installTemplate(name, workbenchID):
-            var out = ["automations", "install-template", name]
-            if let workbenchID { out += ["--workbench", String(workbenchID)] }
-            return out + ["--json"]
+        case let .installTemplate(name, workbenchID, params):
+            return templateArgs(name: name, workbenchID: workbenchID, params: params) + ["--json"]
+        case let .renderTemplate(name, workbenchID, params):
+            return templateArgs(name: name, workbenchID: workbenchID, params: params) + ["--render", "--json"]
         case let .sessionLaunched(step, session):
             return ["automations", "session-launched", "--step", String(step), "--session", String(session), "--json"]
         case let .sessionEnded(step, status, error):
@@ -93,6 +96,18 @@ package struct AutomationsCLI {
         case let .reply(outputID, action):
             return ["automations", "reply", "--output", String(outputID), "--action", String(action), "--json"]
         }
+    }
+
+    /// `install-template NAME [--workbench ID] [--param KEY=VALUE]…`, params
+    /// sorted by key, empty values omitted.
+    private static func templateArgs(name: String, workbenchID: Int64?, params: [String: String]) -> [String] {
+        var out = ["automations", "install-template", name]
+        if let workbenchID { out += ["--workbench", String(workbenchID)] }
+        for key in params.keys.sorted() {
+            guard let value = params[key], !value.isEmpty else { continue }
+            out += ["--param", "\(key)=\(value)"]
+        }
+        return out
     }
 
     /// `rerunOf` repeats one failed (or interrupted) run of `id`.
@@ -108,8 +123,8 @@ package struct AutomationsCLI {
         try await decode(.show(id))
     }
 
-    package func validate(file: URL, against: Int64?) async throws -> ValidateResult {
-        try await decode(.validate(file: file.path, against: against))
+    package func validate(file: URL, against: Int64?, workbench: Int64? = nil) async throws -> ValidateResult {
+        try await decode(.validate(file: file.path, against: against, workbench: workbench))
     }
 
     package func save(file: URL, path: String, confirmHash: String, expectContentHash: String) async throws
@@ -146,8 +161,15 @@ package struct AutomationsCLI {
         try await decode(.templates)
     }
 
-    package func installTemplate(_ name: String, workbenchID: Int64?) async throws -> InstallResult {
-        try await decode(.installTemplate(name: name, workbenchID: workbenchID))
+    package func installTemplate(_ name: String, workbenchID: Int64?, params: [String: String] = [:])
+        async throws -> InstallResult {
+        try await decode(.installTemplate(name: name, workbenchID: workbenchID, params: params))
+    }
+
+    /// The template's recipe files rendered and validated, nothing written.
+    package func renderTemplate(_ name: String, workbenchID: Int64?, params: [String: String])
+        async throws -> RenderResult {
+        try await decode(.renderTemplate(name: name, workbenchID: workbenchID, params: params))
     }
 
     /// Attaches the session the app launched to its waiting step; false when
@@ -238,9 +260,53 @@ extension AutomationsCLI {
         /// Whether the validated text feeds its sources to `llm()`
         /// (`feeds_sources_to_llm`, #559); false from an older CLI.
         package let feedsSourcesToLLM: Bool
+        /// Hashed fields that differ from the confirmed recipe (`changes`);
+        /// `[]` from an older CLI.
+        package let changes: [AutomationChange]
+        /// Whether `changes` is a real comparison (`changes_known`).
+        package let changesKnown: Bool
+        /// The hashed fields the manifest keys do not carry (`fields`): `{}`
+        /// when the text does not parse, nil from an older CLI.
+        package let fields: Fields?
+
+        /// `fields`: the trigger in one line ("schedule: 0 9 * * 1-5",
+        /// "event: slack.new_messages where account=a", "button", "button
+        /// (asks before running)", "manual"), `missed` ("run_once"/"skip"),
+        /// the concurrency in decimal and the budget.
+        package struct Fields: Decodable, Equatable, Sendable {
+            package struct Budget: Decodable, Equatable, Sendable {
+                package let tokens: Int
+                package let minutes: Int
+            }
+
+            package let trigger: String
+            package let missed: String
+            package let concurrency: String
+            package let budget: Budget?
+
+            /// Every field present: what the column needs to show them all.
+            package var isComplete: Bool {
+                !trigger.isEmpty && !missed.isEmpty && Int(concurrency) != nil && budget != nil
+            }
+
+            package init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                trigger = try c.decodeIfPresent(String.self, forKey: .trigger) ?? ""
+                missed = try c.decodeIfPresent(String.self, forKey: .missed) ?? ""
+                concurrency = try c.decodeIfPresent(String.self, forKey: .concurrency) ?? ""
+                budget = try c.decodeIfPresent(Budget.self, forKey: .budget)
+            }
+
+            private enum CodingKeys: String, CodingKey { case trigger, missed, concurrency, budget }
+        }
+
+        /// The validated text is `ok` and every hashed field can be shown
+        /// (AUTO-06: only a screen showing every hashed field confirms).
+        package var showsAllFields: Bool { ok && fields?.isComplete == true }
 
         enum CodingKeys: String, CodingKey {
-            case ok, errors, slug, name, scope, permissions, outputs, widening
+            case ok, errors, slug, name, scope, permissions, outputs, widening, changes, fields
+            case changesKnown = "changes_known"
             case approvalHash = "approval_hash", contentHash = "content_hash"
             case feedsSourcesToLLM = "feeds_sources_to_llm"
         }
@@ -258,6 +324,9 @@ extension AutomationsCLI {
             outputs = try c.decodeIfPresent([String].self, forKey: .outputs) ?? []
             widening = try c.decodeIfPresent([String].self, forKey: .widening) ?? []
             feedsSourcesToLLM = try c.decodeIfPresent(Bool.self, forKey: .feedsSourcesToLLM) ?? false
+            changes = try c.decodeIfPresent([AutomationChange].self, forKey: .changes) ?? []
+            changesKnown = try c.decodeIfPresent(Bool.self, forKey: .changesKnown) ?? false
+            fields = try c.decodeIfPresent(Fields.self, forKey: .fields)
         }
     }
 
@@ -280,9 +349,11 @@ extension AutomationsCLI {
         /// Each param's values as installed, given or chosen by the CLI
         /// (#582); empty from an older CLI.
         package let params: [String: [String]]
+        /// The installed copies with their approval hashes; `[]` from an older CLI.
+        package let installed: [InstalledRecipe]
 
         enum CodingKeys: String, CodingKey {
-            case automationID = "automation_id", path, params
+            case automationID = "automation_id", path, params, installed
         }
 
         package init(from decoder: Decoder) throws {
@@ -290,7 +361,56 @@ extension AutomationsCLI {
             automationID = try c.decode(Int64.self, forKey: .automationID)
             path = try c.decode(String.self, forKey: .path)
             params = try c.decodeIfPresent([String: [String]].self, forKey: .params) ?? [:]
+            installed = try c.decodeIfPresent([InstalledRecipe].self, forKey: .installed) ?? []
         }
+    }
+
+    /// One installed copy in `install-template --json` `installed`.
+    package struct InstalledRecipe: Decodable, Equatable, Sendable {
+        package let automationID: Int64
+        package let slug: String
+        package let path: String
+        package let parseError: String
+        package let approvalHash: String
+
+        enum CodingKeys: String, CodingKey {
+            case automationID = "automation_id", slug, path
+            case parseError = "parse_error", approvalHash = "approval_hash"
+        }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            automationID = try c.decode(Int64.self, forKey: .automationID)
+            slug = try c.decodeIfPresent(String.self, forKey: .slug) ?? ""
+            path = try c.decodeIfPresent(String.self, forKey: .path) ?? ""
+            parseError = try c.decodeIfPresent(String.self, forKey: .parseError) ?? ""
+            approvalHash = try c.decodeIfPresent(String.self, forKey: .approvalHash) ?? ""
+        }
+    }
+
+    /// `install-template --render --json`: nothing is written.
+    package struct RenderResult: Decodable, Equatable, Sendable {
+        package let name: String
+        package let scope: String
+        package let params: [String: [String]]
+        package let files: [RenderedFile]
+
+        enum CodingKeys: String, CodingKey { case name, scope, params, files }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+            scope = try c.decodeIfPresent(String.self, forKey: .scope) ?? ""
+            params = try c.decodeIfPresent([String: [String]].self, forKey: .params) ?? [:]
+            files = try c.decodeIfPresent([RenderedFile].self, forKey: .files) ?? []
+        }
+    }
+
+    /// One rendered recipe file with its validation.
+    package struct RenderedFile: Decodable, Equatable, Sendable {
+        package let slug: String
+        package let text: String
+        package let validate: ValidateResult
     }
 }
 

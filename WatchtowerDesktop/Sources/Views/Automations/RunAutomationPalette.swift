@@ -42,7 +42,7 @@ struct RunAutomationPaletteHost: ViewModifier {
 /// dimmed backdrop with a "Search commands" field, the **Run automation**
 /// rows ranked by `QuickRunCatalog.ranked` and an **Other** section. ↩ on a
 /// runnable row runs it (a `confirm: true` one asks first); on a dimmed row
-/// it opens the confirmation sheet or the card, never a run. Closing hands
+/// it opens its card, never a run. Closing hands
 /// the keyboard back to whatever had it (a terminal, the Files editor).
 struct RunAutomationPalette: View {
     @Bindable var center: QuickRunCenter
