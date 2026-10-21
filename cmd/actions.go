@@ -26,6 +26,13 @@ var (
 	actionsFlagForce        bool
 	actionsFlagPatch        string
 	actionsFlagArgsSHA256   string
+
+	actionsProposeFlagTool        string
+	actionsProposeFlagSurface     string
+	actionsProposeFlagContextType string
+	actionsProposeFlagContextID   string
+	actionsProposeFlagArgs        string
+	actionsProposeFlagApprove     bool
 )
 
 // externalRetryWarning is what the card shows on a failed external row, said
@@ -68,10 +75,34 @@ surface takes none.`,
 	RunE: runActionsTrust,
 }
 var actionsToolsCmd = &cobra.Command{Use: "tools", Short: "List the registry's write tools", RunE: runActionsTools}
+var actionsProposeCmd = &cobra.Command{
+	Use:   "propose",
+	Short: "Propose an owner tool's action from the Inbox (and, with --approve, approve and apply it)",
+	Long: `The owner's own press in the Desktop's Inbox: only a tool on the inbox
+surface (apply_track_action) is accepted, and only with --surface inbox. The
+call goes through the registry like any proposal (one agent_actions row);
+with --approve the same press approves and applies it, exactly as
+'actions approve' does, and prints the same envelope.
+
+Outcomes (the Desktop's TrackActionPress reads all three):
+  - exit non-zero, the reason on stderr, nothing written: an AI-agent
+    marker (AGENT-07), the owner's Deny, an unknown tool, a tool or surface
+    other than the inbox's, or the proposal refused (the event is gone, its
+    change was already applied or dismissed, its track has no live linked
+    task, a kind or value the Inbox cannot apply);
+  - exit 0, {"ok":true,"applied_ok":false,"error":…}: the row was approved
+    but the apply failed (another press applied the change first — "This
+    change was already applied." —, the task vanished meanwhile, a database
+    error); the row is 'failed';
+  - exit 0, {"ok":true,"applied_ok":true}: applied.
+This command never prints {"ok":false}.`,
+	Args: cobra.NoArgs,
+	RunE: runActionsPropose,
+}
 
 func init() {
 	rootCmd.AddCommand(actionsCmd)
-	for _, c := range []*cobra.Command{actionsListCmd, actionsShowCmd, actionsApproveCmd, actionsRejectCmd, actionsApplyCmd, actionsDismissCmd, actionsToolsCmd} {
+	for _, c := range []*cobra.Command{actionsListCmd, actionsShowCmd, actionsApproveCmd, actionsRejectCmd, actionsApplyCmd, actionsDismissCmd, actionsToolsCmd, actionsProposeCmd} {
 		c.Flags().BoolVar(&actionsFlagJSON, "json", false, "output JSON (the Desktop contract)")
 		actionsCmd.AddCommand(c)
 	}
@@ -82,6 +113,14 @@ func init() {
 		"the owner's edits as a JSON object, merged into the pending row before it is approved (e.g. a Slack message's text)")
 	actionsApproveCmd.Flags().StringVar(&actionsFlagArgsSHA256, "args-sha256", "",
 		"sha256 (hex) of the args_json the owner was shown; the approve is refused if the stored args differ")
+	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagTool, "tool", "", "the tool (an inbox-surface tool)")
+	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagSurface, "surface", "", "the surface: inbox")
+	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagContextType, "context-type", "",
+		"what the press acts on (e.g. track_event), stored on the row")
+	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagContextID, "context-id", "", "its id, stored on the row")
+	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagArgs, "args", "", "the tool's arguments as a JSON object")
+	actionsProposeCmd.Flags().BoolVar(&actionsProposeFlagApprove, "approve", false,
+		"approve and apply the proposal in the same press")
 	actionsListCmd.Flags().StringVar(&actionsFlagStatus, "status", "", "filter by status")
 	actionsListCmd.Flags().Int64Var(&actionsFlagConversation, "conversation", 0, "filter by chat conversation id")
 	actionsToolsCmd.Flags().StringVar(&actionsFlagSurface, "surface", "", "filter by surface (main|target|reaction|project|automation)")
@@ -403,7 +442,9 @@ var agentEnvMarkers = []string{"CLAUDECODE", "CODEX_THREAD_ID", "CODEX_SANDBOX",
 // enable` and `automations delete` (D24, ask #293); `automations auto …
 // on` (spec §6.4, P2); `automations session-launched` and `session-ended`
 // (P5); `actions dismiss` (#737, ask #342); `automations reply`, an Inbox
-// card's Reply press (ask #475). The Desktop's buttons are the path.
+// card's Reply press (ask #475); `actions propose`, an Inbox card's
+// track-action press (with --approve it is the approve). The Desktop's
+// buttons are the path.
 // Reject and the read verbs stay open.
 func refuseUnderAgent(verb string) error {
 	for _, name := range agentEnvMarkers {
