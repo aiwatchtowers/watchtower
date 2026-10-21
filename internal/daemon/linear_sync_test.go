@@ -149,3 +149,21 @@ func TestPhaseLinearSync_SyncsLinearTargets(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "done", got.Status)
 }
+
+// A cancelled pass leaves the interval clock alone: the next cycle syncs
+// again instead of waiting out the interval (phaseJiraSync's rule).
+func TestPhaseLinearSync_CancelledPassDoesNotStampTheInterval(t *testing.T) {
+	d, database := newLinearTestDaemon(t)
+	a1, err := database.CreateLinearAccount("")
+	require.NoError(t, err)
+	ran := 0
+	d.linearSyncers = []linearAccountSyncer{fakeLinearSyncer{id: a1, ran: &ran}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.phaseLinearSync(ctx)
+	d.phaseLinearSync(context.Background())
+	assert.Equal(t, 2, ran, "the pass after a cancelled one is not throttled")
+	d.phaseLinearSync(context.Background())
+	assert.Equal(t, 2, ran, "an uncancelled pass still is")
+}

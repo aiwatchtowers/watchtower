@@ -91,6 +91,10 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "branch-review-deep-meaning", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.deepMeaning()
+            },
+            // Search while the messages index is rebuilt (#892).
+            DesignShot(name: "search-index-rebuilding", size: NSSize(width: 720, height: 200)) {
+                AnyView(SearchShotFixtures.rebuildPending().shotFrame().detailBackground())
             }
         ] + CatalogPage.allCases.map { page in
             DesignShot(name: "catalog-\(page.rawValue)", size: NSSize(width: 900, height: 0)) {

@@ -518,3 +518,44 @@ func TestPhaseJiraSyncStampsAccessWhenReachedDespiteError(t *testing.T) {
 	assert.Equal(t, "revoked", status)
 	assert.Empty(t, okAt, "a revoked grant never stamps access")
 }
+
+// A pass cut off by a cancelled context (shutdown, or a sleep interrupting the
+// cycle) leaves the interval clock where it was, so the next cycle syncs
+// instead of waiting out the interval.
+func TestPhaseJiraSyncCancelledPassKeepsTheIntervalClock(t *testing.T) {
+	d, database, wsDir := newJiraTestDaemon(t)
+	d.config.Jira.SyncIntervalMins = 60
+
+	acct := seedJiraAccountWithBoard(t, database, "c1", "OPS")
+	d.SetJiraSyncers([]*jira.Syncer{jiraSyncerFor(t, database, wsDir, acct)})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.phaseJiraSync(ctx)
+	assert.True(t, d.lastJira.IsZero(), "a cancelled pass must not stamp the interval clock")
+
+	d.phaseJiraSync(context.Background())
+	assert.False(t, d.lastJira.IsZero(), "the next, uncancelled pass stamps it")
+}
+
+// A pass cut off by the loop's cancel records its jira-boards row (board
+// analyzer usage) without an error: cancelled, not failed.
+func TestPhaseJiraSyncCancelledPassIsNoErrorRow(t *testing.T) {
+	d, database, _ := newJiraTestDaemon(t)
+
+	acct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+	d.jiraSyncers = []jiraAccountSyncer{
+		&stubJiraSyncer{accountID: acct, err: fmt.Errorf("searching issues: %w", context.Canceled), inTok: 100, outTok: 20, apiTok: 120},
+	}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(errCycleSlept)
+
+	d.phaseJiraSync(ctx)
+
+	var status, errMsg string
+	require.NoError(t, database.QueryRow(
+		`SELECT status, COALESCE(error_msg, '') FROM pipeline_runs WHERE pipeline = 'jira-boards' ORDER BY id DESC LIMIT 1`,
+	).Scan(&status, &errMsg))
+	assert.Empty(t, errMsg, "a cancelled pass is no failure")
+}

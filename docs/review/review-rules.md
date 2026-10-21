@@ -70,6 +70,7 @@ reviewer should be able to point at code and say pass/fail). Cite the PR or less
 - Changing a public Go interface (`ai.Provider`, `digest.Generator`) or a CLI flag updates every implementation/consumer in the same change; keep the old form if back-compat is needed. (seed)
 - Widening a sync/backfill time window (or any watermark lookback) requires auditing every downstream consumer that selects on synced_at/updated_at without its own event-time bound — backfilled rows inherit fresh sync timestamps and replay as "new" into detectors; a detector query with no event-time predicate is the tell. (2026-07-31)
 - A migration that UPDATEs a column covered by an `AFTER UPDATE OF <cols>` trigger on the same table, or mirrored into a standalone FTS5 shadow table, must re-sync the dependent side effect (rebuild the FTS/trigger output) in the same migration — plus a test that queries THROUGH the dependent index/view post-migration, not just the base table. (2026-08-03/04, PR #58)
+- Rebuilding `messages` (or any table an FTS index is keyed to by rowid) copies `rowid` explicitly, and writes to it never use REPLACE — SEARCHIDX-01. (2026-10-20, #872)
 
 ## 9. DRY + error handling + security
 

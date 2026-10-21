@@ -7,11 +7,11 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// TestMigration00147_BackfillsAccessClocks replays goose to 00146, seeds
-// accounts in every status, applies 00147 and checks that every clock starts
+// TestMigration00148_BackfillsAccessClocks replays goose to 00147, seeds
+// accounts in every status, applies 00148 and checks that every clock starts
 // at the upgrade: each account (removed ones too — they take part in the
 // lease, ask #477) gets access_ok_at, only a revoked one gets revoked_at.
-func TestMigration00147_BackfillsAccessClocks(t *testing.T) {
+func TestMigration00148_BackfillsAccessClocks(t *testing.T) {
 	t.Parallel()
 	raw, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -19,8 +19,8 @@ func TestMigration00147_BackfillsAccessClocks(t *testing.T) {
 	}
 	defer raw.Close()
 	raw.SetMaxOpenConns(1)
-	if err := gooseUpTo(raw, "migrations", 146); err != nil {
-		t.Fatalf("migrate to v146: %v", err)
+	if err := gooseUpTo(raw, "migrations", 147); err != nil {
+		t.Fatalf("migrate to v147: %v", err)
 	}
 	for _, q := range []string{
 		`INSERT INTO slack_accounts (id, team_id, status) VALUES (1, 'T1', 'ok'), (2, 'T2', 'removed'), (3, 'T3', 'revoked')`,
@@ -32,8 +32,8 @@ func TestMigration00147_BackfillsAccessClocks(t *testing.T) {
 			t.Fatalf("seed: %v\n%s", err, q)
 		}
 	}
-	if err := gooseUpTo(raw, "migrations", 147); err != nil {
-		t.Fatalf("apply 00147: %v", err)
+	if err := gooseUpTo(raw, "migrations", 148); err != nil {
+		t.Fatalf("apply 00148: %v", err)
 	}
 	cases := []struct {
 		table       string
@@ -62,7 +62,7 @@ func TestMigration00147_BackfillsAccessClocks(t *testing.T) {
 	}
 }
 
-func TestMigration00147_OneOpenPurgePerAccount(t *testing.T) {
+func TestMigration00148_OneOpenPurgePerAccount(t *testing.T) {
 	d := OpenTestDB(t)
 	ins := `INSERT INTO account_purges (source, account_id, reason, due_at, state) VALUES ('slack', 1, 'revoked', '2026-01-01T00:00:00Z', ?)`
 	if _, err := d.Exec(ins, "scheduled"); err != nil {

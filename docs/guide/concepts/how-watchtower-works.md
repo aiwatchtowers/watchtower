@@ -12,7 +12,7 @@ The AI runs through the Claude Code or Codex command-line tool (or a local serve
 
 ## What one sync cycle does
 
-A small background program, the daemon, runs a cycle every 15 minutes (**Settings → System → Sync → Poll Interval**). A cycle also starts when the daemon starts, when the Mac wakes from sleep, and when you press **Sync Now** in the menu bar. The daemon keeps running when you close the window and stops when you quit the app.
+A small background program, the daemon, runs a cycle every 15 minutes (**Settings → System → Sync → Poll Interval**). A cycle also starts when the daemon starts, about 15 seconds after the Mac wakes from sleep, and when you press **Sync Now** in the menu bar. A cycle the Mac fell asleep in while fetching stops on wake and is replaced by that fresh one, so the digests never run on data the sleep kept from syncing. A cycle already building digests finishes them first. The daemon keeps running when you close the window and stops when you quit the app.
 
 ```mermaid
 flowchart LR
@@ -73,6 +73,10 @@ Some updates free a lot of space inside the database file, and the file only shr
 From 15 seconds on, **Skip for now** stops it; nothing is lost, and it tries again at the next launch. Quitting the app stops it the same way.
 
 If the disk is short, the app opens normally and says **Watchtower could not optimize its database**, with the free space it needs (twice the file's size) and what is available. Free that much space and relaunch.
+
+Some updates also rebuild the search index of your Slack messages. Then the splash first shows **Updating search index —** with the time so far, and moves on to **Optimizing database** when the index is done. **Skip for now** works the same: the rebuild continues where it stopped at the next launch, or in the background while Watchtower syncs.
+
+Until the rebuild finishes, search may miss older Slack messages; nothing is lost, and new messages are searchable right away. The rebuild removes the old index first and writes the new one into the space it frees, so it needs only 64 MiB free; with less, the app says **Watchtower could not update its search index**, with the free space it needs and what is available. If the rebuild fails three times at launch, the app stops trying it there and the background sync finishes it.
 
 After three failed tries it waits for the next update and says so. You can also run it yourself with `watchtower db compact` ([Command line](../reference/cli.md)).
 

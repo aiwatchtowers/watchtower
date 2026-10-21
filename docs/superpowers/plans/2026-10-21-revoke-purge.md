@@ -96,10 +96,10 @@ lease with the same notice; the LINEAR-03 amendment.
 
 Depends on: none.
 
-Follow `.claude/skills/add-migration`. Next free number: `00147` (last is
-`00146_automation_run_replay.sql`; renamed from 00146 at the merge with main) — recheck before naming.
+Follow `.claude/skills/add-migration`. Next free number: `00148` (last is
+`00147_fts_rowid.sql`; renamed from 00146, then 00147, at merges with main) — recheck before naming.
 
-- `internal/db/migrations/00147_account_purge.sql`, Up:
+- `internal/db/migrations/00148_account_purge.sql`, Up:
   - `ALTER TABLE {slack,google,jira,linear}_accounts ADD COLUMN access_ok_at TEXT NOT NULL DEFAULT ''`
     and `ADD COLUMN revoked_at TEXT NOT NULL DEFAULT ''`.
   - Backfill so an upgrade starts every clock at the upgrade, never in the
@@ -132,7 +132,7 @@ Follow `.claude/skills/add-migration`. Next free number: `00147` (last is
   `internal/db/schema.sql`), so `purged` needs no table recreation; update the
   four `-- ok | error | revoked | removed` comments to add `purged`.
 - Mirror into `internal/db/schema.sql` (columns with comments, the ledger with
-  a "see 00147" header), add `account_purges` to `TestAllTablesExist`
+  a "see 00148" header), add `account_purges` to `TestAllTablesExist`
   (`internal/db/db_test.go`), regenerate
   `go test ./internal/db/ -run 'TestSchemaGolden|TestDesktopTestSchema' -update`.
 - Tests (`internal/db`): migration backfill (an `ok` account gets
