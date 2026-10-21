@@ -66,7 +66,7 @@ final class SQLCipherEngineTests: XCTestCase {
     }
 
     /// The Go engine's `internal/sqlcipher/VERSION` names the same SQLCipher
-    /// (and, when it lists one, the same SQLite) as the Swift side.
+    /// and the same SQLite as the Swift side.
     func testSwiftEngineMatchesGoAmalgamationVersion() throws {
         let versionURL = URL(fileURLWithPath: #filePath)   // …/WatchtowerDesktop/Tests/Core/<this file>
             .deletingLastPathComponent()                    // Tests/Core
@@ -74,17 +74,13 @@ final class SQLCipherEngineTests: XCTestCase {
             .deletingLastPathComponent()                    // WatchtowerDesktop
             .deletingLastPathComponent()                    // repo root
             .appendingPathComponent("internal/sqlcipher/VERSION")
-        guard let text = try? String(contentsOf: versionURL, encoding: .utf8) else {
-            throw XCTSkip("internal/sqlcipher/VERSION is not in this checkout yet (Go engine lane of #603)")
-        }
+        let text = try String(contentsOf: versionURL, encoding: .utf8)
         let pinned = Self.parseVersionFile(text)
         XCTAssertEqual(pinned.cipher, Self.pinnedCipherVersion,
                        "internal/sqlcipher/VERSION and the GRDB fork's SQLCipher.swift pin drifted; "
                        + "upgrade both together (aiwatchtowers/GRDB.swift README)")
-        if let sqlite = pinned.sqlite {
-            XCTAssertEqual(sqlite, Self.pinnedSQLiteVersion,
-                           "internal/sqlcipher/VERSION names another SQLite than SQLCipher.swift")
-        }
+        XCTAssertEqual(pinned.sqlite, Self.pinnedSQLiteVersion,
+                       "internal/sqlcipher/VERSION names another SQLite than SQLCipher.swift")
     }
 
     /// Pulls the SQLCipher and SQLite versions out of `VERSION`: the first

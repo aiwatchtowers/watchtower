@@ -120,6 +120,9 @@ jobs:
 
       - name: Test
         timeout-minutes: 20
+        env:
+          # SQLCipherInteropTests fail instead of skipping without Go (#603).
+          WATCHTOWER_REQUIRE_GO: "1"
         run: swift test
 
       # The process-spawning suites again on a one-thread concurrency pool,

@@ -452,6 +452,8 @@ jobs:
         timeout-minutes: 25
         env:
           LANE_TIMEOUT: "600"
+          # SQLCipherInteropTests fail instead of skipping without Go (#603).
+          WATCHTOWER_REQUIRE_GO: "1"
         run: ../scripts/swift-test-sharded.sh 3
 
       # The process-spawning suites again on a one-thread concurrency pool,
