@@ -72,10 +72,10 @@ final class LiveHomeFeedPerformer: HomeFeedPerforming {
                 }
             }
         case .output(let id):
-            // Already read or dismissed elsewhere: the update changes nothing, which is success.
+            // Already done or dismissed elsewhere: the update changes nothing, which is success.
             try await pool.write { db in
                 switch action {
-                case .done: try AutomationQueries.markOutputRead(db, id: id, now: now)
+                case .done: try AutomationQueries.markOutputDone(db, id: id, now: now)
                 case .hide: try AutomationQueries.dismissOutput(db, id: id, now: now)
                 }
             }

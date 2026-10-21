@@ -22,6 +22,21 @@ final class AutomationQueriesTests: XCTestCase {
         XCTAssertEqual(items.map(\.automation.name), ["alpha mail", "Mid", "Zeta report"])
     }
 
+    /// A `save_automation` proposal names its recipe by path: the saved
+    /// automation there, never a removed one.
+    func testAutomationIDByPath() throws {
+        let queue = try TestDatabase.create()
+        let id = try queue.write { db in
+            try TestDatabase.insertAutomation(db, slug: "gone", removedAt: "2026-10-10T00:00:00Z")
+            return try TestDatabase.insertAutomation(db, slug: "digest")
+        }
+        try queue.read { db in
+            XCTAssertEqual(try AutomationQueries.automationID(db, path: "/tmp/acme/automations/digest.md"), id)
+            XCTAssertNil(try AutomationQueries.automationID(db, path: "/tmp/acme/automations/gone.md"))
+            XCTAssertNil(try AutomationQueries.automationID(db, path: "/tmp/acme/automations/none.md"))
+        }
+    }
+
     func testListCarriesLastAndActiveRunsAndTriggerText() throws {
         let queue = try TestDatabase.create()
         let (id, finished, active) = try queue.write { db -> (Int64, Int64, Int64) in
@@ -154,33 +169,65 @@ final class AutomationQueriesTests: XCTestCase {
         }
     }
 
-    func testOutputWritesTouchOnlyReadAndDismissed() throws {
+    /// Read, Done and Dismiss are three states (ask #475): each write stamps
+    /// its own column once, and a done or dismissed card takes no other.
+    func testOutputWritesTouchOnlyTheirOwnColumn() throws {
         let queue = try TestDatabase.create()
-        let (read, dismissed) = try queue.write { db -> (Int64, Int64) in
+        let (opened, done, dismissed) = try queue.write { db -> (Int64, Int64, Int64) in
             let id = try TestDatabase.insertAutomation(db)
             let run = try TestDatabase.insertAutomationRun(db, automationID: id)
             return (try TestDatabase.insertAutomationOutput(db, automationID: id, runID: run, title: "a"),
-                    try TestDatabase.insertAutomationOutput(db, automationID: id, runID: run, title: "b"))
+                    try TestDatabase.insertAutomationOutput(db, automationID: id, runID: run, title: "b"),
+                    try TestDatabase.insertAutomationOutput(db, automationID: id, runID: run, title: "c"))
         }
+        let stamps: Set<String> = ["read_at", "done_at", "dismissed_at"]
         let before = try queue.read { db in try Row.fetchAll(db, sql: "SELECT * FROM automation_outputs ORDER BY id") }
+        let later = now.addingTimeInterval(60)
         try queue.write { db in
-            try AutomationQueries.markOutputRead(db, id: read, now: now)
+            try AutomationQueries.markOutputOpened(db, id: opened, now: now)
+            try AutomationQueries.markOutputDone(db, id: done, now: now)
             try AutomationQueries.dismissOutput(db, id: dismissed, now: now)
-            // Guarded: a second mark on either row changes nothing.
-            try AutomationQueries.dismissOutput(db, id: read, now: now.addingTimeInterval(60))
-            try AutomationQueries.markOutputRead(db, id: dismissed, now: now.addingTimeInterval(60))
+            // Guarded: opening twice keeps the first stamp, and a done or
+            // dismissed card takes no further stamp.
+            try AutomationQueries.markOutputOpened(db, id: opened, now: later)
+            try AutomationQueries.markOutputOpened(db, id: done, now: later)
+            try AutomationQueries.dismissOutput(db, id: done, now: later)
+            try AutomationQueries.markOutputDone(db, id: dismissed, now: later)
+            try AutomationQueries.markOutputOpened(db, id: dismissed, now: later)
         }
         let after = try queue.read { db in try Row.fetchAll(db, sql: "SELECT * FROM automation_outputs ORDER BY id") }
         XCTAssertEqual(after.count, before.count)
         for (old, new) in zip(before, after) {
-            for column in old.columnNames where column != "read_at" && column != "dismissed_at" {
+            for column in old.columnNames where !stamps.contains(column) {
                 XCTAssertEqual(old[column] as DatabaseValue, new[column] as DatabaseValue, column)
             }
         }
-        XCTAssertEqual(after[0]["read_at"] as String?, "2026-10-16T12:00:00Z")
-        XCTAssertNil(after[0]["dismissed_at"] as String?)
-        XCTAssertNil(after[1]["read_at"] as String?)
-        XCTAssertEqual(after[1]["dismissed_at"] as String?, "2026-10-16T12:00:00Z")
+        let stamped = "2026-10-16T12:00:00Z"
+        XCTAssertEqual(after.map { $0["read_at"] as String? }, [stamped, nil, nil])
+        XCTAssertEqual(after.map { $0["done_at"] as String? }, [nil, stamped, nil])
+        XCTAssertEqual(after.map { $0["dismissed_at"] as String? }, [nil, nil, stamped])
+    }
+
+    /// The Inbox lists open read cards too; Home and the badge only unread ones.
+    func testInboxOutputsIncludeReadOnRequest() throws {
+        let queue = try TestDatabase.create()
+        let (unread, read) = try queue.write { db -> (Int64, Int64) in
+            let id = try TestDatabase.insertAutomation(db)
+            let run = try TestDatabase.insertAutomationRun(db, automationID: id)
+            try TestDatabase.insertAutomationOutput(db, automationID: id, runID: run, doneAt: "2026-10-03T00:00:00Z")
+            return (try TestDatabase.insertAutomationOutput(db, automationID: id, runID: run,
+                                                            createdAt: "2026-10-01T09:00:00Z"),
+                    try TestDatabase.insertAutomationOutput(db, automationID: id, runID: run,
+                                                            createdAt: "2026-10-02T09:00:00Z",
+                                                            readAt: "2026-10-02T10:00:00Z"))
+        }
+        try queue.read { db in
+            XCTAssertEqual(try AutomationQueries.fetchInboxOutputs(db).map(\.id), [unread])
+            XCTAssertEqual(try AutomationQueries.fetchInboxOutputs(db, includeRead: true).map(\.id), [read, unread])
+            XCTAssertEqual(try AutomationQueries.fetchInboxOutputs(db, includeRead: true).first?.readAt,
+                           AutomationDates.parse("2026-10-02T10:00:00Z"))
+            XCTAssertEqual(try AutomationQueries.inboxOutputCount(db), 1)
+        }
     }
 
     func testRunLabels() throws {

@@ -79,7 +79,7 @@ package enum HomeFeedQueries {
         } ?? []
         let cutoff = now.addingTimeInterval(-windowHours * 3600)
         data.outputs = readSource(.automations, db, tables: ["automation_outputs", "automations"], failed: &data.failed) {
-            try AutomationQueries.fetchInboxOutputs(db, since: cutoff, limit: rowLimit)
+            try AutomationQueries.fetchInboxOutputs(db, since: cutoff, limit: rowLimit, includeRead: false)
         } ?? []
         data.targets = readSource(.targets, db, tables: ["targets"], failed: &data.failed) {
             try dueTargets(db, today: today)

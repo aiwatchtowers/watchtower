@@ -1,7 +1,7 @@
 import Foundation
 
 /// The Desktop's write path for automations: every write but an inbox
-/// output's read/dismiss marks goes through `watchtower automations …`
+/// output's read/done/dismiss marks goes through `watchtower automations …`
 /// (spec §9.6). Result structs decode the pinned `--json` keys of
 /// cmd/automations*.go; arrays default to `[]` and unknown keys are ignored.
 /// A non-zero exit surfaces as the runner's `CLIRunnerError.nonZeroExit`
@@ -26,6 +26,8 @@ package struct AutomationsCLI {
         case sessionLaunched(step: Int64, session: Int64)
         case sessionEnded(step: Int64, status: SessionEnd, error: String?)
         case rescan(workbenchID: Int64)
+        /// The owner's press of Reply action `action` of Inbox card `outputID`.
+        case reply(outputID: Int64, action: Int)
     }
 
     /// How a `session()` step's session ended, as `session-ended --status`
@@ -91,6 +93,8 @@ package struct AutomationsCLI {
         case let .rescan(workbenchID):
             // The personal folder and this workbench's (spec §13.4).
             return ["automations", "rescan", "--workbench", String(workbenchID)]
+        case let .reply(outputID, action):
+            return ["automations", "reply", "--output", String(outputID), "--action", String(action), "--json"]
         }
     }
 
@@ -188,6 +192,12 @@ package struct AutomationsCLI {
         _ = try await runner.run(args: Self.args(.rescan(workbenchID: workbenchID)))
     }
 
+    /// Records the press of a card's Reply action and queues one
+    /// `trigger='reply'` run (AUTO-09); the CLI wakes the daemon itself.
+    package func reply(outputID: Int64, action: Int) async throws -> ReplyResult {
+        try await decode(.reply(outputID: outputID, action: action))
+    }
+
     private func decode<T: Decodable>(_ op: Op) async throws -> T {
         let data = try await runner.run(args: Self.args(op))
         return try JSONDecoder().decode(T.self, from: data)
@@ -209,6 +219,16 @@ extension AutomationsCLI {
 
         enum CodingKeys: String, CodingKey {
             case runID = "run_id", coalesced, daemonRunning = "daemon_running"
+        }
+    }
+
+    /// `reply --json`.
+    package struct ReplyResult: Decodable, Equatable, Sendable {
+        package let runID: Int64
+        package let daemonRunning: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case runID = "run_id", daemonRunning = "daemon_running"
         }
     }
 

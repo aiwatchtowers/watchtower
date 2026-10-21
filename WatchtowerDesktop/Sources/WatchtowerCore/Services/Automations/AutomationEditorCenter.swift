@@ -156,10 +156,18 @@ package final class AutomationEditorCenter {
     /// `show --json` (a draft with unsaved edits is kept as it is, never
     /// replaced by the file), records the chat's newest draft text as already
     /// adopted (opening never pulls in an old cached draft), then checks it.
-    package func beginEdit(_ id: Int64, chatNewestText: String?) async {
+    /// A `startText` (an Inbox proposal's recipe) is then adopted over the
+    /// loaded text, as a chat draft is: edits in a kept draft go aside.
+    package func beginEdit(_ id: Int64, chatNewestText: String?, startText: String? = nil) async {
         if let chatNewestText { lastAdopted[id] = chatNewestText }
         guard await load(id) else { return }
-        scheduleCheck(id)
+        guard let startText else {
+            scheduleCheck(id)
+            return
+        }
+        // Adopted even when the chat's newest draft is this same text.
+        lastAdopted[id] = nil
+        adoptChatDraft(id, text: startText, slug: nil)
     }
 
     /// Whether a draft is open after the load (a loaded or kept one).

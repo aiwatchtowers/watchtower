@@ -151,6 +151,7 @@ final class AutomationCardPresentationTests: XCTestCase {
         XCTAssertEqual(ACP.permissionLine("mcp:github/list_*"), "Use list_* from github (Quick Connection)")
         XCTAssertEqual(ACP.permissionLine(#"shell:"make release""#), "Run the command make release")
         XCTAssertEqual(ACP.permissionLine("session:start@codex"), "Start Codex sessions")
+        XCTAssertEqual(ACP.permissionLine("inbox:reply"), "Reacts to its own Inbox buttons")
         XCTAssertEqual(ACP.permissionLine("weird"), "weird")
         XCTAssertEqual(ACP.outputLine("inbox"), "Put cards in your Inbox")
         XCTAssertEqual(ACP.outputLine("report"), "Add reports to this automation")
@@ -252,6 +253,7 @@ final class AutomationCardPresentationTests: XCTestCase {
         XCTAssertEqual(ACP.triggerLabel(run(.succeeded)), "Scheduled")
         XCTAssertEqual(ACP.triggerLabel(run(.succeeded, trigger: "dry_run")), "Dry run")
         XCTAssertEqual(ACP.triggerLabel(run(.succeeded, trigger: "catch_up")), "Caught up after sleep")
+        XCTAssertEqual(ACP.triggerLabel(run(.succeeded, trigger: "reply")), "Inbox button")
         XCTAssertEqual(ACP.triggerLabel(AutomationRun(id: 9, automationID: 7, rerunOf: 3, status: .running)), "Rerun of #3")
     }
 
