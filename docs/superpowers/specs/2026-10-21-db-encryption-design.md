@@ -22,9 +22,9 @@ Watchtower binaries signed by our team.
 
 ## 2. Lessons carried in
 
-- **#567 (owner's note: no Keychain prompts after every binary update).** I could not find the #567
-  record in the repo or on GitHub (the repo's #567 is the session-place board target). I carried over
-  the lesson the owner stated, which matches #51 (TCC grants keyed to an ad-hoc cdhash):
+- **#567 (board target: tokens into the Keychain instead of 0600 files, backlog).** Its risk note: a
+  move to the Keychain can bring Keychain access prompts after every binary update, so the design must
+  avoid them from the start. The same lesson as #51 (TCC grants keyed to an ad-hoc cdhash):
   **never use a file-based (legacy) Keychain ACL.** Its trusted-app list pins a binary and prompts again
   when the binary changes, and an ad-hoc build gets a new cdhash on every build. Access in this design
   depends only on an **access group entitlement under our team ID**, which stays the same across
