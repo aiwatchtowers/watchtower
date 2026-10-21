@@ -39,6 +39,9 @@ package struct JiraAccount: FetchableRecord, Identifiable, Equatable {
 
     package var isOK: Bool { status == "ok" }
     package var isRevoked: Bool { status == "revoked" }
+    /// Its synced data was deleted after its access was revoked or went stale
+    /// (board #601); a Re-login revives it. Never healthy.
+    package var isPurged: Bool { status == "purged" }
 
     /// Display text for a row: the user-facing label if set, else the site
     /// name, else a positional fallback for a not-yet-consented row (site name
