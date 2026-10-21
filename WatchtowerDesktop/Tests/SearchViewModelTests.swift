@@ -183,3 +183,42 @@ struct SearchViewModelGuideTests {
         #expect(HelpChatPrefill.merge(draft: "mine", prefill: "q") == "mine\nq")
     }
 }
+
+@Suite("SearchViewModel index rebuild line")
+@MainActor
+struct SearchViewModelIndexRebuildTests {
+    @Test("pending at load shows the line; neither key nor legacy table hides it")
+    func readAtLoad() async throws {
+        let (manager, _) = try TestDatabase.createDatabaseManager()
+        #expect(!SearchViewModel(dbManager: manager).indexRebuildPending)
+        try await manager.dbPool.write { db in
+            try db.execute(sql: "CREATE VIRTUAL TABLE messages_fts_legacy USING fts5(text)")
+        }
+        #expect(SearchViewModel(dbManager: manager).indexRebuildPending)
+    }
+
+    @Test("a search re-reads the state: the line goes once the rebuild finishes")
+    func searchRereads() async throws {
+        let (manager, _) = try TestDatabase.createDatabaseManager()
+        try await manager.dbPool.write { db in
+            try db.execute(sql: "INSERT INTO db_maintenance (key, value) VALUES ('fts_rebuild_pending', '1')")
+        }
+        let vm = SearchViewModel(dbManager: manager)
+        #expect(vm.indexRebuildPending)
+
+        try await manager.dbPool.write { db in
+            try db.execute(sql: "DELETE FROM db_maintenance WHERE key = 'fts_rebuild_pending'")
+        }
+        vm.query = "rollout"
+        vm.search()
+        await vm.searchTask?.value
+        #expect(!vm.indexRebuildPending)
+        #expect(vm.errorMessage == nil, "the state read never blocks the search")
+
+        try await manager.dbPool.write { db in
+            try db.execute(sql: "INSERT INTO db_maintenance (key, value) VALUES ('fts_rebuild_pending', '1')")
+        }
+        vm.refreshIndexRebuildPending()
+        #expect(vm.indexRebuildPending)
+    }
+}

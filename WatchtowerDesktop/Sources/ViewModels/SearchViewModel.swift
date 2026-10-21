@@ -11,6 +11,9 @@ final class SearchViewModel {
     var guideHits: [GuideHit] = []
     var isSearching = false
     var errorMessage: String?
+    /// The messages search index is still being rebuilt (#872): search may
+    /// miss older Slack messages. Read when the screen loads and on each search.
+    private(set) var indexRebuildPending = false
     private(set) var slackLinks: SlackLinkResolver?
 
     private let dbManager: DatabaseManager
@@ -27,6 +30,24 @@ final class SearchViewModel {
     init(dbManager: DatabaseManager) {
         self.dbManager = dbManager
         self.slackLinks = try? dbManager.dbPool.read { db in try SlackLinkResolver.load(db) }
+        refreshIndexRebuildPending()
+    }
+
+    /// One small read; a failure hides the line and is logged, never blocks search.
+    func refreshIndexRebuildPending() {
+        do {
+            indexRebuildPending = try dbManager.dbPool.read { db in
+                try SearchQueries.messagesIndexRebuildPending(db)
+            }
+        } catch {
+            Self.logIndexStateFailure(error)
+            indexRebuildPending = false
+        }
+    }
+
+    private static func logIndexStateFailure(_ error: Error) {
+        Logger(subsystem: "com.watchtower.desktop", category: "search")
+            .error("search index state read failed: \(error.localizedDescription, privacy: .public)")
     }
 
     func slackChannelURL(channelID: String) -> URL? {
@@ -65,6 +86,17 @@ final class SearchViewModel {
             guard isCurrent() else { return }
             self.isSearching = true
             self.onSearchStep?(.reading)
+            do {
+                let pending = try await dbManager.dbPool.read { db in
+                    try SearchQueries.messagesIndexRebuildPending(db)
+                }
+                if isCurrent() { self.indexRebuildPending = pending }
+            } catch {
+                if isCurrent() {
+                    Self.logIndexStateFailure(error)
+                    self.indexRebuildPending = false
+                }
+            }
             // Guide pages ride along; a failure here must not hide Slack results.
             do {
                 let hits = try await dbManager.dbPool.read { db in

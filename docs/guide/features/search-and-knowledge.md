@@ -39,6 +39,7 @@ Memory is not part of this index; the assistant reads it separately. A deleted s
 ## When it's empty or wrong
 
 - **"No results for ..."** in **Search**. Every word must match, so drop a word. Only Slack messages and guide pages are searched here; mail and Jira are found through the chat.
+- **"Search index is still being updated — older Slack messages may be missing."** After some updates Watchtower rebuilds the Slack message index. New messages are found at once, older ones come back as the rebuild goes; usually it finishes at launch or within a few background sync cycles, and the line goes away on its own the next time you open **Search** or search.
 - **The chat doesn't find something recent.** The index trails the sync by one daemon cycle. For Slack, results may say "NN% indexed" during a first big load.
 - **"Confluence sync is turned off."** Press **Enable** in the Confluence section; it restarts the background sync.
 - **"No Confluence spaces found on this site."** Your Atlassian account sees no spaces, or the grant does not cover Confluence. Press **Grant Confluence access** or sign in again.
