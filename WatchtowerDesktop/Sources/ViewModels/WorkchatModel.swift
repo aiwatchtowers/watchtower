@@ -57,11 +57,13 @@ final class WorkchatModel {
     @ObservationIgnored private var attachmentCounter: Int64 = 0
     /// The chips of a line on its way, to bring back if it cannot go.
     @ObservationIgnored private var sentAttachments: [UUID: [ChatAttachment]] = [:]
-    /// Codex has not been verified to queue a Return typed mid-turn, and an
-    /// unknown kind is not trusted to: both keep the phone's busy hold.
-    @ObservationIgnored private let kind: TerminalSession.Kind?
-    /// Whether a line waits for the agent to stop (Codex, unknown kind).
-    var holdsUntilIdle: Bool { kind == nil || kind == .codex }
+    /// The session's kind, read each time it is needed: a pane restored at
+    /// launch makes its model before the sessions load.
+    @ObservationIgnored private let kind: @MainActor () -> TerminalSession.Kind?
+    /// Whether a line waits for the agent to stop. Only Claude Code is
+    /// known to queue a Return typed mid-turn; Codex (not verified), a shell
+    /// and a kind not known yet keep the phone's busy hold.
+    var holdsUntilIdle: Bool { kind() != .claude }
     /// Feed entries that stood for a line already: one echo, one line.
     @ObservationIgnored private var claimedEntries: Set<String> = []
     /// Bumped by each permission read and answer, so a read that finishes
@@ -75,7 +77,7 @@ final class WorkchatModel {
         sessionID: Int64,
         control: any WorkchatControl,
         lineDelivery: SessionLineDelivery,
-        kind: TerminalSession.Kind? = nil,
+        kind: @escaping @MainActor () -> TerminalSession.Kind?,
         attachmentStore: WorkchatAttachmentStore? = nil,
         now: @escaping () -> Date = Date.init
     ) {
@@ -108,8 +110,9 @@ final class WorkchatModel {
         ))
         let delivery = await lineDelivery.deliverLine(
             text, key: .workchat(id), sessionID: sessionID,
-            gate: { [weak control, busyHold = holdsUntilIdle] in
-                Self.gate(busyHold ? control?.lineCheck($0) : control?.workchatLineCheck($0))
+            gate: { [weak self, weak control] in
+                // Read at each try: a held line goes once the kind is known.
+                Self.gate(self?.holdsUntilIdle ?? true ? control?.lineCheck($0) : control?.workchatLineCheck($0))
             },
             onHeldEvent: { [weak self] event in
                 guard case let .tried(delivery) = event else { return }

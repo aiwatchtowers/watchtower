@@ -69,7 +69,7 @@ final class WorkchatModelTests: XCTestCase {
         let clock = try XCTUnwrap(clock)
         let control = try control ?? makeControl()
         return WorkchatModel(
-            sessionID: sessionID, control: control, lineDelivery: delivery, kind: .claude,
+            sessionID: sessionID, control: control, lineDelivery: delivery, kind: { .claude },
             attachmentStore: WorkchatAttachmentStore(root: folder.appendingPathComponent("att"))
         ) { clock.now }
     }
@@ -313,7 +313,9 @@ final class WorkchatModelTests: XCTestCase {
         let session = try await liveSession()
         setState(session, .working)
         let clock = try XCTUnwrap(clock)
-        let model = WorkchatModel(sessionID: session, control: try makeControl(), lineDelivery: delivery) { clock.now }
+        let model = WorkchatModel(
+            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { nil }
+        ) { clock.now }
         model.draft = "Hello"
 
         await model.send()
@@ -352,12 +354,48 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertEqual(model.outgoing.count, 1, "an idle line's echo past the window stays a bubble")
     }
 
+    /// The kind is read at each send, not when the model is made: a pane
+    /// restored at launch makes its model before the sessions load.
+    func testKindKnownOnlyAfterTheModelIsMadeDropsTheBusyHold() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let clock = try XCTUnwrap(clock)
+        var kind: TerminalSession.Kind?
+        let model = WorkchatModel(
+            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { kind }
+        ) { clock.now }
+        XCTAssertTrue(model.holdsUntilIdle, "unknown kind keeps the hold")
+
+        kind = .claude
+        model.draft = "Also add the fixture"
+        await model.send()
+
+        XCTAssertFalse(model.holdsUntilIdle)
+        XCTAssertEqual(model.outgoing.first?.state, .sent)
+        XCTAssertTrue(typedText.contains("Also add the fixture"))
+    }
+
+    func testShellKindKeepsTheBusyHold() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let clock = try XCTUnwrap(clock)
+        let model = WorkchatModel(
+            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { .shell }
+        ) { clock.now }
+        model.draft = "Also add the fixture"
+
+        await model.send()
+
+        XCTAssertTrue(model.holdsUntilIdle)
+        XCTAssertEqual(model.outgoing.first?.state, .queued)
+    }
+
     func testSendWhileWorkingHoldsOnCodex() async throws {
         let session = try await liveSession()
         setState(session, .working)
         let clock = try XCTUnwrap(clock)
         let model = WorkchatModel(
-            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: .codex
+            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { .codex }
         ) { clock.now }
         model.draft = "Also add the fixture"
 
