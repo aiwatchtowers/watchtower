@@ -37,13 +37,14 @@ enum AutomationEditFixtures {
 
     static func validateJSON(
         approval: String,
+        name: String = "Digest",
         contentHash: String = "c2",
         widening: [String] = [],
         ok: Bool = true,
         errors: [String] = []
     ) throws -> Data {
         let object: [String: Any] = [
-            "ok": ok, "errors": errors, "slug": "digest", "name": "Digest", "scope": "personal",
+            "ok": ok, "errors": errors, "slug": "digest", "name": name, "scope": "personal",
             "approval_hash": approval, "content_hash": contentHash, "permissions": ["jira:read@ACME"],
             "outputs": ["report"], "widening": widening
         ]
@@ -94,9 +95,9 @@ final class AutomationFormTests: XCTestCase {
     }
 
     /// D26: a trigger, missed, budget or concurrency edit is spliced into the
-    /// recipe and changes the approval hash Go returns, so the sheet shows and
-    /// the active grants are paused.
-    func testScheduleOrBudgetEditShowsSheetAndPausesGrants() throws {
+    /// recipe and changes the approval hash Go returns, so the active grants
+    /// are paused.
+    func testScheduleOrBudgetEditPausesGrants() throws {
         let edits: [(String, (inout RecipeFrontmatter) -> Void, String)] = [
             ("trigger", { $0.trigger = .schedule("0 16 * * 1-5") }, "  schedule: \"0 16 * * 1-5\"\n"),
             ("missed", { $0.missed = "skip" }, "missed: \"skip\"\n"),
