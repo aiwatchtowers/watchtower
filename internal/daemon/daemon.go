@@ -156,6 +156,7 @@ type Daemon struct {
 	dayPlanPipeline            DayPlanRunner
 	lastJira                   time.Time
 	linearSyncers              []linearAccountSyncer
+	purgeHold                  map[purgeKey]bool // accounts purged or being purged; refreshed by phaseAccountPurge, read by the sync phases
 	lastLinear                 time.Time
 	lastPeople                 time.Time // when people cards last ran (once per day)
 	lastBriefing               time.Time // when briefing last ran (once per day)
@@ -509,6 +510,9 @@ func (d *Daemon) triggerChannel() <-chan struct{} {
 
 func (d *Daemon) runSync(ctx context.Context) {
 	d.sampleLockStats(ctx)
+	// First: schedule/cancel/run account purges (#601), so a purged account's
+	// syncer is skipped this very cycle.
+	d.phaseAccountPurge(ctx)
 	// Every source sync below starts after this instant, so the data the
 	// inbox scans at the end of the cycle is complete up to it (INBOX-09).
 	syncStart := time.Now()
@@ -750,6 +754,9 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	d.trackedPipelineRun("slack-sync", func() pipelineRunStats {
 		messages := 0
 		for _, o := range d.orchestrators {
+			if d.purgeHeld("slack", o.AccountID()) {
+				continue
+			}
 			stopBeat := d.startSyncHeartbeat(o)
 			err := o.Run(ctx, sync.SyncOptions{})
 			stopBeat()
@@ -855,6 +862,9 @@ func (d *Daemon) startupCalendarSync(ctx context.Context) {
 // aborting the rest of the accounts.
 func (d *Daemon) phaseCalendarSync(ctx context.Context) {
 	for _, s := range d.calendarSyncers {
+		if d.purgeHeld("google", s.AccountID()) {
+			continue
+		}
 		n, err := s.Sync(ctx)
 		if err != nil {
 			d.logger.Printf("calendar sync error: %v", err)
@@ -886,6 +896,9 @@ func (d *Daemon) phaseCalDAVSync(ctx context.Context) {
 // aborting the rest of the accounts.
 func (d *Daemon) phaseGmailSync(ctx context.Context) {
 	for _, s := range d.gmailSyncers {
+		if d.purgeHeld("google", s.AccountID()) {
+			continue
+		}
 		var n int
 		var err error
 		d.observePhase(ctx, automations.MailSource(d.db, "gmail", s.AccountID()), func() { n, err = s.Sync(ctx) })
@@ -967,6 +980,9 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 	var firstErr error
 	anyClean := false
 	for _, s := range d.jiraSyncers {
+		if d.purgeHeld("jira", s.AccountID()) {
+			continue
+		}
 		n, err := s.Sync(ctx)
 		// Read after every Sync, whatever it returned (R13).
 		if from, ok := s.FirstSyncFrom(); ok {
@@ -1057,6 +1073,9 @@ func (d *Daemon) phaseLinearSync(ctx context.Context) {
 
 	anyClean := false
 	for _, s := range d.linearSyncers {
+		if d.purgeHeld("linear", s.AccountID()) {
+			continue
+		}
 		n, err := s.Sync(ctx)
 		if err != nil {
 			d.logger.Printf("linear: account %d: sync error: %v", s.AccountID(), err)

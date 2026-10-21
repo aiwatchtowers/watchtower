@@ -135,14 +135,21 @@ func (d *Daemon) historyBackfillDue() bool {
 // Gmail syncer, IMAP syncer and Jira syncer.
 func (d *Daemon) historyBackfillSources() []historybackfill.Source {
 	out := make([]historybackfill.Source, 0, len(d.orchestrators)+len(d.gmailSyncers)+len(d.imapSyncers)+len(d.jiraSyncers))
+	// Accounts purged or being purged (#601) are left out.
 	for _, o := range d.orchestrators {
-		out = append(out, slackSource{o: o, id: o.AccountID(), d: d})
+		if !d.purgeHeld("slack", o.AccountID()) {
+			out = append(out, slackSource{o: o, id: o.AccountID(), d: d})
+		}
 	}
 	for _, s := range d.gmailSyncers {
-		out = append(out, gmailSource{s: s, id: s.AccountID(), d: d})
+		if !d.purgeHeld("google", s.AccountID()) {
+			out = append(out, gmailSource{s: s, id: s.AccountID(), d: d})
+		}
 	}
 	for _, s := range d.jiraSyncers {
-		out = append(out, jiraSource{id: s.AccountID(), d: d})
+		if !d.purgeHeld("jira", s.AccountID()) {
+			out = append(out, jiraSource{id: s.AccountID(), d: d})
+		}
 	}
 	for _, s := range d.imapSyncers {
 		out = append(out, imapSource{s: s, id: s.AccountID(), d: d})

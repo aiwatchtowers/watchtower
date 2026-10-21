@@ -39,6 +39,9 @@ func NewSyncer(client *Client, database *db.DB, cfg *config.Config, logger *log.
 	}
 }
 
+// AccountID returns the google_accounts row this syncer pulls.
+func (s *Syncer) AccountID() int64 { return s.accountID }
+
 // Sync fetches calendars and events, upserts them to DB, and cleans up stale data.
 // Returns the count of new/updated events.
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
