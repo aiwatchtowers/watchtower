@@ -59,6 +59,23 @@ final class InboxListBuilderTests: XCTestCase {
         XCTAssertEqual(sections[1].items.map(\.id), [.output(3), .reminder(8)])
     }
 
+    /// Done or Dismiss on the selected row moves to the row below it, or to
+    /// the one above when it was the last; nothing when it was alone.
+    func testSelectionAfterMovesDownThenUp() throws {
+        let now = try date("2026-10-21T15:00:00Z")
+        let sections = InboxListBuilder.sections(
+            proposals: [proposal(1)], reminders: [],
+            outputs: [try output(2, at: "2026-10-21T10:00:00Z"), try output(3, at: "2026-10-19T10:00:00Z")],
+            now: now, calendar: utc
+        )
+        XCTAssertEqual(InboxListBuilder.selection(after: .proposal(1), in: sections), .output(2))
+        XCTAssertEqual(InboxListBuilder.selection(after: .output(2), in: sections), .output(3), "across sections")
+        XCTAssertEqual(InboxListBuilder.selection(after: .output(3), in: sections), .output(2), "the last moves up")
+        XCTAssertNil(InboxListBuilder.selection(after: .output(9), in: sections), "not listed")
+        let alone = [InboxSection(title: "Today", items: [.output(try output(2, at: "2026-10-21T10:00:00Z"))])]
+        XCTAssertNil(InboxListBuilder.selection(after: .output(2), in: alone))
+    }
+
     func testCalendarDayBoundary() throws {
         var tokyo = Calendar(identifier: .gregorian)
         tokyo.timeZone = TimeZone(identifier: "Asia/Tokyo") ?? .gmt
@@ -136,6 +153,15 @@ final class InboxCardTextsTests: XCTestCase {
                      "**Acme** asked twice."] {
             XCTAssertTrue(markdown.contains(part), part)
         }
+    }
+
+    func testStampedLines() throws {
+        let now = try XCTUnwrap(AutomationDates.parse("2026-10-21T15:00:00Z"))
+        let today = try XCTUnwrap(AutomationDates.parse("2026-10-21T14:00:00Z"))
+        let earlier = try XCTUnwrap(AutomationDates.parse("2026-10-18T09:30:00Z"))
+        XCTAssertEqual(InboxCardTexts.stamped("Reminder", at: today, now: now, calendar: utc), "Reminder · 14:00")
+        XCTAssertEqual(InboxCardTexts.stamped("Assistant proposal", at: earlier, now: now, calendar: utc),
+                       "Assistant proposal · Oct 18")
     }
 
     func testSourceLines() throws {

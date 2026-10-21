@@ -72,6 +72,10 @@ enum DesignShotCatalog {
             DesignShot(name: "automation-new-sheet-workbench", size: NSSize(width: 960, height: 640)) {
                 AnyView(AutomationShotFixtures.newSheetForWorkbench().detailBackground())
             },
+            // The Inbox read like mail (spec B1).
+            DesignShot(name: "inbox-reading-pane", size: NSSize(width: 1180, height: 720)) {
+                InboxShotFixtures.readingPane()
+            },
             // Branch review (#712, artboards A–C).
             DesignShot(name: "branch-review-changes", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.changes()
@@ -121,6 +125,7 @@ enum DesignShotFixtures {
         if let poolPath { TestDatabase.cleanup(path: poolPath) }
         poolPath = nil
         ReviewShotFixtures.cleanUp()
+        InboxShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)

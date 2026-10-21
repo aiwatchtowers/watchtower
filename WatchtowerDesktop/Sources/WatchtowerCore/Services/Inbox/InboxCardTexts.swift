@@ -21,8 +21,14 @@ package enum InboxCardTexts {
 
     /// The list row's source: "<automation> · 10:00" today, else its day.
     package static func sourceLine(_ card: AutomationOutputCard, now: Date, calendar: Calendar = .current) -> String {
-        let sameDay = calendar.isDate(card.createdAt, inSameDayAs: now)
-        return "\(card.automationName) · \(format(card.createdAt, sameDay ? "HH:mm" : "MMM d", calendar))"
+        stamped(card.automationName, at: card.createdAt, now: now, calendar: calendar)
+    }
+
+    /// A list row's source: "<prefix> · 10:00" today, else "<prefix> · Oct 18"
+    /// (a reminder's due time, a proposal's creation).
+    package static func stamped(_ prefix: String, at date: Date, now: Date, calendar: Calendar = .current) -> String {
+        let sameDay = calendar.isDate(date, inSameDayAs: now)
+        return "\(prefix) · \(format(date, sameDay ? "HH:mm" : "MMM d", calendar))"
     }
 
     /// The reading pane's source, which opens the run.

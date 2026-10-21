@@ -85,6 +85,20 @@ final class InboxReplyPressTests: XCTestCase {
         XCTAssertEqual(vm.outputRows.map(\.id), [id])
     }
 
+    /// Cobra prints a refusal as "Error: <text>"; the banner shows the text.
+    func testCLIRefusalDropsTheErrorPrefix() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let id = try await seed(pool)
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: Sent — run #7\n"))
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
+        vm.refresh()
+
+        await vm.pressReply(outputID: id, action: 1)
+
+        XCTAssertEqual(vm.lastError, "Sent — run #7")
+    }
+
     private func waitUntil(timeout: TimeInterval = 5, _ condition: @escaping @MainActor () -> Bool) async {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition() {

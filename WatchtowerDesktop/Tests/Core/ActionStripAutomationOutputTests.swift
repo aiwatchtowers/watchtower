@@ -182,6 +182,43 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         XCTAssertTrue(vm.outputRows.isEmpty)
     }
 
+    /// Opening a card writes `read_at` under its own key: a Done pressed
+    /// while that write still waits for the writer lands, it is not dropped.
+    func testDoneWhileOpeningLands() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let seed = try await seedAutomation(pool)
+        let id = try await pool.write { db in
+            try TestDatabase.insertAutomationOutput(db, automationID: seed.automationID, runID: seed.runID)
+        }
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        vm.refresh()
+        // Hold the writer, so the opening write waits for it.
+        let started = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let holder = Task.detached {
+            try await pool.write { _ in
+                started.signal()
+                release.wait()
+            }
+        }
+        await Task.detached { started.wait() }.value
+
+        let opening = Task { await vm.select(.output(id)) }
+        let done = Task { await vm.markOutputDone(id) }
+        try await Task.sleep(for: .milliseconds(50))
+        release.signal()
+        try await holder.value
+        await opening.value
+        await done.value
+
+        let row = try XCTUnwrap(try outputRow(pool, id))
+        XCTAssertNotNil(row["done_at"] as String?, "the Done press was dropped")
+        XCTAssertTrue(vm.outputRows.isEmpty)
+        XCTAssertNil(vm.selection)
+        XCTAssertNil(vm.lastError)
+    }
+
     func testCardCarriesPressAndRecipeState() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }

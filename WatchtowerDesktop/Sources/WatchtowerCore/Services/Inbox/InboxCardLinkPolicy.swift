@@ -18,4 +18,21 @@ package enum InboxCardLinkPolicy {
             return false
         }
     }
+
+    /// Where a permitted link goes.
+    package enum Route: Equatable, Sendable {
+        /// An app screen, rebuilt as `watchtower-nav://<screen>`: `NavLink`
+        /// compares the scheme as written, and an author may write it in caps.
+        case screen(URL)
+        case web(URL)
+    }
+
+    /// What a press opens; nil when `permits` refuses the link.
+    package static func route(_ url: URL, navScreens: Set<String>) -> Route? {
+        guard permits(url, navScreens: navScreens) else { return nil }
+        if url.scheme?.lowercased() == NavLink.scheme, let screen = url.host {
+            return .screen(NavLink.url(screen))
+        }
+        return .web(url)
+    }
 }

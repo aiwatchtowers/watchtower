@@ -137,8 +137,8 @@ package final class ActionStripViewModel {
         pendingWrites.isPending(CardKey.reminder(id))
     }
 
-    /// An output's opening, Done, Dismiss or Reply press is under way: its
-    /// buttons wait.
+    /// An output's Done, Dismiss or Reply press is under way: its buttons
+    /// wait (its opening does not hold them).
     package func isWriting(output id: Int64) -> Bool {
         pendingWrites.isPending(CardKey.output(id))
     }
@@ -156,12 +156,14 @@ package final class ActionStripViewModel {
     }
 
     /// Shows `item` in the reading pane. Opening an unread output writes its
-    /// `read_at` (only that column); the card stays listed, now read.
+    /// `read_at` (only that column); the card stays listed, now read. The
+    /// opening has a key of its own: the card's buttons do not wait for it,
+    /// and a Done or Dismiss pressed meanwhile still lands.
     package func select(_ item: InboxSelection?) async {
         selection = item
         guard case .output(let id) = item, outputRows.first(where: { $0.id == id })?.isUnread == true else { return }
         let now = Date()
-        await write(.output(id)) { try AutomationQueries.markOutputOpened($0, id: id, now: now) }
+        await write(.opening(id)) { try AutomationQueries.markOutputOpened($0, id: id, now: now) }
     }
 
     /// Done on an output card: writes `done_at` only. The card leaves the
@@ -197,9 +199,15 @@ package final class ActionStripViewModel {
                 refresh()
             } catch {
                 refresh()
-                lastError = AutomationsViewModel.message(for: error)
+                lastError = Self.replyRefusal(AutomationsViewModel.message(for: error))
             }
         }
+    }
+
+    /// The CLI's refusal without cobra's "Error: " lead ("Sent — run #7").
+    nonisolated static func replyRefusal(_ message: String) -> String {
+        let lead = "Error: "
+        return message.hasPrefix(lead) ? String(message.dropFirst(lead.count)) : message
     }
 
     /// A card that left the Inbox is no longer shown.
@@ -210,6 +218,8 @@ package final class ActionStripViewModel {
     private enum CardKey: Hashable {
         case reminder(Int64)
         case output(Int64)
+        /// An output's `read_at` on opening.
+        case opening(Int64)
     }
 
     /// One write per card: a second press while it waits does nothing.

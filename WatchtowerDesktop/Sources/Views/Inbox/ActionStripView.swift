@@ -1,8 +1,8 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The Inbox tab's content: a flat strip of due reminders, pending agent-
-/// action proposals and unread automation inbox outputs — the reaction-command
+/// The Inbox tab's content: due reminders, pending agent-action proposals
+/// and open automation inbox outputs, as a list and a reading pane — the reaction-command
 /// surface, which replaced the
 /// situations Dashboard (now deleted). The Dashboard's two sibling tabs did
 /// not go with it: the learned-rules manager still feeds the digest/tracks/
@@ -50,9 +50,7 @@ struct ActionStripView: View {
                         onOpenSettings: openReactionDictionary,
                         onOpen: open,
                         onOpenAutomationRun: { runID in appState.openAutomationRun(runID: runID) },
-                        onOpenAutomation: { output in
-                            appState.openAutomationRun(automationID: output.automationID, runID: output.runID)
-                        },
+                        onCardAction: { perform($0, vm: vm) },
                         onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
                         sessionHoldsCall: { appState.chatSessionPool?.holdsSessionCall($0) ?? false },
                         emptyState: appState.emptyStateContext,
@@ -119,6 +117,27 @@ struct ActionStripView: View {
         }
     }
 
+    /// A card press. Links go through the press-time policy: a screen
+    /// link only through `openNavLink`, a web link to the system.
+    /// Discuss in Chat and Hand to Agent are carried out by AppState's card
+    /// commands (the next step of the Inbox plan); until then they do nothing.
+    private func perform(_ command: InboxCardCommand, vm: ActionStripViewModel) {
+        switch command {
+        case .openLink(let url):
+            switch InboxCardLinkPolicy.route(url, navScreens: appState.visibleHelpScreenIDs) {
+            case .screen(let screen): appState.openNavLink(screen)
+            case .web(let web): NSWorkspace.shared.open(web)
+            case nil: break
+            }
+        case let .reply(outputID, action):
+            Task { await vm.pressReply(outputID: outputID, action: action) }
+        case .openAutomation(let card):
+            appState.openAutomationRun(automationID: card.automationID, runID: nil)
+        case .chat, .agent:
+            break
+        }
+    }
+
     private func openReactionDictionary() {
         appState.settingsTab = .connections
         appState.settingsConnection = .slack
@@ -132,8 +151,9 @@ struct ActionStripView: View {
     }
 }
 
-/// The Actions segment: the strip itself, or — when it is empty — the
-/// reaction cheat sheet in its place. On a non-empty strip the cheat sheet
+/// The Actions segment: the list and reading pane (`InboxSplitView`), or —
+/// when it is empty — the reaction cheat sheet in its place. On a non-empty
+/// strip the cheat sheet
 /// stays one `?` click away in a popover, never inline (a card-shaped help
 /// block among real cards would read as something waiting on the owner).
 /// Split out of `ActionStripView` so it takes plain inputs and can be tested
@@ -151,7 +171,8 @@ struct ActionStripActionsView: View {
     /// line: open that automation's card with the run expanded. Nil (tests)
     /// renders them as plain text.
     var onOpenAutomationRun: ((Int64) -> Void)?
-    var onOpenAutomation: ((AutomationOutputCard) -> Void)?
+    /// A press on an automation card's buttons (`InboxCardCommand`).
+    var onCardAction: (InboxCardCommand) -> Void = { _ in }
     /// A failed Slack send's Reconnect Slack button (`AppState.reconnectSlack`).
     var onReconnectSlack: ((Int64) async -> String?)?
     /// `AgentActionCardView.sessionHoldsCall` for a row (a connector call).
@@ -163,8 +184,6 @@ struct ActionStripActionsView: View {
     /// Plan do.
     var onOpenConnections: () -> Void = {}
     var ownerKnown = true
-
-    @State private var showsCheatSheet = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -191,51 +210,14 @@ struct ActionStripActionsView: View {
                 }
                 .accessibilityIdentifier("actionStrip.cheatSheet")
             } else {
-                HStack {
-                    Spacer()
-                    Button {
-                        showsCheatSheet = true
-                    } label: {
-                        Image(systemName: "questionmark.circle")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Reaction commands")
-                    .accessibilityIdentifier("actionStrip.cheatSheetButton")
-                    .popover(isPresented: $showsCheatSheet, arrowEdge: .bottom) {
-                        ReactionCheatSheetView(rows: cheatSheetRows, onOpenSettings: onOpenSettings)
-                            .frame(width: 440)
-                            .popoverSurface()
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.top, 6)
-                List {
-                    if !vm.reminderRows.isEmpty {
-                        Section("Reminders") {
-                            ForEach(vm.reminderRows) { reminder in
-                                ReminderRow(reminder: reminder, vm: vm)
-                            }
-                        }
-                    }
-                    if !vm.outputRows.isEmpty {
-                        Section("From your automations") {
-                            ForEach(vm.outputRows) { output in
-                                AutomationOutputRow(
-                                    output: output,
-                                    vm: vm,
-                                    onOpenAutomation: onOpenAutomation.map { open in { open(output) } }
-                                )
-                            }
-                        }
-                    }
-                    if !vm.actionRows.isEmpty {
-                        Section("Proposals") {
-                            ForEach(vm.actionRows) { action in
-                                card(action)
-                            }
-                        }
-                    }
-                }
+                InboxSplitView(
+                    vm: vm,
+                    cheatSheetRows: cheatSheetRows,
+                    onOpenSettings: onOpenSettings,
+                    proposalCard: card,
+                    onCardAction: onCardAction,
+                    onOpenAutomationRun: onOpenAutomationRun
+                )
             }
         }
     }
@@ -278,86 +260,5 @@ struct ActionStripActionsView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(Color.orange.opacity(0.12))
-    }
-}
-
-/// One due reminder: its note, a link to the Slack message it was set from
-/// (none when the ref is empty or unparseable), and Done / Snooze 1h.
-struct ReminderRow: View {
-    let reminder: Reminder
-    let vm: ActionStripViewModel
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(reminder.note.isEmpty ? "Reminder" : reminder.note)
-                    .font(.callout)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let source = SlackMessageRef.url(reminder.messageRef) {
-                    Link("Slack message ↗", destination: source)
-                        .font(.caption)
-                }
-            }
-            Spacer()
-            Group {
-                Button("Done") { Task { await vm.markReminderDone(reminder.id) } }
-                Button("Snooze 1h") {
-                    let until = ISO8601DateFormatter().string(from: Date().addingTimeInterval(3600))
-                    Task { await vm.snoozeReminder(reminder.id, until: until) }
-                }
-            }
-            .disabled(vm.isWriting(reminder: reminder.id))
-        }
-        .padding(.vertical, 4)
-    }
-}
-
-/// One unread automation inbox output: its title and body, the automation
-/// and run it came from, and Done / Dismiss — each writes only its own column
-/// (`read_at` / `dismissed_at`); the card stays until the write lands.
-struct AutomationOutputRow: View {
-    let output: AutomationOutputCard
-    let vm: ActionStripViewModel
-    var onOpenAutomation: (() -> Void)?
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(output.title.isEmpty ? "Automation output" : output.title)
-                    .font(.callout.weight(output.priority == "high" ? .semibold : .regular))
-                    .fixedSize(horizontal: false, vertical: true)
-                if !output.body.isEmpty {
-                    Text(output.body)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .textSelection(.enabled)
-                }
-                source
-            }
-            Spacer()
-            Group {
-                Button("Done") { Task { await vm.markOutputDone(output.id) } }
-                Button("Dismiss") { Task { await vm.dismissOutput(output.id) } }
-            }
-            .disabled(vm.isWriting(output: output.id))
-        }
-        .padding(.vertical, 4)
-    }
-
-    private var sourceText: String {
-        "⚙ \(output.automationName) · run #\(output.runID)"
-    }
-
-    @ViewBuilder
-    private var source: some View {
-        if let onOpenAutomation {
-            Button(sourceText, action: onOpenAutomation)
-                .buttonStyle(.link)
-                .font(.caption)
-                .help("Open the automation run")
-        } else {
-            Text(sourceText).font(.caption).foregroundStyle(.secondary)
-        }
     }
 }

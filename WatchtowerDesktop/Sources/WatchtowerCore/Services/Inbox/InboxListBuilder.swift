@@ -48,4 +48,14 @@ package enum InboxListBuilder {
         ]
         return sections.filter { !$0.items.isEmpty }
     }
+
+    /// The row to open once `id` left the list (Done, Dismiss, Snooze): the
+    /// one below it, or the one above when it was the last; nil when it was
+    /// alone or is not listed.
+    package static func selection(after id: InboxSelection, in sections: [InboxSection]) -> InboxSelection? {
+        let ids = sections.flatMap(\.items).map(\.id)
+        guard let index = ids.firstIndex(of: id) else { return nil }
+        if index + 1 < ids.count { return ids[index + 1] }
+        return index > 0 ? ids[index - 1] : nil
+    }
 }

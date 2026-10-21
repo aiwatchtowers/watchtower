@@ -24,6 +24,17 @@ final class InboxCardLinkPolicyTests: XCTestCase {
         XCTAssertFalse(InboxCardLinkPolicy.permits(try url("watchtower-nav://settings"), navScreens: ["home"]))
     }
 
+    /// What a press opens: a screen link rebuilt with the lowercase scheme
+    /// `NavLink.destination` compares, a web link as written, nothing refused.
+    func testRouteNormalisesScreenLinks() throws {
+        XCTAssertEqual(InboxCardLinkPolicy.route(try url("WATCHTOWER-NAV://home"), navScreens: ["home"]),
+                       .screen(try url("watchtower-nav://home")))
+        XCTAssertEqual(InboxCardLinkPolicy.route(try url("HTTPS://example.com/a"), navScreens: []),
+                       .web(try url("HTTPS://example.com/a")))
+        XCTAssertNil(InboxCardLinkPolicy.route(try url("watchtower-nav://hidden"), navScreens: ["home"]))
+        XCTAssertNil(InboxCardLinkPolicy.route(try url("file:///etc/hosts"), navScreens: ["home"]))
+    }
+
     func testRefusesOtherSchemes() throws {
         for text in ["file:///etc/hosts", "smb://example.com/share", "javascript:alert(1)",
                      "mailto:a@example.com", "slack://channel?id=C1", "notes/today.md", "https://"] {
