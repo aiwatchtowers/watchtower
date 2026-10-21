@@ -33,6 +33,8 @@ UPDATE linear_accounts SET revoked_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WH
 
 -- The purge ledger: one row per scheduled purge. No foreign key — four
 -- parent tables, and the account row is never deleted by a purge.
+-- failures counts chunk failures since the last chunk that deleted rows; the
+-- third ends the row in the terminal state 'failed'.
 CREATE TABLE IF NOT EXISTS account_purges (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     source       TEXT NOT NULL CHECK (source IN ('slack','google','jira','linear')),

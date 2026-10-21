@@ -5,35 +5,40 @@ When a company revokes the owner's Slack, Google, Jira or Linear access, or an i
 ## Schema (migration 00147)
 
 - `access_ok_at`, `revoked_at` (TEXT, `''` = unset, RFC 3339 UTC) on `slack_accounts`, `google_accounts`, `jira_accounts`, `linear_accounts`. The migration stamps `access_ok_at` = now on every row (removed ones too) and `revoked_at` = now on revoked rows, so an upgrade never starts a clock in the past.
-- `account_purges(id, source, account_id, reason revoked|lease, scheduled_at, due_at, state scheduled|running|done|cancelled, started_at, finished_at, rows_deleted, error)`, one open row per account (`idx_account_purges_open`). No foreign key: four parent tables, and the account row is never deleted.
+- `account_purges(id, source, account_id, reason revoked|lease, scheduled_at, due_at, state scheduled|running|done|cancelled|failed, started_at, finished_at, rows_deleted, error, failures)`, one open (scheduled or running) row per account (`idx_account_purges_open`). `failures` counts chunk failures since the last chunk that deleted rows; `failed` is terminal. No foreign key: four parent tables, and the account row is never deleted.
 - New `status` value `purged` (no CHECK on any of the four columns).
 
 ## Access facts
 
-- `revoked_at` is kept by the `Set*AccountAuthState` writers themselves (`internal/db/account_access.go`): `revoked` sets it when empty (kept on a repeat), `ok` clears it, `error` keeps it. Every existing writer (sync phases, the `login` paths) is covered with no new call.
-- `access_ok_at` is set by the same writers on `ok` (Slack and Google write `ok` after a clean sync). Jira and Linear passes never write `ok` (LINEAR-03), so the daemon calls `db.MarkAccountAccessOK(source, id)` after a nil `Sync` error; it touches `access_ok_at` only. A clean Confluence sync stamps its Jira account's access too: one Atlassian grant covers both, and an account used only for Confluence makes no Jira request.
+- `revoked_at` is kept by the `Set*AccountAuthState` writers themselves (`internal/db/account_access.go`): `revoked` sets it when empty (kept on a repeat, restamped when `access_ok_at` is newer: a new revocation after confirmed access), `ok` clears it, `error` keeps it. Every existing writer (sync phases, the `login` paths) is covered with no new call. Both columns are fixed-width RFC 3339 UTC, so SQL compares them as text.
+- `access_ok_at` is set by the same writers on `ok` (Slack and Google write `ok` after a clean sync). Jira and Linear passes never write `ok` (LINEAR-03), so the daemon calls `db.MarkAccountAccessOK(source, id)`; it touches `access_ok_at` only. Linear: after a nil `Sync` error (every pass starts with a viewer query). Jira: whenever `ReachedSource()` is true (a project's issue search came back), whatever the pass returned after, except `ErrAuthRevoked`. A clean Confluence sync stamps its Jira account's access too (not while the account is held): one Atlassian grant covers both, and an account used only for Confluence makes no Jira request.
+- A local change that makes no authenticated call proves no access: `google disconnect <service>` (`gmail logout`, `calendar logout`) clears a plain `error` with `ClearGoogleAccountError` (status `error` and no `revoked_at` only) and never writes `ok`.
 - A `purged` row refuses every auth-state write except `ok` (`authStateWhereSQL`); that `ok` (a Re-login) re-enables Slack/Jira/Linear rows and starts the account over as a first sync. `MarkAccountAccessOK` leaves a purged row alone.
 
 ## The switch
 
 `purge.Enabled(cfg)` returns the effective value and its origin, strongest first: a policy (`policy` seam, unset until #608) > the config key `privacy.purge_revoked_data` (tri-state `*bool`, absent = build default) > the build default `purge.BuildDefault` (ldflags from `WATCHTOWER_PURGE_DEFAULT`, which `Makefile` and `scripts/build-app.sh` pass next to the OAuth client ids; the corporate build profile sets `WATCHTOWER_PURGE_DEFAULT=on`) > off. The Desktop never re-implements it: it reads `enabled`/`enabled_by` from `watchtower accounts purges --json`, writes only the config key (Settings → System → Privacy, absent stays absent until the owner toggles), and restarts the daemon after a Save that changed it, since the daemon reads config only at startup.
 
-## Scheduling (`phaseAccountPurge`, first phase of every cycle)
+## Scheduling (`phaseAccountPurge` first in every cycle, `phaseAccountPurgeLeases` after the syncs)
 
-`purge.Plan(accounts, open, enabled, now)` reads the account rows and the open ledger rows only; `purge.Apply` writes its decision.
+`purge.Plan(accounts, open, enabled, now)` reads the account rows and the open ledger rows only; `purge.Apply(d, enabled, leases, now)` writes its decision, joining write errors and continuing past a bad row. Two passes a cycle: `phaseAccountPurge` runs first (cancels, revoked schedules, then the due purges) and schedules no lease row; `phaseAccountPurgeLeases` runs after `phaseExternalSync` with leases on, so a Mac back from a long absence first lets the cycle's syncs prove access instead of getting a false notice. Its due rows run next cycle.
 
 - **Off:** every scheduled row is cancelled; nothing is scheduled; a running row finishes.
-- **Revoked:** a revoked account is scheduled due `max(revoked_at + 72 h, now + 72 h)`. Cancelled when the account is no longer revoked or in error. A due row runs only while the account is still `revoked`; `error` waits.
+- **Revoked:** a revoked account is scheduled due 72 h after the first pass that sees it (`now + 72 h`; `revoked_at` is never in the future, so it cannot set a later date). Cancelled when the account is no longer revoked or in error, or when its `access_ok_at` is newer than its `revoked_at` (a clean Jira/Linear pass); no new row is scheduled for such an account. An empty or unreadable `access_ok_at` is no proof: still revoked. A due row runs only while the account is still `revoked`; `error` waits (the Desktop line says it is on hold).
 - **Lease (live accounts, status not removed/purged, disabled included):** when every live account of a source has an `access_ok_at` and the newest is older than 30 d − 72 h, each is scheduled due now + 72 h (on a daemon that runs every cycle, the 30-day mark). An empty `access_ok_at` is no evidence: that source is never lease-scheduled.
 - **Lease (removed accounts):** a removed account whose own `access_ok_at` is older than 30 d is scheduled due now + 72 h. Removed accounts are not part of their source's live set.
 - A lease row is cancelled when its account's deadline moves past the row's `due_at` (fresh access, or the account added back) and runs only once the deadline has passed.
 - **Deviation from the plan text:** every due date is at least 72 h after the pass that schedules it, so the notice always shows for the full grace period (also when the purge is turned on for an account revoked long ago, or the daemon was off longer than the lease).
 
-The daemon then keeps `purgeHold`: the sync phases skip accounts being or already purged, so a syncer wired at startup never refills one.
+The daemon then keeps `purgeHold`: the sync phases, the reaction poll (`reactioncmd.Pipeline.SetAccountSkip`), the history backfill and the Confluence access stamp skip accounts being or already purged, so a syncer wired at startup never refills one. `Run` refreshes it before the startup calendar sync too. A `failed` row releases its account.
 
 ## Running a purge (`purge.Run`)
 
-`db.PurgeSteps(source, id)` is an ordered list of idempotent statements (dependents before the rows their predicates read). `RunPurgeStep` deletes at most 500 rows of the step's driving table per transaction and is repeated until it affects nothing; `AddPurgeRows` counts them on the ledger. A cycle spends at most 5 minutes (`purgeCycleBudget`); an unfinished purge stays `running` and resumes from the top of its list next cycle. A failed chunk is recorded in `error` and retried. Token files are deleted after the steps, outside any transaction (Jira/Linear under their token lock); no remote revoke call is made. `FinishAccountPurge` then marks the ledger row `done` and the account row `purged` in one transaction.
+The plan is a snapshot, so a scheduled row is started only after `Run` re-plans that one account against the current rows; `StartAccountPurge` is a conditional `UPDATE … WHERE state = 'scheduled'` and reports whether it changed the row. A row that is cancelled or no longer due returns `purge.ErrNoLongerDue` and nothing is deleted.
+
+`(*db.DB).PurgeSteps(source, id)` is an ordered list of idempotent statements (dependents before the rows their predicates read). It reads the ids the knowledge steps need (the account's stream digests and Confluence spaces) first, read only, outside any write transaction; every `kb_documents`, `kb_dirty` (by `source`) and `doc_links` (by `from_kind`) delete is a primary-key range, never a scan inside `BEGIN IMMEDIATE` (`TestPurge02_KnowledgeStepsUseKeyRanges`, EXPLAIN QUERY PLAN). `RunPurgeStep` deletes at most 500 rows of the step's driving table per transaction and is repeated until it affects nothing; `AddPurgeRows` counts them on the ledger and resets `failures`. A cycle spends at most 5 minutes (`purgeCycleBudget`); an unfinished purge stays `running` and resumes from the top of its (re-read) list next cycle. A failed chunk is recorded in `error` and retried next cycle; the third failure in a row (`purge.MaxChunkFailures`) ends the row in `failed` (`finished_at` set, account untouched, hold released; the Desktop shows the error and notifies once). A revoked or still-stale account is then scheduled again, with a new notice. Token files are deleted after the steps, outside any transaction (Jira/Linear under their token lock); no remote revoke call is made. `FinishAccountPurge` then, in one transaction, requires the row to be `running` (else `db.ErrPurgeNotRunning`), marks it `done`, resets the account's sync clocks and marks it `purged`.
+
+A Re-login during the run: the Desktop disables **Re-login** while the account's purge runs. If access is confirmed anyway at or after `started_at` (`PurgeAccessReturned`, e.g. a CLI login), the token files are kept and `FinishAccountPurge` keeps the account (status and enabled untouched, sync clocks reset so it starts over) and closes the row `done` with a note in `error`. A login between the token delete and the finish leaves an `ok` account without a token, which its next sync reports.
 
 ### What each source deletes
 
@@ -47,7 +52,7 @@ Scope additions beyond the spec's list: stream digests and their KB documents, `
 
 ## CLI
 
-`watchtower accounts purges [--json]` lists the ledger, newest first, every state. Text: a header `Purge on revoked access: on (build default)` and one line per row. `--json` (pinned by `TestAccountsPurgesJSONKeys`):
+`watchtower accounts purges [--json]` lists the ledger, newest first, every state (`scheduled`, `running`, `done`, `cancelled`, `failed`); a done, cancelled or failed row's text line shows its finish time. Text: a header `Purge on revoked access: on (build default)` and one line per row. `--json` (pinned by `TestAccountsPurgesJSONKeys`):
 
 ```json
 {"enabled": true, "enabled_by": "policy|setting|build|default", "grace_hours": 72, "lease_days": 30,
@@ -59,9 +64,9 @@ Times are RFC 3339 UTC, `""` when unset; `purges` is `[]`, never `null`; `accoun
 
 ## Desktop
 
-- `WatchtowerCore`: `AccountPurge` + `AccountPurgeQueries.open/recent` (the ledger joined to the account, Go's label rule), `AccountPurgeNoticePolicy` (revoked, lease and removed-account lines, done line, purged line pointing to Re-login, once-per-row-per-state notices keyed `"<id>:scheduled"`/`"<id>:done"`), `AccountPurgeStatus` (the switch from the CLI), `isPurged` on the four account models.
+- `WatchtowerCore`: `AccountPurge` + `AccountPurgeQueries.open/recent` (the ledger joined to the account, Go's label rule; `recent` = done and failed rows), `AccountPurgeNoticePolicy` (revoked, on-hold-while-error, lease and removed-account lines, done line — or "came back … kept" for a done row with a note —, failed line, purged line pointing to Re-login, once-per-row-per-state notices keyed `"<id>:scheduled"`/`"<id>:done"`/`"<id>:failed"`), `AccountPurgeStatus` (the switch from the CLI; `removeDialogMessage`: "about 30 days after the account was last reached, plus 72 hours' notice"), `isPurged` on the four account models.
 - `AccountPurgeCenter` on `AppState`: a 30 s poll of the ledger (the daemon writes it from another process, so GRDB observation never fires), the notifications through `NotificationService.sendAccountPurgeNotice` (deduped in `UserDefaults` `accountPurges.noticesSent`, held back while notifications are paused; a click opens the source's connection), and the switch's state.
-- The red line under each Slack, Google, Jira and Linear account in Settings → Connections (`AccountPurgeLine`); a purged account shows **Data deleted** (gray dot, the Enabled switch off) and the purged line. Home's `AccountPurgeBanner` above Getting ready, with **Reconnect** on scheduled rows (a running purge cannot be stopped).
+- The red line under each Slack, Google, Jira and Linear account in Settings → Connections (`AccountPurgeLine`: open row, else purged, else a recent failed row); a purged account shows **Data deleted** (gray dot, the Enabled switch off) and the purged line. **Re-login** is disabled with its reason while the account's purge runs (`AccountPurgeLine.reloginBlockedReason`). Google's Remove dialog says its mail and events are deleted (they are). Home's `AccountPurgeBanner` above Getting ready, with **Reconnect** on scheduled rows (a running purge cannot be stopped).
 - `linear add` for a purged workspace still says it is already connected; the copy points to Re-login.
 
 ## Later
