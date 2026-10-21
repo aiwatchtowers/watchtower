@@ -15,6 +15,6 @@ package sqlcipher
 #cgo darwin CFLAGS: -DSQLCIPHER_CRYPTO_CC
 #cgo darwin LDFLAGS: -framework Security -framework CoreFoundation
 #cgo linux CFLAGS: -DSQLCIPHER_CRYPTO_OPENSSL
-#cgo linux LDFLAGS: -lcrypto
+#cgo linux LDFLAGS: -lcrypto -lm
 */
 import "C"
