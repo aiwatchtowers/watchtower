@@ -893,8 +893,8 @@ CREATE TABLE IF NOT EXISTS jira_accounts (
     owner_account_id              TEXT NOT NULL DEFAULT '',  -- the connecting person's own Atlassian identity from GET /rest/api/3/myself; feeds db.ResolveOwner's Jira rung (see 00071)
     owner_email                   TEXT NOT NULL DEFAULT '',
     owner_display_name            TEXT NOT NULL DEFAULT '',
-    access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00146)
-    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00146)
+    access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00147)
+    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00147)
 );
 
 -- Jira boards
@@ -1064,8 +1064,8 @@ CREATE TABLE IF NOT EXISTS linear_accounts (
     ideas_floor              TEXT NOT NULL DEFAULT '',
     moved_watermark          TEXT NOT NULL DEFAULT '',  -- moved-issue reconcile cursor; advances only on success
     created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00146)
-    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00146)
+    access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00147)
+    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00147)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_linear_accounts_org ON linear_accounts(org_id) WHERE org_id != '';
 
@@ -1557,8 +1557,8 @@ CREATE TABLE IF NOT EXISTS google_accounts (
     deletions_checked_at           TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last Gmail ID diff (see 00139)
     created_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00146)
-    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00146)
+    access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00147)
+    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00147)
 );
 
 -- Multi-account Slack source: one row per connected Slack workspace.
@@ -1581,8 +1581,8 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     reaction_events_seeded_at TEXT NOT NULL DEFAULT '',  -- when reaction_events was seeded with this account's existing reactions (no events fired); '' = never
     roster_synced_at  TEXT NOT NULL DEFAULT '',  -- last full users.list roster fetch (sync and sync --users-only); '' = never
     deletion_sweep_day TEXT NOT NULL DEFAULT '',  -- last UTC day (YYYY-MM-DD) the Slack deletion sweep finished (see 00139)
-    access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00146)
-    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00146)
+    access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00147)
+    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00147)
 );
 
 -- Multi-account IMAP/Outlook email source: one row per connected mailbox
@@ -2850,7 +2850,10 @@ CREATE TABLE IF NOT EXISTS automation_runs (
     summary           TEXT NOT NULL DEFAULT '',              -- clipped 1 KiB
     queued_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     started_at        TEXT,
-    finished_at       TEXT
+    finished_at       TEXT,
+    resume_pending    INTEGER NOT NULL DEFAULT 0 CHECK (resume_pending IN (0, 1)), -- 1 = a waiting run kept by the daemon start for a resume (00146)
+    not_resumable     INTEGER NOT NULL DEFAULT 0 CHECK (not_resumable IN (0, 1)),  -- 1 = its replay log is incomplete; a restart ends it (00146)
+    random_seed       INTEGER NOT NULL DEFAULT 0                                     -- the run's Math.random seed, set at claim (00146)
 );
 CREATE INDEX IF NOT EXISTS idx_automation_runs_automation_status ON automation_runs(automation_id, status);
 CREATE INDEX IF NOT EXISTS idx_automation_runs_status_queued ON automation_runs(status, queued_at);
@@ -2887,6 +2890,29 @@ CREATE TABLE IF NOT EXISTS automation_run_steps (
     finished_at       TEXT,
     UNIQUE (run_id, seq)
 );
+
+-- The replay log of an active live run (00146): one row per completed SDK
+-- call (the whole result, not clipped) and one pending row for the call the
+-- run waits in. A run waiting when the daemon stopped is resumed by
+-- re-executing its snapshot against this log. Deleted when the run ends.
+CREATE TABLE IF NOT EXISTS automation_run_replay (
+    run_id      INTEGER NOT NULL REFERENCES automation_runs(id) ON DELETE CASCADE,
+    seq         INTEGER NOT NULL,                            -- the journal step's seq
+    kind        TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    args_hash   TEXT NOT NULL,                               -- sha256 of the call's whole args JSON
+    result_json TEXT,                                        -- NULL = undefined
+    error_json  TEXT,                                        -- {name, message, needed} of a thrown call
+    clock_json  TEXT NOT NULL DEFAULT '[]',                  -- Date.now() values (ms) read since the previous call
+    pending     INTEGER NOT NULL DEFAULT 0 CHECK (pending IN (0, 1)), -- 1 = the call the run waits in
+    PRIMARY KEY (run_id, seq)
+);
+CREATE TRIGGER IF NOT EXISTS automation_runs_replay_cleanup AFTER UPDATE OF status ON automation_runs
+WHEN NEW.status NOT IN ('queued','running','waiting')
+BEGIN
+    DELETE FROM automation_run_replay WHERE run_id = NEW.id;
+    UPDATE automation_runs SET resume_pending = 0 WHERE id = NEW.id AND resume_pending = 1;
+END;
 
 -- The state a script keeps between runs; replaced only by a succeeded run.
 CREATE TABLE IF NOT EXISTS automation_state (
@@ -3126,7 +3152,7 @@ CREATE TABLE IF NOT EXISTS db_maintenance (
     value TEXT NOT NULL
 );
 
--- Account purges (00146, #601): the ledger of scheduled purges of an account's
+-- Account purges (00147, #601): the ledger of scheduled purges of an account's
 -- synced data after revoked access (reason 'revoked', due revoked_at + 72 h) or
 -- a stale lease (reason 'lease', 30 days without confirmed access). At most
 -- one open (scheduled/running) row per account. No foreign key: four parent

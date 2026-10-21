@@ -60,7 +60,7 @@ func stateSet(env *Env, call goja.FunctionCall, rt *goja.Runtime) (any, error) {
 	if valueErr == nil {
 		args["value"] = value
 	}
-	return env.Call(StepKindState, "set", args, func(step *Step) (any, error) {
+	return env.CallBuffered(StepKindState, "set", args, func(step *Step) (any, error) {
 		switch {
 		case keyErr != nil:
 			return nil, keyErr

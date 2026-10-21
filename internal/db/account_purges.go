@@ -4,7 +4,7 @@ import (
 	"fmt"
 )
 
-// AccountPurge is one row of the account_purges ledger (migration 00146,
+// AccountPurge is one row of the account_purges ledger (migration 00147,
 // board #601).
 type AccountPurge struct {
 	ID          int64

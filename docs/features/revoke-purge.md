@@ -2,7 +2,7 @@
 
 When a company revokes the owner's Slack, Google, Jira or Linear access, or an install has not reached a source for 30 days, and the purge is on, the account's synced data is deleted after a 72 h notice unless the owner reconnects first. Part of board group #595 (corporate data on the Mac). Spec: `docs/superpowers/specs/2026-10-21-revoke-purge-design.md` (approved 2026-10-21, ask #474: Q1 on in the corp build and under a future MDM policy, opt-in elsewhere; Q2 (a); Q3 72 h; Q4 30-day lease; the LINEAR-03 amendment). Plan: `docs/superpowers/plans/2026-10-21-revoke-purge.md` (ask #477: the lease counts disabled accounts, and removed accounts get a lease of their own). Contracts: PURGE-01..02 in `docs/inventory/account-purge.md`, LINEAR-03 amended in `docs/inventory/linear.md`; SLACK-01 unchanged. User guide: `docs/guide/concepts/revoked-access.md`.
 
-## Schema (migration 00146)
+## Schema (migration 00147)
 
 - `access_ok_at`, `revoked_at` (TEXT, `''` = unset, RFC 3339 UTC) on `slack_accounts`, `google_accounts`, `jira_accounts`, `linear_accounts`. The migration stamps `access_ok_at` = now on every row (removed ones too) and `revoked_at` = now on revoked rows, so an upgrade never starts a clock in the past.
 - `account_purges(id, source, account_id, reason revoked|lease, scheduled_at, due_at, state scheduled|running|done|cancelled, started_at, finished_at, rows_deleted, error)`, one open row per account (`idx_account_purges_open`). No foreign key: four parent tables, and the account row is never deleted.

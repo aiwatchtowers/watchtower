@@ -16,6 +16,8 @@ of these entries; decisions §20, §20.1).
 `internal/db/automation_reads.go`, `internal/db/automation_grants.go`,
 `internal/db/migrations/00113_automations.sql`,
 `internal/db/migrations/00117_automation_tool_grants.sql`,
+`internal/db/automation_run_replay.go`, `internal/db/migrations/00146_automation_run_replay.sql`,
+`internal/automations/replay.go` (resume after a restart, board #795),
 `cmd/automations*.go` (incl. `cmd/automations_auto.go`), `cmd/automations_registry.go`,
 `internal/briefing/automations.go` (the FROM YOUR AUTOMATIONS block),
 `internal/daemon/automation_wake.go`, `internal/automations/bus.go`,
@@ -351,9 +353,25 @@ disable; it is stopped within about one 10 ms poll of its live heap passing
 that limit (a GC is forced when the heap's objects pass it first), plus one
 native step still running.
 Every run reaches exactly one terminal status, including after a
-daemon restart: on start the executor ends every `running`/`waiting` run
-`failed`/`interrupted` — except a live CLI dry run, which is swept only past
-its deadline plus one minute; a stop mid-run ends it `failed`/`interrupted`.
+daemon restart: on start the executor ends every `running` run, and every
+`waiting` run that cannot be resumed, `failed`/`interrupted` — except a live
+CLI dry run, which is swept only past its deadline plus one minute. A
+resumable waiting run continues at its wait (board #795, ask #464): a live
+run whose replay log (`automation_run_replay`) holds every completed call,
+waiting in its last step — the only open one — whose automation is still
+runnable and confirmed at the run's `recipe_hash`, and not flagged
+`not_resumable` (a result past 1 MiB, a log past 16 MiB). Its script is
+re-executed from its `recipe_snapshot`; every completed call is answered
+from the log (no backend call, no new step), the waiting call re-enters the
+same ask, action or session wait (`pause_timeout_hours` still counts from
+that wait's start), `Date.now()`/`new Date()` and `Math.random` give back
+the recorded values, and the meter starts from the tokens and active time
+already spent. A call that differs from its record, or a script that ends
+before its waiting call, ends the run `failed`/`script` ("the recipe ran
+differently after the restart (step N); it was not resumed") with nothing
+executed. A stop mid-run (inside or between calls) ends it
+`failed`/`interrupted`; a stop while a resumable run waits leaves it
+`waiting` with its ask, action or session untouched.
 Ending a run closes its still-open steps in the same transaction.
 A finish the database refuses is retried three times, then the run is ended
 `failed`/`backend` without its commit, so it never holds its slots until the
@@ -377,6 +395,8 @@ model quota.
 - `internal/automations/dryrun_memory_test.go` — `TestDryRunInMemory_BudgetBound`
 - P6 (`agent()`): `internal/automations/sdk_agent_test.go` — `TestAgent_BudgetCarvedFromRun`, `TestAgent_CarvedDeadlineThrowsCatchableBudgetExceeded` (a spent carved minutes deadline throws a catchable `BudgetExceeded`; the run's own deadline stays uncatchable), `TestAgent_ResultUsageDebitedOnce`; `cmd/automations_agent_test.go` — `TestAgent_RunBudgetCrossedInterruptsRun`, `TestAgent_LocalBudgetSpentThrowsCatchable`, `TestAgent_IterationsCapped12`, `TestAgent_CLIUsageDebitedOrEstimated`, `TestAgent_CancelKillsCLIChild` (the whole process group dies); `internal/ai/client_child_test.go` — `TestCLIAgent_SIGINTIgnoringGroupKilledWithinGrace` (`ai.GroupKillGrace` = 1 s, inside the 2 s `AbandonGrace`)
 - `internal/db/automation_runs_test.go` — `TestAuto08_RestartMarksInterrupted`, `TestAuto08_RestartSparesLiveDryRun`, `TestRunEnd_ClosesOpenSteps`
+- `internal/automations/replay_test.go` — `TestAuto08_ResumeAtAskWait`, `TestAuto08_ResumeAtApprovalWait`, `TestAuto08_ResumeAtSessionWait`, `TestAuto08_DivergenceEndsTheRunWithoutExecuting`, `TestAuto08_ChangedRecipeIsNotResumed`, `TestAuto08_LargeResultMakesTheRunNotResumable`, `TestAuto08_TimeAndRandomReplay`, `TestAuto08_ResumedTokensNotDoubleCounted`, `TestAuto08_ResumedWaitKeepsItsPauseTimeout`, `TestAuto08_StopWhileRunningStillInterrupts`, `TestAuto08_ResumeAfterAgent`, `TestAuto08_ResumeAfterDefaultAgentChanged`, `TestAuto08_StopDuringReplayReturnsToWaiting`, `TestAuto08_DeadlineDuringReplayKeepsItsEnd`, `TestAuto08_ClockReadOverflowMakesTheRunNotResumable`, `TestAuto08_KeptRunChangedBeforeItsClaimIsNotResumed`; `internal/automations/replay_internal_test.go` — `TestAuto08_ReplayLogCapCountsTheStoredLog` (board #795: resume after a restart; the ask test also pins AUTO-11 — one step per call across both daemon lives — and AUTO-04 — the replayed `state.set`/`output.inbox` are committed once, only with the success)
+- `internal/db/automation_run_replay_test.go` — `TestAuto08_RestartKeepsResumableWaitingRun`, `TestAuto08_ReplayLogDeletedOnFinish` (board #795)
 - `internal/automations/run_limits_test.go` — `TestAuto08_StepCapEndsTheRun`, `TestAuto08_FinishFailureRetries`, `TestAuto08_FinishFailureEndsTheRunFailed`, `TestAuto08_FinishFailureWithoutCommitKeepsItsEnd`, `TestAuto08_FinishSkipsRetriesWhenStopping`, `TestAuto08_FinishDoesNotRetryAnInvalidFinish`, `TestOutputs_CapPerRun`, `TestSession_CapPerRun` (board #562); `internal/automations/workbench_e2e_test.go` — `TestPRReviewRounds_MorePRsThanTheSessionCap`
 
 **Locked since:** 2026-10-14
@@ -556,6 +576,10 @@ turn a recipe into arbitrary code execution.
 **Locked since:** 2026-10-14
 
 ## Changelog
+
+- 2026-10-21 (board #799): the `new-mail-summary` gallery template remembers summed-up messages by id over a two-day lookback window instead of a per-mailbox time cursor (rule 1 of the create-automation skill's "Reliable recipes"), so mail synced after a newer message was summed up is no longer skipped. State `mail = {base, boxes}` with minutes relative to `base`; the done entries are bounded under `MaxStateBytes` by a fair per-mailbox share (a quiet mailbox is never cut by a busy one), a mailbox over its share dropping its oldest whole minutes behind a floor; an older script's `cursors` are re-keyed through the `list_emails` name probe and migrated (mail at or before the cursor marked done, the cursor dropped). Its pinned dry-run journal in `TestTemplates_DryRunE2E` (AUTO-12) gains the second `state.get` (the old `cursors`, read for the migration) — a template change, not a relaxed guard. `TestTemplate_NewMailSummaryKeepsPerAccountCursor` (not an inventory guard) becomes `TestTemplate_NewMailSummaryKeepsPerAccountDone` with message dates relative to now (the window is read against the real clock), asserting the done ids and that a later run still reads the whole window; the `TestTemplates_RunE2E` mail cases assert the done ids where they asserted the cursor, and gain the late-mail, cursor-migration, cursor-by-label, state-budget (fair share) and eviction-floor cases (each floor check, the floor's exclusivity, the name re-keying and the fair share verified to fail the tests when removed). No guard relaxed.
+
+- 2026-10-21 (board #795, **owner decision ask #463/#464**): **AUTO-08 amended — a waiting run survives a daemon restart.** "On start the executor ends every `running`/`waiting` run `failed`/`interrupted`" becomes "every `running` run, and every `waiting` run that cannot be resumed"; a resumable waiting run continues at its wait by deterministic replay of its recorded calls (migration 00146 `automation_run_replay`, `automation_runs.resume_pending`/`not_resumable`/`random_seed`; spec `docs/superpowers/specs/2026-10-21-automation-wait-survives-restart-design.md`). A run running at the stop, a waiting run outside a journaled call, a dry run, a run whose recipe was re-confirmed at another hash or whose log is incomplete still end `failed`/`interrupted` as before. AUTO-11 (a replayed call writes no step) and AUTO-04 (the replay re-buffers state and outputs; they commit only with the success) are unchanged and now also pinned across a resume. The existing guards keep their assertions — `TestAuto08_RestartMarksInterrupted` (db and executor), `TestExecutor_DaemonStopMidRunEndsInterrupted` and `TestWaiter_DaemonStopDuringWaitEndsInterrupted` pass unchanged (their runs have no resumable waiting step). Guards added: `TestAuto08_ResumeAtAskWait`, `TestAuto08_ResumeAtApprovalWait`, `TestAuto08_ResumeAtSessionWait`, `TestAuto08_DivergenceEndsTheRunWithoutExecuting`, `TestAuto08_ChangedRecipeIsNotResumed`, `TestAuto08_LargeResultMakesTheRunNotResumable`, `TestAuto08_TimeAndRandomReplay`, `TestAuto08_ResumedTokensNotDoubleCounted`, `TestAuto08_ResumedWaitKeepsItsPauseTimeout`, `TestAuto08_StopWhileRunningStillInterrupts`, `TestAuto08_ResumeAfterAgent`, `TestAuto08_ResumeAfterDefaultAgentChanged`, `TestAuto08_StopDuringReplayReturnsToWaiting`, `TestAuto08_DeadlineDuringReplayKeepsItsEnd`, `TestAuto08_ClockReadOverflowMakesTheRunNotResumable`, `TestAuto08_KeptRunChangedBeforeItsClaimIsNotResumed`, `TestAuto08_ReplayLogCapCountsTheStoredLog`, `TestAuto08_RestartKeepsResumableWaitingRun`, `TestAuto08_ReplayLogDeletedOnFinish`. No guard relaxed.
 
 - 2026-10-20 (board #788, workbench header redesign): controls moved (header → title row / session strip, header buttons → ⚡ menu); no contract, guard test or status changed.
 

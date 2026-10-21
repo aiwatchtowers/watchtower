@@ -1509,7 +1509,7 @@ CREATE TABLE IF NOT EXISTS automation_runs (
     queued_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     started_at        TEXT,
     finished_at       TEXT
-);
+, resume_pending INTEGER NOT NULL DEFAULT 0 CHECK (resume_pending IN (0, 1)), not_resumable INTEGER NOT NULL DEFAULT 0 CHECK (not_resumable IN (0, 1)), random_seed INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS automation_run_steps (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id            INTEGER NOT NULL REFERENCES automation_runs(id) ON DELETE CASCADE,
@@ -2122,6 +2122,18 @@ CREATE TABLE IF NOT EXISTS "idea_mentions" (
 CREATE TABLE IF NOT EXISTS db_maintenance (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS automation_run_replay (
+    run_id      INTEGER NOT NULL REFERENCES automation_runs(id) ON DELETE CASCADE,
+    seq         INTEGER NOT NULL,
+    kind        TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    args_hash   TEXT NOT NULL,
+    result_json TEXT,
+    error_json  TEXT,
+    clock_json  TEXT NOT NULL DEFAULT '[]',
+    pending     INTEGER NOT NULL DEFAULT 0 CHECK (pending IN (0, 1)),
+    PRIMARY KEY (run_id, seq)
 );
 CREATE TABLE IF NOT EXISTS account_purges (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2759,6 +2771,12 @@ BEGIN
     VALUES (NEW.id, OLD.status, NEW.status, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
             COALESCE(NEW.status_actor, 'owner'));
     UPDATE targets SET status_actor = NULL WHERE id = NEW.id AND status_actor IS NOT NULL;
+END;
+CREATE TRIGGER IF NOT EXISTS automation_runs_replay_cleanup AFTER UPDATE OF status ON automation_runs
+WHEN NEW.status NOT IN ('queued','running','waiting')
+BEGIN
+    DELETE FROM automation_run_replay WHERE run_id = NEW.id;
+    UPDATE automation_runs SET resume_pending = 0 WHERE id = NEW.id AND resume_pending = 1;
 END;
 """#
 }

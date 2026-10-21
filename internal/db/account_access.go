@@ -2,7 +2,7 @@ package db
 
 import "fmt"
 
-// Account access facts (board #601, migration 00146): access_ok_at is the
+// Account access facts (board #601, migration 00147): access_ok_at is the
 // last confirmed authenticated call, revoked_at the moment status turned
 // revoked. Both feed the purge scheduler (internal/purge).
 

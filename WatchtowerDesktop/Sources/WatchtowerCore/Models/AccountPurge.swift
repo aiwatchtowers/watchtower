@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-/// One row of the daemon's purge ledger `account_purges` (migration 00146,
+/// One row of the daemon's purge ledger `account_purges` (migration 00147,
 /// board #601), joined to its account: when an account's access is revoked,
 /// or a source was not reached for the lease, and purge on revoked access is
 /// on, the account's synced data is deleted after a notice. Read by

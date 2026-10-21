@@ -12,7 +12,7 @@
 > read this file first. Any proposed change that would break a guard test or
 > remove a contract must be raised as a question before touching code.
 
-**Module:** `internal/purge/` (switch, scheduler, runner), `internal/db/account_access.go` (access facts), `internal/db/account_purges.go` (ledger), `internal/db/account_purge_steps.go` (step lists), migration 00146, `internal/daemon/account_purge.go` (`phaseAccountPurge`), `cmd/accounts.go` (`accounts purges`), the Desktop center and notice policy. Feature note: `docs/features/revoke-purge.md`. Board #601, spec `docs/superpowers/specs/2026-10-21-revoke-purge-design.md` (approved 2026-10-21, ask #474; plan decisions ask #477).
+**Module:** `internal/purge/` (switch, scheduler, runner), `internal/db/account_access.go` (access facts), `internal/db/account_purges.go` (ledger), `internal/db/account_purge_steps.go` (step lists), migration 00147, `internal/daemon/account_purge.go` (`phaseAccountPurge`), `cmd/accounts.go` (`accounts purges`), the Desktop center and notice policy. Feature note: `docs/features/revoke-purge.md`. Board #601, spec `docs/superpowers/specs/2026-10-21-revoke-purge-design.md` (approved 2026-10-21, ask #474; plan decisions ask #477).
 **Last full audit:** 2026-10-21
 
 ## PURGE-01 — Schedule and cancel
