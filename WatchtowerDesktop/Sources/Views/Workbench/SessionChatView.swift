@@ -193,13 +193,15 @@ struct SessionChatView: View {
             SessionChatSubagentView(
                 store: store,
                 subagent: subagent,
+                status: { SessionFeedSubagent.currentStatus(of: subagent, in: store.entries) },
                 isActive: { isActive },
                 isOnScreen: { vm.isTabOnScreen() },
                 onOpenSubagent: { path.push($0) },
                 liveLine: { activity, entries in
                     let lastAgent = entries.last { $0.kind == "agent" }
                     return WorkchatActivityPresenter.subagentLine(
-                        activity: activity, sessionWorking: working, subagentStatus: subagent.status,
+                        activity: activity, sessionWorking: working,
+                        subagentStatus: SessionFeedSubagent.currentStatus(of: subagent, in: store.entries),
                         stateAt: SessionFeedEntry.parseDate(vm.sessionStatuses[sessionID]?.at),
                         lastAgentAt: lastAgent?.at)
                 },

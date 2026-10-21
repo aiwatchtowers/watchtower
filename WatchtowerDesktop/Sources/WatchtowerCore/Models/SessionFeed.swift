@@ -20,6 +20,13 @@ package struct SessionFeedSubagent: Decodable, Equatable, Sendable {
         self.status = status
     }
 
+    /// The status of `subagent` in the feed's current markers (a read
+    /// updates a marker in place); the copy itself when no marker has it —
+    /// a copy kept since it was opened would never see it finish.
+    package static func currentStatus(of subagent: SessionFeedSubagent, in entries: [SessionFeedEntry]) -> String {
+        entries.last { $0.subagent?.toolUseID == subagent.toolUseID }?.subagent?.status ?? subagent.status
+    }
+
     private enum CodingKeys: String, CodingKey {
         case toolUseID = "tool_use_id"
         case agentID = "agent_id"

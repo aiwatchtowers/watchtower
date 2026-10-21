@@ -4,10 +4,14 @@ import WatchtowerCore
 /// A subagent's run opened in place in the session chat pane: the task it
 /// was given, what it said on the way and its final report. Read when it
 /// opens; while its marker says `running` and the session is active, read
-/// again every 3 s through the store's one-CLI-at-a-time rule.
+/// again every 3 s through the store's one-CLI-at-a-time rule, each time with
+/// the main feed, which holds the marker (its status is read there, not from
+/// the copy opened).
 struct SessionChatSubagentView: View {
     let store: SessionFeedStore
     let subagent: SessionFeedSubagent
+    /// The subagent's status in the main feed's current markers.
+    let status: () -> String
     /// The session works or has background subagents running.
     let isActive: () -> Bool
     let isOnScreen: () -> Bool
@@ -27,12 +31,14 @@ struct SessionChatSubagentView: View {
     var body: some View {
         VStack(spacing: 0) {
             content
-            if let line = liveLine(activity, entries) { WorkchatActivityLine(line: line) }
+            // Always the row, empty or not: the run does not jump.
+            WorkchatActivityLine(line: liveLine(activity, entries))
         }
             .task(id: followKey) {
                 await store.followSubagent(
                     subagent.toolUseID,
-                    isRunning: { subagent.status == "running" && isActive() },
+                    readsMainFeed: true,
+                    isRunning: { status() == "running" && isActive() },
                     isOnScreen: isOnScreen,
                     onEntries: {
                         entries = $0

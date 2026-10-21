@@ -88,10 +88,14 @@ package final class SessionFeedStore: ObservableObject {
     /// (its marker says `running`) one more every `interval`. Reads due while
     /// `isOnScreen` is false are skipped. Each good read hands its entries and
     /// activity to `onEntries`/`onActivity` and clears the error; a failed one reports it to
-    /// `onError`. Returns when finished or cancelled.
+    /// `onError`. With `readsMainFeed` each tick also reads the main feed
+    /// after it (the main poll is stopped while a subagent is open), so the
+    /// markers — and the status `isRunning` reads from them — stay current.
+    /// Returns when finished or cancelled.
     package func followSubagent(
         _ toolUseID: String,
         interval: Duration = .seconds(3),
+        readsMainFeed: Bool = false,
         isRunning: () -> Bool,
         isOnScreen: () -> Bool,
         onEntries: ([SessionFeedEntry]) -> Void,
@@ -110,6 +114,7 @@ package final class SessionFeedStore: ObservableObject {
             } catch {
                 if !Task.isCancelled { onError(error.localizedDescription) }
             }
+            if readsMainFeed, !Task.isCancelled { await poller.refresh() }
         }
         await tick()
         while isRunning() {

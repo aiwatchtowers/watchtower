@@ -282,6 +282,28 @@ final class SessionFeedStoreTests: XCTestCase {
         XCTAssertTrue(store.entries.isEmpty, "a subagent's feed never enters the main feed")
     }
 
+    /// An open subagent's marker lives in the main feed: with
+    /// `readsMainFeed` each tick also reads the main feed (after the
+    /// subagent's, one CLI at a time), so the status the loop checks is
+    /// current and the loop ends once the marker says finished.
+    func testSubagentFollowReadsMainFeedForTheMarkerStatus() async {
+        let runner = FakeRunner([
+            .success(payload(cursor: "", entries: entry("s1", "agent"))),
+            .success(payload(entries: marker("tu1", status: "running"))),
+            .success(payload(cursor: "", entries: entry("s1", "agent"))),
+            .success(payload(cursor: "c2", subagents: marker("tu1", status: "finished")))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        let pushed = SessionFeedSubagent(toolUseID: "tu1", status: "running")
+        await store.followSubagent("tu1", interval: .milliseconds(1), readsMainFeed: true,
+                                   isRunning: { SessionFeedSubagent.currentStatus(of: pushed, in: store.entries) == "running" },
+                                   isOnScreen: { true }, onEntries: { _ in })
+        XCTAssertEqual(runner.calls.count, 4, "subagent + main per tick, none after finished")
+        XCTAssertTrue(runner.calls[0].contains("--subagent"))
+        XCTAssertFalse(runner.calls[1].contains("--subagent"))
+        XCTAssertEqual(store.entries.first?.subagent?.status, "finished")
+    }
+
     func testSubagentFollowFinishedReadsOnce() async {
         let runner = FakeRunner([])
         let store = SessionFeedStore(sessionID: 7, runner: runner)

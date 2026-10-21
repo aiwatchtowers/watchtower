@@ -63,6 +63,23 @@ final class WorkchatActivityPresenterTests: XCTestCase {
         XCTAssertNil(sub(working: false, status: "running"))
     }
 
+    /// The open subagent's status comes from the feed's current markers,
+    /// not the copy pushed onto the path: finished there → no line.
+    func testSubagentStatusReadFromTheCurrentMarkers() {
+        let pushed = SessionFeedSubagent(toolUseID: "tu1", status: "running")
+        func marker(_ id: String, _ status: String) -> SessionFeedEntry {
+            SessionFeedEntry(id: id, kind: "subagent", at: nil, text: "",
+                             subagent: SessionFeedSubagent(toolUseID: id, status: status))
+        }
+        let entries = [marker("tu0", "running"), marker("tu1", "finished")]
+        let status = SessionFeedSubagent.currentStatus(of: pushed, in: entries)
+        XCTAssertEqual(status, "finished")
+        XCTAssertNil(WorkchatActivityPresenter.subagentLine(
+            activity: activity(), sessionWorking: true, subagentStatus: status, stateAt: t0, lastAgentAt: nil))
+        XCTAssertEqual(SessionFeedSubagent.currentStatus(of: pushed, in: [marker("tu0", "finished")]), "running",
+                       "not in the feed: the pushed copy")
+    }
+
     func testSymbols() {
         XCTAssertEqual(WorkchatActivityPresenter.symbol(for: "Edit"), "pencil")
         XCTAssertEqual(WorkchatActivityPresenter.symbol(for: "mcp__x__y"), "powerplug")
