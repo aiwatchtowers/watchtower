@@ -231,6 +231,34 @@ final class AutomationsViewModelTests: XCTestCase {
         XCTAssertEqual(notified, 1, "an unchanged count does not refresh the badge again")
     }
 
+    // MARK: - Panel
+
+    func testSelectShowsTheCard() {
+        let vm = makeViewModel()
+        XCTAssertEqual(vm.panel, .empty)
+        vm.select(7)
+        XCTAssertEqual(vm.panel, .card(7))
+        XCTAssertEqual(vm.selectedID, 7)
+        vm.select(nil)
+        XCTAssertEqual(vm.panel, .empty)
+        vm.showCard(8)
+        XCTAssertEqual(vm.panel, .card(8))
+        XCTAssertEqual(vm.selectedID, 8)
+    }
+
+    func testShowNewKeepsTheFixedScope() {
+        let vm = makeViewModel()
+        let scope = AutomationScopeChoice.workbench(id: 3, name: "acme", folder: "/tmp/acme")
+        vm.select(7)
+        vm.showNew(AutomationNewFlow(fixedScope: scope, composerPrefill: "Summarise the board"))
+        XCTAssertEqual(vm.panel, .new(AutomationNewFlow(fixedScope: scope, composerPrefill: "Summarise the board")))
+        XCTAssertNil(vm.selectedID, "the list has no selected row while New is open")
+        XCTAssertEqual(scope.workbenchID, 3)
+        XCTAssertEqual(scope.recipeDir(workspaceDir: "/tmp/ws"), "/tmp/acme/.watchtower/automations")
+        XCTAssertNil(AutomationScopeChoice.personal.workbenchID)
+        XCTAssertEqual(AutomationScopeChoice.personal.recipeDir(workspaceDir: "/tmp/ws"), "/tmp/ws/automations")
+    }
+
     func testSelectLoadsCardAndToggleRunLoadsSteps() throws {
         let (id, runID) = try pool.write { db -> (Int64, Int64) in
             let id = try TestDatabase.insertAutomation(db)

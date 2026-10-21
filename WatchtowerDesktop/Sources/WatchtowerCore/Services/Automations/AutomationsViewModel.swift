@@ -49,6 +49,9 @@ package final class AutomationsViewModel {
     @ObservationIgnored package var onInboxOutputCountChanged: (() -> Void)?
     /// The automation whose card is open. Set it through `select(_:)` to load the card.
     package var selectedID: Int64?
+    /// What the right panel shows: the empty state, a card, the New flow, a
+    /// template, or the editor. `select(_:)` and `showCard(_:)` set a card.
+    package var panel: AutomationsPanel = .empty
     /// Run ids whose steps are shown in the history.
     package private(set) var expandedRuns: Set<Int64> = []
     /// Keyed by automation id.
@@ -305,7 +308,20 @@ package final class AutomationsViewModel {
     package func select(_ id: Int64?) {
         if id != selectedID { expandedRuns = [] }
         selectedID = id
+        panel = id.map(AutomationsPanel.card) ?? .empty
         if id != nil { refresh() }
+    }
+
+    /// Shows an automation's card in the panel and selects its row.
+    package func showCard(_ id: Int64) {
+        select(id)
+    }
+
+    /// Opens the New automation flow; no row stays selected meanwhile.
+    package func showNew(_ flow: AutomationNewFlow) {
+        if selectedID != nil { expandedRuns = [] }
+        selectedID = nil
+        panel = .new(flow)
     }
 
     /// Shows or hides a run's steps in the history.
@@ -329,6 +345,7 @@ package final class AutomationsViewModel {
     package func open(automationID: Int64, runID: Int64?) {
         if automationID != selectedID { expandedRuns = [] }
         selectedID = automationID
+        panel = .card(automationID)
         if let runID { expandedRuns.insert(runID) }
         refresh()
     }
