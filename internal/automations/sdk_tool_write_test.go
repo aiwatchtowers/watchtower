@@ -30,8 +30,14 @@ type writeFixture struct {
 
 func newWriteFixture(t *testing.T) *writeFixture {
 	t.Helper()
+	return newWriteFixtureWith(t, nil)
+}
+
+// newWriteFixtureWith is newWriteFixture with extra test modules.
+func newWriteFixtureWith(t *testing.T, modules func(f *exFixture) []automations.Module) *writeFixture {
+	t.Helper()
 	w := &writeFixture{}
-	w.exFixture = newExFixture(t, exOpts{fileDB: true, registry: func(d *db.DB) automations.ToolRegistry {
+	w.exFixture = newExFixture(t, exOpts{fileDB: true, modules: modules, registry: func(d *db.DB) automations.ToolRegistry {
 		w.reg = tools.New(d)
 		for _, tl := range []*tools.Tool{tools.NewCreateTarget(), tools.NewCreateIdea(), tools.NewCreateJiraIssue(nil), editNoteTool(t)} {
 			if err := w.reg.Register(tl); err != nil {
