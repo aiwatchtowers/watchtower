@@ -42,7 +42,8 @@ type Syncer struct {
 	OnProgress       func(SyncProgress) // optional progress callback
 	firstSyncFrom    time.Time          // set by Sync when it was the account's first; see FirstSyncFrom
 
-	deletionsCheckedAt map[string]time.Time // project key → last completed CheckDeletedIssues; in memory per daemon run
+	deletionsDueAt map[string]time.Time            // project key → earliest next CheckDeletedIssues; in memory per daemon run
+	deletionsKept  map[string]map[string]time.Time // project key → missing keys Jira still returned → when last confirmed
 }
 
 // NewSyncer creates a Syncer for one Jira account.
@@ -55,7 +56,8 @@ func NewSyncer(client *Client, database *db.DB, mapper *UserMapper, boardIDs []i
 		boardIDs:  boardIDs,
 		accountID: accountID,
 
-		deletionsCheckedAt: map[string]time.Time{},
+		deletionsDueAt: map[string]time.Time{},
+		deletionsKept:  map[string]map[string]time.Time{},
 	}
 }
 

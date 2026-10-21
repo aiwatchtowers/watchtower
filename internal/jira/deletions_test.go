@@ -32,6 +32,7 @@ type deletionsServer struct {
 	present    map[string]bool
 	moved      map[string]string
 	failing    map[string]bool
+	failStatus int // status for a failing key; 500 when zero
 	onSearch   func()
 
 	searches []string // jql of each search request
@@ -69,7 +70,11 @@ func (s *deletionsServer) start(t *testing.T) *httptest.Server {
 		s.mu.Unlock()
 		switch {
 		case s.failing[key]:
-			w.WriteHeader(http.StatusInternalServerError)
+			status := s.failStatus
+			if status == 0 {
+				status = http.StatusInternalServerError
+			}
+			w.WriteHeader(status)
 		case s.moved[key] != "":
 			body, _ := json.Marshal(map[string]string{"id": "1", "key": s.moved[key]})
 			_, _ = w.Write(body)
@@ -169,6 +174,7 @@ func TestCheckDeletedIssues_RemovesConfirmedGone(t *testing.T) {
 
 func TestCheckDeletedIssues_MovedIssueRemovesOldKey(t *testing.T) {
 	database := deletionsDB(t, projectKeys(6))
+	storeIssues(t, database, 1, "OTHER", "OTHER-9")
 	fake := &deletionsServer{listed: projectKeys(5), moved: map[string]string{"PROJ-6": "OTHER-9"}}
 	s := deletionsSyncer(t, database, fake.start(t), 1)
 
@@ -176,6 +182,9 @@ func TestCheckDeletedIssues_MovedIssueRemovesOldKey(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, removed)
 	assert.NotContains(t, storedKeys(t, database, 1), "PROJ-6")
+	other, err := database.JiraProjectIssueKeys(1, "OTHER")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"OTHER-9"}, other, "the issue's row under its new key is untouched")
 }
 
 // SRCDEL-01 supporting: a listing that misses an issue Jira still returns
@@ -242,13 +251,25 @@ func TestCheckDeletedIssues_IncompleteListingDeletesNothing(t *testing.T) {
 	assert.Len(t, storedKeys(t, database, 1), 6)
 	assert.Empty(t, lookups)
 
-	_, err = s.CheckDeletedIssues(context.Background(), deletionsNow.Add(time.Minute))
-	require.NoError(t, err)
-	searches, _ := fake.counts()
-	assert.Equal(t, 2, searches, "an incomplete listing leaves the project unstamped")
+	assertRetriedAfterBackoff(t, s, fake)
 }
 
-func TestCheckDeletedIssues_ListErrorRetriesNextCycle(t *testing.T) {
+// assertRetriedAfterBackoff checks that a failed check is not retried on the
+// next 15-minute cycle but is once deletionRetryAfter has passed.
+func assertRetriedAfterBackoff(t *testing.T, s *Syncer, fake *deletionsServer) {
+	t.Helper()
+	_, err := s.CheckDeletedIssues(context.Background(), deletionsNow.Add(15*time.Minute))
+	require.NoError(t, err)
+	searches, _ := fake.counts()
+	assert.Equal(t, 1, searches, "the next cycle inside the backoff sends no request")
+
+	_, err = s.CheckDeletedIssues(context.Background(), deletionsNow.Add(deletionRetryAfter))
+	require.NoError(t, err)
+	searches, _ = fake.counts()
+	assert.Equal(t, 2, searches, "the project is retried once the backoff has passed")
+}
+
+func TestCheckDeletedIssues_ListErrorRetriesAfterBackoff(t *testing.T) {
 	database := deletionsDB(t, projectKeys(6))
 	fake := &deletionsServer{listStatus: http.StatusInternalServerError}
 	s := deletionsSyncer(t, database, fake.start(t), 1)
@@ -258,10 +279,7 @@ func TestCheckDeletedIssues_ListErrorRetriesNextCycle(t *testing.T) {
 	assert.Equal(t, 0, removed)
 	assert.Len(t, storedKeys(t, database, 1), 6)
 
-	_, err = s.CheckDeletedIssues(context.Background(), deletionsNow.Add(time.Minute))
-	require.NoError(t, err)
-	searches, _ := fake.counts()
-	assert.Equal(t, 2, searches)
+	assertRetriedAfterBackoff(t, s, fake)
 }
 
 func TestCheckDeletedIssues_ConfirmErrorKeepsRest(t *testing.T) {
@@ -276,10 +294,57 @@ func TestCheckDeletedIssues_ConfirmErrorKeepsRest(t *testing.T) {
 	assert.NotContains(t, keys, "PROJ-5", "the key confirmed before the failure is removed")
 	assert.Contains(t, keys, "PROJ-6", "the key whose lookup failed is kept")
 
-	_, err = s.CheckDeletedIssues(context.Background(), deletionsNow.Add(time.Minute))
+	assertRetriedAfterBackoff(t, s, fake)
+}
+
+// A 403 on the per-key lookup is not a 404: nothing is deleted.
+func TestCheckDeletedIssues_ForbiddenLookupDeletesNothing(t *testing.T) {
+	database := deletionsDB(t, projectKeys(6))
+	fake := &deletionsServer{listed: projectKeys(5), failing: map[string]bool{"PROJ-6": true}, failStatus: http.StatusForbidden}
+	s := deletionsSyncer(t, database, fake.start(t), 1)
+
+	removed, err := s.CheckDeletedIssues(context.Background(), deletionsNow)
 	require.NoError(t, err)
-	searches, _ := fake.counts()
-	assert.Equal(t, 2, searches, "a failed lookup leaves the project unstamped")
+	assert.Equal(t, 0, removed)
+	assert.Len(t, storedKeys(t, database, 1), 6)
+	assertRetriedAfterBackoff(t, s, fake)
+}
+
+// Keys Jira still returns under the same key do not starve a real deletion
+// behind the per-check cap: they are looked up after the unchecked ones.
+func TestCheckDeletedIssues_KeptKeysDoNotStarveDeletions(t *testing.T) {
+	all := projectKeys(400)
+	database := deletionsDB(t, all)
+	// PROJ-1 … PROJ-150 are missing from the listing but still exist; they
+	// sort before PROJ-999, the one issue really deleted.
+	storeIssues(t, database, 1, "PROJ", "PROJ-999")
+	present := map[string]bool{}
+	for _, k := range all[:150] {
+		present[k] = true
+	}
+	fake := &deletionsServer{listed: all[150:], present: present}
+	s := deletionsSyncer(t, database, fake.start(t), 1)
+
+	day := deletionsNow
+	for range 3 {
+		_, err := s.CheckDeletedIssues(context.Background(), day)
+		require.NoError(t, err)
+		if !slices.Contains(storedKeys(t, database, 1), "PROJ-999") {
+			break
+		}
+		day = day.Add(deletionCheckEvery)
+	}
+	keys := storedKeys(t, database, 1)
+	assert.NotContains(t, keys, "PROJ-999", "the deletion lands within two daily checks")
+	assert.Len(t, keys, 400, "every kept key stays")
+	assert.LessOrEqual(t, day.Sub(deletionsNow), deletionCheckEvery)
+
+	// The remembered kept keys still get rechecked when the cap leaves room.
+	_, _, before := fake.requests()
+	_, err := s.CheckDeletedIssues(context.Background(), day.Add(deletionCheckEvery))
+	require.NoError(t, err)
+	_, _, after := fake.requests()
+	assert.Len(t, after[len(before):], maxIssueConfirms)
 }
 
 func TestCheckDeletedIssues_ConfirmCap(t *testing.T) {

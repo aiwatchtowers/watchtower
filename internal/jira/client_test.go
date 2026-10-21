@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -224,6 +225,23 @@ func TestSearchIssueKeys_IncompleteOnRepeatedToken(t *testing.T) {
 	assert.Equal(t, 2, calls, "the repeated token stops the loop on the second page")
 }
 
+func TestSearchIssueKeys_IncompleteAfterMaxPages(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		_, _ = w.Write([]byte(fmt.Sprintf(`{"issues":[{"id":"%d","key":"PROJ-%d"}],"isLast":false,"nextPageToken":"t%d"}`, calls, calls, calls)))
+	}))
+	defer srv.Close()
+
+	c := makeTestClient(t, srv.URL)
+	c.rateLimiter = &RateLimiter{tokens: 1000, maxTokens: 1000, refillRate: 1000, lastRefill: time.Now()}
+	keys, complete, err := c.searchIssueKeys(context.Background(), "project = PROJ")
+	require.NoError(t, err)
+	assert.False(t, complete, "a listing that never reaches its last page is incomplete")
+	assert.Equal(t, maxKeyPages, calls)
+	assert.Len(t, keys, maxKeyPages)
+}
+
 func TestSearchIssueKeys_ErrorIsReturned(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -248,6 +266,8 @@ func TestIssueCurrentKey(t *testing.T) {
 			_, _ = w.Write([]byte(`{"id":"1","key":"PROJ-1"}`))
 		case "/rest/api/3/issue/PROJ-6":
 			_, _ = w.Write([]byte(`{"id":"6","key":"OTHER-9"}`))
+		case "/rest/api/3/issue/PROJ-7":
+			_, _ = w.Write([]byte(`{"id":"7"}`))
 		default:
 			w.WriteHeader(http.StatusInternalServerError)
 		}
@@ -271,4 +291,8 @@ func TestIssueCurrentKey(t *testing.T) {
 
 	_, err = c.issueCurrentKey(ctx, "PROJ-500")
 	require.Error(t, err)
+
+	got, err = c.issueCurrentKey(ctx, "PROJ-7")
+	require.Error(t, err, "a 200 without a key is never read as deleted")
+	assert.Equal(t, "", got)
 }

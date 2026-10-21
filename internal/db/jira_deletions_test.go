@@ -111,12 +111,18 @@ func TestDeleteJiraIssues_OtherAccountKeepsKey(t *testing.T) {
 	d := openTestDB(t)
 	a1 := SeedTestJiraAccount(t, d)
 	a2 := SeedTestJiraAccount(t, d)
-	seedJiraIssues(t, d, a1, "PROJ", "PROJ-1")
-	seedJiraIssues(t, d, a2, "PROJ", "PROJ-1")
+	seedJiraIssues(t, d, a1, "PROJ", "PROJ-1", "PROJ-2")
+	seedJiraIssues(t, d, a2, "PROJ", "PROJ-1", "PROJ-2")
 	require.NoError(t, d.UpsertJiraComments([]JiraComment{
 		{AccountID: a1, IssueKey: "PROJ-1", ID: "c1", BodyText: "one"},
 		{AccountID: a2, IssueKey: "PROJ-1", ID: "c1", BodyText: "other site"},
 	}))
+	for _, a := range []int64{a1, a2} {
+		require.NoError(t, d.ReplaceJiraIssueChangelogs(a, []JiraIssueHistory{
+			{Key: "PROJ-1", UpdatedAt: "2026-10-01T00:00:00Z", Items: []JiraChangelogItem{{HistoryID: "h1", Field: "status", ChangedAt: "2026-10-01T00:00:00Z"}}},
+		}))
+		require.NoError(t, d.UpsertJiraIssueLink(JiraIssueLink{AccountID: a, ID: "l1", SourceKey: "PROJ-1", TargetKey: "PROJ-2", LinkType: "blocks"}))
+	}
 	item := jiraInboxItem(t, d, "PROJ-1", "jira_assigned", "1")
 
 	n, err := d.DeleteJiraIssues(a1, []string{"PROJ-1"})
@@ -125,8 +131,38 @@ func TestDeleteJiraIssues_OtherAccountKeepsKey(t *testing.T) {
 
 	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM jira_issues WHERE account_id = ? AND key = 'PROJ-1'`, a2))
 	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM jira_comments WHERE account_id = ?`, a2))
+	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM jira_issue_changelog WHERE account_id = ? AND issue_key = 'PROJ-1'`, a2))
+	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM jira_changelog_sync WHERE account_id = ? AND issue_key = 'PROJ-1'`, a2))
+	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM jira_issue_links WHERE account_id = ? AND id = 'l1'`, a2))
+	assert.Equal(t, 0, countRows(t, d, `SELECT COUNT(*) FROM jira_issue_changelog WHERE account_id = ?`, a1))
+	assert.Equal(t, 0, countRows(t, d, `SELECT COUNT(*) FROM jira_changelog_sync WHERE account_id = ?`, a1))
+	assert.Equal(t, 0, countRows(t, d, `SELECT COUNT(*) FROM jira_issue_links WHERE account_id = ?`, a1))
 	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM inbox_items WHERE id = ? AND snippet != ''`, item),
 		"the bare-key inbox item may belong to the other account's live issue")
+}
+
+// More keys than one IN chunk (500): every chunk is deleted in the one
+// transaction, and the issue past the list is kept.
+func TestDeleteJiraIssues_AcrossChunks(t *testing.T) {
+	d := openTestDB(t)
+	a := SeedTestJiraAccount(t, d)
+	keys := make([]string, 1201)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("PROJ-%d", i+1)
+	}
+	seedJiraIssues(t, d, a, "PROJ", keys...)
+	comments := make([]JiraComment, 0, len(keys))
+	for i, k := range keys {
+		comments = append(comments, JiraComment{AccountID: a, IssueKey: k, ID: fmt.Sprintf("c%d", i), BodyText: "x"})
+	}
+	require.NoError(t, d.UpsertJiraComments(comments))
+
+	n, err := d.DeleteJiraIssues(a, keys[:1200])
+	require.NoError(t, err)
+	assert.Equal(t, 1200, n)
+	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM jira_issues WHERE account_id = ?`, a))
+	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM jira_issues WHERE key = 'PROJ-1201'`))
+	assert.Equal(t, 1, countRows(t, d, `SELECT COUNT(*) FROM jira_comments WHERE account_id = ?`, a))
 }
 
 func TestDeleteJiraIssues_Empty(t *testing.T) {
