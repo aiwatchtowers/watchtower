@@ -462,7 +462,7 @@ func TestAutomationsCLI_ValidateJSONKeys(t *testing.T) {
 	for _, text := range []string{autoCLIRecipeText(`return 1`), "broken"} {
 		path := writeRecipe(t, t.TempDir(), "digest", text)
 		wantKeys(t, runAutomationsJSON(t, "validate", path), "ok", "errors", "slug", "name", "scope",
-			"approval_hash", "content_hash", "permissions", "outputs", "widening", "feeds_sources_to_llm", "changes", "changes_known")
+			"approval_hash", "content_hash", "permissions", "outputs", "widening", "feeds_sources_to_llm", "changes", "changes_known", "fields")
 	}
 }
 
@@ -1089,4 +1089,27 @@ func TestAutomationsCLI_ShowChangesIgnoresButtonLabel(t *testing.T) {
 	changes, known, _, _ = showChanges(t, a.ID)
 	assert.Equal(t, []any{change("budget_tokens", "40000", "30000")}, changes, "no trigger entry for the label")
 	assert.True(t, known)
+}
+
+func TestAutomationsCLI_ValidateJSONFields(t *testing.T) {
+	newAutoCLI(t)
+	recipe := func(trigger string) string {
+		return "---\nname: Acme\n" + trigger + "missed: skip\nconcurrency: 2\nbudget:\n  tokens: 50000\n  minutes: 3\n---\n```js\nreturn 1\n```\n"
+	}
+	cases := []struct{ name, trigger, want string }{
+		{"schedule", "trigger:\n  schedule: \"0 9 * * 1-5\"\n", "schedule: 0 9 * * 1-5"},
+		{"event", "trigger:\n  event:\n    type: slack.new_messages\n    where:\n      channel: acme-*\n      account: acme\n", "event: slack.new_messages where account=acme, channel=acme-*"},
+		{"manual", "trigger:\n  manual: true\n", "manual"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			path := writeRecipe(t, t.TempDir(), "acme", recipe(c.trigger))
+			v := runAutomationsJSON(t, "validate", path)
+			require.Equal(t, true, v["ok"], "%v", v["errors"])
+			assert.Equal(t, map[string]any{"trigger": c.want, "missed": "skip", "concurrency": "2",
+				"budget": map[string]any{"tokens": float64(50000), "minutes": float64(3)}}, v["fields"])
+		})
+	}
+	bad := runAutomationsJSON(t, "validate", writeRecipe(t, t.TempDir(), "acme", "broken"))
+	assert.Equal(t, map[string]any{}, bad["fields"])
 }

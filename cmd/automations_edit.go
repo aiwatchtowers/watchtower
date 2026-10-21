@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +43,54 @@ type validateJSON struct {
 	// no known confirmed text, or when the text does not parse.
 	Changes      []automationChangeJSON `json:"changes"`
 	ChangesKnown bool                   `json:"changes_known"`
+	// Fields is the hashed, non-manifest part of the parsed recipe as owner
+	// text (AUTO-06: the panel shows these as Go parsed them); {} when the text
+	// does not parse.
+	Fields validateFieldsJSON `json:"fields"`
+}
+
+// validateFieldsJSON is the approval hash's non-manifest fields (trigger,
+// missed, budget, concurrency; the manifest, scope and script have their own
+// keys or are the text itself). Empty values are omitted.
+type validateFieldsJSON struct {
+	Trigger     string              `json:"trigger,omitempty"`
+	Missed      string              `json:"missed,omitempty"`
+	Concurrency string              `json:"concurrency,omitempty"`
+	Budget      *validateBudgetJSON `json:"budget,omitempty"`
+}
+
+type validateBudgetJSON struct {
+	Tokens  int `json:"tokens"`
+	Minutes int `json:"minutes"`
+}
+
+// triggerLine is the trigger in one owner-readable line: the schedule text, an
+// event type with its where filters as key=value, a button (noting a confirm
+// prompt) or "manual".
+func triggerLine(t automations.Trigger) string {
+	switch t.Kind {
+	case automations.TriggerSchedule:
+		return "schedule: " + t.Schedule
+	case automations.TriggerEvent:
+		if t.Event == nil {
+			return "event"
+		}
+		parts := make([]string, 0, len(t.Event.Where))
+		for _, k := range slices.Sorted(maps.Keys(t.Event.Where)) {
+			parts = append(parts, k+"="+t.Event.Where[k])
+		}
+		if len(parts) == 0 {
+			return "event: " + t.Event.Type
+		}
+		return "event: " + t.Event.Type + " where " + strings.Join(parts, ", ")
+	case automations.TriggerButton:
+		if t.Button != nil && t.Button.Confirm {
+			return "button (asks before running)"
+		}
+		return "button"
+	default:
+		return "manual"
+	}
 }
 
 // validateRecipe parses data as the recipe slug in scope. A parse error is a
@@ -62,6 +112,8 @@ func validateRecipe(slug string, data []byte, contentHash string, scope automati
 		return v
 	}
 	v.OK, v.Name, v.ApprovalHash = true, r.Name, automations.ApprovalHash(r)
+	v.Fields = validateFieldsJSON{Trigger: triggerLine(r.Trigger), Missed: string(r.Missed),
+		Concurrency: strconv.Itoa(r.Concurrency), Budget: &validateBudgetJSON{Tokens: r.Budget.Tokens, Minutes: r.Budget.Minutes}}
 	v.Permissions = append(v.Permissions, m.Normalized()...)
 	v.Outputs = append(v.Outputs, slices.Compact(slices.Sorted(slices.Values(r.Outputs)))...)
 	var baseline []string
