@@ -318,6 +318,9 @@ final class AppState {
     /// The Automations edit form's drafts, saves and the confirmation
     /// sheet's confirm; owned here so a save finishes after the form closes.
     private(set) var automationEditorCenter: AutomationEditorCenter?
+    /// The template panels (spec A3) by template and scope; owned here so an
+    /// install started in a panel finishes when the panel goes away.
+    private(set) var automationTemplatePanels: AutomationTemplatePanels?
     /// Quick run's rows and finish watch (spec §12.7); built with `automationsViewModel`.
     private(set) var quickRunCenter: QuickRunCenter?
     /// Launches the sessions automation runs request (spec §13.1); built
@@ -1315,6 +1318,12 @@ final class AppState {
                 await vm?.loadDetail(id)
             }
         )
+        automationTemplatePanels = AutomationTemplatePanels { [weak vm] template, scope in
+            AutomationTemplatePanelModel(template: template, scope: scope, cli: cli) { id in
+                vm?.refresh()
+                if let id { await vm?.loadDetail(id) }
+            }
+        }
     }
 
     /// The onboarding on screen was started from Settings: it can be
