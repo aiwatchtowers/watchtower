@@ -1620,7 +1620,7 @@ final class AppState {
     /// what is already there, and during onboarding an account already
     /// connected (a relaunch mid-onboarding) resumes the load.
     func slackAccountsDidChange(_ accounts: [SlackAccount]) {
-        let active = accounts.filter { !["removed", "purged"].contains($0.status) }.map(\.id)
+        let active = accounts.filter { !$0.isGone }.map(\.id)
         defer { knownSlackAccountIDs = Set(active) }
         guard let known = knownSlackAccountIDs else {
             if needsOnboarding { resumePeopleRosterIfNeeded() }
@@ -1635,7 +1635,7 @@ final class AppState {
     /// already connected Slack account starts it once.
     func resumePeopleRosterIfNeeded() {
         guard peopleRoster.state == .idle,
-              let account = slackAccountsViewModel?.accounts.first(where: { !["removed", "purged"].contains($0.status) }) else { return }
+              let account = slackAccountsViewModel?.accounts.first(where: { !$0.isGone }) else { return }
         peopleRoster.start(accountID: account.id)
     }
 

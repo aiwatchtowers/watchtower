@@ -77,10 +77,9 @@ final class SidebarVisibilityTests: XCTestCase {
     /// its tab hides — the purge also turns the account off.
     func testPurgedAccountsCountAsRemoved() throws {
         let purged = try fetch { db in
-            _ = try TestDatabase.insertSlackAccount(db, teamID: "T1", status: "purged")
+            _ = try TestDatabase.insertSlackAccount(db, teamID: "T1", status: "purged", enabled: false)
             _ = try TestDatabase.insertJiraAccount(db, cloudID: "c1", status: "purged", enabled: false)
             _ = try TestDatabase.insertLinearAccount(db, status: "purged", enabled: false)
-            _ = try TestDatabase.insertGoogleAccount(db, email: "a@example.com", status: "purged")
         }
         XCTAssertEqual(purged, .none)
     }

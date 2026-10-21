@@ -74,13 +74,10 @@ final class OwnerQueriesTests: XCTestCase {
             )
         }
         for email in s.google {
-            // A finished purge leaves the row purged with both services off.
             _ = try TestDatabase.insertGoogleAccount(db, email: email, status: s.purgedGoogle.contains(email) ? "purged" : "ok")
         }
         for j in s.jira {
-            // A finished purge also turns the account off.
-            let id = try TestDatabase.insertJiraAccount(db, cloudID: j.cloudID, status: j.status,
-                                                        enabled: j.enabled && j.status != "purged")
+            let id = try TestDatabase.insertJiraAccount(db, cloudID: j.cloudID, status: j.status, enabled: j.enabled)
             try db.execute(sql: """
                 UPDATE jira_accounts SET owner_account_id = ?, owner_email = ?, owner_display_name = ?
                 WHERE id = ?
@@ -90,7 +87,7 @@ final class OwnerQueriesTests: XCTestCase {
             try db.execute(sql: """
                 INSERT INTO linear_accounts (enabled, status, owner_user_id, owner_email, owner_display_name)
                 VALUES (?, ?, ?, ?, ?)
-                """, arguments: [l.enabled && l.status != "purged", l.status, l.ownerUserID, l.ownerEmail, l.ownerDisplayName])
+                """, arguments: [l.enabled, l.status, l.ownerUserID, l.ownerEmail, l.ownerDisplayName])
         }
         for m in s.mailboxes {
             try TestDatabase.insertEmailAccount(db, provider: m.provider, emailAddress: m.address)
@@ -135,7 +132,9 @@ final class OwnerQueriesTests: XCTestCase {
             ("removed linear is skipped",
              OwnerSeed(linear: [LinearSeed(status: "removed", ownerUserID: "user-1")]),
              Owner.unknown),
-            ("purged linear is skipped",
+            // Purged yet enabled (an enable toggle on a purged row): the
+            // status filter alone skips it, as in Go's "purged-enabled" seed.
+            ("purged linear is skipped, even re-enabled",
              OwnerSeed(linear: [LinearSeed(status: "purged", ownerUserID: "user-1")]),
              Owner.unknown),
             ("disabled linear is skipped",
@@ -193,7 +192,7 @@ final class OwnerQueriesTests: XCTestCase {
             ("purged google is skipped",
              OwnerSeed(google: ["old@x.com", "b@x.com"], purgedGoogle: ["old@x.com"]),
              Self.owner(id: "google:b@x.com", source: .google, email: "b@x.com", displayName: "b")),
-            ("purged jira is skipped",
+            ("purged jira is skipped, even re-enabled",
              OwnerSeed(jira: [JiraSeed(cloudID: "c1", enabled: true, status: "purged", ownerAccountID: "acc-9")]),
              Owner.unknown),
             ("disabled jira is skipped",

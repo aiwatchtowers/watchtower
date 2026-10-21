@@ -71,10 +71,18 @@ func seedOwner(t *testing.T, d *DB, s ownerSeed) {
 	}
 }
 
+// seedPurged marks the row as a finished purge does (purgedAccountSQL);
+// "purged-enabled" then turns it back on, the state an enable toggle can leave
+// on a still-purged row, so the status filter itself is what skips it.
 func seedPurged(t *testing.T, d *DB, source string, id int64, status string) {
 	t.Helper()
-	if status == "purged" {
-		_, err := d.Exec(purgedAccountSQL[source], id)
+	if status != "purged" && status != "purged-enabled" {
+		return
+	}
+	_, err := d.Exec(purgedAccountSQL[source], id)
+	require.NoError(t, err)
+	if status == "purged-enabled" {
+		_, err = d.Exec(`UPDATE `+source+`_accounts SET enabled = 1 WHERE id = ?`, id)
 		require.NoError(t, err)
 	}
 }
@@ -137,8 +145,8 @@ func TestOwner01_ResolveOwnerLadder(t *testing.T) {
 			Owner{ID: "google:me@x.com", Source: OwnerSourceGoogle, Email: "me@x.com", DisplayName: "me"}},
 		{"purged google is skipped", ownerSeed{google: []GoogleAccount{{Email: "old@x.com", Status: "purged"}, {Email: "b@x.com"}}},
 			Owner{ID: "google:b@x.com", Source: OwnerSourceGoogle, Email: "b@x.com", DisplayName: "b"}},
-		{"purged jira is skipped", ownerSeed{jira: []JiraAccount{{CloudID: "c1", Enabled: true, Status: "purged", OwnerAccountID: "acc-9"}}}, Owner{}},
-		{"purged linear is skipped", ownerSeed{linear: []LinearAccount{{Enabled: true, Status: "purged", OwnerUserID: "user-1"}}}, Owner{}},
+		{"purged jira is skipped, even re-enabled", ownerSeed{jira: []JiraAccount{{CloudID: "c1", Enabled: true, Status: "purged-enabled", OwnerAccountID: "acc-9"}}}, Owner{}},
+		{"purged linear is skipped, even re-enabled", ownerSeed{linear: []LinearAccount{{Enabled: true, Status: "purged-enabled", OwnerUserID: "user-1"}}}, Owner{}},
 		{"disabled linear is skipped", ownerSeed{linear: []LinearAccount{{Enabled: false, OwnerUserID: "user-1"}}}, Owner{}},
 		{"linear account without an owner id is skipped", ownerSeed{linear: []LinearAccount{{Enabled: true}, {Enabled: true, OwnerUserID: "user-2"}}},
 			Owner{ID: "linear:user-2", Source: OwnerSourceLinear, LinearUserIDs: []string{"user-2"}}},
