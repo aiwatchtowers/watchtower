@@ -109,6 +109,9 @@ package enum HomeLink: Equatable, Sendable {
     /// An automation inbox output's run in the Automations tab, which is
     /// always visible (Inbox hides with no message or tracker source).
     case automationRun(automationID: Int64, runID: Int64)
+    /// An automation inbox output's card in the Inbox, with its buttons;
+    /// its run when the Inbox tab is hidden.
+    case inboxOutput(id: Int64, automationID: Int64, runID: Int64)
     /// Getting ready's Open.
     case feature(ReadinessFeature)
     /// Getting ready's Connect row.

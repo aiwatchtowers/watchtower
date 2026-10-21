@@ -365,6 +365,14 @@ feed, Workbench, links and numbers — what needs the owner now. It composes
 nothing: no AI call, no DB write; every zone reads existing tables (the feed's
 Done/Hide is the one writer), and Getting ready reads P1's readiness.
 
+### Purge banner (2026-10-21, #601)
+
+`AccountPurgeBanner` (`Views/Home/AccountPurgeBanner.swift`) sits above
+Getting ready while `AccountPurgeCenter.openRows` is non-empty: one red line
+per account whose data is scheduled for deletion or being deleted
+(`AccountPurgeNoticePolicy.line`), **Reconnect** only while `state =
+'scheduled'`. See [revoke-purge.md](revoke-purge.md).
+
 ### Destination and landing
 
 - `SidebarDestination.home` (`WatchtowerDesktop/Sources/App/SidebarDestination.swift:5`)
@@ -510,7 +518,10 @@ content width). No migration, no AI, no daemon phase.
     `MAX(created_at, mentioned_at)` within 72 h (`windowHours`), not snoozed
     (`snooze_until = ''` or elapsed), newest first, `LIMIT 200` (`rowLimit`).
     `read_at` never hides a row: a read row stays and renders secondary;
-    `priority` is not used.
+    `priority` is not used. A `jira_*` row whose key has no live
+    `jira_issues` row (`is_deleted = 0`) is left out (2026-10-22): an issue
+    deleted at the source (`db.DeleteJiraIssues`, SRCDEL) leaves its inbox
+    item pending with blank text, and its link would lead nowhere.
   - Due reminders (`ReminderQueries.fetchDue`), proposals/failed actions
     (`AgentActionQueries.awaitingOwner`, workbench rows excluded there), and
     own targets overdue or due today (`dueTargets`: `project_id IS NULL` —
@@ -525,9 +536,11 @@ content width). No migration, no AI, no daemon phase.
     `LIMIT 200`. Source `.automations`, tables `automation_outputs` +
     `automations`. A row shows the output's title (or "Automation output"),
     the automation's name as the place, the body, chip "Automation"; a click
-    opens its run in the Automations tab (`HomeLink.automationRun`) — always
-    visible, unlike Inbox, which hides with no message, tracker or calendar
-    source.
+    opens its Inbox card with its buttons (`HomeLink.inboxOutput` →
+    `ActionStripViewModel.select(.output)`, which marks it read, so it leaves
+    the feed), or its run in the Automations tab (`openAutomationRun`) while
+    the Inbox tab is hidden (no message, tracker or calendar source) — since
+    #449 (2026-10-22). `includeRead: false`: an opened note is not shown.
   - Calendar (`events`): today and the next 4 days through
     `isShownEvent` — no all-day, no `cancelled`, none the owner
     declined (attendee email equal to the event's `accountEmail`,

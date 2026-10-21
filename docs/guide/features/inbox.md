@@ -54,7 +54,7 @@ The tab has three views: **Actions**, **Learned** and **Profile**.
 - **Automation cards** can carry their own buttons, then **Open source**, **Discuss in Chat**, **Hand to Agent…**, **Done** and **Dismiss**. The source line opens the run. See [Buttons on automation cards](automations-inbox-buttons.md).
 - **Proposals** offer **Approve**, **Reject** or, after a failure, **Retry**. A Slack message offers **Approve & send** so you can edit the text first. A proposed automation shows a summary with **Open Draft** and **Reject**.
 
-When an action is done, its card links to the result, such as **Open →** for the new idea, target or track, or **Open ABC-7 →** for a Jira issue. Cards that came from a reaction and due reminders also show **Slack message ↗**. The badge on the tab counts proposals, due reminders and automation cards you haven't opened or finished.
+When an action is done, its card links to the result, such as **Open →** for the new idea, target or track, or **Open ABC-7 →** for a Jira issue. Cards that came from a reaction and due reminders also show **Slack message ↗**. The badge on the tab counts proposals, due reminders and automation cards you haven't opened yet.
 
 ### Teach it your preferences
 
