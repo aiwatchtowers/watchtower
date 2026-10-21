@@ -1,4 +1,5 @@
 mattn/go-sqlite3 v1.14.52
 sqlcipher v4.19.0
 sqlite 3.53.4
-sqlite3-binding.c sha256 77044ff1d11a8fe7adda43178bd53ed6b276f6cbf777c7b36d84dadb57a3c612
+sqlite3-binding.c sha256 6538625f2e5db09a8f1dd54e325e7e6ddf81be532f8e572631100adb01232390
+patch 0001-attach-codec-on-reserve-only-when-main-has-codec.patch

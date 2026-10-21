@@ -11,8 +11,10 @@
 #   internal/sqlcipher/sqlite3-binding.h   sqlite3.h
 #   internal/sqlcipher/sqlite3ext.h        src/sqlite3ext.h
 # each wrapped in mattn's `#ifndef USE_LIBSQLITE3` guard, and
-# internal/sqlcipher/VERSION (mattn tag, SQLCipher tag, SQLite version and
-# the amalgamation's SHA-256). It never downloads a prebuilt binary.
+# internal/sqlcipher/VERSION (mattn tag, SQLCipher tag, SQLite version, the
+# amalgamation's SHA-256 after the Watchtower patches, and one `patch` line
+# per patch applied from internal/sqlcipher/patches/). It never downloads a
+# prebuilt binary.
 #
 # An upgrade moves in lockstep with the Swift side (SQLCipher.swift pinned to
 # the same tag in the GRDB fork); the Go<->Swift interop test is the gate.
@@ -55,6 +57,24 @@ wrap "$WORK/src/src/sqlite3ext.h" "$DEST/sqlite3ext.h"
 # sqlite3-binding.h, so the include is renamed as mattn's upgrade tool does.
 sed -i.bak 's/^#include "sqlite3.h"/#include "sqlite3-binding.h"/' "$DEST/sqlite3-binding.c" "$DEST/sqlite3ext.h"
 rm -f "$DEST/sqlite3-binding.c.bak" "$DEST/sqlite3ext.h.bak"
+# An upstream credit line carries a real email address; the repo's leak check
+# lets it through only with its marker on the line.
+sed -i.bak 's/^\(   Note: As suggested by Joachim Schipper (.*@fox-it\.com)\)$/\1 leak-check:allow/' "$DEST/sqlite3-binding.c"
+rm -f "$DEST/sqlite3-binding.c.bak"
+
+# Watchtower patches (internal/sqlcipher/patches/*.patch, in name order) go on
+# the wrapped amalgamation; one that does not apply cleanly stops the script,
+# since it must be rebased onto the new tag by hand.
+PATCHES=()
+for p in "$DEST"/patches/*.patch; do
+	[ -e "$p" ] || continue
+	if ! patch -p1 -N -f -s -d "$ROOT" <"$p"; then
+		echo "error: $(basename "$p") does not apply to SQLCipher $TAG; rebase it by hand" >&2
+		exit 1
+	fi
+	PATCHES+=("$(basename "$p")")
+done
+rm -f "$DEST"/*.orig
 
 SQLITE_VERSION="$(sed -n 's/^#define SQLITE_VERSION  *"\(.*\)"$/\1/p' "$WORK/src/sqlite3.h")"
 SHA="$(shasum -a 256 "$DEST/sqlite3-binding.c" | awk '{print $1}')"
@@ -64,4 +84,7 @@ sqlcipher $TAG
 sqlite $SQLITE_VERSION
 sqlite3-binding.c sha256 $SHA
 EOF
+for p in ${PATCHES[@]+"${PATCHES[@]}"}; do
+	echo "patch $p" >>"$DEST/VERSION"
+done
 echo "internal/sqlcipher: SQLCipher $TAG (SQLite $SQLITE_VERSION)"

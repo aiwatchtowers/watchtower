@@ -131775,7 +131775,12 @@ static void attachFunc(
         rc = sqlite3CodecQueryParameters(db, zName, zPath, &seen);
         if( rc==SQLITE_OK && seen==0 ){
           sqlcipherCodecGetKey(db, 0, (void**)&zKey, &nKey);
-          if( nKey || sqlite3BtreeGetRequestedReserve(db->aDb[0].pBt)>0 ){
+          /* WATCHTOWER PATCH (#603): attach a codec on reserved bytes only
+          ** when the main database has one, so a plaintext main database
+          ** with reserved bytes (macOS SQLite writes 12) can VACUUM and
+          ** ATTACH without a key. See internal/sqlcipher/patches/. */
+          if( nKey || (sqlite3BtreeGetRequestedReserve(db->aDb[0].pBt)>0
+                       && sqlcipherPagerGetCodec(sqlite3BtreePager(db->aDb[0].pBt))!=0) ){
             rc = sqlcipherCodecAttach(db, db->nDb-1, zKey, nKey);
           }
           if(nKey) sqlcipher_free(zKey, nKey);

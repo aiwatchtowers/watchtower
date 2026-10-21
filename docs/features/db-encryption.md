@@ -9,8 +9,8 @@ Design: `docs/superpowers/specs/2026-10-21-db-encryption-design.md` (approved 20
 ### Go: `internal/sqlcipher`
 
 - **What it is.** A vendored fork of `mattn/go-sqlite3` **v1.14.52** (its non-test files with upstream names, its `LICENSE`, no `libsqlite3` build-tag files), with `sqlite3-binding.c`/`.h` and `sqlite3ext.h` replaced by the **SQLCipher v4.19.0 community amalgamation (SQLite 3.53.4)**. Import path `watchtower/internal/sqlcipher`; the registered driver name stays `sqlite3`. `modernc.org/sqlite` is gone from `go.mod`.
-- **`VERSION`** holds four lines: `mattn/go-sqlite3 v1.14.52`, `sqlcipher v4.19.0`, `sqlite 3.53.4` and `sqlite3-binding.c sha256 <hex>`. `TestEngine_IsSQLCipher` checks the running engine against it, and both Swift engine tests read it.
-- **Amalgamation.** `scripts/sqlcipher-amalgamation.sh <tag>` clones `sqlcipher/sqlcipher` at the tag, builds `sqlite3.c` from source (`make sqlite3.c`, macOS's `tclsh`), wraps the files in mattn's `#ifndef USE_LIBSQLITE3` guard, and rewrites `VERSION`. It never downloads a prebuilt binary.
+- **`VERSION`** holds `mattn/go-sqlite3 v1.14.52`, `sqlcipher v4.19.0`, `sqlite 3.53.4`, `sqlite3-binding.c sha256 <hex>` (the file as committed, patches included) and one `patch <file>` line per Watchtower patch. `TestEngine_IsSQLCipher` checks the running engine against it, and both Swift engine tests read it.
+- **Amalgamation.** `scripts/sqlcipher-amalgamation.sh <tag>` clones `sqlcipher/sqlcipher` at the tag, builds `sqlite3.c` from source (`make sqlite3.c`, macOS's `tclsh`), wraps the files in mattn's `#ifndef USE_LIBSQLITE3` guard, adds the `leak-check:allow` marker to one upstream credit line, applies `internal/sqlcipher/patches/*.patch` in name order (a patch that does not apply stops the script), and rewrites `VERSION`. Regenerating v4.19.0 yields the committed files byte for byte. It never downloads a prebuilt binary.
 - **Build flags** (`wt_cgo.go`): `SQLITE_HAS_CODEC`, `SQLITE_TEMP_STORE=2`, `SQLITE_ENABLE_FTS5`, `SQLITE_EXTRA_INIT=sqlcipher_extra_init`, `SQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown`, on top of mattn's own. Darwin uses CommonCrypto (`SQLCIPHER_CRYPTO_CC`, `-framework Security -framework CoreFoundation`). Linux uses OpenSSL (`SQLCIPHER_CRYPTO_OPENSSL`, `-lcrypto`).
 - **No system `libsqlite3`, ever.** Two SQLite copies in one process break POSIX locks on the same file, so nothing links a system or Homebrew SQLite.
 - **cgo only.** `wt_nocgo.go` stops a `CGO_ENABLED=0` build at compile time on the undefined `watchtower_needs_cgo_for_sqlcipher`. There is no silent fallback to another engine.
@@ -45,7 +45,7 @@ Design: `docs/superpowers/specs/2026-10-21-db-encryption-design.md` (approved 20
 
 A plaintext file with **no reserved bytes per page** VACUUMs on the vendored engine: `TestEngine_VacuumPlaintext` (`internal/db/compact_engine_test.go`) pins it, and `TestCompact_PreservesRowids` holds.
 
-**Open finding (Stage 1 gate, 2026-10-21): a plaintext file with reserved bytes does not VACUUM.** macOS's system SQLite writes 12 reserved bytes per page (header byte 20), and the files of real installs carry them. VACUUM attaches its temporary database without a key, and SQLCipher's ATTACH, given no key, attaches a codec whenever the main database has reserved bytes; with no key that codec attach fails, so `VACUUM` returns `unable to open database` (this is the spike's footnote). `db compact` on such an install fails and counts the failure, where modernc compacted the same copy in 557 ms. A one-line change in the amalgamation's ATTACH (attach the codec on reserved bytes only when the main database has a codec) makes it VACUUM; it is not applied, pending the owner's decision on patching the vendored SQLCipher source.
+**Patched (ask #494): a plaintext file with reserved bytes VACUUMs.** Found at the Stage 1 gate (2026-10-21): macOS's system SQLite writes 12 reserved bytes per page (header byte 20), and the files of real installs carry them. VACUUM attaches its temporary database without a key, and SQLCipher's ATTACH, given no key, attaches a codec whenever the main database has reserved bytes; with no key that codec attach fails, so `VACUUM` returns `unable to open database` (this is the spike's footnote). `db compact` on such an install fails and counts the failure, where modernc compacted the same copy in 557 ms. Our patch `internal/sqlcipher/patches/0001-attach-codec-on-reserve-only-when-main-has-codec.patch` changes that one condition in the amalgamation's ATTACH: the codec is attached on reserved bytes only when the main database has a codec (an encrypted main database keeps upstream behaviour). `TestEngine_CompactPlaintextWithReservedBytes` pins it: a 12-reserved-byte plaintext file compacts with its rows intact, and the test fails on the unpatched amalgamation.
 
 ### Swift: the GRDB fork
 
@@ -74,7 +74,7 @@ Every helper process has a timeout and is killed and reaped in `tearDown`. With 
 
 Go and Swift move together, and the interop test is the gate:
 
-1. `scripts/sqlcipher-amalgamation.sh v<new>`. This regenerates the amalgamation and `VERSION`. A new mattn tag means re-vendoring and re-applying the `// watchtower:` patches.
+1. `scripts/sqlcipher-amalgamation.sh v<new>`. This regenerates the amalgamation and `VERSION`; a patch in `internal/sqlcipher/patches/` that no longer applies stops it and is rebased by hand. A new mattn tag means re-vendoring and re-applying the `// watchtower:` patches.
 2. In the GRDB fork, rebase on the GRDB tag, bump `SQLCipher.swift` to the same SQLCipher version, and tag `<grdb>-sqlcipher.<n>` (see the fork's README).
 3. Move the pin in `WatchtowerKit/Package.swift`, `WatchtowerDesktop/Package.swift` and `WatchtowerMobile/project.yml` in one commit, resolve both packages, and run `make mobile-gen`.
 4. Update `pinnedCipherVersion`/`pinnedSQLiteVersion` in both `SQLCipherEngineTests`, and the versions in `THIRD_PARTY_NOTICES.md` (`scripts/tests/test-build-app-notices.sh` checks them against `VERSION`).
@@ -104,7 +104,7 @@ Copies of two installs on an Apple-silicon Mac, warm OS cache: S, 110 MB (curren
 | KB aggregate by source, warm | S | 31 ms | 19 ms |
 | `db compact --check --json`, whole command | S | 26.6 ms | 22.3 ms |
 | `kb search`, whole command | S | 27.6 ms | 24.3 ms |
-| `db compact --force` | S | 557 ms | fails (reserved bytes, above) |
+| `db compact --force` | S | 557 ms | failed before the reserved-bytes patch (above) |
 
 Reads are 15–45 % faster, in line with the spike. With `PRAGMA cache_size = -65536` (64 MiB, Stage 2's planned value for one-off commands) the L full scans got slower on both engines (new engine: mentions 127 ms, linkscan 115 ms, channel stats 139 ms) because the 486 MB table does not fit and the larger cache only adds churn, while the S scans got faster (KB body LIKE 21 ms, KB aggregate 12.5 ms). Stage 2's §5.5 measurement on an encrypted copy decides the sizes.
 

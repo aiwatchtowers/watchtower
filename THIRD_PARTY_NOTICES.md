@@ -604,6 +604,13 @@ are recorded in `internal/sqlcipher/VERSION`. The Desktop app links GRDB
 through our fork, built against SQLCipher.swift, which it ships as
 `Contents/Frameworks/SQLCipher.framework`.
 
+The vendored amalgamation is modified: `VERSION` lists our changes, which
+are kept in `internal/sqlcipher/patches/` and applied by
+`scripts/sqlcipher-amalgamation.sh`. At present that is
+`patch 0001-attach-codec-on-reserve-only-when-main-has-codec.patch`: an
+ATTACH without a key attaches a codec on reserved bytes only when the main
+database has one.
+
 | Component | Version | Licence | Upstream |
 |---|---|---|---|
 | go-sqlite3 (vendored fork in `internal/sqlcipher`) | mattn/go-sqlite3 v1.14.52 | MIT | https://github.com/mattn/go-sqlite3 |
