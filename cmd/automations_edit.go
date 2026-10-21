@@ -77,7 +77,7 @@ func triggerLine(t automations.Trigger) string {
 		}
 		parts := make([]string, 0, len(t.Event.Where))
 		for _, k := range slices.Sorted(maps.Keys(t.Event.Where)) {
-			parts = append(parts, k+"="+t.Event.Where[k])
+			parts = append(parts, fmt.Sprintf("%s=%q", k, t.Event.Where[k]))
 		}
 		if len(parts) == 0 {
 			return "event: " + t.Event.Type

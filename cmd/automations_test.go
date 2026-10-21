@@ -1098,7 +1098,7 @@ func TestAutomationsCLI_ValidateJSONFields(t *testing.T) {
 	}
 	cases := []struct{ name, trigger, want string }{
 		{"schedule", "trigger:\n  schedule: \"0 9 * * 1-5\"\n", "schedule: 0 9 * * 1-5"},
-		{"event", "trigger:\n  event:\n    type: slack.new_messages\n    where:\n      channel: acme-*\n      account: acme\n", "event: slack.new_messages where account=acme, channel=acme-*"},
+		{"event", "trigger:\n  event:\n    type: slack.new_messages\n    where:\n      channel: acme-*\n      account: acme\n", `event: slack.new_messages where account="acme", channel="acme-*"`},
 		{"manual", "trigger:\n  manual: true\n", "manual"},
 	}
 	for _, c := range cases {

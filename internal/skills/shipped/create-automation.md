@@ -271,6 +271,10 @@ if (trigger.kind === "reply") {
 }
 ```
 
+A dry run (`draft_automation`) never has `trigger.kind === "reply"`, so the
+reply branch is not exercised by it; tell the owner that branch stays untested
+until a button is pressed.
+
 ## Reliable recipes
 
 Every recipe that handles "what is new" must follow these rules; check the

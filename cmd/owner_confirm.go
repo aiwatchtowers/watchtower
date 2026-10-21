@@ -157,7 +157,9 @@ func inboxReplyConfirmDetail(database *db.DB, outputID int64, index int) string 
 		name = a.Slug
 	}
 	act := o.Actions[index]
-	return fmt.Sprintf("Automation #%d %q\nCard: %s\nButton: %s (sends %q)", a.ID, name, o.Title, act.Label, act.Reply)
+	// Title and label are recipe-written: quoted, so a newline in either
+	// cannot add a line that reads as the window's own.
+	return fmt.Sprintf("Automation #%d %q\nCard: %q\nButton: %q (sends %q)", a.ID, name, o.Title, act.Label, act.Reply)
 }
 
 // lessonConfirmDetail is the window's text for the --lesson of a workbench.

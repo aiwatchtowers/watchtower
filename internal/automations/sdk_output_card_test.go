@@ -122,6 +122,8 @@ func TestOutput_CardActionLimits(t *testing.T) {
 		"41-char label":        `[{label: "x".repeat(41), chat: "x"}]`,
 		"empty label":          `[{label: "", chat: "x"}]`,
 		"no label":             `[{chat: "x"}]`,
+		"blank label":          `[{label: " \n\t", chat: "x"}]`,
+		"blank reply":          `[{label: "a", reply: "  "}]`,
 		"4097-byte chat":       `[{label: "a", chat: "x".repeat(4097)}]`,
 		"empty task":           `[{label: "a", agent: {task: ""}}]`,
 		"4097-byte task":       `[{label: "a", agent: {task: "x".repeat(4097)}}]`,

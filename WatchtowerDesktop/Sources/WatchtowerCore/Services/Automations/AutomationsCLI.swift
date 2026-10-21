@@ -270,7 +270,7 @@ extension AutomationsCLI {
         package let fields: Fields?
 
         /// `fields`: the trigger in one line ("schedule: 0 9 * * 1-5",
-        /// "event: slack.new_messages where account=a", "button", "button
+        /// "event: slack.new_messages where account=\"a\"", "button", "button
         /// (asks before running)", "manual"), `missed` ("run_once"/"skip"),
         /// the concurrency in decimal and the budget.
         package struct Fields: Decodable, Equatable, Sendable {

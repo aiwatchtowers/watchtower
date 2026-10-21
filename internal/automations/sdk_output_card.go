@@ -88,7 +88,7 @@ func inboxAction(fn string, i int, v any) (db.InboxAction, error) {
 		}
 	}
 	a := db.InboxAction{Primary: i == 0}
-	if a.Label, ok = fields["label"].(string); !ok || a.Label == "" {
+	if a.Label, ok = fields["label"].(string); !ok || strings.TrimSpace(a.Label) == "" {
 		return a, validationf("%s(): %s.label must be a non-empty string", fn, field)
 	}
 	if n := utf8.RuneCountInString(a.Label); n > MaxInboxActionLabelChars {
@@ -188,7 +188,7 @@ func agentAction(fn, field string, v any) (*db.InboxAgentAction, error) {
 // replyAction validates a reply's value and its optional data object.
 func replyAction(fn, field string, fields map[string]any, a *db.InboxAction) error {
 	s, ok := fields["reply"].(string)
-	if !ok || s == "" {
+	if !ok || strings.TrimSpace(s) == "" {
 		return validationf("%s(): %s.reply must be a non-empty string", fn, field)
 	}
 	if n := utf8.RuneCountInString(s); n > MaxInboxReplyValueChars {

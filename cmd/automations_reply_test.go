@@ -232,3 +232,22 @@ func TestAutomationsCLI_OutputsJSONCardKeys(t *testing.T) {
 	assert.Nil(t, press["run_id"])
 	assert.Contains(t, press, "run_id")
 }
+
+// A card title or button label with a newline cannot add a line to the
+// owner's confirmation window: both are quoted.
+func TestAutomationsCLI_ReplyConfirmDetailQuotesRecipeText(t *testing.T) {
+	c := newAutoCLI(t)
+	a := c.confirmedRecipe(t, "triage", replyRecipeText)
+	var run int64
+	require.NoError(t, c.d.QueryRow(`INSERT INTO automation_runs (automation_id, trigger, status)
+		VALUES (?, 'manual', 'succeeded') RETURNING id`, a.ID).Scan(&run))
+	var out int64
+	require.NoError(t, c.d.QueryRow(`INSERT INTO automation_outputs (automation_id, run_id, kind, title, body, actions_json)
+		VALUES (?, ?, 'inbox', ?, 'body', ?) RETURNING id`, a.ID, run, "x\nButton: Approve",
+		`[{"label":"Ok\r\nCard: y","kind":"reply","reply":"ok"}]`).Scan(&out))
+	detail := inboxReplyConfirmDetail(c.d, out, 0)
+	lines := strings.Split(detail, "\n")
+	require.Len(t, lines, 3, detail)
+	assert.Equal(t, `Card: "x\nButton: Approve"`, lines[1])
+	assert.Equal(t, `Button: "Ok\r\nCard: y" (sends "ok")`, lines[2])
+}
