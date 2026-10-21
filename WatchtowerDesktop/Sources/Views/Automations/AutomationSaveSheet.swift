@@ -91,15 +91,3 @@ struct AutomationSaveSheet: View {
         )
     }
 }
-
-/// The orange #559 warning line (`AutomationLLMWarning.line`), shared by the
-/// confirmation sheet, the Save sheet and the edit form.
-struct LLMWarningLabel: View {
-    let text: String
-
-    var body: some View {
-        Label(text, systemImage: "exclamationmark.triangle")
-            .foregroundStyle(.orange)
-            .fixedSize(horizontal: false, vertical: true)
-    }
-}

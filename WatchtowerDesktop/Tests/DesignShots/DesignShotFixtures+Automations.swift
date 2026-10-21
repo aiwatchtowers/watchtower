@@ -226,8 +226,94 @@ enum AutomationShotFixtures {
         }
     }
 
+    private static var poolPath: String?
+
+    /// Removes the editor shots' database (`DesignShotFixtures.cleanUp`).
+    static func cleanUp() {
+        if let poolPath { TestDatabase.cleanup(path: poolPath) }
+        poolPath = nil
+    }
+
+    /// The editor panel on "acme digest" (id 7, personal) with the chat
+    /// still opening on the left: `review` is the "Needs your confirmation"
+    /// banner's case — the saved bytes unchanged and not confirmed, so the
+    /// footer confirms; otherwise an enabled, confirmed recipe whose
+    /// schedule moved from 08:00 to 09:00, so the footer saves and confirms.
+    static func editorPanel(review: Bool) -> AnyView {
+        do {
+            let confirmed = digest.replacingOccurrences(of: "0 9 * * 1-5", with: "0 8 * * 1-5")
+            let show: [String: Any] = [
+                "id": 7, "slug": "acme-digest", "scope": "personal", "project_id": 0,
+                "path": "/acme/automations/acme-digest.md", "name": "acme digest",
+                "description": "Summarises the morning mail.", "script": "", "recipe_text": review ? digest : confirmed,
+                "trigger_kind": "schedule", "trigger_spec": #"{"schedule":"0 8 * * 1-5"}"#,
+                "permissions": ["gmail:read@work", "llm:light"], "outputs": ["inbox"], "budget_tokens": 40000,
+                "budget_minutes": 5, "concurrency": 1, "missed_policy": "skip", "pause_timeout_hours": 72,
+                "enabled": !review, "runnable": !review, "needs_confirmation": review, "parse_error": "",
+                "content_hash": "c1", "approval_hash": review ? "h2" : "h1", "confirmed_hash": "h1",
+                "widening": [String](), "grants": [String](), "changes": [String](), "changes_known": true,
+                "changed_by": "", "changed_at": NSNull()
+            ]
+            let changes = #"[{"field":"trigger","old":"{\"schedule\":\"0 8 * * 1-5\"}","#
+                + #""new":"{\"schedule\":\"0 9 * * 1-5\"}"}]"#
+            let validate = #"{"ok":true,"errors":[],"slug":"acme-digest","name":"acme digest","scope":"personal","#
+                + #""approval_hash":"h2","content_hash":"\#(AutomationDraftColumnModel.contentHash(digest))","#
+                + #""permissions":["gmail:read@work","llm:light"],"outputs":["inbox"],"widening":[],"#
+                + #""changes":\#(changes),"changes_known":true,"#
+                + #""fields":{"trigger":"schedule: 0 9 * * 1-5","missed":"skip","concurrency":"1","#
+                + #""budget":{"tokens":40000,"minutes":5}}}"#
+            let runner = RoutedCLIRunner(routes: [
+                "show": try JSONSerialization.data(withJSONObject: show), "validate": Data(validate.utf8)
+            ])
+            let cli = AutomationsCLI(runner: runner)
+            let editor = AutomationEditorCenter(cli: cli, grants: { _ in [] }, refresh: { _ in }, sleep: { _ in })
+            let (pool, path) = try TestDatabase.createPool()
+            cleanUp()
+            poolPath = path
+            let vm = AutomationsViewModel(dbPool: pool, cli: cli)
+            Task {
+                await editor.beginEdit(7, chatNewestText: nil)
+                if !review { editor.drafts[7]?.form.buffer.replace(text: digest) }
+                editor.textChanged(7)
+            }
+            let deadline = Date().addingTimeInterval(5)
+            while !editor.canSave(7), Date() < deadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            }
+            XCTAssertTrue(editor.canSave(7), "the fixture's check did not land: \(String(describing: editor.saving[7]))")
+            return AnyView(AutomationEditorPanel(
+                target: .existing(7, review: review), editor: editor, vm: vm,
+                // The chat never opens: its spinner stays on the left.
+                makeChat: {
+                    try await Task.sleep(for: .seconds(86_400))
+                    return nil
+                },
+                scopeTitle: "Personal", workspaceDir: "/acme", toolsAvailable: true,
+                onSaved: { _ in }, onDiscardDraft: nil
+            ))
+        } catch {
+            return failure(error)
+        }
+    }
+
     private static func failure(_ error: Error) -> AnyView {
         XCTFail("automation shot fixture failed: \(error)")
         return AnyView(Text("fixture failed: \(String(describing: error))").foregroundStyle(.red))
+    }
+}
+
+/// Answers each `automations <subcommand>` with its fixed JSON.
+private final class RoutedCLIRunner: CLIRunnerProtocol, Sendable {
+    private let routes: [String: Data]
+
+    init(routes: [String: Data]) {
+        self.routes = routes
+    }
+
+    func run(args: [String]) async throws -> Data {
+        guard args.count > 1, let data = routes[args[1]] else {
+            throw CLIRunnerError.nonZeroExit(code: 1, stderr: "no fixture for \(args)")
+        }
+        return data
     }
 }

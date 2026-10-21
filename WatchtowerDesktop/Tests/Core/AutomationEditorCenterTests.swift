@@ -410,6 +410,18 @@ final class AutomationEditorCenterTests: XCTestCase {
         XCTAssertFalse(runner.invocations.contains { $0[1] == "save" })
     }
 
+    func testCheckKeepsItsResultForTheColumn() async throws {
+        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "", ok: false, errors: ["line 3: bad cron"]) }
+        let center = makeCenter()
+        await center.beginEdit(7, chatNewestText: nil)
+        await center.check(7)
+        // The column shows the errors of these bytes, not "Checking…".
+        XCTAssertEqual(center.lastChecked[7]?.ok, false)
+        XCTAssertEqual(center.lastChecked[7]?.errors, ["line 3: bad cron"])
+        center.discard(7)
+        XCTAssertNil(center.lastChecked[7])
+    }
+
     func testChangedOnDiskSurfacesMessage() async throws {
         runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h1") }
         runner.on("save") { _ in

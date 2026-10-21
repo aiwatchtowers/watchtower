@@ -106,6 +106,8 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
     package static let unreadableHint = "Couldn't read the draft. Ask the assistant to draft it again."
     package static let footer = "Saving asks for your confirmation. It won't run until you confirm."
 
+    /// The newest cached entry this was made from; nil when none decodes.
+    package let entry: AutomationDraftEntry?
     /// No draft yet.
     package let isEmpty: Bool
     /// The cache file exists but could not be read, or its newest line does
@@ -188,6 +190,7 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
     }
 
     package init(entry: AutomationDraftEntry?, unreadable: Bool = false) {
+        self.entry = entry
         isUnreadable = entry == nil && unreadable
         guard let entry else {
             isEmpty = !unreadable

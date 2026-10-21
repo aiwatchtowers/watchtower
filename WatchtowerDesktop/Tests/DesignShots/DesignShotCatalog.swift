@@ -78,6 +78,12 @@ enum DesignShotCatalog {
             DesignShot(name: "automation-template-panel", size: NSSize(width: 1000, height: 760)) {
                 AnyView(AutomationShotFixtures.templatePanel().detailBackground())
             },
+            DesignShot(name: "automation-editor-panel", size: NSSize(width: 1280, height: 800)) {
+                AnyView(AutomationShotFixtures.editorPanel(review: false).detailBackground())
+            },
+            DesignShot(name: "automation-editor-review", size: NSSize(width: 1280, height: 800)) {
+                AnyView(AutomationShotFixtures.editorPanel(review: true).detailBackground())
+            },
             // Branch review (#712, artboards A–C).
             DesignShot(name: "branch-review-changes", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.changes()
@@ -127,6 +133,7 @@ enum DesignShotFixtures {
         if let poolPath { TestDatabase.cleanup(path: poolPath) }
         poolPath = nil
         ReviewShotFixtures.cleanUp()
+        AutomationShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)

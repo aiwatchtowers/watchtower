@@ -88,11 +88,12 @@ final class AutomationDraftColumnModelTests: XCTestCase {
                                    confirmedText: confirmedText, isNew: isNew, plan: plan)
     }
 
-    func testNewRecipeMarksEveryPermissionNewAndHasNoChanges() throws {
-        let m = model(validated: try validated())
+    func testNewRecipeShowsNoNewMarksAndHasNoChanges() throws {
+        // Nothing was ever confirmed: "New since you confirmed" would sit on every line.
+        let m = model(validated: try validated(widening: ["gmail:read@work", "llm:light"]))
         XCTAssertEqual(m.status, .ready)
         XCTAssertEqual(m.mayDo.count, 2)
-        XCTAssertTrue(m.mayDo.allSatisfy(\.isNew))
+        XCTAssertFalse(m.mayDo.contains(where: \.isNew))
         XCTAssertEqual(m.mayDo.map(\.text), ["gmail:read@work", "llm:light"].map(AutomationCardPresentation.permissionLine))
         XCTAssertEqual(m.sends, [AutomationCardPresentation.outputLine("inbox")])
         XCTAssertEqual(m.changes, [])
@@ -118,6 +119,12 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         XCTAssertTrue(m.changes[0].contains(" → "), m.changes[0])
         let diff = try XCTUnwrap(m.recipeDiff)
         XCTAssertFalse(diff.isIdentical)
+    }
+
+    func testEditOfANeverConfirmedRecipeShowsNoNewMarks() throws {
+        let m = model(validated: try validated(widening: ["gmail:read@work"]), confirmedText: nil, isNew: false)
+        XCTAssertEqual(m.mayDo.count, 2)
+        XCTAssertFalse(m.mayDo.contains(where: \.isNew))
     }
 
     func testUnknownChangesSaySo() throws {

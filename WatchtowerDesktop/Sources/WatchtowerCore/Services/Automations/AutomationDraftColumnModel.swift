@@ -28,7 +28,9 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
 
     package let when: String
     package let whenDetail: String?
-    /// The permissions, each marked new when the confirmation does not cover it.
+    /// The permissions, each marked new when the confirmation does not cover
+    /// it; none is marked for a recipe never confirmed (new, or no
+    /// `confirmedText`).
     package let mayDo: [AutomationCardPresentation.PermissionLine]
     /// One line per output.
     package let sends: [String]
@@ -81,8 +83,10 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
             eachRun = SaveAutomationCardModel.budget(tokens: budget.tokens, minutes: budget.minutes)
             missedAndConcurrency = Self.missedAndConcurrency(fields)
             let permissions = shown.permissions
+            // The mark is relative to a confirmed text: a recipe never
+            // confirmed has none, so no line carries it.
             mayDo = AutomationCardPresentation.permissionLines(
-                permissions: permissions, outputs: [], widening: isNew ? permissions : shown.widening
+                permissions: permissions, outputs: [], widening: isNew || confirmedText == nil ? [] : shown.widening
             )
             sends = shown.outputs.map(AutomationCardPresentation.outputLine)
             changes = isNew ? [] : AutomationChangePresentation.lines(

@@ -89,6 +89,10 @@ package final class AutomationEditorCenter {
     /// The automation a draft's save wrote, by draft key: a retry after
     /// "not turned on" only turns it on.
     package private(set) var savedIDs: [Int64: Int64] = [:]
+    /// The newest check's `validate` result, valid or not, by draft key: the
+    /// draft column shows it (its errors too) while it is of the bytes on
+    /// screen (its `content_hash`).
+    package private(set) var lastChecked: [Int64: AutomationsCLI.ValidateResult] = [:]
 
     @ObservationIgnored private let cli: AutomationsCLI
     @ObservationIgnored private let grants: @MainActor (Int64) async throws -> [AutomationToolGrant]
@@ -254,6 +258,7 @@ package final class AutomationEditorCenter {
         adoptBase[id] = nil
         slugHints[id] = nil
         savedIDs[id] = nil
+        lastChecked[id] = nil
     }
 
     /// **Reload** after a save was refused because the recipe changed on
@@ -386,6 +391,7 @@ package final class AutomationEditorCenter {
         }
         switch outcome {
         case let .success((validated, plan)):
+            lastChecked[key] = validated
             if draft.form.recipeUnparsed {
                 draft.form.currentParseError = validated.ok ? "" : validated.errors.joined(separator: "\n")
             }
@@ -580,6 +586,7 @@ package final class AutomationEditorCenter {
         checkTasks[key]?.cancel()
         checkTasks[key] = nil
         drafts[key] = nil
+        lastChecked[key] = nil
         saving[key] = autoFailures.isEmpty
             ? .done
             : .failed("Saved, but auto could not be kept for " + autoFailures.joined(separator: "; "))
