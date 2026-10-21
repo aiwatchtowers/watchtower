@@ -14,7 +14,7 @@ Home only reads what the rest of the app has produced, and refreshes about every
 
 The feed reads top to bottom like your day: above a **NOW** line is everything that waits on you, below it your meetings and what is still to come.
 
-**Above NOW** are, from the last 72 hours: Slack mentions, DMs, thread replies and reactions, then Jira and Linear items, proposals and failed actions from the assistant, notes your automations left for you, due reminders, your own targets that are overdue or due today, and email. Rows from Inbox follow its detection and snooze. A read row stays, dimmer, until you act on it. Newest comes first within each kind; seven rows show, **N more** opens up to 50, and **Open Inbox (N more)** the rest. Workbench targets never appear.
+**Above NOW** are, from the last 72 hours: Slack mentions, DMs, thread replies and reactions, then Jira and Linear items, proposals and failed actions from the assistant, notes your automations left for you, due reminders, your own targets that are overdue or due today, and email. Rows from Inbox follow its detection and snooze. A read row stays, dimmer, until you act on it. Newest comes first within each kind; seven rows show, **N more** opens up to 50, and **Show 50 more** the next 50. Workbench targets never appear.
 
 **Below NOW** are the meeting in progress, then today's remaining meetings, reminders and timed targets in time order. The next meeting says how soon it starts, such as "in 25 min", and shows "Prep ready" when prep exists. After today, a short block shows the first of the next three days that has meetings: **Tomorrow**, or the weekday, with up to three meetings. All-day, cancelled and declined events are left out.
 

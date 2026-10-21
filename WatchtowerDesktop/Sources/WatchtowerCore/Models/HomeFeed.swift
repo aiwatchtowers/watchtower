@@ -131,10 +131,8 @@ package struct FeedDay: Equatable, Sendable {
 /// Home's feed: what waits above NOW, the NOW line and what follows.
 package struct HomeFeed: Equatable, Sendable {
     package let waiting: [FeedRow]
-    /// Rows past the collapsed cap, behind "N more"; 0 when expanded.
+    /// Rows past the current limit, shown a page at a time by "N more".
     package let hiddenWaiting: Int
-    /// Rows past the expanded cap, left to Inbox; 0 when collapsed.
-    package let overflowWaiting: Int
     package let nowLabel: String
     package let ongoing: FeedEvent?
     package let laterToday: [FeedEvent]
@@ -145,7 +143,6 @@ package struct HomeFeed: Equatable, Sendable {
     package init(
         waiting: [FeedRow],
         hiddenWaiting: Int,
-        overflowWaiting: Int = 0,
         nowLabel: String,
         ongoing: FeedEvent?,
         laterToday: [FeedEvent],
@@ -154,7 +151,6 @@ package struct HomeFeed: Equatable, Sendable {
     ) {
         self.waiting = waiting
         self.hiddenWaiting = hiddenWaiting
-        self.overflowWaiting = overflowWaiting
         self.nowLabel = nowLabel
         self.ongoing = ongoing
         self.laterToday = laterToday

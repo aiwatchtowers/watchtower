@@ -292,23 +292,60 @@ final class HomeFeedActionTests: XCTestCase {
         XCTAssertFalse(center.hiddenRefs.contains(ref))
     }
 
-    func testSetFeedExpandedShowsEveryRow() async throws {
-        let pool = try makePool()
+    private func insertInbox(_ pool: DatabasePool, count: Int) async throws {
         try await pool.write { db in
-            for index in 0..<9 {
-                try TestDatabase.insertInboxItem(db, messageTS: "1700000000.00010\(index)")
+            for index in 0..<count {
+                try TestDatabase.insertInboxItem(db, messageTS: String(format: "1700000000.%06d", index))
             }
         }
+    }
+
+    /// Over a long backlog the feed pages in place: seven, 50, 100, the last
+    /// partial page, and Show less goes back to seven.
+    func testPageFeedPagesAndShowsLess() async throws {
+        let pool = try makePool()
+        try await insertInbox(pool, count: 120)
         let center = try makeCenter(performer: FakeHomeFeedPerformer())
         center.beginReading(pool: pool)
         defer { center.endReading() }
         await waitUntil(center) { $0?.feed.waiting.count == 7 }
-        XCTAssertEqual(center.snapshot?.feed.hiddenWaiting, 2)
+        XCTAssertEqual(center.snapshot?.feed.hiddenWaiting, 113)
 
-        center.setFeedExpanded(true)
-        XCTAssertTrue(center.feedExpanded)
-        XCTAssertEqual(center.snapshot?.feed.waiting.count, 9)
+        center.pageFeed(more: true)
+        XCTAssertEqual(center.feedLimit, 50)
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 50)
+        XCTAssertEqual(center.snapshot?.feed.hiddenWaiting, 70)
+
+        center.pageFeed(more: true)
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 100)
+        center.pageFeed(more: true)
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 120)
         XCTAssertEqual(center.snapshot?.feed.hiddenWaiting, 0)
+
+        center.pageFeed(more: false)
+        XCTAssertEqual(center.feedLimit, HomeFeedBuilder.waitingLimit)
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 7)
+        XCTAssertEqual(center.snapshot?.feed.hiddenWaiting, 113)
+    }
+
+    /// Done / Hide down to seven rows or fewer collapses the page state, so
+    /// the next backlog starts folded instead of expanded with no Show less.
+    func testFeedCollapsesWhenRowsDropToSeven() async throws {
+        let pool = try makePool()
+        try await insertInbox(pool, count: 9)
+        let center = try makeCenter(performer: FakeHomeFeedPerformer())
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntil(center) { $0?.feed.waiting.count == 7 }
+
+        center.pageFeed(more: true)
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 9)
+        let refs = try XCTUnwrap(center.snapshot?.feed.waiting.prefix(2).map(\.id))
+        await center.act(.done, on: refs[0])
+        XCTAssertEqual(center.feedLimit, 50, "eight rows: still expanded")
+        await center.act(.done, on: refs[1])
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 7)
+        XCTAssertEqual(center.feedLimit, HomeFeedBuilder.waitingLimit)
     }
 
     // MARK: - LiveHomeFeedPerformer

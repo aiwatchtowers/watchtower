@@ -11,7 +11,8 @@ struct FeedZoneView: View {
     let onLink: (HomeLink) -> Void
     /// Runs in an unstructured task: a view going away must not cancel the write.
     let onAct: (FeedAction, FeedRef) async -> Void
-    let onExpand: (Bool) -> Void
+    /// true: the next page of rows above NOW; false: back to the first seven.
+    let onPage: (Bool) -> Void
     /// The clock row stamps are labelled against.
     var now = Date()
     /// The builder's calendar: its zone formats every time, so rows and
@@ -27,7 +28,7 @@ struct FeedZoneView: View {
     }
 
     var body: some View {
-        HomeZone(title: "Waiting on you", detail: Self.countDetail(feed.waiting.count + feed.hiddenWaiting + feed.overflowWaiting)) {
+        HomeZone(title: "Waiting on you", detail: Self.countDetail(feed.waiting.count + feed.hiddenWaiting)) {
             Button("Catch-Up →") { onLink(.catchUp) }
         } content: {
             waitingPart
@@ -62,25 +63,24 @@ struct FeedZoneView: View {
                 FeedRowView(row: row, error: errors[row.id], now: now, calendar: calendar, onLink: onLink, onAct: onAct)
             }
         }
-        if feed.hiddenWaiting > 0 {
+        let expanded = feed.waiting.count > HomeFeedBuilder.waitingLimit
+        if feed.hiddenWaiting > 0 || expanded {
             moreButtons {
-                Button("\(feed.hiddenWaiting) more") { onExpand(true) }
-            }
-        } else if feed.waiting.count > HomeFeedBuilder.waitingLimit {
-            // Expanded: past `HomeFeedBuilder.expandedLimit` the rest is
-            // Inbox's to show.
-            moreButtons {
-                if feed.overflowWaiting > 0 {
-                    Button(Self.overflowTitle(feed.overflowWaiting)) { onLink(.inbox) }
+                if feed.hiddenWaiting > 0 {
+                    Button(Self.moreTitle(feed, expanded: expanded)) { onPage(true) }
                 }
-                Button("Show less") { onExpand(false) }
+                if expanded {
+                    Button("Show less") { onPage(false) }
+                }
             }
         }
     }
 
-    /// "Open Inbox (N more)": the expanded list's way to the rows it leaves out.
-    static func overflowTitle(_ count: Int) -> String {
-        "Open Inbox (\(count) more)"
+    /// "N more" collapsed, "Show N more" once expanded: N is what the next
+    /// page really adds, never every row left.
+    static func moreTitle(_ feed: HomeFeed, expanded: Bool) -> String {
+        let count = HomeFeedBuilder.nextPageCount(feed)
+        return expanded ? "Show \(count) more" : "\(count) more"
     }
 
     private func moreButtons(@ViewBuilder _ buttons: () -> some View) -> some View {

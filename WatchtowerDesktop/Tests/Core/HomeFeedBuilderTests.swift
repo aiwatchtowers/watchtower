@@ -25,10 +25,10 @@ final class HomeFeedBuilderTests: XCTestCase {
     private func build(
         _ data: HomeFeedData,
         now override: Date? = nil,
-        expanded: Bool = false,
+        limit: Int = HomeFeedBuilder.waitingLimit,
         hidden: Set<FeedRef> = []
     ) -> HomeFeed {
-        HomeFeedBuilder.feed(data, now: override ?? now, calendar: calendar, expanded: expanded, hidden: hidden)
+        HomeFeedBuilder.feed(data, now: override ?? now, calendar: calendar, limit: limit, hidden: hidden)
     }
 
     private func inbox(
@@ -120,65 +120,86 @@ final class HomeFeedBuilderTests: XCTestCase {
         let capped = build(data)
         XCTAssertEqual(capped.waiting.count, 7)
         XCTAssertEqual(capped.hiddenWaiting, 3)
-        XCTAssertEqual(capped.overflowWaiting, 0, "collapsed never leaves rows to Inbox")
-        let all = build(data, expanded: true)
+        XCTAssertEqual(HomeFeedBuilder.nextPageCount(capped), 3, "never more than remain")
+        let all = build(data, limit: HomeFeedBuilder.nextLimit(after: HomeFeedBuilder.waitingLimit))
         XCTAssertEqual(all.waiting.count, 10)
         XCTAssertEqual(all.hiddenWaiting, 0)
-        XCTAssertEqual(all.overflowWaiting, 0)
+        XCTAssertEqual(HomeFeedBuilder.nextPageCount(all), 0)
     }
 
-    private func expandedFeed(rows count: Int, hidden: Set<FeedRef> = []) -> HomeFeed {
+    private func pagedFeed(rows count: Int, limit: Int, hidden: Set<FeedRef> = []) -> HomeFeed {
         var data = HomeFeedData()
         data.inbox = (1...count).map { inbox($0, minutesAgo: Double($0)) }
-        return build(data, expanded: true, hidden: hidden)
+        return build(data, limit: limit, hidden: hidden)
     }
 
-    /// Expanded stops at `expandedLimit`, newest first; the rest are counted
-    /// for the Inbox link, never behind "N more".
-    func testExpandedStopsAtTheLimit() {
+    /// The first expand goes from seven to 50, each later page adds 50.
+    func testNextLimitPages() {
         XCTAssertEqual(HomeFeedBuilder.expandedLimit, 50)
-        let feed = expandedFeed(rows: 200)
-        XCTAssertEqual(feed.waiting.count, 50)
-        XCTAssertEqual(feed.waiting.first?.id, .inbox(1))
-        XCTAssertEqual(feed.waiting.last?.id, .inbox(50))
-        XCTAssertEqual(feed.overflowWaiting, 150)
-        XCTAssertEqual(feed.hiddenWaiting, 0)
+        XCTAssertEqual(HomeFeedBuilder.nextLimit(after: 7), 50)
+        XCTAssertEqual(HomeFeedBuilder.nextLimit(after: 50), 100)
+        XCTAssertEqual(HomeFeedBuilder.nextLimit(after: 100), 150)
     }
 
-    func testExpandedAtTheLimitEdges() {
-        let exact = expandedFeed(rows: 50)
+    /// 120 rows: seven, then 50, 100 and the last partial page of 20; each
+    /// "N more" says what the next page really adds.
+    func testPagesThroughABacklog() {
+        let collapsed = pagedFeed(rows: 120, limit: 7)
+        XCTAssertEqual(collapsed.waiting.count, 7)
+        XCTAssertEqual(collapsed.hiddenWaiting, 113)
+        XCTAssertEqual(HomeFeedBuilder.nextPageCount(collapsed), 43, "N more never overpromises")
+
+        let first = pagedFeed(rows: 120, limit: 50)
+        XCTAssertEqual(first.waiting.map(\.id), (1...50).map { FeedRef.inbox($0) }, "newest first")
+        XCTAssertEqual(first.hiddenWaiting, 70)
+        XCTAssertEqual(HomeFeedBuilder.nextPageCount(first), 50)
+
+        let second = pagedFeed(rows: 120, limit: 100)
+        XCTAssertEqual(second.waiting.count, 100)
+        XCTAssertEqual(second.waiting.last?.id, .inbox(100))
+        XCTAssertEqual(second.hiddenWaiting, 20)
+        XCTAssertEqual(HomeFeedBuilder.nextPageCount(second), 20, "the last page is partial")
+
+        let last = pagedFeed(rows: 120, limit: 150)
+        XCTAssertEqual(last.waiting.count, 120)
+        XCTAssertEqual(last.hiddenWaiting, 0)
+    }
+
+    func testPageBoundaries() {
+        let exact = pagedFeed(rows: 50, limit: 50)
         XCTAssertEqual(exact.waiting.count, 50)
-        XCTAssertEqual(exact.overflowWaiting, 0, "exactly the limit: everything shows")
-        let oneOver = expandedFeed(rows: 51)
+        XCTAssertEqual(exact.hiddenWaiting, 0, "exactly a page: nothing left")
+        let oneOver = pagedFeed(rows: 51, limit: 50)
         XCTAssertEqual(oneOver.waiting.count, 50)
-        XCTAssertEqual(oneOver.overflowWaiting, 1)
-        XCTAssertEqual(oneOver.hiddenWaiting, 0)
+        XCTAssertEqual(oneOver.hiddenWaiting, 1)
+        XCTAssertEqual(HomeFeedBuilder.nextPageCount(oneOver), 1)
+        XCTAssertEqual(HomeFeedBuilder.nextPageCount(pagedFeed(rows: 8, limit: 7)), 1)
+        XCTAssertEqual(pagedFeed(rows: 7, limit: 7).hiddenWaiting, 0)
     }
 
-    /// Rows just Done / Hidden leave before the cap, so the overflow counts
-    /// only rows still waiting.
-    func testExpandedOverflowSubtractsHiddenRefs() {
-        let feed = expandedFeed(rows: 53, hidden: [.inbox(1), .inbox(52)])
+    /// Rows just Done / Hidden leave before the limit, so the next row is
+    /// pulled into the page.
+    func testHiddenRefsPullTheNextRowIn() {
+        let feed = pagedFeed(rows: 53, limit: 50, hidden: [.inbox(1), .inbox(52)])
         XCTAssertEqual(feed.waiting.count, 50)
         XCTAssertEqual(feed.waiting.first?.id, .inbox(2))
-        XCTAssertFalse(feed.waiting.contains { $0.id == .inbox(52) })
-        XCTAssertEqual(feed.overflowWaiting, 1)
-        // Hiding enough brings it back under the limit.
-        let under = expandedFeed(rows: 51, hidden: [.inbox(7)])
-        XCTAssertEqual(under.waiting.count, 50)
-        XCTAssertEqual(under.overflowWaiting, 0)
+        XCTAssertEqual(feed.waiting.last?.id, .inbox(51), "the next row moved up into the page")
+        XCTAssertEqual(feed.hiddenWaiting, 1)
     }
 
-    /// The cap is over every kind together: non-inbox rows past it are cut too.
-    func testExpandedCapCountsEveryKind() {
+    /// Kinds sort first, so a Slack backlog fills the first page; targets
+    /// and email are on a later one, never cut off.
+    func testTailKindsReachableOnALaterPage() {
         var data = HomeFeedData()
-        data.inbox = (1...49).map { inbox($0, minutesAgo: Double($0)) }
-        data.proposals = [proposal(100), proposal(101)]
-        data.outputs = [output(200)]
-        let feed = build(data, expanded: true)
-        XCTAssertEqual(feed.waiting.count, 50)
-        XCTAssertEqual(feed.overflowWaiting, 2)
-        XCTAssertEqual(feed.waiting.last?.id, .proposal(100))
+        data.inbox = (1...60).map { inbox($0, minutesAgo: Double($0)) }
+            + [inbox(100, trigger: "email_received", minutesAgo: 1)]
+        data.targets = [target(200, due: "2026-10-19")]
+        let first = build(data, limit: 50)
+        XCTAssertFalse(first.waiting.contains { $0.kind == .target || $0.kind == .email })
+        XCTAssertEqual(first.hiddenWaiting, 12)
+        let second = build(data, limit: HomeFeedBuilder.nextLimit(after: 50))
+        XCTAssertEqual(second.hiddenWaiting, 0)
+        XCTAssertEqual(second.waiting.suffix(2).map(\.id), [.target(200), .inbox(100)])
     }
 
     func testHiddenRefsLeave() {

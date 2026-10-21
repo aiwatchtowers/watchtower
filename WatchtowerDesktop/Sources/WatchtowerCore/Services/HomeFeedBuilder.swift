@@ -6,32 +6,47 @@ import Foundation
 package enum HomeFeedBuilder {
     /// Rows shown above NOW before "N more".
     package static let waitingLimit = 7
-    /// Rows shown above NOW once expanded; the rest are left to Inbox, so a
-    /// long backlog never lays out hundreds of rows on Home.
+    /// The first expand shows this many rows above NOW, and each "Show N
+    /// more" after it this many more: a long backlog pages in place instead
+    /// of laying out hundreds of rows at once.
     package static let expandedLimit = 50
+
+    /// The row limit one more page raises `limit` to: the first expand goes
+    /// from the collapsed seven to `expandedLimit`, each later one adds
+    /// `expandedLimit`.
+    package static func nextLimit(after limit: Int) -> Int {
+        limit < expandedLimit ? expandedLimit : limit + expandedLimit
+    }
+
+    /// How many rows the next page adds to a feed: never more than remain
+    /// past it, so "N more" never promises rows it will not show.
+    package static func nextPageCount(_ feed: HomeFeed) -> Int {
+        let shown = feed.waiting.count
+        return min(feed.hiddenWaiting, nextLimit(after: shown) - shown)
+    }
     /// How many days ahead the next day with meetings is looked for.
     package static let nextDayHorizonDays = 3
 
     private static let nextDayLimit = 3
     private static let soonMinutes = 60
 
-    /// `hidden` holds the rows the owner just pressed Done / Hide on, so
-    /// they leave before the next read lands.
+    /// `limit` is how many rows show above NOW: `waitingLimit` collapsed,
+    /// raised a page at a time by `nextLimit(after:)`. `hidden` holds the
+    /// rows the owner just pressed Done / Hide on, so they leave before the
+    /// next read lands.
     package static func feed(
         _ data: HomeFeedData,
         now: Date,
         calendar: Calendar,
-        expanded: Bool,
+        limit: Int = waitingLimit,
         hidden: Set<FeedRef>
     ) -> HomeFeed {
         let rows = waitingRows(data, now: now, calendar: calendar).filter { !hidden.contains($0.id) }
-        let shown = Array(rows.prefix(expanded ? expandedLimit : waitingLimit))
-        let cut = rows.count - shown.count
+        let shown = Array(rows.prefix(max(limit, waitingLimit)))
         let today = events(data, now: now, calendar: calendar, hidden: hidden)
         return HomeFeed(
             waiting: shown,
-            hiddenWaiting: expanded ? 0 : cut,
-            overflowWaiting: expanded ? cut : 0,
+            hiddenWaiting: rows.count - shown.count,
             nowLabel: format("HH:mm", now, calendar),
             ongoing: today.ongoing,
             laterToday: today.later,
