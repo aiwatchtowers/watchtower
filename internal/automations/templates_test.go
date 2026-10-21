@@ -321,14 +321,16 @@ func TestTemplate_NewMailSummaryKeepsPerAccountDone(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got struct {
-		Mailboxes map[string]struct {
-			Done map[string]int64 `json:"done"`
-		} `json:"mailboxes"`
+		Mail struct {
+			Boxes map[string]struct {
+				Done map[string]int64 `json:"done"`
+			} `json:"boxes"`
+		} `json:"mail"`
 	}
 	if err := json.Unmarshal([]byte(state), &got); err != nil {
 		t.Fatal(err)
 	}
-	if done := got.Mailboxes["work"].Done; len(done) != 2 || done["m1"] == 0 || done["m2"] == 0 {
+	if done := got.Mail.Boxes["work"].Done; len(done) != 2 || !hasKey(done, "m1") || !hasKey(done, "m2") {
 		t.Fatalf("state = %s; want m1 and m2 done under work", state)
 	}
 
@@ -340,4 +342,9 @@ func TestTemplate_NewMailSummaryKeepsPerAccountDone(t *testing.T) {
 	}
 	reads := f.reg.ReadCalls()
 	wantWindowSince(t, string(reads[len(reads)-1].Args))
+}
+
+func hasKey(m map[string]int64, k string) bool {
+	_, ok := m[k]
+	return ok
 }

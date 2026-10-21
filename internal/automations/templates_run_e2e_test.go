@@ -50,9 +50,20 @@ func TestTemplates_RunE2E(t *testing.T) {
 	// mail older than the old cursor is still summed up.
 	t.Run("new-mail-summary cursor migration", testRunNewMailCursorMigration)
 
-	// #799: a done set past the state budget drops its oldest entries behind
-	// a floor and the state stays under MaxStateBytes.
+	// #799: an event run naming the mailbox by label migrates a cursor an
+	// older script kept under its address.
+	t.Run("new-mail-summary cursor under the address, event by label", testRunNewMailLegacyCursorByLabel)
+
+	// #799: a mailbox over the state budget drops its oldest minutes whole
+	// behind a floor; a quiet mailbox keeps all of its entries and gets no
+	// floor, and the state stays under MaxStateBytes.
 	t.Run("new-mail-summary state budget", testRunNewMailStateBudget)
+
+	// #799: the floor's read side with real mail. The 600 cap ends inside a
+	// minute, eviction stops at that minute: the evicted mail is not summed
+	// up again, the rest of the floor's minute and a late message after the
+	// floor are.
+	t.Run("new-mail-summary eviction floor", testRunNewMailEvictionFloor)
 
 	t.Run("jira-state-report", testRunJiraStateReport)
 	t.Run("jira-state-report two projects", testRunJiraStateReportTwoProjects)
@@ -107,7 +118,8 @@ func wantWindowSince(t *testing.T, argsJSON string) {
 	if err != nil {
 		t.Fatalf("list_emails since %q: %v", args.Since, err)
 	}
-	if d := time.Since(since) - 48*time.Hour; d < -time.Minute || d > time.Minute {
+	// The window starts at a whole minute, up to a minute before now - 48 h.
+	if d := time.Since(since) - 48*time.Hour; d < -time.Minute || d > 2*time.Minute {
 		t.Fatalf("list_emails since = %s; want two days back", args.Since)
 	}
 }
@@ -433,24 +445,45 @@ func testRunNewMailCursorMigration(t *testing.T) {
 	}
 }
 
-func testRunNewMailStateBudget(t *testing.T) {
-	gen := &automationstest.FakeGenerator{Replies: []string{"- mail"}}
-	f := newTplFixture(t, gen)
-	a := f.installTemplate(t, "new-mail-summary", nil)
-	// 3000 done ids of 20 characters in the window: about 100 KB of entries,
-	// well past the state cap.
-	base := time.Now().Add(-40 * time.Hour).Unix()
-	done := make(map[string]int64, 3000)
-	for i := range 3000 {
-		done[fmt.Sprintf("old-%016d", i)] = base + int64(i)
+// seedMailState commits new-mail-summary's state for a: boxes maps a
+// mailbox to its done ids → epoch minute.
+func (f *exFixture) seedMailState(t *testing.T, a db.Automation, boxes map[string]map[string]int64) {
+	t.Helper()
+	base := time.Now().Add(-47*time.Hour).Unix() / 60
+	saved := map[string]any{}
+	for name, done := range boxes {
+		rel := make(map[string]int64, len(done))
+		for id, at := range done {
+			rel[id] = at - base
+		}
+		saved[name] = map[string]any{"done": rel}
 	}
-	raw, err := json.Marshal(map[string]any{"mailboxes": map[string]any{"work": map[string]any{"done": done}}})
+	raw, err := json.Marshal(map[string]any{"mail": map[string]any{"base": base, "boxes": saved}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := f.d.Exec(`INSERT INTO automation_state (automation_id, state_json) VALUES (?, ?)`, a.ID, string(raw)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func testRunNewMailStateBudget(t *testing.T) {
+	gen := &automationstest.FakeGenerator{Replies: []string{"- mail"}}
+	f := newTplFixture(t, gen)
+	a := f.installTemplate(t, "new-mail-summary", nil)
+	// work: 4000 done ids of 20 characters, two a minute from 40 hours back,
+	// about 110 KB of entries, well past the state cap. home: 10 ids older
+	// than all of them — the first a global oldest-first cut would take.
+	start := time.Now().Add(-40*time.Hour).Unix() / 60
+	work := make(map[string]int64, 4000)
+	for i := range 4000 {
+		work[fmt.Sprintf("old-%016d", i)] = start + int64(i/2)
+	}
+	home := map[string]int64{}
+	for i := range 10 {
+		home[fmt.Sprintf("h-%d", i)] = start - 300
+	}
+	f.seedMailState(t, a, map[string]map[string]int64{"work": work, "home": home})
 	id := f.mailEvent(t, a, "c1")
 	f.step(t, 1)
 	f.wantRun(t, id, db.RunSucceeded, "")
@@ -464,10 +497,107 @@ func testRunNewMailStateBudget(t *testing.T) {
 	if len(state) > automations.MaxStateBytes {
 		t.Fatalf("state = %d bytes; want at most %d", len(state), automations.MaxStateBytes)
 	}
-	box := f.mailBox(t, a)
-	if !box.Done["m1"] || !box.Done["m3"] || box.Done["old-0000000000000000"] || box.Floor <= base {
+	box := f.mailBoxOf(t, a, "work")
+	if !box.Done["m1"] || !box.Done["m3"] || box.Done["old-0000000000000000"] || box.Floor <= start {
 		t.Fatalf("work done = %d ids, floor = %d; want the new mail kept and the oldest dropped behind a floor past %d",
-			len(box.Done), box.Floor, base)
+			len(box.Done), box.Floor, start)
+	}
+	if hb := f.mailBoxOf(t, a, "home"); len(hb.Done) != 10 || hb.Floor != 0 {
+		t.Fatalf("home done = %d ids, floor = %d; want all 10 kept and no floor — a busy mailbox never cuts a quiet one",
+			len(hb.Done), hb.Floor)
+	}
+}
+
+func testRunNewMailEvictionFloor(t *testing.T) {
+	gen := &automationstest.FakeGenerator{Replies: []string{"- mail"}}
+	f := newTplFixture(t, gen)
+	a := f.installTemplate(t, "new-mail-summary", nil)
+	// Minute M, 20 hours back, holds 60 messages ("Tie 0" … "Tie 59", one a
+	// second); 570 older ones ("Old 1" … "Old 570") take a minute each
+	// before it. With m1..m3 that is 633 new: run 1 sums up the 600 oldest
+	// and its cap ends inside M (Tie 0 … Tie 29 summed, Tie 30 … Tie 59 left).
+	m := time.Now().UTC().Add(-20 * time.Hour).Truncate(time.Minute)
+	for i := 1; i <= 570; i++ {
+		insertMailAt(t, f.d, fmt.Sprintf("old-%04d", i), fmt.Sprintf("Old %d", i), m.Add(-time.Duration(i)*time.Minute))
+	}
+	for i := range 60 {
+		insertMailAt(t, f.d, fmt.Sprintf("tie-%04d", i), fmt.Sprintf("Tie %d", i), m.Add(time.Duration(i)*time.Second))
+	}
+	// Calibrated to the script's doneBudget (56 KiB) and entry cost (id + 8
+	// bytes): 2369 ids of 16 characters (24 bytes each, 56,856 in all) plus
+	// the 600 summed up (8-character ids, 16 bytes each) is 66,456. Cutting
+	// the 570 older minutes leaves 57,336, inside the 57,344 budget; 569 do
+	// not. So eviction drops every minute before M and stops at M: floor = M.
+	synth := map[string]int64{}
+	for i := range 2369 {
+		synth[fmt.Sprintf("syn-%012d", i)] = time.Now().Add(-30*time.Minute).Unix() / 60
+	}
+	f.seedMailState(t, a, map[string]map[string]int64{"work": synth})
+
+	first := f.mailEvent(t, a, "c1")
+	f.step(t, 1)
+	f.wantRun(t, first, db.RunSucceeded, "")
+	if got := summedSubjects(t, gen); len(got) != 600 || got[599] != "Tie 29" {
+		t.Fatalf("summed up %d messages; want the oldest 600, ending at Tie 29", len(got))
+	}
+	box := f.mailBoxOf(t, a, "work")
+	if box.Floor != m.Unix()/60 || box.Done["old-0570"] || !box.Done["tie-0000"] || !box.Done["tie-0029"] {
+		t.Fatalf("work floor = %d, %d ids; want the floor at M (%d), the older minutes cut and M's ids kept",
+			box.Floor, len(box.Done), m.Unix()/60)
+	}
+
+	// A late message after the floor (10 hours back).
+	insertMailAt(t, f.d, "m-late", "Synced late", time.Now().UTC().Add(-10*time.Hour))
+	second := f.mailEvent(t, a, "c2")
+	f.step(t, 1)
+	f.wantRun(t, second, db.RunSucceeded, "")
+	// summedSubjects fails on a message summed up twice: none of the 570
+	// behind the floor comes back.
+	got := summedSubjects(t, gen)
+	if len(got) != 634 {
+		t.Fatalf("summed up %d messages over both runs; want 634: the 30 left in M, m1..m3 and the late one", len(got))
+	}
+	second30 := got[600:]
+	for _, want := range []string{"Tie 30", "Tie 59", "Synced late", "Contract review"} {
+		if !slices.Contains(second30, want) {
+			t.Fatalf("second run summed up %v; want %q among them", second30, want)
+		}
+	}
+}
+
+// insertMailAt adds one message to "work" dated at.
+func insertMailAt(t *testing.T, d *db.DB, id, subject string, at time.Time) {
+	t.Helper()
+	if _, err := d.Exec(`INSERT INTO gmail_messages (account_id, id, from_email, subject, internal_date)
+		VALUES (1, ?, 'd@example.com', ?, ?)`, id, subject, at.UTC().Format(time.RFC3339)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// An event run names the mailbox "work" (its label); an older script kept
+// the cursor under its address. The run finds it through list_emails' name.
+func testRunNewMailLegacyCursorByLabel(t *testing.T) {
+	gen := &automationstest.FakeGenerator{Replies: []string{"- mail"}}
+	f := newTplFixture(t, gen)
+	a := f.installTemplate(t, "new-mail-summary", nil)
+	var newest, newestID string
+	if err := f.d.QueryRow(`SELECT internal_date, id FROM gmail_messages WHERE account_id = 1
+		ORDER BY internal_date DESC LIMIT 1`).Scan(&newest, &newestID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.d.Exec(`INSERT INTO automation_state (automation_id, state_json) VALUES (?, ?)`, a.ID,
+		`{"cursors":{"owner@example.com":{"date":"`+newest+`","ids":["`+newestID+`"]}}}`); err != nil {
+		t.Fatal(err)
+	}
+	insertWorkMail(t, f.d, "m-new", "After the old cursor", "+1 minutes")
+	id := f.mailEvent(t, a, "c1")
+	f.step(t, 1)
+	f.wantRun(t, id, db.RunSucceeded, "")
+	if got := summedSubjects(t, gen); len(got) != 1 || got[0] != "After the old cursor" {
+		t.Fatalf("summed subjects = %v; want only the mail after the old cursor", got)
+	}
+	if st := f.stateDump(t); !strings.Contains(st, `"cursors":null`) || !sameIDs(f.mailDone(t, a), "m1", "m2", "m3", "m-new") {
+		t.Fatalf("state = %q; want the cursor dropped and the four messages done under work", st)
 	}
 }
 
@@ -578,31 +708,37 @@ func (f *exFixture) newestMail(t *testing.T) string {
 	return newest
 }
 
-// mailBox is new-mail-summary's committed state of "work": the ids it
-// summed up and its floor (0 when unset).
+// mailBox is one mailbox's committed new-mail-summary state: the ids it
+// summed up and its floor in epoch minutes (0 when unset).
 type mailBox struct {
 	Done  map[string]bool
 	Floor int64
 }
 
-func (f *exFixture) mailBox(t *testing.T, a db.Automation) mailBox {
+func (f *exFixture) mailBoxOf(t *testing.T, a db.Automation, name string) mailBox {
 	t.Helper()
 	raw, err := f.d.GetAutomationState(a.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var state struct {
-		Mailboxes map[string]struct {
-			Done  map[string]int64 `json:"done"`
-			Floor int64            `json:"floor"`
-		} `json:"mailboxes"`
+		Mail struct {
+			Base  int64 `json:"base"`
+			Boxes map[string]struct {
+				Done  map[string]int64 `json:"done"`
+				Floor *int64           `json:"floor"`
+			} `json:"boxes"`
+		} `json:"mail"`
 	}
 	if err := json.Unmarshal(raw, &state); err != nil {
 		t.Fatalf("state %s: %v", raw, err)
 	}
-	w := state.Mailboxes["work"]
-	out := mailBox{Done: map[string]bool{}, Floor: w.Floor}
-	for id := range w.Done {
+	b := state.Mail.Boxes[name]
+	out := mailBox{Done: map[string]bool{}}
+	if b.Floor != nil {
+		out.Floor = state.Mail.Base + *b.Floor
+	}
+	for id := range b.Done {
 		out.Done[id] = true
 	}
 	return out
@@ -611,7 +747,7 @@ func (f *exFixture) mailBox(t *testing.T, a db.Automation) mailBox {
 // mailDone is the ids new-mail-summary committed as summed up in "work".
 func (f *exFixture) mailDone(t *testing.T, a db.Automation) map[string]bool {
 	t.Helper()
-	return f.mailBox(t, a).Done
+	return f.mailBoxOf(t, a, "work").Done
 }
 
 // sameIDs reports whether done holds exactly ids.
