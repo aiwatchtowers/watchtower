@@ -171,7 +171,7 @@ Decisions taken while implementing, where the design above left a choice:
   (`db.resumableRunSQL`: a complete record for every earlier step plus the
   pending one). The table therefore has a `pending` column.
 - **Deletion by trigger.** `automation_runs_replay_cleanup` (AFTER UPDATE OF
-  status) deletes the log on any terminal status, so every ending path —
+  status) deletes the log, and clears `resume_pending`, on any terminal status, so every ending path —
   finish, cancel, the restart sweep, the stale dry-run sweep — drops it in
   its own transaction without each writer knowing about the table.
 - **Extra caps.** Besides the 1 MiB per-result cap, a run's whole log is
@@ -179,6 +179,15 @@ Decisions taken while implementing, where the design above left a choice:
   calls at 10 000; past either the run is flagged `not_resumable` and stops
   recording. (`MaxSDKResultBytes` is 256 KiB, so the 1 MiB cap is a
   backstop.)
+- **Keyed calls.** `agent()` and `session()` hash what the script asked
+  (`Env.CallWithReplayKey`: instruction, requested tools, tier and budget;
+  prompt, the script's own agent and title, wait) and the replay skips their
+  name check: their step args and name hold derived values — the budget
+  carved from the run's remainder (different once the meter carries the
+  first life's spend), the effective tools, the provider's name, the
+  workbench's default agent — that may change across a restart. A resumed
+  `session()` takes its agent and title from its stored step, so it waits on
+  the session it started.
 - **Clock check.** Clock reads are recorded per call ("since the previous
   call") and replayed per call; a script that reads the clock more or fewer
   times before a call than it did is a divergence at that call. The
@@ -201,10 +210,18 @@ Decisions taken while implementing, where the design above left a choice:
   module calling the Waiter directly) ends `interrupted` as before. A ready
   check that fails because of the stop also stays waiting.
 - **Stop during the replay.** A resumed run that the daemon stops again
-  before its replay reached the waiting call is put back to `waiting` with
-  its old reason (`ReturnAutomationRunToWaiting`), for the next start to
-  judge again. A crash in that window leaves it `running`, and the next
+  before its replay reached the waiting call records that life's active
+  time and is put back to `waiting` with its old reason
+  (`SetAutomationRunWaiting`, which already moves a running run to
+  waiting), for the next start to judge again. A crash in that window leaves it `running`, and the next
   start ends it `interrupted` (v1 limit).
+- **Ends during the replay.** Only a divergence, a return or an uncaught
+  exception before the waiting call ends the run "ran differently"
+  (`failed`/`script`); a deadline, budget, memory or cancel interrupt, the
+  step cap or an abandoned script keep their usual end.
+- **Log cap across lives.** The records replayed from the log count toward
+  `MaxReplayLogBytes`, so the cap holds across daemon lives.
+- **Runnable check.** `resumableRunSQL` reuses `runnableAutomationSQL`.
 - **Active time.** A run left waiting adds the active time of that daemon
   life to `active_ms`; the resumed meter starts with the run's `active_ms`
   and tokens carried, and its finish adds only the new life's active time.

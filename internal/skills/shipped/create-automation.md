@@ -260,11 +260,14 @@ draft against them before you show it to the owner.
    and say what the first real run will do with the backlog (with rule 1 it
    handles the window; with a time cursor it would skip it).
 5. **A run commits only when it ends.** Outputs and `state` are written when
-   the run succeeds. A run that waits on `ask()` or a session keeps everything
-   it found in memory until then; if the run ends early (it is cancelled, it
-   expires after `pause_timeout_hours`, the daemon stops),
-   nothing of it is kept, and rule 1 makes the next run redo that work. Put the
-   ask at the end, after the work, and ask only what needs the owner.
+   the run succeeds. A run that waits on `ask()`, an approval or a session
+   keeps waiting through a daemon restart, and keeps everything it found
+   until then. If the run ends early — it is cancelled, it expires after
+   `pause_timeout_hours`, the daemon stops while it is busy (not waiting), or
+   it cannot resume after a restart (its recipe was re-confirmed or disabled
+   meanwhile) — nothing of it is kept, and rule 1 makes the next run redo
+   that work. Put the ask at the end, after the work, and ask only what needs
+   the owner.
 
 ## Templates
 
