@@ -398,12 +398,7 @@ func (db *DB) ClearGoogleAccountCalendarData(accountID int64) (int, error) {
 // account sharing that calendar id claims it on UpsertCalendar. Returns the
 // number of events deleted.
 func purgeGoogleAccountCalendarsTx(tx *sql.Tx, accountID int64) (int64, error) {
-	result, err := tx.Exec(`
-		DELETE FROM calendar_events
-		 WHERE calendar_id IN (SELECT id FROM calendar_calendars WHERE account_id = ?)
-		   AND NOT EXISTS (SELECT 1 FROM meeting_transcripts t WHERE t.event_id = calendar_events.id)
-		   AND NOT EXISTS (SELECT 1 FROM meeting_recaps    r WHERE r.event_id = calendar_events.id)
-	`, accountID)
+	result, err := tx.Exec(`DELETE FROM calendar_events WHERE `+accountCalendarEventsWhere, accountID)
 	if err != nil {
 		return 0, fmt.Errorf("deleting calendar events of google account %d: %w", accountID, err)
 	}
@@ -411,11 +406,7 @@ func purgeGoogleAccountCalendarsTx(tx *sql.Tx, accountID int64) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("counting deleted calendar events of google account %d: %w", accountID, err)
 	}
-	if _, err := tx.Exec(`
-		DELETE FROM calendar_calendars
-		 WHERE account_id = ?
-		   AND NOT EXISTS (SELECT 1 FROM calendar_events e WHERE e.calendar_id = calendar_calendars.id)
-	`, accountID); err != nil {
+	if _, err := tx.Exec(`DELETE FROM calendar_calendars WHERE `+accountEmptyCalendarsWhere, accountID); err != nil {
 		return 0, fmt.Errorf("deleting calendars of google account %d: %w", accountID, err)
 	}
 	if _, err := tx.Exec(`UPDATE calendar_calendars SET account_id = NULL, is_selected = 0 WHERE account_id = ?`,

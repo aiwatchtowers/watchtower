@@ -333,6 +333,8 @@ final class AppState {
     private(set) var workbenchNotificationCenter: WorkbenchNotificationCenter?
     /// Claude plan limits (menu bar text, tray rows, Usage tab); nil until the database is open.
     private(set) var planUsageCenter: PlanUsageCenter?
+    /// The account purge ledger (board #601): red lines, Home banner, notices.
+    var accountPurgeCenter: AccountPurgeCenter?
     /// The live workbench sessions' agent states (board #312), polled while
     /// a `claude` session runs, whatever tab is shown.
     private(set) var sessionAgentStateCenter: SessionAgentStateCenter?
@@ -1516,6 +1518,7 @@ final class AppState {
         if let vm = workbenchesViewModel { replaceAgentAnalytics(cliRunner: ProcessCLIRunner.makeDefault(), workbenches: vm) }
         applyUIVisibility(uiVisibility.isOnScreen)
         initPlanUsage(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
+        initAccountPurges(dbPool: manager.dbPool, cliRunner: ProcessCLIRunner.makeDefault())
         startDigestWatcher(dbPool: manager.dbPool)
         startMeetingReminders(dbPool: manager.dbPool)
         startWarmEnginePolicy(dbPool: manager.dbPool)

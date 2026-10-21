@@ -71,6 +71,7 @@ type jiraAccountSyncer interface {
 	AccountID() int64
 	BoardAnalyzerUsage() (inputTokens, outputTokens, totalAPITokens int)
 	FirstSyncFrom() (time.Time, bool)
+	ReachedSource() bool
 }
 
 // mailSyncer is the slice of *gmail.Syncer and *imap.Syncer behaviour the
@@ -155,6 +156,7 @@ type Daemon struct {
 	dayPlanPipeline            DayPlanRunner
 	lastJira                   time.Time
 	linearSyncers              []linearAccountSyncer
+	purgeHold                  map[purgeKey]bool // accounts purged or being purged; refreshed by phaseAccountPurge, read by the sync phases
 	lastLinear                 time.Time
 	lastPeople                 time.Time // when people cards last ran (once per day)
 	lastBriefing               time.Time // when briefing last ran (once per day)
@@ -266,6 +268,9 @@ func (d *Daemon) SetIdeasPipeline(p *ideas.Pipeline) {
 // SetReactionCommandsPipeline sets the reaction-commands pipeline (owner drives
 // Watchtower by reacting in Slack; gated by reaction_commands.enabled).
 func (d *Daemon) SetReactionCommandsPipeline(p *reactioncmd.Pipeline) {
+	if p != nil {
+		p.SetAccountSkip(func(id int64) bool { return d.purgeHeld("slack", id) })
+	}
 	d.reactionCmdPipe = p
 }
 
@@ -459,6 +464,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// a calendar connect — onboarding's finish, the Add sheet — so shows
 	// events within seconds (#740). The cycle below syncs them a second time —
 	// a few API calls per account, accepted on a (re)start for that latency.
+	// The purge hold first (#601): a purged or half-purged account's
+	// calendar must not be refilled before the first cycle's purge phase.
+	d.refreshPurgeHold()
 	d.startupCalendarSync(ctx)
 
 	return d.runLoop(ctx, pollInterval)
@@ -493,6 +501,11 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	d.setSection(sectionSlackFetch)
 	d.markFetchProgress()
 	d.sampleLockStats(fetchCtx)
+	// First: schedule/cancel/run account purges (#601), so a purged account's
+	// syncer is skipped this very cycle. On fetchCtx: a sleep or a restart
+	// pauses a purge (it resumes next cycle); the stall clock restarts after it.
+	d.phaseAccountPurge(fetchCtx)
+	d.markFetchProgress()
 	// Every source sync below starts after this instant, so the data the
 	// inbox scans at the end of the cycle is complete up to it (INBOX-09).
 	syncStart := time.Now()
@@ -527,6 +540,9 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	d.markFetchProgress()
 	d.observePhase(fetchCtx, automations.ConfluenceSource(d.db), func() { d.phaseExternalSync(fetchCtx) })
 	d.markFetchProgress()
+	// Lease purges are scheduled only now, after every source sync had its
+	// chance to prove access this cycle (#601).
+	d.phaseAccountPurgeLeases(fetchCtx)
 	// Once per cycle, also on a cancelled ctx: it only queues rows.
 	d.flushAutomationEvents(syncStart)
 	d.phaseAgentAnalytics(fetchCtx)
@@ -759,6 +775,9 @@ func (d *Daemon) phaseSlackSync(ctx context.Context) (syncErr, inboxErr error) {
 	d.trackedPipelineRun("slack-sync", func() pipelineRunStats {
 		messages := 0
 		for _, o := range d.orchestrators {
+			if d.purgeHeld("slack", o.AccountID()) {
+				continue
+			}
 			stopBeat := d.startSyncHeartbeat(o)
 			err := o.Run(ctx, sync.SyncOptions{})
 			stopBeat()
@@ -893,6 +912,9 @@ func (d *Daemon) startupCalendarSync(ctx context.Context) {
 // aborting the rest of the accounts.
 func (d *Daemon) phaseCalendarSync(ctx context.Context) {
 	for _, s := range d.calendarSyncers {
+		if d.purgeHeld("google", s.AccountID()) {
+			continue
+		}
 		n, err := s.Sync(ctx)
 		if err != nil {
 			d.logger.Printf("calendar sync error: %v", err)
@@ -924,6 +946,9 @@ func (d *Daemon) phaseCalDAVSync(ctx context.Context) {
 // aborting the rest of the accounts.
 func (d *Daemon) phaseGmailSync(ctx context.Context) {
 	for _, s := range d.gmailSyncers {
+		if d.purgeHeld("google", s.AccountID()) {
+			continue
+		}
 		var n int
 		var err error
 		d.observePhase(ctx, automations.MailSource(d.db, "gmail", s.AccountID()), func() { n, err = s.Sync(ctx) })
@@ -1015,10 +1040,20 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 	var firstErr error
 	anyClean := false
 	for _, s := range d.jiraSyncers {
+		if d.purgeHeld("jira", s.AccountID()) {
+			continue
+		}
 		n, err := s.Sync(ctx)
 		// Read after every Sync, whatever it returned (R13).
 		if from, ok := s.FirstSyncFrom(); ok {
 			d.startHistoryBackfill("jira", s.AccountID(), from)
+		}
+		// A pass that reached Atlassian proved access, whatever failed after
+		// (one board, a later request); a revoked grant never does. No
+		// request (no boards selected) proves nothing. access_ok_at only,
+		// never status: a pass still never writes "ok" (#601, LINEAR-03).
+		if s.ReachedSource() && !errors.Is(err, jira.ErrAuthRevoked) {
+			d.markAccessOK("jira", s.AccountID())
 		}
 		if err != nil {
 			d.logger.Printf("jira: account %d: sync error: %v", s.AccountID(), err)
@@ -1111,6 +1146,9 @@ func (d *Daemon) phaseLinearSync(ctx context.Context) {
 
 	anyClean := false
 	for _, s := range d.linearSyncers {
+		if d.purgeHeld("linear", s.AccountID()) {
+			continue
+		}
 		n, err := s.Sync(ctx)
 		if err != nil {
 			d.logger.Printf("linear: account %d: sync error: %v", s.AccountID(), err)
@@ -1127,6 +1165,9 @@ func (d *Daemon) phaseLinearSync(ctx context.Context) {
 			continue
 		}
 		anyClean = true
+		// Every Linear pass starts with an authenticated viewer query, so a
+		// nil error proves access. access_ok_at only, never status (#601).
+		d.markAccessOK("linear", s.AccountID())
 		if n > 0 {
 			d.logger.Printf("linear: account %d: %d issues synced", s.AccountID(), n)
 		}
@@ -1371,6 +1412,7 @@ func (d *Daemon) phaseExternalSync(ctx context.Context) {
 	}
 	d.trackedPipelineRun("external-sync", func() pipelineRunStats {
 		st, err := d.externalSync.Run(ctx)
+		d.markConfluenceAccess(srcs)
 		reportErr := err
 		if err != nil {
 			if isBenignShutdownErr(ctx, err) {
@@ -1388,6 +1430,31 @@ func (d *Daemon) phaseExternalSync(ctx context.Context) {
 		linked, linkErr := d.scanDocLinks(ctx)
 		return pipelineRunStats{items: st.Fetched + st.Deleted + st.Comments + linked, err: errors.Join(reportErr, linkErr)}
 	})
+}
+
+// markConfluenceAccess stamps access_ok_at of every Jira account one of
+// whose Confluence spaces the engine just synced cleanly (its last_synced_at
+// moved; #601): one Atlassian grant covers both, and an account used only for
+// Confluence makes no Jira request, so the lease must see this too.
+func (d *Daemon) markConfluenceAccess(before []db.ExtSource) {
+	prev := make(map[int64]string, len(before))
+	for _, s := range before {
+		prev[s.ID] = s.LastSyncedAt
+	}
+	after, err := d.db.ListExtSources("confluence")
+	if err != nil {
+		d.logger.Printf("external sync: reading sources for access: %v", err)
+		return
+	}
+	marked := map[int64]bool{}
+	for _, s := range after {
+		if s.JiraAccountID == 0 || marked[s.JiraAccountID] || s.LastSyncedAt == "" || s.LastSyncedAt == prev[s.ID] ||
+			d.purgeHeld("jira", s.JiraAccountID) {
+			continue
+		}
+		marked[s.JiraAccountID] = true
+		d.markAccessOK("jira", s.JiraAccountID)
+	}
 }
 
 // docLinkScanBudget bounds one cycle's doc_links detection (Confluence page
@@ -2586,5 +2653,17 @@ func (d *Daemon) runDayPlanConflictPhase(ctx context.Context, now time.Time, own
 			summary = updated.ConflictSummary.String
 		}
 		d.logger.Printf("dayplan: conflicts detected: %s", summary)
+	}
+}
+
+// markAccessOK stamps an account's access_ok_at after a pass that reached
+// the source (#601). A failure is logged: the lease clock then just keeps
+// its older value.
+func (d *Daemon) markAccessOK(source string, id int64) {
+	if d.db == nil {
+		return
+	}
+	if err := d.db.MarkAccountAccessOK(source, id); err != nil {
+		d.logger.Printf("%s: account %d: record access: %v", source, id, err)
 	}
 }

@@ -182,6 +182,7 @@ How Watchtower works
 - Turning features on and off (concepts/features-on-and-off.md)
 - AI providers, models and cost (concepts/ai-providers-and-cost.md)
 - Privacy (concepts/privacy.md)
+- Revoked access deletes an account's data (concepts/revoked-access.md)
 
 Troubleshooting
 - Troubleshooting (troubleshooting/README.md)

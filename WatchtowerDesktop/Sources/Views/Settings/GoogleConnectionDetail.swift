@@ -54,17 +54,24 @@ struct GoogleConnectionDetail: View {
                                 }
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                                if let line = AccountPurgeLine.make(
+                                    center: appState.accountPurgeCenter, source: "google", accountID: Int64(account.id),
+                                    isPurged: account.isPurged
+                                ) {
+                                    line
+                                }
                             }
                             Spacer()
                             Circle()
                                 .fill(googleAccountStatusColor(account))
                                 .frame(width: 8, height: 8)
-                                .help(account.isOK ? "Connected" : account.error)
+                                .help(account.isOK ? "Connected" : (account.isPurged ? "Data deleted" : account.error))
                             if !account.isOK {
                                 Button("Re-login") {
                                     vm.relogin(account, daemonPolicy: appState.accountDaemonPolicy)
                                 }
-                                .disabled(vm.isConnecting)
+                                .help(reloginBlocked(account.id) ?? "")
+                                .disabled(vm.isConnecting || reloginBlocked(account.id) != nil)
                             }
                             Button("Rename…") {
                                 accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
@@ -124,15 +131,23 @@ struct GoogleConnectionDetail: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(
-                "Removes the connection and stops syncing this account's Calendar and Gmail data. "
-                    + "Already-synced events/messages and AI products built on them are kept."
+                "Removes the connection, stops syncing, and deletes this account's synced mail and calendar "
+                    + "events from this Mac. Events tied to a recording or recap are kept, and so are digests, "
+                    + "briefings and other results built from them."
             )
         }
+    }
+
+    /// Why Re-login is off for the account (its purge is running), or nil.
+    private func reloginBlocked(_ id: Int) -> String? {
+        AccountPurgeLine.reloginBlockedReason(
+            center: appState.accountPurgeCenter, source: "google", accountID: Int64(id))
     }
 
     private func googleAccountStatusColor(_ account: GoogleAccount) -> Color {
         if account.isOK { return .green }
         if account.isRevoked { return .red }
+        if account.isPurged { return .gray }
         return .orange
     }
 
