@@ -46,6 +46,7 @@ Because the file belongs to the repository, it can arrive with a `git pull` or b
 ## Using it
 1. In **Automations**, click **+**, pick the scope, then a template under **How do you want to start?** and **Continue**.
 2. The panel shows the template's fields, if it has any, and the recipe it makes, checked but not written. **Save and Turn On** installs, confirms and turns it on. **Adjust in Chat** opens the recipe in the editor chat instead; a template with several recipes has no such button, so install it, then edit each.
+
 ### The templates
 | Template | Where | When | What it does |
 |---|---|---|---|

@@ -40,7 +40,7 @@ Each session pane has a strip on top with the session's state dot and name and a
 
 Every automation of the workbench that runs **When I press a button** is an item in the ⚡ menu, in the order of their file names. **New Automation…** at its end makes a new one for this workbench. A click starts the run; one set to ask first shows "Run <label>?" with **Run** and **Cancel**. While a run is going, the ⚡ icon spins and its item shows the run in Automations.
 
-An item that says why it is not runnable: **Needs your confirmation** opens its card, **Disabled** or **Parse error** opens its card. If the run could not start, "Could not run <label>" says why. See [Recipes and templates](../automations-recipes.md#workbench-recipes).
+An item that says why it is not runnable: **Needs your confirmation**, **Disabled** and **Parse error**. All three open its card. If the run could not start, "Could not run <label>" says why. See [Recipes and templates](../automations-recipes.md#workbench-recipes).
 
 A folder inside Documents, Desktop, Downloads or a cloud-synced folder shows a warning first, because macOS may ask to allow access. The warning comes before anything is created.
 

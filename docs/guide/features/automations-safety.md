@@ -13,7 +13,7 @@ If any of these changes, the fingerprint changes and the recipe stops until you 
 
 A file pulled in from outside (say with `git pull`) also shows **Needs your confirmation** and waits.
 
-A recipe that runs a shell command (`shell:`) is confirmed by the command text only. The scripts or Makefile the command runs are not part of the fingerprint: if they change later, for example when the repository is updated or an agent edits them, the command still runs unattended without asking again. Confirm such a recipe only if you trust that folder's contents; the draft column says this.
+A recipe that runs a shell command (`shell:`) is confirmed by the command text only. The scripts or Makefile the command runs are not part of the fingerprint: if they change later, for example when the repository is updated or an agent edits them, the command still runs unattended without asking again. Confirm such a recipe only if you trust that folder's contents; the draft column says so.
 
 ### Budgets
 

@@ -32,7 +32,7 @@ A draft you leave is kept at the top of its section until you save it or choose 
 2. Unconfirmed or disabled recipes are dimmed, and Return opens their card instead of running. A recipe set to **Ask before running** shows a "Run “<name>”?" prompt first.
 3. When a run you started ends, you get a notice: "<name> finished", "<name> failed" or "<name> stopped: ...".
 
-On the card, **Run now** starts a run the same way, without the notice; **Dry run** works even before you confirm. **History** lists runs and their steps; a failed run offers **Rerun**, an active one **Cancel**.
+On the card, **Run Now** starts a run the same way, without the notice; **Dry Run** works even before you confirm. **History** lists runs and their steps; a failed run offers **Rerun**, an active one **Cancel**.
 
 ### When a run fails
 
@@ -59,8 +59,8 @@ The tab also shows your reaction commands and custom tracks next to your recipes
 - **"No automations yet".** You have none; click **+**.
 - **Needs your confirmation.** Open **Review…**, check the column, then press **Confirm and Turn On**. After an update that changed how the fingerprint is computed, earlier recipes ask once more.
 - **The form is off ("The recipe can't be read").** The file has an error, named next to it. The controls stay off so they never overwrite the file's settings; click **Open in Script**, fix the recipe, then save.
-- **Disabled.** Use **⋯**, then **Enable**.
-- **Recipes turned off after the update.** Automations used to have an on/off switch in Settings → Features. If yours was off, the update turned off each recipe you had enabled, once, so nothing starts spending on its own; a notice may tell you so. In the Automations tab, use **⋯**, then **Enable** on the ones you want.
+- **Disabled.** Use **⋯**, then **Turn On**.
+- **Recipes turned off after the update.** Automations used to have an on/off switch in Settings → Features. If yours was off, the update turned off each recipe you had enabled, once, so nothing starts spending on its own; a notice may tell you so. In the Automations tab, use **⋯**, then **Turn On** on the ones you want.
 - **Nothing ran on schedule.** The recipe must be confirmed and enabled, with the daemon running. Slots missed before you enabled or confirmed it are never made up.
 - **Ended on budget or time.** Raise the budget in **Form** (this needs confirming again) or shorten the work. Calls, outputs and sessions are [capped](../troubleshooting/automation-run-limits.md) too.
 - **Failed with a permission error.** The script touched something outside its permissions. Add it with **+ Add**, or ask the assistant.
