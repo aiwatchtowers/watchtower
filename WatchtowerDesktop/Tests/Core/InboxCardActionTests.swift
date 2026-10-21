@@ -49,6 +49,9 @@ final class InboxCardActionTests: XCTestCase {
         XCTAssertEqual(ref("3"), .some(.id(3)))
         XCTAssertEqual(ref(#""acme""#), .some(.name("acme")))
         XCTAssertEqual(ref(nil), .some(nil))
+        XCTAssertEqual(ref("3.5"), .some(nil))
+        XCTAssertEqual(ref("true"), .some(nil))
+        XCTAssertEqual(ref("9007199254740993"), .some(.id(9_007_199_254_740_993)))
     }
 
     func testReplyState() {

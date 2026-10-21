@@ -72,8 +72,8 @@ package struct InboxCardAction: Equatable, Sendable {
     private static func workbenchRef(_ value: Any?) -> WorkbenchRef? {
         if let name = value as? String { return name.isEmpty ? nil : .name(name) }
         guard let number = value as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
-              let id = Int64(exactly: number.doubleValue) else { return nil }
-        return .id(id)
+              number == NSNumber(value: number.int64Value) else { return nil }
+        return .id(number.int64Value)
     }
 
     /// What the card's Reply buttons can do now: a press already made wins,

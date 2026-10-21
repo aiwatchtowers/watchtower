@@ -34,18 +34,19 @@ final class InboxReplyPressTests: XCTestCase {
     func testAuto09_ReplyPressOnlyQueues() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
-        _ = try await seed(pool)
+        let id = try await seed(pool)
         let before = try dump(pool)
         let runner = FakeCLIRunner(stdout: Data(#"{"run_id":7,"daemon_running":true}"#.utf8))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
         vm.refresh()
 
-        await vm.pressReply(outputID: 5, action: 1)
+        await vm.pressReply(outputID: id, action: 1)
 
-        XCTAssertEqual(runner.invocations, [["automations", "reply", "--output", "5", "--action", "1", "--json"]])
+        XCTAssertEqual(runner.invocations,
+                       [["automations", "reply", "--output", String(id), "--action", "1", "--json"]])
         XCTAssertEqual(try dump(pool), before)
         XCTAssertNil(vm.lastError)
-        XCTAssertFalse(vm.isWriting(output: 5))
+        XCTAssertFalse(vm.isWriting(output: id))
     }
 
     func testSecondPressWhileWritingIsDropped() async throws {

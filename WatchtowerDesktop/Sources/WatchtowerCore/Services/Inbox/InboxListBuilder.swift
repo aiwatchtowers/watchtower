@@ -39,7 +39,9 @@ package enum InboxListBuilder {
     ) -> [InboxSection] {
         let dated = (outputs.map { (at: $0.createdAt, item: InboxListItem.output($0)) }
             + reminders.map { (at: AutomationDates.parse($0.remindAt) ?? .distantPast, item: .reminder($0)) })
-            .sorted { $0.at > $1.at }
+            .sorted { lhs, rhs in
+                lhs.at != rhs.at ? lhs.at > rhs.at : tieOrder(lhs.item) < tieOrder(rhs.item)
+            }
         let startOfToday = calendar.startOfDay(for: now)
         let sections = [
             InboxSection(title: "Needs your decision", items: proposals.map(InboxListItem.proposal)),
@@ -47,6 +49,16 @@ package enum InboxListBuilder {
             InboxSection(title: "Earlier", items: dated.filter { $0.at < startOfToday }.map(\.item))
         ]
         return sections.filter { !$0.items.isEmpty }
+    }
+
+    /// Equal times keep one order across refreshes: outputs before
+    /// reminders, then by id.
+    private static func tieOrder(_ item: InboxListItem) -> (Int, Int64) {
+        switch item {
+        case let .output(card): (0, card.id)
+        case let .reminder(reminder): (1, reminder.id)
+        case let .proposal(action): (2, action.id)
+        }
     }
 
     /// The row to open once `id` left the list (Done, Dismiss, Snooze): the
