@@ -20,7 +20,7 @@
 - UI copy is English and built from `WatchtowerDesktop/Sources/DesignKit/` only. These flows use no sheets, popovers or modal confirmations; use inline rows instead. Add affordances use the `+` icon (`Image(systemName: "plus")`, `.kitIcon(isOn: false)`, `.help` carries the word). Read `docs/design/desktop-style-guide.md` and the "Swift / Desktop conventions" section of `docs/review/review-rules.md` first.
 - Never weaken an inventory guard (`docs/inventory/`). A guard that moves with its code keeps its name and every assertion. A guard that would have to relax is a stop-and-ask to the owner. This covers TRACKS-01..07, IDEA-01..05, REACT-01..05, STRIP-01..03, FEAT-01..04, AUTO-*, OWNER-01/02 and CATCHUP-01.
 - Public repo hygiene: no real ids, names, domains or local paths in fixtures, docs or tests (`acme`, `example.com`, `<owner-slack-id>`).
-- Each task declares `Depends on:`. Independent Go tasks may run in parallel worktree lanes. Tasks that edit `internal/daemon/daemon.go` run one at a time, and Swift tasks run one lane at a time.
+- Each task declares `Depends on:`. Independent Go tasks may run in parallel worktree lanes. Tasks that edit `internal/daemon/daemon.go` run one at a time. Independent Swift tasks may run in parallel lanes too.
 - Use the fixed strings verbatim.
   - Built-in ids: `track-my-threads`, `idea-finder`, `reactions`.
   - Slots: `tracks`, `ideas`, `reactions`, `custom_tracks` (C2's `SyncSlots`).

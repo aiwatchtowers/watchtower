@@ -21,7 +21,7 @@
 - UI copy is English, built from `WatchtowerDesktop/Sources/DesignKit/` only; no sheets, popovers or modal confirmations for these flows (inline rows instead); add affordances use the "+" icon. Read `docs/design/desktop-style-guide.md` and `docs/review/review-rules.md` "Swift / Desktop conventions" first.
 - Never weaken an inventory guard test (`docs/inventory/`): a guard moving with its code keeps its name and every assertion; a guard that would have to relax is a stop-and-ask to the owner.
 - Public repo hygiene: no real ids, names, domains or local paths in fixtures, docs or tests (`acme`, `example.com`, `<owner-slack-id>`).
-- Each task declares `Depends on:`; independent tasks may run in parallel worktree lanes, Swift tasks one lane at a time.
+- Each task declares `Depends on:`; independent tasks may run in parallel worktree lanes, Swift tasks included.
 - Built-in ids and slots are fixed strings: built-in `morning-brief`; slots `morning_brief` (C2) and, reserved for C3, `custom_tracks`, `tracks`, `reactions`, `ideas`.
 - Capabilities for primitives are `builtin:<primitive>` by default (`CapabilityForPrimitive`, Task 2); C2 ships `builtin:brief.compose`, `builtin:plan.compose`. Only `origin = 'builtin'` recipes may declare a `builtin:` capability; in C2 only they may declare a `sync` trigger (the one rule is `syncTriggerAllowed`, Task 2). C3's `track.scan` uses the capability `track:scan` (Personal), see `CapabilityForPrimitive`.
 - The config keys `briefing.enabled` and `day_plan.enabled` stay the on/off truth for Morning brief; `briefing.hour` is the one hour (the plan is made in the same run, right after the brief); `day_plan.hour` is retired.
