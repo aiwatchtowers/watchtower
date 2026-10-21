@@ -29,7 +29,7 @@ struct InboxSplitView: View {
         PanelSplit(isPanelShown: true, width: Self.paneWidth) {
             list(sections, now: now)
         } panel: {
-            pane(sections)
+            pane(sections, now: now)
         }
         .detailBackground()
     }
@@ -40,16 +40,19 @@ struct InboxSplitView: View {
         VStack(spacing: 0) {
             header
             List(selection: selection) {
+                // Each title is a plain row that cannot be selected, not a
+                // Section header: a plain List pins its header and draws a
+                // hairline under it.
                 ForEach(sections, id: \.title) { section in
-                    Section {
-                        ForEach(section.items) { item in
-                            InboxListRow(item: item, proposalLabel: proposalLabel(item), now: now)
-                                .tag(Optional(item.id))
-                                .listRowSeparator(.hidden)
-                        }
-                    } header: {
-                        SectionHeader(title: section.title, systemImage: Self.icon(section.title),
-                                      count: section.items.count)
+                    SectionHeader(title: section.title, systemImage: Self.icon(section.title),
+                                  count: section.items.count)
+                        .padding(.top, Spacing.regular)
+                        .selectionDisabled()
+                        .listRowSeparator(.hidden)
+                    ForEach(section.items) { item in
+                        InboxListRow(item: item, proposalLabel: proposalLabel(item), now: now)
+                            .tag(Optional(item.id))
+                            .listRowSeparator(.hidden)
                     }
                 }
             }
@@ -82,7 +85,11 @@ struct InboxSplitView: View {
     }
 
     private var selection: Binding<InboxSelection?> {
-        Binding(get: { vm.selection }, set: { item in Task { await vm.select(item) } })
+        // The highlight moves at once; only the opening's `read_at` waits.
+        Binding(get: { vm.selection }, set: { item in
+            vm.selection = item
+            Task { await vm.select(item) }
+        })
     }
 
     private func proposalLabel(_ item: InboxListItem) -> String? {
@@ -100,11 +107,12 @@ struct InboxSplitView: View {
 
     // MARK: - The reading pane
 
-    private func pane(_ sections: [InboxSection]) -> some View {
+    private func pane(_ sections: [InboxSection], now: Date) -> some View {
         let shown = vm.selection.flatMap { id in sections.flatMap(\.items).first { $0.id == id } }
         return InboxReadingPane(
             item: shown,
             navScreens: navScreens,
+            now: now,
             isWriting: shown.map(isWriting) ?? false,
             onCommand: onCardAction,
             onOpenAutomationRun: onOpenAutomationRun,

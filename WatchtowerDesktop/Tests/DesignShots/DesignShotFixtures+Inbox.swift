@@ -85,4 +85,22 @@ enum InboxShotFixtures {
             return AnyView(Text("fixture failed: \(String(describing: error))").foregroundStyle(.red))
         }
     }
+
+    /// The pane at its narrowest (420 pt) with four 40-character labels:
+    /// both button rows wrap, Done and Dismiss stay trailing.
+    static func narrowPane() -> AnyView {
+        let label = { (word: String) in word + String(repeating: " and then some more", count: 2).prefix(40 - word.count) }
+        let actions = #"[{"label":"\#(label("Move"))","kind":"reply","reply":"backlog","primary":true},"#
+            + #"{"label":"\#(label("Close"))","kind":"reply","reply":"close"},"#
+            + #"{"label":"\#(label("Ask"))","kind":"chat","chat":"Draft a comment"},"#
+            + #"{"label":"\#(label("Open"))","kind":"link","open":"https://example.com/acme/482"}]"#
+        let card = AutomationOutputCard(
+            id: 1, automationID: 1, automationName: "Issue triage", runID: 212,
+            title: "ACME-482: crash when importing CSV", body: body, priority: "high", createdAt: now,
+            link: "https://example.com/acme/issue/482", actionsJSON: actions, recipeState: .needsConfirmation)
+        return AnyView(InboxReadingPane(item: .output(card), navScreens: ["home"], now: now) { _ in }
+            .frame(width: 420)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .detailBackground())
+    }
 }

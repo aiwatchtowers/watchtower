@@ -10,6 +10,8 @@ struct InboxReadingPane: View {
     let item: InboxListItem?
     /// The screens a `watchtower-nav://` link may open.
     let navScreens: Set<String>
+    /// The moment a reminder's due time is told from ("Reminder · 14:00").
+    var now = Date()
     /// The shown card's Done, Dismiss, Snooze or Reply is under way.
     var isWriting = false
     let onCommand: (InboxCardCommand) -> Void
@@ -98,7 +100,7 @@ struct InboxReadingPane: View {
 
     private func reminder(_ reminder: Reminder) -> some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
-            Text(InboxListRow.reminderSource(reminder, now: Date()))
+            Text(InboxListRow.reminderSource(reminder, now: now))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text(reminder.note.isEmpty ? "Reminder" : reminder.note)

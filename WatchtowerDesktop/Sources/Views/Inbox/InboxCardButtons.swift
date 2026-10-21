@@ -36,7 +36,8 @@ struct InboxCardButtons: View {
         let reply = InboxCardAction.replyState(card)
         VStack(alignment: .leading, spacing: Spacing.regular) {
             if !actions.isEmpty {
-                HStack(spacing: Spacing.regular) {
+                // Up to four 40-character labels: the row wraps in a narrow pane.
+                FlowLayout(spacing: Spacing.regular) {
                     ForEach(actions, id: \.index) { action in
                         ownButton(action, reply: reply)
                     }
@@ -44,6 +45,7 @@ struct InboxCardButtons: View {
                         Text(caption)
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                            .padding(.vertical, Spacing.small)
                     }
                 }
             }
@@ -127,24 +129,28 @@ struct InboxCardButtons: View {
 
     // MARK: - The common row
 
+    /// The leading buttons wrap in a narrow pane; Done and Dismiss stay on
+    /// the first line, trailing.
     private var commonRow: some View {
-        HStack(spacing: Spacing.regular) {
-            if let source = URL(string: card.link), !card.link.isEmpty {
-                Button("Open source") { onCommand(.openLink(source)) }
-                    .disabled(!InboxCardLinkPolicy.permits(source, navScreens: navScreens))
-                    .help(card.link)
+        HStack(alignment: .top, spacing: Spacing.medium) {
+            FlowLayout(spacing: Spacing.regular) {
+                if let source = URL(string: card.link), !card.link.isEmpty {
+                    Button("Open source") { onCommand(.openLink(source)) }
+                        .disabled(!InboxCardLinkPolicy.permits(source, navScreens: navScreens))
+                        .help(card.link)
+                }
+                Button("Discuss in Chat") {
+                    onCommand(.chat(card: card, message: InboxCardTexts.discussMessage(card)))
+                }
+                Button("Hand to Agent…") {
+                    onCommand(.agent(card: card, task: InboxCardTexts.handToAgentTask(card), workbench: nil))
+                }
             }
-            Button("Discuss in Chat") {
-                onCommand(.chat(card: card, message: InboxCardTexts.discussMessage(card)))
-            }
-            Button("Hand to Agent…") {
-                onCommand(.agent(card: card, task: InboxCardTexts.handToAgentTask(card), workbench: nil))
-            }
-            Spacer(minLength: Spacing.medium)
-            Group {
+            HStack(spacing: Spacing.regular) {
                 Button("Done", action: onDone)
                 Button("Dismiss", action: onDismiss)
             }
+            .fixedSize()
             .disabled(isWriting)
         }
         .buttonStyle(.kitQuiet)

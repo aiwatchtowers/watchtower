@@ -97,7 +97,7 @@ final class InboxReadingPaneTests: XCTestCase {
         XCTAssertThrowsError(try sent.inspect().find(button: "Move to Backlog"))
 
         for (state, caption) in [(AutomationHeaderButton.State.needsConfirmation, "Needs confirmation"),
-                                 (.disabled, "Off")] {
+                                 (.disabled, "Off"), (.parseError, "Recipe can't be read")] {
             var commands: [InboxCardCommand] = []
             let shown = card(actions: reply, recipeState: state)
             let sut = pane(shown) { commands.append($0) }
