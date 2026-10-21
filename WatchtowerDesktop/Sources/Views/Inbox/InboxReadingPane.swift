@@ -46,6 +46,8 @@ struct InboxReadingPane: View {
             } else {
                 nothingSelected
             }
+        case .day, .track, .idea, .message: // placeholder until the kind panes land
+            nothingSelected
         case nil:
             nothingSelected
         }

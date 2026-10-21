@@ -133,7 +133,7 @@ struct InboxSplitView: View {
         switch item.id {
         case .output(let id): vm.isWriting(output: id)
         case .reminder(let id): vm.isWriting(reminder: id)
-        case .proposal: false
+        case .proposal, .day, .track, .idea, .message: false
         }
     }
 
@@ -157,6 +157,7 @@ struct InboxSplitView: View {
         case .output(let output): vm.outputRows.contains { $0.id == output }
         case .reminder(let reminder): vm.reminderRows.contains { $0.id == reminder }
         case .proposal(let action): vm.actionRows.contains { $0.id == action }
+        case .day, .track, .idea, .message: false // placeholder until the all-kinds list is wired
         }
     }
 
@@ -164,7 +165,7 @@ struct InboxSplitView: View {
         switch id {
         case .output(let output): await vm.markOutputDone(output)
         case .reminder(let reminder): await vm.markReminderDone(reminder)
-        case .proposal: break
+        case .proposal, .day, .track, .idea, .message: break
         }
     }
 

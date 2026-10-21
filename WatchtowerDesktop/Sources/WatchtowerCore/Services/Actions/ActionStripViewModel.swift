@@ -6,6 +6,10 @@ package enum InboxSelection: Hashable, Sendable {
     case proposal(Int64)
     case reminder(Int64)
     case output(Int64)
+    case day(String) // "YYYY-MM-DD"
+    case track(Int)
+    case idea(Int)
+    case message(Int)
 }
 
 /// The Inbox action strip — a union of pending agent-action proposals, due

@@ -70,6 +70,16 @@ struct InboxListRow: View {
                 .map { InboxCardTexts.stamped(prefix, at: $0, now: now) } ?? prefix
             return Content(unread: action.isPending, title: title, high: false, source: source,
                            preview: action.reason)
+        // Placeholder rows until the kind rows land.
+        case .day(let card):
+            return Content(unread: card.isUnread, title: "Day \(card.date)", high: false, source: "Day", preview: "")
+        case .track(let card):
+            return Content(unread: card.isUnread, title: card.track.text, high: false, source: "Track", preview: "")
+        case .idea(let idea):
+            return Content(unread: idea.awaitsVerdict, title: idea.title, high: false, source: "Idea",
+                           preview: idea.essence)
+        case .message(let row):
+            return Content(unread: false, title: row.item.snippet, high: false, source: row.who, preview: "")
         }
     }
 
