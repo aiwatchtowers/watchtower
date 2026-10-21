@@ -71,6 +71,7 @@ type jiraAccountSyncer interface {
 	AccountID() int64
 	BoardAnalyzerUsage() (inputTokens, outputTokens, totalAPITokens int)
 	FirstSyncFrom() (time.Time, bool)
+	CheckDeletedIssues(ctx context.Context, now time.Time) (int, error)
 	ReachedSource() bool
 }
 
@@ -1079,6 +1080,16 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 		d.resolveJiraUsers(ctx, s)
 		if n > 0 {
 			d.logger.Printf("jira: account %d: %d issues synced", s.AccountID(), n)
+		}
+		// Daily per project (the syncer keeps the stamp). Log only: a revoked
+		// grant is recorded by the next Sync through the path above. Safe
+		// inside observePhase(JiraSource): a removed issue publishes no event.
+		removed, derr := s.CheckDeletedIssues(ctx, time.Now())
+		if removed > 0 {
+			d.logger.Printf("jira: account %d: %d deleted issues removed", s.AccountID(), removed)
+		}
+		if derr != nil {
+			d.logger.Printf("jira: account %d: deletion check: %v", s.AccountID(), derr)
 		}
 	}
 

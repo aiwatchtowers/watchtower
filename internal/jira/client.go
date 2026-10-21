@@ -388,6 +388,82 @@ func (c *Client) searchIssues(ctx context.Context, jql string, maxResults int, n
 	return &result, nil
 }
 
+// maxKeyPages bounds searchIssueKeys: 200 pages of 5000 keys is 1M issues per
+// project; beyond that the listing is reported incomplete.
+const maxKeyPages = 200
+
+// searchIssueKeys lists every issue key jql matches, through the enhanced
+// search with fields=key and maxResults=5000 (Jira's page maximum for key-only
+// requests; a smaller page from the server is fine). complete is true only when
+// a page reported isLast; a page with isLast=false and no nextPageToken, an issue
+// without a key, a repeated token or more than maxKeyPages pages returns
+// complete=false with the keys read so far. err wraps the client error, so
+// ErrAuthRevoked stays matchable.
+func (c *Client) searchIssueKeys(ctx context.Context, jql string) (keys []string, complete bool, err error) {
+	seen := map[string]bool{}
+	token := ""
+	for range maxKeyPages {
+		params := url.Values{
+			"jql":        {jql},
+			"maxResults": {"5000"},
+			"fields":     {"key"},
+		}
+		if token != "" {
+			params.Set("nextPageToken", token)
+		}
+		var page SearchResult
+		if err := c.getWithQuery(ctx, "/rest/api/3/search/jql", params, &page); err != nil {
+			return nil, false, fmt.Errorf("listing issue keys (%s): %w", jql, err)
+		}
+		for _, issue := range page.Issues {
+			if issue.Key == "" {
+				return keys, false, nil
+			}
+			keys = append(keys, issue.Key)
+		}
+		if page.IsLast {
+			return keys, true, nil
+		}
+		if page.NextPageToken == "" || seen[page.NextPageToken] {
+			return keys, false, nil
+		}
+		seen[page.NextPageToken] = true
+		token = page.NextPageToken
+	}
+	return keys, false, nil
+}
+
+// issueCurrentKey returns the issue's current key: "" when Jira answers 404
+// (deleted, or not visible to this user), the same key when it still exists,
+// another key when the issue was moved. Any other status, or a 200 without a
+// key, is an error.
+func (c *Client) issueCurrentKey(ctx context.Context, key string) (string, error) {
+	path := "/rest/api/3/issue/" + url.PathEscape(key) + "?fields=key"
+	resp, err := c.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return "", fmt.Errorf("looking up issue %s: %w", key, err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	switch resp.StatusCode {
+	case http.StatusNotFound:
+		return "", nil
+	case http.StatusOK:
+	default:
+		return "", fmt.Errorf("looking up issue %s: status %d: %s", key, resp.StatusCode, body)
+	}
+	var out struct {
+		Key string `json:"key"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", fmt.Errorf("decoding issue %s: %w", key, err)
+	}
+	if out.Key == "" {
+		return "", fmt.Errorf("looking up issue %s: response carried no key", key)
+	}
+	return out.Key, nil
+}
+
 // searchFields lists the issue fields to request from the Jira API.
 var searchFields = []string{
 	"summary", "description", "issuetype", "status", "assignee", "reporter",

@@ -215,8 +215,10 @@ type stubJiraSyncer struct {
 	apiTok       int
 	resolveCalls int
 	firstSync    time.Time
-	noRequest    bool // a nil-error pass that made no request (no boards selected)
-	reachedErr   bool // the pass reached Atlassian, then failed (err set)
+	checkCalls   int
+	check        func() (int, error) // CheckDeletedIssues' body; nil removes nothing
+	noRequest    bool                // a nil-error pass that made no request (no boards selected)
+	reachedErr   bool                // the pass reached Atlassian, then failed (err set)
 }
 
 func (s *stubJiraSyncer) Sync(context.Context) (int, error) { return s.issues, s.err }
@@ -229,6 +231,14 @@ func (s *stubJiraSyncer) BoardAnalyzerUsage() (int, int, int) {
 	return s.inTok, s.outTok, s.apiTok
 }
 func (s *stubJiraSyncer) FirstSyncFrom() (time.Time, bool) { return s.firstSync, !s.firstSync.IsZero() }
+func (s *stubJiraSyncer) CheckDeletedIssues(context.Context, time.Time) (int, error) {
+	s.checkCalls++
+	if s.check == nil {
+		return 0, nil
+	}
+	return s.check()
+}
+
 func (s *stubJiraSyncer) ReachedSource() bool {
 	return (s.err == nil && !s.noRequest) || s.reachedErr
 }
