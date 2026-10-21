@@ -68,7 +68,7 @@ func TestOpenExisting_BusyTimeoutBoundsALockedDatabase(t *testing.T) {
 		_, err = ro.GetWorkbench(1)
 	}
 	require.Error(t, err, "the read must fail while the database is locked")
-	assert.Contains(t, err.Error(), "SQLITE_BUSY")
+	assert.Contains(t, err.Error(), "database is locked")
 	elapsed := time.Since(start)
 	assert.GreaterOrEqual(t, elapsed, 50*time.Millisecond, "it waited for the lock")
 	assert.Less(t, elapsed, 2*time.Second)
@@ -164,7 +164,7 @@ func TestOpenExistingRW_BusyTimeoutBoundsALockedDatabase(t *testing.T) {
 		_, err = rw.Exec(`UPDATE projects SET name = 'other'`)
 	}
 	require.Error(t, err, "the write must fail while the database is locked")
-	assert.Contains(t, err.Error(), "SQLITE_BUSY")
+	assert.Contains(t, err.Error(), "database is locked")
 	elapsed := time.Since(start)
 	assert.GreaterOrEqual(t, elapsed, 25*time.Millisecond, "it waited for the lock")
 	assert.Less(t, elapsed, 2*time.Second)
@@ -198,7 +198,7 @@ func TestOpenExistingRW_WriteTransactionBeginsImmediate(t *testing.T) {
 		_ = tx.Rollback()
 	}
 	require.Error(t, err, "BEGIN IMMEDIATE must wait for the held write lock and fail")
-	assert.Contains(t, err.Error(), "SQLITE_BUSY")
+	assert.Contains(t, err.Error(), "database is locked")
 	elapsed := time.Since(start)
 	assert.GreaterOrEqual(t, elapsed, 25*time.Millisecond, "it waited for the lock")
 	assert.Less(t, elapsed, 2*time.Second)

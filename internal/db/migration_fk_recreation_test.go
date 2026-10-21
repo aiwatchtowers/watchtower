@@ -3,8 +3,6 @@ package db
 import (
 	"database/sql"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 // TestMigration_TableRecreationPreservesCascadeChildren guards a real
@@ -33,7 +31,7 @@ import (
 func TestMigration_TableRecreationPreservesCascadeChildren(t *testing.T) {
 	newSeededSchema := func(t *testing.T) *sql.DB {
 		t.Helper()
-		raw, err := sql.Open("sqlite", ":memory:")
+		raw, err := sql.Open("sqlite3", ":memory:")
 		if err != nil {
 			t.Fatalf("open: %v", err)
 		}
@@ -122,7 +120,7 @@ func TestMigration_TableRecreationPreservesCascadeChildren(t *testing.T) {
 
 		if got := feedbackRows(t, raw); got != 0 {
 			t.Fatalf("antipattern demonstration expected the cascade to wipe inbox_feedback (0 rows), got %d -- "+
-				"if this now passes with rows preserved, modernc.org/sqlite's defer_foreign_keys semantics changed "+
+				"if this now passes with rows preserved, the SQLite engine's defer_foreign_keys semantics changed "+
 				"and the warning in .claude/skills/add-migration/SKILL.md needs revisiting", got)
 		}
 	})

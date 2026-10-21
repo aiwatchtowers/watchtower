@@ -42,7 +42,8 @@ package struct ConnectedSources: Equatable, Sendable {
         }
     }
 
-    /// Reads the account tables. Removed Slack/Jira/Linear accounts don't count;
+    /// Reads the account tables. Removed and purged Slack/Jira/Linear accounts
+    /// don't count (a purged account's data is gone, ask #491);
     /// Google, IMAP and calendar accounts are deleted on removal. A paused
     /// account (`enabled = 0`, not removed) counts as connected on purpose:
     /// its synced data is still there to show — unlike
@@ -53,13 +54,13 @@ package struct ConnectedSources: Equatable, Sendable {
             try Bool.fetchOne(db, sql: "SELECT EXISTS(\(sql))") ?? false
         }
         return Self(
-            slack: try any("SELECT 1 FROM slack_accounts WHERE status != 'removed'"),
+            slack: try any("SELECT 1 FROM slack_accounts WHERE status NOT IN ('removed', 'purged')"),
             mail: try any("SELECT 1 FROM google_accounts WHERE gmail_enabled = 1")
                 || any("SELECT 1 FROM email_accounts"),
             calendar: try any("SELECT 1 FROM google_accounts WHERE calendar_enabled = 1")
                 || any("SELECT 1 FROM calendar_accounts"),
-            jira: try any("SELECT 1 FROM jira_accounts WHERE status != 'removed'"),
-            linear: try any("SELECT 1 FROM linear_accounts WHERE status != 'removed'")
+            jira: try any("SELECT 1 FROM jira_accounts WHERE status NOT IN ('removed', 'purged')"),
+            linear: try any("SELECT 1 FROM linear_accounts WHERE status NOT IN ('removed', 'purged')")
         )
     }
 }

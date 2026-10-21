@@ -1,0 +1,27 @@
+Watchtower patch (#603, owner-approved in ask #494) to the SQLCipher v4.19.0
+amalgamation, applied by scripts/sqlcipher-amalgamation.sh.
+
+ATTACH with no key (VACUUM's temporary database, VACUUM INTO, a plain
+ATTACH) attached a SQLCipher codec whenever the main database had reserved
+bytes per page. A plaintext main database with reserved bytes (macOS's
+system SQLite writes 12) then had a keyless codec attach fail, and VACUUM
+returned "unable to open database". The codec is now attached on reserved
+bytes only when the main database itself has a codec. Pinned by
+TestEngine_CompactPlaintextWithReservedBytes (internal/db).
+
+--- a/internal/sqlcipher/sqlite3-binding.c
++++ b/internal/sqlcipher/sqlite3-binding.c
+@@ -131775,7 +131775,12 @@
+         rc = sqlite3CodecQueryParameters(db, zName, zPath, &seen);
+         if( rc==SQLITE_OK && seen==0 ){
+           sqlcipherCodecGetKey(db, 0, (void**)&zKey, &nKey);
+-          if( nKey || sqlite3BtreeGetRequestedReserve(db->aDb[0].pBt)>0 ){
++          /* WATCHTOWER PATCH (#603): attach a codec on reserved bytes only
++          ** when the main database has one, so a plaintext main database
++          ** with reserved bytes (macOS SQLite writes 12) can VACUUM and
++          ** ATTACH without a key. See internal/sqlcipher/patches/. */
++          if( nKey || (sqlite3BtreeGetRequestedReserve(db->aDb[0].pBt)>0
++                       && sqlcipherPagerGetCodec(sqlite3BtreePager(db->aDb[0].pBt))!=0) ){
+             rc = sqlcipherCodecAttach(db, db->nDb-1, zKey, nKey);
+           }
+           if(nKey) sqlcipher_free(zKey, nKey);

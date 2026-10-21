@@ -3,8 +3,6 @@ package db
 import (
 	"database/sql"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 // NOTE: TestMigration00006DropsDefaultObservers was removed with migration
@@ -19,7 +17,7 @@ import (
 // index (clean duplicate exists) are deleted, and healthy refs are untouched.
 func TestMigration00007CleansMalformedExternalRefs(t *testing.T) {
 	t.Parallel()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatal(err)
 	}

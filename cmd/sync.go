@@ -841,6 +841,9 @@ func migrateJiraFeatureKeys(cfg *config.Config, logger *log.Logger) *config.Conf
 // wireImapSyncers/wireCalDAVSyncers — so one broken account never blocks the
 // rest of the daemon from starting.
 func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger, orchestrators []*sync.Orchestrator) error {
+	// The daemon's one connection holds the page cache every cycle reads
+	// through; other long-lived processes let theirs close when idle.
+	database.KeepConnectionWarm()
 	// Perform the one-time feature-gate migration (and its first-contact
 	// marker stamp) for digest.enabled=false installs. On a real migration,
 	// reload the config so this daemon process uses the migrated values.

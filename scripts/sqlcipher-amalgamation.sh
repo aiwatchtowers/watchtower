@@ -1,0 +1,106 @@
+#!/bin/bash
+# Regenerates internal/sqlcipher's SQLite amalgamation from a SQLCipher
+# community release tag (board #603).
+#
+#   scripts/sqlcipher-amalgamation.sh v4.19.0
+#
+# Clones github.com/sqlcipher/sqlcipher at the tag into a temp dir, builds
+# the amalgamation from source (`make sqlite3.c` needs tclsh, which macOS
+# ships), and writes:
+#   internal/sqlcipher/sqlite3-binding.c   sqlite3.c
+#   internal/sqlcipher/sqlite3-binding.h   sqlite3.h
+#   internal/sqlcipher/sqlite3ext.h        src/sqlite3ext.h
+# each wrapped in mattn's `#ifndef USE_LIBSQLITE3` guard, and
+# internal/sqlcipher/VERSION (mattn tag, SQLCipher tag, SQLite version, the
+# amalgamation's SHA-256 after the Watchtower patches, and one `patch` line
+# per patch applied from internal/sqlcipher/patches/). It never downloads a
+# prebuilt binary.
+#
+# An upgrade moves in lockstep with the Swift side (SQLCipher.swift pinned to
+# the same tag in the GRDB fork); the Go<->Swift interop test is the gate.
+set -euo pipefail
+
+if [ $# -ne 1 ]; then
+	echo "usage: $0 <sqlcipher-tag, e.g. v4.19.0>" >&2
+	exit 2
+fi
+TAG="$1"
+MATTN_TAG="v1.14.52"
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+DEST="$ROOT/internal/sqlcipher"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+command -v tclsh >/dev/null || { echo "tclsh is required (make sqlite3.c runs Tcl)" >&2; exit 1; }
+
+git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$TAG" \
+	https://github.com/sqlcipher/sqlcipher.git "$WORK/src"
+(
+	cd "$WORK/src"
+	./configure --with-tempstore=yes --disable-tcl >"$WORK/configure.log" 2>&1
+	make sqlite3.c >"$WORK/make.log" 2>&1
+)
+
+# expect_lines FILE PATTERN COUNT: a rewrite below must leave exactly COUNT
+# lines matching PATTERN, so a sed that matched nothing on a new tag stops
+# the script instead of passing silently.
+expect_lines() {
+	local n
+	n="$(grep -c -e "$2" "$1" || true)"
+	if [ "$n" != "$3" ]; then
+		echo "error: $(basename "$1") has $n lines matching '$2' after the rewrite, want $3" >&2
+		exit 1
+	fi
+}
+
+# wrap SRC DST: mattn's guard, so a libsqlite3 build would see an empty file.
+wrap() {
+	{
+		printf '#ifndef USE_LIBSQLITE3\n'
+		cat "$1"
+		printf '#else // USE_LIBSQLITE3\n // If users really want to link against the system sqlite3 we\n// need to make this file a noop.\n #endif'
+	} >"$2"
+}
+wrap "$WORK/src/sqlite3.c" "$DEST/sqlite3-binding.c"
+wrap "$WORK/src/sqlite3.h" "$DEST/sqlite3-binding.h"
+wrap "$WORK/src/src/sqlite3ext.h" "$DEST/sqlite3ext.h"
+# The amalgamation includes "sqlite3.h"; mattn's sources name the header
+# sqlite3-binding.h, so the include is renamed as mattn's upgrade tool does.
+sed -i.bak 's/^#include "sqlite3.h"/#include "sqlite3-binding.h"/' "$DEST/sqlite3-binding.c" "$DEST/sqlite3ext.h"
+rm -f "$DEST/sqlite3-binding.c.bak" "$DEST/sqlite3ext.h.bak"
+expect_lines "$DEST/sqlite3-binding.c" '^#include "sqlite3.h"' 0
+expect_lines "$DEST/sqlite3ext.h" '^#include "sqlite3.h"' 0
+expect_lines "$DEST/sqlite3ext.h" '^#include "sqlite3-binding.h"' 1
+# An upstream credit line carries a real email address; the repo's leak check
+# lets it through only with its marker on the line.
+sed -i.bak 's/^\(   Note: As suggested by Joachim Schipper (.*@fox-it\.com)\)$/\1 leak-check:allow/' "$DEST/sqlite3-binding.c"
+rm -f "$DEST/sqlite3-binding.c.bak"
+expect_lines "$DEST/sqlite3-binding.c" 'fox-it\.com) leak-check:allow$' 1
+
+# Watchtower patches (internal/sqlcipher/patches/*.patch, in name order) go on
+# the wrapped amalgamation; one that does not apply cleanly stops the script,
+# since it must be rebased onto the new tag by hand.
+PATCHES=()
+for p in "$DEST"/patches/*.patch; do
+	[ -e "$p" ] || continue
+	if ! patch -p1 -N -f -s -d "$ROOT" <"$p"; then
+		echo "error: $(basename "$p") does not apply to SQLCipher $TAG; rebase it by hand" >&2
+		exit 1
+	fi
+	PATCHES+=("$(basename "$p")")
+done
+rm -f "$DEST"/*.orig
+
+SQLITE_VERSION="$(sed -n 's/^#define SQLITE_VERSION  *"\(.*\)"$/\1/p' "$WORK/src/sqlite3.h")"
+SHA="$(shasum -a 256 "$DEST/sqlite3-binding.c" | awk '{print $1}')"
+cat >"$DEST/VERSION" <<EOF
+mattn/go-sqlite3 $MATTN_TAG
+sqlcipher $TAG
+sqlite $SQLITE_VERSION
+sqlite3-binding.c sha256 $SHA
+EOF
+for p in ${PATCHES[@]+"${PATCHES[@]}"}; do
+	echo "patch $p" >>"$DEST/VERSION"
+done
+echo "internal/sqlcipher: SQLCipher $TAG (SQLite $SQLITE_VERSION)"

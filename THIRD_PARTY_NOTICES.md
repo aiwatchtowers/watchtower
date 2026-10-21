@@ -2,7 +2,8 @@
 
 Third-party code compiled into the Watchtower CLI beyond ordinary Go module
 dependencies: the tree-sitter runtime and the grammars the code index
-(`internal/codeindex`) parses with. Each grammar module comes from
+(`internal/codeindex`) parses with, and the SQLite engine (§ SQLite engine at
+the end, which also covers the engine the Desktop app ships). Each grammar module comes from
 [go-sitter-forest](https://github.com/alexaandru/go-sitter-forest), which
 wraps the upstream grammar's generated `parser.c` (and `scanner.c` where the
 grammar has one) in a Go package; the upstream grammar's own licence applies
@@ -594,3 +595,65 @@ not cover; their README states:
     software is granted. This software is provided "as is" without
     express or implied warranty, and with no claim as to its
     suitability for any purpose.
+
+## SQLite engine
+
+The CLI's SQLite engine (`internal/sqlcipher`, board #603) is a vendored fork
+of mattn's driver built on the SQLCipher community amalgamation; the versions
+are recorded in `internal/sqlcipher/VERSION`. The Desktop app links GRDB
+through our fork, built against SQLCipher.swift, which it ships as
+`Contents/Frameworks/SQLCipher.framework`.
+
+The vendored amalgamation is modified: `VERSION` lists our changes, which
+are kept in `internal/sqlcipher/patches/` and applied by
+`scripts/sqlcipher-amalgamation.sh`. At present that is
+`patch 0001-attach-codec-on-reserve-only-when-main-has-codec.patch`: an
+ATTACH without a key attaches a codec on reserved bytes only when the main
+database has one.
+
+| Component | Version | Licence | Upstream |
+|---|---|---|---|
+| go-sqlite3 (vendored fork in `internal/sqlcipher`) | mattn/go-sqlite3 v1.14.52 | MIT | https://github.com/mattn/go-sqlite3 |
+| SQLCipher community amalgamation (`internal/sqlcipher/sqlite3-binding.c`) | sqlcipher v4.19.0, sqlite 3.53.4 | BSD-style SQLCipher Community Edition licence (below); the SQLite code in it is in the public domain | https://github.com/sqlcipher/sqlcipher |
+| SQLCipher.swift (shipped in the app) | 4.19.0 | the same SQLCipher Community Edition licence | https://github.com/sqlcipher/SQLCipher.swift |
+| GRDB.swift (our SQLCipher fork) | 7.11.1-sqlcipher.2 (GRDB 7.11.1) | MIT | https://github.com/aiwatchtowers/GRDB.swift (fork of https://github.com/groue/GRDB.swift) |
+
+Copyright notices for the MIT components, whose licence text is in
+§ MIT License above:
+
+- **go-sqlite3**: Copyright (c) 2014 Yasuhiro Matsumoto
+- **GRDB.swift**: Copyright (C) 2015-2025 Gwendal Roué
+
+The SQLite source code is in the public domain; see
+https://sqlite.org/copyright.html.
+
+SQLCipher Community Edition licence, as in the amalgamation's `sqlcipher.c`
+header. SQLCipher.swift's `LICENSE.md` carries the same terms under
+"Copyright (c) 2025, ZETETIC LLC".
+
+```text
+Copyright (c) 2008-2024, ZETETIC LLC
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+    * Redistributions of source code must retain the above copyright
+      notice, this list of conditions and the following disclaimer.
+    * Redistributions in binary form must reproduce the above copyright
+      notice, this list of conditions and the following disclaimer in the
+      documentation and/or other materials provided with the distribution.
+    * Neither the name of the ZETETIC LLC nor the
+      names of its contributors may be used to endorse or promote products
+      derived from this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY ZETETIC LLC ''AS IS'' AND ANY
+EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL ZETETIC LLC BE LIABLE FOR ANY
+DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```

@@ -146,3 +146,50 @@ func TestFailedOpenKeepsTheLockMetricsSink(t *testing.T) {
 		t.Fatalf("a sink was written next to the missing database (stat err %v)", err)
 	}
 }
+
+// pingFresh opens a connection, so a busy error on the open names this
+// helper as its caller.
+func pingFresh(d *DB) error { return d.Ping() }
+
+// A busy error while a pool connection opens (the engine reads the schema
+// then) is recorded, and its site names the open's caller after
+// pragmaConnector.Connect.
+func TestPoolConnectionOpenRecordsBusy(t *testing.T) {
+	skipUnlessDefaultThreshold(t)
+	path := filepath.Join(t.TempDir(), "watchtower.db")
+	d, err := Open(path) // creates the file and points the sink beside it
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// An exclusive-mode connection that has written keeps every other
+	// connection out of the file, reads included.
+	holder := sql.OpenDB(engineConnector(path))
+	holder.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = holder.Close() })
+	for _, q := range []string{`PRAGMA locking_mode=EXCLUSIVE`, `UPDATE projects SET name = name`} {
+		if _, err := holder.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+
+	fresh := openPoolWith(metricsConnector(path + "?_busy_timeout=50"))
+	t.Cleanup(func() { _ = fresh.Close() })
+	if err := pingFresh(fresh); !IsBusy(err) {
+		t.Fatalf("open under an exclusive lock: want a busy error, got %v", err)
+	}
+
+	const site = "internal/db.(*pragmaConnector).Connect <- internal/db.pingFresh"
+	for _, e := range lockEvents(t, path) {
+		if e.Kind == lockmetrics.KindBusy && e.Site == site {
+			if e.BusyTimeoutMS != 50 {
+				t.Fatalf("busy event = %+v, want busy_timeout_ms 50", e)
+			}
+			return
+		}
+	}
+	t.Fatalf("no busy event with site %q in %+v", site, lockEvents(t, path))
+}

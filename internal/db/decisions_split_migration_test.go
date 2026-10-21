@@ -3,8 +3,6 @@ package db
 import (
 	"database/sql"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 // TestMigration00053_SchemaShape covers the schema half on a fully-migrated
@@ -48,7 +46,7 @@ func TestMigration00053_SchemaShape(t *testing.T) {
 // the idea is untouched, and the new columns exist.
 func TestMigration00053_FlipsProposedDecisionsToActive(t *testing.T) {
 	t.Parallel()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -118,7 +116,7 @@ func TestMigration00053_FlipsProposedDecisionsToActive(t *testing.T) {
 // columns but deliberately does not (cannot) revert the status flip.
 func TestMigration00053DownDropsMarkerColumns(t *testing.T) {
 	t.Parallel()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

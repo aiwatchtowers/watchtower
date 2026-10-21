@@ -3,8 +3,6 @@ package db
 import (
 	"database/sql"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 // TestMigration00073_StampsAccountsThatAlreadyUseTheFeature replays goose up
@@ -20,7 +18,7 @@ import (
 // history and record it `skipped` — silent loss of owner commands on upgrade.
 func TestMigration00073_StampsAccountsThatAlreadyUseTheFeature(t *testing.T) {
 	t.Parallel()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

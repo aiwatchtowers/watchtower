@@ -357,3 +357,32 @@ func TestRun_UnknownSourceName(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nope")
 }
+
+// An issue removed by the Jira deletion check (db.DeleteJiraIssues) leaves the
+// index on the next run even when it had no comments, so no kb_dirty mark was
+// written: the per-run Jira reconcile drops its document.
+func TestRun_DeletedJiraIssueLeavesIndex(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	exec(t, d, `INSERT INTO jira_accounts (id, cloud_id, site_url) VALUES (1, 'c1', 'https://acme.atlassian.net/')`)
+	exec(t, d, `INSERT INTO jira_issues (account_id, key, project_key, summary, status, status_category, created_at, updated_at, synced_at)
+		VALUES (1,'PROJ-1','PROJ','Rotate the staging certificate','To Do','new','2026-04-01T09:00:00.000+0100','2026-04-01T09:00:00.000+0100','2026-04-01T11:00:01Z')`)
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	_, err := Run(ctx, d, Options{Now: now})
+	require.NoError(t, err)
+	require.Equal(t, 1, countDocs(t, d, "jira"))
+	res, err := Search(ctx, d, Request{Queries: []string{"certificate"}, Now: now})
+	require.NoError(t, err)
+	require.Contains(t, hitRefs(res), "jira:1:PROJ-1")
+
+	n, err := d.DeleteJiraIssues(1, []string{"PROJ-1"})
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+
+	_, err = Run(ctx, d, Options{Now: now.Add(time.Hour)})
+	require.NoError(t, err)
+	assert.Equal(t, 0, countDocs(t, d, "jira"))
+	res, err = Search(ctx, d, Request{Queries: []string{"certificate"}, Now: now.Add(time.Hour)})
+	require.NoError(t, err)
+	assert.NotContains(t, hitRefs(res), "jira:1:PROJ-1")
+}

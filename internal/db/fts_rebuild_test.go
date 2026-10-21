@@ -490,7 +490,7 @@ func TestRebuildMessagesSearchAt_Interrupted(t *testing.T) {
 
 func TestRebuildMessagesSearchAt_SchemaPending(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wt.db")
-	raw, err := sql.Open("sqlite", path)
+	raw, err := sql.Open("sqlite3", path)
 	require.NoError(t, err)
 	raw.SetMaxOpenConns(1)
 	require.NoError(t, gooseUpTo(raw, "migrations", 146))

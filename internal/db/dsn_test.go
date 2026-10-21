@@ -32,7 +32,7 @@ func TestOpen_PathWithQuestionMarkOpensThatFile(t *testing.T) {
 	// The file at the exact path exists either way once the test hook seeds
 	// it, so read the probe table back off that file through a raw
 	// connection: Open must have written there, not elsewhere.
-	raw, err := sql.Open("sqlite", sqliteDSN(path, ""))
+	raw, err := sql.Open("sqlite3", sqliteDSN(path, ""))
 	if err != nil {
 		t.Fatalf("open raw: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestOpen_PathWithQuestionMarkOpensThatFile(t *testing.T) {
 func TestRunSchemaUpgrade_WaitsForAnotherWriter(t *testing.T) {
 	path := newLegacyDB(t, legacySchemaTip)
 
-	holder, err := sql.Open("sqlite", path)
+	holder, err := sql.Open("sqlite3", path)
 	if err != nil {
 		t.Fatalf("open holder: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestRunSchemaUpgrade_WaitsForAnotherWriter(t *testing.T) {
 func TestRunSchemaUpgrade_ConcurrentUpgradersBothSucceed(t *testing.T) {
 	path := newLegacyDB(t, legacySchemaTip)
 
-	holder, err := sql.Open("sqlite", path)
+	holder, err := sql.Open("sqlite3", path)
 	if err != nil {
 		t.Fatalf("open holder: %v", err)
 	}
@@ -140,7 +140,7 @@ func TestRunSchemaUpgrade_ConcurrentUpgradersBothSucceed(t *testing.T) {
 		}
 	}
 
-	d, err := sql.Open("sqlite", path)
+	d, err := sql.Open("sqlite3", path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestRunSchemaUpgrade_PathWithQuestionMark(t *testing.T) {
 	}
 	// A bare legacy fixture cannot run goose's later migrations, so read the
 	// marker straight off the file.
-	d, err := sql.Open("sqlite", sqliteDSN(path, ""))
+	d, err := sql.Open("sqlite3", sqliteDSN(path, ""))
 	if err != nil {
 		t.Fatalf("open after upgrade: %v", err)
 	}

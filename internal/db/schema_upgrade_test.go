@@ -14,7 +14,7 @@ import (
 func newLegacyDB(t *testing.T, userVersion int) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "legacy.db")
-	raw, err := sql.Open("sqlite", path)
+	raw, err := sql.Open("sqlite3", path)
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -47,7 +47,7 @@ func TestRunSchemaUpgrade_RejectsNonTipLegacyVersion(t *testing.T) {
 	}
 
 	// The refusal must not have half-transitioned the DB.
-	raw, oErr := sql.Open("sqlite", path)
+	raw, oErr := sql.Open("sqlite3", path)
 	if oErr != nil {
 		t.Fatalf("reopen: %v", oErr)
 	}
@@ -72,7 +72,7 @@ func TestRunSchemaUpgrade_AcceptsLegacyTipVersion(t *testing.T) {
 		t.Fatalf("RunSchemaUpgrade at legacy tip: %v", err)
 	}
 
-	raw, err := sql.Open("sqlite", path)
+	raw, err := sql.Open("sqlite3", path)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
