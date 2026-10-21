@@ -2174,3 +2174,12 @@ Entry format:
 - weak-dimension: 6. A destructive feature shipped Plan tests for the happy transitions but none for "revoked status + fresh access evidence" or "reconnect between Plan and Run". Both are the cases where the data loss actually happens.
 - rule-gap (candidate, dim 6): *a destructive action decided from a snapshot re-checks its precondition in the same statement that starts it (conditional UPDATE + RowsAffected); a sequence of destructive runs from one snapshot is the tell.*
 - outcome: TBD
+
+## 2026-10-21 — feature/automations-panel-inbox (spec 2026-10-21 automations panel + Inbox: part A chat-first panel with no sheets, Save and Turn On, template panel; part B Inbox reading pane, Read/Done/Dismiss, `output.inbox` `link`/`actions` (Link/Chat/Agent/Reply), `inbox:reply` capability, `trigger='reply'` run, `watchtower automations reply`, migration 00149; panel: prosecutor (4) + codex (0), 3 specialists DOWN (not installed); judge verified against cb9313b3a by reading and grep, no runs; judge synthesis, round 1) — verdict: changes-needed
+
+- contested (F1, held major, not a blocker): 4ffcdda04, the "fence a recipe's Agent task" fix, fenced the card (title/body/link) after the recipe's task and left the task itself as the unfenced lead. Fencing the task would be wrong, because it is the instruction. The real hole is that the task is a run-time string (≤ 4 KB, can be built from `llm()` over mail), a single press starts a full Claude Code session from it, and before that press the owner sees only a 40-char label and the task's first line. The spec's "runs on its own surface's rules" does not cover the case where the instruction itself is attacker-steerable. **When a fix is claimed as "fenced X", check which string got fenced. Fencing the data around an instruction does nothing when the instruction is itself built from data.** [5/6]
+- false-positive (downgraded): F2, the title as the unfenced first line. The title has to be the target's title, it is flattened to one line, and it is repeated inside the fence: nit. [5]
+- miss: codex raised nothing on a PR that adds a one-press "start an agent from recipe text" path.
+- weak-dimension: 5 (security). Prompt-injection review stopped at "is the card fenced" and did not trace where the instruction string comes from.
+- rule-gap (candidate, dim 5): *a button or action that starts an agent session from text a recipe produced at run time shows the full instruction to the owner before it starts, or the SDK makes the instruction a confirmed static string.*
+- outcome: TBD
