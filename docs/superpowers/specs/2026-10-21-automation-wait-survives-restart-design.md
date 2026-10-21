@@ -158,3 +158,56 @@ duplicated write.
   as a courtesy, not as the fix.
 - **Checkpoint the script (`state` + re-entry by label).** Moves the burden to
   every recipe author. Rejected: the owner asked for the engine to handle it.
+
+## Implementation notes (2026-10-21)
+
+Decisions taken while implementing, where the design above left a choice:
+
+- **Pending replay row.** The call the run waits in gets its replay row when
+  its step is marked `waiting` (`pending = 1`, no outcome), in the same
+  transaction as the mark; its close replaces it with the outcome. That
+  gives the waiting call an args hash and clock record to check on replay,
+  and lets the start sweep decide "resumable" in SQL alone
+  (`db.resumableRunSQL`: a complete record for every earlier step plus the
+  pending one). The table therefore has a `pending` column.
+- **Deletion by trigger.** `automation_runs_replay_cleanup` (AFTER UPDATE OF
+  status) deletes the log on any terminal status, so every ending path —
+  finish, cancel, the restart sweep, the stale dry-run sweep — drops it in
+  its own transaction without each writer knowing about the table.
+- **Extra caps.** Besides the 1 MiB per-result cap, a run's whole log is
+  capped at 16 MiB (`MaxReplayLogBytes`) and the clock reads between two
+  calls at 10 000; past either the run is flagged `not_resumable` and stops
+  recording. (`MaxSDKResultBytes` is 256 KiB, so the 1 MiB cap is a
+  backstop.)
+- **Clock check.** Clock reads are recorded per call ("since the previous
+  call") and replayed per call; a script that reads the clock more or fewer
+  times before a call than it did is a divergence at that call. The
+  sandbox's regex timer reads a native real clock, never the script's.
+- **`Math.random`.** PCG seeded with `automation_runs.random_seed` (set by
+  the claim with SQLite `random()`) and the run id.
+- **Re-attaching a wait.** The waiting call's step is adopted
+  (`Step.Resumed()` returns its links): `ask()` waits on the step's
+  `ask_id`, `tool(…, {wait: true})` on its `action_id` (no new proposal),
+  `session()` keeps polling the same step, which already carries the
+  session the Desktop attached.
+- **Commit buffer.** `state.set` and the buffered outputs (`inbox`,
+  `report`, `briefing`) go through `Env.CallBuffered`: on replay their
+  function runs again on a scratch step that is never written, so the buffer
+  is rebuilt; a call that throws now but did not then (or the reverse) is a
+  divergence. The buffer's base is the automation's committed state at the
+  resume.
+- **Which waits stay.** Only a wait inside a journaled call whose pending
+  row is written stays waiting at a stop; a wait outside a call (a test
+  module calling the Waiter directly) ends `interrupted` as before. A ready
+  check that fails because of the stop also stays waiting.
+- **Stop during the replay.** A resumed run that the daemon stops again
+  before its replay reached the waiting call is put back to `waiting` with
+  its old reason (`ReturnAutomationRunToWaiting`), for the next start to
+  judge again. A crash in that window leaves it `running`, and the next
+  start ends it `interrupted` (v1 limit).
+- **Active time.** A run left waiting adds the active time of that daemon
+  life to `active_ms`; the resumed meter starts with the run's `active_ms`
+  and tokens carried, and its finish adds only the new life's active time.
+- **Kept runs whose recipe changed between the start and the claim** are
+  ended by the poll (`failed`/`interrupted`, "the recipe or its
+  confirmation changed, so the run was not resumed").
