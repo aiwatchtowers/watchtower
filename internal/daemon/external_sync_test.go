@@ -25,6 +25,8 @@ type fakeExternalSync struct {
 	// wired, when non-nil, lists the Jira accounts with a fetcher (the
 	// engine's runnable rule); nil = every account is wired.
 	wired map[int64]bool
+	// onRun, when set, runs inside Run (e.g. to stamp a source's clean sync).
+	onRun func()
 }
 
 func (f *fakeExternalSync) HasRunnable(srcs []db.ExtSource) bool {
@@ -38,6 +40,9 @@ func (f *fakeExternalSync) HasRunnable(srcs []db.ExtSource) bool {
 
 func (f *fakeExternalSync) Run(context.Context) (extsync.Stats, error) {
 	f.calls++
+	if f.onRun != nil {
+		f.onRun()
+	}
 	if f.cancel != nil {
 		f.cancel()
 	}
@@ -189,4 +194,29 @@ func TestPhaseExternalSync_RealErrorIsRecorded(t *testing.T) {
 	d.phaseExternalSync(context.Background())
 
 	assert.Equal(t, []string{"error"}, pipelineStatuses(t, database, "external-sync"))
+}
+
+// #601: a clean Confluence sync proves the Atlassian grant, so the Jira
+// account's access_ok_at is stamped (status untouched); a source the engine
+// did not sync cleanly stamps nothing.
+func TestPhaseExternalSync_StampsJiraAccess(t *testing.T) {
+	d, database, fake := newExternalSyncTestDaemon(t)
+	d.config.Knowledge.Connectors.Enabled = true
+	seedConfluenceSource(t, database)
+	_, err := database.Exec(`UPDATE jira_accounts SET access_ok_at = '', status = 'error'`)
+	require.NoError(t, err)
+
+	d.phaseExternalSync(context.Background())
+	var okAt, status string
+	require.NoError(t, database.QueryRow(`SELECT access_ok_at, status FROM jira_accounts WHERE id = 1`).Scan(&okAt, &status))
+	assert.Empty(t, okAt, "no clean source sync: no proof of access")
+
+	fake.onRun = func() {
+		_, err := database.Exec(`UPDATE ext_sources SET last_synced_at = '2026-10-21T10:00:00Z'`)
+		require.NoError(t, err)
+	}
+	d.phaseExternalSync(context.Background())
+	require.NoError(t, database.QueryRow(`SELECT access_ok_at, status FROM jira_accounts WHERE id = 1`).Scan(&okAt, &status))
+	assert.NotEmpty(t, okAt)
+	assert.Equal(t, "error", status)
 }

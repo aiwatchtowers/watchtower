@@ -1340,6 +1340,7 @@ func (d *Daemon) phaseExternalSync(ctx context.Context) {
 	}
 	d.trackedPipelineRun("external-sync", func() pipelineRunStats {
 		st, err := d.externalSync.Run(ctx)
+		d.markConfluenceAccess(srcs)
 		reportErr := err
 		if err != nil {
 			if isBenignShutdownErr(ctx, err) {
@@ -1357,6 +1358,30 @@ func (d *Daemon) phaseExternalSync(ctx context.Context) {
 		linked, linkErr := d.scanDocLinks(ctx)
 		return pipelineRunStats{items: st.Fetched + st.Deleted + st.Comments + linked, err: errors.Join(reportErr, linkErr)}
 	})
+}
+
+// markConfluenceAccess stamps access_ok_at of every Jira account one of
+// whose Confluence spaces the engine just synced cleanly (its last_synced_at
+// moved; #601): one Atlassian grant covers both, and an account used only for
+// Confluence makes no Jira request, so the lease must see this too.
+func (d *Daemon) markConfluenceAccess(before []db.ExtSource) {
+	prev := make(map[int64]string, len(before))
+	for _, s := range before {
+		prev[s.ID] = s.LastSyncedAt
+	}
+	after, err := d.db.ListExtSources("confluence")
+	if err != nil {
+		d.logger.Printf("external sync: reading sources for access: %v", err)
+		return
+	}
+	marked := map[int64]bool{}
+	for _, s := range after {
+		if s.JiraAccountID == 0 || marked[s.JiraAccountID] || s.LastSyncedAt == "" || s.LastSyncedAt == prev[s.ID] {
+			continue
+		}
+		marked[s.JiraAccountID] = true
+		d.markAccessOK("jira", s.JiraAccountID)
+	}
 }
 
 // docLinkScanBudget bounds one cycle's doc_links detection (Confluence page
