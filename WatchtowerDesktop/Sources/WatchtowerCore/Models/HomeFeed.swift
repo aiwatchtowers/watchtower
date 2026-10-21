@@ -131,7 +131,7 @@ package struct FeedDay: Equatable, Sendable {
 /// Home's feed: what waits above NOW, the NOW line and what follows.
 package struct HomeFeed: Equatable, Sendable {
     package let waiting: [FeedRow]
-    /// Rows past the cap, behind "N more".
+    /// Rows past the current limit, shown a page at a time by "N more".
     package let hiddenWaiting: Int
     package let nowLabel: String
     package let ongoing: FeedEvent?
