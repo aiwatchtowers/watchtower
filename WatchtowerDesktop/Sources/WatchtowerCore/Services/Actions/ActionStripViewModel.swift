@@ -66,15 +66,18 @@ package final class ActionStripViewModel {
         self.actionFeed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner, automationsWake: automationsWake)
     }
 
-    /// The Inbox sidebar badge: what the strip waits on the owner for —
-    /// proposals awaiting a decision, due reminders and unread open inbox
-    /// outputs.
+    /// The Inbox sidebar badge (R1, spec §6.1): Needs your decision (proposals
+    /// awaiting the owner, ideas awaiting a verdict) + unread Messages + 1 when
+    /// the latest briefing is unread + due reminders. Unread automation outputs
+    /// and track cards show only as the list's unread dots.
     /// Each source tolerates a schema that predates it (its table missing
     /// counts 0); any other read error is thrown, never folded into 0.
     nonisolated package static func badgeCount(_ db: Database, nowUTC: String) throws -> Int {
         try zeroIfTableMissing { try AgentActionQueries.awaitingOwnerCount(db) }
             + zeroIfTableMissing { try ReminderQueries.dueCount(db, nowUTC: nowUTC) }
-            + zeroIfTableMissing { try AutomationQueries.inboxOutputCount(db) }
+            + zeroIfTableMissing { try IdeaQueries.countForReview(db) }
+            + zeroIfTableMissing { try InboxQueries.unreadOpenMessageCount(db, nowUTC: nowUTC) }
+            + zeroIfTableMissing { try BriefingQueries.latestUnreadCount(db) }
     }
 
     /// `count()`, or 0 when its table does not exist yet (an older schema).

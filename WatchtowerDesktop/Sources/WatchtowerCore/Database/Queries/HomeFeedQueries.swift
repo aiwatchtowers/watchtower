@@ -48,7 +48,8 @@ package enum HomeFeedQueries {
     private static let rowLimit = 200
     private static let calendarDays = 4
     private static let nextDayHorizon = 3
-    private static let feedTriggers = [
+    /// The triggers of a Messages row; the Inbox's Messages filter reads the same set.
+    package static let feedTriggers = [
         "mention", "dm", "thread_reply", "reaction",
         "jira_assigned", "jira_comment_mention", "linear_assigned", "linear_comment_mention",
         "email_received"
@@ -125,7 +126,7 @@ package enum HomeFeedQueries {
         ["mention", "dm", "thread_reply", "reaction"].contains(item.triggerType)
     }
 
-    private static func who(_ db: Database, _ item: InboxItem) throws -> String {
+    package static func who(_ db: Database, _ item: InboxItem) throws -> String {
         if item.triggerType.hasPrefix("jira_") || item.triggerType.hasPrefix("linear_") { return item.channelID }
         if item.triggerType == "email_received" { return item.senderUserID }
         if item.isAccumulated {
@@ -141,7 +142,7 @@ package enum HomeFeedQueries {
         return try UserQueries.fetchByID(db, id: item.senderUserID)?.bestName ?? ""
     }
 
-    private static func whereText(_ db: Database, _ item: InboxItem) throws -> String? {
+    package static func whereText(_ db: Database, _ item: InboxItem) throws -> String? {
         switch item.triggerType {
         case "jira_assigned", "linear_assigned": return "assigned to you"
         case "jira_comment_mention", "linear_comment_mention": return "mentioned you"
@@ -157,7 +158,7 @@ package enum HomeFeedQueries {
         }
     }
 
-    private static func parse(_ stamp: String) -> Date? {
+    package static func parse(_ stamp: String) -> Date? {
         let fractional = ISO8601DateFormatter()
         fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return fractional.date(from: stamp) ?? ISO8601DateFormatter().date(from: stamp)

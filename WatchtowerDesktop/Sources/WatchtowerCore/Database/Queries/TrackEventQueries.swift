@@ -37,6 +37,14 @@ package enum TrackEventQueries {
             """, arguments: [id])
     }
 
+    /// Marks every unread event of one track read; other tracks are untouched.
+    package static func markAllRead(_ db: Database, trackId: Int) throws {
+        try db.execute(sql: """
+            UPDATE track_events SET read_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+            WHERE track_id = ? AND (read_at IS NULL OR read_at = '')
+            """, arguments: [trackId])
+    }
+
     package static func setActionStatus(_ db: Database, id: Int, status: String) throws {
         try db.execute(sql: "UPDATE track_events SET action_status = ? WHERE id = ?",
                        arguments: [status, id])

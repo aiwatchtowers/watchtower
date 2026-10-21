@@ -6,7 +6,7 @@ package enum AgentActionQueries {
     /// workbench row is the exception — DEV-06 refuses every External tool
     /// inline, so it is a propose-only proposal (a Slack send from the workbench
     /// terminal) that waits for the owner's Approve here.
-    private static let notWorkbenchRow = "(context_type IS NOT 'project' OR external = 1)"
+    private static let notWorkbenchRow = "((context_type IS NOT 'project' OR external = 1) AND surface != 'inbox')"
 
     /// A failed session-applied call (`claude_ai_connector_call`, Go
     /// `Tool.AppliedBySession`) has no Retry: Apply refuses it. It is terminal
@@ -89,7 +89,9 @@ package enum AgentActionQueries {
     /// Project rows (`context_type = 'project'`) are the audit trail of the
     /// project agent's direct MCP writes, never an owner gesture, so they
     /// stay off the strip (STRIP-01) — except an External one, which is a
-    /// proposal awaiting the owner (`notWorkbenchRow`).
+    /// proposal awaiting the owner (`notWorkbenchRow`). Rows an Inbox card
+    /// button proposed and approved in one press (`surface = 'inbox'`) are
+    /// not proposals either: they leave no decision to make.
     package static func fetchStrip(_ db: Database, terminalSince: String) throws -> [AgentAction] {
         try AgentAction.fetchAll(db, sql: """
             SELECT * FROM agent_actions

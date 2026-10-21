@@ -145,7 +145,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         XCTAssertEqual(vm.outputRows.map(\.id), [id])
         XCTAssertEqual(vm.outputRows.first?.isUnread, false)
         let badgeAfter = try await badge()
-        XCTAssertEqual(badgeAfter, badgeBefore - 1)
+        XCTAssertEqual(badgeAfter, badgeBefore, "unread outputs are not in the badge (R1)")
         XCTAssertNil(vm.lastError)
 
         await vm.select(nil)
@@ -342,7 +342,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         XCTAssertEqual(badge, 0)
     }
 
-    func testInboxBadgeCountsOutputs() async throws {
+    func testInboxBadgeLeavesOutputsOut() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         let seed = try await seedAutomation(pool)
@@ -353,7 +353,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
                 db, automationID: seed.automationID, runID: seed.runID,
                 readAt: "2026-10-01T10:00:00Z", doneAt: "2026-10-01T10:00:00Z"
             )
-            // Read but not done: still open, no longer counted.
+            // Read but not done: still open.
             try TestDatabase.insertAutomationOutput(
                 db, automationID: seed.automationID, runID: seed.runID, readAt: "2026-10-01T11:00:00Z"
             )
@@ -366,8 +366,8 @@ final class ActionStripAutomationOutputTests: XCTestCase {
 
         let badge = try await pool.read { db in try ActionStripViewModel.badgeCount(db, nowUTC: "2026-10-16T00:00:00Z") }
 
-        // 1 proposal + 1 due reminder + 2 unread inbox outputs.
-        XCTAssertEqual(badge, 4)
+        // 1 proposal + 1 due reminder; unread outputs leave the badge (R1, spec §6.1).
+        XCTAssertEqual(badge, 2)
     }
 
     /// J13: a source whose table is missing (an older schema) counts 0; any

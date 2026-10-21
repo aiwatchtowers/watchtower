@@ -99,6 +99,17 @@ package enum IdeaQueries {
         return try Idea.fetchAll(db, sql: sql, arguments: StatementArguments(args))
     }
 
+    /// The Inbox's Ideas filter: ideas, notes and decisions except the merged
+    /// ones (F15 — decisions are informational there), newest update first.
+    /// No limit (F1).
+    package static func fetchInboxRegistry(_ db: Database) throws -> [Idea] {
+        try Idea.fetchAll(db, sql: """
+            SELECT * FROM ideas
+            WHERE kind IN ('idea', 'note', 'decision') AND status != 'merged'
+            ORDER BY updated_at DESC, id DESC
+            """)
+    }
+
     package static func fetchOne(_ db: Database, id: Int) throws -> Idea? {
         try Idea.fetchOne(db, sql: "SELECT * FROM ideas WHERE id = ?", arguments: [id])
     }
