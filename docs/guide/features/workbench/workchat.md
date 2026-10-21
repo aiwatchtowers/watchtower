@@ -31,7 +31,7 @@ Once the session ends, the field gives way to **Session finished. The history st
 - A line starting with `/` is typed as written, so `/clear` works.
 - You can send while the agent works. With Claude Code the line shows **Queued · the agent reads it at its next step** until the agent picks it up. If it has to wait a moment, it reads **Queued · sends in a moment** (**Queued · sends when the agent stops** for Codex), and **Cancel** drops it; quitting drops it too.
 - A line under the chat shows what the agent is doing now, such as a command or "3 files", with a timer, or **Thinking…**. It is not part of the history.
-- Paste a screenshot or PDF with ⌘V, or drop files, and they show as chips above the field (✕ removes one). Pasted images are kept in Watchtower's folder for 7 days. Finder files attach as they are.
+- Paste a screenshot or PDF with ⌘V, or drop files, and they show as chips above the field (✕ removes one). Pasted images are kept in Watchtower's folder for 7 days. Finder files attach as they are. If a paste can't be saved, or a file's path has a line break, the reason shows under the field.
 - **Stop** (■), or Esc in the empty field, interrupts the agent. If it can't, the reason shows above the field.
 - A line typed into the terminal but not sent says so, with **Show in Terminal**: press Return there.
 

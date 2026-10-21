@@ -191,6 +191,64 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertTrue(model.attachments.isEmpty)
     }
 
+    /// A paste that cannot be saved says so under the field; the next
+    /// attach or send clears it.
+    func testFailedPasteSaveShowsAnError() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let blocker = folder.appendingPathComponent("not-a-folder")
+        try Data([0]).write(to: blocker)
+        let clock = try XCTUnwrap(clock)
+        let model = WorkchatModel(
+            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { .claude },
+            attachmentStore: WorkchatAttachmentStore(root: blocker)
+        ) { clock.now }
+
+        let taken = await model.attach(data: Data([1]), name: "Pasted image.png")
+
+        XCTAssertFalse(taken)
+        XCTAssertTrue(model.attachments.isEmpty)
+        let error = try XCTUnwrap(model.attachmentError)
+        XCTAssertTrue(error.hasPrefix("Could not save the pasted file"), error)
+
+        let file = folder.appendingPathComponent("a.png")
+        try Data([9]).write(to: file)
+        model.attach(files: [file])
+        XCTAssertNil(model.attachmentError, "the next attach clears it")
+
+        _ = await model.attach(data: Data([1]), name: "Pasted image.png")
+        XCTAssertNotNil(model.attachmentError)
+        model.draft = "look"
+        await model.send()
+        XCTAssertNil(model.attachmentError, "a send clears it")
+    }
+
+    func testSendQuotesAndEscapesQuoteAndBackslashInPaths() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        let file = folder.appendingPathComponent(#"say "hi"\x.png"#)
+        model.attach(files: [file])
+
+        await model.send()
+
+        let escaped = file.path.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        XCTAssertEqual(model.outgoing.first?.text, "\"\(escaped)\"")
+        XCTAssertTrue(escaped.contains(#"\"hi\""#) && escaped.contains(#"\\x"#))
+    }
+
+    func testPathWithLineBreakIsRefused() async throws {
+        let model = try makeModel(try await liveSession())
+        let file = folder.appendingPathComponent("two\nlines.png")
+
+        model.attach(files: [file])
+
+        XCTAssertTrue(model.attachments.isEmpty)
+        let error = try XCTUnwrap(model.attachmentError)
+        XCTAssertTrue(error.contains("line break"), error)
+    }
+
     func testAttachFilesUsesPathsAsIs() async throws {
         let model = try makeModel(try await liveSession())
         let file = folder.appendingPathComponent("a b.png")
