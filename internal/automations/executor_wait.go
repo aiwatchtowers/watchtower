@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"watchtower/internal/db"
@@ -15,6 +17,55 @@ type runWait struct {
 	runID        int64
 	meter        *Meter
 	pauseTimeout time.Duration
+	// stopping is the daemon's stop (the executor's ctx); nil for a CLI's
+	// inline run, which never stays waiting. journal tells whether the wait
+	// could be resumed; left is set once a wait returned errDaemonStopping.
+	stopping <-chan struct{}
+	journal  *Journal
+	left     atomic.Bool
+
+	mu          sync.Mutex
+	resumeSince time.Time // a resumed wait's original start (pause_timeout_hours)
+}
+
+// resumeAt makes the next wait count its pause timeout from t (the resumed
+// waiting step's start).
+func (rw *runWait) resumeAt(t time.Time) {
+	rw.mu.Lock()
+	defer rw.mu.Unlock()
+	rw.resumeSince = t
+}
+
+// waitStart is when the wait began: now, or the resumed wait's original
+// start (taken once).
+func (rw *runWait) waitStart(now time.Time) time.Time {
+	rw.mu.Lock()
+	defer rw.mu.Unlock()
+	if t := rw.resumeSince; !t.IsZero() {
+		rw.resumeSince = time.Time{}
+		return t
+	}
+	return now
+}
+
+// stayWaiting reports — and records — that a wait whose ctx ended stays
+// waiting for a resume: the daemon is stopping and the run could resume at
+// this wait (AUTO-08 as amended by board #795). Otherwise the wait ends as
+// before.
+func (rw *runWait) stayWaiting(ctx context.Context) bool {
+	if ctx.Err() == nil || rw.stopping == nil || rw.journal == nil {
+		return false
+	}
+	select {
+	case <-rw.stopping:
+	default:
+		return false
+	}
+	if !rw.journal.waitingResumable() {
+		return false
+	}
+	rw.left.Store(true)
+	return true
 }
 
 type runWaitKey struct{}
@@ -46,7 +97,7 @@ func (w executorWaiter) Wait(ctx context.Context, reason string, ready func(cont
 	if ready == nil {
 		return errors.New("automation wait: no ready check")
 	}
-	since := w.e.clock.Now()
+	since := rw.waitStart(w.e.clock.Now())
 	rw.meter.PauseActive()
 	defer rw.meter.ResumeActive()
 	if err := w.e.db.SetAutomationRunWaiting(rw.runID, reason); err != nil {
@@ -55,6 +106,9 @@ func (w executorWaiter) Wait(ctx context.Context, reason string, ready func(cont
 	readyErr, err := w.e.pollReady(ctx, rw, since, ready)
 	if err != nil {
 		return err
+	}
+	if readyErr != nil && rw.stayWaiting(ctx) {
+		return errDaemonStopping // the check failed under the stop: the resume asks again
 	}
 	if err := w.e.resumeWhenSlotFree(ctx, rw, since); err != nil {
 		return errors.Join(readyErr, err)
@@ -82,7 +136,7 @@ func (e *Executor) pollReady(ctx context.Context, rw *runWait, since time.Time,
 		if e.clock.Now().Sub(since) >= rw.pauseTimeout {
 			return nil, &RunInterrupted{Reason: InterruptExpired}
 		}
-		if err := e.idle(ctx, nudge); err != nil {
+		if err := e.idle(ctx, rw, nudge); err != nil {
 			return nil, err
 		}
 	}
@@ -112,7 +166,7 @@ func (e *Executor) resumeWhenSlotFree(ctx context.Context, rw *runWait, since ti
 		if e.clock.Now().Sub(since) >= rw.pauseTimeout {
 			return &RunInterrupted{Reason: InterruptExpired}
 		}
-		if err := e.idle(ctx, nudge); err != nil {
+		if err := e.idle(ctx, rw, nudge); err != nil {
 			return err
 		}
 	}
@@ -131,12 +185,17 @@ func (e *Executor) stillActive(runID int64) error {
 	return nil
 }
 
-// idle waits for a Wake, PollInterval or ctx's end. An ended ctx (the
-// daemon or the CLI stopping, or the sandbox interrupting) is a cancel
-// interrupt, so the script stops rather than seeing a catchable error.
-func (e *Executor) idle(ctx context.Context, nudge <-chan struct{}) error {
+// idle waits for a Wake, PollInterval or ctx's end. An ended ctx is
+// errDaemonStopping when the run stays waiting for a resume (stayWaiting),
+// else (the CLI stopping, the sandbox interrupting, a run that cannot
+// resume) a cancel interrupt, so the script stops rather than seeing a
+// catchable error.
+func (e *Executor) idle(ctx context.Context, rw *runWait, nudge <-chan struct{}) error {
 	select {
 	case <-ctx.Done():
+		if rw.stayWaiting(ctx) {
+			return errDaemonStopping
+		}
 		return &RunInterrupted{Reason: InterruptCancel}
 	case <-nudge:
 	case <-e.clock.After(PollInterval):

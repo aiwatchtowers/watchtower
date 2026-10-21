@@ -21,14 +21,25 @@ func failedEnd(kind string, err error) *runEnd {
 	return &runEnd{status: db.RunFailed, kind: kind, msg: err.Error()}
 }
 
+// claimKind is how a run came to runClaimed.
+type claimKind struct {
+	// inline is ExecuteInline's run (the CLI's dry run): a ctx that ends
+	// there is the CLI stopping, not the daemon.
+	inline bool
+	// resumeReason is set for a run resumed after a restart: the reason it
+	// waited with, which it gets back when the daemon stops again before
+	// its replay reached the wait.
+	resumeReason string
+}
+
 // runClaimed executes a run this executor claimed and finishes it. Every
 // claimed run reaches a terminal status here: a finish the database refuses
 // is retried, then written as a plain failed/backend end without the commit
 // (writeFinish); only when that fails too does the run stay active until the
-// next daemon start ends it as interrupted.
-// inline is ExecuteInline's run (the CLI's dry run): a ctx that ends there
-// is the CLI stopping, not the daemon.
-func (e *Executor) runClaimed(ctx context.Context, runID int64, a *db.Automation, inline bool) {
+// next daemon start ends it as interrupted. The exception is a run that
+// waits when the daemon stops and can resume (AUTO-08, board #795): it is
+// left waiting, and the next daemon resumes it.
+func (e *Executor) runClaimed(ctx context.Context, runID int64, a *db.Automation, how claimKind) {
 	defer e.Wake() // a finished run frees a slot: claim the next queued run, resume a waiting one
 	run, err := e.db.GetAutomationRun(runID)
 	if errors.Is(err, db.ErrAutomationRunNotFound) {
@@ -39,7 +50,7 @@ func (e *Executor) runClaimed(ctx context.Context, runID int64, a *db.Automation
 		e.finish(ctx, runID, a, db.RunFinish{Status: db.RunFailed, ErrorKind: db.ErrKindBackend, Error: err.Error()}, nil, false)
 		return
 	}
-	env, sb, end := e.prepare(ctx, run, a)
+	env, sb, end := e.prepare(ctx, run, a, how)
 	if end != nil {
 		e.finish(ctx, runID, a, db.RunFinish{Status: end.status, ErrorKind: end.kind, Error: end.msg}, nil, false)
 		return
@@ -48,8 +59,39 @@ func (e *Executor) runClaimed(ctx context.Context, runID int64, a *db.Automation
 	if e.runGone(runID) {
 		return
 	}
-	f, commit, abandoned := e.outcome(ctx, env, v, runErr, inline)
+	if e.leftWaiting(ctx, env, how) {
+		return
+	}
+	f, commit, abandoned := e.outcome(ctx, env, v, runErr, how.inline)
 	e.finish(ctx, runID, a, f, commit, abandoned)
+}
+
+// leftWaiting handles a run the daemon's stop leaves active: a wait that
+// stays waiting for its resume (its active time so far is recorded), or a
+// resumed run whose replay had not reached its wait yet (it goes back to
+// waiting, for the next start to judge again). It reports whether the run
+// was left so.
+func (e *Executor) leftWaiting(ctx context.Context, env *Env, how claimKind) bool {
+	rw, _ := env.Ctx.Value(runWaitKey{}).(*runWait)
+	switch {
+	case rw != nil && rw.left.Load():
+		if err := e.db.AddAutomationRunUsage(env.Run.ID, db.RunUsage{ActiveMS: env.Meter.ActiveMS()}); err != nil {
+			e.logger.Printf("automations: run %d: recording its active time: %v", env.Run.ID, err)
+		}
+		e.logger.Printf("automations: run %d stays waiting; the next daemon start resumes it", env.Run.ID)
+		return true
+	case how.resumeReason != "" && ctx.Err() != nil && env.Replay != nil && !env.Replay.Live():
+		if err := e.db.SetAutomationRunWaiting(env.Run.ID, how.resumeReason); err != nil {
+			e.logger.Printf("automations: run %d: returning it to waiting: %v", env.Run.ID, err)
+			return false
+		}
+		if err := e.db.AddAutomationRunUsage(env.Run.ID, db.RunUsage{ActiveMS: env.Meter.ActiveMS()}); err != nil {
+			e.logger.Printf("automations: run %d: recording its active time: %v", env.Run.ID, err)
+		}
+		e.logger.Printf("automations: run %d stopped during its replay; it stays waiting for the next start", env.Run.ID)
+		return true
+	}
+	return false
 }
 
 // runGone reports whether the run's row is gone: a workbench delete removes
@@ -65,7 +107,7 @@ func (e *Executor) runGone(runID int64) bool {
 // sandbox. A non-nil runEnd ends the run before any script code runs: a
 // snapshot that does not parse (failed/not_runnable), a malformed event payload or an unreadable
 // store (failed/backend), a script that does not compile (failed/script).
-func (e *Executor) prepare(ctx context.Context, run *db.AutomationRun, a *db.Automation) (*Env, *Sandbox, *runEnd) {
+func (e *Executor) prepare(ctx context.Context, run *db.AutomationRun, a *db.Automation, how claimKind) (*Env, *Sandbox, *runEnd) {
 	scope := Scope{Kind: ScopeKind(a.Scope), WorkbenchID: a.ProjectID}
 	r, err := ParseRecipe(a.Slug, []byte(run.RecipeSnapshot), scope)
 	if err != nil {
@@ -85,17 +127,56 @@ func (e *Executor) prepare(ctx context.Context, run *db.AutomationRun, a *db.Aut
 		return nil, nil, failedEnd(db.ErrKindBackend, err)
 	}
 	dry := run.Trigger == db.TriggerDryRun
+	journal := NewJournal(e.db, run.ID, dry).UseClock(e.clock)
+	rw := &runWait{runID: run.ID, meter: meter, pauseTimeout: pauseTimeout(r), journal: journal}
+	if !how.inline {
+		rw.stopping = ctx.Done()
+	}
 	env := &Env{
-		Ctx: withRunWait(ctx, &runWait{runID: run.ID, meter: meter, pauseTimeout: pauseTimeout(r)}),
+		Ctx: withRunWait(ctx, rw),
 		Run: run, Automation: a, Recipe: r, Manifest: m, DryRun: dry,
-		Journal: NewJournal(e.db, run.ID, dry).UseClock(e.clock),
+		Journal: journal,
 		Meter:   meter, Buffer: NewCommitBuffer(state), Wait: e.Waiter(), Trigger: trig,
+	}
+	if !dry {
+		env.Replay = newRecorder()
+	}
+	if how.resumeReason != "" {
+		if end := e.prepareResume(env); end != nil {
+			return nil, nil, end
+		}
 	}
 	sb, err := NewSandbox(env, e.modules(e.b))
 	if err != nil {
 		return nil, nil, classifyRunError(err)
 	}
 	return env, sb, nil
+}
+
+// prepareResume sets a resumed run up for its replay: the player over its
+// log and journal, and the meter carrying what the run already spent (its
+// replayed calls spend nothing). A log that does not fit the journal ends
+// the run failed/interrupted, as a restart did before.
+func (e *Executor) prepareResume(env *Env) *runEnd {
+	run := env.Run
+	steps, err := e.db.ListAutomationRunSteps(run.ID)
+	if err != nil {
+		return failedEnd(db.ErrKindBackend, err)
+	}
+	records, err := e.db.ListAutomationRunReplay(run.ID)
+	if err != nil {
+		return failedEnd(db.ErrKindBackend, err)
+	}
+	player, err := newPlayer(records, steps, func(replayed int) {
+		e.logger.Printf("automations: run %d resumed after restart (replayed %d steps)", run.ID, replayed)
+	})
+	if err != nil {
+		return &runEnd{status: db.RunFailed, kind: db.ErrKindInterrupted,
+			msg: "interrupted by a daemon restart: " + err.Error()}
+	}
+	env.Replay = player
+	env.Meter.carry(run.InputTokens+run.OutputTokens, time.Duration(run.ActiveMS)*time.Millisecond)
+	return nil
 }
 
 // newMeter starts the run's meter on its snapshotted budgets (the recipe's
@@ -206,6 +287,13 @@ func (e *Executor) runEnded(runID int64) (bool, error) {
 // cancelled.
 func (e *Executor) outcome(ctx context.Context, env *Env, v any, runErr error, inline bool) (db.RunFinish, *db.RunCommit, bool) {
 	f := db.RunFinish{ActiveMS: env.Meter.ActiveMS()}
+	if env.Replay != nil && !env.Replay.Live() && ranDifferently(runErr) {
+		// A resumed run's script diverged from its log, or ended before it
+		// reached the call it waited in: nothing it did was executed.
+		f.Status, f.ErrorKind = db.RunFailed, db.ErrKindScript
+		f.Error = (&replayDivergence{seq: env.Replay.replayPos()}).Error()
+		return f, nil, false
+	}
 	jerr := env.Journal.Err()
 	if jerr != nil {
 		e.logger.Printf("automations: run %d: writing its journal: %v", env.Run.ID, jerr)
@@ -230,6 +318,21 @@ func (e *Executor) outcome(ctx context.Context, env *Env, v any, runErr error, i
 	}
 	f.Status, f.ErrorKind, f.Error = end.status, end.kind, end.msg
 	return f, nil, end.abandoned
+}
+
+// ranDifferently reports whether a resumed run's replay ended because its
+// script ran differently: a divergence, a return, or an uncaught exception
+// before its waiting call. A deadline, budget, cancel or memory interrupt,
+// the step cap or an abandoned script keep their own end.
+func ranDifferently(runErr error) bool {
+	if runErr == nil {
+		return true
+	}
+	var se *ScriptError
+	if !errors.As(runErr, &se) {
+		return false
+	}
+	return se.Message != errTooMuchMemory().Message && se.Message != errTooManySteps().Message
 }
 
 // stoppedMessage is the error of a run whose executor's ctx ended under it.

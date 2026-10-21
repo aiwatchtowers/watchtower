@@ -36,6 +36,13 @@ type Journal struct {
 	kinds  map[string]int // steps begun per kind
 	totals db.RunUsage
 	err    error
+	// The replay log (Replay): replayOff once the run is not resumable (a
+	// record too large, the clock reads overflowed); replayBytes is what the
+	// log holds so far.
+	replayOff   bool
+	replayBytes int
+	// waitRecorded: the open waiting step's pending replay row is written.
+	waitRecorded bool
 }
 
 // NewJournal records the steps of run runID in d.
@@ -88,6 +95,11 @@ type Step struct {
 	usage      db.RunUsage
 	hold       bool           // Env.Call: a close by the SDK function waits for the result's encoding
 	pending    *db.StepFinish // the close held while hold is set
+	// rec is the step's replay row (a live, recorded run); recDone once the
+	// call's outcome is in it.
+	rec     *db.AutomationRunReplay
+	recDone bool
+	adopted bool // a resumed run's open waiting step (adopt)
 }
 
 // Begin records the start of a call; args is stored as JSON clipped to
@@ -113,6 +125,153 @@ func (j *Journal) Begin(kind, name string, args any) *Step {
 	}
 	j.kinds[kind]++
 	return &Step{j: j, idx: len(j.steps) - 1, id: row.ID, started: now}
+}
+
+// appendStored adds a step a resumed run's replay answered: the stored row,
+// in memory only (AUTO-11: the call already has its one step). rec, its
+// replay record, counts toward MaxReplayLogBytes, so the cap holds across
+// daemon lives.
+func (j *Journal) appendStored(row db.AutomationRunStep, rec *db.AutomationRunReplay) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if rec != nil {
+		j.replayBytes += replayRecordBytes(rec)
+	}
+	j.steps = append(j.steps, row)
+	if j.kinds == nil {
+		j.kinds = map[string]int{}
+	}
+	j.kinds[row.Kind]++
+	addUsage(&j.totals, db.RunUsage{InputTokens: row.InputTokens, OutputTokens: row.OutputTokens,
+		Estimated: row.TokensEstimated, ReportedCostUSD: row.ReportedCostUSD})
+}
+
+// adopt takes over a resumed run's open waiting step: the call re-enters its
+// wait on this step (its links, its start), and its replay row is rec.
+func (j *Journal) adopt(row db.AutomationRunStep, rec db.AutomationRunReplay) *Step {
+	j.appendStored(row, nil) // its record counts once its outcome is in (recordOutcome)
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return &Step{j: j, idx: len(j.steps) - 1, id: row.ID, started: row.StartedAt, rec: &rec, adopted: true}
+}
+
+// ResumedArgs is the stored args_json of a resumed run's adopted waiting
+// step, ok false for any other step.
+func (s *Step) ResumedArgs() (string, bool) {
+	if !s.adopted {
+		return "", false
+	}
+	s.j.mu.Lock()
+	defer s.j.mu.Unlock()
+	return s.j.steps[s.idx].ArgsJSON, true
+}
+
+// Resumed returns the links of a resumed run's adopted waiting step (the
+// ask, action or session its call waits on), ok false for any other step:
+// the call re-enters its wait on them instead of filing a new one.
+func (s *Step) Resumed() (link db.StepFinish, ok bool) {
+	if !s.adopted {
+		return db.StepFinish{}, false
+	}
+	s.j.mu.Lock()
+	defer s.j.mu.Unlock()
+	row := s.j.steps[s.idx]
+	return db.StepFinish{ActionID: row.ActionID, AskID: row.AskID, SessionID: row.SessionID}, true
+}
+
+// record starts the step's replay row: its args hash and the clock reads
+// before it. ok false (the reads overflowed) makes the run not resumable.
+func (s *Step) record(hash, clock string, ok bool) {
+	j := s.j
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if !ok {
+		j.stopReplayLocked()
+	}
+	if j.replayOff {
+		return
+	}
+	row := j.steps[s.idx]
+	s.rec = &db.AutomationRunReplay{RunID: j.runID, Seq: row.Seq, Kind: row.Kind, Name: row.Name,
+		ArgsHash: hash, ClockJSON: clock}
+}
+
+// recordOutcome puts the call's outcome in the step's replay row: the
+// result the script got or the error it threw. A result past
+// MaxReplayResultBytes, or a log past MaxReplayLogBytes, makes the run not
+// resumable.
+func (s *Step) recordOutcome(v any, err error) {
+	j := s.j
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if s.rec == nil || j.replayOff {
+		return
+	}
+	s.rec.Pending, s.rec.ResultJSON, s.rec.ErrorJSON = false, nil, ""
+	switch {
+	case err != nil:
+		s.rec.ErrorJSON = errorRecord(err)
+	case v != nil:
+		text := marshalForStep(v)
+		if len(text) > MaxReplayResultBytes {
+			j.stopReplayLocked()
+			return
+		}
+		s.rec.ResultJSON = &text
+	}
+	size := replayRecordBytes(s.rec)
+	if j.replayBytes+size > MaxReplayLogBytes {
+		j.stopReplayLocked()
+		return
+	}
+	j.replayBytes += size
+	s.recDone = true
+}
+
+// replayRecordBytes is what one record weighs against MaxReplayLogBytes.
+func replayRecordBytes(rec *db.AutomationRunReplay) int {
+	n := len(rec.ClockJSON) + len(rec.ErrorJSON)
+	if rec.ResultJSON != nil {
+		n += len(*rec.ResultJSON)
+	}
+	return n
+}
+
+// stopReplayLocked makes the run not resumable (once); the caller holds mu.
+func (j *Journal) stopReplayLocked() {
+	if j.replayOff {
+		return
+	}
+	j.replayOff = true
+	if j.db != nil && !j.dryRun {
+		j.keepErr(j.db.SetAutomationRunNotResumable(j.runID))
+	}
+}
+
+// replayRowLocked is the step's replay row to write with its close (done)
+// or its waiting mark (pending), or nil; the caller holds mu.
+func (s *Step) replayRowLocked(pending bool) *db.AutomationRunReplay {
+	if s.rec == nil || s.j.replayOff || (!pending && !s.recDone) {
+		return nil
+	}
+	row := *s.rec
+	if pending {
+		row.Pending, row.ResultJSON, row.ErrorJSON = true, nil, ""
+	}
+	return &row
+}
+
+// waitingResumable reports whether the run could resume at its current
+// wait: it records its log, the log is complete, and its last step is open
+// and waiting with a replay row.
+func (j *Journal) waitingResumable() bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.db == nil || j.dryRun || j.replayOff || len(j.steps) == 0 {
+		return false
+	}
+	last := j.steps[len(j.steps)-1]
+	return last.FinishedAt == nil && last.Status == StepWaiting && j.waitRecorded
 }
 
 // keepErr keeps the first write error; the caller holds mu.
@@ -198,6 +357,14 @@ func (s *Step) releaseFinish(override error) bool {
 	return true
 }
 
+// dropHold ends the hold without writing anything (the daemon is stopping
+// while the call waits: its step stays open for the resume).
+func (s *Step) dropHold() {
+	s.j.mu.Lock()
+	defer s.j.mu.Unlock()
+	s.hold, s.pending = false, nil
+}
+
 // SetPermission records the manifest entry that admitted the call.
 func (s *Step) SetPermission(entry string) { s.permission = entry }
 
@@ -212,9 +379,13 @@ func (s *Step) Mark(status string, link db.StepFinish) error {
 		return fmt.Errorf("automation run step %d: %w", s.id, db.ErrStepFinished)
 	}
 	if j.db != nil && s.id != 0 {
+		if status == StepWaiting {
+			link.Replay = s.replayRowLocked(true)
+		}
 		if err := j.db.MarkAutomationRunStep(s.id, status, link); err != nil {
 			return fmt.Errorf("marking automation run %d step %d %s: %w", j.runID, s.id, status, err)
 		}
+		j.waitRecorded = link.Replay != nil
 	}
 	row.Status = status
 	applyStepLinks(row, link)
@@ -303,8 +474,10 @@ func (s *Step) Finish(f db.StepFinish) {
 		return
 	}
 	if j.db != nil && s.id != 0 {
+		f.Replay = s.replayRowLocked(false)
 		j.keepErr(j.db.FinishAutomationRunStep(s.id, f))
 	}
+	j.waitRecorded = false
 	applyFinish(row, f)
 }
 

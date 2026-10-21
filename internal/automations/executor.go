@@ -120,8 +120,9 @@ func (e *Executor) nudged() <-chan struct{} {
 func (e *Executor) Wait() { e.wg.Wait() }
 
 // Run first ends the runs a previous daemon left running or waiting
-// (failed/interrupted, AUTO-08; a live CLI dry run is spared) and withdraws
-// their open asks (sweepAsks), then polls
+// (failed/interrupted, AUTO-08; a live CLI dry run is spared, and a waiting
+// run that can resume is kept for Step to resume) and withdraws their open
+// asks (sweepAsks), then polls
 // every PollInterval and on Wake until ctx is done. In-flight runs are
 // interrupted with ctx and finished before Run returns nil.
 func (e *Executor) Run(ctx context.Context) error {
@@ -155,6 +156,12 @@ func (e *Executor) markInterrupted(ctx context.Context) bool {
 			if n > 0 {
 				e.logger.Printf("automations: %d run(s) left by the previous daemon ended as interrupted", n)
 			}
+			switch kept, err := e.db.NextResumePendingAutomationRuns(); {
+			case err != nil:
+				e.logger.Printf("automations: executor start: listing the runs kept for a resume: %v", err)
+			case len(kept) > 0:
+				e.logger.Printf("automations: %d waiting run(s) left by the previous daemon will be resumed", len(kept))
+			}
 			return true
 		}
 		e.logger.Printf("automations: executor start: %v (retrying)", err)
@@ -167,7 +174,9 @@ func (e *Executor) markInterrupted(ctx context.Context) bool {
 }
 
 // Step is one poll (the test seam): it ends dry runs whose CLI died,
-// withdraws the open asks of ended runs (sweepAsks), cancels
+// withdraws the open asks of ended runs (sweepAsks), resumes the waiting
+// runs the start kept for a resume (oldest first, before any queued run;
+// one whose recipe changed meanwhile is ended interrupted), cancels
 // queued runs of non-runnable automations, and claims queued runs oldest
 // first while running runs are fewer than MaxConcurrent, starting one
 // goroutine per claim. It claims nothing while AbandonedRuns() ≥ 2 (but
@@ -185,6 +194,10 @@ func (e *Executor) Step(ctx context.Context) (started int, err error) {
 		errs = append(errs, err)
 	}
 	gated := e.claimsGated()
+	resumes, err := e.db.NextResumePendingAutomationRuns()
+	if err != nil {
+		return 0, errors.Join(append(errs, err)...)
+	}
 	queued, err := e.db.NextQueuedAutomationRuns(0)
 	if err != nil {
 		return 0, errors.Join(append(errs, err)...)
@@ -196,6 +209,14 @@ func (e *Executor) Step(ctx context.Context) (started int, err error) {
 		}
 	}
 	p := poll{e: e, ctx: ctx, now: now, free: free, autos: map[int64]*db.Automation{}}
+	for _, r := range resumes {
+		if ctx.Err() != nil {
+			break
+		}
+		if err := p.resume(r); err != nil {
+			errs = append(errs, fmt.Errorf("automation run %d: %w", r.ID, err))
+		}
+	}
 	for _, r := range queued {
 		if ctx.Err() != nil {
 			break
@@ -265,13 +286,9 @@ type poll struct {
 // consider cancels r when its automation is not runnable, else claims and
 // starts it when a slot is free.
 func (p *poll) consider(r db.AutomationRun) error {
-	a, ok := p.autos[r.AutomationID]
-	if !ok {
-		got, err := p.e.db.GetAutomation(r.AutomationID)
-		if err != nil {
-			return err
-		}
-		a, p.autos[r.AutomationID] = got, got
+	a, err := p.automation(r.AutomationID)
+	if err != nil {
+		return err
 	}
 	if !a.Runnable() {
 		return p.e.cancelNotRunnable(r.ID, p.now)
@@ -286,7 +303,60 @@ func (p *poll) consider(r db.AutomationRun) error {
 	p.free--
 	p.started++
 	p.e.wg.Go(func() {
-		p.e.runClaimed(p.ctx, r.ID, a, false)
+		p.e.runClaimed(p.ctx, r.ID, a, claimKind{})
+	})
+	return nil
+}
+
+// automation reads automation id once per poll.
+func (p *poll) automation(id int64) (*db.Automation, error) {
+	if a, ok := p.autos[id]; ok {
+		return a, nil
+	}
+	a, err := p.e.db.GetAutomation(id)
+	if err != nil {
+		return nil, err
+	}
+	p.autos[id] = a
+	return a, nil
+}
+
+// notResumedMessage ends a kept run whose automation changed while it
+// waited for its resume.
+const notResumedMessage = "interrupted by a daemon restart: the recipe or its confirmation changed, so the run was not resumed"
+
+// resume claims a waiting run the start kept for a resume when a running
+// slot is free and starts its replay. A run whose automation is no longer
+// runnable, or confirmed at another hash than the run was claimed with, is
+// ended failed/interrupted instead, as a restart did before (AUTO-08).
+func (p *poll) resume(r db.AutomationRun) error {
+	a, err := p.automation(r.AutomationID)
+	if err != nil {
+		return err
+	}
+	if !a.Runnable() || a.ConfirmedHash != r.RecipeHash {
+		err := p.e.db.FinishAutomationRun(r.ID, db.RunFinish{Status: db.RunFailed, ErrorKind: db.ErrKindInterrupted,
+			Error: notResumedMessage, Now: p.now}, nil)
+		if errors.Is(err, db.ErrRunNotActive) {
+			return nil // ended meanwhile (a cancel)
+		}
+		return err
+	}
+	if p.free <= 0 {
+		return nil
+	}
+	claimed, err := p.e.db.ClaimResumeAutomationRun(r.ID, p.e.maxConcurrent)
+	if err != nil || !claimed {
+		return err // not claimed: no slot after all, or cancelled meanwhile
+	}
+	p.free--
+	p.started++
+	how := claimKind{resumeReason: r.WaitingReason}
+	if how.resumeReason == "" {
+		how.resumeReason = db.WaitApp
+	}
+	p.e.wg.Go(func() {
+		p.e.runClaimed(p.ctx, r.ID, a, how)
 	})
 	return nil
 }
@@ -357,6 +427,6 @@ func (e *Executor) ExecuteInlinePinned(ctx context.Context, runID int64, approva
 	if !claimed {
 		return nil, fmt.Errorf("automation run %d: %w", runID, ErrRunNotClaimed)
 	}
-	e.runClaimed(ctx, runID, a, true)
+	e.runClaimed(ctx, runID, a, claimKind{inline: true})
 	return e.db.GetAutomationRun(runID)
 }
