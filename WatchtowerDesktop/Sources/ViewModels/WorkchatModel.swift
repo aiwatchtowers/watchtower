@@ -8,6 +8,8 @@ import WatchtowerCore
 @MainActor
 protocol WorkchatControl: AnyObject {
     func lineCheck(_ sessionID: Int64) -> SessionControl.LineCheck
+    func workchatLineCheck(_ sessionID: Int64) -> SessionControl.LineCheck
+    func isWorking(_ sessionID: Int64) -> Bool
     func interrupt(_ sessionID: Int64) async throws -> SessionControl.InterruptResult
     func pendingPermission(_ sessionID: Int64) async throws -> SessionControl.PermissionPrompt?
     func answerPermission(requestID: Int64, sessionID: Int64, allow: Bool, decidedBy: String) async throws
@@ -46,6 +48,9 @@ final class WorkchatModel {
     @ObservationIgnored private let control: any WorkchatControl
     @ObservationIgnored private let lineDelivery: SessionLineDelivery
     @ObservationIgnored private let now: () -> Date
+    /// Codex has not been verified to queue a Return typed mid-turn, so its
+    /// lines keep the phone's busy hold (`lineCheck`).
+    @ObservationIgnored private let kind: TerminalSession.Kind
     /// Feed entries that stood for a line already: one echo, one line.
     @ObservationIgnored private var claimedEntries: Set<String> = []
     /// Bumped by each permission read and answer, so a read that finishes
@@ -55,8 +60,15 @@ final class WorkchatModel {
     /// that already held its echo is matched against it.
     @ObservationIgnored private var lastEntries: [SessionFeedEntry] = []
 
-    init(sessionID: Int64, control: any WorkchatControl, lineDelivery: SessionLineDelivery, now: @escaping () -> Date = Date.init) {
+    init(
+        sessionID: Int64,
+        control: any WorkchatControl,
+        lineDelivery: SessionLineDelivery,
+        kind: TerminalSession.Kind = .claude,
+        now: @escaping () -> Date = Date.init
+    ) {
         self.sessionID = sessionID
+        self.kind = kind
         self.control = control
         self.lineDelivery = lineDelivery
         self.now = now
@@ -77,7 +89,9 @@ final class WorkchatModel {
         outgoing.append(WorkchatOutgoing(id: id, text: text, sentAt: now(), state: .sending))
         let delivery = await lineDelivery.deliverLine(
             text, key: .workchat(id), sessionID: sessionID,
-            gate: { [weak control] in Self.gate(control?.lineCheck($0)) },
+            gate: { [weak control, codex = kind == .codex] in
+                Self.gate(codex ? control?.lineCheck($0) : control?.workchatLineCheck($0))
+            },
             onHeldEvent: { [weak self] event in
                 guard case let .tried(delivery) = event else { return }
                 self?.settle(id, delivery)
@@ -227,7 +241,8 @@ final class WorkchatModel {
             guard let delivered = line.deliveredAt else { return true }
             // `matches` already required the entry's date.
             let since = (entry.at ?? delivered).timeIntervalSince(delivered)
-            return since >= -echoLead && since <= WorkchatOutgoing.echoWindow
+            // A line sent mid-turn is echoed when the agent reads it.
+            return since >= -echoLead && (line.sentWhileBusy || since <= WorkchatOutgoing.echoWindow)
         case .typed, .copied: return true
         case .sending, .queued, .notSent: return false
         }
@@ -253,6 +268,7 @@ final class WorkchatModel {
         case .noSession: .notSent
         }
         outgoing[index].state = state
+        if state == .sent, kind != .codex { outgoing[index].sentWhileBusy = control.isWorking(sessionID) }
         switch state {
         case .sent, .typed, .copied:
             outgoing[index].deliveredAt = now()

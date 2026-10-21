@@ -258,6 +258,7 @@ struct SessionChatView: View {
                             ForEach(workchat.outgoing) { line in
                                 WorkchatOutgoingBubble(
                                     line: line,
+                                    working: working,
                                     onCancel: { workchat.cancel(line.id) },
                                     onShowTerminal: showInTerminal
                                 )

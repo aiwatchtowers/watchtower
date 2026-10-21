@@ -88,6 +88,14 @@ final class WorkchatModelTests: XCTestCase {
             base.lineCheck(sessionID)
         }
 
+        func workchatLineCheck(_ sessionID: Int64) -> SessionControl.LineCheck {
+            base.workchatLineCheck(sessionID)
+        }
+
+        func isWorking(_ sessionID: Int64) -> Bool {
+            base.isWorking(sessionID)
+        }
+
         func interrupt(_ sessionID: Int64) async throws -> SessionControl.InterruptResult {
             if let interrupt { return try await interrupt() }
             return try await base.interrupt(sessionID)
@@ -180,7 +188,7 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertTrue(typedText.contains("\r"), "submitted with Return")
     }
 
-    func testSendWhileWorkingQueues() async throws {
+    func testSendWhileWorkingSubmitsAtOnce() async throws {
         let session = try await liveSession()
         setState(session, .working)
         let model = try makeModel(session)
@@ -189,8 +197,87 @@ final class WorkchatModelTests: XCTestCase {
         await model.send()
 
         let line = try XCTUnwrap(model.outgoing.first)
+        XCTAssertEqual(line.state, .sent)
+        XCTAssertTrue(line.sentWhileBusy)
+        XCTAssertTrue(typedText.contains("Also add the teammate fixture"))
+    }
+
+    func testTwoLinesWhileBusyGoInOrder() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let model = try makeModel(session)
+        model.draft = "First"
+        await model.send()
+        // The turn's hook has reported since the first line.
+        clock.advance(1)
+        setState(session, .working)
+        model.draft = "Second"
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.map(\.state), [.sent, .sent])
+        let first = try XCTUnwrap(typedText.range(of: "First"))
+        let second = try XCTUnwrap(typedText.range(of: "Second"))
+        XCTAssertLessThan(first.lowerBound, second.lowerBound)
+        XCTAssertEqual(typedText.components(separatedBy: "First").count, 2, "once")
+        XCTAssertEqual(typedText.components(separatedBy: "Second").count, 2, "once")
+        XCTAssertFalse(typedText.contains("FirstSecond"))
+    }
+
+    func testBusyLineEchoAfterTwoMinutesStillMatches() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let model = try makeModel(session)
+        model.draft = "Also add the fixture"
+        await model.send()
+        let delivered = try XCTUnwrap(model.outgoing.first?.deliveredAt)
+
+        model.reconcile(with: [SessionFeedEntry(
+            id: "late", kind: "owner", at: delivered.addingTimeInterval(150), text: "Also add the fixture"
+        )])
+
+        XCTAssertTrue(model.outgoing.isEmpty)
+    }
+
+    func testIdleLineEchoWindowUnchanged() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        model.draft = "Also add the fixture"
+        await model.send()
+        let delivered = try XCTUnwrap(model.outgoing.first?.deliveredAt)
+
+        model.reconcile(with: [SessionFeedEntry(
+            id: "late", kind: "owner", at: delivered.addingTimeInterval(150), text: "Also add the fixture"
+        )])
+
+        XCTAssertEqual(model.outgoing.count, 1, "an idle line's echo past the window stays a bubble")
+    }
+
+    func testSendWhileWorkingHoldsOnCodex() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let clock = try XCTUnwrap(clock)
+        let model = WorkchatModel(
+            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: .codex
+        ) { clock.now }
+        model.draft = "Also add the fixture"
+
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.first?.state, .queued)
+    }
+
+    func testSendWhileApprovalPendingQueues() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let model = try makeModel(session)
+        model.draft = "Also add the teammate fixture"
+
+        await model.send()
+
+        let line = try XCTUnwrap(model.outgoing.first)
         XCTAssertEqual(line.state, .queued)
-        XCTAssertEqual(typedText, "", "nothing typed into a busy agent")
+        XCTAssertEqual(typedText, "", "nothing typed over a permission prompt")
         XCTAssertEqual(delivery.heldKeys(sessionID: session), [.workchat(line.id)])
 
         // The agent stops: the next state read sends it.
@@ -221,7 +308,7 @@ final class WorkchatModelTests: XCTestCase {
 
     func testCancelDropsHeldLine() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .needsApproval)
         let model = try makeModel(session)
         model.draft = "Never mind"
         await model.send()
@@ -240,7 +327,7 @@ final class WorkchatModelTests: XCTestCase {
     /// changes nothing (final review m7).
     func testCancelOnALineNotQueuedIsANoOp() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .needsApproval)
         let model = try makeModel(session)
         let gate = Gate()
         delivery.refreshStates = { await gate.wait(); return true }
@@ -269,7 +356,7 @@ final class WorkchatModelTests: XCTestCase {
     /// `dropHeld` finds nothing and the line stays (final review m7).
     func testCancelKeepsALineWhoseRetryIsUnderWay() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .needsApproval)
         let model = try makeModel(session)
         model.draft = "Run it"
         await model.send()
@@ -294,7 +381,7 @@ final class WorkchatModelTests: XCTestCase {
     /// it was not sent and the text comes back to the field.
     func testQueuedLineAfterSessionEndsReturnsToField() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .needsApproval)
         let model = try makeModel(session)
         model.draft = "Add the fixture"
         await model.send()
@@ -313,13 +400,14 @@ final class WorkchatModelTests: XCTestCase {
     /// line was not sent.
     func testNotSentLineKeepsANewerDraft() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .needsApproval)
         let model = try makeModel(session)
         model.draft = "First"
         await model.send()
         model.draft = "Second, still typing"
 
         processes[0].onExit?(0)
+        statuses[session] = nil
         await delivery.deliverHeld()
 
         XCTAssertEqual(model.outgoing.first?.state, .notSent)
@@ -421,7 +509,7 @@ final class WorkchatModelTests: XCTestCase {
     /// way: settling matches it against that read.
     func testEchoSeenWhileSendingReconcilesOnSettle() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .needsApproval)
         let model = try makeModel(session)
         model.draft = "Later"
         await model.send()
@@ -439,7 +527,7 @@ final class WorkchatModelTests: XCTestCase {
     /// dated before its delivery: it is not the line's echo (final review m1).
     func testOwnerEntryWhileQueuedIsNotTheEcho() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .needsApproval)
         let model = try makeModel(session)
         model.draft = "Ship it"
         await model.send()

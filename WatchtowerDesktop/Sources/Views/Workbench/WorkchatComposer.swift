@@ -49,6 +49,8 @@ struct WorkchatComposer: View {
 /// a line the terminal still holds or that never went.
 struct WorkchatOutgoingBubble: View {
     let line: WorkchatOutgoing
+    /// The session's agent works now.
+    var working = false
     let onCancel: () -> Void
     let onShowTerminal: () -> Void
 
@@ -106,7 +108,11 @@ struct WorkchatOutgoingBubble: View {
         case .notSent:
             Text("Not sent: the session ended")
         case .sent:
-            Text(line.sentAt, format: .dateTime.hour().minute())
+            if line.sentWhileBusy && working {
+                Text("Queued · the agent reads it at its next step")
+            } else {
+                Text(line.sentAt, format: .dateTime.hour().minute())
+            }
         }
     }
 }

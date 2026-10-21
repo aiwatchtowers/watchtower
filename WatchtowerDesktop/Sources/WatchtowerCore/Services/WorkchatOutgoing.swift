@@ -27,13 +27,19 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
     /// When it was submitted, typed or copied; `echoWindow` counts from here,
     /// so a line queued for long still gets its full window.
     package var deliveredAt: Date?
+    /// Submitted while the agent worked: the agent reads it at its next
+    /// step, so its echo can come long after delivery (no `echoWindow`).
+    package var sentWhileBusy: Bool
 
-    package init(id: UUID, text: String, sentAt: Date, state: State, deliveredAt: Date? = nil) {
+    package init(
+        id: UUID, text: String, sentAt: Date, state: State, deliveredAt: Date? = nil, sentWhileBusy: Bool = false
+    ) {
         self.id = id
         self.text = text
         self.sentAt = sentAt
         self.state = state
         self.deliveredAt = deliveredAt
+        self.sentWhileBusy = sentWhileBusy
     }
 
     /// A submitted line with no echo this long stays a plain local bubble

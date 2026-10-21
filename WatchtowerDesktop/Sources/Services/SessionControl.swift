@@ -55,6 +55,24 @@ final class SessionControl {
         return .go
     }
 
+    /// The Workchat's check (#711): `lineCheck` minus the idle requirement,
+    /// since Claude Code queues a line typed mid-turn and reads it at its
+    /// next step, as in the terminal. A permission prompt, a line just
+    /// submitted and text in the prompt still hold it. The phone keeps
+    /// `lineCheck` (PROJ-16).
+    func workchatLineCheck(_ sessionID: Int64) -> LineCheck {
+        guard let current = status(sessionID) else { return .sessionGone }
+        if current.state.kind == .needsApproval { return .hold(.needsApproval) }
+        if justSubmitted(sessionID, status: current) { return .hold(.agentBusy) }
+        if terminalCenter.promptHoldsText(sessionID) { return .hold(.promptHasText) }
+        return .go
+    }
+
+    /// Whether the session's agent works now (a turn or background agents).
+    func isWorking(_ sessionID: Int64) -> Bool {
+        status(sessionID).map(Self.isWorking) ?? false
+    }
+
     /// A line went into the session within `submitSettle` and no hook has
     /// reported since: the agent is turning to it (its Working may not be
     /// written yet).

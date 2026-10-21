@@ -164,6 +164,53 @@ final class SessionControlTests: XCTestCase {
         XCTAssertEqual(try makeControl().lineCheck(session), .hold(.promptHasText))
     }
 
+    func testWorkchatLineCheckGoesWhileWorking() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+
+        XCTAssertEqual(try makeControl().workchatLineCheck(session), .go)
+        XCTAssertTrue(try makeControl().isWorking(session))
+    }
+
+    func testWorkchatLineCheckHoldsOnApproval() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+
+        XCTAssertEqual(try makeControl().workchatLineCheck(session), .hold(.needsApproval))
+    }
+
+    func testWorkchatLineCheckHoldsOnPromptText() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        processes[0].onOwnerInput?(Array("fix the".utf8))
+
+        XCTAssertEqual(try makeControl().workchatLineCheck(session), .hold(.promptHasText))
+    }
+
+    func testWorkchatLineCheckHoldsJustSubmitted() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let control = try makeControl()
+        let sent = await delivery.deliverLine("First", key: .input("action-1"), sessionID: session) { _ in }
+        XCTAssertEqual(sent, .submitted)
+
+        XCTAssertEqual(control.workchatLineCheck(session), .hold(.agentBusy))
+    }
+
+    func testWorkchatLineCheckSessionGoneWithoutStatus() async throws {
+        let session = try await liveSession()
+
+        XCTAssertEqual(try makeControl().workchatLineCheck(session), .sessionGone)
+    }
+
+    /// PROJ-16 guard: the phone's check still holds a working agent.
+    func testPhoneLineCheckStillHoldsWhileWorking() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+
+        XCTAssertEqual(try makeControl().lineCheck(session), .hold(.agentBusy))
+    }
+
     func testLineCheckSessionGoneWithoutStatus() async throws {
         let session = try await liveSession()
 
