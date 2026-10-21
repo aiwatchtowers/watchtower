@@ -178,7 +178,8 @@ package final class AutomationsViewModel {
                 guard let interval = self?.pollInterval else { return }
                 await sleep(interval)
                 guard !Task.isCancelled, let self else { return }
-                self.refresh()
+                // A hidden tab's tick is for the badge: the draft rows wait.
+                self.refresh(drafts: self.tabVisible)
                 await self.runWatcher?.checkWatched()
             }
         }
@@ -186,20 +187,26 @@ package final class AutomationsViewModel {
 
     // MARK: - Reads
 
-    /// Re-reads the list, the badge and the open card.
-    package func refresh() {
+    /// Re-reads the list, the badge and the open card, and with `drafts`
+    /// the draft rows (their cache files are read after the database read).
+    package func refresh(drafts: Bool = true) {
         do {
             let selected = selectedID
             let expanded = expandedRuns
             let date = now()
             let failures = failureWatch != nil
             let databasePath = dbPool.path
-            let openDrafts = openNewDrafts()
             let snapshot = try dbPool.read { db in
                 try Snapshot.read(db, now: date, selected: selected, expanded: expanded, failures: failures,
-                                  databasePath: databasePath, openDrafts: openDrafts)
+                                  drafts: drafts)
             }
             apply(snapshot)
+            if let conversations = snapshot.draftConversations {
+                let rows = AutomationDraftRows.rows(conversations, databasePath: databasePath,
+                                                    liveWorkbenchIDs: snapshot.workbenchIDs,
+                                                    openDrafts: openNewDrafts())
+                if draftRows != rows { draftRows = rows }
+            }
             if lastErrorIsRead {
                 lastError = nil
                 lastErrorIsRead = false
@@ -220,7 +227,9 @@ package final class AutomationsViewModel {
         var allIDs: Set<Int64>
         var card: Card?
         var steps: [Int64: [AutomationRunStep]]
-        var drafts: [AutomationDraftRow]
+        /// Read only with `drafts`; their cache files are read after the read.
+        var draftConversations: [AutomationDraftRows.Conversation]?
+        var workbenchIDs: Set<Int64>
 
         struct Card {
             let automationID: Int64
@@ -235,8 +244,7 @@ package final class AutomationsViewModel {
             selected: Int64?,
             expanded: Set<Int64>,
             failures: Bool,
-            databasePath: String,
-            openDrafts: [Int64: String]
+            drafts: Bool
         ) throws -> Self {
             var card: Card?
             if let selected {
@@ -262,15 +270,14 @@ package final class AutomationsViewModel {
                 allIDs: failures ? try AutomationQueries.allIDs(db) : [],
                 card: card,
                 steps: steps,
-                drafts: try AutomationDraftRows.load(db, databasePath: databasePath, liveWorkbenchIDs: workbenchIDs,
-                                                     openDrafts: openDrafts)
+                draftConversations: drafts ? try AutomationDraftRows.conversations(db) : nil,
+                workbenchIDs: workbenchIDs
             )
         }
     }
 
     private func apply(_ snapshot: Snapshot) {
         items = snapshot.items
-        if draftRows != snapshot.drafts { draftRows = snapshot.drafts }
         attentionCount = snapshot.attentionCount
         headerButtonsByProject = snapshot.headerButtons
         if snapshot.inboxOutputCount != inboxOutputCount {

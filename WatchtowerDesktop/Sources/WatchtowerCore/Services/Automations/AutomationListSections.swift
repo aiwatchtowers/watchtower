@@ -29,6 +29,13 @@ package enum AutomationDraftRows {
     package static let contextType = "automation_draft"
     package static let untitled = "New automation"
 
+    /// An `automation_draft` conversation, as `conversations` reads it.
+    package struct Conversation: Equatable, Sendable {
+        package let id: Int64
+        package let contextID: String
+        package let updatedAt: Date
+    }
+
     /// Every `automation_draft` conversation whose cache file exists and
     /// whose newest line decodes, newest first. A draft of a workbench not in
     /// `liveWorkbenchIDs` (deleted since) is dropped; an unreadable or
@@ -38,17 +45,35 @@ package enum AutomationDraftRows {
     package static func load(
         _ db: Database, databasePath: String, liveWorkbenchIDs: Set<Int64>, openDrafts: [Int64: String] = [:]
     ) throws -> [AutomationDraftRow] {
+        rows(try conversations(db), databasePath: databasePath, liveWorkbenchIDs: liveWorkbenchIDs,
+             openDrafts: openDrafts)
+    }
+
+    /// The database half of `load`: the draft conversations, no file read.
+    package static func conversations(_ db: Database) throws -> [Conversation] {
         let rows = try Row.fetchAll(db, sql: """
             SELECT id, context_id, updated_at FROM chat_conversations
             WHERE context_type = ? AND context_id IS NOT NULL
             """, arguments: [contextType])
+        return rows.map { row in
+            Conversation(id: row["id"], contextID: row["context_id"],
+                         updatedAt: Date(timeIntervalSince1970: row["updated_at"] ?? 0))
+        }
+    }
+
+    /// The file half of `load`: reads each conversation's cache file, so it
+    /// runs outside a database read.
+    package static func rows(
+        _ conversations: [Conversation],
+        databasePath: String,
+        liveWorkbenchIDs: Set<Int64>,
+        openDrafts: [Int64: String] = [:]
+    ) -> [AutomationDraftRow] {
         var drafts: [AutomationDraftRow] = []
-        for row in rows {
-            let conversationID: Int64 = row["id"]
-            let contextID: String = row["context_id"]
-            let workbenchID = workbenchID(fromContextID: contextID)
+        for conversation in conversations {
+            let workbenchID = workbenchID(fromContextID: conversation.contextID)
             if let workbenchID, !liveWorkbenchIDs.contains(workbenchID) { continue }
-            let url = AutomationDraftEntry.cacheURL(databasePath: databasePath, conversationID: conversationID)
+            let url = AutomationDraftEntry.cacheURL(databasePath: databasePath, conversationID: conversation.id)
             let name: String
             let updatedAt: Date
             if let text = try? String(contentsOf: url, encoding: .utf8),
@@ -56,13 +81,13 @@ package enum AutomationDraftRows {
                let modified = try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date {
                 name = entry.result?.manifest.name ?? ""
                 updatedAt = modified
-            } else if let open = openDrafts[conversationID] {
+            } else if let open = openDrafts[conversation.id] {
                 name = open
-                updatedAt = Date(timeIntervalSince1970: row["updated_at"] ?? 0)
+                updatedAt = conversation.updatedAt
             } else {
                 continue
             }
-            drafts.append(AutomationDraftRow(conversationID: conversationID, contextID: contextID,
+            drafts.append(AutomationDraftRow(conversationID: conversation.id, contextID: conversation.contextID,
                                              workbenchID: workbenchID, name: name.isEmpty ? untitled : name,
                                              updatedAt: updatedAt))
         }
