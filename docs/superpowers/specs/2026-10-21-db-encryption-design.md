@@ -1,6 +1,6 @@
 # Database encryption with a key bound to this Mac — design (board #603)
 
-Date: 2026-10-21. Status: design, no code. Depends on the spike #602
+Date: 2026-10-21. Status: **approved by the owner on 2026-10-21 (ask #483), with option (a) for Q1–Q4** (§12); no code yet. Depends on the spike #602
 (`docs/superpowers/specs/2026-10-21-sqlcipher-spike.md` on `spike/602-sqlcipher`); the owner chose its
 option **A — SQLCipher in stages**. Closes the Slack "strong encryption" requirement and the CASA item on
 data at rest. #604 owns the plaintext files around the database; #601 owns revoke/lease purge.
