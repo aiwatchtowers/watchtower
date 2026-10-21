@@ -46,7 +46,10 @@ enum AutomationEditFixtures {
         let object: [String: Any] = [
             "ok": ok, "errors": errors, "slug": "digest", "name": name, "scope": "personal",
             "approval_hash": approval, "content_hash": contentHash, "permissions": ["jira:read@ACME"],
-            "outputs": ["report"], "widening": widening
+            "outputs": ["report"], "widening": widening,
+            // Go writes `{}` for text that does not parse.
+            "fields": ok ? ["trigger": "schedule: 0 16 * * 5", "missed": "run_once", "concurrency": "1",
+                            "budget": ["tokens": 50000, "minutes": 5]] as [String: Any] : [:]
         ]
         return try JSONSerialization.data(withJSONObject: object)
     }

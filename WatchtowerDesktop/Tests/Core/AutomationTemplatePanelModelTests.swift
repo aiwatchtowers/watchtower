@@ -101,7 +101,10 @@ final class AutomationTemplatePanelModelTests: XCTestCase {
         -> Result<Data, CLIRunnerError> {
         let files = hashes.enumerated().map { i, hash in
             #"{"slug":"r\#(i)","text":"---\nname: R\#(i)\n---\n","#
-                + #""validate":{"ok":\#(ok),"approval_hash":"\#(hash)","scope":"personal"}}"#
+                + #""validate":{"ok":\#(ok),"approval_hash":"\#(hash)","scope":"personal","#
+                + #""content_hash":"\#(AutomationDraftColumnModel.contentHash("---\nname: R\(i)\n---\n"))","#
+                + #""fields":{"trigger":"manual","missed":"run_once","concurrency":"1","#
+                + #""budget":{"tokens":50000,"minutes":5}}}}"#
         }
         let body = #"{"name":"jira-state-report","scope":"personal","params":{"PROJECT":["\#(project)"]},"#
             + #""files":[\#(files.joined(separator: ","))]}"#

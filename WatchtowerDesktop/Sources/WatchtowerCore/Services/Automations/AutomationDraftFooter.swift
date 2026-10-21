@@ -23,6 +23,9 @@ package struct AutomationDraftFooter: Equatable, Sendable {
     nonisolated package static let saveHint = "Saving confirms exactly what's listed above"
     nonisolated package static let confirmHint = "Confirming approves exactly what's listed above"
     nonisolated package static let noChangesHint = "No changes to save"
+    /// The column cannot show every hashed field of these bytes (a parse
+    /// error, or a CLI without `fields`): nothing may be saved or confirmed.
+    nonisolated package static let cantShowAllHint = "Can't show everything this would confirm, so it can't be saved"
 
     package let primary: Action
     package let primaryEnabled: Bool
@@ -30,8 +33,22 @@ package struct AutomationDraftFooter: Equatable, Sendable {
     package let hint: String
 
     /// `bytesChanged`: the draft differs from the saved file;
-    /// `needsConfirmation`: the saved file's hash is not confirmed.
-    package static func make(isNew: Bool, bytesChanged: Bool, enabled: Bool, needsConfirmation: Bool) -> Self {
+    /// `needsConfirmation`: the saved file's hash is not confirmed;
+    /// `showsAllFields`: the draft column shows every hashed field
+    /// (`AutomationDraftColumnModel.showsAllFields`) — false turns every
+    /// button off (AUTO-06).
+    package static func make(
+        isNew: Bool,
+        bytesChanged: Bool,
+        enabled: Bool,
+        needsConfirmation: Bool,
+        showsAllFields: Bool = true
+    ) -> Self {
+        guard showsAllFields else {
+            let shape = make(isNew: isNew, bytesChanged: bytesChanged, enabled: enabled,
+                             needsConfirmation: needsConfirmation)
+            return Self(primary: shape.primary, primaryEnabled: false, secondary: nil, hint: cantShowAllHint)
+        }
         if isNew || (bytesChanged && !enabled) {
             return Self(primary: .saveAndTurnOn, primaryEnabled: true, secondary: .saveTurnedOff, hint: turnsOnHint)
         }

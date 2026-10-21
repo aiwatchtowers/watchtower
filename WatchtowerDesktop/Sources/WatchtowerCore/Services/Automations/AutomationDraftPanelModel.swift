@@ -274,8 +274,14 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
             return parts[1].trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
                 == "skip"
         }
-        return skips ? "Your local time · if the Mac was asleep, skips that time"
-                     : "Your local time · if the Mac was asleep, runs once when it wakes"
+        return missedDetail(skips: skips)
+    }
+
+    /// A schedule's detail line: local time, and what a time missed while
+    /// the Mac slept does (the Draft panel and the draft column).
+    package static func missedDetail(skips: Bool) -> String {
+        skips ? "Your local time · if the Mac was asleep, skips that time"
+              : "Your local time · if the Mac was asleep, runs once when it wakes"
     }
 
     /// "It can't …" over the writes the draft does not declare among mail

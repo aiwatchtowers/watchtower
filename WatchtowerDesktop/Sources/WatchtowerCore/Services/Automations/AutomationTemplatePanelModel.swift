@@ -89,10 +89,10 @@ package final class AutomationTemplatePanelModel {
     }
 
     /// **Save and Turn On** is on: a render of exactly the params shown,
-    /// every file valid.
+    /// every file valid with every hashed field shown (AUTO-06).
     package var canSave: Bool {
         guard case let .rendered(result) = state, !result.files.isEmpty else { return false }
-        return result.files.allSatisfy(\.validate.ok) && renderedRequest == Self.normalized(params)
+        return result.files.allSatisfy(\.validate.showsAllFields) && renderedRequest == Self.normalized(params)
     }
 
     /// **Adjust in Chat** is offered for a one-file template only; a

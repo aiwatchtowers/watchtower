@@ -4,7 +4,8 @@ import WatchtowerCore
 /// The draft column beside the editor chat and the form (spec A4): every
 /// field the save confirms, from `AutomationDraftColumnModel`. The footer
 /// (Save and Turn On / Save Turned Off, `AutomationDraftFooter`) sits under
-/// it in the editor panel. The paused auto grants start unchecked (AUTO-03).
+/// it in the editor panel, and is off unless `model.showsAllFields`. The
+/// paused auto grants start unchecked (AUTO-03).
 struct AutomationDraftColumn: View {
     let model: AutomationDraftColumnModel
     @Binding var keepAuto: Set<String>
@@ -22,7 +23,11 @@ struct AutomationDraftColumn: View {
                     if let detail = model.whenDetail { secondary(detail) }
                 }
                 box(title: "It may", systemImage: "checkmark.shield") {
-                    if model.mayDo.isEmpty { secondary("Nothing beyond its own state") }
+                    if let placeholder = model.placeholder {
+                        secondary(placeholder)
+                    } else if model.mayDo.isEmpty {
+                        secondary("Nothing beyond its own state")
+                    }
                     ForEach(Array(model.mayDo.enumerated()), id: \.offset) { _, line in
                         HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
                             Text(line.text).fixedSize(horizontal: false, vertical: true)
@@ -33,7 +38,11 @@ struct AutomationDraftColumn: View {
                     }
                 }
                 box(title: "Sends", systemImage: "paperplane") {
-                    if model.sends.isEmpty { secondary("Nothing") }
+                    if let placeholder = model.placeholder {
+                        secondary(placeholder)
+                    } else if model.sends.isEmpty {
+                        secondary("Nothing")
+                    }
                     ForEach(Array(model.sends.enumerated()), id: \.offset) { _, line in Text(line) }
                 }
                 HStack(alignment: .top, spacing: Spacing.medium) {

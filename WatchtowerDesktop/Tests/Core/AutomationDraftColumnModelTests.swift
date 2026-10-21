@@ -30,21 +30,28 @@ final class AutomationDraftColumnModelTests: XCTestCase {
 
     private static let confirmed = recipe.replacingOccurrences(of: "0 9 * * 1-5", with: "0 8 * * 1-5")
 
+    private static let fullFields = #"{"trigger":"schedule: 0 9 * * 1-5","missed":"skip","concurrency":"2","#
+        + #""budget":{"tokens":40000,"minutes":5}}"#
+
     private func validated(
+        text: String = recipe,
         ok: Bool = true,
         errors: [String] = [],
         widening: [String] = [],
         changes: String = "[]",
         changesKnown: Bool = true,
-        feeds: Bool = false
+        feeds: Bool = false,
+        fields: String? = fullFields
     ) throws -> AutomationsCLI.ValidateResult {
         let errorsJSON = String(data: try JSONSerialization.data(withJSONObject: errors), encoding: .utf8) ?? "[]"
         let wideningJSON = String(data: try JSONSerialization.data(withJSONObject: widening), encoding: .utf8) ?? "[]"
+        let fieldsJSON = fields.map { #","fields":\#($0)"# } ?? ""
+        let hash = AutomationDraftColumnModel.contentHash(text)
         let json = #"{"ok":\#(ok),"errors":\#(errorsJSON),"slug":"acme-digest","name":"acme digest","#
-            + #""scope":"personal","approval_hash":"h2","content_hash":"c2","#
+            + #""scope":"personal","approval_hash":"h2","content_hash":"\#(hash)","#
             + #""permissions":["gmail:read@work","llm:light"],"outputs":["inbox"],"#
             + #""widening":\#(wideningJSON),"feeds_sources_to_llm":\#(feeds),"#
-            + #""changes":\#(changes),"changes_known":\#(changesKnown)}"#
+            + #""changes":\#(changes),"changes_known":\#(changesKnown)\#(fieldsJSON)}"#
         return try JSONDecoder().decode(AutomationsCLI.ValidateResult.self, from: Data(json.utf8))
     }
 
@@ -92,7 +99,9 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         XCTAssertNil(m.recipeDiff)
         XCTAssertEqual(m.recipeText, Self.recipe)
         XCTAssertEqual(AutomationDraftColumnModel.newMark, "New since you confirmed")
-        // When, Each run, Missed and Concurrency come from the text's frontmatter.
+        // When, Each run, Missed and Concurrency come from `fields`.
+        XCTAssertTrue(m.showsAllFields)
+        XCTAssertNil(m.placeholder)
         XCTAssertEqual(m.when, "Every weekday at 09:00")
         XCTAssertEqual(m.whenDetail, "Your local time · if the Mac was asleep, skips that time")
         XCTAssertEqual(m.eachRun, "40,000 tokens · 5 min")
@@ -122,7 +131,7 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         XCTAssertNil(same.dryRunNote)
 
         let edited = Self.recipe + "\n"
-        let other = model(text: edited, validated: try validated(), entry: try entry(text: Self.recipe))
+        let other = model(text: edited, validated: try validated(text: edited), entry: try entry(text: Self.recipe))
         XCTAssertEqual(other.dryRunLines, [])
         XCTAssertEqual(other.sessions, [])
         XCTAssertEqual(other.dryRunNote, AutomationDraftColumnModel.notDryRunNote)
@@ -136,8 +145,24 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         XCTAssertEqual(model(validated: try validated(), isChecking: true).status, .checking)
         XCTAssertEqual(model(validated: try validated(ok: false, errors: ["x"]), isChecking: true).status, .checking)
         XCTAssertEqual(model(validated: nil, isChecking: true).status, .checking)
-        // Not checked yet: nothing ready to save either.
+        // Not checked yet, or checked for other bytes: nothing ready to save either.
         XCTAssertEqual(model(validated: nil).status, .checking)
+        XCTAssertEqual(model(text: Self.recipe + "x", validated: try validated()).status, .checking)
+    }
+
+    /// While checking, no box claims a value: It may and Sends list nothing
+    /// and the rest say "Checking…".
+    func testCheckingShowsNoValues() throws {
+        for m in [model(validated: nil, isChecking: true), model(validated: try validated(), isChecking: true),
+                  model(text: Self.recipe + "x", validated: try validated())] {
+            XCTAssertFalse(m.showsAllFields)
+            XCTAssertEqual(m.placeholder, AutomationDraftColumnModel.checkingLine)
+            XCTAssertEqual(m.when, AutomationDraftColumnModel.checkingLine)
+            XCTAssertEqual(m.eachRun, AutomationDraftColumnModel.checkingLine)
+            XCTAssertEqual(m.mayDo, [])
+            XCTAssertEqual(m.sends, [])
+            XCTAssertEqual(m.changes, [])
+        }
     }
 
     func testInvalidShowsErrors() throws {
@@ -162,40 +187,45 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         XCTAssertNil(without.llmWarning)
     }
 
-    /// The column reads `When` and the limits from the text itself: what
-    /// `RecipeFrontmatter.render` writes reads back as the same fields.
-    func testFrontmatterReadsWhatRenderWrites() {
-        let fields = [
-            RecipeFrontmatter(name: #"Mail: "triage" # weekly \ done — ok"#, trigger: .schedule("30 8 * * 1-5"),
-                              missed: "skip", concurrency: 2, permissions: ["gmail:read@work", "llm:light"],
-                              outputs: ["inbox", "report"], budgetTokens: 120_000, budgetMinutes: 10,
-                              pauseTimeoutHours: 24),
-            RecipeFrontmatter(name: "Release", trigger: .button(label: "Release", confirm: true)),
-            RecipeFrontmatter(name: "Mail", trigger: .event(type: "gmail.new_messages", where: ["account": "work"])),
-            RecipeFrontmatter(name: "Manual", trigger: .manual)
-        ]
-        for f in fields {
-            XCTAssertEqual(RecipeFrontmatter.read(RecipeFrontmatter.render(f) + "body\n"), f)
+    /// A check without `fields` (an older CLI) or with `{}` cannot show
+    /// every hashed field: the boxes say so and nothing may be saved.
+    func testMissingOrEmptyFieldsCannotShowAll() throws {
+        for fields in [nil, "{}", #"{"trigger":"manual"}"#] as [String?] {
+            let m = model(validated: try validated(fields: fields))
+            XCTAssertFalse(m.showsAllFields, fields ?? "nil")
+            XCTAssertEqual(m.status, .ready)
+            XCTAssertEqual(m.placeholder, AutomationDraftColumnModel.unreadableLine)
+            XCTAssertEqual(m.when, AutomationDraftColumnModel.unreadableLine)
+            XCTAssertNil(m.whenDetail)
+            XCTAssertEqual(m.eachRun, AutomationDraftColumnModel.unreadableLine)
+            XCTAssertEqual(m.missedAndConcurrency, AutomationDraftColumnModel.unreadableLine)
+            XCTAssertEqual(m.mayDo, [])
         }
-        XCTAssertNil(RecipeFrontmatter.read("no frontmatter"))
-        XCTAssertNil(RecipeFrontmatter.read("---\nname: x\n---\n"), "no trigger")
+        let invalid = model(validated: try validated(ok: false, errors: ["no frontmatter"], fields: "{}"))
+        XCTAssertFalse(invalid.showsAllFields)
+        XCTAssertEqual(invalid.when, AutomationDraftColumnModel.unreadableLine)
     }
 
-    /// Hand-written shapes: plain scalars, comments, inline lists.
-    func testFrontmatterReadsHandWrittenShapes() throws {
-        let text = "---\nname: acme digest # note\ntrigger:\n  schedule: '0 9 * * *'\n"
-            + "permissions: [gmail:read@work, \"llm:light\"]\noutputs: []\n---\n"
-        let f = try XCTUnwrap(RecipeFrontmatter.read(text))
-        XCTAssertEqual(f.name, "acme digest")
-        XCTAssertEqual(f.trigger, .schedule("0 9 * * *"))
-        XCTAssertEqual(f.permissions, ["gmail:read@work", "llm:light"])
-        XCTAssertEqual(f.budgetTokens, 50000)
-        XCTAssertEqual(f.missed, "run_once")
-    }
-
-    func testUnreadableFrontmatterSaysSo() throws {
-        let m = model(text: "not a recipe", validated: try validated(ok: false, errors: ["no frontmatter"]))
-        XCTAssertEqual(m.when, AutomationDraftColumnModel.unreadableWhen)
-        XCTAssertNil(m.whenDetail)
+    /// Each trigger line Go writes, in the Draft panel's words.
+    func testTriggerLinesInWords() throws {
+        func when(_ trigger: String) throws -> (String, String?) {
+            let fields = #"{"trigger":"\#(trigger)","missed":"run_once","concurrency":"1","#
+                + #""budget":{"tokens":1000,"minutes":1}}"#
+            let m = model(validated: try validated(fields: fields))
+            return (m.when, m.whenDetail)
+        }
+        let schedule = try when("schedule: 0 9 * * 1-5")
+        XCTAssertEqual(schedule.0, "Every weekday at 09:00")
+        XCTAssertEqual(schedule.1, AutomationDraftPanelModel.missedDetail(skips: false))
+        let event = try when("event: slack.new_messages where account=a, channel=b")
+        XCTAssertEqual(event.0, "On new Slack messages")
+        XCTAssertEqual(event.1, "Where account=a, channel=b")
+        XCTAssertEqual(try when("event: gmail.new_messages").1, nil)
+        XCTAssertEqual(try when("button").0, "Button")
+        XCTAssertEqual(try when("button (asks before running)").0, "Button, asks before running")
+        XCTAssertEqual(try when("manual").0, "Only when you run it")
+        XCTAssertEqual(model(validated: try validated(fields: #"{"trigger":"manual","missed":"run_once","#
+            + #""concurrency":"1","budget":{"tokens":1000,"minutes":1}}"#)).missedAndConcurrency,
+                       "Missed while asleep: run once · One run at a time")
     }
 }

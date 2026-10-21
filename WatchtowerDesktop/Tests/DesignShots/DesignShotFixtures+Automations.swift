@@ -71,9 +71,12 @@ enum AutomationShotFixtures {
         do {
             let changes = #"[{"field":"trigger","old":"{\"schedule\":\"0 8 * * 1-5\"}","#
                 + #""new":"{\"schedule\":\"0 9 * * 1-5\"}"}]"#
+            let hash = AutomationDraftColumnModel.contentHash(digest)
             let json = #"{"ok":true,"errors":[],"slug":"acme-digest","name":"acme digest","scope":"personal","#
-                + #""approval_hash":"h2","content_hash":"c2","permissions":["gmail:read@work","llm:light"],"#
-                + #""outputs":["inbox"],"widening":["gmail:read@work"],"changes":\#(changes),"changes_known":true}"#
+                + #""approval_hash":"h2","content_hash":"\#(hash)","permissions":["gmail:read@work","llm:light"],"#
+                + #""outputs":["inbox"],"widening":["gmail:read@work"],"changes":\#(changes),"changes_known":true,"#
+                + #""fields":{"trigger":"schedule: 0 9 * * 1-5","missed":"skip","concurrency":"1","#
+                + #""budget":{"tokens":40000,"minutes":5}}}"#
             let validated = try JSONDecoder().decode(AutomationsCLI.ValidateResult.self, from: Data(json.utf8))
             let entry: [String: Any] = [
                 "recipe_text": digest,

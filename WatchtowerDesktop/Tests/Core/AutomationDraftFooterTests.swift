@@ -44,6 +44,19 @@ final class AutomationDraftFooterTests: XCTestCase {
         }
     }
 
+    /// A column that cannot show every hashed field turns every button off
+    /// (AUTO-06), whatever the row would offer.
+    func testCantShowAllFieldsTurnsEverythingOff() {
+        for (isNew, changed, enabled, needs) in [(true, true, false, false), (false, true, true, false),
+                                                 (false, false, true, true), (false, false, false, true)] {
+            let footer = Footer.make(isNew: isNew, bytesChanged: changed, enabled: enabled,
+                                     needsConfirmation: needs, showsAllFields: false)
+            XCTAssertFalse(footer.primaryEnabled)
+            XCTAssertNil(footer.secondary)
+            XCTAssertEqual(footer.hint, Footer.cantShowAllHint)
+        }
+    }
+
     func testActionTitles() {
         let titles: [AutomationDraftFooter.Action: String] = [
             .saveAndTurnOn: "Save and Turn On", .saveTurnedOff: "Save Turned Off", .saveAndConfirm: "Save and Confirm",

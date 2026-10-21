@@ -90,6 +90,28 @@ final class AutomationsCLITests: XCTestCase {
         XCTAssertFalse(bare.changesKnown)
     }
 
+    /// `fields`: the hashed non-manifest fields; `{}` on a parse error, absent
+    /// from an older CLI — neither shows every field.
+    func testValidateDecodesFields() async throws {
+        let body = #"{"ok":true,"fields":{"trigger":"schedule: 0 9 * * 1-5","missed":"skip","concurrency":"2","#
+            + #""budget":{"tokens":40000,"minutes":5}}}"#
+        let v = try await cli(body).0.validate(file: URL(fileURLWithPath: "/tmp/x.md"), against: nil)
+        let fields = try XCTUnwrap(v.fields)
+        XCTAssertEqual(fields.trigger, "schedule: 0 9 * * 1-5")
+        XCTAssertEqual(fields.missed, "skip")
+        XCTAssertEqual(fields.concurrency, "2")
+        XCTAssertEqual(fields.budget, .init(tokens: 40000, minutes: 5))
+        XCTAssertTrue(v.showsAllFields)
+
+        let empty = try await cli(#"{"ok":false,"fields":{}}"#).0.validate(file: URL(fileURLWithPath: "/tmp/x.md"),
+                                                                           against: nil)
+        XCTAssertEqual(empty.fields?.isComplete, false)
+        XCTAssertFalse(empty.showsAllFields)
+        let bare = try await cli(#"{"ok":true}"#).0.validate(file: URL(fileURLWithPath: "/tmp/x.md"), against: nil)
+        XCTAssertNil(bare.fields)
+        XCTAssertFalse(bare.showsAllFields)
+    }
+
     func testRenderTemplateArgsAndDecode() async throws {
         XCTAssertEqual(
             AutomationsCLI.args(.renderTemplate(name: "jira-state-report", workbenchID: nil,

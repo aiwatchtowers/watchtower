@@ -245,9 +245,47 @@ extension AutomationsCLI {
         package let changes: [AutomationChange]
         /// Whether `changes` is a real comparison (`changes_known`).
         package let changesKnown: Bool
+        /// The hashed fields the manifest keys do not carry (`fields`): `{}`
+        /// when the text does not parse, nil from an older CLI.
+        package let fields: Fields?
+
+        /// `fields`: the trigger in one line ("schedule: 0 9 * * 1-5",
+        /// "event: slack.new_messages where account=a", "button", "button
+        /// (asks before running)", "manual"), `missed` ("run_once"/"skip"),
+        /// the concurrency in decimal and the budget.
+        package struct Fields: Decodable, Equatable, Sendable {
+            package struct Budget: Decodable, Equatable, Sendable {
+                package let tokens: Int
+                package let minutes: Int
+            }
+
+            package let trigger: String
+            package let missed: String
+            package let concurrency: String
+            package let budget: Budget?
+
+            /// Every field present: what the column needs to show them all.
+            package var isComplete: Bool {
+                !trigger.isEmpty && !missed.isEmpty && Int(concurrency) != nil && budget != nil
+            }
+
+            package init(from decoder: Decoder) throws {
+                let c = try decoder.container(keyedBy: CodingKeys.self)
+                trigger = try c.decodeIfPresent(String.self, forKey: .trigger) ?? ""
+                missed = try c.decodeIfPresent(String.self, forKey: .missed) ?? ""
+                concurrency = try c.decodeIfPresent(String.self, forKey: .concurrency) ?? ""
+                budget = try c.decodeIfPresent(Budget.self, forKey: .budget)
+            }
+
+            private enum CodingKeys: String, CodingKey { case trigger, missed, concurrency, budget }
+        }
+
+        /// The validated text is `ok` and every hashed field can be shown
+        /// (AUTO-06: only a screen showing every hashed field confirms).
+        package var showsAllFields: Bool { ok && fields?.isComplete == true }
 
         enum CodingKeys: String, CodingKey {
-            case ok, errors, slug, name, scope, permissions, outputs, widening, changes
+            case ok, errors, slug, name, scope, permissions, outputs, widening, changes, fields
             case changesKnown = "changes_known"
             case approvalHash = "approval_hash", contentHash = "content_hash"
             case feedsSourcesToLLM = "feeds_sources_to_llm"
@@ -268,6 +306,7 @@ extension AutomationsCLI {
             feedsSourcesToLLM = try c.decodeIfPresent(Bool.self, forKey: .feedsSourcesToLLM) ?? false
             changes = try c.decodeIfPresent([AutomationChange].self, forKey: .changes) ?? []
             changesKnown = try c.decodeIfPresent(Bool.self, forKey: .changesKnown) ?? false
+            fields = try c.decodeIfPresent(Fields.self, forKey: .fields)
         }
     }
 

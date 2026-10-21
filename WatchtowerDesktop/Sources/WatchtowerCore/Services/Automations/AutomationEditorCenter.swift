@@ -401,9 +401,10 @@ package final class AutomationEditorCenter {
     }
 
     /// Whether the panel's save buttons are on: the draft was checked, it
-    /// validates, and the bytes on screen are the bytes checked.
+    /// validates with every hashed field shown (AUTO-06), and the bytes on
+    /// screen are the bytes checked.
     package func canSave(_ key: Int64) -> Bool {
-        guard case let .review(plan) = saving[key], plan.validated.ok,
+        guard case let .review(plan) = saving[key], plan.validated.showsAllFields,
               let form = drafts[key]?.form else { return false }
         return validatedTexts[key] == form.renderedText()
     }
@@ -441,7 +442,7 @@ package final class AutomationEditorCenter {
         await draft.form.buffer.flush()
         let text = draft.form.renderedText()
         guard case let .review(checked) = saving[key], checked.validated.approvalHash == plan.validated.approvalHash,
-              plan.validated.ok, validatedTexts[key] == text else {
+              plan.validated.showsAllFields, validatedTexts[key] == text else {
             await check(key)
             return
         }
@@ -494,6 +495,11 @@ package final class AutomationEditorCenter {
     /// the panel showed, then turns it on when `turnOn`. A draft with edits
     /// is checked, not confirmed.
     package func confirmShown(_ id: Int64, plan: AutomationSavePlan, turnOn: Bool) async {
+        // Only a screen that showed every hashed field confirms (AUTO-06).
+        guard plan.validated.showsAllFields else {
+            saving[id] = .failed(AutomationDraftFooter.cantShowAllHint)
+            return
+        }
         if let form = drafts[id]?.form {
             await form.buffer.flush()
             guard !form.buffer.isDirty else {
