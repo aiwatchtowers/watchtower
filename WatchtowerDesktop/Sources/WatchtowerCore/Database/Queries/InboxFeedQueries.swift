@@ -32,8 +32,7 @@ package enum InboxFeedQueries {
     private static func emptyIfTableMissing<T>(_ read: () throws -> [T]) throws -> [T] {
         do {
             return try read()
-        } catch let error as DatabaseError
-            where error.resultCode == .SQLITE_ERROR && (error.message ?? "").hasPrefix("no such table") {
+        } catch let error as DatabaseError where ActionStripViewModel.isMissingTable(error) {
             return []
         }
     }

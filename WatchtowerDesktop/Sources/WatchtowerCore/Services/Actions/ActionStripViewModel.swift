@@ -84,10 +84,14 @@ package final class ActionStripViewModel {
     nonisolated package static func zeroIfTableMissing(_ count: () throws -> Int) throws -> Int {
         do {
             return try count()
-        } catch let error as DatabaseError
-            where error.resultCode == .SQLITE_ERROR && (error.message ?? "").hasPrefix("no such table") {
+        } catch let error as DatabaseError where isMissingTable(error) {
             return 0
         }
+    }
+
+    /// An older schema's missing table ("no such table"), the only error the readers fold into "empty".
+    nonisolated package static func isMissingTable(_ error: DatabaseError) -> Bool {
+        error.resultCode == .SQLITE_ERROR && (error.message ?? "").hasPrefix("no such table")
     }
 
     /// The card labels for `rows`: an automation run's row gets its run's

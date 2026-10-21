@@ -99,14 +99,33 @@ package enum HomeFeedQueries {
     private static func inboxRows(_ db: Database, now: Date) throws -> [HomeFeedInboxRow] {
         let formatter = ISO8601DateFormatter()
         let cutoff = formatter.string(from: now.addingTimeInterval(-windowHours * 3600))
-        let marks = feedTriggers.map { _ in "?" }.joined(separator: ", ")
-        let arguments: [any DatabaseValueConvertible] = feedTriggers + [cutoff, formatter.string(from: now), rowLimit]
+        return try openMessageRows(db, now: now, since: cutoff, limit: rowLimit)
+    }
+
+    /// The open messages clause every Messages read shares (Home's feed, the
+    /// Inbox's Messages filter and its badge): pending actionable rows of the
+    /// feed triggers that are not archived or snoozed. One `?`: the current time.
+    package static let openMessageClause = """
+        status = 'pending' AND item_class = 'actionable' AND archived_at IS NULL
+        AND trigger_type IN (\(feedTriggers.map { "'\($0)'" }.joined(separator: ", ")))
+        AND (snooze_until = '' OR snooze_until <= ?)
+        """
+
+    /// The open messages, newest first by `MAX(created_at, mentioned_at)`,
+    /// optionally only those at or after `since` (RFC 3339 UTC).
+    package static func openMessageRows(
+        _ db: Database, now: Date, since: String?, limit: Int
+    ) throws -> [HomeFeedInboxRow] {
+        var arguments: [any DatabaseValueConvertible] = [ISO8601DateFormatter().string(from: now)]
+        var sinceClause = ""
+        if let since {
+            sinceClause = " AND MAX(created_at, mentioned_at) >= ?"
+            arguments.append(since)
+        }
+        arguments.append(limit)
         let rows = try Row.fetchAll(db, sql: """
             SELECT *, MAX(created_at, mentioned_at) AS stamp FROM inbox_items
-            WHERE status = 'pending' AND item_class = 'actionable' AND archived_at IS NULL
-              AND trigger_type IN (\(marks))
-              AND MAX(created_at, mentioned_at) >= ?
-              AND (snooze_until = '' OR snooze_until <= ?)
+            WHERE \(openMessageClause)\(sinceClause)
             ORDER BY stamp DESC, id DESC
             LIMIT ?
             """, arguments: StatementArguments(arguments))

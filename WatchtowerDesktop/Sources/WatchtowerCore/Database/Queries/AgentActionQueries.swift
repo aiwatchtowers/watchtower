@@ -6,6 +6,7 @@ package enum AgentActionQueries {
     /// workbench row is the exception — DEV-06 refuses every External tool
     /// inline, so it is a propose-only proposal (a Slack send from the workbench
     /// terminal) that waits for the owner's Approve here.
+    /// Rows an Inbox card button proposed and approved in one press (`surface = 'inbox'`) are excluded too.
     private static let notWorkbenchRow = "((context_type IS NOT 'project' OR external = 1) AND surface != 'inbox')"
 
     /// A failed session-applied call (`claude_ai_connector_call`, Go
