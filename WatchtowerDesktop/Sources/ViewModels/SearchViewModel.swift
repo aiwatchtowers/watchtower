@@ -16,6 +16,8 @@ final class SearchViewModel {
     private(set) var indexRebuildPending = false
     private(set) var slackLinks: SlackLinkResolver?
 
+    private static let log = Logger(subsystem: "com.watchtower.desktop", category: "search")
+
     private let dbManager: DatabaseManager
     // Readable so tests can await the in-flight search instead of sleeping.
     private(set) var searchTask: Task<Void, Never>?
@@ -33,7 +35,9 @@ final class SearchViewModel {
         refreshIndexRebuildPending()
     }
 
-    /// One small read; a failure hides the line and is logged, never blocks search.
+    /// One small read. A failure is logged and keeps the last known value:
+    /// a busy read mid-rebuild must not hide the line while results are
+    /// incomplete. It never blocks search.
     func refreshIndexRebuildPending() {
         do {
             indexRebuildPending = try dbManager.dbPool.read { db in
@@ -41,13 +45,11 @@ final class SearchViewModel {
             }
         } catch {
             Self.logIndexStateFailure(error)
-            indexRebuildPending = false
         }
     }
 
     private static func logIndexStateFailure(_ error: Error) {
-        Logger(subsystem: "com.watchtower.desktop", category: "search")
-            .error("search index state read failed: \(error.localizedDescription, privacy: .public)")
+        log.error("search index state read failed: \(error.localizedDescription, privacy: .public)")
     }
 
     func slackChannelURL(channelID: String) -> URL? {
@@ -92,10 +94,7 @@ final class SearchViewModel {
                 }
                 if isCurrent() { self.indexRebuildPending = pending }
             } catch {
-                if isCurrent() {
-                    Self.logIndexStateFailure(error)
-                    self.indexRebuildPending = false
-                }
+                if isCurrent() { Self.logIndexStateFailure(error) }
             }
             // Guide pages ride along; a failure here must not hide Slack results.
             do {
@@ -105,8 +104,7 @@ final class SearchViewModel {
                 if isCurrent() { self.guideHits = hits }
             } catch {
                 if isCurrent() {
-                    Logger(subsystem: "com.watchtower.desktop", category: "search")
-                        .error("guide search failed: \(error.localizedDescription, privacy: .public)")
+                    Self.log.error("guide search failed: \(error.localizedDescription, privacy: .public)")
                     self.guideHits = []
                 }
             }

@@ -213,12 +213,40 @@ struct SearchViewModelIndexRebuildTests {
         vm.search()
         await vm.searchTask?.value
         #expect(!vm.indexRebuildPending)
-        #expect(vm.errorMessage == nil, "the state read never blocks the search")
+        #expect(vm.errorMessage == nil, "a state change leaves the search itself untouched")
 
         try await manager.dbPool.write { db in
             try db.execute(sql: "INSERT INTO db_maintenance (key, value) VALUES ('fts_rebuild_pending', '1')")
         }
         vm.refreshIndexRebuildPending()
         #expect(vm.indexRebuildPending)
+    }
+
+    @Test("a failed state read keeps the line and leaves the search alone")
+    func failedReadKeepsLastValue() async throws {
+        let (manager, _) = try TestDatabase.createDatabaseManager()
+        try await manager.dbPool.write { db in
+            try TestDatabase.insertChannel(db)
+            try TestDatabase.insertUser(db)
+            try TestDatabase.insertMessage(db, text: "the rollout plan for acme")
+            try db.execute(sql: "INSERT INTO db_maintenance (key, value) VALUES ('fts_rebuild_pending', '1')")
+        }
+        let vm = SearchViewModel(dbManager: manager)
+        #expect(vm.indexRebuildPending)
+
+        // A db_maintenance without a key column: every state read now throws.
+        try await manager.dbPool.write { db in
+            try db.execute(sql: "DROP TABLE db_maintenance")
+            try db.execute(sql: "CREATE TABLE db_maintenance (other TEXT)")
+        }
+        vm.refreshIndexRebuildPending()
+        #expect(vm.indexRebuildPending)
+
+        vm.query = "rollout"
+        vm.search()
+        await vm.searchTask?.value
+        #expect(vm.indexRebuildPending)
+        #expect(vm.results.count == 1)
+        #expect(vm.errorMessage == nil)
     }
 }

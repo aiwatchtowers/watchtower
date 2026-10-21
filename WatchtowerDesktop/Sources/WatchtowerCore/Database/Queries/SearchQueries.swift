@@ -42,7 +42,7 @@ package enum SearchQueries {
     /// `fts_rebuild_pending` key in `db_maintenance` (any value) or a
     /// `messages_fts_legacy` table that still exists. Swift twin of Go's
     /// `messagesSearchPending` (`internal/db/fts_rebuild.go`); both sides
-    /// test the same three states.
+    /// test the same five states.
     package static func messagesIndexRebuildPending(_ db: Database) throws -> Bool {
         if try db.tableExists("messages_fts_legacy") { return true }
         // Go reads a missing db_maintenance table as "no key".
