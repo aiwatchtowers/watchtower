@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -105,6 +106,35 @@ func (db *DB) GetTrackEventSummaries(trackID, limit int) ([]string, error) {
 func (db *DB) MarkTrackEventRead(id int, at string) error {
 	_, err := db.Exec(`UPDATE track_events SET read_at = ? WHERE id = ?`, at, id)
 	return err
+}
+
+// GetTrackEvent returns one track event; a missing one is sql.ErrNoRows
+// wrapped as not found.
+func (db *DB) GetTrackEvent(id int) (*TrackEvent, error) {
+	e, err := scanTrackEvent(db.QueryRow(`SELECT `+trackEventCols+` FROM track_events WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("track event %d not found: %w", id, err)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("getting track event %d: %w", id, err)
+	}
+	return e, nil
+}
+
+// ClaimTrackEventActionTx marks a pending proposed action applied inside tx.
+// It is the claim of the one apply that may write the change: true only when
+// this call moved the row from pending, so of two presses only one wins.
+func (db *DB) ClaimTrackEventActionTx(tx *sql.Tx, id int) (bool, error) {
+	res, err := tx.Exec(`UPDATE track_events SET action_status = 'applied'
+		WHERE id = ? AND action_status = 'pending'`, id)
+	if err != nil {
+		return false, fmt.Errorf("claiming track event %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("claiming track event %d: %w", id, err)
+	}
+	return n == 1, nil
 }
 
 // SetTrackEventActionStatus updates the proposed-action lifecycle.

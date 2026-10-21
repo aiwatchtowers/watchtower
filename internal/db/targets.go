@@ -437,8 +437,14 @@ func (db *DB) UpdateTargetStatus(id int, newStatus string) error {
 // transaction, claiming actor (ActorAgent, ActorOwner, ActorSystem; "" =
 // none) for the project target's status history (PROJ-06). Any error — a
 // cascade failure included — is the caller's cue to roll back; the
-// "persisted" wording applies to the auto-commit form.
+// "persisted" wording applies to the auto-commit form. A target that is not
+// there is sql.ErrNoRows wrapped, so the caller's transaction never commits a
+// status write that touched no row.
 func (db *DB) UpdateTargetStatusAsTx(tx *sql.Tx, id int, newStatus, actor string) error {
+	var one int
+	if err := tx.QueryRow(`SELECT 1 FROM targets WHERE id = ?`, id).Scan(&one); err != nil {
+		return fmt.Errorf("updating target %d status: %w", id, err)
+	}
 	return updateTargetStatusOn(tx, id, newStatus, actor)
 }
 

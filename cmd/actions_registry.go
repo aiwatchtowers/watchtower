@@ -209,6 +209,10 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 	// (#737): recorded and run only by that chat session, never listed on any
 	// surface (Tool.AppliedBySession).
 	regTools = append(regTools, tools.NewClaudeAIConnectorCall())
+	// The Inbox's track-action press (spec 2026-10-22 §6.2, gap 17): the
+	// inbox surface only, which no MCP server or chat mounts; `actions
+	// propose --approve` is its one way in.
+	regTools = append(regTools, tools.NewApplyTrackAction())
 	// The workbench tools (surface "project" only, spec 2026-10-02 A1):
 	// mounted by `mcp --workbench N`, which applies them directly under
 	// Binding.DirectApply (DEV-06).
