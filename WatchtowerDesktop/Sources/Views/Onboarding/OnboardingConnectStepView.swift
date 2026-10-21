@@ -56,7 +56,7 @@ struct OnboardingConnectStepView: View {
     }
 
     private var activeSlackAccounts: [SlackAccount] {
-        appState.slackAccountsViewModel?.accounts.filter { $0.status != "removed" } ?? []
+        appState.slackAccountsViewModel?.accounts.filter { !$0.isGone } ?? []
     }
 
     var body: some View {
@@ -168,7 +168,7 @@ struct OnboardingConnectStepView: View {
             )
         case .jira:
             // v1: the first active account, whatever its status.
-            let account = appState.jiraAccountsViewModel?.accounts.first { $0.status != "removed" }
+            let account = appState.jiraAccountsViewModel?.accounts.first { !$0.isGone }
             sourceRow(
                 letter: "J", title: "Jira",
                 subtitle: "Issues and boards · for tasks",

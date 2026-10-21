@@ -141,10 +141,11 @@ func (db *DB) RequireOwner() (Owner, error) {
 }
 
 // ownerSlackID is the Slack rung: account #1's namespaced current_user_id,
-// unless that account was removed. "" when there is no such account.
+// unless that account was removed or purged (a purged account counts as
+// removed everywhere, ask #491). "" when there is no such account.
 func (db *DB) ownerSlackID() (string, error) {
 	var id string
-	err := db.QueryRow(`SELECT current_user_id FROM slack_accounts WHERE id = 1 AND status != 'removed'`).Scan(&id)
+	err := db.QueryRow(`SELECT current_user_id FROM slack_accounts WHERE id = 1 AND status NOT IN ('removed', 'purged')`).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -158,7 +159,7 @@ func (db *DB) ownerSlackID() (string, error) {
 // email, as stored (the caller lower-cases it for the ID only).
 func (db *DB) ownerGoogleEmail() (string, error) {
 	var email string
-	err := db.QueryRow(`SELECT email FROM google_accounts WHERE email != '' ORDER BY id LIMIT 1`).Scan(&email)
+	err := db.QueryRow(`SELECT email FROM google_accounts WHERE email != '' AND status != 'purged' ORDER BY id LIMIT 1`).Scan(&email)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
@@ -173,7 +174,7 @@ func (db *DB) ownerGoogleEmail() (string, error) {
 func (db *DB) ownerJiraAccount() (ownerJira, error) {
 	var j ownerJira
 	err := db.QueryRow(`SELECT owner_account_id, owner_email, owner_display_name FROM jira_accounts
-		WHERE enabled = 1 AND status != 'removed' AND owner_account_id != '' ORDER BY id LIMIT 1`).
+		WHERE enabled = 1 AND status NOT IN ('removed', 'purged') AND owner_account_id != '' ORDER BY id LIMIT 1`).
 		Scan(&j.AccountID, &j.Email, &j.DisplayName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ownerJira{}, nil
@@ -189,7 +190,7 @@ func (db *DB) ownerJiraAccount() (ownerJira, error) {
 func (db *DB) ownerLinearAccount() (ownerLinear, error) {
 	var l ownerLinear
 	err := db.QueryRow(`SELECT owner_user_id, owner_email, owner_display_name FROM linear_accounts
-		WHERE enabled = 1 AND status != 'removed' AND owner_user_id != '' ORDER BY id LIMIT 1`).
+		WHERE enabled = 1 AND status NOT IN ('removed', 'purged') AND owner_user_id != '' ORDER BY id LIMIT 1`).
 		Scan(&l.UserID, &l.Email, &l.DisplayName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ownerLinear{}, nil
@@ -221,7 +222,7 @@ func (db *DB) ownerMailbox() (string, error) {
 // non-removed account (one per workspace), by account id. nil when none.
 func (db *DB) ownerLinearUserIDs() ([]string, error) {
 	rows, err := db.Query(`SELECT owner_user_id FROM linear_accounts
-		WHERE enabled = 1 AND status != 'removed' AND owner_user_id != '' ORDER BY id`)
+		WHERE enabled = 1 AND status NOT IN ('removed', 'purged') AND owner_user_id != '' ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("listing owner linear user ids: %w", err)
 	}

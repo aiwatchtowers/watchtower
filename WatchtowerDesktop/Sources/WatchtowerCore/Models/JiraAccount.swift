@@ -43,6 +43,10 @@ package struct JiraAccount: FetchableRecord, Identifiable, Equatable {
     /// (board #601); a Re-login revives it. Never healthy.
     package var isPurged: Bool { status == "purged" }
 
+    /// Removed, or purged — a purged account counts as removed outside
+    /// Settings (ask #491), where it stays listed for its Re-login.
+    package var isGone: Bool { status == "removed" || isPurged }
+
     /// Display text for a row: the user-facing label if set, else the site
     /// name, else a positional fallback for a not-yet-consented row (site name
     /// is only populated once the OAuth flow completes).

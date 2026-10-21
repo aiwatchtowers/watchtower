@@ -51,12 +51,12 @@ package enum OwnerQueries {
     }
 
     /// The owner's own user in every Slack workspace still connected
-    /// (namespaced ids, not just account #1's; removed accounts left out) —
+    /// (namespaced ids, not just account #1's; removed and purged accounts left out) —
     /// for counts of the owner's own messages (Home's "Today in numbers").
     /// Not an owner identity: `resolve` stays the one source of that.
     package static func ownSlackUserIDs(_ db: Database) throws -> [String] {
         try String.fetchAll(db, sql: """
-            SELECT current_user_id FROM slack_accounts WHERE status != 'removed' AND current_user_id != ''
+            SELECT current_user_id FROM slack_accounts WHERE status NOT IN ('removed', 'purged') AND current_user_id != ''
             ORDER BY id
             """)
     }
@@ -104,10 +104,10 @@ package enum OwnerQueries {
     // MARK: - Rungs
 
     /// Account #1's namespaced current_user_id, unless that account was
-    /// removed. "" when there is no such account.
+    /// removed or purged (purged counts as removed everywhere, ask #491). "" when there is no such account.
     private static func ownerSlackID(_ db: Database) throws -> String {
         try String.fetchOne(db, sql: """
-            SELECT current_user_id FROM slack_accounts WHERE id = 1 AND status != 'removed'
+            SELECT current_user_id FROM slack_accounts WHERE id = 1 AND status NOT IN ('removed', 'purged')
             """) ?? ""
     }
 
@@ -115,7 +115,7 @@ package enum OwnerQueries {
     /// for the id only).
     private static func ownerGoogleEmail(_ db: Database) throws -> String {
         try String.fetchOne(db, sql: """
-            SELECT email FROM google_accounts WHERE email != '' ORDER BY id LIMIT 1
+            SELECT email FROM google_accounts WHERE email != '' AND status != 'purged' ORDER BY id LIMIT 1
             """) ?? ""
     }
 
@@ -124,7 +124,7 @@ package enum OwnerQueries {
     private static func ownerJiraAccount(_ db: Database) throws -> OwnerJira {
         guard let row = try Row.fetchOne(db, sql: """
             SELECT owner_account_id, owner_email, owner_display_name FROM jira_accounts
-            WHERE enabled = 1 AND status != 'removed' AND owner_account_id != '' ORDER BY id LIMIT 1
+            WHERE enabled = 1 AND status NOT IN ('removed', 'purged') AND owner_account_id != '' ORDER BY id LIMIT 1
             """) else { return OwnerJira() }
         return OwnerJira(
             accountID: row["owner_account_id"],
@@ -138,7 +138,7 @@ package enum OwnerQueries {
     private static func ownerLinearAccount(_ db: Database) throws -> OwnerLinear {
         guard let row = try Row.fetchOne(db, sql: """
             SELECT owner_user_id, owner_email, owner_display_name FROM linear_accounts
-            WHERE enabled = 1 AND status != 'removed' AND owner_user_id != '' ORDER BY id LIMIT 1
+            WHERE enabled = 1 AND status NOT IN ('removed', 'purged') AND owner_user_id != '' ORDER BY id LIMIT 1
             """) else { return OwnerLinear() }
         return OwnerLinear(
             userID: row["owner_user_id"],
@@ -162,7 +162,7 @@ package enum OwnerQueries {
     private static func ownerLinearUserIDs(_ db: Database) throws -> [String] {
         try String.fetchAll(db, sql: """
             SELECT owner_user_id FROM linear_accounts
-            WHERE enabled = 1 AND status != 'removed' AND owner_user_id != '' ORDER BY id
+            WHERE enabled = 1 AND status NOT IN ('removed', 'purged') AND owner_user_id != '' ORDER BY id
             """)
     }
 

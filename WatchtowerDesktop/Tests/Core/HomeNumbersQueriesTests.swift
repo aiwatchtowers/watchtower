@@ -65,9 +65,11 @@ final class HomeNumbersQueriesTests: XCTestCase {
             _ = try TestDatabase.insertSlackAccount(d, currentUserID: "1:UME")
             _ = try TestDatabase.insertSlackAccount(d, currentUserID: "2:UME2")
             _ = try TestDatabase.insertSlackAccount(d, currentUserID: "3:UGONE", status: "removed")
+            _ = try TestDatabase.insertSlackAccount(d, currentUserID: "4:UPURGED", status: "purged")
             try self.message(d, user: "1:UME")
             try self.message(d, channel: "2:C1", user: "2:UME2")
             try self.message(d, channel: "3:C1", user: "3:UGONE")
+            try self.message(d, channel: "4:C1", user: "4:UPURGED")
             try self.message(d, user: "1:UME", daysAgo: 1)
             try self.message(d, user: "1:U9")
         }
