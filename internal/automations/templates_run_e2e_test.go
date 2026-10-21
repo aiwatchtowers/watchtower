@@ -2,8 +2,11 @@ package automations_test
 
 import (
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/automationstest"
@@ -17,24 +20,39 @@ import (
 func TestTemplates_RunE2E(t *testing.T) {
 	t.Run("new-mail-summary", testRunNewMailSummary)
 
-	// A burst over list_emails' page: every page is drained, all new mail is
-	// summed up once, and the cursor is the newest message.
+	// A burst over list_emails' page: every page is drained and all new mail
+	// is summed up once and remembered as done.
 	t.Run("new-mail-summary burst", testRunNewMailBurst)
 
-	// Mail that arrives late at the cursor's second is summed up once.
+	// Mail that arrives late at a second already summed up is summed up once.
 	t.Run("new-mail-summary same second", testRunNewMailSameSecond)
 
 	// A page that ends inside a second loses none of that second's mail.
 	t.Run("new-mail-summary page ends inside a second", testRunNewMailSplitSecond)
 
 	// Past the per-run cap the oldest are summed up, the summary says how many
-	// newer are left, and the cursor never passes mail not summed up.
+	// newer are left, and only mail summed up is remembered as done.
 	t.Run("new-mail-summary run cap", testRunNewMailRunCap)
 
-	// One mailbox keeps one cursor whether a run names it by label or by
-	// address, and a cursor an older script kept under the address is moved.
+	// One mailbox keeps one state whether a run names it by label or by
+	// address, and a cursor an older script kept under the address is
+	// migrated.
 	t.Run("new-mail-summary label then address", testRunNewMailNamedTwoWays)
 	t.Run("new-mail-summary cursor under the address", testRunNewMailLegacyCursor)
+
+	// #799: a message synced after a newer one was summed up — so dated
+	// before it — is summed up by the next run (a time cursor skipped it
+	// forever); mail older than the two-day window is not.
+	t.Run("new-mail-summary late mail older than the summed", testRunNewMailLateOlderMail)
+
+	// #799: an older script's cursor is migrated: the mail at or before it is
+	// marked done, not summed up again, the cursor is dropped, and later late
+	// mail older than the old cursor is still summed up.
+	t.Run("new-mail-summary cursor migration", testRunNewMailCursorMigration)
+
+	// #799: a done set past the state budget drops its oldest entries behind
+	// a floor and the state stays under MaxStateBytes.
+	t.Run("new-mail-summary state budget", testRunNewMailStateBudget)
 
 	t.Run("jira-state-report", testRunJiraStateReport)
 	t.Run("jira-state-report two projects", testRunJiraStateReportTwoProjects)
@@ -54,9 +72,8 @@ func testRunNewMailSummary(t *testing.T) {
 		outs[0].Body != "- colleague C wants a contract review by Friday" {
 		t.Fatalf("outputs = %+v; want one inbox summary of the 3 messages", outs)
 	}
-	newest := f.newestMail(t)
-	if got := f.mailCursor(t, a); got != newest {
-		t.Fatalf("work cursor = %q; want the newest message's date %q", got, newest)
+	if got := f.mailDone(t, a); !sameIDs(got, "m1", "m2", "m3") {
+		t.Fatalf("work done = %v; want the three messages summed up", got)
 	}
 	state := f.stateDump(t)
 
@@ -70,9 +87,28 @@ func testRunNewMailSummary(t *testing.T) {
 		t.Fatalf("state after a run without newer mail = %q; want unchanged %q", got, state)
 	}
 	reads := f.toolSteps(t, second, "list_emails")
-	if len(reads) != 2 || !strings.Contains(reads[0].ArgsJSON, `"limit":1`) ||
-		!strings.Contains(reads[1].ArgsJSON, `"since":"`+newest+`"`) {
-		t.Fatalf("second list_emails steps = %+v; want the name probe, then one with since = the cursor %s", reads, newest)
+	if len(reads) != 2 || !strings.Contains(reads[0].ArgsJSON, `"limit":1`) {
+		t.Fatalf("second list_emails steps = %+v; want the name probe, then one page", reads)
+	}
+	wantWindowSince(t, reads[1].ArgsJSON)
+}
+
+// wantWindowSince fails unless a list_emails call's since is the start of the
+// two-day window (not the newest message summed up).
+func wantWindowSince(t *testing.T, argsJSON string) {
+	t.Helper()
+	var args struct {
+		Since string `json:"since"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		t.Fatal(err)
+	}
+	since, err := time.Parse(time.RFC3339, args.Since)
+	if err != nil {
+		t.Fatalf("list_emails since %q: %v", args.Since, err)
+	}
+	if d := time.Since(since) - 48*time.Hour; d < -time.Minute || d > time.Minute {
+		t.Fatalf("list_emails since = %s; want two days back", args.Since)
 	}
 }
 
@@ -133,8 +169,8 @@ func testRunNewMailBurst(t *testing.T) {
 	if len(outs) != 1 || outs[0].Title != "New mail in work: 453 messages" || strings.Contains(outs[0].Body, "left") {
 		t.Fatalf("outputs = %+v; want one summary of all 453 messages", outs)
 	}
-	if got, newest := f.mailCursor(t, a), f.newestMail(t); got != newest {
-		t.Fatalf("work cursor = %q; want the newest message's date %q", got, newest)
+	if got := len(f.mailDone(t, a)); got != 453 {
+		t.Fatalf("work done = %d ids; want all 453", got)
 	}
 
 	second := f.mailEvent(t, a, "c2")
@@ -154,7 +190,7 @@ func testRunNewMailSameSecond(t *testing.T) {
 	f.wantRun(t, first, db.RunSucceeded, "")
 	newest := f.newestMail(t)
 
-	// A message synced late with the same second as the cursor.
+	// A message synced late with the same second as the newest summed up.
 	if _, err := f.d.Exec(`INSERT INTO gmail_messages (account_id, id, from_email, subject, internal_date)
 		VALUES (1, 'm4', 'd@example.com', 'Late at the same second', ?)`, newest); err != nil {
 		t.Fatal(err)
@@ -169,8 +205,8 @@ func testRunNewMailSameSecond(t *testing.T) {
 	if got := summedSubjects(t, gen); len(got) != 4 || got[3] != "Late at the same second" {
 		t.Fatalf("summed subjects = %v; want the three messages, then the late one once", got)
 	}
-	if got := f.mailCursor(t, a); got != newest {
-		t.Fatalf("work cursor = %q; want still %q", got, newest)
+	if got := f.mailDone(t, a); !sameIDs(got, "m1", "m2", "m3", "m4") {
+		t.Fatalf("work done = %v; want the three messages and the late one", got)
 	}
 
 	third := f.mailEvent(t, a, "c3")
@@ -218,12 +254,9 @@ func testRunNewMailRunCap(t *testing.T) {
 	if len(summed) != 600 || summed[0] != "Alert 650" || summed[599] != "Alert 51" {
 		t.Fatalf("summed up %d messages (%v … %v); want the oldest 600, Alert 650 … Alert 51", len(summed), summed[0], summed[len(summed)-1])
 	}
-	var alert51 string
-	if err := f.d.QueryRow(`SELECT internal_date FROM gmail_messages WHERE id = 'burst-51'`).Scan(&alert51); err != nil {
-		t.Fatal(err)
-	}
-	if got := f.mailCursor(t, a); got != alert51 {
-		t.Fatalf("work cursor = %q; want the newest summed-up message's date %q, not past the mail left", got, alert51)
+	done := f.mailDone(t, a)
+	if len(done) != 600 || !done["burst-51"] || !done["burst-650"] || done["burst-50"] || done["m3"] {
+		t.Fatalf("work done = %d ids; want exactly the 600 summed up, burst-650 … burst-51, none of the mail left", len(done))
 	}
 
 	second := f.mailEvent(t, a, "c2")
@@ -236,8 +269,8 @@ func testRunNewMailRunCap(t *testing.T) {
 	if got := summedSubjects(t, gen); len(got) != 653 {
 		t.Fatalf("summed up %d messages over both runs; want each of the 653 once", len(got))
 	}
-	if got, newest := f.mailCursor(t, a), f.newestMail(t); got != newest {
-		t.Fatalf("work cursor = %q; want the newest message's date %q", got, newest)
+	if got := len(f.mailDone(t, a)); got != 653 {
+		t.Fatalf("work done = %d ids; want all 653", got)
 	}
 }
 
@@ -276,14 +309,14 @@ func testRunNewMailNamedTwoWays(t *testing.T) {
 	if got := f.stateDump(t); got != state {
 		t.Fatalf("state after the run by address = %q; want unchanged %q", got, state)
 	}
-	if got, newest := f.mailCursor(t, a), f.newestMail(t); got != newest {
-		t.Fatalf("work cursor = %q; want %q", got, newest)
+	if got := f.mailDone(t, a); !sameIDs(got, "m1", "m2", "m3") || strings.Contains(state, "owner@example.com") {
+		t.Fatalf("state = %q; want the three messages done under work alone", state)
 	}
 }
 
 // An older script kept the cursor under the name scheduledAccounts gave the
 // mailbox (here its address); the next run by that name reads it once and
-// moves it under the label.
+// migrates it to the done ids under the label.
 func testRunNewMailLegacyCursor(t *testing.T) {
 	gen := &automationstest.FakeGenerator{Replies: []string{"- mail"}}
 	f := newTplFixture(t, gen)
@@ -308,8 +341,133 @@ func testRunNewMailLegacyCursor(t *testing.T) {
 	if got := summedSubjects(t, gen); len(got) != 1 || got[0] != "After the old cursor" {
 		t.Fatalf("summed subjects = %v; want only the mail after the old cursor", got)
 	}
-	if got := f.stateDump(t); strings.Contains(got, "owner@example.com") || f.mailCursor(t, a) != f.newestMail(t) {
-		t.Fatalf("state = %q; want the cursor moved under work at the newest mail", got)
+	if got := f.stateDump(t); strings.Contains(got, "owner@example.com") || strings.Contains(got, `"cursors":{`) ||
+		!sameIDs(f.mailDone(t, a), "m1", "m2", "m3", "m-new") {
+		t.Fatalf("state = %q; want the cursor dropped and the four messages done under work", got)
+	}
+}
+
+// insertWorkMail adds one message to "work" dated offset from now (an
+// SQLite modifier such as "-5 hours").
+func insertWorkMail(t *testing.T, d *db.DB, id, subject, offset string) {
+	t.Helper()
+	if _, err := d.Exec(`INSERT INTO gmail_messages (account_id, id, from_email, subject, internal_date)
+		VALUES (1, ?, 'd@example.com', ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now', ?))`, id, subject, offset); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testRunNewMailLateOlderMail(t *testing.T) {
+	gen := &automationstest.FakeGenerator{Replies: []string{"- mail"}}
+	f := newTplFixture(t, gen)
+	a := f.installTemplate(t, "new-mail-summary", nil)
+	first := f.mailEvent(t, a, "c1")
+	f.step(t, 1)
+	f.wantRun(t, first, db.RunSucceeded, "")
+
+	// Synced after m1..m3 (1–3 hours old) were summed up, dated before all of
+	// them; and one older than the window.
+	insertWorkMail(t, f.d, "m-late", "Synced late", "-30 hours")
+	insertWorkMail(t, f.d, "m-ancient", "Older than the window", "-3 days")
+	second := f.mailEvent(t, a, "c2")
+	f.step(t, 1)
+	f.wantRun(t, second, db.RunSucceeded, "")
+	outs := f.outputs(t)
+	if len(outs) != 2 || outs[1].Title != "New mail in work: 1 message" {
+		t.Fatalf("outputs = %+v; want a second summary of the late message alone", outs)
+	}
+	if got := summedSubjects(t, gen); len(got) != 4 || got[3] != "Synced late" {
+		t.Fatalf("summed subjects = %v; want the three messages, then the late one once", got)
+	}
+	if got := f.mailDone(t, a); !sameIDs(got, "m1", "m2", "m3", "m-late") {
+		t.Fatalf("work done = %v; want the three messages and the late one", got)
+	}
+
+	third := f.mailEvent(t, a, "c3")
+	f.step(t, 1)
+	f.wantRun(t, third, db.RunSucceeded, "")
+	if n := len(f.outputs(t)); n != 2 {
+		t.Fatalf("outputs after a run without newer mail = %d; want still 2", n)
+	}
+}
+
+func testRunNewMailCursorMigration(t *testing.T) {
+	gen := &automationstest.FakeGenerator{Replies: []string{"- mail"}}
+	f := newTplFixture(t, gen)
+	a := f.installTemplate(t, "new-mail-summary", nil)
+	var m2Date string
+	if err := f.d.QueryRow(`SELECT internal_date FROM gmail_messages WHERE id = 'm2'`).Scan(&m2Date); err != nil {
+		t.Fatal(err)
+	}
+	// The older script summed up m1 and m2 (its cursor at m2's second, with
+	// m2's id), not m3 yet. m-tie shares m2's second but is not in the
+	// cursor's ids, so the older script had not summed it up either.
+	if _, err := f.d.Exec(`INSERT INTO gmail_messages (account_id, id, from_email, subject, internal_date)
+		VALUES (1, 'm-tie', 'd@example.com', 'At the cursor second', ?)`, m2Date); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.d.Exec(`INSERT INTO automation_state (automation_id, state_json) VALUES (?, ?)`, a.ID,
+		`{"cursors":{"work":{"date":"`+m2Date+`","ids":["m2"]}}}`); err != nil {
+		t.Fatal(err)
+	}
+	first := f.mailEvent(t, a, "c1")
+	f.step(t, 1)
+	f.wantRun(t, first, db.RunSucceeded, "")
+	got := summedSubjects(t, gen)
+	slices.Sort(got)
+	if want := []string{"At the cursor second", "Contract review"}; !slices.Equal(got, want) {
+		t.Fatalf("summed subjects = %v; want %v — the mail at or before the old cursor stays summed up", got, want)
+	}
+	if st := f.stateDump(t); !strings.Contains(st, `"cursors":null`) || !sameIDs(f.mailDone(t, a), "m1", "m2", "m3", "m-tie") {
+		t.Fatalf("state = %q; want the cursor dropped and the four messages done", st)
+	}
+
+	// After the migration no time mark is left: mail synced late with a date
+	// before the old cursor is summed up.
+	insertWorkMail(t, f.d, "m-late", "Synced late", "-20 hours")
+	second := f.mailEvent(t, a, "c2")
+	f.step(t, 1)
+	f.wantRun(t, second, db.RunSucceeded, "")
+	if got := summedSubjects(t, gen); len(got) != 3 || got[2] != "Synced late" {
+		t.Fatalf("summed subjects = %v; want the late message summed up after the migration", got)
+	}
+}
+
+func testRunNewMailStateBudget(t *testing.T) {
+	gen := &automationstest.FakeGenerator{Replies: []string{"- mail"}}
+	f := newTplFixture(t, gen)
+	a := f.installTemplate(t, "new-mail-summary", nil)
+	// 3000 done ids of 20 characters in the window: about 100 KB of entries,
+	// well past the state cap.
+	base := time.Now().Add(-40 * time.Hour).Unix()
+	done := make(map[string]int64, 3000)
+	for i := range 3000 {
+		done[fmt.Sprintf("old-%016d", i)] = base + int64(i)
+	}
+	raw, err := json.Marshal(map[string]any{"mailboxes": map[string]any{"work": map[string]any{"done": done}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.d.Exec(`INSERT INTO automation_state (automation_id, state_json) VALUES (?, ?)`, a.ID, string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	id := f.mailEvent(t, a, "c1")
+	f.step(t, 1)
+	f.wantRun(t, id, db.RunSucceeded, "")
+	if got := summedSubjects(t, gen); len(got) != 3 {
+		t.Fatalf("summed subjects = %v; want the three seeded messages", got)
+	}
+	state, err := f.d.GetAutomationState(a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state) > automations.MaxStateBytes {
+		t.Fatalf("state = %d bytes; want at most %d", len(state), automations.MaxStateBytes)
+	}
+	box := f.mailBox(t, a)
+	if !box.Done["m1"] || !box.Done["m3"] || box.Done["old-0000000000000000"] || box.Floor <= base {
+		t.Fatalf("work done = %d ids, floor = %d; want the new mail kept and the oldest dropped behind a floor past %d",
+			len(box.Done), box.Floor, base)
 	}
 }
 
@@ -420,23 +578,53 @@ func (f *exFixture) newestMail(t *testing.T) string {
 	return newest
 }
 
-// mailCursor is the date of new-mail-summary's committed cursor of "work".
-func (f *exFixture) mailCursor(t *testing.T, a db.Automation) string {
+// mailBox is new-mail-summary's committed state of "work": the ids it
+// summed up and its floor (0 when unset).
+type mailBox struct {
+	Done  map[string]bool
+	Floor int64
+}
+
+func (f *exFixture) mailBox(t *testing.T, a db.Automation) mailBox {
 	t.Helper()
 	raw, err := f.d.GetAutomationState(a.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var state struct {
-		Cursors map[string]struct {
-			Date string   `json:"date"`
-			IDs  []string `json:"ids"`
-		} `json:"cursors"`
+		Mailboxes map[string]struct {
+			Done  map[string]int64 `json:"done"`
+			Floor int64            `json:"floor"`
+		} `json:"mailboxes"`
 	}
 	if err := json.Unmarshal(raw, &state); err != nil {
 		t.Fatalf("state %s: %v", raw, err)
 	}
-	return state.Cursors["work"].Date
+	w := state.Mailboxes["work"]
+	out := mailBox{Done: map[string]bool{}, Floor: w.Floor}
+	for id := range w.Done {
+		out.Done[id] = true
+	}
+	return out
+}
+
+// mailDone is the ids new-mail-summary committed as summed up in "work".
+func (f *exFixture) mailDone(t *testing.T, a db.Automation) map[string]bool {
+	t.Helper()
+	return f.mailBox(t, a).Done
+}
+
+// sameIDs reports whether done holds exactly ids.
+func sameIDs(done map[string]bool, ids ...string) bool {
+	if len(done) != len(ids) {
+		return false
+	}
+	for _, id := range ids {
+		if !done[id] {
+			return false
+		}
+	}
+	return true
 }
 
 func (f *exFixture) toolSteps(t *testing.T, runID int64, name string) []db.AutomationRunStep {

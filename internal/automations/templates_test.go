@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"watchtower/internal/automations"
 	"watchtower/internal/db"
@@ -289,13 +290,15 @@ func TestRenderTemplate_Params(t *testing.T) {
 }
 
 // new-mail-summary on two sync events: the first run sums up the new mail of
-// the event's mailbox and stores its cursor; the second, given the same
-// messages, sums up nothing (spec §15 #1: the per-account since cursor).
-func TestTemplate_NewMailSummaryKeepsPerAccountCursor(t *testing.T) {
+// the event's mailbox and remembers its ids; the second, given the same
+// messages, sums up nothing and still reads the whole window (#799: done ids
+// over a lookback window, not a since cursor).
+func TestTemplate_NewMailSummaryKeepsPerAccountDone(t *testing.T) {
 	f := newExFixture(t, exOpts{fileDB: true})
+	at := func(ago time.Duration) string { return time.Now().UTC().Add(-ago).Format(time.RFC3339) }
 	f.reg.ReadResults["list_emails"] = map[string]any{"account": "work", "messages": []map[string]any{
-		{"id": "m2", "from": "colleague A <a@example.com>", "subject": "Deploy", "snippet": "today?", "date": "2026-10-14T11:00:00Z"},
-		{"id": "m1", "from": "colleague B <b@example.com>", "subject": "Lunch", "snippet": "at 1", "date": "2026-10-14T10:00:00Z"},
+		{"id": "m2", "from": "colleague A <a@example.com>", "subject": "Deploy", "snippet": "today?", "date": at(time.Hour)},
+		{"id": "m1", "from": "colleague B <b@example.com>", "subject": "Lunch", "snippet": "at 1", "date": at(2 * time.Hour)},
 	}}
 	files, err := automations.RenderTemplate("new-mail-summary", nil)
 	if err != nil {
@@ -317,8 +320,16 @@ func TestTemplate_NewMailSummaryKeepsPerAccountCursor(t *testing.T) {
 	if err := f.d.QueryRow(`SELECT state_json FROM automation_state WHERE automation_id = ?`, a.ID).Scan(&state); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(state, `"work":{"date":"2026-10-14T11:00:00Z","ids":["m2"]}`) {
-		t.Fatalf("state = %s; want the work cursor at the newest message", state)
+	var got struct {
+		Mailboxes map[string]struct {
+			Done map[string]int64 `json:"done"`
+		} `json:"mailboxes"`
+	}
+	if err := json.Unmarshal([]byte(state), &got); err != nil {
+		t.Fatal(err)
+	}
+	if done := got.Mailboxes["work"].Done; len(done) != 2 || done["m1"] == 0 || done["m2"] == 0 {
+		t.Fatalf("state = %s; want m1 and m2 done under work", state)
 	}
 
 	second := event("c2")
@@ -328,7 +339,5 @@ func TestTemplate_NewMailSummaryKeepsPerAccountCursor(t *testing.T) {
 		t.Fatalf("outputs after the second run = %d; want still 1", n)
 	}
 	reads := f.reg.ReadCalls()
-	if last := string(reads[len(reads)-1].Args); !strings.Contains(last, `"since":"2026-10-14T11:00:00Z"`) {
-		t.Fatalf("second list_emails args = %s; want since = the cursor", last)
-	}
+	wantWindowSince(t, string(reads[len(reads)-1].Args))
 }
