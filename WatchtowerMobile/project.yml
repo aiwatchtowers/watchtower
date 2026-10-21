@@ -21,10 +21,10 @@ packages:
   # its types directly (`ValueObservation`, `Database`). A testability build
   # dead-strips the autolink hint, so the app would fail with undefined GRDB
   # symbols: declare it explicitly. Same URL and version as the Kit's
-  # dependency, so SPM dedupes it.
+  # dependency (the SQLCipher GRDB fork, #603), so SPM dedupes it.
   GRDB:
-    url: https://github.com/groue/GRDB.swift
-    from: "7.0.0"
+    url: https://github.com/aiwatchtowers/GRDB.swift
+    exactVersion: "7.11.1-sqlcipher.2"
 
 # Signing lives in Base.xcconfig (unsigned defaults plus an optional
 # `#include? "Signing.xcconfig"` for device and archive signing), wired to
