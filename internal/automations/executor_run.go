@@ -117,6 +117,13 @@ func (e *Executor) prepare(ctx context.Context, run *db.AutomationRun, a *db.Aut
 	if err != nil {
 		return nil, nil, failedEnd(db.ErrKindNotRunnable, fmt.Errorf("the permission manifest does not parse: %w", err))
 	}
+	// Every run, a resumed one too, passes here: a reply run of a snapshot
+	// without inbox:reply never reaches its script.
+	if run.Trigger == db.TriggerReply {
+		if _, err := m.AllowInboxReply(); err != nil {
+			return nil, nil, failedEnd(db.ErrKindPermission, err)
+		}
+	}
 	trig, err := triggerInfo(run, r)
 	if err != nil {
 		return nil, nil, failedEnd(db.ErrKindBackend, err)
@@ -204,7 +211,7 @@ func pauseTimeout(r *Recipe) time.Duration {
 // triggerInfo builds the script's trigger object. An event run's event_json
 // must decode as db.AutomationEventPayload with every event an object (S5);
 // so must a dry run's, when it carries one (the events an event recipe's dry
-// run plays).
+// run plays). A reply run's must decode as db.ReplyPayload.
 func triggerInfo(run *db.AutomationRun, r *Recipe) (TriggerInfo, error) {
 	t := TriggerInfo{
 		Kind: run.Trigger, RunID: run.ID, ScheduledFor: run.ScheduledFor,
@@ -212,6 +219,11 @@ func triggerInfo(run *db.AutomationRun, r *Recipe) (TriggerInfo, error) {
 	}
 	if run.Trigger == db.TriggerButton && r.Trigger.Button != nil {
 		t.Button = r.Trigger.Button.Label
+	}
+	if run.Trigger == db.TriggerReply {
+		reply, err := replyInfo(run.EventJSON)
+		t.Reply = reply
+		return t, err
 	}
 	if run.Trigger != db.TriggerEvent && (run.Trigger != db.TriggerDryRun || run.EventJSON == "") {
 		return t, nil
@@ -230,6 +242,25 @@ func triggerInfo(run *db.AutomationRun, r *Recipe) (TriggerInfo, error) {
 	}
 	t.Truncated = p.Truncated
 	return t, nil
+}
+
+// replyInfo decodes a reply run's event_json into the script's
+// trigger.reply. Data is the stored action's data (null when it has none).
+func replyInfo(eventJSON string) (map[string]any, error) {
+	var p db.ReplyPayload
+	if err := json.Unmarshal([]byte(eventJSON), &p); err != nil {
+		return nil, fmt.Errorf("decoding the run's reply payload: %w", err)
+	}
+	var data any
+	if len(p.Reply.Data) > 0 {
+		if err := json.Unmarshal(p.Reply.Data, &data); err != nil {
+			return nil, fmt.Errorf("decoding the run's reply payload: data: %w", err)
+		}
+	}
+	return map[string]any{
+		"output_id": p.Reply.OutputID, "action": p.Reply.Action, "value": p.Reply.Value, "data": data,
+		"card": map[string]any{"title": p.Reply.Card.Title, "link": p.Reply.Card.Link},
+	}, nil
 }
 
 // runSandbox runs the script while a watcher re-reads the run's status every
