@@ -63,6 +63,12 @@ enum DesignShotCatalog {
             DesignShot(name: "home-getting-ready", size: NSSize(width: 1800, height: 1100)) {
                 HomeShotFixtures.home(gettingReady: true)
             },
+            DesignShot(name: "automation-list", size: NSSize(width: 1280, height: 760)) {
+                AutomationShotFixtures.list()
+            },
+            DesignShot(name: "automation-card", size: NSSize(width: 900, height: 720)) {
+                AnyView(AutomationShotFixtures.card().detailBackground())
+            },
             DesignShot(name: "automation-draft-column", size: NSSize(width: 560, height: 760)) {
                 AnyView(AutomationShotFixtures.draftColumn().shotFrame().detailBackground())
             },

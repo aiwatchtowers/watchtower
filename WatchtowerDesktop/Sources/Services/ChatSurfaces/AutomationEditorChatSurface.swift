@@ -9,7 +9,7 @@ private let editorChatLog = Logger(subsystem: Constants.bundleID, category: "aut
 // MARK: - Surface
 
 /// "Change it in words" (spec §11, §12.2): an assistant chat bound to one
-/// automation, and the "New automation" sheet's chat with no automation yet.
+/// automation, and the New automation panel's chat with no automation yet.
 /// An action surface (AGENT-04 as amended, spec §14.5): `automation_editor`
 /// carries only `draft_automation`, `save_automation` and the read tools.
 /// Under ollama it is draft-only (R-P3-12): no tool mode, so it cannot draft.
@@ -20,8 +20,6 @@ enum AutomationEditorChatSurface {
     static let draftContextType = "automation_draft"
     static let surface = AgentSurface.automationEditor.rawValue
     static let dryRunAgainText = "Dry run the draft again."
-    static let saveText = "Save this draft: propose save_automation with the exact text you last drafted, "
-        + "and copy your dry run's summary into dry_run_summary."
     static let unavailableHelp = "Needs Claude or Codex"
     static let sendRefusedNote = "The assistant is still answering — try again when the reply finishes."
 
@@ -53,13 +51,6 @@ enum AutomationEditorChatSurface {
     static func newConversationID(contextID: String, dbPool: DatabasePool) async throws -> Int64 {
         try await DatabaseEmbeddedChatStore.conversationID(
             dbPool: dbPool, contextType: draftContextType, contextID: contextID, title: "New automation")
-    }
-
-    /// The new draft's conversation for one scope, created on first use.
-    static func newConversationID(draftID: String, workbenchID: Int64?, dbPool: DatabasePool) async throws -> Int64 {
-        try await DatabaseEmbeddedChatStore.conversationID(
-            dbPool: dbPool, contextType: draftContextType,
-            contextID: draftContextID(draftID: draftID, workbenchID: workbenchID), title: "New automation")
     }
 
     /// The chat about `automation`. Its per-turn prompt re-reads the recipe
@@ -97,25 +88,10 @@ enum AutomationEditorChatSurface {
         )
     }
 
-    /// The "New automation" chat: no automation yet, so the CLI gets
-    /// `--surface automation_editor` with no context (Task 3). With a
-    /// `workbench` the prompt names it and its `workbench_id`.
-    static func newSpec(
-        provider: String?,
-        draftID: String,
-        workbench: NewWorkbench?,
-        conversationID: Int64,
-        dbPool: DatabasePool,
-        outcomes: @escaping @MainActor (Date?) -> String? = { _ in nil },
-        panelDraft: @escaping @MainActor () -> String? = { nil },
-        skillsDir: String? = SkillsCatalog.defaultDir()
-    ) -> ChatSurfaceSpec {
-        newSpec(provider: provider, contextID: draftContextID(draftID: draftID, workbenchID: workbench?.id),
-                workbench: workbench, conversationID: conversationID, dbPool: dbPool, outcomes: outcomes,
-                panelDraft: panelDraft, skillsDir: skillsDir)
-    }
-
-    /// As above, keyed by an explicit context id (`AppState.draftContextID`).
+    /// The "New automation" chat, keyed by its context id
+    /// (`AppState.draftContextID`): no automation yet, so the CLI gets
+    /// `--surface automation_editor` with no context. With a `workbench` the
+    /// prompt names it and its `workbench_id`.
     static func newSpec(
         provider: String?,
         contextID: String,
@@ -272,9 +248,9 @@ final class PanelDraftBox {
 }
 
 /// One open editor chat: the engine (from the app-wide `EmbeddedChatCenter`,
-/// so a turn keeps streaming after the sheet closes), the conversation's
-/// proposal feed and the Draft panel read from the editor's draft cache.
-/// Made when a sheet opens and `close()`d when it goes; the engine and the
+/// so a turn keeps streaming after the panel goes away), the conversation's
+/// proposal feed and the newest draft read from the editor's draft cache.
+/// Made when the editor panel opens and `close()`d when it goes; the engine and the
 /// cache outlive it, so reopening shows the same turn and the same draft.
 @MainActor
 @Observable
@@ -325,7 +301,7 @@ final class AutomationEditorChat {
         feed.start(conversationID: conversationID)
     }
 
-    /// The sheet closed: the engine stays in the center (a running turn
+    /// The panel went away: the engine stays in the center (a running turn
     /// finishes), only this view of it stops.
     func close() {
         guard !closed else { return }
@@ -334,7 +310,7 @@ final class AutomationEditorChat {
         center.markHidden(engine.spec.key)
     }
 
-    /// Re-reads the newest draft (after a turn, and when the sheet appears).
+    /// Re-reads the newest draft (after a turn, and when the panel appears).
     func reloadDraft() {
         draft = AutomationDraftPanelModel.load(databasePath: databasePath, conversationID: conversationID)
     }
@@ -347,12 +323,6 @@ final class AutomationEditorChat {
 
     func dryRunAgain() {
         send(AutomationEditorChatSurface.dryRunAgainText)
-    }
-
-    /// **Save…**: the assistant proposes `save_automation`; its card's
-    /// Approve is the save (spec §11).
-    func askToSave() {
-        send(AutomationEditorChatSurface.saveText)
     }
 
     /// A refused send is said, never dropped silently.

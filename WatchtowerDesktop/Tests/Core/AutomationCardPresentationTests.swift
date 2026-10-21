@@ -209,6 +209,11 @@ final class AutomationCardPresentationTests: XCTestCase {
         XCTAssertEqual(ACP.reportedCostText(0), "$0.00 reported")
     }
 
+    func testToggleMenuTitle() {
+        XCTAssertEqual(ACP.toggleMenuTitle(enabled: true), "Turn Off")
+        XCTAssertEqual(ACP.toggleMenuTitle(enabled: false), "Turn On")
+    }
+
     func testButtonsForStates() {
         let ready = ACP.buttons(for: automation())
         XCTAssertEqual(ready.runNow, ACP.ButtonState(enabled: true, help: nil))

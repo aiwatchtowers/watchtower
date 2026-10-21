@@ -203,7 +203,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         let key = AutomationEditorCenter.newDraftKey(conversationID: 5)
         center.beginNew(key: key, scope: .personal, recipeDir: "/acme/automations", startText: nil)
         let form = try XCTUnwrap(center.drafts[key]?.form)
-        XCTAssertTrue(form.detail.isNewRecipe)
+        XCTAssertTrue(AutomationEditorCenter.isNewDraft(key))
         form.fields.name = "Morning Mail digest!"
 
         let plan = try await checkedPlan(center, key)
@@ -238,32 +238,6 @@ final class AutomationEditorCenterTests: XCTestCase {
         await center.commit(key, plan: plan, turnOn: true)
         XCTAssertEqual(center.saving[key], .failed("A recipe named digest.md already exists — pick another name."))
         XCTAssertFalse(runner.invocations.contains { $0[1] == "enable" })
-    }
-
-    /// #582: an unreadable recipe's banner follows the fix typed in Monaco:
-    /// `recheckParse` validates the text as it is now; the loaded text needs no call.
-    func testRecheckParseFollowsTheFixedText() async throws {
-        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Fixtures.showJSON()) as? [String: Any])
-        object["parse_error"] = "permissions[0]: placeholder"
-        let show = try JSONSerialization.data(withJSONObject: object)
-        runner.on("show") { _ in show }
-        let center = makeCenter()
-        await center.beginEdit(7)
-        let form = try XCTUnwrap(center.drafts[7]?.form)
-
-        await center.recheckParse(7)
-        XCTAssertEqual(form.currentParseError, "permissions[0]: placeholder")
-        XCTAssertFalse(runner.invocations.contains { $0.count > 1 && $0[1] == "validate" }, "the loaded text is not re-validated")
-
-        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h2", ok: false, errors: ["line 3: still broken"]) }
-        form.buffer.pageSent(text: Fixtures.recipe + "\n", base: form.buffer.revision)
-        await center.recheckParse(7)
-        XCTAssertEqual(form.currentParseError, "line 3: still broken")
-
-        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h2") }
-        await center.recheckParse(7)
-        XCTAssertEqual(form.currentParseError, "")
-        XCTAssertTrue(form.paused, "the form stays off until the fixed recipe is saved")
     }
 
     func testSlugForName() {
@@ -345,7 +319,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h1") }
         runner.on("save") { _ in Self.saveJSON(approval: "h1") }
         let center = makeCenter()
-        await center.beginEdit(7)
+        await center.beginEdit(7, chatNewestText: nil)
         let form = try XCTUnwrap(center.drafts[7]?.form)
         form.fields.name = "Weekly digest"
         let typed = form.renderedText().replacingOccurrences(of: "const a = 1;", with: "const a = 2;")
@@ -375,12 +349,12 @@ final class AutomationEditorCenterTests: XCTestCase {
         await center.commit(7, plan: plan, turnOn: true)
 
         XCTAssertNil(center.drafts[7], "the recipe was saved")
-        guard case let .finished(message) = center.formContent(7) else {
-            return XCTFail("the form shows the outcome, got \(center.formContent(7))")
-        }
-        XCTAssertEqual(message, "Saved, but auto could not be kept for create_jira_issue: Error: not admitted")
+        XCTAssertEqual(center.saving[7],
+                       .failed("Saved, but auto could not be kept for create_jira_issue: Error: not admitted"),
+                       "the panel shows the outcome")
+        XCTAssertEqual(center.savedIDs[7], 7)
         center.discard(7)
-        guard case .loading = center.formContent(7) else { return XCTFail("closed") }
+        XCTAssertNil(center.saving[7], "closed")
     }
 
     func testTempFileRemovedOnFailure() async throws {
@@ -516,21 +490,21 @@ final class AutomationEditorCenterTests: XCTestCase {
 
     func testBeginEditKeepsAnUnsavedDraft() async throws {
         let center = makeCenter()
-        await center.beginEdit(7)
+        await center.beginEdit(7, chatNewestText: nil)
         center.drafts[7]?.form.fields.name = "Unsaved"
         runner.on("show") { _ in try Fixtures.showJSON(contentHash: "c9") }
-        await center.beginEdit(7)
+        await center.beginEdit(7, chatNewestText: nil)
         XCTAssertTrue(center.drafts[7]?.form.renderedText().contains("Unsaved") ?? false)
         XCTAssertEqual(runner.invocations.filter { $0[1] == "show" }.count, 1, "the file is not read over the edits")
 
         center.discard(7)
-        await center.beginEdit(7)
+        await center.beginEdit(7, chatNewestText: nil)
         XCTAssertEqual(center.drafts[7]?.form.buffer.baseContentHash, "c9")
     }
 
     func testAutoToggleUsesTheLoadedHash() async {
         let center = makeCenter()
-        await center.beginEdit(7)
+        await center.beginEdit(7, chatNewestText: nil)
         center.drafts[7]?.form.fields.name = "Unsaved"
         await center.setAuto(7, tool: "create_jira_issue", on: true)
         await center.setAuto(7, tool: "create_jira_issue", on: false)

@@ -7,6 +7,11 @@ package enum AutomationScopeChoice: Hashable, Sendable {
     case personal
     case workbench(id: Int64, name: String, folder: String)
 
+    /// One workbench's scope, its folder as the full path.
+    package static func forWorkbench(_ workbench: Workbench) -> Self {
+        .workbench(id: workbench.id, name: workbench.name, folder: workbench.folderPath)
+    }
+
     /// The workbench's id; nil for personal.
     package var workbenchID: Int64? {
         if case let .workbench(id, _, _) = self { return id }

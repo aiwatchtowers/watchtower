@@ -43,9 +43,9 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         workbench: AutomationEditorChatSurface.NewWorkbench? = nil,
         provider: String = "claude"
     ) async throws -> ChatSurfaceSpec {
-        let conversationID = try await AutomationEditorChatSurface.newConversationID(
-            draftID: draftID, workbenchID: workbench?.id, dbPool: pool)
-        return AutomationEditorChatSurface.newSpec(provider: provider, draftID: draftID, workbench: workbench,
+        let contextID = AutomationEditorChatSurface.draftContextID(draftID: draftID, workbenchID: workbench?.id)
+        let conversationID = try await AutomationEditorChatSurface.newConversationID(contextID: contextID, dbPool: pool)
+        return AutomationEditorChatSurface.newSpec(provider: provider, contextID: contextID, workbench: workbench,
                                                    conversationID: conversationID, dbPool: pool, skillsDir: nil)
     }
 
@@ -172,11 +172,14 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
     /// and nothing written under one scope is sent under another.
     func testEachScopeKeepsItsOwnDraftConversation() async throws {
         let personalID = try await AutomationEditorChatSurface.newConversationID(
-            draftID: "draft-1", workbenchID: nil, dbPool: pool)
+            contextID: AutomationEditorChatSurface.draftContextID(draftID: "draft-1", workbenchID: nil),
+            dbPool: pool)
         let workbenchID = try await AutomationEditorChatSurface.newConversationID(
-            draftID: "draft-1", workbenchID: 1, dbPool: pool)
+            contextID: AutomationEditorChatSurface.draftContextID(draftID: "draft-1", workbenchID: 1),
+            dbPool: pool)
         let otherWorkbenchID = try await AutomationEditorChatSurface.newConversationID(
-            draftID: "draft-1", workbenchID: 2, dbPool: pool)
+            contextID: AutomationEditorChatSurface.draftContextID(draftID: "draft-1", workbenchID: 2),
+            dbPool: pool)
         XCTAssertEqual(Set([personalID, workbenchID, otherWorkbenchID]).count, 3)
 
         let workbenchMock = MockClaudeService(events: [.text("ok"), .done])
@@ -308,7 +311,8 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         let automation = try makeAutomation()
         let editor = try await AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool)
         let draft = try await AutomationEditorChatSurface.newConversationID(
-            draftID: "draft-1", workbenchID: nil, dbPool: pool)
+            contextID: AutomationEditorChatSurface.draftContextID(draftID: "draft-1", workbenchID: nil),
+            dbPool: pool)
         let history = try await pool.read { db in try ChatConversationQueries.fetchStandalone(db) }.map(\.id)
         XCTAssertFalse(history.contains(editor))
         XCTAssertFalse(history.contains(draft))
@@ -398,8 +402,8 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         try await pool.write { db in try db.execute(sql: "ALTER TABLE automations_away RENAME TO automations") }
     }
 
-    /// J13: Save… while a turn is still running is refused by the engine —
-    /// the panel says so instead of dropping the click.
+    /// J13: Dry run again while a turn is still running is refused by the
+    /// engine — the panel says so instead of dropping the click.
     func testRefusedSendIsSaid() async throws {
         let mock = MockClaudeService(events: [.text("drafting…")], thenAwaitsRelease: true)
         let chat = controller(center(mock), spec: try await newSpec())
@@ -408,7 +412,7 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         let streaming = await eventually { chat.engine.isStreaming }
         XCTAssertTrue(streaming)
 
-        chat.askToSave()
+        chat.dryRunAgain()
         XCTAssertEqual(chat.sendNote, AutomationEditorChatSurface.sendRefusedNote)
 
         mock.release()

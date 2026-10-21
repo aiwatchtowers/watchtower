@@ -352,6 +352,27 @@ final class AutomationTemplatePanelModelTests: XCTestCase {
         XCTAssertTrue(model.canSave)
     }
 
+    /// A render in flight when a param changes is overtaken: its result is
+    /// dropped and "Checking…" stays until the newer render lands.
+    func testParamEditOvertakesARenderInFlight() async throws {
+        let model = try await renderedModel(["h1"])
+        runner.hold("install-template")
+        let inFlight = Task { await model.render() }
+        await waitUntil { self.runner.isHolding }
+
+        model.params["PROJECT"] = "OPS"
+        model.paramsChanged()
+        runner.release()
+        await inFlight.value
+        XCTAssertTrue(model.isRendering, "the overtaken render does not clear Checking…")
+        XCTAssertFalse(model.canSave)
+
+        await waitUntil { self.sleeper.calls == 1 }
+        sleeper.fire()
+        await waitUntil { !model.isRendering }
+        XCTAssertTrue(model.canSave)
+    }
+
     func testIsRenderingClearsAfterAFailedRender() async throws {
         runner.answer("install-template", .failure(.nonZeroExit(code: 1, stderr: "no active Jira project")))
         let model = try makeModel()

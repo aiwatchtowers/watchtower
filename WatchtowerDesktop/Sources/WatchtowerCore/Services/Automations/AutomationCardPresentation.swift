@@ -332,6 +332,11 @@ package enum AutomationCardPresentation {
         }
     }
 
+    /// The card's ⋯ menu item that turns the automation off or on.
+    package static func toggleMenuTitle(enabled: Bool) -> String {
+        enabled ? "Turn Off" : "Turn On"
+    }
+
     /// Run now and Dry run for the card. Run now follows Go's `Runnable()`
     /// (the CLI refuses anything else, `notRunnableReason`); Dry run is the
     /// owner's click and works for an unconfirmed or disabled recipe (ask #271).

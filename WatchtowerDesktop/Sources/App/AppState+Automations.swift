@@ -16,11 +16,27 @@ extension AppState {
     }
 
     /// **New Automation…** in a workbench's header menu: the Automations
-    /// tab opens the New automation sheet with that workbench picked.
-    func newAutomation(forWorkbench id: Int64) {
+    /// tab opens the New automation panel for that workbench (its scope
+    /// fixed, so "What is it for?" is skipped).
+    func newAutomation(forWorkbench workbench: Workbench) {
         guard let automationsViewModel else { return }
-        automationsViewModel.pendingNewWorkbenchID = id
+        automationsViewModel.showNew(AutomationNewFlow(fixedScope: .forWorkbench(workbench)))
         selectedDestination = .automations
+    }
+
+    /// Opens the Automations tab's editor panel on `target` (an edit, or a
+    /// new draft with its start text).
+    func openAutomationEditor(_ target: AutomationEditorTarget) {
+        guard let automationsViewModel else { return }
+        automationsViewModel.showEditor(target)
+        selectedDestination = .automations
+    }
+
+    /// Opens the editor panel on a fresh new draft in `scope` that starts
+    /// from `text` (a recipe proposed elsewhere, e.g. an Inbox card): its
+    /// column shows every hashed field, and only the owner's press saves.
+    func openAutomationDraft(text: String, scope: AutomationScopeChoice) {
+        openAutomationEditor(.newDraft(contextID: draftContextID(for: scope), scope: scope, startText: text))
     }
 
     /// An Inbox proposal card's automation label: opens the run's

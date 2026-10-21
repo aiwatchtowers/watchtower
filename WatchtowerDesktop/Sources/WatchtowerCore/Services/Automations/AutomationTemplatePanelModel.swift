@@ -120,6 +120,8 @@ package final class AutomationTemplatePanelModel {
     package func paramsChanged() {
         guard !isInstallingOrInstalled else { return }
         renderTask?.cancel()
+        // A render in flight is of the old params: its result is dropped.
+        generation += 1
         isRendering = true
         let delay = checkDelay
         let sleep = sleep

@@ -226,12 +226,138 @@ enum AutomationShotFixtures {
         }
     }
 
-    private static var poolPath: String?
+    private static var poolPaths: [String] = []
 
-    /// Removes the editor shots' database (`DesignShotFixtures.cleanUp`).
+    /// Removes the shots' databases (`DesignShotFixtures.cleanUp`).
     static func cleanUp() {
-        if let poolPath { TestDatabase.cleanup(path: poolPath) }
-        poolPath = nil
+        poolPaths.forEach(TestDatabase.cleanup(path:))
+        poolPaths = []
+    }
+
+    /// A fresh test database, removed by `cleanUp`.
+    private static func makePool() throws -> DatabasePool {
+        let (pool, path) = try TestDatabase.createPool()
+        poolPaths.append(path)
+        return pool
+    }
+
+    /// `show --json` for a card: its description, nothing widened or changed.
+    private static func showJSON(name: String) throws -> Data {
+        try JSONSerialization.data(withJSONObject: [
+            "id": 1, "slug": "x", "scope": "personal", "project_id": 0, "path": "/acme/automations/x.md",
+            "name": name, "description": "Summarises the morning mail and flags what needs an answer today.",
+            "script": "", "recipe_text": digest, "trigger_kind": "schedule",
+            "trigger_spec": #"{"schedule":"0 9 * * 1-5"}"#, "permissions": ["gmail:read@work", "llm:light"],
+            "outputs": ["inbox", "report"], "budget_tokens": 40000, "budget_minutes": 5, "concurrency": 1,
+            "missed_policy": "skip", "pause_timeout_hours": 72, "enabled": true, "runnable": true,
+            "needs_confirmation": false, "parse_error": "", "content_hash": "c1", "approval_hash": "h1",
+            "confirmed_hash": "h1", "widening": [String](), "grants": [String](), "changes": [String](),
+            "changes_known": true, "changed_by": "", "changed_at": NSNull()
+        ] as [String: Any])
+    }
+
+    private static func hooks(acmeID: Int64?) -> AutomationEditorChatHooks {
+        let acme = acmeID.map { AutomationScopeChoice.workbench(id: $0, name: "acme", folder: "/work/acme") }
+        return AutomationEditorChatHooks(
+            scopes: [.personal] + (acme.map { [$0] } ?? []), workspaceDir: "/acme",
+            draftContextID: { _ in "shot" }, makeNewChat: { _, _ in nil }, makeEditChat: { _ in nil },
+            templatePanel: { _, _ in nil }, startTemplate: { _, _ in nil }
+        )
+    }
+
+    /// Two runs (a failed one, then a newer one that succeeded) with their
+    /// steps and two reports.
+    private static func insertHistory(_ db: Database, automationID: Int64) throws {
+        let failed = try TestDatabase.insertAutomationRun(
+            db, automationID: automationID, trigger: "schedule", status: "failed", inputTokens: 1200,
+            error: "list_emails: the account needs to sign in again",
+            queuedAt: "2026-10-19T09:00:00Z", startedAt: "2026-10-19T09:00:01Z", finishedAt: "2026-10-19T09:00:03Z")
+        try TestDatabase.insertAutomationStep(db, runID: failed, seq: 1, kind: "tool", name: "list_emails",
+                                              status: "error")
+        try TestDatabase.insertAutomationOutput(db, automationID: automationID, runID: failed, kind: "report",
+                                                title: "Morning mail, Oct 18", body: "Nothing urgent.",
+                                                createdAt: "2026-10-18T09:00:12Z")
+        let ok = try TestDatabase.insertAutomationRun(
+            db, automationID: automationID, trigger: "schedule", inputTokens: 5200, outputTokens: 900,
+            queuedAt: "2026-10-20T09:00:00Z", startedAt: "2026-10-20T09:00:01Z", finishedAt: "2026-10-20T09:00:14Z")
+        try TestDatabase.insertAutomationStep(db, runID: ok, seq: 1, kind: "tool", name: "list_emails")
+        try TestDatabase.insertAutomationStep(db, runID: ok, seq: 2, kind: "llm", name: "light")
+        try TestDatabase.insertAutomationOutput(db, automationID: automationID, runID: ok, kind: "report",
+                                                title: "Morning mail, Oct 20",
+                                                body: "Three threads need an answer today.",
+                                                createdAt: "2026-10-20T09:00:14Z")
+    }
+
+    /// A New automation chat for workbench `acme` with a draft on disk.
+    private static func insertDraft(_ db: Database, databasePath: String, acme: Int64) throws {
+        try db.execute(sql: """
+            INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
+            VALUES ('New automation', 'automation_draft', ?, 0, 0)
+            """, arguments: ["shot-wb\(acme)"])
+        let url = AutomationDraftEntry.cacheURL(databasePath: databasePath, conversationID: db.lastInsertedRowID)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try (cacheLine() + "\n").write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    /// The tab (spec A1): Personal with an off automation and one that needs
+    /// confirmation, acme with a draft row and a paused automation, and the
+    /// first automation's card in the panel.
+    static func list() -> AnyView {
+        do {
+            let pool = try makePool()
+            let path = pool.path
+            let (acmeID, firstID) = try pool.write { db -> (Int64, Int64) in
+                let acme = try TestDatabase.insertWorkbench(db, name: "acme", folder: "/work/acme")
+                let first = try TestDatabase.insertAutomation(
+                    db, slug: "morning-mail", name: "Morning mail digest", triggerKind: "schedule",
+                    triggerSpec: #"{"schedule":"0 9 * * 1-5"}"#, enabled: false,
+                    permissionsJSON: #"["gmail:read@work","llm:light"]"#, outputsJSON: #"["inbox","report"]"#)
+                try insertHistory(db, automationID: first)
+                try TestDatabase.insertAutomation(
+                    db, slug: "weekly-status", name: "Weekly status report", triggerKind: "schedule",
+                    triggerSpec: #"{"schedule":"0 16 * * 5"}"#, approvalHash: "h2", enabled: false)
+                let paused = try TestDatabase.insertAutomation(
+                    db, slug: "nightly-triage", name: "Nightly test triage", triggerKind: "schedule",
+                    triggerSpec: #"{"schedule":"0 2 * * *"}"#, enabled: false, workbenchID: acme)
+                try db.execute(sql: "UPDATE automations SET disabled_reason = ? WHERE id = ?",
+                               arguments: ["stopped after a runaway script", paused])
+                try insertDraft(db, databasePath: path, acme: acme)
+                return (acme, first)
+            }
+            let vm = AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: RoutedCLIRunner(routes: [
+                "show": try showJSON(name: "Morning mail digest")
+            ])))
+            vm.refresh()
+            vm.select(firstID)
+            return AnyView(AutomationsView(vm: vm, hooks: hooks(acmeID: acmeID)))
+        } catch {
+            return failure(error)
+        }
+    }
+
+    /// The card of an enabled personal automation with its reports and history.
+    static func card() -> AnyView {
+        do {
+            let pool = try makePool()
+            let id = try pool.write { db -> Int64 in
+                let id = try TestDatabase.insertAutomation(
+                    db, slug: "morning-mail", name: "Morning mail digest", triggerKind: "schedule",
+                    triggerSpec: #"{"schedule":"0 9 * * 1-5"}"#,
+                    permissionsJSON: #"["gmail:read@work","llm:light"]"#, outputsJSON: #"["inbox","report"]"#)
+                try insertHistory(db, automationID: id)
+                return id
+            }
+            let vm = AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: RoutedCLIRunner(routes: [
+                "show": try showJSON(name: "Morning mail digest")
+            ])))
+            vm.refresh()
+            vm.select(id)
+            let item = try XCTUnwrap(vm.items.first)
+            return AnyView(AutomationCardView(vm: vm, item: item, actions: AutomationsTabActions(), workbenchName: nil,
+                                              now: Date()) { _ in })
+        } catch {
+            return failure(error)
+        }
     }
 
     /// The editor panel on "acme digest" (id 7, personal) with the chat
@@ -267,9 +393,7 @@ enum AutomationShotFixtures {
             ])
             let cli = AutomationsCLI(runner: runner)
             let editor = AutomationEditorCenter(cli: cli, grants: { _ in [] }, refresh: { _ in }, sleep: { _ in })
-            let (pool, path) = try TestDatabase.createPool()
-            cleanUp()
-            poolPath = path
+            let pool = try makePool()
             let vm = AutomationsViewModel(dbPool: pool, cli: cli)
             Task {
                 await editor.beginEdit(7, chatNewestText: nil)

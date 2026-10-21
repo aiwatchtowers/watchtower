@@ -315,8 +315,8 @@ final class AppState {
     /// run, a dry run or a delete survives navigation; built with the
     /// sidebar on both paths that reveal it (launch, `completeOnboarding()`).
     private(set) var automationsViewModel: AutomationsViewModel?
-    /// The Automations edit form's drafts, saves and the confirmation
-    /// sheet's confirm; owned here so a save finishes after the form closes.
+    /// The Automations editor panel's drafts, saves and confirms; owned here
+    /// so a save finishes after the panel goes away.
     private(set) var automationEditorCenter: AutomationEditorCenter?
     /// The template panels (spec A3) by template and scope; owned here so an
     /// install started in a panel finishes when the panel goes away.
@@ -531,8 +531,8 @@ final class AppState {
         return pool
     }
 
-    /// "Change it in words" for one automation: its engine comes from
-    /// `embeddedChatCenter`, so a turn outlives the sheet. Nil while the
+    /// The editor panel's chat for one automation: its engine comes from
+    /// `embeddedChatCenter`, so a turn outlives the panel. Nil while the
     /// database is not open or the automation is gone.
     func automationEditorChat(automationID: Int64) async throws -> AutomationEditorChat? {
         guard let pool = databaseManager?.dbPool,
@@ -550,33 +550,6 @@ final class AppState {
                                                  panelDraft: box.read)
             }
         )
-    }
-
-    /// The "New automation" sheet's chat, keyed by the draft id
-    /// `automationsViewModel` keeps and the "For" pick, so a half-written
-    /// draft survives the sheet and each scope keeps its own. Once a save
-    /// lands, the next **+ New** starts a fresh draft. A workbench that is
-    /// gone opens nothing (never a personal chat in its place).
-    func newAutomationEditorChat(workbenchID: Int64?) async throws -> AutomationEditorChat? {
-        guard let pool = databaseManager?.dbPool, let draftID = automationsViewModel?.newDraftID else { return nil }
-        var workbench: AutomationEditorChatSurface.NewWorkbench?
-        if let workbenchID {
-            guard let project = workbenchesViewModel?.summaries.first(where: { $0.project.id == workbenchID })?.project
-            else { return nil }
-            workbench = (workbenchID, project.name, project.folderURL.lastPathComponent)
-        }
-        let provider = Constants.aiProviderID()
-        let conversationID = try await AutomationEditorChatSurface.newConversationID(
-            draftID: draftID, workbenchID: workbenchID, dbPool: pool)
-        let onSaved: () -> Void = { [weak self] in
-            self?.automationsViewModel?.refresh()
-            self?.automationsViewModel?.startNewDraft()
-        }
-        return makeAutomationEditorChat(conversationID: conversationID, pool: pool, provider: provider,
-                                        onSaved: onSaved) { outcomes in
-            AutomationEditorChatSurface.newSpec(provider: provider, draftID: draftID, workbench: workbench,
-                                                conversationID: conversationID, dbPool: pool, outcomes: outcomes)
-        }
     }
 
     /// The panel's chat for a new automation, keyed by an explicit context id
@@ -605,16 +578,14 @@ final class AppState {
 
     /// Starts a new draft and returns its conversation key for `scope`.
     func draftContextID(for scope: AutomationScopeChoice) -> String {
-        automationsViewModel?.startNewDraft()
-        let draftID = automationsViewModel?.newDraftID ?? UUID().uuidString
-        return AutomationEditorChatSurface.draftContextID(draftID: draftID, workbenchID: scope.workbenchID)
+        AutomationEditorChatSurface.draftContextID(draftID: UUID().uuidString, workbenchID: scope.workbenchID)
     }
 
     private func makeAutomationEditorChat(
         conversationID: Int64,
         pool: DatabasePool,
         provider: String,
-        panelDraftBox: PanelDraftBox = PanelDraftBox(),
+        panelDraftBox: PanelDraftBox,
         onSaved: @escaping () -> Void,
         makeSpec: (@escaping @MainActor (Date?) -> String?) -> ChatSurfaceSpec
     ) -> AutomationEditorChat {

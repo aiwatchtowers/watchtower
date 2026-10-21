@@ -34,7 +34,7 @@ struct AutomationFormFields: View {
                     mayDoSection
                 }
                 .disabled(!controlsEnabled)
-                if !form.detail.isNewRecipe, !AutomationEditorCenter.isNewDraft(id), !form.detail.autoTools.isEmpty {
+                if !AutomationEditorCenter.isNewDraft(id), !form.detail.autoTools.isEmpty {
                     autoSection.disabled(locked)
                 }
                 problems
@@ -63,11 +63,6 @@ struct AutomationFormFields: View {
     // MARK: - Notes
 
     @ViewBuilder private var notes: some View {
-        if let coverage = vm.installCoverage[id] {
-            Label(coverage, systemImage: "checklist")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
         if form.recipeUnparsed {
             // #582: the fields are column defaults, not the file's settings;
             // the form stays off so it never writes them over the recipe.

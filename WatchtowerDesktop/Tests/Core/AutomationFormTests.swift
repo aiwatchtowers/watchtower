@@ -70,21 +70,10 @@ final class AutomationFormTests: XCTestCase {
 
     // MARK: - Save plan
 
-    func testWideningSheetShownOnlyOnWidening() throws {
-        let current = try Fixtures.detail()
-        let quiet = AutomationSavePlan.make(validated: try Fixtures.validated(approval: "h1"), current: current, grants: [])
-        XCTAssertFalse(quiet.needsSheet, "no widening, confirmed, same hash, no grants: Save saves at once")
-
-        let wider = AutomationSavePlan.make(validated: try Fixtures.validated(approval: "h1", widening: ["jira:read@*"]),
-                                            current: current, grants: [])
-        XCTAssertTrue(wider.needsSheet)
-    }
-
-    func testUnconfirmedRecipeAlwaysShowsSheet() throws {
+    func testUnconfirmedRecipeIsNotConfirmed() throws {
         let plan = AutomationSavePlan.make(validated: try Fixtures.validated(approval: "h1"),
                                            current: try Fixtures.detail(approval: "h1", confirmed: ""), grants: [])
         XCTAssertFalse(plan.wasConfirmed)
-        XCTAssertTrue(plan.needsSheet)
     }
 
     func testAuto03_KeepAutoBoxesUncheckedByDefault() throws {
@@ -94,7 +83,11 @@ final class AutomationFormTests: XCTestCase {
         XCTAssertEqual(plan.pausedGrants, ["add_comment", "create_jira_issue"],
                        "the grants active under the current hash, an already paused one left out")
         XCTAssertEqual(plan.keepAuto, [], "no Keep auto box is checked by default")
-        XCTAssertTrue(plan.needsSheet)
+        // The sheet is gone (spec A4): the draft column shows a Keep auto box
+        // for each paused grant before any save.
+        let column = AutomationDraftColumnModel(text: "x", validated: plan.validated, isChecking: false,
+                                                newestChatEntry: nil, confirmedText: nil, isNew: false, plan: plan)
+        XCTAssertEqual(column.pausedGrants, ["add_comment", "create_jira_issue"])
     }
 
     /// D26: a trigger, missed, budget or concurrency edit is spliced into the
@@ -116,7 +109,6 @@ final class AutomationFormTests: XCTestCase {
 
             let plan = AutomationSavePlan.make(validated: try Fixtures.validated(approval: "h2"), current: form.detail,
                                                grants: [Fixtures.grant("create_jira_issue", hash: "h1")])
-            XCTAssertTrue(plan.needsSheet, name)
             XCTAssertEqual(plan.pausedGrants, ["create_jira_issue"], name)
         }
     }
@@ -128,7 +120,6 @@ final class AutomationFormTests: XCTestCase {
         let plan = AutomationSavePlan.make(validated: try Fixtures.validated(approval: "h1"), current: form.detail,
                                            grants: [Fixtures.grant("create_jira_issue", hash: "h1")])
         XCTAssertEqual(plan.pausedGrants, [])
-        XCTAssertFalse(plan.needsSheet)
     }
 
     /// R-P3-5 lifted in P5 part 2 (PROJ-03 amendment, ask #272): the form
