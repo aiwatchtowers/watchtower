@@ -27,7 +27,7 @@ struct FeedZoneView: View {
     }
 
     var body: some View {
-        HomeZone(title: "Waiting on you", detail: Self.countDetail(feed.waiting.count + feed.hiddenWaiting)) {
+        HomeZone(title: "Waiting on you", detail: Self.countDetail(feed.waiting.count + feed.hiddenWaiting + feed.overflowWaiting)) {
             Button("Catch-Up →") { onLink(.catchUp) }
         } content: {
             waitingPart
@@ -63,17 +63,33 @@ struct FeedZoneView: View {
             }
         }
         if feed.hiddenWaiting > 0 {
-            moreButton("\(feed.hiddenWaiting) more") { onExpand(true) }
+            moreButtons {
+                Button("\(feed.hiddenWaiting) more") { onExpand(true) }
+            }
         } else if feed.waiting.count > HomeFeedBuilder.waitingLimit {
-            moreButton("Show less") { onExpand(false) }
+            // Expanded: past `HomeFeedBuilder.expandedLimit` the rest is
+            // Inbox's to show.
+            moreButtons {
+                if feed.overflowWaiting > 0 {
+                    Button(Self.overflowTitle(feed.overflowWaiting)) { onLink(.inbox) }
+                }
+                Button("Show less") { onExpand(false) }
+            }
         }
     }
 
-    private func moreButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(title, action: action)
-            .buttonStyle(.kitQuiet)
-            .controlSize(.small)
-            .padding(.leading, FeedRowMetrics.textInset - Spacing.regular)
+    /// "Open Inbox (N more)": the expanded list's way to the rows it leaves out.
+    static func overflowTitle(_ count: Int) -> String {
+        "Open Inbox (\(count) more)"
+    }
+
+    private func moreButtons(@ViewBuilder _ buttons: () -> some View) -> some View {
+        HStack(spacing: Spacing.small) {
+            buttons()
+        }
+        .buttonStyle(.kitQuiet)
+        .controlSize(.small)
+        .padding(.leading, FeedRowMetrics.textInset - Spacing.regular)
     }
 
     @ViewBuilder private var laterPart: some View {
@@ -306,14 +322,36 @@ struct FeedEventRow: View {
 
 /// Formats a feed time in the given calendar's zone — never a formatter
 /// without one, which would follow the process zone instead of the builder's.
-private enum FeedTime {
+/// Every row formats on every layout pass, so the formatters are made once
+/// per pattern and calendar (the calendar carries the zone) and reused;
+/// views only, hence main-actor.
+@MainActor
+enum FeedTime {
+    private struct Key: Hashable {
+        let pattern: String
+        let calendar: Calendar
+    }
+
+    /// A few patterns times the builder's calendar; the bound only guards a
+    /// caller cycling calendars.
+    private static let cacheLimit = 32
+    private static var formatters: [Key: DateFormatter] = [:]
+
     static func string(_ date: Date, _ pattern: String, _ calendar: Calendar) -> String {
+        formatter(pattern, calendar).string(from: date)
+    }
+
+    static func formatter(_ pattern: String, _ calendar: Calendar) -> DateFormatter {
+        let key = Key(pattern: pattern, calendar: calendar)
+        if let cached = formatters[key] { return cached }
+        if formatters.count >= cacheLimit { formatters.removeAll() }
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = calendar
         formatter.timeZone = calendar.timeZone
         formatter.dateFormat = pattern
-        return formatter.string(from: date)
+        formatters[key] = formatter
+        return formatter
     }
 }
 

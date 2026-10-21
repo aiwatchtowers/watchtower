@@ -120,9 +120,65 @@ final class HomeFeedBuilderTests: XCTestCase {
         let capped = build(data)
         XCTAssertEqual(capped.waiting.count, 7)
         XCTAssertEqual(capped.hiddenWaiting, 3)
+        XCTAssertEqual(capped.overflowWaiting, 0, "collapsed never leaves rows to Inbox")
         let all = build(data, expanded: true)
         XCTAssertEqual(all.waiting.count, 10)
         XCTAssertEqual(all.hiddenWaiting, 0)
+        XCTAssertEqual(all.overflowWaiting, 0)
+    }
+
+    private func expandedFeed(rows count: Int, hidden: Set<FeedRef> = []) -> HomeFeed {
+        var data = HomeFeedData()
+        data.inbox = (1...count).map { inbox($0, minutesAgo: Double($0)) }
+        return build(data, expanded: true, hidden: hidden)
+    }
+
+    /// Expanded stops at `expandedLimit`, newest first; the rest are counted
+    /// for the Inbox link, never behind "N more".
+    func testExpandedStopsAtTheLimit() {
+        XCTAssertEqual(HomeFeedBuilder.expandedLimit, 50)
+        let feed = expandedFeed(rows: 200)
+        XCTAssertEqual(feed.waiting.count, 50)
+        XCTAssertEqual(feed.waiting.first?.id, .inbox(1))
+        XCTAssertEqual(feed.waiting.last?.id, .inbox(50))
+        XCTAssertEqual(feed.overflowWaiting, 150)
+        XCTAssertEqual(feed.hiddenWaiting, 0)
+    }
+
+    func testExpandedAtTheLimitEdges() {
+        let exact = expandedFeed(rows: 50)
+        XCTAssertEqual(exact.waiting.count, 50)
+        XCTAssertEqual(exact.overflowWaiting, 0, "exactly the limit: everything shows")
+        let oneOver = expandedFeed(rows: 51)
+        XCTAssertEqual(oneOver.waiting.count, 50)
+        XCTAssertEqual(oneOver.overflowWaiting, 1)
+        XCTAssertEqual(oneOver.hiddenWaiting, 0)
+    }
+
+    /// Rows just Done / Hidden leave before the cap, so the overflow counts
+    /// only rows still waiting.
+    func testExpandedOverflowSubtractsHiddenRefs() {
+        let feed = expandedFeed(rows: 53, hidden: [.inbox(1), .inbox(52)])
+        XCTAssertEqual(feed.waiting.count, 50)
+        XCTAssertEqual(feed.waiting.first?.id, .inbox(2))
+        XCTAssertFalse(feed.waiting.contains { $0.id == .inbox(52) })
+        XCTAssertEqual(feed.overflowWaiting, 1)
+        // Hiding enough brings it back under the limit.
+        let under = expandedFeed(rows: 51, hidden: [.inbox(7)])
+        XCTAssertEqual(under.waiting.count, 50)
+        XCTAssertEqual(under.overflowWaiting, 0)
+    }
+
+    /// The cap is over every kind together: non-inbox rows past it are cut too.
+    func testExpandedCapCountsEveryKind() {
+        var data = HomeFeedData()
+        data.inbox = (1...49).map { inbox($0, minutesAgo: Double($0)) }
+        data.proposals = [proposal(100), proposal(101)]
+        data.outputs = [output(200)]
+        let feed = build(data, expanded: true)
+        XCTAssertEqual(feed.waiting.count, 50)
+        XCTAssertEqual(feed.overflowWaiting, 2)
+        XCTAssertEqual(feed.waiting.last?.id, .proposal(100))
     }
 
     func testHiddenRefsLeave() {

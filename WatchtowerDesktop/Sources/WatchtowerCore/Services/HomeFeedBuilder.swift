@@ -6,6 +6,9 @@ import Foundation
 package enum HomeFeedBuilder {
     /// Rows shown above NOW before "N more".
     package static let waitingLimit = 7
+    /// Rows shown above NOW once expanded; the rest are left to Inbox, so a
+    /// long backlog never lays out hundreds of rows on Home.
+    package static let expandedLimit = 50
     /// How many days ahead the next day with meetings is looked for.
     package static let nextDayHorizonDays = 3
 
@@ -22,11 +25,13 @@ package enum HomeFeedBuilder {
         hidden: Set<FeedRef>
     ) -> HomeFeed {
         let rows = waitingRows(data, now: now, calendar: calendar).filter { !hidden.contains($0.id) }
-        let shown = expanded ? rows : Array(rows.prefix(waitingLimit))
+        let shown = Array(rows.prefix(expanded ? expandedLimit : waitingLimit))
+        let cut = rows.count - shown.count
         let today = events(data, now: now, calendar: calendar, hidden: hidden)
         return HomeFeed(
             waiting: shown,
-            hiddenWaiting: rows.count - shown.count,
+            hiddenWaiting: expanded ? 0 : cut,
+            overflowWaiting: expanded ? cut : 0,
             nowLabel: format("HH:mm", now, calendar),
             ongoing: today.ongoing,
             laterToday: today.later,
@@ -200,8 +205,11 @@ package enum HomeFeedBuilder {
 
     /// An RFC 3339 UTC stamp as a date; an unparseable one sorts last.
     private static func instant(_ stamp: String) -> Date {
-        ISO8601DateFormatter().date(from: stamp) ?? .distantPast
+        isoParser.date(from: stamp) ?? .distantPast
     }
+
+    /// Zone-free, so one parser serves every build.
+    private static let isoParser = ISO8601DateFormatter()
 
     /// A target's "yyyy-MM-dd[THH:mm]" due date as local wall-clock time; a
     /// bare day is its midnight.

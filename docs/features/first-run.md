@@ -539,7 +539,10 @@ content width). No migration, no AI, no daemon phase.
   `.jira` kind, chip "Linear" for Linear) → proposal → automation output →
   reminder → target → email (`FeedKind`), newest first within a kind, 7 rows
   (`waitingLimit`) and `hiddenWaiting` for "N more" (expanding is
-  `HomeCenter.setFeedExpanded`, in place). An inbox row opens its permalink;
+  `HomeCenter.setFeedExpanded`, in place). Expanded shows at most 50 rows
+  (`expandedLimit`, over every kind together); the rest are
+  `overflowWaiting`, behind an "Open Inbox (N more)" button beside
+  "Show less" — a long backlog laid out in full pinned the main thread. An inbox row opens its permalink;
   one without an absolute permalink (empty, no scheme) opens Catch-Up. NOW carries `HH:mm`. Below:
   the ongoing meeting, then later today by time — meetings (the first says "in
   N min" under 60 min, "now" under one), timed targets and later reminders.
@@ -584,7 +587,9 @@ out when empty; numbers show once their first read lands. Two columns from
 900 pt content width (`HomeContent.twoColumnWidth`), else one column in the order
 feed, Workbench, links, numbers. The two columns fill the whole window, split
 about 60/40 (`HomeColumnsLayout`, the mockup's 1.55 : 1; owner, ask #432) — no
-page width cap. No migration, no AI, no daemon phase. A zone
+page width cap. The one layout picks two columns or the stack by the width
+it is offered, so the feed and the side column are built and measured once
+(no `ViewThatFits` over both arrangements). No migration, no AI, no daemon phase. A zone
 whose read failed shows `HomeZoneErrorLine` ("Couldn't read <zone> — see the
 log.") and never reads as empty.
 
