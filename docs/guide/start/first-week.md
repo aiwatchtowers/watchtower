@@ -13,7 +13,7 @@ Most tabs are empty for the first few minutes, and each one says what will land 
 ## Day 1: read Home
 
 - **Try:** open **Home** and look at **Getting ready**.
-- **See:** one card per feature that is on, each with a status line such as "Preparing now" or "Within ~15 min", and **Ready** when it is done. As things finish, a Today section shows what needs you.
+- **See:** how many features are ready, a line per feature still preparing, with a status such as "Preparing now" or "Within ~15 min", and the finished ones on a **Ready** line. Below it, the feed shows what is waiting on you.
 - **Needs:** nothing.
 
 Details: [Home](../features/home.md). A tab that stays empty is explained on [A tab is empty](../troubleshooting/tab-is-empty.md).

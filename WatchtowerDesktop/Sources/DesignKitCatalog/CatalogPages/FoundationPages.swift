@@ -283,6 +283,14 @@ struct TypographyPage: View {
                         Text("Billing export for acme runs nightly").font(font)
                     }
                 }
+                Sample("Caps label: Home's zone titles",
+                       usage: ".textCase(.uppercase).tracking(Tracking.caps).font(.caption.weight(.bold))") {
+                    Text("Waiting on you")
+                        .textCase(.uppercase)
+                        .tracking(Tracking.caps)
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.secondary)
+                }
             }
             PageSection("Numbers") {
                 Sample("Changing numbers keep their width: monospaced digits (left) against proportional (right)",

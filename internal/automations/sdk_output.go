@@ -58,7 +58,7 @@ func bufferedOutput(kind string, withPriority bool) SDKFunc {
 	return func(env *Env, call goja.FunctionCall, rt *goja.Runtime) (any, error) {
 		fn := "output." + kind
 		arg, _, argErr := argAt(env, rt, call, 0)
-		return env.Call(StepKindOutput, kind, arg, func(step *Step) (any, error) {
+		return env.CallBuffered(StepKindOutput, kind, arg, func(step *Step) (any, error) {
 			m, err := manifestOf(env)
 			if err != nil {
 				return nil, err

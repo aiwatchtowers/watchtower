@@ -6,7 +6,7 @@ import ViewInspector
 import WatchtowerCore
 import WatchtowerTestSupport
 
-/// The collapsible sessions panel and the collapsed title row's switchers
+/// The collapsible sessions panel and the collapsed title row's switcher
 /// (board #251, variant H): the panel's persisted visibility, ⌘1…⌘9, ⌘T,
 /// the session in focus, and which title the row shows.
 @MainActor
@@ -304,11 +304,20 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
 
     // MARK: - Views
 
-    private func titleRow(_ vm: WorkbenchesViewModel) -> WorkbenchTitleRow {
+    /// The panel-hidden back button, found by its help (ViewInspector reads
+    /// a Button's help, not its accessibility label, on this SDK).
+    private static func isBackButton(_ button: InspectableView<ViewType.Button>) throws -> Bool {
+        try button.help().string() == "All Workbenches (⌘[)"
+    }
+
+    private func titleRow(_ vm: WorkbenchesViewModel) -> WorkbenchTitleRow<EmptyView> {
         WorkbenchTitleRow(vm: vm, switcherActions: WorkbenchSwitcherActions(openFolder: {}, showAll: {})) {}
     }
 
-    func testAHiddenPanelPutsTheSwitchersInTheTitleRow() async throws {
+    /// Spec 2026-10-20 calls 5 and 11: with the panel hidden the title row
+    /// carries the workbench switcher only; the session's switcher is the
+    /// sessions menu on its pane's strip.
+    func testHiddenPanelTitleRowHasTheWorkbenchSwitcherAndNoSessionSwitcher() async throws {
         let a = try await workbench("alpha")
         let one = try await session(a, "one", lastActiveAt: "2026-09-03T10:00:00Z")
         let vm = makeVM()
@@ -319,8 +328,11 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
 
         let row = titleRow(vm)
         XCTAssertEqual(try row.inspect().find(WorkbenchSwitcherButton.self).actualView().name, "alpha")
-        XCTAssertEqual(try row.inspect().find(SessionSwitcherButton.self).actualView().title, "one")
-        XCTAssertNoThrow(try row.inspect().find(viewWithAccessibilityLabel: "Show Sessions Panel"))
+        XCTAssertThrowsError(try row.inspect().find(WorkbenchSessionsMenu.self))
+        XCTAssertThrowsError(try row.inspect().find(text: "one"), "no session in the title row")
+        XCTAssertThrowsError(try row.inspect().find(ViewType.Image.self) { try $0.actualImage().name() == "chevron.right" },
+                             "no workbench › session chevron")
+        XCTAssertNoThrow(try row.inspect().find(ViewType.Button.self) { try $0.help().string() == "Show Sessions Panel (⌥⌘S)" })
     }
 
     /// Board #743: with the panel hidden the list is one click away in the
@@ -335,21 +347,43 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
 
         XCTAssertThrowsError(
             try WorkbenchTitleRow(vm: vm, switcherActions: actions) {}.inspect()
-                .find(viewWithAccessibilityLabel: "Back to Workbenches")
+                .find(ViewType.Button.self, where: Self.isBackButton)
         )
 
         vm.panelVisible = false
         let back = try WorkbenchTitleRow(vm: vm, switcherActions: actions) {}.inspect()
-            .find(viewWithAccessibilityLabel: "Back to Workbenches")
-        try back.find(ViewType.Button.self).tap()
+            .find(ViewType.Button.self, where: Self.isBackButton)
+        try back.tap()
         XCTAssertEqual(shown, 1)
 
         // Over a standalone terminal too: the list is still one click away.
         await vm.newStandalone(kind: .shell, folder: folder)
         XCTAssertNoThrow(
             try WorkbenchTitleRow(vm: vm, switcherActions: actions) {}.inspect()
-                .find(viewWithAccessibilityLabel: "Back to Workbenches")
+                .find(ViewType.Button.self, where: Self.isBackButton)
         )
+    }
+
+    /// In the title row the switcher's tooltip also names the folder; the
+    /// standalone terminal's title has no tooltip at all, not an empty one.
+    func testTheTitleRowTooltips() async throws {
+        let a = try await workbench("alpha")
+        let vm = makeVM()
+        await vm.reload()
+        vm.drill(into: a)
+        let actions = WorkbenchSwitcherActions(openFolder: {}, showAll: {})
+        let switcherHelp = { (row: WorkbenchTitleRow<EmptyView>) in
+            try row.inspect().find(WorkbenchSwitcherButton.self).find(ViewType.Button.self).help().string()
+        }
+
+        vm.panelVisible = false
+        XCTAssertEqual(try switcherHelp(WorkbenchTitleRow(vm: vm, switcherActions: actions) {}),
+                       "\(try XCTUnwrap(vm.selectedWorkbench).folderPath)\nalpha — Switch Workbench")
+
+        await vm.newStandalone(kind: .shell, folder: folder)
+        let title = try WorkbenchTitleRow(vm: vm, switcherActions: actions) {}.inspect()
+            .find(ViewType.Text.self) { try $0.attributes().font() == .headline }
+        XCTAssertThrowsError(try title.help(), "no path, no tooltip")
     }
 
     /// ⌘[ (board #743, the Workbench menu since issue #288): on while the
@@ -383,8 +417,7 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         let row = titleRow(vm)
         XCTAssertNoThrow(try row.inspect().find(text: "alpha"))
         XCTAssertThrowsError(try row.inspect().find(WorkbenchSwitcherButton.self))
-        XCTAssertThrowsError(try row.inspect().find(SessionSwitcherButton.self))
-        XCTAssertNoThrow(try row.inspect().find(viewWithAccessibilityLabel: "Hide Sessions Panel"))
+        XCTAssertNoThrow(try row.inspect().find(ViewType.Button.self) { try $0.help().string() == "Hide Sessions Panel (⌥⌘S)" })
     }
 
     func testAHiddenPanelOverAStandaloneTerminalKeepsThePlainTitle() async throws {
@@ -398,102 +431,29 @@ final class WorkbenchHeaderSwitcherTests: XCTestCase {
         XCTAssertThrowsError(try row.inspect().find(WorkbenchSwitcherButton.self))
     }
 
-    func testTheSessionButtonSaysNoSessionWithoutOne() throws {
-        var taps = 0
-        let button = SessionSwitcherButton(title: nil, state: .notStarted) { taps += 1 }
-        XCTAssertNoThrow(try button.inspect().find(text: "No session"))
-        XCTAssertThrowsError(try button.inspect().find(viewWithAccessibilityLabel: "Running"))
-        try button.inspect().find(ViewType.Button.self).tap()
-        XCTAssertEqual(taps, 1)
-
-        XCTAssertNoThrow(try button.inspect().find(viewWithAccessibilityLabel: "No session"))
-
-        // VoiceOver hears the state with the title, not as a separate element.
-        let live = SessionSwitcherButton(title: "one", state: .live(.running)) {}
-        XCTAssertNoThrow(try live.inspect().find(viewWithAccessibilityLabel: "Session one, running"))
-        let idle = SessionSwitcherButton(title: "one", state: .notStarted) {}
-        XCTAssertNoThrow(try idle.inspect().find(viewWithAccessibilityLabel: "Session one, not running"))
-        let stopped = SessionSwitcherButton(title: "one", state: .live(.stopped)) {}
-        XCTAssertNoThrow(try stopped.inspect().find(viewWithAccessibilityLabel: "Session one, stopped"))
-        XCTAssertThrowsError(try button.inspect().find(SessionStateLabel.self), "no session, no state")
-    }
-
-    /// The button shows the state's glyph and caption beside the title.
-    func testTheSessionButtonShowsTheStateLabel() throws {
-        let waiting = SessionSwitcherButton(title: "one", state: SessionSwitcherPresentation.State(
+    /// The state label (the panel row's, the report line's): the state's
+    /// glyph and caption, the ask count by the glyph, never a 0 beside
+    /// `person.2.fill`.
+    func testTheStateLabelShowsTheGlyphCaptionAndAskCount() throws {
+        let waiting = SessionStateLabel(state: SessionSwitcherPresentation.State(
             kind: .waitingOnAsk, live: false, openAsks: 1, oldestAskID: 12
-        )) {}
-        let label = try waiting.inspect().find(SessionStateLabel.self)
-        XCTAssertNoThrow(try label.find(text: "Waiting for you · ask #12"))
-        XCTAssertEqual(try label.find(ViewType.Image.self).actualImage().name(), "questionmark")
-        XCTAssertNoThrow(try waiting.inspect().find(viewWithAccessibilityLabel: "Session one, waiting for you · ask #12"))
-        let dot = try waiting.inspect().find(SessionLiveDot.self).find(ViewType.Image.self)
-        XCTAssertEqual(try dot.actualImage().name(), "circle", "closed: a ring")
-        XCTAssertEqual(try dot.foregroundStyleShapeStyle(Color.self), .orange)
+        ))
+        XCTAssertNoThrow(try waiting.inspect().find(text: "Waiting for you · ask #12"))
+        XCTAssertEqual(try waiting.inspect().find(ViewType.Image.self).actualImage().name(), "questionmark")
 
-        let working = SessionSwitcherButton(title: "one", state: .live(.working, openAsks: 2, oldestAskID: 4)) {}
-        XCTAssertNoThrow(try working.inspect().find(SessionStateLabel.self).find(text: "2"), "the ask count by the glyph")
-        XCTAssertNoThrow(try working.inspect().find(SessionStateLabel.self).find(text: "Working · 2 asks open"))
+        let working = SessionStateLabel(state: .live(.working, openAsks: 2, oldestAskID: 4))
+        XCTAssertNoThrow(try working.inspect().find(text: "2"), "the ask count by the glyph")
+        XCTAssertNoThrow(try working.inspect().find(text: "Working · 2 asks open"))
 
-        let background = SessionSwitcherButton(title: "one", state: .live(.background, backgroundAgents: 3)) {}
-        let backgroundLabel = try background.inspect().find(SessionStateLabel.self)
-        XCTAssertNoThrow(try backgroundLabel.find(text: "3 agents working"))
-        XCTAssertEqual(try backgroundLabel.find(ViewType.Image.self).actualImage().name(), "person.2.fill")
-        XCTAssertThrowsError(try backgroundLabel.find(text: "0"), "no ask count beside person.2.fill")
-        XCTAssertNoThrow(try background.inspect().find(viewWithAccessibilityLabel: "Session one, 3 agents working"))
-        let backgroundAsks = SessionSwitcherButton(
-            title: "one", state: .live(.background, openAsks: 2, oldestAskID: 4, backgroundAgents: 1)
-        ) {}
-        let asksLabel = try backgroundAsks.inspect().find(SessionStateLabel.self)
-        XCTAssertEqual(try asksLabel.find(ViewType.Image.self).actualImage().name(), "questionmark")
-        XCTAssertNoThrow(try asksLabel.find(text: "2"), "the ask count by the glyph")
-        XCTAssertNoThrow(try asksLabel.find(text: "1 agent working · 2 asks open"))
-    }
-
-    func testASessionRowShowsItsBadgeCaptionAndShortcut() async throws {
-        let a = try await workbench("alpha")
-        let first = try await session(a, "first", lastActiveAt: "2026-09-03T10:00:00Z")
-        let target = try await pool.write { try TestDatabase.insertWorkbenchTarget($0, projectID: a, text: "Ship it") }
-        let second = try await session(a, "second", lastActiveAt: "2026-09-03T10:00:00Z", targetID: target)
-        let now = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-09-04T10:00:00Z"))
-        let rows = SessionSwitcherPresentation.rows([first, second], liveIDs: [first.id], statuses: [:], now: now)
-
-        var picked = 0
-        let running = SessionSwitcherRow(row: rows[0], isCurrent: true) { picked += 1 }
-        XCTAssertNoThrow(try running.inspect().find(text: "⌘1"))
-        XCTAssertNoThrow(try running.inspect().find(viewWithAccessibilityLabel: "Running"))
-        try running.inspect().find(ViewType.Button.self).tap()
-        XCTAssertEqual(picked, 1)
-
-        let idle = SessionSwitcherRow(row: rows[1], isCurrent: false) {}
-        XCTAssertNoThrow(try idle.inspect().find(text: "#\(target)"))
-        XCTAssertNoThrow(try idle.inspect().find(text: "Not running · 1d"))
-        XCTAssertNoThrow(try idle.inspect().find(viewWithAccessibilityLabel: "Not running · 1d"))
-        XCTAssertNoThrow(try idle.inspect().find(text: "⌘2"))
-    }
-
-    func testThePopoverSaysNoSessionsYetOnlyAfterASuccessfulRead() async throws {
-        let a = try await workbench("alpha")
-        let vm = makeVM()
-        await vm.reload()
-        vm.drill(into: a)
-        let project = try XCTUnwrap(vm.selectedWorkbench)
-        let popover = SessionSwitcherPopover(
-            vm: vm, project: project, currentID: nil, onSelect: { _ in }, onNewSession: { _ in }, onShowPanel: {}
+        let background = SessionStateLabel(state: .live(.background, backgroundAgents: 3))
+        XCTAssertNoThrow(try background.inspect().find(text: "3 agents working"))
+        XCTAssertEqual(try background.inspect().find(ViewType.Image.self).actualImage().name(), "person.2.fill")
+        XCTAssertThrowsError(try background.inspect().find(text: "0"), "no ask count beside person.2.fill")
+        let backgroundAsks = SessionStateLabel(
+            state: .live(.background, openAsks: 2, oldestAskID: 4, backgroundAgents: 1)
         )
-        // Board #399: a new session of each agent, ⌘T on the default one.
-        XCTAssertNoThrow(try popover.inspect().find(text: "New Claude Code session"))
-        XCTAssertNoThrow(try popover.inspect().find(text: "New Codex session"))
-
-        vm.terminalSessions[a] = nil
-        XCTAssertThrowsError(try popover.inspect().find(text: "No sessions yet."), "the first read is in flight")
-
-        vm.terminalSessions[a] = []
-        vm.sessionLoadErrors[a] = "Could not load terminal sessions: boom"
-        XCTAssertThrowsError(try popover.inspect().find(text: "No sessions yet."), "the read failed")
-        XCTAssertNoThrow(try popover.inspect().find(text: "Could not load terminal sessions: boom"))
-
-        vm.sessionLoadErrors[a] = nil
-        XCTAssertNoThrow(try popover.inspect().find(text: "No sessions yet."))
+        XCTAssertEqual(try backgroundAsks.inspect().find(ViewType.Image.self).actualImage().name(), "questionmark")
+        XCTAssertNoThrow(try backgroundAsks.inspect().find(text: "2"), "the ask count by the glyph")
+        XCTAssertNoThrow(try backgroundAsks.inspect().find(text: "1 agent working · 2 asks open"))
     }
 }

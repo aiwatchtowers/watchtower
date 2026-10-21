@@ -101,6 +101,15 @@ func (s *Sandbox) compile(script string) (*goja.Program, error) {
 func (s *Sandbox) setup(modules []Module) error {
 	rt := s.rt
 	rt.SetMaxCallStackSize(maxCallStackDepth)
+	// A recorded run's clock and Math.random replay after a restart: the
+	// clock reads through the run's Replay, Math.random draws from the
+	// run's seed (the lockdown's own regex timer keeps the real clock).
+	if r := s.env.Replay; r != nil && !s.env.DryRun {
+		rt.SetTimeSource(r.Now)
+		if s.env.Run != nil {
+			rt.SetRandSource(runRandom(s.env.Run))
+		}
+	}
 	s.errorCtor = rt.Get("Error")
 	var err error
 	if s.jsonParse, err = s.callable(`JSON.parse`); err != nil {
@@ -252,6 +261,15 @@ func (s *Sandbox) wrap(path string, fn SDKFunc) func(goja.FunctionCall) goja.Val
 		}
 		if errors.Is(err, errStepCap) { // the run's step cap: it ends here
 			s.abort(errTooManySteps())
+			return goja.Undefined()
+		}
+		var diverged *replayDivergence
+		if errors.As(err, &diverged) { // a resumed run that ran differently ends here
+			s.abort(&ScriptError{Message: diverged.Error()})
+			return goja.Undefined()
+		}
+		if errors.Is(err, errDaemonStopping) { // the run stays waiting for its resume
+			s.Interrupt(InterruptCancel)
 			return goja.Undefined()
 		}
 		if err != nil {

@@ -143,16 +143,6 @@ package struct SessionPanelSections: Equatable, Sendable {
         panelSection(of: statuses[id]?.state ?? SessionSwitcherPresentation.state(of: id, liveIDs: liveIDs, statuses: statuses))
     }
 
-    /// The switcher popover's lists (#480): the main rows and every group
-    /// row (shown under a "Finished" divider), each filtered by `query`
-    /// (`SessionSwitcherPresentation.matching`).
-    package func switcherRows(
-        matching query: String
-    ) -> (main: [SessionSwitcherPresentation.Row], finished: [SessionSwitcherPresentation.Row]) {
-        (SessionSwitcherPresentation.matching(main, query: query),
-         SessionSwitcherPresentation.matching(groupRows, query: query))
-    }
-
     /// Where the panel cursor goes after `id` leaves `visible`: the next
     /// row, else the previous one, else nil (also nil when `id` is not
     /// listed).

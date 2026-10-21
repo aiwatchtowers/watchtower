@@ -30,7 +30,7 @@ The agent never changes these settings. If anything about them cannot be read, t
 
 ## Using it
 
-1. Open the page header's **…** menu and choose **Agent Settings…**.
+1. Open the **…** menu in the workbench's title row and choose **Agent Settings…**.
 2. Pick a value for **Methodology**, **Ask guard** and **Finish check**. **From folder file** (for **Methodology**) and **Default** (for the checks) mean "do not override", and show the current value and where it comes from.
 3. **Create workflow.md** writes a template with every key commented out. Edit it, and commit it. The button reads **Open workflow.md** once the file exists.
 4. Press **Done**.

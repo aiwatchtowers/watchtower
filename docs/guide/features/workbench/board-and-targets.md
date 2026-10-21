@@ -83,7 +83,7 @@ To look at one feature alone, click **Open group** in its panel, double-click it
 
 ### Control the archive
 
-In the page header's **…** menu:
+In the **…** menu of the workbench's title row:
 
 - **Archive Closed Targets After** takes Never, 3, 7, 14, 30 or 90 days.
 - **Archive Closed Targets Now** archives every closed target at once. One with an open sub-task stays.

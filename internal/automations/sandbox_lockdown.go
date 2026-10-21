@@ -89,13 +89,13 @@ func init() {
 //     timeoutMs (a regexp2 match that timed out); exec stays goja's own.
 //
 // It returns the function that neutralises one more function prototype.
-const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, maxListing, jsonLimits, quotedLength, classOf, expandedLength, execHelperName) {
+const lockdownJS = `(function (g, maxAlloc, maxDepth, timeoutMs, maxSort, maxListing, jsonLimits, quotedLength, classOf, expandedLength, execHelperName, realNow) {
 	"use strict";
 	var FunctionProto = Function.prototype;
 	var uncurry = FunctionProto.bind.bind(FunctionProto.call);
 	var apply = Reflect.apply, construct = Reflect.construct, defineProperty = Object.defineProperty;
 	var reflectDefine = Reflect.defineProperty, reflectDelete = Reflect.deleteProperty, objectKeys = Object.keys;
-	var getPrototypeOf = Object.getPrototypeOf, floor = Math.floor, min = Math.min, now = Date.now;
+	var getPrototypeOf = Object.getPrototypeOf, floor = Math.floor, min = Math.min, now = realNow;
 	var NumberCtor = Number, StringCtor = String, ObjectCtor = Object, isArray = Array.isArray;
 	var RangeErrorCtor = RangeError, EvalErrorCtor = EvalError, WeakMapCtor = WeakMap;
 	var wmGet = uncurry(WeakMap.prototype.get), wmSet = uncurry(WeakMap.prototype.set);
@@ -904,13 +904,17 @@ func (s *Sandbox) lockdown() error {
 		}
 		return s.rt.ToValue("")
 	}
+	// realNow is the regex timer's clock: the real one, never the script's
+	// (recorded, replayed) clock, so timing a match records nothing.
+	realNow := func(goja.FunctionCall) goja.Value { return s.rt.ToValue(time.Now().UnixMilli()) }
 	expanded := func(call goja.FunctionCall) goja.Value {
 		str, _ := call.Argument(1).(goja.String)
 		return s.rt.ToValue(expandedLength(call.Argument(0).String(), str, int(call.Argument(2).ToInteger())))
 	}
 	nv, err := lock(goja.Undefined(), s.rt.GlobalObject(), s.rt.ToValue(MaxBuiltinAlloc), s.rt.ToValue(MaxJSONDepth),
 		s.rt.ToValue(RegexpMatchTimeout.Milliseconds()), s.rt.ToValue(MaxDefaultSortLength), s.rt.ToValue(MaxListing),
-		s.rt.ToValue(jsonLimits), s.rt.ToValue(quoted), s.rt.ToValue(classOf), s.rt.ToValue(expanded), s.rt.ToValue(execHelper))
+		s.rt.ToValue(jsonLimits), s.rt.ToValue(quoted), s.rt.ToValue(classOf), s.rt.ToValue(expanded), s.rt.ToValue(execHelper),
+		s.rt.ToValue(realNow))
 	if err != nil {
 		return fmt.Errorf("automation sandbox: locking down the runtime: %w", err)
 	}

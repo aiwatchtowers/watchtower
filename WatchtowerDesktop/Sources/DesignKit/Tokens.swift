@@ -65,6 +65,12 @@ public enum IconSize {
     public static let composerLarge: CGFloat = 24
 }
 
+/// Letter spacing, in points.
+public enum Tracking {
+    /// Small uppercase labels: Home's zone titles.
+    public static let caps: CGFloat = 0.6
+}
+
 /// The app's two standard animations.
 public enum Motion {
     public static let toggle = Animation.snappy(duration: 0.15)

@@ -11,7 +11,7 @@ struct LinksZoneView: View {
     let onLink: (HomeLink) -> Void
 
     var body: some View {
-        HomeZone(title: "Links", systemImage: "link") {
+        HomeZone(title: "Links") {
             if failed {
                 HomeZoneErrorLine(zone: "the links")
             }
