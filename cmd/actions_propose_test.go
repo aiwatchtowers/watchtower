@@ -188,3 +188,22 @@ func TestActionsPropose_ApproveNeedsTheOwnersConfirmation(t *testing.T) {
 	assert.Zero(t, actionRowCount(t, database))
 	assert.Equal(t, "todo", targetStatus(t, database, targetID))
 }
+
+// The owner's press is no assistant tool: Settings → Assistant tools never
+// lists it (actions tools --json), while workbench-only tools stay listed.
+func TestActionsTools_SkipsInboxOnlyTools(t *testing.T) {
+	writeActionsConfig(t)
+	out, err := runActions(t, "tools", "--json")
+	require.NoError(t, err)
+	var listed []struct {
+		Name string `json:"name"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(out), &listed), out)
+	names := map[string]bool{}
+	for _, l := range listed {
+		names[l.Name] = true
+	}
+	assert.False(t, names["apply_track_action"], "the Inbox press is not an assistant tool")
+	assert.True(t, names["update_target"], "workbench tools stay listed")
+	assert.True(t, names["create_target"])
+}

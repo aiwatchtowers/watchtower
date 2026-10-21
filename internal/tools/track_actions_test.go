@@ -262,6 +262,9 @@ func TestApplyTrackAction_ValidationRefusals(t *testing.T) {
 		{"unknown event", func(*testing.T, trackActionFixture) json.RawMessage { return trackActionArgs(9999) },
 			"This track event no longer exists."},
 		{"empty proposed_action", func(t *testing.T, f trackActionFixture) json.RawMessage {
+			return trackActionArgs(f.eventOn(t, f.trackID, "", "pending"))
+		}, "This track event proposes no change."},
+		{"no proposed change (status none)", func(t *testing.T, f trackActionFixture) json.RawMessage {
 			return trackActionArgs(f.eventOn(t, f.trackID, "", "none"))
 		}, "This track event proposes no change."},
 		{"dismissed", func(t *testing.T, f trackActionFixture) json.RawMessage {
@@ -299,7 +302,7 @@ func TestApplyTrackAction_ValidationRefusals(t *testing.T) {
 		{"extra key", func(t *testing.T, f trackActionFixture) json.RawMessage {
 			ev := f.event(t, `{"type":"update_status","status":"done"}`)
 			return json.RawMessage(`{"event_id":` + strconv.Itoa(ev) + `,"reason":"mine"}`)
-		}, ""},
+		}, `validating root: unexpected additional properties ["reason"]`}, // the schema gate, ahead of decodeStrict
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -308,9 +311,7 @@ func TestApplyTrackAction_ValidationRefusals(t *testing.T) {
 			_, err := f.reg.Propose(context.Background(), "apply_track_action", args, Binding{Surface: InboxSurface})
 			var verr *ValidationError
 			require.ErrorAs(t, err, &verr)
-			if tc.msg != "" {
-				assert.Equal(t, tc.msg, verr.Msg)
-			}
+			assert.Equal(t, tc.msg, verr.Msg)
 			assert.Zero(t, f.actionRows(t), "a refusal writes no agent_actions row")
 		})
 	}
@@ -343,4 +344,25 @@ func TestApplyTrackAction_OnlyOnTheInboxSurface(t *testing.T) {
 	assert.Equal(t, TrustAsk, trust, "no trust row was written")
 	assert.Empty(t, TrustSurfaces(tool))
 	assert.Empty(t, f.reg.List("main"), "no chat surface lists it")
+}
+
+// The target vanishing between Execute's read and its transaction: the status
+// write touches no row, so the apply fails and the event's claim rolls back
+// instead of reporting a change that was never written. The deletion runs
+// from a trigger on the claim itself, inside the same transaction.
+func TestApplyTrackAction_TargetGoneBeforeTheWriteRollsBackTheClaim(t *testing.T) {
+	f := newTrackActionFixture(t)
+	ev := f.event(t, `{"type":"update_status","status":"done"}`)
+	id := f.propose(t, ev)
+	_, err := f.db.Exec(`PRAGMA foreign_keys = OFF`)
+	require.NoError(t, err)
+	_, err = f.db.Exec(`CREATE TRIGGER drop_target AFTER UPDATE OF action_status ON track_events
+		BEGIN DELETE FROM targets WHERE id = ` + strconv.Itoa(f.targetID) + `; END`)
+	require.NoError(t, err)
+
+	row := f.approveApply(t, id)
+
+	assert.Equal(t, "failed", row.Status)
+	assert.Contains(t, row.Error, "no rows")
+	assert.Equal(t, "pending", f.eventStatus(t, ev), "the claim rolled back with the failed write")
 }

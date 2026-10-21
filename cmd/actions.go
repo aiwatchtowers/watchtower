@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -624,7 +625,9 @@ func runActionsTools(cmd *cobra.Command, _ []string) error {
 		// Settings → Assistant tools draws a trust switch per surface, so
 		// only what trust can act on is listed (CheckTrustable); a
 		// session-applied tool is no assistant tool a switch could govern.
-		if tools.CheckTrustable(t) != nil || t.AppliedBySession {
+		// An inbox-only tool is the owner's own press (apply_track_action):
+		// no assistant calls it, so it is no assistant tool either.
+		if tools.CheckTrustable(t) != nil || t.AppliedBySession || slices.Equal(t.Surfaces, []string{tools.InboxSurface}) {
 			continue
 		}
 		// Never nil, so JSON carries []; the automation surface is listed with
