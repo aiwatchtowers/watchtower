@@ -1,9 +1,10 @@
 import SwiftUI
 import WatchtowerCore
 
-/// Home's Getting ready zone: the features still preparing, a Connect row per
-/// missing source, and the first sync's line on top while it runs. No
-/// counters: each card says only its own readiness.
+/// Home's Getting ready zone, compact: "N of M ready" in the header, one row
+/// per feature still preparing, the ready ones on one line of links, a
+/// Connect row per missing source, and the first sync's line on top while it
+/// runs.
 struct GettingReadyZoneView: View {
     let zone: GettingReadyZone
     let firstSync: FirstSyncLine?
@@ -42,29 +43,45 @@ struct GettingReadyZoneView: View {
     }
 
     private func shownZone(cards: [GettingReadyCard], sourceRows: [GettingReadySourceRow]) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HomeZoneHeader(title: "Getting ready", subtitle: "Watchtower is preparing these from your sources") {
-                Button(action: onHide) {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(.borderless)
-                .help("Hide")
-                .accessibilityLabel("Hide Getting ready")
+        let ready = cards.filter { $0.readiness == .ready }
+        let offering = Self.digestsOfferingCards(cards, digestsTurnOn)
+        return HomeZone(title: "Getting ready", detail: Self.progressDetail(ready: ready.count, of: cards.count)) {
+            Button(action: onHide) {
+                Label("Hide", systemImage: "xmark")
+                    .labelStyle(.iconOnly)
             }
+            .help("Hide")
+            .accessibilityLabel("Hide Getting ready")
+        } content: {
             if let firstSync {
                 FirstSyncBanner(line: firstSync)
+                    .homeZoneInset()
             }
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 250), spacing: 12, alignment: .top)], spacing: 12) {
-                let offering = Self.digestsOfferingCards(cards, digestsTurnOn)
-                ForEach(cards, id: \.feature) { card in
-                    GettingReadyCardView(
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: Self.rowMinWidth), spacing: Spacing.page, alignment: .top)],
+                alignment: .leading, spacing: 0
+            ) {
+                ForEach(cards.filter { $0.readiness != .ready }, id: \.feature) { card in
+                    GettingReadyRowView(
                         card: card, digestsTurnOn: offering.contains(card.feature) ? digestsTurnOn : nil, onLink: onLink)
                 }
             }
+            if !ready.isEmpty {
+                GettingReadyReadyLine(cards: ready, onLink: onLink)
+            }
             ForEach(sourceRows, id: \.source) { row in
                 GettingReadySourceRowView(text: Self.connectLine(row), source: row.source, onLink: onLink)
+                    .homeZoneInset()
             }
         }
+    }
+
+    /// The narrowest a preparing row gets before the grid drops a column.
+    static let rowMinWidth: CGFloat = 320
+
+    /// "6 of 11 ready"; no cards (only Connect rows) shows none.
+    static func progressDetail(ready: Int, of total: Int) -> String? {
+        total > 0 ? "\(ready) of \(total) ready" : nil
     }
 
     /// The cards that may offer the Slack Digests Turn on: each one waiting
@@ -141,8 +158,10 @@ struct DigestsTurnOnState: Equatable {
     static let idle = Self()
 }
 
-/// One feature: its name, what it makes, and its readiness.
-struct GettingReadyCardView: View {
+/// One feature still preparing, on one line: its status dot, name and
+/// readiness line, and the fix when there is one (Turn on Slack Digests,
+/// Open Connections, Choose Jira boards). What it makes is the row's tooltip.
+struct GettingReadyRowView: View {
     let card: GettingReadyCard
     /// nil: this card offers no Slack Digests Turn on (another card carries it).
     let digestsTurnOn: DigestsTurnOnState?
@@ -167,66 +186,53 @@ struct GettingReadyCardView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(card.copy.title)
-                .font(.headline)
-            Text(card.copy.whatItIs)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            readiness
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(HomeCardBackground())
-    }
-
-    @ViewBuilder
-    private var readiness: some View {
-        if card.readiness == .ready {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
                 HomeStatusDot(color: Self.color(card.tone))
-                Text("Ready")
-                    .font(.callout)
+                Text(card.copy.title)
+                    .fontWeight(.semibold)
+                if let readiness = card.readiness {
+                    // Wraps: an error's detail or what to connect is the
+                    // only place the owner reads it.
+                    Text(FeatureReadiness.line(readiness))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Spacer(minLength: 0)
-                Button("Open") { onLink(.feature(card.feature)) }
-                    .buttonStyle(.link)
-                    .accessibilityLabel("Open \(card.copy.title)")
-            }
-        } else if let readiness = card.readiness {
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                HomeStatusDot(color: Self.color(card.tone))
-                Text(FeatureReadiness.line(readiness))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                if let featureID = digestsTurnOnID, let digestsTurnOn {
-                    Spacer(minLength: 0)
-                    if digestsTurnOn.isTurningOn {
-                        ProgressView().controlSize(.small)
-                    }
-                    Button(digestsTurnOn.error == nil ? "Turn on Slack Digests" : "Try again") {
-                        onLink(.turnOn(featureID: featureID))
-                    }
-                    .buttonStyle(.link)
-                    .disabled(digestsTurnOn.busy)
-                }
-                if case .needsSource(let source) = readiness, source.isOwnerIdentity || source == .jiraBoards {
-                    Spacer(minLength: 0)
-                    // No owner yet (OWNER-02): the fix is in Settings →
-                    // Connections. No Jira board picked (#572): Boards.
-                    Button(source.isOwnerIdentity ? "Open Connections" : source.actionTitle) {
-                        onLink(.connect(source))
-                    }
-                    .buttonStyle(.link)
-                }
+                fix
             }
             if digestsTurnOnID != nil, let error = digestsTurnOn?.error {
                 Text(error)
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Tone.error)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+        .padding(.vertical, Spacing.compact)
+        .homeZoneInset()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(card.copy.whatItIs)
+    }
+
+    @ViewBuilder
+    private var fix: some View {
+        if let featureID = digestsTurnOnID, let digestsTurnOn {
+            if digestsTurnOn.isTurningOn {
+                ProgressView().controlSize(.small)
+            }
+            Button(digestsTurnOn.error == nil ? "Turn on Slack Digests" : "Try again") {
+                onLink(.turnOn(featureID: featureID))
+            }
+            .buttonStyle(.link)
+            .disabled(digestsTurnOn.busy)
+        }
+        if case .needsSource(let source) = card.readiness, source.isOwnerIdentity || source == .jiraBoards {
+            // No owner yet (OWNER-02): the fix is in Settings →
+            // Connections. No Jira board picked (#572): Boards.
+            Button(source.isOwnerIdentity ? "Open Connections" : source.actionTitle) {
+                onLink(.connect(source))
+            }
+            .buttonStyle(.link)
         }
     }
 
@@ -240,6 +246,30 @@ struct GettingReadyCardView: View {
     }
 }
 
+/// "Ready: Briefing · Day plan · …": the ready features on one wrapping
+/// line, each a link that opens it.
+private struct GettingReadyReadyLine: View {
+    let cards: [GettingReadyCard]
+    let onLink: (HomeLink) -> Void
+
+    var body: some View {
+        FlowLayout(spacing: Spacing.medium) {
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                HomeStatusDot(color: GettingReadyRowView.color(.ready))
+                Text("Ready")
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(cards, id: \.feature) { card in
+                Button(card.copy.title) { onLink(.feature(card.feature)) }
+                    .buttonStyle(.link)
+                    .accessibilityLabel("Open \(card.copy.title)")
+            }
+        }
+        .padding(.vertical, Spacing.compact)
+        .homeZoneInset()
+    }
+}
+
 /// "Connect <Source> to get …" with its Connect button, dashed.
 private struct GettingReadySourceRowView: View {
     let text: String
@@ -247,14 +277,14 @@ private struct GettingReadySourceRowView: View {
     let onLink: (HomeLink) -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Spacing.medium) {
             Text(text)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Button(source.actionTitle) { onLink(.connect(source)) }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(HomeCardBackground(dashed: true))
+        .padding(.horizontal, Spacing.large)
+        .padding(.vertical, Spacing.cozy)
+        .background(HomeDashedOutline())
     }
 }

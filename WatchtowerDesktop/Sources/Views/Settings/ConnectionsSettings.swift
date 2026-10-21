@@ -17,7 +17,10 @@ struct ConnectionsSettings: View {
             List(ConnectionService.allCases, selection: $appState.settingsConnection) { service in
                 row(service).tag(service)
             }
-            .listStyle(.sidebar)
+            // Not .sidebar: outside a NavigationSplitView its vibrancy
+            // material bleeds up under the window's toolbar.
+            .listStyle(.inset)
+            .scrollContentBackground(.hidden)
             .frame(width: 190)
             Divider()
             detail

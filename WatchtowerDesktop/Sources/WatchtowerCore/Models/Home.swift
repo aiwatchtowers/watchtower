@@ -109,8 +109,6 @@ package enum HomeLink: Equatable, Sendable {
     /// An automation inbox output's run in the Automations tab, which is
     /// always visible (Inbox hides with no message or tracker source).
     case automationRun(automationID: Int64, runID: Int64)
-    /// Settings → System (the instruction suggestion's More…).
-    case instructionSettings
     /// Getting ready's Open.
     case feature(ReadinessFeature)
     /// Getting ready's Connect row.

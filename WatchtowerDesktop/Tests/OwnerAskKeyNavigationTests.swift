@@ -271,10 +271,10 @@ final class OwnerAskKeyNavigationTests: XCTestCase {
         await vm.asks.load(projectID: project)
         let a = OwnerAskKeyMap.Press(key: .character("a"))
 
-        XCTAssertFalse(WorkbenchTitleRow.pressOnPage(a, vm: vm, paletteOpen: true))
+        XCTAssertFalse(WorkbenchTitleRowKeys.pressOnPage(a, vm: vm, paletteOpen: true))
         XCTAssertNil(vm.asks.stackKeyboardRequest)
-        XCTAssertFalse(WorkbenchTitleRow.pressOnPage(digit("j"), vm: vm, paletteOpen: false))
-        XCTAssertTrue(WorkbenchTitleRow.pressOnPage(a, vm: vm, paletteOpen: false))
+        XCTAssertFalse(WorkbenchTitleRowKeys.pressOnPage(digit("j"), vm: vm, paletteOpen: false))
+        XCTAssertTrue(WorkbenchTitleRowKeys.pressOnPage(a, vm: vm, paletteOpen: false))
         XCTAssertNotNil(vm.asks.stackKeyboardRequest)
     }
 

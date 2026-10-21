@@ -90,7 +90,7 @@ public enum CatalogPage: String, CaseIterable, Identifiable {
         case .spacing: ["Spacing"]
         case .radius: ["Radius"]
         case .strokes: ["Stroke"]
-        case .typography: []
+        case .typography: ["Tracking"]
         case .icons: ["IconSize"]
         case .motion: ["Motion", "FloatingShadow"]
         case .actions: ["kitPrimary", "kitSecondary", "kitQuiet", "kitDestructive", "kitIcon",

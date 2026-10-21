@@ -72,8 +72,8 @@ extension WorkbenchesViewModel {
         drilledWorkbenchID.flatMap(visibleSession(projectID:))
     }
 
-    /// The collapsed header's session (board #251): the one on screen the
-    /// way `panelSelection` picks it, else the workbench's active one. nil
+    /// The page's session (board #251): the one on screen the way
+    /// `panelSelection` picks it, else the workbench's active one. nil
     /// without a workbench page or when it has neither.
     var headerSession: TerminalSession? {
         guard let projectID = selectedWorkbenchID else { return nil }
@@ -255,8 +255,8 @@ extension WorkbenchesViewModel {
 
     /// The session the Session and Changes views open on: the one on screen,
     /// else the active one, else the first listed agent session; nil = none,
-    /// nothing to report on or review (the header's Changes button is then
-    /// disabled).
+    /// nothing to report on or review (`showView(.report / .changes)` then
+    /// changes nothing).
     func sessionViewTarget(projectID: Int64) -> Int64? {
         layout(projectID: projectID).shownSessionIDs.first ?? activeSessionID(projectID: projectID)
             ?? orderedSessions(projectID: projectID).first { $0.kind.isAgent }?.id
@@ -267,10 +267,37 @@ extension WorkbenchesViewModel {
     /// Changes button puts it.
     func showChanges(sessionID: Int64, projectID: Int64) {
         if selectedWorkbenchID != projectID { selectedWorkbenchID = projectID }
+        showBesideItsSession(.changes(sessionID), sessionID: sessionID, projectID: projectID)
+    }
+
+    /// A session strip's Report or Changes (spec 2026-10-20, call 8): that
+    /// session's `pane` beside its own terminal, the way the header's
+    /// toggle puts the shown session's.
+    func showBesideItsSession(_ pane: WorkspacePane, sessionID: Int64, projectID: Int64) {
         beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
-        Self.placeBesideItsSession(.changes(sessionID), sessionID: sessionID, in: &updated)
+        Self.placeBesideItsSession(pane, sessionID: sessionID, in: &updated)
         setLayout(updated, projectID: projectID)
+    }
+
+    /// A session strip's Terminal or Workchat over that session's report or
+    /// Changes: the slot shows the session instead, in that mode — recorded
+    /// as the mode it opens in — resumed if not running. The open places the
+    /// session by its recorded mode, so the mode is written first; an open
+    /// that does not put the session on screen (it was deleted, its row
+    /// could not be read) gives the previous mode back, so only an open that
+    /// succeeded keeps it.
+    func showSession(_ id: Int64, workchat: Bool, inPane slot: WorkspacePane, projectID: Int64) async {
+        beginSwitch(projectID: projectID)
+        var updated = layout(projectID: projectID)
+        let previous = updated.pane(forSession: id).isWorkchat
+        updated.setMode(workchat, sessionID: id)
+        setLayout(updated, projectID: projectID)
+        await showInPane(slot, item: .session(id), projectID: projectID)
+        var after = layout(projectID: projectID)
+        guard !after.showsSession(id), after.pane(forSession: id).isWorkchat == workchat else { return }
+        after.setMode(previous, sessionID: id)
+        setLayout(after, projectID: projectID)
     }
 
     /// A session row's Open in Workchat (#711): its workbench on screen and
@@ -322,6 +349,13 @@ extension WorkbenchesViewModel {
     /// No session on screen, or both its modes side by side: nothing changes.
     func toggleWorkchat(projectID: Int64) {
         guard let id = workchatToggleSession(projectID: projectID) else { return }
+        toggleMode(sessionID: id, projectID: projectID)
+    }
+
+    /// ⌃` and a session strip's Terminal | Workchat (spec 2026-10-20, call
+    /// 8): the slot holding session `id` shows its other mode, in place —
+    /// the other pane of a split stays — and that mode is recorded.
+    func toggleMode(sessionID id: Int64, projectID: Int64) {
         beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
         updated.toggleMode(sessionID: id)
@@ -366,14 +400,16 @@ extension WorkbenchesViewModel {
 
     /// A session's report, Changes or Workchat beside its own session's
     /// terminal or Workchat (board #357, #711): a split showing that session
-    /// swaps its other pane; otherwise the page becomes the session — its
-    /// Workchat on screen stays, else its terminal — and `pane` side by
-    /// side, so a panel click re-points the report instead of replacing it.
-    /// Nothing starts.
+    /// keeps its pane and swaps the other one — whichever slot holds it, so
+    /// the second session of a split gets its report beside its own
+    /// terminal (spec 2026-10-20, call 8); otherwise the page becomes the
+    /// session — its Workchat on screen stays, else its terminal — and
+    /// `pane` side by side, so a panel click re-points the report instead
+    /// of replacing it. Nothing starts.
     private static func placeBesideItsSession(_ pane: WorkspacePane, sessionID id: Int64, in layout: inout WorkspaceLayout) {
         let own = layout.visiblePanes.first { $0 != pane && WorkspaceLayout.sessionID(of: $0) == id }
-        if layout.isSplit, own != nil {
-            layout.showWorkbenchView(pane)
+        if layout.isSplit, let own {
+            layout.reveal(pane, keeping: own)
         } else {
             layout.primary = own ?? .session(id)
             layout.split(with: pane)
@@ -459,6 +495,36 @@ extension WorkbenchesViewModel {
         beginSwitch(projectID: projectID)
         var updated = layout(projectID: projectID)
         updated.hide(view)
+        setLayout(updated, projectID: projectID)
+    }
+
+    /// The title row's Session tab turned on (spec 2026-10-20 call 7): the
+    /// session view target in the mode it was last shown in — its Workchat
+    /// or its terminal — the way today's Workchat / Terminal buttons put it
+    /// (`showView`). In a split a Workchat takes the second pane and the
+    /// first stays, as the terminal does (`revealTerminal`). With no
+    /// session, Terminal's path.
+    func showSessionTab(project: Workbench) async {
+        var updated = layout(projectID: project.id)
+        guard let id = sessionViewTarget(projectID: project.id), updated.pane(forSession: id).isWorkchat else {
+            await showView(.terminal, project: project)
+            return
+        }
+        guard updated.isSplit else {
+            await showView(.chat, project: project)
+            return
+        }
+        updated.reveal(.sessionChat(id), keeping: updated.visiblePanes.first ?? updated.primary)
+        beginSwitch(projectID: project.id)
+        setLayout(updated, projectID: project.id)
+    }
+
+    /// The Session tab turned off: a split's session pane closes, the other
+    /// pane stays alone (`WorkspaceLayout.hideSessionViews`).
+    func hideSessionViews(projectID: Int64) {
+        beginSwitch(projectID: projectID)
+        var updated = layout(projectID: projectID)
+        updated.hideSessionViews()
         setLayout(updated, projectID: projectID)
     }
 

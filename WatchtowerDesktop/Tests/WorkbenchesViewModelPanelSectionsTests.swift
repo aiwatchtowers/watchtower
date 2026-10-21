@@ -1,5 +1,7 @@
 import XCTest
 import GRDB
+import SwiftUI
+import ViewInspector
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
@@ -226,6 +228,26 @@ final class WorkbenchesViewModelPanelSectionsTests: XCTestCase {
         XCTAssertEqual(sections.groupRows.map(\.id), [b.id], "listed by the switcher while folded in the panel")
         XCTAssertEqual(sections.searchRows.map(\.shortcut), [1, 2, nil])
         XCTAssertEqual(vm.panelOrderedSessions(projectID: projectID).map(\.id), [c.id, a.id, b.id])
+    }
+
+    /// PROJ-11(b): a session strip's sessions menu — the page's session
+    /// switcher — lists the main rows, then every finished one (folded in
+    /// the panel or not), as Go to… does.
+    func testStripSessionsMenuListsFinishedAfterTheMainRows() async throws {
+        let a = try await insertSession("Session A")
+        let b = try await insertSession("Session B")
+        let c = try await insertSession("Session C")
+        let vm = makeVM()
+        await page(vm)
+        await setStates([stateRow(b, finishedAt: "2026-10-12T10:00:00.000Z")])
+        let project = try XCTUnwrap(vm.summaries.first { $0.id == projectID }?.project)
+        let menu = WorkbenchSessionsMenu(vm: vm, project: project, slot: .session(a.id))
+        let titles = try menu
+            .inspect()
+            .findAll(ViewType.Button.self)
+            .compactMap { try? $0.labelView().text().string() }
+            .filter { $0.hasPrefix("Session ") }
+        XCTAssertEqual(titles, ["Session C", "Session A", "Session B"])
     }
 
     // MARK: - Opening a finished session (#480 fix round)

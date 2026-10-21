@@ -109,6 +109,10 @@ func writeTool(env *Env, b Backends, step *Step, t *tools.Tool, args json.RawMes
 	if wait && (env.Wait == nil || b.DB == nil) {
 		return nil, notAvailable("waiting for an approval needs the automation executor")
 	}
+	if link, ok := step.Resumed(); ok && wait && link.ActionID != 0 {
+		// A resumed run: the proposal exists; wait for its decision again.
+		return waitForAction(env, b, step, link.ActionID)
+	}
 	args, err := withDefaultReason(env, t.Name, args)
 	if err != nil {
 		return nil, err

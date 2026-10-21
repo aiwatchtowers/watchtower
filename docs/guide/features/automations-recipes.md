@@ -7,7 +7,7 @@ A template gives you a working recipe to adapt instead of a blank page. Knowing 
 ## How it works
 ### The settings block
 The top of the file holds the settings:
-- **Trigger**, exactly one of: a `schedule` (five-field cron, local time), an `event` (see [Event triggers](#event-triggers)), a `button` (with a label of 1 to 24 characters, and optionally `confirm`), or `manual: true` (only when you run it). The edit form calls the button option **When I press a button**. It makes the recipe appear under its name in **Run Automation…** (**⌃⌘R**) and in the tray's **Run automation** submenu, and a workbench recipe also gets a button in its workbench's header; with `confirm` it asks before running.
+- **Trigger**, exactly one of: a `schedule` (five-field cron, local time), an `event` (see [Event triggers](#event-triggers)), a `button` (with a label of 1 to 24 characters, and optionally `confirm`), or `manual: true` (only when you run it). The edit form calls the button option **When I press a button**. It makes the recipe appear under its name in **Run Automation…** (**⌃⌘R**) and in the tray's **Run automation** submenu, and a workbench recipe is also an item in its workbench's ⚡ menu; with `confirm` it asks before running.
 - **Permissions**, such as `gmail:read@work`, `jira:read@PAY`, `llm:light`, `llm:strong`, `tool:create_jira_issue`. Reading all Slack messages or all calendar events needs `slack:read@*` or `calendar:read@*`. Linear uses team keys: `linear:read@ENG`, `linear:write@ENG`.
 - **Outputs**, any of `inbox`, `briefing`, `report`, `target`, `slack`. Posting to Slack also needs `slack:write@<account>`.
 - **Budget**: tokens (1,000 to 2,000,000) and minutes (1 to 60).
@@ -41,7 +41,7 @@ Personal recipes sit in the `automations` folder inside Watchtower's workspace f
 ### Workbench recipes
 A recipe can also live in a Workbench folder, in `.watchtower/automations/`, so it travels with the repository. There it can do what a personal one can't: run an exact command listed in its settings in the folder, open an agent session there, or ask you something. Its card says "workbench" where a personal one says "personal"; **Edit**, **Change in words** and confirming work the same, and the new version is saved in the workbench folder.
 
-Because the file belongs to the repository, it can arrive with a `git pull` or be changed by someone else. Watchtower notices when you open the workbench, and as the file changes once the workbench's files have been shown. Such a recipe shows **Needs your confirmation** on its card and its header button, and does not run until you confirm it.
+Because the file belongs to the repository, it can arrive with a `git pull` or be changed by someone else. Watchtower notices when you open the workbench, and as the file changes once the workbench's files have been shown. Such a recipe shows **Needs your confirmation** on its card and in the workbench's ⚡ menu, and does not run until you confirm it.
 
 ## Using it
 1. In **Automations**, click **Templates** (or **Browse templates** on an empty tab).
@@ -57,7 +57,7 @@ Because the file belongs to the repository, it can arrive with a `git pull` or b
 | `pr-review-rounds` | workbench | weekdays 10:00 and 16:00 | lists open pull requests with `gh` and opens a review session for each changed one, at most 10 per round; the rest wait for the next round |
 | `release-buttons` | workbench | by hand | three recipes (release, deploy to test, deploy to stage), each running one `make` target and asking before it acts |
 
-`new-mail-summary` runs on its own after a Gmail or IMAP sync brings new mail. A run by hand or on a schedule has no mail event, so first put your mailboxes' labels or addresses in `scheduledAccounts` in the script. Each mailbox picks up where its last run stopped, whether you name it by label or by address.
+`new-mail-summary` runs on its own after a Gmail or IMAP sync brings new mail. A run by hand or on a schedule has no mail event, so first put your mailboxes' labels or addresses in `scheduledAccounts` in the script. Mail that syncs late is summed up only if under two days old.
 
 `jira-state-report` picks its projects when you install it: every synced Jira project with an open issue assigned to you or reported by you. The form that opens says which ("Covers: PAY, OPS"). Each project gets its own `jira:read@…` permission and an entry in the script's `projects` list; to add or drop one later, change both.
 

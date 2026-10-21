@@ -941,7 +941,8 @@ tool QC-02 does not allow." Guard `TestMCP_OnlyQC02AllowedTools`.
 Embedded in `internal/automations/templates/*.md`; installed unconfirmed and disabled.
 
 1. `new-mail-summary` — personal; `event: gmail.new_messages` (and `schedule` variant in the description);
-   `gmail:read@*`, `llm:light`; `outputs: [inbox]`; cursor in `state` (`since`).
+   `gmail:read@*`, `llm:light`; `outputs: [inbox]`; summed-up message ids over a two-day lookback window in
+   `state` (board #799 replaced the original `since` cursor, which skipped mail synced late).
 2. `pr-review-rounds` — workbench; `schedule: "0 10,16 * * 1-5"`; `shell:"gh pr list --state open --json
    number,title,url,author,updatedAt"`, `session:start`, `llm:light`; for each PR updated since the last round
    (`state`), one `session()` whose prompt tells the agent to review the PR and file its findings as `ask_owner`

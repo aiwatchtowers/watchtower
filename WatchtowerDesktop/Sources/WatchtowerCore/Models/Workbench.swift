@@ -7,11 +7,15 @@ import GRDB
 package enum WorkbenchPane: String, CaseIterable, Codable, Sendable {
     case terminal
     case board
+    /// A session's Branch review pane beside its terminal (Home's click on a
+    /// session ready to check); `subjectID` names the session.
+    case review
 
     package var title: String {
         switch self {
         case .terminal: "Terminal"
         case .board: "Board"
+        case .review: "Branch review"
         }
     }
 }

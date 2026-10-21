@@ -2845,7 +2845,10 @@ CREATE TABLE IF NOT EXISTS automation_runs (
     summary           TEXT NOT NULL DEFAULT '',              -- clipped 1 KiB
     queued_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     started_at        TEXT,
-    finished_at       TEXT
+    finished_at       TEXT,
+    resume_pending    INTEGER NOT NULL DEFAULT 0 CHECK (resume_pending IN (0, 1)), -- 1 = a waiting run kept by the daemon start for a resume (00146)
+    not_resumable     INTEGER NOT NULL DEFAULT 0 CHECK (not_resumable IN (0, 1)),  -- 1 = its replay log is incomplete; a restart ends it (00146)
+    random_seed       INTEGER NOT NULL DEFAULT 0                                     -- the run's Math.random seed, set at claim (00146)
 );
 CREATE INDEX IF NOT EXISTS idx_automation_runs_automation_status ON automation_runs(automation_id, status);
 CREATE INDEX IF NOT EXISTS idx_automation_runs_status_queued ON automation_runs(status, queued_at);
@@ -2882,6 +2885,29 @@ CREATE TABLE IF NOT EXISTS automation_run_steps (
     finished_at       TEXT,
     UNIQUE (run_id, seq)
 );
+
+-- The replay log of an active live run (00146): one row per completed SDK
+-- call (the whole result, not clipped) and one pending row for the call the
+-- run waits in. A run waiting when the daemon stopped is resumed by
+-- re-executing its snapshot against this log. Deleted when the run ends.
+CREATE TABLE IF NOT EXISTS automation_run_replay (
+    run_id      INTEGER NOT NULL REFERENCES automation_runs(id) ON DELETE CASCADE,
+    seq         INTEGER NOT NULL,                            -- the journal step's seq
+    kind        TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    args_hash   TEXT NOT NULL,                               -- sha256 of the call's whole args JSON
+    result_json TEXT,                                        -- NULL = undefined
+    error_json  TEXT,                                        -- {name, message, needed} of a thrown call
+    clock_json  TEXT NOT NULL DEFAULT '[]',                  -- Date.now() values (ms) read since the previous call
+    pending     INTEGER NOT NULL DEFAULT 0 CHECK (pending IN (0, 1)), -- 1 = the call the run waits in
+    PRIMARY KEY (run_id, seq)
+);
+CREATE TRIGGER IF NOT EXISTS automation_runs_replay_cleanup AFTER UPDATE OF status ON automation_runs
+WHEN NEW.status NOT IN ('queued','running','waiting')
+BEGIN
+    DELETE FROM automation_run_replay WHERE run_id = NEW.id;
+    UPDATE automation_runs SET resume_pending = 0 WHERE id = NEW.id AND resume_pending = 1;
+END;
 
 -- The state a script keeps between runs; replaced only by a succeeded run.
 CREATE TABLE IF NOT EXISTS automation_state (
