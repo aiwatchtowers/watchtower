@@ -295,8 +295,9 @@ type CompactResult struct {
 }
 
 // compactVacuumHook, nil in production, runs right before the VACUUM Exec
-// (test seam for the interrupt test).
-var compactVacuumHook func()
+// on the connection that runs it (test seam for the interrupt test and the
+// temp_store check).
+var compactVacuumHook func(conn *sql.Conn)
 
 // compactVacuumSQL is the statement run (test seam for a forced failure).
 var compactVacuumSQL = "VACUUM"
@@ -381,30 +382,48 @@ func Compact(ctx context.Context, dbPath string, opts CompactOptions) (CompactRe
 	return res, nil
 }
 
-// vacuumWithCheckpoints runs checkpoint, VACUUM, checkpoint. The first two
-// honour ctx (the VACUUM through sqlite3_interrupt); the last runs to the
-// end once the VACUUM has committed. A checkpoint that reports busy (a
-// reader still on an older snapshot) is not an error; the final one's busy
-// is returned, since the file then keeps part of its size until the next
-// checkpoint.
+// vacuumWithCheckpoints runs checkpoint, VACUUM, checkpoint on one
+// connection. The first two honour ctx (the VACUUM through
+// sqlite3_interrupt); the last runs to the end once the VACUUM has
+// committed. A checkpoint that reports busy (a reader still on an older
+// snapshot) is not an error; the final one's busy is returned, since the
+// file then keeps part of its size until the next checkpoint. The engine is
+// built with SQLITE_TEMP_STORE=2 (temporary data in memory, the at-rest
+// policy for an encrypted file), which would hold VACUUM's temporary copy —
+// about the file's size — in RAM; this connection sets temp_store = FILE
+// first, so the copy goes to a temporary file. The connection belongs to
+// the compaction's own handle, which Compact closes.
 func vacuumWithCheckpoints(ctx context.Context, d *DB) (checkpointBusy bool, err error) {
-	if _, err := walCheckpointTruncate(ctx, d); err != nil {
+	conn, err := d.Conn(ctx)
+	if err != nil {
+		return false, fmt.Errorf("vacuum connection: %w", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if _, err := walCheckpointTruncate(ctx, conn); err != nil {
 		return false, err
 	}
-	if compactVacuumHook != nil {
-		compactVacuumHook()
+	if _, err := conn.ExecContext(ctx, `PRAGMA temp_store = FILE`); err != nil {
+		return false, fmt.Errorf("temp_store: %w", err)
 	}
-	if _, err := d.ExecContext(ctx, compactVacuumSQL); err != nil {
+	if compactVacuumHook != nil {
+		compactVacuumHook(conn)
+	}
+	// A *sql.Conn does not check ctx before a statement as the pool does,
+	// and an interrupt sent before the VACUUM starts is lost.
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if _, err := conn.ExecContext(ctx, compactVacuumSQL); err != nil {
 		return false, fmt.Errorf("vacuum: %w", err)
 	}
-	return walCheckpointTruncate(context.WithoutCancel(ctx), d)
+	return walCheckpointTruncate(context.WithoutCancel(ctx), conn)
 }
 
 // walCheckpointTruncate runs PRAGMA wal_checkpoint(TRUNCATE) and reports
 // whether it was blocked from completing (its busy column).
-func walCheckpointTruncate(ctx context.Context, d *DB) (busy bool, err error) {
+func walCheckpointTruncate(ctx context.Context, conn *sql.Conn) (busy bool, err error) {
 	var busyCol, logFrames, checkpointed int64
-	if err := d.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busyCol, &logFrames, &checkpointed); err != nil {
+	if err := conn.QueryRowContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`).Scan(&busyCol, &logFrames, &checkpointed); err != nil {
 		return false, fmt.Errorf("wal checkpoint: %w", err)
 	}
 	return busyCol != 0, nil

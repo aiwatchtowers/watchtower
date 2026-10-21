@@ -69,6 +69,8 @@ var genericHelpers = map[string]bool{
 	modulePrefix + "internal/db.(*DB).WithTx":          true,
 	modulePrefix + "internal/kb.withTx":                true,
 	modulePrefix + "internal/extsync.(*Engine).withTx": true,
+	// A pool connection's open, where a busy error on open is raised.
+	modulePrefix + "internal/db.(*pragmaConnector).Connect": true,
 }
 
 type connector struct {
@@ -244,7 +246,9 @@ func (c *conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 }
 
 // baseRows is the set of driver rows interfaces the engine's rows implement
-// and database/sql uses; firstStepRows forwards every one of them.
+// and database/sql uses; firstStepRows forwards every one of them. The engine
+// has no RowsColumnTypeLength or RowsColumnTypePrecisionScale (mattn leaves
+// both commented out), so there is nothing more to forward.
 type baseRows interface {
 	driver.Rows
 	driver.RowsColumnTypeDatabaseTypeName

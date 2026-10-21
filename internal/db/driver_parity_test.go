@@ -24,6 +24,9 @@ func TestDriverValueParity(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
+	// No column here is declared DATETIME, TIMESTAMP or DATE: the engine
+	// (mattn) scans such a column as time.Time where modernc gave a string.
+	// The only one in the schema today is goose_db_version.tstamp.
 	if _, err := d.Exec(`CREATE TABLE parity (
 		name TEXT PRIMARY KEY,
 		c_none, c_text TEXT, c_int INTEGER, c_real REAL, c_blob BLOB)`); err != nil {

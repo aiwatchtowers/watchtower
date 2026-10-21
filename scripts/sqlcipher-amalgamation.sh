@@ -42,6 +42,18 @@ git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$TAG" \
 	make sqlite3.c >"$WORK/make.log" 2>&1
 )
 
+# expect_lines FILE PATTERN COUNT: a rewrite below must leave exactly COUNT
+# lines matching PATTERN, so a sed that matched nothing on a new tag stops
+# the script instead of passing silently.
+expect_lines() {
+	local n
+	n="$(grep -c -e "$2" "$1" || true)"
+	if [ "$n" != "$3" ]; then
+		echo "error: $(basename "$1") has $n lines matching '$2' after the rewrite, want $3" >&2
+		exit 1
+	fi
+}
+
 # wrap SRC DST: mattn's guard, so a libsqlite3 build would see an empty file.
 wrap() {
 	{
@@ -57,10 +69,14 @@ wrap "$WORK/src/src/sqlite3ext.h" "$DEST/sqlite3ext.h"
 # sqlite3-binding.h, so the include is renamed as mattn's upgrade tool does.
 sed -i.bak 's/^#include "sqlite3.h"/#include "sqlite3-binding.h"/' "$DEST/sqlite3-binding.c" "$DEST/sqlite3ext.h"
 rm -f "$DEST/sqlite3-binding.c.bak" "$DEST/sqlite3ext.h.bak"
+expect_lines "$DEST/sqlite3-binding.c" '^#include "sqlite3.h"' 0
+expect_lines "$DEST/sqlite3ext.h" '^#include "sqlite3.h"' 0
+expect_lines "$DEST/sqlite3ext.h" '^#include "sqlite3-binding.h"' 1
 # An upstream credit line carries a real email address; the repo's leak check
 # lets it through only with its marker on the line.
 sed -i.bak 's/^\(   Note: As suggested by Joachim Schipper (.*@fox-it\.com)\)$/\1 leak-check:allow/' "$DEST/sqlite3-binding.c"
 rm -f "$DEST/sqlite3-binding.c.bak"
+expect_lines "$DEST/sqlite3-binding.c" 'fox-it\.com) leak-check:allow$' 1
 
 # Watchtower patches (internal/sqlcipher/patches/*.patch, in name order) go on
 # the wrapped amalgamation; one that does not apply cleanly stops the script,

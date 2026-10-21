@@ -76,10 +76,27 @@ func TestEngine_IsSQLCipher(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"ENABLE_FTS5", "ENABLE_DBSTAT_VTAB", "HAS_CODEC", "TEMP_STORE=2"} {
+	for _, want := range []string{
+		"ENABLE_FTS5", "ENABLE_DBSTAT_VTAB", "HAS_CODEC", "TEMP_STORE=2",
+		"ENABLE_MATH_FUNCTIONS", "ENABLE_STAT4", "LIKE_DOESNT_MATCH_BLOBS",
+	} {
 		if !opts[want] {
 			t.Errorf("compile_options lacks %s", want)
 		}
+	}
+}
+
+// The SQL behaviour modernc.org/sqlite's build had: math functions, and a
+// BLOB that never LIKE-matches a text pattern.
+func TestEngine_ModerncSQLParity(t *testing.T) {
+	d := openTest(t, &Connector{Path: ":memory:"})
+	var ceil float64
+	var blobLike int
+	if err := d.QueryRow(`SELECT ceil(1.2), CAST(x'616263' AS BLOB) LIKE 'abc'`).Scan(&ceil, &blobLike); err != nil {
+		t.Fatal(err)
+	}
+	if ceil != 2 || blobLike != 0 {
+		t.Errorf("ceil(1.2) = %v, blob LIKE = %d; want 2 and 0", ceil, blobLike)
 	}
 }
 
@@ -195,6 +212,48 @@ func TestEngine_KeyedRoundTrip(t *testing.T) {
 	}
 	if !bytes.HasPrefix(head, []byte("SQLite format 3\x00")) {
 		t.Error("an open without a key did not write a plaintext SQLite file")
+	}
+}
+
+// Patch 0001 keeps upstream behaviour for a keyed main database: a keyless
+// ATTACH of a new file and VACUUM INTO take the main database's key, so the
+// copies are encrypted and open only with that key.
+func TestEngine_KeyedCopiesStayEncrypted(t *testing.T) {
+	dir := t.TempDir()
+	const marker = "watchtower-plaintext-marker-603"
+	d := openTest(t, &Connector{Path: filepath.Join(dir, "keyed.db"), Key: keyFunc(testKey)})
+	d.SetMaxOpenConns(1)
+	attached, into := filepath.Join(dir, "attached.db"), filepath.Join(dir, "into.db")
+	for _, q := range []string{
+		`CREATE TABLE t (v TEXT)`,
+		`INSERT INTO t VALUES ('` + marker + `')`,
+		`ATTACH DATABASE '` + attached + `' AS side`,
+		`CREATE TABLE side.t (v TEXT)`,
+		`INSERT INTO side.t VALUES ('` + marker + `')`,
+		`DETACH DATABASE side`,
+		`VACUUM INTO '` + into + `'`,
+	} {
+		if _, err := d.Exec(q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+
+	for _, path := range []string{attached, into} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.HasPrefix(raw, []byte("SQLite format 3\x00")) || bytes.Contains(raw, []byte(marker)) {
+			t.Errorf("%s is plaintext", filepath.Base(path))
+		}
+		var got string
+		if err := openTest(t, &Connector{Path: path, Key: keyFunc(testKey)}).QueryRow(`SELECT v FROM t`).Scan(&got); err != nil || got != marker {
+			t.Errorf("%s with the key: %q, %v", filepath.Base(path), got, err)
+		}
+		err = openTest(t, &Connector{Path: path}).QueryRow(`SELECT count(*) FROM t`).Scan(new(int))
+		if err == nil || !strings.Contains(err.Error(), "file is not a database") {
+			t.Errorf("%s without the key: err = %v, want file is not a database", filepath.Base(path), err)
+		}
 	}
 }
 
