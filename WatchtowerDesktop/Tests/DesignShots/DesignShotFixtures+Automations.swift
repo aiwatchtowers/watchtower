@@ -7,7 +7,8 @@ import WatchtowerTestSupport
 
 /// The automation editor before a save: the draft column of an edit, and a
 /// pending `save_automation` card with its scope line and "Sessions it
-/// starts" (one prompt long enough to fold, one clipped).
+/// starts" (one prompt long enough to fold, one clipped); the New automation
+/// panel.
 @MainActor
 enum AutomationShotFixtures {
     private static let recipe = "---\nname: \"Release button\"\ntrigger:\n  button: \"Release\"\n---\n"
@@ -135,26 +136,32 @@ enum AutomationShotFixtures {
         }
     }
 
-    private static var newSheetPoolPath: String?
+    /// The five templates in `automations templates --json` order.
+    private static let templatesJSON = #"""
+    [{"name":"new-mail-summary","title":"New mail summary","description":"Sums up new mail.","scope":"personal",
+      "trigger_text":"On new Gmail","permissions":["reads your mail"],"outputs":["inbox"]},
+     {"name":"pr-review-rounds","title":"PR review rounds","description":"Review rounds.","scope":"workbench",
+      "trigger_text":"Weekdays 10:00, 16:00","permissions":["starts agent sessions"],"outputs":["inbox"]},
+     {"name":"jira-state-report","title":"Jira state report","description":"Weekly.","scope":"personal",
+      "trigger_text":"Mondays 09:00","permissions":["reads Jira"],"outputs":["report"]},
+     {"name":"team-performance-report","title":"Team performance report","description":"Weekly.",
+      "scope":"personal","trigger_text":"Fridays 17:00","permissions":["reads Jira and Slack"],"outputs":["report"]},
+     {"name":"release-buttons","title":"Release and deploy buttons","description":"Buttons.","scope":"workbench",
+      "trigger_text":"Button: Release","permissions":["runs a shell command"],"outputs":["report"]}]
+    """#
 
-    /// The New automation sheet opened from acme's **New Automation…**: the
-    /// "For" picker on acme, the chat still opening.
-    static func newSheetForWorkbench() -> AnyView {
+    private static let acme = AutomationScopeChoice.workbench(id: 3, name: "acme", folder: "/work/acme")
+
+    /// The New automation panel: Personal and two workbenches, the five
+    /// templates; `fixedScope` acme is a workbench's **New Automation…**.
+    static func newPanel(fixedToAcme: Bool) -> AnyView {
         do {
-            let (pool, path) = try TestDatabase.createPool()
-            if let newSheetPoolPath { TestDatabase.cleanup(path: newSheetPoolPath) }
-            newSheetPoolPath = path
-            let noSleep: (Duration) async -> Void = { _ in }
-            let vm = AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: FakeCLIRunner()), sleep: noSleep)
-            let workbenches = [AutomationTemplateGallery.InstallTarget(id: 3, name: "acme"),
-                               AutomationTemplateGallery.InstallTarget(id: 4, name: "acme-docs")]
-            let opening: (Int64?) async throws -> AutomationEditorChat? = { _ in
-                try await Task.sleep(for: .seconds(3600))
-                return nil
-            }
-            return AnyView(NewAutomationSheet(vm: vm, editor: nil, workbenches: workbenches,
-                                              workbenchID: .constant(3), makeChat: opening,
-                                              automationsDir: nil, onTemplates: nil) {})
+            let templates = try JSONDecoder().decode([AutomationTemplate].self, from: Data(templatesJSON.utf8))
+            let scopes: [AutomationScopeChoice] = [
+                .personal, acme, .workbench(id: 4, name: "acme-docs", folder: "/work/acme-docs")
+            ]
+            let flow = AutomationNewFlow(fixedScope: fixedToAcme ? acme : nil)
+            return AnyView(AutomationNewPanel(flow: flow, scopes: scopes, templates: templates) { _, _ in })
         } catch {
             return failure(error)
         }

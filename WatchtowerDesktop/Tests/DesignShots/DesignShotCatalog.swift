@@ -69,8 +69,11 @@ enum DesignShotCatalog {
             DesignShot(name: "automation-save-card", size: NSSize(width: 560, height: 520)) {
                 AnyView(AutomationShotFixtures.saveCard().padding(12).shotFrame().detailBackground())
             },
-            DesignShot(name: "automation-new-sheet-workbench", size: NSSize(width: 960, height: 640)) {
-                AnyView(AutomationShotFixtures.newSheetForWorkbench().detailBackground())
+            DesignShot(name: "automation-new-panel", size: NSSize(width: 900, height: 640)) {
+                AnyView(AutomationShotFixtures.newPanel(fixedToAcme: false).detailBackground())
+            },
+            DesignShot(name: "automation-new-panel-workbench", size: NSSize(width: 900, height: 640)) {
+                AnyView(AutomationShotFixtures.newPanel(fixedToAcme: true).detailBackground())
             },
             // Branch review (#712, artboards A–C).
             DesignShot(name: "branch-review-changes", size: NSSize(width: 1180, height: 760)) {
