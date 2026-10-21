@@ -126,17 +126,11 @@ func (db *DB) DeleteGoogleAccount(id int64) error {
 
 // SetGoogleAccountAuthState updates status/error telemetry for accountID.
 // status is one of "ok", "revoked", "error".
+// It also keeps the access facts (revoked_at, access_ok_at) and never writes
+// over a purged row except with "ok" (account_access.go); the Gmail and
+// Calendar switches stay as the login path sets them.
 func (db *DB) SetGoogleAccountAuthState(accountID int64, status, errMsg string) error {
-	res, err := db.Exec(`UPDATE google_accounts SET status = ?, error = ?,
-        updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE id = ?`,
-		status, errMsg, accountID)
-	if err != nil {
-		return fmt.Errorf("setting auth state for google account %d: %w", accountID, err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("setting auth state: no google_accounts row %d", accountID)
-	}
-	return nil
+	return db.setAccountAuthState("google_accounts", `, updated_at = `+nowSQL, accountID, status, errMsg)
 }
 
 // GetGmailAccountWatermark returns the Gmail sync watermark (unix seconds, 0

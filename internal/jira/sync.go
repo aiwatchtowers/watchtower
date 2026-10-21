@@ -41,6 +41,7 @@ type Syncer struct {
 	changelogLimit   int                // max issues whose status/assignee history is fetched per pass (0 = disabled)
 	OnProgress       func(SyncProgress) // optional progress callback
 	firstSyncFrom    time.Time          // set by Sync when it was the account's first; see FirstSyncFrom
+	reached          bool               // set by Sync when a project's issue search succeeded; see ReachedSource
 }
 
 // NewSyncer creates a Syncer for one Jira account.
@@ -95,6 +96,7 @@ func (s *Syncer) SetCommentSyncLimit(n int) {
 // first sync (FirstSyncFrom).
 func (s *Syncer) Sync(ctx context.Context) (int, error) {
 	s.firstSyncFrom = time.Time{}
+	s.reached = false
 	started := time.Now().UTC()
 	had, err := s.hasSyncWatermark()
 	if err != nil {
@@ -118,6 +120,12 @@ func (s *Syncer) Sync(ctx context.Context) (int, error) {
 func (s *Syncer) FirstSyncFrom() (time.Time, bool) {
 	return s.firstSyncFrom, !s.firstSyncFrom.IsZero()
 }
+
+// ReachedSource reports whether the last Sync made at least one successful
+// authenticated request (a project's issue search came back). A pass with no
+// boards selected, or whose every project failed, returns nil without proving
+// access; the daemon stamps access_ok_at only when this is true (#601).
+func (s *Syncer) ReachedSource() bool { return s.reached }
 
 // hasSyncWatermark reports whether any project of this account has a
 // last_synced_at watermark.
@@ -402,6 +410,9 @@ func (s *Syncer) syncProject(ctx context.Context, boardID int, projectKey string
 	jql := buildIncrementalJQL(projectKey, lastSyncedAt, passStart)
 
 	n, changedKeys, err := s.syncWithJQL(ctx, jql, boardID)
+	if err == nil {
+		s.reached = true
+	}
 	if err != nil {
 		if errors.Is(err, ErrAuthRevoked) {
 			// The account's grant is gone — every remaining project would

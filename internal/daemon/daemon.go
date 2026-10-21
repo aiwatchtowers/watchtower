@@ -71,6 +71,7 @@ type jiraAccountSyncer interface {
 	AccountID() int64
 	BoardAnalyzerUsage() (inputTokens, outputTokens, totalAPITokens int)
 	FirstSyncFrom() (time.Time, bool)
+	ReachedSource() bool
 }
 
 // mailSyncer is the slice of *gmail.Syncer and *imap.Syncer behaviour the
@@ -992,6 +993,12 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 			continue
 		}
 		anyClean = true
+		// A nil error proves access only when the pass made a request (no
+		// boards selected makes none). access_ok_at only, never status:
+		// a pass still never writes "ok" (#601, LINEAR-03's rule).
+		if s.ReachedSource() {
+			d.markAccessOK("jira", s.AccountID())
+		}
 		d.resolveJiraUsers(ctx, s)
 		if n > 0 {
 			d.logger.Printf("jira: account %d: %d issues synced", s.AccountID(), n)
@@ -1066,6 +1073,9 @@ func (d *Daemon) phaseLinearSync(ctx context.Context) {
 			continue
 		}
 		anyClean = true
+		// Every Linear pass starts with an authenticated viewer query, so a
+		// nil error proves access. access_ok_at only, never status (#601).
+		d.markAccessOK("linear", s.AccountID())
 		if n > 0 {
 			d.logger.Printf("linear: account %d: %d issues synced", s.AccountID(), n)
 		}
@@ -2516,5 +2526,17 @@ func (d *Daemon) runDayPlanConflictPhase(ctx context.Context, now time.Time, own
 			summary = updated.ConflictSummary.String
 		}
 		d.logger.Printf("dayplan: conflicts detected: %s", summary)
+	}
+}
+
+// markAccessOK stamps an account's access_ok_at after a pass that reached
+// the source (#601). A failure is logged: the lease clock then just keeps
+// its older value.
+func (d *Daemon) markAccessOK(source string, id int64) {
+	if d.db == nil {
+		return
+	}
+	if err := d.db.MarkAccountAccessOK(source, id); err != nil {
+		d.logger.Printf("%s: account %d: record access: %v", source, id, err)
 	}
 }

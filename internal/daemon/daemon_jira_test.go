@@ -215,6 +215,7 @@ type stubJiraSyncer struct {
 	apiTok       int
 	resolveCalls int
 	firstSync    time.Time
+	noRequest    bool // a nil-error pass that made no request (no boards selected)
 }
 
 func (s *stubJiraSyncer) Sync(context.Context) (int, error) { return s.issues, s.err }
@@ -227,6 +228,7 @@ func (s *stubJiraSyncer) BoardAnalyzerUsage() (int, int, int) {
 	return s.inTok, s.outTok, s.apiTok
 }
 func (s *stubJiraSyncer) FirstSyncFrom() (time.Time, bool) { return s.firstSync, !s.firstSync.IsZero() }
+func (s *stubJiraSyncer) ReachedSource() bool              { return s.err == nil && !s.noRequest }
 
 // revokedErr is shaped like the error client.do returns for a 401 that survives
 // a token refresh.
@@ -454,4 +456,37 @@ func TestPhaseJiraSyncSkipsUserResolveOnCancelledContext(t *testing.T) {
 	d.phaseJiraSync(ctx)
 
 	assert.Zero(t, stub.resolveCalls, "a shutdown must not start identity resolution")
+}
+
+func readAccessOKAt(t *testing.T, database *db.DB, table string, id int64) (status, accessOKAt string) {
+	t.Helper()
+	// table comes from the fixed test call sites
+	require.NoError(t, database.QueryRow(`SELECT status, access_ok_at FROM `+table+` WHERE id = ?`, id).Scan(&status, &accessOKAt))
+	return status, accessOKAt
+}
+
+// A clean Jira pass that reached Atlassian stamps access_ok_at and leaves
+// status; a nil-error pass that made no request (no boards) stamps nothing
+// (#601).
+func TestPhaseJiraSyncStampsAccessOnlyWhenReached(t *testing.T) {
+	d, database, _ := newJiraTestDaemon(t)
+	reached, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+	idle, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c2"})
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE jira_accounts SET status = 'error', error = 'old', access_ok_at = ''`)
+	require.NoError(t, err)
+
+	d.jiraSyncers = []jiraAccountSyncer{
+		&stubJiraSyncer{accountID: reached},
+		&stubJiraSyncer{accountID: idle, noRequest: true},
+	}
+	d.phaseJiraSync(context.Background())
+
+	status, okAt := readAccessOKAt(t, database, "jira_accounts", reached)
+	assert.Equal(t, "error", status, "a pass never writes status")
+	assert.NotEmpty(t, okAt, "a pass that reached the source stamps access_ok_at")
+	status, okAt = readAccessOKAt(t, database, "jira_accounts", idle)
+	assert.Equal(t, "error", status)
+	assert.Empty(t, okAt, "a pass with no request proves no access")
 }
