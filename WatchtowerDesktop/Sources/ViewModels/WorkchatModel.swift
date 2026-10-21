@@ -80,8 +80,8 @@ final class WorkchatModel {
         sessionID: Int64,
         control: any WorkchatControl,
         lineDelivery: SessionLineDelivery,
-        kind: @escaping @MainActor () -> TerminalSession.Kind?,
         attachmentStore: WorkchatAttachmentStore? = nil,
+        kind: @escaping @MainActor () -> TerminalSession.Kind?,
         now: @escaping () -> Date = Date.init
     ) {
         self.sessionID = sessionID

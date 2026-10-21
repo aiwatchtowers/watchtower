@@ -69,9 +69,9 @@ final class WorkchatModelTests: XCTestCase {
         let clock = try XCTUnwrap(clock)
         let control = try control ?? makeControl()
         return WorkchatModel(
-            sessionID: sessionID, control: control, lineDelivery: delivery, kind: { .claude },
-            attachmentStore: WorkchatAttachmentStore(root: folder.appendingPathComponent("att"))
-        ) { clock.now }
+            sessionID: sessionID, control: control, lineDelivery: delivery,
+            attachmentStore: WorkchatAttachmentStore(root: folder.appendingPathComponent("att")), kind: { .claude }, now: { clock.now }
+        )
     }
 
     /// Lets one test make the permission read, the answer or the interrupt
@@ -200,9 +200,9 @@ final class WorkchatModelTests: XCTestCase {
         try Data([0]).write(to: blocker)
         let clock = try XCTUnwrap(clock)
         let model = WorkchatModel(
-            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { .claude },
-            attachmentStore: WorkchatAttachmentStore(root: blocker)
-        ) { clock.now }
+            sessionID: session, control: try makeControl(), lineDelivery: delivery,
+            attachmentStore: WorkchatAttachmentStore(root: blocker), kind: { .claude }, now: { clock.now }
+        )
 
         let taken = await model.attach(data: Data([1]), name: "Pasted image.png")
 
@@ -372,8 +372,8 @@ final class WorkchatModelTests: XCTestCase {
         setState(session, .working)
         let clock = try XCTUnwrap(clock)
         let model = WorkchatModel(
-            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { nil }
-        ) { clock.now }
+            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { nil }, now: { clock.now }
+        )
         model.draft = "Hello"
 
         await model.send()
@@ -420,8 +420,8 @@ final class WorkchatModelTests: XCTestCase {
         let clock = try XCTUnwrap(clock)
         var kind: TerminalSession.Kind?
         let model = WorkchatModel(
-            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { kind }
-        ) { clock.now }
+            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { kind }, now: { clock.now }
+        )
         XCTAssertTrue(model.holdsUntilIdle, "unknown kind keeps the hold")
 
         kind = .claude
@@ -438,8 +438,8 @@ final class WorkchatModelTests: XCTestCase {
         setState(session, .working)
         let clock = try XCTUnwrap(clock)
         let model = WorkchatModel(
-            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { .shell }
-        ) { clock.now }
+            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { .shell }, now: { clock.now }
+        )
         model.draft = "Also add the fixture"
 
         await model.send()
@@ -453,8 +453,8 @@ final class WorkchatModelTests: XCTestCase {
         setState(session, .working)
         let clock = try XCTUnwrap(clock)
         let model = WorkchatModel(
-            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { .codex }
-        ) { clock.now }
+            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { .codex }, now: { clock.now }
+        )
         model.draft = "Also add the fixture"
 
         await model.send()
