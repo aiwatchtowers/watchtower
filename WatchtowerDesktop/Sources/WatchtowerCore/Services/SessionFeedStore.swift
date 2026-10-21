@@ -81,6 +81,9 @@ package final class SessionFeedStore: ObservableObject {
         }
     }
 
+    /// The session left working: the old step must not flash on the next turn.
+    package func clearActivity() { activity = nil }
+
     /// A subagent opened in the pane: one read now, then while `isRunning`
     /// (its marker says `running`) one more every `interval`. Reads due while
     /// `isOnScreen` is false are skipped. Each good read hands its entries and

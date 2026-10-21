@@ -46,6 +46,23 @@ final class WorkchatActivityPresenterTests: XCTestCase {
         XCTAssertEqual(line(activity(), lastAgentAt: t0 - 1)?.symbol, "terminal")
     }
 
+    func testActivityWithoutStartHidesToolLine() {
+        let noStart = SessionFeedActivity(tool: "Bash", summary: "ls", startedAt: nil)
+        XCTAssertEqual(line(noStart)?.text, "Thinking…")
+        XCTAssertEqual(line(noStart, lastAgentAt: t0)?.text, "Thinking…")
+    }
+
+    func testSubagentLineNeedsRunningSubagentAndWorkingSession() {
+        func sub(working: Bool, status: String) -> WorkchatActivityPresenter.Line? {
+            WorkchatActivityPresenter.subagentLine(
+                activity: activity(), sessionWorking: working, subagentStatus: status, stateAt: t0, lastAgentAt: nil)
+        }
+        XCTAssertEqual(sub(working: true, status: "running")?.symbol, "terminal")
+        XCTAssertNil(sub(working: true, status: "finished"))
+        XCTAssertNil(sub(working: true, status: "unknown"))
+        XCTAssertNil(sub(working: false, status: "running"))
+    }
+
     func testSymbols() {
         XCTAssertEqual(WorkchatActivityPresenter.symbol(for: "Edit"), "pencil")
         XCTAssertEqual(WorkchatActivityPresenter.symbol(for: "mcp__x__y"), "powerplug")

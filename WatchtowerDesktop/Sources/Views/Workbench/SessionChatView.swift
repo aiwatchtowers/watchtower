@@ -132,7 +132,7 @@ struct SessionChatView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(Spacing.cozy)
             } else if path.isRoot, composerShown, let workchat {
-                if let activityLine { WorkchatActivityLine(line: activityLine) }
+                WorkchatActivityLine(line: activityLine)
                 Divider()
                 // No card to carry it: a failed permission read shows here.
                 if permission == nil, let error = workchat.permissionError {
@@ -167,6 +167,9 @@ struct SessionChatView: View {
             guard path.isRoot else { return }
             await store.screenChanged(appState.uiVisibility.isOnScreen)
         }
+        .onChange(of: working) { _, nowWorking in
+            if !nowWorking { store.clearActivity() }
+        }
         .onChange(of: sessionID) { path = SessionChatPath() }
     }
 
@@ -194,9 +197,11 @@ struct SessionChatView: View {
                 isOnScreen: { vm.isTabOnScreen() },
                 onOpenSubagent: { path.push($0) },
                 liveLine: { activity, entries in
-                    Self.activityLine(
-                        activity: activity, working: working, background: false,
-                        status: vm.sessionStatuses[sessionID], entries: entries, runningSubagents: 0)
+                    let lastAgent = entries.last { $0.kind == "agent" }
+                    return WorkchatActivityPresenter.subagentLine(
+                        activity: activity, sessionWorking: working, subagentStatus: subagent.status,
+                        stateAt: SessionFeedEntry.parseDate(vm.sessionStatuses[sessionID]?.at),
+                        lastAgentAt: lastAgent?.at)
                 },
                 followKey: SubagentFollowKey(state: stateKind, onScreen: appState.uiVisibility.isOnScreen)
             )

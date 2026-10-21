@@ -44,6 +44,8 @@ struct SessionChatSubagentView: View {
                         if $0 != nil { loading = false }
                     }
                 )
+                // The follow ended (finished or stopped): no stale step.
+                activity = nil
             }
     }
 

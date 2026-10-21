@@ -2,12 +2,23 @@ import SwiftUI
 import WatchtowerCore
 
 /// The live line between the Workchat feed and the composer: a symbol, the
-/// agent's current step and how long it has lasted. Fixed height, so the
-/// feed does not jump when it comes and goes.
+/// agent's current step and how long it has lasted. The row keeps its height
+/// when there is no line (an empty placeholder), so the feed does not jump
+/// when the line comes and goes.
 struct WorkchatActivityLine: View {
-    let line: WorkchatActivityPresenter.Line
+    let line: WorkchatActivityPresenter.Line?
 
     var body: some View {
+        if let line {
+            content(line)
+        } else {
+            Color.clear.frame(height: Self.height)
+        }
+    }
+
+    private static let height: CGFloat = 22
+
+    private func content(_ line: WorkchatActivityPresenter.Line) -> some View {
         HStack(spacing: Spacing.compact) {
             Image(systemName: line.symbol)
                 .symbolEffect(.pulse)
@@ -27,7 +38,7 @@ struct WorkchatActivityLine: View {
         .font(.caption)
         .foregroundStyle(.secondary)
         .padding(.horizontal, Spacing.large)
-        .frame(height: 22)
+        .frame(height: Self.height)
         .animation(.default, value: line)
         .accessibilityElement(children: .combine)
     }

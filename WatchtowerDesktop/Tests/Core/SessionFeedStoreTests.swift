@@ -161,6 +161,14 @@ final class SessionFeedStoreTests: XCTestCase {
         XCTAssertNil(store.activity)
     }
 
+    func testClearActivity() async {
+        let runner = FakeRunner([.success(payload(activity: bashActivity))])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        store.clearActivity()
+        XCTAssertNil(store.activity)
+    }
+
     func testSubagentFeedCarriesActivity() async throws {
         let runner = FakeRunner([.success(payload(activity: bashActivity))])
         let store = SessionFeedStore(sessionID: 7, runner: runner)

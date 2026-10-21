@@ -23,7 +23,7 @@ package enum WorkchatActivityPresenter {
         lastAgentAt: Date?
     ) -> Line? {
         guard working else { return nil }
-        if let activity, lastAgentAt == nil || startedAfter(activity, lastAgentAt) {
+        if let activity, startedAfter(activity, lastAgentAt) {
             let more = activity.more > 0 ? " · \(activity.more) more" : ""
             return Line(symbol: symbol(for: activity.tool), text: activity.summary + more, since: activity.startedAt)
         }
@@ -34,10 +34,25 @@ package enum WorkchatActivityPresenter {
         return Line(symbol: "ellipsis", text: "Thinking…", since: stateAt)
     }
 
-    /// An activity without a start time cannot be older than the text.
+    /// The tool call shows only when it started after the agent's last text;
+    /// one without a start time cannot be placed, so it is hidden.
     private static func startedAfter(_ activity: SessionFeedActivity, _ lastAgentAt: Date?) -> Bool {
-        guard let started = activity.startedAt, let lastAgentAt else { return true }
+        guard let started = activity.startedAt else { return false }
+        guard let lastAgentAt else { return true }
         return lastAgentAt < started
+    }
+
+    /// A subagent's own line: only while the session works and this
+    /// subagent's marker says `running`.
+    package static func subagentLine(
+        activity: SessionFeedActivity?,
+        sessionWorking: Bool,
+        subagentStatus: String,
+        stateAt: Date?,
+        lastAgentAt: Date?
+    ) -> Line? {
+        line(activity: activity, working: sessionWorking && subagentStatus == "running", background: false,
+             runningSubagents: 0, stateAt: stateAt, lastAgentAt: lastAgentAt)
     }
 
     package static func symbol(for tool: String) -> String {
