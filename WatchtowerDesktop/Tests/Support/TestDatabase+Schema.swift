@@ -722,7 +722,7 @@ CREATE TABLE IF NOT EXISTS google_accounts (
     memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,   -- per-account memory extraction watermark (was workspace.memory_gmail_last_extracted_ts)
     created_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, ideas_email_floor REAL NOT NULL DEFAULT 0, deletions_checked_at TEXT NOT NULL DEFAULT '');
+, ideas_email_floor REAL NOT NULL DEFAULT 0, deletions_checked_at TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS "gmail_messages" (
     account_id     INTEGER NOT NULL REFERENCES google_accounts(id) ON DELETE CASCADE,
     id             TEXT NOT NULL,
@@ -754,7 +754,7 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     enabled           INTEGER NOT NULL DEFAULT 1,
     search_last_date  TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '');
+, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS jira_accounts (
     id                            INTEGER PRIMARY KEY AUTOINCREMENT,
     cloud_id                      TEXT NOT NULL DEFAULT '',
@@ -766,7 +766,7 @@ CREATE TABLE IF NOT EXISTS jira_accounts (
     enabled                       INTEGER NOT NULL DEFAULT 1,
     memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- per-account memory extraction watermark (was workspace.memory_jira_last_extracted_ts)
     created_at                    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, ideas_jira_floor TEXT NOT NULL DEFAULT '', owner_account_id TEXT NOT NULL DEFAULT '', owner_email TEXT NOT NULL DEFAULT '', owner_display_name TEXT NOT NULL DEFAULT '');
+, ideas_jira_floor TEXT NOT NULL DEFAULT '', owner_account_id TEXT NOT NULL DEFAULT '', owner_email TEXT NOT NULL DEFAULT '', owner_display_name TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS "jira_boards" (
     account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
     id INTEGER NOT NULL, name TEXT NOT NULL, project_key TEXT NOT NULL DEFAULT '',
@@ -1671,7 +1671,7 @@ CREATE TABLE IF NOT EXISTS linear_accounts (
     ideas_floor              TEXT NOT NULL DEFAULT '',
     moved_watermark          TEXT NOT NULL DEFAULT '',  -- moved-issue reconcile cursor; advances only on success
     created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-);
+, access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS linear_teams (
     account_id  INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
     id          TEXT NOT NULL,
@@ -2123,6 +2123,20 @@ CREATE TABLE IF NOT EXISTS db_maintenance (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS account_purges (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    source       TEXT NOT NULL CHECK (source IN ('slack','google','jira','linear')),
+    account_id   INTEGER NOT NULL,
+    reason       TEXT NOT NULL CHECK (reason IN ('revoked','lease')),
+    scheduled_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    due_at       TEXT NOT NULL,
+    state        TEXT NOT NULL DEFAULT 'scheduled'
+                 CHECK (state IN ('scheduled','running','done','cancelled')),
+    started_at   TEXT NOT NULL DEFAULT '',
+    finished_at  TEXT NOT NULL DEFAULT '',
+    rows_deleted INTEGER NOT NULL DEFAULT 0,
+    error        TEXT NOT NULL DEFAULT ''
+);
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,
@@ -2450,6 +2464,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_slack_links_decision_identity
 CREATE INDEX IF NOT EXISTS idx_stream_digests_source ON stream_digests(source, account_id);
 CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
 CREATE INDEX IF NOT EXISTS idx_idea_mentions_ref ON idea_mentions(source, ref);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_account_purges_open
+    ON account_purges(source, account_id) WHERE state IN ('scheduled','running');
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN

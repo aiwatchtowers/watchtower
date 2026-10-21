@@ -1,4 +1,8 @@
 # sqlite_master
+index	idx_account_purges_open
+CREATE UNIQUE INDEX idx_account_purges_open
+ON account_purges(source, account_id) WHERE state IN ('scheduled','running')
+
 index	idx_agent_actions_conversation
 CREATE INDEX idx_agent_actions_conversation ON agent_actions(conversation_id, created_at)
 
@@ -565,6 +569,22 @@ CREATE UNIQUE INDEX review_rounds_one_open ON review_rounds(session_id) WHERE st
 
 index	review_rounds_project
 CREATE INDEX review_rounds_project ON review_rounds(project_id, id)
+
+table	account_purges
+CREATE TABLE account_purges (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+source TEXT NOT NULL CHECK (source IN ('slack','google','jira','linear')),
+account_id INTEGER NOT NULL,
+reason TEXT NOT NULL CHECK (reason IN ('revoked','lease')),
+scheduled_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+due_at TEXT NOT NULL,
+state TEXT NOT NULL DEFAULT 'scheduled'
+CHECK (state IN ('scheduled','running','done','cancelled')),
+started_at TEXT NOT NULL DEFAULT '',
+finished_at TEXT NOT NULL DEFAULT '',
+rows_deleted INTEGER NOT NULL DEFAULT 0,
+error TEXT NOT NULL DEFAULT ''
+)
 
 table	agent_actions
 CREATE TABLE agent_actions (
@@ -1342,7 +1362,7 @@ gmail_last_internal_date REAL NOT NULL DEFAULT 0, -- per-account Gmail sync wate
 memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0, -- per-account memory extraction watermark (was workspace.memory_gmail_last_extracted_ts)
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, ideas_email_floor REAL NOT NULL DEFAULT 0, deletions_checked_at TEXT NOT NULL DEFAULT '')
+, ideas_email_floor REAL NOT NULL DEFAULT 0, deletions_checked_at TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '')
 
 table	history_backfill
 CREATE TABLE history_backfill (
@@ -1514,7 +1534,7 @@ error TEXT NOT NULL DEFAULT '',
 enabled INTEGER NOT NULL DEFAULT 1,
 memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0, -- per-account memory extraction watermark (was workspace.memory_jira_last_extracted_ts)
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, ideas_jira_floor TEXT NOT NULL DEFAULT '', owner_account_id TEXT NOT NULL DEFAULT '', owner_email TEXT NOT NULL DEFAULT '', owner_display_name TEXT NOT NULL DEFAULT '')
+, ideas_jira_floor TEXT NOT NULL DEFAULT '', owner_account_id TEXT NOT NULL DEFAULT '', owner_email TEXT NOT NULL DEFAULT '', owner_display_name TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '')
 
 table	jira_board_field_map
 CREATE TABLE "jira_board_field_map" (
@@ -1767,7 +1787,7 @@ memory_last_extracted_ts REAL NOT NULL DEFAULT 0,
 ideas_floor TEXT NOT NULL DEFAULT '',
 moved_watermark TEXT NOT NULL DEFAULT '', -- moved-issue reconcile cursor; advances only on success
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-)
+, access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '')
 
 table	linear_comments
 CREATE TABLE linear_comments (
@@ -2632,7 +2652,7 @@ error TEXT NOT NULL DEFAULT '',
 enabled INTEGER NOT NULL DEFAULT 1,
 search_last_date TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '')
+, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at TEXT NOT NULL DEFAULT '')
 
 table	stream_digests
 CREATE TABLE "stream_digests" (
@@ -3601,6 +3621,19 @@ JOIN projects p ON p.id = up.project_id
 GROUP BY up.ancestor
 
 # table_info
+## account_purges
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	source	TEXT	notnull=1	dflt=NULL	pk=0
+2	account_id	INTEGER	notnull=1	dflt=NULL	pk=0
+3	reason	TEXT	notnull=1	dflt=NULL	pk=0
+4	scheduled_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
+5	due_at	TEXT	notnull=1	dflt=NULL	pk=0
+6	state	TEXT	notnull=1	dflt='scheduled'	pk=0
+7	started_at	TEXT	notnull=1	dflt=''	pk=0
+8	finished_at	TEXT	notnull=1	dflt=''	pk=0
+9	rows_deleted	INTEGER	notnull=1	dflt=0	pk=0
+10	error	TEXT	notnull=1	dflt=''	pk=0
+
 ## agent_actions
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	tool	TEXT	notnull=1	dflt=NULL	pk=0
@@ -4280,6 +4313,8 @@ GROUP BY up.ancestor
 11	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
 12	ideas_email_floor	REAL	notnull=1	dflt=0	pk=0
 13	deletions_checked_at	TEXT	notnull=1	dflt=''	pk=0
+14	access_ok_at	TEXT	notnull=1	dflt=''	pk=0
+15	revoked_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## history_backfill
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -4428,6 +4463,8 @@ GROUP BY up.ancestor
 11	owner_account_id	TEXT	notnull=1	dflt=''	pk=0
 12	owner_email	TEXT	notnull=1	dflt=''	pk=0
 13	owner_display_name	TEXT	notnull=1	dflt=''	pk=0
+14	access_ok_at	TEXT	notnull=1	dflt=''	pk=0
+15	revoked_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## jira_board_field_map
 0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -4667,6 +4704,8 @@ GROUP BY up.ancestor
 12	ideas_floor	TEXT	notnull=1	dflt=''	pk=0
 13	moved_watermark	TEXT	notnull=1	dflt=''	pk=0
 14	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+15	access_ok_at	TEXT	notnull=1	dflt=''	pk=0
+16	revoked_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## linear_comments
 0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -5414,6 +5453,8 @@ GROUP BY up.ancestor
 12	roster_synced_at	TEXT	notnull=1	dflt=''	pk=0
 13	reaction_events_seeded_at	TEXT	notnull=1	dflt=''	pk=0
 14	deletion_sweep_day	TEXT	notnull=1	dflt=''	pk=0
+15	access_ok_at	TEXT	notnull=1	dflt=''	pk=0
+16	revoked_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## stream_digests
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
