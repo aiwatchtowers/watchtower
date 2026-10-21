@@ -46,6 +46,9 @@ enum DesignShotCatalog {
             DesignShot(name: "chat-rows", size: NSSize(width: 560, height: 280)) {
                 AnyView(DesignShotFixtures.chatRows().padding(12).shotFrame().detailBackground())
             },
+            DesignShot(name: "workchat-live-line", size: NSSize(width: 560, height: 120)) {
+                AnyView(DesignShotFixtures.workchatLiveLine().padding(12).shotFrame().detailBackground())
+            },
             DesignShot(name: "calendar-rows", size: NSSize(width: 480, height: 200)) {
                 AnyView(DesignShotFixtures.calendarRows().padding(12).shotFrame().detailBackground())
             },
@@ -312,6 +315,29 @@ enum DesignShotFixtures {
         } catch {
             return failure(error)
         }
+    }
+
+    // MARK: - Workchat
+
+    /// The live line with a tool step and its timer, Thinking…, and the
+    /// empty row that keeps its height.
+    static func workchatLiveLine() -> AnyView {
+        let now = Date()
+        let tool = WorkchatActivityPresenter.line(
+            activity: SessionFeedActivity(tool: "Bash", summary: "make test FILTER=AcmeExportTests", startedAt: now.addingTimeInterval(-75)),
+            working: true, background: false, runningSubagents: 0, stateAt: now, lastAgentAt: nil)
+        let thinking = WorkchatActivityPresenter.line(
+            activity: nil, working: true, background: false, runningSubagents: 0,
+            stateAt: now.addingTimeInterval(-12), lastAgentAt: nil)
+        return AnyView(VStack(spacing: 0) {
+            WorkchatActivityLine(line: tool)
+            Divider()
+            WorkchatActivityLine(line: thinking)
+            Divider()
+            WorkchatActivityLine(line: nil)
+            Divider()
+            Spacer(minLength: 0)
+        })
     }
 
     // MARK: - Calendar

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -58,6 +59,7 @@ type sessionFeedJSON struct {
 	SessionID      int64                  `json:"session_id"`
 	Cursor         string                 `json:"cursor"`
 	Entries        []sessionFeedEntryJSON `json:"entries"`
+	Activity       *sessionfeed.Activity  `json:"activity"` // the agent's open tool call, or null
 	Subagents      []sessionFeedEntryJSON `json:"subagents"`
 	Skipped        int                    `json:"skipped"`
 	UnknownRecords map[string]int         `json:"unknown_records"`
@@ -157,10 +159,11 @@ func requireAgentSession(sess *db.TerminalSession) error {
 func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *sessionfeed.Cursor, lookup sessionfeed.AskLookup, sub string) (sessionFeedJSON, error) {
 	out := sessionFeedJSON{SessionID: id, Entries: []sessionFeedEntryJSON{}, Subagents: []sessionFeedEntryJSON{}, UnknownRecords: map[string]int{}}
 	if sub != "" {
-		res, err := sessionFeedSubagent(convs, sub)
+		res, path, err := sessionFeedSubagent(convs, sub)
 		if err != nil {
 			return out, err
 		}
+		out.Activity = sessionFeedActivity(path, false, true)
 		var markers []sessionfeed.Entry
 		for _, e := range res.Entries {
 			if e.Kind == sessionfeed.KindSubagent {
@@ -179,10 +182,27 @@ func buildSessionFeedOutput(id int64, convs []sessionfeed.Conversation, after *s
 	if feed.Cursor.Conv != "" {
 		out.Cursor = feed.Cursor.String()
 	}
+	if len(convs) > 0 {
+		last := convs[len(convs)-1]
+		out.Activity = sessionFeedActivity(last.Path, last.Codex, false)
+	}
 	out.Entries, out.Subagents = toSessionFeedEntries(feed.Entries), toSessionFeedEntries(feed.Subagents)
 	out.Skipped = feed.Skipped
 	maps.Copy(out.UnknownRecords, feed.Unknown)
 	return out, nil
+}
+
+// sessionFeedActivity reads the open tool call at the transcript's tail. A
+// read error leaves it null: the activity line is a hint, never a failure.
+func sessionFeedActivity(path string, codex, sidechain bool) *sessionfeed.Activity {
+	a, err := sessionfeed.ActivityOf(path, codex, sidechain)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(os.Stderr, "session-feed: activity: %v\n", err)
+		}
+		return nil
+	}
+	return a
 }
 
 // sessionFeedConversations lists the tab's conversations in ledger order
@@ -226,27 +246,27 @@ const sessionFeedMaxSubagentDepth = 8
 
 // sessionFeedSubagent finds the subagent started by tool call toolUseID in
 // any conversation of the tab (or nested in another subagent) and returns
-// its feed, nested markers resolved. A one-off drill-in: it parses every
+// its feed, nested markers resolved, with the path of its transcript file. A one-off drill-in: it parses every
 // subagent on the way, correctness over speed.
-func sessionFeedSubagent(convs []sessionfeed.Conversation, toolUseID string) (*sessionfeed.Result, error) {
+func sessionFeedSubagent(convs []sessionfeed.Conversation, toolUseID string) (*sessionfeed.Result, string, error) {
 	for _, c := range convs {
 		feed, err := sessionfeed.Build([]sessionfeed.Conversation{c}, nil, nil)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		dir := strings.TrimSuffix(c.Path, ".jsonl")
-		res, err := findSubagent(dir, feed.Entries, toolUseID, 0)
+		res, path, err := findSubagent(dir, feed.Entries, toolUseID, 0)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if res != nil {
-			return res, nil
+			return res, path, nil
 		}
 	}
-	return nil, fmt.Errorf("subagent %s not found", toolUseID)
+	return nil, "", fmt.Errorf("subagent %s not found", toolUseID)
 }
 
-func findSubagent(sessionDir string, entries []sessionfeed.Entry, toolUseID string, depth int) (*sessionfeed.Result, error) {
+func findSubagent(sessionDir string, entries []sessionfeed.Entry, toolUseID string, depth int) (*sessionfeed.Result, string, error) {
 	for _, e := range entries {
 		ref := e.Subagent
 		if e.Kind != sessionfeed.KindSubagent || ref == nil || ref.AgentID == "" {
@@ -256,22 +276,23 @@ func findSubagent(sessionDir string, entries []sessionfeed.Entry, toolUseID stri
 		if !match && depth >= sessionFeedMaxSubagentDepth {
 			continue
 		}
-		res, err := sessionfeed.ParseSubagent(filepath.Join(sessionDir, "subagents", "agent-"+ref.AgentID+".jsonl"), ref.ParentReport)
+		path := filepath.Join(sessionDir, "subagents", "agent-"+ref.AgentID+".jsonl")
+		res, err := sessionfeed.ParseSubagent(path, ref.ParentReport)
 		if err != nil {
 			if match {
-				return nil, err
+				return nil, "", err
 			}
 			continue // an unreadable subagent file hides only its own nesting
 		}
 		sessionfeed.ResolveSubagents(sessionDir, res.Entries)
 		if match {
-			return res, nil
+			return res, path, nil
 		}
-		if found, err := findSubagent(sessionDir, res.Entries, toolUseID, depth+1); err != nil || found != nil {
-			return found, err
+		if found, foundPath, err := findSubagent(sessionDir, res.Entries, toolUseID, depth+1); err != nil || found != nil {
+			return found, foundPath, err
 		}
 	}
-	return nil, nil
+	return nil, "", nil
 }
 
 func printSessionFeed(w io.Writer, entries []sessionFeedEntryJSON) {

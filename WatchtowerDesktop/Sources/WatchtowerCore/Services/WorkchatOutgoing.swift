@@ -20,20 +20,40 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
     }
 
     package let id: UUID
+    /// What goes to the terminal: the typed text, then the attachment paths.
     package let text: String
+    /// The owner's own words, without the attachment paths.
+    package let typedText: String
+    /// The files sent with the line, as written into `text` (quoted or not there).
+    package let attachmentPaths: [String]
     /// When the owner sent it: an echo is dated at or after this.
     package let sentAt: Date
     package var state: State
     /// When it was submitted, typed or copied; `echoWindow` counts from here,
     /// so a line queued for long still gets its full window.
     package var deliveredAt: Date?
+    /// Submitted while the agent worked: the agent reads it at its next
+    /// step, so its echo can come long after delivery (no `echoWindow`).
+    package var sentWhileBusy: Bool
 
-    package init(id: UUID, text: String, sentAt: Date, state: State, deliveredAt: Date? = nil) {
+    package init(
+        id: UUID,
+        text: String,
+        sentAt: Date,
+        state: State,
+        deliveredAt: Date? = nil,
+        sentWhileBusy: Bool = false,
+        typedText: String? = nil,
+        attachmentPaths: [String] = []
+    ) {
         self.id = id
         self.text = text
+        self.typedText = typedText ?? text
+        self.attachmentPaths = attachmentPaths
         self.sentAt = sentAt
         self.state = state
         self.deliveredAt = deliveredAt
+        self.sentWhileBusy = sentWhileBusy
     }
 
     /// A submitted line with no echo this long stays a plain local bubble
@@ -44,7 +64,23 @@ package struct WorkchatOutgoing: Identifiable, Equatable, Sendable {
     /// (a "/name args" line equals the parser's slash entry), dated at or after sentAt.
     package static func matches(_ entry: SessionFeedEntry, line: Self) -> Bool {
         guard entry.kind == "owner", let at = entry.at, at >= line.sentAt else { return false }
-        return collapsed(entry.text) == collapsed(line.text)
+        var echoed = entry.text
+        // Claude Code records a pasted image path as "[Image #N]"; the feed
+        // may also show "[image]". A path comes back quoted or not.
+        for path in line.attachmentPaths {
+            echoed = echoed.replacingOccurrences(of: "\"\(path)\"", with: " ")
+                .replacingOccurrences(of: path, with: " ")
+        }
+        if line.attachmentPaths.isEmpty { return collapsed(echoed) == collapsed(line.text) }
+        return withoutImageMarkers(echoed) == withoutImageMarkers(line.typedText)
+    }
+
+    private static let imageMarker = try? NSRegularExpression(pattern: #"\[(?:Image #\d+|image)\]"#)
+
+    private static func withoutImageMarkers(_ text: String) -> String {
+        let range = NSRange(text.startIndex..., in: text)
+        let bare = imageMarker?.stringByReplacingMatches(in: text, range: range, withTemplate: " ") ?? text
+        return collapsed(bare)
     }
 
     private static func collapsed(_ text: String) -> String {

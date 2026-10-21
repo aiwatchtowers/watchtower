@@ -78,7 +78,7 @@ The progress line under the caption, the **Report** view and the **Analytics** v
 
 ### Drive a session from its Workchat
 
-Workchat is a session's second mode: its dialog as a chat that you can write to, in the same place as its terminal. **Terminal | Workchat** on the session's strip or ⌃` switches between them, and each session opens in the mode you last used. See [Workchat](workchat.md).
+Workchat is a session's second mode: its dialog as a chat that you can write to, in the same place as its terminal. The toggle on the session's strip or ⌃` switches between them, and each session opens in the mode you last used. See [Workchat](workchat.md).
 
 ### Get notified
 

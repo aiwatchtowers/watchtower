@@ -68,7 +68,10 @@ final class WorkchatModelTests: XCTestCase {
     private func makeModel(_ sessionID: Int64, control: (any WorkchatControl)? = nil) throws -> WorkchatModel {
         let clock = try XCTUnwrap(clock)
         let control = try control ?? makeControl()
-        return WorkchatModel(sessionID: sessionID, control: control, lineDelivery: delivery) { clock.now }
+        return WorkchatModel(
+            sessionID: sessionID, control: control, lineDelivery: delivery,
+            attachmentStore: WorkchatAttachmentStore(root: folder.appendingPathComponent("att")), kind: { .claude }, now: { clock.now }
+        )
     }
 
     /// Lets one test make the permission read, the answer or the interrupt
@@ -86,6 +89,14 @@ final class WorkchatModelTests: XCTestCase {
 
         func lineCheck(_ sessionID: Int64) -> SessionControl.LineCheck {
             base.lineCheck(sessionID)
+        }
+
+        func workchatLineCheck(_ sessionID: Int64) -> SessionControl.LineCheck {
+            base.workchatLineCheck(sessionID)
+        }
+
+        func isWorking(_ sessionID: Int64) -> Bool {
+            base.isWorking(sessionID)
         }
 
         func interrupt(_ sessionID: Int64) async throws -> SessionControl.InterruptResult {
@@ -163,6 +174,139 @@ final class WorkchatModelTests: XCTestCase {
         SessionFeedEntry(id: UUID().uuidString, kind: "owner", at: clock.now.addingTimeInterval(seconds), text: text)
     }
 
+    // MARK: - Attachments
+
+    func testPasteImageAddsChip() async throws {
+        let model = try makeModel(try await liveSession())
+
+        let taken = await model.attach(data: Data([1, 2]), name: "Pasted image.png")
+
+        XCTAssertTrue(taken)
+        let chip = try XCTUnwrap(model.attachments.first)
+        XCTAssertLessThan(chip.id, 0)
+        XCTAssertEqual(chip.name, "Pasted image.png")
+        XCTAssertEqual(chip.mime, "image/png")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: chip.path))
+        model.removeAttachment(chip.id)
+        XCTAssertTrue(model.attachments.isEmpty)
+    }
+
+    /// A paste that cannot be saved says so under the field; the next
+    /// attach or send clears it.
+    func testFailedPasteSaveShowsAnError() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let blocker = folder.appendingPathComponent("not-a-folder")
+        try Data([0]).write(to: blocker)
+        let clock = try XCTUnwrap(clock)
+        let model = WorkchatModel(
+            sessionID: session, control: try makeControl(), lineDelivery: delivery,
+            attachmentStore: WorkchatAttachmentStore(root: blocker), kind: { .claude }, now: { clock.now }
+        )
+
+        let taken = await model.attach(data: Data([1]), name: "Pasted image.png")
+
+        XCTAssertFalse(taken)
+        XCTAssertTrue(model.attachments.isEmpty)
+        let error = try XCTUnwrap(model.attachmentError)
+        XCTAssertTrue(error.hasPrefix("Could not save the pasted file"), error)
+
+        let file = folder.appendingPathComponent("a.png")
+        try Data([9]).write(to: file)
+        model.attach(files: [file])
+        XCTAssertNil(model.attachmentError, "the next attach clears it")
+
+        _ = await model.attach(data: Data([1]), name: "Pasted image.png")
+        XCTAssertNotNil(model.attachmentError)
+        model.draft = "look"
+        await model.send()
+        XCTAssertNil(model.attachmentError, "a send clears it")
+    }
+
+    func testSendQuotesAndEscapesQuoteAndBackslashInPaths() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        let file = folder.appendingPathComponent(#"say "hi"\x.png"#)
+        model.attach(files: [file])
+
+        await model.send()
+
+        let escaped = file.path.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        XCTAssertEqual(model.outgoing.first?.text, "\"\(escaped)\"")
+        XCTAssertTrue(escaped.contains(#"\"hi\""#) && escaped.contains(#"\\x"#))
+    }
+
+    func testPathWithLineBreakIsRefused() async throws {
+        let model = try makeModel(try await liveSession())
+        let file = folder.appendingPathComponent("two\nlines.png")
+
+        model.attach(files: [file])
+
+        XCTAssertTrue(model.attachments.isEmpty)
+        let error = try XCTUnwrap(model.attachmentError)
+        XCTAssertTrue(error.contains("line break"), error)
+    }
+
+    func testAttachFilesUsesPathsAsIs() async throws {
+        let model = try makeModel(try await liveSession())
+        let file = folder.appendingPathComponent("a b.png")
+        try Data([9]).write(to: file)
+
+        model.attach(files: [file])
+
+        XCTAssertEqual(model.attachments.first?.path, file.path)
+        XCTAssertEqual(model.attachments.first?.size, 1)
+    }
+
+    func testSendComposesTextAndQuotedPaths() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        let file = folder.appendingPathComponent("a b.png")
+        try Data([9]).write(to: file)
+        model.attach(files: [file])
+        model.draft = "look"
+
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.first?.text, "look\n\"\(file.path)\"")
+        XCTAssertEqual(model.outgoing.first?.typedText, "look")
+        XCTAssertTrue(model.attachments.isEmpty, "chips clear on send")
+    }
+
+    func testAttachmentsOnlySends() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        _ = await model.attach(data: Data([1]), name: "x.png")
+        let path = try XCTUnwrap(model.attachments.first?.path)
+
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.first?.text, path.contains(" ") ? "\"\(path)\"" : path)
+        XCTAssertEqual(model.outgoing.first?.state, .sent)
+    }
+
+    func testNotSentRestoresAttachments() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let model = try makeModel(session)
+        _ = await model.attach(data: Data([1]), name: "x.png")
+        model.draft = "look"
+        await model.send()
+        XCTAssertTrue(model.attachments.isEmpty)
+
+        processes[0].onExit?(0)
+        statuses[session] = nil
+        await delivery.deliverHeld()
+
+        XCTAssertEqual(model.outgoing.first?.state, .notSent)
+        XCTAssertEqual(model.draft, "look")
+        XCTAssertEqual(model.attachments.count, 1)
+    }
+
     // MARK: - Send
 
     func testSendIdleSubmits() async throws {
@@ -180,7 +324,7 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertTrue(typedText.contains("\r"), "submitted with Return")
     }
 
-    func testSendWhileWorkingQueues() async throws {
+    func testSendWhileWorkingSubmitsAtOnce() async throws {
         let session = try await liveSession()
         setState(session, .working)
         let model = try makeModel(session)
@@ -189,8 +333,146 @@ final class WorkchatModelTests: XCTestCase {
         await model.send()
 
         let line = try XCTUnwrap(model.outgoing.first)
+        XCTAssertEqual(line.state, .sent)
+        XCTAssertTrue(line.sentWhileBusy)
+        XCTAssertTrue(typedText.contains("Also add the teammate fixture"))
+    }
+
+    func testTwoLinesWhileBusyGoInOrder() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let model = try makeModel(session)
+        model.draft = "First"
+        await model.send()
+        model.draft = "Second"
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.map(\.state), [.sent, .queued], "no hook since line 1: line 2 waits")
+        // The turn's hook reports; the next state read sends line 2.
+        clock.advance(1)
+        setState(session, .working)
+        await delivery.deliverHeld()
+
+        XCTAssertEqual(model.outgoing.map(\.state), [.sent, .sent])
+        let first = try XCTUnwrap(typedText.range(of: "First"))
+        let second = try XCTUnwrap(typedText.range(of: "Second"))
+        XCTAssertLessThan(first.lowerBound, second.lowerBound)
+        XCTAssertEqual(typedText.components(separatedBy: "First").count, 2, "once")
+        XCTAssertEqual(typedText.components(separatedBy: "Second").count, 2, "once")
+        XCTAssertFalse(typedText.contains("FirstSecond"))
+    }
+
+    func testQueuedCaptionFollowsTheAgentKind() {
+        XCTAssertEqual(WorkchatOutgoingBubble.queuedCaption(holdsUntilIdle: true), "Queued · sends when the agent stops ·")
+        XCTAssertEqual(WorkchatOutgoingBubble.queuedCaption(holdsUntilIdle: false), "Queued · sends in a moment ·")
+    }
+
+    func testUnknownKindKeepsTheBusyHold() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let clock = try XCTUnwrap(clock)
+        let model = WorkchatModel(
+            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { nil }, now: { clock.now }
+        )
+        model.draft = "Hello"
+
+        await model.send()
+
+        XCTAssertTrue(model.holdsUntilIdle)
+        XCTAssertEqual(model.outgoing.first?.state, .queued)
+    }
+
+    func testBusyLineEchoAfterTwoMinutesStillMatches() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let model = try makeModel(session)
+        model.draft = "Also add the fixture"
+        await model.send()
+        let delivered = try XCTUnwrap(model.outgoing.first?.deliveredAt)
+
+        model.reconcile(with: [SessionFeedEntry(
+            id: "late", kind: "owner", at: delivered.addingTimeInterval(150), text: "Also add the fixture"
+        )])
+
+        XCTAssertTrue(model.outgoing.isEmpty)
+    }
+
+    func testIdleLineEchoWindowUnchanged() async throws {
+        let session = try await liveSession()
+        setState(session, .stopped)
+        let model = try makeModel(session)
+        model.draft = "Also add the fixture"
+        await model.send()
+        let delivered = try XCTUnwrap(model.outgoing.first?.deliveredAt)
+
+        model.reconcile(with: [SessionFeedEntry(
+            id: "late", kind: "owner", at: delivered.addingTimeInterval(150), text: "Also add the fixture"
+        )])
+
+        XCTAssertEqual(model.outgoing.count, 1, "an idle line's echo past the window stays a bubble")
+    }
+
+    /// The kind is read at each send, not when the model is made: a pane
+    /// restored at launch makes its model before the sessions load.
+    func testKindKnownOnlyAfterTheModelIsMadeDropsTheBusyHold() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let clock = try XCTUnwrap(clock)
+        var kind: TerminalSession.Kind?
+        let model = WorkchatModel(
+            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { kind }, now: { clock.now }
+        )
+        XCTAssertTrue(model.holdsUntilIdle, "unknown kind keeps the hold")
+
+        kind = .claude
+        model.draft = "Also add the fixture"
+        await model.send()
+
+        XCTAssertFalse(model.holdsUntilIdle)
+        XCTAssertEqual(model.outgoing.first?.state, .sent)
+        XCTAssertTrue(typedText.contains("Also add the fixture"))
+    }
+
+    func testShellKindKeepsTheBusyHold() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let clock = try XCTUnwrap(clock)
+        let model = WorkchatModel(
+            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { .shell }, now: { clock.now }
+        )
+        model.draft = "Also add the fixture"
+
+        await model.send()
+
+        XCTAssertTrue(model.holdsUntilIdle)
+        XCTAssertEqual(model.outgoing.first?.state, .queued)
+    }
+
+    func testSendWhileWorkingHoldsOnCodex() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let clock = try XCTUnwrap(clock)
+        let model = WorkchatModel(
+            sessionID: session, control: try makeControl(), lineDelivery: delivery, kind: { .codex }, now: { clock.now }
+        )
+        model.draft = "Also add the fixture"
+
+        await model.send()
+
+        XCTAssertEqual(model.outgoing.first?.state, .queued)
+    }
+
+    func testSendWhileApprovalPendingQueues() async throws {
+        let session = try await liveSession()
+        setState(session, .needsApproval)
+        let model = try makeModel(session)
+        model.draft = "Also add the teammate fixture"
+
+        await model.send()
+
+        let line = try XCTUnwrap(model.outgoing.first)
         XCTAssertEqual(line.state, .queued)
-        XCTAssertEqual(typedText, "", "nothing typed into a busy agent")
+        XCTAssertEqual(typedText, "", "nothing typed over a permission prompt")
         XCTAssertEqual(delivery.heldKeys(sessionID: session), [.workchat(line.id)])
 
         // The agent stops: the next state read sends it.
@@ -221,7 +503,7 @@ final class WorkchatModelTests: XCTestCase {
 
     func testCancelDropsHeldLine() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .needsApproval)
         let model = try makeModel(session)
         model.draft = "Never mind"
         await model.send()
@@ -240,7 +522,7 @@ final class WorkchatModelTests: XCTestCase {
     /// changes nothing (final review m7).
     func testCancelOnALineNotQueuedIsANoOp() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .needsApproval)
         let model = try makeModel(session)
         let gate = Gate()
         delivery.refreshStates = { await gate.wait(); return true }
@@ -269,7 +551,7 @@ final class WorkchatModelTests: XCTestCase {
     /// `dropHeld` finds nothing and the line stays (final review m7).
     func testCancelKeepsALineWhoseRetryIsUnderWay() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .needsApproval)
         let model = try makeModel(session)
         model.draft = "Run it"
         await model.send()
@@ -294,7 +576,7 @@ final class WorkchatModelTests: XCTestCase {
     /// it was not sent and the text comes back to the field.
     func testQueuedLineAfterSessionEndsReturnsToField() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .needsApproval)
         let model = try makeModel(session)
         model.draft = "Add the fixture"
         await model.send()
@@ -313,13 +595,14 @@ final class WorkchatModelTests: XCTestCase {
     /// line was not sent.
     func testNotSentLineKeepsANewerDraft() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .needsApproval)
         let model = try makeModel(session)
         model.draft = "First"
         await model.send()
         model.draft = "Second, still typing"
 
         processes[0].onExit?(0)
+        statuses[session] = nil
         await delivery.deliverHeld()
 
         XCTAssertEqual(model.outgoing.first?.state, .notSent)
@@ -421,7 +704,7 @@ final class WorkchatModelTests: XCTestCase {
     /// way: settling matches it against that read.
     func testEchoSeenWhileSendingReconcilesOnSettle() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .needsApproval)
         let model = try makeModel(session)
         model.draft = "Later"
         await model.send()
@@ -439,7 +722,7 @@ final class WorkchatModelTests: XCTestCase {
     /// dated before its delivery: it is not the line's echo (final review m1).
     func testOwnerEntryWhileQueuedIsNotTheEcho() async throws {
         let session = try await liveSession()
-        setState(session, .working)
+        setState(session, .needsApproval)
         let model = try makeModel(session)
         model.draft = "Ship it"
         await model.send()
