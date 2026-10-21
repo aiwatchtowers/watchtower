@@ -116,6 +116,12 @@ type AutomationRun struct {
 	QueuedAt         time.Time
 	StartedAt        *time.Time
 	FinishedAt       *time.Time
+	// ResumePending marks a waiting run a daemon start kept for a resume
+	// (00146); NotResumable one whose replay log is incomplete; RandomSeed
+	// seeds the run's Math.random (set at claim).
+	ResumePending bool
+	NotResumable  bool
+	RandomSeed    int64
 }
 
 // AutomationEventPayload is the event_json shape of a trigger='event' run
@@ -141,7 +147,8 @@ func (p AutomationEventPayload) MarshalJSON() ([]byte, error) {
 
 const automationRunCols = `id, automation_id, trigger, scheduled_for, event_cycle, event_json, rerun_of, status,
 	waiting_reason, recipe_hash, recipe_snapshot, budget_tokens, budget_minutes, input_tokens, output_tokens,
-	tokens_estimated, reported_cost_usd, active_ms, error, error_kind, summary, queued_at, started_at, finished_at`
+	tokens_estimated, reported_cost_usd, active_ms, error, error_kind, summary, queued_at, started_at, finished_at,
+	resume_pending, not_resumable, random_seed`
 
 func scanAutomationRun(row interface{ Scan(...any) error }) (*AutomationRun, error) {
 	var (
@@ -155,7 +162,7 @@ func scanAutomationRun(row interface{ Scan(...any) error }) (*AutomationRun, err
 	if err := row.Scan(&r.ID, &r.AutomationID, &r.Trigger, &scheduled, &cycle, &r.EventJSON, &rerun, &r.Status,
 		&r.WaitingReason, &r.RecipeHash, &r.RecipeSnapshot, &r.BudgetTokens, &r.BudgetMinutes, &r.InputTokens,
 		&r.OutputTokens, &r.TokensEstimated, &cost, &r.ActiveMS, &r.Error, &r.ErrorKind, &r.Summary, &queued,
-		&started, &finished); err != nil {
+		&started, &finished, &r.ResumePending, &r.NotResumable, &r.RandomSeed); err != nil {
 		return nil, err
 	}
 	r.EventCycle, r.RerunOf = cycle.String, rerun.Int64
@@ -515,7 +522,7 @@ func (db *DB) claimAutomationRun(runID int64, recipeHash, recipeSnapshot string,
 	}
 	defer func() { _ = tx.Rollback() }()
 	res, err := tx.Exec(`UPDATE automation_runs SET status = 'running', started_at = ?,
-		recipe_hash = ?, recipe_snapshot = ?, budget_tokens = ?, budget_minutes = ?
+		recipe_hash = ?, recipe_snapshot = ?, budget_tokens = ?, budget_minutes = ?, random_seed = random()
 		WHERE id = ? AND status = 'queued'
 		  AND (SELECT COUNT(*) FROM automation_runs a WHERE a.automation_id = automation_runs.automation_id
 		       AND a.status IN ('running','waiting'))
@@ -822,14 +829,15 @@ const interruptedRunSQL = `status IN ('running','waiting') AND NOT (` + liveDryR
 // one argument is now.
 const staleDryRunSQL = `status IN ('running','waiting') AND trigger = 'dry_run' AND NOT (` + liveDryRunSQL + `)`
 
-// MarkInterruptedAutomationRuns ends every running/waiting run as failed with
-// error_kind='interrupted' (a daemon restart; goja state is not resumable),
-// closes their open steps in the same transaction, and returns how many runs
-// it ended. Queued runs are untouched, and so is a dry run still within its
-// deadline (see liveDryRunSQL).
+// MarkInterruptedAutomationRuns is the daemon start's sweep (AUTO-08): in one
+// transaction it keeps every resumable waiting run (resumableRunSQL) for a
+// resume — resume_pending = 1, status still waiting — and ends every other
+// running/waiting run as failed with error_kind='interrupted', closing their
+// open steps. It returns how many runs it ended. Queued runs are untouched,
+// and so is a dry run still within its deadline (see liveDryRunSQL).
 func (db *DB) MarkInterruptedAutomationRuns(now time.Time) (int, error) {
-	return db.endRunsInterrupted(now, interruptedRunSQL, "interrupted by a daemon restart",
-		"marking interrupted automation runs")
+	return db.endRunsInterruptedTx(now, interruptedRunSQL+` AND NOT (`+resumableRunSQL+`)`,
+		"interrupted by a daemon restart", "marking interrupted automation runs", markResumableTx)
 }
 
 // MarkStaleDryRuns ends every running/waiting dry run past its deadline as
@@ -860,6 +868,12 @@ func (db *DB) MarkStaleDryRuns(now time.Time) (int, error) {
 // endRunsInterrupted ends the runs matching predicate (whose one argument is
 // now) as failed/interrupted with errText.
 func (db *DB) endRunsInterrupted(now time.Time, predicate, errText, what string) (int, error) {
+	return db.endRunsInterruptedTx(now, predicate, errText, what, nil)
+}
+
+// endRunsInterruptedTx is endRunsInterrupted with first, when set, run first
+// in the same transaction.
+func (db *DB) endRunsInterruptedTx(now time.Time, predicate, errText, what string, first func(*sql.Tx) error) (int, error) {
 	if err := requireRunTime(now, what); err != nil {
 		return 0, err
 	}
@@ -868,6 +882,11 @@ func (db *DB) endRunsInterrupted(now time.Time, predicate, errText, what string)
 		return 0, fmt.Errorf("%s: %w", what, err)
 	}
 	defer func() { _ = tx.Rollback() }()
+	if first != nil {
+		if err := first(tx); err != nil {
+			return 0, fmt.Errorf("%s: %w", what, err)
+		}
+	}
 	stamp := formatAutomationTime(now)
 	if err := closeOpenStepsTx(tx, RunFailed, stamp, predicate, stamp); err != nil {
 		return 0, err
@@ -922,6 +941,9 @@ type StepFinish struct {
 	ReportedCostUSD              *float64
 	DurationMS                   int64
 	Now                          time.Time
+	// Replay, when set, is the step's replay row (00146), written in the
+	// same transaction as the step's mark or finish.
+	Replay *AutomationRunReplay
 }
 
 // AppendAutomationRunStep inserts s with seq = the run's max seq + 1 (in one
@@ -964,13 +986,15 @@ const stepLinkSQL = `action_id = CASE WHEN ? != 0 THEN ? ELSE action_id END,
 // it writes status and only the non-zero link.ActionID/AskID/SessionID;
 // finished_at stays NULL. A finished step → ErrStepFinished.
 func (db *DB) MarkAutomationRunStep(id int64, status string, link StepFinish) error {
-	res, err := db.Exec(`UPDATE automation_run_steps SET status = ?, `+stepLinkSQL+`
-		WHERE id = ? AND finished_at IS NULL`, status,
-		link.ActionID, link.ActionID, link.AskID, link.AskID, link.SessionID, link.SessionID, id)
-	if err != nil {
-		return fmt.Errorf("marking automation run step %d: %w", id, err)
-	}
-	return requireOpenStep(db, res, id)
+	return db.stepWriteTx(id, link.Replay, func(q stepExecer) (sql.Result, error) {
+		res, err := q.Exec(`UPDATE automation_run_steps SET status = ?, `+stepLinkSQL+`
+			WHERE id = ? AND finished_at IS NULL`, status,
+			link.ActionID, link.ActionID, link.AskID, link.AskID, link.SessionID, link.SessionID, id)
+		if err != nil {
+			return nil, fmt.Errorf("marking automation run step %d: %w", id, err)
+		}
+		return res, nil
+	})
 }
 
 // FinishAutomationRunStep closes step id with f (finished_at = f.Now); links
@@ -979,19 +1003,21 @@ func (db *DB) FinishAutomationRunStep(id int64, f StepFinish) error {
 	if err := requireRunTime(f.Now, fmt.Sprintf("finishing automation run step %d", id)); err != nil {
 		return err
 	}
-	res, err := db.Exec(`UPDATE automation_run_steps SET status = ?, result_summary = ?, error = ?, auto = ?,
-		permission = CASE WHEN ? != '' THEN ? ELSE permission END,
-		`+stepLinkSQL+`, input_tokens = ?, output_tokens = ?, tokens_estimated = ?, reported_cost_usd = ?,
-		duration_ms = ?, finished_at = ?
-		WHERE id = ? AND finished_at IS NULL`,
-		f.Status, f.ResultSummary, f.Error, f.Auto, f.Permission, f.Permission,
-		f.ActionID, f.ActionID, f.AskID, f.AskID, f.SessionID, f.SessionID,
-		f.InputTokens, f.OutputTokens, f.TokensEstimated, nullRunCost(f.ReportedCostUSD), f.DurationMS,
-		formatAutomationTime(f.Now), id)
-	if err != nil {
-		return fmt.Errorf("finishing automation run step %d: %w", id, err)
-	}
-	return requireOpenStep(db, res, id)
+	return db.stepWriteTx(id, f.Replay, func(q stepExecer) (sql.Result, error) {
+		res, err := q.Exec(`UPDATE automation_run_steps SET status = ?, result_summary = ?, error = ?, auto = ?,
+			permission = CASE WHEN ? != '' THEN ? ELSE permission END,
+			`+stepLinkSQL+`, input_tokens = ?, output_tokens = ?, tokens_estimated = ?, reported_cost_usd = ?,
+			duration_ms = ?, finished_at = ?
+			WHERE id = ? AND finished_at IS NULL`,
+			f.Status, f.ResultSummary, f.Error, f.Auto, f.Permission, f.Permission,
+			f.ActionID, f.ActionID, f.AskID, f.AskID, f.SessionID, f.SessionID,
+			f.InputTokens, f.OutputTokens, f.TokensEstimated, nullRunCost(f.ReportedCostUSD), f.DurationMS,
+			formatAutomationTime(f.Now), id)
+		if err != nil {
+			return nil, fmt.Errorf("finishing automation run step %d: %w", id, err)
+		}
+		return res, nil
+	})
 }
 
 func requireOpenStep(db *DB, res sql.Result, id int64) error {
