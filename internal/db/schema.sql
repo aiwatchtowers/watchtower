@@ -2813,11 +2813,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_automations_scope_slug ON automations(scop
 -- One row per run. Triggers only insert queued rows; the executor claims them.
 -- event_json: '' for every non-event run; for trigger = 'event' exactly
 -- {"cycles": ["<cycle id>", ...], "events": [<event>, ... at most 100],
---  "count": <total matched>, "truncated": <bool>} (spec §8).
+--  "count": <total matched>, "truncated": <bool>} (spec §8); for
+-- trigger = 'reply' (00147, one owner press of an Inbox card's Reply button)
+-- exactly {"reply": {"output_id": <id>, "action": <index>, "value": "<reply>",
+--  "data": <the action's stored data, null when absent>,
+--  "card": {"title": "<card title>", "link": "<card link>"}}}.
 CREATE TABLE IF NOT EXISTS automation_runs (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     automation_id     INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
-    trigger           TEXT NOT NULL CHECK (trigger IN ('schedule','catch_up','button','event','manual','dry_run')),
+    trigger           TEXT NOT NULL CHECK (trigger IN ('schedule','catch_up','button','event','manual','dry_run','reply')),
     scheduled_for     TEXT,
     event_cycle       TEXT,
     event_json        TEXT NOT NULL DEFAULT '',
@@ -2851,8 +2855,9 @@ CREATE INDEX IF NOT EXISTS idx_automation_runs_automation_status ON automation_r
 CREATE INDEX IF NOT EXISTS idx_automation_runs_status_queued ON automation_runs(status, queued_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_event_cycle ON automation_runs(automation_id, event_cycle)
     WHERE event_cycle IS NOT NULL;
+-- At most one queued run per (automation, trigger); reply runs are never coalesced (00147).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_queued_trigger ON automation_runs(automation_id, trigger)
-    WHERE status = 'queued';
+    WHERE status = 'queued' AND trigger <> 'reply';
 CREATE INDEX IF NOT EXISTS idx_automation_runs_rerun_of ON automation_runs(rerun_of);
 CREATE INDEX IF NOT EXISTS idx_automation_runs_started_at ON automation_runs(started_at); -- per-automation token stats window
 
@@ -2924,8 +2929,14 @@ CREATE TABLE IF NOT EXISTS automation_outputs (
     body          TEXT NOT NULL,
     priority      TEXT NOT NULL DEFAULT 'medium' CHECK (priority IN ('high','medium','low')),
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    read_at       TEXT,                                      -- Desktop-written
-    dismissed_at  TEXT                                       -- Desktop-written
+    read_at       TEXT,                                      -- Desktop-written: the card was opened
+    dismissed_at  TEXT,                                      -- Desktop-written
+    link          TEXT NOT NULL DEFAULT '',                  -- the card's source link (http, https or watchtower-nav://); '' = none (00147)
+    actions_json  TEXT NOT NULL DEFAULT '[]',                -- the card's buttons, at most 4: [{label, kind link|chat|agent|reply, open|chat|agent{task, workbench}|reply, data, primary}]
+    done_at       TEXT,                                      -- Desktop-written: the owner marked the card Done (00147 backfilled it from read_at)
+    pressed_action INTEGER,                                  -- CLI-written by `automations reply`: the index of the pressed Reply action
+    pressed_run_id INTEGER REFERENCES automation_runs(id) ON DELETE SET NULL, -- CLI-written: the reply run the press queued
+    pressed_at    TEXT                                       -- CLI-written: when; a card is pressed at most once
 );
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_kind ON automation_outputs(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_automation ON automation_outputs(automation_id);

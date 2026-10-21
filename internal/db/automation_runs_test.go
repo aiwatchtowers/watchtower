@@ -179,6 +179,56 @@ func TestRun_CoalescesSecondTrigger(t *testing.T) {
 	wantRowCount(t, d, "automation_runs", 2)
 }
 
+// Two presses on two cards of one automation while the first reply run is
+// still queued queue two runs: a reply is never coalesced.
+func TestRun_ReplyIsNeverCoalesced(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunAutomation(t, d, "triage", 1)
+	first, c1 := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerReply, EventJSON: `{"reply":{"output_id":1}}`})
+	second, c2 := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerReply, EventJSON: `{"reply":{"output_id":2}}`})
+	if c1 || c2 || first == second {
+		t.Fatalf("presses = (%d, %v), (%d, %v); want two new rows", first, c1, second, c2)
+	}
+	for _, id := range []int64{first, second} {
+		if r := wantAutomationRun(t, d, id, RunQueued, ""); r.Trigger != TriggerReply {
+			t.Errorf("run %d trigger = %s", id, r.Trigger)
+		}
+	}
+}
+
+func TestRun_CommitStoresLinkAndActions(t *testing.T) {
+	d := openTestDB(t)
+	a, run := seedRunningAutomationRun(t, d)
+	actions := []InboxAction{
+		{Label: "Open", Kind: "link", Open: "https://example.com/a-1", Primary: true},
+		{Label: "Backlog", Kind: "reply", Reply: "backlog", Data: json.RawMessage(`{"id":"A-1"}`)},
+	}
+	mustFinishAutomationRun(t, d, run, RunFinish{Status: RunSucceeded}, &RunCommit{Outputs: []AutomationOutput{
+		{Kind: "inbox", Title: "card", Body: "b", Link: "https://example.com/a-1", Actions: actions},
+		{Kind: "report", Title: "r", Body: "x"},
+	}})
+	inbox, err := d.ListAutomationOutputs("inbox", 0)
+	if err != nil || len(inbox) != 1 {
+		t.Fatalf("inbox = %+v, %v", inbox, err)
+	}
+	got := inbox[0]
+	if got.AutomationID != a || got.Link != "https://example.com/a-1" || !reflect.DeepEqual(got.Actions, actions) ||
+		!got.Actions[0].Primary || got.DoneAt != nil || got.PressedAction != nil || got.PressedRunID != 0 || got.PressedAt != nil {
+		t.Errorf("inbox output = %+v", got)
+	}
+	var stored string
+	if err := d.QueryRow(`SELECT actions_json FROM automation_outputs WHERE kind = 'report'`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != "[]" {
+		t.Errorf("an output without actions stores %q; want []", stored)
+	}
+	reports, err := d.ListAutomationOutputs("report", 0)
+	if err != nil || len(reports) != 1 || reports[0].Actions == nil || len(reports[0].Actions) != 0 {
+		t.Errorf("reports = %+v, %v; want empty non-nil actions", reports, err)
+	}
+}
+
 func TestEnqueue_EventCycleOncePerAutomation(t *testing.T) {
 	d := openTestDB(t)
 	a := seedRunAutomation(t, d, "watch", 1)
