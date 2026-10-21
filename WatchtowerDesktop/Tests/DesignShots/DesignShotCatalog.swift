@@ -63,6 +63,13 @@ enum DesignShotCatalog {
             DesignShot(name: "home-getting-ready", size: NSSize(width: 1800, height: 1100)) {
                 HomeShotFixtures.home(gettingReady: true)
             },
+            // Account purge notice (#601): the banner above Getting ready.
+            DesignShot(name: "home-account-purge", size: NSSize(width: 1280, height: 720)) {
+                HomeShotFixtures.home(purges: HomeShotFixtures.purges)
+            },
+            DesignShot(name: "settings-privacy", size: NSSize(width: 640, height: 420)) {
+                AnyView(HomeShotFixtures.privacySettings().shotFrame().detailBackground())
+            },
             DesignShot(name: "automation-draft-panel", size: NSSize(width: 560, height: 720)) {
                 AnyView(AutomationShotFixtures.draftPanel().shotFrame().detailBackground())
             },

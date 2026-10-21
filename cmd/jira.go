@@ -574,6 +574,10 @@ func connectJiraAccount(cmd *cobra.Command, cfg *config.Config, database *db.DB,
 		}
 	}
 
+	if err := refuseLoginDuringPurge(database, "jira", accountID); err != nil {
+		rollback()
+		return jira.CloudResource{}, err
+	}
 	if err := database.UpdateJiraAccountConnection(accountID, site.ID, site.URL, site.Name); err != nil {
 		rollback()
 		return jira.CloudResource{}, fmt.Errorf("recording site: %w", err)

@@ -26,4 +26,6 @@
 **Test guards:**
 - `cmd/slack01_test.go`: `TestSlack01_RemoveIsNonDestructive` — two accounts, data seeded under the removed account's `2:` namespace; after `runSlackRemove` the removed account's token file is gone, the other account's token file and row are unchanged, the removed row is kept as `removed`/disabled, and the row count of every table in the database is unchanged. `TestSlack01_RemoveUnknownAccountChangesNothing`, `TestSlack01_ConnectRollbackIsSoftRemove`.
 
+**Note (2026-10-21, board #601):** revocation is not removal; SLACK-01 is unchanged and `slack remove` stays soft. A removed account's data, kept by the remove, is deleted by an enabled lease purge 30 days after its last confirmed access, after a 72 h notice (PURGE-01, `docs/inventory/account-purge.md`); with the purge off it is kept for good.
+
 **Locked since:** 2026-10-01

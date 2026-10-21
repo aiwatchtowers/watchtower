@@ -367,6 +367,9 @@ func buildGoogleOAuthScopes(wantCalendar, wantGmail bool) []string {
 	return scopes
 }
 
+// googleOAuthLogin is calendar.Login; a var so tests can script the grant.
+var googleOAuthLogin = calendar.Login
+
 // loginAndSaveGoogleToken runs the OAuth consent flow for accountID and
 // persists the resulting token. When isNewRow is true, either failure rolls
 // back the just-created row (and any credentials file) — mirrors
@@ -374,7 +377,7 @@ func buildGoogleOAuthScopes(wantCalendar, wantGmail bool) []string {
 // id must never be created and then left un-loginable.
 func loginAndSaveGoogleToken(cmd *cobra.Command, cfg *config.Config, database *db.DB, accountID int64, googleCfg calendar.GoogleOAuthConfig, scopes []string, noOpen, appReturn, isNewRow bool) (*calendar.OAuthToken, error) {
 	out := cmd.OutOrStdout()
-	token, err := calendar.Login(cmd.Context(), googleCfg, out, calendar.LoginOptions{
+	token, err := googleOAuthLogin(cmd.Context(), googleCfg, out, calendar.LoginOptions{
 		SkipBrowserOpen: noOpen,
 		Scopes:          scopes,
 		AppReturn:       appReturn,
@@ -385,6 +388,9 @@ func loginAndSaveGoogleToken(cmd *cobra.Command, cfg *config.Config, database *d
 			rollbackGoogleAccount(database, cfg.WorkspaceDir(), accountID, cmd.ErrOrStderr())
 		}
 		return nil, fmt.Errorf("google login: %w", err)
+	}
+	if err := refuseLoginDuringPurge(database, "google", accountID); err != nil {
+		return nil, err
 	}
 
 	store := calendar.NewAccountTokenStore(cfg.WorkspaceDir(), accountID)
@@ -584,8 +590,12 @@ func disconnectGoogleService(cmd *cobra.Command, cfg *config.Config, database *d
 		return acct.ID, nil
 	}
 
-	// Clear any previously recorded auth failure so the Desktop popup dismisses.
-	_ = database.SetGoogleAccountAuthState(acct.ID, "ok", "")
+	// Clear a previously recorded plain error so the Desktop popup dismisses.
+	// No authenticated call was made: the access facts stay (a revocation, and
+	// a purge it scheduled, are not cleared by a disconnect, #601).
+	if err := database.ClearGoogleAccountError(acct.ID); err != nil {
+		return 0, err
+	}
 	fmt.Fprintf(out, "%s disconnected.\n", googleServiceLabel(service))
 	return acct.ID, nil
 }

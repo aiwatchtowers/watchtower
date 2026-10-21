@@ -49,9 +49,9 @@ func dumpTemplateFacts(t *testing.T, d *DB) string {
 }
 
 // queryStrings returns the single text column of every row query yields.
-func queryStrings(t *testing.T, d *DB, query string) []string {
+func queryStrings(t *testing.T, d *DB, query string, args ...any) []string {
 	t.Helper()
-	rows, err := d.Query(query)
+	rows, err := d.Query(query, args...)
 	require.NoError(t, err)
 	defer rows.Close()
 	var out []string

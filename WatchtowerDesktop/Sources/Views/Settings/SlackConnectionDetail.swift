@@ -217,12 +217,18 @@ struct SlackConnectionDetail: View {
                                         .foregroundStyle(.orange)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
+                                if let line = AccountPurgeLine.make(
+                                    center: appState.accountPurgeCenter, source: "slack", accountID: Int64(account.id),
+                                    isPurged: account.isPurged
+                                ) {
+                                    line
+                                }
                             }
                             Spacer()
                             Circle()
                                 .fill(slackAccountStatusColor(account))
                                 .frame(width: 8, height: 8)
-                                .help(account.isOK ? "Connected" : (account.error.isEmpty ? account.status : account.error))
+                                .help(accountStatusHelp(account))
                             Toggle("Enabled", isOn: Binding(
                                 get: { account.enabled },
                                 set: { newValue in
@@ -231,14 +237,17 @@ struct SlackConnectionDetail: View {
                             ))
                             .toggleStyle(.switch)
                             .controlSize(.mini)
-                            .disabled(vm.isConnecting)
+                            .disabled(vm.isConnecting || account.isPurged)
                             // Always offered: a healthy account re-consents to pick up a
                             // newly requested permission (sending, chat:write).
                             Button(account.isOK ? "Reconnect" : "Re-login") {
                                 Task { await vm.relogin(account) }
                             }
-                            .help("Sign in to this workspace again (grants new permissions such as sending messages)")
-                            .disabled(vm.isConnecting)
+                            .help(
+                                reloginBlocked(account.id)
+                                    ?? "Sign in to this workspace again (grants new permissions such as sending messages)"
+                            )
+                            .disabled(vm.isConnecting || reloginBlocked(account.id) != nil)
                             Button("Rename…") {
                                 accountBeingRenamed = AccountRenameTarget(id: account.id, currentName: account.displayName)
                             }
@@ -296,10 +305,11 @@ struct SlackConnectionDetail: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(
+            Text(AccountPurgeStatus.removeDialogMessage(
                 "Disconnects the workspace. Already-synced messages, digests, and "
-                    + "situations stay in Watchtower."
-            )
+                    + "situations stay in Watchtower.",
+                status: appState.accountPurgeCenter?.status
+            ))
         }
     }
 
@@ -316,10 +326,23 @@ struct SlackConnectionDetail: View {
         }
     }
 
+    /// Why Re-login is off for the account (its purge is running), or nil.
+    private func reloginBlocked(_ id: Int) -> String? {
+        AccountPurgeLine.reloginBlockedReason(
+            center: appState.accountPurgeCenter, source: "slack", accountID: Int64(id))
+    }
+
     private func slackAccountStatusColor(_ account: SlackAccount) -> Color {
         if account.isOK { return .green }
         if account.isRevoked { return .red }
+        if account.isPurged { return .gray }
         return .orange
+    }
+
+    private func accountStatusHelp(_ account: SlackAccount) -> String {
+        if account.isOK { return "Connected" }
+        if account.isPurged { return "Data deleted" }
+        return account.error.isEmpty ? account.status : account.error
     }
 
     private func reconnectSlack() {
