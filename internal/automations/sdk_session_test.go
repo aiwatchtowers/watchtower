@@ -41,9 +41,12 @@ func newSessFixture(t *testing.T, defaultAgent string) *sessFixture {
 	t.Helper()
 	s := &sessFixture{exFixture: newExFixture(t, exOpts{fileDB: true}), agent: defaultAgent}
 	s.wb, s.folder = newWorkbench(t, s.d)
-	s.e = automations.NewExecutor(s.d, automations.Backends{DB: s.d, Generator: s.gen, Registry: s.reg, Clock: s.clock,
-		Workbench: automations.NewWorkbenchResolver(s.d, func() string { return s.agent }, func(string) bool { return false })},
-		automations.ExecutorOptions{Modules: automations.DefaultModules, Logger: log.New(s.logs, "", 0)})
+	s.mk = func() *automations.Executor {
+		return automations.NewExecutor(s.d, automations.Backends{DB: s.d, Generator: s.gen, Registry: s.reg, Clock: s.clock,
+			Workbench: automations.NewWorkbenchResolver(s.d, func() string { return s.agent }, func(string) bool { return false })},
+			automations.ExecutorOptions{Modules: automations.DefaultModules, Logger: log.New(s.logs, "", 0)})
+	}
+	s.e = s.mk()
 	return s
 }
 

@@ -100,7 +100,7 @@ func runAsk(env *Env, b Backends, step *Step, in askInput, payload asks.Payload)
 		return nil, notAvailable("ask() needs the automation executor")
 	}
 	wb := env.Binding().WorkbenchID
-	id, err := fileAutomationAsk(b.DB, wb, env.Run.ID, in, payload)
+	id, err := askToWaitOn(env, b.DB, step, wb, in, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -117,6 +117,16 @@ func runAsk(env *Env, b Backends, step *Step, in askInput, payload asks.Payload)
 		return nil, err
 	}
 	return deliverAnswer(b.DB, step, row, payload)
+}
+
+// askToWaitOn is the ask the call waits on: a resumed run's call re-enters
+// its wait on the ask it filed before the restart (still open in the
+// owner's stack); any other call files a new one.
+func askToWaitOn(env *Env, d *db.DB, step *Step, wb int64, in askInput, payload asks.Payload) (int64, error) {
+	if link, ok := step.Resumed(); ok && link.AskID != 0 {
+		return link.AskID, nil
+	}
+	return fileAutomationAsk(d, wb, env.Run.ID, in, payload)
 }
 
 // fileAutomationAsk inserts the open ask of run runID on workbench wb: no
@@ -164,6 +174,9 @@ func waitForAnswer(env *Env, d *db.DB, wb, id int64) (*db.OwnerAsk, error) {
 		}
 		return false, fmt.Errorf("ask #%d is %s", id, a.Status)
 	})
+	if errors.Is(err, errDaemonStopping) {
+		return nil, err // the ask stays open: the resumed run waits on it again
+	}
 	if err != nil {
 		// An ask answered just before the wait ended (a cancel while the
 		// resume waited for a slot) is not open: it stays answered, never

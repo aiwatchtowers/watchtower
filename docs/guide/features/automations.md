@@ -10,6 +10,8 @@ Some chores repeat: a Monday Jira summary, a digest of new mail, a Friday team r
 
 A recipe is one Markdown file: settings (when it runs, what it may touch, where results go, its budget) plus one short script. The daemon runs it, so the Mac must be awake with Watchtower's daemon running. A schedule fires in your local time; if the Mac was asleep, the recipe can run once on wake or skip the slot. An event trigger fires after a sync brings new Slack messages, mail, Jira or calendar changes, or Confluence pages, or when you react to a Slack message, at most once per sync cycle ([Event triggers](automations-recipes.md#event-triggers)).
 
+A run that waits for your answer, an approval or a session keeps waiting through a daemon restart or an update: the question stays in your stack, and the run goes on once you answer. A run that was working when the daemon stopped ends as interrupted.
+
 A recipe never runs until you confirm it, every run has its own token and time budget, and writes wait for your approval. The details are in [Confirmation, budgets and writes](automations-safety.md).
 
 ## Using it
@@ -31,7 +33,7 @@ On the card, **Run now** starts a run the same way, without the notice; **Dry ru
 
 ### When a run fails
 
-A scheduled or event run that fails brings "<name> failed", at most once per automation a day; several at once share one notice. A run cut short by a restart brings none. A recipe disabled because its script got stuck always brings "<name> was disabled".
+A scheduled or event run that fails brings "<name> failed", at most once per automation a day; several at once share one notice. A run cut short by a restart while it was working brings none. A recipe disabled because its script got stuck always brings "<name> was disabled".
 
 The **Automations** badge counts automations whose last run failed, until you open the card or a later run succeeds.
 

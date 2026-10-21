@@ -51,7 +51,13 @@ type exFixture struct {
 	dir   string
 	e     *automations.Executor
 	logs  *syncBuffer
+	// mk builds the fixture's executor; restart replaces e with a fresh one
+	// over the same database, as a daemon restart would.
+	mk func() *automations.Executor
 }
+
+// restart replaces the executor with a fresh one (a new daemon process).
+func (f *exFixture) restart() { f.e = f.mk() }
 
 // syncBuffer is a log sink safe for the executor's goroutines.
 type syncBuffer struct {
@@ -89,18 +95,21 @@ func newExFixture(t *testing.T, o exOpts) *exFixture {
 	if o.backends != nil {
 		o.backends(f, &b)
 	}
-	f.e = automations.NewExecutor(d, b,
-		automations.ExecutorOptions{
-			MaxConcurrent: o.maxConcurrent,
-			Modules: func(b automations.Backends) []automations.Module {
-				mods := automations.DefaultModules(b)
-				if o.modules != nil {
-					mods = append(mods, o.modules(f)...)
-				}
-				return mods
-			},
-			Logger: log.New(f.logs, "", 0),
-		})
+	f.mk = func() *automations.Executor {
+		return automations.NewExecutor(d, b,
+			automations.ExecutorOptions{
+				MaxConcurrent: o.maxConcurrent,
+				Modules: func(b automations.Backends) []automations.Module {
+					mods := automations.DefaultModules(b)
+					if o.modules != nil {
+						mods = append(mods, o.modules(f)...)
+					}
+					return mods
+				},
+				Logger: log.New(f.logs, "", 0),
+			})
+	}
+	f.e = f.mk()
 	return f
 }
 
