@@ -28,7 +28,6 @@ struct AutomationEditorPanel: View {
     @State private var chat: AutomationEditorChat?
     @State private var chatFailure: String?
     @State private var newKey: Int64?
-    @State private var keepAuto: Set<String> = []
     /// Waits for the owner's press to land, then opens the saved automation;
     /// cancelled when the panel goes, so it never navigates from elsewhere.
     @State private var pressTask: Task<Void, Never>?
@@ -274,7 +273,7 @@ struct AutomationEditorPanel: View {
         if let key, let form {
             let column = columnModel(form, key: key)
             VStack(spacing: 0) {
-                AutomationDraftColumn(model: column, keepAuto: $keepAuto, onDryRunAgain: dryRunAgain)
+                AutomationDraftColumn(model: column, keepAuto: keepAutoBinding(key), onDryRunAgain: dryRunAgain)
                 footer(form, key: key, column: column)
             }
         } else if let key, case let .failed(message) = editor.saving[key] {
@@ -424,6 +423,19 @@ struct AutomationEditorPanel: View {
         }
     }
 
+    /// The column's "Keep auto" boxes, held by the center per draft (AUTO-03).
+    private func keepAutoBinding(_ key: Int64) -> Binding<Set<String>> {
+        let editor = editor
+        return Binding(
+            get: { editor.keepAuto[key] ?? [] },
+            set: { new in
+                let old = editor.keepAuto[key] ?? []
+                for tool in new.subtracting(old) { editor.setKeepAuto(key, tool: tool, on: true) }
+                for tool in old.subtracting(new) { editor.setKeepAuto(key, tool: tool, on: false) }
+            }
+        )
+    }
+
     private func isFailed(_ key: Int64) -> Bool {
         if case .failed = editor.saving[key] { return true }
         return false
@@ -434,7 +446,7 @@ struct AutomationEditorPanel: View {
     private func press(_ action: AutomationDraftFooter.Action, key: Int64) {
         guard case let .review(plan) = editor.saving[key] else { return }
         var checked = plan
-        checked.keepAuto = keepAuto.intersection(plan.pausedGrants)
+        checked.keepAuto = (editor.keepAuto[key] ?? []).intersection(plan.pausedGrants)
         let editor = editor
         whenLanded {
             switch action {

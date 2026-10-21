@@ -64,6 +64,29 @@ enum AutomationEditFixtures {
     }
 }
 
+/// Answers `show` with the fixture and `validate` with `approval`.
+private final class KeepAutoRunner: CLIRunnerProtocol, @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: String
+
+    init(approval: String) {
+        current = approval
+    }
+
+    var approval: String {
+        get { lock.withLock { current } }
+        set { lock.withLock { current = newValue } }
+    }
+
+    func run(args: [String]) async throws -> Data {
+        switch args.count > 1 ? args[1] : "" {
+        case "show": try AutomationEditFixtures.showJSON()
+        case "validate": try AutomationEditFixtures.validateJSON(approval: approval)
+        default: Data()
+        }
+    }
+}
+
 @MainActor
 final class AutomationFormTests: XCTestCase {
     private typealias Fixtures = AutomationEditFixtures
@@ -76,7 +99,7 @@ final class AutomationFormTests: XCTestCase {
         XCTAssertFalse(plan.wasConfirmed)
     }
 
-    func testAuto03_KeepAutoBoxesUncheckedByDefault() throws {
+    func testAuto03_KeepAutoBoxesUncheckedByDefault() async throws {
         let grants = [Fixtures.grant("create_jira_issue", hash: "h1"), Fixtures.grant("add_comment", hash: "h1"),
                       Fixtures.grant("send_slack_message", hash: "h0")]
         let plan = AutomationSavePlan.make(validated: try Fixtures.validated(approval: "h2"), current: try Fixtures.detail(), grants: grants)
@@ -88,6 +111,34 @@ final class AutomationFormTests: XCTestCase {
         let column = AutomationDraftColumnModel(text: "x", validated: plan.validated, isChecking: false,
                                                 newestChatEntry: nil, confirmedText: nil, isNew: false, plan: plan)
         XCTAssertEqual(column.pausedGrants, ["add_comment", "create_jira_issue"])
+
+        // The boxes the panel binds to live in the editor center: none is
+        // checked by default, and a check that measures a new hash unchecks
+        // every box checked under the old one.
+        let runner = KeepAutoRunner(approval: "h2")
+        let center = AutomationEditorCenter(cli: AutomationsCLI(runner: runner), grants: { _ in grants },
+                                            refresh: { _ in },
+                                            sleep: { _ in try? await Task.sleep(for: .seconds(3600)) })
+        await center.beginEdit(7, chatNewestText: nil)
+        let form = try XCTUnwrap(center.drafts[7]?.form)
+        form.fields.budgetTokens = 120_000
+        await center.check(7)
+        guard case let .review(shown) = center.saving[7] else { return XCTFail("not checked: \(String(describing: center.saving[7]))") }
+        XCTAssertEqual(shown.pausedGrants, ["add_comment", "create_jira_issue"], "a box for each paused grant")
+        XCTAssertEqual(center.keepAuto[7] ?? [], [], "no Keep auto box is checked by default")
+        center.setKeepAuto(7, tool: "add_comment", on: true)
+        center.setKeepAuto(7, tool: "send_slack_message", on: true)
+        XCTAssertEqual(center.keepAuto[7], ["add_comment"], "only a paused grant has a box")
+
+        await center.check(7)
+        XCTAssertEqual(center.keepAuto[7], ["add_comment"], "a re-check of the same hash keeps the box")
+
+        runner.approval = "h3"
+        form.fields.budgetTokens = 130_000
+        await center.check(7)
+        guard case let .review(again) = center.saving[7] else { return XCTFail("not re-checked") }
+        XCTAssertEqual(again.validated.approvalHash, "h3")
+        XCTAssertEqual(center.keepAuto[7] ?? [], [], "a new hash unchecks every box")
     }
 
     /// D26: a trigger, missed, budget or concurrency edit is spliced into the

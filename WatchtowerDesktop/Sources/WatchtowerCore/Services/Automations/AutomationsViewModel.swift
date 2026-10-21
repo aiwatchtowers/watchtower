@@ -247,7 +247,7 @@ package final class AutomationsViewModel {
                 steps[runID] = try AutomationQueries.fetchSteps(db, runID: runID)
             }
             let items = try AutomationQueries.fetchList(db, now: now)
-            let workbenchIDs = Set(try Int64.fetchAll(db, sql: "SELECT id FROM projects"))
+            let workbenchIDs = try WorkbenchQueries.allIDs(db)
             return Self(
                 items: items,
                 attentionCount: try AutomationQueries.attentionCount(db),
@@ -327,6 +327,14 @@ package final class AutomationsViewModel {
         selectedID = nil
         panel = .template(name: name, scope: scope)
         composerPrefill = nil
+    }
+
+    /// A template panel's install finished with `firstID` as its first copy:
+    /// that card opens, but only while this template's panel is the one
+    /// shown — a finished panel seen again opens it once, never from elsewhere.
+    package func templateFinished(name: String, scope: AutomationScopeChoice, firstID: Int64) {
+        guard panel == .template(name: name, scope: scope) else { return }
+        showCard(firstID)
     }
 
     /// Opens the editor: an edit keeps its row selected, a new draft selects

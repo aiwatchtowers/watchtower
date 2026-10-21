@@ -59,7 +59,7 @@ private struct AutomationRowContent: View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
             Circle()
                 .fill(isOn ? Tone.success : Color.secondary)
-                .frame(width: 7, height: 7)
+                .frame(width: IconSize.chevron, height: IconSize.chevron)
                 .accessibilityLabel(isOn ? "On" : "Off")
             VStack(alignment: .leading, spacing: Spacing.tight) {
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {

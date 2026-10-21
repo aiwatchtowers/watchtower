@@ -894,15 +894,4 @@ final class AutomationEditorCenterTests: XCTestCase {
         XCTAssertEqual(AutomationChangePresentation.lines([], known: false, confirmedBefore: false),
                        ["First confirmation"])
     }
-
-    func testConfirmSheetAuthorLine() {
-        let now = Date(timeIntervalSince1970: 1_792_152_000)
-        let tenMinutesAgo = now.addingTimeInterval(-600)
-        XCTAssertEqual(AutomationChangePresentation.authorLine(changedBy: "assistant", changedAt: tenMinutesAgo, now: now),
-                       "Changed by the assistant in the chat · 10 min ago")
-        XCTAssertEqual(AutomationChangePresentation.authorLine(changedBy: "", changedAt: tenMinutesAgo, now: now),
-                       "Changed outside Watchtower · 10 min ago")
-        XCTAssertEqual(AutomationChangePresentation.authorLine(changedBy: "", changedAt: nil, now: now),
-                       "Changed outside Watchtower")
-    }
 }

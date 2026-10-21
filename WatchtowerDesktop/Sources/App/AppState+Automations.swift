@@ -7,11 +7,13 @@ private let automationsLog = Logger(subsystem: Constants.bundleID, category: "au
 
 /// Navigation into the Automations tab, and quick run's entry point (spec
 /// §12.7): the "Run Automation…" menu item (⌃⌘R) opens the palette here.
+/// Every entry that opens something in the panel also switches the tab to
+/// its Automations section (`navigateToAutomations`), so the panel is seen.
 extension AppState {
     /// Opens an automation's card, with one run's steps open when given
     /// (a run notification, an Inbox card's label).
     func openAutomationRun(automationID: Int64, runID: Int64?) {
-        selectedDestination = .automations
+        navigateToAutomations(section: .automations)
         automationsViewModel?.open(automationID: automationID, runID: runID)
     }
 
@@ -21,7 +23,7 @@ extension AppState {
     func newAutomation(forWorkbench workbench: Workbench) {
         guard let automationsViewModel else { return }
         automationsViewModel.showNew(AutomationNewFlow(fixedScope: .forWorkbench(workbench)))
-        selectedDestination = .automations
+        navigateToAutomations(section: .automations)
     }
 
     /// Opens the Automations tab's editor panel on `target` (an edit, or a
@@ -29,7 +31,7 @@ extension AppState {
     func openAutomationEditor(_ target: AutomationEditorTarget) {
         guard let automationsViewModel else { return }
         automationsViewModel.showEditor(target)
-        selectedDestination = .automations
+        navigateToAutomations(section: .automations)
     }
 
     /// Opens the editor panel on a fresh new draft in `scope` that starts
@@ -168,9 +170,9 @@ extension AppState {
             center.cancelConfirm()
             alerts.showRefusal(message)
         case .openedConfirmation, .openedCard, .openedRun:
-            // `activate` already opened the card, run or sheet in the view model.
+            // `activate` already opened the card or run in the view model.
             bringMainWindowForward()
-            selectedDestination = .automations
+            navigateToAutomations(section: .automations)
         case let .refused(message):
             alerts.showRefusal(message)
         }

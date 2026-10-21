@@ -297,6 +297,23 @@ final class AutomationsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.panel, .empty)
     }
 
+    /// A finished template opens its first copy's card once, and only while
+    /// that template's panel is shown.
+    func testTemplateFinishedOpensTheCardOnlyFromItsPanel() {
+        let vm = makeViewModel()
+        vm.showTemplate(name: "jira-state-report", scope: .personal)
+        vm.templateFinished(name: "jira-state-report", scope: .personal, firstID: 11)
+        XCTAssertEqual(vm.panel, .card(11))
+
+        vm.showNew(AutomationNewFlow())
+        vm.templateFinished(name: "jira-state-report", scope: .personal, firstID: 11)
+        XCTAssertEqual(vm.panel, .new(AutomationNewFlow()), "a panel no longer shown navigates nowhere")
+
+        vm.showTemplate(name: "release-buttons", scope: .personal)
+        vm.templateFinished(name: "jira-state-report", scope: .personal, firstID: 11)
+        XCTAssertEqual(vm.panel, .template(name: "release-buttons", scope: .personal))
+    }
+
     /// The New flow's composer text rides along to the editor once; any
     /// other panel drops it.
     func testShowEditorCarriesTheComposerPrefill() {

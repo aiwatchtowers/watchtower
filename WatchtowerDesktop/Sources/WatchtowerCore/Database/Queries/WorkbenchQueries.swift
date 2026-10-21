@@ -30,6 +30,11 @@ package enum WorkbenchQueries {
 
     // MARK: - Projects
 
+    /// Every workbench's id.
+    package static func allIDs(_ db: Database) throws -> Set<Int64> {
+        Set(try Int64.fetchAll(db, sql: "SELECT id FROM projects"))
+    }
+
     package static func fetchAll(_ db: Database) throws -> [Workbench] {
         try Workbench.fetchAll(db, sql: "SELECT * FROM projects ORDER BY name COLLATE NOCASE, id")
     }

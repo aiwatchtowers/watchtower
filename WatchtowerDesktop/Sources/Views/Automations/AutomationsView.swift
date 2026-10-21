@@ -112,12 +112,18 @@ struct AutomationsView: View {
         }
         .onDisappear { vm.setTabVisible(false) }
         .onChange(of: vm.items.map(\.id)) { _, _ in autoSelect() }
-        .onChange(of: vm.pendingConfirmID, initial: true) { _, _ in vm.consumePendingConfirm() }
+        .onChange(of: vm.pendingConfirmID, initial: true) { _, pending in
+            // The card it opens is in the Automations section: show it.
+            if pending != nil { storedSection = AutomationsSection.automations.rawValue }
+            vm.consumePendingConfirm()
+        }
     }
 
-    /// The first listed automation, while the panel shows nothing else.
+    /// The first listed automation, while the panel shows nothing else; an
+    /// automation whose row is not listed (its workbench not loaded yet) is
+    /// never picked.
     private func autoSelect() {
-        vm.autoSelect(first: sections.lazy.flatMap(\.items).first?.id ?? vm.items.first?.id)
+        vm.autoSelect(first: sections.lazy.flatMap(\.items).first?.id)
     }
 
     // MARK: - List
@@ -144,7 +150,6 @@ struct AutomationsView: View {
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
                 SearchField(text: $searchText, placeholder: "Search automations")
-                    .frame(height: 22)
             }
             .padding(.horizontal, Spacing.medium)
             .padding(.vertical, Spacing.regular)
@@ -183,7 +188,7 @@ struct AutomationsView: View {
                 .padding(.bottom, Spacing.medium)
             }
             .overlay {
-                if sections.isEmpty, !isEmpty {
+                if sections.isEmpty, !isEmpty, !searchText.trimmingCharacters(in: .whitespaces).isEmpty {
                     Text("No automation matches “\(searchText)”.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
@@ -199,8 +204,16 @@ struct AutomationsView: View {
     }
 
     /// A draft row opens the editor on its chat, in the scope it was started in.
+    /// A workbench draft whose workbench is not listed opens nothing: it
+    /// never opens as a personal chat (ask #469).
     private func open(_ row: AutomationDraftRow) {
-        let scope = row.workbenchID.flatMap { id in hooks.scopes.first { $0.workbenchID == id } } ?? .personal
+        let scope: AutomationScopeChoice
+        if let id = row.workbenchID {
+            guard let workbench = hooks.scopes.first(where: { $0.workbenchID == id }) else { return }
+            scope = workbench
+        } else {
+            scope = .personal
+        }
         vm.showEditor(.newDraft(contextID: row.contextID, scope: scope, startText: nil))
     }
 
@@ -236,13 +249,7 @@ struct AutomationsView: View {
                     onAdjustInChat: { text in
                         vm.showEditor(.newDraft(contextID: hooks.draftContextID(scope), scope: scope, startText: text))
                     },
-                    onDone: { id in
-                        // A finished panel seen again (an install that ended
-                        // while the tab was away) opens the card once: only
-                        // while this panel is the one shown.
-                        guard vm.panel == .template(name: name, scope: scope) else { return }
-                        vm.showCard(id)
-                    }
+                    onDone: { id in vm.templateFinished(name: name, scope: scope, firstID: id) }
                 )
                 .id(AutomationTemplatePanels.key(template: name, scope: scope))
             } else {

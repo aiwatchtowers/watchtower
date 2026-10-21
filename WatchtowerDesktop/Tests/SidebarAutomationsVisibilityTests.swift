@@ -99,9 +99,16 @@ final class SidebarAutomationsVisibilityTests: XCTestCase {
             return try XCTUnwrap(Workbench.fetchOne(db, sql: "SELECT * FROM projects WHERE id = ?", arguments: [id]))
         }
 
+        // The tab was last left on Reactions: the panel must still be seen.
+        let key = AutomationsSection.storageKey
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+        UserDefaults.standard.set(AutomationsSection.reactions.rawValue, forKey: key)
+
         appState.newAutomation(forWorkbench: workbench)
 
         XCTAssertEqual(appState.selectedDestination, .automations)
+        XCTAssertEqual(UserDefaults.standard.string(forKey: key), AutomationsSection.automations.rawValue)
         XCTAssertEqual(appState.automationsViewModel?.panel, .new(AutomationNewFlow(
             fixedScope: .workbench(id: workbench.id, name: "acme", folder: "/tmp/acme"))))
     }
@@ -124,9 +131,15 @@ final class SidebarAutomationsVisibilityTests: XCTestCase {
             appState.stopSidebarCounts()
         }
 
+        let key = AutomationsSection.storageKey
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+        UserDefaults.standard.set(AutomationsSection.tracks.rawValue, forKey: key)
+
         appState.openAutomationDraft(text: "---\nname: Digest\n---\n", scope: .personal)
 
         XCTAssertEqual(appState.selectedDestination, .automations)
+        XCTAssertEqual(UserDefaults.standard.string(forKey: key), AutomationsSection.automations.rawValue)
         guard case let .editor(.newDraft(contextID, scope, startText)) = appState.automationsViewModel?.panel else {
             return XCTFail("the editor opens on a new draft")
         }

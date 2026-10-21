@@ -1313,7 +1313,7 @@ final class AppState {
         automationsViewModel = vm
         let quickRun = QuickRunCenter(dbPool: dbPool, viewModel: vm, cli: cli,
                                       notifier: notifier)
-        quickRun.showAutomationsTab = { [weak self] in self?.selectedDestination = .automations }
+        quickRun.showAutomationsTab = { [weak self] in self?.navigateToAutomations(section: .automations) }
         quickRunCenter = quickRun
         automationEditorCenter = AutomationEditorCenter(
             cli: cli,

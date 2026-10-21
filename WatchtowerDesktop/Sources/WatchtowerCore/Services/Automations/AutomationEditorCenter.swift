@@ -92,10 +92,17 @@ package final class AutomationEditorCenter {
     /// draft column shows it (its errors too) while it is of the bytes on
     /// screen (its `content_hash`).
     package private(set) var lastChecked: [Int64: AutomationsCLI.ValidateResult] = [:]
+    /// The "Keep auto" boxes the owner checked, by draft key (AUTO-03):
+    /// empty by default, and emptied by every check that measures a new
+    /// approval hash, so a box checked under one hash is never carried to
+    /// another. Only a paused grant of the shown plan can be checked.
+    package private(set) var keepAuto: [Int64: Set<String>] = [:]
     /// Drafts whose save or confirm landed but whose turn-on failed: the
     /// panel offers **Turn On** (`retryTurnOn`).
     package private(set) var turnOnPending: Set<Int64> = []
 
+    /// The approval hash `keepAuto` was checked under, by draft key.
+    @ObservationIgnored private var keepAutoHash: [Int64: String] = [:]
     @ObservationIgnored private let cli: AutomationsCLI
     @ObservationIgnored private let grants: @MainActor (Int64) async throws -> [AutomationToolGrant]
     @ObservationIgnored private let refresh: @MainActor (Int64) async -> Void
@@ -232,6 +239,16 @@ package final class AutomationEditorCenter {
         lastChecked[id] = nil
         turnOnPending.remove(id)
         prefilled.remove(id)
+        keepAuto[id] = nil
+        keepAutoHash[id] = nil
+    }
+
+    /// A "Keep auto" box: checks or unchecks `tool`, a grant the shown plan pauses.
+    package func setKeepAuto(_ key: Int64, tool: String, on: Bool) {
+        guard case let .review(plan) = saving[key], plan.pausedGrants.contains(tool) else { return }
+        var kept = keepAuto[key] ?? []
+        if on { kept.insert(tool) } else { kept.remove(tool) }
+        keepAuto[key] = kept
     }
 
     /// True once per draft: the New flow's text goes into its chat's
@@ -343,6 +360,10 @@ package final class AutomationEditorCenter {
             }
             if let plan {
                 validatedTexts[key] = text
+                if keepAutoHash[key] != plan.validated.approvalHash {
+                    keepAuto[key] = nil
+                    keepAutoHash[key] = plan.validated.approvalHash
+                }
                 saving[key] = .review(plan)
             } else {
                 saving[key] = .failed(Self.recipeErrors(validated))
@@ -527,6 +548,8 @@ package final class AutomationEditorCenter {
         checkTasks[key] = nil
         drafts[key] = nil
         lastChecked[key] = nil
+        keepAuto[key] = nil
+        keepAutoHash[key] = nil
         // `.saving` until `commit` has turned it on (or not): only then `.done`.
         if !autoFailures.isEmpty {
             saving[key] = .failed("Saved, but auto could not be kept for " + autoFailures.joined(separator: "; "))

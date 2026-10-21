@@ -54,7 +54,7 @@ package enum AutomationLLMWarning {
     }
 }
 
-/// The draft column's **Changed** block and author line (spec §12.2,
+/// The draft column's **Changed** block (spec §12.2,
 /// D26), from `show --json`'s `changes` (old/new always strings: the trigger
 /// as its spec JSON, numbers in decimal, lists as JSON arrays, the script "").
 package enum AutomationChangePresentation {
@@ -68,15 +68,6 @@ package enum AutomationChangePresentation {
         guard confirmedBefore else { return [firstConfirmation] }
         guard known else { return [unknownChanges] }
         return changes.map(line)
-    }
-
-    /// "Changed by the assistant in the chat · 10 min ago" when an applied
-    /// `save_automation` wrote the current version, else "Changed outside
-    /// Watchtower · <age>".
-    package static func authorLine(changedBy: String, changedAt: Date?, now: Date) -> String {
-        let who = changedBy == "assistant" ? "Changed by the assistant in the chat" : "Changed outside Watchtower"
-        guard let changedAt else { return who }
-        return "\(who) · \(AutomationCardPresentation.relative(now.timeIntervalSince(changedAt))) ago"
     }
 
     private static func line(_ change: AutomationChange) -> String {
