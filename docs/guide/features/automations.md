@@ -46,7 +46,7 @@ The **Automations** badge counts automations whose last run failed, until you op
 
 ### Where results land
 
-- Inbox: **From your automations** cards with **Done** and **Dismiss**. Those from the last 72 hours also show in the [Home](home.md) feed, with **Done** and **Hide**.
+- Inbox: cards in **Actions**, with their own buttons, **Done** and **Dismiss**. Those from the last 72 hours also show in the [Home](home.md) feed, with **Done** and **Hide**.
 - Reports: **Latest reports** on the card.
 - Briefing: notes reach the next daily briefing, from the last 7 days at most.
 
@@ -72,6 +72,7 @@ The tab also shows your reaction commands and custom tracks next to your recipes
 ## Related
 
 - [Recipes and templates](automations-recipes.md)
+- [Buttons on automation cards](automations-inbox-buttons.md)
 - [Reactions and tracks in Automations](automations-rules.md)
 - [Confirmation, budgets and writes](automations-safety.md)
 

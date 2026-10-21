@@ -153,7 +153,7 @@ call, a chat proposal the owner elicited, or a recipe the owner confirmed.
 `ActionStripViewModel.refresh()` is a pure read (`AgentActionQueries.fetchStrip`
 + `ReminderQueries.fetchDue` + `AutomationQueries.fetchInboxOutputs`, plus the
 automation run labels) over three tables — `agent_actions`, `reminders` and
-`automation_outputs` (`kind='inbox'`, unread and not dismissed) — and every
+`automation_outputs` (`kind='inbox'`, neither done nor dismissed) — and every
 row in them is written only by a `Registry.Propose` call, a `remind_me`
 `Execute`/`InsertReminder`, or a succeeded run of an automation. An
 automation output is gesture-gated by construction: it exists only because
@@ -162,7 +162,13 @@ an `agent_actions` row with `context_type='automation_run'` likewise comes
 only from such a recipe's `Registry.Propose`. There is no other writer, and
 no scan of ambient Slack/Jira/Calendar/Gmail traffic feeds any of the three
 tables. (Amended 2026-10-16, Automations P3, spec §14.4, D10, approved in ask
-#270.)
+#270.) Since 2026-10-21 (ask #475) the Actions tab is a list and a reading
+pane: a proposal opens in the reading pane — a `save_automation` proposal as a
+short summary with **Open Draft** and **Reject**, any other kind in
+`AgentActionCardView` — and an automation card's own buttons are drawn only
+from the `actions` its confirmed recipe wrote. A button never grants a
+permission: Link, Chat and Agent only navigate or prepare, and Reply queues a
+run under the recipe's confirmed manifest (AUTO-06, AUTO-09).
 
 **Why locked:** The whole point of the strip taking over from the situations
 Dashboard was "no trash bin by construction" (design §1) — a flat list that
@@ -173,7 +179,7 @@ the only thing the sidebar's "Inbox" tab shows besides its Learned and Profile
 segments — which makes this contract the sole remaining guarantee that nothing
 ambient can reach that tab.
 
-**Test guards:** No dedicated negative test (an absence-of-writer property); covered indirectly by every writer-side guard above (`TestReactionCmd_DispatchesNewCommandAsProposal`, AGENT-05's guards in `docs/inventory/agent-actions.md`) each being reachable only from a gesture, plus `WatchtowerDesktop/Tests/Core/AgentActionQueriesTests.swift::testFetchStripReturnsNonTerminalAcrossConversations` and `WatchtowerDesktop/Tests/Core/ActionStripViewModelTests.swift::testRefreshPopulatesActionAndReminderRows` (the read side pulls only from `agent_actions`/`reminders`, nothing else). Automation outputs (P3): `WatchtowerDesktop/Tests/Core/ActionStripAutomationOutputTests.swift` (`testStripListsUnreadInboxOutputs`, `testReportAndBriefingOutputsNotOnStrip` — only `kind='inbox'` reaches the strip — and `testRefreshIsAPureRead`).
+**Test guards:** No dedicated negative test (an absence-of-writer property); covered indirectly by every writer-side guard above (`TestReactionCmd_DispatchesNewCommandAsProposal`, AGENT-05's guards in `docs/inventory/agent-actions.md`) each being reachable only from a gesture, plus `WatchtowerDesktop/Tests/Core/AgentActionQueriesTests.swift::testFetchStripReturnsNonTerminalAcrossConversations` and `WatchtowerDesktop/Tests/Core/ActionStripViewModelTests.swift::testRefreshPopulatesActionAndReminderRows` (the read side pulls only from `agent_actions`/`reminders`, nothing else). Automation outputs (P3): `WatchtowerDesktop/Tests/Core/ActionStripAutomationOutputTests.swift` (`testStripListsOpenInboxOutputs`, `testReportAndBriefingOutputsNotOnStrip` — only `kind='inbox'` reaches the strip — and `testRefreshIsAPureRead`); `WatchtowerDesktop/Tests/Core/InboxListBuilderTests.swift::testSectionsAreProposalsTodayEarlier` (2026-10-21).
 
 **Locked since:** 2026-09-06
 
@@ -184,10 +190,15 @@ ambient can reach that tab.
 **Observable:** `ActionStripViewModel.refresh()` writes nothing — it is one
 pure read (SELECTs only, inside one `dbPool.read`). Every mutation a strip
 card triggers (Approve/Reject/Retry, Done, Snooze, and for an automation
-output Done/Dismiss) writes to the backing `agent_actions`, `reminders` or
+output Read/Done/Dismiss) writes to the backing `agent_actions`, `reminders` or
 `automation_outputs` row directly (via `AgentActionFeed`/`ReminderQueries`/
-`AutomationQueries` — an output's Done writes only `read_at`, Dismiss only
-`dismissed_at`); there is no strip-local table (migration 00065 adds only
+`AutomationQueries` — opening an output card writes only `read_at`, its Done
+only `done_at`, its Dismiss only `dismissed_at`, the three owner columns the
+Desktop writes; Home's Done is the same `done_at` write). A Reply press is not
+a Desktop write: it runs `watchtower automations reply --output <id> --action
+<index>`, which records the press on the output (`pressed_action`,
+`pressed_run_id`, `pressed_at`) and queues the run in one Go transaction.
+There is no strip-local table (migration 00065 adds only
 `reminders` — no "strip" or "feed" table exists; `automation_outputs` is the
 automation's own table, 00113).
 
@@ -195,7 +206,7 @@ automation's own table, 00113).
 truth for state that already lives on the agent-action/reminder row, risking
 drift between what the strip shows and what `Registry.Apply` actually did.
 
-**Test guards:** `WatchtowerDesktop/Tests/Core/ActionStripViewModelTests.swift::testMarkReminderDoneDropsItOnNextRefresh`, `WatchtowerDesktop/Tests/Core/ActionStripViewModelTests.swift::testSnoozeReminderMovesItOutOfTheDueWindow` (mutation lands on `reminders`, confirmed by a subsequent `refresh()`); `WatchtowerDesktop/Tests/Core/ReminderQueriesTests.swift::testMarkDoneRemovesFromDue`, `WatchtowerDesktop/Tests/Core/ReminderQueriesTests.swift::testSnoozeBumpsRemindAt`; automation outputs (P3): `WatchtowerDesktop/Tests/Core/ActionStripAutomationOutputTests.swift::testRefreshIsAPureRead` (full row dumps of `agent_actions`, `reminders`, `automation_outputs`, `automation_runs`, `automations`, `pipeline_runs` unchanged by a refresh), `::testDoneWritesOnlyReadAt`, `::testDismissWritesOnlyDismissedAt`, `::testFailedWriteKeepsCard`.
+**Test guards:** `WatchtowerDesktop/Tests/Core/ActionStripViewModelTests.swift::testMarkReminderDoneDropsItOnNextRefresh`, `WatchtowerDesktop/Tests/Core/ActionStripViewModelTests.swift::testSnoozeReminderMovesItOutOfTheDueWindow` (mutation lands on `reminders`, confirmed by a subsequent `refresh()`); `WatchtowerDesktop/Tests/Core/ReminderQueriesTests.swift::testMarkDoneRemovesFromDue`, `WatchtowerDesktop/Tests/Core/ReminderQueriesTests.swift::testSnoozeBumpsRemindAt`; automation outputs (P3): `WatchtowerDesktop/Tests/Core/ActionStripAutomationOutputTests.swift::testRefreshIsAPureRead` (full row dumps of `agent_actions`, `reminders`, `automation_outputs`, `automation_runs`, `automations`, `pipeline_runs` unchanged by a refresh), `::testDoneWritesOnlyDoneAt`, `::testOpeningWritesOnlyReadAt`, `::testDismissWritesOnlyDismissedAt`, `::testFailedWriteKeepsCard`; `WatchtowerDesktop/Tests/Core/AutomationQueriesTests.swift::testOutputWritesTouchOnlyTheirOwnColumn`; `WatchtowerDesktop/Tests/Core/InboxReplyPressTests.swift::testAuto09_ReplyPressOnlyQueues`.
 
 **Locked since:** 2026-09-06
 
@@ -263,6 +274,7 @@ surface must never grow an implicit Slack-write side effect.
 
 ## Changelog
 
+- 2026-10-21 (Inbox reading pane and card actions, spec `docs/superpowers/specs/2026-10-21-automations-panel-and-inbox-design.md` §B, **owner approved in ask #475**): **STRIP-01 amended** — open (neither done nor dismissed) inbox outputs are listed; proposals open in the reading pane; card buttons come only from the confirmed recipe's `actions`. **STRIP-02 amended** — Read/Done/Dismiss are three owner columns (`read_at` on open, `done_at`, `dismissed_at`; migration 00147 backfills `done_at = read_at`), and a Reply press goes through the CLI, not a Desktop write. Guard changes, none weakened: `testDoneWritesOnlyReadAt` is replaced by `testDoneWritesOnlyDoneAt` with the same full-row comparison (every other column, `read_at` included, must be unchanged); `testStripListsUnreadInboxOutputs` is replaced by `testStripListsOpenInboxOutputs`, which also asserts that done and backfilled rows stay hidden; `testOutputWritesTouchOnlyReadAndDismissed` is replaced by `testOutputWritesTouchOnlyTheirOwnColumn`; new `testOpeningWritesOnlyReadAt`, `testSectionsAreProposalsTodayEarlier`, `testAuto09_ReplyPressOnlyQueues`. STRIP-03 holds: Reject on the proposal pane goes through `AgentActionFeed`.
 - 2026-10-18 (Linear Plan 2, board #690; spec `docs/superpowers/specs/2026-10-15-linear-integration-design.md` §6 "reaction commands"): extension only, no guard relaxed. An emoji mapped to `create_jira_issue` or `create_linear_issue` is routed in `dispatch` (`internal/reactioncmd/route.go`) to the tracker the channel's issue keys belong to; a channel with both trackers' keys keeps the dictionary's tool. `create_linear_issue` joined the reaction surface (pinned in `cmd/actions_registry_test.go`). **REACT-02** holds: the binding is unchanged. **REACT-03** holds: routing is free (DB reads only, prefixes once per Run), runs after the budget slot and the claim and before compose, a routing read error keeps the dictionary's tool, and the ledger key has no tool; the Propose-error lookup keys on the routed tool, so its known limit now reads "two emojis that resolve to the same tool". **REACT-04** holds and gains the guard `TestReactionCmd_LinearChannelFilesLinearIssue` (a routed Linear create stays a pending External proposal, AGENT-03). **REACT-05** holds: no Slack write. Routing guards: `internal/reactioncmd/route_test.go::TestReactionCmd_JiraChannelKeepsJiraIssue`, `::TestReactionCmd_MixedChannelKeepsDictionaryTool`, `::TestReactionCmd_LinearOnlyInstallFilesLinearIssue`, `::TestReactionCmd_RoutedToolOffTheSurfaceKeepsDictionaryTool`, `::TestReactionCmd_NonIssueToolIsNotRouted`, `::TestReactionCmd_RemovedOrDisabledJiraAccountRoutesToLinear`, `::TestReactionCmd_ThreadReplyOutsideTheWindowRoutes`, `::TestReactionCmd_RoutingReadErrorKeepsDictionaryTool`, `::TestPrefixCache_ReadsOnce`, `::TestRouteIssueTool`, `::TestScanTrackerEvidence`.
 - 2026-10-18 (board #737, owner decision in ask #342): the Inbox badge (`AgentActionQueries.awaitingOwnerCount`), Home's Waiting on you (`awaitingOwner`) and the strip's waiting group (`fetchStrip`) count a `claude_ai_connector_call` that failed with "session ended while the call ran; outcome unknown" until the owner dismisses it; every other failed session call stays settled (`settledSessionCall`). **STRIP-01** holds (the owner elicited the call). **STRIP-02** holds (`refresh()` is still one pure read). **STRIP-03** holds: the card's **Dismiss** goes through the composed `AgentActionFeed` → `watchtower actions dismiss` (Go writes `dismissed_at`); the strip adds no write path. Guards added: `ActionStripViewModelTests::testDismissDelegatesToTheComposedAgentActionFeed`, `ConnectorCallProposalTests::testOutcomeUnknownAwaitsTheOwnerUntilDismissed`; `testFailedSessionCallIsNotAwaitingTheOwner` extended with the stopped and connector-error reasons.
 - 2026-10-16 (Automations P3, board #753; spec §12.5, §14.4, D10, approved in ask #270): **STRIP-01 amended** — `automation_outputs` with `kind='inbox'` are the strip's third source (the "From your automations" section), gesture-gated by construction (they exist only because the owner confirmed a recipe declaring `outputs: [inbox]`, AUTO-06); `context_type='automation_run'` proposals carry the "⚙ <automation name> · run #<n>" label. New guard `ActionStripAutomationOutputTests`. **STRIP-02**: outputs are backing rows, not a strip store — Done writes only `read_at`, Dismiss only `dismissed_at`, and `refresh()` stays one pure read (the Observable's former "two SELECTs" now reads "one pure read"; the read gained the outputs and the run labels). The Inbox badge also counts unread inbox outputs. No guard relaxed.

@@ -274,6 +274,14 @@ marker before anything is read or written (AGENT-07); `disable` stays open.
 A gallery template installed by `install-template` (P6) is indexed like any
 new file: unconfirmed and disabled, never runnable until the owner confirms
 and enables it.
+`inbox:reply` is a manifest entry like any other (2026-10-21, ask #475): it is
+in `approval_hash`, the confirming screen lists it as "Reacts to its own Inbox
+buttons", and `output.inbox` refuses a `reply` action without it
+(`PermissionDenied`). `automations reply` refuses a press when the automation
+is not runnable or its confirmed recipe lacks the capability, and the executor
+fails a `reply` run whose claimed snapshot lacks it (`error_kind='permission'`).
+A press runs the currently confirmed text; a button's `value` and `data` only
+steer code the owner confirmed.
 
 **Why locked:** "What was confirmed is exactly what runs" is the whole
 security model: a git pull, a hand edit or an agent's edit must never run
@@ -287,6 +295,8 @@ code or permissions the owner did not see.
 - `cmd/automations_templates_test.go` — `TestInstallTemplate_InstalledUnconfirmedAndDisabled` (P6: an installed template is unconfirmed and disabled; `run` is refused and a queued run is cancelled `not_runnable`), `TestInstallTemplate_RenderHashMatchesInstall`
 - P3: `internal/automations/authoring/draft_test.go` — `TestDraftAutomation_RefusesDryRunOfUnconfirmedRecipe`, `TestDraftAutomation_RemovedUnconfirmedRecipeDoesNotBlock`; `internal/automations/authoring/save_test.go` — `TestSaveAutomation_AlwaysAskAndPinsHash`, `TestSaveAutomation_RefusesWhenFileChangedSincePropose`, `TestSaveAutomation_RefusesWhenFileAppearedForNewSlug`, `TestSaveAutomation_RefusesHashDrift`; `cmd/automations_test.go` — `TestAutomationsCLI_SaveRefusesWhenFileChangedSinceLoad`, `TestAutomationsCLI_ShowChangesFromConfirmedSnapshot`, `TestAutomationsCLI_ShowChangesUnknownWithoutSource`, `TestAutomationsCLI_ShowChangesUnknownAfterRehash`
 - P3 Desktop: `WatchtowerDesktop/Tests/Core/AutomationEditorCenterTests.swift` — `testSaveConfirmsTheValidatedHashOnly`, `testAuto06_ConfirmSheetPassesTheShownHash`, `testAuto06_ConfirmSheetShowsHashedFieldChanges`, `testAuto06_SavePressAfterAnUnflushedEditRechecksInsteadOfSaving`, `testAuto06_SaveDisabledWhileChecking`; `WatchtowerDesktop/Tests/Core/AutomationTemplatePanelModelTests.swift` — `testAuto06_TemplateConfirmsOnlyTheShownHash`; `WatchtowerDesktop/Tests/Core/AutomationCardPresentationTests.swift` — `testButtonsForStates`; quick run: `WatchtowerDesktop/Tests/Core/QuickRunCenterTests.swift` — `testDimmedRowOpensInsteadOfRunning`, `testConfirmRecipeRunsOnlyAfterRun`; `WatchtowerDesktop/Tests/Core/TrayRunAutomationMenuTests.swift` — `testDisabledItemsAreNotActionable`
+
+- 2026-10-21 (Inbox Reply): `internal/automations/indexer_test.go` — `TestApprovalHash_InboxReplyIsHashed`; `internal/automations/sdk_output_card_test.go` — `TestOutput_ReplyActionNeedsInboxReply`; `cmd/automations_reply_test.go` — `TestAutomationsCLI_ReplyRefusedWhenNotRunnableOrNoCapability`; `internal/automations/executor_test.go` — `TestExecutor_ReplyRunWithoutCapabilityFails`
 
 **Locked since:** 2026-10-14
 
@@ -388,6 +398,7 @@ model quota.
 - `internal/automations/replay_test.go` — `TestAuto08_ResumeAtAskWait`, `TestAuto08_ResumeAtApprovalWait`, `TestAuto08_ResumeAtSessionWait`, `TestAuto08_DivergenceEndsTheRunWithoutExecuting`, `TestAuto08_ChangedRecipeIsNotResumed`, `TestAuto08_LargeResultMakesTheRunNotResumable`, `TestAuto08_TimeAndRandomReplay`, `TestAuto08_ResumedTokensNotDoubleCounted`, `TestAuto08_ResumedWaitKeepsItsPauseTimeout`, `TestAuto08_StopWhileRunningStillInterrupts`, `TestAuto08_ResumeAfterAgent`, `TestAuto08_ResumeAfterDefaultAgentChanged`, `TestAuto08_StopDuringReplayReturnsToWaiting`, `TestAuto08_DeadlineDuringReplayKeepsItsEnd`, `TestAuto08_ClockReadOverflowMakesTheRunNotResumable`, `TestAuto08_KeptRunChangedBeforeItsClaimIsNotResumed`; `internal/automations/replay_internal_test.go` — `TestAuto08_ReplayLogCapCountsTheStoredLog` (board #795: resume after a restart; the ask test also pins AUTO-11 — one step per call across both daemon lives — and AUTO-04 — the replayed `state.set`/`output.inbox` are committed once, only with the success)
 - `internal/db/automation_run_replay_test.go` — `TestAuto08_RestartKeepsResumableWaitingRun`, `TestAuto08_ReplayLogDeletedOnFinish` (board #795)
 - `internal/automations/run_limits_test.go` — `TestAuto08_StepCapEndsTheRun`, `TestAuto08_FinishFailureRetries`, `TestAuto08_FinishFailureEndsTheRunFailed`, `TestAuto08_FinishFailureWithoutCommitKeepsItsEnd`, `TestAuto08_FinishSkipsRetriesWhenStopping`, `TestAuto08_FinishDoesNotRetryAnInvalidFinish`, `TestOutputs_CapPerRun`, `TestSession_CapPerRun` (board #562); `internal/automations/workbench_e2e_test.go` — `TestPRReviewRounds_MorePRsThanTheSessionCap`
+- `internal/automations/sdk_output_card_test.go` — `TestAuto08_ResumeRebuildsInboxCard` (2026-10-21: a resumed run's replayed `output.inbox` rebuilds its card with the link and actions)
 
 **Locked since:** 2026-10-14
 
@@ -400,13 +411,19 @@ status change.
 **Observable:** The scheduler, the event bus, CLI `run` and the Desktop
 buttons only insert `queued` rows (`db.EnqueueAutomationRun`, the only way to
 create a run; a second trigger of the same kind while one is queued is
-coalesced onto it); only the daemon's executor runs them. The one exception
+coalesced onto it, except an Inbox Reply press (`trigger='reply'`), which is
+never coalesced: one press is one run); only the daemon's executor runs them. The one exception
 is `automations dry-run`, which executes its own `trigger='dry_run'` row in
 the CLI process and writes nothing outside its journal; the daemon never
 picks up a dry-run row. The automation wake is `SIGUSR2`; it never starts a
 sync cycle. The event bus's `Flush` only inserts `queued` rows (one per
 automation per cycle) and merges into a still-queued event run; event runs
-carry ids, labels, enums and counts only.
+carry ids, labels, enums and counts only. A Reply press (`automations reply`,
+2026-10-21, ask #475) inserts exactly one `queued` `trigger='reply'` row, in the
+transaction that records the press on the output, and wakes the daemon. It
+does not go through the event bus; its `event_json` is `{"reply": {output_id,
+action, value, data, card}}` built from the stored output, never from the
+caller.
 
 **Why locked:** One executor in one process is what makes concurrency
 (AUTO-05), budgets (AUTO-08) and restarts (AUTO-08) hold; a trigger that ran
@@ -415,7 +432,10 @@ a script inline would escape all three.
 **Test guards:**
 - `internal/automations/scheduler_test.go` — `TestAuto09_SchedulerOnlyQueues`
 - `cmd/automations_test.go` — `TestAuto09_RunCommandOnlyQueues`
-- `internal/db/automation_runs_test.go` — `TestRun_CoalescesSecondTrigger`, `TestNextQueued_SkipsDryRun`
+- `internal/db/automation_runs_test.go` — `TestRun_CoalescesSecondTrigger`, `TestNextQueued_SkipsDryRun`, `TestRun_ReplyIsNeverCoalesced` (2026-10-21)
+- `cmd/automations_reply_test.go` — `TestAuto09_ReplyCommandOnlyQueues` (2026-10-21)
+- `internal/db/automation_outputs_press_test.go` — `TestPressInboxOutputAction_OnePressOneRun` (2026-10-21)
+- `WatchtowerDesktop/Tests/Core/InboxReplyPressTests.swift` — `testAuto09_ReplyPressOnlyQueues` (2026-10-21)
 - `internal/daemon/automation_wake_test.go` — `TestDaemon_AutomationWakeSignalDoesNotStartSync`
 - `WatchtowerDesktop/Tests/Core/WorkbenchHeaderAutomationButtonsTests.swift` — `testAuto09_HeaderButtonOnlyQueues` (a workbench header button's click is exactly `automations run <id> --json`; Swift writes no run)
 - `internal/automations/bus_test.go` — `TestAuto09_FlushOnlyQueues`, `TestBus_OneRunPerAutomationPerCycle` (P4)
@@ -567,6 +587,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-21 (Inbox card actions, spec 2026-10-21 §B3–B4, **owner approved in ask #475**): **AUTO-09 amended** — the Reply press is a trigger that only queues, never coalesced (one press, one run), outside the event bus; **AUTO-06 extended** — `inbox:reply` is hashed and checked at write, press and run. Strengthening; no guard relaxed; `TestRun_CoalescesSecondTrigger` and `TestBus_EventsCarryNoContent` unchanged. Guards added: `TestAuto09_ReplyCommandOnlyQueues`, `TestRun_ReplyIsNeverCoalesced`, `TestPressInboxOutputAction_OnePressOneRun`, `testAuto09_ReplyPressOnlyQueues`, `TestApprovalHash_InboxReplyIsHashed`, `TestOutput_ReplyActionNeedsInboxReply`, `TestAutomationsCLI_ReplyRefusedWhenNotRunnableOrNoCapability`, `TestExecutor_ReplyRunWithoutCapabilityFails`, and `TestAuto08_ResumeRebuildsInboxCard` (AUTO-08).
 - 2026-10-21 (Automations in the panel, board #405; spec `2026-10-21-automations-panel-and-inbox-design.md` §A, **AUTO-06 amended, owner approved in ask #475**): strengthening, no guard relaxed. The Desktop's confirming screen moves from the confirmation and Save sheets to the Automations panel's draft column, which shows every hashed field of the exact bytes saved and the changes since the confirmed text (`validate --json` gains `changes`/`changes_known`, and `fields`: a column that cannot show them turns every save and confirm button off); a press on changed bytes re-validates instead of saving. A panel save is enabled unless the owner picks **Save Turned Off** (`enable` after the confirmed save; Save Turned Off disables first). A template installs from its panel after `install-template --render` showed its validation; `install-template` stays unconfirmed and disabled (`TestInstallTemplate_InstalledUnconfirmedAndDisabled` unchanged) and the Desktop confirms an installed copy only when its `approval_hash` equals the shown one, then enables it. Quick run on a dimmed row opens the card instead of the sheet (`testDimmedRowOpensInsteadOfRunning` unchanged). Guards whose call sites moved with the sheets keep their names and assertions: `testSaveConfirmsTheValidatedHashOnly` and `testNoAutoOnWithoutACheckedBox` save through `check` + `commit(…, turnOn:)`; `testButtonsForStates` is unchanged (the card's ⋯ shows Turn Off / Turn On from a separate helper). AUTO-03 names the draft column's Keep auto boxes (still unchecked by default, `testAuto03_KeepAutoBoxesUncheckedByDefault`). Guards added: `testAuto06_SavePressAfterAnUnflushedEditRechecksInsteadOfSaving`, `testAuto06_SaveDisabledWhileChecking`, `testAuto06_TemplateConfirmsOnlyTheShownHash`, `TestInstallTemplate_RenderHashMatchesInstall`.
 - 2026-10-21 (board #795, **owner decision ask #463/#464**): **AUTO-08 amended — a waiting run survives a daemon restart.** "On start the executor ends every `running`/`waiting` run `failed`/`interrupted`" becomes "every `running` run, and every `waiting` run that cannot be resumed"; a resumable waiting run continues at its wait by deterministic replay of its recorded calls (migration 00146 `automation_run_replay`, `automation_runs.resume_pending`/`not_resumable`/`random_seed`; spec `docs/superpowers/specs/2026-10-21-automation-wait-survives-restart-design.md`). A run running at the stop, a waiting run outside a journaled call, a dry run, a run whose recipe was re-confirmed at another hash or whose log is incomplete still end `failed`/`interrupted` as before. AUTO-11 (a replayed call writes no step) and AUTO-04 (the replay re-buffers state and outputs; they commit only with the success) are unchanged and now also pinned across a resume. The existing guards keep their assertions — `TestAuto08_RestartMarksInterrupted` (db and executor), `TestExecutor_DaemonStopMidRunEndsInterrupted` and `TestWaiter_DaemonStopDuringWaitEndsInterrupted` pass unchanged (their runs have no resumable waiting step). Guards added: `TestAuto08_ResumeAtAskWait`, `TestAuto08_ResumeAtApprovalWait`, `TestAuto08_ResumeAtSessionWait`, `TestAuto08_DivergenceEndsTheRunWithoutExecuting`, `TestAuto08_ChangedRecipeIsNotResumed`, `TestAuto08_LargeResultMakesTheRunNotResumable`, `TestAuto08_TimeAndRandomReplay`, `TestAuto08_ResumedTokensNotDoubleCounted`, `TestAuto08_ResumedWaitKeepsItsPauseTimeout`, `TestAuto08_StopWhileRunningStillInterrupts`, `TestAuto08_ResumeAfterAgent`, `TestAuto08_ResumeAfterDefaultAgentChanged`, `TestAuto08_StopDuringReplayReturnsToWaiting`, `TestAuto08_DeadlineDuringReplayKeepsItsEnd`, `TestAuto08_ClockReadOverflowMakesTheRunNotResumable`, `TestAuto08_KeptRunChangedBeforeItsClaimIsNotResumed`, `TestAuto08_ReplayLogCapCountsTheStoredLog`, `TestAuto08_RestartKeepsResumableWaitingRun`, `TestAuto08_ReplayLogDeletedOnFinish`. No guard relaxed.
 

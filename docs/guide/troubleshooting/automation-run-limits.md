@@ -26,7 +26,7 @@ The other two messages come from the database. If Watchtower cannot write a step
 
 ## How to check
 
-Use **Run now** on the card. The new run in **History** ends without the message.
+Use **Run Now** on the card. The new run in **History** ends without the message.
 
 ## If it didn't help
 
