@@ -1,6 +1,6 @@
 # Source deletions and edits (2026-10-17, board #640)
 
-A message, mail or comment deleted or edited at its source disappears or updates in Watchtower's raw tables, full-text search and the knowledge index. Design: `docs/superpowers/specs/2026-10-17-source-deletions-design.md`; plan: `docs/superpowers/plans/2026-10-17-source-deletions.md`. Contracts: SRCDEL-01..03 in `docs/inventory/source-deletions.md`.
+A message, mail, comment or Jira issue deleted or edited at its source disappears or updates in Watchtower's raw tables, full-text search and the knowledge index. Design: `docs/superpowers/specs/2026-10-17-source-deletions-design.md`; plan: `docs/superpowers/plans/2026-10-17-source-deletions.md`. Contracts: SRCDEL-01..03 in `docs/inventory/source-deletions.md`. Phase 3 (2026-10-21, board #674, plan `docs/superpowers/plans/2026-10-21-jira-deleted-issues.md`) adds deleted and moved Jira issues.
 
 ## What each source detects, and when
 
@@ -10,6 +10,7 @@ A message, mail or comment deleted or edited at its source disappears or updates
 | Gmail | stored message IDs diffed against the account's full ID listing, all mail except trash and spam (`internal/gmail/deletions.go`); archived mail stays | once a day per account (`google_accounts.deletions_checked_at`); an incomplete listing leaves no stamp and retries next cycle |
 | IMAP | UID diff against the synced folder, plus cleanup of rows stored under an old UIDVALIDITY (`reconcileDeletions` in `internal/imap/sync.go`) | every sync |
 | Jira comments | an issue's comments are replaced by what the refetch returns (`internal/jira/sync.go`) | whenever the issue is refetched |
+| Jira issues | key-only `project = X` listing diffed against stored keys, each missing key confirmed with `GET /issue/{key}` (404 or a new key = gone), hard delete with comments, changelog, links and inbox text copies (`internal/jira/deletions.go`, `db.DeleteJiraIssues`) | once a day per project, after a clean Jira pass of the account, stamped in memory per daemon run (a restart checks again); an incomplete listing or a failed confirm retries next cycle |
 | Confluence | already reconciled by `extsync` (a deleted comment stamps its page's `children_changed_at`) | no change |
 
 Slack sweep: `slack_accounts.deletion_sweep_day` is the per-account cursor. It walks from the newest stored day back to the oldest, then wraps. It advances after a finished day, a guard refusal or a skipped day, and holds on a rate limit or partial pages. The query is widened to about three days around the swept day (`sweepSearchRange`) so the UTC day is covered in any timezone, and `sweepMaxPages = 10` applies to that widened query. A bigger day is skipped and logged. The sweep also refreshes edited text.
@@ -24,7 +25,9 @@ Mail is deleted, not tombstoned, and the same rule holds: `DeleteGmailMessages`,
 
 ## The shared guard
 
-`internal/sourcediff.Check(stored, listed, missing, floors)` refuses a diff when the listing returned 0 of at least `EmptyMin` stored rows, or when more than half of at least `HalfMin` stored rows would go. `SlackFloors` = {5, 10}; `MailFloors` = {1, 1}. Every diff also needs a complete listing first: no API error, every page fetched, Slack matched >= `Total` (Slack caps `pages` at 100, so reaching the last page does not prove completeness), Jira reporting a complete listing (a missing `total` means incomplete). Every skip is logged with source, account, range and reason. Jira is the exception to `Check`: a complete comment listing may be empty and then removes all of the issue's stored comments.
+`internal/sourcediff.Check(stored, listed, missing, floors)` refuses a diff when the listing returned 0 of at least `EmptyMin` stored rows, or when more than half of at least `HalfMin` stored rows would go. `SlackFloors` = {5, 10}; `MailFloors` = {1, 1}. Every diff also needs a complete listing first: no API error, every page fetched, Slack matched >= `Total` (Slack caps `pages` at 100, so reaching the last page does not prove completeness), Jira reporting a complete listing (a missing `total` means incomplete). Every skip is logged with source, account, range and reason. Jira comments are the exception to `Check`: a complete comment listing may be empty and then removes all of the issue's stored comments.
+
+Jira issues go through `Check` with `IssueFloors` = {5, 10} (the Slack numbers, so a small project stays judgeable). The key listing (`searchIssueKeys`, `fields=key`, `maxResults=5000`) counts as complete only when a page reports `isLast`; a page without `isLast` and without a token, an issue without a key, a repeated token or more than 200 pages makes it incomplete. The stored keys are read before the listing, so an issue synced meanwhile is never judged. Only a project whose `jira_sync_state.last_synced_at` is set is checked. A refused diff sends no lookup and stamps the project for the day; an accepted one confirms at most `maxIssueConfirms` = 100 missing keys per project per check, one `GET /rest/api/3/issue/{key}?fields=key` each; an issue Jira still returns under the same key is kept, and the rest of a capped list waits for the next day.
 
 The Slack live window is also clamped to what the forward query's `after:` date provably covers (`liveDiffWindow`), and a missing Slack row whose ts lies between one page's last match and the next page's first match is skipped and counted in the log: offset paging can skip a match there when the result set shifts mid-paging.
 
@@ -32,7 +35,7 @@ Slack candidates are narrowed so rows search cannot see are never judged: rows w
 
 ## KB follow-through
 
-Migration 00139 adds `kb_dirty(source, key, gen)` and AFTER triggers: `messages_kb_dirty` (text or `is_deleted` change; marks the thread or channel-day key, for both OLD and NEW), `gmail_messages_kb_dirty` (delete) and `jira_comments_kb_dirty` (delete). They write in the same statement as the change, so every writer is covered. The trigger key expressions and the Go key builders are a dual path pinned by `TestSRCDEL03_TriggerKeysMatchSourceKeys`. `drainDirty` (`internal/kb/dirty.go`) re-renders each marked document and deletes the mark only if its `gen` is unchanged (`TestDrainDirty_ReMarkDuringRenderSurvives`); a mark whose source document is gone is a delete. IMAP needs no mark (its KB key is one message and every non-Slack source reconciles each run). KB-01 was amended with this (see `docs/inventory/knowledge-search.md`).
+Migration 00139 adds `kb_dirty(source, key, gen)` and AFTER triggers: `messages_kb_dirty` (text or `is_deleted` change; marks the thread or channel-day key, for both OLD and NEW), `gmail_messages_kb_dirty` (delete) and `jira_comments_kb_dirty` (delete). They write in the same statement as the change, so every writer is covered. The trigger key expressions and the Go key builders are a dual path pinned by `TestSRCDEL03_TriggerKeysMatchSourceKeys`. `drainDirty` (`internal/kb/dirty.go`) re-renders each marked document and deletes the mark only if its `gen` is unchanged (`TestDrainDirty_ReMarkDuringRenderSurvives`); a mark whose source document is gone is a delete. IMAP needs no mark (its KB key is one message and every non-Slack source reconciles each run). A deleted Jira issue's document leaves the same way: the comment deletes mark it when it had comments, and the per-run Jira reconcile drops it otherwise (`TestRun_DeletedJiraIssueLeavesIndex`). Targets made from the issue, memory notes (their `jira:` refs fail closed), `jira_slack_links`, `issue_slack_links`, `jira_linked_issues` and AI text are kept. Jira inbox items carry the bare key as `channel_id`, so their text copies stay while another account still stores a live issue under that key. KB-01 was amended with this (see `docs/inventory/knowledge-search.md`).
 
 ## v1 limits
 
@@ -46,8 +49,15 @@ Migration 00139 adds `kb_dirty(source, key, gen)` and AFTER triggers: `messages_
 - A thread_ts-only change does not mark `kb_dirty`. A hard-deleted Slack document still waits for the daily KB reconcile.
 - The sweep's 429 does not set `searchRateLimited`; a persistent DB error retries the same day.
 - The live window starts no earlier than `after:` + 1 day at 12:00Z (the latest a profile-local day can start, UTC−12). When the machine's local date runs ahead of UTC (east of UTC, after local midnight), the early-UTC-day hours before that bound are left to the sweep.
+- A Jira issue whose permission is restored, or that moved back, returns only when it is updated again.
+- A Jira project the user can no longer see keeps its issues (the listing fails or comes back empty).
+- Deleting every issue of a Jira project (or more than half of ten or more) is not detected.
+- Issues of a Jira board that is no longer selected stay.
+- `jira_linked_issues` rows (the other-board cache) are not diffed.
+- Linear permanent deletions are not diffed (archived and trashed issues are already flagged by the Linear sync).
+- The retention mirror from spec Phase 3 is not built.
 - Gmail mail restored from trash (or spam) after the daily check removed it may not come back: the forward sync queries `in:inbox after:<watermark>` on the message date, and the history backfill covers each date window once, so a restored mail dated before the watermark is not re-fetched.
 
 ## Tests
 
-`internal/sourcediff/guard_test.go`, `internal/sync/{deletions,deletions_sweep}_test.go`, `internal/db/{kb_dirty,slack_deletions,mail_deletions}_test.go`, `internal/kb/dirty_test.go`, `internal/gmail/deletions_test.go`, `internal/imap/sync_test.go`, `internal/jira` (`TestSyncComments_*`).
+`internal/sourcediff/guard_test.go`, `internal/sync/{deletions,deletions_sweep}_test.go`, `internal/db/{kb_dirty,slack_deletions,mail_deletions}_test.go`, `internal/kb/dirty_test.go`, `internal/gmail/deletions_test.go`, `internal/imap/sync_test.go`, `internal/jira` (`TestSyncComments_*`, `TestCheckDeletedIssues_*`, `TestSearchIssueKeys_*`, `TestIssueCurrentKey`), `internal/db/jira_deletions_test.go`, `internal/kb` (`TestRun_DeletedJiraIssueLeavesIndex`), `internal/daemon/jira_deletions_test.go`.
