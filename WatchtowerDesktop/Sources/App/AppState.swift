@@ -540,12 +540,14 @@ final class AppState {
         else { return nil }
         let provider = Constants.aiProviderID()
         let conversationID = try await AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool)
+        let box = PanelDraftBox()
         return makeAutomationEditorChat(
-            conversationID: conversationID, pool: pool, provider: provider,
+            conversationID: conversationID, pool: pool, provider: provider, panelDraftBox: box,
             onSaved: { [weak self] in self?.automationsViewModel?.refresh() },
             makeSpec: { outcomes in
                 AutomationEditorChatSurface.spec(automation: automation, provider: provider,
-                                                 conversationID: conversationID, dbPool: pool, outcomes: outcomes)
+                                                 conversationID: conversationID, dbPool: pool, outcomes: outcomes,
+                                                 panelDraft: box.read)
             }
         )
     }
@@ -573,21 +575,53 @@ final class AppState {
         return makeAutomationEditorChat(conversationID: conversationID, pool: pool, provider: provider,
                                         onSaved: onSaved) { outcomes in
             AutomationEditorChatSurface.newSpec(provider: provider, draftID: draftID, workbench: workbench,
-                                                conversationID: conversationID, outcomes: outcomes)
+                                                conversationID: conversationID, dbPool: pool, outcomes: outcomes)
         }
+    }
+
+    /// The panel's chat for a new automation, keyed by an explicit context id
+    /// (`draftContextID(for:)`), so each draft keeps its own conversation. A
+    /// workbench that is gone opens nothing (never a personal chat in its place).
+    func newAutomationEditorChat(contextID: String, scope: AutomationScopeChoice) async throws -> AutomationEditorChat? {
+        guard let pool = databaseManager?.dbPool else { return nil }
+        var workbench: AutomationEditorChatSurface.NewWorkbench?
+        if case let .workbench(id, _, _) = scope {
+            guard let project = workbenchesViewModel?.summaries.first(where: { $0.project.id == id })?.project
+            else { return nil }
+            workbench = (id, project.name, project.folderURL.lastPathComponent)
+        }
+        let provider = Constants.aiProviderID()
+        let conversationID = try await AutomationEditorChatSurface.newConversationID(contextID: contextID, dbPool: pool)
+        let box = PanelDraftBox()
+        return makeAutomationEditorChat(conversationID: conversationID, pool: pool, provider: provider,
+                                        panelDraftBox: box,
+                                        onSaved: { [weak self] in self?.automationsViewModel?.refresh() },
+                                        makeSpec: { outcomes in
+            AutomationEditorChatSurface.newSpec(
+                provider: provider, contextID: contextID, workbench: workbench, conversationID: conversationID,
+                dbPool: pool, outcomes: outcomes, panelDraft: box.read)
+        })
+    }
+
+    /// Starts a new draft and returns its conversation key for `scope`.
+    func draftContextID(for scope: AutomationScopeChoice) -> String {
+        automationsViewModel?.startNewDraft()
+        let draftID = automationsViewModel?.newDraftID ?? UUID().uuidString
+        return AutomationEditorChatSurface.draftContextID(draftID: draftID, workbenchID: scope.workbenchID)
     }
 
     private func makeAutomationEditorChat(
         conversationID: Int64,
         pool: DatabasePool,
         provider: String,
+        panelDraftBox: PanelDraftBox = PanelDraftBox(),
         onSaved: @escaping () -> Void,
         makeSpec: (@escaping @MainActor (Date?) -> String?) -> ChatSurfaceSpec
     ) -> AutomationEditorChat {
         AutomationEditorChat(
             conversationID: conversationID, dbPool: pool,
             toolsAvailable: AutomationEditorChatSurface.toolsAvailable(provider: provider),
-            center: embeddedChatCenter, onSaved: onSaved, makeSpec: makeSpec
+            center: embeddedChatCenter, panelDraftBox: panelDraftBox, onSaved: onSaved, makeSpec: makeSpec
         )
     }
 

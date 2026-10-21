@@ -48,6 +48,13 @@ enum AutomationEditorChatSurface {
         return "\(draftID)-wb\(workbenchID)"
     }
 
+    /// The new draft's conversation for an explicit context id (the panel's
+    /// `AppState.draftContextID`), created on first use.
+    static func newConversationID(contextID: String, dbPool: DatabasePool) async throws -> Int64 {
+        try await DatabaseEmbeddedChatStore.conversationID(
+            dbPool: dbPool, contextType: draftContextType, contextID: contextID, title: "New automation")
+    }
+
     /// The new draft's conversation for one scope, created on first use.
     static func newConversationID(draftID: String, workbenchID: Int64?, dbPool: DatabasePool) async throws -> Int64 {
         try await DatabaseEmbeddedChatStore.conversationID(
@@ -64,6 +71,7 @@ enum AutomationEditorChatSurface {
         conversationID: Int64,
         dbPool: DatabasePool,
         outcomes: @escaping @MainActor (Date?) -> String? = { _ in nil },
+        panelDraft: @escaping @MainActor () -> String? = { nil },
         skillsDir: String? = SkillsCatalog.defaultDir()
     ) -> ChatSurfaceSpec {
         let tools = toolsAvailable(provider: provider)
@@ -77,7 +85,8 @@ enum AutomationEditorChatSurface {
             turnPrompt: { input in
                 let recipe = currentRecipeBlock(automationID: automation.id, dbPool: dbPool)
                 let resumed = input.isResumed ? rulesBlock(context: context, tools: tools) + "\n\n" : ""
-                return compose(outcomes(input.previousOwnerMessageAt), resumed + recipe, input.text)
+                let panel = panelDraftBlock(panelDraft(), conversationID: conversationID, dbPool: dbPool)
+                return compose(outcomes(input.previousOwnerMessageAt), resumed + recipe, panel, input.text)
             },
             emptyHint: "Say what to change — the assistant drafts it, dry-runs it and proposes the save for "
                 + "your approval.",
@@ -96,12 +105,29 @@ enum AutomationEditorChatSurface {
         draftID: String,
         workbench: NewWorkbench?,
         conversationID: Int64,
+        dbPool: DatabasePool,
         outcomes: @escaping @MainActor (Date?) -> String? = { _ in nil },
+        panelDraft: @escaping @MainActor () -> String? = { nil },
+        skillsDir: String? = SkillsCatalog.defaultDir()
+    ) -> ChatSurfaceSpec {
+        newSpec(provider: provider, contextID: draftContextID(draftID: draftID, workbenchID: workbench?.id),
+                workbench: workbench, conversationID: conversationID, dbPool: dbPool, outcomes: outcomes,
+                panelDraft: panelDraft, skillsDir: skillsDir)
+    }
+
+    /// As above, keyed by an explicit context id (`AppState.draftContextID`).
+    static func newSpec(
+        provider: String?,
+        contextID: String,
+        workbench: NewWorkbench?,
+        conversationID: Int64,
+        dbPool: DatabasePool,
+        outcomes: @escaping @MainActor (Date?) -> String? = { _ in nil },
+        panelDraft: @escaping @MainActor () -> String? = { nil },
         skillsDir: String? = SkillsCatalog.defaultDir()
     ) -> ChatSurfaceSpec {
         let tools = toolsAvailable(provider: provider)
         let context = newContextBlock(workbench: workbench)
-        let contextID = draftContextID(draftID: draftID, workbenchID: workbench?.id)
         return ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: draftContextType, contextID: contextID, conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
@@ -109,7 +135,8 @@ enum AutomationEditorChatSurface {
             systemPrompt: { systemPrompt(context: context, tools: tools, skillsDir: skillsDir) },
             turnPrompt: { input in
                 let resumed = input.isResumed ? rulesBlock(context: context, tools: tools) : ""
-                return compose(outcomes(input.previousOwnerMessageAt), resumed, input.text)
+                let panel = panelDraftBlock(panelDraft(), conversationID: conversationID, dbPool: dbPool)
+                return compose(outcomes(input.previousOwnerMessageAt), resumed, panel, input.text)
             },
             emptyHint: "Describe the recurring work in your own words — when it runs, what it reads and where "
                 + "the result goes. The assistant drafts it and dry-runs it without writing anything."
@@ -154,7 +181,8 @@ enum AutomationEditorChatSurface {
             lines += [
                 "Scope: personal",
                 "Pick a short slug for it (lowercase letters, digits and hyphens) and keep using the same one.",
-                "If the owner wants it for a workbench, ask them to pick the workbench under **For** at the top of this window."
+                "The scope is fixed: if the owner wants it for a workbench, tell them to start a new automation "
+                    + "and pick that workbench."
             ]
         }
         return lines.joined(separator: "\n")
@@ -169,8 +197,9 @@ enum AutomationEditorChatSurface {
         }
         return context + "\n\n"
             + "Load the `create-automation` skill with `load_skill` before drafting.\n"
-            + "Draft with `draft_automation` and go through its dry run with the owner before proposing "
-            + "`save_automation`.\n\n"
+            + "Draft with `draft_automation` and go through its dry run with the owner. "
+            + "Do not call `save_automation` here: the owner saves from the panel with **Save and Turn On** "
+            + "or **Save Turned Off** under the draft. When the draft is ready, tell them to press it.\n\n"
             + AgentToolsContract.promptBlock(surface: .automationEditor)
     }
 
@@ -202,12 +231,30 @@ enum AutomationEditorChatSurface {
         "=== CURRENT RECIPE (as saved now — re-read every turn) ===\n```markdown\n\(automation.recipeText)\n```"
     }
 
+    /// The owner's panel text, when it differs from the newest cached draft
+    /// (they edited it, or no draft was made yet): the model drafts from it.
+    static func panelDraftBlock(_ text: String?, conversationID: Int64, dbPool: DatabasePool) -> String? {
+        guard let text, !text.isEmpty else { return nil }
+        let url = AutomationDraftEntry.cacheURL(databasePath: dbPool.path, conversationID: conversationID)
+        if let cache = try? String(contentsOf: url, encoding: .utf8),
+           case let .entry(entry) = AutomationDraftEntry.newest(inCache: cache), entry.recipeText == text { return nil }
+        return "=== THE DRAFT IN THE OWNER'S PANEL (they may have edited it — draft from this text) ===\n"
+            + "```markdown\n\(text)\n```"
+    }
+
     private static func compose(_ parts: String?...) -> String {
         parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "\n\n")
     }
 }
 
 // MARK: - Controller
+
+/// The panel-draft reader a spec's closure and its chat share: the spec is
+/// built before the view exists, so the view fills `provider` afterwards.
+final class PanelDraftBox: @unchecked Sendable { // touched on the main actor only
+    @MainActor var provider: @MainActor () -> String? = { nil }
+    @MainActor func read() -> String? { provider() }
+}
 
 /// One open editor chat: the engine (from the app-wide `EmbeddedChatCenter`,
 /// so a turn keeps streaming after the sheet closes), the conversation's
@@ -233,6 +280,7 @@ final class AutomationEditorChat {
     @ObservationIgnored private let center: EmbeddedChatCenter
     @ObservationIgnored private let onSaved: () -> Void
     @ObservationIgnored private var closed = false
+    @ObservationIgnored private let panelDraftBox: PanelDraftBox
 
     /// `makeSpec` builds the surface's spec around this chat's feed.
     init(
@@ -241,6 +289,7 @@ final class AutomationEditorChat {
         toolsAvailable: Bool,
         center: EmbeddedChatCenter,
         cliRunner: CLIRunnerProtocol? = nil,
+        panelDraftBox: PanelDraftBox = PanelDraftBox(),
         onSaved: @escaping () -> Void,
         makeSpec: (_ outcomes: @escaping @MainActor (Date?) -> String?) -> ChatSurfaceSpec
     ) {
@@ -251,6 +300,7 @@ final class AutomationEditorChat {
         self.databasePath = dbPool.path
         self.center = center
         self.onSaved = onSaved
+        self.panelDraftBox = panelDraftBox
         let spec = makeSpec { [weak feed] floor in feed?.outcomesBlock(after: floor) }
         engine = center.engine(for: spec)
         draft = AutomationDraftPanelModel.load(databasePath: dbPool.path, conversationID: conversationID)
@@ -272,6 +322,12 @@ final class AutomationEditorChat {
     /// Re-reads the newest draft (after a turn, and when the sheet appears).
     func reloadDraft() {
         draft = AutomationDraftPanelModel.load(databasePath: databasePath, conversationID: conversationID)
+    }
+
+    /// The panel's draft buffer, read at each turn (the view hands over the
+    /// center's text).
+    func setPanelDraft(_ provider: @escaping @MainActor () -> String?) {
+        panelDraftBox.provider = provider
     }
 
     func dryRunAgain() {
