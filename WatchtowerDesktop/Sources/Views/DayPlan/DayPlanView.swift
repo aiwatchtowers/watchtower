@@ -151,7 +151,7 @@ struct DayPlanView: View {
                             meetingPrepEventID = eventID
                         },
                         onNavigate: { item in
-                            navigateToSource(item)
+                            appState.openDayPlanItemSource(item)
                         }
                     )
                 }
@@ -193,7 +193,7 @@ struct DayPlanView: View {
                                 Task { await vm.delete(item) }
                             },
                             onNavigateSource: {
-                                navigateToSource(item)
+                                appState.openDayPlanItemSource(item)
                             }
                         )
                         Divider()
@@ -267,34 +267,6 @@ struct DayPlanView: View {
     }
 
     // MARK: - Navigation
-
-    private func navigateToSource(_ item: DayPlanItem) {
-        guard let sid = item.sourceId, !sid.isEmpty else { return }
-        switch item.sourceType {
-        case .task:
-            if let id = Int(sid) {
-                appState.navigateToTarget(id)
-            }
-        case .briefingAttention:
-            // briefing_attention source_id points at the attention item's inner source
-            // (track/digest/people/task), not a briefings.id. Route to the plan's linked
-            // briefing, or fall back to the briefings list.
-            if let bid = vm.plan?.briefingId {
-                appState.navigateToBriefing(Int(bid))
-            } else {
-                appState.selectedDestination = .briefings
-            }
-        case .jira:
-            appState.selectedDestination = .boards
-        case .linear:
-            // Linear has no Boards tab: open the issue itself, else Blockers.
-            if !appState.openTrackerIssue(tracker: .linear, key: sid) {
-                appState.selectedDestination = .blockers
-            }
-        case .focus, .calendar, .manual:
-            break
-        }
-    }
 
     private func openBriefing() {
         if let bid = vm.plan?.briefingId {

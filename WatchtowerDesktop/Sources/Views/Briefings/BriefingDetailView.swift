@@ -1,248 +1,117 @@
 import SwiftUI
 import WatchtowerCore
 
-struct BriefingDetailView: View {
+/// Where a briefing item's deep link goes. `AppState.openBriefingLink`
+/// carries it out; the sections only emit it.
+enum BriefingLink: Equatable {
+    /// A track, or the tracks list when the item names none.
+    case track(Int?)
+    /// A digest, or the digests list.
+    case digest(Int?)
+    /// A person, or the people list.
+    case person(String?)
+    /// A workbench's board, or the Workbench tab.
+    case workbench(Int64?)
+    case target(Int)
+
+    /// The link of an attention item's `source_type`/`source_id`; nil for a
+    /// type with nowhere to go.
+    init?(sourceType: String?, sourceID: String?) {
+        switch sourceType {
+        case "track": self = .track(sourceID.flatMap { Int($0) })
+        case "digest": self = .digest(sourceID.flatMap { Int($0) })
+        case "people": self = .person(sourceID)
+        // A workbench; the stored source_type predates the rename (spec 2026-10-02 A1).
+        case "project": self = .workbench(sourceID.flatMap { Int64($0) })
+        default: return nil
+        }
+    }
+}
+
+/// What a briefing item's **Make a Task** makes a target from (R9).
+enum BriefingTaskSource: Equatable {
+    case attention(AttentionItem)
+    case coaching(CoachingItem)
+}
+
+/// A briefing's sections — Needs you, Your day, What happened, Team pulse,
+/// Coaching — with their deep links, for the Inbox's Your day card. No
+/// header and no sheet: the card owns the header, and an item's
+/// **Make a Task** creates the target at once (`onMakeTask`, which returns
+/// the failure to show, or nil). A section with nothing in it is not drawn.
+struct BriefingSectionsView: View {
     let briefing: Briefing
-    @Environment(AppState.self) private var appState
-    @State private var showCreateTarget = false
-    @State private var targetPrefill: TargetPrefill?
-    @State private var targetPrefillError: String?
-    @State private var isBuildingPrefill = false
-    @State private var calendarEvents: [CalendarEvent] = []
+    var onOpen: (BriefingLink) -> Void = { _ in }
+    var onMakeTask: (BriefingTaskSource) async -> String? = { _ in nil }
+
+    @State private var makingTask = false
+    @State private var makeTaskError: String?
     @State private var jiraConnected = false
     @State private var jiraSiteURL: String?
-    @State private var dayPlanExists: Bool = false
-    @State private var allDayExpanded: Bool = false
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                if let msg = targetPrefillError {
-                    Text(msg)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .padding(.horizontal)
-                }
-                header
-                calendarSection
-                attentionSection
-                yourDaySection
-                whatHappenedSection
-                teamPulseSection
-                coachingSection
+        VStack(alignment: .leading, spacing: Spacing.page) {
+            if let makeTaskError {
+                WriteErrorBanner(message: makeTaskError) { self.makeTaskError = nil }
             }
-            .padding()
-        }
-        .sheet(isPresented: $showCreateTarget) {
-            CreateTargetSheet(prefill: targetPrefill)
+            needsYouSection
+            yourDaySection
+            whatHappenedSection
+            teamPulseSection
+            coachingSection
         }
         .onAppear {
             jiraConnected = JiraQueries.isConnected()
             jiraSiteURL = JiraConfigHelper.readSiteURL()
-            loadCalendarEvents()
-            refreshDayPlanExists()
         }
     }
 
-    private func refreshDayPlanExists() {
-        guard let db = appState.databaseManager else {
-            dayPlanExists = false
-            return
+    private func makeTask(_ source: BriefingTaskSource) {
+        guard !makingTask else { return }
+        makingTask = true
+        Task {
+            makeTaskError = await onMakeTask(source)
+            makingTask = false
         }
-        dayPlanExists = (try? db.dbPool.read { db in
-            try DayPlanQueries.fetchByDate(db, date: briefing.date) != nil
-        }) ?? false
     }
 
-    // MARK: - Calendar
+    private func makeTaskButton(_ source: BriefingTaskSource) -> some View {
+        Button("Make a Task") { makeTask(source) }
+            .buttonStyle(.kitQuiet)
+            .controlSize(.small)
+            .disabled(makingTask)
+    }
+
+    // MARK: - Needs you
 
     @ViewBuilder
-    private var calendarSection: some View {
-        if !calendarEvents.isEmpty {
-            let timed = calendarEvents.filter { !$0.isAllDay }
-            let allDay = calendarEvents.filter { $0.isAllDay }
-
-            sectionView(
-                title: "Today's Schedule",
-                icon: "calendar",
-                iconColor: .blue
-            ) {
-                if !allDay.isEmpty {
-                    allDayChip(allDay)
-                }
-                ForEach(timed) { event in
-                    CalendarEventRow(event: event)
-                }
-            }
-        }
-    }
-
-    private func allDayChip(_ events: [CalendarEvent]) -> some View {
-        let previewTitles = events.prefix(3).map(\.title).joined(separator: " · ")
-        let extra = events.count - min(3, events.count)
-        let preview = extra > 0 ? "\(previewTitles) · +\(extra)" : previewTitles
-
-        return VStack(alignment: .leading, spacing: 6) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    allDayExpanded.toggle()
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "sun.horizon")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Text("\(events.count) all-day")
-                        .font(.caption)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.secondary)
-                    Text("·")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                    Text(preview)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Spacer(minLength: 4)
-                    Image(systemName: allDayExpanded ? "chevron.down" : "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
-                .background(Color.secondary.opacity(0.08), in: Capsule())
-            }
-            .buttonStyle(.plain)
-            .help(events.map(\.title).joined(separator: "\n"))
-
-            if allDayExpanded {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(events) { event in
-                        HStack(spacing: 6) {
-                            Circle()
-                                .fill(.secondary.opacity(0.3))
-                                .frame(width: 6, height: 6)
-                            Text(event.title)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        .padding(.leading, 12)
-                    }
-                }
-                .padding(.top, 2)
-            }
-        }
-    }
-
-    private func loadCalendarEvents() {
-        guard let db = appState.databaseManager else { return }
-        calendarEvents = (try? db.dbPool.read { db in
-            try CalendarQueries.fetchTodayEvents(db)
-        }) ?? []
-    }
-
-    private func openCreateTarget(for item: AttentionItem) {
-        guard let db = appState.databaseManager else {
-            targetPrefillError = "Database not available"
-            return
-        }
-        Task { @MainActor in
-            isBuildingPrefill = true
-            defer { isBuildingPrefill = false }
-            do {
-                let pf = try await TargetPrefillBuilder.fromBriefingItem(item, briefing: briefing, db: db)
-                targetPrefill = pf
-                targetPrefillError = nil
-                showCreateTarget = true
-            } catch {
-                targetPrefillError = "Failed to prepare prefill: \(error.localizedDescription)"
-            }
-        }
-    }
-
-    // MARK: - Header
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Image(systemName: "sun.max.fill")
-                    .foregroundStyle(.orange)
-                Text(briefing.dateLabel)
-                    .font(.title2)
-                    .fontWeight(.bold)
-
-                Spacer()
-
-                if dayPlanExists {
-                    Button {
-                        appState.navigateToDayPlan(briefing.date)
-                    } label: {
-                        Label("Day Plan", systemImage: "calendar.day.timeline.left")
-                            .font(.caption)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help("Open day plan for \(briefing.date)")
-                }
-            }
-
-            if !briefing.role.isEmpty {
-                Text(briefing.role)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-
-            if briefing.isRead {
-                Label("Read", systemImage: "checkmark.circle")
-                    .font(.caption)
-                    .foregroundStyle(.green)
-            }
-        }
-    }
-
-    // MARK: - Attention
-
-    @ViewBuilder
-    private var attentionSection: some View {
+    private var needsYouSection: some View {
         let items = briefing.parsedAttention
         if !items.isEmpty {
-            sectionView(
-                title: "Needs Attention",
-                icon: "exclamationmark.triangle.fill",
-                iconColor: .orange
-            ) {
+            section("Needs you", icon: "exclamationmark.triangle.fill") {
                 ForEach(items) { item in
-                    attentionCard(item)
+                    VStack(alignment: .trailing, spacing: Spacing.small) {
+                        attentionCard(item)
+                        if item.suggestTarget == true {
+                            makeTaskButton(.attention(item))
+                        }
+                    }
                 }
             }
         }
     }
 
-    @ViewBuilder
     private func attentionCard(_ item: AttentionItem) -> some View {
-        Button {
-            navigateToSource(type: item.sourceType, id: item.sourceID)
-        } label: {
-            HStack(alignment: .top, spacing: 8) {
+        let link = BriefingLink(sourceType: item.sourceType, sourceID: item.sourceID)
+        return itemButton(link) {
+            HStack(alignment: .top, spacing: Spacing.regular) {
                 priorityIcon(item.priority)
-                    .frame(width: 16)
-                    .padding(.top, 2)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.text)
-                        .font(.callout)
-                        .foregroundStyle(.primary)
-                        .multilineTextAlignment(.leading)
-
+                VStack(alignment: .leading, spacing: Spacing.small) {
+                    itemText(item.text)
                     if let reason = item.reason, !reason.isEmpty {
-                        Text(reason)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text(reason).font(.caption).foregroundStyle(.secondary)
                     }
-
-                    HStack(spacing: 4) {
+                    HStack(spacing: Spacing.small) {
                         if let sourceType = item.sourceType {
                             sourceLabel(type: sourceType)
                         }
@@ -252,63 +121,19 @@ struct BriefingDetailView: View {
                         }
                     }
                 }
-
                 Spacer()
-
-                if item.sourceType != nil {
-                    Image(systemName: "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
+                if link != nil { chevron }
             }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                Color.orange.opacity(0.06),
-                in: RoundedRectangle(cornerRadius: 8)
-            )
-        }
-        .buttonStyle(.plain)
-
-        if item.suggestTarget == true {
-            HStack {
-                Spacer()
-                Button {
-                    openCreateTarget(for: item)
-                } label: {
-                    Label("Create target", systemImage: "plus.circle")
-                        .font(.caption)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .disabled(isBuildingPrefill)
-            }
-            .padding(.trailing, 4)
-            .padding(.top, 2)
         }
     }
 
-    // MARK: - Your Day
+    // MARK: - Your day
 
     @ViewBuilder
     private var yourDaySection: some View {
         let items = briefing.parsedYourDay
-        sectionView(
-            title: "Your Day",
-            icon: "calendar",
-            iconColor: .green
-        ) {
-            if items.isEmpty {
-                Text("No tracks yet. Tracks are auto-generated from digests.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .padding(10)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        Color.green.opacity(0.04),
-                        in: RoundedRectangle(cornerRadius: 8)
-                    )
-            } else {
+        if !items.isEmpty {
+            section("Your day", icon: "calendar") {
                 ForEach(items) { item in
                     yourDayCard(item)
                 }
@@ -317,71 +142,38 @@ struct BriefingDetailView: View {
     }
 
     private func yourDayCard(_ item: YourDayItem) -> some View {
-        Button {
-            if let targetID = item.targetID {
-                appState.navigateToTarget(targetID)
-            } else if let trackID = item.trackID {
-                navigateToSource(type: "track", id: String(trackID))
-            }
-        } label: {
-            HStack(alignment: .top, spacing: 8) {
+        let link: BriefingLink? = item.targetID.map { .target($0) } ?? item.trackID.map { .track($0) }
+        return itemButton(link) {
+            HStack(alignment: .top, spacing: Spacing.regular) {
                 priorityIcon(item.priority)
-                    .frame(width: 16)
-                    .padding(.top, 2)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.text)
-                        .font(.callout)
-                        .foregroundStyle(.primary)
-                        .multilineTextAlignment(.leading)
-
-                    HStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: Spacing.small) {
+                    itemText(item.text)
+                    HStack(spacing: Spacing.compact) {
                         if let status = item.status, !status.isEmpty {
-                            statusBadge(status)
+                            Chip(text: status.capitalized, color: status == "active" ? Tone.success : .secondary)
                         }
                         if let ownership = item.ownership, !ownership.isEmpty {
-                            Text(ownership)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                            Text(ownership).font(.caption2).foregroundStyle(.secondary)
                         }
                         if let due = item.dueDate, !due.isEmpty {
-                            Label(due, systemImage: "clock")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
+                            Label(due, systemImage: "clock").font(.caption2).foregroundStyle(.secondary)
                         }
                         jiraKeyBadges(in: item.text)
                     }
                 }
-
                 Spacer()
-
-                if item.trackID != nil || item.targetID != nil {
-                    Image(systemName: "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
+                if link != nil { chevron }
             }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                Color.green.opacity(0.04),
-                in: RoundedRectangle(cornerRadius: 8)
-            )
         }
-        .buttonStyle(.plain)
     }
 
-    // MARK: - What Happened
+    // MARK: - What happened
 
     @ViewBuilder
     private var whatHappenedSection: some View {
         let items = briefing.parsedWhatHappened
         if !items.isEmpty {
-            sectionView(
-                title: "What Happened",
-                icon: "newspaper.fill",
-                iconColor: .blue
-            ) {
+            section("What happened", icon: "newspaper.fill") {
                 ForEach(items) { item in
                     whatHappenedCard(item)
                 }
@@ -390,70 +182,34 @@ struct BriefingDetailView: View {
     }
 
     private func whatHappenedCard(_ item: WhatHappenedItem) -> some View {
-        Button {
-            if let digestID = item.digestID {
-                navigateToSource(type: "digest", id: String(digestID))
-            }
-        } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    if let ch = item.channelName, !ch.isEmpty {
-                        Text("#\(ch)")
-                            .font(.caption)
-                            .fontWeight(.semibold)
-                            .foregroundStyle(.blue)
+        let link = item.digestID.map { BriefingLink.digest($0) }
+        return itemButton(link) {
+            VStack(alignment: .leading, spacing: Spacing.small) {
+                HStack(spacing: Spacing.compact) {
+                    if let channel = item.channelName, !channel.isEmpty {
+                        Text("#\(channel)").font(.caption.weight(.semibold)).foregroundStyle(Color.accentColor)
                     }
-
                     if let itemType = item.itemType, !itemType.isEmpty {
-                        Text(itemType)
-                            .font(.caption2)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(
-                                Color.secondary.opacity(0.15),
-                                in: Capsule()
-                            )
+                        Chip(text: itemType, color: .secondary)
                     }
-
-                    if let imp = item.importance, !imp.isEmpty {
-                        importanceBadge(imp)
+                    if let importance = item.importance, !importance.isEmpty {
+                        Text(importance.capitalized).font(.caption2).foregroundStyle(Tone.priority(importance))
                     }
-
                     Spacer()
-
-                    if item.digestID != nil {
-                        Image(systemName: "chevron.right")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
+                    if link != nil { chevron }
                 }
-
-                Text(item.text)
-                    .font(.callout)
-                    .foregroundStyle(.primary)
-                    .multilineTextAlignment(.leading)
+                itemText(item.text)
             }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                Color.blue.opacity(0.04),
-                in: RoundedRectangle(cornerRadius: 8)
-            )
         }
-        .buttonStyle(.plain)
     }
 
-    // MARK: - Team Pulse
+    // MARK: - Team pulse
 
     @ViewBuilder
     private var teamPulseSection: some View {
         let items = briefing.parsedTeamPulse
         if !items.isEmpty {
-            sectionView(
-                title: "Team Pulse",
-                icon: "heart.text.square.fill",
-                iconColor: .pink
-            ) {
+            section("Team pulse", icon: "heart.text.square.fill") {
                 ForEach(items) { item in
                     teamPulseCard(item)
                 }
@@ -462,249 +218,138 @@ struct BriefingDetailView: View {
     }
 
     private func teamPulseCard(_ item: TeamPulseItem) -> some View {
-        Button {
-            if let userID = item.userID {
-                navigateToSource(type: "people", id: nil, userID: userID)
-            }
-        } label: {
-            HStack(alignment: .top, spacing: 8) {
+        let link = item.userID.map { BriefingLink.person($0) }
+        return itemButton(link) {
+            HStack(alignment: .top, spacing: Spacing.regular) {
                 signalIcon(item.signalType)
-                    .frame(width: 16)
-                    .padding(.top, 2)
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.text)
-                        .font(.callout)
-                        .foregroundStyle(.primary)
-                        .multilineTextAlignment(.leading)
-
+                VStack(alignment: .leading, spacing: Spacing.small) {
+                    itemText(item.text)
                     if let detail = item.detail, !detail.isEmpty {
-                        Text(detail)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text(detail).font(.caption).foregroundStyle(.secondary)
                     }
-
                     if let signal = item.signalType, !signal.isEmpty {
-                        signalBadge(signal)
+                        Chip(text: signal.replacingOccurrences(of: "_", with: " ").capitalized, color: .secondary)
                     }
                 }
-
                 Spacer()
-
-                if item.userID != nil {
-                    Image(systemName: "chevron.right")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
+                if link != nil { chevron }
             }
-            .padding(10)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                Color.pink.opacity(0.04),
-                in: RoundedRectangle(cornerRadius: 8)
-            )
         }
-        .buttonStyle(.plain)
     }
 
-    // MARK: - Coaching Corner
+    // MARK: - Coaching
 
     @ViewBuilder
     private var coachingSection: some View {
         let items = briefing.parsedCoaching
         if !items.isEmpty {
-            sectionView(
-                title: "Coaching Corner",
-                icon: "lightbulb.fill",
-                iconColor: .yellow
-            ) {
+            section("Coaching", icon: "lightbulb.fill") {
                 ForEach(items) { item in
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "lightbulb.fill")
-                            .foregroundStyle(.yellow)
-                            .font(.caption)
-                            .padding(.top, 2)
-
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(item.text)
-                                .font(.callout)
-
-                            if let cat = item.category, !cat.isEmpty {
-                                Text(cat.capitalized)
-                                    .font(.caption2)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1)
-                                    .background(
-                                        Color.yellow.opacity(0.2),
-                                        in: Capsule()
-                                    )
+                    HStack(alignment: .top, spacing: Spacing.regular) {
+                        Image(systemName: "lightbulb.fill").font(.caption).foregroundStyle(Tone.amber)
+                        VStack(alignment: .leading, spacing: Spacing.small) {
+                            itemText(item.text)
+                            if let category = item.category, !category.isEmpty {
+                                Chip(text: category.capitalized, color: Tone.amber)
                             }
                         }
-
                         Spacer()
-
-                        Button {
-                            targetPrefill = nil
-                            showCreateTarget = true
-                        } label: {
-                            Image(systemName: "plus.circle")
-                                .foregroundStyle(.secondary)
-                                .font(.caption)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Add Target")
+                        makeTaskButton(.coaching(item))
                     }
+                    .padding(Spacing.cozy)
+                    .card()
                 }
             }
         }
     }
 
-    // MARK: - Navigation
+    // MARK: - Parts
 
-    private func navigateToSource(
-        type: String?,
-        id: String?,
-        userID: String? = nil
-    ) {
-        guard let type else { return }
-        switch type {
-        case "track":
-            if let id, let intID = Int(id) {
-                appState.navigateToTrack(intID)
-            } else {
-                appState.selectedDestination = .tracks
-            }
-        case "digest":
-            if let id, let intID = Int(id) {
-                appState.navigateToDigest(intID)
-            } else {
-                appState.selectedDestination = .digests
-            }
-        case "people":
-            if let userID = userID ?? id {
-                appState.navigateToPerson(userID)
-            } else {
-                appState.selectedDestination = .people
-            }
-        case "project": // a workbench; the stored source_type predates the rename (spec 2026-10-02 A1)
-            if let id, let projectID = Int64(id) {
-                appState.navigateToWorkbench(WorkbenchRoute(projectID: projectID, pane: .board))
-            } else {
-                appState.selectedDestination = .workbench
-            }
-        default:
-            break
-        }
-    }
-
-    // MARK: - Helpers
-
-    private func sectionView<Content: View>(
-        title: String,
+    private func section<Content: View>(
+        _ title: String,
         icon: String,
-        iconColor: Color,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Image(systemName: icon)
-                    .foregroundStyle(iconColor)
-                Text(title)
-                    .font(.headline)
-            }
-
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            SectionHeader(title: title, systemImage: icon)
             content()
         }
     }
 
+    /// An item's card; pressing it follows `link` when there is one.
+    private func itemButton<Label: View>(_ link: BriefingLink?, @ViewBuilder label: () -> Label) -> some View {
+        Button {
+            if let link { onOpen(link) }
+        } label: {
+            label()
+                .padding(Spacing.cozy)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .card()
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func itemText(_ text: String) -> some View {
+        Text(text).font(.callout).foregroundStyle(.primary).multilineTextAlignment(.leading)
+    }
+
+    private var chevron: some View {
+        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.tertiary)
+    }
+
     private func priorityIcon(_ priority: String?) -> some View {
-        let (icon, color): (String, Color) = {
-            switch priority {
-            case "high": return ("exclamationmark.circle.fill", .red)
-            case "low": return ("arrow.down.circle.fill", .gray)
-            default: return ("minus.circle.fill", .orange)
-            }
-        }()
-        return Image(systemName: icon)
-            .foregroundStyle(color)
-            .font(.caption)
+        let icon = switch priority {
+        case "high": "exclamationmark.circle.fill"
+        case "low": "arrow.down.circle.fill"
+        default: "minus.circle.fill"
+        }
+        return Image(systemName: icon).font(.caption).foregroundStyle(Tone.priority(priority ?? "medium"))
     }
 
     private func sourceLabel(type: String) -> some View {
-        let (icon, label): (String, String) = {
-            switch type {
-            case "track": return ("checklist", "Track")
-            case "digest": return ("newspaper", "Digest")
-            case "people": return ("person.2", "Person")
-            case "project": return ("folder", "Workbench")
-            default: return ("questionmark.circle", type)
-            }
-        }()
-        return Label(label, systemImage: icon)
-            .font(.caption2)
-            .foregroundStyle(.tertiary)
-    }
-
-    private func statusBadge(_ status: String) -> some View {
-        let color: Color = {
-            switch status {
-            case "active": return .green
-            case "done": return .gray
-            default: return .secondary
-            }
-        }()
-        return Text(status.capitalized)
-            .font(.caption2)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(color.opacity(0.15), in: Capsule())
-    }
-
-    private func importanceBadge(_ importance: String) -> some View {
-        let color: Color = {
-            switch importance {
-            case "high": return .red
-            case "low": return .gray
-            default: return .orange
-            }
-        }()
-        return Text(importance.capitalized)
-            .font(.caption2)
-            .foregroundStyle(color)
+        let (icon, label): (String, String) = switch type {
+        case "track": ("checklist", "Track")
+        case "digest": ("newspaper", "Digest")
+        case "people": ("person.2", "Person")
+        case "project": ("folder", "Workbench")
+        default: ("questionmark.circle", type)
+        }
+        return Label(label, systemImage: icon).font(.caption2).foregroundStyle(.tertiary)
     }
 
     private func signalIcon(_ signalType: String?) -> some View {
-        let (icon, color): (String, Color) = {
-            switch signalType {
-            case "volume_spike": return ("arrow.up.circle.fill", .orange)
-            case "volume_drop": return ("arrow.down.circle.fill", .blue)
-            case "new_red_flag": return ("flag.fill", .red)
-            case "highlight": return ("star.fill", .yellow)
-            case "conflict": return ("bolt.fill", .red)
-            default: return ("circle.fill", .secondary)
-            }
-        }()
-        return Image(systemName: icon)
-            .foregroundStyle(color)
-            .font(.caption)
+        let (icon, color): (String, Color) = switch signalType {
+        case "volume_spike": ("arrow.up.circle.fill", Tone.warning)
+        case "volume_drop": ("arrow.down.circle.fill", Color.accentColor)
+        case "new_red_flag": ("flag.fill", Tone.error)
+        case "highlight": ("star.fill", Tone.amber)
+        case "conflict": ("bolt.fill", Tone.error)
+        default: ("circle.fill", .secondary)
+        }
+        return Image(systemName: icon).font(.caption).foregroundStyle(color)
     }
-
-    private func signalBadge(_ signal: String) -> some View {
-        let label = signal.replacingOccurrences(of: "_", with: " ").capitalized
-        return Text(label)
-            .font(.caption2)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(Color.pink.opacity(0.12), in: Capsule())
-    }
-
-    // MARK: - Jira Helpers
 
     private func jiraKeyBadges(in text: String) -> some View {
-        JiraKeyLinkBadgesView(
-            text: text,
-            siteURL: jiraSiteURL,
-            isConnected: jiraConnected
-        )
+        JiraKeyLinkBadgesView(text: text, siteURL: jiraSiteURL, isConnected: jiraConnected)
+    }
+}
+
+/// The Briefings screen's detail, kept as a thin wrapper over
+/// `BriefingSectionsView` until that screen leaves (C1 Task 11).
+struct BriefingDetailView: View {
+    let briefing: Briefing
+    @Environment(AppState.self) private var appState
+
+    var body: some View {
+        ScrollView {
+            BriefingSectionsView(
+                briefing: briefing,
+                onOpen: { appState.openBriefingLink($0) },
+                onMakeTask: { await appState.makeTask(from: $0, briefing: briefing) }
+            )
+            .padding(Spacing.page)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
