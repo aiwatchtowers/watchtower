@@ -4,12 +4,14 @@ package sqlcipher
 
 // Watchtower's build of the SQLCipher community amalgamation (board #603),
 // on top of the defines mattn's sqlite3.go sets. Darwin uses CommonCrypto;
-// Linux (CI and tests only) uses OpenSSL's libcrypto.
+// Linux (CI and tests only) uses OpenSSL's libcrypto. DBSTAT_VTAB keeps the
+// dbstat table modernc.org/sqlite had (size checks in tests and diagnostics).
 
 /*
 #cgo CFLAGS: -DSQLITE_HAS_CODEC
 #cgo CFLAGS: -DSQLITE_TEMP_STORE=2
 #cgo CFLAGS: -DSQLITE_ENABLE_FTS5
+#cgo CFLAGS: -DSQLITE_ENABLE_DBSTAT_VTAB
 #cgo CFLAGS: -DSQLITE_EXTRA_INIT=sqlcipher_extra_init
 #cgo CFLAGS: -DSQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown
 #cgo darwin CFLAGS: -DSQLCIPHER_CRYPTO_CC

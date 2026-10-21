@@ -416,3 +416,32 @@ func TestCompact_PathWithSpacesAndUnicode(t *testing.T) {
 		t.Fatalf("check after compacting: %+v (bytes_after %d)", c, res.BytesAfter)
 	}
 }
+
+// A compaction that runs while the messages search fill is pending records
+// no completed compaction — the migration stays due for the compaction after
+// the fill — but still clears the failure counter.
+func TestCompact_NoRecordWhileFTSRebuildPending(t *testing.T) {
+	d, path, _ := pendingFillDB(t)
+	for key, value := range map[string]string{maintCompactFailures: "2", maintCompactFailuresVersion: "1.0.0"} {
+		if _, err := d.Exec(`INSERT INTO db_maintenance (key, value) VALUES (?, ?)`, key, value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Compact(context.Background(), path, CompactOptions{Force: true, Reason: "manual", Version: "1.0.0"})
+	if err != nil || !res.Compacted {
+		t.Fatalf("Compact = %+v, %v; want compacted", res, err)
+	}
+	keys := maintenanceKeys(t, path)
+	for _, key := range []string{maintLastCompactedVersion, maintCompactedAt, maintCompactFailures, maintCompactFailuresVersion} {
+		if _, ok := keys[key]; ok {
+			t.Errorf("db_maintenance %s = %q while the fill is pending, want absent", key, keys[key])
+		}
+	}
+	if keys[maintFTSRebuildPending] != "1" {
+		t.Errorf("fts_rebuild_pending = %q, want 1", keys[maintFTSRebuildPending])
+	}
+}

@@ -389,7 +389,7 @@ func runSyncCycle(t *testing.T, ctx context.Context) (*recordingEvents, time.Tim
 	require.NoError(t, err)
 	d.gmailSyncers = []mailSyncer{&countMailSyncer{accountID: id}}
 	before := time.Now()
-	d.runSync(ctx)
+	d.runSync(ctx, ctx)
 	return ev, before, time.Now()
 }
 
@@ -463,7 +463,7 @@ func TestRunSync_RealBusQueuesOneRun(t *testing.T) {
 	d.gmailSyncers = []mailSyncer{&countMailSyncer{accountID: id, n: 3, store: store(1, 3)},
 		&countMailSyncer{accountID: id, n: 1, store: store(4, 4)}}
 
-	d.runSync(context.Background())
+	d.runSync(context.Background(), context.Background())
 
 	runs, err := database.ListAutomationRuns(a.ID, 10)
 	require.NoError(t, err)
@@ -497,26 +497,37 @@ func TestDaemon_NilOrFailingBusLeavesRunSyncUnchanged(t *testing.T) {
 	d, _, _ := newEventsTestDaemon(t, nil)
 	d.SetAutomationEvents(nil)
 	assert.False(t, d.HasAutomationEvents())
-	d.runSync(context.Background())
+	d.runSync(context.Background(), context.Background())
 	assert.Nil(t, d.cycleEvents)
 
 	// A bus whose Begin fails is off for the cycle: no Wants, no Flush.
 	ev := newRecordingEvents("slack.new_messages")
 	ev.beginErr = errors.New("db locked")
 	d.SetAutomationEvents(ev)
-	d.runSync(context.Background())
+	d.runSync(context.Background(), context.Background())
 	assert.Equal(t, []string{"begin"}, ev.callList())
 }
 
 func TestDaemon_ReactionCommandsPublishToCycleBus(t *testing.T) {
-	// Statically: phaseReactionCommands(ctx) is the statement right after
-	// the observed phaseSlackSync, guarded by ctx.Err() == nil as before.
+	// Statically: phaseReactionCommands(fetchCtx) follows the observed
+	// phaseSlackSync with nothing but the cycle-section bookkeeping between
+	// them, guarded by fetchCtx.Err() == nil.
 	file, err := parser.ParseFile(token.NewFileSet(), "daemon.go", nil, 0)
 	require.NoError(t, err)
 	body := runSyncBody(t, file)
 	order := runSyncCallOrder(t)
 	slack, reactions := order["phaseSlackSync"], order["phaseReactionCommands"]
-	assert.Equal(t, slack+1, reactions, "the poll still follows the Slack sync directly")
+	require.Less(t, slack, reactions, "the poll follows the Slack sync")
+	for _, between := range body.List[slack+1 : reactions] {
+		stmt, ok := between.(*ast.ExprStmt)
+		require.True(t, ok, "only bookkeeping calls sit between the Slack sync and the poll")
+		call, ok := stmt.X.(*ast.CallExpr)
+		require.True(t, ok, "only bookkeeping calls sit between the Slack sync and the poll")
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		require.True(t, ok, "only bookkeeping calls sit between the Slack sync and the poll")
+		assert.Contains(t, []string{"setSection", "markFetchProgress"}, sel.Sel.Name,
+			"the poll still follows the Slack sync directly")
+	}
 	guard, ok := body.List[reactions].(*ast.IfStmt)
 	require.True(t, ok, "the poll keeps its ctx.Err() guard")
 	stmt, ok := guard.Body.List[0].(*ast.ExprStmt)
@@ -525,8 +536,8 @@ func TestDaemon_ReactionCommandsPublishToCycleBus(t *testing.T) {
 	require.True(t, ok, "the guard's first statement is the poll call")
 	require.Len(t, call.Args, 1)
 	arg, ok := call.Args[0].(*ast.Ident)
-	require.True(t, ok, "the poll is passed ctx")
-	assert.Equal(t, "ctx", arg.Name)
+	require.True(t, ok, "the poll is passed the fetch ctx")
+	assert.Equal(t, "fetchCtx", arg.Name)
 
 	// At run time: with an account to poll, the bus is asked whether it
 	// wants slack.reaction_added, and only about event types of EventTypes.
@@ -537,7 +548,7 @@ func TestDaemon_ReactionCommandsPublishToCycleBus(t *testing.T) {
 	reactionProbe(t, d, database, d.config)
 	d.SetAutomationEvents(ev)
 	d.config.ReactionCommands.Enabled = true
-	d.runSync(context.Background())
+	d.runSync(context.Background(), context.Background())
 	asked := false
 	for _, c := range ev.callList() {
 		if typ, ok := strings.CutPrefix(c, "wants:"); ok {

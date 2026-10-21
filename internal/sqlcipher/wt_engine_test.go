@@ -76,7 +76,7 @@ func TestEngine_IsSQLCipher(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"ENABLE_FTS5", "HAS_CODEC", "TEMP_STORE=2"} {
+	for _, want := range []string{"ENABLE_FTS5", "ENABLE_DBSTAT_VTAB", "HAS_CODEC", "TEMP_STORE=2"} {
 		if !opts[want] {
 			t.Errorf("compile_options lacks %s", want)
 		}

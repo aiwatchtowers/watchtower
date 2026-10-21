@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// `CompactionCLI` over the real `watchtower` binary.
 package struct ProcessCompactionCLI: CompactionCLI {
@@ -41,12 +42,14 @@ package struct ProcessCompactionCLI: CompactionCLI {
         return try decodeLastJSONLine(CompactionCheck.self, from: Data(output.stdout.utf8))
     }
 
-    package func startCompact() throws -> any CompactionChild {
+    package func startCompact(
+        onPhase: @escaping @Sendable (CompactionRunPhase) -> Void
+    ) throws -> any CompactionChild {
         let process = try makeProcess(["db", "compact", "--if-due", "--json"])
         // `check()` ran first and resolved the login-shell environment, so
         // this never blocks the caller on the shell probe.
         process.environment = Constants.resolvedEnvironmentIfReady()
-        return try ProcessCompactionChild(process)
+        return try ProcessCompactionChild(process, onPhase: onPhase)
     }
 
     private func makeProcess(_ arguments: [String]) throws -> Process {
@@ -59,21 +62,26 @@ package struct ProcessCompactionCLI: CompactionCLI {
 }
 
 /// A launched `db compact --if-due` child; both streams drain from launch on
-/// (SB3, see `ProcessPipes`).
+/// (SB3, see `ProcessPipes`), stdout through a phase scanner.
 private final class ProcessCompactionChild: CompactionChild, @unchecked Sendable {
     private let process: Process
     private let stdoutRead: Task<Data, Never>
     private let stderrRead: Task<Data, Never>
 
     /// Launches `process`; throws when it cannot start.
-    init(_ process: Process) throws {
+    init(_ process: Process, onPhase: @escaping @Sendable (CompactionRunPhase) -> Void) throws {
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
         try process.run()
         self.process = process
-        stdoutRead = ProcessPipes.drain(stdoutPipe)
+        // The drain reads on one thread; the lock only makes the scanner
+        // Sendable.
+        let scanner = OSAllocatedUnfairLock(initialState: CompactionPhaseScanner())
+        stdoutRead = ProcessPipes.drain(stdoutPipe) { chunk in
+            scanner.withLock { $0.feed(chunk) }.forEach(onPhase)
+        }
         stderrRead = ProcessPipes.drain(stderrPipe)
     }
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/slack-go/slack"
@@ -16,6 +17,7 @@ type Client struct {
 	api         *slack.Client
 	rateLimiter *RateLimiter
 	logger      *log.Logger
+	answered    atomic.Uint64 // AnsweredCalls
 }
 
 // Timeouts bounding every Slack API request. slack-go's default client has no
@@ -24,6 +26,11 @@ type Client struct {
 // macOS, long enough to stall a whole sync cycle. The idle-connection pool
 // cannot expire such a socket either: Go's monotonic clock stops while the
 // machine sleeps, so an idle timer that "expired" during sleep never fires.
+// The same clock bounds these timeouts, so they count awake time only: a
+// request caught by a sleep can take far longer in wall time. The daemon
+// therefore cancels a cycle a sleep interrupted and drops the pooled
+// connections (CloseIdleConnections) before the next one
+// (internal/daemon/wake.go).
 const (
 	// httpTimeout is the whole-request ceiling, matching every other
 	// integration in this repo (jira, gmail, calendar, caldav, imap). It is a
@@ -45,8 +52,12 @@ const (
 	h2PingTimeout     = 10 * time.Second
 )
 
-// newHTTPClient builds the bounded HTTP client every Slack call goes through.
-func newHTTPClient() *http.Client {
+// transport is the one connection pool every Slack client shares, so
+// CloseIdleConnections reaches all of them.
+var transport = newTransport()
+
+// newTransport builds the bounded transport behind every Slack call.
+func newTransport() *http.Transport {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.ResponseHeaderTimeout = responseHeaderTimeout
 	// HTTP/2 health checks: a ping after ReadIdleTimeout of silence, the
@@ -55,7 +66,18 @@ func newHTTPClient() *http.Client {
 		SendPingTimeout: h2ReadIdleTimeout,
 		PingTimeout:     h2PingTimeout,
 	}
-	return &http.Client{Timeout: httpTimeout, Transport: tr}
+	return tr
+}
+
+// newHTTPClient builds the bounded HTTP client every Slack call goes through.
+func newHTTPClient() *http.Client {
+	return &http.Client{Timeout: httpTimeout, Transport: transport}
+}
+
+// CloseIdleConnections drops every idle pooled Slack connection, so the next
+// call dials afresh instead of writing into a socket a sleep left dead.
+func CloseIdleConnections() {
+	transport.CloseIdleConnections()
 }
 
 // NewClient creates a new rate-limited Slack client.
@@ -107,6 +129,9 @@ func (c *Client) doRequest(ctx context.Context, tier int, fn func() error) error
 		err := fn()
 		c.handleError(tier, err) // set backoff BEFORE releasing gate
 		c.rateLimiter.Done(tier)
+		if isSlackAnswer(err) {
+			c.answered.Add(1)
+		}
 
 		if err == nil {
 			return nil
@@ -485,6 +510,31 @@ func (c *Client) APIStats() (counts map[int]int, retries int) {
 // ResetAPIStats clears all request counters.
 func (c *Client) ResetAPIStats() {
 	c.rateLimiter.ResetStats()
+}
+
+// AnsweredCalls counts the requests Slack answered — a success, an API
+// error, a 429, an HTTP status error — over the client's lifetime. Any other
+// failure does not count: one on the wire (a timeout, a dead socket, a
+// cancelled ctx) and one that broke off mid-body after the headers came (a
+// truncated or stalled response, which slack-go returns unwrapped). Unlike
+// APIStats it is never reset, so a caller that compares two readings sees
+// every answer in between: the daemon reads a change as its Slack sync
+// making progress.
+func (c *Client) AnsweredCalls() uint64 {
+	return c.answered.Load()
+}
+
+// isSlackAnswer reports whether a request ended with a complete answer from
+// Slack: no error, or one of the errors slack-go builds from a response it
+// read in full (an API error, a 429, a non-2xx status).
+func isSlackAnswer(err error) bool {
+	if err == nil {
+		return true
+	}
+	var apiErr slack.SlackErrorResponse
+	var rateErr *slack.RateLimitedError
+	var statusErr slack.StatusCodeError
+	return errors.As(err, &apiErr) || errors.As(err, &rateErr) || errors.As(err, &statusErr)
 }
 
 // handleError checks for rate limit errors and sets backoff accordingly.

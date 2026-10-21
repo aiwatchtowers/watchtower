@@ -55,6 +55,8 @@ func (d *Daemon) startHistoryBackfill(kind string, accountID int64, from time.Ti
 // sync.backfill_days <= 0 is the kill switch (R20): the phase does not run
 // and the rows stay as they are; setting it back resumes them. Memory waits
 // for a running row at most memoryBackfillWaitMax (phaseMemory, #578).
+// runSync passes the cycle's fetch context: a sleep cancels the Step, which
+// then strikes no chunk (Runner.fail) and leaves no error on the row.
 func (d *Daemon) phaseHistoryBackfill(ctx context.Context) {
 	if d.db == nil || d.config.Sync.BackfillDays <= 0 {
 		return
@@ -78,7 +80,11 @@ func (d *Daemon) phaseHistoryBackfill(ctx context.Context) {
 		// (the phaseIdeas pattern). The phase runs alone, after them.
 		u0 := d.historyBackfillUsage()
 		err := r.Step(ctx)
-		if err != nil {
+		switch {
+		case isLoopCancelErr(ctx, err):
+			d.logger.Printf("history backfill: stopped by %s", fetchStopReason(ctx))
+			err = nil // cancelled, not failed (the slack-sync row's rule)
+		case err != nil:
 			d.logger.Printf("history backfill: %v", err)
 		}
 		u := d.historyBackfillUsage()
@@ -244,9 +250,15 @@ func (d *Daemon) onSlackBackfillDone(ctx context.Context, floor time.Time) error
 					firstErr = err
 				}
 			}
+			// ctx is the runner's budget ctx: only the loop's cancel or the
+			// shutdown is benign, its passed deadline is a failure.
+			reportErr := err
+			if isLoopCancelErr(ctx, err) {
+				reportErr = nil // cancelled, not failed: no stamp, retried on a later Step
+			}
 			inTok, outTok, cost, totalAPI := d.peoplePipe.AccumulatedUsage()
 			return pipelineRunStats{items: n, inTok: inTok - inTok0, outTok: outTok - outTok0,
-				cost: cost - cost0, totalAPI: totalAPI - totalAPI0, err: err}
+				cost: cost - cost0, totalAPI: totalAPI - totalAPI0, err: reportErr}
 		})
 	}
 	if firstErr != nil {
