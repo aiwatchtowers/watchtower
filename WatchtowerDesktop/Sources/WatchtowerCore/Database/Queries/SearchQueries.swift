@@ -37,6 +37,21 @@ package enum SearchQueries {
         return try SearchResult.fetchAll(db, sql: sql, arguments: StatementArguments(args))
     }
 
+    /// Whether the messages search index is still being rebuilt after the
+    /// #872 upgrade, so search may miss older Slack messages. Pending is the
+    /// `fts_rebuild_pending` key in `db_maintenance` (any value) or a
+    /// `messages_fts_legacy` table that still exists. Swift twin of Go's
+    /// `messagesSearchPending` (`internal/db/fts_rebuild.go`); both sides
+    /// test the same five states.
+    package static func messagesIndexRebuildPending(_ db: Database) throws -> Bool {
+        if try db.tableExists("messages_fts_legacy") { return true }
+        // Go reads a missing db_maintenance table as "no key".
+        guard try db.tableExists("db_maintenance") else { return false }
+        return try Bool.fetchOne(db, sql: """
+            SELECT EXISTS(SELECT 1 FROM db_maintenance WHERE key = 'fts_rebuild_pending')
+            """) ?? false
+    }
+
     /// Sanitize user input for FTS5: wrap terms in double quotes, skip operators
     package static func sanitizeFTS5Query(_ input: String) -> String {
         let operators: Set<String> = ["AND", "OR", "NOT", "NEAR"]

@@ -2155,3 +2155,13 @@ Entry format:
 - weak-dimension: 7 (mild). Pruning at the window edge and the 5-digit offset case (mail dated more than about 5 days in the future) have no test. The 8 KiB headroom absorbs the second.
 - rule-gap (candidate, dim 7): *a state format that stores values relative to a moving base ships a test whose seeded base differs from the run's base, so a missing re-base fails it.* This PR did it by accident (47 h vs 48 h). Make it deliberate.
 - outcome: TBD
+
+## 2026-10-21 — feature/892-search-rebuild-banner (board #892: Desktop Search line while the #872 messages search rebuild is pending; `SearchQueries.messagesIndexRebuildPending` as the Swift twin of Go `messagesSearchPending` with the same five states tested on both sides, `SearchIndexRebuildNotice`, read at load/onAppear and on each search; 10 files +207/−1; panel: prosecutor (8) + codex (0, no tests run) + all 3 specialists; judge verified against d0d9cbb6b by reading and grep, no runs; judge synthesis, round 1) — verdict: changes-needed
+
+- contested (held minor, silent-failure MEDIUM + analyzer gap 5, 2 lanes): a failed state read set `indexRebuildPending = false`. It is logged, so it is not a swallowed error, but a transient busy during the fill hides the line exactly while results are incomplete. Settled fix: log and keep the last known value. **When a status read fails, a UI flag that warns of degraded results keeps its last value. It does not fall back to the all-clear.** [9]
+- false-positive: prosecutor F5 (one-shot read instead of `ValueObservation` per §1). The pending state is written by the daemon and the `db compact` CLI, and GRDB observation does not fire on cross-process writes. The repo precedent (`SlackAccountsViewModel`, `GoogleAccountsViewModel`) is to reload on appear. A stale line while Search stays open is the accepted cost, and the guide states it. [1]
+- false-positive (half of F7): stale searches that drop their state-read error without logging follow the sibling guide-search branch, and a stale search writes nothing by design.
+- miss: none from codex. The binding-rule gaps came from the prosecutor and code-reviewer: design-kit PNGs, and the guide entry having no fix for a 64 MiB disk floor that keeps the rebuild skipped.
+- weak-dimension: 9 (docs/guide). A troubleshooting entry said "goes away on its own" without naming the condition under which it never does.
+- rule-gap (candidate, dim 1): *§1's ValueObservation bullet should say it covers in-process writes only. State written by the daemon or CLI is reloaded on appear or on an action, per the cross-process precedent.* This would stop reviewers from re-raising it.
+- outcome: TBD

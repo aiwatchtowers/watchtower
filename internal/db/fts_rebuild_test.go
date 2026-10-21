@@ -695,6 +695,38 @@ func TestMessagesSearchPendingAt(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// TestMessagesSearchPending_States pins the pending rule over the states the
+// Swift twin (SearchIndexRebuildPendingTests) tests too.
+func TestMessagesSearchPending_States(t *testing.T) {
+	pending := func(d *DB) bool {
+		t.Helper()
+		p, _, err := messagesSearchPending(d)
+		require.NoError(t, err)
+		return p
+	}
+
+	d := openTestDB(t)
+	assert.False(t, pending(d), "neither key nor legacy table")
+
+	_, err := d.Exec(`INSERT INTO db_maintenance (key, value) VALUES ('fts_rebuild_cursor_messages', '42')`)
+	require.NoError(t, err)
+	assert.False(t, pending(d), "another key")
+
+	_, err = d.Exec(`INSERT INTO db_maintenance (key, value) VALUES ('fts_rebuild_pending', '0')`)
+	require.NoError(t, err)
+	assert.True(t, pending(d), "the key, whatever its value")
+
+	d = openTestDB(t)
+	_, err = d.Exec(`CREATE VIRTUAL TABLE messages_fts_legacy USING fts5(text)`)
+	require.NoError(t, err)
+	assert.True(t, pending(d), "the legacy table alone")
+
+	d = openTestDB(t)
+	_, err = d.Exec(`DROP TABLE db_maintenance`)
+	require.NoError(t, err)
+	assert.False(t, pending(d), "no db_maintenance table")
+}
+
 func TestIsInterruption(t *testing.T) {
 	assert.True(t, isInterruption(context.Canceled))
 	assert.True(t, isInterruption(fmt.Errorf("chunk: %w", context.DeadlineExceeded)))
