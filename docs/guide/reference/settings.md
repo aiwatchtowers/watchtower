@@ -43,6 +43,7 @@ A list of services (Slack, Google, Email, Calendar, Jira, Linear, Quick Connecti
 - **Sync** — **Poll Interval** (default `15m`), **Workers**, **Initial History Days** (bounds the first Slack sync to a few days; the month of history comes from [history backfill](../concepts/history-backfill.md)), **Sync Threads**.
 - **Daemon** — read-only status. The app starts and stops the daemon itself. **Open Logs** opens the live log window.
 - **Data** — storage, **Reset AI-Generated Data** (deletes what the AI made, then rebuilds it) and, under Danger Zone, **Reset All Data**.
+- **Privacy** — **Delete an account's data when its access is revoked** (off by default, on in the corporate build). **Save** restarts the background sync once. See [Revoked access deletes an account's data](../concepts/revoked-access.md).
 - **Update** — checks on launch and every 6 hours; nothing downloads until you press **Download** here or **Update Now** in the Software Update window. See [Menu bar and updates](../features/menu-bar-and-updates.md).
 
 ## Mobile

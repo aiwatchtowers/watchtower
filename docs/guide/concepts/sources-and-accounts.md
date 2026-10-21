@@ -33,6 +33,8 @@ It depends on the source. **Remove** always stops syncing and deletes the sign-i
 - **Slack and Jira:** the data already synced stays: messages, digests, issues, boards.
 - **Google, Email and Calendar:** the mail and calendar events synced from that account are deleted from the local database (a Google account keeps events tied to a recording or recap). Digests, briefings and other AI results built from them stay.
 
+With **Delete an account's data when its access is revoked** on, a removed Slack, Jira or Linear account's data is deleted too, once the account has not been reached for 30 days, after a 72-hour notice. A revoked account goes the same way. See [Revoked access deletes an account's data](revoked-access.md).
+
 **Known issue:** the confirmation dialog for Google, Email and Calendar says synced data is kept, but it is deleted. If you need the mail or events, do not remove the account; use its **Enabled** switch where there is one, or remove it only after you have what you need. Slack and Jira do keep their data.
 
 ## Why Watchtower needs to know who you are
