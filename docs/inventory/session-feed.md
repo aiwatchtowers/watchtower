@@ -96,4 +96,4 @@
 - 2026-10-18 (board #486, owner approval ask #379): FEED-05 added; mobile POC I-4 amended (session chat exception). Spec `docs/superpowers/specs/2026-10-18-session-chat-iphone-design.md`.
 
 - 2026-10-19 (board #711, owner approval ask #400): FEED-02 amended — Claude Code notices are event entries. FEED-03 lists `event_type`. Spec `docs/superpowers/specs/2026-10-18-workchat-design.md`.
-- 2026-10-21 (board #846, owner approval ask #482): FEED-03 gains `activity`. Spec `docs/superpowers/specs/2026-10-21-workchat-polish-design.md`.
+- 2026-10-21 (board #846; the owner's decisions ask #481, spec approval ask #482): FEED-03 gains `activity`. Spec `docs/superpowers/specs/2026-10-21-workchat-polish-design.md`.
