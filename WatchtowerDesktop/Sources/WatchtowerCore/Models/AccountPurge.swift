@@ -123,7 +123,7 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
     /// synced data stays; with the purge effectively on, one sentence adds
     /// the removed account's own lease. An unknown status (the CLI has not
     /// answered) adds nothing.
-    package static func removeDialogMessage(_ kept: String, status: AccountPurgeStatus?) -> String {
+    package static func removeDialogMessage(_ kept: String, status: Self?) -> String {
         guard let status, status.enabled else { return kept }
         return kept + " Because deleting data on revoked access is on, it is deleted after "
             + "\(status.leaseDays) days without access."
