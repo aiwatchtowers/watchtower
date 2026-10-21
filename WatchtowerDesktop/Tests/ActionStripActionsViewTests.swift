@@ -118,6 +118,23 @@ final class ActionStripActionsViewTests: XCTestCase {
         XCTAssertThrowsError(try sut.inspect().find(text: "Track this"), "a disabled mapping is omitted")
     }
 
+    /// An empty filter other than All shows its own empty state; the cheat
+    /// sheet stays behind `?` there.
+    func testEmptyFilterShowsItsOwnEmptyState() async throws {
+        let suite = "ActionStripActionsViewTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let vm = ActionStripViewModel(dbPool: try makePool(), cliRunner: FakeCLIRunner(), defaults: defaults)
+        await vm.refresh()
+        vm.filter = .messages
+        let sut = view(vm, rows: [], feature: .off)
+
+        XCTAssertNoThrow(try sut.inspect().find(text: "No messages waiting"))
+        XCTAssertThrowsError(try sut.inspect().find(ReactionCheatSheetView.self))
+        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
+        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.emptyFilter"))
+    }
+
     func testFeatureStateFollowsTheLoadedFeatureList() {
         func info(_ state: String) -> FeatureInfo {
             FeatureInfo(

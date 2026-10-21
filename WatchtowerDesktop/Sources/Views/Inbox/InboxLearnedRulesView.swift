@@ -2,6 +2,8 @@ import SwiftUI
 import GRDB
 import WatchtowerCore
 
+/// The Inbox's Learned Rules (opened from the header's ⋯ in the reading
+/// pane): mutes and boosts, with an inline add form under the `+` — no sheet.
 struct InboxLearnedRulesView: View {
     @State private var vm: InboxLearnedRulesViewModel
     @State private var showAdd = false
@@ -9,32 +11,43 @@ struct InboxLearnedRulesView: View {
     init(db: DatabasePool) { _vm = State(initialValue: InboxLearnedRulesViewModel(db: db)) }
 
     var body: some View {
-        List {
-            if let error = vm.errorMessage {
-                WriteErrorBanner(message: error) { vm.errorMessage = nil }
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Spacer()
+                Button {
+                    vm.addError = nil
+                    showAdd = true
+                } label: { Image(systemName: "plus") }
+                    .buttonStyle(.kitIcon(isOn: showAdd))
+                    .help("Add Rule")
+                    .accessibilityLabel("Add Rule")
+                    .disabled(showAdd)
             }
-            Section("Mutes (\(vm.mutes.count))") {
-                ForEach(vm.mutes) { r in ruleRow(r) }
+            .padding(.horizontal, Spacing.medium)
+            if showAdd {
+                // The form stays (its input kept, the reason shown in it) when
+                // the rule wasn't saved; Cancel and Esc always close it — a save
+                // still under way may land after.
+                AddRuleSheet(error: vm.addError, onCancel: { showAdd = false }, onSave: { scope, weight, type in
+                    if await vm.addRule(ruleType: type, scopeKey: scope, weight: weight) { showAdd = false }
+                })
+                .card()
+                .padding(.horizontal, Spacing.medium)
+                .padding(.vertical, Spacing.regular)
             }
-            Section("Boosts (\(vm.boosts.count))") {
-                ForEach(vm.boosts) { r in ruleRow(r) }
+            List {
+                if let error = vm.errorMessage {
+                    WriteErrorBanner(message: error) { vm.errorMessage = nil }
+                }
+                Section("Mutes (\(vm.mutes.count))") {
+                    ForEach(vm.mutes) { r in ruleRow(r) }
+                }
+                Section("Boosts (\(vm.boosts.count))") {
+                    ForEach(vm.boosts) { r in ruleRow(r) }
+                }
             }
-        }
-        .toolbar {
-            Button {
-                vm.addError = nil
-                showAdd = true
-            } label: { Image(systemName: "plus") }
         }
         .task { await vm.load() }
-        .sheet(isPresented: $showAdd) {
-            // The sheet stays (its input kept, the reason shown in it) when
-            // the rule wasn't saved; Cancel and Esc always close it — a save
-            // still under way may land after.
-            AddRuleSheet(error: vm.addError, onCancel: { showAdd = false }, onSave: { scope, weight, type in
-                if await vm.addRule(ruleType: type, scopeKey: scope, weight: weight) { showAdd = false }
-            })
-        }
     }
 
     @ViewBuilder private func ruleRow(_ r: InboxLearnedRule) -> some View {
@@ -50,6 +63,7 @@ struct InboxLearnedRulesView: View {
     }
 }
 
+/// The add-rule form, shown inline in Learned Rules (the name is historical).
 struct AddRuleSheet: View {
     var error: String?
     var onCancel: () -> Void = {}

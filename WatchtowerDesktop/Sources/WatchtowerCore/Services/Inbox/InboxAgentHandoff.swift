@@ -15,10 +15,20 @@ package enum InboxAgentHandoff {
         card: AutomationOutputCard,
         workbenches: [Workbench]
     ) -> Resolution {
+        workbench(for: ref, cardWorkbenchID: card.workbenchID, workbenches: workbenches)
+    }
+
+    /// The same rule for a card of any kind: `cardWorkbenchID` is the card's
+    /// own workbench (`InboxCardSubject.workbenchID`), nil for a personal one.
+    package static func workbench(
+        for ref: InboxCardAction.WorkbenchRef?,
+        cardWorkbenchID: Int64?,
+        workbenches: [Workbench]
+    ) -> Resolution {
         let matches: [Workbench] = switch ref {
         case .id(let id): workbenches.filter { $0.id == id }
         case .name(let name): workbenches.filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
-        case nil: workbenches.filter { $0.id == card.workbenchID }
+        case nil: workbenches.filter { $0.id == cardWorkbenchID }
         }
         guard matches.count == 1, let only = matches.first else { return .pick }
         return .workbench(only.id)
