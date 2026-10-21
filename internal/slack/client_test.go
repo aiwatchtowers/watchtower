@@ -4,11 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	goslack "github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
@@ -782,6 +788,124 @@ func TestNewHTTPClientBounds(t *testing.T) {
 	require.NotNil(t, tr.HTTP2, "HTTP/2 keepalive must be configured")
 	assert.Equal(t, h2ReadIdleTimeout, tr.HTTP2.SendPingTimeout, "HTTP/2 idle ping")
 	assert.Equal(t, h2PingTimeout, tr.HTTP2.PingTimeout, "HTTP/2 ping deadline")
+}
+
+// TestAnsweredCalls_CountsWhatSlackAnswered pins the daemon's Slack progress
+// signal: a success and an API error are answers, a request that died on the
+// wire or broke off mid-body is not, and ResetAPIStats never moves the count
+// back.
+func TestAnsweredCalls_CountsWhatSlackAnswered(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth.test", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "user_id": "U001", "team_id": "T001"})
+	})
+	mux.HandleFunc("/conversations.info", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "channel_not_found"})
+	})
+	mux.HandleFunc("/users.info", func(w http.ResponseWriter, _ *http.Request) {
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = conn.Close() // no response: the request fails on the wire
+		}
+	})
+	mux.HandleFunc("/users.profile.get", func(w http.ResponseWriter, _ *http.Request) {
+		// Headers and part of the body, then the connection drops: slack-go
+		// returns the body read error unwrapped.
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "100")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":tr`))
+		w.(http.Flusher).Flush()
+		if conn, _, err := w.(http.Hijacker).Hijack(); err == nil {
+			_ = conn.Close()
+		}
+	})
+	c := newUnlimitedTestClient(t, mux)
+
+	_, err := c.AuthTest(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, uint64(1), c.AnsweredCalls(), "a success is an answer")
+	c.ResetAPIStats()
+	assert.Equal(t, uint64(1), c.AnsweredCalls(), "ResetAPIStats leaves the count alone")
+
+	_, err = c.GetChannelReadCursor(context.Background(), "C001")
+	require.Error(t, err)
+	assert.Equal(t, uint64(2), c.AnsweredCalls(), "an API error is an answer")
+
+	_, err = c.GetUserInfo(context.Background(), "U001")
+	require.Error(t, err)
+	assert.Equal(t, uint64(2), c.AnsweredCalls(), "a request that died on the wire is no answer")
+
+	err = c.doRequest(context.Background(), 4, func() error {
+		_, err := c.api.GetUserProfileContext(context.Background(), &goslack.GetUserProfileParameters{UserID: "U001"})
+		return err
+	})
+	require.Error(t, err)
+	assert.Equal(t, uint64(2), c.AnsweredCalls(), "a response cut off mid-body is no answer")
+}
+
+// TestIsSlackAnswer_ErrorKinds pins each answer kind slack-go returns — a
+// value or a pointer type, so a wrong errors.As target would never match —
+// also when wrapped, and the failures that are no answer.
+func TestIsSlackAnswer_ErrorKinds(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"success", nil, true},
+		{"API error", goslack.SlackErrorResponse{Err: "channel_not_found"}, true},
+		{"429", &goslack.RateLimitedError{RetryAfter: time.Second}, true},
+		{"status error", goslack.StatusCodeError{Code: 502, Status: "502 Bad Gateway"}, true},
+		{"wrapped API error", fmt.Errorf("conversations.info: %w", goslack.SlackErrorResponse{Err: "x"}), true},
+		{"wire error", &url.Error{Op: "Post", URL: "https://slack.com/api/x", Err: errors.New("timeout")}, false},
+		{"body cut off", io.ErrUnexpectedEOF, false},
+		{"cancelled", context.Canceled, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, isSlackAnswer(tc.err))
+		})
+	}
+}
+
+// TestCloseIdleConnections_ReachesEveryClient pins the wake handling's half
+// in this package: every client shares one transport, and
+// CloseIdleConnections drops its pooled connections, so the call after it
+// dials afresh instead of reusing a socket a sleep may have killed.
+func TestCloseIdleConnections_ReachesEveryClient(t *testing.T) {
+	a, b := newHTTPClient(), newHTTPClient()
+	assert.Same(t, a.Transport, b.Transport, "one pool for every Slack client")
+
+	var dials atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	srv.Config.ConnState = func(_ net.Conn, st http.ConnState) {
+		if st == http.StateNew {
+			dials.Add(1)
+		}
+	}
+	srv.Start()
+	t.Cleanup(srv.Close)
+	t.Cleanup(CloseIdleConnections)
+
+	get := func(c *http.Client) {
+		t.Helper()
+		resp, err := c.Get(srv.URL)
+		require.NoError(t, err)
+		_, _ = io.Copy(io.Discard, resp.Body)
+		require.NoError(t, resp.Body.Close())
+	}
+	get(a)
+	get(b)
+	assert.Equal(t, int32(1), dials.Load(), "the second client reuses the pooled connection")
+
+	CloseIdleConnections()
+	get(a)
+	assert.Equal(t, int32(2), dials.Load(), "after CloseIdleConnections the next call dials afresh")
 }
 
 func TestPostMessage_SendsTextAndThread(t *testing.T) {

@@ -85,6 +85,41 @@ func TestDaemon_PhaseReactionCommands_ExplicitIntervalStillThrottles(t *testing.
 	assert.Equal(t, 1, *polls, "an explicit interval throttles repeat cycles")
 }
 
+// A poll cut off by a cancelled context (shutdown, or a sleep interrupting the
+// cycle) does not stamp the throttle: the next cycle polls again.
+func TestDaemon_PhaseReactionCommands_CancelledPollDoesNotStampTheThrottle(t *testing.T) {
+	cfg := &config.Config{ReactionCommands: config.ReactionCommandsConfig{Enabled: true, IntervalHours: 6}}
+	d, _ := newReactionTestDaemon(t, cfg)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.phaseReactionCommands(ctx)
+	assert.True(t, d.lastReactionCmd.IsZero(), "a cancelled poll must not stamp the throttle")
+
+	d.phaseReactionCommands(context.Background())
+	assert.False(t, d.lastReactionCmd.IsZero())
+}
+
+// A poll cut off by the loop's cancel records its reaction-commands row
+// without an error: cancelled, not failed (the slack-sync row's rule).
+func TestDaemon_PhaseReactionCommands_CancelledPollIsNoErrorRow(t *testing.T) {
+	cfg := &config.Config{ReactionCommands: config.ReactionCommandsConfig{Enabled: true}}
+	d, _ := newReactionTestDaemon(t, cfg)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	accountsFn := func(context.Context) ([]reactioncmd.Account, error) {
+		cancel(errCycleSlept)
+		return nil, ctx.Err()
+	}
+	d.SetReactionCommandsPipeline(reactioncmd.New(d.db, cfg, nil, nil, accountsFn, nil))
+
+	d.phaseReactionCommands(ctx)
+
+	var status, errMsg string
+	require.NoError(t, d.db.QueryRow(`SELECT status, COALESCE(error_msg, '') FROM pipeline_runs
+		WHERE pipeline = 'reaction-commands'`).Scan(&status, &errMsg))
+	assert.Empty(t, errMsg, "a cancelled poll is no failure")
+}
+
 // TestDaemon_ReactionCommandsDefaultOn pins that a config with no
 // reaction_commands block enables the feature (owner call 2026-09-26; the
 // first-poll seed in internal/reactioncmd is what makes that safe).
