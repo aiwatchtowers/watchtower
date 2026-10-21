@@ -8,7 +8,7 @@ package struct LinearAccount: Decodable, Equatable, Identifiable, Sendable {
     package let label: String
     package let orgName: String
     package let url: String
-    /// "ok" | "error" | "revoked" | "removed"
+    /// "ok" | "error" | "revoked" | "removed" | "purged"
     package let status: String
     package let enabled: Bool
     package let error: String
@@ -48,6 +48,8 @@ package struct LinearAccount: Decodable, Equatable, Identifiable, Sendable {
 
     package var isOK: Bool { status == "ok" }
     package var isRemoved: Bool { status == "removed" }
+    /// Its synced data was deleted (board #601); a Re-login revives it.
+    package var isPurged: Bool { status == "purged" }
     package var usesAPIKey: Bool { auth == "api_key" }
 
     /// The auth line under the workspace name.

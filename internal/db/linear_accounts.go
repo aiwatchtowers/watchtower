@@ -126,10 +126,12 @@ func (db *DB) SetLinearAccountEnabled(id int64, enabled bool) error {
 		`UPDATE linear_accounts SET enabled = ? WHERE id = ?`, enabled, id)
 }
 
-// SetLinearAccountAuthState records status (ok | error | revoked) and its error text.
+// SetLinearAccountAuthState records status (ok | error | revoked) and its error
+// text. It also keeps the access facts (revoked_at, access_ok_at) and never
+// writes over a purged row except with "ok", which re-enables it
+// (account_access.go).
 func (db *DB) SetLinearAccountAuthState(id int64, status, errMsg string) error {
-	return db.execLinearAccount(fmt.Sprintf("setting linear account %d auth state", id),
-		`UPDATE linear_accounts SET status = ?, error = ? WHERE id = ?`, status, errMsg, id)
+	return db.setAccountAuthState("linear_accounts", reenableOnLoginSQL, id, status, errMsg)
 }
 
 // SetLinearAccountRemoved soft-deletes the account: the row and its data stay.

@@ -419,6 +419,7 @@ type Config struct {
 	Catchup          CatchupConfig               `mapstructure:"catchup"`
 	DB               DBConfig                    `mapstructure:"db"`
 	Workbench        WorkbenchConfig             `mapstructure:"workbench"`
+	Privacy          PrivacyConfig               `mapstructure:"privacy"`
 	ClaudePath       string                      `mapstructure:"claude_path"`
 	CodexPath        string                      `mapstructure:"codex_path"`
 
@@ -430,6 +431,14 @@ type Config struct {
 	// data directory at all, so ValidateWorkspace reports that instead of
 	// mistaking an unreadable directory for a fresh install.
 	workspaceLookupErr error
+}
+
+// PrivacyConfig holds the owner's privacy switches.
+type PrivacyConfig struct {
+	// PurgeRevokedData turns on the purge of an account's synced data after
+	// its access is revoked or its 30-day lease runs out (board #601). nil =
+	// absent = the build default (purge.Enabled); no SetDefault on purpose.
+	PurgeRevokedData *bool `mapstructure:"purge_revoked_data"`
 }
 
 // DBConfig captures database-runtime state that the binary tracks across

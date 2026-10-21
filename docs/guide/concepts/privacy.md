@@ -10,7 +10,7 @@ Watchtower has no account, no cloud service and no analytics of its own. Three t
 - **Search.** Knowledge search is a local index and uses no AI.
 - **Mechanical features.** Attention detection and Claude plan limits make no AI calls.
 
-Removing an account deletes its sign-in file.
+Removing an account deletes its sign-in file. With **Delete an account's data when its access is revoked** on, a revoked account's synced data is deleted after a 72-hour notice, and so is a source's that Watchtower has not reached for 30 days: see [Revoked access deletes an account's data](revoked-access.md).
 
 In **Settings → System**, **Reset & Regenerate…** deletes the AI-generated data (raw Slack data, config and profile stay) and **Reset All Data…** removes the config, the database folder, preferences and caches, then quits.
 
@@ -63,6 +63,7 @@ Inbox items made from a deleted message or mail stay, with their text removed. I
 ## Related
 
 - [Sources and accounts](sources-and-accounts.md)
+- [Revoked access deletes an account's data](revoked-access.md)
 - [Features: iPhone](../features/iphone.md)
 - [Meeting recording](../features/meeting-recording.md)
 

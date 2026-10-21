@@ -191,8 +191,15 @@ func TestAuto08_ResumeAtSessionWait(t *testing.T) {
 // externalModule defines external(): a value from outside the journal (a
 // test-only call that writes no step), so a replay can see a different one.
 func externalModule(v *atomic.Int64) automations.Module {
+	return externalModuleCounting(v, new(atomic.Int64))
+}
+
+// externalModuleCounting is externalModule that also counts its calls in
+// reads, so a test knows the script runs (its meter started).
+func externalModuleCounting(v, reads *atomic.Int64) automations.Module {
 	return exModule{name: "external", fns: map[string]automations.SDKFunc{
 		"external": func(*automations.Env, goja.FunctionCall, *goja.Runtime) (any, error) {
+			reads.Add(1)
 			return v.Load(), nil
 		},
 	}}
@@ -440,16 +447,27 @@ const loopScript = `log("a"); if (external() > 0) { while (true) {} } ` + resume
 // replay reached the wait puts the run back to waiting (its ask open, this
 // life's active time recorded), and the next start resumes it.
 func TestAuto08_StopDuringReplayReturnsToWaiting(t *testing.T) {
-	var v atomic.Int64
-	w := newWriteFixtureWith(t, func(*exFixture) []automations.Module { return []automations.Module{externalModule(&v)} })
+	var v, reads atomic.Int64
+	w := newWriteFixtureWith(t, func(*exFixture) []automations.Module {
+		return []automations.Module{externalModuleCounting(&v, &reads)}
+	})
 	a := w.seedWorkbenchOutput(t, "deploy", []string{"ask:owner"}, "inbox", loopScript)
 	id := w.enqueue(t, a, db.TriggerManual)
 	w.stopWhileWaiting(t, id)
 	before := w.run(t, id).ActiveMS
 	v.Store(1)
 	w.restart()
+	readsBefore := reads.Load()
 	stop := runExecutor(t, w.exFixture)
-	w.waitStatus(t, id, db.RunRunning)
+	// The claim marks the run running before its meter starts; the clock
+	// moves only once the replayed script calls external() (meter running).
+	deadline := time.Now().Add(10 * time.Second)
+	for reads.Load() == readsBefore {
+		if time.Now().After(deadline) {
+			t.Fatalf("the resumed script never ran (run is %s)", w.run(t, id).Status)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	w.clock.Advance(30 * time.Second)
 	stop()
 	r := w.wantRun(t, id, db.RunWaiting, "")

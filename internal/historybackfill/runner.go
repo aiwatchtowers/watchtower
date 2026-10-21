@@ -161,6 +161,10 @@ func (r *Runner) runRow(ctx, bctx context.Context, row *db.HistoryBackfill) (sto
 	if err != nil {
 		return r.fail(ctx, bctx, row, fromTS, from, to, fmt.Errorf("process: %w", err))
 	}
+	if !complete && ctx.Err() != nil {
+		// Cut off by the cancel, not answered: the hold, if any, stays.
+		return true, ctx.Err()
+	}
 	// The source answered: a hold, however old, is over.
 	if err := r.releaseHold(row); err != nil {
 		return false, err
@@ -212,8 +216,9 @@ func (r *Runner) markPlanLimitWaiting(row *db.HistoryBackfill) error {
 }
 
 // fail records a chunk failure; the third failure of a chunk skips it. A
-// canceled context is a shutdown and a passed Budget deadline holds the
-// chunk for the next cycle: neither is a failure, and both stop the Step. A
+// canceled context (a daemon shutdown, or a sleep cancelling the cycle) and
+// a passed Budget deadline hold the chunk for the next cycle: neither is a
+// failure, and both stop the Step. A
 // source's ErrHold holds the chunk with no strike and the Step goes on to
 // the next row: the first hold writes held_since and its reason to
 // last_error and is logged once. held_since belongs to the row: a strike or

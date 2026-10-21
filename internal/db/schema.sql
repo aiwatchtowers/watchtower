@@ -103,26 +103,27 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     tokenize='porter unicode61'
 );
 
--- Triggers to keep FTS index in sync with messages table
+-- Triggers to keep FTS index in sync with messages table. The index is keyed
+-- by rowid: messages_fts.rowid = messages.rowid (migration 00147).
 CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
 WHEN NEW.text != '' AND NEW.is_deleted = 0
 BEGIN
-    DELETE FROM messages_fts WHERE channel_id = NEW.channel_id AND ts = NEW.ts;
-    INSERT INTO messages_fts(text, channel_id, ts, user_id)
-    VALUES (NEW.text, NEW.channel_id, NEW.ts, NEW.user_id);
+    DELETE FROM messages_fts WHERE rowid = NEW.rowid;
+    INSERT INTO messages_fts(rowid, text, channel_id, ts, user_id)
+    VALUES (NEW.rowid, NEW.text, NEW.channel_id, NEW.ts, NEW.user_id);
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages
 BEGIN
-    DELETE FROM messages_fts WHERE channel_id = OLD.channel_id AND ts = OLD.ts;
+    DELETE FROM messages_fts WHERE rowid = OLD.rowid;
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF text, is_deleted ON messages
 WHEN OLD.text != NEW.text OR OLD.is_deleted != NEW.is_deleted
 BEGIN
-    DELETE FROM messages_fts WHERE channel_id = OLD.channel_id AND ts = OLD.ts;
-    INSERT INTO messages_fts(text, channel_id, ts, user_id)
-    SELECT NEW.text, NEW.channel_id, NEW.ts, NEW.user_id
+    DELETE FROM messages_fts WHERE rowid = OLD.rowid;
+    INSERT INTO messages_fts(rowid, text, channel_id, ts, user_id)
+    SELECT NEW.rowid, NEW.text, NEW.channel_id, NEW.ts, NEW.user_id
     WHERE NEW.text != '' AND NEW.is_deleted = 0;
 END;
 
@@ -884,7 +885,7 @@ CREATE TABLE IF NOT EXISTS jira_accounts (
     site_url                      TEXT NOT NULL DEFAULT '',
     site_name                     TEXT NOT NULL DEFAULT '',
     label                         TEXT NOT NULL DEFAULT '',
-    status                        TEXT NOT NULL DEFAULT 'ok',  -- ok | error | revoked | removed
+    status                        TEXT NOT NULL DEFAULT 'ok',  -- ok | error | revoked | removed | purged
     error                         TEXT NOT NULL DEFAULT '',
     enabled                       INTEGER NOT NULL DEFAULT 1,
     memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- per-account memory extraction watermark (was on workspace)
@@ -892,7 +893,9 @@ CREATE TABLE IF NOT EXISTS jira_accounts (
     created_at                    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     owner_account_id              TEXT NOT NULL DEFAULT '',  -- the connecting person's own Atlassian identity from GET /rest/api/3/myself; feeds db.ResolveOwner's Jira rung (see 00071)
     owner_email                   TEXT NOT NULL DEFAULT '',
-    owner_display_name            TEXT NOT NULL DEFAULT ''
+    owner_display_name            TEXT NOT NULL DEFAULT '',
+    access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00148)
+    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
 );
 
 -- Jira boards
@@ -1052,7 +1055,7 @@ CREATE TABLE IF NOT EXISTS linear_accounts (
     url_key                  TEXT NOT NULL DEFAULT '',
     org_name                 TEXT NOT NULL DEFAULT '',
     label                    TEXT NOT NULL DEFAULT '',
-    status                   TEXT NOT NULL DEFAULT 'ok',  -- ok | error | revoked | removed
+    status                   TEXT NOT NULL DEFAULT 'ok',  -- ok | error | revoked | removed | purged
     error                    TEXT NOT NULL DEFAULT '',
     enabled                  INTEGER NOT NULL DEFAULT 1,
     owner_user_id            TEXT NOT NULL DEFAULT '',
@@ -1061,7 +1064,9 @@ CREATE TABLE IF NOT EXISTS linear_accounts (
     memory_last_extracted_ts REAL NOT NULL DEFAULT 0,
     ideas_floor              TEXT NOT NULL DEFAULT '',
     moved_watermark          TEXT NOT NULL DEFAULT '',  -- moved-issue reconcile cursor; advances only on success
-    created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00148)
+    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_linear_accounts_org ON linear_accounts(org_id) WHERE org_id != '';
 
@@ -1413,26 +1418,28 @@ CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts USING fts5(
     tokenize='porter unicode61'
 );
 
--- Triggers to keep the FTS index in sync with meeting_transcripts
+-- Triggers to keep the FTS index in sync with meeting_transcripts. The index
+-- is keyed by rowid: transcripts_fts.rowid = meeting_transcripts.id
+-- (migration 00147).
 CREATE TRIGGER IF NOT EXISTS meeting_transcripts_ai AFTER INSERT ON meeting_transcripts
 WHEN NEW.transcript_text != ''
 BEGIN
-    DELETE FROM transcripts_fts WHERE transcript_id = NEW.id;
-    INSERT INTO transcripts_fts(text, transcript_id, title)
-    VALUES (NEW.transcript_text, NEW.id, NEW.title);
+    DELETE FROM transcripts_fts WHERE rowid = NEW.id;
+    INSERT INTO transcripts_fts(rowid, text, transcript_id, title)
+    VALUES (NEW.id, NEW.transcript_text, NEW.id, NEW.title);
 END;
 
 CREATE TRIGGER IF NOT EXISTS meeting_transcripts_ad AFTER DELETE ON meeting_transcripts
 BEGIN
-    DELETE FROM transcripts_fts WHERE transcript_id = OLD.id;
+    DELETE FROM transcripts_fts WHERE rowid = OLD.id;
 END;
 
 CREATE TRIGGER IF NOT EXISTS meeting_transcripts_au AFTER UPDATE OF transcript_text, title ON meeting_transcripts
 WHEN OLD.transcript_text != NEW.transcript_text OR OLD.title != NEW.title
 BEGIN
-    DELETE FROM transcripts_fts WHERE transcript_id = OLD.id;
-    INSERT INTO transcripts_fts(text, transcript_id, title)
-    SELECT NEW.transcript_text, NEW.id, NEW.title
+    DELETE FROM transcripts_fts WHERE rowid = OLD.id;
+    INSERT INTO transcripts_fts(rowid, text, transcript_id, title)
+    SELECT NEW.id, NEW.transcript_text, NEW.id, NEW.title
     WHERE NEW.transcript_text != '';
 END;
 
@@ -1545,14 +1552,16 @@ CREATE TABLE IF NOT EXISTS google_accounts (
     client_id                      TEXT NOT NULL DEFAULT '',  -- non-secret half of a custom OAuth client; '' = build-time default
     calendar_enabled               INTEGER NOT NULL DEFAULT 0,
     gmail_enabled                  INTEGER NOT NULL DEFAULT 0,
-    status                         TEXT NOT NULL DEFAULT 'ok',  -- ok | error | revoked
+    status                         TEXT NOT NULL DEFAULT 'ok',  -- ok | error | revoked | purged
     error                          TEXT NOT NULL DEFAULT '',
     gmail_last_internal_date       REAL NOT NULL DEFAULT 0,   -- per-account Gmail sync watermark
     memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,   -- per-account memory extraction watermark
     ideas_email_floor              REAL NOT NULL DEFAULT 0,   -- ideas registry floor: per-account Gmail internalDate watermark for the email pre-digest (see 00050)
     deletions_checked_at           TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last Gmail ID diff (see 00139)
     created_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    updated_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00148)
+    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
 );
 
 -- Multi-account Slack source: one row per connected Slack workspace.
@@ -1566,7 +1575,7 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     team_domain       TEXT NOT NULL DEFAULT '',
     label             TEXT NOT NULL DEFAULT '',
     current_user_id   TEXT NOT NULL DEFAULT '',  -- namespaced, e.g. "1:U0123"
-    status            TEXT NOT NULL DEFAULT 'ok',  -- ok | error | revoked | removed
+    status            TEXT NOT NULL DEFAULT 'ok',  -- ok | error | revoked | removed | purged
     error             TEXT NOT NULL DEFAULT '',
     enabled           INTEGER NOT NULL DEFAULT 1,
     search_last_date  TEXT NOT NULL DEFAULT '',
@@ -1574,7 +1583,9 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     reaction_commands_seeded_at TEXT NOT NULL DEFAULT '',  -- when the reaction-commands ledger was seeded with this account's history; '' = never
     reaction_events_seeded_at TEXT NOT NULL DEFAULT '',  -- when reaction_events was seeded with this account's existing reactions (no events fired); '' = never
     roster_synced_at  TEXT NOT NULL DEFAULT '',  -- last full users.list roster fetch (sync and sync --users-only); '' = never
-    deletion_sweep_day TEXT NOT NULL DEFAULT ''  -- last UTC day (YYYY-MM-DD) the Slack deletion sweep finished (see 00139)
+    deletion_sweep_day TEXT NOT NULL DEFAULT '',  -- last UTC day (YYYY-MM-DD) the Slack deletion sweep finished (see 00139)
+    access_ok_at      TEXT NOT NULL DEFAULT '',  -- RFC 3339 UTC of the last confirmed authenticated call; '' = unknown (see 00148)
+    revoked_at        TEXT NOT NULL DEFAULT ''   -- RFC 3339 UTC when status turned revoked; cleared by ok (see 00148)
 );
 
 -- Multi-account IMAP/Outlook email source: one row per connected mailbox
@@ -3139,7 +3150,34 @@ CREATE INDEX IF NOT EXISTS idx_instruction_suggestions_status ON instruction_sug
 -- Database maintenance (00145, #850): compaction state for `watchtower db compact`.
 -- Keys: last_compacted_version, compacted_at (RFC 3339 UTC), compact_failures,
 -- compact_failures_version. Absent key = never compacted / no failures.
+-- Messages search fill (00147, #872): fts_rebuild_pending ('1' while the old
+-- index messages_fts_legacy is being copied into messages_fts) and
+-- fts_rebuild_cursor_messages (last messages.rowid covered). Absent = not
+-- pending / cursor 0.
 CREATE TABLE IF NOT EXISTS db_maintenance (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Account purges (00148, #601): the ledger of scheduled purges of an account's
+-- synced data after revoked access (reason 'revoked', due revoked_at + 72 h) or
+-- a stale lease (reason 'lease', 30 days without confirmed access). At most
+-- one open (scheduled/running) row per account. No foreign key: four parent
+-- tables, and a purge keeps the account row (status 'purged').
+CREATE TABLE IF NOT EXISTS account_purges (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    source       TEXT NOT NULL CHECK (source IN ('slack','google','jira','linear')),
+    account_id   INTEGER NOT NULL,
+    reason       TEXT NOT NULL CHECK (reason IN ('revoked','lease')),
+    scheduled_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    due_at       TEXT NOT NULL,                          -- RFC 3339 UTC
+    state        TEXT NOT NULL DEFAULT 'scheduled'
+                 CHECK (state IN ('scheduled','running','done','cancelled','failed')),
+    started_at   TEXT NOT NULL DEFAULT '',
+    finished_at  TEXT NOT NULL DEFAULT '',
+    rows_deleted INTEGER NOT NULL DEFAULT 0,
+    error        TEXT NOT NULL DEFAULT '',               -- last failed chunk; a running row resumes next cycle
+    failures     INTEGER NOT NULL DEFAULT 0              -- chunk failures since the last progress; 3 end the row 'failed'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_account_purges_open
+    ON account_purges(source, account_id) WHERE state IN ('scheduled','running');

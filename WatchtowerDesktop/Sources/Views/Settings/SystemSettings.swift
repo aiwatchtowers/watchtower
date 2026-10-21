@@ -25,6 +25,7 @@ struct SystemSettings: View {
             DaemonSettings()
             DataSettings()
                 .environment(appState)
+            PrivacySettings(config: config)
             logsSection
             updateSection
             usageLinkSection
@@ -32,7 +33,14 @@ struct SystemSettings: View {
         .formStyle(.grouped)
         .padding(.horizontal)
         .padding(.top, 4)
-        .safeAreaInset(edge: .bottom) { ConfigSaveBar(config: config) }
+        .safeAreaInset(edge: .bottom) {
+            ConfigSaveBar(config: config) {
+                // The daemon reads privacy.purge_revoked_data only at startup.
+                guard config.lastSaveChangedPurge else { return }
+                await appState.accountDaemonPolicy.apply(using: LiveDaemonRestarter())?.value
+                await appState.accountPurgeCenter?.reloadStatus()
+            }
+        }
     }
 
     private var syncSection: some View {

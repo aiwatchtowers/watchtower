@@ -811,3 +811,19 @@ func TestConfig_BackfillZeroIsKept(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, cfg.Sync.BackfillDays, "0 turns new backfills off, never re-defaulted")
 }
+
+// privacy.purge_revoked_data is tri-state (#601): absent stays nil so the
+// build default decides; true and false are kept as set.
+func TestLoad_PurgeRevokedDataTriState(t *testing.T) {
+	cfg, err := Load(writeTestConfig(t, "active_workspace: acme\n"))
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Privacy.PurgeRevokedData, "absent key must stay nil")
+
+	for _, v := range []bool{true, false} {
+		yaml := "active_workspace: acme\nprivacy:\n  purge_revoked_data: " + map[bool]string{true: "true", false: "false"}[v] + "\n"
+		cfg, err := Load(writeTestConfig(t, yaml))
+		require.NoError(t, err)
+		require.NotNil(t, cfg.Privacy.PurgeRevokedData)
+		assert.Equal(t, v, *cfg.Privacy.PurgeRevokedData)
+	}
+}
