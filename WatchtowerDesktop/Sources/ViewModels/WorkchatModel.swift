@@ -48,9 +48,11 @@ final class WorkchatModel {
     @ObservationIgnored private let control: any WorkchatControl
     @ObservationIgnored private let lineDelivery: SessionLineDelivery
     @ObservationIgnored private let now: () -> Date
-    /// Codex has not been verified to queue a Return typed mid-turn, so its
-    /// lines keep the phone's busy hold (`lineCheck`).
-    @ObservationIgnored private let kind: TerminalSession.Kind
+    /// Codex has not been verified to queue a Return typed mid-turn, and an
+    /// unknown kind is not trusted to: both keep the phone's busy hold.
+    @ObservationIgnored private let kind: TerminalSession.Kind?
+    /// Whether a line waits for the agent to stop (Codex, unknown kind).
+    var holdsUntilIdle: Bool { kind == nil || kind == .codex }
     /// Feed entries that stood for a line already: one echo, one line.
     @ObservationIgnored private var claimedEntries: Set<String> = []
     /// Bumped by each permission read and answer, so a read that finishes
@@ -64,7 +66,7 @@ final class WorkchatModel {
         sessionID: Int64,
         control: any WorkchatControl,
         lineDelivery: SessionLineDelivery,
-        kind: TerminalSession.Kind = .claude,
+        kind: TerminalSession.Kind? = nil,
         now: @escaping () -> Date = Date.init
     ) {
         self.sessionID = sessionID
@@ -89,8 +91,8 @@ final class WorkchatModel {
         outgoing.append(WorkchatOutgoing(id: id, text: text, sentAt: now(), state: .sending))
         let delivery = await lineDelivery.deliverLine(
             text, key: .workchat(id), sessionID: sessionID,
-            gate: { [weak control, codex = kind == .codex] in
-                Self.gate(codex ? control?.lineCheck($0) : control?.workchatLineCheck($0))
+            gate: { [weak control, busyHold = holdsUntilIdle] in
+                Self.gate(busyHold ? control?.lineCheck($0) : control?.workchatLineCheck($0))
             },
             onHeldEvent: { [weak self] event in
                 guard case let .tried(delivery) = event else { return }
@@ -268,7 +270,7 @@ final class WorkchatModel {
         case .noSession: .notSent
         }
         outgoing[index].state = state
-        if state == .sent, kind != .codex { outgoing[index].sentWhileBusy = control.isWorking(sessionID) }
+        if state == .sent, !holdsUntilIdle { outgoing[index].sentWhileBusy = control.isWorking(sessionID) }
         switch state {
         case .sent, .typed, .copied:
             outgoing[index].deliveredAt = now()

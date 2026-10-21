@@ -51,6 +51,8 @@ struct WorkchatOutgoingBubble: View {
     let line: WorkchatOutgoing
     /// The session's agent works now.
     var working = false
+    /// The line waits for the agent to stop (`WorkchatModel.holdsUntilIdle`).
+    var holdsUntilIdle = false
     let onCancel: () -> Void
     let onShowTerminal: () -> Void
 
@@ -69,6 +71,12 @@ struct WorkchatOutgoingBubble: View {
             }
             .opacity(isPending ? 0.65 : 1)
         }
+    }
+
+    /// A Claude line is held only for a prompt, the owner's typing or the
+    /// settle after the previous line; Codex waits for the agent to stop.
+    static func queuedCaption(holdsUntilIdle: Bool) -> String {
+        holdsUntilIdle ? "Queued · sends when the agent stops ·" : "Queued · sends in a moment ·"
     }
 
     private var isPending: Bool {
@@ -92,7 +100,7 @@ struct WorkchatOutgoingBubble: View {
             Text("Sending…")
         case .queued:
             HStack(spacing: Spacing.small) {
-                Text("Queued · sends when the agent stops ·")
+                Text(Self.queuedCaption(holdsUntilIdle: holdsUntilIdle))
                 Button("Cancel", action: onCancel).buttonStyle(.link)
             }
         case .typed:

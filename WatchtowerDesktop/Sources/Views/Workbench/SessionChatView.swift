@@ -259,6 +259,7 @@ struct SessionChatView: View {
                                 WorkchatOutgoingBubble(
                                     line: line,
                                     working: working,
+                                    holdsUntilIdle: workchat.holdsUntilIdle,
                                     onCancel: { workchat.cancel(line.id) },
                                     onShowTerminal: showInTerminal
                                 )

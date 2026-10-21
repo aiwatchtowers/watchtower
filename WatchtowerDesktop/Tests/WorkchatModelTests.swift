@@ -68,7 +68,7 @@ final class WorkchatModelTests: XCTestCase {
     private func makeModel(_ sessionID: Int64, control: (any WorkchatControl)? = nil) throws -> WorkchatModel {
         let clock = try XCTUnwrap(clock)
         let control = try control ?? makeControl()
-        return WorkchatModel(sessionID: sessionID, control: control, lineDelivery: delivery) { clock.now }
+        return WorkchatModel(sessionID: sessionID, control: control, lineDelivery: delivery, kind: .claude) { clock.now }
     }
 
     /// Lets one test make the permission read, the answer or the interrupt
@@ -208,11 +208,14 @@ final class WorkchatModelTests: XCTestCase {
         let model = try makeModel(session)
         model.draft = "First"
         await model.send()
-        // The turn's hook has reported since the first line.
-        clock.advance(1)
-        setState(session, .working)
         model.draft = "Second"
         await model.send()
+
+        XCTAssertEqual(model.outgoing.map(\.state), [.sent, .queued], "no hook since line 1: line 2 waits")
+        // The turn's hook reports; the next state read sends line 2.
+        clock.advance(1)
+        setState(session, .working)
+        await delivery.deliverHeld()
 
         XCTAssertEqual(model.outgoing.map(\.state), [.sent, .sent])
         let first = try XCTUnwrap(typedText.range(of: "First"))
@@ -221,6 +224,24 @@ final class WorkchatModelTests: XCTestCase {
         XCTAssertEqual(typedText.components(separatedBy: "First").count, 2, "once")
         XCTAssertEqual(typedText.components(separatedBy: "Second").count, 2, "once")
         XCTAssertFalse(typedText.contains("FirstSecond"))
+    }
+
+    func testQueuedCaptionFollowsTheAgentKind() {
+        XCTAssertEqual(WorkchatOutgoingBubble.queuedCaption(holdsUntilIdle: true), "Queued · sends when the agent stops ·")
+        XCTAssertEqual(WorkchatOutgoingBubble.queuedCaption(holdsUntilIdle: false), "Queued · sends in a moment ·")
+    }
+
+    func testUnknownKindKeepsTheBusyHold() async throws {
+        let session = try await liveSession()
+        setState(session, .working)
+        let clock = try XCTUnwrap(clock)
+        let model = WorkchatModel(sessionID: session, control: try makeControl(), lineDelivery: delivery) { clock.now }
+        model.draft = "Hello"
+
+        await model.send()
+
+        XCTAssertTrue(model.holdsUntilIdle)
+        XCTAssertEqual(model.outgoing.first?.state, .queued)
     }
 
     func testBusyLineEchoAfterTwoMinutesStillMatches() async throws {
