@@ -48,8 +48,11 @@ const (
 )
 
 // CompactCheck is the outcome of CheckCompaction, printed by
-// `db compact --check --json`. Reason is "migration:<v>", "freelist",
-// "schema_pending", "gave_up" or "".
+// `db compact --check --json`. Reason is "fts_rebuild", "migration:<v>",
+// "freelist", "schema_pending", "gave_up", "fts_rebuild_gave_up" or "".
+// While the messages search fill is pending (FTSRebuildPending) it is due
+// for "fts_rebuild" and the disk fields are the fill's rule, not the
+// compaction's — unless the launch step's fill gave up (see CheckCompaction).
 type CompactCheck struct {
 	Due            bool   `json:"due"`
 	Reason         string `json:"reason"`
@@ -58,6 +61,9 @@ type CompactCheck struct {
 	FreeDiskBytes  int64  `json:"free_disk_bytes"`
 	NeedsDiskBytes int64  `json:"needs_disk_bytes"`
 	DiskOK         bool   `json:"disk_ok"`
+	// FTSRebuildPending is filled whenever the schema is current, so a
+	// gave_up outcome still reports it.
+	FTSRebuildPending bool `json:"fts_rebuild_pending"`
 }
 
 // freeDiskBytes returns the bytes available to an unprivileged writer on the
@@ -77,7 +83,14 @@ func SetFreeDiskBytesForTest(fn func(dir string) (int64, error)) (restore func()
 // CheckCompaction reports whether the database at dbPath is due for a
 // compaction, by reads only: it opens with OpenExisting, so it never creates
 // the file, migrates or writes. No file → not due, disk OK. version is the CLI
-// build version, compared with compact_failures_version.
+// build version, compared with compact_failures_version and
+// fts_rebuild_failures_version. A pending messages search fill comes before
+// the compaction's failure cap: it has its own rule and is not stopped by
+// failed compactions. After ftsRebuildMaxFailures failed fills under version
+// it is no longer due (the daemon keeps filling): the compaction rules apply
+// without the migration rule — its record waits for the fill, so a VACUUM
+// now would repeat at every launch — and when none is due the reason is
+// fts_rebuild_gave_up.
 func CheckCompaction(dbPath, version string) (CompactCheck, error) {
 	info, err := os.Stat(dbPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -111,19 +124,38 @@ func CheckCompaction(dbPath, version string) (CompactCheck, error) {
 		c.Reason = "schema_pending"
 		return c, nil
 	}
-	gaveUp, err := compactGaveUp(d, version)
+	// The fill's disk rule reads the free space measured above: no second
+	// statfs that could fail on its own.
+	if c.FTSRebuildPending, _, err = messagesSearchPending(d); err != nil {
+		return CompactCheck{}, err
+	}
+	fillGaveUp := false
+	if c.FTSRebuildPending {
+		if fillGaveUp, err = gaveUp(d, maintFTSRebuildFailures, maintFTSRebuildFailuresVersion, version, ftsRebuildMaxFailures); err != nil {
+			return CompactCheck{}, err
+		}
+		if !fillGaveUp {
+			fts := pendingMessagesSearchCheck(c.FreeDiskBytes)
+			c.Due, c.Reason = true, "fts_rebuild"
+			c.NeedsDiskBytes, c.DiskOK = fts.NeedsDiskBytes, fts.DiskOK
+			return c, nil
+		}
+	}
+	compactGaveUp, err := gaveUp(d, maintCompactFailures, maintCompactFailuresVersion, version, compactMaxFailures)
 	if err != nil {
 		return CompactCheck{}, err
 	}
-	if gaveUp {
+	if compactGaveUp {
 		c.Reason = "gave_up"
 		return c, nil
 	}
-	if v, err := pendingCompactMigration(d); err != nil {
-		return CompactCheck{}, err
-	} else if v > 0 {
-		c.Due, c.Reason = true, fmt.Sprintf("migration:%d", v)
-		return c, nil
+	if !fillGaveUp {
+		if v, err := pendingCompactMigration(d); err != nil {
+			return CompactCheck{}, err
+		} else if v > 0 {
+			c.Due, c.Reason = true, fmt.Sprintf("migration:%d", v)
+			return c, nil
+		}
 	}
 	var freelist, pageCount, pageSize int64
 	for _, p := range []struct {
@@ -134,8 +166,11 @@ func CheckCompaction(dbPath, version string) (CompactCheck, error) {
 			return CompactCheck{}, fmt.Errorf("reading %s: %w", p.pragma, err)
 		}
 	}
-	if freelistDue(freelist, pageCount, pageSize) {
+	switch {
+	case freelistDue(freelist, pageCount, pageSize):
 		c.Due, c.Reason = true, "freelist"
+	case fillGaveUp:
+		c.Reason = "fts_rebuild_gave_up"
 	}
 	return c, nil
 }
@@ -152,18 +187,18 @@ func freelistDue(freelist, pageCount, pageSize int64) bool {
 		float64(freelist) > compactFreelistMinRatio*float64(pageCount)
 }
 
-// compactGaveUp reports whether compactMaxFailures consecutive compactions
-// failed under this CLI version.
-func compactGaveUp(q queryRower, version string) (bool, error) {
-	failedVersion, ok, err := readMaintenance(q, maintCompactFailuresVersion)
+// gaveUp reports whether limit consecutive failures were counted in countKey
+// under this CLI version (versionKey).
+func gaveUp(q queryRower, countKey, versionKey, version string, limit int64) (bool, error) {
+	failedVersion, ok, err := readMaintenance(q, versionKey)
 	if err != nil || !ok || failedVersion != version {
 		return false, err
 	}
-	failures, err := readMaintenanceInt(q, maintCompactFailures)
+	failures, err := readMaintenanceInt(q, countKey)
 	if err != nil {
 		return false, err
 	}
-	return failures >= compactMaxFailures, nil
+	return failures >= limit, nil
 }
 
 // pendingCompactMigration returns the highest applied version in
@@ -239,6 +274,7 @@ type CompactOptions struct {
 // CompactResult is the outcome of Compact, printed by `db compact --json`.
 // Skipped is "not_due", "disk", "daemon_running", "interrupted" or
 // "schema_pending" (not_due and daemon_running are set by the command).
+// RebuildMessagesSearchAt returns the same shape with FTSRebuilt.
 type CompactResult struct {
 	Compacted   bool   `json:"compacted"`
 	Skipped     string `json:"skipped,omitempty"`
@@ -252,6 +288,10 @@ type CompactResult struct {
 	// CheckpointBusy: the final checkpoint could not pass a reader's
 	// snapshot, so part of the space is reclaimed at the next checkpoint.
 	CheckpointBusy bool `json:"checkpoint_busy,omitempty"`
+	// FTSRebuilt: the messages search fill is complete — this run finished
+	// it, or another process did while this run waited on it. It does not
+	// say this run did the work.
+	FTSRebuilt bool `json:"fts_rebuilt,omitempty"`
 }
 
 // compactVacuumHook, nil in production, runs right before the VACUUM Exec
@@ -379,22 +419,24 @@ func fileSize(path string) (int64, error) {
 }
 
 // recordCompaction stores the highest applied goose version and the time in
-// one write transaction and clears the failure counter.
+// one write transaction and clears the failure counter. While the messages
+// search fill is pending it only clears the counter: a recorded compaction
+// would hide the space the dropped legacy index frees, so the compaction
+// after the fill must still find its migration due.
 func recordCompaction(d *DB) error {
 	tx, err := d.Begin()
 	if err != nil {
 		return fmt.Errorf("recording the compaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	var version int64
-	if err := tx.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&version); err != nil {
-		return fmt.Errorf("recording the compaction: reading goose version: %w", err)
-	}
-	if err := writeMaintenance(tx, maintLastCompactedVersion, strconv.FormatInt(version, 10)); err != nil {
+	ftsPending, _, err := messagesSearchPending(tx)
+	if err != nil {
 		return fmt.Errorf("recording the compaction: %w", err)
 	}
-	if err := writeMaintenance(tx, maintCompactedAt, time.Now().UTC().Format(time.RFC3339)); err != nil {
-		return fmt.Errorf("recording the compaction: %w", err)
+	if !ftsPending {
+		if err := writeCompactionRecord(tx); err != nil {
+			return fmt.Errorf("recording the compaction: %w", err)
+		}
 	}
 	if _, err := tx.Exec(`DELETE FROM db_maintenance WHERE key IN (?, ?)`, maintCompactFailures, maintCompactFailuresVersion); err != nil {
 		return fmt.Errorf("recording the compaction: clearing the failure counter: %w", err)
@@ -405,13 +447,26 @@ func recordCompaction(d *DB) error {
 	return nil
 }
 
+// writeCompactionRecord writes last_compacted_version (the highest applied
+// goose version) and compacted_at.
+func writeCompactionRecord(tx *sql.Tx) error {
+	var version int64
+	if err := tx.QueryRow(`SELECT MAX(version_id) FROM goose_db_version WHERE is_applied = 1`).Scan(&version); err != nil {
+		return fmt.Errorf("reading goose version: %w", err)
+	}
+	if err := writeMaintenance(tx, maintLastCompactedVersion, strconv.FormatInt(version, 10)); err != nil {
+		return err
+	}
+	return writeMaintenance(tx, maintCompactedAt, time.Now().UTC().Format(time.RFC3339))
+}
+
 // compactFailed counts cause in compact_failures — restarting at 1 when
 // compact_failures_version is not version — and fills res. It returns the
 // error to hand back: cause, joined with the counter write's error if that
 // failed too.
 func compactFailed(d *DB, version string, res *CompactResult, cause error) error {
 	res.Error = cause.Error()
-	failures, err := countCompactFailure(d, version)
+	failures, err := countFailure(d, maintCompactFailures, maintCompactFailuresVersion, version)
 	if err != nil {
 		return errors.Join(cause, fmt.Errorf("recording the compaction failure: %w", err))
 	}
@@ -420,27 +475,29 @@ func compactFailed(d *DB, version string, res *CompactResult, cause error) error
 	return cause
 }
 
-func countCompactFailure(d *DB, version string) (int, error) {
+// countFailure adds one failure to countKey and stores version in
+// versionKey, restarting at 1 when versionKey held another version.
+func countFailure(d *DB, countKey, versionKey, version string) (int, error) {
 	tx, err := d.Begin()
 	if err != nil {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	var failures int64
-	failedVersion, ok, err := readMaintenance(tx, maintCompactFailuresVersion)
+	failedVersion, ok, err := readMaintenance(tx, versionKey)
 	if err != nil {
 		return 0, err
 	}
 	if ok && failedVersion == version {
-		if failures, err = readMaintenanceInt(tx, maintCompactFailures); err != nil {
+		if failures, err = readMaintenanceInt(tx, countKey); err != nil {
 			return 0, err
 		}
 	}
 	failures++
-	if err := writeMaintenance(tx, maintCompactFailures, strconv.FormatInt(failures, 10)); err != nil {
+	if err := writeMaintenance(tx, countKey, strconv.FormatInt(failures, 10)); err != nil {
 		return 0, err
 	}
-	if err := writeMaintenance(tx, maintCompactFailuresVersion, version); err != nil {
+	if err := writeMaintenance(tx, versionKey, version); err != nil {
 		return 0, err
 	}
 	if err := tx.Commit(); err != nil {
