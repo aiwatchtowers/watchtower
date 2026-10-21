@@ -223,6 +223,13 @@ package enum AutomationQueries {
         try Int64.fetchOne(db, sql: "SELECT automation_id FROM automation_runs WHERE id = ?", arguments: [runID])
     }
 
+    /// The saved automation whose recipe is at `path` (`automations.path` is
+    /// unique); nil when there is none, or its file is gone.
+    package static func automationID(_ db: Database, path: String) throws -> Int64? {
+        try Int64.fetchOne(db, sql: "SELECT id FROM automations WHERE path = ? AND removed_at IS NULL",
+                           arguments: [path])
+    }
+
     /// "⚙ <name> · run #<id>" for each run that exists; a missing run is
     /// absent from the map.
     package static func runLabels(_ db: Database, runIDs: [Int64]) throws -> [Int64: String] {

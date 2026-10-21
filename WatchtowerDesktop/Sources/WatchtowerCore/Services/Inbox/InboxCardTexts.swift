@@ -46,16 +46,18 @@ package enum InboxCardTexts {
         "Let's discuss the Inbox card \"\(card.title)\" from \(card.automationName)."
     }
 
-    /// Hand to Agent…'s task. The title is the first line (the target's
-    /// title); the card itself, automation output that may quote anyone, is
-    /// fenced after `dataNotice` with a fence no backtick run inside can close.
+    /// Hand to Agent…'s task. The title, its whitespace runs (line breaks
+    /// too) made one space, is the first line (the target's title); the card
+    /// itself, automation output that may quote anyone, is fenced after
+    /// `dataNotice` with a fence no backtick run inside can close.
     package static func handToAgentTask(_ card: AutomationOutputCard) -> String {
         var data = [card.title, card.body]
         if !card.link.isEmpty { data.append("Source: \(card.link)") }
         let inner = data.filter { !$0.isEmpty }.joined(separator: "\n\n")
         let fence = String(repeating: "`", count: max(3, longestBacktickRun(inner) + 1))
+        let titleLine = card.title.split(whereSeparator: \.isWhitespace).joined(separator: " ")
         return [
-            card.title,
+            titleLine,
             "From the Inbox card of the automation \(card.automationName), run #\(card.runID).",
             dataNotice,
             "\(fence)text\n\(inner)\n\(fence)"

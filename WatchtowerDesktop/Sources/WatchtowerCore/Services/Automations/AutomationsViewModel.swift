@@ -333,7 +333,7 @@ package final class AutomationsViewModel {
     /// none (its draft row, if any, shows as selected). `composerPrefill`
     /// goes into the editor chat's empty composer once.
     package func showEditor(_ target: AutomationEditorTarget, composerPrefill: String? = nil) {
-        let id: Int64? = if case let .existing(id, _) = target { id } else { nil }
+        let id: Int64? = if case let .existing(id, _, _) = target { id } else { nil }
         if id != selectedID { expandedRuns = [] }
         selectedID = id
         panel = .editor(target)

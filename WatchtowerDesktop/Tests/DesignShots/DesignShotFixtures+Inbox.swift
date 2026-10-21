@@ -86,6 +86,50 @@ enum InboxShotFixtures {
         }
     }
 
+    /// A pending `save_automation` proposal selected: its summary, Open Draft
+    /// and Reject in the reading pane.
+    static func proposalPane() -> AnyView {
+        do {
+            let (pool, path) = try TestDatabase.createPool()
+            cleanUp()
+            poolPath = path
+            let args = #"{"path":"/acme/automations/mail-digest.md","name":"Morning mail digest","#
+                + #""slug":"mail-digest","is_new":true,"trigger_kind":"schedule","#
+                + #""trigger_spec":{"schedule":"0 9 * * 1-5"},"#
+                + #""permissions":["gmail:read@work","llm:light","slack:read@acme","inbox:reply"],"#
+                + #""outputs":["inbox"],"recipe_text":"---\nname: Morning mail digest\n---\n"}"#
+            let selected = try pool.write { db -> Int64 in
+                let mail = try TestDatabase.insertAutomation(db, slug: "mail-triage", name: "Morning mail triage",
+                                                             outputsJSON: #"["inbox"]"#)
+                let run = try TestDatabase.insertAutomationRun(db, automationID: mail)
+                _ = try TestDatabase.insertAutomationOutput(
+                    db, automationID: mail, runID: run, title: "3 emails waiting for a reply",
+                    body: "From colleague A, colleague B and billing@example.com", createdAt: "2026-10-21T08:30:00Z")
+                return try TestDatabase.insertAgentAction(
+                    db, tool: "save_automation", argsJSON: args,
+                    reason: "Every weekday morning, the mail that needs your reply, newsletters skipped.",
+                    createdAt: "2026-10-21T10:12:00Z")
+            }
+            let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+            vm.refresh()
+            vm.selection = .proposal(selected)
+            return AnyView(InboxSplitView(
+                vm: vm, cheatSheetRows: [], onOpenSettings: {},
+                proposalCard: { action in
+                    AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+                },
+                saveProposal: { action in
+                    SaveAutomationProposalPane(action: action, workbenchName: { _ in nil },
+                                               onOpenDraft: { _ in }, onReject: {})
+                },
+                onCardAction: { _ in }, onOpenAutomationRun: { _ in }, now: now
+            ))
+        } catch {
+            XCTFail("inbox proposal shot fixture failed: \(error)")
+            return AnyView(Text("fixture failed: \(String(describing: error))").foregroundStyle(.red))
+        }
+    }
+
     /// The pane at its narrowest (420 pt) with four 40-character labels:
     /// both button rows wrap, Done and Dismiss stay trailing.
     static func narrowPane() -> AnyView {

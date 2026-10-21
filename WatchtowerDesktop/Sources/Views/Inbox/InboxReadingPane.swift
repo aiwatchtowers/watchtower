@@ -4,8 +4,9 @@ import WatchtowerCore
 /// The Inbox's reading pane (spec B1): the selected row read in full. An
 /// automation card shows where it came from (a link to its run), its title,
 /// its body as markdown under the chat's link rules, and its buttons; a
-/// reminder its note, its Slack message and Done / Snooze 1h; a proposal its
-/// `AgentActionCardView`, which has room to read here.
+/// reminder its note, its Slack message and Done / Snooze 1h; a pending
+/// `save_automation` proposal its summary (`SaveAutomationProposalPane`), any
+/// other proposal its `AgentActionCardView`, which has room to read here.
 struct InboxReadingPane: View {
     let item: InboxListItem?
     /// The screens a `watchtower-nav://` link may open.
@@ -23,6 +24,10 @@ struct InboxReadingPane: View {
     var onSnooze: () -> Void = {}
     /// A proposal's card; nil (tests) leaves the pane empty for proposals.
     var proposalCard: ((AgentAction) -> AgentActionCardView)?
+    /// A pending `save_automation` proposal's pane; nil shows its card.
+    var saveProposal: ((AgentAction) -> SaveAutomationProposalPane)?
+    /// The workbenches a card's agent press can go to.
+    var workbenches: [Workbench] = []
 
     /// The pane's one readable column (style guide: "one readable column").
     static let readableWidth: CGFloat = 640
@@ -34,7 +39,9 @@ struct InboxReadingPane: View {
         case .reminder(let reminder):
             column { self.reminder(reminder) }
         case .proposal(let action):
-            if let proposalCard {
+            if action.tool == SaveAutomationCardModel.tool, action.isPending, let saveProposal {
+                column { saveProposal(action) }
+            } else if let proposalCard {
                 column { proposalCard(action) }
             } else {
                 nothingSelected
@@ -78,7 +85,7 @@ struct InboxReadingPane: View {
                 MarkdownView(text: card.body)
             }
             InboxCardButtons(card: card, navScreens: navScreens, isWriting: isWriting, onCommand: onCommand,
-                             onDone: onDone, onDismiss: onDismiss)
+                             onDone: onDone, onDismiss: onDismiss, workbenches: workbenches)
                 .padding(.top, Spacing.small)
         }
     }

@@ -50,7 +50,9 @@ struct ActionStripView: View {
                         onOpenSettings: openReactionDictionary,
                         onOpen: open,
                         onOpenAutomationRun: { runID in appState.openAutomationRun(runID: runID) },
-                        onCardAction: { perform($0, vm: vm) },
+                        onCardAction: { command in Task { await appState.perform(command) } },
+                        onOpenSaveDraft: { appState.openSaveProposalDraft($0) },
+                        workbenches: appState.inboxWorkbenches,
                         onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
                         sessionHoldsCall: { appState.chatSessionPool?.holdsSessionCall($0) ?? false },
                         emptyState: appState.emptyStateContext,
@@ -117,27 +119,6 @@ struct ActionStripView: View {
         }
     }
 
-    /// A card press. Links go through the press-time policy: a screen
-    /// link only through `openNavLink`, a web link to the system.
-    /// Discuss in Chat and Hand to Agent are carried out by AppState's card
-    /// commands (the next step of the Inbox plan); until then they do nothing.
-    private func perform(_ command: InboxCardCommand, vm: ActionStripViewModel) {
-        switch command {
-        case .openLink(let url):
-            switch InboxCardLinkPolicy.route(url, navScreens: appState.visibleHelpScreenIDs) {
-            case .screen(let screen): appState.openNavLink(screen)
-            case .web(let web): NSWorkspace.shared.open(web)
-            case nil: break
-            }
-        case let .reply(outputID, action):
-            Task { await vm.pressReply(outputID: outputID, action: action) }
-        case .openAutomation(let card):
-            appState.openAutomationRun(automationID: card.automationID, runID: nil)
-        case .chat, .agent:
-            break
-        }
-    }
-
     private func openReactionDictionary() {
         appState.settingsTab = .connections
         appState.settingsConnection = .slack
@@ -173,6 +154,11 @@ struct ActionStripActionsView: View {
     var onOpenAutomationRun: ((Int64) -> Void)?
     /// A press on an automation card's buttons (`InboxCardCommand`).
     var onCardAction: (InboxCardCommand) -> Void = { _ in }
+    /// A `save_automation` proposal's **Open Draft** (`AppState.openSaveProposalDraft`).
+    var onOpenSaveDraft: (SaveAutomationCardModel) -> Void = { _ in }
+    /// The workbenches a card's agent press can go to (and that name a
+    /// workbench proposal's scope).
+    var workbenches: [Workbench] = []
     /// A failed Slack send's Reconnect Slack button (`AppState.reconnectSlack`).
     var onReconnectSlack: ((Int64) async -> String?)?
     /// `AgentActionCardView.sessionHoldsCall` for a row (a connector call).
@@ -215,6 +201,8 @@ struct ActionStripActionsView: View {
                     cheatSheetRows: cheatSheetRows,
                     onOpenSettings: onOpenSettings,
                     proposalCard: card,
+                    saveProposal: saveProposal,
+                    workbenches: workbenches,
                     onCardAction: onCardAction,
                     onOpenAutomationRun: onOpenAutomationRun
                 )
@@ -237,6 +225,18 @@ struct ActionStripActionsView: View {
             onOpenContext: openContext(action),
             onDismiss: { Task { await vm.dismiss(action.id) } },
             sessionHoldsCall: sessionHoldsCall?(action) ?? false
+        )
+    }
+
+    private func saveProposal(_ action: AgentAction) -> SaveAutomationProposalPane {
+        SaveAutomationProposalPane(
+            action: action,
+            workbenchName: { id in workbenches.first { $0.id == id }?.name },
+            contextLabel: vm.actionLabels[action.id],
+            inFlight: vm.actionFeed.inFlight.contains(action.id),
+            gestureError: vm.actionFeed.rowErrors[action.id]?.message,
+            onOpenDraft: { onOpenSaveDraft($0) },
+            onReject: { Task { await vm.reject(action.id) } }
         )
     }
 

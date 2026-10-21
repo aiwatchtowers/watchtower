@@ -300,7 +300,7 @@ struct AutomationsView: View {
 
     private func makeChat(_ target: AutomationEditorTarget) async throws -> AutomationEditorChat? {
         switch target {
-        case let .existing(id, _): try await hooks.makeEditChat(id)
+        case let .existing(id, _, _): try await hooks.makeEditChat(id)
         case let .newDraft(contextID, scope, _): try await hooks.makeNewChat(contextID, scope)
         }
     }
@@ -316,7 +316,7 @@ struct AutomationsView: View {
 
     private func scopeTitle(_ target: AutomationEditorTarget) -> String {
         switch target {
-        case let .existing(id, _):
+        case let .existing(id, _, _):
             guard let automation = vm.items.first(where: { $0.id == id })?.automation,
                   automation.scope == .workbench else { return AutomationListSections.personalTitle }
             return automation.projectID.flatMap(workbenchName) ?? "Workbench"

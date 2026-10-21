@@ -718,6 +718,20 @@ final class AutomationEditorCenterTests: XCTestCase {
         XCTAssertNil(center.keptAside[7])
     }
 
+    /// An Inbox proposal's **Open Draft** on a saved automation: the file is
+    /// loaded, then the proposed text replaces it — even when the chat's
+    /// newest draft is that same text (it would otherwise count as adopted).
+    func testOpenWithStartTextAdoptsItOverTheFile() async throws {
+        let center = makeCenter()
+        let proposed = Fixtures.recipe + "// proposed\n"
+        await center.beginEdit(7, chatNewestText: proposed, startText: proposed)
+        let form = try XCTUnwrap(center.drafts[7]?.form)
+        XCTAssertEqual(form.renderedText(), proposed)
+        XCTAssertNil(center.keptAside[7], "an unedited file is not kept aside")
+        XCTAssertEqual(AutomationEditorTarget.existing(7, review: false, startText: proposed).startText, proposed)
+        XCTAssertNil(AutomationEditorTarget.existing(7, review: false).startText)
+    }
+
     func testConfirmShownPassesTheValidatedHash() async throws {
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Fixtures.showJSON(confirmed: "")) as? [String: Any])
         object["enabled"] = false

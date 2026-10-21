@@ -12,6 +12,10 @@ struct InboxSplitView: View {
     let onOpenSettings: () -> Void
     /// A proposal's card in the reading pane.
     let proposalCard: (AgentAction) -> AgentActionCardView
+    /// A pending `save_automation` proposal in the reading pane.
+    var saveProposal: ((AgentAction) -> SaveAutomationProposalPane)?
+    /// The workbenches a card's agent press can go to.
+    var workbenches: [Workbench] = []
     let onCardAction: (InboxCardCommand) -> Void
     var onOpenAutomationRun: ((Int64) -> Void)?
     /// The moment Today starts from; nil is now (design shots fix it).
@@ -119,7 +123,9 @@ struct InboxSplitView: View {
             onDone: { shown.map { close($0.id, in: sections, done) } },
             onDismiss: { shown.map { close($0.id, in: sections, dismiss) } },
             onSnooze: { shown.map { close($0.id, in: sections, snooze) } },
-            proposalCard: proposalCard
+            proposalCard: proposalCard,
+            saveProposal: saveProposal,
+            workbenches: workbenches
         )
     }
 

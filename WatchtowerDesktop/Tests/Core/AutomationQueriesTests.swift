@@ -22,6 +22,21 @@ final class AutomationQueriesTests: XCTestCase {
         XCTAssertEqual(items.map(\.automation.name), ["alpha mail", "Mid", "Zeta report"])
     }
 
+    /// A `save_automation` proposal names its recipe by path: the saved
+    /// automation there, never a removed one.
+    func testAutomationIDByPath() throws {
+        let queue = try TestDatabase.create()
+        let id = try queue.write { db in
+            try TestDatabase.insertAutomation(db, slug: "gone", removedAt: "2026-10-10T00:00:00Z")
+            return try TestDatabase.insertAutomation(db, slug: "digest")
+        }
+        try queue.read { db in
+            XCTAssertEqual(try AutomationQueries.automationID(db, path: "/tmp/acme/automations/digest.md"), id)
+            XCTAssertNil(try AutomationQueries.automationID(db, path: "/tmp/acme/automations/gone.md"))
+            XCTAssertNil(try AutomationQueries.automationID(db, path: "/tmp/acme/automations/none.md"))
+        }
+    }
+
     func testListCarriesLastAndActiveRunsAndTriggerText() throws {
         let queue = try TestDatabase.create()
         let (id, finished, active) = try queue.write { db -> (Int64, Int64, Int64) in

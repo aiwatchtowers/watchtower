@@ -160,3 +160,94 @@ final class InboxReminderPaneTests: XCTestCase {
         XCTAssertNoThrow(try sut.inspect().find(button: "Snooze 1h"))
     }
 }
+
+/// An agent press goes out with the workbench it resolved; one that names no
+/// workbench waits for the owner's pick (a popover) instead.
+@MainActor
+final class InboxAgentPressTests: XCTestCase {
+    private let workbenches = [Int64(3), 4].map { (id: Int64) in
+        Workbench(row: Row(["id": id, "name": "acme-\(id)", "folder_path": "/acme/\(id)"]))
+    }
+
+    private func card(workbenchID: Int64?, actions: String = "[]") -> AutomationOutputCard {
+        AutomationOutputCard(id: 5, automationID: 2, automationName: "Issue triage", runID: 212, title: "ACME-482",
+                             body: "", priority: "high", createdAt: Date(timeIntervalSinceReferenceDate: 800_000_000),
+                             actionsJSON: actions, workbenchID: workbenchID)
+    }
+
+    private func buttons(_ card: AutomationOutputCard, onCommand: @escaping (InboxCardCommand) -> Void)
+        -> InboxCardButtons {
+        InboxCardButtons(card: card, navScreens: [], onCommand: onCommand, workbenches: workbenches)
+    }
+
+    func testResolvedWorkbenchGoesOutAsItsID() throws {
+        var commands: [InboxCardCommand] = []
+        let own = card(workbenchID: 3, actions: #"[{"label":"Ask","kind":"agent","agent":{"task":"Fix","workbench":"ACME-4"}}]"#)
+        let sut = buttons(own) { commands.append($0) }
+
+        try sut.inspect().find(button: "Hand to Agent…").tap()
+        try sut.inspect().find(button: "Ask").tap()
+
+        XCTAssertEqual(commands, [
+            .agent(card: own, task: InboxCardTexts.handToAgentTask(own), workbench: .id(3)),
+            .agent(card: own, task: "Fix", workbench: .id(4))
+        ])
+    }
+
+    func testUnresolvedPressWaitsForThePick() throws {
+        var commands: [InboxCardCommand] = []
+        let sut = buttons(card(workbenchID: nil)) { commands.append($0) }
+
+        try sut.inspect().find(button: "Hand to Agent…").tap()
+
+        XCTAssertEqual(commands, [], "the picker opens; nothing is handed over yet")
+    }
+}
+
+/// A pending `save_automation` proposal in the reading pane: its summary,
+/// **Open Draft** (the screen's one prominent action) and **Reject**.
+@MainActor
+final class SaveAutomationProposalPaneTests: XCTestCase {
+    private func proposal(status: String = "pending") throws -> AgentAction {
+        let args: [String: Any] = [
+            "path": "/acme/automations/mail-digest.md", "name": "Mail digest", "slug": "mail-digest",
+            "trigger_kind": "schedule", "trigger_spec": ["schedule": "0 9 * * 1-5"], "is_new": true,
+            "permissions": ["gmail:read@work", "llm:light", "slack:read@acme"], "workbench_id": 3,
+            "recipe_text": "---\nname: Mail digest\n---\n"
+        ]
+        let json = try XCTUnwrap(String(data: try JSONSerialization.data(withJSONObject: args), encoding: .utf8))
+        return AgentAction(row: Row(["id": 8, "tool": "save_automation", "args_json": json, "status": status,
+                                     "reason": "Skip newsletters"]))
+    }
+
+    func testPaneShowsTheSummaryAndItsTwoButtons() throws {
+        var opened: [SaveAutomationCardModel] = []
+        var rejected = 0
+        let sut = SaveAutomationProposalPane(action: try proposal(), workbenchName: { $0 == 3 ? "acme" : nil },
+                                             onOpenDraft: { opened.append($0) }, onReject: { rejected += 1 })
+
+        for text in ["Save automation Mail digest", "acme", "Every weekday at 09:00",
+                     "Read mail in work (Gmail), Use the light model and 1 more", "Skip newsletters"] {
+            XCTAssertNoThrow(try sut.inspect().find(text: text), text)
+        }
+        XCTAssertTrue(try sut.inspect().find(button: "Open Draft").buttonStyle() is KitPrimaryButtonStyle)
+        try sut.inspect().find(button: "Open Draft").tap()
+        try sut.inspect().find(button: "Reject").tap()
+        XCTAssertEqual(opened.map(\.recipeText), ["---\nname: Mail digest\n---\n"])
+        XCTAssertEqual(rejected, 1)
+    }
+
+    func testReadingPaneUsesItForAPendingSaveOnly() throws {
+        let pane: (AgentAction) -> SaveAutomationProposalPane = { action in
+            SaveAutomationProposalPane(action: action, workbenchName: { _ in nil }, onOpenDraft: { _ in }, onReject: {})
+        }
+        let pending = InboxReadingPane(item: .proposal(try proposal()), navScreens: [], onCommand: { _ in },
+                                       saveProposal: pane)
+        XCTAssertNoThrow(try pending.inspect().find(SaveAutomationProposalPane.self))
+
+        let decided = InboxReadingPane(item: .proposal(try proposal(status: "rejected")), navScreens: [],
+                                       onCommand: { _ in }, saveProposal: pane)
+        XCTAssertThrowsError(try decided.inspect().find(SaveAutomationProposalPane.self),
+                             "a decided proposal shows its card and result")
+    }
+}

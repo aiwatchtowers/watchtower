@@ -97,6 +97,9 @@ enum DesignShotCatalog {
             DesignShot(name: "inbox-reading-pane-narrow", size: NSSize(width: 420, height: 560)) {
                 InboxShotFixtures.narrowPane()
             },
+            DesignShot(name: "inbox-proposal-pane", size: NSSize(width: 1180, height: 720)) {
+                InboxShotFixtures.proposalPane()
+            },
             // Branch review (#712, artboards A–C).
             DesignShot(name: "branch-review-changes", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.changes()

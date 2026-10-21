@@ -37,7 +37,7 @@ struct AutomationEditorPanel: View {
     /// draft's (known once its chat is open).
     private var key: Int64? {
         switch target {
-        case let .existing(id, _): id
+        case let .existing(id, _, _): id
         case .newDraft: newKey
         }
     }
@@ -125,7 +125,7 @@ struct AutomationEditorPanel: View {
     }
 
     private var title: String {
-        if case let .existing(id, _) = target {
+        if case let .existing(id, _, _) = target {
             return vm.items.first { $0.id == id }?.automation.name ?? form?.detail.name ?? "Automation"
         }
         if let name = key.flatMap({ editor.lastChecked[$0]?.name }), !name.isEmpty { return name }
@@ -447,9 +447,9 @@ struct AutomationEditorPanel: View {
             made.engine.draft = prefill
         }
         switch target {
-        case let .existing(id, _):
+        case let .existing(id, _, startText):
             // The form and Script still work when the chat cannot open.
-            await editor.beginEdit(id, chatNewestText: made?.draft.shownRecipeText)
+            await editor.beginEdit(id, chatNewestText: made?.draft.shownRecipeText, startText: startText)
         case let .newDraft(_, scope, startText):
             guard let made else { return }
             let key = AutomationEditorCenter.newDraftKey(conversationID: made.conversationID)
@@ -475,7 +475,7 @@ struct AutomationEditorPanel: View {
 
     @discardableResult
     private func finishIfConfirmed() -> Bool {
-        guard case let .existing(id, _) = target, editor.confirmations[id] == .done else { return false }
+        guard case let .existing(id, _, _) = target, editor.confirmations[id] == .done else { return false }
         editor.closeConfirmation(id)
         finish(id, id)
         return true
