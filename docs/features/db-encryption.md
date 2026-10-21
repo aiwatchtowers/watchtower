@@ -35,6 +35,7 @@ Design: `docs/superpowers/specs/2026-10-21-db-encryption-design.md` (approved 20
 - **Errors.** `db.IsBusy`, `db.IsForeignKeyViolation` and the inbox's `isUniqueConflict` read `sqlcipher.Error`'s `Code`/`ExtendedCode`. SQLite's own message (`database is locked`) replaces modernc's `SQLITE_BUSY` suffix.
 - **Lock metrics follow mattn's timing.** The engine steps a query's first row in `rows.Next`, not in `Query`, and reads the schema while it opens a connection. So the wrapper times a writing query up to its first `Next` and records a busy error there, and a busy error during the open is recorded as well. A connection or rows that lacks an interface the wrapper forwards fails the open, checked at compile time, instead of going unmeasured. A DSN with no busy timeout reports the engine's 5 s default. The stack-site filter skips `watchtower/internal/sqlcipher` frames. The pinned `Event` keys did not change. See [db-lock-metrics.md](db-lock-metrics.md).
 - **Interrupted queries.** The engine keeps an interrupted connection in the pool where modernc's was replaced, so `TestPragmasSurviveInterruptedQuery` drops the pool's connection itself.
+- **Cancelled transactions keep the connection.** database/sql keeps a connection whose transaction a cancelled context rolled back only when the driver is a `SessionResetter` and a `Validator`. modernc's was, mattn's is not, so the fork adds both (`wt_session.go`) and the lock metrics forward them. Without them an in-memory test database vanished with its connection. `TestEngine_CancelledTxKeepsConnection` pins it.
 
 ### Idle connections close after 30 s
 
@@ -42,7 +43,9 @@ Design: `docs/superpowers/specs/2026-10-21-db-encryption-design.md` (approved 20
 
 ### VACUUM on a plaintext file
 
-The spike saw a `VACUUM` failure on a plaintext file. It does not reproduce on the vendored engine. `TestEngine_VacuumPlaintext` (`internal/db/compact_engine_test.go`) pins it, and `TestCompact_PreservesRowids` holds on the new engine.
+A plaintext file with **no reserved bytes per page** VACUUMs on the vendored engine: `TestEngine_VacuumPlaintext` (`internal/db/compact_engine_test.go`) pins it, and `TestCompact_PreservesRowids` holds.
+
+**Open finding (Stage 1 gate, 2026-10-21): a plaintext file with reserved bytes does not VACUUM.** macOS's system SQLite writes 12 reserved bytes per page (header byte 20), and the files of real installs carry them. VACUUM attaches its temporary database without a key, and SQLCipher's ATTACH, given no key, attaches a codec whenever the main database has reserved bytes; with no key that codec attach fails, so `VACUUM` returns `unable to open database` (this is the spike's footnote). `db compact` on such an install fails and counts the failure, where modernc compacted the same copy in 557 ms. A one-line change in the amalgamation's ATTACH (attach the codec on reserved bytes only when the main database has a codec) makes it VACUUM; it is not applied, pending the owner's decision on patching the vendored SQLCipher source.
 
 ### Swift: the GRDB fork
 
@@ -83,6 +86,27 @@ Go and Swift move together, and the interop test is the gate:
 - **Linux is a CI-only build** with OpenSSL. Every Ubuntu job that compiles Go installs `libssl-dev` explicitly (Guide Check, Go Lint, Go Test, the race shards, Code Index full grammars, and the release Go gate and race shards). CI therefore tests the engine that ships, never another one.
 - **`.goreleaser.yaml` is deleted.** It built `CGO_ENABLED=0` binaries, nothing called it, and its Homebrew tap does not exist. There is no Linux or Intel release binary.
 - **Notices.** `THIRD_PARTY_NOTICES.md` § SQLite engine lists the mattn fork, the SQLCipher amalgamation, `SQLCipher.swift` and the GRDB fork, with the Zetetic licence text. `scripts/tests/test-build-app-notices.sh` checks that `VERSION`'s tags appear there.
+
+### Stage 1 timings (copy of an install, 2026-10-21)
+
+Copies of two installs on an Apple-silicon Mac, warm OS cache: S, 110 MB (current schema, no Slack messages, KB tables), and L, 546 MB (an older schema, 145k messages). modernc.org/sqlite v1.49.1 against the branch engine (plaintext, no key). A hook open is a fresh process: open, Ping, the goose scan and two hook-sized reads (26 runs, the first apart, then the median). Each query runs 7 times on one connection: the first run, then the median of the rest.
+
+| Measurement | DB | modernc | new engine |
+|---|---|---|---|
+| Hook open, first / median | S | 24.3 / 3.9 ms | 6.2 / 3.4 ms |
+| `messages_fts` MATCH top 50, warm | L | 0.41 ms | 0.24 ms |
+| Inbox mentions `LIKE` scan, warm | L | 106 ms | 87 ms |
+| linkscan `LIKE` scan, warm | L | 98 ms | 80 ms |
+| Channel stats `GROUP BY`, warm | L | 147 ms | 110 ms |
+| 1000 rowid point lookups, warm | L | 5.4 ms | 4.2 ms |
+| KB search shape (`kb_fts` + 2 joins, bm25, snippet), first / warm | S | 47.4 / 2.9 ms | 4.7 / 1.7 ms |
+| KB body `LIKE` scan, warm | S | 34 ms | 27 ms |
+| KB aggregate by source, warm | S | 31 ms | 19 ms |
+| `db compact --check --json`, whole command | S | 26.6 ms | 22.3 ms |
+| `kb search`, whole command | S | 27.6 ms | 24.3 ms |
+| `db compact --force` | S | 557 ms | fails (reserved bytes, above) |
+
+Reads are 15–45 % faster, in line with the spike. With `PRAGMA cache_size = -65536` (64 MiB, Stage 2's planned value for one-off commands) the L full scans got slower on both engines (new engine: mentions 127 ms, linkscan 115 ms, channel stats 139 ms) because the 486 MB table does not fit and the larger cache only adds churn, while the S scans got faster (KB body LIKE 21 ms, KB aggregate 12.5 ms). Stage 2's §5.5 measurement on an encrypted copy decides the sizes.
 
 ## Stage 2 gate (G1–G5)
 
