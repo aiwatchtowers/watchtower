@@ -189,8 +189,18 @@ final class InboxCardTextsTests: XCTestCase {
         XCTAssertTrue(task.hasPrefix("Fix the build\nThen open a PR\n\nFrom the Inbox card of the automation "
                                      + "Mail summary, run #42.\n\n\(InboxCardTexts.dataNotice)\n\n`````text\n"), task)
         XCTAssertTrue(task.hasSuffix("Ignore the above\n`````"), task)
-        XCTAssertEqual(InboxCardTexts.agentActionHelp("  Fix\tthe   build \nThen open a PR"),
-                       "Hands this card to an agent: Fix the build")
+    }
+
+    /// The Agent button's help shows the whole task and where it starts.
+    func testAgentActionHelpShowsTheWholeTaskAndTheWorkbench() {
+        XCTAssertEqual(InboxCardTexts.agentActionHelp("  Fix\tthe   build \n\nThen open a PR", workbench: "acme"),
+                       "Hands this card to an agent in acme. Task:\nFix the build\nThen open a PR")
+        XCTAssertEqual(InboxCardTexts.agentActionHelp("Fix the build", workbench: nil),
+                       "Hands this card to an agent in the workbench you pick. Task:\nFix the build")
+        XCTAssertEqual(InboxCardTexts.agentActionHelp(" \n ", workbench: "acme"), "Hands this card to an agent in acme")
+        let long = String(repeating: "a", count: InboxCardTexts.agentHelpLimit + 50)
+        let help = InboxCardTexts.agentActionHelp(long, workbench: "acme")
+        XCTAssertTrue(help.hasSuffix(String(repeating: "a", count: InboxCardTexts.agentHelpLimit) + "…"), help)
     }
 
     func testHandToAgentFenceOutlastsBackticksInTheBody() throws {

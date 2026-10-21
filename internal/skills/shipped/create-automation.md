@@ -248,6 +248,13 @@ section says. Never put secrets in a recipe.
 | Agent | `agent: {task, workbench?}` | Hands the task to an agent session (task at most 4 KB) |
 | Reply | `reply: "<value>", data?: {...}` | Runs this same automation once more (value at most 100 characters, `data` at most 8 KB of JSON) |
 
+A Chat message and an Agent `task` are instructions: the chat or the agent
+does what they say. Write them as fixed text in the recipe; never build them
+from an email, a Slack message, a tool result or `llm()` output, which can
+carry someone else's instructions. Put that material in the card's `body`: the
+chat gets the card attached, and the agent gets the card after its task,
+fenced as data.
+
 The first action is the card's primary button; set `primary: false` on it to
 make it a plain one (`primary` may only be `false`, and only on the first
 action). `link` and `open` take `http`, `https` or `watchtower-nav://` URLs
@@ -394,7 +401,7 @@ if (fresh.length > 0) {
     body: summary,
     link: "https://mail.example.com/inbox",
     actions: [
-      { label: "Draft replies", chat: "Draft replies to the mail that needs one, from this summary:\n" + summary },
+      { label: "Draft replies", chat: "Draft replies to the mail on this card that needs one." },
       { label: "Open mailbox", open: "https://mail.example.com/inbox" },
       { label: "Mute first sender", reply: "mute", data: { sender: fresh[0].from } }
     ]

@@ -74,7 +74,7 @@ struct InboxCardButtons: View {
     private func ownButton(_ action: InboxCardAction, reply: InboxReplyState) -> some View {
         let button = Button(Self.label(action, card: card, reply: reply)) { press(action, reply: reply) }
             .disabled(isDisabled(action, reply: reply))
-            .help(Self.help(action))
+            .help(help(action))
             .popover(isPresented: isPicking(action.index), arrowEdge: .bottom) { workbenchPicker.popoverSurface() }
         if action.primary {
             button.buttonStyle(.kitPrimary)
@@ -138,13 +138,20 @@ struct InboxCardButtons: View {
         }
     }
 
-    private static func help(_ action: InboxCardAction) -> String {
+    private func help(_ action: InboxCardAction) -> String {
         switch action.kind {
         case .link(let url): url.absoluteString
         case .chat: "Opens AI Chat with this card"
-        case let .agent(task, _): InboxCardTexts.agentActionHelp(task)
+        case let .agent(task, ref): InboxCardTexts.agentActionHelp(task, workbench: workbenchName(for: ref))
         case .reply: "Sends this choice to the automation"
         }
+    }
+
+    /// The workbench an agent press goes to without a picker, by name.
+    private func workbenchName(for ref: InboxCardAction.WorkbenchRef?) -> String? {
+        guard case .workbench(let id) = InboxAgentHandoff.workbench(for: ref, card: card, workbenches: workbenches)
+        else { return nil }
+        return workbenches.first { $0.id == id }?.name
     }
 
     // MARK: - The common row

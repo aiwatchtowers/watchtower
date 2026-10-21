@@ -62,10 +62,22 @@ package enum InboxCardTexts {
         fencedTask(lead: task, card: card)
     }
 
-    /// An Agent button's help: the first line of its task, as one line.
-    package static func agentActionHelp(_ task: String) -> String {
-        let line = flattened(targetTitle(fromTask: task))
-        return line.isEmpty ? "Hands this card to an agent" : "Hands this card to an agent: \(line)"
+    /// The most of an Agent task its button's help shows, in characters.
+    package static let agentHelpLimit = 600
+
+    /// An Agent button's help, so the owner reads what will start before
+    /// pressing: the workbench (`nil`: the owner picks one at the press),
+    /// then the task — blank lines dropped, whitespace runs in a line made
+    /// one space — clipped to `agentHelpLimit` characters with an ellipsis.
+    package static func agentActionHelp(_ task: String, workbench: String?) -> String {
+        let lead = workbench.map { "Hands this card to an agent in \($0)" }
+            ?? "Hands this card to an agent in the workbench you pick"
+        let lines = task.split(whereSeparator: \.isNewline).map { flattened(String($0)) }
+        var text = lines.filter { !$0.isEmpty }.joined(separator: "\n")
+        if text.count > agentHelpLimit {
+            text = String(text.prefix(agentHelpLimit)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
+        }
+        return text.isEmpty ? lead : "\(lead). Task:\n\(text)"
     }
 
     private static func fencedTask(lead: String, card: AutomationOutputCard) -> String {

@@ -19,6 +19,8 @@ A card is written by `output.inbox({title, body, link?, actions?})`. `actions` h
 
 The first button is the prominent one. Set `primary: false` on the first one to make it plain; `primary` is refused anywhere else and can't be `true`. `chat` and `task` take up to 4 KB, a reply `value` up to 100 characters and `data` up to 8 KB of JSON.
 
+A `chat` message and an Agent `task` are instructions: the chat or the agent does what they say. Write them as fixed text in the recipe, never built from an email, a Slack message or `llm()` output. Put such material in the card's `body`; it reaches the agent fenced as data. Hover over an Agent button to read its workbench and task before you press.
+
 A button never grants a permission. Link, Chat and Agent only navigate or prepare. A Reply runs the recipe you confirmed, under the permissions you confirmed. Links are checked when the recipe writes the card and again when you press.
 
 Under the recipe's own buttons every card has a common row:
