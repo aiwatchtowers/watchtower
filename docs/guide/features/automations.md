@@ -36,7 +36,7 @@ On the card, **Run Now** starts a run the same way, without the notice; **Dry Ru
 
 ### When a run fails
 
-A scheduled or event run that fails brings "<name> failed", at most once per automation a day; several at once share one notice. A run cut short by a restart while it was working brings none. A recipe disabled because its script got stuck always brings "<name> was disabled".
+A scheduled, event or Inbox **Reply** run that fails brings "<name> failed", at most once per automation a day; several at once share one notice. A run cut short by a restart while it was working brings none. A recipe disabled because its script got stuck always brings "<name> was disabled".
 
 The **Automations** badge counts automations whose last run failed, until you open the card or a later run succeeds.
 
