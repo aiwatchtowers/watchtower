@@ -663,6 +663,107 @@ final class AutomationEditorCenterTests: XCTestCase {
         XCTAssertEqual(center.saving[key], .done)
     }
 
+    /// Runs `commit` with `enable` held: the state seen while the turn-on is
+    /// in flight, and at each refresh, is never `.done` before it fails.
+    private func commitWithHeldEnable(
+        _ center: AutomationEditorCenter, _ key: Int64, plan: AutomationSavePlan
+    ) async -> [AutomationEditorCenter.SaveState?] {
+        var seen: [AutomationEditorCenter.SaveState?] = []
+        runner.on("enable") { _ in throw CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: daemon busy\n") }
+        runner.hold("enable")
+        let commit = Task { await center.commit(key, plan: plan, turnOn: true) }
+        await waitUntil { self.runner.isHolding }
+        seen.append(center.saving[key])
+        runner.release()
+        await commit.value
+        return seen
+    }
+
+    func testSaveAndTurnOnIsNotDoneBeforeAFailedTurnOn() async throws {
+        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "hn") }
+        runner.on("save") { _ in Self.saveJSON(approval: "hn") }
+        let center = makeCenter()
+        let key = AutomationEditorCenter.newDraftKey(conversationID: 42)
+        center.beginNew(key: key, scope: .personal, recipeDir: "/acme/automations", startText: nil)
+        let plan = try await checkedPlan(center, key)
+        let seen = await commitWithHeldEnable(center, key, plan: plan)
+
+        XCTAssertEqual(seen, [.saving], "a panel watching for .done must not close during the turn-on")
+        XCTAssertEqual(center.saving[key], .failed(AutomationEditorCenter.notTurnedOn("Error: daemon busy")))
+        XCTAssertEqual(center.savedIDs[key], 7)
+        XCTAssertTrue(center.turnOnPending.contains(key))
+
+        runner.on("enable") { _ in Data() }
+        await center.retryTurnOn(key)
+        XCTAssertEqual(center.saving[key], .done)
+        XCTAssertFalse(center.turnOnPending.contains(key))
+    }
+
+    func testSaveAndConfirmOnADisabledAutomationIsNotDoneBeforeAFailedTurnOn() async throws {
+        runner.on("show") { _ in
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Fixtures.showJSON()) as? [String: Any])
+            object["enabled"] = false
+            return try JSONSerialization.data(withJSONObject: object)
+        }
+        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h2") }
+        runner.on("save") { _ in Self.saveJSON(approval: "h2") }
+        let center = makeCenter()
+        await center.beginEdit(7, chatNewestText: nil)
+        center.drafts[7]?.form.fields.name = "Weekly digest"
+        let plan = try await checkedPlan(center, 7)
+        let seen = await commitWithHeldEnable(center, 7, plan: plan)
+
+        XCTAssertEqual(seen, [.saving])
+        XCTAssertEqual(center.saving[7], .failed(AutomationEditorCenter.notTurnedOn("Error: daemon busy")))
+        XCTAssertEqual(center.savedIDs[7], 7)
+        XCTAssertTrue(center.turnOnPending.contains(7))
+    }
+
+    func testConfirmedButNotEnabledOffersTurnOn() async {
+        runner.on("confirm") { _ in Data() }
+        runner.on("enable") { _ in throw CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: daemon busy\n") }
+        let center = makeCenter()
+        await center.confirmForeign(7, shownHash: "h2", enable: true)
+        XCTAssertEqual(center.confirmations[7], .failed(AutomationEditorCenter.confirmedNotEnabled("Error: daemon busy")))
+        XCTAssertTrue(center.turnOnPending.contains(7))
+
+        runner.on("enable") { _ in Data() }
+        let before = runner.invocations.count
+        await center.retryTurnOn(7)
+        XCTAssertEqual(Array(runner.invocations.dropFirst(before)), [["automations", "enable", "7"]], "enable only")
+        XCTAssertEqual(center.confirmations[7], .done)
+        XCTAssertFalse(center.turnOnPending.contains(7))
+    }
+
+    func testReloadSchedulesACheck() async throws {
+        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h1") }
+        let center = makeCenter()
+        await center.beginEdit(7, chatNewestText: nil)
+        await waitUntil { self.sleeper.calls >= 1 }
+        sleeper.fire()
+        await waitUntil {
+            if case .review = center.saving[7] { return true }
+            return false
+        }
+        await center.reloadFromDisk(7)
+        XCTAssertNil(center.saving[7])
+        // The reloaded text equals the old one: no edit would check it.
+        await waitUntil { self.sleeper.calls >= 2 }
+        sleeper.fire()
+        await waitUntil {
+            if case .review = center.saving[7] { return true }
+            return false
+        }
+    }
+
+    func testComposerPrefillIsClaimedOncePerDraft() {
+        let center = makeCenter()
+        XCTAssertTrue(center.claimComposerPrefill(-42))
+        XCTAssertFalse(center.claimComposerPrefill(-42))
+        center.discard(-42)
+        XCTAssertTrue(center.claimComposerPrefill(-42), "a discarded draft starts over")
+    }
+
     func testSaveTurnedOffOnAnEnabledAutomationDisablesBeforeSaving() async throws {
         runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h2") }
         runner.on("save") { _ in Self.saveJSON(approval: "h2") }

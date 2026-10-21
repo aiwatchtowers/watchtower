@@ -57,6 +57,14 @@ final class AutomationDraftFooterTests: XCTestCase {
         }
     }
 
+    func testInvalidRecipeSaysItHasErrors() {
+        let footer = Footer.make(isNew: false, bytesChanged: true, enabled: true, needsConfirmation: false,
+                                 showsAllFields: false, hasErrors: true)
+        XCTAssertFalse(footer.primaryEnabled)
+        XCTAssertNil(footer.secondary)
+        XCTAssertEqual(footer.hint, "The recipe has errors, so it can't be saved")
+    }
+
     func testActionTitles() {
         let titles: [AutomationDraftFooter.Action: String] = [
             .saveAndTurnOn: "Save and Turn On", .saveTurnedOff: "Save Turned Off", .saveAndConfirm: "Save and Confirm",

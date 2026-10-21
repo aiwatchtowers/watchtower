@@ -61,6 +61,10 @@ package final class AutomationEditorCenter {
         "Saved and confirmed, but not turned on: \(message)"
     }
 
+    nonisolated package static func confirmedNotEnabled(_ message: String) -> String {
+        "Confirmed, but not enabled: \(message)"
+    }
+
     nonisolated package static let changedOnDisk =
         "The recipe changed on disk since you opened it — reload it and review again."
     nonisolated package static func nameTaken(_ slug: String) -> String {
@@ -88,6 +92,9 @@ package final class AutomationEditorCenter {
     /// draft column shows it (its errors too) while it is of the bytes on
     /// screen (its `content_hash`).
     package private(set) var lastChecked: [Int64: AutomationsCLI.ValidateResult] = [:]
+    /// Drafts whose save or confirm landed but whose turn-on failed: the
+    /// panel offers **Turn On** (`retryTurnOn`).
+    package private(set) var turnOnPending: Set<Int64> = []
 
     @ObservationIgnored private let cli: AutomationsCLI
     @ObservationIgnored private let grants: @MainActor (Int64) async throws -> [AutomationToolGrant]
@@ -109,6 +116,8 @@ package final class AutomationEditorCenter {
     @ObservationIgnored private var adoptBase: [Int64: String] = [:]
     /// A new draft's file name from the chat (`^[a-z0-9][a-z0-9-]{0,63}$`).
     @ObservationIgnored private var slugHints: [Int64: String] = [:]
+    /// Drafts whose chat composer was prefilled already (`claimComposerPrefill`).
+    @ObservationIgnored private var prefilled: Set<Int64> = []
 
     private static let log = Logger(subsystem: "com.watchtower.desktop", category: "automation-editor")
 
@@ -221,6 +230,14 @@ package final class AutomationEditorCenter {
         slugHints[id] = nil
         savedIDs[id] = nil
         lastChecked[id] = nil
+        turnOnPending.remove(id)
+        prefilled.remove(id)
+    }
+
+    /// True once per draft: the New flow's text goes into its chat's
+    /// composer the first time the panel opens it, never again.
+    package func claimComposerPrefill(_ key: Int64) -> Bool {
+        prefilled.insert(key).inserted
     }
 
     /// **Reload** after a save was refused because the recipe changed on
@@ -241,6 +258,8 @@ package final class AutomationEditorCenter {
             saving[id] = nil
             validatedTexts[id] = nil
             loadErrors[id] = nil
+            // The reloaded text may equal the old one: nothing else would check it.
+            scheduleCheck(id)
         } catch {
             saving[id] = .failed(Self.message(for: error))
         }
@@ -386,6 +405,7 @@ package final class AutomationEditorCenter {
                 try await cli.setEnabled(saved.automationID, true)
             } catch {
                 let notOn = Self.notTurnedOn(Self.message(for: error))
+                turnOnPending.insert(key)
                 if case let .failed(autoMessage) = saving[key] {
                     saving[key] = .failed(notOn + "\n" + autoMessage)
                 } else {
@@ -394,17 +414,43 @@ package final class AutomationEditorCenter {
             }
         }
         await refresh(saved.automationID)
+        // Done only now: a panel watching for `.done` never closes before
+        // the turn-on's outcome is known.
+        if saving[key] == .saving { saving[key] = .done }
     }
 
     private func enableAfterSave(_ key: Int64, _ id: Int64) async {
         saving[key] = .saving
+        var outcome = SaveState.done
         do {
             try await cli.setEnabled(id, true)
-            saving[key] = .done
+            turnOnPending.remove(key)
         } catch {
-            saving[key] = .failed(Self.notTurnedOn(Self.message(for: error)))
+            outcome = .failed(Self.notTurnedOn(Self.message(for: error)))
         }
         await refresh(id)
+        saving[key] = outcome
+    }
+
+    /// **Turn On** after a save or confirm that landed but did not turn the
+    /// automation on: only enables it (`.done` on success).
+    package func retryTurnOn(_ key: Int64) async {
+        guard turnOnPending.contains(key) else { return }
+        if let savedID = savedIDs[key], saving[key] != .saving {
+            await enableAfterSave(key, savedID)
+            return
+        }
+        guard confirmations[key] != .confirming else { return }
+        confirmations[key] = .confirming
+        do {
+            try await cli.setEnabled(key, true)
+            turnOnPending.remove(key)
+            await refresh(key)
+            confirmations[key] = .done
+        } catch {
+            await refresh(key)
+            confirmations[key] = .failed(Self.confirmedNotEnabled(Self.message(for: error)))
+        }
     }
 
     /// The panel's **Confirm** family for unchanged bytes: confirms the hash
@@ -481,9 +527,10 @@ package final class AutomationEditorCenter {
         checkTasks[key] = nil
         drafts[key] = nil
         lastChecked[key] = nil
-        saving[key] = autoFailures.isEmpty
-            ? .done
-            : .failed("Saved, but auto could not be kept for " + autoFailures.joined(separator: "; "))
+        // `.saving` until `commit` has turned it on (or not): only then `.done`.
+        if !autoFailures.isEmpty {
+            saving[key] = .failed("Saved, but auto could not be kept for " + autoFailures.joined(separator: "; "))
+        }
         return saved
     }
 
@@ -524,7 +571,8 @@ package final class AutomationEditorCenter {
             do {
                 try await cli.setEnabled(id, true)
             } catch {
-                confirmations[id] = .failed("Confirmed, but not enabled: " + Self.message(for: error))
+                turnOnPending.insert(id)
+                confirmations[id] = .failed(Self.confirmedNotEnabled(Self.message(for: error)))
                 await refresh(id)
                 return
             }

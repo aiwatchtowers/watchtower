@@ -64,13 +64,19 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
         newestChatEntry: AutomationDraftEntry?,
         confirmedText: String?,
         isNew: Bool,
-        plan: AutomationSavePlan?
+        plan: AutomationSavePlan?,
+        checkFailed: Bool = false
     ) {
         recipeText = text
         self.isNew = isNew
         // A result for other bytes says nothing about these.
         let current = validated.flatMap { $0.contentHash == Self.contentHash(text) ? $0 : nil }
-        status = if isChecking || current == nil { .checking } else if current?.ok == true { .ready } else {
+        // `checkFailed`: the draft's newest check failed without a result for
+        // these bytes (the CLI did not answer) — not "checking": the boxes
+        // say they can't read it.
+        status = if isChecking || (current == nil && !checkFailed) { .checking } else if current?.ok == true {
+            .ready
+        } else {
             .invalid
         }
         errors = status == .invalid ? current?.errors ?? [] : []

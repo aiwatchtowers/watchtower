@@ -172,6 +172,22 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         }
     }
 
+    func testFailedCheckWithoutAResultIsNotChecking() throws {
+        // The CLI did not answer: the footer says why, the column must not say "Checking…".
+        let failed = AutomationDraftColumnModel(text: Self.recipe, validated: nil, isChecking: false,
+                                                newestChatEntry: nil, confirmedText: nil, isNew: true, plan: nil,
+                                                checkFailed: true)
+        XCTAssertEqual(failed.status, .invalid)
+        XCTAssertEqual(failed.errors, [])
+        XCTAssertEqual(failed.placeholder, AutomationDraftColumnModel.unreadableLine)
+        XCTAssertFalse(failed.showsAllFields)
+        // Still checking while a new check runs.
+        let rechecking = AutomationDraftColumnModel(text: Self.recipe, validated: nil, isChecking: true,
+                                                    newestChatEntry: nil, confirmedText: nil, isNew: true, plan: nil,
+                                                    checkFailed: true)
+        XCTAssertEqual(rechecking.status, .checking)
+    }
+
     func testInvalidShowsErrors() throws {
         let m = model(validated: try validated(ok: false, errors: ["line 3: trigger is required"]))
         XCTAssertEqual(m.status, .invalid)

@@ -26,6 +26,8 @@ package struct AutomationDraftFooter: Equatable, Sendable {
     /// The column cannot show every hashed field of these bytes (a parse
     /// error, or a CLI without `fields`): nothing may be saved or confirmed.
     nonisolated package static let cantShowAllHint = "Can't show everything this would confirm, so it can't be saved"
+    /// The draft does not validate: its errors are listed above.
+    nonisolated package static let hasErrorsHint = "The recipe has errors, so it can't be saved"
 
     package let primary: Action
     package let primaryEnabled: Bool
@@ -36,18 +38,21 @@ package struct AutomationDraftFooter: Equatable, Sendable {
     /// `needsConfirmation`: the saved file's hash is not confirmed;
     /// `showsAllFields`: the draft column shows every hashed field
     /// (`AutomationDraftColumnModel.showsAllFields`) — false turns every
-    /// button off (AUTO-06).
+    /// button off (AUTO-06); `hasErrors`: off because the recipe does not
+    /// validate, which the hint then says.
     package static func make(
         isNew: Bool,
         bytesChanged: Bool,
         enabled: Bool,
         needsConfirmation: Bool,
-        showsAllFields: Bool = true
+        showsAllFields: Bool = true,
+        hasErrors: Bool = false
     ) -> Self {
         guard showsAllFields else {
             let shape = make(isNew: isNew, bytesChanged: bytesChanged, enabled: enabled,
                              needsConfirmation: needsConfirmation)
-            return Self(primary: shape.primary, primaryEnabled: false, secondary: nil, hint: cantShowAllHint)
+            return Self(primary: shape.primary, primaryEnabled: false, secondary: nil,
+                        hint: hasErrors ? hasErrorsHint : cantShowAllHint)
         }
         if isNew || (bytesChanged && !enabled) {
             return Self(primary: .saveAndTurnOn, primaryEnabled: true, secondary: .saveTurnedOff, hint: turnsOnHint)

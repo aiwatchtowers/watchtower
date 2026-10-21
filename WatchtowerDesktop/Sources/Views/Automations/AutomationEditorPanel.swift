@@ -29,6 +29,9 @@ struct AutomationEditorPanel: View {
     @State private var chatFailure: String?
     @State private var newKey: Int64?
     @State private var keepAuto: Set<String> = []
+    /// Waits for the owner's press to land, then opens the saved automation;
+    /// cancelled when the panel goes, so it never navigates from elsewhere.
+    @State private var pressTask: Task<Void, Never>?
 
     private var mode: AutomationEditorMode { chosenMode ?? .initial(toolsAvailable: hasTools) }
     private var hasTools: Bool { chat?.toolsAvailable ?? toolsAvailable }
@@ -72,6 +75,8 @@ struct AutomationEditorPanel: View {
         }
         .task { await open() }
         .onDisappear {
+            pressTask?.cancel()
+            pressTask = nil
             chat?.close()
             chat = nil
         }
@@ -83,8 +88,6 @@ struct AutomationEditorPanel: View {
         .onChange(of: form?.buffer.text) { _, _ in
             if let key { editor.textChanged(key) }
         }
-        .onChange(of: key.flatMap { editor.saving[$0] }) { _, _ in finishIfSaved() }
-        .onChange(of: key.flatMap { editor.confirmations[$0] }) { _, _ in finishIfConfirmed() }
     }
 
     // MARK: - Header
@@ -191,7 +194,14 @@ struct AutomationEditorPanel: View {
     }
 
     @ViewBuilder private var draftPlaceholder: some View {
-        if let message = key.flatMap({ editor.loadErrors[$0] }) {
+        if let key, case let .failed(message) = editor.saving[key] {
+            // The save landed but a later step did not: the draft is gone.
+            centered {
+                Label(message, systemImage: "exclamationmark.octagon")
+                    .foregroundStyle(Tone.error)
+                    .textSelection(.enabled)
+            }
+        } else if let message = key.flatMap({ editor.loadErrors[$0] }) {
             centered {
                 Label(message, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(Tone.warning)
@@ -275,9 +285,15 @@ struct AutomationEditorPanel: View {
                     .foregroundStyle(Tone.error)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
-                if let savedID = editor.savedIDs[key] {
-                    Button("Open Automation") { finish(key, savedID) }
-                        .buttonStyle(.kitSecondary)
+                HStack(spacing: Spacing.regular) {
+                    if editor.turnOnPending.contains(key) {
+                        Button("Turn On") { retryTurnOn(key) }
+                            .buttonStyle(.kitSecondary)
+                    }
+                    if let savedID = editor.savedIDs[key] {
+                        Button("Open Automation") { finish(key, savedID) }
+                            .buttonStyle(.kitSecondary)
+                    }
                 }
             }
             .font(.callout)
@@ -304,7 +320,8 @@ struct AutomationEditorPanel: View {
             newestChatEntry: chat?.draft.entry,
             confirmedText: confirmed,
             isNew: isNew,
-            plan: plan
+            plan: plan,
+            checkFailed: isFailed(key)
         )
     }
 
@@ -317,7 +334,8 @@ struct AutomationEditorPanel: View {
         let enabled = vm.items.first { $0.id == key }?.automation.enabled ?? form.detail.enabled
         let verdict = AutomationDraftFooter.make(
             isNew: isNew, bytesChanged: form.buffer.isDirty, enabled: enabled,
-            needsConfirmation: form.detail.needsConfirmation, showsAllFields: column.showsAllFields
+            needsConfirmation: form.detail.needsConfirmation, showsAllFields: column.showsAllFields,
+            hasErrors: !column.errors.isEmpty
         )
         let ready = editor.canSave(key) && !isSaving
         let checking = column.status == .checking && !isFailed(key)
@@ -368,7 +386,7 @@ struct AutomationEditorPanel: View {
             }
         }
         // The column lists a recipe's own errors; any other failure is said here.
-        if case let .failed(message) = editor.saving[key], column.status != .invalid {
+        if case let .failed(message) = editor.saving[key], column.errors.isEmpty {
             VStack(alignment: .leading, spacing: Spacing.small) {
                 Label(message, systemImage: "xmark.octagon")
                     .font(.caption)
@@ -393,8 +411,13 @@ struct AutomationEditorPanel: View {
                     .foregroundStyle(Tone.error)
                     .fixedSize(horizontal: false, vertical: true)
                     .textSelection(.enabled)
-                Button("Reload") { reload(key) }
-                    .buttonStyle(.kitQuiet)
+                if editor.turnOnPending.contains(key) {
+                    Button("Turn On") { retryTurnOn(key) }
+                        .buttonStyle(.kitQuiet)
+                } else {
+                    Button("Reload") { reload(key) }
+                        .buttonStyle(.kitQuiet)
+                }
             }
         case .confirming, .done, nil:
             EmptyView()
@@ -412,7 +435,8 @@ struct AutomationEditorPanel: View {
         guard case let .review(plan) = editor.saving[key] else { return }
         var checked = plan
         checked.keepAuto = keepAuto.intersection(plan.pausedGrants)
-        Task {
+        let editor = editor
+        whenLanded {
             switch action {
             case .saveAndTurnOn, .saveAndConfirm:
                 await editor.commit(key, plan: checked, turnOn: true)
@@ -423,6 +447,23 @@ struct AutomationEditorPanel: View {
             case .confirmTurnedOff, .confirm:
                 await editor.confirmShown(key, plan: checked, turnOn: false)
             }
+        }
+    }
+
+    /// **Turn On** after a save or confirm that did not turn it on.
+    private func retryTurnOn(_ key: Int64) {
+        let editor = editor
+        whenLanded { await editor.retryTurnOn(key) }
+    }
+
+    /// Runs `work` to its end — leaving the panel never cancels a save — and
+    /// then, if the panel is still here, opens the automation when it is done.
+    private func whenLanded(_ work: @escaping @MainActor () async -> Void) {
+        pressTask?.cancel()
+        pressTask = Task {
+            await Task { await work() }.value
+            guard !Task.isCancelled else { return }
+            if !finishIfSaved() { finishIfConfirmed() }
         }
     }
 
@@ -443,9 +484,6 @@ struct AutomationEditorPanel: View {
             return
         }
         chat = made
-        if let made, let prefill = composerPrefill, made.engine.messages.isEmpty, made.engine.draft.isEmpty {
-            made.engine.draft = prefill
-        }
         switch target {
         case let .existing(id, _):
             // The form and Script still work when the chat cannot open.
@@ -461,6 +499,11 @@ struct AutomationEditorPanel: View {
         if let made, let key {
             let editor = editor
             made.setPanelDraft { editor.drafts[key]?.form.renderedText() }
+            // Once per draft: a composer the owner emptied stays empty.
+            if let prefill = composerPrefill, editor.claimComposerPrefill(key), made.engine.messages.isEmpty,
+               made.engine.draft.isEmpty {
+                made.engine.draft = prefill
+            }
         }
     }
 
