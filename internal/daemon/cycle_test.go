@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	gosync "sync"
@@ -245,12 +246,18 @@ func seedLoopBackfill(t *testing.T, d *Daemon) {
 	d.SetDB(database)
 }
 
-// newLoopDB gives d's config a workspace and returns a test DB for d.
+// newLoopDB gives d's config a workspace and returns a test DB for d. It is
+// file-backed, as the daemon's is: a sleep cancels queries mid-flight, the
+// driver then drops the pool's connection, and an in-memory database would
+// come back empty on the next one.
 func newLoopDB(t *testing.T, d *Daemon) *db.DB {
 	t.Helper()
 	d.config.ActiveWorkspace = "test-ws"
 	require.NoError(t, os.MkdirAll(d.config.WorkspaceDir(), 0o755))
-	return db.OpenTestDB(t)
+	database, err := db.Open(filepath.Join(t.TempDir(), "watchtower.db"))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	return database
 }
 
 // stop cancels the daemon and requires Run to return promptly.
