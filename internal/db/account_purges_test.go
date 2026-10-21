@@ -183,3 +183,34 @@ func TestPurge02_FailureCapEndsFailed(t *testing.T) {
 		t.Fatalf("a failed row is not open: %+v %v", open, err)
 	}
 }
+
+func TestAccountPurgeRunning_OnlyARunningRow(t *testing.T) {
+	d := OpenTestDB(t)
+	running := func(source string, id int64) bool {
+		t.Helper()
+		got, err := d.AccountPurgeRunning(source, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	if _, err := d.ScheduleAccountPurge("slack", 1, "revoked", "2026-10-24T12:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if running("slack", 1) {
+		t.Fatal("a scheduled row is not running")
+	}
+	rows, err := d.ListAccountPurges(true)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("open rows = %+v, %v", rows, err)
+	}
+	if ok, err := d.StartAccountPurge(rows[0].ID); err != nil || !ok {
+		t.Fatalf("start: %v %v", ok, err)
+	}
+	if !running("slack", 1) {
+		t.Fatal("a running row must be reported")
+	}
+	if running("slack", 2) || running("jira", 1) {
+		t.Fatal("another account or source must not be reported")
+	}
+}

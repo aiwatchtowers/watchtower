@@ -16,7 +16,7 @@ Nothing is deleted without a notice of at least 72 hours, and reconnecting stops
 
 From the moment it is scheduled you see a red line under the account in **Settings → Connections**, a banner on [Home](../features/home.md) with **Reconnect**, and a macOS notification. A second notification says when the data is gone.
 
-If the account is in error rather than revoked when the time comes, the deletion waits and its line says it is on hold. Once it starts, it runs in small steps over a few sync cycles and finishes even if you turn the setting off; **Re-login** is unavailable until then. If it fails three times in a row, it stops: the line and a notification show the error, the account syncs again, and any new attempt comes with a new notice.
+If the account is in error rather than revoked when the time comes, the deletion waits and its line says it is on hold. Once it starts, it runs in small steps over a few sync cycles and finishes even if you turn the setting off; **Re-login** is unavailable until then, and a `watchtower … login` in the terminal is refused with a message pointing to `watchtower accounts purges`. If it fails three times in a row, it stops: the line and a notification show the error, the account syncs again, and any new attempt comes with a new notice.
 
 ## Turning it on
 

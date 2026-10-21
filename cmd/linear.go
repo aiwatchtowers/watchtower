@@ -325,6 +325,9 @@ func sameWorkspaceAccount(accounts []db.LinearAccount, newID int64, orgID string
 }
 
 func reviveLinearAccount(ctx context.Context, cfg *config.Config, database *db.DB, a db.LinearAccount, token *linear.Token, label string, viewer linear.Viewer) error {
+	if err := refuseLoginDuringPurge(database, "linear", a.ID); err != nil {
+		return err
+	}
 	if err := saveLinearTokenLocked(ctx, linear.NewTokenStore(cfg.WorkspaceDir(), a.ID), token); err != nil {
 		return err
 	}
@@ -470,6 +473,9 @@ func relinkLinearAccount(ctx context.Context, cfg *config.Config, database *db.D
 	if account.OrgID != "" && viewer.OrgID != account.OrgID {
 		return fmt.Errorf("this login is for workspace %s, but account %d is %s; run 'watchtower linear add' to connect another workspace",
 			viewer.OrgName, account.ID, account.OrgName)
+	}
+	if err := refuseLoginDuringPurge(database, "linear", account.ID); err != nil {
+		return err
 	}
 	if err := saveLinearTokenLocked(ctx, linear.NewTokenStore(cfg.WorkspaceDir(), account.ID), token); err != nil {
 		return err

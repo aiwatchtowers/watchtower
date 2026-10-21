@@ -126,3 +126,15 @@ func (db *DB) ListAccountPurges(openOnly bool) ([]AccountPurge, error) {
 	}
 	return out, nil
 }
+
+// AccountPurgeRunning reports whether the account has a running purge. The
+// login paths refuse to write credentials then: the purge would delete them
+// when it finishes.
+func (db *DB) AccountPurgeRunning(source string, accountID int64) (bool, error) {
+	var running bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM account_purges
+		WHERE source = ? AND account_id = ? AND state = 'running')`, source, accountID).Scan(&running); err != nil {
+		return false, fmt.Errorf("reading %s account %d purge: %w", source, accountID, err)
+	}
+	return running, nil
+}

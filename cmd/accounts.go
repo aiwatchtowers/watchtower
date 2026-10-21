@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -150,4 +151,22 @@ func purgeLine(p accountPurgeJSON) string {
 		line += "  — " + p.Error
 	}
 	return line
+}
+
+// errLoginDuringPurge refuses a login or re-auth of an account whose purge is
+// running: the purge would delete the credentials it writes when it finishes.
+var errLoginDuringPurge = errors.New("watchtower is deleting this account's data; " +
+	"log in again once it finishes (see 'watchtower accounts purges')")
+
+// refuseLoginDuringPurge returns errLoginDuringPurge when the account's purge
+// is running. Every login path calls it before its first write.
+func refuseLoginDuringPurge(database *db.DB, source string, accountID int64) error {
+	running, err := database.AccountPurgeRunning(source, accountID)
+	if err != nil {
+		return err
+	}
+	if running {
+		return fmt.Errorf("%s account %d: %w", source, accountID, errLoginDuringPurge)
+	}
+	return nil
 }
