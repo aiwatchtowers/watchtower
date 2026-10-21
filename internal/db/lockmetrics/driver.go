@@ -87,6 +87,8 @@ type baseConn interface {
 	driver.ExecerContext
 	driver.QueryerContext
 	driver.Pinger
+	driver.SessionResetter
+	driver.Validator
 }
 
 // errUnmeasurable: the engine's connection lacks one of baseConn's
@@ -147,6 +149,10 @@ var (
 func (c *conn) Prepare(query string) (driver.Stmt, error) { return c.base.Prepare(query) }
 func (c *conn) Close() error                              { return c.base.Close() }
 func (c *conn) Ping(ctx context.Context) error            { return c.base.Ping(ctx) }
+
+func (c *conn) IsValid() bool { return c.base.IsValid() }
+
+func (c *conn) ResetSession(ctx context.Context) error { return c.base.ResetSession(ctx) }
 
 func (c *conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, error) {
 	return c.base.PrepareContext(ctx, query)
