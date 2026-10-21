@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-/// Fixtures for the automation tables (migrations 00113, 00117, 00147).
+/// Fixtures for the automation tables (migrations 00113, 00117, 00149).
 extension TestDatabase {
     /// A personal recipe; defaults to a confirmed, enabled manual recipe.
     @discardableResult

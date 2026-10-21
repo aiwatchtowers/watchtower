@@ -31,7 +31,7 @@ const (
 	TriggerManual   = "manual"
 	TriggerDryRun   = "dry_run"
 	// TriggerReply is one owner press of an Inbox card's Reply button
-	// (00147): never coalesced with another run; event_json is a ReplyPayload.
+	// (00149): never coalesced with another run; event_json is a ReplyPayload.
 	TriggerReply = "reply"
 )
 
@@ -1117,7 +1117,7 @@ type AutomationOutput struct {
 	CreatedAt               time.Time
 	ReadAt, DismissedAt     *time.Time
 	// Link is the card's source link ('' = none) and Actions its buttons
-	// (00147); never nil when read back.
+	// (00149); never nil when read back.
 	Link    string
 	Actions []InboxAction
 	// DoneAt is the Desktop's Done; PressedAction/PressedRunID/PressedAt

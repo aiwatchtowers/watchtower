@@ -54,6 +54,28 @@ func TestLinear03_RevokedMarksAccount(t *testing.T) {
 	acc2, err := database.GetLinearAccount(a2)
 	require.NoError(t, err)
 	assert.Equal(t, "ok", acc2.Status)
+	// #601: the revoked account's revoked_at is stamped for the purge
+	// scheduler (PURGE-01).
+	var revokedAt string
+	require.NoError(t, database.QueryRow(`SELECT revoked_at FROM linear_accounts WHERE id = ?`, a1).Scan(&revokedAt))
+	assert.NotEmpty(t, revokedAt, "a revoked account records when it turned revoked")
+}
+
+// A clean Linear pass stamps access_ok_at and never writes status (#601;
+// LINEAR-03's "a nil error never writes a blanket ok" still holds).
+func TestPhaseLinearSync_CleanPassStampsAccessOnly(t *testing.T) {
+	d, database := newLinearTestDaemon(t)
+	a1, err := database.CreateLinearAccount("")
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE linear_accounts SET status = 'error', error = 'old', access_ok_at = '' WHERE id = ?`, a1)
+	require.NoError(t, err)
+	ran := 0
+	d.linearSyncers = []linearAccountSyncer{fakeLinearSyncer{id: a1, n: 1, ran: &ran}}
+	d.phaseLinearSync(context.Background())
+	var status, okAt string
+	require.NoError(t, database.QueryRow(`SELECT status, access_ok_at FROM linear_accounts WHERE id = ?`, a1).Scan(&status, &okAt))
+	assert.Equal(t, "error", status)
+	assert.NotEmpty(t, okAt)
 }
 
 func TestPhaseLinearSync_OtherErrorLeavesState(t *testing.T) {
@@ -126,4 +148,22 @@ func TestPhaseLinearSync_SyncsLinearTargets(t *testing.T) {
 	got, err = database.GetTargetByID(target.ID)
 	require.NoError(t, err)
 	assert.Equal(t, "done", got.Status)
+}
+
+// A cancelled pass leaves the interval clock alone: the next cycle syncs
+// again instead of waiting out the interval (phaseJiraSync's rule).
+func TestPhaseLinearSync_CancelledPassDoesNotStampTheInterval(t *testing.T) {
+	d, database := newLinearTestDaemon(t)
+	a1, err := database.CreateLinearAccount("")
+	require.NoError(t, err)
+	ran := 0
+	d.linearSyncers = []linearAccountSyncer{fakeLinearSyncer{id: a1, ran: &ran}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.phaseLinearSync(ctx)
+	d.phaseLinearSync(context.Background())
+	assert.Equal(t, 2, ran, "the pass after a cancelled one is not throttled")
+	d.phaseLinearSync(context.Background())
+	assert.Equal(t, 2, ran, "an uncancelled pass still is")
 }

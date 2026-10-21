@@ -12,7 +12,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 | `watchtower version` | Version |
 | `watchtower workspace init` | Create the local workspace (data directory and database) |
 | `watchtower db migrate` | Apply database migrations |
-| `watchtower db compact` | Shrink the database file after an update freed space (the app does this at launch). `--check` only reports; `--if-due` compacts only when due; refuses while the daemon runs or disk is short unless `--force` |
+| `watchtower db compact` | Shrink the database file after an update freed space, first finishing a pending search index rebuild (the app does this at launch). `--check` only reports; `--if-due` compacts only when due; refuses while the daemon runs or disk is short (twice the file's size for compacting, 64 MiB for the rebuild) unless `--force` |
 | `watchtower backfill status` | Progress of the [history backfill](../concepts/history-backfill.md) per source |
 | `watchtower features list\|enable\|disable <id>` | [Feature switches](../concepts/features-on-and-off.md) |
 | `watchtower config` | Read and change configuration |
@@ -26,6 +26,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 | `watchtower imap`, `outlook` | Other mailboxes |
 | `watchtower calendar`, `caldav` | Calendar events and CalDAV/ICS feeds |
 | `watchtower jira`, `linear`, `confluence` | Trackers and Confluence spaces |
+| `watchtower accounts purges` | Scheduled and finished deletions of a revoked or unreached account's data, newest first; `--json` for scripts. See [Revoked access](../concepts/revoked-access.md) |
 | `watchtower connections` | [Quick Connections](../features/quick-connections.md); `connections import` brings in your codex and Claude Code MCP servers |
 
 Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the others with `list`; `rename <id> <name>` exists on Slack, Jira, Google, IMAP, Outlook and CalDAV; `remove` exists on most (Outlook uses `logout`); `enable` / `disable` exist on Slack, Jira and Linear but not on Google, IMAP or CalDAV. Run `--help` on the group. See [Sources and accounts](../concepts/sources-and-accounts.md).

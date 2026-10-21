@@ -1,10 +1,14 @@
 package db
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strconv"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // compactFixture migrates a database file in a temp dir, stubs the free disk
@@ -286,4 +290,147 @@ func TestCheckCompaction_NamesHighestListedMigration(t *testing.T) {
 	if c := checkCompaction(t, path, "1.0.0"); c.Due {
 		t.Fatalf("reason = %q after recording 134, want not due", c.Reason)
 	}
+}
+
+func TestCheckCompaction_FTSRebuildDue(t *testing.T) {
+	d, path, _ := pendingFillDB(t)
+	fill, err := d.CheckMessagesSearchRebuild()
+	require.NoError(t, err)
+	require.NoError(t, d.Close())
+
+	c := checkCompaction(t, path, "1.0.0")
+	assert.True(t, c.Due)
+	assert.Equal(t, "fts_rebuild", c.Reason)
+	assert.True(t, c.FTSRebuildPending)
+	assert.Equal(t, fill.NeedsDiskBytes, c.NeedsDiskBytes)
+	assert.NotEqual(t, 2*c.DBBytes, c.NeedsDiskBytes)
+	assert.True(t, c.DiskOK)
+}
+
+func TestCheckCompaction_FTSRebuildBeatsGaveUp(t *testing.T) {
+	d, path, _ := pendingFillDB(t)
+	for key, value := range map[string]string{maintCompactFailures: "3", maintCompactFailuresVersion: "1.0.0"} {
+		_, err := d.Exec(`INSERT INTO db_maintenance (key, value) VALUES (?, ?)`, key, value)
+		require.NoError(t, err)
+	}
+	if c := checkCompaction(t, path, "1.0.0"); !c.Due || c.Reason != "fts_rebuild" {
+		t.Fatalf("pending and gave up: got due=%v reason=%q, want due fts_rebuild", c.Due, c.Reason)
+	}
+
+	_, err := d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{})
+	require.NoError(t, err)
+	c := checkCompaction(t, path, "1.0.0")
+	if c.Due || c.Reason != "gave_up" || c.FTSRebuildPending {
+		t.Fatalf("after the fill: got due=%v reason=%q pending=%v, want not due gave_up", c.Due, c.Reason, c.FTSRebuildPending)
+	}
+}
+
+// Nothing pending reads false and leaves the compaction rules alone.
+func TestCheckCompaction_FTSRebuildPendingFalseWhenDone(t *testing.T) {
+	path := compactFixture(t)
+	setMaintenance(t, path, maintLastCompactedVersion, strconv.FormatInt(highestAppliedVersion(t, path), 10))
+	c := checkCompaction(t, path, "1.0.0")
+	assert.False(t, c.FTSRebuildPending)
+	assert.False(t, c.Due)
+}
+
+func TestCheckCompaction_FTSRebuildDiskShort(t *testing.T) {
+	d, path, _ := pendingFillDB(t)
+	fill, err := d.CheckMessagesSearchRebuild()
+	require.NoError(t, err)
+	require.NoError(t, d.Close())
+	stubFreeDisk(t, fill.NeedsDiskBytes-1)
+
+	c := checkCompaction(t, path, "1.0.0")
+	assert.True(t, c.Due)
+	assert.Equal(t, "fts_rebuild", c.Reason)
+	assert.False(t, c.DiskOK)
+
+	stubFreeDisk(t, fill.NeedsDiskBytes)
+	assert.True(t, checkCompaction(t, path, "1.0.0").DiskOK, "exactly the need")
+}
+
+// failFill breaks the fill after its drop chunk (a cursor that is not an
+// integer) and runs the launch step's fill under version, which must fail.
+func failFill(t *testing.T, path, version string) {
+	t.Helper()
+	setMaintenance(t, path, maintFTSRebuildCursor, "not-a-number")
+	_, err := RebuildMessagesSearchAt(context.Background(), path, FTSRebuildRunOptions{Version: version})
+	require.Error(t, err)
+}
+
+// TestCheckCompaction_FTSRebuildGaveUp pins the launch fill's failure cap:
+// three failed fills under one version stop the check from reporting the
+// fill as due (the migration rule waits for the fill too), a new version
+// makes it due again, the compaction counter is never touched, and the
+// fill's completion clears the counter.
+func TestCheckCompaction_FTSRebuildGaveUp(t *testing.T) {
+	d, path, _ := pendingFillDB(t)
+	for i := 1; i <= 3; i++ {
+		c := checkCompaction(t, path, "1.0.0")
+		require.True(t, c.Due, "failure %d", i)
+		require.Equal(t, "fts_rebuild", c.Reason, "failure %d", i)
+		failFill(t, path, "1.0.0")
+		assert.Equal(t, strconv.Itoa(i), maintenanceKeys(t, path)[maintFTSRebuildFailures])
+	}
+
+	c := checkCompaction(t, path, "1.0.0")
+	assert.False(t, c.Due)
+	assert.Equal(t, "fts_rebuild_gave_up", c.Reason)
+	assert.True(t, c.FTSRebuildPending)
+	assert.Equal(t, 2*c.DBBytes, c.NeedsDiskBytes, "the compaction's disk rule once the fill is not due")
+	keys := maintenanceKeys(t, path)
+	assert.NotContains(t, keys, maintCompactFailures, "a fill failure counted against the compaction")
+
+	c = checkCompaction(t, path, "2.0.0")
+	assert.True(t, c.Due, "a new version tries the fill again")
+	assert.Equal(t, "fts_rebuild", c.Reason)
+
+	setMaintenance(t, path, maintFTSRebuildCursor, "0")
+	res, err := d.RebuildMessagesSearch(context.Background(), FTSRebuildOptions{})
+	require.NoError(t, err)
+	require.True(t, res.Done)
+	keys = maintenanceKeys(t, path)
+	assert.NotContains(t, keys, maintFTSRebuildFailures)
+	assert.NotContains(t, keys, maintFTSRebuildFailuresVersion)
+	assert.Equal(t, "migration:134", checkCompaction(t, path, "1.0.0").Reason, "after the fill the compaction is due again")
+}
+
+// TestCheckCompaction_FTSRebuildGaveUpFreelistStillDue pins that a fill that
+// gave up does not hold back a compaction its free pages make due.
+func TestCheckCompaction_FTSRebuildGaveUpFreelistStillDue(t *testing.T) {
+	_, path, _ := pendingFillDB(t)
+	prev := compactFreelistMinBytes
+	compactFreelistMinBytes = 1 << 20
+	t.Cleanup(func() { compactFreelistMinBytes = prev })
+	for range 3 {
+		failFill(t, path, "1.0.0")
+	}
+	require.Equal(t, "fts_rebuild_gave_up", checkCompaction(t, path, "1.0.0").Reason)
+	compactExec(t, path, `CREATE TABLE compact_filler (b BLOB)`)
+	compactExec(t, path, `INSERT INTO compact_filler WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2000) SELECT randomblob(4096) FROM n`)
+	compactExec(t, path, `DROP TABLE compact_filler`)
+
+	c := checkCompaction(t, path, "1.0.0")
+	assert.True(t, c.Due)
+	assert.Equal(t, "freelist", c.Reason)
+	assert.True(t, c.FTSRebuildPending)
+	// The Desktop's disk notice reads this: the compaction's rule, not the fill's floor.
+	assert.Equal(t, needsDiskBytes(c.DBBytes), c.NeedsDiskBytes)
+}
+
+// TestCheckCompaction_FTSRebuildUsesCompactionStatfs pins that the fill's
+// disk rule reads the free space the check measured once: one statfs.
+func TestCheckCompaction_FTSRebuildUsesCompactionStatfs(t *testing.T) {
+	d, path, _ := pendingFillDB(t)
+	require.NoError(t, d.Close())
+	calls := 0
+	prev := freeDiskBytes
+	freeDiskBytes = func(string) (int64, error) { calls++; return 1 << 50, nil }
+	t.Cleanup(func() { freeDiskBytes = prev })
+
+	c := checkCompaction(t, path, "1.0.0")
+	assert.Equal(t, "fts_rebuild", c.Reason)
+	assert.Equal(t, ftsRebuildMinFreeBytes, c.NeedsDiskBytes)
+	assert.Equal(t, 1, calls)
 }

@@ -40,8 +40,9 @@ struct NavigationRoot: View {
 }
 
 struct SplashView: View {
-    /// The launch's compaction step: while it compacts, its progress line,
-    /// subtitle and (from 15 s) Skip sit under the progress view.
+    /// The launch's compaction step: while its child runs (search index
+    /// update, then compaction), the phase's line, subtitle and (from 15 s)
+    /// Skip sit under the progress view.
     let compaction: DatabaseCompactionStep
     @State private var opacity: Double = 0
 
@@ -55,13 +56,11 @@ struct SplashView: View {
                 .scaleEffect(0.8)
                 .padding(.top, 8)
 
-            if case let .compacting(dbBytes) = compaction.phase {
+            if let progressLine {
                 VStack(spacing: Spacing.compact) {
-                    Text(DatabaseCompactionStep.progressLine(
-                        dbBytes: dbBytes, elapsedSeconds: compaction.elapsedSeconds
-                    ))
-                    .font(.callout)
-                    .monospacedDigit()
+                    Text(progressLine)
+                        .font(.callout)
+                        .monospacedDigit()
                     Text(DatabaseCompactionStep.subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -81,6 +80,19 @@ struct SplashView: View {
             withAnimation(.easeIn(duration: 0.4)) {
                 opacity = 1
             }
+        }
+    }
+
+    /// The running phase's line, timed from that phase's start; nil when no
+    /// child runs.
+    private var progressLine: String? {
+        switch compaction.phase {
+        case .updatingSearchIndex:
+            DatabaseCompactionStep.searchIndexLine(elapsedSeconds: compaction.phaseElapsedSeconds)
+        case let .compacting(dbBytes):
+            DatabaseCompactionStep.progressLine(dbBytes: dbBytes, elapsedSeconds: compaction.phaseElapsedSeconds)
+        case .idle, .checking, .finished:
+            nil
         }
     }
 }

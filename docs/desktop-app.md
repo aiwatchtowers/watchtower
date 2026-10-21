@@ -150,7 +150,31 @@ CREATE VIRTUAL TABLE messages_fts USING fts5(
     tokenize='porter unicode61'
 );
 ```
-Kept in sync via triggers on `messages` table. App can query directly:
+Kept in sync by triggers on `messages`, keyed by rowid (`messages_fts.rowid = messages.rowid`, migration 00147; SEARCHIDX-01). Only a message with text that is not deleted is indexed:
+```sql
+CREATE TRIGGER messages_ai AFTER INSERT ON messages
+WHEN NEW.text != '' AND NEW.is_deleted = 0
+BEGIN
+    DELETE FROM messages_fts WHERE rowid = NEW.rowid;
+    INSERT INTO messages_fts(rowid, text, channel_id, ts, user_id)
+    VALUES (NEW.rowid, NEW.text, NEW.channel_id, NEW.ts, NEW.user_id);
+END;
+
+CREATE TRIGGER messages_ad AFTER DELETE ON messages
+BEGIN
+    DELETE FROM messages_fts WHERE rowid = OLD.rowid;
+END;
+
+CREATE TRIGGER messages_au AFTER UPDATE OF text, is_deleted ON messages
+WHEN OLD.text != NEW.text OR OLD.is_deleted != NEW.is_deleted
+BEGIN
+    DELETE FROM messages_fts WHERE rowid = OLD.rowid;
+    INSERT INTO messages_fts(rowid, text, channel_id, ts, user_id)
+    SELECT NEW.rowid, NEW.text, NEW.channel_id, NEW.ts, NEW.user_id
+    WHERE NEW.text != '' AND NEW.is_deleted = 0;
+END;
+```
+The Desktop never writes `messages` with `INSERT OR REPLACE`/`REPLACE INTO`: REPLACE gives the row a new rowid and orphans its index row. After an upgrade to 00147 the index fills in the background (see `docs/features/db-compact.md`, "Search index rebuild"), so until then older messages may be missing from it. App can query directly:
 ```sql
 SELECT m.* FROM messages m
 JOIN messages_fts fts ON fts.channel_id = m.channel_id AND fts.ts = m.ts

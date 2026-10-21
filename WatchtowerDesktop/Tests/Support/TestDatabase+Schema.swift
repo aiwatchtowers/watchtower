@@ -54,13 +54,6 @@ CREATE TABLE IF NOT EXISTS messages (
     raw_json     TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (channel_id, ts)
 );
-CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-    text,
-    channel_id UNINDEXED,
-    ts UNINDEXED,
-    user_id UNINDEXED,
-    tokenize='porter unicode61'
-);
 CREATE TABLE IF NOT EXISTS reactions (
     channel_id  TEXT NOT NULL,
     message_ts  TEXT NOT NULL,
@@ -722,7 +715,7 @@ CREATE TABLE IF NOT EXISTS google_accounts (
     memory_gmail_last_extracted_ts REAL NOT NULL DEFAULT 0,   -- per-account memory extraction watermark (was workspace.memory_gmail_last_extracted_ts)
     created_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     updated_at                     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, ideas_email_floor REAL NOT NULL DEFAULT 0, deletions_checked_at TEXT NOT NULL DEFAULT '');
+, ideas_email_floor REAL NOT NULL DEFAULT 0, deletions_checked_at TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS "gmail_messages" (
     account_id     INTEGER NOT NULL REFERENCES google_accounts(id) ON DELETE CASCADE,
     id             TEXT NOT NULL,
@@ -754,7 +747,7 @@ CREATE TABLE IF NOT EXISTS slack_accounts (
     enabled           INTEGER NOT NULL DEFAULT 1,
     search_last_date  TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '');
+, reaction_commands_seeded_at TEXT NOT NULL DEFAULT '', roster_synced_at TEXT NOT NULL DEFAULT '', reaction_events_seeded_at TEXT NOT NULL DEFAULT '', deletion_sweep_day TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS jira_accounts (
     id                            INTEGER PRIMARY KEY AUTOINCREMENT,
     cloud_id                      TEXT NOT NULL DEFAULT '',
@@ -766,7 +759,7 @@ CREATE TABLE IF NOT EXISTS jira_accounts (
     enabled                       INTEGER NOT NULL DEFAULT 1,
     memory_jira_last_extracted_ts REAL NOT NULL DEFAULT 0,  -- per-account memory extraction watermark (was workspace.memory_jira_last_extracted_ts)
     created_at                    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-, ideas_jira_floor TEXT NOT NULL DEFAULT '', owner_account_id TEXT NOT NULL DEFAULT '', owner_email TEXT NOT NULL DEFAULT '', owner_display_name TEXT NOT NULL DEFAULT '');
+, ideas_jira_floor TEXT NOT NULL DEFAULT '', owner_account_id TEXT NOT NULL DEFAULT '', owner_email TEXT NOT NULL DEFAULT '', owner_display_name TEXT NOT NULL DEFAULT '', access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS "jira_boards" (
     account_id INTEGER NOT NULL REFERENCES jira_accounts(id) ON DELETE CASCADE,
     id INTEGER NOT NULL, name TEXT NOT NULL, project_key TEXT NOT NULL DEFAULT '',
@@ -889,12 +882,6 @@ CREATE TABLE IF NOT EXISTS jira_comments (
     updated_at          TEXT NOT NULL DEFAULT '',
     synced_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     PRIMARY KEY (account_id, id)
-);
-CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts USING fts5(
-    text,
-    transcript_id UNINDEXED,
-    title UNINDEXED,
-    tokenize='porter unicode61'
 );
 CREATE TABLE IF NOT EXISTS "meeting_recaps" (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1641,7 +1628,7 @@ CREATE TABLE IF NOT EXISTS linear_accounts (
     ideas_floor              TEXT NOT NULL DEFAULT '',
     moved_watermark          TEXT NOT NULL DEFAULT '',  -- moved-issue reconcile cursor; advances only on success
     created_at               TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-);
+, access_ok_at TEXT NOT NULL DEFAULT '', revoked_at   TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS linear_teams (
     account_id  INTEGER NOT NULL REFERENCES linear_accounts(id) ON DELETE CASCADE,
     id          TEXT NOT NULL,
@@ -2105,6 +2092,34 @@ CREATE TABLE IF NOT EXISTS automation_run_replay (
     pending     INTEGER NOT NULL DEFAULT 0 CHECK (pending IN (0, 1)),
     PRIMARY KEY (run_id, seq)
 );
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    text,
+    channel_id UNINDEXED,
+    ts UNINDEXED,
+    user_id UNINDEXED,
+    tokenize='porter unicode61'
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS transcripts_fts USING fts5(
+    text,
+    transcript_id UNINDEXED,
+    title UNINDEXED,
+    tokenize='porter unicode61'
+);
+CREATE TABLE IF NOT EXISTS account_purges (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    source       TEXT NOT NULL CHECK (source IN ('slack','google','jira','linear')),
+    account_id   INTEGER NOT NULL,
+    reason       TEXT NOT NULL CHECK (reason IN ('revoked','lease')),
+    scheduled_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    due_at       TEXT NOT NULL,
+    state        TEXT NOT NULL DEFAULT 'scheduled'
+                 CHECK (state IN ('scheduled','running','done','cancelled','failed')),
+    started_at   TEXT NOT NULL DEFAULT '',
+    finished_at  TEXT NOT NULL DEFAULT '',
+    rows_deleted INTEGER NOT NULL DEFAULT 0,
+    error        TEXT NOT NULL DEFAULT '',
+    failures     INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS "automation_runs" (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     automation_id     INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
@@ -2457,6 +2472,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_slack_links_decision_identity
 CREATE INDEX IF NOT EXISTS idx_stream_digests_source ON stream_digests(source, account_id);
 CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
 CREATE INDEX IF NOT EXISTS idx_idea_mentions_ref ON idea_mentions(source, ref);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_account_purges_open
+    ON account_purges(source, account_id) WHERE state IN ('scheduled','running');
 CREATE INDEX IF NOT EXISTS idx_automation_runs_automation_status ON automation_runs(automation_id, status);
 CREATE INDEX IF NOT EXISTS idx_automation_runs_status_queued ON automation_runs(status, queued_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_event_cycle ON automation_runs(automation_id, event_cycle)
@@ -2465,44 +2482,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_queued_trigger ON automati
     WHERE status = 'queued' AND trigger <> 'reply';
 CREATE INDEX IF NOT EXISTS idx_automation_runs_rerun_of ON automation_runs(rerun_of);
 CREATE INDEX IF NOT EXISTS idx_automation_runs_started_at ON automation_runs(started_at);
-CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
-WHEN NEW.text != '' AND NEW.is_deleted = 0
-BEGIN
-    DELETE FROM messages_fts WHERE channel_id = NEW.channel_id AND ts = NEW.ts;
-    INSERT INTO messages_fts(text, channel_id, ts, user_id)
-    VALUES (NEW.text, NEW.channel_id, NEW.ts, NEW.user_id);
-END;
-CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages
-BEGIN
-    DELETE FROM messages_fts WHERE channel_id = OLD.channel_id AND ts = OLD.ts;
-END;
-CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF text, is_deleted ON messages
-WHEN OLD.text != NEW.text OR OLD.is_deleted != NEW.is_deleted
-BEGIN
-    DELETE FROM messages_fts WHERE channel_id = OLD.channel_id AND ts = OLD.ts;
-    INSERT INTO messages_fts(text, channel_id, ts, user_id)
-    SELECT NEW.text, NEW.channel_id, NEW.ts, NEW.user_id
-    WHERE NEW.text != '' AND NEW.is_deleted = 0;
-END;
-CREATE TRIGGER IF NOT EXISTS meeting_transcripts_ai AFTER INSERT ON meeting_transcripts
-WHEN NEW.transcript_text != ''
-BEGIN
-    DELETE FROM transcripts_fts WHERE transcript_id = NEW.id;
-    INSERT INTO transcripts_fts(text, transcript_id, title)
-    VALUES (NEW.transcript_text, NEW.id, NEW.title);
-END;
-CREATE TRIGGER IF NOT EXISTS meeting_transcripts_ad AFTER DELETE ON meeting_transcripts
-BEGIN
-    DELETE FROM transcripts_fts WHERE transcript_id = OLD.id;
-END;
-CREATE TRIGGER IF NOT EXISTS meeting_transcripts_au AFTER UPDATE OF transcript_text, title ON meeting_transcripts
-WHEN OLD.transcript_text != NEW.transcript_text OR OLD.title != NEW.title
-BEGIN
-    DELETE FROM transcripts_fts WHERE transcript_id = OLD.id;
-    INSERT INTO transcripts_fts(text, transcript_id, title)
-    SELECT NEW.transcript_text, NEW.id, NEW.title
-    WHERE NEW.transcript_text != '';
-END;
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;
@@ -2758,6 +2737,44 @@ BEGIN
     VALUES (NEW.id, OLD.status, NEW.status, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
             COALESCE(NEW.status_actor, 'owner'));
     UPDATE targets SET status_actor = NULL WHERE id = NEW.id AND status_actor IS NOT NULL;
+END;
+CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages
+WHEN NEW.text != '' AND NEW.is_deleted = 0
+BEGIN
+    DELETE FROM messages_fts WHERE rowid = NEW.rowid;
+    INSERT INTO messages_fts(rowid, text, channel_id, ts, user_id)
+    VALUES (NEW.rowid, NEW.text, NEW.channel_id, NEW.ts, NEW.user_id);
+END;
+CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages
+BEGIN
+    DELETE FROM messages_fts WHERE rowid = OLD.rowid;
+END;
+CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF text, is_deleted ON messages
+WHEN OLD.text != NEW.text OR OLD.is_deleted != NEW.is_deleted
+BEGIN
+    DELETE FROM messages_fts WHERE rowid = OLD.rowid;
+    INSERT INTO messages_fts(rowid, text, channel_id, ts, user_id)
+    SELECT NEW.rowid, NEW.text, NEW.channel_id, NEW.ts, NEW.user_id
+    WHERE NEW.text != '' AND NEW.is_deleted = 0;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_ai AFTER INSERT ON meeting_transcripts
+WHEN NEW.transcript_text != ''
+BEGIN
+    DELETE FROM transcripts_fts WHERE rowid = NEW.id;
+    INSERT INTO transcripts_fts(rowid, text, transcript_id, title)
+    VALUES (NEW.id, NEW.transcript_text, NEW.id, NEW.title);
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_ad AFTER DELETE ON meeting_transcripts
+BEGIN
+    DELETE FROM transcripts_fts WHERE rowid = OLD.id;
+END;
+CREATE TRIGGER IF NOT EXISTS meeting_transcripts_au AFTER UPDATE OF transcript_text, title ON meeting_transcripts
+WHEN OLD.transcript_text != NEW.transcript_text OR OLD.title != NEW.title
+BEGIN
+    DELETE FROM transcripts_fts WHERE rowid = OLD.id;
+    INSERT INTO transcripts_fts(rowid, text, transcript_id, title)
+    SELECT NEW.id, NEW.transcript_text, NEW.id, NEW.title
+    WHERE NEW.transcript_text != '';
 END;
 CREATE TRIGGER IF NOT EXISTS automation_runs_replay_cleanup AFTER UPDATE OF status ON automation_runs
 WHEN NEW.status NOT IN ('queued','running','waiting')

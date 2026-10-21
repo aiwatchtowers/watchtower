@@ -9,10 +9,11 @@ A service in **Settings → Connections** shows a red dot, an account row has a 
 - "Stopped syncing: this server uses no TLS …" on a mail account, or "… uses plain http …" on a CalDAV calendar.
 - "Google Calendar for <name> can't sync" on the Calendar tab, with **Reconnect**.
 - "Loading history paused — reconnect the account" in the menu bar.
+- A red line saying the account's data will be deleted, or **Data deleted** on the row. This happens only with [revoked-access deletion](../concepts/revoked-access.md) on.
 
 ## Why
 
-The service revoked or expired the sign-in (a password change, an admin removing the app, a long idle period), or the server refused the connection. Watchtower keeps what it already synced and stops asking until you sign in again.
+The service revoked or expired the sign-in (a password change, an admin removing the app, a long idle period), or the server refused the connection. Watchtower keeps what it already synced and stops asking until you sign in again, unless [revoked-access deletion](../concepts/revoked-access.md) is on: then the data is deleted after a notice of at least 72 hours.
 
 ## Fix
 
@@ -21,6 +22,8 @@ The service revoked or expired the sign-in (a password change, an admin removing
 3. **Linear:** in **Settings** → **Connections** → **Linear**, press **Re-login** on the row. A browser workspace signs in again; an API-key workspace asks for a new key. `watchtower linear login --account N` does the same in a terminal.
 4. **Email (IMAP, Outlook) and CalDAV or ICS:** these rows have no **Re-login**. Remove the account and add it again, using SSL or STARTTLS for mail and an https URL for CalDAV.
    **Known issue:** removing a Google, Email or Calendar account deletes the mail or events synced from it, though the dialog says they are kept. Before you remove one, make sure you can live without the old mail or events; adding the account again syncs recent mail and events from the server again, and older mail returns through [history backfill](../concepts/history-backfill.md). Slack and Jira keep their data. See [Known issues](known-issues.md).
+
+A row that says **Data deleted** (Slack, Google, Jira or Linear) is fixed the same way, with **Re-login**; the account then syncs again from scratch. See [My data was deleted](../concepts/revoked-access.md#my-data-was-deleted).
 
 ## How to check
 

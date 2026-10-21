@@ -94,6 +94,7 @@ type Pipeline struct {
 	accountsFn  func(context.Context) ([]Account, error)
 	promptStore *prompts.Store
 	logger      *log.Logger
+	skip        func(accountID int64) bool // accounts not to poll (purged or being purged, #601); nil = none
 }
 
 // New builds a reaction-commands pipeline. accountsFn resolves the connected
@@ -103,6 +104,10 @@ func New(database *db.DB, cfg *config.Config, gen digest.Generator, registry *to
 	accountsFn func(context.Context) ([]Account, error), logger *log.Logger) *Pipeline {
 	return &Pipeline{db: database, cfg: cfg, generator: gen, registry: registry, accountsFn: accountsFn, logger: logger}
 }
+
+// SetAccountSkip sets which accounts a poll leaves out: the daemon skips the
+// accounts it is purging or has purged (#601).
+func (p *Pipeline) SetAccountSkip(skip func(accountID int64) bool) { p.skip = skip }
 
 // SetPromptStore injects the owner-customizable prompt store.
 func (p *Pipeline) SetPromptStore(s *prompts.Store) { p.promptStore = s }
@@ -140,6 +145,9 @@ func (p *Pipeline) Run(ctx context.Context, events EventSink) (int, error) {
 	var firstErr error
 	budget := &dispatchBudget{remaining: maxDispatchPerRun}
 	for _, acct := range accounts {
+		if p.skip != nil && p.skip(acct.AccountID) {
+			continue
+		}
 		n, err := p.processAccount(ctx, acct, dict, budget, events)
 		total += n
 		if err != nil {

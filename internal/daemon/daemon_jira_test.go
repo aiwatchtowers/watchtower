@@ -215,6 +215,8 @@ type stubJiraSyncer struct {
 	apiTok       int
 	resolveCalls int
 	firstSync    time.Time
+	noRequest    bool // a nil-error pass that made no request (no boards selected)
+	reachedErr   bool // the pass reached Atlassian, then failed (err set)
 }
 
 func (s *stubJiraSyncer) Sync(context.Context) (int, error) { return s.issues, s.err }
@@ -227,6 +229,9 @@ func (s *stubJiraSyncer) BoardAnalyzerUsage() (int, int, int) {
 	return s.inTok, s.outTok, s.apiTok
 }
 func (s *stubJiraSyncer) FirstSyncFrom() (time.Time, bool) { return s.firstSync, !s.firstSync.IsZero() }
+func (s *stubJiraSyncer) ReachedSource() bool {
+	return (s.err == nil && !s.noRequest) || s.reachedErr
+}
 
 // revokedErr is shaped like the error client.do returns for a 401 that survives
 // a token refresh.
@@ -454,4 +459,103 @@ func TestPhaseJiraSyncSkipsUserResolveOnCancelledContext(t *testing.T) {
 	d.phaseJiraSync(ctx)
 
 	assert.Zero(t, stub.resolveCalls, "a shutdown must not start identity resolution")
+}
+
+func readAccessOKAt(t *testing.T, database *db.DB, table string, id int64) (status, accessOKAt string) {
+	t.Helper()
+	// table comes from the fixed test call sites
+	require.NoError(t, database.QueryRow(`SELECT status, access_ok_at FROM `+table+` WHERE id = ?`, id).Scan(&status, &accessOKAt))
+	return status, accessOKAt
+}
+
+// A clean Jira pass that reached Atlassian stamps access_ok_at and leaves
+// status; a nil-error pass that made no request (no boards) stamps nothing
+// (#601).
+func TestPhaseJiraSyncStampsAccessOnlyWhenReached(t *testing.T) {
+	d, database, _ := newJiraTestDaemon(t)
+	reached, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+	idle, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c2"})
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE jira_accounts SET status = 'error', error = 'old', access_ok_at = ''`)
+	require.NoError(t, err)
+
+	d.jiraSyncers = []jiraAccountSyncer{
+		&stubJiraSyncer{accountID: reached},
+		&stubJiraSyncer{accountID: idle, noRequest: true},
+	}
+	d.phaseJiraSync(context.Background())
+
+	status, okAt := readAccessOKAt(t, database, "jira_accounts", reached)
+	assert.Equal(t, "error", status, "a pass never writes status")
+	assert.NotEmpty(t, okAt, "a pass that reached the source stamps access_ok_at")
+	status, okAt = readAccessOKAt(t, database, "jira_accounts", idle)
+	assert.Equal(t, "error", status)
+	assert.Empty(t, okAt, "a pass with no request proves no access")
+}
+
+// A pass that reached Atlassian and then failed elsewhere (one board's
+// history, a later request) still proved access: access_ok_at is stamped.
+// A revoked grant is the one error that never stamps (review #601).
+func TestPhaseJiraSyncStampsAccessWhenReachedDespiteError(t *testing.T) {
+	d, database, _ := newJiraTestDaemon(t)
+	partial, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+	revoked, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c2"})
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE jira_accounts SET access_ok_at = ''`)
+	require.NoError(t, err)
+
+	d.jiraSyncers = []jiraAccountSyncer{
+		&stubJiraSyncer{accountID: partial, err: errors.New("history: 500"), reachedErr: true},
+		&stubJiraSyncer{accountID: revoked, err: revokedErr(), reachedErr: true},
+	}
+	d.phaseJiraSync(context.Background())
+
+	_, okAt := readAccessOKAt(t, database, "jira_accounts", partial)
+	assert.NotEmpty(t, okAt, "a pass that reached the source stamps access_ok_at whatever failed after")
+	status, okAt := readAccessOKAt(t, database, "jira_accounts", revoked)
+	assert.Equal(t, "revoked", status)
+	assert.Empty(t, okAt, "a revoked grant never stamps access")
+}
+
+// A pass cut off by a cancelled context (shutdown, or a sleep interrupting the
+// cycle) leaves the interval clock where it was, so the next cycle syncs
+// instead of waiting out the interval.
+func TestPhaseJiraSyncCancelledPassKeepsTheIntervalClock(t *testing.T) {
+	d, database, wsDir := newJiraTestDaemon(t)
+	d.config.Jira.SyncIntervalMins = 60
+
+	acct := seedJiraAccountWithBoard(t, database, "c1", "OPS")
+	d.SetJiraSyncers([]*jira.Syncer{jiraSyncerFor(t, database, wsDir, acct)})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	d.phaseJiraSync(ctx)
+	assert.True(t, d.lastJira.IsZero(), "a cancelled pass must not stamp the interval clock")
+
+	d.phaseJiraSync(context.Background())
+	assert.False(t, d.lastJira.IsZero(), "the next, uncancelled pass stamps it")
+}
+
+// A pass cut off by the loop's cancel records its jira-boards row (board
+// analyzer usage) without an error: cancelled, not failed.
+func TestPhaseJiraSyncCancelledPassIsNoErrorRow(t *testing.T) {
+	d, database, _ := newJiraTestDaemon(t)
+
+	acct, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+	d.jiraSyncers = []jiraAccountSyncer{
+		&stubJiraSyncer{accountID: acct, err: fmt.Errorf("searching issues: %w", context.Canceled), inTok: 100, outTok: 20, apiTok: 120},
+	}
+	ctx, cancel := context.WithCancelCause(context.Background())
+	cancel(errCycleSlept)
+
+	d.phaseJiraSync(ctx)
+
+	var status, errMsg string
+	require.NoError(t, database.QueryRow(
+		`SELECT status, COALESCE(error_msg, '') FROM pipeline_runs WHERE pipeline = 'jira-boards' ORDER BY id DESC LIMIT 1`,
+	).Scan(&status, &errMsg))
+	assert.Empty(t, errMsg, "a cancelled pass is no failure")
 }

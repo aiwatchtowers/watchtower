@@ -39,10 +39,10 @@ func runsSeq(t *testing.T, d *DB) int64 {
 	return seq
 }
 
-func TestMigration00147_BackfillsDoneAtFromReadAt(t *testing.T) {
+func TestMigration00149_BackfillsDoneAtFromReadAt(t *testing.T) {
 	d := openTestDB(t)
 	objectsAtHead := automationRunObjects(t, d)
-	require.NoError(t, gooseDownTo(d.DB, "migrations", 146))
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 148))
 	before := automationRunObjects(t, d)
 
 	wb := newTestWorkbench(t, d)
@@ -103,8 +103,8 @@ func TestMigration00147_BackfillsDoneAtFromReadAt(t *testing.T) {
 	// done card that was never read reads as read.
 	_, err = d.Exec(`UPDATE automation_outputs SET done_at = '2026-10-20T11:00:00Z' WHERE id = 2`)
 	require.NoError(t, err)
-	require.NoError(t, gooseDownTo(d.DB, "migrations", 146))
-	assert.Equal(t, before, automationRunObjects(t, d), "the 00146 indexes and trigger come back verbatim")
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 148))
+	assert.Equal(t, before, automationRunObjects(t, d), "the 00148 indexes and trigger come back verbatim")
 	assert.Equal(t, 2, countWhere(t, d, `SELECT COUNT(*) FROM automation_runs`))
 	assert.Equal(t, 0, countWhere(t, d, `SELECT COUNT(*) FROM automation_run_steps WHERE run_id = 4`))
 	assert.Equal(t, 1, countWhere(t, d, `SELECT COUNT(*) FROM automation_run_replay WHERE run_id = 2`))

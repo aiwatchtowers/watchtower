@@ -206,7 +206,7 @@ func TestAllTablesExist(t *testing.T) {
 		"linear_issue_history", "linear_cycles", "linear_projects", "linear_relations", "linear_user_map",
 		"plan_usage_samples", "plan_usage_status", "history_backfill",
 		"automation_tool_grants", "linear_workflow_states", "linear_labels",
-		"db_maintenance",
+		"db_maintenance", "account_purges",
 	}
 
 	for _, table := range expectedTables {
@@ -1107,9 +1107,10 @@ func TestMessageUpsert(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	// Upsert via INSERT OR REPLACE
+	// Upsert the way production does: ON CONFLICT keeps the rowid (SEARCHIDX-01)
 	_, err = db.Exec(
-		"INSERT OR REPLACE INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1000000000.000001', 'U1', 'v2')",
+		"INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('C1', '1000000000.000001', 'U1', 'v2') " +
+			"ON CONFLICT(channel_id, ts) DO UPDATE SET text = excluded.text",
 	)
 	require.NoError(t, err)
 

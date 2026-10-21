@@ -374,6 +374,35 @@ func TestRunner_CanceledContextRecordsNoFailure(t *testing.T) {
 	assert.Equal(t, 30*day, st.rows[0].ReachedTS)
 }
 
+// A cancel (a sleep cancelling the daemon cycle) is no strike even when the
+// source reports it as some other error, such as the reset socket it cut.
+func TestRunner_CanceledContextAnyErrorRecordsNoFailure(t *testing.T) {
+	st := &fakeStore{rows: []db.HistoryBackfill{running(1, "slack", 1, 30*day, 0)}}
+	ctx, cancel := context.WithCancel(context.Background())
+	src := &fakeSource{kind: "slack", id: 1, processErr: errors.New("connection reset by peer"), onProcess: cancel}
+	err := newRunner(st, src).Step(ctx)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.Equal(t, 0, st.failures)
+	assert.Empty(t, st.rows[0].LastError)
+}
+
+// An incomplete Process cut off by a cancel did not answer: a hold stays,
+// and the Step stops instead of going on to the next row.
+func TestRunner_CanceledIncompleteProcessKeepsTheHold(t *testing.T) {
+	held := running(1, "gmail", 1, 30*day, 0)
+	since := time.Unix(900_000_000, 0)
+	held.HeldSince = &since
+	st := &fakeStore{rows: []db.HistoryBackfill{held, running(2, "imap", 1, 30*day, 0)}}
+	ctx, cancel := context.WithCancel(context.Background())
+	a := &fakeSource{kind: "gmail", id: 1, incomplete: true, onProcess: cancel}
+	b := &fakeSource{kind: "imap", id: 1}
+	err := newRunner(st, a, b).Step(ctx)
+	assert.ErrorIs(t, err, context.Canceled)
+	assert.NotNil(t, st.rows[0].HeldSince, "a cancelled Process did not answer")
+	assert.Zero(t, b.count("fetch"), "the Step stops at the cancel")
+	assert.Equal(t, 0, st.failures)
+}
+
 func TestRunner_PlanGateHoldsChunk(t *testing.T) {
 	st := &fakeStore{
 		rows: []db.HistoryBackfill{running(1, "slack", 1, 30*day, 0), running(2, "gmail", 1, 30*day, 0)},

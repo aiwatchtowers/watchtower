@@ -55,6 +55,8 @@ func (d *Daemon) startHistoryBackfill(kind string, accountID int64, from time.Ti
 // sync.backfill_days <= 0 is the kill switch (R20): the phase does not run
 // and the rows stay as they are; setting it back resumes them. Memory waits
 // for a running row at most memoryBackfillWaitMax (phaseMemory, #578).
+// runSync passes the cycle's fetch context: a sleep cancels the Step, which
+// then strikes no chunk (Runner.fail) and leaves no error on the row.
 func (d *Daemon) phaseHistoryBackfill(ctx context.Context) {
 	if d.db == nil || d.config.Sync.BackfillDays <= 0 {
 		return
@@ -78,7 +80,11 @@ func (d *Daemon) phaseHistoryBackfill(ctx context.Context) {
 		// (the phaseIdeas pattern). The phase runs alone, after them.
 		u0 := d.historyBackfillUsage()
 		err := r.Step(ctx)
-		if err != nil {
+		switch {
+		case isLoopCancelErr(ctx, err):
+			d.logger.Printf("history backfill: stopped by %s", fetchStopReason(ctx))
+			err = nil // cancelled, not failed (the slack-sync row's rule)
+		case err != nil:
 			d.logger.Printf("history backfill: %v", err)
 		}
 		u := d.historyBackfillUsage()
@@ -135,14 +141,21 @@ func (d *Daemon) historyBackfillDue() bool {
 // Gmail syncer, IMAP syncer and Jira syncer.
 func (d *Daemon) historyBackfillSources() []historybackfill.Source {
 	out := make([]historybackfill.Source, 0, len(d.orchestrators)+len(d.gmailSyncers)+len(d.imapSyncers)+len(d.jiraSyncers))
+	// Accounts purged or being purged (#601) are left out.
 	for _, o := range d.orchestrators {
-		out = append(out, slackSource{o: o, id: o.AccountID(), d: d})
+		if !d.purgeHeld("slack", o.AccountID()) {
+			out = append(out, slackSource{o: o, id: o.AccountID(), d: d})
+		}
 	}
 	for _, s := range d.gmailSyncers {
-		out = append(out, gmailSource{s: s, id: s.AccountID(), d: d})
+		if !d.purgeHeld("google", s.AccountID()) {
+			out = append(out, gmailSource{s: s, id: s.AccountID(), d: d})
+		}
 	}
 	for _, s := range d.jiraSyncers {
-		out = append(out, jiraSource{id: s.AccountID(), d: d})
+		if !d.purgeHeld("jira", s.AccountID()) {
+			out = append(out, jiraSource{id: s.AccountID(), d: d})
+		}
 	}
 	for _, s := range d.imapSyncers {
 		out = append(out, imapSource{s: s, id: s.AccountID(), d: d})
@@ -244,9 +257,15 @@ func (d *Daemon) onSlackBackfillDone(ctx context.Context, floor time.Time) error
 					firstErr = err
 				}
 			}
+			// ctx is the runner's budget ctx: only the loop's cancel or the
+			// shutdown is benign, its passed deadline is a failure.
+			reportErr := err
+			if isLoopCancelErr(ctx, err) {
+				reportErr = nil // cancelled, not failed: no stamp, retried on a later Step
+			}
 			inTok, outTok, cost, totalAPI := d.peoplePipe.AccumulatedUsage()
 			return pipelineRunStats{items: n, inTok: inTok - inTok0, outTok: outTok - outTok0,
-				cost: cost - cost0, totalAPI: totalAPI - totalAPI0, err: err}
+				cost: cost - cost0, totalAPI: totalAPI - totalAPI0, err: reportErr}
 		})
 	}
 	if firstErr != nil {

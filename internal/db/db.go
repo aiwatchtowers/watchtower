@@ -575,7 +575,19 @@ func (db *DB) migrate() error {
 	}
 	gooseMu.Lock()
 	defer gooseMu.Unlock()
-	return goose.Up(db.DB, "migrations")
+	if err := goose.Up(db.DB, "migrations"); err != nil {
+		return err
+	}
+	// After goose: the conditional half of 00147 (see
+	// dropEmptyMessagesSearchLegacy). Best effort: a failure leaves the
+	// legacy table and the pending key behind, and the messages search fill
+	// is the safety net — it handles an empty messages table and drops the
+	// legacy table with DROP TABLE IF EXISTS — so Open goes on.
+	if err := dropEmptyMessagesSearchLegacy(db.DB); err != nil {
+		path, _ := mainDatabaseFile(db) // best effort, for the log line only
+		slog.Warn("could not drop the empty legacy messages search index; the search fill will", "path", path, "error", err)
+	}
+	return nil
 }
 
 // SetBusyTimeout replaces Open's 5 s busy_timeout on the connection: how long
