@@ -86,4 +86,19 @@ final class AccountPurgeStatusDecodingTests: XCTestCase {
     func testMissingKeyThrows() {
         XCTAssertThrowsError(try AccountPurgeStatus.decode(Data(#"{"enabled": true}"#.utf8)))
     }
+
+    func testRemoveDialogMessageAddsTheLeaseOnlyWhenOn() {
+        let kept = "Already-synced issues stay in Watchtower."
+        XCTAssertEqual(AccountPurgeStatus.removeDialogMessage(kept, status: nil), kept)
+        XCTAssertEqual(
+            AccountPurgeStatus.removeDialogMessage(kept, status: AccountPurgeStatus(enabled: false, enabledBy: "default")),
+            kept
+        )
+        XCTAssertEqual(
+            AccountPurgeStatus.removeDialogMessage(
+                kept, status: AccountPurgeStatus(enabled: true, enabledBy: "build", leaseDays: 14)
+            ),
+            kept + " Because deleting data on revoked access is on, it is deleted after 14 days without access."
+        )
+    }
 }

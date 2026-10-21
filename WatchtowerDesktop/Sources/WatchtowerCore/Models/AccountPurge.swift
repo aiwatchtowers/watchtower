@@ -119,6 +119,16 @@ package struct AccountPurgeStatus: Decodable, Equatable, Sendable {
     /// An organisation policy sets it; the owner cannot change it.
     package var isSetByPolicy: Bool { enabledBy == "policy" }
 
+    /// A Slack, Jira or Linear Remove dialog's message: `kept` says the
+    /// synced data stays; with the purge effectively on, one sentence adds
+    /// the removed account's own lease. An unknown status (the CLI has not
+    /// answered) adds nothing.
+    package static func removeDialogMessage(_ kept: String, status: AccountPurgeStatus?) -> String {
+        guard let status, status.enabled else { return kept }
+        return kept + " Because deleting data on revoked access is on, it is deleted after "
+            + "\(status.leaseDays) days without access."
+    }
+
     package static func decode(_ data: Data) throws -> Self {
         try JSONDecoder().decode(Self.self, from: data)
     }

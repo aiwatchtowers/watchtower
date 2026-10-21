@@ -54,9 +54,12 @@ struct LinearConnectionDetail: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(pendingRemoval?.usesAPIKey == true
-                 ? "Disconnects the workspace. Already-synced issues stay in Watchtower. Delete the API key in Linear's settings to revoke it."
-                 : "Disconnects the workspace and revokes Watchtower's access. Already-synced issues stay in Watchtower.")
+            Text(AccountPurgeStatus.removeDialogMessage(
+                pendingRemoval?.usesAPIKey == true
+                    ? "Disconnects the workspace. Already-synced issues stay in Watchtower. Delete the API key in Linear's settings to revoke it."
+                    : "Disconnects the workspace and revokes Watchtower's access. Already-synced issues stay in Watchtower.",
+                status: appState.accountPurgeCenter?.status
+            ))
         }
     }
 

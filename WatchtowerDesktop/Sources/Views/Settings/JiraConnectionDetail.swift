@@ -126,10 +126,11 @@ struct JiraConnectionDetail: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(
+            Text(AccountPurgeStatus.removeDialogMessage(
                 "Disconnects the site. Already-synced issues, boards, and "
-                    + "releases stay in Watchtower."
-            )
+                    + "releases stay in Watchtower.",
+                status: appState.accountPurgeCenter?.status
+            ))
         }
 
         if appState.jiraAccountsViewModel?.accounts.isEmpty == false {

@@ -302,10 +302,11 @@ struct SlackConnectionDetail: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(
+            Text(AccountPurgeStatus.removeDialogMessage(
                 "Disconnects the workspace. Already-synced messages, digests, and "
-                    + "situations stay in Watchtower."
-            )
+                    + "situations stay in Watchtower.",
+                status: appState.accountPurgeCenter?.status
+            ))
         }
     }
 
