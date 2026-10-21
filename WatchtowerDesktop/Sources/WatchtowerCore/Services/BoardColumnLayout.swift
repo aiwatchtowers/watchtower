@@ -69,7 +69,8 @@ package enum BoardColumnLayout {
         return defined.first { $0.id != nil && $0.id == columnID } ?? defined.first
     }
 
-    private static func key(_ columnID: Int64?) -> String {
+    /// The slot key of a defined column ("c<id>").
+    package static func key(_ columnID: Int64?) -> String {
         "c\(columnID ?? 0)"
     }
 

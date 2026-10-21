@@ -109,7 +109,10 @@ type Options struct {
 	// Network allows reading pull request states through the gh CLI. Off
 	// in the Stop hook's and the brief's fast path.
 	Network bool
-	Run     Runner // nil = ExecRunner
+	// OpenOnly checks only open targets: every blocking kind is about one,
+	// so the Stop hook's verdict is the same without the closed ones.
+	OpenOnly bool
+	Run      Runner // nil = ExecRunner
 }
 
 // addRunNotes adds what the git and pull-request passes learned while
@@ -157,20 +160,27 @@ func Check(ctx context.Context, workbenchID int64, board []db.BoardNode, o Optio
 		rep.Notes = append(rep.Notes, pr.notes...)
 	}
 	c := checker{g: g, pr: pr, o: o, openRefs: openRefs(board)}
-	walkBoard(board, func(n db.BoardNode) {
-		if rep.Incomplete {
-			return
+	// Open targets first: a check its deadline cuts short has then looked at
+	// the work the blocking kinds are about.
+	for _, open := range []bool{true, false} {
+		if !open && o.OpenOnly {
+			break
 		}
-		found := c.checkTarget(ctx, n)
-		// A git call cut short by the deadline reads as "not found" or "not
-		// merged": never report what a cut-short target seemed to show.
-		if ctx.Err() != nil {
-			rep.Incomplete = true
-			rep.Notes = append(rep.Notes, "time ran out; only part of the board was checked")
-			return
-		}
-		rep.Findings = append(rep.Findings, found...)
-	})
+		walkBoard(board, func(n db.BoardNode) {
+			if rep.Incomplete || isClosed(n.Target.Status) == open {
+				return
+			}
+			found := c.checkTarget(ctx, n)
+			// A git call cut short by the deadline reads as "not found" or "not
+			// merged": never report what a cut-short target seemed to show.
+			if ctx.Err() != nil {
+				rep.Incomplete = true
+				rep.Notes = append(rep.Notes, "time ran out; only part of the board was checked")
+				return
+			}
+			rep.Findings = append(rep.Findings, found...)
+		})
+	}
 	addRunNotes(&rep, g, pr)
 	if ctx.Err() != nil && !rep.Incomplete {
 		// The deadline hit during the repository probe: its conclusions

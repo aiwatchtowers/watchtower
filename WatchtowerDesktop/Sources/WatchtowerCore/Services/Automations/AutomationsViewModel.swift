@@ -101,6 +101,10 @@ package final class AutomationsViewModel {
     /// tab opens its confirmation sheet and clears this (held here so the
     /// sheet opens when the tab appears).
     package var pendingConfirmID: Int64?
+    /// **New Automation…** in a workbench's header menu: the tab opens the
+    /// New automation sheet with this workbench picked under "For" and
+    /// clears it (held here so the sheet opens when the tab appears).
+    package var pendingNewWorkbenchID: Int64?
     /// Quick run's finish watch (`QuickRunCenter` registers itself): each
     /// poll tick checks it, and the poll stays fast while it watches a run.
     @ObservationIgnored package weak var runWatcher: QuickRunCenter?

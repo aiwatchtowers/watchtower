@@ -38,9 +38,14 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
                                                 conversationID: conversationID, dbPool: pool, skillsDir: nil)
     }
 
-    private func newSpec(draftID: String = "draft-1", provider: String = "claude") async throws -> ChatSurfaceSpec {
-        let conversationID = try await AutomationEditorChatSurface.newConversationID(draftID: draftID, dbPool: pool)
-        return AutomationEditorChatSurface.newSpec(provider: provider, draftID: draftID,
+    private func newSpec(
+        draftID: String = "draft-1",
+        workbench: AutomationEditorChatSurface.NewWorkbench? = nil,
+        provider: String = "claude"
+    ) async throws -> ChatSurfaceSpec {
+        let conversationID = try await AutomationEditorChatSurface.newConversationID(
+            draftID: draftID, workbenchID: workbench?.id, dbPool: pool)
+        return AutomationEditorChatSurface.newSpec(provider: provider, draftID: draftID, workbench: workbench,
                                                    conversationID: conversationID, skillsDir: nil)
     }
 
@@ -120,6 +125,89 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         XCTAssertTrue(args.contains("--conversation"))
     }
 
+    // MARK: - Workbench scope at creation (spec §4)
+
+    func testNewContextBlockPersonal() {
+        let block = AutomationEditorChatSurface.newContextBlock(workbench: nil)
+        XCTAssertTrue(block.contains("Scope: personal"), block)
+        XCTAssertFalse(block.contains("workbench_id"), block)
+        XCTAssertFalse(block.contains("workbench_skills"), block)
+        XCTAssertTrue(block.contains("pick the workbench under **For** at the top of this window"), block)
+    }
+
+    func testNewContextBlockWorkbench() {
+        let block = AutomationEditorChatSurface.newContextBlock(workbench: (1, "watchtower", "watchtower"))
+        XCTAssertTrue(block.contains("Scope: workbench 1 (watchtower, folder watchtower)"), block)
+        XCTAssertTrue(block.contains("Always pass `workbench_id: 1`"), block)
+        XCTAssertTrue(block.contains("workbench_skills"), block)
+        XCTAssertFalse(block.contains("Scope: personal"), block)
+    }
+
+    func testDraftContextIDPerScope() {
+        XCTAssertEqual(AutomationEditorChatSurface.draftContextID(draftID: "d", workbenchID: nil), "d")
+        XCTAssertEqual(AutomationEditorChatSurface.draftContextID(draftID: "d", workbenchID: 1), "d-wb1")
+    }
+
+    func testWorkbenchNewSpecCarriesTheWorkbenchAndNoCLIContext() async throws {
+        let mock = MockClaudeService(events: [.text("ok"), .done])
+        let spec = try await newSpec(workbench: (7, "acme", "acme-app"))
+        XCTAssertEqual(spec.key.contextType, "automation_draft")
+        XCTAssertEqual(spec.key.contextID, "draft-1-wb7")
+        XCTAssertTrue(spec.systemPrompt().contains("Scope: workbench 7 (acme, folder acme-app)"))
+        let engine = makeSurfaceEngine(spec, dbPool: pool, ai: mock)
+        engine.send("run my lint skill every night")
+        await engine.finished()
+        let done = await eventually { !engine.isStreaming }
+        XCTAssertTrue(done)
+
+        let args = try XCTUnwrap(mock.toolModes.first.flatMap { $0 }).cliArgs
+        XCTAssertEqual(Array(args.prefix(4)), ["--tools", "chat", "--surface", "automation_editor"])
+        XCTAssertFalse(args.contains("--context-type"))
+        XCTAssertFalse(args.contains("--context-id"))
+        XCTAssertTrue(args.contains("--conversation"))
+    }
+
+    /// Switching the "For" picker: each scope keeps its own conversation,
+    /// and nothing written under one scope is sent under another.
+    func testEachScopeKeepsItsOwnDraftConversation() async throws {
+        let personalID = try await AutomationEditorChatSurface.newConversationID(
+            draftID: "draft-1", workbenchID: nil, dbPool: pool)
+        let workbenchID = try await AutomationEditorChatSurface.newConversationID(
+            draftID: "draft-1", workbenchID: 1, dbPool: pool)
+        let otherWorkbenchID = try await AutomationEditorChatSurface.newConversationID(
+            draftID: "draft-1", workbenchID: 2, dbPool: pool)
+        XCTAssertEqual(Set([personalID, workbenchID, otherWorkbenchID]).count, 3)
+
+        let workbenchMock = MockClaudeService(events: [.text("ok"), .done])
+        let workbenchChat = controller(center(workbenchMock),
+                                       spec: try await newSpec(workbench: (1, "watchtower", "watchtower")))
+        workbenchChat.engine.send("secret workbench wording")
+        await workbenchChat.engine.finished()
+        var done = await eventually { !workbenchChat.engine.isStreaming }
+        XCTAssertTrue(done)
+        workbenchChat.close()
+
+        let personalMock = MockClaudeService(events: [.text("ok"), .done])
+        let personalChat = controller(center(personalMock), spec: try await newSpec())
+        XCTAssertFalse(personalChat.engine === workbenchChat.engine)
+        XCTAssertEqual(personalChat.conversationID, personalID)
+        XCTAssertTrue(personalChat.engine.messages.isEmpty, "the personal chat starts empty")
+        personalChat.engine.send("personal wording")
+        await personalChat.engine.finished()
+        done = await eventually { !personalChat.engine.isStreaming }
+        XCTAssertTrue(done)
+        let sent = personalMock.prompts.joined() + personalMock.systemPrompts.compactMap { $0 }.joined()
+        XCTAssertFalse(sent.contains("secret workbench wording"))
+        XCTAssertFalse(sent.contains("Scope: workbench"))
+        XCTAssertTrue(sent.contains("Scope: personal"))
+        personalChat.close()
+
+        let reopened = controller(center(MockClaudeService()),
+                                  spec: try await newSpec(workbench: (1, "watchtower", "watchtower")))
+        XCTAssertEqual(reopened.conversationID, workbenchID, "switching back reopens that scope's draft")
+        reopened.close()
+    }
+
     // MARK: - Prompts
 
     func testPerTurnPromptCarriesCurrentRecipeText() async throws {
@@ -150,7 +238,8 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
     func testConversationNotInMainChatHistory() async throws {
         let automation = try makeAutomation()
         let editor = try await AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool)
-        let draft = try await AutomationEditorChatSurface.newConversationID(draftID: "draft-1", dbPool: pool)
+        let draft = try await AutomationEditorChatSurface.newConversationID(
+            draftID: "draft-1", workbenchID: nil, dbPool: pool)
         let history = try await pool.read { db in try ChatConversationQueries.fetchStandalone(db) }.map(\.id)
         XCTAssertFalse(history.contains(editor))
         XCTAssertFalse(history.contains(draft))

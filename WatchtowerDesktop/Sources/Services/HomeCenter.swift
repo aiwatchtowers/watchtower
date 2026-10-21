@@ -277,6 +277,7 @@ final class HomeCenter {
         case .inbox(let id): data.inbox.contains { $0.item.id == id }
         case .reminder(let id): (data.dueReminders + data.laterReminders).contains { $0.id == id }
         case .proposal(let id): data.proposals.contains { $0.id == id }
+        case .output(let id): data.outputs.contains { $0.id == id }
         case .target(let id): data.targets.contains { $0.id == id }
         case .event(let id): data.events.contains { $0.id == id }
         }
@@ -425,6 +426,7 @@ final class HomeCenter {
             data.laterReminders = []
         }
         if !sources.contains(.proposals) { data.proposals = [] }
+        if !sources.contains(.automations) { data.outputs = [] }
         if !sources.contains(.targets) { data.targets = [] }
         if !sources.contains(.calendar) {
             data.events = []

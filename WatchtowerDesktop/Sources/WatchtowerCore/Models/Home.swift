@@ -106,6 +106,9 @@ package enum HomeLink: Equatable, Sendable {
     case workbench(WorkbenchRoute)
     case workbenches
     case catchUp
+    /// An automation inbox output's run in the Automations tab, which is
+    /// always visible (Inbox hides with no message or tracker source).
+    case automationRun(automationID: Int64, runID: Int64)
     /// Getting ready's Open.
     case feature(ReadinessFeature)
     /// Getting ready's Connect row.

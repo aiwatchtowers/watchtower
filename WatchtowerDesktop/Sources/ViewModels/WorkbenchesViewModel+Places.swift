@@ -65,6 +65,20 @@ extension WorkbenchesViewModel {
         }
     }
 
+    /// Whether a session's strip shows its Review button (board #712, spec
+    /// §5; per strip, spec 2026-10-20-workbench-header call 8): the session
+    /// is an agent and its place is not plainly a clean default branch, or
+    /// its own Branch review pane is on screen. The status is the session's
+    /// worktree's own, the main folder's otherwise.
+    func showsReviewButton(sessionID: Int64, projectID: Int64) -> Bool {
+        let paneOnScreen = layout(projectID: projectID).visiblePanes.contains(.changes(sessionID))
+        let isAgent = session(sessionID, projectID: projectID)?.kind.isAgent ?? false
+        let status = ReviewIdentityPresentation.status(
+            place: sessionPlaces.currentPlace(sessionID: sessionID), mainStatus: gitStatus[projectID]
+        )
+        return ReviewIdentityPresentation.showsReviewButton(isAgent: isAgent, status: status, paneOnScreen: paneOnScreen)
+    }
+
     /// The code root the page's FILES, Files pane, git marks and code
     /// navigation work in (spec D6, §6.3): the root of the session the
     /// layout holds (`codeRoot(sessionID:project:)`); the main folder for a
@@ -121,6 +135,19 @@ extension WorkbenchesViewModel {
     private static func worktreeFolderExists(_ place: SessionPlace) -> Bool {
         guard case let .worktree(_, folder, _) = place else { return false }
         return CodeRootPolicy.directoryExists(folder)
+    }
+
+    /// The one pane on screen whose session strip carries the place and
+    /// branch crumbs, which follow the page's root (spec 2026-10-20, call
+    /// 9): a pane of the session whose place sets that root (D6) — its
+    /// terminal or Workchat first, else the first of its panes, so a split
+    /// of one session's terminal and its report draws them once. nil when
+    /// no pane on screen is that session's (no session, an expanded other
+    /// pane, a lone Changes pane): the title row carries them then.
+    func crumbsPane(projectID: Int64) -> WorkspacePane? {
+        guard let owner = pageSessionID(projectID: projectID) else { return nil }
+        let panes = layout(projectID: projectID).visiblePanes.filter { WorkspaceLayout.sessionID(ofAny: $0) == owner }
+        return panes.first { WorkspaceLayout.sessionID(of: $0) != nil } ?? panes.first
     }
 
     /// The session whose place sets the page's root (D6), nil without one.

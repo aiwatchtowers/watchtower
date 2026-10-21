@@ -889,6 +889,26 @@ final class SessionAgentStateCenterTests: XCTestCase {
         XCTAssertThrowsError(try idle.inspect().find(SessionStateLabel.self).find(ViewType.Image.self), "no glyph")
     }
 
+    /// The row's hover action (#712 spec §5, artboard D): **Review Branch**
+    /// on a Ready-to-check row only; the row menu's item is there for both.
+    func testAReadyToCheckRowOffersReviewBranchOnHover() async throws {
+        let session = try await session()
+        let id = session.id
+        let actions = SessionRowActions(open: { _ in }, rename: { _ in }, delete: { _ in }, reviewChanges: { _ in })
+        func hoverLabels(_ state: SessionSwitcherPresentation.State) throws -> [String] {
+            let status = SessionAgentStatus(sessionID: id, workbenchID: session.projectID, workbenchName: "acme",
+                                            title: session.title, state: state, at: "t")
+            let row = SessionSwitcherPresentation.rows([session], liveIDs: [id], statuses: [id: status], now: Date())[0]
+            let view = TerminalSessionRow(row: row, actions: actions, showsDelete: true)
+            return try view.inspect().findAll(ViewType.Button.self).compactMap { try? $0.labelView().text().string() }
+        }
+        let ready = try hoverLabels(.live(.readyToCheck, openAsks: 1, openQuestionAsks: 0, openReviewAsks: 1))
+        let stopped = try hoverLabels(.live(.stopped))
+        XCTAssertFalse(ready.contains("Review"), "\(ready)")
+        XCTAssertEqual(ready.filter { $0 == "Review Branch" }.count,
+                       stopped.filter { $0 == "Review Branch" }.count + 1, "ready: \(ready), stopped: \(stopped)")
+    }
+
     func testTheDotColourAndLabelPerState() throws {
         let expected: [(SessionSwitcherPresentation.State, Color, String, String)] = [
             (.live(.running), .green, "Running", "circle.fill"),

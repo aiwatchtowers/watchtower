@@ -82,13 +82,16 @@ the since view), and Send, which types the line once. After Send the round is cl
 in the model too: adding or editing a comment is refused, and Refresh on it opens the
 next round through `open()` (the one path that creates a round and carries); Go
 answering `sent: false` shows "This round was already sent". The header **Changes**
-button is disabled while there is no session to review.
+button was disabled while there was no session to review (since 2026-10-20 the
+session strip's **Review** shows only when there is something to review; see
+"Branch review UI" below).
 
 **The Changes pane (Task 9, built in parallel).** A workspace pane `Changes` (a
 `WorkspacePane.changes(sessionID)`, picked in the pane picker) with a file list (status,
 Viewed, comment counts, collapsed files) and a Monaco diff page (`diff.html`) in
 side-by-side or inline mode; selecting lines offers **Comment**. It opens from the
-session row menu **Review Changes**; one model per session.
+session row menu **Review Changes**; one model per session. (Since 2026-10-20, #712:
+the pane is **Branch review** and the row item **Review Branch**; see "Branch review UI".)
 
 ## What Plan 2 ships (Deep mode)
 
@@ -309,7 +312,7 @@ to the key window (owner ruling, ask #221).
 
 ## Flow
 
-1. Row menu **Review Changes** → `review start` snapshots the tree and opens the round.
+1. Row menu **Review Branch** (or the header **Review** button) → `review start` snapshots the tree and opens the round.
 2. Owner reads, marks files Viewed, comments lines (drafts stay local to the round).
 3. **Send** → `review send` stores the round and its comments as `sent`; only then the
    Desktop types `Review round #N sent (n comments) — read it with get_review N …`
@@ -328,7 +331,7 @@ to the key window (owner ruling, ask #221).
   blanked, REVIEW-05), so LFS files show their pointer or raw bytes.
 - No PR source (the `source` column accepts `pr`).
 - Active review time counts the owner's input anywhere in the window, not only in the
-  Changes pane (owner ruling, ask #221).
+  Branch review pane (owner ruling, ask #221).
 - Keep is implicit: a hunk not undone is kept; there is no explicit Keep mark.
 - Undo is not LFS-aware: filters are blanked (REVIEW-05), so an LFS file is checked and
   patched on its raw content, as it was snapshotted. Renamed, binary, symlink, submodule,
@@ -341,3 +344,15 @@ to the key window (owner ruling, ask #221).
   uncommitted changes.
 - The overview cache key does not include the lens file: editing `.watchtower/review.md`
   does not re-run the overview until the tree changes.
+
+## Branch review UI (board #712, 2026-10-20)
+
+The pane formerly called Changes is **Branch review**; the button is **Review** (on the session strip since the 2026-10-20 header redesign, board #788), the row menu item **Review Branch** (a Ready-to-check row also carries a **Review Branch** hover button, and its session report a **Review Branch** link). Spec: `docs/superpowers/specs/2026-10-20-branch-review-design.md`.
+
+- **Identity bar** (`ReviewIdentityBar`, pure lines in `ReviewIdentityPresentation`): `branch → base · N files · +a −d · n uncommitted · worktree x`. The branch, uncommitted count and place come from the session's `SessionPlace` and git status (`status(place:mainStatus:)`: a worktree's own status, else the main folder's); base and base commit from the round; size from the diff files. On the default branch with nothing committed past its base (with a round: the branch is the base and HEAD is the base commit; without one: `main`/`master` with no unpushed commits) the base is dropped and the line says only uncommitted edits are reviewed; a `main` ahead of `origin/main` shows the normal line, since its unpushed commits are in the diff. A failed status read adds the place-label stale note. The first linked target shows as the For line.
+- **Review button** (`showsReviewButton(sessionID:projectID:)`): "Review" on each session's strip (`WorkbenchSessionStrip`, after Report; #712 first put it right of the header's view capsule, the 2026-10-20 header redesign moved it to the strip), for an agent session with uncommitted edits, unpushed commits, a branch other than main/master, or a detached HEAD, and always while that session's own pane is on screen. Each strip answers for its own session (header spec call 8); on puts the pane beside its session's terminal, off closes it in a split.
+- **Empty-diff guard**: no `review overview` call while the round's diff has no files, also after an Undo refresh empties it.
+- **Busy write**: a write that hits `SQLITE_BUSY` is retried once after 300 ms; the state flush on pane changes is quiet (no error banner).
+- **`hasChanges`** reads the whole diff, not the selected file or the Since view.
+- Deep: Next buttons at the foot of Meaning and Chapters; Wrap-up has no Send (the toolbar's Send review); a sent round shows **Start next round**; the Since view with nothing new says "Nothing new since round N"; ⌥⌘↑ / ⌥⌘↓ go to the previous / next unviewed file.
+- The identity bar's session title opens the session in its recorded mode (`vm.showSession`, terminal or Workchat); the ⋯ menu's **Open in Terminal** forces the terminal. Unfolded target cards scroll inside a third of the pane's height. The Since view's file column says "Nothing new since round N" like the detail.

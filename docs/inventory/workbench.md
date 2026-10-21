@@ -685,13 +685,21 @@ a cut-short target. The `Stop` hook (`workbench check --workbench N
 input, runs offline (no gh) with an 8 s budget for its git work (the
 database open is never cut off by that budget — it may be applying a
 migration; only Claude Code's own 15 s hook timeout bounds it), and prints
-`{"decision":"block","reason":…}` listing only the certain kinds —
+`{"decision":"block","reason":…}` listing only the certain kinds (it checks
+open targets only — every certain kind is about one, so the verdict is the
+same as the whole board's) —
 `merged_but_open`, `branch_missing`, `pr_closed_unmerged`; never `stale` or
 the offline guess `done_but_unmerged` — and only when `stop_hook_active` is
 false, so it blocks at most once per stop and a turn can never loop on it. It
 always exits 0, a panic included; stdout stays empty on every failure, and a
 real failure (bad id, no config, a missing folder, time ran out) is one
 stderr line, while a deleted workbench's leftover hook says nothing at all.
+Every check walks the open targets before the closed ones, reads all local
+and origin branches with one `for-each-ref` (`%(ahead-behind)` where git has
+it, else one `--merged` listing per base; a failed read falls back to
+per-branch reads), reads each base's first-parent line once, keeps the
+default branch's patch ids across branches, and reads each branch once
+(2026-10-20, owner approved in ask #434; findings unchanged).
 `workbench brief` shows every finding (offline, 4 s budget), and so does the
 Desktop board: `WorkbenchesViewModel.refreshDrift` runs `workbench check --json
 --no-network` when the Board pane appears, on the owner's Refresh, and every
@@ -2473,6 +2481,8 @@ owner never saw.
 
 ## Changelog
 
+- 2026-10-20 (board #713, Linear AI-14): note only — **no contract, guard test or status changed**. Desktop only: board columns are edited on the Kanban's header row instead of the **Board Columns…** sheet (the same whole-definition `workbench columns --set -` write, PROJ-19 unchanged); New Task becomes a panel whose column chip writes the column right after `workbench target add`; the drift popover's **Fix** starts an ordinary agent session with a fix prompt (PROJ-07 unchanged: the check stays read-only, the agent writes the board through its tools).
+- 2026-10-20 (board #788, workbench header redesign): controls moved (header → title row / session strip, header buttons → ⚡ menu); no contract, guard test or status changed.
 - 2026-10-19 (board #711, Workchat final review; **owner approved in ask #400**): **PROJ-21 amended — no guard changed.** The Status line and one Observable paragraph record the Mac's Workchat card as a second writer of `permission_requests`: `SessionControl.answerPermission` with `decided_by = "Mac"`, through the same guarded compare-and-set, with no device grant, and the Deny-only blocks (`PermissionAllowBlock`) on the card too. The Go hook prints a second deny constant, `Denied by the owner at the Mac.`, when `decided_by` is `"Mac"`; the phone's pinned `Denied from the owner's phone.` is unchanged (`TestProj21_PermissionWaitPhoneDenyPrintsDeny` untouched; `TestProj21_PermissionWaitMacWorkchatDenySaysMac` added; the Workchat card's tests in `WorkchatModelTests` are listed under the guards). Note only: the PROJ-16/21 file lists gained `WatchtowerDesktop/Sources/Services/SessionControl.swift` — the line, interrupt and answer gates moved out of the phone handlers into it — and no contract changed.
 - 2026-10-19 (board #711/#758, **owner approved in ask #421**): **PROJ-12 amended** for Workchat lines only — a Workchat message keeps its line breaks and is pasted as one multi-line bracketed paste (as the code-question hand-off does); the ask answer, the phone's input and the review round lines are still one line. Heading, other wording and every guard unchanged; `WorkchatModelTests.testMultilineDraftKeepsLineBreaks` and `SessionLineDeliveryTests.testOtherLineKeysStillOneLine` pin it.
 - 2026-10-18 (board #704, Linear AI-8; no contract change): the sweep plan measures up to 4 worktrees at a time (each keeps its 20 s budget); the hint keeps its ready plan for the sheet its **Clean Up…** opens and forgets it on ✕; the sheet reuses a ready plan or waits for a sheet plan still running, and closing it mid-plan leaves that plan running; a ready plan is reused only within 10 minutes, and a sheet's plan is stopped and fails after 5 minutes. Supporting `testSweepHintShownOnceAboveOneGigabyte` now asserts the hint's plan is kept (it asserted the opposite); new supporting tests `testSheetOpenedFromTheHintReusesItsPlan`, `testClosingTheSheetMidPlanKeepsThePlanForTheNextOpen`, `testStalledSheetPlanFailsAtItsTimeLimit`, `testOldReadyPlanIsPlannedAgain`, `TestPlan_SweepMeasuresWorktreesConcurrently`, `TestPlan_SweepMeasuresAtMostSizeWorkersAtOnce`. No guard changed.

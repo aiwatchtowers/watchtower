@@ -29,8 +29,9 @@ extension WorkspacePane {
     }
 }
 
-/// The project page header's view buttons: a terminal (any session), the
-/// Session view, the Board, the Files or a session's Changes.
+/// What kind of view a pane shows: a session's terminal, report, Changes
+/// or Workchat, the Board, the Files or the Analytics — what the title
+/// row's tabs and the session strip's toggles show and hide.
 package enum WorkspaceView: CaseIterable, Sendable {
     case terminal
     /// A session's report (the Session view).
@@ -204,20 +205,27 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         reveal(pane, keeping: session ?? primary)
     }
 
-    /// The pane the header's session menu puts a session into: the session
-    /// on screen, in its terminal or its Workchat (#711), else the last pane
-    /// on screen — the one the Terminal button replaces too (it keeps the
-    /// first).
-    package var terminalSlot: WorkspacePane {
-        visiblePanes.first { Self.sessionID(of: $0) != nil } ?? visiblePanes.last ?? primary
-    }
-
     /// A header view button turned off: in a split on screen, the pane it
     /// names closes and the other stays alone. One pane on screen (single
     /// or expanded) is never removed.
     package mutating func hide(_ view: WorkspaceView) {
         guard visiblePanes.count == 2, let pane = visiblePanes.first(where: view.matches) else { return }
         remove(pane)
+    }
+
+    /// Whether any pane on screen belongs to a session: the Session tab is on.
+    package var isShowingSessionView: Bool {
+        visiblePanes.contains { Self.sessionID(ofAny: $0) != nil }
+    }
+
+    /// The Session tab turned off: in a split with exactly one pane that is
+    /// not a session's, that pane stays alone (an expansion goes with the
+    /// split). Otherwise nothing moves, so the page never empties.
+    package mutating func hideSessionViews() {
+        let slots = [primary, secondary].compactMap(\.self)
+        let sessionPanes = slots.filter { Self.sessionID(ofAny: $0) != nil }
+        guard isSplit, sessionPanes.count == 1 else { return }
+        remove(sessionPanes[0])
     }
 
     package mutating func setDividerFraction(_ fraction: Double) {
@@ -277,6 +285,15 @@ package struct WorkspaceLayout: Codable, Equatable, Sendable {
         switch pane {
         case let .session(id), let .sessionChat(id): id
         default: nil
+        }
+    }
+
+    /// The session of any session-family pane — terminal, Workchat, report
+    /// or changes; nil for the Board, Files and Analytics.
+    package static func sessionID(ofAny pane: WorkspacePane) -> Int64? {
+        switch pane {
+        case let .session(id), let .sessionChat(id), let .sessionReport(id), let .changes(id): id
+        case .board, .files, .analytics: nil
         }
     }
 

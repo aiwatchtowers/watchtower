@@ -68,9 +68,9 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Updates and quitting](features/workbench/updates-and-quitting.md) — what keeps running when you update, quit or restart with sessions at work
 - [Asks](features/workbench/asks.md) — reviews, checks and decisions the agent files for you, and how your answer gets back
 - [Code viewer](features/workbench/code-viewer.md) — read and edit the folder's files, jump to definitions with Open Quickly, and ask about code
-- [Branches in the header](features/workbench/branches.md) — switch, create, fetch and check out branches from the page header without losing work
+- [Switching branches](features/workbench/branches.md) — switch, create, fetch and check out branches from a workbench page without losing work
 - [Worktrees and cleanup](features/workbench/worktrees-and-cleanup.md) — an own git worktree per parallel session, and safe removal of what a session leaves behind
-- [Diff review](features/workbench/diff-review.md) — review what a session changed, comment on lines and send the round to the agent
+- [Branch review](features/workbench/diff-review.md) — review what a session changed, comment on lines and send the round to the agent
 - [Methodology](features/workbench/methodology.md) — the workflow file, **Agent Settings…** and the ask guard that shape how agents work
 - [Your instructions](features/workbench/instructions.md) — standing directions for every agent, a target procedure, and suggestions from what you repeat
 - [Codex](features/workbench/codex.md) — run Codex instead of Claude Code in a workbench

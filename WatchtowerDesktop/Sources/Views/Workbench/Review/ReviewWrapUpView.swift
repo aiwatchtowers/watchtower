@@ -2,8 +2,8 @@ import SwiftUI
 import WatchtowerCore
 
 /// Deep mode, step 3 (board #328): was the intent met — Done / Partly / Not
-/// done per linked target — then every open comment by chapter, read-only,
-/// then Send.
+/// done per linked target — then every open comment by chapter, read-only.
+/// Send is the toolbar's (#712: one prominent action).
 struct ReviewWrapUpView: View {
     let model: ReviewChangesModel
     let compose: (ReviewChangesPaneView.ComposeRequest) -> Void
@@ -44,12 +44,6 @@ struct ReviewWrapUpView: View {
                 if !model.reverts.isEmpty {
                     Divider()
                     ReviewUndoneList(reverts: model.reverts)
-                }
-                Divider()
-                HStack {
-                    Spacer()
-                    Button("Send review (\(model.draftCount))") { Task { await model.send() } }
-                        .disabled(!ReviewChangesHeader.canSend(model))
                 }
             }
             .padding(12)

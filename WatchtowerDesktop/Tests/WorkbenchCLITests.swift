@@ -409,11 +409,11 @@ final class WorkbenchCLITests: XCTestCase {
             .success(Data(#"{"workbench_id":3,"forgot":true}"#.utf8))
         ])
         let cli = WorkbenchCLI(runner: runner)
-        let created = try await cli.worktreeCreate(projectID: 3, name: "a")
-        let ensured = try await cli.worktreeEnsure(projectID: 3, path: "/tmp/acme/wt", branch: "wt/a")
+        let created = try await cli.worktreeCreate(projectID: 3, name: "a", agent: .claude)
+        let ensured = try await cli.worktreeEnsure(projectID: 3, path: "/tmp/acme/wt", branch: "wt/a", agent: nil)
         let forgot = try await cli.worktreeForget(projectID: 3, path: "/tmp/acme/wt")
         XCTAssertEqual(runner.invocations, [
-            ["workbench", "worktree", "create", "--workbench", "3", "--name", "a", "--json"],
+            ["workbench", "worktree", "create", "--workbench", "3", "--name", "a", "--agent", "claude", "--json"],
             ["workbench", "worktree", "ensure", "--workbench", "3", "--path", "/tmp/acme/wt", "--branch", "wt/a", "--json"],
             ["workbench", "worktree", "forget", "--workbench", "3", "--path", "/tmp/acme/wt", "--json"]
         ])
@@ -692,26 +692,21 @@ final class WorkbenchCLITests: XCTestCase {
         ])
     }
 
-    /// Board #267: `workbench columns <id> --json` reads the definition;
-    /// `--set -` sends the whole definition on stdin and decodes the stored one.
-    func testBoardColumnsReadAndSetThroughStdin() async throws {
+    /// Board #267: `--set -` sends the whole definition on stdin and
+    /// decodes the stored one.
+    func testBoardColumnsSetThroughStdin() async throws {
         let stored = #"{"columns":[{"id":4,"status":"todo","title":"Ready","description":"","position":0}],"hidden":[]}"#
         let runner = FakeCLIRunner(stdout: Data(stored.utf8))
         let cli = WorkbenchCLI(runner: runner)
-        let read = try await cli.boardColumns(projectID: 7)
         let input = WorkbenchBoardColumns(
             columns: [WorkbenchBoardColumnDef(id: nil, status: "todo", title: "Ready", description: "", position: 0)],
             hidden: []
         )
         let saved = try await cli.setBoardColumns(projectID: 7, input)
 
-        XCTAssertEqual(read.columns.map(\.id), [4])
-        XCTAssertEqual(saved, read)
-        XCTAssertEqual(runner.invocations, [
-            ["workbench", "columns", "7", "--json"],
-            ["workbench", "columns", "7", "--set", "-", "--json"]
-        ])
-        XCTAssertEqual(runner.stdinInputs.count, 1, "only the write sends stdin")
+        XCTAssertEqual(saved.columns.map(\.id), [4])
+        XCTAssertEqual(runner.invocations, [["workbench", "columns", "7", "--set", "-", "--json"]])
+        XCTAssertEqual(runner.stdinInputs.count, 1)
         let sent = try JSONDecoder().decode(WorkbenchBoardColumns.self, from: try XCTUnwrap(runner.stdinInputs.first))
         XCTAssertEqual(sent, input)
     }

@@ -1,5 +1,43 @@
 import Foundation
 
+/// One `session()` or `agent()` call of a dry run, as the editor's Draft
+/// panel and the save card show it before a save: what the recipe would
+/// start and the exact prompt it hands over (an instruction hidden there,
+/// such as "do not publish", is visible before the owner confirms).
+package struct AutomationSessionPrompt: Equatable, Sendable {
+    /// The step kind: `session` or `agent`.
+    package let kind: String
+    /// The call's `title`, else the kind.
+    package let title: String
+    /// The `session()` prompt or the `agent()` instruction; nil when the
+    /// journaled args were clipped (not JSON) or carry none.
+    package let prompt: String?
+    /// An `agent()` instruction at the 1 KiB the journal keeps
+    /// (`agentStepClip`, `internal/automations/sdk_agent.go`): `prompt` is
+    /// only its start, though the args are still valid JSON.
+    package let isCut: Bool
+
+    package init(kind: String, title: String, prompt: String?, isCut: Bool = false) {
+        self.kind = kind
+        self.title = title
+        self.prompt = prompt
+        self.isCut = isCut
+    }
+}
+
+/// The sessions of one cached dry run, as the save card shows them.
+package struct AutomationDryRunSessions: Equatable, Sendable {
+    package let sessions: [AutomationSessionPrompt]
+    /// The run ended before the script did (the mcp() draft stop, ask #326,
+    /// or an error): sessions after that point are not listed.
+    package let stoppedEarly: Bool
+
+    package init(sessions: [AutomationSessionPrompt], stoppedEarly: Bool) {
+        self.sessions = sessions
+        self.stoppedEarly = stoppedEarly
+    }
+}
+
 /// The words of the Automations tab (spec §12.1–12.2, approved mockup 1):
 /// list rows, the card's subtitle, **It may**, **Limits per run**, the
 /// History lines and which buttons are live. Pure, so the views stay thin.
@@ -317,6 +355,28 @@ package enum AutomationCardPresentation {
         }
         return Buttons(runNow: automation.isRunnable ? on : off("Needs your confirmation"), dryRun: on,
                        toggleLabel: toggle)
+    }
+
+    // MARK: - Sessions it starts
+
+    /// Go's `agentStepClip`: the bytes of an `agent()` instruction a step journals.
+    package static let agentInstructionClipBytes = 1024
+    package static let cutInstructionLine = "(cut at 1 KB — the full instruction is in the recipe)"
+
+    /// The `session()` and `agent()` steps of a dry run in seq order
+    /// (`internal/automations/sdk_session.go`: `{agent, prompt, title}`;
+    /// `sdk_agent.go`: `{instruction, …}`); every other step is left out.
+    package static func sessionPrompts(_ steps: [AutomationDraftEntry.Step]) -> [AutomationSessionPrompt] {
+        steps.filter { $0.kind == "session" || $0.kind == "agent" }
+            .sorted { $0.seq < $1.seq }
+            .map { step in
+                let object = (try? JSONSerialization.jsonObject(with: Data(step.args.utf8))) as? [String: Any]
+                let title = (object?["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? step.kind
+                let prompt = (object?["prompt"] as? String) ?? (object?["instruction"] as? String)
+                // ClipUTF8Bytes backs off at most 3 bytes to a rune start.
+                let isCut = step.kind == "agent" && (prompt?.utf8.count ?? 0) >= agentInstructionClipBytes - 3
+                return AutomationSessionPrompt(kind: step.kind, title: title, prompt: prompt, isCut: isCut)
+            }
     }
 
     // MARK: - History

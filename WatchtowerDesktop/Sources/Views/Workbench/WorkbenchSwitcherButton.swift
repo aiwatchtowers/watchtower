@@ -18,10 +18,12 @@ struct WorkbenchSwitcher: View {
     let project: Workbench
     let actions: WorkbenchSwitcherActions
     var fillsWidth = true
+    /// The folder, when nothing else on screen names it: the tooltip's first line.
+    var folderPath: String?
     @State private var showsPopover = false
 
     var body: some View {
-        WorkbenchSwitcherButton(name: project.name, fillsWidth: fillsWidth) { showsPopover.toggle() }
+        WorkbenchSwitcherButton(name: project.name, fillsWidth: fillsWidth, folderPath: folderPath) { showsPopover.toggle() }
             .popover(isPresented: $showsPopover, arrowEdge: .bottom) {
                 WorkbenchSwitcherPopover(
                     vm: vm,
@@ -67,6 +69,7 @@ struct WorkbenchBackButton: View {
 struct WorkbenchSwitcherButton: View {
     let name: String
     var fillsWidth = true
+    var folderPath: String?
     let action: () -> Void
 
     var body: some View {
@@ -86,7 +89,7 @@ struct WorkbenchSwitcherButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.borderless)
-        .help("\(name) — Switch Workbench")
+        .help(folderPath.map { "\($0)\n\(name) — Switch Workbench" } ?? "\(name) — Switch Workbench")
         .accessibilityLabel("Workbench \(name)")
         .accessibilityHint("Switch workbench")
     }

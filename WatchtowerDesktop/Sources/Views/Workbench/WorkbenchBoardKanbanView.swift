@@ -7,7 +7,8 @@ import WatchtowerCore
 /// selects it (the detail pane is shared with the list mode); dragging a card
 /// to another column sets its status (and, on a defined board column, its
 /// column — board #267) through the same writer the status menu uses. The
-/// menu stays the keyboard/accessibility path.
+/// menu stays the keyboard/accessibility path. The column headers edit the
+/// columns in place (#713 AI-14 §1).
 struct WorkbenchBoardKanbanView: View {
     let board: WorkbenchBoardKanban
     /// For the cards' context menu (copy the number, Move to…) and the
@@ -31,22 +32,29 @@ struct WorkbenchBoardKanbanView: View {
     }
 
     private var columns: some View {
-        ScrollView(.horizontal) {
-            HStack(alignment: .top, spacing: WorkbenchBoardKanbanLayout.spacing) {
-                ForEach(board.columns) { column in
-                    WorkbenchBoardKanbanColumnView(
-                        column: column,
-                        vm: vm,
-                        selectedTargetID: selectedTargetID,
-                        onSelect: onSelect
-                    ) { id, column in
-                        // Only this board's own cards move; see showsCard.
-                        board.showsCard(id) && onMove(id, column)
-                    }
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            if vm.columnsError != nil {
+                columnsRefusal.padding(.top, Spacing.regular)
             }
-            .padding(10)
-            .frame(maxHeight: .infinity, alignment: .top)
+            ScrollView(.horizontal) {
+                HStack(alignment: .top, spacing: WorkbenchBoardKanbanLayout.spacing) {
+                    ForEach(board.columns) { column in
+                        WorkbenchBoardKanbanColumnView(
+                            column: column,
+                            vm: vm,
+                            selectedTargetID: selectedTargetID,
+                            onSelect: onSelect
+                        ) { id, column in
+                            // Only this board's own cards move; see showsCard.
+                            board.showsCard(id) && onMove(id, column)
+                        }
+                    }
+                    WorkbenchBoardAddColumnMenu(vm: vm)
+                        .padding(.vertical, Spacing.regular)
+                }
+                .padding(Spacing.cozy)
+                .frame(maxHeight: .infinity, alignment: .top)
+            }
         }
     }
 
@@ -97,35 +105,71 @@ struct WorkbenchBoardKanbanView: View {
     /// The column titles and, per column, the cards over the lanes shown —
     /// a folded lane's and a folded Done's included.
     private var totals: some View {
-        HStack(spacing: WorkbenchBoardKanbanLayout.spacing) {
-            ForEach(board.columns) { column in
-                WorkbenchBoardKanbanColumnHeader(column: column, count: board.totals[column.key] ?? 0)
-                    .padding(.horizontal, 10)
-                    .frame(width: WorkbenchBoardKanbanLayout.columnWidth)
+        VStack(alignment: .leading, spacing: Spacing.small) {
+            HStack(spacing: WorkbenchBoardKanbanLayout.spacing) {
+                ForEach(board.columns) { column in
+                    WorkbenchBoardKanbanColumnHeader(column: column, count: board.totals[column.key] ?? 0, vm: vm)
+                        .padding(.horizontal, Spacing.cozy)
+                        .frame(width: WorkbenchBoardKanbanLayout.columnWidth)
+                }
+                WorkbenchBoardAddColumnMenu(vm: vm)
             }
+            columnsRefusal
         }
-        .padding(.vertical, 6)
+        .padding(.vertical, Spacing.compact)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    /// A refused column edit, under the header row.
+    @ViewBuilder
+    private var columnsRefusal: some View {
+        if let message = vm.columnsError {
+            WorkbenchBoardColumnsRefusal(message: message) { vm.columnsError = nil }
+                .padding(.horizontal, Spacing.cozy)
+        }
     }
 }
 
 /// A column's header: its title and count; a defined column named apart
 /// from its status carries the status's label under it, and its
-/// description as the tooltip (board #267).
+/// description as the tooltip (board #267). The columns are edited here
+/// (#713 AI-14 §1): its menu on right-click and on the hover `…`, the title
+/// as an inline field in rename mode.
 private struct WorkbenchBoardKanbanColumnHeader: View {
     let column: WorkbenchBoardKanban.Column
     let count: Int
+    let vm: WorkbenchBoardViewModel
+
+    @State private var hovering = false
+    @State private var editsDescription = false
+    /// Delete Column on a column with cards: its id and "N cards move to …".
+    @State private var pendingDelete: (id: Int64, notice: String)?
 
     var body: some View {
+        let editable = WorkbenchBoardColumnMenu.isEditable(column)
         VStack(alignment: .leading, spacing: 1) {
             HStack {
-                Text(column.title)
-                    .font(.subheadline.weight(.semibold))
-                    .lineLimit(1)
+                if editable, vm.renamingColumnKey == column.key {
+                    WorkbenchBoardColumnTitleField(column: column, vm: vm)
+                } else {
+                    Text(column.title)
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                }
                 Text("\(count)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
+                if editable {
+                    Menu { menu } label: { Image(systemName: "ellipsis") }
+                        .menuStyle(.button)
+                        .buttonStyle(.kitQuiet)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .opacity(hovering ? 1 : 0)
+                        .help("Edit this column")
+                        .accessibilityLabel("Edit column \(column.title)")
+                }
             }
             if let category = column.categoryLabel {
                 Text(category)
@@ -134,7 +178,41 @@ private struct WorkbenchBoardKanbanColumnHeader: View {
             }
         }
         .help(column.description)
-        .accessibilityElement(children: .combine)
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
+        .contextMenu { if editable { menu } }
+        .popover(isPresented: $editsDescription, arrowEdge: .bottom) {
+            WorkbenchBoardColumnDescriptionEditor(column: column, vm: vm) { editsDescription = false }
+                .popoverSurface()
+        }
+        .alert(
+            "Delete \(column.title)?",
+            isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
+            presenting: pendingDelete
+        ) { pending in
+            Button("Delete", role: .destructive) { delete(pending.id) }
+            Button("Cancel", role: .cancel) {}
+        } message: { pending in
+            Text(pending.notice)
+        }
+    }
+
+    private var menu: some View {
+        WorkbenchBoardColumnMenu(
+            column: column, vm: vm,
+            onDescription: { editsDescription = true },
+            onDelete: { id in
+                if let notice = vm.columnDeleteNotice(id) {
+                    pendingDelete = (id, notice)
+                } else {
+                    delete(id)
+                }
+            }
+        )
+    }
+
+    private func delete(_ id: Int64) {
+        Task { await vm.editColumns { $0.deleteColumn(id); return nil } }
     }
 }
 
@@ -369,7 +447,7 @@ private struct WorkbenchBoardKanbanColumnView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            WorkbenchBoardKanbanColumnHeader(column: column, count: column.cards.count + column.hiddenCount)
+            WorkbenchBoardKanbanColumnHeader(column: column, count: column.cards.count + column.hiddenCount, vm: vm)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
             ScrollView(.vertical) {

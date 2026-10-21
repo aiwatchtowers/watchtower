@@ -74,4 +74,28 @@ final class SidebarAutomationsVisibilityTests: XCTestCase {
         XCTAssertEqual(appState.automationsViewModel?.selectedID, 4)
         XCTAssertEqual(appState.automationsViewModel?.expandedRuns, [9])
     }
+
+    /// New Automation… in a workbench's menu (spec 2026-10-20 §4): the tab
+    /// opens with the workbench left for the New automation sheet to pick.
+    func testNewAutomationForWorkbenchNavigates() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let suite = "SidebarAutomationsVisibilityTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let features = FeatureManagerService(runner: FakeCLIRunner(stdout: Data(#"{"features":[]}"#.utf8)))
+        let appState = AppState(onboardingDefaults: defaults, featureManager: features)
+        appState.wireAppDatabaseOverride = { _ in }
+        appState.databaseManager = manager
+        appState.completeOnboarding()
+        defer {
+            appState.automationsViewModel?.stop()
+            appState.stopSidebarCounts()
+        }
+
+        appState.newAutomation(forWorkbench: 3)
+
+        XCTAssertEqual(appState.selectedDestination, .automations)
+        XCTAssertEqual(appState.automationsViewModel?.pendingNewWorkbenchID, 3)
+    }
 }

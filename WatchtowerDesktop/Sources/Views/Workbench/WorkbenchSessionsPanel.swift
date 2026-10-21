@@ -171,7 +171,7 @@ struct SessionRowActions {
     let delete: (TerminalSession) -> Void
     /// A workbench session's Clean Up… (board #535); nil = no menu item.
     var cleanUp: ((TerminalSession) -> Void)?
-    /// A workbench session's Review Changes (board #328); nil = no menu item.
+    /// A workbench session's Review Branch (board #328, #712); nil = no menu item.
     var reviewChanges: ((TerminalSession) -> Void)?
     /// A workbench agent session's Open in Terminal (false) / Open in
     /// Workchat (true), #711; nil = no menu items.

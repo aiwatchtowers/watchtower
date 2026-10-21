@@ -1,5 +1,6 @@
 import SwiftUI
 import WatchtowerCore
+import DesignKit
 
 /// One compact line above the board for PROJ-07 drift: "Board drift: N"
 /// opens the list, and a finding selects its target. A failed or partial
@@ -10,6 +11,10 @@ struct WorkbenchDriftBanner: View {
     let error: String?
     let onSelect: (Int) -> Void
     let onRefresh: () -> Void
+    /// Starts (or opens) a Fix session: for every finding (nil) or one target.
+    let onFix: (Int64?) -> Void
+    /// The running Fix session for every finding (nil) or one target.
+    let liveFix: (Int64?) -> Bool
 
     @State private var showList = false
 
@@ -76,15 +81,17 @@ struct WorkbenchDriftBanner: View {
                 }
                 Spacer()
                 Button("Refresh", action: onRefresh).controlSize(.small)
+                fixButton(nil)
             }
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(report.findings) { finding in
-                        Button {
-                            showList = false
-                            onSelect(finding.targetID)
-                        } label: { row(finding) }
-                        .buttonStyle(.plain)
+                        DriftFindingRow(
+                            finding: finding,
+                            fixing: liveFix(Int64(finding.targetID)),
+                            onSelect: { showList = false; onSelect(finding.targetID) },
+                            onFix: { onFix(Int64(finding.targetID)) }
+                        )
                     }
                 }
             }
@@ -97,7 +104,36 @@ struct WorkbenchDriftBanner: View {
         .frame(width: 440)
     }
 
-    private func row(_ finding: WorkbenchDriftFinding) -> some View {
+    private func fixButton(_ targetID: Int64?) -> some View {
+        let fixing = liveFix(targetID)
+        return Button(fixing ? "Fixing…" : "Fix") { onFix(targetID) }
+            .controlSize(.small)
+            .help(fixing ? "Open the session fixing the board" : "Start an agent session that fixes the board")
+    }
+}
+
+/// One finding: the row selects its target; a hover Fix starts a session for it.
+private struct DriftFindingRow: View {
+    let finding: WorkbenchDriftFinding
+    let fixing: Bool
+    let onSelect: () -> Void
+    let onFix: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Spacing.compact) {
+            Button(action: onSelect) { content }.buttonStyle(.plain)
+            // A running fix stays visible; otherwise Fix shows on hover.
+            Button(fixing ? "Fixing…" : "Fix", action: onFix)
+                .controlSize(.small)
+                .opacity(hovering || fixing ? 1 : 0)
+                .help(fixing ? "Open the session fixing this" : "Start an agent session that fixes this finding")
+        }
+        .onHover { hovering = $0 }
+    }
+
+    private var content: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 6) {
                 Text(finding.kindLabel)

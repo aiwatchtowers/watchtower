@@ -28,11 +28,12 @@ struct WorkspaceAreaView: View {
     }
 }
 
-/// One pane: Board, Files, a session's terminal or its report (the Session
-/// view). In a split it has a
-/// slim header (its own picker, expand and close); a single pane has none —
-/// the page header's view buttons and the panel's session list cover it, so
-/// the terminal gets the height.
+/// One pane: Board, Files, Analytics, or a session's terminal, Workchat,
+/// report or Branch review. A session's pane always has its session strip
+/// (`WorkbenchSessionStrip`, spec 2026-10-20 §2); any other pane has a strip
+/// of the same look in a split only (its own picker, expand and close, §3)
+/// — a single one has none, the title row's lit tab or Analytics icon says
+/// what it is.
 struct WorkspacePaneView: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
@@ -46,7 +47,12 @@ struct WorkspacePaneView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if isSplit {
+            if let sessionID = WorkspaceLayout.sessionID(ofAny: pane) {
+                WorkbenchSessionStrip(
+                    vm: vm, project: project, pane: pane, sessionID: sessionID, isSplit: isSplit, isExpanded: isExpanded
+                )
+                Divider()
+            } else if isSplit {
                 header
                 Divider()
             }
@@ -61,34 +67,20 @@ struct WorkspacePaneView: View {
         }
     }
 
-    /// Shown only in a split (`body`).
+    /// Shown only in a split, on a pane that is not a session's (`body`):
+    /// its picker, expand and close, at the session strip's height and look
+    /// (spec 2026-10-20 §3) — same fonts, control size, paddings and icon
+    /// buttons.
     private var header: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: Spacing.regular) {
             picker
-            Spacer(minLength: 4)
-            Button {
-                vm.toggleExpand(pane, projectID: project.id)
-            } label: {
-                Image(systemName: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
-            }
-            .buttonStyle(.borderless)
-            .help(isExpanded ? "Back to the split" : "Expand this pane")
-            .accessibilityLabel(isExpanded ? "Back to the split" : "Expand this pane")
-            if !isExpanded {
-                Button {
-                    vm.closePane(pane, projectID: project.id)
-                } label: {
-                    Image(systemName: "xmark")
-                }
-                .buttonStyle(.borderless)
-                .help("Close this pane")
-                .accessibilityLabel("Close this pane")
-            }
+            Spacer(minLength: Spacing.small)
+            WorkspacePaneButtons(vm: vm, project: project, pane: pane, isExpanded: isExpanded)
         }
         .font(.caption)
         .controlSize(.small)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 2)
+        .padding(.horizontal, Spacing.regular)
+        .padding(.vertical, Spacing.tight)
     }
 
     private var picker: some View {
@@ -97,7 +89,7 @@ struct WorkspacePaneView: View {
             Button("Files") { show(.files) }.disabled(pane == .files)
             Button("Analytics") { show(.analytics) }.disabled(pane == .analytics)
             if let id = currentSessionID {
-                Button("Changes") { show(.changes(id)) }.disabled(pane == .changes(id))
+                Button("Branch review") { show(.changes(id)) }.disabled(pane == .changes(id))
                 Button("Workchat") { show(.sessionChat(id)) }.disabled(pane == .sessionChat(id))
             }
             Divider()
@@ -113,14 +105,22 @@ struct WorkspacePaneView: View {
                 }
             }
         } label: {
-            Label(title, systemImage: icon).font(.subheadline)
+            // The session strip's `session ▾` look.
+            HStack(spacing: Spacing.small) {
+                Label(title, systemImage: icon).lineLimit(1)
+                Image(systemName: "chevron.down").imageScale(.small)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
         }
-        .menuStyle(.borderlessButton)
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
         .fixedSize()
         .help("Show something else in this pane")
     }
 
-    /// The session the pane picker's Changes reviews: the one in a slot (in
+    /// The session the pane picker's Branch review reviews: the one in a slot (in
     /// its terminal or its Workchat), else the active one.
     private var currentSessionID: Int64? {
         vm.layout(projectID: project.id).shownSessionIDs.first ?? vm.activeSessionID(projectID: project.id)
@@ -164,6 +164,7 @@ struct WorkspacePaneView: View {
             if let model = vm.reviewModel(sessionID: id, projectID: project.id) {
                 ReviewChangesPaneView(
                     model: model,
+                    identity: reviewIdentity(sessionID: id),
                     agentStateKind: vm.session(id, projectID: project.id).map { vm.sessionState($0).kind },
                     lessons: vm.reviewLessonsModel(projectID: project.id)
                 )
@@ -174,6 +175,25 @@ struct WorkspacePaneView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+    }
+}
+
+extension WorkspacePaneView {
+    /// The Branch review's identity bar inputs (#712): the session's row,
+    /// where its agent works and the main folder's status; the title opens
+    /// the session in its recorded mode, the ⋯ menu's Open in Terminal its terminal.
+    func reviewIdentity(sessionID id: Int64) -> ReviewSessionIdentity {
+        let session = vm.session(id, projectID: project.id)
+        let projectID = project.id
+        return ReviewSessionIdentity(
+            row: session.flatMap { vm.sessionRows([$0]).first },
+            place: vm.sessionPlaces.currentPlace(sessionID: id),
+            stale: vm.sessionPlaces.isPlaceStale(sessionID: id),
+            mainStatus: vm.gitStatus[projectID],
+            agentName: session?.kind.agent?.displayName ?? "Agent",
+            openSession: { [vm] in Task { await vm.showSession(id: id) } },
+            openTerminal: { [vm] in Task { await vm.showTerminal(sessionID: id, projectID: projectID) } }
+        )
     }
 }
 
@@ -279,7 +299,7 @@ extension WorkspaceView {
         case .board: "Board"
         case .files: "Files"
         case .analytics: "Analytics"
-        case .changes: "Changes"
+        case .changes: "Branch review"
         case .chat: "Workchat"
         }
     }
@@ -293,6 +313,36 @@ extension WorkspaceView {
         case .analytics: "chart.bar.xaxis"
         case .changes: "plus.forwardslash.minus"
         case .chat: "bubble.left.and.bubble.right"
+        }
+    }
+}
+
+/// A split pane's expand and close, on its strip — the session strip's and
+/// the Board, Files and Analytics panes' alike. Expanded, only the way back.
+struct WorkspacePaneButtons: View {
+    @Bindable var vm: WorkbenchesViewModel
+    let project: Workbench
+    let pane: WorkspacePane
+    let isExpanded: Bool
+
+    var body: some View {
+        Button {
+            vm.toggleExpand(pane, projectID: project.id)
+        } label: {
+            Image(systemName: isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+        }
+        .buttonStyle(.kitIcon(isOn: isExpanded))
+        .help(isExpanded ? "Back to the split" : "Expand this pane")
+        .accessibilityLabel(isExpanded ? "Back to the split" : "Expand this pane")
+        if !isExpanded {
+            Button {
+                vm.closePane(pane, projectID: project.id)
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.kitIcon(isOn: false))
+            .help("Close this pane")
+            .accessibilityLabel("Close this pane")
         }
     }
 }

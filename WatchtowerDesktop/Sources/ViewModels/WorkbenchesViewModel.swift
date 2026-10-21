@@ -203,6 +203,9 @@ final class WorkbenchesViewModel {
     /// own view model (Work on It's status, board #499): the Board reloads at
     /// once instead of at its next poll.
     var boardReloads: [Int64: Int] = [:]
+    /// Workbenches whose Board should switch to Kanban once on screen
+    /// (`editColumnsOnKanban`); the Board takes it (`takeKanbanRequest`).
+    var kanbanRequests: Set<Int64> = []
     /// Each workbench's GitHub repository from its `origin` remote, for the
     /// Session view's PR links; `.some(nil)` = read, not on GitHub.
     var gitHubRepositories: [Int64: URL?] = [:]
@@ -391,6 +394,13 @@ final class WorkbenchesViewModel {
     /// Why the last drift check of a project failed; the next success clears it.
     private(set) var driftErrors: [Int64: String] = [:]
     private var driftCheckedAt: [Int64: Date] = [:]
+    /// The Fix sessions the drift popover started, per workbench, newest
+    /// last (spec 2026-10-20 §4); one is "live" while its agent works
+    /// (`liveDriftFix`).
+    var driftFixSessions: [Int64: [DriftFixSession]] = [:]
+    /// The workbenches whose Fix start is in flight: a second press then
+    /// starts nothing.
+    var startingDriftFix: Set<Int64> = []
     private var checkingDrift: Set<Int64> = []
     /// How often the open Board pane re-runs the check (git work in the folder).
     static let driftMinInterval: TimeInterval = 30
@@ -758,6 +768,13 @@ final class WorkbenchesViewModel {
             let projectID = route.projectID
             let sessionID = route.subjectID
             Task { await revealTerminal(projectID: projectID, sessionID: sessionID) }
+        case .review:
+            let projectID = route.projectID
+            guard let sessionID = route.subjectID else {
+                Task { await revealTerminal(projectID: projectID) }
+                return
+            }
+            showChanges(sessionID: sessionID, projectID: projectID)
         }
     }
 
@@ -1226,22 +1243,27 @@ final class WorkbenchesViewModel {
         }
     }
 
-    /// The Board Columns… sheet's read (board #267): the stored definition
-    /// through `watchtower workbench columns` and, per defined column, the
-    /// cards that show in it (what deleting it moves).
-    func loadBoardColumns(projectID: Int64) async throws -> (WorkbenchBoardColumns, [Int64: Int]) {
-        guard let cli else { throw WorkbenchBoardColumnsError.cliUnavailable }
-        let def = try await cli.boardColumns(projectID: projectID)
-        let counts = try await dbPool.read { try WorkbenchQueries.boardColumnCardCounts($0, projectID: projectID) }
-        return (def, counts)
-    }
-
-    /// The sheet's Save: Go replaces the whole definition or refuses it
-    /// (nothing written). The board picks a saved definition up through its
-    /// fingerprint.
+    /// The Kanban header row's column write (board #267, #713 AI-14 §1;
+    /// `WorkbenchBoardViewModel.editColumns`): Go replaces the whole
+    /// definition or refuses it (nothing written).
     func saveBoardColumns(_ def: WorkbenchBoardColumns, projectID: Int64) async throws -> WorkbenchBoardColumns {
         guard let cli else { throw WorkbenchBoardColumnsError.cliUnavailable }
         return try await cli.setBoardColumns(projectID: projectID, def)
+    }
+
+    /// The header menu's Edit Columns on the Kanban: the Board goes on
+    /// screen in Kanban, where the columns are edited (`takeKanbanRequest`).
+    func editColumnsOnKanban(projectID: Int64) {
+        kanbanRequests.insert(projectID)
+        beginSwitch(projectID: projectID)
+        var updated = layout(projectID: projectID)
+        updated.showWorkbenchView(.board)
+        setLayout(updated, projectID: projectID)
+    }
+
+    /// The Board of `projectID` takes a pending switch to Kanban, once.
+    func takeKanbanRequest(projectID: Int64) -> Bool {
+        kanbanRequests.remove(projectID) != nil
     }
 
     /// A refused definition's own message (Go prints it alone on stderr);
@@ -1287,7 +1309,7 @@ final class WorkbenchesViewModel {
     }
 }
 
-/// Why the Board Columns… sheet could not run its CLI call.
+/// Why a board column edit could not run its CLI call.
 enum WorkbenchBoardColumnsError: LocalizedError {
     case cliUnavailable
 

@@ -26,7 +26,8 @@ struct AutomationsTabActions {
 /// automation" sheet); `AppState` builds them on `embeddedChatCenter`.
 struct AutomationEditorChatHooks {
     let open: (Int64) async throws -> AutomationEditorChat?
-    let openNew: () async throws -> AutomationEditorChat?
+    /// The New automation chat for the "For" pick (nil: Personal).
+    let openNew: (_ workbenchID: Int64?) async throws -> AutomationEditorChat?
     /// `<workspace>/automations`, where the New sheet's **Form** tab saves.
     let automationsDir: String?
     /// Non-nil when the provider has no tools (ollama): Change in words is
@@ -67,6 +68,9 @@ struct AutomationsView: View {
     /// sheet has finished closing (two sheets in one transaction can drop one).
     @State private var pendingChangeInWords: SheetTarget?
     @State private var creating = false
+    /// The New automation sheet's "For" pick (nil: Personal), shared with
+    /// the gallery it hands over to.
+    @State private var newWorkbenchID: Int64?
     @State private var browsingTemplates = false
     /// Which sheet to open once the one closing has finished (two sheets in
     /// one transaction can drop one).
@@ -81,8 +85,14 @@ struct AutomationsView: View {
             out.onConfirm = { confirming = SheetTarget(id: $0) }
         }
         if let chats {
-            out.onNew = { creating = true }
-            out.onTemplates = { browsingTemplates = true }
+            out.onNew = {
+                newWorkbenchID = nil
+                creating = true
+            }
+            out.onTemplates = {
+                newWorkbenchID = nil
+                browsingTemplates = true
+            }
             if let help = chats.unavailableHelp {
                 out.changeInWordsDisabledHelp = help
             } else {
@@ -199,20 +209,38 @@ struct AutomationsView: View {
         }
         .sheet(isPresented: $creating, onDismiss: openPendingSheet) {
             if let chats {
-                NewAutomationSheet(vm: vm, editor: editor, makeChat: chats.openNew,
+                NewAutomationSheet(vm: vm, editor: editor, workbenches: workbenches,
+                                   workbenchID: $newWorkbenchID, makeChat: chats.openNew,
                                    automationsDir: chats.automationsDir,
                                    onTemplates: { pendingSheet = .gallery; creating = false },
                                    onClose: { creating = false })
             }
         }
         .sheet(isPresented: $browsingTemplates, onDismiss: openPendingSheet) {
-            AutomationTemplateGalleryView(vm: vm, workbenches: workbenches, onDescribeInWords: {
+            AutomationTemplateGalleryView(vm: vm, workbenches: galleryWorkbenches, onDescribeInWords: {
                 pendingSheet = .newAutomation
                 browsingTemplates = false
             }, onClose: { browsingTemplates = false })
         }
         .onChange(of: vm.pendingEditID, initial: true) { _, _ in openInstalledTemplate() }
         .onChange(of: vm.pendingConfirmID, initial: true) { _, _ in openPendingConfirmation() }
+        .onChange(of: vm.pendingNewWorkbenchID, initial: true) { _, _ in openPendingNewAutomation() }
+    }
+
+    /// The gallery installs a workbench template into the "For" pick; with
+    /// Personal (or a pick that is gone) it offers every workbench.
+    private var galleryWorkbenches: [AutomationTemplateGallery.InstallTarget] {
+        let picked = workbenches.filter { $0.id == newWorkbenchID }
+        return picked.isEmpty ? workbenches : picked
+    }
+
+    /// **New Automation…** from a workbench's header menu: the New
+    /// automation sheet with that workbench picked under "For".
+    private func openPendingNewAutomation() {
+        guard chats != nil, let id = vm.pendingNewWorkbenchID else { return }
+        vm.pendingNewWorkbenchID = nil
+        newWorkbenchID = id
+        creating = true
     }
 
     /// An unconfirmed row picked in the "Run Automation…" palette: the same

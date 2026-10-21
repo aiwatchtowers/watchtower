@@ -62,7 +62,7 @@ The **+** in **FILES** and each row's menu create files and folders, rename, cop
 
 ## Related
 
-- [Sessions](sessions.md) and [Diff review](diff-review.md): what the agent changed.
+- [Sessions](sessions.md) and [Branch review](diff-review.md): what the agent changed.
 - [Workbench](README.md)
 
 For developers: [docs/features/code-navigation.md](../../../features/code-navigation.md)

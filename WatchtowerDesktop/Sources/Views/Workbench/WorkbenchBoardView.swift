@@ -23,6 +23,11 @@ struct WorkbenchBoardView: View {
     /// where a card click focuses nothing.
     @FocusState private var pathBarFocused: Bool
 
+    /// The New Task panel's first crumb: this workbench's name.
+    private var workbenchName: String {
+        appState.workbenchesViewModel?.summaries.first { $0.project.id == projectID }?.project.name ?? "Board"
+    }
+
     var body: some View {
         Group {
             if let vm = viewModel {
@@ -49,7 +54,7 @@ struct WorkbenchBoardView: View {
                 // terminal in the other split pane.
                 .onExitCommand { _ = escape(vm) }
                 .sheet(item: Binding(get: { vm.newTargetRequest }, set: { vm.newTargetRequest = $0 })) { request in
-                    WorkbenchNewTargetSheet(request: request, vm: vm)
+                    WorkbenchNewTargetSheet(request: request, vm: vm, workbenchName: workbenchName)
                 }
             } else {
                 ProgressView()
@@ -72,14 +77,21 @@ struct WorkbenchBoardView: View {
                         )
                     }
                 }
+                vm.saveColumns = { [weak projects = appState.workbenchesViewModel, projectID] def in
+                    guard let projects else { throw WorkbenchBoardColumnsError.cliUnavailable }
+                    return try await projects.saveBoardColumns(def, projectID: projectID)
+                }
                 vm.load()
                 viewModel = vm
             }
             takeFocus()
+            takeKanbanRequest()
             viewModel?.startPolling()
         }
         // A target id in the Session view opens its card here.
         .onChange(of: appState.workbenchesViewModel?.boardFocus[projectID]) { _, _ in takeFocus() }
+        // The header menu's Edit Columns on the Kanban (#713 AI-14 §1).
+        .onChange(of: appState.workbenchesViewModel?.kanbanRequests.contains(projectID)) { _, _ in takeKanbanRequest() }
         .onDisappear { viewModel?.stopPolling() }
         // The header's "Archive Closed Targets After" and "Archive Closed
         // Targets Now" / "Undo Archive Now" apply at once, not at the next poll
@@ -137,6 +149,11 @@ struct WorkbenchBoardView: View {
         vm.select(Int(id))
     }
 
+    private func takeKanbanRequest() {
+        guard let vm = viewModel, appState.workbenchesViewModel?.takeKanbanRequest(projectID: projectID) == true else { return }
+        vm.mode = .kanban
+    }
+
     // MARK: - Board (list or kanban)
 
     private func board(_ vm: WorkbenchBoardViewModel) -> some View {
@@ -164,7 +181,12 @@ struct WorkbenchBoardView: View {
                     report: projects.drift[projectID],
                     error: projects.driftErrors[projectID],
                     onSelect: { vm.select($0) },
-                    onRefresh: { Task { await projects.refreshDrift(projectID: projectID, force: true) } }
+                    onRefresh: { Task { await projects.refreshDrift(projectID: projectID, force: true) } },
+                    onFix: { target in
+                        let findings = projects.drift[projectID]?.findings ?? []
+                        Task { await projects.fixDrift(projectID: projectID, findings: findings, targetID: target) }
+                    },
+                    liveFix: { projects.liveDriftFix(projectID: projectID, targetID: $0) != nil }
                 )
                 .padding(.horizontal, 8)
                 .padding(.bottom, 6)
@@ -215,7 +237,6 @@ struct WorkbenchBoardView: View {
 
     private func header(_ vm: WorkbenchBoardViewModel, kanban: WorkbenchBoardKanban?) -> some View {
         HStack(spacing: 10) {
-            Text("Board").font(.headline)
             Button { vm.beginNewTarget() } label: { Label("New Task", systemImage: "plus") }
                 .help(vm.scopeNode.map { "New task in \(WorkbenchTargetNumber.label($0.target.id))" } ?? "New task")
             Picker("View", selection: Binding(get: { vm.mode }, set: { vm.mode = $0 })) {

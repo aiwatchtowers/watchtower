@@ -818,13 +818,6 @@ struct WorkbenchCLI {
         }
     }
 
-    /// The workbench's board column definition (board #267, PROJ-19) as
-    /// `watchtower workbench columns <id> --json` prints it.
-    func boardColumns(projectID: Int64) async throws -> WorkbenchBoardColumns {
-        let data = try await runner.run(args: ["workbench", "columns", String(projectID), "--json"])
-        return try JSONDecoder().decode(WorkbenchBoardColumns.self, from: data)
-    }
-
     /// Replaces the whole definition (`--set -`, the JSON on stdin) and
     /// returns the stored one. A refused definition exits 1 with Go's
     /// message on stderr (`CLIRunnerError.nonZeroExit`); nothing is written.
@@ -925,20 +918,28 @@ struct WorkbenchCLI {
         }
     }
 
-    /// Makes a session worktree named `name` (Go slugs it and cuts `wt/<slug>`).
+    /// Makes a session worktree named `name` (Go slugs it and cuts `wt/<slug>`)
+    /// for `agent`'s session: a Claude worktree skips Codex's install (it
+    /// starts Codex's app-server); nil installs both.
     /// A refusal or failure exits 0 with the envelope's `refused`/`error`.
-    func worktreeCreate(projectID: Int64, name: String) async throws -> WorktreeCreateResult {
-        let args = ["workbench", "worktree", "create", "--workbench", String(projectID), "--name", name, "--json"]
+    func worktreeCreate(projectID: Int64, name: String, agent: AgentKind?) async throws -> WorktreeCreateResult {
+        let args = ["workbench", "worktree", "create", "--workbench", String(projectID), "--name", name]
+            + Self.worktreeAgentArgs(agent) + ["--json"]
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorktreeCreateResult.self, from: data)
     }
 
-    /// Re-creates a placed worktree at `path` on `branch` when it is gone from disk.
-    func worktreeEnsure(projectID: Int64, path: String, branch: String) async throws -> WorktreeCreateResult {
+    /// Re-creates a placed worktree at `path` on `branch` when it is gone from
+    /// disk; `agent` as for `worktreeCreate`.
+    func worktreeEnsure(projectID: Int64, path: String, branch: String, agent: AgentKind?) async throws -> WorktreeCreateResult {
         let args = ["workbench", "worktree", "ensure", "--workbench", String(projectID),
-                    "--path", path, "--branch", branch, "--json"]
+                    "--path", path, "--branch", branch] + Self.worktreeAgentArgs(agent) + ["--json"]
         let data = try await runner.run(args: args)
         return try JSONDecoder().decode(WorktreeCreateResult.self, from: data)
+    }
+
+    private static func worktreeAgentArgs(_ agent: AgentKind?) -> [String] {
+        agent.map { ["--agent", $0.rawValue] } ?? []
     }
 
     /// Drops the placed worktree at `path` from the workbench's records.

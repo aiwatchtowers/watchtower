@@ -188,3 +188,30 @@ func TestWorkbenchWorktree_CreateSkipsANameASessionRowHolds(t *testing.T) {
 	assert.Equal(t, "wt/held-2", created.Branch)
 	assert.Equal(t, filepath.Join(f.folder, ".claude", "worktrees", "held-2"), created.Path)
 }
+
+// A worktree for a claude session skips codex's install, which starts
+// codex's app-server; one for codex, or for no named agent, still gets it.
+func TestWorkbenchWorktree_AgentClaudeSkipsTheCodexInstall(t *testing.T) {
+	f := newWorktreeFixture(t)
+	codexFake := useFakeCmdCodex(t)
+	out, err := runWorktree(t, "create", "--workbench", f.idArg, "--name", "cl", "--agent", "claude", "--json")
+	require.NoError(t, err, out)
+	var env worktreeEnvelope
+	require.NoError(t, json.Unmarshal([]byte(out), &env), out)
+	require.True(t, env.Created, out)
+	assert.Empty(t, env.IntegrationError)
+	assert.Nil(t, codexFake.ctx, "codex's app-server must not start for a claude worktree")
+	assert.FileExists(t, filepath.Join(env.Cwd, ".claude", "settings.local.json"))
+
+	out, err = runWorktree(t, "create", "--workbench", f.idArg, "--name", "cx", "--agent", "codex", "--json")
+	require.NoError(t, err, out)
+	assert.NotNil(t, codexFake.ctx, "a codex worktree gets codex's install")
+
+	codexFake.ctx = nil
+	out, err = runWorktree(t, "create", "--workbench", f.idArg, "--name", "both", "--json")
+	require.NoError(t, err, out)
+	assert.NotNil(t, codexFake.ctx, "no named agent installs both")
+
+	_, err = runWorktree(t, "create", "--workbench", f.idArg, "--name", "bad", "--agent", "gpt", "--json")
+	require.Error(t, err)
+}

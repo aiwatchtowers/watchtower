@@ -1,12 +1,17 @@
-import AppKit
 import SwiftUI
 import WatchtowerCore
 
-/// One workbench: a one-row header (folder › branch, install status, view controls,
-/// the "…" menu with Repair / Re-run Setup / Delete) over its workspace — one pane or a split (spec 2026-09-30-project-workspace-sessions §3).
+/// One workbench: the window's title row carrying the workbench row (name,
+/// install status, `Session | Board | Files`, ⚡, Analytics, split, ⋯ —
+/// spec 2026-10-20-workbench-header §1) over its workspace — one pane or a
+/// split (spec 2026-09-30-project-workspace-sessions §3).
 struct WorkbenchPageView: View {
     @Bindable var vm: WorkbenchesViewModel
     let project: Workbench
+    let switcherActions: WorkbenchSwitcherActions
+    /// The ⌘K palette is open: the row's panel toggle and A key wait.
+    let paletteOpen: Bool
+    let openGoTo: () -> Void
     @Environment(AppState.self) private var appState
     @State private var deleteSummary: WorkbenchDeleteSummary?
     @State private var deleteSummaryError: String?
@@ -19,7 +24,7 @@ struct WorkbenchPageView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            header
+            titleRow
             Divider()
             if vm.resyncResults[project.id] != nil || vm.resyncErrors[project.id] != nil {
                 resyncSummary
@@ -111,59 +116,52 @@ struct WorkbenchPageView: View {
                        set: { if $0 == nil { handoff.cancel(workbenchID: workbenchID) } })
     }
 
-    /// One compact row (folder, install status, view controls, the "…"
-    /// menu) so the workspace below keeps nearly all the height; an install
-    /// error or import note adds a caption line only when there is one.
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: 8) {
-                // Breadcrumbs: 📁 ~/folder › [⑂ worktree ›] ⎇ branch ● ↑2 ▾ (#233, #565).
-                Button {
-                    NSWorkspace.shared.activateFileViewerSelecting([project.folderURL])
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "folder")
-                        Text(WorkbenchBranchPresentation.displayPath(project.folderPath, home: NSHomeDirectory()))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    .font(.caption)
-                }
-                .buttonStyle(.link)
-                .help("\(project.folderPath)\nShow in Finder")
-                .layoutPriority(-1)
-                WorkbenchPlaceCrumb(vm: vm, project: project)
-                WorkbenchBranchCrumb(vm: vm, project: project)
+    /// The workbench row in the window's title row, then an install error
+    /// or archive-setting error as a caption line under it when there is
+    /// one. The folder path is the name's help; Show in Finder is in ⋯.
+    private var titleRow: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            WorkbenchTitleRow(vm: vm, switcherActions: switcherActions, paletteOpen: paletteOpen, openGoTo: openGoTo) {
+                // The workbench's install state sits by its name (call 3).
                 WorkbenchInstallStatusIcons(vm: vm, project: project)
                 if vm.isInstalling(projectID: project.id) { ProgressView().controlSize(.mini) }
-                Spacer(minLength: 8)
-                WorkbenchHeaderControls(vm: vm, project: project, automationButtons: automationButtons(project),
+                // The trailing closure is the ⋯ menu's Clean Up Old Worktrees….
+                WorkbenchHeaderControls(vm: vm, project: project, automations: automationsMenu(project),
                                         onDelete: confirmDelete) { sweeping = true }
             }
             if let installError = vm.installErrors[project.id] {
-                Text(installError)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .lineLimit(1)
-                    .help(installError)
+                errorCaption(installError)
             }
             if let archiveError = vm.archiveSettingErrors[project.id] {
-                Text(archiveError)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .lineLimit(1)
-                    .help(archiveError)
+                errorCaption(archiveError)
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
     }
 
-    private func automationButtons(_ project: Workbench) -> WorkbenchAutomationButtons? {
+    private func errorCaption(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.red)
+            .lineLimit(1)
+            .help(text)
+            .padding(.horizontal, Spacing.medium)
+            .padding(.bottom, Spacing.small)
+    }
+
+    /// **New Automation…**: the Automations tab's New automation sheet
+    /// with this workbench picked; nil until the tab's view model is up.
+    private func newAutomation(_ project: Workbench) -> (() -> Void)? {
+        guard appState.automationsViewModel != nil else { return nil }
+        return { [appState] in appState.newAutomation(forWorkbench: project.id) }
+    }
+
+    private func automationsMenu(_ project: Workbench) -> WorkbenchAutomationsMenu? {
         guard let automations = appState.automationsViewModel else { return nil }
-        return WorkbenchAutomationButtons(project: project, vm: automations) { [appState] id, runID in
-            appState.openAutomationRun(automationID: id, runID: runID)
-        }
+        return WorkbenchAutomationsMenu(
+            project: project, vm: automations,
+            openRun: { [appState] id, runID in appState.openAutomationRun(automationID: id, runID: runID) },
+            onNewAutomation: newAutomation(project)
+        )
     }
 
     private func confirmDelete() {
