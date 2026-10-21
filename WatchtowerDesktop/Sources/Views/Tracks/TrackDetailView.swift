@@ -299,20 +299,16 @@ struct TrackDetailView: View {
         }
     }
 
-    /// Builds and starts the custom-track timeline VM. When the track is linked
-    /// to a target, a TargetsViewModel is supplied so a confirmed proposed
-    /// action can mutate that target; standalone tracks pass nil.
+    /// Builds and starts the custom-track timeline VM; a confirmed proposed
+    /// action is applied through the CLI (the registry).
     private func startTimelineIfCustom(db: DatabaseManager) {
         guard track.isCustom, timelineVM == nil,
               let runner = ProcessCLIRunner.makeDefault() else { return }
-        let targetsVM: TargetsViewModel? = track.linkedTargetID != nil
-            ? TargetsViewModel(dbManager: db)
-            : nil
         let vm = CustomTrackTimelineViewModel(
             track: track,
             dbManager: db,
             scanService: TrackScanService(runner: runner),
-            targetsViewModel: targetsVM,
+            actionRunner: runner,
             scanCenter: appState.trackScanCenter
         )
         vm.start()

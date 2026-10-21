@@ -220,10 +220,18 @@ package final class AgentActionFeed {
         return fmt.string(from: date)
     }
 
-    /// Only `error` is read: it surfaces regardless of `ok`/`applied_ok`, so
-    /// an approve/apply that exits 0 but failed to execute still reports.
-    private struct Envelope: Decodable {
-        let error: String?
+    /// The `--json` envelope of `actions approve|apply|propose`. `error`
+    /// surfaces regardless of `ok`/`applied_ok`, so an approve/apply that
+    /// exits 0 but failed to execute still reports.
+    package struct Envelope: Decodable {
+        package let ok: Bool?
+        package let appliedOK: Bool?
+        package let error: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok, error
+            case appliedOK = "applied_ok"
+        }
     }
 
     /// Clears only this row's error: another row's failure stays on its card.

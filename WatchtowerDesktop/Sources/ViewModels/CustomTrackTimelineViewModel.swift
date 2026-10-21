@@ -4,8 +4,8 @@ import WatchtowerCore
 
 /// Drives the Activity timeline on a CUSTOM track's detail view. Observes
 /// `track_events` for the track and, when the track is linked to a target,
-/// applies a confirmed proposed action through the shared (static)
-/// `TargetActionExecutor` — reusing the same TargetsViewModel the chat path uses.
+/// applies a confirmed proposed action through the registry
+/// (`TrackActionPress`: `actions propose --approve`, Go writes the target).
 ///
 /// Ported from the removed `ObserverTimelineViewModel`. A custom track carries a
 /// single watch instruction (not N observers), so the observer-management CRUD
@@ -19,9 +19,7 @@ final class CustomTrackTimelineViewModel {
     @ObservationIgnored private let writes = SerialWrites()
     /// One pending apply or dismiss per event (board #670).
     let pendingWrites = PendingWrites()
-    /// Optional: only present (and only usable) when the track is linked to a
-    /// target, so a confirmed proposed action has something to mutate.
-    private let targetsViewModel: TargetsViewModel?
+    private let actionPress: TrackActionPress
     private let scanService: TrackScanService
     /// Shared registry so the "scanning" indicator survives navigation away
     /// from this detail (the list/sidebar read it too).
@@ -41,22 +39,21 @@ final class CustomTrackTimelineViewModel {
     var lastScanNote: String?
 
     /// True when a confirmed proposed action can be applied: the track must be
-    /// linked to a target AND a TargetsViewModel must be available to mutate it.
-    /// Standalone tracks hide the Apply button (the scan prompt already
-    /// suppresses proposed actions for them).
-    var canApplyActions: Bool { track.linkedTargetID != nil && targetsViewModel != nil }
+    /// linked to a target. Standalone tracks hide the Apply button (the scan
+    /// prompt already suppresses proposed actions for them).
+    var canApplyActions: Bool { track.linkedTargetID != nil }
 
     private var observationTask: Task<Void, Never>?
 
     init(track: Track,
          dbManager: DatabaseManager,
          scanService: TrackScanService,
-         targetsViewModel: TargetsViewModel? = nil,
+         actionRunner: any CLIRunnerProtocol,
          scanCenter: TrackScanCenter) {
         self.track = track
         self.dbPool = dbManager.dbPool
         self.scanService = scanService
-        self.targetsViewModel = targetsViewModel
+        self.actionPress = TrackActionPress(runner: actionRunner)
         self.scanCenter = scanCenter
         self.lastRunAt = track.lastRunAt
     }
@@ -189,11 +186,11 @@ final class CustomTrackTimelineViewModel {
         try? await chained { db in try TrackEventQueries.markRead(db, id: event.id) }
     }
 
-    /// Applies a confirmed proposed action to the LINKED target via the shared
-    /// static executor, then records the event's action_status so the button does
-    /// not re-fire. Standalone tracks (no linked target) are a no-op: there is
-    /// nothing to mutate, and the scan prompt suppresses proposed actions for
-    /// them, so the event is left untouched.
+    /// Applies a confirmed proposed action to the LINKED target through the
+    /// registry; Go claims the event, writes the target and sets the event's
+    /// action_status. Standalone tracks (no linked target) are a no-op: there
+    /// is nothing to mutate, and the scan prompt suppresses proposed actions
+    /// for them, so the event is left untouched.
     /// One apply or dismiss per event at a time (board #670): a second
     /// press while the first waits would apply the action twice.
     func applyAction(for event: TrackEvent) async {
@@ -205,36 +202,15 @@ final class CustomTrackTimelineViewModel {
     }
 
     private func applyNow(_ event: TrackEvent) async {
-        guard let linkedID = track.linkedTargetID, let targetsViewModel else { return }
-        guard let action = event.decodedAction else { return }
+        guard track.linkedTargetID != nil, event.decodedAction != nil else { return }
+        errorMessage = nil
         do {
-            // Apply against a FRESH copy of the target, not an init-time
-            // snapshot: the executor's sub-item/note paths are whole-JSON
-            // read-modify-writes, so a stale snapshot would clobber anything
-            // applied since this VM was created (lost update). A missing row
-            // means the target was deleted — surface that instead of silently
-            // marking the event applied with no effect.
-            let (fresh, eventExists) = try await dbPool.read { db in
-                (try TargetQueries.fetchByID(db, id: linkedID), try TrackEventQueries.exists(db, id: event.id))
-            }
-            guard let fresh else {
-                errorMessage = "The linked task no longer exists — it may have been deleted."
-                return
-            }
-            // Checked before the task is touched: otherwise the apply would land
-            // and then fail on the vanished event's status write.
-            guard eventExists else {
-                refreshEvents()
-                errorMessage = RowNotFoundError(kind: "track event", id: event.id).localizedDescription
-                return
-            }
-            _ = try await TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
-            try await chained { db in
-                try TrackEventQueries.setActionStatus(db, id: event.id, status: "applied")
-            }
+            try await actionPress.press(eventID: event.id)
         } catch {
             errorMessage = error.localizedDescription
         }
+        // The CLI wrote on its own connection: the observation never sees it.
+        refreshEvents()
     }
 
     private func dismissNow(_ event: TrackEvent) async {
