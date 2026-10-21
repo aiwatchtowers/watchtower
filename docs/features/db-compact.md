@@ -75,12 +75,12 @@ The notice is non-blocking and shown once per launch, in the main window's detai
 ## D6. Other processes during the step (accepted effects)
 
 - **Daemon:** stopped for the step.
-- **`watchtower mcp` servers and terminal-session hooks** that survived the update keep idle connections; an idle connection does not block `VACUUM`. Their writes during the step wait up to their busy timeouts (MCP owner writes 30 s, hooks 1 s, ask guard 0.5 s) and may fail. Accepted: an agent left running across the update may lose a status update; the state hooks rewrite the current state on their next event.
+- **`watchtower mcp` servers and terminal-session hooks** that survived the update: since board #603 Stage 1 a file handle's idle connection closes after 30 s, so an MCP server idle for that long holds no handle at all (and an idle connection never blocked `VACUUM` anyway). Their writes during the step wait up to their busy timeouts (MCP owner writes 30 s, hooks 1 s, ask guard 0.5 s) and may fail. Accepted: an agent left running across the update may lose a status update; the state hooks rewrite the current state on their next event.
 - **A CLI command started by the owner** during the step waits up to 5 s and may fail with busy. Accepted.
 
 ## Rowid guard
 
-`messages` (and several other tables) have no `INTEGER PRIMARY KEY`, and SQLite documents that `VACUUM` may renumber such rowids — but saved cursors depend on them (`internal/doclinks/linkscan` `synced_at|rowid` cursors, memory's rowid identities, the knowledge-index cursors). The SQLite inside `modernc.org/sqlite` keeps rowids through `VACUUM`, and `TestCompact_PreservesRowids` (`internal/db/compact_rowid_test.go`) pins it: it seeds every table in `rowidTables` with gaps from deletes, compacts, and asserts every `(rowid, primary key)` pair is unchanged. A new table with a rowid-based cursor must be added to `rowidTables`.
+`messages` (and several other tables) have no `INTEGER PRIMARY KEY`, and SQLite documents that `VACUUM` may renumber such rowids — but saved cursors depend on them (`internal/doclinks/linkscan` `synced_at|rowid` cursors, memory's rowid identities, the knowledge-index cursors). The engine (`internal/sqlcipher`, the SQLCipher amalgamation's SQLite, board #603; before it `modernc.org/sqlite`) keeps rowids through `VACUUM`, and `TestCompact_PreservesRowids` (`internal/db/compact_rowid_test.go`) pins it: it seeds every table in `rowidTables` with gaps from deletes, compacts, and asserts every `(rowid, primary key)` pair is unchanged. A new table with a rowid-based cursor must be added to `rowidTables`.
 
 **If the guard fails** (typically after a driver upgrade): do not ship that driver with compaction as is. Either keep the old driver, or make `Compact` reset the affected cursors after a successful `VACUUM` (they then rescan once) before upgrading.
 
