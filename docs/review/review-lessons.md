@@ -2125,3 +2125,13 @@ Entry format:
 - weak-dimension: 7 (mild). Pruning at the window edge and the 5-digit offset case (mail dated more than about 5 days in the future) have no test. The 8 KiB headroom absorbs the second.
 - rule-gap (candidate, dim 7): *a state format that stores values relative to a moving base ships a test whose seeded base differs from the run's base, so a missing re-base fails it.* This PR did it by accident (47 h vs 48 h). Make it deliberate.
 - outcome: TBD
+
+## 2026-10-21 — fix/home-feed-expanded-cap (Home "Waiting on you" froze when expanded: 50-row expanded cap + "Open Inbox (N more)", `ViewThatFits` replaced by a width-switching `HomeColumnsLayout` with a pure `frames()`, cached `FeedTime` formatter; 8 files; panel: prosecutor (6) + codex (1) + code-reviewer + pr-test-analyzer + silent-failure-hunter; judge verified against 84bf55daf by reading and grep, no runs; round 1) — verdict: changes-needed
+
+- contested (held major, all five lanes): the overflow button sends the owner to `.inbox`, which is `ActionStripView` (reminders, proposals, automation outputs, STRIP-01). It does not list Slack/Jira/email `inbox_items`, overdue targets or most automation notes, and Catch-Up is an AI recap, not a list. Home's expanded feed is the only list of those rows, so a cap with a "go elsewhere" link loses them. The owner approved "cap at 50 with a link to Inbox" on the orchestrator's false premise that the rows live there. **Before an overflow link is proposed to the owner, check that the target screen actually lists the rows being cut.** [6]
+- contested: the kind-ordered cap (slack < jira < … < target < email) means a Slack backlog of 50+ removes every tail kind, and `testExpandedCapCountsEveryKind` encodes that as intent. This is the round-1 "test pins the defect" shape (Review process rule). [6/7]
+- false-positive (downgraded to nit): F4, "`placeSubviews` re-measures both columns". SwiftUI caches a subview's `sizeThatFits` for the same proposal, and the docs' "measured once" claim is about dropping the `ViewThatFits` double build. Silent-failure-hunter's "button does nothing when Inbox is hidden" is moot under the recommended redesign.
+- miss: none unique to codex. Every lane converged on F1. The value was in the agreement, not in independent catches.
+- weak-dimension: 6. The design was approved without tracing what the link target renders.
+- rule-gap (candidate, dim 6): *a cap that sends the overflow to another screen ships a test or a cited query proving that the destination lists every kind the cap can cut. Otherwise it pages in place.*
+- outcome: TBD
