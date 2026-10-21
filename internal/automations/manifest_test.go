@@ -685,3 +685,36 @@ func TestManifest_AdmitsWrite(t *testing.T) {
 	}
 	runAdmitsCases(t, cases, (*Manifest).AdmitsWrite)
 }
+
+// TestManifest_InboxReplyCapability: inbox:reply is an unscoped capability
+// that needs outputs: [inbox], in both scopes; AllowInboxReply admits it.
+func TestManifest_InboxReplyCapability(t *testing.T) {
+	for _, scope := range []Scope{personalScope, workbenchScope} {
+		m, err := ParseManifest([]string{"Inbox:Reply"}, []string{"inbox"}, scope)
+		if err != nil {
+			t.Fatalf("scope %v: ParseManifest: %v", scope.Kind, err)
+		}
+		if got := m.Normalized(); !reflect.DeepEqual(got, []string{"inbox:reply"}) {
+			t.Fatalf("Normalized = %v; want [inbox:reply]", got)
+		}
+		if e, err := m.AllowInboxReply(); err != nil || e != "inbox:reply" {
+			t.Fatalf("AllowInboxReply = %q, %v; want inbox:reply", e, err)
+		}
+	}
+	m := mustManifest(t, []string{"llm:light"}, "inbox")
+	_, err := m.AllowInboxReply()
+	var pd *PermissionDenied
+	if !errors.As(err, &pd) || pd.Needed != "inbox:reply" {
+		t.Fatalf("AllowInboxReply without the entry = %v; want denied inbox:reply", err)
+	}
+	for entry, want := range map[string]string{"inbox:reply@x": "inbox takes no @scope", "inbox:read": "has no verb"} {
+		if _, err := ParseManifest([]string{entry}, []string{"inbox"}, personalScope); err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v; want %q", entry, err, want)
+		}
+	}
+	_, err = ParseManifest([]string{"llm:light", "inbox:reply"}, []string{"report"}, personalScope)
+	var me *ManifestError
+	if !errors.As(err, &me) || me.Field != "permissions" || me.Index != 1 || !strings.Contains(me.Msg, "needs outputs: [inbox]") {
+		t.Fatalf("inbox:reply without outputs: [inbox] = %#v; want a permissions ManifestError at 1", err)
+	}
+}
