@@ -1315,7 +1315,7 @@ final class AppState {
                                       notifier: notifier)
         quickRun.showAutomationsTab = { [weak self] in self?.navigateToAutomations(section: .automations) }
         quickRunCenter = quickRun
-        automationEditorCenter = AutomationEditorCenter(
+        let editorCenter = AutomationEditorCenter(
             cli: cli,
             grants: { id in try await dbPool.read { db in try AutomationQueries.fetchGrants(db, automationID: id) } },
             refresh: { [weak vm] id in
@@ -1323,6 +1323,9 @@ final class AppState {
                 await vm?.loadDetail(id)
             }
         )
+        // A new draft the editor holds is a list row, cache file or not.
+        vm.openNewDrafts = { [weak editorCenter] in editorCenter?.openNewDraftNames ?? [:] }
+        automationEditorCenter = editorCenter
         automationTemplatePanels = AutomationTemplatePanels { [weak vm] template, scope in
             AutomationTemplatePanelModel(template: template, scope: scope, cli: cli) { id in
                 vm?.refresh()

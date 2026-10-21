@@ -167,7 +167,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         runner.on("save") { _ in Self.saveJSON(approval: "hv") }
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        let form = try XCTUnwrap(center.drafts[7]?.form)
+        let form = try XCTUnwrap(center.drafts[7])
         form.fields.trigger = .schedule("0 16 * * 1-5")
         let text = form.renderedText()
 
@@ -202,7 +202,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         let center = makeCenter()
         let key = AutomationEditorCenter.newDraftKey(conversationID: 5)
         center.beginNew(key: key, scope: .personal, recipeDir: "/acme/automations", startText: nil)
-        let form = try XCTUnwrap(center.drafts[key]?.form)
+        let form = try XCTUnwrap(center.drafts[key])
         XCTAssertTrue(AutomationEditorCenter.isNewDraft(key))
         form.fields.name = "Morning Mail digest!"
 
@@ -233,7 +233,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         let center = makeCenter()
         let key = AutomationEditorCenter.newDraftKey(conversationID: 5)
         center.beginNew(key: key, scope: .personal, recipeDir: "/acme/automations", startText: nil)
-        center.drafts[key]?.form.fields.name = "Digest"
+        center.drafts[key]?.fields.name = "Digest"
         let plan = try await checkedPlan(center, key)
         await center.commit(key, plan: plan, turnOn: true)
         XCTAssertEqual(center.saving[key], .failed("A recipe named digest.md already exists — pick another name."))
@@ -252,12 +252,12 @@ final class AutomationEditorCenterTests: XCTestCase {
         runner.on("save") { _ in Self.saveJSON(approval: "h1") }
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        center.drafts[7]?.form.fields.name = "Weekly digest"
+        center.drafts[7]?.fields.name = "Weekly digest"
         let plan = try await checkedPlan(center, 7)
         XCTAssertEqual(subcommands, ["show", "validate"], "nothing is saved before the press")
         await center.commit(7, plan: plan, turnOn: true)
         XCTAssertEqual(center.saving[7], .done)
-        XCTAssertEqual(subcommands, ["show", "validate", "save"], "already enabled: nothing to turn on")
+        XCTAssertEqual(subcommands, ["show", "validate", "save", "enable"], "a turned-on save always enables")
     }
 
     /// Review Focus 4: no `auto … on` unless the owner checked a box, then one
@@ -269,7 +269,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         let center = makeCenter()
 
         await center.beginEdit(7, chatNewestText: nil)
-        center.drafts[7]?.form.fields.budgetTokens = 120_000
+        center.drafts[7]?.fields.budgetTokens = 120_000
         await center.check(7)
         guard case let .review(plan) = center.saving[7] else { return XCTFail("no plan") }
         XCTAssertEqual(plan.pausedGrants, ["add_comment", "create_jira_issue"])
@@ -277,7 +277,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         XCTAssertFalse(runner.invocations.contains { $0[1] == "auto" })
 
         await center.beginEdit(7, chatNewestText: nil)
-        center.drafts[7]?.form.fields.budgetTokens = 120_000
+        center.drafts[7]?.fields.budgetTokens = 120_000
         await center.check(7)
         guard case var .review(second) = center.saving[7] else { return XCTFail("no plan") }
         second.keepAuto = ["create_jira_issue"]
@@ -293,7 +293,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         runner.hold("save")
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        center.drafts[7]?.form.fields.name = "Weekly digest"
+        center.drafts[7]?.fields.name = "Weekly digest"
         let plan = try await checkedPlan(center, 7)
 
         let task = Task { await center.commit(7, plan: plan, turnOn: true) }
@@ -320,7 +320,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         runner.on("save") { _ in Self.saveJSON(approval: "h1") }
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        let form = try XCTUnwrap(center.drafts[7]?.form)
+        let form = try XCTUnwrap(center.drafts[7])
         form.fields.name = "Weekly digest"
         let typed = form.renderedText().replacingOccurrences(of: "const a = 1;", with: "const a = 2;")
         form.buffer.flushPending = { [weak form] in
@@ -343,7 +343,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         runner.on("auto") { _ in throw CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: not admitted\n") }
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        center.drafts[7]?.form.fields.budgetTokens = 120_000
+        center.drafts[7]?.fields.budgetTokens = 120_000
         var plan = try await checkedPlan(center, 7)
         plan.keepAuto = ["create_jira_issue"]
         await center.commit(7, plan: plan, turnOn: true)
@@ -404,12 +404,12 @@ final class AutomationEditorCenterTests: XCTestCase {
         }
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        center.drafts[7]?.form.fields.name = "Weekly digest"
+        center.drafts[7]?.fields.name = "Weekly digest"
         let plan = try await checkedPlan(center, 7)
         await center.commit(7, plan: plan, turnOn: true)
         guard case let .failed(message) = center.saving[7] else { return XCTFail("not failed") }
         XCTAssertTrue(message.hasPrefix("The recipe changed on disk since you opened it"), message)
-        XCTAssertTrue(center.drafts[7]?.form.renderedText().contains("Weekly digest") ?? false, "the draft is kept")
+        XCTAssertTrue(center.drafts[7]?.renderedText().contains("Weekly digest") ?? false, "the draft is kept")
     }
 
     /// J7: after "changed on disk", Reload brings in the file as it is now
@@ -422,18 +422,18 @@ final class AutomationEditorCenterTests: XCTestCase {
         }
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        center.drafts[7]?.form.fields.name = "Weekly digest"
+        center.drafts[7]?.fields.name = "Weekly digest"
         let plan = try await checkedPlan(center, 7)
         await center.commit(7, plan: plan, turnOn: true)
         XCTAssertEqual(center.saving[7], .failed(AutomationEditorCenter.changedOnDisk))
-        let typed = try XCTUnwrap(center.drafts[7]?.form.renderedText())
+        let typed = try XCTUnwrap(center.drafts[7]?.renderedText())
 
         runner.on("show") { _ in try Fixtures.showJSON(contentHash: "c9") }
         await center.reloadFromDisk(7)
         XCTAssertNil(center.saving[7])
         XCTAssertEqual(center.keptAside[7], typed, "the owner's text is kept aside")
-        XCTAssertEqual(center.drafts[7]?.form.buffer.baseContentHash, "c9", "the file as it is now")
-        XCTAssertFalse(center.drafts[7]?.form.buffer.isDirty ?? true)
+        XCTAssertEqual(center.drafts[7]?.buffer.baseContentHash, "c9", "the file as it is now")
+        XCTAssertFalse(center.drafts[7]?.buffer.isDirty ?? true)
 
         center.discard(7)
         XCTAssertNil(center.keptAside[7])
@@ -449,7 +449,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         }
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        center.drafts[7]?.form.fields.name = "Weekly digest"
+        center.drafts[7]?.fields.name = "Weekly digest"
         let plan = try await checkedPlan(center, 7)
         await center.commit(7, plan: plan, turnOn: true)
         guard case let .failed(message) = center.saving[7] else {
@@ -468,7 +468,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         runner.on("save") { _ in Self.saveJSON(approval: "hv") }
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        let form = try XCTUnwrap(center.drafts[7]?.form)
+        let form = try XCTUnwrap(center.drafts[7])
         form.fields.trigger = .schedule("0 16 * * 1-5")
         let validated = form.renderedText()
         let plan = try await checkedPlan(center, 7)
@@ -491,21 +491,21 @@ final class AutomationEditorCenterTests: XCTestCase {
     func testBeginEditKeepsAnUnsavedDraft() async throws {
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        center.drafts[7]?.form.fields.name = "Unsaved"
+        center.drafts[7]?.fields.name = "Unsaved"
         runner.on("show") { _ in try Fixtures.showJSON(contentHash: "c9") }
         await center.beginEdit(7, chatNewestText: nil)
-        XCTAssertTrue(center.drafts[7]?.form.renderedText().contains("Unsaved") ?? false)
+        XCTAssertTrue(center.drafts[7]?.renderedText().contains("Unsaved") ?? false)
         XCTAssertEqual(runner.invocations.filter { $0[1] == "show" }.count, 1, "the file is not read over the edits")
 
         center.discard(7)
         await center.beginEdit(7, chatNewestText: nil)
-        XCTAssertEqual(center.drafts[7]?.form.buffer.baseContentHash, "c9")
+        XCTAssertEqual(center.drafts[7]?.buffer.baseContentHash, "c9")
     }
 
     func testAutoToggleUsesTheLoadedHash() async {
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        center.drafts[7]?.form.fields.name = "Unsaved"
+        center.drafts[7]?.fields.name = "Unsaved"
         await center.setAuto(7, tool: "create_jira_issue", on: true)
         await center.setAuto(7, tool: "create_jira_issue", on: false)
         XCTAssertEqual(runner.invocations.filter { $0[1] == "auto" }, [
@@ -526,7 +526,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         runner.on("save") { _ in Self.saveJSON(approval: "h2") }
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        let form = try XCTUnwrap(center.drafts[7]?.form)
+        let form = try XCTUnwrap(center.drafts[7])
         form.fields.budgetTokens = 120_000
         let plan = try await checkedPlan(center, 7)
         XCTAssertTrue(center.canSave(7))
@@ -549,7 +549,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         runner.hold("validate")
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        center.drafts[7]?.form.fields.name = "Weekly digest"
+        center.drafts[7]?.fields.name = "Weekly digest"
         center.textChanged(7)
         await waitUntil { self.sleeper.calls >= 2 }
         sleeper.fire()
@@ -564,7 +564,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         }
         XCTAssertTrue(center.canSave(7))
 
-        center.drafts[7]?.form.fields.name = "Weekly digest, edited"
+        center.drafts[7]?.fields.name = "Weekly digest, edited"
         XCTAssertFalse(center.canSave(7), "bytes changed since the check")
     }
 
@@ -625,7 +625,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         let scope = AutomationScopeChoice.workbench(id: 3, name: "acme", folder: "/acme")
         center.beginNew(key: key, scope: scope, recipeDir: scope.recipeDir(workspaceDir: "/workspace"),
                         startText: nil)
-        let form = try XCTUnwrap(center.drafts[key]?.form)
+        let form = try XCTUnwrap(center.drafts[key])
         XCTAssertEqual(form.detail.scope, "workbench")
         XCTAssertEqual(form.detail.projectID, 3)
         form.fields.name = "Board sweep"
@@ -658,7 +658,7 @@ final class AutomationEditorCenterTests: XCTestCase {
 
         runner.on("enable") { _ in Data() }
         let before = runner.invocations.count
-        await center.commit(key, plan: plan, turnOn: true)
+        await center.retryTurnOn(key)
         XCTAssertEqual(Array(runner.invocations.dropFirst(before)), [["automations", "enable", "7"]])
         XCTAssertEqual(center.saving[key], .done)
     }
@@ -709,7 +709,7 @@ final class AutomationEditorCenterTests: XCTestCase {
         runner.on("save") { _ in Self.saveJSON(approval: "h2") }
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        center.drafts[7]?.form.fields.name = "Weekly digest"
+        center.drafts[7]?.fields.name = "Weekly digest"
         let plan = try await checkedPlan(center, 7)
         let seen = await commitWithHeldEnable(center, 7, plan: plan)
 
@@ -769,8 +769,8 @@ final class AutomationEditorCenterTests: XCTestCase {
         runner.on("save") { _ in Self.saveJSON(approval: "h2") }
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        XCTAssertEqual(center.drafts[7]?.form.detail.enabled, true)
-        center.drafts[7]?.form.fields.budgetTokens = 120_000
+        XCTAssertEqual(center.drafts[7]?.detail.enabled, true)
+        center.drafts[7]?.fields.budgetTokens = 120_000
         let plan = try await checkedPlan(center, 7)
         await center.commit(7, plan: plan, turnOn: false)
 
@@ -780,12 +780,69 @@ final class AutomationEditorCenterTests: XCTestCase {
         XCTAssertEqual(center.saving[7], .done)
     }
 
+    /// The draft's loaded `enabled` may be stale (turned on or off from the
+    /// card since the panel opened): **Save Turned Off** always disables a
+    /// saved automation first, and a turned-on save always enables after —
+    /// both idempotent in Go.
+    func testSaveTurnsOnOrOffWhateverTheLoadedEnabledSays() async throws {
+        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h2") }
+        runner.on("save") { _ in Self.saveJSON(approval: "h2") }
+        for (loadedEnabled, turnOn) in [(true, true), (false, false)] {
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Fixtures.showJSON()) as? [String: Any])
+            object["enabled"] = loadedEnabled
+            let show = try JSONSerialization.data(withJSONObject: object)
+            runner.on("show") { _ in show }
+            let before = runner.invocations.count
+            let center = makeCenter()
+            await center.beginEdit(7, chatNewestText: nil)
+            center.drafts[7]?.fields.budgetTokens = 120_000
+            let plan = try await checkedPlan(center, 7)
+            await center.commit(7, plan: plan, turnOn: turnOn)
+
+            let calls = runner.invocations.dropFirst(before).map { $0[1] }
+            let label = "loaded enabled=\(loadedEnabled), turnOn=\(turnOn)"
+            if turnOn {
+                XCTAssertEqual(calls, ["show", "validate", "save", "enable"], label)
+            } else {
+                XCTAssertEqual(calls, ["show", "validate", "disable", "save"], label)
+            }
+            XCTAssertEqual(center.saving[7], .done, label)
+        }
+    }
+
+    /// A save that landed while its panel was away: settling drops its
+    /// finished state, so the next Edit opens the editor, not the card.
+    func testSettleUnwatchedDropsALandedSave() async throws {
+        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "h2") }
+        runner.on("save") { _ in Self.saveJSON(approval: "h2") }
+        let center = makeCenter()
+        await center.beginEdit(7, chatNewestText: nil)
+        center.drafts[7]?.fields.budgetTokens = 120_000
+        let plan = try await checkedPlan(center, 7)
+        await center.commit(7, plan: plan, turnOn: false)
+        XCTAssertEqual(center.saving[7], .done)
+        XCTAssertEqual(center.savedIDs[7], 7)
+
+        center.settleUnwatched(7)
+        XCTAssertNil(center.saving[7])
+        XCTAssertNil(center.savedIDs[7])
+
+        // A confirm that landed unwatched is dropped too.
+        runner.on("confirm") { _ in Data() }
+        await center.beginEdit(7, chatNewestText: nil)
+        await center.confirmForeign(7, shownHash: "h1")
+        XCTAssertEqual(center.confirmations[7], .done)
+        center.settleUnwatched(7)
+        XCTAssertNil(center.confirmations[7])
+        XCTAssertNil(center.drafts[7])
+    }
+
     // MARK: - Chat drafts
 
     func testChatDraftOverOwnerEditsKeepsThemAside() async throws {
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: nil)
-        let form = try XCTUnwrap(center.drafts[7]?.form)
+        let form = try XCTUnwrap(center.drafts[7])
         let draftA = Fixtures.recipe.replacingOccurrences(of: "const a = 1;", with: "const a = 10;")
         let draftB = Fixtures.recipe.replacingOccurrences(of: "const a = 1;", with: "const a = 20;")
 
@@ -811,7 +868,7 @@ final class AutomationEditorCenterTests: XCTestCase {
     func testOpenDoesNotAdoptAnOldCachedDraft() async throws {
         let center = makeCenter()
         await center.beginEdit(7, chatNewestText: "old")
-        let form = try XCTUnwrap(center.drafts[7]?.form)
+        let form = try XCTUnwrap(center.drafts[7])
         XCTAssertEqual(form.renderedText(), Fixtures.recipe, "the file as shown")
         center.adoptChatDraft(7, text: "old", slug: nil)
         XCTAssertEqual(form.renderedText(), Fixtures.recipe)
@@ -826,11 +883,50 @@ final class AutomationEditorCenterTests: XCTestCase {
         let center = makeCenter()
         let proposed = Fixtures.recipe + "// proposed\n"
         await center.beginEdit(7, chatNewestText: proposed, startText: proposed)
-        let form = try XCTUnwrap(center.drafts[7]?.form)
+        let form = try XCTUnwrap(center.drafts[7])
         XCTAssertEqual(form.renderedText(), proposed)
         XCTAssertNil(center.keptAside[7], "an unedited file is not kept aside")
-        XCTAssertEqual(AutomationEditorTarget.existing(7, review: false, startText: proposed).startText, proposed)
-        XCTAssertNil(AutomationEditorTarget.existing(7, review: false).startText)
+    }
+
+    /// The panel opens again (the tab came back) on the same Inbox
+    /// proposal: the owner's edits since the first open are kept, never
+    /// replaced by the proposal again.
+    func testStartTextIsAdoptedOncePerDraft() async throws {
+        let center = makeCenter()
+        let proposed = Fixtures.recipe + "// proposed\n"
+        await center.beginEdit(7, chatNewestText: nil, startText: proposed)
+        let form = try XCTUnwrap(center.drafts[7])
+        let owners = proposed + "// owner\n"
+        form.buffer.pageSent(text: owners, base: form.buffer.revision)
+
+        await center.beginEdit(7, chatNewestText: nil, startText: proposed)
+        XCTAssertTrue(center.drafts[7] === form)
+        XCTAssertEqual(form.renderedText(), owners)
+        XCTAssertNil(center.keptAside[7])
+
+        center.discard(7)
+        await center.beginEdit(7, chatNewestText: nil, startText: proposed)
+        XCTAssertEqual(center.drafts[7]?.renderedText(), proposed, "a discarded draft starts over")
+    }
+
+    /// A **Reload** aside (the owner's text before the reload) is not
+    /// replaced by a later assistant aside.
+    func testReloadAsideIsNotOverwrittenByTheAssistant() async throws {
+        let center = makeCenter()
+        await center.beginEdit(7, chatNewestText: nil)
+        var form = try XCTUnwrap(center.drafts[7])
+        let owners = Fixtures.recipe + "// owner\n"
+        form.buffer.pageSent(text: owners, base: form.buffer.revision)
+        await center.reloadFromDisk(7)
+        XCTAssertEqual(center.keptAside[7], owners)
+        XCTAssertEqual(center.asideReason[7], .reloadedFromDisk)
+
+        form = try XCTUnwrap(center.drafts[7])
+        form.buffer.pageSent(text: Fixtures.recipe + "// again\n", base: form.buffer.revision)
+        center.adoptChatDraft(7, text: Fixtures.recipe + "// assistant\n", slug: nil)
+        XCTAssertEqual(form.renderedText(), Fixtures.recipe + "// assistant\n")
+        XCTAssertEqual(center.keptAside[7], owners)
+        XCTAssertEqual(center.asideReason[7], .reloadedFromDisk)
     }
 
     func testConfirmShownPassesTheValidatedHash() async throws {

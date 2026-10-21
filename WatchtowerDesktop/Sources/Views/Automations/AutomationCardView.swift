@@ -12,8 +12,8 @@ struct AutomationCardView: View {
     let actions: AutomationsTabActions
     let workbenchName: String?
     let now: Date
-    /// **Edit** (`review: false`) and the banner's **Review…** (`review: true`).
-    let onEdit: (_ review: Bool) -> Void
+    /// **Edit** and the banner's **Review…**: the editor on this automation.
+    let onEdit: () -> Void
 
     @State private var confirmingDelete = false
 
@@ -145,7 +145,7 @@ struct AutomationCardView: View {
             .disabled(!buttons.runNow.enabled || isBusy)
             .help(buttons.runNow.help ?? "")
 
-            Button("Edit") { onEdit(false) }
+            Button("Edit") { onEdit() }
                 .buttonStyle(.kitSecondary)
 
             Menu {
@@ -190,7 +190,7 @@ struct AutomationCardView: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Review…") { onEdit(true) }
+                Button("Review…") { onEdit() }
                     .buttonStyle(.kitSecondary)
                     .controlSize(.small)
             }

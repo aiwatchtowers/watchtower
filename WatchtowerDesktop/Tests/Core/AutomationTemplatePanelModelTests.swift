@@ -277,6 +277,10 @@ final class AutomationTemplatePanelModelTests: XCTestCase {
         XCTAssertEqual(writes, [])
 
         model.params["PROJECT"] = ""
+        XCTAssertFalse(model.canSave, "a render is pending: the column says Checking…")
+        await waitUntil { self.sleeper.calls == 1 }
+        sleeper.fire()
+        await waitUntil { !model.isRendering }
         XCTAssertTrue(model.canSave, "an emptied field is the CLI's choice, as rendered")
     }
 
@@ -342,6 +346,7 @@ final class AutomationTemplatePanelModelTests: XCTestCase {
         model.params["PROJECT"] = "OPS"
         model.paramsChanged()
         XCTAssertTrue(model.isRendering, "a re-render is pending")
+        XCTAssertFalse(model.canSave, "nothing is saved while a render is pending")
         XCTAssertEqual(model.columns.first?.status, .checking, "the shown column says Checking…")
         XCTAssertFalse(model.columns.first?.showsAllFields ?? true)
 

@@ -284,9 +284,9 @@ final class AutomationsViewModelTests: XCTestCase {
         vm.autoSelect(first: first)
         XCTAssertEqual(vm.panel, .new(AutomationNewFlow()), "a list change never bounces New back to a card")
 
-        vm.showEditor(.existing(second, review: false))
+        vm.showEditor(.existing(second))
         vm.autoSelect(first: first)
-        XCTAssertEqual(vm.panel, .editor(.existing(second, review: false)))
+        XCTAssertEqual(vm.panel, .editor(.existing(second)))
 
         vm.showCard(99)
         vm.autoSelect(first: first)
@@ -324,7 +324,7 @@ final class AutomationsViewModelTests: XCTestCase {
         XCTAssertNil(vm.selectedID)
         XCTAssertEqual(vm.composerPrefill, "When I react with :eyes:, ")
 
-        vm.showEditor(.existing(7, review: true))
+        vm.showEditor(.existing(7))
         XCTAssertEqual(vm.selectedID, 7, "an edit keeps its row selected")
         XCTAssertNil(vm.composerPrefill)
 
@@ -371,6 +371,39 @@ final class AutomationsViewModelTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
         vm.refresh()
         XCTAssertEqual(vm.draftRows, [])
+    }
+
+    /// A new draft open in the editor whose chat never drafted (Adjust in
+    /// Chat, an Inbox proposal's Open Draft) has no cache file: it is a row
+    /// while the editor holds it, so leaving the panel never loses it.
+    func testOpenNewDraftWithoutACacheIsARow() throws {
+        let (open, closed) = try pool.write { db -> (Int64, Int64) in
+            for context in ["d1", "d2"] {
+                try db.execute(sql: """
+                    INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
+                    VALUES ('New automation', 'automation_draft', ?, 0, 0)
+                    """, arguments: [context])
+            }
+            return (db.lastInsertedRowID - 1, db.lastInsertedRowID)
+        }
+        let vm = makeViewModel()
+        vm.refresh()
+        XCTAssertEqual(vm.draftRows, [], "no cache, no open draft: no row")
+
+        vm.openNewDrafts = { [open: "Morning digest"] }
+        vm.refresh()
+        XCTAssertEqual(vm.draftRows.map(\.conversationID), [open])
+        XCTAssertEqual(vm.draftRows.first?.name, "Morning digest")
+        XCTAssertEqual(vm.draftRows.first?.contextID, "d1")
+        XCTAssertFalse(vm.draftRows.contains { $0.conversationID == closed })
+
+        vm.openNewDrafts = { [open: ""] }
+        vm.refresh()
+        XCTAssertEqual(vm.draftRows.first?.name, AutomationDraftRows.untitled)
+
+        vm.discardDraft(contextID: "d1")
+        XCTAssertEqual(vm.draftRows, [])
+        XCTAssertNil(vm.lastError, "a draft with no file discards quietly")
     }
 
     func testSelectLoadsCardAndToggleRunLoadsSteps() throws {

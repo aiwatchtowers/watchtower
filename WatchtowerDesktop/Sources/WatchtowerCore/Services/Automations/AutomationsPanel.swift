@@ -44,21 +44,13 @@ package struct AutomationNewFlow: Equatable, Sendable {
     }
 }
 
-/// What the editor panel edits: a saved automation (`review: true` is the
-/// "Needs your confirmation" banner's **Review…**; a `startText` — an Inbox
-/// proposal's recipe — replaces the loaded file in the buffer, unsaved), or
-/// a new draft keyed by its chat's context id.
+/// What the editor panel edits: a saved automation (a `startText` — an
+/// Inbox proposal's recipe — replaces the loaded file in the buffer,
+/// unsaved), or a new draft keyed by its chat's context id (a `startText`
+/// is its starting text; nil is the chat's newest draft).
 package enum AutomationEditorTarget: Hashable, Sendable {
-    case existing(Int64, review: Bool, startText: String? = nil)
+    case existing(Int64, startText: String? = nil)
     case newDraft(contextID: String, scope: AutomationScopeChoice, startText: String?)
-
-    /// The recipe text the draft starts from; nil is the saved file (or, for
-    /// a new draft, the chat's newest draft).
-    package var startText: String? {
-        switch self {
-        case let .existing(_, _, startText), let .newDraft(_, _, startText): startText
-        }
-    }
 }
 
 /// The Automations tab's right panel.

@@ -358,7 +358,7 @@ enum AutomationShotFixtures {
             vm.select(id)
             let item = try XCTUnwrap(vm.items.first)
             return AnyView(AutomationCardView(vm: vm, item: item, actions: AutomationsTabActions(), workbenchName: nil,
-                                              now: Date()) { _ in })
+                                              now: Date()) {})
         } catch {
             return failure(error)
         }
@@ -401,7 +401,7 @@ enum AutomationShotFixtures {
             let vm = AutomationsViewModel(dbPool: pool, cli: cli)
             Task {
                 await editor.beginEdit(7, chatNewestText: nil)
-                if !review { editor.drafts[7]?.form.buffer.replace(text: digest) }
+                if !review { editor.drafts[7]?.buffer.replace(text: digest) }
                 editor.textChanged(7)
             }
             let deadline = Date().addingTimeInterval(5)
@@ -410,7 +410,7 @@ enum AutomationShotFixtures {
             }
             XCTAssertTrue(editor.canSave(7), "the fixture's check did not land: \(String(describing: editor.saving[7]))")
             return AnyView(AutomationEditorPanel(
-                target: .existing(7, review: review), editor: editor, vm: vm,
+                target: .existing(7), editor: editor, vm: vm,
                 // The chat never opens: its spinner stays on the left.
                 makeChat: {
                     try await Task.sleep(for: .seconds(86_400))

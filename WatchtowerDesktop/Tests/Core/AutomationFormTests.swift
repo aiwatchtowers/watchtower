@@ -120,7 +120,7 @@ final class AutomationFormTests: XCTestCase {
                                             refresh: { _ in },
                                             sleep: { _ in try? await Task.sleep(for: .seconds(3600)) })
         await center.beginEdit(7, chatNewestText: nil)
-        let form = try XCTUnwrap(center.drafts[7]?.form)
+        let form = try XCTUnwrap(center.drafts[7])
         form.fields.budgetTokens = 120_000
         await center.check(7)
         guard case let .review(shown) = center.saving[7] else { return XCTFail("not checked: \(String(describing: center.saving[7]))") }

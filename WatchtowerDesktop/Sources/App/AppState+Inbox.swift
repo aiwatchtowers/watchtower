@@ -94,7 +94,7 @@ extension AppState {
         let savedID = model.isNew ? nil : savedAutomationID(path: model.path)
         switch SaveProposalDraftOpening(model: model, savedID: savedID, workbenches: inboxWorkbenches) {
         case .existing(let id):
-            openAutomationEditor(.existing(id, review: false, startText: model.recipeText))
+            openAutomationEditor(.existing(id, startText: model.recipeText))
         case .newDraft(let scope):
             openAutomationDraft(text: model.recipeText, scope: scope)
         case .workbenchGone(let id):

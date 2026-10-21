@@ -39,7 +39,7 @@ struct AutomationEditorPanel: View {
     /// draft's (known once its chat is open).
     private var key: Int64? {
         switch target {
-        case let .existing(id, _, _): id
+        case let .existing(id, _): id
         case .newDraft: newKey
         }
     }
@@ -49,7 +49,7 @@ struct AutomationEditorPanel: View {
         return false
     }
 
-    private var form: AutomationFormModel? { key.flatMap { editor.drafts[$0]?.form } }
+    private var form: AutomationFormModel? { key.flatMap { editor.drafts[$0] } }
 
     /// A save or confirm runs: nothing is editable, so nothing typed is dropped.
     private var isSaving: Bool {
@@ -127,7 +127,7 @@ struct AutomationEditorPanel: View {
     }
 
     private var title: String {
-        if case let .existing(id, _, _) = target {
+        if case let .existing(id, _) = target {
             return vm.items.first { $0.id == id }?.automation.name ?? form?.detail.name ?? "Automation"
         }
         if let name = key.flatMap({ editor.lastChecked[$0]?.name }), !name.isEmpty { return name }
@@ -456,7 +456,7 @@ struct AutomationEditorPanel: View {
         var checked = plan
         checked.keepAuto = (editor.keepAuto[key] ?? []).intersection(plan.pausedGrants)
         let editor = editor
-        whenLanded {
+        whenLanded(key) {
             switch action {
             case .saveAndTurnOn, .saveAndConfirm:
                 await editor.commit(key, plan: checked, turnOn: true)
@@ -473,16 +473,21 @@ struct AutomationEditorPanel: View {
     /// **Turn On** after a save or confirm that did not turn it on.
     private func retryTurnOn(_ key: Int64) {
         let editor = editor
-        whenLanded { await editor.retryTurnOn(key) }
+        whenLanded(key) { await editor.retryTurnOn(key) }
     }
 
     /// Runs `work` to its end — leaving the panel never cancels a save — and
-    /// then, if the panel is still here, opens the automation when it is done.
-    private func whenLanded(_ work: @escaping @MainActor () async -> Void) {
+    /// then, if the panel is still here, opens the automation when it is
+    /// done; if it is gone, the finished state is dropped (`settleUnwatched`).
+    private func whenLanded(_ key: Int64, _ work: @escaping @MainActor () async -> Void) {
         pressTask?.cancel()
+        let editor = editor
         pressTask = Task {
             await Task { await work() }.value
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else {
+                editor.settleUnwatched(key)
+                return
+            }
             if !finishIfSaved() { finishIfConfirmed() }
         }
     }
@@ -505,7 +510,7 @@ struct AutomationEditorPanel: View {
         }
         chat = made
         switch target {
-        case let .existing(id, _, startText):
+        case let .existing(id, startText):
             // The form and Script still work when the chat cannot open.
             await editor.beginEdit(id, chatNewestText: made?.draft.shownRecipeText, startText: startText)
         case let .newDraft(_, scope, startText):
@@ -518,7 +523,7 @@ struct AutomationEditorPanel: View {
         }
         if let made, let key {
             let editor = editor
-            made.setPanelDraft { editor.drafts[key]?.form.renderedText() }
+            made.setPanelDraft { editor.drafts[key]?.renderedText() }
             // Once per draft: a composer the owner emptied stays empty.
             if let prefill = composerPrefill, editor.claimComposerPrefill(key), made.engine.messages.isEmpty,
                made.engine.draft.isEmpty {
@@ -538,7 +543,7 @@ struct AutomationEditorPanel: View {
 
     @discardableResult
     private func finishIfConfirmed() -> Bool {
-        guard case let .existing(id, _, _) = target, editor.confirmations[id] == .done else { return false }
+        guard case let .existing(id, _) = target, editor.confirmations[id] == .done else { return false }
         editor.closeConfirmation(id)
         finish(id, id)
         return true

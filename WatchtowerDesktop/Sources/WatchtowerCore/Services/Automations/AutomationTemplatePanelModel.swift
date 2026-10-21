@@ -97,9 +97,10 @@ package final class AutomationTemplatePanelModel {
     }
 
     /// **Save and Turn On** is on: a render of exactly the params shown,
-    /// every file valid with every hashed field shown (AUTO-06).
+    /// every file valid with every hashed field shown (AUTO-06), and no
+    /// newer render pending (the column says Checking…).
     package var canSave: Bool {
-        guard case let .rendered(result) = state, !result.files.isEmpty else { return false }
+        guard !isRendering, case let .rendered(result) = state, !result.files.isEmpty else { return false }
         return result.files.allSatisfy(\.validate.showsAllFields) && renderedRequest == Self.normalized(params)
     }
 

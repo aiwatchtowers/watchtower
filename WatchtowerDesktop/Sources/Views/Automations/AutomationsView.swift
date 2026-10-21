@@ -84,7 +84,7 @@ struct AutomationsView: View {
             case .automations:
                 PanelSplit(
                     isPanelShown: true,
-                    width: PanelSplitWidth(key: "automations.detailWidth", range: 640...1600, ideal: 900)
+                    width: PanelSplitWidth(key: "automations.detailWidth", range: 720...1600, ideal: 900)
                 ) {
                     listColumn
                 } panel: {
@@ -231,7 +231,7 @@ struct AutomationsView: View {
                     actions: actions,
                     workbenchName: item.automation.projectID.flatMap(workbenchName),
                     now: Date()
-                ) { review in vm.showEditor(.existing(id, review: review)) }
+                ) { vm.showEditor(.existing(id)) }
                 .id(id)
             } else {
                 emptyPanel
@@ -307,7 +307,7 @@ struct AutomationsView: View {
 
     private func makeChat(_ target: AutomationEditorTarget) async throws -> AutomationEditorChat? {
         switch target {
-        case let .existing(id, _, _): try await hooks.makeEditChat(id)
+        case let .existing(id, _): try await hooks.makeEditChat(id)
         case let .newDraft(contextID, scope, _): try await hooks.makeNewChat(contextID, scope)
         }
     }
@@ -323,7 +323,7 @@ struct AutomationsView: View {
 
     private func scopeTitle(_ target: AutomationEditorTarget) -> String {
         switch target {
-        case let .existing(id, _, _):
+        case let .existing(id, _):
             guard let automation = vm.items.first(where: { $0.id == id })?.automation,
                   automation.scope == .workbench else { return AutomationListSections.personalTitle }
             return automation.projectID.flatMap(workbenchName) ?? "Workbench"

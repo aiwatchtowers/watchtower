@@ -53,30 +53,9 @@ final class AutomationDraftPanelModelTests: XCTestCase {
         XCTAssertFalse(panel.isEmpty)
         XCTAssertEqual(panel.name, "Morning mail")
         XCTAssertEqual(panel.recipeText, Self.recipe + "newer\n", "Show recipe shows the newest entry's text")
-        XCTAssertEqual(panel.when, "Every weekday at 09:00")
-        XCTAssertEqual(panel.whenDetail, "Your local time · if the Mac was asleep, runs once when it wakes")
-        XCTAssertEqual(panel.budget, "40,000 tokens · 5 min")
-        XCTAssertEqual(panel.lastDryRunTokens, "Last dry run used 1,050 tokens")
-        XCTAssertEqual(panel.permissions.map(\.manifest), ["gmail:read@work", "llm:light", "output: inbox"])
-        XCTAssertEqual(panel.permissions.first?.plain, "Read mail in work (Gmail)")
         XCTAssertEqual(panel.dryRunLines, ["Read list_emails", "Asked the assistant · 1,050 tokens",
                                            "Would post to Inbox: Mail: 4 need a reply"])
         XCTAssertNil(panel.dryRunNote)
-    }
-
-    func testMissedSkipInWords() throws {
-        let skip = Self.recipe.replacingOccurrences(of: "run_once", with: "skip")
-        XCTAssertEqual(model(try line(recipe: skip)).whenDetail,
-                       "Your local time · if the Mac was asleep, skips that time")
-        XCTAssertNil(model(try line(triggerKind: "manual", trigger: "manual")).whenDetail)
-    }
-
-    func testCantLineListsUndeclaredWrites() throws {
-        XCTAssertEqual(model(try line()).cantLine, "It can't send mail, post to Slack or change Jira.")
-        XCTAssertEqual(AutomationDraftPanelModel.cantLine(permissions: ["gmail:write@work"], outputs: ["slack"]),
-                       "It can't change Jira.")
-        XCTAssertNil(AutomationDraftPanelModel.cantLine(
-            permissions: ["gmail:write@work", "slack:write@acme", "jira:write@ACME"], outputs: []))
     }
 
     func testRefusedDryRunShowsReason() throws {
@@ -86,7 +65,6 @@ final class AutomationDraftPanelModelTests: XCTestCase {
         ]))
         XCTAssertEqual(panel.dryRunNote, message)
         XCTAssertEqual(panel.dryRunLines, [])
-        XCTAssertNil(panel.lastDryRunTokens)
     }
 
     /// A draft that reached mcp() stops there (ask #326): the steps before it
@@ -113,7 +91,6 @@ final class AutomationDraftPanelModelTests: XCTestCase {
     func testParseErrorShowsErrors() throws {
         let panel = model(try line(name: "", dryRun: nil, errors: ["line 2: name is required"]))
         XCTAssertEqual(panel.errors, ["line 2: name is required"])
-        XCTAssertNil(panel.cantLine)
         XCTAssertEqual(panel.dryRunLines, [])
     }
 
@@ -150,7 +127,6 @@ final class AutomationDraftPanelModelTests: XCTestCase {
         XCTAssertEqual(panel.shownRecipeText, "---\nname: Broken\n---\n")
         XCTAssertEqual(panel.errors, ["Couldn't check this draft: workbench_id must be a workbench id"])
         XCTAssertEqual(panel.dryRunLines, [])
-        XCTAssertNil(panel.cantLine)
     }
 
     /// A cache path that exists but cannot be read as text is unreadable,

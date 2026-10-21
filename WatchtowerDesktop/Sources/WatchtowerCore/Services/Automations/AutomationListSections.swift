@@ -32,11 +32,14 @@ package enum AutomationDraftRows {
     /// Every `automation_draft` conversation whose cache file exists and
     /// whose newest line decodes, newest first. A draft of a workbench not in
     /// `liveWorkbenchIDs` (deleted since) is dropped; an unreadable or
-    /// undecodable cache is not a row.
-    package static func load(_ db: Database, databasePath: String, liveWorkbenchIDs: Set<Int64>) throws
-        -> [AutomationDraftRow] {
+    /// undecodable cache is not a row — unless the editor holds the draft
+    /// (`openDrafts`, conversation id → name, `AutomationEditorCenter.openNewDraftNames`):
+    /// then it is a row named as the editor reads it, dated by its chat.
+    package static func load(
+        _ db: Database, databasePath: String, liveWorkbenchIDs: Set<Int64>, openDrafts: [Int64: String] = [:]
+    ) throws -> [AutomationDraftRow] {
         let rows = try Row.fetchAll(db, sql: """
-            SELECT id, context_id FROM chat_conversations
+            SELECT id, context_id, updated_at FROM chat_conversations
             WHERE context_type = ? AND context_id IS NOT NULL
             """, arguments: [contextType])
         var drafts: [AutomationDraftRow] = []
@@ -46,14 +49,22 @@ package enum AutomationDraftRows {
             let workbenchID = workbenchID(fromContextID: contextID)
             if let workbenchID, !liveWorkbenchIDs.contains(workbenchID) { continue }
             let url = AutomationDraftEntry.cacheURL(databasePath: databasePath, conversationID: conversationID)
-            guard let text = try? String(contentsOf: url, encoding: .utf8),
-                  case let .entry(entry) = AutomationDraftEntry.newest(inCache: text),
-                  let modified = try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date
-            else { continue }
-            let name = entry.result?.manifest.name ?? ""
+            let name: String
+            let updatedAt: Date
+            if let text = try? String(contentsOf: url, encoding: .utf8),
+               case let .entry(entry) = AutomationDraftEntry.newest(inCache: text),
+               let modified = try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date {
+                name = entry.result?.manifest.name ?? ""
+                updatedAt = modified
+            } else if let open = openDrafts[conversationID] {
+                name = open
+                updatedAt = Date(timeIntervalSince1970: row["updated_at"] ?? 0)
+            } else {
+                continue
+            }
             drafts.append(AutomationDraftRow(conversationID: conversationID, contextID: contextID,
                                              workbenchID: workbenchID, name: name.isEmpty ? untitled : name,
-                                             updatedAt: modified))
+                                             updatedAt: updatedAt))
         }
         return drafts.sorted { ($0.updatedAt, $0.conversationID) > ($1.updatedAt, $1.conversationID) }
     }

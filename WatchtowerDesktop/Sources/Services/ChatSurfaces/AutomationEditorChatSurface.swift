@@ -79,8 +79,8 @@ enum AutomationEditorChatSurface {
                 let panel = panelDraftBlock(panelDraft(), conversationID: conversationID, dbPool: dbPool)
                 return compose(outcomes(input.previousOwnerMessageAt), resumed + recipe, panel, input.text)
             },
-            emptyHint: "Say what to change — the assistant drafts it, dry-runs it and proposes the save for "
-                + "your approval.",
+            emptyHint: "Say what to change — the assistant drafts it and dry-runs it; you save it with the "
+                + "Save buttons in the draft column.",
             starterPrompts: [
                 ChatStarterPrompt(title: "Explain it", text: "Explain what this automation does, step by step.",
                                   sendsImmediately: true)

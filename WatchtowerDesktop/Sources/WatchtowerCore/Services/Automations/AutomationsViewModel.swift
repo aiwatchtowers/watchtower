@@ -56,9 +56,12 @@ package final class AutomationsViewModel {
     /// The New flow's composer text for the editor it continues to: put into
     /// an empty chat once; any other panel drops it.
     package private(set) var composerPrefill: String?
-    /// New automation chats with a draft on disk (`AutomationDraftRows`),
-    /// read with the list.
+    /// New automation chats with a draft on disk or open in the editor
+    /// (`AutomationDraftRows`), read with the list.
     package private(set) var draftRows: [AutomationDraftRow] = []
+    /// The new drafts the editor holds, by conversation id → name
+    /// (`AutomationEditorCenter.openNewDraftNames`), read with the list.
+    @ObservationIgnored package var openNewDrafts: @MainActor () -> [Int64: String] = { [:] }
     /// Run ids whose steps are shown in the history.
     package private(set) var expandedRuns: Set<Int64> = []
     /// Keyed by automation id.
@@ -191,9 +194,10 @@ package final class AutomationsViewModel {
             let date = now()
             let failures = failureWatch != nil
             let databasePath = dbPool.path
+            let openDrafts = openNewDrafts()
             let snapshot = try dbPool.read { db in
                 try Snapshot.read(db, now: date, selected: selected, expanded: expanded, failures: failures,
-                                  databasePath: databasePath)
+                                  databasePath: databasePath, openDrafts: openDrafts)
             }
             apply(snapshot)
             if lastErrorIsRead {
@@ -231,7 +235,8 @@ package final class AutomationsViewModel {
             selected: Int64?,
             expanded: Set<Int64>,
             failures: Bool,
-            databasePath: String
+            databasePath: String,
+            openDrafts: [Int64: String]
         ) throws -> Self {
             var card: Card?
             if let selected {
@@ -257,7 +262,8 @@ package final class AutomationsViewModel {
                 allIDs: failures ? try AutomationQueries.allIDs(db) : [],
                 card: card,
                 steps: steps,
-                drafts: try AutomationDraftRows.load(db, databasePath: databasePath, liveWorkbenchIDs: workbenchIDs)
+                drafts: try AutomationDraftRows.load(db, databasePath: databasePath, liveWorkbenchIDs: workbenchIDs,
+                                                     openDrafts: openDrafts)
             )
         }
     }
@@ -341,7 +347,7 @@ package final class AutomationsViewModel {
     /// none (its draft row, if any, shows as selected). `composerPrefill`
     /// goes into the editor chat's empty composer once.
     package func showEditor(_ target: AutomationEditorTarget, composerPrefill: String? = nil) {
-        let id: Int64? = if case let .existing(id, _, _) = target { id } else { nil }
+        let id: Int64? = if case let .existing(id, _) = target { id } else { nil }
         if id != selectedID { expandedRuns = [] }
         selectedID = id
         panel = .editor(target)

@@ -21,10 +21,6 @@ import os
 @MainActor
 @Observable
 package final class AutomationEditorCenter {
-    package struct EditDraft {
-        package let form: AutomationFormModel
-    }
-
     package enum SaveState: Equatable, Sendable {
         case validating
         /// The draft was checked: the panel shows this plan.
@@ -72,7 +68,7 @@ package final class AutomationEditorCenter {
     }
     nonisolated package static let changedAgain = "The recipe changed again — review it once more."
 
-    package private(set) var drafts: [Int64: EditDraft] = [:]
+    package private(set) var drafts: [Int64: AutomationFormModel] = [:]
     package private(set) var saving: [Int64: SaveState] = [:]
     package private(set) var confirmations: [Int64: ConfirmState] = [:]
     /// Why opening the form failed, keyed by automation id.
@@ -125,6 +121,8 @@ package final class AutomationEditorCenter {
     @ObservationIgnored private var slugHints: [Int64: String] = [:]
     /// Drafts whose chat composer was prefilled already (`claimComposerPrefill`).
     @ObservationIgnored private var prefilled: Set<Int64> = []
+    /// The `beginEdit` start text each draft adopted already.
+    @ObservationIgnored private var startAdopted: [Int64: String] = [:]
 
     private static let log = Logger(subsystem: "com.watchtower.desktop", category: "automation-editor")
 
@@ -157,14 +155,17 @@ package final class AutomationEditorCenter {
     /// replaced by the file), records the chat's newest draft text as already
     /// adopted (opening never pulls in an old cached draft), then checks it.
     /// A `startText` (an Inbox proposal's recipe) is then adopted over the
-    /// loaded text, as a chat draft is: edits in a kept draft go aside.
+    /// loaded text, as a chat draft is: edits in a kept draft go aside. It
+    /// is adopted once per draft: the panel opening again on the same text
+    /// keeps the owner's edits.
     package func beginEdit(_ id: Int64, chatNewestText: String?, startText: String? = nil) async {
         if let chatNewestText { lastAdopted[id] = chatNewestText }
         guard await load(id) else { return }
-        guard let startText else {
+        guard let startText, startAdopted[id] != startText else {
             scheduleCheck(id)
             return
         }
+        startAdopted[id] = startText
         // Adopted even when the chat's newest draft is this same text.
         lastAdopted[id] = nil
         adoptChatDraft(id, text: startText, slug: nil)
@@ -173,11 +174,11 @@ package final class AutomationEditorCenter {
     /// Whether a draft is open after the load (a loaded or kept one).
     private func load(_ id: Int64) async -> Bool {
         if case .saving = saving[id] { return false }
-        if drafts[id]?.form.buffer.isDirty == true { return true }
+        if drafts[id]?.buffer.isDirty == true { return true }
         saving[id] = nil
         do {
             let detail = try await cli.show(id)
-            drafts[id] = EditDraft(form: AutomationFormModel(detail: detail))
+            drafts[id] = AutomationFormModel(detail: detail)
             adoptBase[id] = detail.recipeText
             loadErrors[id] = nil
             return true
@@ -196,18 +197,20 @@ package final class AutomationEditorCenter {
         loadErrors[key] = nil
         let form = AutomationFormModel(detail: AutomationDetail(newRecipeIn: recipeDir, scope: scope))
         if let startText { form.buffer.replace(text: startText) }
-        drafts[key] = EditDraft(form: form)
+        drafts[key] = form
         adoptBase[key] = form.renderedText()
         scheduleCheck(key)
     }
 
     /// The chat's newest draft text: replaces the buffer unless it is the
     /// text already adopted. Owner edits made since the last adoption are
-    /// kept aside (`keptAside`, `.assistantReplaced`) for **Restore**.
+    /// kept aside (`keptAside`, `.assistantReplaced`) for **Restore**, unless
+    /// a **Reload** aside is there: the text from before the reload stays.
     package func adoptChatDraft(_ key: Int64, text: String, slug: String?) {
-        guard let form = drafts[key]?.form, saving[key] != .saving, lastAdopted[key] != text else { return }
+        guard let form = drafts[key], saving[key] != .saving, lastAdopted[key] != text else { return }
         let current = form.renderedText()
-        if current != (adoptBase[key] ?? form.detail.recipeText), current != text {
+        if current != (adoptBase[key] ?? form.detail.recipeText), current != text,
+           asideReason[key] != .reloadedFromDisk {
             keptAside[key] = current
             asideReason[key] = .assistantReplaced
         }
@@ -222,7 +225,7 @@ package final class AutomationEditorCenter {
 
     /// **Restore**: the text kept aside goes back into the buffer.
     package func restoreAside(_ key: Int64) {
-        guard let form = drafts[key]?.form, let aside = keptAside[key], saving[key] != .saving else { return }
+        guard let form = drafts[key], let aside = keptAside[key], saving[key] != .saving else { return }
         form.buffer.replace(text: aside)
         keptAside[key] = nil
         asideReason[key] = nil
@@ -247,8 +250,20 @@ package final class AutomationEditorCenter {
         lastChecked[id] = nil
         turnOnPending.remove(id)
         prefilled.remove(id)
+        startAdopted[id] = nil
         keepAuto[id] = nil
         keepAutoHash[id] = nil
+    }
+
+    /// The new drafts open here, by conversation id, with the name the
+    /// newest check read (empty before one): the list shows each as a draft
+    /// row, also when its chat never drafted and no cache file exists.
+    package var openNewDraftNames: [Int64: String] {
+        var names: [Int64: String] = [:]
+        for key in drafts.keys where Self.isNewDraft(key) {
+            names[-key] = lastChecked[key]?.name ?? ""
+        }
+        return names
     }
 
     /// A "Keep auto" box: checks or unchecks `tool`, a grant the shown plan pauses.
@@ -272,13 +287,13 @@ package final class AutomationEditorCenter {
     package func reloadFromDisk(_ id: Int64) async {
         guard !Self.isNewDraft(id), let draft = drafts[id],
               saving[id] != .saving, saving[id] != .validating else { return }
-        await draft.form.buffer.flush()
-        let aside = draft.form.renderedText()
+        await draft.buffer.flush()
+        let aside = draft.renderedText()
         do {
             let detail = try await cli.show(id)
             keptAside[id] = aside
             asideReason[id] = .reloadedFromDisk
-            drafts[id] = EditDraft(form: AutomationFormModel(detail: detail))
+            drafts[id] = AutomationFormModel(detail: detail)
             adoptBase[id] = detail.recipeText
             saving[id] = nil
             validatedTexts[id] = nil
@@ -295,9 +310,9 @@ package final class AutomationEditorCenter {
     /// `validate` of `text` (`--against` for a saved automation,
     /// `--workbench` for a new workbench draft) and, when it validates, the
     /// plan the panel shows.
-    private func measure(_ key: Int64, draft: EditDraft, text: String) async throws
+    private func measure(_ key: Int64, draft: AutomationFormModel, text: String) async throws
         -> (AutomationsCLI.ValidateResult, AutomationSavePlan?) {
-        let detail = draft.form.detail
+        let detail = draft.detail
         let isNew = Self.isNewDraft(key)
         let validated = try await withTempRecipe(text, slug: detail.slug) { file in
             try await cli.validate(file: file, against: isNew ? nil : key,
@@ -341,10 +356,10 @@ package final class AutomationEditorCenter {
         // A check started directly overtakes the pending debounced one.
         checkTasks[key]?.cancel()
         checkTasks[key] = nil
-        await draft.form.buffer.flush()
+        await draft.buffer.flush()
         let generation = (checkGenerations[key] ?? 0) + 1
         checkGenerations[key] = generation
-        let text = draft.form.renderedText()
+        let text = draft.renderedText()
         validatedTexts[key] = nil
         saving[key] = .validating
         let outcome: Result<(AutomationsCLI.ValidateResult, AutomationSavePlan?), Error>
@@ -353,9 +368,9 @@ package final class AutomationEditorCenter {
         } catch {
             outcome = .failure(error)
         }
-        guard checkGenerations[key] == generation, drafts[key]?.form === draft.form,
+        guard checkGenerations[key] == generation, drafts[key] === draft,
               saving[key] == .validating else { return }
-        guard draft.form.renderedText() == text else {
+        guard draft.renderedText() == text else {
             // Typed while the check ran and nothing newer is scheduled: check again.
             if checkTasks[key] == nil { scheduleCheck(key) }
             return
@@ -363,8 +378,8 @@ package final class AutomationEditorCenter {
         switch outcome {
         case let .success((validated, plan)):
             lastChecked[key] = validated
-            if draft.form.recipeUnparsed {
-                draft.form.currentParseError = validated.ok ? "" : validated.errors.joined(separator: "\n")
+            if draft.recipeUnparsed {
+                draft.currentParseError = validated.ok ? "" : validated.errors.joined(separator: "\n")
             }
             if let plan {
                 validatedTexts[key] = text
@@ -386,7 +401,7 @@ package final class AutomationEditorCenter {
     /// screen are the bytes checked.
     package func canSave(_ key: Int64) -> Bool {
         guard case let .review(plan) = saving[key], plan.validated.showsAllFields,
-              let form = drafts[key]?.form else { return false }
+              let form = drafts[key] else { return false }
         return validatedTexts[key] == form.renderedText()
     }
 
@@ -394,25 +409,21 @@ package final class AutomationEditorCenter {
     /// **Save Turned Off**: saves the checked bytes, confirming
     /// `plan.validated.approvalHash` (AUTO-06). Bytes changed since the check
     /// (the page's pending keystroke included) are checked again instead of
-    /// saved. An enabled automation saved turned off is disabled first; a
-    /// turned-on save enables after the confirmed save. A retry after "not
-    /// turned on" only enables.
+    /// saved. A saved automation saved turned off is disabled first; a
+    /// turned-on save enables after the confirmed save. Both run whatever the
+    /// loaded `enabled` says (the card may have turned it on or off since the
+    /// draft was loaded); both are idempotent in Go.
     package func commit(_ key: Int64, plan: AutomationSavePlan, turnOn: Bool) async {
-        guard saving[key] != .saving, saving[key] != .validating else { return }
-        guard let draft = drafts[key] else {
-            if case .failed = saving[key], turnOn, let savedID = savedIDs[key] { await enableAfterSave(key, savedID) }
-            return
-        }
-        await draft.form.buffer.flush()
-        let text = draft.form.renderedText()
+        guard saving[key] != .saving, saving[key] != .validating, let draft = drafts[key] else { return }
+        await draft.buffer.flush()
+        let text = draft.renderedText()
         guard case let .review(checked) = saving[key], checked.validated.approvalHash == plan.validated.approvalHash,
               plan.validated.showsAllFields, validatedTexts[key] == text else {
             await check(key)
             return
         }
-        let detail = draft.form.detail
         let isNew = Self.isNewDraft(key)
-        let disableFirst = !isNew && detail.enabled && !turnOn
+        let disableFirst = !isNew && !turnOn
         if disableFirst {
             saving[key] = .saving
             do {
@@ -429,7 +440,7 @@ package final class AutomationEditorCenter {
         }
         savedIDs[key] = saved.automationID
         if Self.isNewDraft(key) { removeDraftCache(key) }
-        if turnOn, isNew || !detail.enabled {
+        if turnOn {
             do {
                 try await cli.setEnabled(saved.automationID, true)
             } catch {
@@ -491,7 +502,7 @@ package final class AutomationEditorCenter {
             saving[id] = .failed(AutomationDraftFooter.cantShowAllHint)
             return
         }
-        if let form = drafts[id]?.form {
+        if let form = drafts[id] {
             await form.buffer.flush()
             guard !form.buffer.isDirty else {
                 await check(id)
@@ -516,7 +527,7 @@ package final class AutomationEditorCenter {
     /// Saves `text` with `--confirm-hash plan.validated.approvalHash`, then
     /// keeps auto for exactly `plan.keepAuto`; nil (with `saving` failed)
     /// when the save is refused. The draft is gone after a save.
-    private func performSave(_ key: Int64, draft: EditDraft, text: String, plan: AutomationSavePlan) async
+    private func performSave(_ key: Int64, draft: AutomationFormModel, text: String, plan: AutomationSavePlan) async
         -> AutomationsCLI.SaveResult? {
         saving[key] = .saving
         // A new recipe is saved at a slug made from its name, and only where
@@ -524,16 +535,16 @@ package final class AutomationEditorCenter {
         let isNew = Self.isNewDraft(key)
         // A new draft's text may come from the chat or a template, whose
         // name the form's fields do not hold: the validated name is the text's.
-        let name = Self.isNewDraft(key) && !plan.validated.name.isEmpty ? plan.validated.name : draft.form.fields.name
-        let slug = isNew ? slugHints[key] ?? Self.slug(forName: name) : draft.form.detail.slug
-        let path = isNew ? (draft.form.detail.path as NSString).appendingPathComponent("\(slug).md")
-                         : draft.form.detail.path
+        let name = Self.isNewDraft(key) && !plan.validated.name.isEmpty ? plan.validated.name : draft.fields.name
+        let slug = isNew ? slugHints[key] ?? Self.slug(forName: name) : draft.detail.slug
+        let path = isNew ? (draft.detail.path as NSString).appendingPathComponent("\(slug).md")
+                         : draft.detail.path
         let saved: AutomationsCLI.SaveResult
         do {
             saved = try await withTempRecipe(text, slug: slug) { file in
                 try await cli.save(file: file, path: path,
                                    confirmHash: plan.validated.approvalHash,
-                                   expectContentHash: isNew ? "" : draft.form.buffer.baseContentHash)
+                                   expectContentHash: isNew ? "" : draft.buffer.baseContentHash)
             }
         } catch {
             let message = Self.saveMessage(for: error)
@@ -571,7 +582,7 @@ package final class AutomationEditorCenter {
     /// <the loaded approval hash>` or `off`. An edit not saved yet is not
     /// what the grant binds: the hash is the recipe's as it is indexed.
     package func setAuto(_ id: Int64, tool: String, on: Bool) async {
-        guard let detail = drafts[id]?.form.detail else { return }
+        guard let detail = drafts[id]?.detail else { return }
         do {
             try await cli.setAuto(id, tool: tool, on: on, hash: on ? detail.approvalHash : nil)
             autoErrors[id] = nil
@@ -610,6 +621,19 @@ package final class AutomationEditorCenter {
         }
         confirmations[id] = .done
         await refresh(id)
+    }
+
+    /// A save or confirm that landed after its panel went away: nothing
+    /// will open the saved card, so its finished state is dropped (with the
+    /// draft) and the next Edit opens the editor on the file, not the card.
+    package func settleUnwatched(_ key: Int64) {
+        if saving[key] == .done {
+            discard(key)
+        }
+        if confirmations[key] == .done {
+            confirmations[key] = nil
+            discard(key)
+        }
     }
 
     /// The panel is done with a confirm: its outcome is no longer shown.
