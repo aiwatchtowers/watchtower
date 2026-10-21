@@ -1,28 +1,10 @@
 import SwiftUI
 import WatchtowerCore
 
-/// What a press on an Inbox card asks the app to do. The card's views only
-/// emit it; `AppState.perform` carries it out.
-enum InboxCardCommand: Equatable {
-    /// A card link (`link`, an action's `open`), checked again at press time.
-    case openLink(URL)
-    /// AI Chat with the card attached and `message` in the composer, not sent.
-    case chat(card: AutomationOutputCard, message: String)
-    /// A target with `task` and a session in a workbench. The buttons emit
-    /// the workbench they resolved (`InboxAgentHandoff`) or the owner picked.
-    case agent(card: AutomationOutputCard, task: String, workbench: InboxCardAction.WorkbenchRef?)
-    /// A Reply press: `action` is the stored index (`InboxCardAction.index`).
-    case reply(outputID: Int64, action: Int)
-    /// The automation's card, where a recipe that cannot run is confirmed or
-    /// turned on.
-    case openAutomation(AutomationOutputCard)
-}
-
 /// An automation card's two button rows (spec B2): its own actions, the
-/// first one prominent unless it set `primary: false`; then the common row,
-/// Open source (only with a link), Discuss in Chat and Hand to Agent…, with
-/// Done and Dismiss trailing. A Hand to Agent… or Agent press that names no
-/// one workbench opens a picker anchored to the button.
+/// first one prominent unless it set `primary: false`; then the common row
+/// (`InboxCommonRow`) with Done and Dismiss trailing. An Agent press that
+/// names no one workbench opens a picker anchored to the button.
 struct InboxCardButtons: View {
     let card: AutomationOutputCard
     /// The screens a `watchtower-nav://` link may open.
@@ -35,14 +17,13 @@ struct InboxCardButtons: View {
     /// The workbenches an agent press can go to.
     var workbenches: [Workbench] = []
 
-    /// An agent press waiting for the owner's workbench: the button it is
-    /// anchored to (an action's index, or `commonRowAnchor`) and its task.
+    /// An agent press waiting for the owner's workbench: the action's index
+    /// (the button it is anchored to) and its task.
     private struct AgentPick: Equatable {
         let anchor: Int
         let task: String
     }
 
-    private static let commonRowAnchor = -1
     @State private var picking: AgentPick?
 
     var body: some View {
@@ -75,7 +56,9 @@ struct InboxCardButtons: View {
         let button = Button(Self.label(action, card: card, reply: reply)) { press(action, reply: reply) }
             .disabled(isDisabled(action, reply: reply))
             .help(help(action))
-            .popover(isPresented: isPicking(action.index), arrowEdge: .bottom) { workbenchPicker.popoverSurface() }
+            .popover(isPresented: isPicking(action.index), arrowEdge: .bottom) {
+                InboxWorkbenchPicker(workbenches: workbenches, onPick: pick).popoverSurface()
+            }
         if action.primary {
             button.buttonStyle(.kitPrimary)
         } else {
@@ -88,7 +71,7 @@ struct InboxCardButtons: View {
         case .link(let url):
             onCommand(.openLink(url))
         case .chat(let message):
-            onCommand(.chat(card: card, message: message))
+            onCommand(.chat(InboxCardSubject(card), message: message))
         case let .agent(task, workbench):
             // The recipe's task, then the card fenced as data (as Hand to
             // Agent… sends it): a card can quote anyone.
@@ -156,32 +139,19 @@ struct InboxCardButtons: View {
 
     // MARK: - The common row
 
-    /// The leading buttons wrap in a narrow pane; Done and Dismiss stay on
-    /// the first line, trailing.
     private var commonRow: some View {
-        HStack(alignment: .top, spacing: Spacing.medium) {
-            FlowLayout(spacing: Spacing.regular) {
-                if let source = URL(string: card.link), !card.link.isEmpty {
-                    Button("Open source") { onCommand(.openLink(source)) }
-                        .disabled(!InboxCardLinkPolicy.permits(source, navScreens: navScreens))
-                        .help(card.link)
-                }
-                Button("Discuss in Chat") {
-                    onCommand(.chat(card: card, message: InboxCardTexts.discussMessage(card)))
-                }
-                Button("Hand to Agent…") {
-                    handToAgent(task: InboxCardTexts.handToAgentTask(card), ref: nil, anchor: Self.commonRowAnchor)
-                }
-                .popover(isPresented: isPicking(Self.commonRowAnchor), arrowEdge: .bottom) { workbenchPicker.popoverSurface() }
-            }
-            HStack(spacing: Spacing.regular) {
-                Button("Done", action: onDone)
-                Button("Dismiss", action: onDismiss)
-            }
-            .fixedSize()
-            .disabled(isWriting)
+        InboxCommonRow(
+            subject: InboxCardSubject(card),
+            link: card.link.isEmpty ? nil : URL(string: card.link),
+            discussMessage: InboxCardTexts.discussMessage(card),
+            navScreens: navScreens,
+            workbenches: workbenches,
+            isWriting: isWriting,
+            onCommand: onCommand
+        ) {
+            Button("Done", action: onDone)
+            Button("Dismiss", action: onDismiss)
         }
-        .buttonStyle(.kitQuiet)
     }
 }
 
@@ -194,11 +164,11 @@ extension InboxCardButtons {
     private func handToAgent(task: String, ref: InboxCardAction.WorkbenchRef?, anchor: Int) {
         switch InboxAgentHandoff.workbench(for: ref, card: card, workbenches: workbenches) {
         case .workbench(let id):
-            onCommand(.agent(card: card, task: task, workbench: .id(id)))
+            onCommand(.agent(InboxCardSubject(card), task: task, workbench: .id(id)))
         case .pick where !workbenches.isEmpty:
             picking = AgentPick(anchor: anchor, task: task)
         case .pick:
-            onCommand(.agent(card: card, task: task, workbench: ref))
+            onCommand(.agent(InboxCardSubject(card), task: task, workbench: ref))
         }
     }
 
@@ -206,22 +176,10 @@ extension InboxCardButtons {
         Binding(get: { picking?.anchor == anchor }, set: { if !$0 { picking = nil } })
     }
 
-    private var workbenchPicker: some View {
-        VStack(alignment: .leading, spacing: Spacing.small) {
-            Text("Hand to which workbench?")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            ForEach(workbenches) { workbench in
-                Button(workbench.name) {
-                    guard let pick = picking else { return }
-                    picking = nil
-                    onCommand(.agent(card: card, task: pick.task, workbench: .id(workbench.id)))
-                }
-                .buttonStyle(.kitQuiet)
-            }
-        }
-        .controlSize(.small)
-        .padding(Spacing.medium)
+    private func pick(_ workbenchID: Int64) {
+        guard let pick = picking else { return }
+        picking = nil
+        onCommand(.agent(InboxCardSubject(card), task: pick.task, workbench: .id(workbenchID)))
     }
 }
 

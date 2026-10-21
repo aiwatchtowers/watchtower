@@ -6,7 +6,8 @@ final class EmptyStateCopyTests: XCTestCase {
     /// EmptyStateCopyCoverageTests sweeps the real enum).
     private let covered = [
         "catchUp", "briefings", "dayPlan", "inbox", "ideas", "calendar", "targets", "tracks", "projects", "automations",
-        "digests", "people", "memory", "workload", "blockers", "projectMap", "releases", "statistics", "boards"
+        "digests", "people", "memory", "workload", "blockers", "projectMap", "releases", "statistics", "boards",
+        "inboxMessages", "inboxAutomations"
     ]
 
     private func copy(_ rawValue: String, briefingHour: Int = 8, dayPlanHour: Int = 8) -> EmptyStateCopy? {
@@ -22,10 +23,21 @@ final class EmptyStateCopyTests: XCTestCase {
             text, "A morning briefing: meetings, what needs you, what changed. Generated once a day at or after 07:00.")
     }
 
-    /// The Inbox holds proposals and due reminders, not replies (owner, ask #299).
+    /// The Inbox's All holds every kind (C1); its Automations filter keeps B's
+    /// proposals-and-reminders sentence (owner, ask #299).
     func testInboxCopySaysProposalsAndReminders() throws {
         XCTAssertEqual(
-            try XCTUnwrap(copy("inbox")).landsHere, "Proposals and due reminders that need you, plus reaction shortcuts.")
+            try XCTUnwrap(copy("inbox")).landsHere,
+            "Your day, messages, tracks, ideas and automation cards that need you.")
+        XCTAssertEqual(
+            try XCTUnwrap(copy("inboxAutomations")).landsHere,
+            "Proposals and due reminders that need you, plus reaction shortcuts.")
+    }
+
+    func testEveryInboxFilterHasCopy() {
+        for filter in InboxFilter.allCases {
+            XCTAssertNotNil(copy(filter.emptyCopyKey), filter.rawValue)
+        }
     }
 
     func testDayPlanCopyNamesConfiguredHour() throws {

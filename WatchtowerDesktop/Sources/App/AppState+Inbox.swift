@@ -27,13 +27,14 @@ extension AppState {
             case .web(let web): NSWorkspace.shared.open(web)
             case nil: break
             }
-        case let .chat(card, message):
-            await openChatAboutInboxCard(card, message: message)
-        case let .agent(card, task, ref):
+        case let .chat(subject, message):
+            await openChatAboutInboxCard(subject, message: message)
+        case let .agent(subject, task, ref):
             // The card's buttons already showed the picker where one was
             // needed; what still names no workbench is refused.
-            switch InboxAgentHandoff.workbench(for: ref, card: card, workbenches: inboxWorkbenches) {
-            case .workbench(let id): await handInboxCardToAgent(card, task: task, workbenchID: id)
+            switch InboxAgentHandoff.workbench(for: ref, cardWorkbenchID: subject.workbenchID,
+                                               workbenches: inboxWorkbenches) {
+            case .workbench(let id): await handInboxCardToAgent(subject, task: task, workbenchID: id)
             case .pick: actionStripViewModel?.lastError = Self.inboxNoWorkbench
             }
         case let .reply(outputID, action):
@@ -43,17 +44,17 @@ extension AppState {
         }
     }
 
-    /// Discuss in Chat and a Chat action: a new AI Chat with the card
-    /// attached as `inbox-card-<id>.md` (the chat reads it as data) and
+    /// Discuss in Chat and a Chat action: a new AI Chat with the card of any
+    /// kind attached as `subject.attachmentName` (the chat reads it as data) and
     /// `message` in the composer, which takes the keyboard. Nothing is sent;
     /// text the owner had typed is kept.
-    func openChatAboutInboxCard(_ card: AutomationOutputCard, message: String) async {
+    func openChatAboutInboxCard(_ subject: InboxCardSubject, message: String) async {
         ensureChatViewModels()
         guard let chat = chatViewModel else { return }
         // A failed create says why on the chat itself.
         if await chat.newConversation() != nil {
-            let markdown = InboxCardTexts.attachmentMarkdown(card)
-            if await !chat.attachPasted(Data(markdown.utf8), name: "inbox-card-\(card.id).md") {
+            let markdown = InboxCardTexts.attachmentMarkdown(subject)
+            if await !chat.attachPasted(Data(markdown.utf8), name: subject.attachmentName) {
                 chat.errorMessage = "Couldn't attach the Inbox card to this chat."
             }
             chat.draft = HelpChatPrefill.merge(draft: chat.draft, prefill: message)
@@ -65,20 +66,23 @@ extension AppState {
     /// Hand to Agent… and an Agent action: a target on `workbenchID`'s board
     /// with the task's first line as its title and the whole task as its
     /// intent, then Work on It (a session starts), on the Workbench tab.
-    func handInboxCardToAgent(_ card: AutomationOutputCard, task: String, workbenchID: Int64) async {
+    func handInboxCardToAgent(_ subject: InboxCardSubject, task: String, workbenchID: Int64) async {
         guard let workbenches = workbenchesViewModel, let cli = workbenches.cli else {
             actionStripViewModel?.lastError = "The Workbench is not ready."
             return
         }
         let firstLine = InboxCardTexts.targetTitle(fromTask: task)
-        let title = firstLine.isEmpty ? "Inbox card #\(card.id)" : firstLine
-        let priority = WorkbenchBoardCard.editablePriorities.contains(card.priority) ? card.priority : "medium"
+        let title = firstLine.isEmpty ? "Inbox card" : firstLine
+        let priority = WorkbenchBoardCard.editablePriorities.contains(subject.priority) ? subject.priority : "medium"
         let targetID: Int64
         do {
             targetID = try await cli.addTarget(workbenchID: workbenchID, title: title, intent: task,
                                                priority: priority, parentID: nil)
         } catch {
-            inboxLog.error("handing card \(card.id) to workbench \(workbenchID): \(error.localizedDescription, privacy: .public)")
+            inboxLog.error("""
+                handing card \(subject.attachmentName, privacy: .public) to workbench \(workbenchID): \
+                \(error.localizedDescription, privacy: .public)
+                """)
             actionStripViewModel?.lastError = "Couldn't create the target: \(error.localizedDescription)"
             return
         }

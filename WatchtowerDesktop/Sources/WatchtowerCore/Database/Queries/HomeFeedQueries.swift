@@ -10,6 +10,9 @@ package struct HomeFeedInboxRow: Equatable, Sendable {
     package let who: String
     /// "#eng", the mail subject, or the Jira reason; nil when there is none.
     package let whereText: String?
+    /// The display names of an accumulated item's senders, keyed by their
+    /// namespaced id; a sender with no name is left out.
+    package var senderNames: [String: String] = [:]
 }
 
 /// Every feed source as one read (`HomeFeedQueries.read`) left it.
@@ -136,7 +139,8 @@ package enum HomeFeedQueries {
                 item: item,
                 stamp: parse(stamp) ?? now,
                 who: try who(db, item),
-                whereText: try whereText(db, item)
+                whereText: try whereText(db, item),
+                senderNames: try senderNames(db, item)
             )
         }
     }
@@ -149,16 +153,22 @@ package enum HomeFeedQueries {
         if item.triggerType.hasPrefix("jira_") || item.triggerType.hasPrefix("linear_") { return item.channelID }
         if item.triggerType == "email_received" { return item.senderUserID }
         if item.isAccumulated {
-            var names: [String: String] = [:]
-            for id in Set(item.mentionList.map(\.sender)) {
-                if let name = try UserQueries.fetchByID(db, id: id)?.bestName, !name.isEmpty {
-                    names[id] = name
-                }
-            }
-            return item.mentionSendersLabel(names: names)
+            return item.mentionSendersLabel(names: try senderNames(db, item))
         }
         // fetchByID, not fetchDisplayName: a raw id would read as noise.
         return try UserQueries.fetchByID(db, id: item.senderUserID)?.bestName ?? ""
+    }
+
+    /// An accumulated item's sender names (`who`'s and the message card's).
+    package static func senderNames(_ db: Database, _ item: InboxItem) throws -> [String: String] {
+        guard item.isAccumulated else { return [:] }
+        var names: [String: String] = [:]
+        for id in Set(item.mentionList.map(\.sender)) {
+            if let name = try UserQueries.fetchByID(db, id: id)?.bestName, !name.isEmpty {
+                names[id] = name
+            }
+        }
+        return names
     }
 
     package static func whereText(_ db: Database, _ item: InboxItem) throws -> String? {

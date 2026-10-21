@@ -52,7 +52,8 @@ package enum EmptyStateAction: Equatable, Sendable {
 /// The per-tab copy (first-run spec §1.5). UI text is English only.
 package enum EmptyStateCopyTable {
     /// Keyed by `SidebarDestination.rawValue` (SidebarDestination lives in the
-    /// Desktop target; Workbench's persisted raw value is "projects").
+    /// Desktop target; Workbench's persisted raw value is "projects"), plus
+    /// the Inbox filters' own keys (`InboxFilter.emptyCopyKey`).
     package static func copy(for destinationRawValue: String, briefingHour: Int, dayPlanHour: Int) -> EmptyStateCopy? {
         guard let row = rows[destinationRawValue] else { return nil }
         let hour: Int? = switch destinationRawValue {
@@ -93,8 +94,17 @@ package enum EmptyStateCopyTable {
             feature: .dayPlan, primaryAction: .openSettings(tab: "features", label: "Change the hour")),
         "inbox": EmptyStateCopy(
             icon: "tray", title: "Nothing waiting for you",
-            landsHere: "Proposals and due reminders that need you, plus reaction shortcuts.",
+            landsHere: "Your day, messages, tracks, ideas and automation cards that need you.",
             feature: .inbox, primaryAction: nil),
+        // The Inbox's Messages and Automations filters (`InboxFilter.emptyCopyKey`).
+        "inboxMessages": EmptyStateCopy(
+            icon: "bubble.left.and.bubble.right", title: "No messages waiting",
+            landsHere: "Mentions, DMs, thread replies, mail and Jira or Linear items that need you.",
+            feature: .inbox, primaryAction: nil),
+        "inboxAutomations": EmptyStateCopy(
+            icon: "gearshape.2", title: "Nothing from your automations",
+            landsHere: "Proposals and due reminders that need you, plus reaction shortcuts.",
+            feature: nil, primaryAction: nil),
         "ideas": EmptyStateCopy(
             icon: "lightbulb", title: "No ideas yet",
             landsHere: "Ideas and decisions picked up from conversations, every ~6 h.",

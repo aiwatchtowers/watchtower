@@ -70,17 +70,60 @@ struct InboxListRow: View {
                 .map { InboxCardTexts.stamped(prefix, at: $0, now: now) } ?? prefix
             return Content(unread: action.isPending, title: title, high: false, source: source,
                            preview: action.reason)
-        // Placeholder rows until the kind rows land.
         case .day(let card):
-            return Content(unread: card.isUnread, title: "Day \(card.date)", high: false, source: "Day", preview: "")
+            return Content(unread: card.isUnread, title: dayTitle(card), high: false, source: daySource(card),
+                           preview: dayPreview(card))
         case .track(let card):
-            return Content(unread: card.isUnread, title: card.track.text, high: false, source: "Track", preview: "")
+            return Content(unread: card.isUnread, title: card.track.text, high: card.track.priority == "high",
+                           source: InboxCardTexts.stamped("Track", at: card.lastEventAt, now: now),
+                           preview: card.newEventCount > 0 ? "\(card.newEventCount) new" : "")
         case .idea(let idea):
-            return Content(unread: idea.awaitsVerdict, title: idea.title, high: false, source: "Idea",
+            return Content(unread: idea.awaitsVerdict, title: idea.title, high: false, source: ideaSource(idea),
                            preview: idea.essence)
         case .message(let row):
-            return Content(unread: false, title: row.item.snippet, high: false, source: row.who, preview: "")
+            return Content(unread: row.item.isUnread, title: messageTitle(row), high: row.item.priority == "high",
+                           source: messageSource(row, now: now), preview: row.item.whyMatters)
         }
+    }
+
+    /// The day card: its briefing, or the plan alone.
+    static func dayTitle(_ card: InboxDayCard) -> String {
+        card.briefing != nil ? "Morning brief" : "Day plan"
+    }
+
+    /// "Your day · Wed 22 Oct".
+    static func daySource(_ card: InboxDayCard) -> String {
+        let parser = DateFormatter()
+        parser.locale = Locale(identifier: "en_US_POSIX")
+        parser.dateFormat = "yyyy-MM-dd"
+        guard let date = parser.date(from: card.date) else { return "Your day · \(card.date)" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "EEE d MMM"
+        return "Your day · \(formatter.string(from: date))"
+    }
+
+    private static func dayPreview(_ card: InboxDayCard) -> String {
+        card.plan == nil ? "" : "Plan: \(card.planDone) of \(card.planTotal) done"
+    }
+
+    /// "Idea · proposed", "Decision · not now".
+    static func ideaSource(_ idea: Idea) -> String {
+        "\(idea.kind.rawValue.capitalized) · \(idea.statusRaw.replacingOccurrences(of: "_", with: " "))"
+    }
+
+    /// A channel item that folded several messages says how many; any other
+    /// its text.
+    static func messageTitle(_ row: HomeFeedInboxRow) -> String {
+        if row.item.isAccumulated { return row.item.mentionCountTitle }
+        let line = row.item.snippet.split(whereSeparator: \.isNewline).first.map(String.init) ?? ""
+        return line.isEmpty ? "Message" : line
+    }
+
+    /// "<who> · #eng · 09:12" (its day when not today).
+    static func messageSource(_ row: HomeFeedInboxRow, now: Date) -> String {
+        let prefix = [row.who, row.whereText ?? ""].filter { !$0.isEmpty }.joined(separator: " · ")
+        return InboxCardTexts.stamped(prefix.isEmpty ? "Message" : prefix, at: row.stamp, now: now)
     }
 
     /// "Reminder · 14:00" (its due time).

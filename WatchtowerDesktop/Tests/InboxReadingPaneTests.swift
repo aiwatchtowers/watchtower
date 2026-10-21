@@ -3,7 +3,10 @@ import GRDB
 import SwiftUI
 import ViewInspector
 @testable import WatchtowerDesktop
-import WatchtowerCore
+@testable import WatchtowerCore
+
+/// The pane with the day, track and idea placeholders (before Tasks 8–10).
+private typealias PlaceholderPane = InboxReadingPane<InboxCardPlaceholder, InboxCardPlaceholder, InboxCardPlaceholder>
 
 /// The Inbox reading pane (spec B1, B2): an automation card's own buttons
 /// from its stored `actions`, then the common row; Reply's states; links
@@ -34,11 +37,11 @@ final class InboxReadingPaneTests: XCTestCase {
         _ card: AutomationOutputCard,
         navScreens: Set<String> = [],
         onCommand: @escaping (InboxCardCommand) -> Void = { _ in }
-    ) -> InboxReadingPane {
+    ) -> PlaceholderPane {
         InboxReadingPane(item: .output(card), navScreens: navScreens, onCommand: onCommand)
     }
 
-    private func buttonLabels(_ view: InboxReadingPane) throws -> [String] {
+    private func buttonLabels(_ view: PlaceholderPane) throws -> [String] {
         try view.inspect().findAll(ViewType.Button.self).map { try $0.labelView().text().string() }
     }
 
@@ -70,8 +73,8 @@ final class InboxReadingPaneTests: XCTestCase {
 
         XCTAssertEqual(commands, [
             .openLink(try XCTUnwrap(URL(string: "https://example.com/issue/482"))),
-            .chat(card: shown, message: InboxCardTexts.discussMessage(shown)),
-            .agent(card: shown, task: InboxCardTexts.handToAgentTask(shown), workbench: nil)
+            .chat(InboxCardSubject(shown), message: InboxCardTexts.discussMessage(shown)),
+            .agent(InboxCardSubject(shown), task: InboxCardTexts.handToAgentTask(shown), workbench: nil)
         ])
     }
 
@@ -86,7 +89,7 @@ final class InboxReadingPaneTests: XCTestCase {
         try sut.inspect().find(button: "Ask").tap()
         try sut.inspect().find(button: "Backlog").tap()
 
-        XCTAssertEqual(commands, [.agent(card: shown, task: InboxCardTexts.agentActionTask(shown, task: "Fix it"),
+        XCTAssertEqual(commands, [.agent(InboxCardSubject(shown), task: InboxCardTexts.agentActionTask(shown, task: "Fix it"),
                                          workbench: .id(3)),
                                   .reply(outputID: 5, action: 2)])
     }
@@ -140,6 +143,132 @@ final class InboxReadingPaneTests: XCTestCase {
         let sut = InboxReadingPane(item: nil, navScreens: []) { _ in }
         XCTAssertNoThrow(try sut.inspect().find(text: "Select a card"))
     }
+
+    // MARK: - Every kind
+
+    /// 09:30 today, local time, and "now" an hour later the same day.
+    private func local(_ hour: Int, _ minute: Int) throws -> Date {
+        try XCTUnwrap(Calendar.current.date(bySettingHour: hour, minute: minute, second: 0, of: Date()))
+    }
+
+    private func dayCard() throws -> InboxDayCard {
+        let briefing = try Briefing(row: Row([
+            "id": 1, "user_id": "u", "date": "2025-10-22", "role": "", "attention": "[]", "your_day": "[]",
+            "what_happened": "[]", "team_pulse": "[]", "coaching": "[]", "model": "", "input_tokens": 0,
+            "output_tokens": 0, "cost_usd": 0.0, "prompt_version": 1, "read_at": nil,
+            "created_at": "2025-10-22T05:00:00Z"
+        ] as [String: (any DatabaseValueConvertible)?]))
+        return InboxDayCard(date: "2025-10-22", briefing: briefing, plan: nil, planDone: 0, planTotal: 0,
+                            stamp: try local(7, 0))
+    }
+
+    private func trackCard() throws -> InboxTrackCard {
+        let track = Track(row: Row(["id": 3, "text": "Launch of acme v2", "read_at": nil, "has_updates": true,
+                                    "priority": "high"] as [String: (any DatabaseValueConvertible)?]))
+        return InboxTrackCard(track: track, lastEventAt: try local(9, 30), newEventCount: 2)
+    }
+
+    private func idea() -> Idea {
+        Idea(row: Row(["id": 4, "kind": "idea", "status": "proposed", "title": "A shared glossary",
+                       "essence": "One page of terms", "updated_at": "2026-10-20T10:00:00Z"]))
+    }
+
+    private func message() throws -> HomeFeedInboxRow {
+        let item = InboxItem(row: Row(["id": 9, "snippet": "Can you review the launch plan?",
+                                       "trigger_type": "mention", "permalink": "https://example.com/m/9",
+                                       "read_at": ""]))
+        return HomeFeedInboxRow(item: item, stamp: try local(9, 12), who: "Ann", whereText: "#eng")
+    }
+
+    private func reminder() -> Reminder {
+        Reminder(row: Row(["id": 1, "message_ref": "", "note": "Ping Ann", "remind_at": "2000-01-01T00:00:00Z",
+                           "status": "pending"]))
+    }
+
+    private func proposal() -> AgentAction {
+        AgentAction(row: Row(["id": 7, "tool": "create_target", "status": "pending", "reason": "From a reaction"]))
+    }
+
+    /// Each kind with the title and source line its pane must show.
+    private func everyKind() throws -> [(item: InboxListItem, texts: [String])] {
+        let output = card()
+        return [
+            (.output(output), [output.title]),
+            (.reminder(reminder()), ["Ping Ann"]),
+            (.proposal(proposal()), [AgentActionCardView.title(for: proposal())]),
+            (.day(try dayCard()), ["Morning brief", "Your day · Wed 22 Oct"]),
+            (.track(try trackCard()), ["Launch of acme v2", "Track · 09:30"]),
+            (.idea(idea()), ["A shared glossary", "Idea · proposed"]),
+            (.message(try message()), ["Can you review the launch plan?", "Ann · #eng · 09:12"])
+        ]
+    }
+
+    func testEveryKindHasAPane() throws {
+        let kinds = try everyKind()
+        XCTAssertEqual(kinds.count, 7, "every InboxListItem case")
+        for (item, texts) in kinds {
+            let sut = InboxReadingPane(
+                item: item, navScreens: [], now: try local(10, 30), onCommand: { _ in },
+                proposalCard: { action in
+                    AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {}, onRetry: {})
+                })
+            XCTAssertThrowsError(try sut.inspect().find(text: "Select a card"), "\(item.id)")
+            for text in texts {
+                XCTAssertNoThrow(try sut.inspect().find(text: text), "\(item.id): \(text)")
+            }
+        }
+    }
+
+    func testListRowContentForEveryKind() throws {
+        let now = try local(10, 30)
+        func content(_ item: InboxListItem) -> InboxListRow.Content {
+            InboxListRow.content(item, proposalLabel: nil, now: now)
+        }
+        XCTAssertEqual(content(.day(try dayCard())),
+                       .init(unread: true, title: "Morning brief", high: false, source: "Your day · Wed 22 Oct",
+                             preview: ""))
+        XCTAssertEqual(content(.track(try trackCard())),
+                       .init(unread: true, title: "Launch of acme v2", high: true, source: "Track · 09:30",
+                             preview: "2 new"))
+        XCTAssertEqual(content(.idea(idea())),
+                       .init(unread: true, title: "A shared glossary", high: false, source: "Idea · proposed",
+                             preview: "One page of terms"))
+        XCTAssertEqual(content(.message(try message())),
+                       .init(unread: true, title: "Can you review the launch plan?", high: false,
+                             source: "Ann · #eng · 09:12", preview: ""))
+
+        let readIdea = Idea(row: Row(["id": 5, "kind": "decision", "status": "not_now", "title": "Ship weekly"]))
+        XCTAssertEqual(content(.idea(readIdea)).source, "Decision · not now")
+        XCTAssertFalse(content(.idea(readIdea)).unread)
+    }
+
+    // MARK: - The header
+
+    func testHeaderMoreMenuOffersLearnedRulesAndProfile() throws {
+        var opened: [InboxAuxPane] = []
+        let sut = InboxFilterBar(filter: .constant(.all), cheatSheetRows: [], showsCheatSheetButton: true,
+                                 onOpenSettings: {}, onOpenAux: { opened.append($0) })
+
+        try sut.inspect().find(button: "Learned Rules").tap()
+        try sut.inspect().find(button: "Assistant Profile").tap()
+
+        XCTAssertEqual(opened, [.learnedRules, .profile])
+        for filter in InboxFilter.allCases {
+            XCTAssertNoThrow(try sut.inspect().find(text: filter.title), filter.title)
+        }
+        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
+    }
+
+    func testIdeasHeaderShowsOnlyOnTheIdeasFilter() throws {
+        let ideas = InboxFilterBar(filter: .constant(.ideas), cheatSheetRows: [], showsCheatSheetButton: false,
+                                   onOpenSettings: {}, onOpenAux: { _ in }, ideasHeader: { Text("New idea slot") })
+        XCTAssertNoThrow(try ideas.inspect().find(text: "New idea slot"))
+        XCTAssertThrowsError(try ideas.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
+
+        let all = InboxFilterBar(filter: .constant(.all), cheatSheetRows: [], showsCheatSheetButton: true,
+                                 onOpenSettings: {}, onOpenAux: { _ in }, ideasHeader: { Text("New idea slot") })
+        XCTAssertThrowsError(try all.inspect().find(text: "New idea slot"))
+    }
 }
 
 /// A due reminder in the reading pane links the Slack message it was set
@@ -147,7 +276,7 @@ final class InboxReadingPaneTests: XCTestCase {
 /// without one.
 @MainActor
 final class InboxReminderPaneTests: XCTestCase {
-    private func reminderPane(messageRef: String) -> InboxReadingPane {
+    private func reminderPane(messageRef: String) -> PlaceholderPane {
         let reminder = Reminder(row: Row(["id": 1, "message_ref": messageRef, "note": "Ping Ann",
                                           "remind_at": "2000-01-01T00:00:00Z", "status": "pending"]))
         return InboxReadingPane(item: .reminder(reminder), navScreens: []) { _ in }
@@ -197,8 +326,8 @@ final class InboxAgentPressTests: XCTestCase {
         try sut.inspect().find(button: "Ask").tap()
 
         XCTAssertEqual(commands, [
-            .agent(card: own, task: InboxCardTexts.handToAgentTask(own), workbench: .id(3)),
-            .agent(card: own, task: InboxCardTexts.agentActionTask(own, task: "Fix"), workbench: .id(4))
+            .agent(InboxCardSubject(own), task: InboxCardTexts.handToAgentTask(own), workbench: .id(3)),
+            .agent(InboxCardSubject(own), task: InboxCardTexts.agentActionTask(own, task: "Fix"), workbench: .id(4))
         ])
     }
 

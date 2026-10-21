@@ -1,92 +1,68 @@
+import GRDB
 import SwiftUI
 import WatchtowerCore
 
-/// The Inbox tab's content: due reminders, pending agent-action proposals
-/// and open automation inbox outputs, as a list and a reading pane — the reaction-command
-/// surface, which replaced the
-/// situations Dashboard (now deleted). The Dashboard's two sibling tabs did
-/// not go with it: the learned-rules manager still feeds the digest/tracks/
-/// briefing/catch-up prompts (`ListLearnedRulesByPipeline`) and the assistant
-/// profile editor still feeds Catch-Up compose and the idea chat, so they
-/// keep their door here behind this view's own segmented control
-/// (`.learned`/`.profile`).
+/// The Inbox tab's content (C1): one list and reading pane over every kind
+/// that needs the owner — the day card, messages, tracks, ideas, and B's
+/// proposals, due reminders and automation cards — under the filter bar
+/// (All · Day · Messages · Tracks · Ideas · Automations). The learned-rules
+/// manager still feeds the digest/tracks/briefing/catch-up prompts
+/// (`ListLearnedRulesByPipeline`) and the assistant profile editor still
+/// feeds Catch-Up compose and the idea chat, so they keep their door here:
+/// the header's ⋯ menu opens them in the reading pane (R7).
 /// Reads `appState.actionStripViewModel` (AppState-owned so it survives
-/// navigation, the `SlackAccountsViewModel` house pattern) and
-/// re-`refresh()`s on every appear — cross-process daemon/CLI writes don't
-/// fire `ValueObservation` (see the view model's own doc comment).
+/// navigation, the `SlackAccountsViewModel` house pattern), re-`refresh()`es
+/// on every appear — cross-process daemon/CLI writes don't fire
+/// `ValueObservation` (see the view model's own doc comment) — and tells it
+/// when the Inbox is on screen, which drives its 30 s poll.
 struct ActionStripView: View {
     @Environment(AppState.self) private var appState
     @Environment(\.openSettings) private var openSettings
-    @State private var stripTab: StripTab = .actions
-
-    enum StripTab { case actions, learned, profile }
 
     var body: some View {
-        VStack(spacing: 0) {
-            Picker("", selection: $stripTab) {
-                Text("Actions").tag(StripTab.actions)
-                Text("Learned").tag(StripTab.learned)
-                Text("Profile").tag(StripTab.profile)
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-
-            Divider()
-
-            switch stripTab {
-            case .actions:
-                if let vm = appState.actionStripViewModel {
-                    ActionStripActionsView(
-                        vm: vm,
-                        cheatSheetRows: cheatSheetRows,
-                        feature: ReactionCheatSheetView.FeatureState.from(
-                            features: appState.featureManager.features,
-                            lastCheck: vm.lastReactionCheck
-                        ),
-                        isEnabling: appState.featureManager.isApplying,
-                        featureError: appState.featureManager.loadError,
-                        onEnable: enableReactionCommands,
-                        onOpenSettings: openReactionDictionary,
-                        onOpen: open,
-                        onOpenAutomationRun: { runID in appState.openAutomationRun(runID: runID) },
-                        onCardAction: { command in Task { await appState.perform(command) } },
-                        onOpenSaveDraft: { appState.openSaveProposalDraft($0) },
-                        workbenches: appState.inboxWorkbenches,
-                        onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
-                        sessionHoldsCall: { appState.chatSessionPool?.holdsSessionCall($0) ?? false },
-                        emptyState: appState.emptyStateContext,
-                        onOpenConnections: {
-                            appState.settingsTab = .connections
-                            openSettings()
-                        },
-                        ownerKnown: appState.owner.isKnown
-                    )
-                } else {
-                    ProgressView()
-                }
-            case .learned:
-                if let dbPool = appState.databaseManager?.dbPool {
-                    InboxLearnedRulesView(db: dbPool)
-                } else {
-                    databaseUnavailableNotice
-                }
-            case .profile:
-                if let vm = appState.secretaryProfileViewModel {
-                    SecretaryProfileView(vm: vm)
-                } else {
-                    databaseUnavailableNotice
-                }
+        Group {
+            if let vm = appState.actionStripViewModel {
+                ActionStripActionsView(
+                    vm: vm,
+                    cheatSheetRows: cheatSheetRows,
+                    feature: ReactionCheatSheetView.FeatureState.from(
+                        features: appState.featureManager.features,
+                        lastCheck: vm.lastReactionCheck
+                    ),
+                    isEnabling: appState.featureManager.isApplying,
+                    featureError: appState.featureManager.loadError,
+                    onEnable: enableReactionCommands,
+                    onOpenSettings: openReactionDictionary,
+                    onOpen: open,
+                    onOpenAutomationRun: { runID in appState.openAutomationRun(runID: runID) },
+                    onCardAction: { command in Task { await appState.perform(command) } },
+                    onOpenSaveDraft: { appState.openSaveProposalDraft($0) },
+                    workbenches: appState.inboxWorkbenches,
+                    onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
+                    sessionHoldsCall: { appState.chatSessionPool?.holdsSessionCall($0) ?? false },
+                    emptyState: appState.emptyStateContext,
+                    onOpenConnections: {
+                        appState.settingsTab = .connections
+                        openSettings()
+                    },
+                    ownerKnown: appState.owner.isKnown,
+                    learnedRulesDB: appState.databaseManager?.dbPool,
+                    profile: appState.secretaryProfileViewModel
+                )
+            } else {
+                ProgressView()
             }
         }
         .navigationTitle("Inbox")
         .task {
-            appState.actionStripViewModel?.refresh()
+            await appState.actionStripViewModel?.refresh()
             // The cheat sheet reads the dictionary through this VM, so a
             // Settings edit made while the Inbox was out of view shows up.
             appState.reactionDictionaryViewModel?.refresh()
             await appState.refreshOwner()
         }
+        .onAppear { appState.actionStripViewModel?.setOnScreen(true) }
+        .onDisappear { appState.actionStripViewModel?.setOnScreen(false) }
     }
 
     /// The live dictionary (`reaction_command_map` + `tool_trust`) through
@@ -124,19 +100,14 @@ struct ActionStripView: View {
         appState.settingsConnection = .slack
         openSettings()
     }
-
-    private var databaseUnavailableNotice: some View {
-        Text("Database unavailable")
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
 }
 
-/// The Actions segment: the list and reading pane (`InboxSplitView`), or —
-/// when it is empty — the reaction cheat sheet in its place. On a non-empty
-/// strip the cheat sheet
-/// stays one `?` click away in a popover, never inline (a card-shaped help
-/// block among real cards would read as something waiting on the owner).
+/// The Inbox under its filter bar: the list and reading pane
+/// (`InboxSplitView`), or — when the filter has nothing and no editor is
+/// open — the filter's empty state in its place. The empty All list keeps
+/// the reaction cheat sheet inline (B); otherwise the cheat sheet stays one
+/// `?` click away in a popover, never inline (a card-shaped help block among
+/// real cards would read as something waiting on the owner).
 /// Split out of `ActionStripView` so it takes plain inputs and can be tested
 /// without an `AppState`.
 struct ActionStripActionsView: View {
@@ -152,7 +123,7 @@ struct ActionStripActionsView: View {
     /// line: open that automation's card with the run expanded. Nil (tests)
     /// renders them as plain text.
     var onOpenAutomationRun: ((Int64) -> Void)?
-    /// A press on an automation card's buttons (`InboxCardCommand`).
+    /// A press on a card's buttons (`InboxCardCommand`).
     var onCardAction: (InboxCardCommand) -> Void = { _ in }
     /// A `save_automation` proposal's **Open Draft** (`AppState.openSaveProposalDraft`).
     var onOpenSaveDraft: (SaveAutomationCardModel) -> Void = { _ in }
@@ -163,49 +134,83 @@ struct ActionStripActionsView: View {
     var onReconnectSlack: ((Int64) async -> String?)?
     /// `AgentActionCardView.sessionHoldsCall` for a row (a connector call).
     var sessionHoldsCall: ((AgentAction) -> Bool)?
-    /// The empty strip's readiness and actions (`AppState.emptyStateContext`).
+    /// The empty list's readiness and actions (`AppState.emptyStateContext`).
     var emptyState: EmptyStateContext = .neutral
-    /// With no owner identity the daemon skips the inbox (OWNER-02), so the
-    /// empty strip says why and points at Connections, as Briefings and Day
-    /// Plan do.
+    /// With no owner identity the daemon skips the inbox, briefing and day
+    /// plan (OWNER-02), so the empty All and Day lists say why and point at
+    /// Connections, as Briefings and Day Plan did.
     var onOpenConnections: () -> Void = {}
     var ownerKnown = true
+    /// Learned Rules' database and Assistant Profile's view model (the ⋯ menu).
+    var learnedRulesDB: DatabasePool?
+    var profile: SecretaryProfileViewModel?
+
+    @State private var aux: InboxAuxPane?
 
     var body: some View {
+        let isEmpty = vm.sections.isEmpty
         VStack(spacing: 0) {
             if let message = vm.lastError {
                 errorBanner(message)
             }
-            if vm.actionRows.isEmpty && vm.reminderRows.isEmpty && vm.outputRows.isEmpty {
+            InboxFilterBar(
+                filter: filter,
+                cheatSheetRows: cheatSheetRows,
+                showsCheatSheetButton: !(isEmpty && vm.filter == .all),
+                onOpenSettings: onOpenSettings,
+                onOpenAux: openAux
+            )
+            if isEmpty && aux == nil {
                 ScrollView {
-                    TabEmptyState(.inbox, context: emptyState) {
-                        if !ownerKnown {
-                            NoOwnerEmptyState(openConnections: onOpenConnections)
-                        }
-                        ReactionCheatSheetView(
-                            rows: cheatSheetRows,
-                            feature: feature,
-                            isEnabling: isEnabling,
-                            error: featureError,
-                            onEnable: onEnable,
-                            onOpenSettings: onOpenSettings
-                        )
-                        .frame(maxWidth: .infinity)
-                    }
-                    .padding(.top, 24)
+                    emptyList.padding(.top, Spacing.wide)
                 }
-                .accessibilityIdentifier("actionStrip.cheatSheet")
+                .accessibilityIdentifier(vm.filter == .all ? "actionStrip.cheatSheet" : "inbox.emptyFilter")
             } else {
                 InboxSplitView(
                     vm: vm,
-                    cheatSheetRows: cheatSheetRows,
-                    onOpenSettings: onOpenSettings,
                     proposalCard: card,
                     saveProposal: saveProposal,
                     workbenches: workbenches,
                     onCardAction: onCardAction,
-                    onOpenAutomationRun: onOpenAutomationRun
+                    onOpenAutomationRun: onOpenAutomationRun,
+                    aux: $aux,
+                    learnedRulesDB: learnedRulesDB,
+                    profile: profile
+                ) {
+                    emptyList
+                }
+            }
+        }
+    }
+
+    private var filter: Binding<InboxFilter> {
+        Binding(get: { vm.filter }, set: { vm.filter = $0 })
+    }
+
+    /// An editor opens in the reading pane in place of the selected card.
+    private func openAux(_ pane: InboxAuxPane) {
+        aux = pane
+        Task { await vm.select(nil) }
+    }
+
+    /// The filter's empty state: All keeps the reaction cheat sheet (B), All
+    /// and Day say why when the owner is unknown.
+    @ViewBuilder
+    private var emptyList: some View {
+        TabEmptyState(copyKey: vm.filter.emptyCopyKey, context: emptyState) {
+            if !ownerKnown, vm.filter == .all || vm.filter == .day {
+                NoOwnerEmptyState(openConnections: onOpenConnections)
+            }
+            if vm.filter == .all {
+                ReactionCheatSheetView(
+                    rows: cheatSheetRows,
+                    feature: feature,
+                    isEnabling: isEnabling,
+                    error: featureError,
+                    onEnable: onEnable,
+                    onOpenSettings: onOpenSettings
                 )
+                .frame(maxWidth: .infinity)
             }
         }
     }
