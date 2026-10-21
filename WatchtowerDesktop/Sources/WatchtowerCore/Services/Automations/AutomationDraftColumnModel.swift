@@ -9,6 +9,25 @@ import Foundation
 /// then may a save or confirm be offered (AUTO-06). A dry run is shown only
 /// when the chat's newest draft is this very text.
 package struct AutomationDraftColumnModel: Equatable, Sendable {
+    /// What `show --json` says of the saved recipe, passed only when the
+    /// column shows its indexed text unchanged (a confirm of the recipe as
+    /// it is on disk), so none of it is put beside the owner's own edit.
+    package struct Saved: Equatable, Sendable {
+        package let changedBy: String
+        package let changedAt: Date?
+        package let needsConfirmation: Bool
+        /// `llm_auto_writes`: External tools with an auto grant, active or
+        /// paused, of a recipe that feeds its sources to `llm()` (#559).
+        package let llmAutoWrites: [String]
+
+        package init(changedBy: String, changedAt: Date?, needsConfirmation: Bool, llmAutoWrites: [String]) {
+            self.changedBy = changedBy
+            self.changedAt = changedAt
+            self.needsConfirmation = needsConfirmation
+            self.llmAutoWrites = llmAutoWrites
+        }
+    }
+
     package enum Status: Equatable, Sendable {
         /// Validation is running, or has not run on these bytes yet.
         case checking
@@ -39,12 +58,21 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
     /// The hashed fields that differ from the confirmed recipe; empty for a
     /// new recipe (no Changed box).
     package let changes: [String]
+    /// Who made the changes a confirm approves; nil unless `saved` needs
+    /// confirmation and the Changed box lists something.
+    package let authorLine: String?
     package let dryRunLines: [String]
     package let dryRunNote: String?
     package let sessions: [AutomationSessionPrompt]
     package let errors: [String]
     package let pausedGrants: [String]
+    /// The #559 warning over the plan's paused grants and the saved
+    /// recipe's `llmAutoWrites`, when these bytes feed sources to `llm()`.
     package let llmWarning: String?
+    /// Board #560: with a `shell:` entry, confirming covers the command text
+    /// only (`AutomationCardPresentation.shellWarning`); nil without one or
+    /// while the boxes show no values.
+    package let shellWarning: String?
     /// The confirmed text against this one (an edit); nil for a new recipe.
     package let recipeDiff: OwnerAskSnapshotDiff?
     package let recipeText: String
@@ -65,7 +93,9 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
         confirmedText: String?,
         isNew: Bool,
         plan: AutomationSavePlan?,
-        checkFailed: Bool = false
+        checkFailed: Bool = false,
+        saved: Saved? = nil,
+        now: Date = Date()
     ) {
         recipeText = text
         self.isNew = isNew
@@ -98,6 +128,7 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
             changes = isNew ? [] : AutomationChangePresentation.lines(
                 shown.changes, known: shown.changesKnown, confirmedBefore: confirmedText != nil
             )
+            shellWarning = AutomationCardPresentation.shellWarning(permissions: permissions)
         } else {
             let line = placeholder ?? Self.unreadableLine
             (when, whenDetail) = (line, nil)
@@ -106,6 +137,13 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
             mayDo = []
             sends = []
             changes = []
+            shellWarning = nil
+        }
+        if let saved, saved.needsConfirmation, !changes.isEmpty {
+            authorLine = AutomationChangePresentation.authorLine(changedBy: saved.changedBy,
+                                                                 changedAt: saved.changedAt, now: now)
+        } else {
+            authorLine = nil
         }
         recipeDiff = isNew ? nil : confirmedText.map { OwnerAskSnapshotDiff(previous: $0, current: text) }
 
@@ -121,9 +159,9 @@ package struct AutomationDraftColumnModel: Equatable, Sendable {
         }
 
         pausedGrants = plan?.pausedGrants ?? []
-        llmWarning = plan.flatMap {
-            AutomationLLMWarning.line(feedsSourcesToLLM: $0.validated.feedsSourcesToLLM, tools: $0.llmWarningTools)
-        }
+        let llmTools = Set(plan?.llmWarningTools ?? []).union(saved?.llmAutoWrites ?? []).sorted()
+        let feeds = shown?.feedsSourcesToLLM ?? plan?.validated.feedsSourcesToLLM ?? false
+        llmWarning = AutomationLLMWarning.line(feedsSourcesToLLM: feeds, tools: llmTools)
     }
 
     /// Go's `ContentHash`: the hex sha256 of the recipe's bytes.

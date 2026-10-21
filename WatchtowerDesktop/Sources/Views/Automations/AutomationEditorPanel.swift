@@ -310,8 +310,15 @@ struct AutomationEditorPanel: View {
         // An edit is compared with its saved text; a recipe never confirmed
         // has nothing to compare with.
         let confirmed = isNew || form.detail.confirmedHash.isEmpty ? nil : form.detail.recipeText
+        let text = form.renderedText()
+        // What `show` says of the saved recipe holds only for its own bytes.
+        let detail = form.detail
+        let saved = isNew || text != detail.recipeText ? nil : AutomationDraftColumnModel.Saved(
+            changedBy: detail.changedBy, changedAt: detail.changedAt,
+            needsConfirmation: detail.needsConfirmation, llmAutoWrites: detail.llmAutoWrites
+        )
         return AutomationDraftColumnModel(
-            text: form.renderedText(),
+            text: text,
             validated: editor.lastChecked[key],
             // Checking until the check of these exact bytes returns (a result
             // of other bytes counts as checking in the model too).
@@ -320,7 +327,8 @@ struct AutomationEditorPanel: View {
             confirmedText: confirmed,
             isNew: isNew,
             plan: plan,
-            checkFailed: isFailed(key)
+            checkFailed: isFailed(key),
+            saved: saved
         )
     }
 

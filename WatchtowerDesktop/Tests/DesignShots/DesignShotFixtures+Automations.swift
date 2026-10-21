@@ -66,16 +66,17 @@ enum AutomationShotFixtures {
 
     """
 
-    /// The draft column on an edit of "acme digest": one widening, one
-    /// change line and a dry run of the same text.
+    /// The draft column on a confirm of "acme digest": one widening (a
+    /// `shell:` entry, so the shell warning shows), one change line with
+    /// who made it, and a dry run of the same text.
     static func draftColumn() -> AnyView {
         do {
             let changes = #"[{"field":"trigger","old":"{\"schedule\":\"0 8 * * 1-5\"}","#
                 + #""new":"{\"schedule\":\"0 9 * * 1-5\"}"}]"#
             let hash = AutomationDraftColumnModel.contentHash(digest)
             let json = #"{"ok":true,"errors":[],"slug":"acme-digest","name":"acme digest","scope":"personal","#
-                + #""approval_hash":"h2","content_hash":"\#(hash)","permissions":["gmail:read@work","llm:light"],"#
-                + #""outputs":["inbox"],"widening":["gmail:read@work"],"changes":\#(changes),"changes_known":true,"#
+                + #""approval_hash":"h2","content_hash":"\#(hash)","permissions":["gmail:read@work","llm:light","#
+                + #""shell:\"make digest\""],"outputs":["inbox"],"widening":["shell:\"make digest\""],"changes":\#(changes),"changes_known":true,"#
                 + #""fields":{"trigger":"schedule: 0 9 * * 1-5","missed":"skip","concurrency":"1","#
                 + #""budget":{"tokens":40000,"minutes":5}}}"#
             let validated = try JSONDecoder().decode(AutomationsCLI.ValidateResult.self, from: Data(json.utf8))
@@ -104,9 +105,12 @@ enum AutomationShotFixtures {
             let newest = try JSONDecoder().decode(AutomationDraftEntry.self,
                                                   from: try JSONSerialization.data(withJSONObject: entry))
             let confirmed = digest.replacingOccurrences(of: "0 9 * * 1-5", with: "0 8 * * 1-5")
+            let now = Date(timeIntervalSince1970: 1_792_152_000)
+            let saved = AutomationDraftColumnModel.Saved(changedBy: "", changedAt: now.addingTimeInterval(-600),
+                                                         needsConfirmation: true, llmAutoWrites: [])
             let model = AutomationDraftColumnModel(text: digest, validated: validated, isChecking: false,
                                                    newestChatEntry: newest, confirmedText: confirmed, isNew: false,
-                                                   plan: nil)
+                                                   plan: nil, saved: saved, now: now)
             return AnyView(AutomationDraftColumn(model: model, keepAuto: .constant([])) {})
         } catch {
             return failure(error)

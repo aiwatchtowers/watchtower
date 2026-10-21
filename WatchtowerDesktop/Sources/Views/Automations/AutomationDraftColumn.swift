@@ -48,6 +48,9 @@ struct AutomationDraftColumn: View {
                         }
                     }
                 }
+                if let warning = model.shellWarning { LLMWarningLabel(text: warning) }
+                // With grants paused, the #559 warning sits by their boxes.
+                if model.pausedGrants.isEmpty, let warning = model.llmWarning { LLMWarningLabel(text: warning) }
             }
             box(title: "Sends", systemImage: "paperplane") {
                 if let placeholder = model.placeholder {
@@ -71,6 +74,7 @@ struct AutomationDraftColumn: View {
                     ForEach(Array(model.changes.enumerated()), id: \.offset) { _, line in
                         Text(line).fixedSize(horizontal: false, vertical: true)
                     }
+                    if let author = model.authorLine { secondary(author) }
                 }
             }
             if showsDryRun { dryRunBox }
@@ -144,11 +148,7 @@ struct AutomationDraftColumn: View {
                 Toggle("Keep auto for \(tool)", isOn: keepBinding(tool))
                     .toggleStyle(.checkbox)
             }
-            if let warning = model.llmWarning {
-                Label(warning, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(Tone.warning)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+            if let warning = model.llmWarning { LLMWarningLabel(text: warning) }
         }
     }
 

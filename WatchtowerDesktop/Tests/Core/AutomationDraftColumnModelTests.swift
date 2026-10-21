@@ -41,15 +41,18 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         changes: String = "[]",
         changesKnown: Bool = true,
         feeds: Bool = false,
-        fields: String? = fullFields
+        fields: String? = fullFields,
+        permissions: [String] = ["gmail:read@work", "llm:light"]
     ) throws -> AutomationsCLI.ValidateResult {
         let errorsJSON = String(data: try JSONSerialization.data(withJSONObject: errors), encoding: .utf8) ?? "[]"
         let wideningJSON = String(data: try JSONSerialization.data(withJSONObject: widening), encoding: .utf8) ?? "[]"
+        let permissionsJSON = String(data: try JSONSerialization.data(withJSONObject: permissions),
+                                     encoding: .utf8) ?? "[]"
         let fieldsJSON = fields.map { #","fields":\#($0)"# } ?? ""
         let hash = AutomationDraftColumnModel.contentHash(text)
         let json = #"{"ok":\#(ok),"errors":\#(errorsJSON),"slug":"acme-digest","name":"acme digest","#
             + #""scope":"personal","approval_hash":"h2","content_hash":"\#(hash)","#
-            + #""permissions":["gmail:read@work","llm:light"],"outputs":["inbox"],"#
+            + #""permissions":\#(permissionsJSON),"outputs":["inbox"],"#
             + #""widening":\#(wideningJSON),"feeds_sources_to_llm":\#(feeds),"#
             + #""changes":\#(changes),"changes_known":\#(changesKnown)\#(fieldsJSON)}"#
         return try JSONDecoder().decode(AutomationsCLI.ValidateResult.self, from: Data(json.utf8))
@@ -82,10 +85,12 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         entry: AutomationDraftEntry? = nil,
         confirmedText: String? = nil,
         isNew: Bool = true,
-        plan: AutomationSavePlan? = nil
+        plan: AutomationSavePlan? = nil,
+        saved: AutomationDraftColumnModel.Saved? = nil,
+        now: Date = Date()
     ) -> AutomationDraftColumnModel {
         AutomationDraftColumnModel(text: text, validated: validated, isChecking: isChecking, newestChatEntry: entry,
-                                   confirmedText: confirmedText, isNew: isNew, plan: plan)
+                                   confirmedText: confirmedText, isNew: isNew, plan: plan, saved: saved, now: now)
     }
 
     func testNewRecipeShowsNoNewMarksAndHasNoChanges() throws {
@@ -250,5 +255,71 @@ final class AutomationDraftColumnModelTests: XCTestCase {
         XCTAssertEqual(model(validated: try validated(fields: #"{"trigger":"manual","missed":"run_once","#
             + #""concurrency":"1","budget":{"tokens":1000,"minutes":1}}"#)).missedAndConcurrency,
                        "Missed while asleep: run once · One run at a time")
+    }
+
+    /// Board #560: a `shell:` entry gets the warning that confirming covers
+    /// the command text only, in It may, on every screen that confirms.
+    func testShellPermissionShowsTheShellWarning() throws {
+        let shell = ["shell:\"make test\"", "llm:light"]
+        let m = model(validated: try validated(permissions: shell))
+        XCTAssertTrue(m.showsAllFields)
+        XCTAssertEqual(m.shellWarning, AutomationCardPresentation.shellWarning(permissions: shell))
+        XCTAssertNotNil(m.shellWarning)
+        XCTAssertNil(model(validated: try validated()).shellWarning)
+        // No value is claimed while the bytes are being checked.
+        XCTAssertNil(model(validated: try validated(permissions: shell), isChecking: true).shellWarning)
+    }
+
+    /// #559 on a confirm: the saved recipe's `llm_auto_writes` (auto grants,
+    /// active or paused, on External tools) warn even with nothing paused by
+    /// this press, merged with the plan's paused ones.
+    func testConfirmOfTheSavedTextShowsItsLLMAutoWrites() throws {
+        let valid = try validated(feeds: true)
+        let saved = AutomationDraftColumnModel.Saved(changedBy: "", changedAt: nil, needsConfirmation: true,
+                                                     llmAutoWrites: ["send_slack_message"])
+        let m = model(validated: valid, confirmedText: Self.confirmed, isNew: false, saved: saved)
+        XCTAssertEqual(m.pausedGrants, [])
+        XCTAssertEqual(m.llmWarning,
+                       AutomationLLMWarning.line(feedsSourcesToLLM: true, tools: ["send_slack_message"]))
+
+        let plan = AutomationSavePlan(validated: valid, wasConfirmed: true, pausedGrants: ["create_jira_issue"],
+                                      llmWarningTools: ["create_jira_issue"], currentApprovalHash: "h1")
+        let both = model(validated: valid, confirmedText: Self.confirmed, isNew: false, plan: plan, saved: saved)
+        XCTAssertEqual(both.llmWarning, AutomationLLMWarning.line(
+            feedsSourcesToLLM: true, tools: ["create_jira_issue", "send_slack_message"]))
+
+        // Text that does not feed its sources to llm() warns of nothing.
+        let quiet = model(validated: try validated(), confirmedText: Self.confirmed, isNew: false, saved: saved)
+        XCTAssertNil(quiet.llmWarning)
+    }
+
+    /// The Changed box of a confirm says who made the change.
+    func testConfirmShowsWhoChangedIt() throws {
+        let now = Date(timeIntervalSince1970: 1_792_152_000)
+        let changes = #"[{"field":"script","old":"","new":""}]"#
+        let saved = AutomationDraftColumnModel.Saved(changedBy: "", changedAt: now.addingTimeInterval(-600),
+                                                     needsConfirmation: true, llmAutoWrites: [])
+        let m = model(validated: try validated(changes: changes), confirmedText: Self.confirmed, isNew: false,
+                      saved: saved, now: now)
+        XCTAssertEqual(m.changes, ["Script changed"])
+        XCTAssertEqual(m.authorLine, "Changed outside Watchtower · 10 min ago")
+        // The owner's own edit (no saved text shown) or a confirmed recipe names no author.
+        XCTAssertNil(model(validated: try validated(changes: changes), confirmedText: Self.confirmed,
+                           isNew: false, now: now).authorLine)
+        let confirmed = AutomationDraftColumnModel.Saved(changedBy: "assistant", changedAt: nil,
+                                                         needsConfirmation: false, llmAutoWrites: [])
+        XCTAssertNil(model(validated: try validated(changes: changes), confirmedText: Self.confirmed,
+                           isNew: false, saved: confirmed, now: now).authorLine)
+    }
+
+    func testAuthorLine() {
+        let now = Date(timeIntervalSince1970: 1_792_152_000)
+        let tenMinutesAgo = now.addingTimeInterval(-600)
+        XCTAssertEqual(AutomationChangePresentation.authorLine(changedBy: "assistant", changedAt: tenMinutesAgo, now: now),
+                       "Changed by the assistant in the chat · 10 min ago")
+        XCTAssertEqual(AutomationChangePresentation.authorLine(changedBy: "", changedAt: tenMinutesAgo, now: now),
+                       "Changed outside Watchtower · 10 min ago")
+        XCTAssertEqual(AutomationChangePresentation.authorLine(changedBy: "", changedAt: nil, now: now),
+                       "Changed outside Watchtower")
     }
 }

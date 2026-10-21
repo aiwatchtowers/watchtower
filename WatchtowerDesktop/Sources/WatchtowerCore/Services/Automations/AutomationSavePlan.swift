@@ -70,6 +70,15 @@ package enum AutomationChangePresentation {
         return changes.map(line)
     }
 
+    /// The Changed box's author line on a confirm: "Changed by the
+    /// assistant in the chat · 10 min ago" when an applied `save_automation`
+    /// wrote the current version, else "Changed outside Watchtower · <age>".
+    package static func authorLine(changedBy: String, changedAt: Date?, now: Date) -> String {
+        let who = changedBy == "assistant" ? "Changed by the assistant in the chat" : "Changed outside Watchtower"
+        guard let changedAt else { return who }
+        return "\(who) · \(AutomationCardPresentation.relative(now.timeIntervalSince(changedAt))) ago"
+    }
+
     private static func line(_ change: AutomationChange) -> String {
         switch change.field {
         case "script":

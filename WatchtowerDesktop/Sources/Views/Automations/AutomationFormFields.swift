@@ -15,6 +15,9 @@ struct AutomationFormFields: View {
     /// Switches the panel to **Script** (an unreadable recipe is fixed there).
     let onOpenScript: () -> Void
 
+    /// `RecipeFrontmatter.splice`'s v1 limit, said where the form writes.
+    static let commentsCaveat = "Comments in the settings block are not kept when the form rewrites it."
+
     @State private var schedule = ScheduleChoice(cron: "0 9 * * 1-5")
     @State private var newPermission = ""
     @State private var addingPermission = false
@@ -38,6 +41,10 @@ struct AutomationFormFields: View {
                     autoSection.disabled(locked)
                 }
                 problems
+                Text(Self.commentsCaveat)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .controlSize(.small)
             .padding(Spacing.page)
@@ -438,8 +445,8 @@ struct AutomationFormFields: View {
     }
 }
 
-/// The #559 warning line (`AutomationLLMWarning.line`), shared by the
-/// form's Auto section and the confirmation sheet.
+/// A warning line — the #559 one (`AutomationLLMWarning.line`) or the
+/// `shell:` one — shared by the form's Auto section and the draft column.
 struct LLMWarningLabel: View {
     let text: String
 
