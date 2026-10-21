@@ -1949,6 +1949,8 @@ final class AppState {
         GoogleConnectFlow.shared.configure(dbPool: dbPool)
     }
 
+    @ObservationIgnored private var ownerGeneration = 0
+    @ObservationIgnored private var appliedOwnerGeneration = 0
     @ObservationIgnored private var connectedSourcesGeneration = 0
     @ObservationIgnored private var appliedConnectedSourcesGeneration = 0
     /// The refresh `completeOnboarding()` kicked off — held so tests can
@@ -1998,10 +2000,19 @@ final class AppState {
 
     /// Re-resolves `owner` off the main thread. A failed read keeps the last value (logged):
     /// a transient error must not flip a known owner to unknown and hide Generate.
+    ///
+    /// Reads can finish out of order (an account VM's init refresh racing a
+    /// later reload); like `refreshConnectedSources()`, an older read never
+    /// overwrites a newer one.
     func refreshOwner() async {
         guard let pool = databaseManager?.dbPool else { return }
+        ownerGeneration += 1
+        let generation = ownerGeneration
         do {
-            (owner, ownerPendingSource) = try await pool.read { db in try OwnerQueries.resolveWithPending(db) }
+            let resolved = try await pool.read { db in try OwnerQueries.resolveWithPending(db) }
+            guard generation > appliedOwnerGeneration else { return }
+            appliedOwnerGeneration = generation
+            (owner, ownerPendingSource) = resolved
         } catch {
             print("[AppState] owner resolve failed, keeping the last value: \(error.localizedDescription)")
         }
