@@ -71,6 +71,9 @@ final class ConfigService {
     /// value (policy > this > build default) comes from Go,
     /// `watchtower accounts purges --json`.
     var purgeRevokedData: Bool? // swiftlint:disable:this discouraged_optional_boolean
+    /// The last `save()` wrote a new purge setting. The daemon reads the
+    /// config only at startup, so Settings restarts it after such a Save.
+    private(set) var lastSaveChangedPurge = false
     var parseError: String?
 
     private let configPath: String
@@ -83,6 +86,8 @@ final class ConfigService {
     /// unrelated Save (#740) — nor materialize `false` on a fresh install.
     private var diskCalendarEnabled = true
     private var diskGmailEnabled = true
+    /// `privacy.purge_revoked_data` as last read from or written to disk.
+    private var diskPurgeRevokedData: Bool? // swiftlint:disable:this discouraged_optional_boolean
 
     convenience init() {
         self.init(configPath: Constants.configPath)
@@ -201,6 +206,7 @@ final class ConfigService {
             }
 
             purgeRevokedData = (yaml["privacy"] as? [String: Any])?["purge_revoked_data"] as? Bool
+            diskPurgeRevokedData = purgeRevokedData
 
             parseError = nil
         } catch {
@@ -351,6 +357,7 @@ final class ConfigService {
         applyWorkbenchSection(to: &yaml)
 
         // Privacy section: absent stays absent until the owner sets it.
+        let purgeChanged = purgeRevokedData != nil && purgeRevokedData != diskPurgeRevokedData
         if let purgeRevokedData {
             var privacy = (yaml["privacy"] as? [String: Any]) ?? [:]
             privacy["purge_revoked_data"] = purgeRevokedData
@@ -366,6 +373,8 @@ final class ConfigService {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configPath)
 
         rawYAML = yaml
+        lastSaveChangedPurge = purgeChanged
+        diskPurgeRevokedData = purgeRevokedData
         // Adopt what is on disk now, so a switch the CLI turned on behind this
         // instance also shows as on.
         adoptGoogleSyncSwitches(from: yaml)

@@ -709,8 +709,12 @@ struct ConfigServiceTests {
         var saved = try Yams.load(yaml: String(contentsOfFile: fresh, encoding: .utf8)) as? [String: Any]
         #expect(saved?["privacy"] == nil, "absent stays absent")
 
+        #expect(!svc.lastSaveChangedPurge)
         svc.purgeRevokedData = false
         try svc.save()
+        #expect(svc.lastSaveChangedPurge, "a new value asks for a daemon restart")
+        try svc.save()
+        #expect(!svc.lastSaveChangedPurge, "an unchanged value does not")
         saved = try Yams.load(yaml: String(contentsOfFile: fresh, encoding: .utf8)) as? [String: Any]
         #expect((saved?["privacy"] as? [String: Any])?["purge_revoked_data"] as? Bool == false, "an explicit off is written")
 
