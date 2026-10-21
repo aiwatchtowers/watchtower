@@ -9,15 +9,17 @@ import (
 	"watchtower/internal/gittest"
 )
 
-// TestMain installs the db schema template cache before running tests.
-// Without it, every db.Open(":memory:") call runs the full goose migration
-// suite which under -race exceeds Go's 10-minute test timeout on CI.
+// TestMain installs the db schema template cache before running tests, for
+// in-memory and fresh file-backed databases alike. Without it, every
+// db.Open(":memory:") call and every db.Open of a new file under t.TempDir()
+// (newAutoFixture) runs the full goose migration suite — ~20 s per test under
+// -race.
 //
 // It also turns off git's background maintenance in the repositories the
 // review tests create (see gittest.DisableBackgroundGit).
 func TestMain(m *testing.M) {
 	gittest.DisableBackgroundGit()
-	if err := db.InitTestTemplate(); err != nil {
+	if err := db.InitTestFileTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
 	}

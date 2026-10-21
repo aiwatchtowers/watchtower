@@ -3,6 +3,7 @@ package lockmetrics_test
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
 	"os"
@@ -11,10 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"modernc.org/sqlite"
-	sqlite3 "modernc.org/sqlite/lib"
-
 	"watchtower/internal/db/lockmetrics"
+	"watchtower/internal/sqlcipher"
 )
 
 // The site of an event raised from this file names this package's helpers.
@@ -33,14 +32,18 @@ func setupDriver(t *testing.T, thresholdMS string) (dbPath, sinkPath string) {
 	return dbPath, filepath.Join(dir, lockmetrics.FileName)
 }
 
-// openMetrics opens dsn through the wrapping driver on one connection, as
-// internal/db does, and makes sure table t exists.
+// wrapped is dsn's engine connector wrapped by the lock metrics, as
+// internal/db opens a watchtower.db handle.
+func wrapped(dsn string) driver.Connector {
+	path, params, _ := strings.Cut(dsn, "?")
+	return lockmetrics.Wrap(&sqlcipher.Connector{Path: path, Params: params}, dsn)
+}
+
+// openMetrics opens dsn through the wrapping connector on one connection,
+// as internal/db does, and makes sure table t exists.
 func openMetrics(t *testing.T, dsn string) *sql.DB {
 	t.Helper()
-	d, err := sql.Open(lockmetrics.DriverName, dsn)
-	if err != nil {
-		t.Fatalf("open %s: %v", dsn, err)
-	}
+	d := sql.OpenDB(wrapped(dsn))
 	d.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = d.Close() })
 	if _, err := d.Exec(`PRAGMA journal_mode=WAL`); err != nil {
@@ -113,7 +116,7 @@ func insertRow(d *sql.DB) error {
 
 func TestDriverSlowTxRecordedWithSiteAndBusyTimeout(t *testing.T) {
 	dbPath, sink := setupDriver(t, "30")
-	d := openMetrics(t, dbPath+"?_txlock=immediate&_pragma=busy_timeout(1234)")
+	d := openMetrics(t, dbPath+"?_txlock=immediate&_busy_timeout=1234")
 
 	holdTx(t, d, 60*time.Millisecond)
 
@@ -153,7 +156,7 @@ func TestDriverBelowThresholdWritesNothing(t *testing.T) {
 func TestDriverBusyIsRecordedAndErrorPassesThroughUnwrapped(t *testing.T) {
 	dbPath, sink := setupDriver(t, "10000") // busy is written whatever the threshold
 	holder := openMetrics(t, dbPath+"?_txlock=immediate")
-	d := openMetrics(t, dbPath+"?_txlock=immediate&_pragma=busy_timeout(50)")
+	d := openMetrics(t, dbPath+"?_txlock=immediate&_busy_timeout=50")
 
 	held, err := holder.Begin()
 	if err != nil {
@@ -162,17 +165,17 @@ func TestDriverBusyIsRecordedAndErrorPassesThroughUnwrapped(t *testing.T) {
 	t.Cleanup(func() { _ = held.Rollback() })
 
 	err = beginWrite(d)
-	var se *sqlite.Error
-	if !errors.As(err, &se) || se.Code()&0xff != sqlite3.SQLITE_BUSY {
-		t.Fatalf("begin under a held lock: want *sqlite.Error SQLITE_BUSY, got %T %v", err, err)
+	var se sqlcipher.Error
+	if !errors.As(err, &se) || se.Code != sqlcipher.ErrBusy {
+		t.Fatalf("begin under a held lock: want sqlcipher.Error SQLITE_BUSY, got %T %v", err, err)
 	}
 
 	if _, err := d.Exec(`PRAGMA busy_timeout=70`); err != nil {
 		t.Fatal(err)
 	}
 	err = insertRow(d)
-	if !errors.As(err, &se) || se.Code()&0xff != sqlite3.SQLITE_BUSY {
-		t.Fatalf("insert under a held lock: want *sqlite.Error SQLITE_BUSY, got %T %v", err, err)
+	if !errors.As(err, &se) || se.Code != sqlcipher.ErrBusy {
+		t.Fatalf("insert under a held lock: want sqlcipher.Error SQLITE_BUSY, got %T %v", err, err)
 	}
 
 	busy := ofKind(readEvents(t, sink), lockmetrics.KindBusy)
@@ -200,7 +203,7 @@ func TestDriverBusyIsRecordedAndErrorPassesThroughUnwrapped(t *testing.T) {
 func TestDriverSlowAutocommitExecRecordsWaitPlusHoldCombined(t *testing.T) {
 	dbPath, sink := setupDriver(t, "30")
 	holder := openMetrics(t, dbPath+"?_txlock=immediate")
-	d := openMetrics(t, dbPath+"?_txlock=immediate&_pragma=busy_timeout(5000)")
+	d := openMetrics(t, dbPath+"?_txlock=immediate&_busy_timeout=5000")
 
 	held, err := holder.Begin()
 	if err != nil {
@@ -240,8 +243,8 @@ func TestDriverSlowAutocommitExecRecordsWaitPlusHoldCombined(t *testing.T) {
 // the extended code, records the busy from inside the transaction, and the
 // rolled-back transaction leaves no tx event of its own.
 func TestDriverBusySnapshotNamedByExtendedCode(t *testing.T) {
-	dbPath, sink := setupDriver(t, "10000")                        // busy is written whatever the threshold
-	reader := openMetrics(t, dbPath+"?_pragma=busy_timeout(2000)") // no _txlock: BEGIN is deferred
+	dbPath, sink := setupDriver(t, "10000")                // busy is written whatever the threshold
+	reader := openMetrics(t, dbPath+"?_busy_timeout=2000") // no _txlock: BEGIN is deferred
 	writer := openMetrics(t, dbPath)
 
 	tx, err := reader.Begin()
@@ -257,9 +260,9 @@ func TestDriverBusySnapshotNamedByExtendedCode(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = tx.Exec(`INSERT INTO t (v) VALUES (3)`)
-	var se *sqlite.Error
-	if !errors.As(err, &se) || se.Code() != sqlite3.SQLITE_BUSY_SNAPSHOT {
-		t.Fatalf("stale deferred write: want *sqlite.Error SQLITE_BUSY_SNAPSHOT, got %T %v", err, err)
+	var se sqlcipher.Error
+	if !errors.As(err, &se) || se.ExtendedCode != sqlcipher.ErrBusySnapshot {
+		t.Fatalf("stale deferred write: want sqlcipher.Error SQLITE_BUSY_SNAPSHOT, got %T %v", err, err)
 	}
 	if err := tx.Rollback(); err != nil {
 		t.Fatal(err)
@@ -325,7 +328,7 @@ func TestDriverKeepsTxLockMode(t *testing.T) {
 	// Begin is busy before either has written anything.
 	dbPath, _ := setupDriver(t, "off")
 	a := openMetrics(t, dbPath+"?_txlock=immediate")
-	b := openMetrics(t, dbPath+"?_txlock=immediate&_pragma=busy_timeout(0)")
+	b := openMetrics(t, dbPath+"?_txlock=immediate&_busy_timeout=0")
 	tx, err := a.Begin()
 	if err != nil {
 		t.Fatal(err)
@@ -390,11 +393,13 @@ func TestPragmaBusyTimeoutMS(t *testing.T) {
 
 func TestDSNBusyTimeoutMS(t *testing.T) {
 	for dsn, want := range map[string]int64{
-		"/x/watchtower.db?_txlock=immediate": 0,
-		"/x/watchtower.db":                   0,
-		"file:/x/w.db?mode=rw&_pragma=busy_timeout(500)&_pragma=query_only(1)":  500,
-		"/x/w.db?_txlock=immediate&_pragma=busy_timeout(5000)":                  5000,
-		"file:/x/w.db?mode=rw&_pragma=busy_timeout%281500%29&_txlock=immediate": 1500,
+		// No busy timeout in the DSN: the engine's own default (mattn's 5 s).
+		"/x/watchtower.db?_txlock=immediate":                          5000,
+		"/x/watchtower.db":                                            5000,
+		"file:/x/w.db?mode=rw&_busy_timeout=500&_query_only=1":        500,
+		"/x/w.db?_txlock=immediate&_busy_timeout=0":                   0,
+		"file:/x/w.db?mode=rw&_busy_timeout=%31500&_txlock=immediate": 1500,
+		"file:/x/w.db?_timeout=250":                                   250,
 	} {
 		if got := lockmetrics.DSNBusyTimeoutMS(dsn); got != want {
 			t.Errorf("DSNBusyTimeoutMS(%q) = %d, want %d", dsn, got, want)
@@ -492,10 +497,7 @@ func TestDriverQueryOnlyConnectionRecordsOnlyBusy(t *testing.T) {
 // openQueryOnly opens dbPath the way db.OpenExisting does.
 func openQueryOnly(t *testing.T, dbPath string) *sql.DB {
 	t.Helper()
-	d, err := sql.Open(lockmetrics.DriverName, "file:"+dbPath+"?mode=rw&_pragma=busy_timeout(50)&_pragma=query_only(1)")
-	if err != nil {
-		t.Fatal(err)
-	}
+	d := sql.OpenDB(wrapped("file:" + dbPath + "?mode=rw&_busy_timeout=50&_query_only=1"))
 	d.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = d.Close() })
 	return d
@@ -510,7 +512,7 @@ func countRows(d *sql.DB) error {
 func TestDriverSlowWriteThroughQueryRecordedAsExec(t *testing.T) {
 	dbPath, sink := setupDriver(t, "30")
 	holder := openMetrics(t, dbPath+"?_txlock=immediate")
-	d := openMetrics(t, dbPath+"?_txlock=immediate&_pragma=busy_timeout(5000)")
+	d := openMetrics(t, dbPath+"?_txlock=immediate&_busy_timeout=5000")
 
 	held, err := holder.Begin()
 	if err != nil {
@@ -546,13 +548,13 @@ func insertReturning(d *sql.DB) error {
 
 func TestDSNQueryOnly(t *testing.T) {
 	for dsn, want := range map[string]bool{
-		"file:/x/w.db?mode=rw&_pragma=busy_timeout(500)&_pragma=query_only(1)": true,
-		"file:/x/w.db?_pragma=query_only(ON)":                                  true,
-		"file:/x/w.db?_pragma=query_only%28true%29":                            true,
-		"file:/x/w.db?_pragma=query_only(0)":                                   false,
-		"file:/x/w.db?mode=rw&_pragma=busy_timeout(500)&_txlock=immediate":     false,
-		"/x/watchtower.db?_txlock=immediate":                                   false,
-		"/x/watchtower.db":                                                     false,
+		"file:/x/w.db?mode=rw&_busy_timeout=500&_query_only=1":     true,
+		"file:/x/w.db?_query_only=ON":                              true,
+		"file:/x/w.db?_query_only=%74rue":                          true,
+		"file:/x/w.db?_query_only=0":                               false,
+		"file:/x/w.db?mode=rw&_busy_timeout=500&_txlock=immediate": false,
+		"/x/watchtower.db?_txlock=immediate":                       false,
+		"/x/watchtower.db":                                         false,
 	} {
 		if got := lockmetrics.DSNQueryOnly(dsn); got != want {
 			t.Errorf("DSNQueryOnly(%q) = %v, want %v", dsn, got, want)
@@ -580,23 +582,25 @@ func TestIsMemoryDSN(t *testing.T) {
 // transaction through the wrapper below the threshold; compare with
 // BenchmarkTxBaseline (the bare driver). Budget: < 5 µs of difference.
 func BenchmarkTxBelowThreshold(b *testing.B) {
-	benchTx(b, lockmetrics.DriverName)
+	benchTx(b, true)
 }
 
 func BenchmarkTxBaseline(b *testing.B) {
-	benchTx(b, "sqlite")
+	benchTx(b, false)
 }
 
-func benchTx(b *testing.B, driverName string) {
+func benchTx(b *testing.B, measured bool) {
 	b.Setenv("WATCHTOWER_DBLOCK_THRESHOLD_MS", "10000")
 	lockmetrics.ResetForTest()
 	b.Cleanup(lockmetrics.ResetForTest)
 	dbPath := filepath.Join(b.TempDir(), "watchtower.db")
 	lockmetrics.Configure(dbPath)
-	d, err := sql.Open(driverName, dbPath+"?_txlock=immediate")
-	if err != nil {
-		b.Fatal(err)
+	dsn := dbPath + "?_txlock=immediate"
+	var c driver.Connector = &sqlcipher.Connector{Path: dbPath, Params: "_txlock=immediate"}
+	if measured {
+		c = wrapped(dsn)
 	}
+	d := sql.OpenDB(c)
 	d.SetMaxOpenConns(1)
 	b.Cleanup(func() { _ = d.Close() })
 	if _, err := d.Exec(`PRAGMA journal_mode=WAL`); err != nil {
@@ -610,5 +614,28 @@ func benchTx(b *testing.B, driverName string) {
 		if err := tx.Commit(); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+// TestWrapMeasuresEveryConnection fails when the engine's connection stops
+// implementing one of the interfaces the wrapper forwards: Wrap would then
+// refuse the open (errUnmeasurable) instead of measuring.
+func TestWrapMeasuresEveryConnection(t *testing.T) {
+	dbPath, _ := setupDriver(t, "10000")
+	d := sql.OpenDB(wrapped(dbPath))
+	t.Cleanup(func() { _ = d.Close() })
+	c, err := d.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("connect through Wrap: %v", err)
+	}
+	defer func() { _ = c.Close() }()
+	err = c.Raw(func(dc any) error {
+		if _, raw := dc.(*sqlcipher.SQLiteConn); raw {
+			return errors.New("Wrap handed back the engine's connection unwrapped")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

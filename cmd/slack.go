@@ -139,6 +139,9 @@ func connectSlackAccount(ctx context.Context, cfg *config.Config, database *db.D
 		}
 		return slackIdentity{}, fmt.Errorf("resolving slack identity: %w", err)
 	}
+	if err := refuseLoginDuringPurge(database, "slack", id); err != nil {
+		return slackIdentity{}, err
+	}
 
 	namespacedUser := watchtowerslack.Namespace(id, identity.UserID)
 	if err := database.UpdateSlackAccountConnection(id, identity.TeamID, identity.TeamName, identity.TeamDomain, namespacedUser); err != nil {

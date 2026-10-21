@@ -5,7 +5,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	_ "modernc.org/sqlite"
 )
 
 // TestMigration00070_FreezesSituationsAndDropsDeadTables replays goose up to

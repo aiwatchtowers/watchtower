@@ -1,6 +1,6 @@
 import Foundation
 
-/// What a Save from the edit form needs from the owner (spec §3.3, §6.4,
+/// What a Save from the editor panel needs from the owner (spec §3.3, §6.4,
 /// D26). `validated` is `validate --against` of the exact bytes the save will
 /// write; the save confirms that `approvalHash` and nothing else. A changed
 /// approval hash pauses the auto grants active under the current one, and
@@ -12,21 +12,12 @@ package struct AutomationSavePlan: Equatable, Sendable {
     /// Tools whose auto grant the save pauses, sorted.
     package let pausedGrants: [String]
     /// The paused grants of External tools when the new text feeds its
-    /// sources to `llm()`: the sheet's #559 warning (`AutomationLLMWarning`).
+    /// sources to `llm()`: the draft column's #559 warning (`AutomationLLMWarning`).
     package let llmWarningTools: [String]
     /// The paused grants the owner chose to keep: `auto … on --hash <new>` after the save.
     package var keepAuto: Set<String> = []
     /// The current approval hash the plan was measured against.
     package let currentApprovalHash: String
-
-    /// Whether the Save sheet is shown; otherwise the Save click saves and
-    /// re-confirms in the same gesture. Since D26 a trigger, missed-policy,
-    /// budget or concurrency edit changes the hash like a script edit; only
-    /// name, description, a button's label and `pause_timeout_hours` keep it.
-    package var needsSheet: Bool {
-        !validated.widening.isEmpty || !pausedGrants.isEmpty || !wasConfirmed
-            || validated.approvalHash != currentApprovalHash
-    }
 
     package static func make(
         validated: AutomationsCLI.ValidateResult, current: AutomationDetail, grants: [AutomationToolGrant]
@@ -49,8 +40,8 @@ package struct AutomationSavePlan: Equatable, Sendable {
 /// The #559 warning: a recipe that feeds its sources to `llm()` with auto
 /// on for a tool that writes outside Watchtower can send model text written
 /// over other people's messages without a card. Shown by the confirmation
-/// sheet (`llm_auto_writes`), the edit form's Auto toggles (External
-/// `auto_tools`) and the Save sheet's "Keep auto" boxes; Go's
+/// draft column (`llm_auto_writes`), the form's Auto toggles (External
+/// `auto_tools`) and the column's "Keep auto" boxes; Go's
 /// `llmAutoWarning` says the same.
 package enum AutomationLLMWarning {
     /// The warning, or nil when the recipe does not feed its sources to
@@ -63,7 +54,7 @@ package enum AutomationLLMWarning {
     }
 }
 
-/// The confirmation sheet's **Changed** block and author line (spec §12.2,
+/// The draft column's **Changed** block (spec §12.2,
 /// D26), from `show --json`'s `changes` (old/new always strings: the trigger
 /// as its spec JSON, numbers in decimal, lists as JSON arrays, the script "").
 package enum AutomationChangePresentation {
@@ -79,9 +70,9 @@ package enum AutomationChangePresentation {
         return changes.map(line)
     }
 
-    /// "Changed by the assistant in the chat · 10 min ago" when an applied
-    /// `save_automation` wrote the current version, else "Changed outside
-    /// Watchtower · <age>".
+    /// The Changed box's author line on a confirm: "Changed by the
+    /// assistant in the chat · 10 min ago" when an applied `save_automation`
+    /// wrote the current version, else "Changed outside Watchtower · <age>".
     package static func authorLine(changedBy: String, changedAt: Date?, now: Date) -> String {
         let who = changedBy == "assistant" ? "Changed by the assistant in the chat" : "Changed outside Watchtower"
         guard let changedAt else { return who }

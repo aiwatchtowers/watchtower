@@ -83,10 +83,24 @@ extension AppState {
         case .workbenches: selectedDestination = .workbench
         case .catchUp: selectedDestination = .catchUp
         case let .automationRun(automationID, runID): openAutomationRun(automationID: automationID, runID: runID)
+        case let .inboxOutput(id, automationID, runID): openInboxOutput(id, automationID: automationID, runID: runID)
         case .feature(let feature): selectedDestination = Self.homeDestination(for: feature)
         case .connect(let source): performEmptyStateAction(.connect(source))
         case .turnOn(let featureID): performEmptyStateAction(.turnOn(featureID: featureID))
         }
+    }
+
+    /// An automation note's Inbox card, selected so its buttons show; the
+    /// run in the Automations tab while the Inbox tab is hidden.
+    private func openInboxOutput(_ id: Int64, automationID: Int64, runID: Int64) {
+        let inboxVisible = SidebarDestination.inbox.isVisible(
+            disabledFeatures: featureVisibility.disabledFeatureIDs, connected: featureVisibility.connectedSources)
+        guard inboxVisible, let strip = actionStripViewModel else {
+            openAutomationRun(automationID: automationID, runID: runID)
+            return
+        }
+        selectedDestination = .inbox
+        Task { await strip.select(.output(id)) }
     }
 
     /// Add / Dismiss from Home's suggestion row; the CLI's refusal (an

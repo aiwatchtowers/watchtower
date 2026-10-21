@@ -4,8 +4,6 @@ import (
 	"database/sql"
 	"strings"
 	"testing"
-
-	_ "modernc.org/sqlite"
 )
 
 func TestMigration00049JiraAccounts(t *testing.T) {
@@ -78,7 +76,7 @@ func TestMigration00049_FreshDBHasNoSeedRow(t *testing.T) {
 // untouched.
 func TestMigration00049_UpgradesLegacySingleAccount(t *testing.T) {
 	t.Parallel()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -178,7 +176,7 @@ func TestMigration00049_UpgradesLegacySingleAccount(t *testing.T) {
 // an empty ghost account that `jira accounts` then lists as a real site.
 func TestMigration00049_SeedIsIdempotent(t *testing.T) {
 	t.Parallel()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -246,7 +244,7 @@ func extractStatement(t *testing.T, sqlText, marker, source string) string {
 // Up and asserts re-scoping — the migration must round-trip.
 func TestMigration00049DownUpCycle(t *testing.T) {
 	t.Parallel()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -304,7 +302,7 @@ func TestMigration00049DownUpCycle(t *testing.T) {
 // rest rather than silently merging two sites' issues under one bare key.
 func TestMigration00049DownDropsOtherAccounts(t *testing.T) {
 	t.Parallel()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -360,7 +358,7 @@ func TestMigration00049DownDropsOtherAccounts(t *testing.T) {
 // silently adopts another site's fields.
 func TestMigration00049_SeedsAccountForNonIssueJiraData(t *testing.T) {
 	t.Parallel()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}

@@ -29,6 +29,7 @@ func TestMeetingRecapUpsertAndGet(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected recap, got nil")
+		return // staticcheck SA5011 on CI does not always see t.Fatal as terminating
 	}
 	if got.SourceText != "raw notes here" {
 		t.Errorf("source_text = %q, want %q", got.SourceText, "raw notes here")
@@ -106,6 +107,7 @@ func TestMeetingRecapSurvivesEventDelete(t *testing.T) {
 	}
 	if got == nil {
 		t.Fatal("expected the orphaned recap to be reachable via GetMeetingRecapByTranscript")
+		return // staticcheck SA5011 on CI does not always see t.Fatal as terminating
 	}
 	if got.EventID != "" {
 		t.Errorf("expected event_id nulled after event delete, got %q", got.EventID)

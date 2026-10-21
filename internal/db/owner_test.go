@@ -20,7 +20,8 @@ type ownerSeed struct {
 }
 
 // seedOwner creates every row of s through the production writers, so the
-// resolver reads exactly what a real connect leaves behind.
+// resolver reads exactly what a real connect leaves behind. Status "purged"
+// marks the row as a finished account purge does (purgedAccountSQL).
 func seedOwner(t *testing.T, d *DB, s ownerSeed) {
 	t.Helper()
 	for i, a := range s.slack {
@@ -30,13 +31,15 @@ func seedOwner(t *testing.T, d *DB, s ownerSeed) {
 		if a.Status == "removed" {
 			require.NoError(t, d.SetSlackAccountRemoved(id))
 		}
+		seedPurged(t, d, "slack", id, a.Status)
 	}
 	if s.slackUser != nil {
 		require.NoError(t, d.UpsertUser(*s.slackUser))
 	}
 	for _, g := range s.google {
-		_, err := d.CreateGoogleAccount(g)
+		id, err := d.CreateGoogleAccount(g)
 		require.NoError(t, err)
+		seedPurged(t, d, "google", id, g.Status)
 	}
 	for _, j := range s.jira {
 		id, err := d.CreateJiraAccount(j)
@@ -45,6 +48,7 @@ func seedOwner(t *testing.T, d *DB, s ownerSeed) {
 			require.NoError(t, d.SetJiraAccountEnabled(id, false))
 		}
 		require.NoError(t, d.SetJiraAccountOwner(id, j.OwnerAccountID, j.OwnerEmail, j.OwnerDisplayName))
+		seedPurged(t, d, "jira", id, j.Status)
 	}
 	for _, l := range s.linear {
 		id, err := d.CreateLinearAccount("")
@@ -56,6 +60,7 @@ func seedOwner(t *testing.T, d *DB, s ownerSeed) {
 			require.NoError(t, d.SetLinearAccountRemoved(id))
 		}
 		require.NoError(t, d.SetLinearAccountOwner(id, l.OwnerUserID, l.OwnerEmail, l.OwnerDisplayName))
+		seedPurged(t, d, "linear", id, l.Status)
 	}
 	for _, m := range s.mailboxes {
 		_, err := d.CreateEmailAccount(m)
@@ -63,6 +68,22 @@ func seedOwner(t *testing.T, d *DB, s ownerSeed) {
 	}
 	for _, m := range s.jiraUserMap {
 		require.NoError(t, d.UpsertJiraUserMap(m))
+	}
+}
+
+// seedPurged marks the row as a finished purge does (purgedAccountSQL);
+// "purged-enabled" then turns it back on, the state an enable toggle can leave
+// on a still-purged row, so the status filter itself is what skips it.
+func seedPurged(t *testing.T, d *DB, source string, id int64, status string) {
+	t.Helper()
+	if status != "purged" && status != "purged-enabled" {
+		return
+	}
+	_, err := d.Exec(purgedAccountSQL[source], id)
+	require.NoError(t, err)
+	if status == "purged-enabled" {
+		_, err = d.Exec(`UPDATE `+source+`_accounts SET enabled = 1 WHERE id = ?`, id)
+		require.NoError(t, err)
 	}
 }
 
@@ -118,6 +139,14 @@ func TestOwner01_ResolveOwnerLadder(t *testing.T) {
 			linear: []LinearAccount{{Enabled: true, OwnerUserID: "user-1", OwnerEmail: "owner@example.com", OwnerDisplayName: "Owner"}}},
 			Owner{ID: "jira:acc-9", Source: OwnerSourceJira, Email: "j@x.com", JiraAccountID: "acc-9", DisplayName: "J Doe", LinearUserIDs: []string{"user-1"}}},
 		{"removed linear is skipped", ownerSeed{linear: []LinearAccount{{Enabled: true, Status: "removed", OwnerUserID: "user-1"}}}, Owner{}},
+		{"purged slack is skipped like removed (ask #491)", ownerSeed{
+			slack:  []SlackAccount{{TeamID: "T1", CurrentUserID: "1:U1", Status: "purged"}, {TeamID: "T2", CurrentUserID: "2:U2"}},
+			google: []GoogleAccount{{Email: "me@x.com"}}},
+			Owner{ID: "google:me@x.com", Source: OwnerSourceGoogle, Email: "me@x.com", DisplayName: "me"}},
+		{"purged google is skipped", ownerSeed{google: []GoogleAccount{{Email: "old@x.com", Status: "purged"}, {Email: "b@x.com"}}},
+			Owner{ID: "google:b@x.com", Source: OwnerSourceGoogle, Email: "b@x.com", DisplayName: "b"}},
+		{"purged jira is skipped, even re-enabled", ownerSeed{jira: []JiraAccount{{CloudID: "c1", Enabled: true, Status: "purged-enabled", OwnerAccountID: "acc-9"}}}, Owner{}},
+		{"purged linear is skipped, even re-enabled", ownerSeed{linear: []LinearAccount{{Enabled: true, Status: "purged-enabled", OwnerUserID: "user-1"}}}, Owner{}},
 		{"disabled linear is skipped", ownerSeed{linear: []LinearAccount{{Enabled: false, OwnerUserID: "user-1"}}}, Owner{}},
 		{"linear account without an owner id is skipped", ownerSeed{linear: []LinearAccount{{Enabled: true}, {Enabled: true, OwnerUserID: "user-2"}}},
 			Owner{ID: "linear:user-2", Source: OwnerSourceLinear, LinearUserIDs: []string{"user-2"}}},

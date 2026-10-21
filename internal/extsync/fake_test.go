@@ -17,10 +17,11 @@ import (
 )
 
 // TestMain installs the db schema template cache before running tests (the
-// internal/kb precedent): without it every in-memory db re-runs the whole
-// goose suite, which under -race is very slow.
+// internal/kb precedent), for in-memory and fresh file-backed databases
+// alike: without it every such db re-runs the whole goose suite, which under
+// -race is very slow.
 func TestMain(m *testing.M) {
-	if err := db.InitTestTemplate(); err != nil {
+	if err := db.InitTestFileTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
 	}

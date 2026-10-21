@@ -8,7 +8,11 @@ let package = Package(
         .macOS(.v14),
     ],
     dependencies: [
-        .package(url: "https://github.com/groue/GRDB.swift", from: "7.0.0"),
+        // GRDB linked against SQLCipher.swift (#603): our fork, pinned exactly.
+        // The Kit, the Desktop and WatchtowerMobile/project.yml carry the same
+        // URL and tag (SPM allows one GRDB in the graph), and the SQLCipher
+        // version moves in lockstep with internal/sqlcipher/VERSION.
+        .package(url: "https://github.com/aiwatchtowers/GRDB.swift", exact: "7.11.1-sqlcipher.2"),
         // Markdown AST for the shared chat renderer (tables, task lists, fences).
         .package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.5.0"),
         // Embedded terminal for the Workbench tab (Claude Code in the project

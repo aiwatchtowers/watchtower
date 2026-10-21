@@ -139,6 +139,12 @@ final class AutomationFailureWatchTests: XCTestCase {
         XCTAssertEqual(notifier.failedRunIDs, [10, 11, 13])
     }
 
+    func testFailedInboxReplyRunNotifies() {
+        let w = watch()
+        notify(w, [item(1)], runs: runs(run(10, automation: 1, trigger: "reply")), now: now)
+        XCTAssertEqual(notifier.failedRunIDs, [10])
+    }
+
     func testManualButtonRestartAndOldFailuresDoNotNotify() {
         let w = watch()
         let items = (1...5).map { item(Int64($0)) }

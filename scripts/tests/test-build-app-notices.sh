@@ -6,7 +6,10 @@
 #     in (internal/codeindex/grammar_<id>.go and grammars_min.go), and
 #     carries the licence texts the grammars need: the MIT text, the full
 #     Apache-2.0 text, the Elixir NOTICE, the MPL-2.0 source pointer and
-#     both ICU notices (ICU 58+ and IBM's ICU 1.8.1–57.1).
+#     both ICU notices (ICU 58+ and IBM's ICU 1.8.1–57.1);
+#   - the SQLite engine section names every tag in internal/sqlcipher/VERSION
+#     (mattn, SQLCipher, SQLite) and the GRDB fork's pin from
+#     WatchtowerDesktop/Package.swift, and carries the SQLCipher licence.
 #
 # Reads files only — never builds.
 set -euo pipefail
@@ -45,4 +48,24 @@ for marker in \
     grep -qF "$marker" "$NOTICES" || fail "THIRD_PARTY_NOTICES.md lacks: $marker"
 done
 [ "$rc" -eq 0 ] && echo "ok: licence texts present"
+
+# The SQLite engine (board #603): VERSION's "<name> <tag>" lines, minus the
+# amalgamation hash, each as "<name> <tag>" in the notices.
+VERSION_FILE="$ROOT/internal/sqlcipher/VERSION"
+engine_tags=$(grep -vE '^[^ ]+ sha256 ' "$VERSION_FILE" || true)
+if [ -z "$engine_tags" ]; then
+    fail "no tags found in internal/sqlcipher/VERSION"
+fi
+while IFS= read -r tag; do
+    [ -n "$tag" ] || continue
+    grep -qF "$tag" "$NOTICES" || fail "THIRD_PARTY_NOTICES.md does not name $tag (internal/sqlcipher/VERSION)"
+done <<< "$engine_tags"
+grdb_pin=$(sed -n 's|.*aiwatchtowers/GRDB\.swift", exact: "\([^"]*\)".*|\1|p' "$ROOT/WatchtowerDesktop/Package.swift")
+if [ -z "$grdb_pin" ]; then
+    fail "no aiwatchtowers/GRDB.swift exact pin found in WatchtowerDesktop/Package.swift"
+else
+    grep -qF "$grdb_pin" "$NOTICES" || fail "THIRD_PARTY_NOTICES.md does not name the GRDB fork pin $grdb_pin"
+fi
+grep -qF 'Neither the name of the ZETETIC LLC nor the' "$NOTICES" || fail "THIRD_PARTY_NOTICES.md lacks the SQLCipher licence"
+[ "$rc" -eq 0 ] && echo "ok: SQLite engine versions and licence present"
 exit $rc

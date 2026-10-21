@@ -87,7 +87,7 @@ func TestDaemon_MemoryPhaseRunsBetweenInboxAndNextStep(t *testing.T) {
 	d.SetNextStepPipeline(targets.New(database, &cfg.Targets, gen, nil, cfg.Digest.Language, l))
 	d.SetMemoryPipeline(newTestMemoryPipeline(t, database, cfg.Memory))
 
-	d.runSync(context.Background())
+	d.runSync(context.Background(), context.Background())
 
 	ids := make(map[string]int64)
 	rows, err := database.Query(`SELECT pipeline, id, source FROM pipeline_runs

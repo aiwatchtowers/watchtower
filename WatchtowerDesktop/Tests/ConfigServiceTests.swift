@@ -696,4 +696,36 @@ struct ConfigServiceTests {
         let saved = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
         #expect(saved?["workbench"] == nil, "the Claude default writes nothing on a fresh config")
     }
+
+    /// `privacy.purge_revoked_data` (board #601) is tri-state: absent stays
+    /// absent on Save (the build default applies), a set value round-trips
+    /// and the section's other keys are kept.
+    @Test("Purge on revoked access round-trips and stays absent until set")
+    func testPurgeRevokedDataRoundTrips() throws {
+        let fresh = makeTempConfig("sync:\n  workers: 1")
+        let svc = ConfigService(configPath: fresh)
+        #expect(svc.purgeRevokedData == nil)
+        try svc.save()
+        var saved = try Yams.load(yaml: String(contentsOfFile: fresh, encoding: .utf8)) as? [String: Any]
+        #expect(saved?["privacy"] == nil, "absent stays absent")
+
+        #expect(!svc.lastSaveChangedPurge)
+        svc.purgeRevokedData = false
+        try svc.save()
+        #expect(svc.lastSaveChangedPurge, "a new value asks for a daemon restart")
+        try svc.save()
+        #expect(!svc.lastSaveChangedPurge, "an unchanged value does not")
+        saved = try Yams.load(yaml: String(contentsOfFile: fresh, encoding: .utf8)) as? [String: Any]
+        #expect((saved?["privacy"] as? [String: Any])?["purge_revoked_data"] as? Bool == false, "an explicit off is written")
+
+        let path = makeTempConfig("privacy:\n  purge_revoked_data: true\n  other_key: kept")
+        let on = ConfigService(configPath: path)
+        #expect(on.purgeRevokedData == true)
+        on.purgeRevokedData = false
+        try on.save()
+        saved = try Yams.load(yaml: String(contentsOfFile: path, encoding: .utf8)) as? [String: Any]
+        let privacy = saved?["privacy"] as? [String: Any]
+        #expect(privacy?["purge_revoked_data"] as? Bool == false)
+        #expect(privacy?["other_key"] as? String == "kept")
+    }
 }

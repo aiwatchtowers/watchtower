@@ -96,16 +96,12 @@ package struct AutomationDraftEntry: Decodable, Equatable, Sendable {
 /// The "New automation" sheet's **Draft** panel (spec §12.2, mockup 2),
 /// rendered from the newest draft of the conversation.
 package struct AutomationDraftPanelModel: Equatable, Sendable {
-    package struct Permission: Equatable, Sendable {
-        /// The manifest string ("gmail:read@work", "output: inbox").
-        package let manifest: String
-        package let plain: String
-    }
-
     package static let emptyHint = "Describe what it should do — the draft shows up here."
     package static let unreadableHint = "Couldn't read the draft. Ask the assistant to draft it again."
     package static let footer = "Saving asks for your confirmation. It won't run until you confirm."
 
+    /// The newest cached entry this was made from; nil when none decodes.
+    package let entry: AutomationDraftEntry?
     /// No draft yet.
     package let isEmpty: Bool
     /// The cache file exists but could not be read, or its newest line does
@@ -115,12 +111,6 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
     package let recipeText: String
     /// Parse errors of a draft that did not validate.
     package let errors: [String]
-    package let when: String
-    package let whenDetail: String?
-    package let budget: String
-    package let lastDryRunTokens: String?
-    package let permissions: [Permission]
-    package let cantLine: String?
     package let dryRunLines: [String]
     /// Why there are no (more) dry-run lines: the refusal (ask #271), the
     /// draft stop at mcp() (ask #326) or the run's error.
@@ -188,18 +178,13 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
     }
 
     package init(entry: AutomationDraftEntry?, unreadable: Bool = false) {
+        self.entry = entry
         isUnreadable = entry == nil && unreadable
         guard let entry else {
             isEmpty = !unreadable
             name = ""
             recipeText = ""
             errors = []
-            when = ""
-            whenDetail = nil
-            budget = ""
-            lastDryRunTokens = nil
-            permissions = []
-            cantLine = nil
             dryRunLines = []
             dryRunNote = nil
             sessions = []
@@ -211,86 +196,32 @@ package struct AutomationDraftPanelModel: Equatable, Sendable {
             // The evaluation failed: the text and why, nothing else to show.
             name = "Untitled draft"
             errors = [entry.error.map { "Couldn't check this draft: \($0)" } ?? "Couldn't check this draft."]
-            when = ""
-            whenDetail = nil
-            budget = ""
-            lastDryRunTokens = nil
-            permissions = []
-            cantLine = nil
             dryRunLines = []
             dryRunNote = nil
             sessions = []
             return
         }
-        let manifest = result.manifest
-        name = manifest.name.isEmpty ? "Untitled draft" : manifest.name
+        name = result.manifest.name.isEmpty ? "Untitled draft" : result.manifest.name
         errors = result.errors
-        when = AutomationTriggerText.sentence(kind: manifest.triggerKind,
-                                              specJSON: Self.triggerSpecJSON(kind: manifest.triggerKind,
-                                                                             text: manifest.trigger))
-        whenDetail = manifest.triggerKind == "schedule" ? Self.missedLine(recipeText: entry.recipeText) : nil
-        budget = SaveAutomationCardModel.budget(tokens: manifest.budgetTokens, minutes: manifest.budgetMinutes)
-        permissions = manifest.permissions.map {
-            Permission(manifest: $0, plain: AutomationCardPresentation.permissionLine($0))
-        } + manifest.outputs.map {
-            Permission(manifest: "output: \($0)", plain: AutomationCardPresentation.outputLine($0))
-        }
-        cantLine = result.ok ? Self.cantLine(permissions: manifest.permissions, outputs: manifest.outputs) : nil
         sessions = Self.sessions(of: entry) ?? []
         let dryRun = result.dryRun
         if let dryRun, dryRun.status == "refused" {
             dryRunLines = []
             dryRunNote = dryRun.error
-            lastDryRunTokens = nil
         } else if let dryRun {
             dryRunLines = DryRunPresentation.lines(steps: dryRun.steps.map(Self.runStep))
             dryRunNote = dryRun.error.isEmpty ? nil : dryRun.error
-            lastDryRunTokens = "Last dry run used \(AutomationCardPresentation.number(dryRun.tokens)) tokens"
         } else {
             dryRunLines = []
             dryRunNote = nil
-            lastDryRunTokens = nil
         }
     }
 
-    /// The trigger column's JSON for `draft_automation`'s short trigger text.
-    package static func triggerSpecJSON(kind: String, text: String) -> String {
-        let object: [String: Any] = switch kind {
-        case "schedule": ["schedule": text]
-        case "button": ["button": ["label": text]]
-        case "event": ["event": ["type": text]]
-        default: ["manual": true]
-        }
-        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else { return "{}" }
-        return String(data: data, encoding: .utf8) ?? "{}"
-    }
-
-    /// The draft's `missed:` key in words (the manifest does not carry it).
-    private static func missedLine(recipeText: String) -> String {
-        let block = RecipeFrontmatter.block(in: recipeText) ?? ""
-        let skips = block.split(whereSeparator: \.isNewline).contains { line in
-            let parts = line.split(separator: ":", maxSplits: 1)
-            guard parts.count == 2, parts[0].trimmingCharacters(in: .whitespaces) == "missed" else { return false }
-            return parts[1].trimmingCharacters(in: .whitespaces).trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
-                == "skip"
-        }
-        return skips ? "Your local time · if the Mac was asleep, skips that time"
-                     : "Your local time · if the Mac was asleep, runs once when it wakes"
-    }
-
-    /// "It can't …" over the writes the draft does not declare among mail
-    /// send, Slack post and Jira change; nil when it declares all three.
-    package static func cantLine(permissions: [String], outputs: [String]) -> String? {
-        func declares(_ capability: String) -> Bool {
-            permissions.contains { $0 == capability || $0.hasPrefix(capability + "@") }
-        }
-        var missing: [String] = []
-        if !declares("gmail:write") { missing.append("send mail") }
-        if !declares("slack:write") && !outputs.contains("slack") { missing.append("post to Slack") }
-        if !declares("jira:write") { missing.append("change Jira") }
-        guard let last = missing.last else { return nil }
-        let head = missing.dropLast().joined(separator: ", ")
-        return "It can't " + (head.isEmpty ? last : "\(head) or \(last)") + "."
+    /// A schedule's detail line: local time, and what a time missed while
+    /// the Mac slept does (the draft column).
+    package static func missedDetail(skips: Bool) -> String {
+        skips ? "Your local time · if the Mac was asleep, skips that time"
+              : "Your local time · if the Mac was asleep, runs once when it wakes"
     }
 
     private static func runStep(_ step: AutomationDraftEntry.Step) -> AutomationRunStep {

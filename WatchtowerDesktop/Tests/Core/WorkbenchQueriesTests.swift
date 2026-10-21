@@ -19,6 +19,7 @@ final class WorkbenchQueriesTests: XCTestCase {
             XCTAssertEqual(fetched.folderPath, "/tmp/beta")
             XCTAssertEqual(fetched.folderURL.path, "/tmp/beta")
             XCTAssertNil(try WorkbenchQueries.fetch(d, id: 999))
+            XCTAssertEqual(try WorkbenchQueries.allIDs(d), Set(try WorkbenchQueries.fetchAll(d).map(\.id)))
         }
     }
 

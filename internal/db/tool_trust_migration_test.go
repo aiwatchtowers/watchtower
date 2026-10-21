@@ -6,7 +6,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	_ "modernc.org/sqlite"
 )
 
 // TestMigration00112_ToolTrustPerSurface replays goose up to 00111 (where the
@@ -18,7 +17,7 @@ import (
 // back to one row per tool, ask winning where the surfaces differ.
 func TestMigration00112_ToolTrustPerSurface(t *testing.T) {
 	t.Parallel()
-	raw, err := sql.Open("sqlite", ":memory:")
+	raw, err := sql.Open("sqlite3", ":memory:")
 	require.NoError(t, err)
 	defer raw.Close()
 	raw.SetMaxOpenConns(1)

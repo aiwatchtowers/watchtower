@@ -1,17 +1,19 @@
 import SwiftUI
 import WatchtowerCore
 
-/// The automation card (spec §12.2, approved mockup 1): title and subtitle,
-/// **Run now** / **Dry run** / **Change in words** / **Edit** / **⋯**
-/// (Enable/Disable, Delete), the dry-run result, the description, **It may**,
-/// **Limits per run**, the latest reports and **History**. The recipe itself
-/// is reached from **Edit** and the confirmation sheet, not shown here.
+/// The automation card (spec A5): the name with its scope and On/Off chips,
+/// **Run Now**, **Edit** and **⋯** (Turn Off / Turn On, Dry Run, Delete…),
+/// the "Needs your confirmation" banner whose **Review…** opens the editor,
+/// the dry-run result, the description, **It may**, **Limits per run**, the
+/// latest reports and **History**. The recipe itself is reached from **Edit**.
 struct AutomationCardView: View {
     @Bindable var vm: AutomationsViewModel
     let item: AutomationListItem
     let actions: AutomationsTabActions
     let workbenchName: String?
     let now: Date
+    /// **Edit** and the banner's **Review…**: the editor on this automation.
+    let onEdit: () -> Void
 
     @State private var confirmingDelete = false
 
@@ -107,82 +109,93 @@ struct AutomationCardView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(automation.name.isEmpty ? automation.slug : automation.name)
-                    .font(.title2.weight(.semibold))
-                    .textSelection(.enabled)
-                Text(AutomationCardPresentation.subtitle(automation, workbenchName: workbenchName))
+        HStack(alignment: .top, spacing: Spacing.medium) {
+            VStack(alignment: .leading, spacing: Spacing.small) {
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                    Text(automation.name.isEmpty ? automation.slug : automation.name)
+                        .font(.title3.weight(.semibold))
+                        .textSelection(.enabled)
+                    Chip(text: scopeTitle, color: Color.accentColor)
+                    Chip(text: automation.enabled ? "On" : "Off",
+                         color: automation.enabled ? Tone.success : Color.secondary)
+                }
+                Text(AutomationTriggerText.sentence(kind: automation.triggerKind, specJSON: automation.triggerSpecJSON))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Spacer(minLength: 12)
+            Spacer(minLength: Spacing.medium)
             buttonRow
         }
     }
 
+    private var scopeTitle: String {
+        automation.scope == .personal ? AutomationListSections.personalTitle : (workbenchName ?? "Workbench")
+    }
+
     private var buttonRow: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Spacing.regular) {
             if isBusy {
                 ProgressView().controlSize(.small)
             }
-            Button("Run now") {
+            Button("Run Now") {
                 let id = automation.id
                 Task { await vm.runNow(id) }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(.kitPrimary)
             .disabled(!buttons.runNow.enabled || isBusy)
             .help(buttons.runNow.help ?? "")
 
-            Button("Dry run") {
-                let id = automation.id
-                Task { await vm.dryRun(id) }
-            }
-            .disabled(!buttons.dryRun.enabled || isBusy)
-            .help(buttons.dryRun.help ?? "")
-
-            Button("Change in words") { actions.onChangeInWords?(automation.id) }
-                .disabled(actions.onChangeInWords == nil)
-                .help(actions.changeInWordsDisabledHelp ?? "")
-            Button("Edit") { actions.onEdit?(automation.id) }
-                .disabled(actions.onEdit == nil)
+            Button("Edit") { onEdit() }
+                .buttonStyle(.kitSecondary)
 
             Menu {
-                Button(buttons.toggleLabel) {
+                Button(AutomationCardPresentation.toggleMenuTitle(enabled: automation.enabled)) {
                     let id = automation.id
                     let enable = !automation.enabled
                     Task { await vm.setEnabled(id, enable) }
                 }
+                Button("Dry Run") {
+                    let id = automation.id
+                    Task { await vm.dryRun(id) }
+                }
+                .disabled(!buttons.dryRun.enabled)
                 Divider()
                 Button("Delete…", role: .destructive) { confirmingDelete = true }
             } label: {
-                Text("⋯")
+                Image(systemName: "ellipsis")
             }
+            .menuStyle(.button)
+            .buttonStyle(.kitIcon(isOn: false))
             .menuIndicator(.hidden)
             .fixedSize()
             .disabled(isBusy)
+            .help("More actions")
             .accessibilityLabel("More actions")
         }
+        .controlSize(.small)
     }
 
     // MARK: - Confirmation
 
-    /// "Needs your confirmation" with **Review…** → the confirmation sheet (AUTO-06).
+    /// "Needs your confirmation" with **Review…** → the editor on the
+    /// unchanged bytes, whose column shows every hashed field (AUTO-06).
     @ViewBuilder private var confirmationBanner: some View {
         if automation.needsConfirmation, automation.parseError.isEmpty, automation.removedAt == nil {
-            HStack(spacing: 10) {
+            HStack(spacing: Spacing.cozy) {
                 Image(systemName: "checkmark.shield")
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Tone.warning)
                 Text("Needs your confirmation")
                     .font(.callout.weight(.semibold))
                 Text("It won't run until you confirm it.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Review…") { actions.onConfirm?(automation.id) }
-                    .disabled(actions.onConfirm == nil)
+                Button("Review…") { onEdit() }
+                    .buttonStyle(.kitSecondary)
+                    .controlSize(.small)
             }
-            .padding(10)
-            .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+            .padding(Spacing.cozy)
+            .card()
         }
     }
 

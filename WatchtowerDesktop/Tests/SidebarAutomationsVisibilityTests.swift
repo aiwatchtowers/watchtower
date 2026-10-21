@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 @testable import WatchtowerDesktop
 import WatchtowerCore
 import WatchtowerTestSupport
@@ -75,8 +76,8 @@ final class SidebarAutomationsVisibilityTests: XCTestCase {
         XCTAssertEqual(appState.automationsViewModel?.expandedRuns, [9])
     }
 
-    /// New Automation… in a workbench's menu (spec 2026-10-20 §4): the tab
-    /// opens with the workbench left for the New automation sheet to pick.
+    /// New Automation… in a workbench's menu (spec 2026-10-20 §4, A2): the
+    /// tab opens the New panel with that workbench's scope fixed.
     func testNewAutomationForWorkbenchNavigates() throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }
@@ -93,9 +94,57 @@ final class SidebarAutomationsVisibilityTests: XCTestCase {
             appState.stopSidebarCounts()
         }
 
-        appState.newAutomation(forWorkbench: 3)
+        let workbench = try manager.dbPool.write { db -> Workbench in
+            let id = try TestDatabase.insertWorkbench(db, name: "acme", folder: "/tmp/acme")
+            return try XCTUnwrap(Workbench.fetchOne(db, sql: "SELECT * FROM projects WHERE id = ?", arguments: [id]))
+        }
+
+        // The tab was last left on Reactions: the panel must still be seen.
+        let key = AutomationsSection.storageKey
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+        UserDefaults.standard.set(AutomationsSection.reactions.rawValue, forKey: key)
+
+        appState.newAutomation(forWorkbench: workbench)
 
         XCTAssertEqual(appState.selectedDestination, .automations)
-        XCTAssertEqual(appState.automationsViewModel?.pendingNewWorkbenchID, 3)
+        XCTAssertEqual(UserDefaults.standard.string(forKey: key), AutomationsSection.automations.rawValue)
+        XCTAssertEqual(appState.automationsViewModel?.panel, .new(AutomationNewFlow(
+            fixedScope: .workbench(id: workbench.id, name: "acme", folder: "/tmp/acme"))))
+    }
+
+    /// Another surface (an Inbox card) opens the editor on a recipe text in
+    /// a scope: a fresh new draft starting from that text.
+    func testOpenAutomationDraftShowsTheEditor() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let suite = "SidebarAutomationsVisibilityTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let features = FeatureManagerService(runner: FakeCLIRunner(stdout: Data(#"{"features":[]}"#.utf8)))
+        let appState = AppState(onboardingDefaults: defaults, featureManager: features)
+        appState.wireAppDatabaseOverride = { _ in }
+        appState.databaseManager = manager
+        appState.completeOnboarding()
+        defer {
+            appState.automationsViewModel?.stop()
+            appState.stopSidebarCounts()
+        }
+
+        let key = AutomationsSection.storageKey
+        let saved = UserDefaults.standard.object(forKey: key)
+        defer { UserDefaults.standard.set(saved, forKey: key) }
+        UserDefaults.standard.set(AutomationsSection.tracks.rawValue, forKey: key)
+
+        appState.openAutomationDraft(text: "---\nname: Digest\n---\n", scope: .personal)
+
+        XCTAssertEqual(appState.selectedDestination, .automations)
+        XCTAssertEqual(UserDefaults.standard.string(forKey: key), AutomationsSection.automations.rawValue)
+        guard case let .editor(.newDraft(contextID, scope, startText)) = appState.automationsViewModel?.panel else {
+            return XCTFail("the editor opens on a new draft")
+        }
+        XCTAssertFalse(contextID.isEmpty)
+        XCTAssertEqual(scope, .personal)
+        XCTAssertEqual(startText, "---\nname: Digest\n---\n")
     }
 }

@@ -800,3 +800,91 @@ func TestExecutor_ExecuteInlinePinnedRefusesChangedRecipe(t *testing.T) {
 		t.Fatalf("generator calls = %d; want 0", n)
 	}
 }
+
+// replyRecipeText is exRecipeText with inbox:reply in the manifest.
+func replyRecipeText(script string) string {
+	return strings.Replace(exRecipeText(script, ""), "  - tool:list_targets\n", "  - tool:list_targets\n  - inbox:reply\n", 1)
+}
+
+// replyPayload is the event_json db.PressInboxOutputAction stores for a
+// press of action 0 ("backlog") of a card titled "Triage A-1".
+func replyPayload(t *testing.T) string {
+	t.Helper()
+	raw, err := json.Marshal(db.ReplyPayload{Reply: db.ReplyTrigger{OutputID: 42, Action: 0, Value: "backlog",
+		Data: json.RawMessage(`{"id":"A-1"}`), Card: db.ReplyCard{Title: "Triage A-1", Link: "https://example.com/A-1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func (f *exFixture) enqueueReply(t *testing.T, a db.Automation) int64 {
+	t.Helper()
+	return f.enqueueReq(t, db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerReply, EventJSON: replyPayload(t)})
+}
+
+const replyScript = `output.report({title: trigger.kind + ":" + trigger.reply.value, body: JSON.stringify(trigger.reply)})`
+
+func TestExecutor_ReplyRunSeesTriggerReply(t *testing.T) {
+	f := newExFixture(t, exOpts{})
+	a := f.seedText(t, "triage", replyRecipeText(replyScript), false)
+	id := f.enqueueReply(t, a)
+	f.step(t, 1)
+	f.wantRun(t, id, db.RunSucceeded, "")
+	var title, body string
+	if err := f.d.QueryRow(`SELECT title, body FROM automation_outputs WHERE run_id = ? AND kind = 'report'`, id).
+		Scan(&title, &body); err != nil {
+		t.Fatalf("reading the report: %v", err)
+	}
+	if title != "reply:backlog" {
+		t.Fatalf("report title = %q; want reply:backlog", title)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("report body %q: %v", body, err)
+	}
+	want := map[string]any{"output_id": float64(42), "action": float64(0), "value": "backlog",
+		"data": map[string]any{"id": "A-1"}, "card": map[string]any{"title": "Triage A-1", "link": "https://example.com/A-1"}}
+	gotJSON, _ := json.Marshal(got)
+	wantJSON, _ := json.Marshal(want)
+	if string(gotJSON) != string(wantJSON) {
+		t.Fatalf("trigger.reply = %s; want %s", gotJSON, wantJSON)
+	}
+}
+
+func TestExecutor_ReplyRunWithoutCapabilityFails(t *testing.T) {
+	f := newExFixture(t, exOpts{})
+	a := f.seed(t, "triage", replyScript, false)
+	id := f.enqueueReply(t, a)
+	f.step(t, 1)
+	r := f.wantRun(t, id, db.RunFailed, db.ErrKindPermission)
+	mustContain(t, "error", r.Error, "inbox:reply")
+	if n := f.count(t, "automation_outputs"); n != 0 {
+		t.Fatalf("outputs = %d; want 0", n)
+	}
+}
+
+func TestExecutor_ReplyRunOfDisabledRecipeIsNotRunnable(t *testing.T) {
+	f := newExFixture(t, exOpts{})
+	a := f.seedText(t, "triage", replyRecipeText(replyScript), false)
+	id := f.enqueueReply(t, a)
+	if err := f.d.SetAutomationEnabled(a.ID, false, exStart); err != nil {
+		t.Fatal(err)
+	}
+	f.step(t, 0)
+	f.wantRun(t, id, db.RunCancelled, db.ErrKindNotRunnable)
+	if n := f.count(t, "automation_outputs"); n != 0 {
+		t.Fatalf("outputs = %d; want 0", n)
+	}
+}
+
+func TestExecutor_ScheduleRunHasNoReply(t *testing.T) {
+	f := newExFixture(t, exOpts{})
+	a := f.seedText(t, "triage", replyRecipeText(`return (typeof trigger.reply) + ":" + trigger.kind`), false)
+	at := exStart
+	id := f.enqueueReq(t, db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerSchedule, ScheduledFor: &at})
+	f.step(t, 1)
+	if r := f.wantRun(t, id, db.RunSucceeded, ""); r.Summary != "undefined:schedule" {
+		t.Fatalf("summary = %q; want undefined:schedule", r.Summary)
+	}
+}

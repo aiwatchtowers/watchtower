@@ -47,13 +47,14 @@ The tab has three views: **Actions**, **Learned** and **Profile**.
 
 ### Handle the Actions list
 
-Up to three sections, newest or soonest first:
+**Actions** reads like mail: a list on the left, the open card on the right. The list has up to three sections: **Needs your decision** (proposals), **Today** and **Earlier** (reminders and automation cards, newest first). A dot marks what you haven't opened. **Up** and **Down** move the selection, **Esc** clears it.
 
+- **Opening a card marks it read**, and only that. Done and Dismiss are separate: **Done** says you dealt with it, **Dismiss** puts it away. Either one opens the next card.
 - **Reminders** appear once they are due. **Done** clears one, **Snooze 1h** brings it back in an hour.
-- **From your automations** shows notes your automations left here. **Done** marks one read, **Dismiss** removes it. The "run" link opens that run.
-- **Proposals** offer **Approve**, **Reject** or, after a failure, **Retry**. A Slack message offers **Approve & send** so you can edit the text first.
+- **Automation cards** can carry their own buttons, then **Open source**, **Discuss in Chat**, **Hand to Agent…**, **Done** and **Dismiss**. The source line opens the run. See [Buttons on automation cards](automations-inbox-buttons.md).
+- **Proposals** offer **Approve**, **Reject** or, after a failure, **Retry**. A Slack message offers **Approve & send** so you can edit the text first. A proposed automation shows a summary with **Open Draft** and **Reject**.
 
-When an action is done, its card links to the result, such as **Open →** for the new idea, target or track, or **Open ABC-7 →** for a Jira issue. Cards that came from a reaction and due reminders also show **Slack message ↗**. The badge on the tab counts proposals, due reminders and unread automation notes.
+When an action is done, its card links to the result, such as **Open →** for the new idea, target or track, or **Open ABC-7 →** for a Jira issue. Cards that came from a reaction and due reminders also show **Slack message ↗**. The badge on the tab counts proposals, due reminders and automation cards you haven't opened yet.
 
 ### Teach it your preferences
 

@@ -20,7 +20,9 @@ struct HomeView: View {
                 onHideGettingReady: { appState.homeCenter.hideGettingReady() },
                 onAsk: { appState.toggleHelpChat() },
                 onAct: { await appState.homeCenter.act($0, on: $1) },
-                onExpand: { appState.homeCenter.setFeedExpanded($0) }
+                onExpand: { appState.homeCenter.setFeedExpanded($0) },
+                onReconnect: { appState.openAccountConnection(source: $0) },
+                purges: appState.accountPurgeCenter?.openRows ?? []
             )
         }
     }
@@ -45,6 +47,9 @@ struct HomeContent: View {
     let onAsk: () -> Void
     let onAct: (FeedAction, FeedRef) async -> Void
     let onExpand: (Bool) -> Void
+    /// Open account purges (board #601): the red banner above Getting ready.
+    let purges: [AccountPurge]
+    let onReconnect: (String) -> Void
 
     init(
         snapshot: HomeSnapshot?,
@@ -57,8 +62,12 @@ struct HomeContent: View {
         onHideGettingReady: @escaping () -> Void,
         onAsk: @escaping () -> Void = {},
         onAct: @escaping (FeedAction, FeedRef) async -> Void = { _, _ in },
-        onExpand: @escaping (Bool) -> Void = { _ in }
+        onExpand: @escaping (Bool) -> Void = { _ in },
+        onReconnect: @escaping (String) -> Void = { _ in },
+        purges: [AccountPurge] = []
     ) {
+        self.purges = purges
+        self.onReconnect = onReconnect
         self.calendar = calendar
         self.feedErrors = feedErrors
         self.onAct = onAct
@@ -76,6 +85,9 @@ struct HomeContent: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.wide) {
                 header
+                if !purges.isEmpty {
+                    AccountPurgeBanner(rows: purges, zone: calendar.timeZone, onReconnect: onReconnect)
+                }
                 if let snapshot {
                     GettingReadyZoneView(
                         zone: snapshot.gettingReady, firstSync: snapshot.firstSync,

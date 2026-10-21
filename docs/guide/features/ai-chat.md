@@ -16,7 +16,7 @@ You ask "what did we decide about the payments rollout?" and get an answer drawn
 
 **Memory.** When the Memory feature's **Chat surface** switch is on, the assistant starts each chat with a short map of what it remembers and can look things up. See [Memory](memory.md).
 
-**Other assistant chats.** The same chat component appears in a target's **Assistant** tab, the track chat, an idea or decision, a recording's **Chat** tab, an automation's **Change in words**, and the setup assistant in Settings. They have no attachments, @-mentions or branches.
+**Other assistant chats.** The same chat component appears in a target's **Assistant** tab, the track chat, an idea or decision, a recording's **Chat** tab, an automation's **Chat** in the Automations panel, and the setup assistant in Settings. They have no attachments, @-mentions or branches.
 
 Only the main chat, the target chat and the automation editor can act, through proposals. The meeting, track, idea and setup chats are draft-only: they discuss and draft but never act. At most three replies across all of them run at once; a fourth shows **Queued**.
 

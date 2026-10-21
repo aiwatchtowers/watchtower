@@ -18,8 +18,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Skips the push-triggered run when the branch has an open PR — the
-  # pull_request-triggered run of the same commit does the work instead.
+  # Skips the push-triggered run only when the pull_request-triggered run of
+  # the same commit on the same branch exists (not cancelled) — it does the
+  # work instead. A conflicting PR gets no pull_request run at all, and one
+  # sometimes never fires, so a push run with an open PR waits up to ~2 min
+  # for that run and goes ahead without it; any gh/API error also lets the
+  # run go ahead (fail-open). See scripts/ci-dedupe-gate.sh.
   # On a pull request it also says which jobs the change can affect:
   #   code   — anything but docs: Go and Swift test each other (Swift Test
   #            builds the CLI, Go tests read Swift sources and the generated
@@ -32,6 +36,7 @@ jobs:
     name: Dedupe gate
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
       pull-requests: read
     outputs:
@@ -59,19 +64,18 @@ jobs:
             guide:
               - 'docs/guide/**'
 
+      # Only the gate script: the job stays a few seconds long.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/ci-dedupe-gate.sh
+          sparse-checkout-cone-mode: false
+
+      # scripts/ci-dedupe-gate.sh, tested by scripts/tests/test-ci-dedupe-gate.sh.
       - id: check
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ "${{ github.event_name }}" = "push" ] && [ "${GITHUB_REF_NAME}" != "main" ]; then
-            open_prs=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "${GITHUB_REF_NAME}" --state open --json number --jq length)
-            if [ "$open_prs" -gt 0 ]; then
-              echo "branch has an open PR — the pull_request run covers this commit"
-              echo "run=false" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-          fi
-          echo "run=true" >> "$GITHUB_OUTPUT"
+          EVENT: ${{ github.event_name }}
+        run: bash scripts/ci-dedupe-gate.sh
 
   # The user guide is a Go package (docs/guide): its links, anchors and page
   # sizes are checked by its tests. Runs on its own, so a guide-only PR gets
@@ -87,6 +91,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
+      # macOS build uses CommonCrypto); install it explicitly so a runner
+      # image change cannot break the cgo build quietly.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Guide check
         # internal/chat pins guide.Map() in the prompt golden and internal/kb
@@ -104,6 +114,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
+      # macOS build uses CommonCrypto); install it explicitly so a runner
+      # image change cannot break the cgo build quietly.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v7
@@ -184,6 +200,12 @@ jobs:
         with:
           go-version: "1.26.9"
 
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
+      # macOS build uses CommonCrypto); install it explicitly so a runner
+      # image change cannot break the cgo build quietly.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
+
       - name: Build
         run: go build ./...
 
@@ -204,7 +226,7 @@ jobs:
   # timed out; two shards then put tools, kb and db on one runner and timed
   # out at 25 m), each shard runs ~a third of the packages (`make test-race
   # SHARD=K/3` — the split and how to rebalance it live there).
-  # Race-instrumented pure-Go sqlite is ~10x slower, so the race pass runs
+  # The race-instrumented suite is many times slower, so the race pass runs
   # only on pushes to main (i.e. per merged PR — a one-PR bisect window), on
   # a manual workflow_dispatch (so a branch can prove it before merging), and
   # in the release workflow, keeping feature-branch CI fast. -timeout is per
@@ -231,6 +253,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
+      # macOS build uses CommonCrypto); install it explicitly so a runner
+      # image change cannot break the cgo build quietly.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Test (race, library packages)
         timeout-minutes: 30
@@ -283,6 +311,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26.9"
+
+      # internal/sqlcipher links OpenSSL's libcrypto on Linux (the shipped
+      # macOS build uses CommonCrypto); install it explicitly so a runner
+      # image change cannot break the cgo build quietly.
+      - name: Install libssl-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libssl-dev
 
       - name: Test (full grammar set)
         run: make test-codeindex-full
@@ -422,6 +456,8 @@ jobs:
         timeout-minutes: 25
         env:
           LANE_TIMEOUT: "600"
+          # SQLCipherInteropTests fail instead of skipping without Go (#603).
+          WATCHTOWER_REQUIRE_GO: "1"
         run: ../scripts/swift-test-sharded.sh 3
 
       # The process-spawning suites again on a one-thread concurrency pool,

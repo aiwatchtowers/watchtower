@@ -176,12 +176,20 @@ func (o *Orchestrator) resolveWorkerCount(requested int) int {
 // per-page swallow) never reaches this point, so a token that dies mid-run
 // after an earlier phase already succeeded may still record "ok" until a
 // later cycle's failure surfaces at the top level.
+//
+// A run cancelled at any point (a sleep or a Sync Now restart cancelling the
+// daemon's fetches, a shutdown) never reaches finishSync, which logs and
+// resets the run's API stats: Run resets them itself, or the next run's
+// "sync complete" line counts this run's calls too.
 func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	o.searchGapNote = ""
 	o.searchRateLimited = false
 	o.searchIncomplete = false
 	o.firstSyncFrom = time.Time{}
 	err := o.run(ctx, opts)
+	if ctx.Err() != nil {
+		o.slackClient.ResetAPIStats()
+	}
 	o.recordAuthResult(ctx, err)
 	return err
 }
@@ -243,6 +251,11 @@ func (o *Orchestrator) fetchRoster(ctx context.Context) error {
 
 // AccountID is the slack_accounts row this orchestrator syncs.
 func (o *Orchestrator) AccountID() int64 { return o.accountID }
+
+// SlackCallsAnswered is the Slack client's AnsweredCalls: it moves with every
+// API call Slack answers, including the passes that move no Progress counter
+// (the read-state refresh, the deletion sweep, the inbox reactions).
+func (o *Orchestrator) SlackCallsAnswered() uint64 { return o.slackClient.AnsweredCalls() }
 
 // SearchIncomplete reports whether the last Run returned without error but
 // left messages of its search window unfetched — Slack rate-limited the
@@ -519,8 +532,8 @@ func (o *Orchestrator) refreshDue(last time.Time, every time.Duration) bool {
 //     the first digest generation (without waiting for a second sync cycle).
 //
 // A per-channel failure is logged and skipped, but a pass that could not
-// list its channels or updated none of them returns an error so the caller's
-// throttle does not record it as a refresh.
+// list its channels, updated none of them or was cut off by a cancelled ctx
+// returns an error so the caller's throttle does not record it as a refresh.
 func (o *Orchestrator) syncChannelReadState(ctx context.Context) error {
 	o.logger.Println("syncing channel read state")
 
@@ -552,6 +565,9 @@ func (o *Orchestrator) syncChannelReadState(ctx context.Context) error {
 
 	var updated, failed int
 	for _, chID := range channelIDs {
+		if err := ctx.Err(); err != nil {
+			break // reported below
+		}
 		_, rawID, _ := watchtowerslack.SplitAccountID(chID)
 		lastRead, err := o.slackClient.GetChannelReadCursor(ctx, rawID)
 		if err != nil {
@@ -570,6 +586,11 @@ func (o *Orchestrator) syncChannelReadState(ctx context.Context) error {
 		updated++
 	}
 	o.logger.Printf("channel read state: %d/%d channels updated (via conversations.info)", updated, len(channelIDs))
+	if err := ctx.Err(); err != nil {
+		// A pass cut off by a cancel is not a refresh: the caller must not
+		// stamp it, or the channels it never reached wait out the hour.
+		return fmt.Errorf("channel read state cancelled: %w", err)
+	}
 	if updated == 0 && failed > 0 {
 		return fmt.Errorf("all %d read-cursor updates failed", failed)
 	}
@@ -602,8 +623,14 @@ func (o *Orchestrator) ownsID(id string) bool {
 // finishWithInboxReactions is both sync paths' tail: sync reactions for
 // pending inbox items so auto-resolve can detect them, then finishSync. A
 // reaction failure does not skip finishSync — the cycle's messages did land,
-// so the "last synced" stamp is true — and is returned after it.
+// so the "last synced" stamp is true — and is returned after it. A cancelled
+// ctx returns its error before either: phases that log and swallow their
+// errors can reach this point having fetched nothing since the cancel, and
+// that run must not stamp "last synced" or auto-mark anything read.
 func (o *Orchestrator) finishWithInboxReactions(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("sync cancelled: %w", err) // Run resets the API stats
+	}
 	reactErr := o.syncInboxReactions(ctx)
 	o.finishSync()
 	return reactErr

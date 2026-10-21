@@ -17,6 +17,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Turning features on and off](concepts/features-on-and-off.md) — the switches, what feeds what, and how to read an empty tab's status line
 - [AI providers, models and cost](concepts/ai-providers-and-cost.md) — Claude, Codex or Ollama, light and strong models, what costs tokens, and your Claude plan limits
 - [Privacy](concepts/privacy.md) — what stays on your Mac, what goes to your AI provider, and what goes to iCloud
+- [Revoked access deletes an account's data](concepts/revoked-access.md) — when a revoked or long-unreached account's synced data is deleted, what is kept, and how to stop it
 
 ## Troubleshooting
 
@@ -85,6 +86,7 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 - [Memory](features/memory.md) — the assistant's long-term notebook of people, projects and beliefs, in plain files you can edit
 - [Automations](features/automations.md) — recipes the daemon runs on a schedule, on sync events or on demand, with confirmation, budgets and auto grants
 - [Automations: recipes and templates](features/automations-recipes.md) — the parts of a recipe, event triggers and the five ready-made templates
+- [Buttons on automation cards](features/automations-inbox-buttons.md) — Open, Chat, Agent and Reply buttons on an automation's Inbox card, and what a press does
 - [Reactions and tracks in Automations](features/automations-rules.md) — the Reactions and Tracks sections, reaction-triggered recipes and the dictionary editor
 - [Automations: confirmation, budgets and writes](features/automations-safety.md) — what you confirm, the per-run budget, how writes wait for you and auto grants
 

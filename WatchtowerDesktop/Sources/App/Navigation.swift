@@ -40,8 +40,9 @@ struct NavigationRoot: View {
 }
 
 struct SplashView: View {
-    /// The launch's compaction step: while it compacts, its progress line,
-    /// subtitle and (from 15 s) Skip sit under the progress view.
+    /// The launch's compaction step: while its child runs (search index
+    /// update, then compaction), the phase's line, subtitle and (from 15 s)
+    /// Skip sit under the progress view.
     let compaction: DatabaseCompactionStep
     @State private var opacity: Double = 0
 
@@ -55,13 +56,11 @@ struct SplashView: View {
                 .scaleEffect(0.8)
                 .padding(.top, 8)
 
-            if case let .compacting(dbBytes) = compaction.phase {
+            if let progressLine {
                 VStack(spacing: Spacing.compact) {
-                    Text(DatabaseCompactionStep.progressLine(
-                        dbBytes: dbBytes, elapsedSeconds: compaction.elapsedSeconds
-                    ))
-                    .font(.callout)
-                    .monospacedDigit()
+                    Text(progressLine)
+                        .font(.callout)
+                        .monospacedDigit()
                     Text(DatabaseCompactionStep.subtitle)
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -81,6 +80,19 @@ struct SplashView: View {
             withAnimation(.easeIn(duration: 0.4)) {
                 opacity = 1
             }
+        }
+    }
+
+    /// The running phase's line, timed from that phase's start; nil when no
+    /// child runs.
+    private var progressLine: String? {
+        switch compaction.phase {
+        case .updatingSearchIndex:
+            DatabaseCompactionStep.searchIndexLine(elapsedSeconds: compaction.phaseElapsedSeconds)
+        case let .compacting(dbBytes):
+            DatabaseCompactionStep.progressLine(dbBytes: dbBytes, elapsedSeconds: compaction.phaseElapsedSeconds)
+        case .idle, .checking, .finished:
+            nil
         }
     }
 }
@@ -233,15 +245,7 @@ struct MainNavigationView: View {
         }
     }
 
-    /// Redirects away from the current tab when it becomes hidden — a
-    /// feature was just disabled, or a persisted selection from a previous
-    /// launch points at a tab that's now gated off. Runs once at appear
-    /// (stale persisted selection), on every live feature-list or
-    /// connected-source change, and on every selection change, sharing the
-    /// same pure `fallbackDestination` rule.
-    /// The Automations tab's hooks into other surfaces; later tasks add
-    /// the New/Templates/Change in words ones. Edit and the confirmation
-    /// sheet are the tab's own (`AutomationEditorCenter`).
+    /// The Automations tab's links out of a run's steps.
     private var automationsTabActions: AutomationsTabActions {
         var actions = AutomationsTabActions()
         actions.onOpenInbox = { _ in appState.selectedDestination = .inbox }
@@ -258,18 +262,29 @@ struct MainNavigationView: View {
         return actions
     }
 
-    private var automationEditorChatHooks: AutomationEditorChatHooks {
+    private func automationHooks(_ vm: AutomationsViewModel) -> AutomationEditorChatHooks {
         // Personal recipes live in <workspace>/automations, beside the database.
-        let workspaceDir = (appState.databaseManager?.dbPool.path as NSString?)?.deletingLastPathComponent
+        let workspaceDir = (appState.databaseManager?.dbPool.path as NSString?)?.deletingLastPathComponent ?? ""
+        let workbenches = (appState.workbenchesViewModel?.summaries ?? []).map { AutomationScopeChoice.forWorkbench($0.project) }
+        let panels = appState.automationTemplatePanels
+        let template = { (name: String) in vm.templates.first { $0.name == name } }
         return AutomationEditorChatHooks(
-            open: { try await appState.automationEditorChat(automationID: $0) },
-            openNew: { try await appState.newAutomationEditorChat(workbenchID: $0) },
-            automationsDir: (workspaceDir as NSString?)?.appendingPathComponent("automations"),
-            unavailableHelp: AutomationEditorChatSurface.toolsAvailable(provider: nil)
-                ? nil : AutomationEditorChatSurface.unavailableHelp
+            scopes: [.personal] + workbenches,
+            workspaceDir: workspaceDir,
+            draftContextID: { appState.draftContextID(for: $0) },
+            makeNewChat: { try await appState.newAutomationEditorChat(contextID: $0, scope: $1) },
+            makeEditChat: { try await appState.automationEditorChat(automationID: $0) },
+            templatePanel: { name, scope in template(name).flatMap { panels?.panel(for: $0, scope: scope) } },
+            startTemplate: { name, scope in template(name).flatMap { panels?.start($0, scope: scope) } }
         )
     }
 
+    /// Redirects away from the current tab when it becomes hidden — a
+    /// feature was just disabled, or a persisted selection from a previous
+    /// launch points at a tab that's now gated off. Runs once at appear
+    /// (stale persisted selection), on every live feature-list or
+    /// connected-source change, and on every selection change, sharing the
+    /// same pure `fallbackDestination` rule.
     private func applyFeatureFallback() {
         if let fallback = SidebarDestination.fallbackDestination(
             current: appState.selectedDestination,
@@ -352,15 +367,9 @@ struct MainNavigationView: View {
                 AutomationsView(
                     vm: vm,
                     actions: automationsTabActions,
-                    workbenchName: { id in
-                        appState.workbenchesViewModel?.summaries.first { $0.project.id == id }?.project.name
-                    },
-                    workbenches: (appState.workbenchesViewModel?.summaries ?? []).map {
-                        AutomationTemplateGallery.InstallTarget(id: $0.project.id, name: $0.project.name)
-                    },
                     emptyStateContext: appState.emptyStateContext,
                     editor: appState.automationEditorCenter,
-                    chats: automationEditorChatHooks,
+                    hooks: automationHooks(vm),
                     tracksVisible: SidebarDestination.tracks.isVisible(
                         disabledFeatures: appState.featureVisibility.disabledFeatureIDs,
                         connected: appState.featureVisibility.connectedSources

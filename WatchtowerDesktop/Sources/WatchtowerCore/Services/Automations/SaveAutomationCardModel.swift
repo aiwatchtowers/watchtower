@@ -57,6 +57,14 @@ package struct SaveAutomationCardModel {
 
     /// The workbench the recipe is saved into; nil for a personal one.
     package let workbenchID: Int64?
+    /// The trigger in words ("Every weekday at 09:00"), the card's "When:" line.
+    package let whenLine: String
+    /// The recipe's manifest entries, as written (`AutomationCardPresentation.permissionLine` says them).
+    package let permissions: [String]
+    /// The recipe file the save writes (absolute); "" when the args carry none.
+    package let path: String
+    /// Whether the save writes a new recipe (else it replaces the saved one at `path`).
+    package let isNew: Bool
 
     package static let appliedNewNote = "Saved and confirmed. It's off until you turn it on in Automations."
     package static let appliedEditNote = "Saved and confirmed. Whether it runs is still set by its switch in Automations."
@@ -123,7 +131,8 @@ package struct SaveAutomationCardModel {
         var lines: [String] = []
         let file = args.path.isEmpty ? "\(args.slug).md" : URL(fileURLWithPath: args.path).lastPathComponent
         lines.append("File: \(file)" + (args.isNew ? " (new)" : " (replaces the saved one)"))
-        lines.append("When: " + AutomationTriggerText.sentence(kind: args.triggerKind, specJSON: specJSON))
+        whenLine = AutomationTriggerText.sentence(kind: args.triggerKind, specJSON: specJSON)
+        lines.append("When: " + whenLine)
         lines += args.permissions.map { permission in
             let line = "\(permission) — \(AutomationCardPresentation.permissionLine(permission))"
             return widening.contains(permission) ? "+ \(line)" : line
@@ -146,6 +155,9 @@ package struct SaveAutomationCardModel {
         newRecipeText = args.isNew ? args.recipeText : nil
         appliedNote = args.isNew ? Self.appliedNewNote : Self.appliedEditNote
         workbenchID = args.workbenchID
+        permissions = args.permissions
+        path = args.path
+        isNew = args.isNew
     }
 
     /// "For: Personal" / "For: workbench <name>" (`#<id>` when the name is

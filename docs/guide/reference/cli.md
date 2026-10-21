@@ -12,7 +12,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 | `watchtower version` | Version |
 | `watchtower workspace init` | Create the local workspace (data directory and database) |
 | `watchtower db migrate` | Apply database migrations |
-| `watchtower db compact` | Shrink the database file after an update freed space (the app does this at launch). `--check` only reports; `--if-due` compacts only when due; refuses while the daemon runs or disk is short unless `--force` |
+| `watchtower db compact` | Shrink the database file after an update freed space, first finishing a pending search index rebuild (the app does this at launch). `--check` only reports; `--if-due` compacts only when due; refuses while the daemon runs or disk is short (twice the file's size for compacting, 64 MiB for the rebuild) unless `--force` |
 | `watchtower backfill status` | Progress of the [history backfill](../concepts/history-backfill.md) per source |
 | `watchtower features list\|enable\|disable <id>` | [Feature switches](../concepts/features-on-and-off.md) |
 | `watchtower config` | Read and change configuration |
@@ -26,6 +26,7 @@ The `watchtower` binary does everything the app does and a bit more. Add `--help
 | `watchtower imap`, `outlook` | Other mailboxes |
 | `watchtower calendar`, `caldav` | Calendar events and CalDAV/ICS feeds |
 | `watchtower jira`, `linear`, `confluence` | Trackers and Confluence spaces |
+| `watchtower accounts purges` | Scheduled and finished deletions of a revoked or unreached account's data, newest first; `--json` for scripts. See [Revoked access](../concepts/revoked-access.md) |
 | `watchtower connections` | [Quick Connections](../features/quick-connections.md); `connections import` brings in your codex and Claude Code MCP servers |
 
 Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the others with `list`; `rename <id> <name>` exists on Slack, Jira, Google, IMAP, Outlook and CalDAV; `remove` exists on most (Outlook uses `logout`); `enable` / `disable` exist on Slack, Jira and Linear but not on Google, IMAP or CalDAV. Run `--help` on the group. See [Sources and accounts](../concepts/sources-and-accounts.md).
@@ -52,12 +53,13 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 | Command | What it does |
 |---|---|
 | `watchtower automations` | [Automations](../features/automations.md): list, validate, run, enable, templates |
+| `watchtower automations reply --output <id> --action <n>` | An Inbox card's Reply press: records it and queues one run; [Buttons on automation cards](../features/automations-inbox-buttons.md) |
 | `watchtower actions` | Proposed assistant actions: list, approve, reject, tool trust |
 | `watchtower reaction-commands` | Slack emoji reactions that drive the assistant |
 
 ### Why the app asks you to confirm a command
 
-Some commands are yours alone: `actions approve` and `apply`, `actions trust … execute`, `automations confirm`, `enable`, `delete` and `auto … on`, review Undo and lessons, and the ask guard and finish check of `workbench methodology`. Run one from a terminal and Watchtower shows a **Confirm in Watchtower** window with the whole command and what it changes (the action's args, the recipe, the hunk). The command waits up to 100 seconds; **Confirm** turns on after a second, and **Deny**, Return and Escape refuse it.
+Some commands are yours alone: `actions approve` and `apply`, `actions trust … execute`, `automations confirm`, `enable`, `delete`, `reply` and `auto … on`, review Undo and lessons, and the ask guard and finish check of `workbench methodology`. Run one from a terminal and Watchtower shows a **Confirm in Watchtower** window with the whole command and what it changes (the action's args, the recipe, the hunk). The command waits up to 100 seconds; **Confirm** turns on after a second, and **Deny**, Return and Escape refuse it.
 
 - The buttons in the app never ask: the app confirms its own commands.
 - With the app closed, the command is refused with **open Watchtower to confirm this**.

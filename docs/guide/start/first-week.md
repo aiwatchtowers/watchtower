@@ -82,8 +82,8 @@ Details: [Workbench](../features/workbench/README.md).
 
 Once you do something weekly, let the daemon do it.
 
-- **Try:** open **Automations**, click **+ New**, choose **Describe in words** and ask for a weekly summary of something you check by hand.
-- **See:** a draft you can **Dry run**, which writes nothing, then a confirmation sheet. Every run has a token and time budget.
+- **Try:** open **Automations**, click **+**, pick **Personal**, choose **Describe it in words** and ask for a weekly summary of something you check by hand.
+- **See:** a draft you can **Dry Run**, which writes nothing, then a column listing everything saving would confirm. Every run has a token and time budget.
 - **Needs:** the daemon running and your confirmation; a recipe never runs before it.
 
 Details: [Automations](../features/automations.md).

@@ -118,6 +118,8 @@ class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
             }
         case "track", "track_update", "task_overdue", "target_extract", "daily_summary", "update", "agent_action", "plan_usage":
             routeNavigation(userInfo["type"] as? String, appState: appState)
+        case "account_purge":
+            appState?.openAccountConnection(source: userInfo["source"] as? String ?? "")
         case "voice_label":
             if let id = userInfo["transcriptID"] as? Int64 ?? (userInfo["transcriptID"] as? NSNumber)?.int64Value {
                 await appState?.voiceRegistryCenter.open(.queue(transcriptID: id))

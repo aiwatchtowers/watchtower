@@ -51,7 +51,7 @@ func TestDaemon_RunSyncSamplesWALOncePerCycle(t *testing.T) {
 	d := newQuietDaemon(t)
 	d.SetDB(database)
 
-	d.runSync(context.Background())
+	d.runSync(context.Background(), context.Background())
 	wal := readLockEvents(t, path, lockmetrics.KindWAL)
 	require.Len(t, wal, 1, "one wal event per cycle")
 	assert.GreaterOrEqual(t, wal[0].WALBytes, int64(0))
@@ -60,12 +60,12 @@ func TestDaemon_RunSyncSamplesWALOncePerCycle(t *testing.T) {
 	assert.Equal(t, database.Stats().MaxOpenConnections, d.lockStats.MaxOpenConnections,
 		"the cycle keeps the pool stats for the next delta")
 
-	d.runSync(context.Background())
+	d.runSync(context.Background(), context.Background())
 	assert.Len(t, readLockEvents(t, path, lockmetrics.KindWAL), 2, "the next cycle samples again")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	d.runSync(ctx)
+	d.runSync(ctx, ctx)
 	assert.Len(t, readLockEvents(t, path, lockmetrics.KindWAL), 2, "a cancelled cycle takes no sample")
 }
 

@@ -30,6 +30,9 @@ const (
 	TriggerEvent    = "event"
 	TriggerManual   = "manual"
 	TriggerDryRun   = "dry_run"
+	// TriggerReply is one owner press of an Inbox card's Reply button
+	// (00149): never coalesced with another run; event_json is a ReplyPayload.
+	TriggerReply = "reply"
 )
 
 // Waiting reasons (automation_runs.waiting_reason).
@@ -305,15 +308,17 @@ func enqueueRunTx(tx *sql.Tx, r EnqueueRequest) (int64, bool, error) {
 		}
 	}
 	var id int64
-	err := tx.QueryRow(`SELECT id FROM automation_runs WHERE automation_id = ? AND trigger = ? AND status = 'queued'`,
-		r.AutomationID, r.Trigger).Scan(&id)
-	if err == nil {
-		return id, true, nil
+	if r.Trigger != TriggerReply { // one press = one run
+		err := tx.QueryRow(`SELECT id FROM automation_runs WHERE automation_id = ? AND trigger = ? AND status = 'queued'`,
+			r.AutomationID, r.Trigger).Scan(&id)
+		if err == nil {
+			return id, true, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return 0, false, fmt.Errorf("looking up a queued %s run of automation %d: %w", r.Trigger, r.AutomationID, err)
+		}
 	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return 0, false, fmt.Errorf("looking up a queued %s run of automation %d: %w", r.Trigger, r.AutomationID, err)
-	}
-	err = tx.QueryRow(`INSERT INTO automation_runs
+	err := tx.QueryRow(`INSERT INTO automation_runs
 		(automation_id, trigger, scheduled_for, event_cycle, event_json, rerun_of, status, queued_at)
 		VALUES (?, ?, ?, ?, ?, ?, 'queued', ?) RETURNING id`,
 		r.AutomationID, r.Trigger, nullAutomationTime(r.ScheduledFor), nullRunText(r.EventCycle), r.EventJSON,
@@ -801,8 +806,18 @@ func commitRunTx(tx *sql.Tx, automationID, runID int64, stamp string, c *RunComm
 		if priority == "" {
 			priority = "medium"
 		}
-		if _, err := tx.Exec(`INSERT INTO automation_outputs (automation_id, run_id, kind, title, body, priority, created_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?)`, automationID, runID, o.Kind, o.Title, o.Body, priority, stamp); err != nil {
+		actions := o.Actions
+		if actions == nil {
+			actions = []InboxAction{}
+		}
+		actionsJSON, err := json.Marshal(actions)
+		if err != nil {
+			return fmt.Errorf("committing output %d of automation run %d: encoding actions: %w", i, runID, err)
+		}
+		if _, err := tx.Exec(`INSERT INTO automation_outputs
+			(automation_id, run_id, kind, title, body, priority, created_at, link, actions_json)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, automationID, runID, o.Kind, o.Title, o.Body, priority, stamp,
+			o.Link, string(actionsJSON)); err != nil {
 			return fmt.Errorf("committing output %d of automation run %d: %w", i, runID, err)
 		}
 	}
@@ -1101,6 +1116,43 @@ type AutomationOutput struct {
 	Priority                string // '' stores medium
 	CreatedAt               time.Time
 	ReadAt, DismissedAt     *time.Time
+	// Link is the card's source link ('' = none) and Actions its buttons
+	// (00149); never nil when read back.
+	Link    string
+	Actions []InboxAction
+	// DoneAt is the Desktop's Done; PressedAction/PressedRunID/PressedAt
+	// record the one Reply press (`automations reply`): nil/0 until then.
+	DoneAt        *time.Time
+	PressedAction *int
+	PressedRunID  int64
+	PressedAt     *time.Time
+}
+
+// Inbox card action kinds (automation_outputs.actions_json).
+const (
+	InboxActionLink  = "link"
+	InboxActionChat  = "chat"
+	InboxActionAgent = "agent"
+	InboxActionReply = "reply"
+)
+
+// InboxAction is one button of an Inbox card. Kind names the one payload
+// field set: Open (link), Chat (chat), Agent (agent) or Reply + Data (reply).
+type InboxAction struct {
+	Label   string            `json:"label"`
+	Kind    string            `json:"kind"`
+	Open    string            `json:"open,omitempty"`
+	Chat    string            `json:"chat,omitempty"`
+	Agent   *InboxAgentAction `json:"agent,omitempty"`
+	Reply   string            `json:"reply,omitempty"`
+	Data    json.RawMessage   `json:"data,omitempty"`
+	Primary bool              `json:"primary,omitempty"`
+}
+
+// InboxAgentAction is an agent action's task and its optional workbench.
+type InboxAgentAction struct {
+	Task      string          `json:"task"`
+	Workbench json.RawMessage `json:"workbench,omitempty"`
 }
 
 // ListAutomationOutputs returns up to limit outputs of kind (” = every
@@ -1132,6 +1184,27 @@ func (db *DB) ListAutomationOutputs(kind string, limit int) ([]AutomationOutput,
 	return out, nil
 }
 
+// GetAutomationOutput returns one output by id; a miss wraps
+// ErrOutputNotFound.
+func (db *DB) GetAutomationOutput(id int64) (*AutomationOutput, error) {
+	rows, err := db.Query(`SELECT `+automationOutputCols+` FROM automation_outputs WHERE id = ?`, id)
+	if err != nil {
+		return nil, fmt.Errorf("reading automation output %d: %w", id, err)
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("reading automation output %d: %w", id, err)
+		}
+		return nil, fmt.Errorf("automation output %d: %w", id, ErrOutputNotFound)
+	}
+	o, err := scanAutomationOutput(rows)
+	if err != nil {
+		return nil, err
+	}
+	return &o, nil
+}
+
 // NamedAutomationOutput is an automation output with the name of the
 // automation that wrote it (its slug when the recipe has no name).
 type NamedAutomationOutput struct {
@@ -1145,7 +1218,8 @@ type NamedAutomationOutput struct {
 // (so a caller can say how many it left out). Never nil.
 func (db *DB) ListAutomationOutputsSince(kind string, since time.Time, limit, maxBodyChars int) ([]NamedAutomationOutput, int, error) {
 	rows, err := db.Query(`SELECT o.id, o.automation_id, o.run_id, o.kind, o.title, substr(o.body, 1, ?), o.priority,
-			o.created_at, o.read_at, o.dismissed_at, COALESCE(NULLIF(a.name, ''), a.slug), COUNT(*) OVER ()
+			o.created_at, o.read_at, o.dismissed_at, o.link, o.actions_json, o.done_at, o.pressed_action,
+			o.pressed_run_id, o.pressed_at, COALESCE(NULLIF(a.name, ''), a.slug), COUNT(*) OVER ()
 		FROM automation_outputs o JOIN automations a ON a.id = o.automation_id
 		WHERE o.kind = ? AND o.created_at >= ? ORDER BY o.created_at DESC, o.id DESC LIMIT ?`,
 		maxBodyChars, kind, formatAutomationTime(since), limit)
@@ -1168,18 +1242,20 @@ func (db *DB) ListAutomationOutputsSince(kind string, since time.Time, limit, ma
 	return out, total, nil
 }
 
-const automationOutputCols = `id, automation_id, run_id, kind, title, body, priority, created_at, read_at, dismissed_at`
+const automationOutputCols = `id, automation_id, run_id, kind, title, body, priority, created_at, read_at, dismissed_at,
+	link, actions_json, done_at, pressed_action, pressed_run_id, pressed_at`
 
 // scanAutomationOutput scans one automationOutputCols row; extra receives any
 // columns the query selects after them.
 func scanAutomationOutput(rows *sql.Rows, extra ...any) (AutomationOutput, error) {
 	var (
-		o               AutomationOutput
-		created         string
-		read, dismissed sql.NullString
+		o                           AutomationOutput
+		created, actions            string
+		read, dismissed, done, prAt sql.NullString
+		prAction, prRun             sql.NullInt64
 	)
 	dest := append([]any{&o.ID, &o.AutomationID, &o.RunID, &o.Kind, &o.Title, &o.Body, &o.Priority, &created,
-		&read, &dismissed}, extra...)
+		&read, &dismissed, &o.Link, &actions, &done, &prAction, &prRun, &prAt}, extra...)
 	if err := rows.Scan(dest...); err != nil {
 		return o, fmt.Errorf("scanning automation output: %w", err)
 	}
@@ -1192,6 +1268,20 @@ func scanAutomationOutput(rows *sql.Rows, extra ...any) (AutomationOutput, error
 	}
 	if o.DismissedAt, err = parseAutomationTime(dismissed, "dismissed_at"); err != nil {
 		return o, err
+	}
+	if o.DoneAt, err = parseAutomationTime(done, "done_at"); err != nil {
+		return o, err
+	}
+	if o.PressedAt, err = parseAutomationTime(prAt, "pressed_at"); err != nil {
+		return o, err
+	}
+	if prAction.Valid {
+		n := int(prAction.Int64)
+		o.PressedAction = &n
+	}
+	o.PressedRunID = prRun.Int64
+	if o.Actions, err = decodeInboxActions(actions); err != nil {
+		return o, fmt.Errorf("automation output %d: %w", o.ID, err)
 	}
 	return o, nil
 }

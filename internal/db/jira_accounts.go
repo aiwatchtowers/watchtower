@@ -148,15 +148,10 @@ func (db *DB) SetJiraAccountEnabled(id int64, enabled bool) error {
 
 // SetJiraAccountAuthState updates status/error telemetry for accountID.
 // status is one of "ok", "error", "revoked", "removed".
+// It also keeps the access facts (revoked_at, access_ok_at) and never writes
+// over a purged row except with "ok", which re-enables it (account_access.go).
 func (db *DB) SetJiraAccountAuthState(id int64, status, errMsg string) error {
-	res, err := db.Exec(`UPDATE jira_accounts SET status = ?, error = ? WHERE id = ?`, status, errMsg, id)
-	if err != nil {
-		return fmt.Errorf("setting auth state for jira account %d: %w", id, err)
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("setting auth state: no jira_accounts row %d", id)
-	}
-	return nil
+	return db.setAccountAuthState("jira_accounts", reenableOnLoginSQL, id, status, errMsg)
 }
 
 // SetJiraAccountRemoved marks accountID as removed and disables it — a

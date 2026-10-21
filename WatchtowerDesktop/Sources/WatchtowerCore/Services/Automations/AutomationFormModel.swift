@@ -121,8 +121,8 @@ package final class AutomationFormModel {
     package var recipeUnparsed: Bool { !detail.parseError.isEmpty }
 
     /// Why the text as it is now does not parse ("" once it does): starts as
-    /// the loaded `parse_error`, re-checked by
-    /// `AutomationEditorCenter.recheckParse` as the owner fixes the recipe.
+    /// the loaded `parse_error`, updated by each `AutomationEditorCenter.check`
+    /// as the owner fixes the recipe.
     /// The form stays paused either way: its fields never described the file.
     package var currentParseError: String
 
