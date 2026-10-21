@@ -2,12 +2,12 @@
 A recipe is one Markdown file you can read in full. This page covers its parts and the five ready-made templates. How confirmation, budgets and runs work is on [Automations](automations.md).
 
 ## Why use it
-A template gives you a working recipe to adapt instead of a blank page. Knowing the parts tells you what you are confirming.
+A template gives you a working recipe to adapt; the parts tell you what you are confirming.
 
 ## How it works
 ### The settings block
 The top of the file holds the settings:
-- **Trigger**, exactly one of: a `schedule` (five-field cron, local time), an `event` (see [Event triggers](#event-triggers)), a `button` (with a label of 1 to 24 characters, and optionally `confirm`), or `manual: true` (only when you run it). The edit form calls the button option **When I press a button**. It makes the recipe appear under its name in **Run Automation…** (**⌃⌘R**) and in the tray's **Run automation** submenu, and a workbench recipe is also an item in its workbench's ⚡ menu; with `confirm` it asks before running.
+- **Trigger**, exactly one of: a `schedule` (five-field cron, local time), an `event` (see [Event triggers](#event-triggers)), a `button` (with a label of 1 to 24 characters, and optionally `confirm`), or `manual: true` (only when you run it). **Form** calls the button option **When I press a button**. It makes the recipe appear under its name in **Run Automation…** (**⌃⌘R**) and in the tray's **Run automation** submenu, and a workbench recipe is also an item in its workbench's ⚡ menu; with `confirm` it asks before running.
 - **Permissions**, such as `gmail:read@work`, `jira:read@PAY`, `llm:light`, `llm:strong`, `tool:create_jira_issue`. Reading all Slack messages or all calendar events needs `slack:read@*` or `calendar:read@*`. Linear uses team keys: `linear:read@ENG`, `linear:write@ENG`.
 - **Outputs**, any of `inbox`, `briefing`, `report`, `target`, `slack`. Posting to Slack also needs `slack:write@<account>`.
 - **Budget**: tokens (1,000 to 2,000,000) and minutes (1 to 60).
@@ -31,7 +31,7 @@ Every `where` key must match. A value matches regardless of case, either exactly
 
 The reaction event carries the account, the channel id, the message timestamp (`message_ts`) and the emoji name without colons (`emoji: alarm_clock`), never the message. To read the message, the recipe needs `slack:read@*` or `tool:list_messages`. It fires only for messages posted after the recipe first sees your account: a reaction on an older message never fires, even a new one, and only once per message and emoji: removing and adding a reaction again does nothing. It needs **Reaction commands** on (Settings, Features). If Watchtower stops between noticing a reaction and starting the run, that reaction is lost, not replayed.
 
-A recipe runs at most once per sync cycle, however many events it matched; it gets up to 100 events, and `trigger.truncated` is true when there were more. A source's first sync, its history backfill and your own Slack messages never fire a trigger. In **Edit**, **On an event** picks the type; write a `where` filter in the recipe text, or ask **Change in words**.
+A recipe runs at most once per sync cycle, however many events it matched; it gets up to 100 events, and `trigger.truncated` is true when there were more. A source's first sync, its history backfill and your own Slack messages never fire one. In **Form**, **On an event** picks the type; write a `where` filter in the recipe text, or ask the assistant in **Chat**.
 
 In the Automations list, an event recipe's line names its event and filter, then when it last ran ("no runs yet" before the first), or a running or failed run's state instead.
 
@@ -39,15 +39,13 @@ In the Automations list, an event recipe's line names its event and filter, then
 Personal recipes sit in the `automations` folder inside Watchtower's workspace folder. The file name is the recipe's id: lower-case letters, digits and dashes. Shortcuts (symlinks) are never read; put the real file there.
 
 ### Workbench recipes
-A recipe can also live in a Workbench folder, in `.watchtower/automations/`, so it travels with the repository. There it can do what a personal one can't: run an exact command listed in its settings in the folder, open an agent session there, or ask you something. Its card says "workbench" where a personal one says "personal"; **Edit**, **Change in words** and confirming work the same, and the new version is saved in the workbench folder.
+A recipe can also live in a Workbench folder, in `.watchtower/automations/`, so it travels with the repository. There it can do what a personal one can't: run an exact command listed in its settings in the folder, open an agent session there, or ask you something. Its card says "workbench" where a personal one says "personal"; **Edit** and confirming work the same, and the new version is saved in the workbench folder.
 
-Because the file belongs to the repository, it can arrive with a `git pull` or be changed by someone else. Watchtower notices when you open the workbench, and as the file changes once the workbench's files have been shown. Such a recipe shows **Needs your confirmation** on its card and in the workbench's ⚡ menu, and does not run until you confirm it.
+Because the file belongs to the repository, it can arrive with a `git pull` or be changed by someone else. Watchtower notices when you open the workbench and as the file changes. Such a recipe shows **Needs your confirmation** on its card and in the workbench's ⚡ menu, and does not run until you confirm it.
 
 ## Using it
-1. In **Automations**, click **Templates** (or **Browse templates** on an empty tab).
-2. Pick a card and click **Use template**. For a workbench template with several workbenches, pick the workbench from its menu. The copy arrives unconfirmed and disabled.
-3. **Dry run**, then **Review…**, then **Confirm and enable**.
-
+1. In **Automations**, click **+**, pick the scope, then a template under **How do you want to start?** and **Continue**.
+2. The panel shows the template's fields, if it has any, and the recipe it makes, checked but not written. **Save and Turn On** installs, confirms and turns it on. **Adjust in Chat** opens the recipe in the editor chat instead; a template with several recipes has no such button, so install it, then edit each.
 ### The templates
 | Template | Where | When | What it does |
 |---|---|---|---|
@@ -65,7 +63,6 @@ Because the file belongs to the repository, it can arrive with a `git pull` or b
 - **"No templates yet."** The command-line tool is older than the app; update Watchtower.
 - **Install refused.** A recipe with that name already exists (a removed one counts), or a symlink is in the way. Nothing is left half-installed.
 - **The Jira state report won't install.** It needs a synced Jira project with an open issue assigned to you or reported by you. Connect Jira, let it sync, and try again.
-- **The form says the recipe can't be read.** The file has an error, named next to it. The form's controls stay off so they never overwrite the file's settings; click **Open in editor** and fix the recipe there. The note turns to "The recipe reads now" once the fix parses; then save.
 - **A workbench template's button is off.** You have no workbench yet; add one first.
 
 ## Related
