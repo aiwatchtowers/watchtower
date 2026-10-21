@@ -116,7 +116,7 @@ final class WorkchatModel {
             text, key: .workchat(id), sessionID: sessionID,
             gate: { [weak self, weak control] in
                 // Read at each try: a held line goes once the kind is known.
-                Self.gate(self?.holdsUntilIdle ?? true ? control?.lineCheck($0) : control?.workchatLineCheck($0))
+                Self.gate((self?.holdsUntilIdle ?? true) ? control?.lineCheck($0) : control?.workchatLineCheck($0))
             },
             onHeldEvent: { [weak self] event in
                 guard case let .tried(delivery) = event else { return }
