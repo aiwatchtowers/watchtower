@@ -55,14 +55,16 @@ final class SessionControl {
         return .go
     }
 
-    /// The Workchat's check (#711): `lineCheck` minus the idle requirement,
-    /// since Claude Code queues a line typed mid-turn and reads it at its
-    /// next step, as in the terminal. A permission prompt, a line just
-    /// submitted and text in the prompt still hold it. The phone keeps
-    /// `lineCheck` (PROJ-16).
+    /// The Workchat's check (#711): `lineCheck`, except that an agent that
+    /// works (Working, Agents working) does not hold the line, since Claude
+    /// Code queues a line typed mid-turn and reads it at its next step, as
+    /// in the terminal. A session not live, a run with no hook state yet, a
+    /// permission prompt, a line just submitted and text in the prompt
+    /// still hold it. The phone keeps `lineCheck` (PROJ-16).
     func workchatLineCheck(_ sessionID: Int64) -> LineCheck {
         guard let current = status(sessionID) else { return .sessionGone }
         if current.state.kind == .needsApproval { return .hold(.needsApproval) }
+        guard Self.isIdle(current) || Self.isWorking(current) else { return .hold(.agentBusy) }
         if justSubmitted(sessionID, status: current) { return .hold(.agentBusy) }
         if terminalCenter.promptHoldsText(sessionID) { return .hold(.promptHasText) }
         return .go
