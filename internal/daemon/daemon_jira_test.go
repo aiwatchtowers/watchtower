@@ -216,6 +216,7 @@ type stubJiraSyncer struct {
 	resolveCalls int
 	firstSync    time.Time
 	noRequest    bool // a nil-error pass that made no request (no boards selected)
+	reachedErr   bool // the pass reached Atlassian, then failed (err set)
 }
 
 func (s *stubJiraSyncer) Sync(context.Context) (int, error) { return s.issues, s.err }
@@ -228,7 +229,9 @@ func (s *stubJiraSyncer) BoardAnalyzerUsage() (int, int, int) {
 	return s.inTok, s.outTok, s.apiTok
 }
 func (s *stubJiraSyncer) FirstSyncFrom() (time.Time, bool) { return s.firstSync, !s.firstSync.IsZero() }
-func (s *stubJiraSyncer) ReachedSource() bool              { return s.err == nil && !s.noRequest }
+func (s *stubJiraSyncer) ReachedSource() bool {
+	return (s.err == nil && !s.noRequest) || s.reachedErr
+}
 
 // revokedErr is shaped like the error client.do returns for a 401 that survives
 // a token refresh.
@@ -489,4 +492,29 @@ func TestPhaseJiraSyncStampsAccessOnlyWhenReached(t *testing.T) {
 	status, okAt = readAccessOKAt(t, database, "jira_accounts", idle)
 	assert.Equal(t, "error", status)
 	assert.Empty(t, okAt, "a pass with no request proves no access")
+}
+
+// A pass that reached Atlassian and then failed elsewhere (one board's
+// history, a later request) still proved access: access_ok_at is stamped.
+// A revoked grant is the one error that never stamps (review #601).
+func TestPhaseJiraSyncStampsAccessWhenReachedDespiteError(t *testing.T) {
+	d, database, _ := newJiraTestDaemon(t)
+	partial, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+	require.NoError(t, err)
+	revoked, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c2"})
+	require.NoError(t, err)
+	_, err = database.Exec(`UPDATE jira_accounts SET access_ok_at = ''`)
+	require.NoError(t, err)
+
+	d.jiraSyncers = []jiraAccountSyncer{
+		&stubJiraSyncer{accountID: partial, err: errors.New("history: 500"), reachedErr: true},
+		&stubJiraSyncer{accountID: revoked, err: revokedErr(), reachedErr: true},
+	}
+	d.phaseJiraSync(context.Background())
+
+	_, okAt := readAccessOKAt(t, database, "jira_accounts", partial)
+	assert.NotEmpty(t, okAt, "a pass that reached the source stamps access_ok_at whatever failed after")
+	status, okAt := readAccessOKAt(t, database, "jira_accounts", revoked)
+	assert.Equal(t, "revoked", status)
+	assert.Empty(t, okAt, "a revoked grant never stamps access")
 }

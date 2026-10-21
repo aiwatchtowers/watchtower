@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -81,25 +82,81 @@ func (s *purgeSteps) inbox(scope string, args ...any) {
 }
 
 // knowledge adds the steps for the knowledge-index documents under one key
-// prefix: the documents (kb_chunks cascade, kb_fts follows kb_chunks_ad),
-// pending kb_dirty marks and the doc_links those documents made. Documents
-// are deleted directly: messages' kb_dirty trigger fires on UPDATE only
-// (00139), so a deleted message would leave its document behind.
-func (s *purgeSteps) knowledge(prefix string) {
+// prefix of one KB source kind: the documents (kb_chunks cascade, kb_fts
+// follows kb_chunks_ad), pending kb_dirty marks and the doc_links those
+// documents made. Each is a primary-key range (kb_dirty is keyed by
+// (source, key), doc_links by (from_kind, from_ref, …)), never a scan inside
+// the write transaction. Documents are deleted directly: messages' kb_dirty
+// trigger fires on UPDATE only (00139), so a deleted message would leave its
+// document behind.
+func (s *purgeSteps) knowledge(kind, prefix string) {
 	lo, hi := prefixRange(prefix)
 	s.del("knowledge documents "+prefix, "kb_documents", `id >= ? AND id < ?`, lo, hi)
-	s.del("knowledge marks "+prefix, "kb_dirty", `key >= ? AND key < ?`, lo, hi)
-	s.del("document links "+prefix, "doc_links", `from_ref >= ? AND from_ref < ?`, lo, hi)
+	s.del("knowledge marks "+prefix, "kb_dirty", `source = ? AND key >= ? AND key < ?`, kind, lo, hi)
+	s.del("document links "+prefix, "doc_links", `from_kind = ? AND from_ref >= ? AND from_ref < ?`, kind, lo, hi)
 }
 
 // streamDigests adds the steps for one account's stream digests of kind
-// (gmail | jira | linear) and their knowledge documents.
-func (s *purgeSteps) streamDigests(kind string, accountID int64) {
-	s.del("stream digest documents", "kb_documents", `EXISTS (SELECT 1 FROM stream_digests sd
-		WHERE sd.source = ? AND sd.account_id = ?
-		  AND kb_documents.id >= 'stream_digest:' || sd.id || ':' AND kb_documents.id < 'stream_digest:' || sd.id || ';')`,
-		kind, accountID)
+// (gmail | jira | linear): each digest's knowledge documents as a key range
+// (ids read by PurgeSteps outside any transaction), then the digests.
+func (s *purgeSteps) streamDigests(kind string, accountID int64, ids []int64) {
+	for _, id := range ids {
+		lo, hi := prefixRange(fmt.Sprintf("stream_digest:%d:", id))
+		s.del("stream digest documents", "kb_documents", `id >= ? AND id < ?`, lo, hi)
+	}
 	s.del("stream digests", "stream_digests", `source = ? AND account_id = ?`, kind, accountID)
+}
+
+// extSpace is one Confluence space (ext_sources row) of a Jira account.
+type extSpace struct {
+	provider string
+	id       int64
+}
+
+// purgeIDs reads the int64 column of query (one column, read only).
+func (db *DB) purgeIDs(query string, args ...any) ([]int64, error) {
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+func (db *DB) streamDigestIDs(kind string, accountID int64) ([]int64, error) {
+	ids, err := db.purgeIDs(`SELECT id FROM stream_digests WHERE source = ? AND account_id = ? ORDER BY id`, kind, accountID)
+	if err != nil {
+		return nil, fmt.Errorf("purge steps: reading %s stream digests of account %d: %w", kind, accountID, err)
+	}
+	return ids, nil
+}
+
+func (db *DB) extSpaces(jiraAccountID int64) ([]extSpace, error) {
+	rows, err := db.Query(`SELECT provider, id FROM ext_sources WHERE jira_account_id = ? ORDER BY id`, jiraAccountID)
+	if err != nil {
+		return nil, fmt.Errorf("purge steps: reading the Confluence spaces of Jira account %d: %w", jiraAccountID, err)
+	}
+	defer rows.Close()
+	var out []extSpace
+	for rows.Next() {
+		var sp extSpace
+		if err := rows.Scan(&sp.provider, &sp.id); err != nil {
+			return nil, fmt.Errorf("purge steps: reading the Confluence spaces of Jira account %d: %w", jiraAccountID, err)
+		}
+		out = append(out, sp)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("purge steps: reading the Confluence spaces of Jira account %d: %w", jiraAccountID, err)
+	}
+	return out, nil
 }
 
 // PurgeSteps returns the ordered step list that deletes everything
@@ -108,18 +165,37 @@ func (s *purgeSteps) streamDigests(kind string, accountID int64) {
 // tracks and people cards that belong to the account alone. AI text that mixes
 // sources (briefings, recaps, ideas, memory, chats, automation outputs,
 // transcripts) is kept, and so are cross-account digests and tracks.
-// Dependents come before the rows their predicates read.
-func PurgeSteps(source string, accountID int64) ([]PurgeStep, error) {
+// Dependents come before the rows their predicates read. The ids the
+// knowledge steps need (stream digests, Confluence spaces) are read here,
+// outside any write transaction; a resumed purge reads them again, and rows
+// an earlier run already deleted simply have no steps any more.
+func (db *DB) PurgeSteps(source string, accountID int64) ([]PurgeStep, error) {
 	var s purgeSteps
 	switch source {
 	case "slack":
 		slackSteps(&s, accountID)
 	case "google":
-		googleSteps(&s, accountID)
+		digests, err := db.streamDigestIDs("gmail", accountID)
+		if err != nil {
+			return nil, err
+		}
+		googleSteps(&s, accountID, digests)
 	case "jira":
-		jiraSteps(&s, accountID)
+		digests, err := db.streamDigestIDs("jira", accountID)
+		if err != nil {
+			return nil, err
+		}
+		spaces, err := db.extSpaces(accountID)
+		if err != nil {
+			return nil, err
+		}
+		jiraSteps(&s, accountID, digests, spaces)
 	case "linear":
-		linearSteps(&s, accountID)
+		digests, err := db.streamDigestIDs("linear", accountID)
+		if err != nil {
+			return nil, err
+		}
+		linearSteps(&s, accountID, digests)
 	default:
 		return nil, fmt.Errorf("purge steps: unknown source %q", source)
 	}
@@ -181,12 +257,12 @@ func slackSteps(s *purgeSteps, id int64) {
 	s.del("users", "users", inRange("id"), lo, hi)
 	s.del("channels", "channels", inRange("id"), lo, hi)
 
-	s.knowledge(fmt.Sprintf("slack:thread:%d:", id))
-	s.knowledge(fmt.Sprintf("slack:day:%d:", id))
+	s.knowledge("slack", fmt.Sprintf("slack:thread:%d:", id))
+	s.knowledge("slack", fmt.Sprintf("slack:day:%d:", id))
 	s.del("history backfill", "history_backfill", `source_kind = 'slack' AND account_id = ?`, id)
 }
 
-func googleSteps(s *purgeSteps, id int64) {
+func googleSteps(s *purgeSteps, id int64, digests []int64) {
 	gmailPrefix := GmailChannelPrefix(id) + ":"
 	gLo, gHi := prefixRange(gmailPrefix)
 
@@ -214,12 +290,12 @@ func googleSteps(s *purgeSteps, id int64) {
 		Args: []any{id},
 	})
 
-	s.streamDigests("gmail", id)
-	s.knowledge(gmailPrefix)
+	s.streamDigests("gmail", id, digests)
+	s.knowledge("gmail", gmailPrefix)
 	s.del("history backfill", "history_backfill", `source_kind = 'gmail' AND account_id = ?`, id)
 }
 
-func jiraSteps(s *purgeSteps, id int64) {
+func jiraSteps(s *purgeSteps, id int64, digests []int64, spaces []extSpace) {
 	// Jira inbox items carry the issue key only: an item is the account's
 	// when its key is one of the account's issues and of no other account's.
 	// Before the issues go.
@@ -236,25 +312,22 @@ func jiraSteps(s *purgeSteps, id int64) {
 	}
 
 	// The account's Confluence spaces: documents and comments, their
-	// knowledge documents and links, then the source rows themselves.
+	// knowledge documents, marks and links (a key range per space), then the
+	// source rows themselves.
 	extOfAccount := `source_id IN (SELECT id FROM ext_sources WHERE jira_account_id = ?)`
 	s.del("confluence comments", "ext_comments", extOfAccount, id)
 	s.del("confluence documents", "ext_documents", extOfAccount, id)
-	extRef := func(col string) string {
-		return `EXISTS (SELECT 1 FROM ext_sources es WHERE es.jira_account_id = ?
-			AND ` + col + ` >= es.provider || ':' || es.id || ':' AND ` + col + ` < es.provider || ':' || es.id || ';')`
+	for _, sp := range spaces {
+		s.knowledge(sp.provider, fmt.Sprintf("%s:%d:", sp.provider, sp.id))
 	}
-	s.del("confluence knowledge documents", "kb_documents", extRef("kb_documents.id"), id)
-	s.del("confluence knowledge marks", "kb_dirty", extRef("kb_dirty.key"), id)
-	s.del("confluence document links", "doc_links", extRef("doc_links.from_ref"), id)
 	s.del("confluence spaces", "ext_sources", `jira_account_id = ?`, id)
 
-	s.streamDigests("jira", id)
-	s.knowledge(fmt.Sprintf("jira:%d:", id))
+	s.streamDigests("jira", id, digests)
+	s.knowledge("jira", fmt.Sprintf("jira:%d:", id))
 	s.del("history backfill", "history_backfill", `source_kind = 'jira' AND account_id = ?`, id)
 }
 
-func linearSteps(s *purgeSteps, id int64) {
+func linearSteps(s *purgeSteps, id int64, digests []int64) {
 	s.inbox(`i.trigger_type IN `+linearInboxTriggers+`
 		AND i.channel_id IN (SELECT key FROM linear_issues WHERE account_id = ?)
 		AND i.channel_id NOT IN (SELECT key FROM linear_issues WHERE account_id != ?)`, id, id)
@@ -264,8 +337,8 @@ func linearSteps(s *purgeSteps, id int64) {
 	} {
 		s.del(t, t, `account_id = ?`, id)
 	}
-	s.streamDigests("linear", id)
-	s.knowledge(fmt.Sprintf("linear:%d:", id))
+	s.streamDigests("linear", id, digests)
+	s.knowledge("linear", fmt.Sprintf("linear:%d:", id))
 }
 
 // RunPurgeStep runs one chunk of step — one transaction, one statement, at
@@ -291,70 +364,149 @@ func (db *DB) RunPurgeStep(ctx context.Context, step PurgeStep, limit int) (int6
 	return n, nil
 }
 
-// StartAccountPurge moves a scheduled row to running; a row already running
-// (a resumed purge) is left as it is.
-func (db *DB) StartAccountPurge(id int64) error {
-	if _, err := db.Exec(`UPDATE account_purges SET state = 'running', started_at = `+nowSQL+`
-		WHERE id = ? AND state = 'scheduled'`, id); err != nil {
-		return fmt.Errorf("starting account purge %d: %w", id, err)
+// StartAccountPurge moves a scheduled row to running and reports whether it
+// did: a row cancelled since the caller read it, or already running, is left
+// as it is (false).
+func (db *DB) StartAccountPurge(id int64) (bool, error) {
+	res, err := db.Exec(`UPDATE account_purges SET state = 'running', started_at = `+nowSQL+`
+		WHERE id = ? AND state = 'scheduled'`, id)
+	if err != nil {
+		return false, fmt.Errorf("starting account purge %d: %w", id, err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("starting account purge %d: %w", id, err)
+	}
+	return n > 0, nil
 }
 
-// AddPurgeRows adds n to a purge's deleted-row count.
+// AddPurgeRows adds n to a purge's deleted-row count. Progress resets the
+// failure count: the cap counts failures in a row.
 func (db *DB) AddPurgeRows(id, n int64) error {
-	if _, err := db.Exec(`UPDATE account_purges SET rows_deleted = rows_deleted + ? WHERE id = ?`, n, id); err != nil {
+	if _, err := db.Exec(`UPDATE account_purges SET rows_deleted = rows_deleted + ?, failures = 0 WHERE id = ?`, n, id); err != nil {
 		return fmt.Errorf("counting account purge %d rows: %w", id, err)
 	}
 	return nil
 }
 
-// FailAccountPurge records a chunk failure; the row stays running and the
-// next cycle resumes it.
-func (db *DB) FailAccountPurge(id int64, msg string) error {
-	if _, err := db.Exec(`UPDATE account_purges SET error = ? WHERE id = ?`, msg, id); err != nil {
-		return fmt.Errorf("recording account purge %d failure: %w", id, err)
+// FailAccountPurge records a failure of a running purge. Below maxFailures
+// failures in a row the row stays running and the next cycle resumes it; the
+// maxFailures-th ends it in the terminal state failed (the purge hold is
+// released, the owner sees the error). It reports whether the row failed.
+func (db *DB) FailAccountPurge(id int64, msg string, maxFailures int) (bool, error) {
+	res, err := db.Exec(`UPDATE account_purges SET error = ?, failures = failures + 1,
+		state = CASE WHEN failures + 1 >= ? THEN 'failed' ELSE state END,
+		finished_at = CASE WHEN failures + 1 >= ? THEN `+nowSQL+` ELSE finished_at END
+		WHERE id = ? AND state = 'running'`, msg, maxFailures, maxFailures, id)
+	if err != nil {
+		return false, fmt.Errorf("recording account purge %d failure: %w", id, err)
 	}
-	return nil
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return false, err
+	}
+	var state string
+	if err := db.QueryRow(`SELECT state FROM account_purges WHERE id = ?`, id).Scan(&state); err != nil {
+		return false, fmt.Errorf("recording account purge %d failure: %w", id, err)
+	}
+	return state == "failed", nil
 }
 
-// purgedAccountSQL marks an account row purged and resets its sync clocks,
-// so a later login starts over as a first sync. The row itself stays for
+// resetAccountSQL resets an account row's sync clocks, so its next sync
+// starts over as a first sync. purgedAccountSQL adds the purged status.
+var resetAccountSQL = map[string]string{
+	"slack": `UPDATE slack_accounts SET search_last_date = '', reaction_commands_seeded_at = '',
+		reaction_events_seeded_at = '', roster_synced_at = '', deletion_sweep_day = '' WHERE id = ?`,
+	"google": `UPDATE google_accounts SET gmail_last_internal_date = 0, memory_gmail_last_extracted_ts = 0,
+		ideas_email_floor = 0, deletions_checked_at = '', updated_at = ` + nowSQL + ` WHERE id = ?`,
+	"jira":   `UPDATE jira_accounts SET memory_jira_last_extracted_ts = 0, ideas_jira_floor = '' WHERE id = ?`,
+	"linear": `UPDATE linear_accounts SET memory_last_extracted_ts = 0, ideas_floor = '', moved_watermark = '' WHERE id = ?`,
+}
+
+// purgedAccountSQL marks an account row purged; the row itself stays for
 // history (labels, permalinks).
 var purgedAccountSQL = map[string]string{
-	"slack": `UPDATE slack_accounts SET status = 'purged', error = '', enabled = 0, search_last_date = '',
-		reaction_commands_seeded_at = '', reaction_events_seeded_at = '', roster_synced_at = '', deletion_sweep_day = ''
-		WHERE id = ?`,
-	"google": `UPDATE google_accounts SET status = 'purged', error = '', gmail_enabled = 0, calendar_enabled = 0,
-		gmail_last_internal_date = 0, memory_gmail_last_extracted_ts = 0, ideas_email_floor = 0, deletions_checked_at = '',
-		updated_at = ` + nowSQL + ` WHERE id = ?`,
-	"jira": `UPDATE jira_accounts SET status = 'purged', error = '', enabled = 0,
-		memory_jira_last_extracted_ts = 0, ideas_jira_floor = '' WHERE id = ?`,
-	"linear": `UPDATE linear_accounts SET status = 'purged', error = '', enabled = 0,
-		memory_last_extracted_ts = 0, ideas_floor = '', moved_watermark = '' WHERE id = ?`,
+	"slack":  `UPDATE slack_accounts SET status = 'purged', error = '', enabled = 0 WHERE id = ?`,
+	"google": `UPDATE google_accounts SET status = 'purged', error = '', gmail_enabled = 0, calendar_enabled = 0 WHERE id = ?`,
+	"jira":   `UPDATE jira_accounts SET status = 'purged', error = '', enabled = 0 WHERE id = ?`,
+	"linear": `UPDATE linear_accounts SET status = 'purged', error = '', enabled = 0 WHERE id = ?`,
 }
 
-// FinishAccountPurge closes a purge in one transaction: the ledger row turns
-// done and the account row purged.
-func (db *DB) FinishAccountPurge(id int64, source string, accountID int64) error {
-	accountSQL, ok := purgedAccountSQL[source]
+// accessReturnedSQL (?1 = ledger id) is true when the purged account's
+// access was confirmed at or after the purge started: a Re-login during the
+// run (the sync phases skip a held account, so nothing else stamps it).
+// Both columns are fixed-width RFC 3339 UTC.
+const accessReturnedSQL = `SELECT COALESCE((
+	SELECT a.access_ok_at != '' AND a.access_ok_at >= p.started_at
+	FROM account_purges p JOIN (
+		SELECT 'slack' AS source, id, access_ok_at FROM slack_accounts UNION ALL
+		SELECT 'google', id, access_ok_at FROM google_accounts UNION ALL
+		SELECT 'jira', id, access_ok_at FROM jira_accounts UNION ALL
+		SELECT 'linear', id, access_ok_at FROM linear_accounts
+	) a ON a.source = p.source AND a.id = p.account_id
+	WHERE p.id = ?1), 0)`
+
+// accessReturnedNote is the ledger note of a purge whose account came back
+// during the run.
+const accessReturnedNote = "access came back during the purge: the account was kept and syncs again from the start"
+
+// PurgeAccessReturned reports whether the purge's account proved access
+// after the purge started (see accessReturnedSQL). Read only.
+func (db *DB) PurgeAccessReturned(id int64) (bool, error) {
+	var back bool
+	if err := db.QueryRow(accessReturnedSQL, id).Scan(&back); err != nil {
+		return false, fmt.Errorf("account purge %d: reading access: %w", id, err)
+	}
+	return back, nil
+}
+
+// FinishAccountPurge closes a running purge in one transaction: the ledger
+// row turns done and the account row purged, its sync clocks reset. When the
+// account proved access after the purge started (a Re-login during the run)
+// the account keeps its status and is not disabled — only its clocks are
+// reset, so it syncs again from the start — and the ledger row is done with
+// a note; kept reports that case. A row that is no longer running is an
+// error and changes nothing.
+func (db *DB) FinishAccountPurge(id int64, source string, accountID int64) (kept bool, err error) {
+	resetSQL, ok := resetAccountSQL[source]
 	if !ok {
-		return fmt.Errorf("finishing account purge %d: unknown source %q", id, source)
+		return false, fmt.Errorf("finishing account purge %d: unknown source %q", id, source)
 	}
 	tx, err := db.Begin()
 	if err != nil {
-		return fmt.Errorf("finishing account purge %d: %w", id, err)
+		return false, fmt.Errorf("finishing account purge %d: %w", id, err)
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
-	if _, err := tx.Exec(`UPDATE account_purges SET state = 'done', error = '', finished_at = `+nowSQL+`
-		WHERE id = ?`, id); err != nil {
-		return fmt.Errorf("finishing account purge %d: %w", id, err)
+	if err := tx.QueryRow(accessReturnedSQL, id).Scan(&kept); err != nil {
+		return false, fmt.Errorf("finishing account purge %d: reading access: %w", id, err)
 	}
-	if _, err := tx.Exec(accountSQL, accountID); err != nil {
-		return fmt.Errorf("finishing account purge %d: marking %s account %d purged: %w", id, source, accountID, err)
+	note := ""
+	if kept {
+		note = accessReturnedNote
+	}
+	res, err := tx.Exec(`UPDATE account_purges SET state = 'done', error = ?, failures = 0, finished_at = `+nowSQL+`
+		WHERE id = ? AND state = 'running'`, note, id)
+	if err != nil {
+		return false, fmt.Errorf("finishing account purge %d: %w", id, err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return false, fmt.Errorf("finishing account purge %d: %w", id, err)
+	} else if n == 0 {
+		return false, fmt.Errorf("finishing account purge %d: %w", id, ErrPurgeNotRunning)
+	}
+	if _, err := tx.Exec(resetSQL, accountID); err != nil {
+		return false, fmt.Errorf("finishing account purge %d: resetting %s account %d: %w", id, source, accountID, err)
+	}
+	if !kept {
+		if _, err := tx.Exec(purgedAccountSQL[source], accountID); err != nil {
+			return false, fmt.Errorf("finishing account purge %d: marking %s account %d purged: %w", id, source, accountID, err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("finishing account purge %d: %w", id, err)
+		return false, fmt.Errorf("finishing account purge %d: %w", id, err)
 	}
-	return nil
+	return kept, nil
 }
+
+// ErrPurgeNotRunning is returned by FinishAccountPurge for a ledger row that
+// is no longer running.
+var ErrPurgeNotRunning = errors.New("the purge is no longer running")

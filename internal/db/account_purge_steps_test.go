@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -20,7 +21,7 @@ var purgeKeptTables = map[string]string{
 // drainPurge runs every step of one account purge to completion.
 func drainPurge(t *testing.T, d *DB, source string, id int64, limit int) int64 {
 	t.Helper()
-	steps, err := PurgeSteps(source, id)
+	steps, err := d.PurgeSteps(source, id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,40 +62,79 @@ func mustExecAll(t *testing.T, d *DB, stmts ...string) {
 	}
 }
 
+// accountTableSources names the purge sources whose accounts own rows of an
+// account-scoped table that has no foreign key to tell (an account_id
+// column read together with a source/kind column). A new such table must be
+// added here, or the guard fails.
+var accountTableSources = map[string][]string{
+	"history_backfill":  {"slack", "google", "jira"}, // source_kind slack | gmail | jira (imap is no purge source)
+	"stream_digests":    {"google", "jira", "linear"},
+	"reaction_commands": {"slack"},
+	"reaction_events":   {"slack"},
+	"reminders":         {"slack"},
+}
+
+// slackNamespacedTables hold Slack rows keyed by "<account>:<raw id>"
+// strings, not by an account column the schema scan can see; the Slack
+// steps must cover each.
+var slackNamespacedTables = []string{
+	"messages", "reactions", "files", "inbox_items", "inbox_learned_rules", "digests", "tracks",
+	"user_analyses", "people_cards", "user_interactions", "issue_slack_links", "sync_state",
+	"watch_list", "channel_settings", "users", "channels", "kb_documents", "kb_dirty", "doc_links",
+}
+
+// purgeSourceOf maps an account table to its purge source.
+var purgeSourceOf = map[string]string{
+	"slack_accounts": "slack", "google_accounts": "google", "jira_accounts": "jira", "linear_accounts": "linear",
+}
+
 // TestPurge02_EveryAccountTableCovered is schema-driven: every table with a
-// foreign key to one of the four account tables, or with an account_id
-// column, is purged by a step of some source or named in purgeKeptTables.
-// It fails when a later migration adds an account-scoped table and forgets
-// the purge.
+// foreign key to an account table, or with an account_id column, is purged
+// by a step of the source(s) that own it — the foreign key's account table,
+// else accountTableSources — or named in purgeKeptTables. Slack's
+// namespace-keyed tables are checked against the Slack steps. It fails when
+// a later migration adds an account-scoped table and forgets the purge, or
+// covers it only in another source's steps.
 func TestPurge02_EveryAccountTableCovered(t *testing.T) {
 	d := OpenTestDB(t)
-	covered := map[string]bool{}
+	covered := map[string]map[string]bool{} // source -> table
 	for _, src := range purgeSources {
-		steps, err := PurgeSteps(src, 1)
+		steps, err := d.PurgeSteps(src, 1)
 		if err != nil {
 			t.Fatal(err)
 		}
+		covered[src] = map[string]bool{}
 		for _, st := range steps {
-			covered[st.Table] = true
+			covered[src][st.Table] = true
 		}
 	}
-	rows, err := d.Query(`SELECT DISTINCT m.name FROM sqlite_master m, pragma_foreign_key_list(m.name) p
-		WHERE m.type = 'table' AND p."table" IN ('slack_accounts','google_accounts','jira_accounts','linear_accounts')
-		UNION
-		SELECT DISTINCT m.name FROM sqlite_master m, pragma_table_info(m.name) c
-		WHERE m.type = 'table' AND c.name IN ('account_id', 'jira_account_id')
-		  AND m.name NOT IN ('slack_accounts','google_accounts','jira_accounts','linear_accounts')`)
+	coveredAny := func(table string) bool {
+		for _, src := range purgeSources {
+			if covered[src][table] {
+				return true
+			}
+		}
+		return false
+	}
+	rows, err := d.Query(`SELECT m.name, COALESCE((SELECT group_concat(p."table") FROM pragma_foreign_key_list(m.name) p
+			WHERE p."table" LIKE '%\_accounts' ESCAPE '\'), '')
+		FROM sqlite_master m
+		WHERE m.type = 'table' AND m.name NOT IN ('slack_accounts','google_accounts','jira_accounts','linear_accounts','email_accounts')
+		  AND (EXISTS (SELECT 1 FROM pragma_foreign_key_list(m.name) p WHERE p."table" LIKE '%\_accounts' ESCAPE '\')
+		    OR EXISTS (SELECT 1 FROM pragma_table_info(m.name) c WHERE c.name IN ('account_id', 'jira_account_id')))
+		ORDER BY 1`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
-	var tables []string
+	type scoped struct{ name, fks string }
+	var tables []scoped
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var s scoped
+		if err := rows.Scan(&s.name, &s.fks); err != nil {
 			t.Fatal(err)
 		}
-		tables = append(tables, name)
+		tables = append(tables, s)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
@@ -102,13 +142,35 @@ func TestPurge02_EveryAccountTableCovered(t *testing.T) {
 	if len(tables) < 20 {
 		t.Fatalf("schema scan found only %d account-scoped tables; the query is broken", len(tables))
 	}
-	for _, name := range tables {
-		_, kept := purgeKeptTables[name]
-		switch {
-		case covered[name] && kept:
-			t.Errorf("%s is both purged and listed as kept", name)
-		case !covered[name] && !kept:
-			t.Errorf("%s is account-scoped but no purge step deletes it; add a step or a purgeKeptTables reason", name)
+	for _, tb := range tables {
+		if _, kept := purgeKeptTables[tb.name]; kept {
+			if coveredAny(tb.name) {
+				t.Errorf("%s is both purged and listed as kept", tb.name)
+			}
+			continue
+		}
+		var owners []string
+		for _, fk := range strings.Split(tb.fks, ",") {
+			if src, ok := purgeSourceOf[fk]; ok {
+				owners = append(owners, src)
+			}
+		}
+		if len(owners) == 0 {
+			owners = accountTableSources[tb.name]
+		}
+		if len(owners) == 0 {
+			t.Errorf("%s is account-scoped but its source is unknown; add it to accountTableSources or purgeKeptTables", tb.name)
+			continue
+		}
+		for _, src := range owners {
+			if !covered[src][tb.name] {
+				t.Errorf("%s belongs to %s accounts but no %s purge step deletes it; add a step or a purgeKeptTables reason", tb.name, src, src)
+			}
+		}
+	}
+	for _, name := range slackNamespacedTables {
+		if !covered["slack"][name] {
+			t.Errorf("%s holds Slack namespaced rows but no Slack purge step deletes it", name)
 		}
 	}
 }
@@ -121,7 +183,7 @@ func TestPurgeSteps_RunOnEmptyDB(t *testing.T) {
 			t.Errorf("%s: an empty database purged %d rows", src, n)
 		}
 	}
-	if _, err := PurgeSteps("imap", 1); err == nil {
+	if _, err := d.PurgeSteps("imap", 1); err == nil {
 		t.Fatal("unknown source must error")
 	}
 }
@@ -157,7 +219,7 @@ func TestPurge02_ChunkedResumable(t *testing.T) {
 		`INSERT INTO kb_chunks (doc_id, idx, body) VALUES ('slack:thread:1:C1:1700000000.000100', 0, 'kbword'), ('slack:thread:2:C1:1700000000.000100', 0, 'kbword')`,
 	)
 
-	steps, err := PurgeSteps("slack", 1)
+	steps, err := d.PurgeSteps("slack", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,21 +368,21 @@ func TestFinishAccountPurge_MarksPurged(t *testing.T) {
 		`INSERT INTO linear_accounts (id, org_id, status, error, moved_watermark) VALUES (1, 'o1', 'revoked', 'gone', 'w')`,
 		`INSERT INTO account_purges (id, source, account_id, reason, due_at) VALUES (1, 'linear', 1, 'revoked', '2026-01-01T00:00:00Z')`,
 	)
-	if err := d.StartAccountPurge(1); err != nil {
-		t.Fatal(err)
+	if started, err := d.StartAccountPurge(1); err != nil || !started {
+		t.Fatal(started, err)
 	}
 	if err := d.AddPurgeRows(1, 7); err != nil {
 		t.Fatal(err)
 	}
-	if err := d.FailAccountPurge(1, "boom"); err != nil {
+	if _, err := d.FailAccountPurge(1, "boom", 3); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := d.ListAccountPurges(true)
 	if err != nil || len(rows) != 1 || rows[0].State != "running" || rows[0].Error != "boom" || rows[0].StartedAt == "" {
 		t.Fatalf("after a failed chunk: %+v %v", rows, err)
 	}
-	if err := d.FinishAccountPurge(1, "linear", 1); err != nil {
-		t.Fatal(err)
+	if kept, err := d.FinishAccountPurge(1, "linear", 1); err != nil || kept {
+		t.Fatal(kept, err)
 	}
 	all, err := d.ListAccountPurges(false)
 	if err != nil || all[0].State != "done" || all[0].RowsDeleted != 7 || all[0].Error != "" || all[0].FinishedAt == "" {
@@ -335,7 +397,41 @@ func TestFinishAccountPurge_MarksPurged(t *testing.T) {
 	if status != "purged" || errText != "" || enabled != 0 || watermark != "" {
 		t.Fatalf("account after finish: %s %q %d %q", status, errText, enabled, watermark)
 	}
-	if err := d.FinishAccountPurge(1, "imap", 1); err == nil {
+	if _, err := d.FinishAccountPurge(1, "imap", 1); err == nil {
 		t.Fatal("unknown source must error")
+	}
+}
+
+// PURGE-02 (review #601): no step scans the knowledge tables inside its
+// write transaction. Every kb_documents, kb_dirty and doc_links delete is a
+// key range (the ids it needs — the account's stream digests and Confluence
+// spaces — are read before, outside any transaction). Checked with EXPLAIN
+// QUERY PLAN on a database that has rows for every source.
+func TestPurge02_KnowledgeStepsUseKeyRanges(t *testing.T) {
+	d := OpenTestDB(t)
+	mustExecAll(t, d,
+		`INSERT INTO jira_accounts (id, cloud_id) VALUES (1, 'c1')`,
+		`INSERT INTO ext_sources (id, provider, jira_account_id, container_key) VALUES (5, 'confluence', 1, 'ENG')`,
+		`INSERT INTO stream_digests (source, account_id, period_from, period_to) VALUES ('jira', 1, 'a', 'b'), ('gmail', 1, 'a', 'b'), ('linear', 1, 'a', 'b')`,
+	)
+	knowledge := map[string]bool{"kb_documents": true, "kb_dirty": true, "doc_links": true}
+	for _, src := range purgeSources {
+		steps, err := d.PurgeSteps(src, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, st := range steps {
+			if !knowledge[st.Table] {
+				continue
+			}
+			plan := explainDetails(t, d, st.SQL, append(append([]any{}, st.Args...), 500)...)
+			for _, detail := range strings.Split(plan, "\n") {
+				for table := range knowledge {
+					if strings.HasPrefix(detail, "SCAN "+table) {
+						t.Errorf("%s step %q scans %s: %s", src, st.Name, table, detail)
+					}
+				}
+			}
+		}
 	}
 }

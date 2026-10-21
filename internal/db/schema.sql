@@ -3165,11 +3165,12 @@ CREATE TABLE IF NOT EXISTS account_purges (
     scheduled_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     due_at       TEXT NOT NULL,                          -- RFC 3339 UTC
     state        TEXT NOT NULL DEFAULT 'scheduled'
-                 CHECK (state IN ('scheduled','running','done','cancelled')),
+                 CHECK (state IN ('scheduled','running','done','cancelled','failed')),
     started_at   TEXT NOT NULL DEFAULT '',
     finished_at  TEXT NOT NULL DEFAULT '',
     rows_deleted INTEGER NOT NULL DEFAULT 0,
-    error        TEXT NOT NULL DEFAULT ''                -- last failed chunk; a running row resumes next cycle
+    error        TEXT NOT NULL DEFAULT '',               -- last failed chunk; a running row resumes next cycle
+    failures     INTEGER NOT NULL DEFAULT 0              -- chunk failures since the last progress; 3 end the row 'failed'
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_account_purges_open
     ON account_purges(source, account_id) WHERE state IN ('scheduled','running');

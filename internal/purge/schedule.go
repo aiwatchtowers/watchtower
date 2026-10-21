@@ -1,6 +1,7 @@
 package purge
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -39,10 +40,13 @@ type accountKey struct {
 //
 //   - Off: every scheduled row is cancelled; nothing is scheduled or run but
 //     a running row, which always finishes.
-//   - Revoked: a revoked account is scheduled at revoked_at + Grace. It is
-//     cancelled once the account is no longer revoked or in error (a
-//     reconnect writes ok; a removed account falls under the removed lease);
-//     a due row runs only while the account is still revoked (error waits).
+//   - Revoked: a revoked account is scheduled Grace after the pass that
+//     first sees it. It is cancelled once the account is no longer revoked
+//     or in error (a reconnect writes ok; a removed account falls under the
+//     removed lease), or once its access_ok_at is newer than its revoked_at
+//     (a clean Jira/Linear pass, which never writes ok — LINEAR-03); a due
+//     row runs only while the account is still revoked (error waits). An
+//     empty or unreadable access_ok_at is no proof of access: still revoked.
 //   - Lease (live accounts, status not removed/purged, disabled included):
 //     when every live account of a source has an access_ok_at and the newest
 //     is older than Lease − Grace, each live account is scheduled, due
@@ -91,12 +95,14 @@ func Plan(accounts []db.PurgeAccount, open []db.AccountPurge, enabled bool, now 
 		}
 		switch p.Reason {
 		case ReasonRevoked:
-			switch a.Status {
-			case "revoked":
+			switch {
+			case accessAfterRevocation(a):
+				out.Cancel = append(out.Cancel, p.ID)
+			case a.Status == "revoked":
 				if !now.Before(due) {
 					out.Due = append(out.Due, p)
 				}
-			case "error":
+			case a.Status == "error":
 				// Not still revoked on the latest attempt, not proof of
 				// access either: wait.
 			default:
@@ -125,11 +131,9 @@ func Plan(accounts []db.PurgeAccount, open []db.AccountPurge, enabled bool, now 
 			continue
 		}
 		if a.Status == "revoked" {
-			due := floor
-			if t, ok := parseTime(a.RevokedAt); ok && t.Add(Grace).After(due) {
-				due = t.Add(Grace)
+			if !accessAfterRevocation(a) {
+				out.Schedule = append(out.Schedule, ScheduleItem{a.Source, a.ID, ReasonRevoked, floor})
 			}
-			out.Schedule = append(out.Schedule, ScheduleItem{a.Source, a.ID, ReasonRevoked, due})
 			continue
 		}
 		deadline, ok := deadlines[k]
@@ -197,6 +201,18 @@ func leaseDeadlines(accounts []db.PurgeAccount) map[accountKey]time.Time {
 	return out
 }
 
+// accessAfterRevocation reports whether the account's last confirmed access
+// is newer than its revocation. An empty or unreadable time on either side
+// is no proof: false.
+func accessAfterRevocation(a db.PurgeAccount) bool {
+	okAt, ok := parseTime(a.AccessOKAt)
+	if !ok {
+		return false
+	}
+	revokedAt, ok := parseTime(a.RevokedAt)
+	return ok && okAt.After(revokedAt)
+}
+
 func isLive(status string) bool { return status != "removed" && status != "purged" }
 
 func parseTime(s string) (time.Time, bool) {
@@ -211,10 +227,14 @@ func parseTime(s string) (time.Time, bool) {
 }
 
 // Apply reads the accounts and the open ledger rows, plans, and writes the
-// cancels and schedules (each its own short statement). It returns what it
+// cancels and schedules (each its own short statement). leases says whether
+// lease rows may be scheduled: the daemon's start-of-cycle pass says no, so
+// a Mac back from a long absence first lets this cycle's syncs prove access,
+// and the pass after the syncs says yes. A failed write is joined into the
+// returned error and the other rows are still written. It returns what it
 // did — Schedule holds only the rows actually inserted, Cancel only the rows
 // actually cancelled — and the Due rows for Run.
-func Apply(d *db.DB, enabled bool, now time.Time) (Actions, error) {
+func Apply(d *db.DB, enabled, leases bool, now time.Time) (Actions, error) {
 	accounts, err := d.ListPurgeAccounts()
 	if err != nil {
 		return Actions{}, err
@@ -225,23 +245,29 @@ func Apply(d *db.DB, enabled bool, now time.Time) (Actions, error) {
 	}
 	plan := Plan(accounts, open, enabled, now)
 	done := Actions{Due: plan.Due}
+	var errs []error
 	for _, id := range plan.Cancel {
 		ok, err := d.CancelAccountPurge(id)
 		if err != nil {
-			return done, fmt.Errorf("purge schedule: %w", err)
+			errs = append(errs, fmt.Errorf("purge schedule: %w", err))
+			continue
 		}
 		if ok {
 			done.Cancel = append(done.Cancel, id)
 		}
 	}
 	for _, s := range plan.Schedule {
+		if s.Reason == ReasonLease && !leases {
+			continue
+		}
 		ok, err := d.ScheduleAccountPurge(s.Source, s.AccountID, s.Reason, s.DueAt.UTC().Format(time.RFC3339))
 		if err != nil {
-			return done, fmt.Errorf("purge schedule: %w", err)
+			errs = append(errs, fmt.Errorf("purge schedule: %w", err))
+			continue
 		}
 		if ok {
 			done.Schedule = append(done.Schedule, s)
 		}
 	}
-	return done, nil
+	return done, errors.Join(errs...)
 }

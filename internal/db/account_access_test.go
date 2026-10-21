@@ -170,3 +170,26 @@ func TestMarkAccountAccessOK(t *testing.T) {
 		t.Fatalf("missing row is not an error: %v", err)
 	}
 }
+
+// A revocation after confirmed access is a new revocation (review #601):
+// Jira and Linear passes stamp access_ok_at without clearing revoked_at, so
+// a later revoked must move revoked_at past that access, or the scheduler
+// would read the account as reconnected forever.
+func TestAuthState_RevokedAfterAccessRestamps(t *testing.T) {
+	d := OpenTestDB(t)
+	seedAccessAccounts(t, d)
+	for _, s := range accessSources {
+		t.Run(s.source, func(t *testing.T) {
+			if _, err := d.Exec(`UPDATE ` + s.table + ` SET status = 'revoked', revoked_at = '2026-01-01T00:00:00Z', access_ok_at = '2026-01-02T00:00:00Z' WHERE id = 1`); err != nil {
+				t.Fatal(err)
+			}
+			if err := setAccessAuth(d, s.source, 1, "revoked"); err != nil {
+				t.Fatal(err)
+			}
+			got := readAccess(t, d, s.table, 1)
+			if got.RevokedAt <= got.AccessOKAt {
+				t.Fatalf("revoked after access must restamp revoked_at past access_ok_at, got %+v", got)
+			}
+		})
+	}
+}

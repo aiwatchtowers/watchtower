@@ -36,8 +36,10 @@ func TestPurge01_RevokedSchedulesAtRevokedPlusGrace(t *testing.T) {
 	}
 
 	// Revoked long ago (the purge turned on later): the notice still gets
-	// the full grace period from scheduling.
+	// the full grace period from scheduling. Its last access predates the
+	// revocation (a newer one would cancel it).
 	a.RevokedAt = ts(t0.Add(-30 * 24 * time.Hour))
+	a.AccessOKAt = ts(t0.Add(-31 * 24 * time.Hour))
 	got = Plan([]db.PurgeAccount{a}, nil, true, t0)
 	if len(got.Schedule) != 1 || !got.Schedule[0].DueAt.Equal(t0.Add(Grace)) {
 		t.Fatalf("an old revocation must be due Grace after scheduling, got %+v", got.Schedule)
@@ -233,14 +235,14 @@ func TestApply_WritesScheduleAndCancel(t *testing.T) {
 	if _, err := d.Exec(`INSERT INTO slack_accounts (id, team_id, status, revoked_at, access_ok_at) VALUES (1, 'T1', 'revoked', ?, ?)`, ts(t0), ts(t0)); err != nil {
 		t.Fatal(err)
 	}
-	got, err := Apply(d, true, t0)
+	got, err := Apply(d, true, true, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got.Schedule) != 1 {
 		t.Fatalf("want one inserted schedule, got %+v", got)
 	}
-	again, err := Apply(d, true, t0)
+	again, err := Apply(d, true, true, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,7 +256,7 @@ func TestApply_WritesScheduleAndCancel(t *testing.T) {
 	if err := d.SetSlackAccountAuthState(1, "ok", ""); err != nil {
 		t.Fatal(err)
 	}
-	got, err = Apply(d, true, t0)
+	got, err = Apply(d, true, true, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,5 +265,98 @@ func TestApply_WritesScheduleAndCancel(t *testing.T) {
 	}
 	if rows, _ := d.ListAccountPurges(true); len(rows) != 0 {
 		t.Fatalf("no open rows after the cancel, got %+v", rows)
+	}
+}
+
+// PURGE-01 (review #601): a revoked row runs only while the account's last
+// confirmed access is not newer than its revocation. Jira and Linear passes
+// never write ok (LINEAR-03), so a clean pass after a revocation shows up
+// only as access_ok_at > revoked_at: that cancels the row and schedules no
+// new one. An empty or unreadable access_ok_at is no proof: still revoked.
+func TestPurge01_AccessAfterRevocationCancels(t *testing.T) {
+	revoked := func(status string, okAt time.Time) db.PurgeAccount {
+		a := acct("jira", 1, status, okAt)
+		a.RevokedAt = ts(t0.Add(-2 * time.Hour))
+		return a
+	}
+	open := []db.AccountPurge{row(3, "jira", 1, ReasonRevoked, "scheduled", t0.Add(-time.Minute))}
+
+	for _, status := range []string{"revoked", "error"} {
+		got := Plan([]db.PurgeAccount{revoked(status, t0.Add(-time.Hour))}, open, true, t0)
+		if len(got.Cancel) != 1 || got.Cancel[0] != 3 || len(got.Due) != 0 || len(got.Schedule) != 0 {
+			t.Fatalf("%s + access after the revocation must cancel, got %+v", status, got)
+		}
+		if got := Plan([]db.PurgeAccount{revoked(status, t0.Add(-time.Hour))}, nil, true, t0); len(got.Schedule) != 0 {
+			t.Fatalf("%s + access after the revocation must not schedule, got %+v", status, got.Schedule)
+		}
+	}
+
+	// Access before the revocation: still revoked, the due row runs.
+	got := Plan([]db.PurgeAccount{revoked("revoked", t0.Add(-3*time.Hour))}, open, true, t0)
+	if len(got.Due) != 1 || len(got.Cancel) != 0 {
+		t.Fatalf("access older than the revocation must not cancel, got %+v", got)
+	}
+	// No (or an unreadable) access_ok_at: still revoked.
+	for _, okAt := range []string{"", "not a time"} {
+		a := revoked("revoked", time.Time{})
+		a.AccessOKAt = okAt
+		got := Plan([]db.PurgeAccount{a}, open, true, t0)
+		if len(got.Due) != 1 || len(got.Cancel) != 0 {
+			t.Fatalf("access_ok_at %q must count as still revoked, got %+v", okAt, got)
+		}
+		if got := Plan([]db.PurgeAccount{a}, nil, true, t0); len(got.Schedule) != 1 {
+			t.Fatalf("access_ok_at %q must schedule, got %+v", okAt, got.Schedule)
+		}
+	}
+}
+
+// Apply writes what it can: one failing write never keeps the other rows
+// from being scheduled or cancelled, and every error is returned.
+func TestApply_ContinuesPastOneBadRow(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	for _, q := range []string{
+		`INSERT INTO slack_accounts (id, team_id, status, revoked_at) VALUES (1, 'T1', 'revoked', '2026-10-21T00:00:00Z')`,
+		`INSERT INTO linear_accounts (id, org_id, status, revoked_at) VALUES (1, 'o1', 'revoked', '2026-10-21T00:00:00Z')`,
+		// Slack's schedule fails; Linear's must still land.
+		`CREATE TRIGGER fail_slack BEFORE INSERT ON account_purges WHEN NEW.source = 'slack'
+		 BEGIN SELECT RAISE(ABORT, 'boom'); END`,
+	} {
+		if _, err := d.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := Apply(d, true, false, t0)
+	if err == nil {
+		t.Fatal("the failed schedule must be returned")
+	}
+	if len(got.Schedule) != 1 || got.Schedule[0].Source != "linear" {
+		t.Fatalf("the other account must still be scheduled, got %+v", got.Schedule)
+	}
+}
+
+// PURGE-01 (review #601): the start-of-cycle pass schedules no lease rows —
+// this cycle's syncs may still prove access after a long absence — and the
+// pass after the syncs does.
+func TestApply_LeasesOnlyWhenAsked(t *testing.T) {
+	d, err := db.Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { d.Close() })
+	stale := ts(t0.Add(-Lease))
+	if _, err := d.Exec(`INSERT INTO slack_accounts (id, team_id, status, access_ok_at) VALUES (1, 'T1', 'ok', ?)`, stale); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Apply(d, true, false, t0)
+	if err != nil || len(got.Schedule) != 0 {
+		t.Fatalf("no leases before the syncs, got %+v %v", got, err)
+	}
+	got, err = Apply(d, true, true, t0)
+	if err != nil || len(got.Schedule) != 1 || got.Schedule[0].Reason != ReasonLease {
+		t.Fatalf("the pass after the syncs schedules the lease, got %+v %v", got, err)
 	}
 }

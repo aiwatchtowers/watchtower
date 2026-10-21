@@ -122,9 +122,11 @@ func (s *Syncer) FirstSyncFrom() (time.Time, bool) {
 }
 
 // ReachedSource reports whether the last Sync made at least one successful
-// authenticated request (a project's issue search came back). A pass with no
-// boards selected, or whose every project failed, returns nil without proving
-// access; the daemon stamps access_ok_at only when this is true (#601).
+// authenticated request (a project's issue search came back), whatever Sync
+// returned after it: a later failure (another board, the history fetch) does
+// not undo that proof. A pass with no boards selected, or whose every
+// project's search failed, never reached the source. The daemon stamps
+// access_ok_at when this is true and the error is not ErrAuthRevoked (#601).
 func (s *Syncer) ReachedSource() bool { return s.reached }
 
 // hasSyncWatermark reports whether any project of this account has a

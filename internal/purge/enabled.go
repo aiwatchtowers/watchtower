@@ -33,6 +33,9 @@ const (
 	Lease = 30 * 24 * time.Hour
 	// ChunkRows caps the rows one purge transaction deletes.
 	ChunkRows = 500
+	// MaxChunkFailures failures in a row (no rows deleted in between) end a
+	// running purge in the terminal state failed.
+	MaxChunkFailures = 3
 )
 
 // policy is the seam an MDM policy (#608) feeds later: set reports whether a

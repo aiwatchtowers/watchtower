@@ -257,6 +257,9 @@ func (d *Daemon) SetIdeasPipeline(p *ideas.Pipeline) {
 // SetReactionCommandsPipeline sets the reaction-commands pipeline (owner drives
 // Watchtower by reacting in Slack; gated by reaction_commands.enabled).
 func (d *Daemon) SetReactionCommandsPipeline(p *reactioncmd.Pipeline) {
+	if p != nil {
+		p.SetAccountSkip(func(id int64) bool { return d.purgeHeld("slack", id) })
+	}
 	d.reactionCmdPipe = p
 }
 
@@ -447,6 +450,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// a calendar connect — onboarding's finish, the Add sheet — so shows
 	// events within seconds (#740). The cycle below syncs them a second time —
 	// a few API calls per account, accepted on a (re)start for that latency.
+	// The purge hold first (#601): a purged or half-purged account's
+	// calendar must not be refilled before the first cycle's purge phase.
+	d.refreshPurgeHold()
 	d.startupCalendarSync(ctx)
 
 	// Run an initial sync immediately on startup.
@@ -536,6 +542,9 @@ func (d *Daemon) runSync(ctx context.Context) {
 	d.observePhase(ctx, automations.JiraSource(d.db), func() { d.phaseJiraSync(ctx) })
 	d.phaseLinearSync(ctx)
 	d.observePhase(ctx, automations.ConfluenceSource(d.db), func() { d.phaseExternalSync(ctx) })
+	// Lease purges are scheduled only now, after every source sync had its
+	// chance to prove access this cycle (#601).
+	d.phaseAccountPurgeLeases(ctx)
 	// Once per cycle, also on a cancelled ctx: it only queues rows.
 	d.flushAutomationEvents(syncStart)
 	d.phaseAgentAnalytics(ctx)
@@ -988,6 +997,13 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 		if from, ok := s.FirstSyncFrom(); ok {
 			d.startHistoryBackfill("jira", s.AccountID(), from)
 		}
+		// A pass that reached Atlassian proved access, whatever failed after
+		// (one board, a later request); a revoked grant never does. No
+		// request (no boards selected) proves nothing. access_ok_at only,
+		// never status: a pass still never writes "ok" (#601, LINEAR-03).
+		if s.ReachedSource() && !errors.Is(err, jira.ErrAuthRevoked) {
+			d.markAccessOK("jira", s.AccountID())
+		}
 		if err != nil {
 			d.logger.Printf("jira: account %d: sync error: %v", s.AccountID(), err)
 			if firstErr == nil {
@@ -1009,12 +1025,6 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 			continue
 		}
 		anyClean = true
-		// A nil error proves access only when the pass made a request (no
-		// boards selected makes none). access_ok_at only, never status:
-		// a pass still never writes "ok" (#601, LINEAR-03's rule).
-		if s.ReachedSource() {
-			d.markAccessOK("jira", s.AccountID())
-		}
 		d.resolveJiraUsers(ctx, s)
 		if n > 0 {
 			d.logger.Printf("jira: account %d: %d issues synced", s.AccountID(), n)
@@ -1376,7 +1386,8 @@ func (d *Daemon) markConfluenceAccess(before []db.ExtSource) {
 	}
 	marked := map[int64]bool{}
 	for _, s := range after {
-		if s.JiraAccountID == 0 || marked[s.JiraAccountID] || s.LastSyncedAt == "" || s.LastSyncedAt == prev[s.ID] {
+		if s.JiraAccountID == 0 || marked[s.JiraAccountID] || s.LastSyncedAt == "" || s.LastSyncedAt == prev[s.ID] ||
+			d.purgeHeld("jira", s.JiraAccountID) {
 			continue
 		}
 		marked[s.JiraAccountID] = true

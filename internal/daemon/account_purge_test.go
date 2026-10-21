@@ -3,14 +3,20 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"testing"
 	"time"
 
+	"github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/linear"
+	"watchtower/internal/reactioncmd"
 )
 
 func setPurge(d *Daemon, on bool) { d.config.Privacy.PurgeRevokedData = &on }
@@ -137,4 +143,176 @@ func TestPhaseAccountPurge_OffCancelsScheduled(t *testing.T) {
 	require.Len(t, all, 1)
 	assert.Equal(t, "cancelled", all[0].State)
 	assert.Equal(t, 3, linearRowCount(t, database, id))
+}
+
+// PURGE-01 (review #601): a revoked Jira or Linear account whose next pass
+// is clean ends cancelled. Neither pass writes ok (LINEAR-03); the stamped
+// access_ok_at, newer than revoked_at, is what cancels the row.
+func TestPurge01_CleanPassAfterRevocationCancels(t *testing.T) {
+	revokedAt := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
+	due := time.Now().Add(-time.Minute).UTC().Format(time.RFC3339) // already due
+
+	t.Run("jira", func(t *testing.T) {
+		d, database, _ := newJiraTestDaemon(t)
+		setPurge(d, true)
+		id, err := database.CreateJiraAccount(db.JiraAccount{CloudID: "c1"})
+		require.NoError(t, err)
+		_, err = database.Exec(`UPDATE jira_accounts SET status = 'revoked', revoked_at = ?, access_ok_at = '' WHERE id = ?`, revokedAt, id)
+		require.NoError(t, err)
+		_, err = database.ScheduleAccountPurge("jira", id, "revoked", due)
+		require.NoError(t, err)
+
+		d.jiraSyncers = []jiraAccountSyncer{&stubJiraSyncer{accountID: id}}
+		d.phaseJiraSync(context.Background())
+		d.phaseAccountPurge(context.Background())
+
+		all, err := database.ListAccountPurges(false)
+		require.NoError(t, err)
+		require.Len(t, all, 1)
+		assert.Equal(t, "cancelled", all[0].State, "a clean pass after the revocation cancels the purge")
+		open, err := database.ListAccountPurges(true)
+		require.NoError(t, err)
+		assert.Empty(t, open, "and schedules no new one")
+	})
+
+	t.Run("linear", func(t *testing.T) {
+		d, database := newLinearTestDaemon(t)
+		setPurge(d, true)
+		id := seedRevokedLinear(t, database, time.Hour)
+		_, err := database.Exec(`UPDATE linear_accounts SET access_ok_at = '' WHERE id = ?`, id)
+		require.NoError(t, err)
+		_, err = database.ScheduleAccountPurge("linear", id, "revoked", due)
+		require.NoError(t, err)
+
+		ran := 0
+		d.linearSyncers = []linearAccountSyncer{fakeLinearSyncer{id: id, ran: &ran}}
+		d.phaseLinearSync(context.Background())
+		d.phaseAccountPurge(context.Background())
+
+		all, err := database.ListAccountPurges(false)
+		require.NoError(t, err)
+		require.Len(t, all, 1)
+		assert.Equal(t, "cancelled", all[0].State)
+		assert.Equal(t, 3, linearRowCount(t, database, id), "nothing deleted")
+	})
+}
+
+// PURGE-01 (review #601): a Mac back after a long absence gets no false
+// lease notice. The start-of-cycle pass schedules no lease; the pass after
+// the syncs sees this cycle's fresh access and schedules nothing either. A
+// source that stays unreached is scheduled by that later pass.
+func TestPurge01_NoLeaseBeforeTheCyclesSyncs(t *testing.T) {
+	d, database := newLinearTestDaemon(t)
+	setPurge(d, true)
+	reached, err := database.CreateLinearAccount("")
+	require.NoError(t, err)
+	stale := time.Now().Add(-29 * 24 * time.Hour).UTC().Format(time.RFC3339)
+	_, err = database.Exec(`UPDATE linear_accounts SET access_ok_at = ?`, stale)
+	require.NoError(t, err)
+
+	d.phaseAccountPurge(context.Background())
+	open, err := database.ListAccountPurges(true)
+	require.NoError(t, err)
+	assert.Empty(t, open, "no lease before the cycle's syncs")
+
+	ran := 0
+	d.linearSyncers = []linearAccountSyncer{fakeLinearSyncer{id: reached, ran: &ran}}
+	d.phaseLinearSync(context.Background())
+	d.phaseAccountPurgeLeases(context.Background())
+	open, err = database.ListAccountPurges(true)
+	require.NoError(t, err)
+	assert.Empty(t, open, "the sync proved access: no lease")
+
+	// Unreached: the later pass schedules it.
+	_, err = database.Exec(`UPDATE linear_accounts SET access_ok_at = ?`, stale)
+	require.NoError(t, err)
+	d.phaseAccountPurgeLeases(context.Background())
+	open, err = database.ListAccountPurges(true)
+	require.NoError(t, err)
+	require.Len(t, open, 1)
+	assert.Equal(t, "lease", open[0].Reason)
+}
+
+// The lease pass runs after every source sync of runSync (static, the
+// TestDaemon_RunSync_PollsReactionsBeforeAIPipelines precedent), and Run
+// refreshes the purge hold before the startup calendar sync.
+func TestDaemon_PurgePhaseOrder(t *testing.T) {
+	file, err := parser.ParseFile(token.NewFileSet(), "daemon.go", nil, 0)
+	require.NoError(t, err)
+
+	run := topLevelCallOrder(daemonFunc(t, file, "Run", true))
+	hold, ok := run["refreshPurgeHold"]
+	require.True(t, ok, "Run must refresh the purge hold")
+	assert.Less(t, hold, run["startupCalendarSync"], "the hold must be known before the startup calendar sync")
+
+	sync := map[string]int{}
+	fn := daemonFunc(t, file, "runSync", true)
+	for i, stmt := range fn.Body.List {
+		ast.Inspect(stmt, func(n ast.Node) bool {
+			if call, ok := n.(*ast.CallExpr); ok {
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+					if _, seen := sync[sel.Sel.Name]; !seen {
+						sync[sel.Sel.Name] = i
+					}
+				}
+			}
+			return true
+		})
+	}
+	leases, ok := sync["phaseAccountPurgeLeases"]
+	require.True(t, ok, "runSync must schedule leases")
+	for _, phase := range []string{"phaseSlackSync", "phaseCalendarSync", "phaseGmailSync", "phaseJiraSync", "phaseLinearSync", "phaseExternalSync"} {
+		at, ok := sync[phase]
+		require.True(t, ok, phase)
+		assert.Greater(t, leases, at, "leases are scheduled after %s", phase)
+	}
+	assert.Less(t, sync["phaseAccountPurge"], sync["phaseSlackSync"], "due purges still run first")
+}
+
+// countingReactionLister counts reactions.list calls.
+type countingReactionLister struct{ calls *int }
+
+func (l countingReactionLister) ListUserReactions(context.Context, string) ([]slack.ReactedItem, error) {
+	*l.calls++
+	return nil, nil
+}
+
+// The reaction poll skips an account being purged (review #601): a running
+// purge must not see the account's reactions written back.
+func TestPhaseReactionCommands_SkipsPurgeHeldAccount(t *testing.T) {
+	cfg := &config.Config{ReactionCommands: config.ReactionCommandsConfig{Enabled: true}}
+	d, _ := newReactionTestDaemon(t, cfg)
+	_, err := d.db.Exec(`INSERT INTO slack_accounts (id, team_id, team_name, current_user_id) VALUES (2, 'T2', 'other', '2:UOWNER')`)
+	require.NoError(t, err)
+	held, other := 0, 0
+	accountsFn := func(context.Context) ([]reactioncmd.Account, error) {
+		return []reactioncmd.Account{
+			{AccountID: 1, OwnerID: "1:UOWNER", Lister: countingReactionLister{&held}},
+			{AccountID: 2, OwnerID: "2:UOWNER", Lister: countingReactionLister{&other}},
+		}, nil
+	}
+	d.SetReactionCommandsPipeline(reactioncmd.New(d.db, cfg, nil, nil, accountsFn, nil))
+	_, err = d.db.Exec(`INSERT INTO account_purges (source, account_id, reason, due_at, state) VALUES ('slack', 1, 'revoked', '2026-01-01T00:00:00Z', 'running')`)
+	require.NoError(t, err)
+	d.refreshPurgeHold()
+
+	d.phaseReactionCommands(context.Background())
+
+	assert.Zero(t, held, "a purge-held account is not polled")
+	assert.Positive(t, other, "another account still is")
+}
+
+// PURGE-02 (review #601): a failed purge releases its account — the sync
+// phases run it again — while a running one holds it.
+func TestRefreshPurgeHold_FailedReleases(t *testing.T) {
+	d, database := newLinearTestDaemon(t)
+	id := seedRevokedLinear(t, database, time.Hour)
+	_, err := database.Exec(`INSERT INTO account_purges (source, account_id, reason, due_at, state) VALUES ('linear', ?, 'revoked', '2026-01-01T00:00:00Z', 'running')`, id)
+	require.NoError(t, err)
+	d.refreshPurgeHold()
+	assert.True(t, d.purgeHeld("linear", id), "a running purge holds its account")
+	_, err = database.Exec(`UPDATE account_purges SET state = 'failed'`)
+	require.NoError(t, err)
+	d.refreshPurgeHold()
+	assert.False(t, d.purgeHeld("linear", id), "a failed purge releases it")
 }

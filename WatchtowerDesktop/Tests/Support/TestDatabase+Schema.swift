@@ -2143,11 +2143,12 @@ CREATE TABLE IF NOT EXISTS account_purges (
     scheduled_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     due_at       TEXT NOT NULL,
     state        TEXT NOT NULL DEFAULT 'scheduled'
-                 CHECK (state IN ('scheduled','running','done','cancelled')),
+                 CHECK (state IN ('scheduled','running','done','cancelled','failed')),
     started_at   TEXT NOT NULL DEFAULT '',
     finished_at  TEXT NOT NULL DEFAULT '',
     rows_deleted INTEGER NOT NULL DEFAULT 0,
-    error        TEXT NOT NULL DEFAULT ''
+    error        TEXT NOT NULL DEFAULT '',
+    failures     INTEGER NOT NULL DEFAULT 0
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,

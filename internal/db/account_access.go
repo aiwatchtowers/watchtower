@@ -30,9 +30,12 @@ const nowSQL = `strftime('%Y-%m-%dT%H:%M:%SZ', 'now')`
 
 // authStateSetSQL is the SET list every Set*AccountAuthState writer shares
 // (?1 = status, ?2 = error text): revoked stamps revoked_at once and keeps it
-// on a repeat, ok clears it and stamps access_ok_at, error keeps both.
+// on a repeat — unless access was confirmed after it (a clean Jira/Linear
+// pass stamps access_ok_at only), which makes this a new revocation —, ok
+// clears it and stamps access_ok_at, error keeps both. Both columns are
+// fixed-width RFC 3339 UTC, so text order is time order.
 const authStateSetSQL = `status = ?1, error = ?2,
-	revoked_at = CASE WHEN ?1 = 'revoked' THEN CASE WHEN revoked_at = '' THEN ` + nowSQL + ` ELSE revoked_at END
+	revoked_at = CASE WHEN ?1 = 'revoked' THEN CASE WHEN revoked_at = '' OR access_ok_at > revoked_at THEN ` + nowSQL + ` ELSE revoked_at END
 	                  WHEN ?1 = 'ok' THEN '' ELSE revoked_at END,
 	access_ok_at = CASE WHEN ?1 = 'ok' THEN ` + nowSQL + ` ELSE access_ok_at END`
 
