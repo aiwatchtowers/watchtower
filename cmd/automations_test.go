@@ -462,7 +462,7 @@ func TestAutomationsCLI_ValidateJSONKeys(t *testing.T) {
 	for _, text := range []string{autoCLIRecipeText(`return 1`), "broken"} {
 		path := writeRecipe(t, t.TempDir(), "digest", text)
 		wantKeys(t, runAutomationsJSON(t, "validate", path), "ok", "errors", "slug", "name", "scope",
-			"approval_hash", "content_hash", "permissions", "outputs", "widening", "feeds_sources_to_llm")
+			"approval_hash", "content_hash", "permissions", "outputs", "widening", "feeds_sources_to_llm", "changes", "changes_known")
 	}
 }
 
@@ -789,6 +789,52 @@ func TestAutomationsCLI_ValidateAgainstComputesWidening(t *testing.T) {
 	require.Error(t, err, "--against and --workbench are mutually exclusive")
 	_, err = runAutomations(t, "validate", src, "--against", "999999", "--json")
 	require.ErrorIs(t, err, db.ErrAutomationNotFound)
+}
+
+func TestAutomationsCLI_ValidateAgainstReportsChangesSinceConfirmed(t *testing.T) {
+	c := newAutoCLI(t)
+	text := autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000)
+	a := c.confirmedRecipe(t, "pay", text)
+	c.runOnce(t, a, a.ApprovalHash) // the confirmed text is known from the run snapshot
+
+	src := writeRecipe(t, t.TempDir(), "pay", strings.Replace(text, "0 9 * * 1-5", "0 16 * * 1-5", 1))
+	v := runAutomationsJSON(t, "validate", src, "--against", idArg(a.ID))
+	require.Equal(t, true, v["ok"], v["errors"])
+	assert.Equal(t, true, v["changes_known"])
+	changes, ok := v["changes"].([]any)
+	require.True(t, ok)
+	require.Len(t, changes, 1)
+	ch := changes[0].(map[string]any)
+	assert.Equal(t, "trigger", ch["field"])
+	assert.Contains(t, ch["old"], "0 9 * * 1-5")
+	assert.Contains(t, ch["new"], "0 16 * * 1-5")
+
+	src = writeRecipe(t, t.TempDir(), "pay", strings.Replace(text, "return 1", "return 2", 1))
+	v = runAutomationsJSON(t, "validate", src, "--against", idArg(a.ID))
+	assert.Equal(t, []any{map[string]any{"field": "script", "old": "", "new": ""}}, v["changes"])
+}
+
+func TestAutomationsCLI_ValidateAgainstUnchangedHasEmptyChanges(t *testing.T) {
+	c := newAutoCLI(t)
+	text := autoCLIRecipeWith(weekdayCron, "jira:read@PAY", 1000)
+	a := c.confirmedRecipe(t, "pay", text)
+	c.runOnce(t, a, a.ApprovalHash)
+	src := writeRecipe(t, t.TempDir(), "pay", text)
+	v := runAutomationsJSON(t, "validate", src, "--against", idArg(a.ID))
+	assert.Equal(t, []any{}, v["changes"])
+	assert.Equal(t, true, v["changes_known"])
+}
+
+func TestAutomationsCLI_ValidateChangesUnknownWithoutAgainst(t *testing.T) {
+	newAutoCLI(t)
+	for _, text := range []string{autoCLIRecipeText(`return 1`), "broken"} {
+		path := writeRecipe(t, t.TempDir(), "digest", text)
+		out, err := runAutomations(t, "validate", path, "--json")
+		require.NoError(t, err, out)
+		compact := strings.Join(strings.Fields(out), "")
+		assert.Contains(t, compact, `"changes":[]`)
+		assert.Contains(t, compact, `"changes_known":false`)
+	}
 }
 
 func TestAutomationsCLI_ValidateAgainstEmptyWideningIsArray(t *testing.T) {
