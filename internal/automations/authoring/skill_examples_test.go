@@ -92,3 +92,17 @@ func TestCreateAutomationSkill_WrapRules(t *testing.T) {
 		}
 	}
 }
+
+func TestCreateAutomationSkill_EditorSurfaceSavesFromThePanel(t *testing.T) {
+	body := createAutomationBody(t)
+	for _, want := range []string{
+		"In the Automations panel's chat",
+		"**Save and Turn On**",
+		"**Save Turned Off**",
+		"Call `save_automation` only with the exact text you drafted",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("skill body does not contain %q", want)
+		}
+	}
+}

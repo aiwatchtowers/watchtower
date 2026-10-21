@@ -488,7 +488,11 @@ if (res.exit_code !== 0) {
    see, including a result that looks wrong.
 3. Iterate until the owner is satisfied. Always `draft_automation` and read
    its dry run with the owner before `save_automation`.
-4. Call `save_automation` only with the exact text you drafted, and copy the
+4. In the Automations panel's chat (surface `automation_editor`) never call
+   `save_automation`: the draft column beside the chat shows what you drafted,
+   and the owner saves it with **Save and Turn On** (saved, confirmed and on)
+   or **Save Turned Off**. Tell them when the draft is ready.
+   In the main chat: Call `save_automation` only with the exact text you drafted, and copy the
    dry run's summary into `dry_run_summary`. Never call `save_automation` with
    text you did not draft: the owner approves the bytes you send. `slug` is
    required (lowercase letters, digits and hyphens, at most 64 characters; for
@@ -505,6 +509,10 @@ if (res.exit_code !== 0) {
    rest shows once the recipe is saved and dry-run from its card.
 
 ## What Save does
+
+In the Automations panel a save confirms exactly the text in the draft column
+and turns the automation on, unless the owner picks **Save Turned Off**. The
+main chat's card still saves a new recipe turned off, as described below.
 
 `save_automation` makes a proposal card; it is never applied on its own, and
 the owner's Approve is the only way it runs. The card shows the trigger, the
