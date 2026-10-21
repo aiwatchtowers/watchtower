@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
@@ -20,17 +21,19 @@ import (
 	watchtowerslack "watchtower/internal/slack"
 )
 
-// startRunningPurge gives the account a running purge.
+// startRunningPurge gives the account a running purge. A lease row with a
+// cutoff ahead of every access_ok_at starts whatever the account's status
+// (purged aside), so the account row is left as the test made it.
 func startRunningPurge(t *testing.T, database *db.DB, source string, id int64) {
 	t.Helper()
-	ok, err := database.ScheduleAccountPurge(source, id, "revoked", "2026-10-24T12:00:00Z")
+	ok, err := database.ScheduleAccountPurge(source, id, "lease", "2026-10-24T12:00:00Z")
 	require.NoError(t, err)
 	require.True(t, ok)
 	rows, err := database.ListAccountPurges(true)
 	require.NoError(t, err)
 	for _, r := range rows {
 		if r.Source == source && r.AccountID == id {
-			started, err := database.StartAccountPurge(r.ID)
+			started, err := database.StartAccountPurge(r.ID, time.Now().Add(time.Hour))
 			require.NoError(t, err)
 			require.True(t, started)
 		}

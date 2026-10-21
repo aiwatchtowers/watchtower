@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 var purgeSources = []string{"slack", "google", "jira", "linear"}
@@ -368,7 +369,7 @@ func TestFinishAccountPurge_MarksPurged(t *testing.T) {
 		`INSERT INTO linear_accounts (id, org_id, status, error, moved_watermark) VALUES (1, 'o1', 'revoked', 'gone', 'w')`,
 		`INSERT INTO account_purges (id, source, account_id, reason, due_at) VALUES (1, 'linear', 1, 'revoked', '2026-01-01T00:00:00Z')`,
 	)
-	if started, err := d.StartAccountPurge(1); err != nil || !started {
+	if started, err := d.StartAccountPurge(1, time.Now()); err != nil || !started {
 		t.Fatal(started, err)
 	}
 	if err := d.AddPurgeRows(1, 7); err != nil {

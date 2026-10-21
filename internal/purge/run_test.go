@@ -297,3 +297,56 @@ func TestRun_TokenDeleteFailureKeepsRunning(t *testing.T) {
 		t.Fatalf("retry = %v, %v", done, err)
 	}
 }
+
+// Review #601: an access proof landing after start's re-plan but before
+// StartAccountPurge (a reconnect for a revoked row, a clean pass for a lease
+// row) leaves the row scheduled and deletes nothing.
+func TestRun_AccessBetweenReplanAndStart(t *testing.T) {
+	old := ts(time.Now().Add(-40 * 24 * time.Hour))
+	cases := []struct {
+		name, reason string
+		seed         string
+		access       func(d *db.DB) error
+	}{
+		{"revoked reconnect", ReasonRevoked,
+			`INSERT INTO linear_accounts (id, org_id, status, revoked_at) VALUES (1, 'o1', 'revoked', '2026-10-01T00:00:00Z')`,
+			func(d *db.DB) error { return d.SetLinearAccountAuthState(1, "ok", "") }},
+		{"revoked clean pass", ReasonRevoked,
+			`INSERT INTO linear_accounts (id, org_id, status, revoked_at) VALUES (1, 'o1', 'revoked', '2026-10-01T00:00:00Z')`,
+			func(d *db.DB) error { return d.MarkAccountAccessOK("linear", 1) }},
+		{"lease clean pass", ReasonLease,
+			`INSERT INTO linear_accounts (id, org_id, status, access_ok_at) VALUES (1, 'o1', 'ok', '` + old + `')`,
+			func(d *db.DB) error { return d.MarkAccountAccessOK("linear", 1) }},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := openPurgeDB(t)
+			execAll(t, d, c.seed,
+				`INSERT INTO linear_teams (account_id, id, key, name) VALUES (1, 't1', 'ENG', 'Eng')`)
+			if _, err := d.ScheduleAccountPurge("linear", 1, c.reason, ts(time.Now().Add(-time.Hour))); err != nil {
+				t.Fatal(err)
+			}
+			rows, err := d.ListAccountPurges(true)
+			if err != nil || len(rows) != 1 {
+				t.Fatalf("open rows: %+v %v", rows, err)
+			}
+			afterReplan = func() {
+				if err := c.access(d); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Cleanup(func() { afterReplan = func() {} })
+			done, err := Run(context.Background(), d, t.TempDir(), rows[0], time.Minute)
+			if done || !errors.Is(err, ErrNoLongerDue) {
+				t.Fatalf("Run = %v, %v; want ErrNoLongerDue", done, err)
+			}
+			var teams int
+			if err := d.QueryRow(`SELECT COUNT(*) FROM linear_teams`).Scan(&teams); err != nil || teams != 1 {
+				t.Fatalf("data must stay: %d %v", teams, err)
+			}
+			if rows, _ := d.ListAccountPurges(true); len(rows) != 1 || rows[0].State != "scheduled" {
+				t.Fatalf("the row is left to the scheduler: %+v", rows)
+			}
+		})
+	}
+}

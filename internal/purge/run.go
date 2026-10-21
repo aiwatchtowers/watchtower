@@ -22,6 +22,10 @@ const tokenLockTimeout = time.Minute
 // plan). Nothing is deleted; the scheduler handles the row next pass.
 var ErrNoLongerDue = errors.New("the purge is no longer due")
 
+// afterReplan runs between start's re-plan and its StartAccountPurge; tests
+// land an access proof there.
+var afterReplan = func() {}
+
 // Run purges one account (PURGE-02): it starts a scheduled row — after
 // re-planning that one account against the current rows, since the caller's
 // plan is a snapshot —, runs every step in chunks of ChunkRows rows until the
@@ -83,7 +87,9 @@ func Run(ctx context.Context, d *db.DB, workspaceDir string, p db.AccountPurge, 
 
 // start re-plans the one account of a scheduled row against the current
 // account and ledger rows and moves the row to running only when it is still
-// due; otherwise ErrNoLongerDue. A running row exists only with the purge on
+// due; otherwise ErrNoLongerDue. StartAccountPurge re-checks the account in
+// its own statement, so an access proof written between the re-plan and the
+// start also leaves the row scheduled. A running row exists only with the purge on
 // (Plan returns no due scheduled row when off), and the switch changes only
 // with a daemon restart, so the re-plan assumes on.
 func start(d *db.DB, p db.AccountPurge, now time.Time) error {
@@ -108,7 +114,8 @@ func start(d *db.DB, p db.AccountPurge, now time.Time) error {
 	if !due {
 		return fmt.Errorf("purge %d: %w", p.ID, ErrNoLongerDue)
 	}
-	started, err := d.StartAccountPurge(p.ID)
+	afterReplan()
+	started, err := d.StartAccountPurge(p.ID, now.Add(-Lease))
 	if err != nil {
 		return err
 	}

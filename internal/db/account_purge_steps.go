@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // PurgeStep is one chunked statement of an account purge (board #601,
@@ -364,12 +365,38 @@ func (db *DB) RunPurgeStep(ctx context.Context, step PurgeStep, limit int) (int6
 	return n, nil
 }
 
+// purgeAccountFactsSQL is every account of the four sources with the facts
+// the purge start guard reads.
+const purgeAccountFactsSQL = `
+SELECT 'slack' AS source, id, status, access_ok_at, revoked_at FROM slack_accounts
+UNION ALL SELECT 'google', id, status, access_ok_at, revoked_at FROM google_accounts
+UNION ALL SELECT 'jira', id, status, access_ok_at, revoked_at FROM jira_accounts
+UNION ALL SELECT 'linear', id, status, access_ok_at, revoked_at FROM linear_accounts`
+
 // StartAccountPurge moves a scheduled row to running and reports whether it
-// did: a row cancelled since the caller read it, or already running, is left
-// as it is (false).
-func (db *DB) StartAccountPurge(id int64) (bool, error) {
-	res, err := db.Exec(`UPDATE account_purges SET state = 'running', started_at = `+nowSQL+`
-		WHERE id = ? AND state = 'scheduled'`, id)
+// did. In the same statement it re-checks that the account still qualifies,
+// so an access proof written after the caller's re-plan cannot start a
+// purge: a revoked row needs the account still revoked with no access_ok_at
+// newer than its revoked_at (an empty time on either side is no proof); a
+// lease row needs a non-purged account with no access_ok_at newer than
+// leaseCutoff (now − Lease) in its lease scope — its own for a removed
+// account, every live account of its source otherwise (purge.Plan's
+// deadlines). The clocks are fixed-width RFC 3339 UTC, so text order is time
+// order. A row cancelled since the caller read it, already running, or whose
+// account no longer qualifies is left as it is (false).
+func (db *DB) StartAccountPurge(id int64, leaseCutoff time.Time) (bool, error) {
+	res, err := db.Exec(`UPDATE account_purges AS p SET state = 'running', started_at = `+nowSQL+`
+		WHERE p.id = ?1 AND p.state = 'scheduled' AND EXISTS (
+			SELECT 1 FROM (`+purgeAccountFactsSQL+`) a
+			WHERE a.source = p.source AND a.id = p.account_id AND (
+				(p.reason = 'revoked' AND a.status = 'revoked'
+					AND (a.access_ok_at = '' OR a.revoked_at = '' OR a.access_ok_at <= a.revoked_at))
+				OR (p.reason = 'lease' AND a.status != 'purged' AND NOT EXISTS (
+					SELECT 1 FROM (`+purgeAccountFactsSQL+`) b
+					WHERE b.source = a.source AND b.access_ok_at > ?2
+						AND CASE WHEN a.status = 'removed' THEN b.id = a.id
+						         ELSE b.status NOT IN ('removed', 'purged') END))))`,
+		id, leaseCutoff.UTC().Format(time.RFC3339))
 	if err != nil {
 		return false, fmt.Errorf("starting account purge %d: %w", id, err)
 	}

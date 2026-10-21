@@ -3,6 +3,7 @@ package db
 import (
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestListPurgeAccounts_EveryStatusAndLabel(t *testing.T) {
@@ -79,16 +80,17 @@ func ledgerState(t *testing.T, d *DB, id int64) (state, errText, finishedAt stri
 // scheduler cancelled after its plan was read is never started.
 func TestStartAccountPurge_OnlyFromScheduled(t *testing.T) {
 	d := OpenTestDB(t)
-	mustExecAll(t, d, `INSERT INTO account_purges (id, source, account_id, reason, due_at, state) VALUES
+	mustExecAll(t, d, `INSERT INTO slack_accounts (id, team_id, status) VALUES (1, 'T1', 'revoked'), (2, 'T2', 'revoked')`,
+		`INSERT INTO account_purges (id, source, account_id, reason, due_at, state) VALUES
 		(1, 'slack', 1, 'revoked', '2026-01-01T00:00:00Z', 'scheduled'),
 		(2, 'slack', 2, 'revoked', '2026-01-01T00:00:00Z', 'cancelled')`)
 	for id, want := range map[int64]bool{1: true, 2: false} {
-		got, err := d.StartAccountPurge(id)
+		got, err := d.StartAccountPurge(id, time.Now())
 		if err != nil || got != want {
 			t.Fatalf("start %d = %v, %v; want %v", id, got, err, want)
 		}
 	}
-	if got, err := d.StartAccountPurge(1); err != nil || got {
+	if got, err := d.StartAccountPurge(1, time.Now()); err != nil || got {
 		t.Fatalf("a running row is not started again: %v %v", got, err)
 	}
 	if state, _, _, _ := ledgerState(t, d, 2); state != "cancelled" {
@@ -194,6 +196,7 @@ func TestAccountPurgeRunning_OnlyARunningRow(t *testing.T) {
 		}
 		return got
 	}
+	mustExecAll(t, d, `INSERT INTO slack_accounts (id, team_id, status) VALUES (1, 'T1', 'revoked')`)
 	if _, err := d.ScheduleAccountPurge("slack", 1, "revoked", "2026-10-24T12:00:00Z"); err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +207,7 @@ func TestAccountPurgeRunning_OnlyARunningRow(t *testing.T) {
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("open rows = %+v, %v", rows, err)
 	}
-	if ok, err := d.StartAccountPurge(rows[0].ID); err != nil || !ok {
+	if ok, err := d.StartAccountPurge(rows[0].ID, time.Now()); err != nil || !ok {
 		t.Fatalf("start: %v %v", ok, err)
 	}
 	if !running("slack", 1) {
@@ -213,4 +216,60 @@ func TestAccountPurgeRunning_OnlyARunningRow(t *testing.T) {
 	if running("slack", 2) || running("jira", 1) {
 		t.Fatal("another account or source must not be reported")
 	}
+}
+
+// Review #601: the start re-checks the account in the same statement, so an
+// access proof written after the caller's re-plan leaves the row scheduled.
+func TestStartAccountPurge_AccountMustStillQualify(t *testing.T) {
+	const cutoff = "2026-09-01T00:00:00Z"
+	cases := []struct {
+		name     string
+		accounts string
+		reason   string
+		want     bool
+	}{
+		{"revoked, no access", `(1, 'o1', 'revoked', '', '2026-10-01T00:00:00Z')`, "revoked", true},
+		{"revoked, no revoked_at", `(1, 'o1', 'revoked', '2026-10-02T00:00:00Z', '')`, "revoked", true},
+		{"revoked, access before", `(1, 'o1', 'revoked', '2026-09-30T00:00:00Z', '2026-10-01T00:00:00Z')`, "revoked", true},
+		{"revoked, access after", `(1, 'o1', 'revoked', '2026-10-02T00:00:00Z', '2026-10-01T00:00:00Z')`, "revoked", false},
+		{"revoked, reconnected", `(1, 'o1', 'ok', '2026-10-02T00:00:00Z', '')`, "revoked", false},
+		{"revoked, error", `(1, 'o1', 'error', '', '2026-10-01T00:00:00Z')`, "revoked", false},
+		{"lease, stale", `(1, 'o1', 'ok', '2026-08-01T00:00:00Z', '')`, "lease", true},
+		{"lease, fresh", `(1, 'o1', 'ok', '2026-09-02T00:00:00Z', '')`, "lease", false},
+		{"lease, live sibling fresh", `(1, 'o1', 'ok', '2026-08-01T00:00:00Z', ''), (2, 'o2', 'error', '2026-09-02T00:00:00Z', '')`, "lease", false},
+		{"lease, removed sibling fresh", `(1, 'o1', 'ok', '2026-08-01T00:00:00Z', ''), (2, 'o2', 'removed', '2026-09-02T00:00:00Z', '')`, "lease", true},
+		{"lease removed, own stale", `(1, 'o1', 'removed', '2026-08-01T00:00:00Z', ''), (2, 'o2', 'ok', '2026-09-02T00:00:00Z', '')`, "lease", true},
+		{"lease removed, own fresh", `(1, 'o1', 'removed', '2026-09-02T00:00:00Z', '')`, "lease", false},
+		{"lease, purged", `(1, 'o1', 'purged', '2026-08-01T00:00:00Z', '')`, "lease", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			d := OpenTestDB(t)
+			mustExecAll(t, d,
+				`INSERT INTO linear_accounts (id, org_id, status, access_ok_at, revoked_at) VALUES `+c.accounts,
+				`INSERT INTO account_purges (id, source, account_id, reason, due_at) VALUES (1, 'linear', 1, '`+c.reason+`', '2026-01-01T00:00:00Z')`)
+			cut, err := time.Parse(time.RFC3339, cutoff)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := d.StartAccountPurge(1, cut)
+			if err != nil || got != c.want {
+				t.Fatalf("start = %v, %v; want %v", got, err, c.want)
+			}
+			want := "scheduled"
+			if c.want {
+				want = "running"
+			}
+			if state, _, _, _ := ledgerState(t, d, 1); state != want {
+				t.Fatalf("state = %s, want %s", state, want)
+			}
+		})
+	}
+	t.Run("no account row", func(t *testing.T) {
+		d := OpenTestDB(t)
+		mustExecAll(t, d, `INSERT INTO account_purges (id, source, account_id, reason, due_at) VALUES (1, 'jira', 9, 'revoked', '2026-01-01T00:00:00Z')`)
+		if got, err := d.StartAccountPurge(1, time.Now()); err != nil || got {
+			t.Fatalf("start = %v, %v; want false", got, err)
+		}
+	})
 }
