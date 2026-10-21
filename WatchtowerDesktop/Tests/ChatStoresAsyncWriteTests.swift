@@ -215,7 +215,7 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
             return db.lastInsertedRowID
         }
         let strip = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        strip.refresh()
+        await strip.refresh()
         XCTAssertEqual(strip.reminderRows.map(\.id), [id])
         let held = HeldWriter(pool)
         defer { held.release() }
@@ -248,7 +248,7 @@ final class ChatStoresAsyncWriteTests: XCTestCase {
             return id
         }
         let strip = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        strip.refresh()
+        await strip.refresh()
 
         await strip.markReminderDone(id)
 

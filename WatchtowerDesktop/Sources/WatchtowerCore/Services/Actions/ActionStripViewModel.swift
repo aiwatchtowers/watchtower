@@ -49,7 +49,10 @@ package final class ActionStripViewModel {
     package var selection: InboxSelection?
     /// The filter bar's segment, remembered per viewer.
     package var filter: InboxFilter {
-        didSet { defaults.set(filter.rawValue, forKey: Self.filterKey) }
+        didSet {
+            defaults.set(filter.rawValue, forKey: Self.filterKey)
+            rebuildSections()
+        }
     }
     /// The date whose day card the owner marked Done (it then stops being pinned), remembered per viewer.
     package private(set) var dayDone: String?
@@ -72,6 +75,9 @@ package final class ActionStripViewModel {
     private let pendingWrites = PendingWrites()
     private var refreshGate = ForegroundRefreshGate()
     private var pollTask: Task<Void, Never>?
+    /// The refresh under way; a call meanwhile waits for it and asks for one more read.
+    private var refreshTask: Task<Void, Never>?
+    private var refreshAgain = false
 
     package static let filterKey = "inbox.filter"
     package static let dayDoneKey = "inbox.dayCardDone"
@@ -148,18 +154,39 @@ package final class ActionStripViewModel {
     }
 
     /// One-shot refetch of every kind (plus the automation labels and the
-    /// reaction phase's last check), inside one read. The only thing that can
-    /// surface a row a subprocess (CLI action commands, the daemon's phases,
-    /// an automation run) wrote. Reads only (STRIP-02). A selected card that
-    /// is gone now gives way to the next row still listed.
-    package func refresh() {
+    /// reaction phase's last check), inside one read off the main thread. The
+    /// only thing that can surface a row a subprocess (CLI action commands,
+    /// the daemon's phases, an automation run) wrote. Reads only (STRIP-02).
+    /// A selected card that is gone now gives way to the next row still listed.
+    ///
+    /// Calls never overlap: a call while a read is under way waits for it and
+    /// then for one more read, so every caller returns after a read that
+    /// started after its call (several waiting calls share that one read).
+    package func refresh() async {
+        if let running = refreshTask {
+            refreshAgain = true
+            await running.value
+            return
+        }
+        let task = Task { @MainActor in
+            repeat {
+                refreshAgain = false
+                await readFeed()
+            } while refreshAgain
+            refreshTask = nil
+        }
+        refreshTask = task
+        await task.value
+    }
+
+    private func readFeed() async {
         lastError = nil
         let now = Date()
         let nowUTC = AutomationDates.format(now)
         let today = HomeFeedBuilder.dayString(now, calendar: .current)
         let dayLimit = dayLimit
         do {
-            let snapshot = try dbPool.read { db in
+            let snapshot = try await dbPool.read { db in
                 let feed = try InboxFeedQueries.read(db, nowUTC: nowUTC, today: today, dayLimit: dayLimit)
                 let runLabels = try AutomationQueries.runLabels(
                     db, runIDs: feed.proposals.compactMap(Self.automationRunID))
@@ -173,16 +200,20 @@ package final class ActionStripViewModel {
             feed = snapshot.feed
             actionLabels = snapshot.labels
             lastReactionCheck = snapshot.lastCheck
+            rebuildSections()
             keepSelectionListed(was: before)
         } catch {
             lastError = error.localizedDescription
         }
     }
 
-    /// The list as `InboxListBuilder` lays it out for the current filter.
-    package var sections: [InboxSection] {
+    /// The list as `InboxListBuilder` laid it out for the current filter;
+    /// rebuilt on each read and on a filter or day Done change.
+    package private(set) var sections: [InboxSection] = []
+
+    private func rebuildSections() {
         let now = Date()
-        return InboxListBuilder.sections(
+        sections = InboxListBuilder.sections(
             feed, filter: filter, dayDone: dayDone, today: HomeFeedBuilder.dayString(now, calendar: .current),
             now: now, calendar: .current)
     }
@@ -206,14 +237,15 @@ package final class ActionStripViewModel {
     /// Routing entry (old links, Home): shows `filter` and opens `item`.
     package func open(_ filter: InboxFilter, select item: InboxSelection?) async {
         self.filter = filter
-        refresh()
+        await refresh()
         await select(item)
     }
 
-    /// The Day filter reads one more page of dates.
-    package func showOlderDays() {
+    /// The Day filter reads one more page of dates; the returned refresh can be awaited.
+    @discardableResult
+    package func showOlderDays() -> Task<Void, Never> {
         dayLimit += Self.dayPage
-        refresh()
+        return Task { await refresh() }
     }
 
     /// Done on a day card: it stops being pinned on top of Today. A per-viewer
@@ -221,6 +253,7 @@ package final class ActionStripViewModel {
     package func markDayDone(_ date: String) {
         dayDone = date
         defaults.set(date, forKey: Self.dayDoneKey)
+        rebuildSections()
     }
 
     // MARK: - Polling (board #731)
@@ -229,13 +262,16 @@ package final class ActionStripViewModel {
     /// screen after a skipped tick, one refresh at once. On screen starts the
     /// 30 s poll the first time.
     package func setOnScreen(_ onScreen: Bool) {
-        if refreshGate.setOnScreen(onScreen) { refresh() }
+        if refreshGate.setOnScreen(onScreen) { onScreenRefresh = Task { await refresh() } }
         if onScreen { startPolling() }
     }
 
+    /// The refresh `setOnScreen` started — held so tests can await it.
+    package private(set) var onScreenRefresh: Task<Void, Never>?
+
     /// One tick of the 30 s poll (its loop's body; tests call it directly).
     package func pollTick() async {
-        if refreshGate.tick() { refresh() }
+        if refreshGate.tick() { await refresh() }
     }
 
     private func startPolling() {
@@ -274,7 +310,7 @@ package final class ActionStripViewModel {
         await write(.card(.reminder(id)), { try ReminderQueries.snooze($0, id: id, until: until) }, onFailure: { error in
             // A reminder deleted elsewhere leaves the strip; `refresh` clears
             // `lastError`, so the reason is set after it.
-            if error is RowNotFoundError { self.refresh() }
+            if error is RowNotFoundError { await self.refresh() }
         })
     }
 
@@ -335,9 +371,9 @@ package final class ActionStripViewModel {
             lastError = nil
             do {
                 try await controls.stopWatching(track)
-                refresh()
+                await refresh()
             } catch is RowNotFoundError {
-                refresh()
+                await refresh()
             } catch {
                 lastError = error.localizedDescription
             }
@@ -374,9 +410,9 @@ package final class ActionStripViewModel {
             }
             do {
                 _ = try await runner.run(args: args, timeout: HomeFeedActionError.cliTimeout)
-                refresh()
+                await refresh()
             } catch {
-                refresh()
+                await refresh()
                 lastError = error.localizedDescription
             }
         }
@@ -412,9 +448,9 @@ package final class ActionStripViewModel {
             }
             do {
                 _ = try await AutomationsCLI(runner: runner).reply(outputID: outputID, action: action)
-                refresh()
+                await refresh()
             } catch {
-                refresh()
+                await refresh()
                 lastError = Self.replyRefusal(AutomationsViewModel.message(for: error))
             }
         }
@@ -443,7 +479,7 @@ package final class ActionStripViewModel {
         _ key: CardKey,
         _ change: @escaping @Sendable (Database) throws -> Void,
         onSuccess: () -> Void = {},
-        onFailure: (Error) -> Void = { _ in }
+        onFailure: (Error) async -> Void = { _ in }
     ) async {
         let pool = dbPool
         await pendingWrites.run(key) {
@@ -451,9 +487,9 @@ package final class ActionStripViewModel {
             do {
                 try await pool.write(change)
                 onSuccess()
-                refresh()
+                await refresh()
             } catch {
-                onFailure(error)
+                await onFailure(error)
                 lastError = error.localizedDescription
             }
         }
@@ -461,25 +497,25 @@ package final class ActionStripViewModel {
 
     package func approve(_ id: Int64, shownArgs: String, patch: String? = nil) async {
         await actionFeed.approve(id, shownArgs: shownArgs, patch: patch)
-        refresh()
+        await refresh()
         adoptFeedError()
     }
 
     package func reject(_ id: Int64) async {
         await actionFeed.reject(id)
-        refresh()
+        await refresh()
         adoptFeedError()
     }
 
     package func retry(_ id: Int64) async {
         await actionFeed.retry(id)
-        refresh()
+        await refresh()
         adoptFeedError()
     }
 
     package func dismiss(_ id: Int64) async {
         await actionFeed.dismiss(id)
-        refresh()
+        await refresh()
         adoptFeedError()
     }
 

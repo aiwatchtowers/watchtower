@@ -70,7 +70,7 @@ enum InboxShotFixtures {
                     link: "https://example.com/acme/issue/482", actionsJSON: actions)
             }
             let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-            vm.refresh()
+            refreshed(vm)
             vm.selection = .output(selected)
             return AnyView(InboxSplitView(
                 vm: vm, cheatSheetRows: [], onOpenSettings: {},
@@ -111,7 +111,7 @@ enum InboxShotFixtures {
                     createdAt: "2026-10-21T10:12:00Z")
             }
             let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-            vm.refresh()
+            refreshed(vm)
             vm.selection = .proposal(selected)
             return AnyView(InboxSplitView(
                 vm: vm, cheatSheetRows: [], onOpenSettings: {},
@@ -146,5 +146,20 @@ enum InboxShotFixtures {
             .frame(width: 420)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .detailBackground())
+    }
+
+    /// The shot renders at once, so the strip's async read is waited for
+    /// here by running the main run loop (the test-side `spin` precedent).
+    private static func refreshed(_ vm: ActionStripViewModel) {
+        final class Flag { var done = false }
+        let flag = Flag()
+        Task { @MainActor in
+            await vm.refresh()
+            flag.done = true
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while !flag.done, Date() < deadline {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
     }
 }

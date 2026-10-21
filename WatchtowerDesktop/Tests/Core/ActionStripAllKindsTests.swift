@@ -97,8 +97,8 @@ final class ActionStripAllKindsTests: XCTestCase {
         let before = try dump(tables)
         let vm = makeVM()
 
-        vm.refresh()
-        vm.refresh()
+        await vm.refresh()
+        await vm.refresh()
 
         XCTAssertEqual(try dump(tables), before)
         XCTAssertNil(vm.lastError)
@@ -126,7 +126,7 @@ final class ActionStripAllKindsTests: XCTestCase {
         let other = try row("briefings", id - 1)
         let before = try row("briefings", id)
         let vm = makeVM()
-        vm.refresh()
+        await vm.refresh()
 
         await vm.select(.day(date))
 
@@ -143,7 +143,7 @@ final class ActionStripAllKindsTests: XCTestCase {
         let id = try await pool.write { try Self.message($0, 1) }
         let before = try row("inbox_items", id)
         let vm = makeVM()
-        vm.refresh()
+        await vm.refresh()
 
         await vm.select(.message(id))
 
@@ -165,7 +165,7 @@ final class ActionStripAllKindsTests: XCTestCase {
         let tables = ["tracks", "track_events", "ideas"]
         let before = try dump(tables)
         let vm = makeVM()
-        vm.refresh()
+        await vm.refresh()
         let idea = try XCTUnwrap(vm.feed.ideas.first)
 
         await vm.select(.track(id))
@@ -173,6 +173,26 @@ final class ActionStripAllKindsTests: XCTestCase {
 
         XCTAssertEqual(try dump(tables), before)
         XCTAssertEqual(vm.selection, .idea(idea.id))
+    }
+
+    func testOpeningAnAlreadyReadCardWritesNothing() async throws {
+        let date = today
+        let id = try await pool.write { db -> Int in
+            try TestDatabase.insertBriefing(db, date: date, readAt: "2026-10-01T00:00:00Z")
+            let id = try Self.message(db, 1)
+            try db.execute(sql: "UPDATE inbox_items SET read_at = '2026-10-01T00:00:00Z' WHERE id = ?", arguments: [id])
+            return id
+        }
+        let tables = ["briefings", "inbox_items"]
+        let before = try dump(tables)
+        let vm = makeVM()
+        await vm.refresh()
+
+        await vm.select(.day(date))
+        await vm.select(.message(id))
+
+        XCTAssertEqual(try dump(tables), before)
+        XCTAssertNil(vm.lastError)
     }
 
     // MARK: - Tracks
@@ -187,7 +207,7 @@ final class ActionStripAllKindsTests: XCTestCase {
             return (Int(track), Int(other))
         }
         let vm = makeVM()
-        vm.refresh()
+        await vm.refresh()
 
         await vm.markTrackDone(id)
 
@@ -209,7 +229,7 @@ final class ActionStripAllKindsTests: XCTestCase {
             return (Int(custom), Int(auto))
         }
         let vm = makeVM()
-        vm.refresh()
+        await vm.refresh()
         let cards = vm.feed.tracks.map(\.track)
         let customTrack = try XCTUnwrap(cards.first { $0.id == custom })
         let autoTrack = try XCTUnwrap(cards.first { $0.id == auto })
@@ -235,7 +255,7 @@ final class ActionStripAllKindsTests: XCTestCase {
         let id = try await pool.write { try Self.message($0, 1) }
         let runner = FakeCLIRunner()
         let vm = makeVM(runner)
-        vm.refresh()
+        await vm.refresh()
 
         await vm.messageDone(id)
         await vm.hideMessage(id)
@@ -253,7 +273,7 @@ final class ActionStripAllKindsTests: XCTestCase {
     func testAMessageCLIFailureSaysWhy() async throws {
         let id = try await pool.write { try Self.message($0, 1) }
         let vm = makeVM(FakeCLIRunner(error: CLIRunnerError.binaryNotFound))
-        vm.refresh()
+        await vm.refresh()
 
         await vm.messageDone(id)
 
@@ -264,7 +284,7 @@ final class ActionStripAllKindsTests: XCTestCase {
     func testMessageDoneOnAResolvedItemIsQuiet() async throws {
         let id = try await pool.write { try Self.message($0, 1) }
         let vm = makeVM()
-        vm.refresh()
+        await vm.refresh()
         XCTAssertEqual(vm.feed.messages.count, 1)
         // INBOX-02 auto-resolved it after the list was read; the CLI exits 0.
         try await pool.write { db in
@@ -287,7 +307,7 @@ final class ActionStripAllKindsTests: XCTestCase {
         }
         let vm = makeVM()
         vm.filter = .messages
-        vm.refresh()
+        await vm.refresh()
         XCTAssertEqual(vm.sections.flatMap(\.items).map(\.id), ids.map { .message($0) })
         await vm.select(.message(ids[1]))
         try await pool.write { db in
@@ -316,7 +336,7 @@ final class ActionStripAllKindsTests: XCTestCase {
         }
         let vm = makeVM()
         vm.filter = .messages
-        vm.refresh()
+        await vm.refresh()
         await vm.select(.message(ids[1]))
         try await pool.write { db in
             try db.execute(sql: "UPDATE inbox_items SET status = 'resolved' WHERE id = ?", arguments: [ids[1]])
@@ -325,6 +345,18 @@ final class ActionStripAllKindsTests: XCTestCase {
         await vm.pollTick()
 
         XCTAssertEqual(vm.selection, .message(ids[2]))
+    }
+
+    func testOverlappingRefreshesEachEndOnAFreshRead() async throws {
+        let vm = makeVM()
+        async let first: Void = vm.refresh()
+        let id = try await pool.write { try Self.message($0, 1) }
+        async let second: Void = vm.refresh()
+        _ = await (first, second)
+
+        // The second call started after the write: it returns only after a read that sees it.
+        XCTAssertEqual(vm.feed.messages.map(\.item.id), [id])
+        XCTAssertNil(vm.lastError)
     }
 
     // MARK: - Per-viewer state
@@ -362,10 +394,10 @@ final class ActionStripAllKindsTests: XCTestCase {
             }
         }
         let vm = makeVM()
-        vm.refresh()
+        await vm.refresh()
         XCTAssertEqual(vm.feed.days.count, 30)
 
-        vm.showOlderDays()
+        await vm.showOlderDays().value
 
         XCTAssertEqual(vm.dayLimit, 60)
         XCTAssertEqual(vm.feed.days.count, 31)
@@ -375,7 +407,7 @@ final class ActionStripAllKindsTests: XCTestCase {
 
     func testPollSkipsWhileOffScreen() async throws {
         let vm = makeVM()
-        vm.refresh()
+        await vm.refresh()
         vm.setOnScreen(false)
         let id = try await pool.write { try Self.message($0, 1) }
 
@@ -383,6 +415,7 @@ final class ActionStripAllKindsTests: XCTestCase {
         XCTAssertTrue(vm.feed.messages.isEmpty)
 
         vm.setOnScreen(true)
+        await vm.onScreenRefresh?.value
         XCTAssertEqual(vm.feed.messages.map(\.item.id), [id], "back on screen after a skipped tick refreshes at once")
     }
 }

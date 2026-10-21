@@ -1754,7 +1754,7 @@ final class AppState {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
             try await AutomationsCLI(runner: runner).wake()
         }
-        vm.refresh()
+        Task { await vm.refresh() }
         actionStripViewModel = vm
     }
 

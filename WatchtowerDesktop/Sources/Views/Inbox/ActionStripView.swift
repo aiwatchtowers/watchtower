@@ -81,7 +81,7 @@ struct ActionStripView: View {
         }
         .navigationTitle("Inbox")
         .task {
-            appState.actionStripViewModel?.refresh()
+            await appState.actionStripViewModel?.refresh()
             // The cheat sheet reads the dictionary through this VM, so a
             // Settings edit made while the Inbox was out of view shows up.
             appState.reactionDictionaryViewModel?.refresh()
