@@ -348,6 +348,37 @@ final class HomeFeedActionTests: XCTestCase {
         XCTAssertEqual(center.feedLimit, HomeFeedBuilder.waitingLimit)
     }
 
+    /// A Done that fails while the list is expanded at eight rows: the
+    /// page does not collapse under the pending write, so the row comes
+    /// back with its error in view, not behind "1 more".
+    func testFailedDoneKeepsThePageOpen() async throws {
+        let pool = try makePool()
+        try await insertInbox(pool, count: 8)
+        let performer = FakeHomeFeedPerformer()
+        performer.gated = true
+        performer.error = NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "write failed"])
+        let center = try makeCenter(performer: performer)
+        center.beginReading(pool: pool)
+        defer { center.endReading() }
+        await waitUntil(center) { $0?.feed.waiting.count == 7 }
+        center.pageFeed(more: true)
+        let ref = try XCTUnwrap(center.snapshot?.feed.waiting.last?.id)
+
+        let done = Task { await center.act(.done, on: ref) }
+        await waitUntil(center, hides(ref))
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 7)
+        XCTAssertEqual(center.feedLimit, 50, "no collapse while the write runs")
+        XCTAssertTrue(performer.isWaiting)
+        performer.release()
+        await done.value
+
+        XCTAssertEqual(center.feedErrors[ref], "write failed")
+        XCTAssertTrue(shows(ref)(center.snapshot), "the failed row is back in view")
+        XCTAssertEqual(center.snapshot?.feed.waiting.count, 8)
+        XCTAssertEqual(center.snapshot?.feed.hiddenWaiting, 0)
+        XCTAssertEqual(center.feedLimit, 50)
+    }
+
     // MARK: - LiveHomeFeedPerformer
 
     /// Done marks an automation output read, Hide dismisses it, both through

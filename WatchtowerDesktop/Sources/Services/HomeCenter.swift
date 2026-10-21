@@ -440,8 +440,11 @@ final class HomeCenter {
         // Down to the collapsed seven (Done / Hide, a read): the list is
         // collapsed again, so a later backlog starts folded and "Show less"
         // never vanishes while the page state sticks. The feed itself is the
-        // same either way.
-        if feed.waiting.count + feed.hiddenWaiting <= HomeFeedBuilder.waitingLimit,
+        // same either way. Not while a Done / Hide is still running: a
+        // failed one brings its row back with the error, and that row must
+        // not land behind "N more"; the rebuild after the write decides.
+        if acting.isEmpty,
+           feed.waiting.count + feed.hiddenWaiting <= HomeFeedBuilder.waitingLimit,
            feedLimit != HomeFeedBuilder.waitingLimit {
             feedLimit = HomeFeedBuilder.waitingLimit
         }
