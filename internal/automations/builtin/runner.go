@@ -195,12 +195,17 @@ func (r *Runner) cancelQueuedManual(automationID int64) error {
 	return nil
 }
 
+// ErrRunNowQueued is RunNow's refusal (it also wraps
+// automations.ErrRunNotClaimed) when a manual run of the built-in with other
+// input is already queued for its next slot.
+var ErrRunNowQueued = errors.New("a Run Now is already queued for the next sync")
+
 // RunNow runs built-in id now, inline, with input in (the CLI's generate
 // commands): a manual run with event_json {"builtin": in}, whether or not the
 // built-in is on. An unconfirmed built-in's run is cancelled and the error
 // wraps automations.ErrNotRunnable; one that cannot be claimed (another run
-// of it is active, or a manual run with other input is already queued for
-// the next slot) wraps automations.ErrRunNotClaimed; a run this call queued
+// of it is active, or — ErrRunNowQueued too — a manual run with other input
+// is already queued for the next slot) wraps automations.ErrRunNotClaimed; a run this call queued
 // is then cancelled, so it never runs later with in.
 func (r *Runner) RunNow(ctx context.Context, id string, in automations.BuiltinInput) (*db.AutomationRun, error) {
 	if _, ok := Lookup(id); !ok {
@@ -226,7 +231,7 @@ func (r *Runner) RunNow(ctx context.Context, id string, in automations.BuiltinIn
 			return nil, err
 		}
 		if queued.EventJSON != string(payload) {
-			return nil, fmt.Errorf("built-in %s: run %d is already queued for the next sync: %w", id, runID, automations.ErrRunNotClaimed)
+			return nil, fmt.Errorf("built-in %s: run %d: %w: %w", id, runID, ErrRunNowQueued, automations.ErrRunNotClaimed)
 		}
 	}
 	run, err := r.exec.ExecuteBuiltinInline(ctx, runID)

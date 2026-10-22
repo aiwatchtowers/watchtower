@@ -467,3 +467,91 @@ func TestAutomationsShow_UnreadableCopyIsCopyError(t *testing.T) {
 	show := runAutomationsJSON(t, "show", idArg(a.ID))
 	assert.Contains(t, show["builtin"].(map[string]any)["copy_error"], "reading the edited copy")
 }
+
+// TestBriefingGenerate_QueuedRunAndBrokenCopyRefusals: a Run Now already
+// queued for the next sync and an edited copy that does not parse each get
+// their own refusal (not the running / not-confirmed texts).
+func TestBriefingGenerate_QueuedRunAndBrokenCopyRefusals(t *testing.T) {
+	c := newBuiltinCLI(t, true, builtinBriefReply)
+	a := c.row(t)
+	_, _, err := c.d.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerManual, Now: time.Now()})
+	require.NoError(t, err)
+	code, stderr := executeCLI(t, "briefing", "generate")
+	assert.NotEqual(t, 0, code)
+	assert.Equal(t, "Morning brief is already queued for the next sync\n", stderr)
+
+	path := builtin.OwnerCopyPath(c.ws, morningBriefID)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(t, os.WriteFile(path, []byte("not a recipe"), 0o600))
+	code, stderr = executeCLI(t, "day-plan", "generate", "--feedback", "fewer meetings")
+	assert.NotEqual(t, 0, code)
+	assert.Equal(t, "Morning brief: your edited copy has an error — fix it in Automations → Built in\n", stderr)
+	assert.Zero(t, c.gen.CallCount())
+}
+
+func TestAutomationsRun_BuiltinRerunOfRefused(t *testing.T) {
+	c := newBuiltinCLI(t, true)
+	a := c.row(t)
+	orig := builtinRunSignal
+	builtinRunSignal = func(*config.Config) (int, error) { return 0, nil }
+	t.Cleanup(func() { builtinRunSignal = orig })
+	runAutomationsJSON(t, "run", idArg(a.ID))
+	first := (&autoCLI{d: c.d}).runs(t, a.ID)
+	require.Len(t, first, 1)
+	_, err := runAutomations(t, "run", idArg(a.ID), "--rerun-of", idArg(first[0].ID))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--rerun-of")
+	assert.Len(t, (&autoCLI{d: c.d}).runs(t, a.ID), 1, "no row carries rerun_of")
+}
+
+// A .builtin that is not a real folder is never written or removed through.
+func TestAutomationsReset_RefusesLinkedBuiltinFolder(t *testing.T) {
+	c := newBuiltinCLI(t, true)
+	a := c.row(t)
+	elsewhere := t.TempDir()
+	victim := filepath.Join(elsewhere, morningBriefID+".md")
+	require.NoError(t, os.WriteFile(victim, []byte("keep me"), 0o600))
+	require.NoError(t, os.Symlink(elsewhere, filepath.Dir(builtin.OwnerCopyPath(c.ws, morningBriefID))))
+	_, err := runAutomations(t, "reset", idArg(a.ID))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "is not a folder")
+	assert.FileExists(t, victim)
+}
+
+func TestAutomationsSave_BuiltinStaleHashWithoutCopyAndOverANonRegularCopy(t *testing.T) {
+	c := newBuiltinCLI(t, true)
+	a := c.row(t)
+	e, _ := builtin.Lookup(morningBriefID)
+	data, err := builtin.RenderOwnerCopy(e, map[string]string{"brief": "Edited brief for %s on %s."})
+	require.NoError(t, err)
+	file := filepath.Join(t.TempDir(), "draft.md")
+	require.NoError(t, os.WriteFile(file, data, 0o600))
+	path := builtin.OwnerCopyPath(c.ws, morningBriefID)
+
+	_, err = runAutomations(t, "save", "--file", file, "--path", "builtin:morning-brief", "--expect-content-hash", "stale")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "changed on disk", "the same wording as a stale copy hash")
+	assert.NoFileExists(t, path)
+
+	// A symlink at the copy path is never read: the row holds the shipped
+	// text, so the row's content_hash passes and the save replaces the link.
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	target := filepath.Join(t.TempDir(), "elsewhere.md")
+	require.NoError(t, os.WriteFile(target, []byte("other"), 0o600))
+	require.NoError(t, os.Symlink(target, path))
+	runAutomationsJSON(t, "save", "--file", file, "--path", "builtin:morning-brief", "--expect-content-hash", a.ContentHash)
+	fi, err := os.Lstat(path)
+	require.NoError(t, err)
+	assert.True(t, fi.Mode().IsRegular(), "the link was replaced by the copy")
+	got, err := os.ReadFile(target)
+	require.NoError(t, err)
+	assert.Equal(t, "other", string(got), "nothing was written through the link")
+}
+
+func TestAutomationsSave_BuiltinRefusedUnderAgentBeforeReading(t *testing.T) {
+	newBuiltinCLI(t, true)
+	t.Setenv("CLAUDECODE", "1")
+	_, err := runAutomations(t, "save", "--file", filepath.Join(t.TempDir(), "missing.md"), "--path", "builtin:morning-brief")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "under an AI agent", "refused before the missing file is read")
+}

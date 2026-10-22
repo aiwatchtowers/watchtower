@@ -436,3 +436,47 @@ func TestMarkStaleBuiltinRuns_EndsOnlyBuiltinRunsPastDeadline(t *testing.T) {
 	_, err = d.MarkStaleBuiltinRuns(time.Time{})
 	require.Error(t, err)
 }
+
+// A built-in run that waited is never stale: a wait moves the meter's
+// deadline by the pause, so started_at + budget says nothing about it. A
+// waiting run, a run resumed after a wait, and a run that waited on a write
+// and is running again are all left alone; a plain stale run is ended.
+func TestMarkStaleBuiltinRuns_NeverEndsARunThatWaited(t *testing.T) {
+	d := openTestDB(t)
+	claimStale := func(builtinID string) int64 {
+		a := seedBuiltinRow(t, d, builtinID, builtinID, "c1", "a1")
+		run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
+		ok, err := d.ClaimAutomationRun(run, "h", "s", 50000, 5, runTestNow.Add(-30*time.Minute))
+		require.NoError(t, err)
+		require.True(t, ok)
+		return run
+	}
+	step := func(run int64, s AutomationRunStep) {
+		s.RunID, s.Seq, s.StartedAt = run, 1, runTestNow.Add(-29*time.Minute)
+		_, err := d.AppendAutomationRunStep(s)
+		require.NoError(t, err)
+	}
+
+	waiting := claimStale("acme-waiting")
+	step(waiting, AutomationRunStep{Kind: "tool", Name: "create_target", Status: "waiting", ActionID: 7})
+	require.NoError(t, d.SetAutomationRunWaiting(waiting, WaitApproval))
+
+	resumedAsk := claimStale("acme-ask")
+	step(resumedAsk, AutomationRunStep{Kind: "ask", Name: "ask", Status: "ok", AskID: 3})
+	require.NoError(t, d.SetAutomationRunWaiting(resumedAsk, "ask"))
+	require.NoError(t, d.ResumeAutomationRun(resumedAsk))
+
+	resumedWrite := claimStale("acme-write")
+	step(resumedWrite, AutomationRunStep{Kind: "tool", Name: "create_target", Status: "applied", ActionID: 8})
+
+	plain := claimStale("acme-plain")
+	step(plain, AutomationRunStep{Kind: "llm", Name: "brief.compose", Status: "ok"})
+
+	n, err := d.MarkStaleBuiltinRuns(runTestNow)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	wantAutomationRun(t, d, plain, RunFailed, ErrKindInterrupted)
+	wantAutomationRun(t, d, waiting, RunWaiting, "")
+	wantAutomationRun(t, d, resumedAsk, RunRunning, "")
+	wantAutomationRun(t, d, resumedWrite, RunRunning, "")
+}

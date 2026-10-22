@@ -283,11 +283,11 @@ func queueBuiltinRun(cmd *cobra.Command, cfg *config.Config, database *db.DB, a 
 	case !a.Confirmed():
 		return fmt.Errorf("%s cannot run: its edited copy is not confirmed yet — confirm it in Automations → Built in", e.Name)
 	}
-	if _, err := runTrigger(database, a, autoFlags.RerunOf); err != nil {
-		return err
+	if autoFlags.RerunOf != 0 {
+		return fmt.Errorf("%s has no reruns: run it again without --rerun-of", e.Name)
 	}
 	runID, coalesced, err := database.EnqueueAutomationRun(db.EnqueueRequest{
-		AutomationID: a.ID, Trigger: db.TriggerManual, RerunOf: autoFlags.RerunOf, Now: time.Now(),
+		AutomationID: a.ID, Trigger: db.TriggerManual, Now: time.Now(),
 	})
 	if err != nil {
 		return err

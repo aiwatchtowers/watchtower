@@ -73,6 +73,8 @@ const morningBriefID = "morning-brief"
 const (
 	msgMorningBriefUnconfirmed = "Morning brief: your edited copy is not confirmed yet — confirm it in Automations → Built in"
 	msgMorningBriefRunning     = "Morning brief is running now — try again in a minute"
+	msgMorningBriefQueued      = "Morning brief is already queued for the next sync"
+	msgMorningBriefCopyError   = "Morning brief: your edited copy has an error — fix it in Automations → Built in"
 )
 
 // cliBuiltinGenerator is the generator of the CLI's built-in runs (`briefing
@@ -125,8 +127,12 @@ func runMorningBriefNow(ctx context.Context, cfg *config.Config, database *db.DB
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if _, err := builtin.SyncOne(ctx, database, cfg.WorkspaceDir(), cfg, morningBriefID, time.Now()); err != nil {
+	row, err := builtin.SyncOne(ctx, database, cfg.WorkspaceDir(), cfg, morningBriefID, time.Now())
+	if err != nil {
 		return err
+	}
+	if row.ParseError != "" {
+		return errors.New(msgMorningBriefCopyError) //nolint:staticcheck // ST1005: the text the Desktop shows
 	}
 	pipeCfg := *cfg
 	pipeCfg.Briefing.Enabled, pipeCfg.DayPlan.Enabled = true, true
@@ -134,8 +140,14 @@ func runMorningBriefNow(ctx context.Context, cfg *config.Config, database *db.DB
 	defer closeGen()
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go func() {
+		<-ctx.Done()
+		stop() // the first signal ends the run; a second one quits at once
+	}()
 	run, err := newCLIBuiltinRunner(&pipeCfg, database, gen, logger).RunNow(ctx, morningBriefID, in)
 	switch {
+	case errors.Is(err, builtin.ErrRunNowQueued):
+		return errors.New(msgMorningBriefQueued) //nolint:staticcheck // ST1005: the text the Desktop shows
 	case errors.Is(err, automations.ErrNotRunnable):
 		return errors.New(msgMorningBriefUnconfirmed) //nolint:staticcheck // ST1005: the pinned text the Desktop shows
 	case errors.Is(err, automations.ErrRunNotClaimed):

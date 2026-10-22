@@ -171,6 +171,7 @@ permissions the owner reviewed.
 - `internal/tools/registry_automation_test.go` — `TestAgent03_AutoGrantAppliesExternalOnlyOnAutomationSurfaceWithMatchingHash`, `TestAgent03_AutoGrantNeverCoversAnotherAutomationOrSurface`, `TestAgent03_RecipeEditMakesAutoGrantInactive`, `TestAgent03_AlwaysAskIsNeverAuto`, `TestTrustOrder_AutomationSurface` (incl. its `AutomationAgent` rows)
 - `internal/db/automation_grants_test.go` — `TestMigration00117_GrantsTable`, `TestGrant_StaleReGrantKeepsExistingGrant`
 - `internal/automations/manifest_test.go` — `TestManifest_AdmitsWrite`
+- C2 built-ins: `cmd/builtins_test.go` — `TestAuto03_BuiltinGetsNoAutoGrant` (`automations auto` on a built-in is refused; a built-in never holds a grant)
 - P3: `internal/automations/authoring/save_test.go` — `TestSaveAutomation_GrantsNotCarriedOver`; `WatchtowerDesktop/Tests/Core/AutomationFormTests.swift` — `testAuto03_KeepAutoBoxesUncheckedByDefault`; `WatchtowerDesktop/Tests/Core/AutomationEditorCenterTests.swift` — `testNoAutoOnWithoutACheckedBox`
 - see AGENT-03 in `agent-actions.md`
 
@@ -444,6 +445,19 @@ transaction that records the press on the output, and wakes the daemon. It
 does not go through the event bus; its `event_json` is `{"reply": {output_id,
 action, value, data, card}}` built from the stored output, never from the
 caller.
+Built-ins (C2, plan 2026-10-22 Task 7, owner-approved in ask #502):
+`automations run <id>` on a built-in only queues a `manual` row and asks the
+daemon for a sync (`signalSyncNow`); the daemon's slot executor runs it at the
+built-in's slot (`at_next_sync`). The second exception: `briefing generate`
+and `day-plan generate` run the Morning brief's confirmed recipe (the shipped
+text or the owner's confirmed copy) inline in the CLI process as one
+`manual` run with its input (`builtin.Runner.RunNow`, the brief's or the
+plan's primitive only), refused while another run of it is active or a Run
+Now is queued. A run such a CLI left running when it was killed is ended by
+the stale-run guard (`db.MarkStaleBuiltinRuns`, before each slot and Run Now):
+only a `running` built-in run past `started_at` + budget + 1 minute that never
+waited (no waiting status, no resume pending, no step that waited) — a run
+that waited or resumed is never ended by it.
 
 **Why locked:** One executor in one process is what makes concurrency
 (AUTO-05), budgets (AUTO-08) and restarts (AUTO-08) hold; a trigger that ran
@@ -460,6 +474,7 @@ a script inline would escape all three.
 - `WatchtowerDesktop/Tests/Core/WorkbenchHeaderAutomationButtonsTests.swift` — `testAuto09_HeaderButtonOnlyQueues` (a workbench header button's click is exactly `automations run <id> --json`; Swift writes no run)
 - `internal/automations/bus_test.go` — `TestAuto09_FlushOnlyQueues`, `TestBus_OneRunPerAutomationPerCycle` (P4)
 - `internal/automations/events_test.go` — `TestBus_EventsCarryNoContent` (P4)
+- C2 built-ins: `cmd/builtins_test.go` — `TestAuto09_BuiltinRunNowOnlyQueues`, `TestBriefingGenerate_RefusedWhileSlotRuns`; `internal/db/automation_builtins_test.go` — `TestMarkStaleBuiltinRuns_EndsOnlyBuiltinRunsPastDeadline`, `TestMarkStaleBuiltinRuns_NeverEndsARunThatWaited`; `internal/automations/builtin/runner_test.go` — `TestRunner_StaleRunOfAKilledCLIIsEnded`
 
 **Locked since:** 2026-10-14
 
@@ -608,6 +623,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-22 (board #801, plan C2 approved in ask #502): **AUTO-09 amended** — `automations run` on a built-in only queues a `manual` run for the daemon's next sync slot; `briefing generate` / `day-plan generate` run the Morning brief's confirmed recipe inline in the CLI process as one `manual` run (the second exception after `dry-run`), with the stale-run guard for a killed CLI's run (`db.MarkStaleBuiltinRuns`: running, past budget + 1 minute, never waited). **AUTO-03 extended** — a built-in gets no auto grant. No guard relaxed. Guards added: `TestAuto09_BuiltinRunNowOnlyQueues`, `TestBriefingGenerate_RefusedWhileSlotRuns`, `TestMarkStaleBuiltinRuns_EndsOnlyBuiltinRunsPastDeadline`, `TestMarkStaleBuiltinRuns_NeverEndsARunThatWaited`, `TestRunner_StaleRunOfAKilledCLIIsEnded`, `TestAuto03_BuiltinGetsNoAutoGrant`.
 - 2026-10-22 (board #801, spec 2026-10-22 §5.2, **AUTO-06 amended, owner approved in ask #500**): shipped built-in bytes run without the owner's confirmation — the built-in indexer confirms a built-in row only while its text is byte-equal to the recipe embedded in the running app (`db.ConfirmShippedBuiltin` refuses any other bytes, an owner row, or a stale hash). The owner's copy `<workspace>/automations/.builtin/<id>.md` is indexed unconfirmed and runs only after the owner confirms it; a hand edit makes it unconfirmed again; a copy that is not a regular file is never read. Only built-in recipes may declare a `sync` trigger or a `builtin:` capability; the Personal scanner never treats a built-in row as a file of its folder (a Personal recipe with a built-in's slug gets a row of its own). A dry run of a built-in calls no primitive (AUTO-12). No guard relaxed. Guards added: as listed under AUTO-06 ("C2 built-ins") and AUTO-12 (`TestAuto12_BuiltinPrimitiveDryRunCallsNothing`).
 - 2026-10-21 (Inbox card actions, spec 2026-10-21 §B3–B4, **owner approved in ask #475**): **AUTO-09 amended** — the Reply press is a trigger that only queues, never coalesced (one press, one run), outside the event bus; **AUTO-06 extended** — `inbox:reply` is hashed and checked at write, press and run. Strengthening; no guard relaxed; `TestRun_CoalescesSecondTrigger` and `TestBus_EventsCarryNoContent` unchanged. Guards added: `TestAuto09_ReplyCommandOnlyQueues`, `TestRun_ReplyIsNeverCoalesced`, `TestPressInboxOutputAction_OnePressOneRun`, `testAuto09_ReplyPressOnlyQueues`, `TestApprovalHash_InboxReplyIsHashed`, `TestOutput_ReplyActionNeedsInboxReply`, `TestAutomationsCLI_ReplyRefusedWhenNotRunnableOrNoCapability`, `TestExecutor_ReplyRunWithoutCapabilityFails`, and `TestAuto08_ResumeRebuildsInboxCard` (AUTO-08).
 - 2026-10-21 (Automations in the panel, board #405; spec `2026-10-21-automations-panel-and-inbox-design.md` §A, **AUTO-06 amended, owner approved in ask #475**): strengthening, no guard relaxed. The Desktop's confirming screen moves from the confirmation and Save sheets to the Automations panel's draft column, which shows every hashed field of the exact bytes saved and the changes since the confirmed text (`validate --json` gains `changes`/`changes_known`, and `fields`: a column that cannot show them turns every save and confirm button off); a press on changed bytes re-validates instead of saving. A panel save is enabled unless the owner picks **Save Turned Off** (`enable` after the confirmed save; Save Turned Off disables first). A template installs from its panel after `install-template --render` showed its validation; `install-template` stays unconfirmed and disabled (`TestInstallTemplate_InstalledUnconfirmedAndDisabled` unchanged) and the Desktop confirms an installed copy only when its `approval_hash` equals the shown one, then enables it. Quick run on a dimmed row opens the card instead of the sheet (`testDimmedRowOpensInsteadOfRunning` unchanged). Guards whose call sites moved with the sheets keep their names and assertions: `testSaveConfirmsTheValidatedHashOnly` and `testNoAutoOnWithoutACheckedBox` save through `check` + `commit(…, turnOn:)`; `testButtonsForStates` is unchanged (the card's ⋯ shows Turn Off / Turn On from a separate helper). AUTO-03 names the draft column's Keep auto boxes (still unchecked by default, `testAuto03_KeepAutoBoxesUncheckedByDefault`). Guards added: `testAuto06_SavePressAfterAnUnflushedEditRechecksInsteadOfSaving`, `testAuto06_SaveDisabledWhileChecking`, `testAuto06_TemplateConfirmsOnlyTheShownHash`, `TestInstallTemplate_RenderHashMatchesInstall`.

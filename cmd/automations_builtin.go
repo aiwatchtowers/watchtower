@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -63,6 +64,11 @@ func runAutomationsReset(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	path := builtin.OwnerCopyPath(cfg.WorkspaceDir(), id)
+	if _, err := os.Lstat(filepath.Dir(path)); err == nil {
+		if err := requireBuiltinCopyDir(filepath.Dir(path)); err != nil {
+			return fmt.Errorf("not reset: %w", err)
+		}
+	}
 	fi, err := os.Lstat(path)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):

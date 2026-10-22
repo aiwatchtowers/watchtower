@@ -292,26 +292,36 @@ func runAutomationsEnable(cmd *cobra.Command, args []string) error {
 	if err := refuseOwnerOnlyAutomationVerb("enable an automation"); err != nil {
 		return err
 	}
-	if err := refuseBuiltinOnOff(args[0]); err != nil {
+	_, database, err := openAutomationsCmd()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	if err := refuseBuiltinOnOff(database, args[0]); err != nil {
 		return err
 	}
 	if err := confirmWithOwner("enable an automation", automationConfirmDetail(args[0])); err != nil {
 		return err
 	}
-	return setAutomationsEnabled(cmd, args[0], true)
+	return setAutomationsEnabled(cmd, database, args[0], true)
 }
 
 func runAutomationsDisable(cmd *cobra.Command, args []string) error {
-	if err := refuseBuiltinOnOff(args[0]); err != nil {
+	_, database, err := openAutomationsCmd()
+	if err != nil {
 		return err
 	}
-	return setAutomationsEnabled(cmd, args[0], false)
+	defer database.Close()
+	if err := refuseBuiltinOnOff(database, args[0]); err != nil {
+		return err
+	}
+	return setAutomationsEnabled(cmd, database, args[0], false)
 }
 
 // refuseBuiltinOnOff refuses enable/disable of a built-in: its features'
 // config keys are its on/off truth (spec 2026-10-22 §5.4).
-func refuseBuiltinOnOff(arg string) error {
-	a, err := builtinArg(arg)
+func refuseBuiltinOnOff(database *db.DB, arg string) error {
+	a, err := builtinArg(database, arg)
 	if err != nil || a == nil {
 		return err
 	}
@@ -323,35 +333,30 @@ func refuseBuiltinOnOff(arg string) error {
 }
 
 // builtinArg is the automation arg names when it is a built-in's row, nil
-// otherwise — also when arg is not an id or names no automation: the command
-// reports that itself.
-func builtinArg(arg string) (*db.Automation, error) {
-	id, err := parseAutomationID("automation id", arg)
-	if err != nil {
-		return nil, nil
+// otherwise — also when arg is not an id or names no automation (the
+// command reports that itself); any other read error is returned.
+func builtinArg(database *db.DB, arg string) (*db.Automation, error) {
+	id, perr := parseAutomationID("automation id", arg)
+	if perr != nil {
+		return nil, nil //nolint:nilerr // not an id: the command reports it itself
 	}
-	_, database, err := openAutomationsCmd()
-	if err != nil {
-		return nil, err
-	}
-	defer database.Close()
 	a, err := database.GetAutomation(id)
-	if err != nil || !a.IsBuiltin() {
+	switch {
+	case errors.Is(err, db.ErrAutomationNotFound):
+		return nil, nil
+	case err != nil:
+		return nil, err
+	case !a.IsBuiltin():
 		return nil, nil
 	}
 	return a, nil
 }
 
-func setAutomationsEnabled(cmd *cobra.Command, arg string, on bool) error {
+func setAutomationsEnabled(cmd *cobra.Command, database *db.DB, arg string, on bool) error {
 	id, err := parseAutomationID("automation id", arg)
 	if err != nil {
 		return err
 	}
-	_, database, err := openAutomationsCmd()
-	if err != nil {
-		return err
-	}
-	defer database.Close()
 	if err := database.SetAutomationEnabled(id, on, time.Now()); err != nil {
 		return err
 	}
@@ -453,6 +458,14 @@ func runAutomationsSave(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
+	builtinID, toBuiltin := strings.CutPrefix(autoFlags.Path, builtinPathPrefix)
+	if toBuiltin {
+		// An unconfirmed copy stops the built-in, and a built-in is edited
+		// from its panel: refused before anything is read.
+		if err := refuseUnderAgent("save a built-in's edited copy"); err != nil {
+			return err
+		}
+	}
 	if autoFlags.File == "" {
 		return errors.New("--file is required: the recipe text to save")
 	}
@@ -465,8 +478,8 @@ func runAutomationsSave(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	if id, ok := strings.CutPrefix(autoFlags.Path, builtinPathPrefix); ok {
-		return saveBuiltinCopy(cmd, cfg, database, id, data)
+	if toBuiltin {
+		return saveBuiltinCopy(cmd, cfg, database, builtinID, data)
 	}
 	t, err := resolveSaveTarget(cfg, database, autoFlags.File, autoFlags.Path)
 	if err != nil {
@@ -523,11 +536,17 @@ func checkConfirmHash(t saveTarget, data []byte, hash string) error {
 // disk since is refused instead of overwritten.
 const expectContentHashFlag = "expect-content-hash"
 
+// errRecipeChangedOnDisk is the refusal of a save whose expected content
+// hash is stale.
+func errRecipeChangedOnDisk(path string) error {
+	return fmt.Errorf("not saved: the recipe changed on disk since you opened it (%s) — reload it and review again", path)
+}
+
 // checkExpectedContentHash refuses, before anything is written, a save over
 // a target whose current content hash is not want ("" = the target must not
 // exist; anything at the path, even a symlink, is a change).
 func checkExpectedContentHash(path, want string) error {
-	changed := fmt.Errorf("not saved: the recipe changed on disk since you opened it (%s) — reload it and review again", path)
+	changed := errRecipeChangedOnDisk(path)
 	_, err := os.Lstat(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		if want != "" {
@@ -577,9 +596,14 @@ func runAutomationsDelete(cmd *cobra.Command, args []string) error {
 	if err := refuseOwnerOnlyAutomationVerb("delete an automation"); err != nil {
 		return err
 	}
-	if a, err := builtinArg(args[0]); err != nil {
+	cfg, database, err := openAutomationsCmd()
+	if err != nil {
 		return err
-	} else if a != nil {
+	}
+	defer database.Close()
+	if b, err := builtinArg(database, args[0]); err != nil {
+		return err
+	} else if b != nil {
 		return errors.New(msgBuiltinNoDelete)
 	}
 	if err := confirmWithOwner("delete an automation", automationConfirmDetail(args[0])); err != nil {
@@ -589,11 +613,6 @@ func runAutomationsDelete(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	cfg, database, err := openAutomationsCmd()
-	if err != nil {
-		return err
-	}
-	defer database.Close()
 	a, err := database.GetAutomation(id)
 	if err != nil {
 		return err
@@ -662,13 +681,10 @@ const builtinPathPrefix = "builtin:"
 // until --confirm-hash, or the owner's confirm, unless it equals the shipped
 // text) and --confirm-hash confirmed as for any save. --expect-content-hash
 // compares with the copy's content hash, or with the shipped text's when
-// there is no copy (the row's content_hash either way). Refused under an
-// agent's markers: an unconfirmed copy stops the built-in, and a built-in is
-// edited from its panel.
+// there is no regular-file copy (the row's content_hash either way); a
+// non-regular file there is replaced. The caller refuses it under an
+// agent's markers.
 func saveBuiltinCopy(cmd *cobra.Command, cfg *config.Config, database *db.DB, id string, data []byte) error {
-	if err := refuseUnderAgent("save a built-in's edited copy"); err != nil {
-		return err
-	}
 	e, ok := builtinLookup(id)
 	if !ok {
 		return fmt.Errorf("cannot save to %s%s: there is no such built-in", builtinPathPrefix, id)
@@ -690,10 +706,8 @@ func saveBuiltinCopy(cmd *cobra.Command, cfg *config.Config, database *db.DB, id
 	if err := os.MkdirAll(t.dir, 0o700); err != nil {
 		return fmt.Errorf("creating %s: %w", t.dir, err)
 	}
-	if fi, err := os.Lstat(t.dir); err != nil {
-		return fmt.Errorf("checking %s: %w", t.dir, err)
-	} else if !fi.IsDir() {
-		return fmt.Errorf("cannot save to %s: %s is not a folder", path, t.dir)
+	if err := requireBuiltinCopyDir(t.dir); err != nil {
+		return err
 	}
 	if err := fsutil.WriteFileAtomic(path, data, 0o600); err != nil {
 		return fmt.Errorf("writing %s: %w", path, err)
@@ -719,13 +733,32 @@ func saveBuiltinCopy(cmd *cobra.Command, cfg *config.Config, database *db.DB, id
 
 // checkBuiltinExpectedContentHash refuses, before anything is written, a
 // save over a built-in whose current text is not want: the copy's content
-// hash when a copy is there, else the shipped text's.
+// hash when a regular-file copy is there, else the shipped text's (a copy
+// that is not a regular file is never read: the row holds the shipped text).
 func checkBuiltinExpectedContentHash(e builtin.Entry, path, want string) error {
-	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+	fi, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist) || (err == nil && !fi.Mode().IsRegular()):
 		if want != e.ShippedContentHash() {
-			return fmt.Errorf("not saved: %s changed since you opened it — reload it and review again", e.Name)
+			return errRecipeChangedOnDisk(path)
 		}
 		return nil
+	case err != nil:
+		return fmt.Errorf("checking %s: %w", path, err)
 	}
 	return checkExpectedContentHash(path, want)
+}
+
+// requireBuiltinCopyDir refuses a built-in copies folder (.builtin) that is
+// not a real folder (a symlink, a file): nothing is written or removed
+// through it.
+func requireBuiltinCopyDir(dir string) error {
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return fmt.Errorf("checking %s: %w", dir, err)
+	}
+	if !fi.IsDir() {
+		return fmt.Errorf("%s is not a folder; remove it first", dir)
+	}
+	return nil
 }
