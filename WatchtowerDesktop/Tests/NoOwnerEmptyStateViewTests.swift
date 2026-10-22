@@ -127,6 +127,45 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
         XCTAssertThrowsError(try makeInboxEmpty(vm, ownerKnown: true) {}.inspect().find(text: Self.message))
     }
 
+    /// Today's placeholder obeys Settings → Features: with the briefing and
+    /// day-plan features both off no filter lists it; with one off it is
+    /// listed and offers to make only the other half.
+    func testTodaysPlaceholderObeysTheFeatureSwitches() async throws {
+        try await testPool().write { db in
+            _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1")
+        }
+        let vm = try dayFilterVM()
+        let today = InboxSelection.day(AppState.inboxToday())
+        vm.disabledFeatures = ["briefing", "day-plan"]
+        await vm.refresh()
+        XCTAssertTrue(vm.sections.isEmpty, "both off: no placeholder on Day")
+        vm.filter = .all
+        XCTAssertTrue(vm.sections.isEmpty, "both off: no placeholder on All")
+
+        vm.disabledFeatures = ["briefing"]
+        await vm.refresh()
+        XCTAssertEqual(vm.sections.flatMap(\.items).map(\.id), [today])
+        XCTAssertFalse(vm.feed.briefingOn)
+        XCTAssertTrue(vm.feed.dayPlanOn)
+
+        let pool = try testPool()
+        func pane(briefingOn: Bool, dayPlanOn: Bool) -> InboxDayNothingReady {
+            InboxDayNothingReady(
+                owner: Self.known,
+                briefing: BriefingViewModel(dbManager: DatabaseManager(pool: pool), cliRunner: FakeCLIRunner()),
+                plan: DayPlanViewModel(databasePool: pool, cliRunner: FakeCLIRunner()),
+                emptyState: .neutral, briefingOn: briefingOn, dayPlanOn: dayPlanOn,
+                onMake: {}, onOpenConnections: {})
+        }
+        let planOnly = pane(briefingOn: false, dayPlanOn: true)
+        XCTAssertNoThrow(try planOnly.inspect().find(button: "Make today's plan"))
+        XCTAssertThrowsError(try planOnly.inspect().find(button: "Make today's brief and plan"))
+        XCTAssertThrowsError(try planOnly.inspect().find(button: "Make today's brief"))
+        let briefOnly = pane(briefingOn: true, dayPlanOn: false)
+        XCTAssertNoThrow(try briefOnly.inspect().find(button: "Make today's brief"))
+        XCTAssertThrowsError(try briefOnly.inspect().find(button: "Make today's plan"))
+    }
+
     // MARK: - Helpers
 
     private func makeInboxEmpty(

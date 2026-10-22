@@ -83,7 +83,8 @@ enum OneInboxShotFixtures {
                 try BriefingQueries.fetchDayCards(db, limit: 1).first
             })
             let plan = DayPlanViewModel(databasePool: manager.dbPool, cliRunner: FakeCLIRunner())
-            return AnyView(dayPane(card, manager: manager, plan: plan, row: nil)
+            // In the reading pane's column, which scrolls and pads the card.
+            return AnyView(InboxCardColumn { dayPane(card, manager: manager, plan: plan, row: nil) }
                 .frame(width: 420)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .environment(AppState())

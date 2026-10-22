@@ -322,6 +322,34 @@ final class InboxIdeaPaneTests: XCTestCase {
         XCTAssertEqual(try stored(idea.id)?.status, .merged)
     }
 
+    /// Reverse asks first, inline; only the row's **Reverse** reverses.
+    func testReverseAsksInline() async throws {
+        let decision = try insert(kind: "decision", title: "Ship on Thursdays", status: "active")
+        var row: IdeaActionRow?
+        let binding = Binding(get: { row }, set: { row = $0 })
+        var reversed = 0
+        var actions = IdeaActions()
+        let done = expectation(description: "reverse")
+        actions.reverse = {
+            reversed += 1
+            done.fulfill()
+        }
+        try bar(decision, actions: actions, row: binding).inspect().find(button: "Reverse").tap()
+        XCTAssertEqual(row, .reverse)
+        XCTAssertEqual(reversed, 0, "the first press only asks")
+
+        let open = bar(decision, actions: actions, row: binding)
+        XCTAssertNoThrow(try open.inspect().find(text: "Reverse this decision?"))
+        try open.inspect().find(IdeaReverseRow.self).find(button: "Cancel").tap()
+        XCTAssertNil(row)
+        row = .reverse
+        let confirm = try bar(decision, actions: actions, row: binding).inspect().find(IdeaReverseRow.self)
+        try confirm.find(button: "Reverse").tap()
+        await fulfillment(of: [done], timeout: 5)
+        XCTAssertEqual(reversed, 1)
+        XCTAssertNil(row)
+    }
+
     func testDeleteIsInline() async throws {
         let idea = try insert()
         var row: IdeaActionRow?

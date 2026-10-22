@@ -218,8 +218,6 @@ struct InboxSplitView<EmptyList: View>: View {
     /// The day pane with what only the split view knows.
     private func around(_ pane: InboxDayPane, _ card: InboxDayCard) -> InboxDayPane {
         var pane = pane
-        pane.navScreens = navScreens
-        pane.workbenches = workbenches
         pane.isWriting = vm.isWriting(.day(card.date))
         return pane
     }

@@ -66,6 +66,10 @@ struct ActionStripView: View {
             appState.reactionDictionaryViewModel?.refresh()
             await appState.refreshOwner()
         }
+        // The briefing and day-plan switches gate today's placeholder card.
+        .onChange(of: appState.featureVisibility.disabledFeatureIDs, initial: true) { _, ids in
+            appState.actionStripViewModel?.disabledFeatures = ids
+        }
         .onAppear { appState.actionStripViewModel?.setOnScreen(true) }
         .onDisappear { appState.actionStripViewModel?.setOnScreen(false) }
     }
@@ -93,7 +97,9 @@ struct ActionStripView: View {
                 appState.settingsTab = .connections
                 openSettings()
             },
-            onMade: { await vm.refresh() }
+            onMade: { await vm.refresh() },
+            briefingOn: vm.feed.briefingOn,
+            dayPlanOn: vm.feed.dayPlanOn
         )
     }
 

@@ -154,7 +154,13 @@ final class InboxRouteTests: XCTestCase {
             // A day card exists for the date the day-plan route opens.
             try TestDatabase.insertDayPlan(db, planDate: "2026-10-19")
             try TestDatabase.insertBriefing(db, date: briefingDate)
-            return Int(db.lastInsertedRowID)
+            let id = Int(db.lastInsertedRowID)
+            // The idea and track the helpers open: a route selects only a listed card.
+            let idea = try TestDatabase.insertIdea(db, title: "A shared glossary")
+            try db.execute(sql: "UPDATE ideas SET id = 5 WHERE id = ?", arguments: [idea])
+            let track = try TestDatabase.insertTrack(db, text: "Launch")
+            try db.execute(sql: "UPDATE tracks SET id = 7 WHERE id = ?", arguments: [track])
+            return id
         }
 
         var state = appState()

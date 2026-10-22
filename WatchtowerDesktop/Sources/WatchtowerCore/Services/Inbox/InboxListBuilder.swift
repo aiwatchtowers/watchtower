@@ -63,7 +63,8 @@ package enum InboxListBuilder {
     /// With `placeholdsToday`, today with neither a briefing nor a plan gets a
     /// placeholder day card (`InboxDayCard.placeholder`) in Day, and in All
     /// while the owner is known (`feed.ownerKnown`; else All's empty state
-    /// carries OWNER-02).
+    /// carries OWNER-02) — never while the briefing and day-plan features
+    /// are both off (`feed.briefingOn`, `feed.dayPlanOn`).
     /// The Tracks filter ends with a `Stopped · N` fold of the stopped tracks,
     /// listed only while `showsStopped`; no other filter shows them.
     package static func sections(
@@ -93,7 +94,8 @@ package enum InboxListBuilder {
         if showsAll || filter == .day {
             var days = showsAll ? feed.days.filter { $0.date == today || $0.isUnread } : feed.days
             // Today without a briefing or a plan yet still has its card.
-            if placeholdsToday, filter == .day || feed.ownerKnown, !feed.days.contains(where: { $0.date == today }) {
+            if placeholdsToday, feed.briefingOn || feed.dayPlanOn, filter == .day || feed.ownerKnown,
+               !feed.days.contains(where: { $0.date == today }) {
                 days.append(.placeholder(date: today, stamp: startOfToday))
             }
             rows += days.map { (at: $0.stamp, item: .day($0)) }

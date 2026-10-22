@@ -303,6 +303,11 @@ final class NotificationRouteTests: XCTestCase {
     func testTrackAndBriefingPushesOpenInboxCards() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
+        // Track 7 exists: a route selects only a listed card.
+        try await pool.write { db in
+            let track = try TestDatabase.insertTrack(db, text: "Launch")
+            try db.execute(sql: "UPDATE tracks SET id = 7 WHERE id = ?", arguments: [track])
+        }
         let savedFilter = UserDefaults.standard.object(forKey: "inbox.filter")
         defer { UserDefaults.standard.set(savedFilter, forKey: "inbox.filter") }
         let today = AppState.inboxToday()

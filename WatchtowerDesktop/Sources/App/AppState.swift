@@ -1602,9 +1602,7 @@ final class AppState {
         dbManager: DatabaseManager,
         cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault()
     ) {
-        let vm = BriefingViewModel(dbManager: dbManager, cliRunner: cliRunner)
-        vm.startObserving()
-        briefingViewModel = vm
+        briefingViewModel = BriefingViewModel(dbManager: dbManager, cliRunner: cliRunner)
     }
 
     /// Not marked `private` (unlike most of its siblings above) so XCTest can call it
@@ -1757,6 +1755,7 @@ final class AppState {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
             try await AutomationsCLI(runner: runner).wake()
         }
+        vm.disabledFeatures = featureVisibility.disabledFeatureIDs
         Task { await vm.refresh() }
         actionStripViewModel = vm
     }

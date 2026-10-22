@@ -57,10 +57,10 @@ final class InboxFeedQueriesTests: XCTestCase {
             }
         }
         let nowUTC = "2026-10-22T08:00:00Z"
-        let page = try queue.read { try InboxFeedQueries.read($0, nowUTC: nowUTC, today: "2026-10-22", dayLimit: 2) }
+        let page = try queue.read { try InboxFeedQueries.read($0, nowUTC: nowUTC, dayLimit: 2) }
         XCTAssertEqual(page.days.map(\.date), ["2026-10-22", "2026-10-21"])
         XCTAssertTrue(page.hasOlderDays)
-        let all = try queue.read { try InboxFeedQueries.read($0, nowUTC: nowUTC, today: "2026-10-22", dayLimit: 3) }
+        let all = try queue.read { try InboxFeedQueries.read($0, nowUTC: nowUTC, dayLimit: 3) }
         XCTAssertEqual(all.days.count, 3)
         XCTAssertFalse(all.hasOlderDays)
     }
@@ -215,7 +215,7 @@ final class InboxFeedQueriesTests: XCTestCase {
         let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: self.now) }
         XCTAssertEqual(badge, 2, "the proposal and the unread briefing; the missing tables count 0")
         let snapshot = try await pool.read {
-            try InboxFeedQueries.read($0, nowUTC: self.now, today: "2026-10-22", dayLimit: 30)
+            try InboxFeedQueries.read($0, nowUTC: self.now, dayLimit: 30)
         }
         XCTAssertEqual(snapshot.proposals.count, 1)
         XCTAssertEqual(snapshot.days.count, 1)
@@ -236,7 +236,7 @@ final class InboxFeedQueriesTests: XCTestCase {
                 INSERT INTO reminders (message_ref, note, remind_at, status) VALUES ('C1@1','x','2000-01-01T00:00:00Z','pending')
                 """)
         }
-        let snapshot = try queue.read { try InboxFeedQueries.read($0, nowUTC: now, today: "2026-10-22", dayLimit: 30) }
+        let snapshot = try queue.read { try InboxFeedQueries.read($0, nowUTC: now, dayLimit: 30) }
         XCTAssertEqual(snapshot.proposals.count, 1)
         XCTAssertEqual(snapshot.ideas.count, 1)
         XCTAssertEqual(snapshot.messages.count, 1)

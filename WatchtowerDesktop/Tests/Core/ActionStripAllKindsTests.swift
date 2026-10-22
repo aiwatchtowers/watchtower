@@ -425,6 +425,34 @@ final class ActionStripAllKindsTests: XCTestCase {
         XCTAssertFalse(vm.feed.hasOlderDays)
     }
 
+    /// A link to a stopped track opens the Stopped fold and selects it; a
+    /// link to a merged idea selects the idea it was merged into; a card
+    /// that is nowhere selects nothing (never a pane the next poll empties).
+    func testOpeningAHiddenTrackOrIdeaSelectsWhatIsListed() async throws {
+        let (stopped, target, merged) = try await pool.write { db -> (Int, Int, Int) in
+            let stopped = try TestDatabase.insertTrack(db, text: "Old vendor migration")
+            try db.execute(sql: "UPDATE tracks SET dismissed_at = '2026-10-18T10:00:00Z' WHERE id = ?",
+                           arguments: [stopped])
+            let target = try TestDatabase.insertIdea(db, title: "Weekly digest")
+            let merged = try TestDatabase.insertIdea(db, title: "Friday email", status: "merged",
+                                                     mergedIntoID: Int(target))
+            return (Int(stopped), Int(target), Int(merged))
+        }
+        let vm = makeVM()
+
+        await vm.open(.tracks, select: .track(stopped))
+        XCTAssertTrue(vm.showsStopped, "the Stopped fold opens")
+        XCTAssertEqual(vm.selection, .track(stopped))
+
+        await vm.open(.ideas, select: .idea(merged))
+        XCTAssertEqual(vm.selection, .idea(target), "the merge target opens")
+
+        await vm.open(.ideas, select: .idea(9999))
+        XCTAssertNil(vm.selection)
+        await vm.open(.tracks, select: .track(9999))
+        XCTAssertNil(vm.selection)
+    }
+
     /// A failed read stops the route's paging instead of looping.
     func testOpeningAnOldDayStopsOnAFailedRead() async throws {
         try await pool.write { db in
