@@ -37,6 +37,8 @@ struct InboxDayPane: View {
     var onOpenConnections: () -> Void = {}
     /// The Inbox re-reads once a Make run ended.
     var onMade: () async -> Void = {}
+    /// The inline row open when the card shows (a design shot opens one).
+    var initialRow: InboxDayPlanRow?
 
     @State private var openRow: InboxDayPlanRow?
 
@@ -76,7 +78,7 @@ struct InboxDayPane: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .task(id: card.date) {
-            openRow = nil
+            openRow = initialRow
             await plan.loadFor(date: card.date)
         }
     }

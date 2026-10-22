@@ -223,7 +223,8 @@ struct TrackDetailView: View {
     /// action is applied through the CLI (the registry).
     private func startTimelineIfCustom(db: DatabaseManager) {
         guard track.isCustom, timelineVM == nil,
-              let runner = ProcessCLIRunner.makeDefault() else { return }
+              let runner = appState.trackActionRunnerOverride
+                ?? ProcessCLIRunner.makeDefault() as (any CLIRunnerProtocol)? else { return }
         let vm = CustomTrackTimelineViewModel(
             track: track,
             dbManager: db,

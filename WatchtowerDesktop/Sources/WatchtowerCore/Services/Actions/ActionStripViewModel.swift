@@ -75,6 +75,9 @@ package final class ActionStripViewModel {
     private let cliRunner: CLIRunnerProtocol?
     private let customTrackControls: any CustomTrackControlling
     private let defaults: UserDefaults
+    /// The moment the list is read and laid out at (Today, Earlier, due
+    /// reminders); the design shots fix it.
+    private let clock: @Sendable () -> Date
     /// One write per card (board #670).
     private let pendingWrites = PendingWrites()
     private var refreshGate = ForegroundRefreshGate()
@@ -99,9 +102,11 @@ package final class ActionStripViewModel {
         cliRunner: CLIRunnerProtocol? = nil,
         customTrackControls: (any CustomTrackControlling)? = nil,
         defaults: UserDefaults = .standard,
-        automationsWake: (() async throws -> Void)? = nil
+        automationsWake: (() async throws -> Void)? = nil,
+        clock: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.dbPool = dbPool
+        self.clock = clock
         self.cliRunner = cliRunner
         self.customTrackControls = customTrackControls ?? DirectCustomTrackControls(
             dbPool: dbPool, scanService: TrackScanService(runner: cliRunner ?? InstalledCLIRunner()))
@@ -185,7 +190,7 @@ package final class ActionStripViewModel {
 
     private func readFeed() async {
         lastError = nil
-        let now = Date()
+        let now = clock()
         let nowUTC = AutomationDates.format(now)
         let today = HomeFeedBuilder.dayString(now, calendar: .current)
         let dayLimit = dayLimit
@@ -216,7 +221,7 @@ package final class ActionStripViewModel {
     package private(set) var sections: [InboxSection] = []
 
     private func rebuildSections() {
-        let now = Date()
+        let now = clock()
         sections = InboxListBuilder.sections(
             feed, filter: filter, dayDone: dayDone, today: HomeFeedBuilder.dayString(now, calendar: .current),
             now: now, calendar: .current, showsStopped: showsStopped, placeholdsToday: true)
