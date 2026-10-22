@@ -111,31 +111,6 @@ final class IdeasViewModel {
         selectedID = id
     }
 
-    /// Selects `id` and clears whatever browse state would hide it — the
-    /// segment is switched to the idea's own kind, the status filter and
-    /// search are dropped — so a link from elsewhere (an Inbox strip card)
-    /// lands on the row instead of `reconcileSelection()` silently moving the
-    /// selection off it. The same reveal `createManual` does for a new row.
-    func reveal(_ id: Int) {
-        do {
-            let idea = try dbManager.dbPool.read { db in try IdeaQueries.fetchOne(db, id: id) }
-            // A deleted idea still switches to the Ideas segment; the reload
-            // then falls back to the first row, as for any vanished selection.
-            if let kind = idea?.kind, kind == .idea || kind == .note {
-                kindMode = kind.rawValue
-            } else {
-                kindMode = Idea.Kind.idea.rawValue
-            }
-        } catch {
-            errorMessage = "Failed to open idea: \(error.localizedDescription)"
-            return
-        }
-        statusFilter = nil
-        searchText = ""
-        selectedID = id
-        load()
-    }
-
     func startObserving() {
         guard observationTask == nil else { return }
         load()
@@ -305,6 +280,16 @@ final class IdeasViewModel {
 
     func merge(_ idea: Idea, into targetID: Int) async {
         await write("merge idea") { db in try IdeaQueries.merge(db, id: idea.id, into: targetID) }
+    }
+
+    /// A decision's Supersede (no replacing idea named).
+    func supersede(_ idea: Idea) async {
+        await write("supersede decision") { db in try IdeaQueries.supersede(db, id: idea.id, by: nil) }
+    }
+
+    /// A decision's Reverse.
+    func reverse(_ idea: Idea) async {
+        await write("reverse decision") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "reversed") }
     }
 
     /// Hard delete — the row, its mentions, and its Discuss chat. The reload's

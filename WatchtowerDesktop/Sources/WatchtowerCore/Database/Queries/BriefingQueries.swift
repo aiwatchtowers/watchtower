@@ -1,3 +1,4 @@
+import Foundation
 import GRDB
 
 package enum BriefingQueries {
@@ -34,11 +35,43 @@ package enum BriefingQueries {
         )
     }
 
+    /// One card per date over the briefings and the day plans, newest date
+    /// first. Each date takes its briefing and its plan (either may be nil) and
+    /// the plan's done/total item counts.
+    package static func fetchDayCards(_ db: Database, limit: Int, offset: Int = 0) throws -> [InboxDayCard] {
+        let dates = try String.fetchAll(db, sql: """
+            SELECT date FROM (
+                SELECT date AS date FROM briefings UNION SELECT plan_date AS date FROM day_plans
+            ) ORDER BY date DESC LIMIT ? OFFSET ?
+            """, arguments: [limit, offset])
+        return try dates.map { date in
+            let briefing = try fetchByDate(db, date: date)
+            let plan = try DayPlanQueries.fetchByDate(db, date: date)
+            var done = 0
+            var total = 0
+            if let plan {
+                let items = try DayPlanQueries.fetchItems(db, planId: plan.id)
+                total = items.count
+                done = items.filter { $0.status == .done }.count
+            }
+            let stamp = AutomationDates.parse(briefing?.createdAt) ?? plan?.generatedAt ?? Date(timeIntervalSince1970: 0)
+            return InboxDayCard(date: date, briefing: briefing, plan: plan, planDone: done, planTotal: total, stamp: stamp)
+        }
+    }
+
     package static func fetchLatest(_ db: Database) throws -> Briefing? {
         try Briefing.fetchOne(
             db,
             sql: "SELECT * FROM briefings ORDER BY created_at DESC LIMIT 1"
         )
+    }
+
+    /// 1 when the newest briefing is unread, else 0: the Inbox badge's day-card term.
+    package static func latestUnreadCount(_ db: Database) throws -> Int {
+        try Int.fetchOne(db, sql: """
+            SELECT COUNT(*) FROM (SELECT read_at FROM briefings ORDER BY created_at DESC, id DESC LIMIT 1)
+            WHERE read_at IS NULL OR read_at = ''
+            """) ?? 0
     }
 
     package static func markRead(_ db: Database, id: Int) throws {

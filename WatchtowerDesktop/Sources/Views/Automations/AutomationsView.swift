@@ -43,8 +43,14 @@ struct AutomationsView: View {
     var emptyStateContext: EmptyStateContext = .neutral
     var editor: AutomationEditorCenter?
     let hooks: AutomationEditorChatHooks
-    /// Whether the Tracks sidebar tab is visible; the Tracks section follows it.
-    var tracksVisible = true
+    /// The Feature Manager's disabled ids: the Tracks section shows while
+    /// the `tracks` feature is on.
+    var disabledFeatures: Set<String> = []
+
+    /// The one place the Tracks section's visibility is decided.
+    private var tracksVisible: Bool {
+        !disabledFeatures.contains("tracks")
+    }
 
     /// The Reactions **+**: a personal automation whose chat starts on a reaction trigger.
     static let reactionPrefill = "When I react to a Slack message with :<emoji>: (trigger slack.reaction_added), "

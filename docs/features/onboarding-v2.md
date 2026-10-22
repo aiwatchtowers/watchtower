@@ -136,6 +136,16 @@ row at the bottom of the menu names the kinds still missing (Mail = any
 Google, IMAP or CalDAV/ICS source), opens Settings → Connections, and hides
 for good with its × (`sidebar_connect_row_dismissed`).
 
+**C1, the one Inbox (2026-10-22, board #861):** the Briefings, Day Plan,
+Tracks and Ideas destinations are gone; the root items are Home, Targets,
+Workbench, Automations and Calendar, and FOCUS is Catch-Up and Inbox. Their
+output is the Inbox's Day, Tracks and Ideas filters, so it shows wherever the
+Inbox does (any source). A persisted `sidebar.hiddenItems` entry naming a
+removed destination is ignored. The goal → feature mapping
+(`OnboardingFeaturePlan`) is unchanged (plan ruling R11): a goal still turns
+`briefing`, `day-plan`, `tracks` and `ideas` on, and only where their output
+lands changed; onboarding's landing is still Home.
+
 **Profile writes are OWNER-01's** (`OnboardingProfileWriter`,
 docs/inventory/owner-identity.md). Finishing onboarding writes
 `onboarding_done = 1` alone (`OnboardingProfileWriter.later`) inside one

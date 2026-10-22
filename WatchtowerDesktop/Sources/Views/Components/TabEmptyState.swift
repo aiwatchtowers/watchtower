@@ -20,11 +20,15 @@ struct EmptyStateContext {
     static let neutral = Self()
 }
 
-/// `FeatureEmptyState` for one sidebar tab: its copy (`EmptyStateCopyTable`),
-/// its feature's readiness and Turn on state from the context, the tab's own
-/// action, and what the tab keeps inside (`extra`).
+/// `FeatureEmptyState` for one sidebar tab (or one Inbox filter): its copy
+/// (`EmptyStateCopyTable`), its feature's readiness and Turn on state from the
+/// context, the tab's own action, and what the tab keeps inside (`extra`).
 struct TabEmptyState<Extra: View>: View {
-    let destination: SidebarDestination
+    /// The `EmptyStateCopyTable` key: a `SidebarDestination.rawValue` or an
+    /// `InboxFilter.emptyCopyKey`.
+    let copyKey: String
+    /// Replaces the row's icon; nil keeps it.
+    let icon: String?
     let context: EmptyStateContext
     let onTabAction: () -> Void
     let extra: Extra
@@ -42,16 +46,25 @@ struct TabEmptyState<Extra: View>: View {
         onTabAction: @escaping () -> Void,
         @ViewBuilder extra: () -> Extra
     ) {
-        self.destination = destination
+        self.init(copyKey: destination.rawValue, context: context, onTabAction: onTabAction, extra: extra)
+    }
+
+    init(
+        copyKey: String,
+        icon: String? = nil,
+        context: EmptyStateContext,
+        onTabAction: @escaping () -> Void = {},
+        @ViewBuilder extra: () -> Extra
+    ) {
+        self.copyKey = copyKey
+        self.icon = icon
         self.context = context
         self.onTabAction = onTabAction
         self.extra = extra()
     }
 
     var body: some View {
-        if let copy = EmptyStateCopyTable.copy(
-            for: destination.rawValue, briefingHour: context.briefingHour, dayPlanHour: context.dayPlanHour
-        ) {
+        if let copy = shownCopy {
             let readiness = copy.feature.flatMap(context.readiness)
             let featureID = copy.feature.flatMap { feature in
                 FeatureReadiness.turnOnFeatureID(
@@ -78,11 +91,24 @@ struct TabEmptyState<Extra: View>: View {
             extra
         }
     }
+
+    private var shownCopy: EmptyStateCopy? {
+        guard let copy = EmptyStateCopyTable.copy(
+            for: copyKey, briefingHour: context.briefingHour, dayPlanHour: context.dayPlanHour
+        ) else { return nil }
+        guard let icon else { return copy }
+        return EmptyStateCopy(icon: icon, title: copy.title, landsHere: copy.landsHere, feature: copy.feature,
+                              primaryAction: copy.primaryAction)
+    }
 }
 
 extension TabEmptyState where Extra == EmptyView {
     init(_ destination: SidebarDestination, context: EmptyStateContext) {
         self.init(destination, context: context) { EmptyView() }
+    }
+
+    init(copyKey: String, icon: String? = nil, context: EmptyStateContext) {
+        self.init(copyKey: copyKey, icon: icon, context: context) { EmptyView() }
     }
 }
 

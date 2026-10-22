@@ -24,7 +24,7 @@ Connecting a calendar is also what makes the **Calendar** tab appear in the side
 
 ### What Prepare reads
 
-**Prepare** runs only when you click it, here or on the Day Plan timeline; nothing is prepared in advance. It builds the prep from:
+**Prepare** runs only when you click it, here in Calendar; nothing is prepared in advance. It builds the prep from:
 
 - the attendees' people cards and their last 7 days of activity
 - tracks and digests that involve them

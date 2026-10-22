@@ -38,7 +38,7 @@ final class InboxReplyPressTests: XCTestCase {
         let before = try dump(pool)
         let runner = FakeCLIRunner(stdout: Data(#"{"run_id":7,"daemon_running":true}"#.utf8))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        vm.refresh()
+        await vm.refresh()
 
         await vm.pressReply(outputID: id, action: 1)
 
@@ -57,7 +57,7 @@ final class InboxReplyPressTests: XCTestCase {
         runner.blockUntilCancelled = true
         runner.returnDataOnCancelInsteadOfThrowing = true
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        vm.refresh()
+        await vm.refresh()
 
         let first = Task { await vm.pressReply(outputID: id, action: 1) }
         await waitUntil { runner.invocations.count == 1 }
@@ -78,7 +78,7 @@ final class InboxReplyPressTests: XCTestCase {
         let id = try await seed(pool)
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: Sent — run #7\n"))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        vm.refresh()
+        await vm.refresh()
 
         await vm.pressReply(outputID: id, action: 1)
 
@@ -93,7 +93,7 @@ final class InboxReplyPressTests: XCTestCase {
         let id = try await seed(pool)
         let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "Error: Sent — run #7\n"))
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: runner)
-        vm.refresh()
+        await vm.refresh()
 
         await vm.pressReply(outputID: id, action: 1)
 

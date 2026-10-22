@@ -150,6 +150,23 @@ enum JiraConfigHelper {
                 return stored
             }
         }
+        return configSiteURL()
+    }
+
+    /// `readSiteURL()` off the main thread: the pool read is async and the
+    /// config file is read on a background task.
+    static func siteURL() async -> String? {
+        if let pool = dbPool {
+            let stored = try? await pool.read { db in try JiraAccountQueries.primarySiteURL(db) }
+            if let stored, !stored.isEmpty {
+                return stored
+            }
+        }
+        return await Task.detached { configSiteURL() }.value
+    }
+
+    /// The legacy `jira.site_url` config key.
+    nonisolated private static func configSiteURL() -> String? {
         let configPath = Constants.configPath
         guard let data = FileManager.default.contents(atPath: configPath),
               let str = String(data: data, encoding: .utf8),

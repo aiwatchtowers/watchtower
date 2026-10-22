@@ -251,6 +251,15 @@ final class AppState {
     /// filters and selection survive navigating away from and back to the tab.
     private(set) var ideasViewModel: IdeasViewModel?
 
+    /// Tracks ViewModel the Inbox's track card reads — AppState-owned like
+    /// `ideasViewModel`, so its state survives moving between cards.
+    private(set) var tracksViewModel: TracksViewModel?
+
+    /// A custom track card's Collecting toggle, instruction, scan and Stop
+    /// watching (R4): C1 writes `tracks` directly; C3 swaps in the watch
+    /// recipe. Shared by the Inbox view model and the track card.
+    private(set) var customTrackControls: (any CustomTrackControlling)?
+
     /// Secretary Profile ViewModel — persists across tab switches so an
     /// in-flight "Generate" style-sample run survives navigating away from
     /// and back to the Profile tab.
@@ -396,18 +405,9 @@ final class AppState {
     /// Set to navigate to a specific target from anywhere in the app.
     var pendingTargetID: Int?
 
-    /// Set to navigate to a specific briefing from anywhere in the app.
-    var pendingBriefingID: Int?
-
     /// Set to open a specific calendar event from anywhere in the app;
     /// `CalendarEventsView` consumes and clears it.
     var pendingCalendarEventID: String?
-
-    /// Set to navigate to the day plan for a specific date from anywhere in the app.
-    var pendingDayPlanDate: String?
-
-    /// Set to focus a specific track from anywhere in the app.
-    var pendingTrackID: Int?
 
     /// Set to focus a specific person card from anywhere in the app.
     var pendingPersonUserID: String?
@@ -1525,6 +1525,7 @@ final class AppState {
         initCatchUp(dbPool: manager.dbPool)
         initMemory(dbPool: manager.dbPool)
         initIdeas(dbManager: manager)
+        initTracks(dbManager: manager)
         initBriefings(dbManager: manager)
         initSecretaryProfile(dbManager: manager)
         initExternalConnections(dbPool: manager.dbPool)
@@ -1576,12 +1577,18 @@ final class AppState {
     }
 
     /// Not marked `private` (mirrors `initSecretaryProfile` below), leaving the
-    /// same XCTest entry point open for `ideasViewModel` (used by
-    /// `IdeaNavigationTests` to drive `navigateToIdea`).
+    /// same XCTest entry point open for `ideasViewModel` (the Inbox's Ideas
+    /// filter reads it).
     func initIdeas(dbManager: DatabaseManager) {
         let vm = IdeasViewModel(dbManager: dbManager)
         vm.startObserving()
         ideasViewModel = vm
+    }
+
+    func initTracks(dbManager: DatabaseManager) {
+        let vm = TracksViewModel(dbManager: dbManager)
+        vm.startObserving()
+        tracksViewModel = vm
     }
 
     /// Not marked `private` (the `initSecretaryProfile` precedent) so XCTest can
@@ -1739,11 +1746,14 @@ final class AppState {
         // A decision on an automation run's proposal wakes the daemon's
         // automations loop (spec §7.4); the runner resolves per call, like
         // the feed's own.
-        let vm = ActionStripViewModel(dbPool: dbPool) {
+        let controls = DirectCustomTrackControls(
+            dbPool: dbPool, scanService: TrackScanService(runner: InstalledCLIRunner()))
+        customTrackControls = controls
+        let vm = ActionStripViewModel(dbPool: dbPool, customTrackControls: controls) {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
             try await AutomationsCLI(runner: runner).wake()
         }
-        vm.refresh()
+        Task { await vm.refresh() }
         actionStripViewModel = vm
     }
 

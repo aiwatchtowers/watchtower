@@ -4,7 +4,7 @@ import WatchtowerCore
 
 /// Drives the target's "Watch" tab: the watches linked to the target, the
 /// origin track it was promoted from (if any), and the merged activity feed
-/// from all its watches. Applies a confirmed proposed action to THIS target.
+/// from all its watches. Applies a confirmed proposed action to THIS target through the registry.
 @MainActor
 @Observable
 final class TargetWatchesViewModel {
@@ -15,7 +15,7 @@ final class TargetWatchesViewModel {
     /// One pending apply or dismiss per event (board #670).
     let pendingWrites = PendingWrites()
     private let scanCenter: TrackScanCenter
-    private let targetsViewModel: TargetsViewModel
+    private let actionPress: TrackActionPress
     private let scanService: TrackScanService
 
     var watches: [Track] = []
@@ -29,12 +29,12 @@ final class TargetWatchesViewModel {
     init(target: Target,
          dbManager: DatabaseManager,
          scanService: TrackScanService,
-         targetsViewModel: TargetsViewModel,
+         actionRunner: any CLIRunnerProtocol,
          scanCenter: TrackScanCenter) {
         self.target = target
         self.dbPool = dbManager.dbPool
         self.scanService = scanService
-        self.targetsViewModel = targetsViewModel
+        self.actionPress = TrackActionPress(runner: actionRunner)
         self.scanCenter = scanCenter
     }
 
@@ -158,25 +158,23 @@ final class TargetWatchesViewModel {
     }
 
     private func applyNow(_ event: TrackEvent) async {
-        guard let action = event.decodedAction else { return }
+        guard event.decodedAction != nil else { return }
         errorMessage = nil
         do {
-            let (fresh, eventExists) = try await dbPool.read { db in
-                (try TargetQueries.fetchByID(db, id: target.id), try TrackEventQueries.exists(db, id: event.id))
-            }
-            guard let fresh else {
-                errorMessage = "This target no longer exists — it may have been deleted."
-                return
-            }
-            // Checked before the target is touched: an apply whose event vanished
-            // (its watch deleted elsewhere) would land and then report a failure.
-            guard eventExists else {
-                reportWriteFailure("apply", RowNotFoundError(kind: "track event", id: event.id))
-                return
-            }
-            _ = try await TargetActionExecutor.apply(action, target: fresh, viewModel: targetsViewModel)
-            try await chained { db in try TrackEventQueries.setActionStatus(db, id: event.id, status: "applied") }
-        } catch { reportWriteFailure("apply", error) }
+            try await actionPress.press(eventID: event.id)
+        } catch {
+            errorMessage = "Failed to apply: \(error.localizedDescription)"
+        }
+        // The CLI wrote on its own connection: the observations never see it,
+        // and a refused press may mean the event or watch is gone.
+        refreshEvents()
+        refreshWatches()
+    }
+
+    private func refreshWatches() {
+        if let rows = try? dbPool.read({ db in try TrackQueries.fetchByLinkedTarget(db, targetID: target.id) }) {
+            watches = rows
+        }
     }
 
     private func dismissNow(_ event: TrackEvent) async {

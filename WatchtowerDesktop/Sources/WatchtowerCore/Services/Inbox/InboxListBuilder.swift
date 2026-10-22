@@ -5,12 +5,20 @@ package enum InboxListItem: Identifiable, Equatable, Sendable {
     case proposal(AgentAction)
     case reminder(Reminder)
     case output(AutomationOutputCard)
+    case day(InboxDayCard)
+    case track(InboxTrackCard)
+    case idea(Idea)
+    case message(HomeFeedInboxRow)
 
     package var id: InboxSelection {
         switch self {
         case let .proposal(action): .proposal(action.id)
         case let .reminder(reminder): .reminder(reminder.id)
         case let .output(card): .output(card.id)
+        case let .day(card): .day(card.date)
+        case let .track(card): .track(card.track.id)
+        case let .idea(idea): .idea(idea.id)
+        case let .message(row): .message(row.item.id)
         }
     }
 }
@@ -19,16 +27,23 @@ package enum InboxListItem: Identifiable, Equatable, Sendable {
 package struct InboxSection: Equatable, Sendable {
     package let title: String
     package let items: [InboxListItem]
+    /// A fold the owner opens on demand (the Tracks filter's Stopped): its
+    /// title shows even while `items` is empty (folded).
+    package let foldable: Bool
 
-    package init(title: String, items: [InboxListItem]) {
+    package init(title: String, items: [InboxListItem], foldable: Bool = false) {
         self.title = title
         self.items = items
+        self.foldable = foldable
     }
+
+    /// The Tracks filter's fold of stopped (dismissed) tracks.
+    package static func stoppedTitle(_ count: Int) -> String { "Stopped · \(count)" }
 }
 
-/// The Inbox list (spec B1): agent proposals, then automation cards and due
-/// reminders of today and of earlier days, newest first. A reminder sorts by
-/// its due time. An empty section is left out.
+/// The Inbox list (spec B1, C1 §5): items that wait on the owner first, then
+/// the dated cards of today and of earlier days, newest first. A reminder
+/// sorts by its due time. An empty section is left out.
 package enum InboxListBuilder {
     package static func sections(
         proposals: [AgentAction],
@@ -37,27 +52,114 @@ package enum InboxListBuilder {
         now: Date,
         calendar: Calendar
     ) -> [InboxSection] {
-        let dated = (outputs.map { (at: $0.createdAt, item: InboxListItem.output($0)) }
-            + reminders.map { (at: AutomationDates.parse($0.remindAt) ?? .distantPast, item: .reminder($0)) })
-            .sorted { lhs, rhs in
-                lhs.at != rhs.at ? lhs.at > rhs.at : tieOrder(lhs.item) < tieOrder(rhs.item)
-            }
-        let startOfToday = calendar.startOfDay(for: now)
-        let sections = [
-            InboxSection(title: "Needs your decision", items: proposals.map(InboxListItem.proposal)),
-            InboxSection(title: "Today", items: dated.filter { $0.at >= startOfToday }.map(\.item)),
-            InboxSection(title: "Earlier", items: dated.filter { $0.at < startOfToday }.map(\.item))
-        ]
-        return sections.filter { !$0.items.isEmpty }
+        sections(
+            InboxFeedSnapshot(proposals: proposals, reminders: reminders, outputs: outputs),
+            filter: .all, dayDone: nil, today: "", now: now, calendar: calendar
+        )
     }
 
-    /// Equal times keep one order across refreshes: outputs before
-    /// reminders, then by id.
-    private static func tieOrder(_ item: InboxListItem) -> (Int, Int64) {
+    /// `today` is the "YYYY-MM-DD" of `now`; `dayDone` the date whose day card
+    /// the owner finished (it then sorts by time instead of staying pinned).
+    /// With `placeholdsToday`, today with neither a briefing nor a plan gets a
+    /// placeholder day card (`InboxDayCard.placeholder`) in Day, and in All
+    /// while the owner is known (`feed.ownerKnown`; else All's empty state
+    /// carries OWNER-02).
+    /// The Tracks filter ends with a `Stopped · N` fold of the stopped tracks,
+    /// listed only while `showsStopped`; no other filter shows them.
+    package static func sections(
+        _ feed: InboxFeedSnapshot,
+        filter: InboxFilter,
+        dayDone: String?,
+        today: String,
+        now: Date,
+        calendar: Calendar,
+        showsStopped: Bool = false,
+        placeholdsToday: Bool = false
+    ) -> [InboxSection] {
+        let showsAll = filter == .all
+        let showsProposals = showsAll || filter == .automations
+        let showsAutomationCards = showsProposals
+        let showsIdeas = showsAll || filter == .ideas
+
+        let awaiting = showsProposals ? feed.proposals.map(InboxListItem.proposal) : []
+        let awaitingIdeas = showsIdeas ? feed.ideas.filter(\.awaitsVerdict).map(InboxListItem.idea) : []
+
+        var rows: [(at: Date, item: InboxListItem)] = []
+        if showsAutomationCards {
+            rows += feed.outputs.map { (at: $0.createdAt, item: .output($0)) }
+            rows += feed.reminders.map { (at: AutomationDates.parse($0.remindAt) ?? .distantPast, item: .reminder($0)) }
+        }
+        let startOfToday = calendar.startOfDay(for: now)
+        if showsAll || filter == .day {
+            var days = showsAll ? feed.days.filter { $0.date == today || $0.isUnread } : feed.days
+            // Today without a briefing or a plan yet still has its card.
+            if placeholdsToday, filter == .day || feed.ownerKnown, !feed.days.contains(where: { $0.date == today }) {
+                days.append(.placeholder(date: today, stamp: startOfToday))
+            }
+            rows += days.map { (at: $0.stamp, item: .day($0)) }
+        }
+        if showsAll || filter == .tracks {
+            let tracks = showsAll ? feed.tracks.filter(\.isUnread) : feed.tracks
+            rows += tracks.map { (at: $0.lastEventAt, item: .track($0)) }
+        }
+        if showsAll || filter == .messages {
+            rows += feed.messages.map { (at: $0.stamp, item: .message($0)) }
+        }
+        if filter == .ideas {
+            rows += feed.ideas.filter { !$0.awaitsVerdict }
+                .map { (at: AutomationDates.parse($0.updatedAt) ?? .distantPast, item: .idea($0)) }
+        }
+        rows.sort { lhs, rhs in
+            lhs.at != rhs.at ? lhs.at > rhs.at : tieOrder(lhs.item) < tieOrder(rhs.item)
+        }
+
+        // Today's day card stays on top until the owner marks it done.
+        func isPinned(_ item: InboxListItem) -> Bool {
+            guard case let .day(card) = item else { return false }
+            return card.date == today && dayDone != today
+        }
+        func isToday(_ row: (at: Date, item: InboxListItem)) -> Bool {
+            row.at >= startOfToday || isPinned(row.item)
+        }
+        let todayRows = rows.filter(isToday)
+        let pinned = todayRows.filter { isPinned($0.item) }
+        let rest = todayRows.filter { !isPinned($0.item) }
+        let sections = [
+            InboxSection(title: "Needs your decision", items: awaiting + awaitingIdeas),
+            InboxSection(title: "Today", items: (pinned + rest).map(\.item)),
+            InboxSection(title: "Earlier", items: rows.filter { !isToday($0) }.map(\.item))
+        ]
+        var listed = sections.filter { !$0.items.isEmpty }
+        if filter == .tracks, !feed.stoppedTracks.isEmpty {
+            listed.append(InboxSection(
+                title: InboxSection.stoppedTitle(feed.stoppedTracks.count),
+                items: showsStopped ? feed.stoppedTracks.map(InboxListItem.track) : [],
+                foldable: true))
+        }
+        return listed
+    }
+
+    /// Equal times keep one order across refreshes: outputs, reminders, day
+    /// cards, tracks, messages, ideas, then by id.
+    private static func tieOrder(_ item: InboxListItem) -> TieKey {
         switch item {
-        case let .output(card): (0, card.id)
-        case let .reminder(reminder): (1, reminder.id)
-        case let .proposal(action): (2, action.id)
+        case let .output(card): TieKey(rank: 0, number: card.id)
+        case let .reminder(reminder): TieKey(rank: 1, number: reminder.id)
+        case let .day(card): TieKey(rank: 2, text: card.date)
+        case let .track(card): TieKey(rank: 3, number: Int64(card.track.id))
+        case let .message(row): TieKey(rank: 4, number: Int64(row.item.id))
+        case let .idea(idea): TieKey(rank: 5, number: Int64(idea.id))
+        case let .proposal(action): TieKey(rank: 6, number: action.id)
+        }
+    }
+
+    private struct TieKey: Comparable {
+        let rank: Int
+        var number: Int64 = 0
+        var text: String = ""
+
+        static func < (lhs: Self, rhs: Self) -> Bool {
+            (lhs.rank, lhs.number, lhs.text) < (rhs.rank, rhs.number, rhs.text)
         }
     }
 

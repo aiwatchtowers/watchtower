@@ -4,7 +4,7 @@ Dictation turns speech into text in the places where you would otherwise type: a
 
 ## Why use it
 
-You are mid-thought and typing would slow you down. Press a key, say it, and a cleaned-up idea lands in your Ideas list. Or dictate your question to the assistant instead of typing it.
+You are mid-thought and typing would slow you down. Press a key, say it, and a cleaned-up idea lands in the Inbox's **Ideas** filter. Or dictate your question to the assistant instead of typing it.
 
 ## How it works
 
@@ -43,7 +43,7 @@ A meeting recording takes priority. While one is capturing or processing, the mi
 Press **⌃⌥D** in any app, or choose **New Voice Idea** in the menu bar icon's menu. A small window opens and listens at once.
 
 1. Speak.
-2. Click **Stop**, review the cleaned text, then click **Save**. It becomes an active idea in the Ideas list. **Discard** or closing the window drops it.
+2. Click **Stop**, review the cleaned text, then click **Save**. It becomes an active idea in the Inbox's **Ideas** filter. **Discard** or closing the window drops it.
 3. After "Saved ✓" the window closes by itself after 2 seconds, or click **Open Ideas**.
 
 If cleanup fails, **Save as idea** keeps what was transcribed as it is.

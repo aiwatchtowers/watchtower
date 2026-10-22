@@ -32,15 +32,15 @@ enum SidebarSection: String, CaseIterable, Identifiable {
 
     var items: [SidebarDestination] {
         switch self {
-        case .today: [.catchUp, .briefings, .dayPlan, .inbox, .ideas]
+        case .today: [.catchUp, .inbox]
         case .delivery: [.projectMap, .releases, .blockers, .workload]
         case .analytics: [.digests, .people, .memory, .statistics]
         }
     }
 
     /// Whether the section starts collapsed on first launch. FOCUS holds the
-    /// everyday tabs (Catch Up, Briefings, Day Plan, Inbox, Ideas)
-    /// and starts expanded; EXECUTION and INSIGHTS are used less often and
+    /// everyday tabs (Catch Up, Inbox — briefings, day plans, tracks and
+    /// ideas are Inbox filters since C1) and starts expanded; EXECUTION and INSIGHTS are used less often and
     /// start collapsed — the owner expands what they need, and their own
     /// choice (persisted in UserDefaults, see `SidebarView.loadCollapsedSections`)
     /// always wins over this default once they've toggled a section.

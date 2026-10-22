@@ -4,11 +4,11 @@ Home is the page Watchtower opens on. It shows what needs you right now and, on 
 
 ## Why use it
 
-You open the app after a meeting and want one answer: what is waiting for me? Home puts what needs you, then your meetings, in one feed. Next to it sit your coding agents' sessions and questions, shortcuts to your briefing and recap, and a few numbers for today.
+You open the app after a meeting and want one answer: what is waiting for me? Home puts what needs you, then your meetings, in one feed, beside your agents' sessions, shortcuts and today's numbers.
 
 ## How it works
 
-Home only reads what the rest of the app has produced, and refreshes about every 30 seconds. The feed is on the left. On the right, top to bottom, are **Workbench**, **Links** and **Today in numbers**. In a narrow window everything is one column in the same order: feed, Workbench, links, numbers. A zone with nothing to show is left out.
+Home only reads what the app produced, and refreshes about every 30 seconds. The feed is on the left. On the right, top to bottom, are **Workbench**, **Links** and **Today in numbers**. In a narrow window everything is one column in the same order: feed, Workbench, links, numbers. A zone with nothing to show is left out.
 
 ### The feed
 
@@ -32,12 +32,14 @@ If you keep telling agents the same thing, the last row offers it as an instruct
 
 ### Links
 
-The **Links** zone has up to four shortcuts, each shown while its tab is visible:
+The **Links** zone has up to four shortcuts, each shown while its tab is in the menu (for the briefing and plan, the Inbox, with their feature on):
 
 - **Briefing** shows "ready 08:05" once today's briefing exists, else the latest one's weekday.
 - **Catch-Up** shows a highlighted "new recap" while a finished recap waits for **I'm caught up**.
 - **Day plan** shows "2 of 5 done" for today's plan.
 - **Digests** has no status.
+
+**Briefing** and **Day plan** open today's **Your day** card in the [Inbox](inbox.md).
 
 ### Today in numbers
 
@@ -70,9 +72,9 @@ When every feature is ready or retrying on its own, the zone shrinks to "Everyth
 
 ### The menu on the left
 
-The menu lists Home, Targets, Tracks, Workbench, Automations and Calendar first. Below them are three collapsible sections:
+The menu lists Home, Targets, Workbench, Automations and Calendar first. Below them are three collapsible sections:
 
-- **FOCUS**: Catch Up, Briefings, Day Plan, Inbox, Ideas.
+- **FOCUS**: Catch Up, Inbox (briefings, plans, tracks and ideas are its filters).
 - **EXECUTION**: Project Map, Releases, Blockers, Workload.
 - **INSIGHTS**: Digests, People, Memory, Statistics.
 
@@ -82,7 +84,7 @@ AI Chat and the TOOLS (Search, Boards, Usage, MCP Server) sit at the bottom. FOC
 - Right-click a tab and choose **Hide**; it moves to the section's **HIDDEN** list, where **Show** brings it back.
 - A tab appears only when its feature is on in Settings → Features and its source is connected.
 - Until Slack, mail and Jira are all connected, a quiet **+ Connect …** line at the bottom names what is missing and opens Settings → Connections. Its **×** hides it for good.
-- Badges show what waits: unread briefings, Inbox proposals and due reminders, ideas to review, a recap waiting.
+- Badges show what waits, such as the Inbox's count and a recap waiting.
 
 Home ends with the line "Stuck? Press **⌘/** to ask, or open the User Guide." It is always there, and **⌘/** opens the [assistant over this tab](ai-chat.md).
 
@@ -92,7 +94,6 @@ Home ends with the line "Stuck? Press **⌘/** to ask, or open the User Guide." 
 - **A tab is missing from the menu.** Turn its feature on in Settings → Features and connect its source, or look under **HIDDEN**.
 - **A link is missing.** Its tab is hidden or its feature is off or its source isn't connected.
 - **A number is missing.** Its source isn't connected or is off.
-- **No Workbench zone.** No session needs a look and nothing is asked of you.
 - **The feed has no Slack, Jira, Linear or email rows.** Inbox detection is off, or nothing arrived in the last 72 hours.
 - **No meetings below NOW.** Calendar isn't connected or its tab is hidden, or the events are all-day, cancelled or declined.
 - **"Couldn't read … — see the log."** A zone (Workbench, the links, or a feed source) says this when the local database couldn't be read. Quit and reopen the app; if it persists, check the app log.
