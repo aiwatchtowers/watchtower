@@ -684,3 +684,36 @@ func TestRunForDateWith_ExistingBriefingStillIdempotent(t *testing.T) {
 	assert.Equal(t, id1, id2)
 	assert.Empty(t, gen.systemMsg, "the second run must not call the generator")
 }
+
+// TestPipelineHasMaterial: the run's no-data rule without a model call —
+// false with nothing to summarize, true once a digest of the day exists, and
+// db.ErrNoOwner with no owner.
+func TestPipelineHasMaterial(t *testing.T) {
+	database := testDB(t)
+	gen := &mockGenerator{}
+	pipe := New(database, testConfig(), gen, log.New(io.Discard, "", 0))
+	today := time.Now().Format("2006-01-02")
+	_, err := pipe.HasMaterial(today)
+	require.ErrorIs(t, err, db.ErrNoOwner)
+
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
+	_, err = database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertUser(db.User{ID: "U001", Name: "alice"}))
+	has, err := pipe.HasMaterial(today)
+	require.NoError(t, err)
+	assert.False(t, has)
+
+	dayStart := time.Now().Truncate(24 * time.Hour)
+	_, err = database.UpsertDigest(db.Digest{ChannelID: "C1", Type: "channel",
+		PeriodFrom: float64(dayStart.Unix()), PeriodTo: float64(dayStart.Add(24 * time.Hour).Unix()),
+		Summary: "Discussion about new feature release", Topics: `[]`, Decisions: `[]`, ActionItems: `[]`, MessageCount: 15})
+	require.NoError(t, err)
+	has, err = pipe.HasMaterial(today)
+	require.NoError(t, err)
+	assert.True(t, has)
+	assert.Equal(t, 0, gen.calls, "no model call")
+	n, err := database.HasAnyBriefing()
+	require.NoError(t, err)
+	assert.False(t, n, "nothing written")
+}

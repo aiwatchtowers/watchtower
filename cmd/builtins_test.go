@@ -625,6 +625,17 @@ func TestAutomationsRun_BuiltinRefusedBeforeItsMove(t *testing.T) {
 	assert.Empty(t, (&autoCLI{d: c.d}).runs(t, a.ID))
 }
 
+// With no builtin_migrations row (the daemon never started on this
+// version) the refusal points at the next daemon start, not at a Retry card.
+func TestAutomationsRun_BuiltinRefusedBeforeTheFirstDaemonStart(t *testing.T) {
+	c := newUnmovedBuiltinCLI(t, true)
+	a := c.row(t)
+	_, err := runAutomations(t, "run", idArg(a.ID))
+	require.Error(t, err)
+	assert.Equal(t, "Morning brief moves to Automations at the next daemon start — try again after it", err.Error())
+	assert.Empty(t, (&autoCLI{d: c.d}).runs(t, a.ID))
+}
+
 // TestBriefingGenerate_LegacyPathBeforeTheMove: with the move failed, the
 // generate commands run the pipelines as before the built-in — the owner's
 // customised prompt-store row is the prompt, and no automation run is

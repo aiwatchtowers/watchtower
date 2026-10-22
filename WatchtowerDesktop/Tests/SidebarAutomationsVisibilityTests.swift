@@ -76,6 +76,50 @@ final class SidebarAutomationsVisibilityTests: XCTestCase {
         XCTAssertEqual(appState.automationsViewModel?.expandedRuns, [9])
     }
 
+    /// The "turned off" notice (#584) of a built-in the daemon stopped (AUTO-08)
+    /// opens the automation's `.card`, which renders `BuiltinAutomationCard`
+    /// for a built-in row: its **Turn On** goes through `setBuiltinEnabled` →
+    /// `resumeStoppedBuiltin` (`features enable`), never `automations enable`
+    /// (refused for a built-in; AppStateBuiltinAutomationsTests).
+    func testDisabledNoticeOfABuiltinOpensItsBuiltinCard() throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let id = try manager.dbPool.write { db -> Int64 in
+            try db.execute(sql: """
+                INSERT INTO automations (slug, scope, path, name, trigger_kind, trigger_spec, origin, builtin_id,
+                    enabled, disabled_reason)
+                VALUES ('morning-brief', 'personal', 'builtin:morning-brief', 'Morning brief', 'sync',
+                    '{"sync":"morning_brief"}', 'builtin', 'morning-brief', 0, 'runaway script — check and re-enable')
+                """)
+            // No disabled_at: the app's failure watch would post a real
+            // notification from the test process; the click is driven below.
+            return db.lastInsertedRowID
+        }
+        let suite = "SidebarAutomationsVisibilityTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let features = FeatureManagerService(runner: FakeCLIRunner(stdout: Data(#"{"features":[]}"#.utf8)))
+        let appState = AppState(onboardingDefaults: defaults, featureManager: features)
+        appState.wireAppDatabaseOverride = { _ in }
+        appState.databaseManager = manager
+        appState.completeOnboarding()
+        defer {
+            appState.automationsViewModel?.stop()
+            appState.stopSidebarCounts()
+        }
+
+        // What a click on the notice does (NotificationDelegate.routeAutomationRun
+        // with the notice's AutomationRunNotifier.userInfo), without the window.
+        let target = try XCTUnwrap(NotificationDelegate.automationRunTarget(
+            AutomationRunNotifier.userInfo(automationID: id, runID: 7)))
+        appState.openAutomationRun(automationID: target.automationID, runID: target.runID)
+
+        XCTAssertEqual(appState.selectedDestination, .automations)
+        let vm = try XCTUnwrap(appState.automationsViewModel)
+        guard case let .card(shown) = vm.panel else { return XCTFail("panel = \(vm.panel), want the card") }
+        XCTAssertEqual(shown, id)
+    }
+
     /// New Automation… in a workbench's menu (spec 2026-10-20 §4, A2): the
     /// tab opens the New panel with that workbench's scope fixed.
     func testNewAutomationForWorkbenchNavigates() throws {

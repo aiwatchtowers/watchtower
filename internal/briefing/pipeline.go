@@ -316,6 +316,30 @@ func (p *Pipeline) RunForDateWith(ctx context.Context, date string, opts RunOpti
 	return int(id), nil
 }
 
+// HasMaterial reports whether a briefing for date would find anything to
+// summarize — the same no-data rule RunForDateWith applies (digests, the
+// daily rollup, tracks, targets, inbox items, workbench activity, automation
+// outputs), with no model call and no write: the daemon's gate asks it before
+// the first briefing ever, so an install with nothing to summarize writes no
+// run. No owner is db.ErrNoOwner.
+func (p *Pipeline) HasMaterial(date string) (bool, error) {
+	owner, err := p.db.RequireOwner()
+	if err != nil {
+		return false, fmt.Errorf("briefing: %w", err)
+	}
+	p.shown = newShownIDs()
+	defer func() { p.shown = nil }()
+	_, hasRealTargets := p.gatherTargets()
+	_, hasRealTracks := p.gatherTracks()
+	_, hasRealInbox := p.gatherInbox()
+	digestsCtx := p.gatherDigests(date)
+	dailyDigestCtx := p.gatherLatestDailyDigest()
+	_, hasRealWorkbenches := p.gatherWorkbenches(p.revisionWindowStart(owner.ID, date))
+	_, hasRealAutomationOutputs := p.gatherAutomationOutputs(p.automationOutputsSince(owner.ID, date))
+	return hasAnyData(digestsCtx, dailyDigestCtx, hasRealTracks, hasRealTargets, hasRealInbox, hasRealWorkbenches,
+		hasRealAutomationOutputs), nil
+}
+
 // hasAnyData reports whether the briefing has real material: a digest, the
 // daily rollup, or any of the gathered sections that found real rows
 // (suggestion/placeholder text alone never counts).

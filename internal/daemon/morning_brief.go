@@ -63,10 +63,11 @@ func (g morningBriefGate) Due(_ context.Context, _ builtin.Entry, now time.Time)
 
 // briefingNoDataBackoff is how long a sync brief that found no data keeps
 // the brief from being due again the same day: without it every cycle of an
-// install with nothing to summarize would write one empty run. It does not
-// apply while no briefing was ever made (briefingFresh): a fresh install's
-// first brief is made in the first cycle after its first digests land, not
-// up to an hour later.
+// install with nothing to summarize would write one empty run. Before the
+// first briefing ever (briefingFresh) the gate asks the pipeline's no-data
+// rule instead (briefing.HasMaterial, a read with no model call): nothing to
+// summarize is not due and writes no run; data is due at once, so the first
+// brief comes in the first cycle after the first digests land.
 const briefingNoDataBackoff = time.Hour
 
 // phaseMorningBrief is the Morning brief slot, where phaseBriefing and the
@@ -129,16 +130,29 @@ func (d *Daemon) builtinNow() time.Time {
 	return time.Now()
 }
 
-// briefDue is phaseBriefing's gate, plus the no-data backoff (not on a fresh
-// install).
+// briefDue is phaseBriefing's gate, plus the no-data rule: before the first
+// briefing the pipeline's HasMaterial, after it the no-data backoff.
 func (d *Daemon) briefDue(now time.Time) bool {
 	d.mbMu.Lock()
 	defer d.mbMu.Unlock()
-	if !d.briefNoDataAt.IsZero() && sameCalendarDay(d.briefNoDataAt, now) && now.Sub(d.briefNoDataAt) < briefingNoDataBackoff &&
-		!d.briefingFresh() {
+	if !d.config.Briefing.Enabled || d.briefingPipe == nil || !d.shouldRunBriefingAt(now) || !d.briefingHasOwner(now) {
 		return false
 	}
-	return d.config.Briefing.Enabled && d.briefingPipe != nil && d.shouldRunBriefingAt(now) && d.briefingHasOwner(now)
+	if d.briefingFresh() {
+		return d.briefingHasMaterial(now)
+	}
+	return d.briefNoDataAt.IsZero() || !sameCalendarDay(d.briefNoDataAt, now) || now.Sub(d.briefNoDataAt) >= briefingNoDataBackoff
+}
+
+// briefingHasMaterial is the pipeline's no-data rule for now's date. A read
+// failure is logged and counts as material: the run then decides itself.
+func (d *Daemon) briefingHasMaterial(now time.Time) bool {
+	has, err := d.briefingPipe.HasMaterial(now.Format(time.DateOnly))
+	if err != nil {
+		d.logger.Printf("briefing: checking for anything to summarize: %v", err)
+		return true
+	}
+	return has
 }
 
 // planDue is the day-plan phase's gate over the cycle's owner.

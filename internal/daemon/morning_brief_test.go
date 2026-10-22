@@ -313,39 +313,19 @@ func TestMorningBrief_LegacyPathWhenNotActive(t *testing.T) {
 // to summarize writes one run; the next cycles of the hour write none (the
 // plan is not due either); an hour later the brief is due again. (An earlier
 // day's briefing exists: a fresh install has no backoff, see
-// TestMorningBrief_FreshInstallNoDataHasNoBackoff.)
-func TestMorningBrief_NoDataBriefBacksOffAnHour(t *testing.T) {
-	f := newMBFixture(t, func(cfg *config.Config) { cfg.DayPlan.Enabled = false })
-	_, err := f.db.Exec(`DELETE FROM digests`)
-	require.NoError(t, err)
-	_, err = f.db.Exec(`INSERT INTO briefings (workspace_id, user_id, date) VALUES ('T1', 'U001', '2026-10-21')`)
-	require.NoError(t, err)
-
-	f.cycle(mbAt(10, 0))
-	runs := f.runs(t)
-	require.Len(t, runs, 1)
-	assert.Equal(t, db.RunSucceeded, runs[0].Status, runs[0].Error)
-	assert.Zero(t, f.gen.count(), "no data, no model call")
-
-	f.cycle(mbAt(10, 15))
-	f.cycle(mbAt(10, 45))
-	assert.Len(t, f.runs(t), 1, "within the hour a no-data brief is not due")
-
-	f.cycle(mbAt(11, 1))
-	assert.Len(t, f.runs(t), 2, "an hour later the brief is due again")
-	assert.Zero(t, f.d.briefingAttempts, "no data is not a failed attempt")
-}
-
-// TestMorningBrief_FreshInstallNoDataHasNoBackoff: while no briefing was
-// ever made, a no-data brief does not hold the next cycle back, so the first
-// brief comes in the first cycle after the first digests land.
-func TestMorningBrief_FreshInstallNoDataHasNoBackoff(t *testing.T) {
+// TestMorningBrief_FreshInstallNoDataWritesNoRun: before the first
+// briefing ever, a cycle with nothing to summarize is not due and writes no
+// run (the pipeline's HasMaterial, no model call); the first cycle after a
+// digest lands makes the brief at once, without the hour's backoff.
+func TestMorningBrief_FreshInstallNoDataWritesNoRun(t *testing.T) {
 	f := newMBFixture(t, func(cfg *config.Config) { cfg.DayPlan.Enabled = false })
 	_, err := f.db.Exec(`DELETE FROM digests`)
 	require.NoError(t, err)
 
-	f.cycle(mbAt(10, 0))
-	require.Len(t, f.runs(t), 1)
+	for _, m := range []int{0, 15, 30} {
+		f.cycle(mbAt(10, m))
+	}
+	assert.Empty(t, f.runs(t), "no data before the first briefing: no run row")
 	assert.Zero(t, f.gen.count(), "no data, no model call")
 
 	day := mbAt(0, 0)
@@ -355,9 +335,11 @@ func TestMorningBrief_FreshInstallNoDataHasNoBackoff(t *testing.T) {
 		Summary: "some discussion", Topics: `[]`, Decisions: `[]`, ActionItems: `[]`, MessageCount: 5,
 	})
 	require.NoError(t, err)
-	f.cycle(mbAt(10, 15))
-	assert.Len(t, f.runs(t), 2, "no backoff on a fresh install")
-	assert.Equal(t, 1, f.gen.count(), "the first brief is made as soon as there is data")
+	f.cycle(mbAt(10, 45))
+	runs := f.runs(t)
+	require.Len(t, runs, 1, "data lands: due at once")
+	assert.Equal(t, db.RunSucceeded, runs[0].Status, runs[0].Error)
+	assert.Equal(t, 1, f.gen.count())
 	assert.Equal(t, 1, countRows(t, f.db, `SELECT COUNT(*) FROM briefings WHERE date = '2026-10-22'`))
 }
 
