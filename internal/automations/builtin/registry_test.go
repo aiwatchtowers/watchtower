@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"watchtower/internal/automations"
@@ -155,5 +156,31 @@ func TestRegistry_ShowJSONGolden(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Errorf("card JSON differs from %s (run with -update):\n%s", path, got)
+	}
+}
+
+// TestCard_UnreadableCopyIsCopyError: an owner copy whose lstat fails with
+// something other than not-exist (a permission error) is the card's
+// copy_error, not a failed card.
+func TestCard_UnreadableCopyIsCopyError(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	dir := filepath.Dir(OwnerCopyPath(f.ws, mbID))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if _, err := os.Lstat(OwnerCopyPath(f.ws, mbID)); err == nil || os.IsNotExist(err) {
+		t.Skipf("lstat in an unreadable directory gave %v (running as root?)", err)
+	}
+	card, err := Card(f.d, f.cfg, f.ws, mustEntry(t), f.row(t), f.clock.Now())
+	if err != nil {
+		t.Fatalf("Card: %v", err)
+	}
+	if !strings.Contains(card.CopyError, "reading the edited copy") {
+		t.Errorf("copy_error = %q", card.CopyError)
 	}
 }

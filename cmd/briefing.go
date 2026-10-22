@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
+	"watchtower/internal/automations"
 	"watchtower/internal/briefing"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
-	"watchtower/internal/prompts"
 	"watchtower/internal/ui"
 
 	"github.com/dustin/go-humanize"
@@ -102,6 +102,9 @@ func runBriefing(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// runBriefingGenerate makes today's briefing through the Morning brief
+// built-in (its brief.compose only), so the prompt is the built-in's current
+// recipe. It works with the feature off.
 func runBriefingGenerate(cmd *cobra.Command, _ []string) error {
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
@@ -114,9 +117,6 @@ func runBriefingGenerate(cmd *cobra.Command, _ []string) error {
 	if err := cfg.ValidateWorkspace(); err != nil {
 		return fmt.Errorf("invalid config: %w", err)
 	}
-
-	cfg.Briefing.Enabled = true
-
 	if err := validateModel(cfg); err != nil {
 		return err
 	}
@@ -127,33 +127,30 @@ func runBriefingGenerate(cmd *cobra.Command, _ []string) error {
 	}
 	defer database.Close()
 
-	out := cmd.OutOrStdout()
+	owner, err := database.RequireOwner()
+	if err != nil {
+		return err
+	}
 
 	logger := log.New(io.Discard, "", 0)
 	if flagVerbose {
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
-	gen, savePool := cliPooledGenerator(cfg)
-	defer savePool()
-
-	pipe := briefing.New(database, cfg, gen, logger)
-	pipe.SetPromptStore(prompts.New(database, nil))
-
-	id, err := pipe.Run(cmd.Context())
-	if err != nil {
-		return fmt.Errorf("generating briefing: %w", err)
+	today := time.Now().Format(time.DateOnly)
+	in := automations.BuiltinInput{Only: []string{"brief.compose"}, Date: today}
+	if err := runMorningBriefNow(cmd.Context(), cfg, database, logger, in); err != nil {
+		return err
 	}
-	if id == 0 {
-		fmt.Fprintln(out, "No data available for briefing generation. Run 'watchtower digest generate' first.")
-		return nil
-	}
-
-	b, err := database.GetBriefingByID(id)
+	b, err := database.GetBriefing(owner.ID, today)
 	if err != nil {
 		return fmt.Errorf("loading generated briefing: %w", err)
 	}
-
+	out := cmd.OutOrStdout()
+	if b == nil {
+		fmt.Fprintln(out, "No data available for briefing generation. Run 'watchtower digest generate' first.")
+		return nil
+	}
 	printBriefing(out, b)
 	return nil
 }

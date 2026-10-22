@@ -39,6 +39,24 @@
       "kind": "clock",
       "label": "to",
       "value": "19:00"
+    },
+    {
+      "key": "day_plan.max_timeblocks",
+      "kind": "count",
+      "label": "Time blocks at most",
+      "value": "3"
+    },
+    {
+      "key": "day_plan.min_backlog",
+      "kind": "count",
+      "label": "Backlog items at least",
+      "value": "3"
+    },
+    {
+      "key": "day_plan.max_backlog",
+      "kind": "count",
+      "label": "Backlog items at most",
+      "value": "8"
     }
   ],
   "feature_ids": [

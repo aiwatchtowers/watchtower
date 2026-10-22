@@ -23,9 +23,10 @@ const maxDryRunSummaryBytes = 2 * 1024
 
 // Messages save_automation's refusals carry verbatim.
 const (
-	msgRecipeTextDrifted = "the recipe text no longer matches the reviewed one"
-	msgRecipeFileChanged = "the recipe file changed since this was proposed — ask the assistant to draft it again"
-	msgRecipePathChanged = "the recipe's location changed since this was proposed — ask the assistant to draft it again"
+	msgRecipeTextDrifted     = "the recipe text no longer matches the reviewed one"
+	msgRecipeFileChanged     = "the recipe file changed since this was proposed — ask the assistant to draft it again"
+	msgRecipePathChanged     = "the recipe's location changed since this was proposed — ask the assistant to draft it again"
+	msgBuiltinSavedFromPanel = "a built-in is saved from its panel"
 )
 
 type saveArgs struct {
@@ -34,6 +35,7 @@ type saveArgs struct {
 	WorkbenchID   int64  `json:"workbench_id,omitempty" jsonschema:"the workbench the recipe belongs to; omit for a personal recipe"`
 	Reason        string `json:"reason" jsonschema:"why you propose this save, for the owner"`
 	DryRunSummary string `json:"dry_run_summary,omitempty" jsonschema:"a short summary of draft_automation's dry run of this exact text (at most 2 KiB)"`
+	BuiltinID     string `json:"builtin_id,omitempty" jsonschema:"never set: a built-in is saved from its panel"`
 }
 
 // savePinned is what Normalize stores in agent_actions.args_json: the call's
@@ -119,6 +121,8 @@ func parseSave(raw json.RawMessage) (saveArgs, *automations.Recipe, error) {
 		return a, nil, &tools.ValidationError{Msg: "invalid arguments"}
 	}
 	switch {
+	case a.BuiltinID != "":
+		return a, nil, &tools.ValidationError{Msg: msgBuiltinSavedFromPanel}
 	case strings.TrimSpace(a.RecipeText) == "":
 		return a, nil, &tools.ValidationError{Msg: "recipe_text is required"}
 	case !automations.ValidSlug(a.Slug):

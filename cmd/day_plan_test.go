@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"log"
 	"testing"
 	"time"
 
@@ -13,7 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/config"
-	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 )
@@ -312,11 +310,7 @@ func TestCLI_DayPlanGenerate_JSON(t *testing.T) {
 
 	mockResp := `{"timeblocks":[],"backlog":[{"source_type":"task","source_id":"1","title":"Write tests","description":"get it done","rationale":"important","priority":"medium"}],"summary":"ok"}`
 
-	oldFactory := newDayPlanPipelineFactory
-	t.Cleanup(func() { newDayPlanPipelineFactory = oldFactory })
-	newDayPlanPipelineFactory = func(d *db.DB, c *config.Config, l *log.Logger) (*dayplan.Pipeline, error) {
-		return dayplan.New(d, c, &dayPlanMockGen{response: mockResp}, l), nil
-	}
+	useBuiltinGenerator(t, &dayPlanMockGen{response: mockResp})
 
 	var buf bytes.Buffer
 	dayPlanGenerateCmd.SetOut(&buf)
@@ -337,4 +331,12 @@ func TestCLI_DayPlanGenerate_JSON(t *testing.T) {
 	// Reset flags for other tests.
 	require.NoError(t, dayPlanGenerateCmd.Flags().Set("date", ""))
 	require.NoError(t, dayPlanGenerateCmd.Flags().Set("json", "false"))
+}
+
+// useBuiltinGenerator puts gen behind the CLI built-in runs' generator seam.
+func useBuiltinGenerator(t *testing.T, gen digest.Generator) {
+	t.Helper()
+	orig := cliBuiltinGenerator
+	cliBuiltinGenerator = func(*config.Config) (digest.Generator, func()) { return gen, func() {} }
+	t.Cleanup(func() { cliBuiltinGenerator = orig })
 }

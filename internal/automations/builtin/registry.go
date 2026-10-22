@@ -37,6 +37,7 @@ type ParamKind string
 const (
 	ParamHour  ParamKind = "hour"  // an hour of the day, 0–23
 	ParamClock ParamKind = "clock" // a time of day, "HH:MM"
+	ParamCount ParamKind = "count" // a whole number of items
 )
 
 // Parameter is one When field on a built-in's card. It lives in the config,
@@ -92,6 +93,9 @@ var registry = []Entry{
 			{Key: "briefing.hour", Kind: ParamHour, Label: "Time"},
 			{Key: "day_plan.working_hours_start", Kind: ParamClock, Label: "Working hours from"},
 			{Key: "day_plan.working_hours_end", Kind: ParamClock, Label: "to"},
+			{Key: "day_plan.max_timeblocks", Kind: ParamCount, Label: "Time blocks at most"},
+			{Key: "day_plan.min_backlog", Kind: ParamCount, Label: "Backlog items at least"},
+			{Key: "day_plan.max_backlog", Kind: ParamCount, Label: "Backlog items at most"},
 		},
 		Pipelines: []string{"briefing", "day_plan"},
 		Reads:     []string{"Slack digests and tracks", "Calendar", "Targets and tasks", "Jira and Linear", "Inbox items"},

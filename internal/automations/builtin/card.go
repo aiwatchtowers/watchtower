@@ -55,8 +55,9 @@ type Costs struct {
 // shipped text and its default prompts for the owner's role, the When
 // parameters read from cfg, whether an overridden copy's base is behind the
 // shipped text (UpdateAvailable), why the owner's copy in workspaceDir is not
-// used (CopyError: not a regular file, read with lstat as Sync does, or the
-// row's parse error) and the last CostDays days of costs.
+// used (CopyError: not a regular file or not readable at all, read with
+// lstat as Sync does, or the row's parse error) and the last CostDays days of
+// costs.
 func Card(d *db.DB, cfg *config.Config, workspaceDir string, e Entry, a *db.Automation, now time.Time) (CardInfo, error) {
 	c := CardInfo{
 		ID: e.ID, Slot: e.Slot, ShippedHash: e.ShippedContentHash(), ShippedText: string(e.Recipe),
@@ -79,9 +80,11 @@ func Card(d *db.DB, cfg *config.Config, workspaceDir string, e Entry, a *db.Auto
 	for _, p := range e.Parameters {
 		c.Parameters = append(c.Parameters, ParameterValue{Key: p.Key, Kind: p.Kind, Label: p.Label, Value: paramValue(cfg, p.Key)})
 	}
+	// A copy that cannot even be lstat'ed (a permission error) is the card's
+	// copy_error, not a failed card: the panel still shows the built-in.
 	_, note, err := copyState(OwnerCopyPath(workspaceDir, e.ID))
 	if err != nil {
-		return c, fmt.Errorf("built-in %s card: %w", e.ID, err)
+		note = err.Error()
 	}
 	c.CopyError = note
 	if a == nil {
@@ -113,6 +116,12 @@ func paramValue(cfg *config.Config, key string) string {
 		return cfg.DayPlan.WorkingHoursStart
 	case "day_plan.working_hours_end":
 		return cfg.DayPlan.WorkingHoursEnd
+	case "day_plan.max_timeblocks":
+		return strconv.Itoa(cfg.DayPlan.MaxTimeblocks)
+	case "day_plan.min_backlog":
+		return strconv.Itoa(cfg.DayPlan.MinBacklog)
+	case "day_plan.max_backlog":
+		return strconv.Itoa(cfg.DayPlan.MaxBacklog)
 	}
 	return ""
 }
