@@ -16,6 +16,9 @@ const (
 	ErrNameTool             = "ToolError"
 	ErrNameBudget           = "BudgetExceeded"
 	ErrNameNotAvailable     = "NotAvailable"
+	// ErrNamePrimitiveFailed: a built-in primitive (brief.compose, …)
+	// failed; uncaught, it ends the run failed/backend.
+	ErrNamePrimitiveFailed = "PrimitiveFailed"
 )
 
 // SDKError is an error an SDK function returns to the script: it becomes a JS

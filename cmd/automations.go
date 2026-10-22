@@ -164,13 +164,9 @@ func parseAutomationID(what, arg string) (int64, error) {
 	return id, nil
 }
 
-// automationScopeOf is the recipe scope of an index row.
-func automationScopeOf(a *db.Automation) automations.Scope {
-	if a.Scope == string(automations.ScopeWorkbench) {
-		return automations.Scope{Kind: automations.ScopeWorkbench, WorkbenchID: a.ProjectID}
-	}
-	return automations.Scope{Kind: automations.ScopePersonal}
-}
+// automationScopeOf is the recipe scope of an index row (a built-in's
+// carries its built-in id).
+func automationScopeOf(a *db.Automation) automations.Scope { return automations.ScopeOf(*a) }
 
 // workbenchScope is the scope of --workbench N (personal when 0) and, for a
 // workbench, its recipe folder; an unknown workbench is an error.
@@ -456,7 +452,10 @@ func diffApprovalFields(confirmed, current *automations.Recipe) []automationChan
 // UTC, nil when unknown.
 func automationAuthor(database *db.DB, a *db.Automation) (string, *string, error) {
 	if a.ApprovalHash != "" {
-		save, err := database.LatestAppliedAutomationSave(a.Path, automationScopeOf(a).String(), a.ApprovalHash)
+		// A save's scope is its folder's: "personal" for a built-in too.
+		scope := automationScopeOf(a)
+		folder := automations.Scope{Kind: scope.Kind, WorkbenchID: scope.WorkbenchID}
+		save, err := database.LatestAppliedAutomationSave(a.Path, folder.String(), a.ApprovalHash)
 		if err != nil {
 			return "", nil, err
 		}

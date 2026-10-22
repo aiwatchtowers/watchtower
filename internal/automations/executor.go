@@ -25,6 +25,11 @@ const runawayDisabledReason = "runaway script — check and re-enable"
 // claimed: it is no longer queued, or its automation is at its concurrency.
 var ErrRunNotClaimed = errors.New("automation run could not be claimed")
 
+// ErrNotRunnable is what ExecuteBuiltinInline returns for a run whose
+// automation is not a confirmed slot automation; the run was cancelled
+// not_runnable, never claimed.
+var ErrNotRunnable = errors.New("the automation is not runnable")
+
 // ErrRecipeChanged is what ExecuteInlinePinned returns when the automation's
 // approval hash is no longer the one its caller checked; the run was
 // cancelled, never claimed.
@@ -284,11 +289,16 @@ type poll struct {
 }
 
 // consider cancels r when its automation is not runnable, else claims and
-// starts it when a slot is free.
+// starts it when a slot is free. A run of a slot automation (RunsAtSlot) is
+// left alone, never claimed or cancelled: the slot executor runs it at its
+// slot (ExecuteBuiltinInline).
 func (p *poll) consider(r db.AutomationRun) error {
 	a, err := p.automation(r.AutomationID)
 	if err != nil {
 		return err
+	}
+	if a.RunsAtSlot() {
+		return nil
 	}
 	if !a.Runnable() {
 		return p.e.cancelNotRunnable(r.ID, p.now)
@@ -328,11 +338,15 @@ const notResumedMessage = "interrupted by a daemon restart: the recipe or its co
 // resume claims a waiting run the start kept for a resume when a running
 // slot is free and starts its replay. A run whose automation is no longer
 // runnable, or confirmed at another hash than the run was claimed with, is
-// ended failed/interrupted instead, as a restart did before (AUTO-08).
+// ended failed/interrupted instead, as a restart did before (AUTO-08). A run
+// of a slot automation (RunsAtSlot) is left alone, as in consider.
 func (p *poll) resume(r db.AutomationRun) error {
 	a, err := p.automation(r.AutomationID)
 	if err != nil {
 		return err
+	}
+	if a.RunsAtSlot() {
+		return nil
 	}
 	if !a.Runnable() || a.ConfirmedHash != r.RecipeHash {
 		err := p.e.db.FinishAutomationRun(r.ID, db.RunFinish{Status: db.RunFailed, ErrorKind: db.ErrKindInterrupted,
@@ -419,6 +433,40 @@ func (e *Executor) ExecuteInlinePinned(ctx context.Context, runID int64, approva
 			return nil, fmt.Errorf("automation run %d: %w", runID, err)
 		}
 		return e.db.GetAutomationRun(runID)
+	}
+	claimed, err := e.claim(runID, a, now, 0)
+	if err != nil {
+		return nil, fmt.Errorf("automation run %d: %w", runID, err)
+	}
+	if !claimed {
+		return nil, fmt.Errorf("automation run %d: %w", runID, ErrRunNotClaimed)
+	}
+	e.runClaimed(ctx, runID, a, claimKind{inline: true})
+	return e.db.GetAutomationRun(runID)
+}
+
+// ExecuteBuiltinInline claims a slot automation's run runID and executes it
+// in the caller's goroutine (the slot executor at its slot, the CLI's
+// built-in commands), then returns the finished row. The automation must be
+// a confirmed slot automation (RunsAtSlot); whether it is enabled is the
+// caller's gate. Otherwise the run is cancelled not_runnable and
+// ErrNotRunnable returned. ErrRunNotClaimed when the claim lost (another run
+// of it is active, or the run is no longer queued); the run is left as is.
+func (e *Executor) ExecuteBuiltinInline(ctx context.Context, runID int64) (*db.AutomationRun, error) {
+	run, err := e.db.GetAutomationRun(runID)
+	if err != nil {
+		return nil, err
+	}
+	a, err := e.db.GetAutomation(run.AutomationID)
+	if err != nil {
+		return nil, fmt.Errorf("automation run %d: %w", runID, err)
+	}
+	now := e.clock.Now()
+	if !a.RunsAtSlot() || !a.Confirmed() {
+		if err := e.cancelNotRunnable(runID, now); err != nil {
+			return nil, fmt.Errorf("automation run %d: %w", runID, err)
+		}
+		return nil, fmt.Errorf("automation run %d of %q: %w", runID, a.Slug, ErrNotRunnable)
 	}
 	claimed, err := e.claim(runID, a, now, 0)
 	if err != nil {

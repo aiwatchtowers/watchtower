@@ -274,7 +274,31 @@ type Definer interface {
 
 type definer struct {
 	fns map[string]SDKFunc
-	err error
+	// vals are plain read-only values (builtin.input), installed as frozen
+	// JSON copies.
+	vals map[string]any
+	err  error
+}
+
+// envModule is a Module whose paths depend on the run (its manifest): the
+// sandbox installs it with installFor instead of Install.
+type envModule interface {
+	installFor(env *Env, d *definer)
+}
+
+// defineValue defines a plain value at path (a later definition replaces
+// an earlier one).
+func (d *definer) defineValue(path string, v any) {
+	if !validSDKPath(path) {
+		if d.err == nil {
+			d.err = fmt.Errorf("invalid SDK definition %q", path)
+		}
+		return
+	}
+	if d.vals == nil {
+		d.vals = map[string]any{}
+	}
+	d.vals[path] = v
 }
 
 func (d *definer) Define(path string, fn SDKFunc) {
@@ -299,8 +323,11 @@ func validSDKPath(path string) bool {
 // TriggerInfo is the script's read-only `trigger` object. Events is nil
 // (trigger.events undefined) for every run but an event run; Reply is nil
 // (trigger.reply undefined) for every run but a reply run, where it holds
-// output_id, action, value, data and card {title, link}.
+// output_id, action, value, data and card {title, link}. Builtin is a slot
+// run's input (event_json's "builtin"), which the script reads as
+// builtin.input, not on trigger.
 type TriggerInfo struct {
+	Builtin      BuiltinInput
 	Kind         string
 	RunID        int64
 	ScheduledFor *time.Time
