@@ -117,7 +117,7 @@ func init() {
 	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagTool, "tool", "", "the tool (an inbox-surface tool)")
 	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagSurface, "surface", "", "the surface: inbox")
 	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagContextType, "context-type", "",
-		"what the press acts on (e.g. track_event), stored on the row")
+		"what the press acts on (e.g. track_event), stored on the row; args naming an event_id override a mismatch")
 	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagContextID, "context-id", "", "its id, stored on the row")
 	actionsProposeCmd.Flags().StringVar(&actionsProposeFlagArgs, "args", "", "the tool's arguments as a JSON object")
 	actionsProposeCmd.Flags().BoolVar(&actionsProposeFlagApprove, "approve", false,

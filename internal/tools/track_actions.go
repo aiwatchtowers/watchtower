@@ -123,6 +123,11 @@ func executeTrackAction(_ context.Context, d *db.DB, call Call) (any, error) {
 		}
 		claimed = true
 		applied, err = act.write(d, tx)
+		if errors.Is(err, sql.ErrNoRows) {
+			// The target went between the read and the write; the
+			// rolled-back claim leaves the event pending.
+			return errTrackTargetGone
+		}
 		return err
 	})
 	if err != nil {
@@ -162,6 +167,10 @@ func (a trackAction) write(d *db.DB, tx *sql.Tx) (string, error) {
 		return "added a sub-item", d.AppendTargetSubItemTx(tx, a.targetID, strings.TrimSpace(c.Text))
 	}
 }
+
+// errTrackTargetGone is the owner-facing refusal when the linked target is
+// gone, at the read or inside the write's transaction.
+var errTrackTargetGone = &ValidationError{Msg: "The task this track is linked to no longer exists."}
 
 // readTrackEvent reads the event; a missing one is the owner-facing refusal.
 func readTrackEvent(d *db.DB, id int) (*db.TrackEvent, error) {
@@ -210,7 +219,7 @@ func resolveTrackAction(d *db.DB, e *db.TrackEvent) (trackAction, error) {
 		return trackAction{}, &ValidationError{Msg: "This track is not linked to a task."}
 	}
 	if _, err := d.GetTargetByID(track.LinkedTargetID); errors.Is(err, sql.ErrNoRows) {
-		return trackAction{}, &ValidationError{Msg: "The task this track is linked to no longer exists."}
+		return trackAction{}, errTrackTargetGone
 	} else if err != nil {
 		return trackAction{}, err
 	}
