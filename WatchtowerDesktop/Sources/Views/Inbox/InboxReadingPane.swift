@@ -32,6 +32,8 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     let proposalCard: ((AgentAction) -> AgentActionCardView)?
     /// A pending `save_automation` proposal's pane; nil shows its card.
     let saveProposal: ((AgentAction) -> SaveAutomationProposalPane)?
+    /// A built-in notice's **Retry** (its built-in id); nil hides it.
+    let onRetryBuiltin: ((String) -> Void)?
     /// The workbenches a card's agent press can go to.
     let workbenches: [Workbench]
     let dayCard: (InboxDayCard) -> DayCard
@@ -50,6 +52,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         onSnooze: @escaping (String) -> Void = { _ in },
         proposalCard: ((AgentAction) -> AgentActionCardView)? = nil,
         saveProposal: ((AgentAction) -> SaveAutomationProposalPane)? = nil,
+        onRetryBuiltin: ((String) -> Void)? = nil,
         workbenches: [Workbench] = [],
         @ViewBuilder dayCard: @escaping (InboxDayCard) -> DayCard,
         @ViewBuilder trackCard: @escaping (InboxTrackCard) -> TrackCard,
@@ -66,6 +69,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         self.onSnooze = onSnooze
         self.proposalCard = proposalCard
         self.saveProposal = saveProposal
+        self.onRetryBuiltin = onRetryBuiltin
         self.workbenches = workbenches
         self.dayCard = dayCard
         self.trackCard = trackCard
@@ -104,6 +108,8 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
                                  onSnooze: onSnooze, onCommand: onCommand, workbenches: workbenches,
                                  navScreens: navScreens, now: now)
             }
+        case .builtinNotice(let notice):
+            column { builtinNotice(notice) }
         case nil:
             nothingSelected
         }
@@ -156,6 +162,39 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         }
     }
 
+    // MARK: - A built-in's failed move
+
+    /// "Couldn't move Morning brief to Automations", the recorded error and
+    /// **Retry**; the card leaves once a read finds the move done.
+    private func builtinNotice(_ notice: BuiltinUpgradeNotice) -> some View {
+        VStack(alignment: .leading, spacing: Spacing.medium) {
+            Text(InboxListRow.builtinNoticeSource)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(notice.title)
+                .font(.title3.weight(.semibold))
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            if !notice.error.isEmpty {
+                Text(notice.error)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
+            }
+            if let onRetryBuiltin {
+                HStack(spacing: Spacing.regular) {
+                    Button("Retry") { onRetryBuiltin(notice.builtinID) }
+                        .buttonStyle(.kitSecondary)
+                        .disabled(isWriting)
+                    if isWriting { ProgressView().controlSize(.small) }
+                }
+                .controlSize(.small)
+                .padding(.top, Spacing.small)
+            }
+        }
+    }
+
     // MARK: - A reminder
 
     private func reminder(_ reminder: Reminder) -> some View {
@@ -199,12 +238,14 @@ where DayCard == InboxCardPlaceholder, TrackCard == InboxCardColumn<InboxCardPla
         onSnooze: @escaping (String) -> Void = { _ in },
         proposalCard: ((AgentAction) -> AgentActionCardView)? = nil,
         saveProposal: ((AgentAction) -> SaveAutomationProposalPane)? = nil,
+        onRetryBuiltin: ((String) -> Void)? = nil,
         workbenches: [Workbench] = []
     ) {
         self.init(
             item: item, navScreens: navScreens, now: now, isWriting: isWriting, onCommand: onCommand,
             onOpenAutomationRun: onOpenAutomationRun, onDone: onDone, onDismiss: onDismiss, onSnooze: onSnooze,
-            proposalCard: proposalCard, saveProposal: saveProposal, workbenches: workbenches,
+            proposalCard: proposalCard, saveProposal: saveProposal, onRetryBuiltin: onRetryBuiltin,
+            workbenches: workbenches,
             dayCard: { InboxCardPlaceholder(day: $0) },
             trackCard: { card in InboxCardColumn { InboxCardPlaceholder(track: card, now: now) } },
             ideaCard: { InboxCardPlaceholder(idea: $0) }

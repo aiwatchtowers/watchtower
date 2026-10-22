@@ -202,6 +202,11 @@ final class BuiltinAutomationCardModelTests: XCTestCase {
         XCTAssertEqual(runner.invocations, [["automations", "run", "3", "--json"]])
         XCTAssertNil(card.loadError)
         XCTAssertFalse(card.isWorking)
+        XCTAssertTrue(card.runQueued, "the card says it runs at the next sync")
+
+        runner.set("run", .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "run failed")))
+        await card.runNow()
+        XCTAssertFalse(card.runQueued, "a refused press queued nothing")
     }
 
     func testLoadFailureIsKept() async {

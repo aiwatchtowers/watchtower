@@ -36,6 +36,12 @@ package final class BuiltinAutomationCardModel {
     package private(set) var resetConfirming = false
     package var showingChanges = false
     package private(set) var isWorking = false
+    /// Why the card's last Turn On/Off, When save or Save and Turn On did not
+    /// land (those go through the app's feature manager and config, not
+    /// this model's CLI); nil after the next success.
+    package var actionError: String?
+    /// The last **Run Now** was queued: it runs at the next sync.
+    package private(set) var runQueued = false
     /// The last `show`: its `needs_confirmation` and `recipe_text` win over the row's.
     private var shown: AutomationDetail?
     /// The `loadError` the last failed Run Now set: its success clears only that one.
@@ -115,8 +121,10 @@ package final class BuiltinAutomationCardModel {
         guard !isWorking else { return }
         isWorking = true
         defer { isWorking = false }
+        runQueued = false
         do {
             _ = try await cli.run(automation.id)
+            runQueued = true
             if let runNowError, loadError == runNowError { loadError = nil }
             runNowError = nil
         } catch {

@@ -68,6 +68,53 @@ final class ActionStripAllKindsTests: XCTestCase {
         }
     }
 
+    // MARK: - A built-in's failed move (C2)
+
+    /// **Retry** runs `upgrade-builtins`, restarts the daemon once a move
+    /// landed, and the card leaves when the next read finds it done; the
+    /// Desktop writes no row itself (STRIP-02).
+    func testRetryBuiltinUpgradeRunsTheCLIRestartsAndRereads() async throws {
+        try await pool.write { db in
+            try db.execute(sql: """
+                INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at)
+                VALUES ('morning-brief', 'failed', 'config unreadable', 1, '2026-10-22T07:00:00Z')
+                """)
+        }
+        let runner = FakeCLIRunner(stdout: Data(#"{"results":[{"builtin_id":"morning-brief","status":"done"}]}"#.utf8))
+        let pool = try XCTUnwrap(pool)
+        runner.onRun = { _ in
+            // The CLI's own write, as Go `db.RecordBuiltinMigration` makes it.
+            try? await pool.write { db in
+                try db.execute(sql: "UPDATE builtin_migrations SET status = 'done', error = ''")
+            }
+        }
+        let vm = makeVM(runner)
+        await vm.refresh()
+        XCTAssertEqual(vm.sections.first?.items.first?.id, .builtinNotice("morning-brief"))
+        var restarts = 0
+
+        await vm.retryBuiltinUpgrade("morning-brief") { restarts += 1 }
+
+        XCTAssertEqual(runner.invocations, [["automations", "upgrade-builtins", "--json"]])
+        XCTAssertEqual(restarts, 1)
+        XCTAssertEqual(vm.feed.builtinNotices, [])
+        XCTAssertNil(vm.lastError)
+    }
+
+    func testRetryBuiltinUpgradeThatFailsAgainDoesNotRestart() async throws {
+        let runner = FakeCLIRunner(
+            stdout: Data(#"{"results":[{"builtin_id":"morning-brief","status":"failed","error":"still locked"}]}"#.utf8))
+        let vm = makeVM(runner)
+        var restarts = 0
+        await vm.retryBuiltinUpgrade("morning-brief") { restarts += 1 }
+        XCTAssertEqual(restarts, 0, "nothing moved, so the old phase keeps running")
+
+        runner.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: "boom")
+        await vm.retryBuiltinUpgrade("morning-brief") { restarts += 1 }
+        XCTAssertEqual(restarts, 0)
+        XCTAssertEqual(vm.lastError, "boom")
+    }
+
     // MARK: - STRIP-02
 
     func testRefreshIsStillOnePureRead() async throws {
@@ -89,10 +136,15 @@ final class ActionStripAllKindsTests: XCTestCase {
             try db.execute(sql: "INSERT INTO track_events (track_id, summary) VALUES (?, 's')", arguments: [track])
             try TestDatabase.insertIdea(db, kind: "idea")
             _ = try Self.message(db, 1)
+            try db.execute(sql: """
+                INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at)
+                VALUES ('morning-brief', 'failed', 'config unreadable', 1, '2026-10-22T07:00:00Z')
+                """)
         }
         let tables = [
             "briefings", "day_plans", "day_plan_items", "tracks", "track_events", "ideas", "inbox_items",
-            "agent_actions", "reminders", "automation_outputs", "automation_runs", "automations", "pipeline_runs"
+            "agent_actions", "reminders", "automation_outputs", "automation_runs", "automations", "pipeline_runs",
+            "builtin_migrations"
         ]
         let before = try dump(tables)
         let vm = makeVM()
@@ -109,6 +161,7 @@ final class ActionStripAllKindsTests: XCTestCase {
         XCTAssertEqual(vm.feed.tracks.count, 1)
         XCTAssertEqual(vm.feed.ideas.count, 1)
         XCTAssertEqual(vm.feed.messages.count, 1)
+        XCTAssertEqual(vm.feed.builtinNotices.map(\.builtinID), ["morning-brief"])
         XCTAssertEqual(vm.actionRows, vm.feed.proposals)
         XCTAssertEqual(vm.reminderRows, vm.feed.reminders)
         XCTAssertEqual(vm.outputRows, vm.feed.outputs)

@@ -193,6 +193,25 @@ final class AutomationEditorCenterTests: XCTestCase {
         XCTAssertEqual(center.savedIDs[7], 7)
     }
 
+    /// A built-in's Save (C2): its on/off is its feature keys, so the save
+    /// never runs `enable`/`disable`, whichever way the press asked.
+    func testBuiltinSaveNeverTogglesEnabled() async throws {
+        runner.on("validate") { _ in try Fixtures.validateJSON(approval: "hv") }
+        runner.on("save") { _ in Self.saveJSON(approval: "hv") }
+        let center = makeCenter()
+        for turnOn in [false, true] {
+            await center.beginEdit(7, chatNewestText: nil)
+            let form = try XCTUnwrap(center.drafts[7])
+            form.fields.trigger = .schedule(turnOn ? "0 16 * * 1-5" : "0 17 * * 1-5")
+            let plan = try await checkedPlan(center, 7)
+            await center.commit(7, plan: plan, turnOn: turnOn, setsEnabled: false)
+            XCTAssertEqual(center.saving[7], .done, "turnOn \(turnOn)")
+            center.discard(7)
+        }
+        XCTAssertEqual(subcommands.filter { $0 == "save" }.count, 2)
+        XCTAssertFalse(subcommands.contains("enable") || subcommands.contains("disable"), "\(subcommands)")
+    }
+
     /// A new personal draft: validated with no `--against`, saved at a slug
     /// made from its name into the automations directory, only where no file
     /// exists yet, confirmed by the owner's press.

@@ -9,6 +9,7 @@ package enum InboxListItem: Identifiable, Equatable, Sendable {
     case track(InboxTrackCard)
     case idea(Idea)
     case message(HomeFeedInboxRow)
+    case builtinNotice(BuiltinUpgradeNotice)
 
     package var id: InboxSelection {
         switch self {
@@ -19,6 +20,7 @@ package enum InboxListItem: Identifiable, Equatable, Sendable {
         case let .track(card): .track(card.track.id)
         case let .idea(idea): .idea(idea.id)
         case let .message(row): .message(row.item.id)
+        case let .builtinNotice(notice): .builtinNotice(notice.builtinID)
         }
     }
 }
@@ -43,7 +45,9 @@ package struct InboxSection: Equatable, Sendable {
 
 /// The Inbox list (spec B1, C1 §5): items that wait on the owner first, then
 /// the dated cards of today and of earlier days, newest first. A reminder
-/// sorts by its due time. An empty section is left out.
+/// sorts by its due time. An empty section is left out. A built-in's failed
+/// move to Automations (C2) heads Needs your decision under All and
+/// Automations.
 package enum InboxListBuilder {
     package static func sections(
         proposals: [AgentAction],
@@ -82,6 +86,7 @@ package enum InboxListBuilder {
         let showsAutomationCards = showsProposals
         let showsIdeas = showsAll || filter == .ideas
 
+        let notices = showsProposals ? feed.builtinNotices.map(InboxListItem.builtinNotice) : []
         let awaiting = showsProposals ? feed.proposals.map(InboxListItem.proposal) : []
         let awaitingIdeas = showsIdeas ? feed.ideas.filter(\.awaitsVerdict).map(InboxListItem.idea) : []
 
@@ -127,7 +132,7 @@ package enum InboxListBuilder {
         let pinned = todayRows.filter { isPinned($0.item) }
         let rest = todayRows.filter { !isPinned($0.item) }
         let sections = [
-            InboxSection(title: "Needs your decision", items: awaiting + awaitingIdeas),
+            InboxSection(title: "Needs your decision", items: notices + awaiting + awaitingIdeas),
             InboxSection(title: "Today", items: (pinned + rest).map(\.item)),
             InboxSection(title: "Earlier", items: rows.filter { !isToday($0) }.map(\.item))
         ]
@@ -152,6 +157,8 @@ package enum InboxListBuilder {
         case let .message(row): TieKey(rank: 4, number: Int64(row.item.id))
         case let .idea(idea): TieKey(rank: 5, number: Int64(idea.id))
         case let .proposal(action): TieKey(rank: 6, number: action.id)
+        // Never dated: always first in Needs your decision.
+        case let .builtinNotice(notice): TieKey(rank: 7, text: notice.builtinID)
         }
     }
 

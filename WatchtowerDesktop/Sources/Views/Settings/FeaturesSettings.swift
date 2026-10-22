@@ -17,8 +17,9 @@ private enum FeatureManagerApplyError: LocalizedError {
 }
 
 /// Features tab — the Feature Manager (on/off toggles + cascade dialog) on
-/// top, then per-feature tuning (Digest, Briefing, Day Plan, Ideas) for
-/// whichever of those pillars is currently enabled, plus notification
+/// top, the pointer to Automations → Built in (Briefing and Day Plan moved
+/// there, C2), then per-feature tuning (Digest, Ideas) for whichever of
+/// those pillars is currently enabled, plus notification
 /// preferences. Save runs the ordinary config.yaml save AND replays any
 /// staged Feature Manager changes through the CLI, restarting the daemon
 /// once — see `ConfigSaveBar.extraSave`.
@@ -29,14 +30,12 @@ struct FeaturesSettings: View {
     var body: some View {
         Form {
             FeatureManagerSection(service: appState.featureManager)
+            BuiltinFeaturesPointer {
+                appState.navigateToAutomations(section: .automations)
+                appState.bringMainWindowForward()
+            }
             if slackDigestsEnabled {
                 digestSection
-            }
-            if briefingEnabled {
-                briefingSection
-            }
-            if dayPlanEnabled {
-                dayPlanSection
             }
             if ideasEnabled {
                 ideasSection
@@ -86,14 +85,6 @@ struct FeaturesSettings: View {
         !appState.featureManager.disabledFeatureIDs.contains("slack-digests")
     }
 
-    private var briefingEnabled: Bool {
-        !appState.featureManager.disabledFeatureIDs.contains("briefing")
-    }
-
-    private var dayPlanEnabled: Bool {
-        !appState.featureManager.disabledFeatureIDs.contains("day-plan")
-    }
-
     private var ideasEnabled: Bool {
         !appState.featureManager.disabledFeatureIDs.contains("ideas")
     }
@@ -119,63 +110,6 @@ struct FeaturesSettings: View {
         }
     }
 
-    private var briefingSection: some View {
-        Section("Briefing") {
-            Picker(
-                "Briefing Hour",
-                selection: $config.briefingHour
-            ) {
-                ForEach(0..<24, id: \.self) { hour in
-                    Text(String(format: "%02d:00", hour)).tag(hour)
-                }
-            }
-            .help("Hour of day when daily briefing should be generated (0-23)")
-        }
-    }
-
-    private var dayPlanSection: some View {
-        Section("Day Plan") {
-            HStack {
-                Text("Working hours:")
-                TextField(
-                    "Start",
-                    text: $config.workingHoursStart,
-                    prompt: Text("09:00")
-                )
-                .frame(width: 70)
-                Text("–")
-                TextField(
-                    "End",
-                    text: $config.workingHoursEnd,
-                    prompt: Text("19:00")
-                )
-                .frame(width: 70)
-            }
-            .help("Working window used when scheduling time blocks (HH:MM)")
-
-            Stepper(
-                "Max timeblocks: \(config.maxTimeblocks)",
-                value: $config.maxTimeblocks,
-                in: 1...5
-            )
-            .help("Maximum number of focused time blocks per day")
-
-            HStack {
-                Stepper(
-                    "Backlog min: \(config.minBacklog)",
-                    value: $config.minBacklog,
-                    in: 1...10
-                )
-                Stepper(
-                    "Backlog max: \(config.maxBacklog)",
-                    value: $config.maxBacklog,
-                    in: 1...15
-                )
-            }
-            .help("Minimum and maximum backlog items shown in the day plan")
-        }
-    }
-
     private var ideasSection: some View {
         Section("Ideas") {
             Stepper(
@@ -184,6 +118,32 @@ struct FeaturesSettings: View {
                 in: 1...48
             )
             .help("How often the daemon's regular (non-backfill) mining pass runs")
+        }
+    }
+}
+
+/// Settings → Features' row for Briefing and Day Plan, which moved to the
+/// Morning brief built-in (spec §5.4): its card turns it on or off and holds
+/// its hour and working hours. **Open Automations** goes there.
+struct BuiltinFeaturesPointer: View {
+    static let line = "These now live in Automations → Built in"
+
+    let onOpen: () -> Void
+
+    var body: some View {
+        Section {
+            HStack(spacing: Spacing.regular) {
+                VStack(alignment: .leading, spacing: Spacing.tight) {
+                    Text("Briefing and Day Plan")
+                    Text(Self.line)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Open Automations", action: onOpen)
+                    .buttonStyle(.kitSecondary)
+                    .controlSize(.small)
+            }
         }
     }
 }

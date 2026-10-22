@@ -270,6 +270,24 @@ final class ConfigService {
         yaml["workbench"] = workbench
     }
 
+    /// A built-in card's When field (`show`'s `builtin.parameters[].key`,
+    /// twin: Go `builtin.Param` keys) set from its text; false for a key
+    /// this file does not write or a value it cannot hold. `save()` writes it.
+    func setBuiltinParameter(_ key: String, _ value: String) -> Bool {
+        switch key {
+        case "briefing.hour":
+            guard let hour = Int(value), (0...23).contains(hour) else { return false }
+            briefingHour = hour
+        case "day_plan.working_hours_start":
+            workingHoursStart = value
+        case "day_plan.working_hours_end":
+            workingHoursEnd = value
+        default:
+            return false
+        }
+        return true
+    }
+
     func save() throws {
         // Re-read the config file right before writing instead of using the
         // in-memory `rawYAML` snapshot captured at the last reload(). Between

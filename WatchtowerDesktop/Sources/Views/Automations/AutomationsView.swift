@@ -9,6 +9,8 @@ struct AutomationsTabActions {
     var onOpenSession: ((_ projectID: Int64, _ sessionID: Int64) -> Void)?
     /// A workbench run's step ask → that ask's drawer on its workbench page.
     var onOpenAsk: ((_ projectID: Int64, _ askID: Int64) -> Void)?
+    /// A built-in's on/off and When fields (the feature keys and config).
+    var builtin = BuiltinCardActions()
 }
 
 /// What the panel needs from `AppState`: the scopes a new automation can
@@ -46,6 +48,8 @@ struct AutomationsView: View {
     /// The Feature Manager's disabled ids: the Tracks section shows while
     /// the `tracks` feature is on.
     var disabledFeatures: Set<String> = []
+    /// The feature manager is applying a change: a built-in's Turn On/Off waits.
+    var isApplyingFeatures = false
 
     /// The one place the Tracks section's visibility is decided.
     private var tracksVisible: Bool {
@@ -169,8 +173,7 @@ struct AutomationsView: View {
                 VStack(alignment: .leading, spacing: Spacing.tight) {
                     let now = Date()
                     ForEach(sections) { section in
-                        SectionHeader(title: section.title,
-                                      systemImage: section.id == "personal" ? "person" : "folder",
+                        SectionHeader(title: section.title, systemImage: Self.sectionIcon(section.id),
                                       count: section.count)
                             .padding(.horizontal, Spacing.regular)
                             .padding(.top, Spacing.medium)
@@ -204,6 +207,14 @@ struct AutomationsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private static func sectionIcon(_ id: String) -> String {
+        switch id {
+        case "builtin": "shippingbox"
+        case "personal": "person"
+        default: "folder"
+        }
+    }
+
     private func isOpen(_ row: AutomationDraftRow) -> Bool {
         if case let .editor(.newDraft(contextID, _, _)) = vm.panel { return contextID == row.contextID }
         return false
@@ -230,7 +241,9 @@ struct AutomationsView: View {
         case .empty:
             emptyPanel
         case let .card(id):
-            if let item = vm.items.first(where: { $0.id == id }) {
+            if let item = vm.items.first(where: { $0.id == id }), item.automation.isBuiltin {
+                builtinCard(item.automation)
+            } else if let item = vm.items.first(where: { $0.id == id }) {
                 AutomationCardView(
                     vm: vm,
                     item: item,
@@ -271,6 +284,7 @@ struct AutomationsView: View {
                     scopeTitle: scopeTitle(target),
                     workspaceDir: hooks.workspaceDir,
                     composerPrefill: vm.composerPrefill,
+                    turnOnBuiltin: turnOnBuiltin(target),
                     onSaved: { vm.showCard($0) },
                     onDiscardDraft: discardHandler(target)
                 )
@@ -278,6 +292,39 @@ struct AutomationsView: View {
             } else {
                 placeholder("The editor is not available yet.")
             }
+        }
+    }
+
+    /// A built-in's card, kept by the view model; it reads the newest row.
+    private func builtinCard(_ automation: Automation) -> some View {
+        let card = vm.builtinCard(automation)
+        return BuiltinAutomationCard(
+            model: card,
+            isApplyingFeatures: isApplyingFeatures,
+            actions: actions.builtin,
+            onEdit: { vm.showEditor(.existing(automation.id)) },
+            onChanged: { vm.refresh(drafts: false) }
+        )
+        .onChange(of: automation, initial: true) { _, row in card.automation = row }
+        .id(automation.id)
+    }
+
+    /// **Save and Turn On** under a built-in's draft: its feature ids on,
+    /// through the same path as the card's Turn On; nil for any other draft.
+    private func turnOnBuiltin(_ target: AutomationEditorTarget) -> (() async -> Void)? {
+        guard case let .existing(id, _) = target,
+              let automation = vm.items.first(where: { $0.id == id })?.automation, automation.isBuiltin
+        else { return nil }
+        let card = vm.builtinCard(automation)
+        let setEnabled = actions.builtin.setEnabled
+        return {
+            if card.detail == nil { await card.load() }
+            guard let ids = card.detail?.featureIDs, !ids.isEmpty else {
+                card.actionError = card.loadError ?? "Saved, but its features are not known, so it was not turned on."
+                return
+            }
+            card.actionError = await setEnabled(ids, true)
+            await card.load()
         }
     }
 
@@ -330,8 +377,11 @@ struct AutomationsView: View {
     private func scopeTitle(_ target: AutomationEditorTarget) -> String {
         switch target {
         case let .existing(id, _):
-            guard let automation = vm.items.first(where: { $0.id == id })?.automation,
-                  automation.scope == .workbench else { return AutomationListSections.personalTitle }
+            guard let automation = vm.items.first(where: { $0.id == id })?.automation else {
+                return AutomationListSections.personalTitle
+            }
+            if automation.isBuiltin { return AutomationListSections.builtinTitle }
+            guard automation.scope == .workbench else { return AutomationListSections.personalTitle }
             return automation.projectID.flatMap(workbenchName) ?? "Workbench"
         case let .newDraft(_, scope, _):
             if case let .workbench(_, name, _) = scope { return name }

@@ -72,4 +72,47 @@ final class AutomationDraftFooterTests: XCTestCase {
         ]
         for (action, title) in titles { XCTAssertEqual(action.title, title) }
     }
+
+    // MARK: - A built-in (C2): Save confirms; Save and Turn On while it is off
+
+    private func builtin(bytes: Bool, enabled: Bool, needs: Bool = false, showsAll: Bool = true) -> Footer {
+        Footer.make(isNew: false, bytesChanged: bytes, enabled: enabled, needsConfirmation: needs,
+                    showsAllFields: showsAll, isBuiltin: true)
+    }
+
+    func testBuiltinFooterOffersSaveAndTurnOnWhenOff() {
+        let save = "Saving confirms exactly what's listed above"
+        let turnsOn = "Saving confirms exactly what's listed above and turns it on"
+        for needs in [false, true] {
+            assertRow(builtin(bytes: true, enabled: true, needs: needs), "Save", enabled: true, nil, save)
+            assertRow(builtin(bytes: true, enabled: false, needs: needs), "Save and Turn On", enabled: true,
+                      "Save", turnsOn)
+        }
+        // A hand-edited copy with no edits here: confirmed only, on/off stays on the card.
+        for enabled in [false, true] {
+            assertRow(builtin(bytes: false, enabled: enabled, needs: true), "Confirm", enabled: true, nil,
+                      "Confirming approves exactly what's listed above")
+            assertRow(builtin(bytes: false, enabled: enabled), "Save", enabled: false, nil, "No changes to save")
+        }
+        assertRow(builtin(bytes: true, enabled: false, showsAll: false), "Save", enabled: false, nil,
+                  "Can't show everything this would confirm, so it can't be saved")
+        XCTAssertEqual(Footer.Action.save.title, "Save")
+    }
+
+    func testBuiltinFooterHasNoDelete() {
+        // Turning a built-in off is the card's Turn Off (its feature keys);
+        // no footer button deletes it or saves it turned off.
+        for bytes in [false, true] {
+            for enabled in [false, true] {
+                for needs in [false, true] {
+                    let footer = builtin(bytes: bytes, enabled: enabled, needs: needs)
+                    for action in [footer.primary] + (footer.secondary.map { [$0] } ?? []) {
+                        XCTAssertFalse(action.title.contains("Delete"), "\(action)")
+                        XCTAssertFalse([.saveTurnedOff, .confirmTurnedOff, .confirmAndTurnOn, .saveAndConfirm]
+                            .contains(action), "\(bytes) \(enabled) \(needs): \(action)")
+                    }
+                }
+            }
+        }
+    }
 }

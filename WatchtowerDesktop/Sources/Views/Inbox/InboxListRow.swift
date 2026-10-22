@@ -94,8 +94,14 @@ struct InboxListRow: View {
         case .message(let row):
             return Content(unread: row.item.isUnread, title: messageTitle(row), high: row.item.priority == "high",
                            source: messageSource(row, now: now), preview: row.item.whyMatters)
+        case .builtinNotice(let notice):
+            return Content(unread: true, title: notice.title, high: false, source: builtinNoticeSource,
+                           preview: notice.error)
         }
     }
+
+    /// A built-in's failed move to Automations: where it is fixed.
+    static let builtinNoticeSource = "Automations · Built in"
 
     /// The day card: its briefing, or the plan alone; today's placeholder
     /// before either exists.

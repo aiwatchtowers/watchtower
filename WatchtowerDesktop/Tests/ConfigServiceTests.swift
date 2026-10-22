@@ -192,6 +192,28 @@ struct ConfigServiceTests {
         #expect(ai?["ollama_url"] == nil)
     }
 
+    @Test("A built-in card's When fields save to their config keys; unknown keys and bad hours are refused")
+    func builtinParametersSave() throws {
+        let path = makeTempConfig("""
+        active_workspace: keep-me
+        briefing:
+          hour: 8
+        """)
+        let svc = ConfigService(configPath: path)
+        #expect(svc.setBuiltinParameter("briefing.hour", "9"))
+        #expect(svc.setBuiltinParameter("day_plan.working_hours_start", "08:30"))
+        #expect(svc.setBuiltinParameter("day_plan.working_hours_end", "17:00"))
+        #expect(!svc.setBuiltinParameter("briefing.hour", "24"))
+        #expect(!svc.setBuiltinParameter("ideas.enabled", "true"), "on/off is the feature manager's")
+        try svc.save()
+
+        let svc2 = ConfigService(configPath: path)
+        #expect(svc2.briefingHour == 9)
+        #expect(svc2.workingHoursStart == "08:30")
+        #expect(svc2.workingHoursEnd == "17:00")
+        #expect(svc2.activeWorkspace == "keep-me")
+    }
+
     @Test("Save round-trips ideas tuning, never ideas.enabled, and preserves unrelated keys")
     func saveIdeasRoundTrip() throws {
         let path = makeTempConfig("""

@@ -342,6 +342,60 @@ final class FeatureManagerService {
         return (enabled, restarted, false)
     }
 
+    /// `enableNow(_:restart:)`'s mirror — a built-in's **Turn Off** on its
+    /// Automations card: each named feature still on is disabled in order
+    /// (`features disable <id>`, never `--with-dependents`, so only the named
+    /// keys are written — FEAT-04), stopping at the first failure, then the
+    /// daemon restarts once if anything was disabled. Nothing staged in
+    /// Settings → Features is replayed; a staged entry for a disabled id is
+    /// dropped. Re-reads the live state first and does nothing when that
+    /// fails. Returns the ids it disabled, whether the restart ran and
+    /// succeeded, and whether another apply was in flight; a failure is in
+    /// `loadError`.
+    @discardableResult
+    func disableNow(
+        _ ids: [String],
+        restart: @MainActor () async throws -> Void
+    ) async -> (disabled: [String], restarted: Bool, busy: Bool) {
+        guard !isApplying else { return ([], false, true) }
+        isApplying = true
+        defer { isApplying = false }
+
+        await load()
+        guard loadError == nil else { return ([], false, false) }
+        let toDisable = ids.filter { id in features.first { $0.id == id }?.state == "enabled" }
+        guard !toDisable.isEmpty else { return ([], false, false) }
+
+        var failure: Error?
+        var disabled: [String] = []
+        var restarted = false
+        for id in toDisable {
+            do {
+                _ = try await runner.run(args: ["features", "disable", id])
+                pending.removeValue(forKey: id)
+                applyWithDependents.remove(id)
+                disabled.append(id)
+            } catch {
+                failure = error
+                break
+            }
+        }
+        if !disabled.isEmpty {
+            do {
+                try await restart()
+                restarted = true
+            } catch {
+                failure = failure ?? error
+            }
+        }
+
+        await load()
+        if let failure {
+            loadError = failure.localizedDescription
+        }
+        return (disabled, restarted, false)
+    }
+
     /// Onboarding's write path: makes exactly `enabled` on and the rest of
     /// `managed` off, through the same `features enable`/`disable` calls as
     /// `apply()` but never restarting the daemon — onboarding's completion

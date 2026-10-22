@@ -20,6 +20,9 @@ struct AutomationEditorPanel: View {
     var composerPrefill: String?
     /// The provider has tools (not Ollama): the Chat segment is on.
     var toolsAvailable = AutomationEditorChatSurface.toolsAvailable(provider: nil)
+    /// A built-in's **Save and Turn On**: turns its features on once the save
+    /// landed; nil for every other recipe (its footer uses the CLI's enable).
+    var turnOnBuiltin: (() async -> Void)?
     let onSaved: (Int64) -> Void
     /// **Discard Draft** of a new draft; nil hides the ⋯ menu.
     let onDiscardDraft: (() -> Void)?
@@ -342,7 +345,7 @@ struct AutomationEditorPanel: View {
         let verdict = AutomationDraftFooter.make(
             isNew: isNew, bytesChanged: form.buffer.isDirty, enabled: enabled,
             needsConfirmation: form.detail.needsConfirmation, showsAllFields: column.showsAllFields,
-            hasErrors: !column.errors.isEmpty
+            hasErrors: !column.errors.isEmpty, isBuiltin: turnOnBuiltin != nil
         )
         let ready = editor.canSave(key) && !isSaving
         let checking = column.status == .checking && !isFailed(key)
@@ -456,6 +459,18 @@ struct AutomationEditorPanel: View {
         var checked = plan
         checked.keepAuto = (editor.keepAuto[key] ?? []).intersection(plan.pausedGrants)
         let editor = editor
+        if let turnOnBuiltin {
+            // A built-in: the save never touches on/off (its feature keys).
+            whenLanded(key) {
+                if action == .confirm {
+                    await editor.confirmShown(key, plan: checked, turnOn: false)
+                    return
+                }
+                await editor.commit(key, plan: checked, turnOn: false, setsEnabled: false)
+                if action == .saveAndTurnOn, editor.saving[key] == .done { await turnOnBuiltin() }
+            }
+            return
+        }
         whenLanded(key) {
             switch action {
             case .saveAndTurnOn, .saveAndConfirm:
@@ -466,6 +481,8 @@ struct AutomationEditorPanel: View {
                 await editor.confirmShown(key, plan: checked, turnOn: true)
             case .confirmTurnedOff, .confirm:
                 await editor.confirmShown(key, plan: checked, turnOn: false)
+            case .save:
+                await editor.commit(key, plan: checked, turnOn: false, setsEnabled: false)
             }
         }
     }
