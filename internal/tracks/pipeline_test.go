@@ -1417,6 +1417,20 @@ func TestTracksRunWith_PlaceholderMismatchUsesDefault(t *testing.T) {
 	_, _, err := pipe.RunWith(context.Background(), RunOptions{Prompt: "B-OVERRIDE %s only"})
 	require.NoError(t, err)
 	assert.NotContains(t, gen.systemSeen+gen.userSeen, "B-OVERRIDE")
+	assert.Contains(t, gen.systemSeen+gen.userSeen, "You are analyzing channel digests from multiple Slack channels", "the default prompt was sent")
+	assert.Contains(t, pipe.LastPromptNote(), "built-in prompt was used")
+}
+
+func TestTracksRun_StoredRowPlaceholderMismatchUsesDefault(t *testing.T) {
+	database := seedOverrideRun(t, "")
+	pipe, gen := overridePipeline(t, database, "C-OLDROW %s %s")
+
+	_, _, err := pipe.Run(context.Background())
+	require.NoError(t, err)
+	sent := gen.systemSeen + gen.userSeen
+	assert.NotContains(t, sent, "C-OLDROW")
+	assert.NotContains(t, sent, "%!")
+	assert.Contains(t, sent, "You are analyzing channel digests from multiple Slack channels")
 	assert.Contains(t, pipe.LastPromptNote(), "built-in prompt was used")
 }
 

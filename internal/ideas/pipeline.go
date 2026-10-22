@@ -173,6 +173,7 @@ func (p *Pipeline) language() string {
 // other" principle carried over from the pre-split Run. Returns the first
 // error any pass produced, if any, without swallowing it.
 func (p *Pipeline) RunStreamDigests(ctx context.Context) error {
+	p.lastPromptNote = ""
 	var firstErr error
 	if err := p.runEmailDigests(ctx); err != nil {
 		firstErr = err

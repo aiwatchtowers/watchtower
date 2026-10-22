@@ -1707,17 +1707,24 @@ func (p *Pipeline) getPrompt(id string) (string, int) {
 	var version int
 	if p.promptOverride != "" {
 		tmpl = p.promptOverride
-		if got, want := countVerbs(tmpl), countVerbs(prompts.Defaults[id]); got != want {
-			p.logger.Printf("tracks: the edited prompt has %d %%s placeholders, the default has %d — using the default", got, want)
-			p.lastPromptNote = fmt.Sprintf("The prompt has %d placeholders where %d are required — the built-in prompt was used.", got, want)
-			tmpl = prompts.DefaultForRole(id, role)
-		}
 	} else {
 		var err error
 		tmpl, version, err = prompts.Resolve(p.promptStore, id, role)
 		if err != nil {
 			p.logger.Printf("tracks: %v — using the built-in default", err)
 		}
+	}
+	// A template whose %s count differs from the shipped default's (an old
+	// customised row, or a bad override) would shift every section and append
+	// %!(EXTRA ...): the default is used instead.
+	if got, want := countVerbs(tmpl), countVerbs(prompts.Defaults[id]); got != want {
+		if p.promptOverride != "" {
+			p.logger.Printf("tracks: the edited prompt has %d %%s placeholders, the default has %d — using the default", got, want)
+		} else {
+			p.logger.Printf("tracks: stored %s template has %d placeholders, the default has %d — using the default (reset the prompt in Settings to pick up the new sections)", id, got, want)
+		}
+		p.lastPromptNote = fmt.Sprintf("The prompt has %d placeholders where %d are required — the built-in prompt was used.", got, want)
+		tmpl, version = prompts.DefaultForRole(id, role), 0
 	}
 	return prompts.WithRoleInstruction(role, tmpl), version
 }
