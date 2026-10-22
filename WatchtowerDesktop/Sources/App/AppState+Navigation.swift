@@ -129,8 +129,15 @@ extension AppState {
                 sourceID: String(briefing.id)
             )
         }
+        return await createTask(from: prefill)
+    }
+
+    /// The one create half of every **Make a Task** (briefing, day and track
+    /// cards): a target from `prefill` for today, opened in Targets. A cut
+    /// title keeps the whole text in the intent. Returns the failure, or nil.
+    func createTask(from prefill: TargetPrefill) async -> String? {
+        guard let db = databaseManager else { return "Database not available" }
         let title = TargetComposerLogic.deriveTitle(from: prefill.text)
-        // A cut title keeps the item's whole text in the intent.
         let fullText = prefill.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let intent = title == fullText ? prefill.intent : [fullText, prefill.intent]
             .filter { !$0.isEmpty }.joined(separator: "\n\n")
@@ -155,6 +162,7 @@ extension AppState {
         }
     }
 
+    /// A made task's day period: the owner's local calendar day.
     private static let makeTaskDay: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"

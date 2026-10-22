@@ -31,6 +31,14 @@ final class AppStateMakeTaskTests: XCTestCase {
         })
     }
 
+    private func insertTrack(text: String, context: String) throws -> Track {
+        let pool = try XCTUnwrap(appState.databaseManager).dbPool
+        return try XCTUnwrap(try pool.write { db -> Track? in
+            let id = try TestDatabase.insertTrack(db, text: text, context: context, channelIDs: #"["C001"]"#)
+            return try TrackQueries.fetchByID(db, id: Int(id))
+        })
+    }
+
     private func target(_ id: Int) throws -> Target {
         let pool = try XCTUnwrap(appState.databaseManager).dbPool
         return try XCTUnwrap(try pool.read { db in try TargetQueries.fetchByID(db, id: id) })
@@ -66,5 +74,24 @@ final class AppStateMakeTaskTests: XCTestCase {
         XCTAssertNotEqual(made.text, long, "the fixture's title is cut")
         XCTAssertTrue(made.intent.hasPrefix(long + "\n\nSurfaced in briefing on 2026-10-22."), made.intent)
         XCTAssertEqual(made.sourceType, "briefing")
+    }
+
+    func testATrackMakesATrackSourcedTaskWithItsChannelLinkAndOpensIt() async throws {
+        let pool = try XCTUnwrap(appState.databaseManager).dbPool
+        let track = try insertTrack(text: "Ship the release notes", context: "Agreed in standup")
+
+        let failure = await appState.makeTask(fromTrack: track)
+
+        XCTAssertNil(failure)
+        let id = try XCTUnwrap(appState.pendingTargetID)
+        XCTAssertEqual(appState.selectedDestination, .targets)
+        let made = try target(id)
+        XCTAssertEqual(made.text, "Ship the release notes")
+        XCTAssertTrue(made.intent.hasPrefix("Agreed in standup"), made.intent)
+        XCTAssertEqual(made.sourceType, "track")
+        XCTAssertEqual(made.sourceID, String(track.id))
+        XCTAssertEqual(made.periodStart, made.periodEnd)
+        let links = try await pool.read { db in try TargetQueries.fetchLinks(db, targetID: id) }
+        XCTAssertEqual(links.map(\.externalRef), ["slack:C001"])
     }
 }
