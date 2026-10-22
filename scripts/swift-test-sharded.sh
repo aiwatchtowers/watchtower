@@ -18,7 +18,9 @@
 #
 # Usage: scripts/swift-test-sharded.sh [SHARDS]   (default 3; build first with
 # `swift build --build-tests`). Each process's log is printed in full
-# afterwards; the exit status is non-zero when any of them fails.
+# afterwards, then a summary of what failed (failing tests, or the last test
+# a crashed lane started, and xctest crash reports); the exit status is
+# non-zero when any of them fails.
 #
 # Compatible with bash 3.2 (macOS).
 
@@ -145,9 +147,43 @@ supervise() {
         else
             cat "$WORK/log$i"
             echo "swift-test-sharded: ${names[$i]} failed (exit $rc)" >&2
+            summarize_failure "$i" "$rc" >> "$WORK/summary"
             status=$rc
         fi
     done
+}
+
+# Appends what failed in lane $1 (exit $2) to the end-of-run summary: its
+# failing test lines, or, when none was logged, the last test it started (a
+# crash or a kill mid-test). The CI log shows this script's stderr out of order
+# with the lane logs, so the summary goes to stdout, after every log.
+summarize_failure() {
+    local log="$WORK/log$1" rc="$2" failed
+    echo "${names[$1]} (exit $rc):"
+    # XCTest's assertion and "failed (" lines; Swift Testing's ✘ lines.
+    failed="$(grep -aE ": error: -\[|^Test Case '.*' failed \(|✘ " "$log" || true)"
+    if [[ -n $failed ]]; then
+        printf '%s\n' "$failed" | sed 's/^/  /'
+        return
+    fi
+    if ((rc > 128)); then
+        echo "  no failing test logged; killed by signal $((rc - 128))"
+    else
+        echo "  no failing test logged; the process exited mid-run"
+    fi
+    grep -aE "^Test Case '.*' started|^Test Suite '.*' started" "$log" | tail -n 1 | sed 's/^/  last started: /' || true
+}
+
+# Prints the summary and the crash reports xctest left since the run began.
+print_summary() {
+    [[ -s "$WORK/summary" ]] || return 0
+    echo "swift-test-sharded: failure summary"
+    cat "$WORK/summary"
+    local report
+    while IFS= read -r report; do
+        echo "--- crash report $report (first 200 lines)"
+        head -n 200 "$report"
+    done < <(find "$HOME/Library/Logs/DiagnosticReports" -name 'xctest*' -newer "$WORK/list" 2>/dev/null)
 }
 
 # WATCHTOWER_TEST_SHARD: preferences are shared across processes, so the
@@ -170,4 +206,5 @@ start_lane "XCTest timing-bound classes (alone)" \
     env WATCHTOWER_TEST_SHARD="serial" NSUnbufferedIO=YES xcrun xctest -XCTest "$(paste -sd, - < "$WORK/serial")" "$BUNDLE"
 supervise "$serial_first"
 
+print_summary
 exit "$status"
