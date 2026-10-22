@@ -146,6 +146,9 @@ final class WorkbenchCodeIndexTests: XCTestCase {
     /// reporting the real figure. Each query counts with its fastest of the
     /// `measure` runs: a regression is slow every time, while one run stalled
     /// by the CI VM's scheduler is not (a single 523 ms sample failed main).
+    /// The fastest run also hides a query's first-run warm-up (caches, lazy
+    /// state), so the slowest single sample keeps a loose 2 s bound of its own:
+    /// a stall stays far under it, a cold query that takes seconds does not.
     func testQueryLatencyOnASyntheticRepository() {
         let index = WorkbenchCodeIndex()
         index.applyIndexLines(Self.syntheticRepository(files: 3000, symbolsPerFile: 10), from: .fullRun)
@@ -156,17 +159,20 @@ final class WorkbenchCodeIndexTests: XCTestCase {
         ]
         let boosts = CodeRankingBoosts(openTabs: ["Sources/Module7/Feature3/File7.swift"], recent: [], gitModified: [])
         var fastest = [String: Duration]()
+        var worstSample: Duration = .zero
         measure {
             for query in queries {
                 let start = ContinuousClock.now
                 _ = index.query(query, scope: .all, boosts: boosts)
                 let took = ContinuousClock.now - start
                 fastest[query] = min(fastest[query] ?? took, took)
+                worstSample = max(worstSample, took)
             }
         }
         XCTAssertEqual(fastest.count, queries.count)
         let worst = fastest.values.max() ?? .zero
         XCTAssertLessThanOrEqual(worst, .milliseconds(300), "slowest query took \(worst)")
+        XCTAssertLessThanOrEqual(worstSample, .seconds(2), "slowest single sample took \(worstSample)")
     }
 
     private static func syntheticRepository(files: Int, symbolsPerFile: Int) -> [CodeIndexLine] {

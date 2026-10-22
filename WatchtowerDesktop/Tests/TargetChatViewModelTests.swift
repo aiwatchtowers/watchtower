@@ -808,6 +808,8 @@ final class TargetChatViewModelTests: XCTestCase {
             [.sessionID("s1"), .text("first reply"), .done],
             [.text("second reply"), .done]
         ], thenAwaitsRelease: true)
+        // A failed assertion before the release must not leave the stream parked.
+        defer { mock.release() }
         let chat = try makeChat(target: target, vm: vm, manager: manager,
                                 aiService: mock)
 
