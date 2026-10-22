@@ -25,14 +25,25 @@ extension AppState {
 
     /// A built-in's **Turn On** / **Turn Off**: its feature ids through the
     /// feature manager (`features enable` runs the FEAT-03 hook), then one
-    /// daemon restart. Returns why it did not land, nil on success.
+    /// daemon restart. A Turn On whose features are all on already is the
+    /// built-in the daemon stopped after a run that would not end (AUTO-08):
+    /// `features enable` of its first feature turns it on again (the CLI
+    /// clears the stop; no fast-forward, no restart — the next sync reads
+    /// the row). Returns why it did not land, nil on success.
     func setBuiltinEnabled(_ featureIDs: [String], on: Bool) async -> String? {
         let daemon = daemonControl
         let restart: @MainActor () async throws -> Void = { try await self.restartOnChain(daemon) }
-        let busy = on ? await featureManager.enableNow(featureIDs, restart: restart).busy
-                      : await featureManager.disableNow(featureIDs, restart: restart).busy
-        if busy { return Self.featureChangesBusy }
-        return featureManager.loadError
+        guard on else {
+            let busy = await featureManager.disableNow(featureIDs, restart: restart).busy
+            return busy ? Self.featureChangesBusy : featureManager.loadError
+        }
+        let result = await featureManager.enableNow(featureIDs, restart: restart)
+        if result.busy { return Self.featureChangesBusy }
+        if let error = featureManager.loadError { return error }
+        if result.enabled.isEmpty, let first = featureIDs.first {
+            return await featureManager.resumeStoppedBuiltin(first)
+        }
+        return nil
     }
 
     /// A built-in card's When **Save**: the config keys written through a

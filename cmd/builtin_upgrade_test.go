@@ -56,7 +56,7 @@ func morningBriefEntry(t *testing.T) builtin.Entry {
 }
 
 func TestBuiltinUpgrade_NoCustomPromptRecordsDone(t *testing.T) {
-	c := newBuiltinCLI(t, true)
+	c := newUnmovedBuiltinCLI(t, true)
 	require.NoError(t, prompts.New(c.d, nil).Seed())
 	assert.True(t, c.upgrade(t))
 	assert.NoFileExists(t, builtin.OwnerCopyPath(c.ws, morningBriefID))
@@ -68,7 +68,7 @@ func TestBuiltinUpgrade_NoCustomPromptRecordsDone(t *testing.T) {
 }
 
 func TestBuiltinUpgrade_CustomPromptBecomesConfirmedCopy(t *testing.T) {
-	c := newBuiltinCLI(t, true, builtinBriefReply)
+	c := newUnmovedBuiltinCLI(t, true, builtinBriefReply)
 	carried := "CARRIED MARKER\n" + prompts.Defaults[prompts.BriefingDaily]
 	c.customisePrompt(t, prompts.BriefingDaily, carried)
 
@@ -93,7 +93,7 @@ func TestBuiltinUpgrade_CustomPromptBecomesConfirmedCopy(t *testing.T) {
 }
 
 func TestBuiltinUpgrade_CarriesTheResolvedRolePrompt(t *testing.T) {
-	c := newBuiltinCLI(t, true)
+	c := newUnmovedBuiltinCLI(t, true)
 	o, err := c.d.RequireOwner()
 	require.NoError(t, err)
 	require.NoError(t, c.d.UpsertOwnerProfile(o, db.UserProfile{Role: "lead"}))
@@ -114,7 +114,7 @@ func TestBuiltinUpgrade_CarriesTheResolvedRolePrompt(t *testing.T) {
 }
 
 func TestBuiltinUpgrade_DayPlanIgnoresRole(t *testing.T) {
-	c := newBuiltinCLI(t, true)
+	c := newUnmovedBuiltinCLI(t, true)
 	o, err := c.d.RequireOwner()
 	require.NoError(t, err)
 	require.NoError(t, c.d.UpsertOwnerProfile(o, db.UserProfile{Role: "lead"}))
@@ -124,7 +124,7 @@ func TestBuiltinUpgrade_DayPlanIgnoresRole(t *testing.T) {
 	require.True(t, c.upgrade(t))
 	assert.NoFileExists(t, builtin.OwnerCopyPath(c.ws, morningBriefID))
 
-	c2 := newBuiltinCLI(t, true)
+	c2 := newUnmovedBuiltinCLI(t, true)
 	c2.customisePrompt(t, prompts.DayPlanGenerate, "BASE PLAN\n"+prompts.Defaults[prompts.DayPlanGenerate])
 	require.True(t, c2.upgrade(t))
 	data, err := os.ReadFile(builtin.OwnerCopyPath(c2.ws, morningBriefID))
@@ -133,7 +133,7 @@ func TestBuiltinUpgrade_DayPlanIgnoresRole(t *testing.T) {
 }
 
 func TestBuiltinUpgrade_WrongPlaceholderCountIsNotCarried(t *testing.T) {
-	c := newBuiltinCLI(t, true)
+	c := newUnmovedBuiltinCLI(t, true)
 	c.customisePrompt(t, prompts.BriefingDaily, "Brief for %s.") // the pipeline ran the default instead
 	assert.True(t, c.upgrade(t))
 	assert.NoFileExists(t, builtin.OwnerCopyPath(c.ws, morningBriefID))
@@ -141,7 +141,7 @@ func TestBuiltinUpgrade_WrongPlaceholderCountIsNotCarried(t *testing.T) {
 }
 
 func TestBuiltinUpgrade_IsIdempotent(t *testing.T) {
-	c := newBuiltinCLI(t, true)
+	c := newUnmovedBuiltinCLI(t, true)
 	c.customisePrompt(t, prompts.BriefingDaily, "CARRIED\n"+prompts.Defaults[prompts.BriefingDaily])
 	require.True(t, c.upgrade(t))
 	path := builtin.OwnerCopyPath(c.ws, morningBriefID)
@@ -159,7 +159,7 @@ func TestBuiltinUpgrade_IsIdempotent(t *testing.T) {
 }
 
 func TestBuiltinUpgrade_ResumesAnInterruptedMove(t *testing.T) {
-	c := newBuiltinCLI(t, true)
+	c := newUnmovedBuiltinCLI(t, true)
 	carried := "CARRIED\n" + prompts.Defaults[prompts.BriefingDaily]
 	c.customisePrompt(t, prompts.BriefingDaily, carried)
 	// A move that wrote its copy and stopped before the confirmation.
@@ -175,7 +175,7 @@ func TestBuiltinUpgrade_ResumesAnInterruptedMove(t *testing.T) {
 }
 
 func TestBuiltinUpgrade_FailureKeepsLegacyAndRecords(t *testing.T) {
-	c := newBuiltinCLI(t, true)
+	c := newUnmovedBuiltinCLI(t, true)
 	c.customisePrompt(t, prompts.BriefingDaily, "CARRIED\n"+prompts.Defaults[prompts.BriefingDaily])
 	dir := filepath.Dir(builtin.OwnerCopyPath(c.ws, morningBriefID))
 	require.NoError(t, os.MkdirAll(dir, 0o500))
@@ -194,7 +194,7 @@ func TestBuiltinUpgrade_FailureKeepsLegacyAndRecords(t *testing.T) {
 }
 
 func TestBuiltinUpgrade_RetryCommandRunsFailedOnly(t *testing.T) {
-	c := newBuiltinCLI(t, true)
+	c := newUnmovedBuiltinCLI(t, true)
 	// Nothing failed: nothing runs, and no record is written.
 	var out upgradeBuiltinsJSON
 	raw, err := runAutomations(t, "upgrade-builtins", "--json")
@@ -241,7 +241,7 @@ func TestBuiltinUpgrade_RetryCommandRunsFailedOnly(t *testing.T) {
 // the confirmed hash is that of RenderOwnerCopy's bytes — and never an
 // owner's copy already there.
 func TestAuto06_UpgradeConfirmsOnlyCarriedPrompt(t *testing.T) {
-	c := newBuiltinCLI(t, true)
+	c := newUnmovedBuiltinCLI(t, true)
 	carried := "CARRIED\n" + prompts.Defaults[prompts.BriefingDaily]
 	c.customisePrompt(t, prompts.BriefingDaily, carried)
 	require.True(t, c.upgrade(t))
@@ -254,7 +254,7 @@ func TestAuto06_UpgradeConfirmsOnlyCarriedPrompt(t *testing.T) {
 	assert.Equal(t, automations.ApprovalHash(r), row.ConfirmedHash)
 
 	// An owner's copy already there (not this step's bytes) stays unconfirmed.
-	c2 := newBuiltinCLI(t, true)
+	c2 := newUnmovedBuiltinCLI(t, true)
 	c2.customisePrompt(t, prompts.BriefingDaily, carried)
 	a := c2.writeCopy(t, "OWNER EDIT\n"+prompts.Defaults[prompts.BriefingDaily])
 	require.False(t, a.Confirmed())
@@ -268,7 +268,7 @@ func TestAuto06_UpgradeConfirmsOnlyCarriedPrompt(t *testing.T) {
 // cannot be read leaves the built-in on its legacy phases (its key false,
 // and wireBuiltins narrows every registry entry by it).
 func TestBuiltinUpgrade_UnreadableRecordKeepsLegacy(t *testing.T) {
-	c := newBuiltinCLI(t, true)
+	c := newUnmovedBuiltinCLI(t, true)
 	_, err := c.d.Exec(`INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at)
 		VALUES (?, 'done', '', 1, 'not a time')`, morningBriefID)
 	require.NoError(t, err)
@@ -281,7 +281,7 @@ func TestBuiltinUpgrade_UnreadableRecordKeepsLegacy(t *testing.T) {
 }
 
 func TestBuiltinUpgrade_RetryRefusedUnderAgentMarkers(t *testing.T) {
-	c := newBuiltinCLI(t, true)
+	c := newUnmovedBuiltinCLI(t, true)
 	c.customisePrompt(t, prompts.BriefingDaily, "CARRIED\n"+prompts.Defaults[prompts.BriefingDaily])
 	require.NoError(t, c.d.RecordBuiltinMigration(morningBriefID, db.BuiltinMigrationFailed, "disk full", time.Now()))
 	for _, marker := range agentEnvMarkers {
@@ -305,7 +305,7 @@ func TestBuiltinUpgrade_ShippedRoleDefaultWinsOverCustomBase(t *testing.T) {
 	const variant = prompts.BriefingDaily + "_testrole"
 	prompts.Defaults[variant] = prompts.Defaults[prompts.BriefingDaily]
 	t.Cleanup(func() { delete(prompts.Defaults, variant) })
-	c := newBuiltinCLI(t, true)
+	c := newUnmovedBuiltinCLI(t, true)
 	o, err := c.d.RequireOwner()
 	require.NoError(t, err)
 	require.NoError(t, c.d.UpsertOwnerProfile(o, db.UserProfile{Role: "testrole"}))

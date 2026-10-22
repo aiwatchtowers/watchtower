@@ -26,6 +26,10 @@ package final class BuiltinAutomationCardModel {
     nonisolated package static func costLine(_ usd: Double) -> String {
         String(format: "About $%.2f in the last 7 days", usd)
     }
+    /// No cost reported, but tokens were (the pipelines report no cost).
+    nonisolated package static func tokensLine(_ tokens: Int64) -> String {
+        "\(tokens.formatted(.number.locale(Locale(identifier: "en_US")))) tokens in the last 7 days (cost not reported)"
+    }
 
     /// The indexed row; the owner of the card replaces it when the row changes.
     package var automation: Automation
@@ -73,7 +77,8 @@ package final class BuiltinAutomationCardModel {
     }
 
     package var costsLine: String {
-        guard let costs = detail?.costs, costs.reported else { return Self.costNotReportedLine }
+        guard let costs = detail?.costs else { return Self.costNotReportedLine }
+        guard costs.reported else { return costs.tokens > 0 ? Self.tokensLine(costs.tokens) : Self.costNotReportedLine }
         return costs.usd > 0 ? Self.costLine(costs.usd) : Self.noCostLine
     }
 

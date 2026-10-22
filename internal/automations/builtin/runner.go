@@ -30,7 +30,14 @@ const (
 	SkippedOff          = "off"           // its features are off
 	SkippedNotConfirmed = "not_confirmed" // its text is not confirmed
 	SkippedNotDue       = "not_due"       // its gate said not now
+	// SkippedDisabled: the daemon stopped it after a run that would not end
+	// (disabled_reason, AUTO-08); it stays off until the owner turns it on.
+	SkippedDisabled = "disabled"
 )
+
+// ErrBuiltinStopped is RunNow's refusal of a built-in the daemon stopped
+// after a run that would not end (its row's disabled_reason, AUTO-08).
+var ErrBuiltinStopped = errors.New("the built-in was stopped after a run that would not end")
 
 // StatusError is SlotOutcome.Status when the slot could not run a built-in
 // (a database or executor failure, logged).
@@ -69,11 +76,13 @@ func NewRunner(d *db.DB, exec InlineExecutor, gates map[string]Gate, cfg *config
 }
 
 // RunSlot runs every built-in at slot, in card order. A built-in whose
-// features are off is skipped before anything else is read and writes
-// nothing (FEAT-01). One whose text is not confirmed cancels its queued
-// manual runs and is skipped. Otherwise a queued manual run (Run Now) is
-// executed without asking the gate; with none, the gate decides and only a
-// due built-in gets a sync run row, executed inline.
+// features are off is skipped before any pipeline is read or run (FEAT-01):
+// it writes nothing but the cancellation of a Run Now queued before it was
+// turned off. One whose text is not confirmed, or that the daemon stopped
+// after a run that would not end (AUTO-08), cancels its queued manual runs
+// and is skipped. Otherwise a queued manual run (Run Now) is executed
+// without asking the gate; with none, the gate decides and only a due
+// built-in gets a sync run row, executed inline.
 func (r *Runner) RunSlot(ctx context.Context, slot Slot) []SlotOutcome {
 	var out []SlotOutcome
 	for _, e := range AtSlot(slot) {
@@ -87,26 +96,32 @@ func (r *Runner) RunSlot(ctx context.Context, slot Slot) []SlotOutcome {
 
 func (r *Runner) runEntry(ctx context.Context, e Entry) SlotOutcome {
 	o := SlotOutcome{BuiltinID: e.ID}
-	if !e.Enabled(r.cfg) {
-		o.Skipped = SkippedOff
-		return o
-	}
 	fail := func(what string, err error) SlotOutcome {
 		r.logger.Printf("built-in %s: %s: %v", e.ID, what, err)
 		o.Status = StatusError
 		return o
+	}
+	skip := func(why string) SlotOutcome {
+		if err := r.cancelQueued(e.ID); err != nil {
+			return fail("cancelling its queued runs", err)
+		}
+		o.Skipped = why
+		return o
+	}
+	if !e.Enabled(r.cfg) {
+		return skip(SkippedOff)
 	}
 	r.endStaleRuns()
 	a, err := r.db.GetBuiltinAutomation(e.ID)
 	if err != nil {
 		return fail("reading its row", err)
 	}
+	if a.DisabledReason != "" {
+		r.logger.Printf("built-in %s: stopped (%s); not run until the owner turns it on again", e.ID, a.DisabledReason)
+		return skip(SkippedDisabled)
+	}
 	if !a.Confirmed() {
-		if err := r.cancelQueuedManual(a.ID); err != nil {
-			return fail("cancelling its queued runs", err)
-		}
-		o.Skipped = SkippedNotConfirmed
-		return o
+		return skip(SkippedNotConfirmed)
 	}
 	queued, err := r.db.TakeQueuedBuiltinRun(a.ID)
 	if err != nil {
@@ -175,24 +190,15 @@ func (r *Runner) endStaleRuns() {
 	}
 }
 
-// maxQueuedCancels bounds cancelQueuedManual (one queued manual run is the
-// most there should be: a second Run Now coalesces onto the first).
-const maxQueuedCancels = 16
-
-// cancelQueuedManual cancels the queued manual runs of an unconfirmed
-// built-in (not_runnable), as the executor would.
-func (r *Runner) cancelQueuedManual(automationID int64) error {
-	for range maxQueuedCancels {
-		run, err := r.db.TakeQueuedBuiltinRun(automationID)
-		if err != nil || run == nil {
-			return err
-		}
-		err = r.db.CancelQueuedNotRunnable(run.ID, r.clock.Now())
-		if err != nil && !errors.Is(err, db.ErrRunNotQueued) {
-			return err
-		}
+// cancelQueued cancels the queued manual runs (Run Now) of built-in id as
+// not_runnable, as the executor would, logging how many: the slot calls it
+// for a built-in that cannot run them now.
+func (r *Runner) cancelQueued(id string) error {
+	n, err := r.db.CancelQueuedBuiltinRuns(id, r.clock.Now())
+	if n > 0 {
+		r.logger.Printf("built-in %s: %d queued run(s) cancelled: it cannot run now", id, n)
 	}
-	return nil
+	return err
 }
 
 // ErrRunNowQueued is RunNow's refusal (it also wraps
@@ -202,11 +208,14 @@ var ErrRunNowQueued = errors.New("a Run Now is already queued for the next sync"
 
 // RunNow runs built-in id now, inline, with input in (the CLI's generate
 // commands): a manual run with event_json {"builtin": in}, whether or not the
-// built-in is on. An unconfirmed built-in's run is cancelled and the error
-// wraps automations.ErrNotRunnable; one that cannot be claimed (another run
-// of it is active, or — ErrRunNowQueued too — a manual run with other input
-// is already queued for the next slot) wraps automations.ErrRunNotClaimed; a run this call queued
-// is then cancelled, so it never runs later with in.
+// built-in is on. A built-in the daemon stopped (AUTO-08) is refused with
+// ErrBuiltinStopped before any run is queued. An unconfirmed built-in's run
+// is cancelled and the error wraps automations.ErrNotRunnable; one that
+// cannot be claimed (another run of it is active, or — ErrRunNowQueued too —
+// a manual run with other input is already queued for the next slot) wraps
+// automations.ErrRunNotClaimed; a run this call queued is then cancelled
+// while it is still queued, so it never runs later with in (one the slot
+// claimed meanwhile is left running: the error still says it runs now).
 func (r *Runner) RunNow(ctx context.Context, id string, in automations.BuiltinInput) (*db.AutomationRun, error) {
 	if _, ok := Lookup(id); !ok {
 		return nil, fmt.Errorf("unknown built-in automation %q", id)
@@ -215,6 +224,9 @@ func (r *Runner) RunNow(ctx context.Context, id string, in automations.BuiltinIn
 	a, err := r.db.GetBuiltinAutomation(id)
 	if err != nil {
 		return nil, err
+	}
+	if a.DisabledReason != "" {
+		return nil, fmt.Errorf("built-in %s: %w", id, ErrBuiltinStopped)
 	}
 	payload, err := json.Marshal(map[string]automations.BuiltinInput{"builtin": in})
 	if err != nil {
@@ -236,8 +248,9 @@ func (r *Runner) RunNow(ctx context.Context, id string, in automations.BuiltinIn
 	}
 	run, err := r.exec.ExecuteBuiltinInline(ctx, runID)
 	if errors.Is(err, automations.ErrRunNotClaimed) && !coalesced {
-		// The run this call made must never run later with its input.
-		if _, cerr := r.db.CancelAutomationRun(runID, r.clock.Now()); cerr != nil {
+		// The run this call made must never run later with its input; one
+		// the slot claimed meanwhile runs now and is left alone.
+		if _, cerr := r.db.CancelQueuedAutomationRun(runID, r.clock.Now()); cerr != nil {
 			return nil, errors.Join(err, fmt.Errorf("built-in %s: cancelling run %d: %w", id, runID, cerr))
 		}
 	}

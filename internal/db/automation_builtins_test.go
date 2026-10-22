@@ -168,18 +168,17 @@ func TestBuiltin_TakeQueuedRunReturnsOldestManual(t *testing.T) {
 func TestBuiltin_SetEnabledMirrorsOnly(t *testing.T) {
 	d := openTestDB(t)
 	id := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
-	_, err := d.Exec(`UPDATE automations SET disabled_reason = 'runaway' WHERE id = ?`, id)
-	require.NoError(t, err)
 	require.NoError(t, d.SetBuiltinEnabled("morning-brief", true, time.Now()))
 	a := mustGetAutomation(t, d, id)
 	assert.True(t, a.Enabled)
-	assert.Equal(t, "runaway", a.DisabledReason)
 	assert.Nil(t, a.LastScheduledFor)
+	// A stopped row (disabled_reason) is never turned on by the mirror:
+	// TestSetBuiltinEnabled_NeverTurnsOnARunawayStop.
 	require.ErrorIs(t, d.SetBuiltinEnabled("nope", true, time.Now()), ErrAutomationNotFound)
 	require.ErrorIs(t, d.SetBuiltinEnabled("nope", false, time.Now()), ErrAutomationNotFound)
 
 	// An unchanged value writes nothing (updated_at stays) and is no error.
-	_, err = d.Exec(`UPDATE automations SET updated_at = '2026-01-01T00:00:00Z' WHERE id = ?`, id)
+	_, err := d.Exec(`UPDATE automations SET updated_at = '2026-01-01T00:00:00Z' WHERE id = ?`, id)
 	require.NoError(t, err)
 	require.NoError(t, d.SetBuiltinEnabled("morning-brief", true, time.Now()))
 	a = mustGetAutomation(t, d, id)
@@ -479,4 +478,129 @@ func TestMarkStaleBuiltinRuns_NeverEndsARunThatWaited(t *testing.T) {
 	wantAutomationRun(t, d, waiting, RunWaiting, "")
 	wantAutomationRun(t, d, resumedAsk, RunRunning, "")
 	wantAutomationRun(t, d, resumedWrite, RunRunning, "")
+}
+
+// The start sweep ends a CLI's inline manual run only past its deadline,
+// like a dry run; a sync run, a waiting run and a manual run past its
+// deadline are ended at once.
+func TestMarkInterruptedBuiltinRuns_LiveManualRunSurvives(t *testing.T) {
+	d := openTestDB(t)
+	bi := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	claimAt := func(trigger string, started time.Time) int64 {
+		run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: bi, Trigger: trigger})
+		ok, err := d.ClaimAutomationRun(run, "h", "s", 50000, 5, started)
+		require.NoError(t, err)
+		require.True(t, ok)
+		return run
+	}
+	live := claimAt(TriggerManual, runTestNow.Add(-2*time.Minute))
+	n, err := d.MarkInterruptedBuiltinRuns(runTestNow)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+	wantAutomationRun(t, d, live, RunRunning, "")
+
+	_, err = d.Exec(`UPDATE automations SET concurrency = 4 WHERE id = ?`, bi)
+	require.NoError(t, err)
+	stale := claimAt(TriggerManual, runTestNow.Add(-7*time.Minute))
+	_, err = d.Exec(`UPDATE automation_runs SET trigger = 'sync' WHERE id = ?`, stale)
+	require.NoError(t, err)
+	slot := stale
+	past := claimAt(TriggerManual, runTestNow.Add(-7*time.Minute))
+	waiting := claimAt(TriggerManual, runTestNow.Add(-time.Minute))
+	_, err = d.Exec(`UPDATE automation_runs SET trigger = 'manual' WHERE id = ?`, past)
+	require.NoError(t, err)
+	require.NoError(t, d.SetAutomationRunWaiting(waiting, WaitAsk))
+	n, err = d.MarkInterruptedBuiltinRuns(runTestNow)
+	require.NoError(t, err)
+	assert.Equal(t, 3, n)
+	wantAutomationRun(t, d, live, RunRunning, "")
+	wantAutomationRun(t, d, slot, RunFailed, ErrKindInterrupted)
+	wantAutomationRun(t, d, past, RunFailed, ErrKindInterrupted)
+	wantAutomationRun(t, d, waiting, RunFailed, ErrKindInterrupted)
+}
+
+// A built-in the daemon stopped (a run that would not end) stays off through
+// every sync's mirror; only ResumeBuiltin turns it on again.
+func TestSetBuiltinEnabled_NeverTurnsOnARunawayStop(t *testing.T) {
+	d := openTestDB(t)
+	id := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	resumed, err := d.ResumeBuiltin("morning-brief", runTestNow)
+	require.NoError(t, err)
+	assert.False(t, resumed, "nothing to resume")
+	require.NoError(t, d.SetBuiltinEnabled("morning-brief", true, runTestNow))
+	require.NoError(t, d.DisableRunawayAutomation(id, "runaway", runTestNow))
+
+	require.NoError(t, d.SetBuiltinEnabled("morning-brief", true, runTestNow))
+	a, err := d.GetAutomation(id)
+	require.NoError(t, err)
+	assert.False(t, a.Enabled, "the sync's mirror never turns a stopped built-in on")
+	assert.Equal(t, "runaway", a.DisabledReason)
+
+	resumed, err = d.ResumeBuiltin("morning-brief", runTestNow)
+	require.NoError(t, err)
+	assert.True(t, resumed)
+	a, err = d.GetAutomation(id)
+	require.NoError(t, err)
+	assert.True(t, a.Enabled)
+	assert.Empty(t, a.DisabledReason)
+	assert.Nil(t, a.DisabledAt)
+	_, err = d.ResumeBuiltin("nope", runTestNow)
+	require.ErrorIs(t, err, ErrAutomationNotFound)
+}
+
+func TestCancelQueuedBuiltinRuns_OnlyQueuedManualRunsOfThatBuiltin(t *testing.T) {
+	d := openTestDB(t)
+	bi := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	other := seedRunAutomation(t, d, "digest", 4)
+	queued, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: bi, Trigger: TriggerManual})
+	ownerRun, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: other, Trigger: TriggerManual})
+	n, err := d.CancelQueuedBuiltinRuns("morning-brief", runTestNow)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	wantAutomationRun(t, d, queued, RunCancelled, ErrKindNotRunnable)
+	wantAutomationRun(t, d, ownerRun, RunQueued, "")
+
+	running, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: bi, Trigger: TriggerManual})
+	mustClaimAutomationRun(t, d, running)
+	n, err = d.CancelQueuedBuiltinRuns("morning-brief", runTestNow)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+	wantAutomationRun(t, d, running, RunRunning, "")
+}
+
+func TestCancelQueuedAutomationRun_OnlyWhileQueued(t *testing.T) {
+	d := openTestDB(t)
+	a := seedRunAutomation(t, d, "digest", 4)
+	queued, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
+	ok, err := d.CancelQueuedAutomationRun(queued, runTestNow)
+	require.NoError(t, err)
+	assert.True(t, ok)
+	wantAutomationRun(t, d, queued, RunCancelled, ErrKindCancelled)
+
+	claimed, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
+	mustClaimAutomationRun(t, d, claimed)
+	ok, err = d.CancelQueuedAutomationRun(claimed, runTestNow)
+	require.NoError(t, err)
+	assert.False(t, ok, "a claimed run is left alone")
+	wantAutomationRun(t, d, claimed, RunRunning, "")
+	_, err = d.CancelQueuedAutomationRun(99999, runTestNow)
+	require.ErrorIs(t, err, ErrAutomationRunNotFound)
+}
+
+func TestBuiltinCost_CountsTokens(t *testing.T) {
+	d := openTestDB(t)
+	id := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	since := time.Now().AddDate(0, 0, -7)
+	_, err := d.Exec(`INSERT INTO pipeline_runs (pipeline, input_tokens, output_tokens, started_at) VALUES
+		('briefing', 100, 20, ?), ('tracks', 1000, 1000, ?)`,
+		formatAutomationTime(time.Now().AddDate(0, 0, -3)), formatAutomationTime(time.Now().AddDate(0, 0, -3)))
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status, queued_at, started_at, input_tokens, output_tokens)
+		VALUES (?, 'sync', 'failed', ?, ?, 300, 40), (?, 'dry_run', 'failed', ?, ?, 5000, 5000)`,
+		id, formatAutomationTime(time.Now().AddDate(0, 0, -1)), formatAutomationTime(time.Now().AddDate(0, 0, -1)),
+		id, formatAutomationTime(time.Now().AddDate(0, 0, -1)), formatAutomationTime(time.Now().AddDate(0, 0, -1)))
+	require.NoError(t, err)
+	sum, err := d.BuiltinCost(id, []string{"briefing"}, since)
+	require.NoError(t, err)
+	assert.Equal(t, BuiltinCostSum{Tokens: 460}, sum, "the run's and the briefing row's tokens, no cost reported")
 }

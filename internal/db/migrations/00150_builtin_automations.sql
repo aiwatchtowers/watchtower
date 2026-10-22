@@ -20,8 +20,16 @@
 -- state, outputs, grants, replay log, owner asks, terminal sessions,
 -- rerun_of), so foreign keys are OFF around the dance: the DROPs must fire no
 -- cascade. 00149's automation_runs definition, indexes and replay cleanup
--- trigger are carried verbatim.
+-- trigger are carried verbatim. The pragma cannot change inside a
+-- transaction, so it stays outside the explicit BEGIN … COMMIT that makes
+-- the rebuilds one unit: a failure part-way leaves both tables as they were.
+-- The transaction is one goose statement (StatementBegin … StatementEnd, run
+-- as one multi-statement exec): the driver discards a connection left inside
+-- a transaction between execs (internal/sqlcipher/wt_session.go), which
+-- rolls it back.
 PRAGMA foreign_keys = OFF;
+-- +goose StatementBegin
+BEGIN IMMEDIATE;
 
 CREATE TABLE automations_new (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,14 +144,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_queued_trigger ON automati
 CREATE INDEX IF NOT EXISTS idx_automation_runs_rerun_of ON automation_runs(rerun_of);
 CREATE INDEX IF NOT EXISTS idx_automation_runs_started_at ON automation_runs(started_at);
 
--- +goose StatementBegin
 CREATE TRIGGER IF NOT EXISTS automation_runs_replay_cleanup AFTER UPDATE OF status ON automation_runs
 WHEN NEW.status NOT IN ('queued','running','waiting')
 BEGIN
     DELETE FROM automation_run_replay WHERE run_id = NEW.id;
     UPDATE automation_runs SET resume_pending = 0 WHERE id = NEW.id AND resume_pending = 1;
 END;
--- +goose StatementEnd
 
 CREATE TABLE IF NOT EXISTS builtin_migrations (
     builtin_id TEXT PRIMARY KEY,
@@ -153,6 +159,8 @@ CREATE TABLE IF NOT EXISTS builtin_migrations (
     updated_at TEXT NOT NULL
 );
 
+COMMIT;
+-- +goose StatementEnd
 PRAGMA foreign_keys = ON;
 
 -- +goose Down
@@ -161,8 +169,11 @@ PRAGMA foreign_keys = ON;
 -- sessions, reruns and card presses that point at a removed run keep their
 -- row with the link cleared (foreign keys are OFF, so nothing cascades by
 -- itself). An owner recipe file left by an overridden built-in is indexed as
--- an ordinary recipe again by the old indexer.
+-- an ordinary recipe again by the old indexer. As in Up, one explicit
+-- transaction inside the foreign_keys pragmas.
 PRAGMA foreign_keys = OFF;
+-- +goose StatementBegin
+BEGIN IMMEDIATE;
 
 CREATE TEMP TABLE builtin_down_runs AS
     SELECT id FROM automation_runs
@@ -290,15 +301,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_queued_trigger ON automati
 CREATE INDEX IF NOT EXISTS idx_automation_runs_rerun_of ON automation_runs(rerun_of);
 CREATE INDEX IF NOT EXISTS idx_automation_runs_started_at ON automation_runs(started_at);
 
--- +goose StatementBegin
 CREATE TRIGGER IF NOT EXISTS automation_runs_replay_cleanup AFTER UPDATE OF status ON automation_runs
 WHEN NEW.status NOT IN ('queued','running','waiting')
 BEGIN
     DELETE FROM automation_run_replay WHERE run_id = NEW.id;
     UPDATE automation_runs SET resume_pending = 0 WHERE id = NEW.id AND resume_pending = 1;
 END;
--- +goose StatementEnd
 
 DROP TABLE IF EXISTS builtin_migrations;
 
+COMMIT;
+-- +goose StatementEnd
 PRAGMA foreign_keys = ON;

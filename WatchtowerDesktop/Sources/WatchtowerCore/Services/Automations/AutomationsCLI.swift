@@ -642,11 +642,30 @@ package struct BuiltinAutomationDetail: Decodable, Equatable, Sendable {
     }
 
     /// The last `days` days' AI cost; `reported` is false when no run or
-    /// pipeline row of the window reported one (twin: Go `builtin.Costs`).
+    /// pipeline row of the window reported one; `tokens` is the same runs'
+    /// input plus output tokens, reported or not (twin: Go `builtin.Costs`).
     package struct Costs: Decodable, Equatable, Sendable {
         package let usd: Double
         package let days: Int
         package let reported: Bool
+        package let tokens: Int64
+
+        package init(usd: Double, days: Int, reported: Bool, tokens: Int64 = 0) {
+            self.usd = usd
+            self.days = days
+            self.reported = reported
+            self.tokens = tokens
+        }
+
+        enum CodingKeys: String, CodingKey { case usd, days, reported, tokens }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            usd = try c.decodeIfPresent(Double.self, forKey: .usd) ?? 0
+            days = try c.decodeIfPresent(Int.self, forKey: .days) ?? 0
+            reported = try c.decodeIfPresent(Bool.self, forKey: .reported) ?? false
+            tokens = try c.decodeIfPresent(Int64.self, forKey: .tokens) ?? 0
+        }
     }
 
     package let id: String

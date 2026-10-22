@@ -44,11 +44,14 @@ type ParameterValue struct {
 	Value string    `json:"value"`
 }
 
-// Costs is what the built-in cost over the last Days days.
+// Costs is what the built-in cost over the last Days days. Tokens is the
+// input plus output tokens of the same runs (the pipelines report tokens but
+// no cost, so the card says tokens when no cost was reported).
 type Costs struct {
 	USD      float64 `json:"usd"`
 	Days     int     `json:"days"`
 	Reported bool    `json:"reported"`
+	Tokens   int64   `json:"tokens"`
 }
 
 // Card builds e's card from its row a (nil before its first sync): the
@@ -90,6 +93,9 @@ func Card(d *db.DB, cfg *config.Config, workspaceDir string, e Entry, a *db.Auto
 	if a == nil {
 		return c, nil
 	}
+	// A built-in the daemon stopped (AUTO-08) shows off, so the card offers
+	// Turn On, which clears the stop.
+	c.Enabled = c.Enabled && a.DisabledReason == ""
 	c.Overridden, c.BaseHash = a.Overridden, a.BuiltinBaseHash
 	if c.CopyError == "" {
 		c.CopyError = a.ParseError
@@ -99,7 +105,7 @@ func Card(d *db.DB, cfg *config.Config, workspaceDir string, e Entry, a *db.Auto
 	if err != nil {
 		return c, err
 	}
-	c.Costs.USD, c.Costs.Reported = sum.USD, sum.Reported
+	c.Costs.USD, c.Costs.Reported, c.Costs.Tokens = sum.USD, sum.Reported, sum.Tokens
 	return c, nil
 }
 

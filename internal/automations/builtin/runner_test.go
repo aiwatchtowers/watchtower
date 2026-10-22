@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log"
 	"slices"
 	"strings"
 	"testing"
@@ -329,5 +331,96 @@ func TestRunner_StaleRunOfAKilledCLIIsEnded(t *testing.T) {
 	}
 	if old.Status != db.RunFailed || old.ErrorKind != db.ErrKindInterrupted {
 		t.Errorf("the stale run is %s/%s, want failed/interrupted", old.Status, old.ErrorKind)
+	}
+}
+
+// TestRunner_RunawayStoppedBuiltinStaysOff (AUTO-08): a built-in the daemon
+// stopped after a run that would not end is not turned on again by the next
+// sync, is skipped at its slot (its queued Run Now cancelled) and refused by
+// RunNow; the owner's turn-on (db.ResumeBuiltin) runs it again.
+func TestRunner_RunawayStoppedBuiltinStaysOff(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	if err := f.d.DisableRunawayAutomation(f.row(t).ID, "runaway script — check and re-enable", f.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	queued, _ := f.enqueueManual(t, "")
+	if _, err := SyncOne(context.Background(), f.d, f.ws, f.cfg, mbID, f.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if a := f.row(t); a.Enabled || a.DisabledReason == "" {
+		t.Fatalf("after a sync the row is enabled=%v reason=%q; want still stopped", a.Enabled, a.DisabledReason)
+	}
+	if o := f.slotOnce(t); o.Skipped != SkippedDisabled || o.RunID != 0 {
+		t.Errorf("slot = %+v, want disabled", o)
+	}
+	if run, err := f.d.GetAutomationRun(queued); err != nil || run.Status != db.RunCancelled || run.ErrorKind != db.ErrKindNotRunnable {
+		t.Errorf("the queued Run Now = %+v, %v; want cancelled/not_runnable", run, err)
+	}
+	if _, err := f.runner.RunNow(context.Background(), mbID, automations.BuiltinInput{}); !errors.Is(err, ErrBuiltinStopped) {
+		t.Errorf("RunNow = %v, want ErrBuiltinStopped", err)
+	}
+	if n := len(f.brief.snapshot()); n != 0 || f.gate.count() != 0 {
+		t.Errorf("a stopped built-in ran: %d briefs, %d gate calls", n, f.gate.count())
+	}
+
+	if ok, err := f.d.ResumeBuiltin(mbID, f.clock.Now()); err != nil || !ok {
+		t.Fatalf("ResumeBuiltin = %v, %v", ok, err)
+	}
+	f.sync(t)
+	if o := f.slotOnce(t); o.Status != db.RunSucceeded {
+		t.Errorf("after the owner's turn-on the slot = %+v, want succeeded", o)
+	}
+}
+
+// A Run Now queued before the built-in was turned off is cancelled at the
+// next slot instead of waiting forever.
+func TestRunner_OffCancelsQueuedRunNow(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	queued, _ := f.enqueueManual(t, "")
+	f.cfg.Briefing.Enabled, f.cfg.DayPlan.Enabled = false, false
+	if o := f.slotOnce(t); o.Skipped != SkippedOff {
+		t.Errorf("slot = %+v, want off", o)
+	}
+	run, err := f.d.GetAutomationRun(queued)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != db.RunCancelled || run.ErrorKind != db.ErrKindNotRunnable {
+		t.Errorf("the queued Run Now = %s/%s, want cancelled/not_runnable", run.Status, run.ErrorKind)
+	}
+	if f.gate.count() != 0 || len(f.brief.snapshot()) != 0 {
+		t.Errorf("off: %d gate calls, %d briefs", f.gate.count(), len(f.brief.snapshot()))
+	}
+}
+
+// claimingExec claims the run it is asked to execute as another process
+// would (the slot took it first) and reports it not claimed.
+type claimingExec struct {
+	d   *db.DB
+	now time.Time
+}
+
+func (c claimingExec) ExecuteBuiltinInline(_ context.Context, runID int64) (*db.AutomationRun, error) {
+	if _, err := c.d.ClaimAutomationRun(runID, "h", "s", 1000, 5, c.now); err != nil {
+		return nil, err
+	}
+	return nil, automations.ErrRunNotClaimed
+}
+
+// RunNow cancels the run it queued only while it is still queued: one the
+// slot claimed between the enqueue and the claim is left running.
+func TestRunner_RunNowNeverCancelsARunTheSlotClaimed(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	r := NewRunner(f.d, claimingExec{d: f.d, now: f.clock.Now()}, nil, f.cfg, f.clock, log.New(io.Discard, "", 0))
+	_, err := r.RunNow(context.Background(), mbID, automations.BuiltinInput{Date: "2026-10-21"})
+	if !errors.Is(err, automations.ErrRunNotClaimed) {
+		t.Fatalf("RunNow = %v, want ErrRunNotClaimed (running now)", err)
+	}
+	runs := f.runs(t)
+	if len(runs) != 1 || runs[0].Status != db.RunRunning {
+		t.Errorf("runs = %+v, want the claimed run still running", runs)
 	}
 }

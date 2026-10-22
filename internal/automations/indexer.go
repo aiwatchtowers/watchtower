@@ -331,6 +331,23 @@ func IndexRow(slug, path string, data []byte, contentHash string, scope Scope) (
 	return a, nil
 }
 
+// IndexBuiltinRow is IndexRow for a built-in whose recipe must keep
+// `trigger: {sync: <slot>}`, its registry slot: a recipe (the owner's copy)
+// with any other trigger kind or slot is the row's parse error, so it never
+// runs (a built-in runs only at its slot; another trigger would leave its
+// runs queued with nobody to take them).
+func IndexBuiltinRow(slug, path string, data []byte, contentHash string, scope Scope, slot string) (db.Automation, error) {
+	r, perr := ParseRecipe(slug, data, scope)
+	if perr == nil && (r.Trigger.Kind != TriggerSync || r.Trigger.Sync != slot) {
+		a := db.Automation{
+			Slug: slug, Scope: string(scope.Kind), ProjectID: scope.WorkbenchID, Path: path,
+			RecipeText: string(data), ContentHash: contentHash,
+		}
+		return withParseErrorDefaults(a, fmt.Sprintf("a built-in's trigger must stay \"sync: %s\"", slot)), nil
+	}
+	return IndexRow(slug, path, data, contentHash, scope)
+}
+
 // withParseErrorDefaults fills an unparsable recipe's row with the column
 // defaults, so a rescan of the same broken file compares equal to its row.
 func withParseErrorDefaults(a db.Automation, msg string) db.Automation {

@@ -267,7 +267,10 @@ const builtinDaemonNotRunningNote = "daemon not running; the run starts at its n
 
 // queueBuiltinRun is `automations run` of a built-in (AUTO-09: it only
 // queues): refused with the entry's NoRunNowNote when it offers no Run Now,
-// while its features are off, or while its text is not confirmed; else a
+// while it has not moved to Automations yet (its legacy phases would never
+// take the run), while its features are off, while the daemon has it
+// stopped after a run that would not end (AUTO-08), or while its text is not
+// confirmed; else a
 // manual run is queued and the daemon asked for a sync now — the daemon runs
 // it at the built-in's slot of that cycle, never this process.
 func queueBuiltinRun(cmd *cobra.Command, cfg *config.Config, database *db.DB, a *db.Automation) error {
@@ -275,11 +278,19 @@ func queueBuiltinRun(cmd *cobra.Command, cfg *config.Config, database *db.DB, a 
 	if !ok {
 		return fmt.Errorf("automation %d is the unknown built-in %q", a.ID, a.BuiltinID)
 	}
+	moved, err := builtinMoved(database, e.ID)
+	if err != nil {
+		return err
+	}
 	switch {
 	case !e.RunNow:
 		return errors.New(e.NoRunNowNote)
+	case !moved:
+		return fmt.Errorf("%s hasn't moved to Automations yet — use Retry in the Inbox", e.Name)
 	case !e.Enabled(cfg):
 		return fmt.Errorf("%s is off — turn it on first", e.Name)
+	case a.DisabledReason != "":
+		return fmt.Errorf("%s was stopped after a run that would not end — turn it on again in Automations → Built in", e.Name)
 	case !a.Confirmed():
 		return fmt.Errorf("%s cannot run: its edited copy is not confirmed yet — confirm it in Automations → Built in", e.Name)
 	}

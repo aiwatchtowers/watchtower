@@ -387,3 +387,31 @@ func TestSyncOne_UnknownID(t *testing.T) {
 		t.Error("SyncOne of an unknown id succeeded")
 	}
 }
+
+// TestBuiltinSync_CopyMustKeepItsSyncSlot: an owner copy whose trigger is
+// not `sync: <its slot>` (a cron schedule, another slot) is a parse error —
+// never runnable, so no run of it waits for a trigger nobody fires.
+func TestBuiltinSync_CopyMustKeepItsSyncSlot(t *testing.T) {
+	for name, trigger := range map[string]string{
+		"cron":       "schedule: \"0 8 * * *\"",
+		"other slot": "sync: tracks",
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFixture(t)
+			e := mustEntry(t)
+			data := bytes.Replace(e.Recipe, []byte("sync: morning_brief"), []byte(trigger), 1)
+			if bytes.Equal(data, e.Recipe) {
+				t.Fatal("the shipped recipe has no `sync: morning_brief` line")
+			}
+			f.writeCopy(t, data)
+			f.sync(t)
+			a := f.row(t)
+			if !strings.Contains(a.ParseError, `trigger must stay "sync: morning_brief"`) || a.Runnable() {
+				t.Errorf("copy with %s: parse error %q, runnable %v", trigger, a.ParseError, a.Runnable())
+			}
+			if o := f.slotOnce(t); o.Skipped != SkippedNotConfirmed || len(f.brief.snapshot()) != 0 {
+				t.Errorf("slot = %+v, %d briefs; want not run", o, len(f.brief.snapshot()))
+			}
+		})
+	}
+}

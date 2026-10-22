@@ -115,11 +115,14 @@ func (db *DB) GetBuiltinAutomation(builtinID string) (*Automation, error) {
 
 // SetBuiltinEnabled mirrors the on/off state of built-in builtinID into its
 // row. It only writes enabled (and updated_at): disabled_reason and the
-// schedule columns are left alone, and an unchanged value writes nothing.
-// ErrAutomationNotFound when there is no row.
+// schedule columns are left alone, and an unchanged value writes nothing. A
+// row the daemon turned off (disabled_reason set, AUTO-08: a run that would
+// not end) is never turned on here — only the owner's turn-on
+// (ResumeBuiltin) does that. ErrAutomationNotFound when there is no row.
 func (db *DB) SetBuiltinEnabled(builtinID string, on bool, now time.Time) error {
-	res, err := db.Exec(`UPDATE automations SET enabled = ?, updated_at = ? WHERE builtin_id = ? AND enabled != ?`,
-		on, formatAutomationTime(now), builtinID, on)
+	res, err := db.Exec(`UPDATE automations SET enabled = ?, updated_at = ?
+		WHERE builtin_id = ? AND enabled != ? AND (? = 0 OR disabled_reason = '')`,
+		on, formatAutomationTime(now), builtinID, on, on)
 	if err != nil {
 		return fmt.Errorf("setting built-in automation %s enabled=%v: %w", builtinID, on, err)
 	}
@@ -132,6 +135,52 @@ func (db *DB) SetBuiltinEnabled(builtinID string, on bool, now time.Time) error 
 	}
 	_, err = db.GetBuiltinAutomation(builtinID) // unchanged, or no row
 	return err
+}
+
+// ResumeBuiltin is the owner's turn-on of built-in builtinID after the
+// daemon turned it off (disabled_reason set by a run that would not end,
+// AUTO-08): it clears disabled_reason and disabled_at and sets enabled. It
+// reports whether the row was stopped; a row that was not is left alone.
+// ErrAutomationNotFound when there is no row.
+func (db *DB) ResumeBuiltin(builtinID string, now time.Time) (bool, error) {
+	res, err := db.Exec(`UPDATE automations SET enabled = 1, disabled_reason = '', disabled_at = NULL, updated_at = ?
+		WHERE builtin_id = ? AND disabled_reason != ''`, formatAutomationTime(now), builtinID)
+	if err != nil {
+		return false, fmt.Errorf("turning built-in automation %s on again: %w", builtinID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("turning built-in automation %s on again: %w", builtinID, err)
+	}
+	if n == 1 {
+		return true, nil
+	}
+	_, err = db.GetBuiltinAutomation(builtinID) // not stopped, or no row
+	return false, err
+}
+
+// CancelQueuedBuiltinRuns cancels every queued manual run (Run Now) of
+// built-in builtinID as not_runnable and returns how many: the runner calls it
+// when the built-in cannot run them (off, unconfirmed, stopped by the daemon,
+// or still on its legacy phases), so a Run Now never waits forever. With none
+// queued it writes nothing.
+func (db *DB) CancelQueuedBuiltinRuns(builtinID string, now time.Time) (int, error) {
+	if err := requireRunTime(now, "cancelling the queued runs of built-in automation "+builtinID); err != nil {
+		return 0, err
+	}
+	res, err := db.Exec(`UPDATE automation_runs SET status = 'cancelled', error_kind = 'not_runnable',
+		error = 'the automation is not runnable', finished_at = ?
+		WHERE status = 'queued' AND trigger = 'manual'
+		  AND automation_id IN (SELECT id FROM automations WHERE builtin_id = ?)`,
+		formatAutomationTime(now), builtinID)
+	if err != nil {
+		return 0, fmt.Errorf("cancelling the queued runs of built-in automation %s: %w", builtinID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("cancelling the queued runs of built-in automation %s: %w", builtinID, err)
+	}
+	return int(n), nil
 }
 
 // TakeQueuedBuiltinRun returns the oldest queued manual run of automationID
@@ -202,10 +251,13 @@ func (db *DB) GetBuiltinMigration(builtinID string) (*BuiltinMigration, error) {
 }
 
 // BuiltinCostSum is what a built-in cost since a moment. Reported is true
-// when at least one run or pipeline row reported a cost.
+// when at least one run or pipeline row reported a cost. Tokens is the input
+// plus output tokens of the same runs and pipeline rows, reported or not (the
+// pipelines report tokens but no cost).
 type BuiltinCostSum struct {
 	USD      float64
 	Reported bool
+	Tokens   int64
 }
 
 // BuiltinCost sums automationID's reported run costs (automation_runs.
@@ -217,6 +269,8 @@ type BuiltinCostSum struct {
 // old pipeline's cost off. With no succeeded run every pipeline row from that
 // moment on counts. Reported is true when a counted run carries a cost or a
 // counted pipeline row has cost_usd > 0 (a zero row reported nothing).
+// Tokens counts every run from that moment on (dry runs left out) and the
+// same pipeline rows.
 func (db *DB) BuiltinCost(automationID int64, pipelines []string, since time.Time) (BuiltinCostSum, error) {
 	var (
 		sum      BuiltinCostSum
@@ -230,9 +284,12 @@ func (db *DB) BuiltinCost(automationID int64, pipelines []string, since time.Tim
 		   AND reported_cost_usd IS NOT NULL AND COALESCE(started_at, queued_at) >= ?),
 		(SELECT COUNT(*) FROM automation_runs WHERE automation_id = ? AND trigger != 'dry_run'
 		   AND reported_cost_usd IS NOT NULL AND COALESCE(started_at, queued_at) >= ?),
+		(SELECT COALESCE(SUM(input_tokens + output_tokens), 0) FROM automation_runs WHERE automation_id = ?
+		   AND trigger != 'dry_run' AND COALESCE(started_at, queued_at) >= ?),
 		(SELECT MIN(COALESCE(started_at, queued_at)) FROM automation_runs WHERE automation_id = ?
 		   AND status = 'succeeded')`,
-		automationID, sinceStamp, automationID, sinceStamp, automationID).Scan(&runUSD, &runCount, &first)
+		automationID, sinceStamp, automationID, sinceStamp, automationID, sinceStamp, automationID).Scan(
+		&runUSD, &runCount, &sum.Tokens, &first)
 	if err != nil {
 		return sum, fmt.Errorf("reading the run costs of automation %d: %w", automationID, err)
 	}
@@ -249,20 +306,23 @@ func (db *DB) BuiltinCost(automationID int64, pipelines []string, since time.Tim
 		local := t.Local()
 		until = formatAutomationTime(time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local))
 	}
-	q := `SELECT COALESCE(SUM(cost_usd), 0), COUNT(CASE WHEN cost_usd > 0 THEN 1 END) FROM pipeline_runs
+	q := `SELECT COALESCE(SUM(cost_usd), 0), COUNT(CASE WHEN cost_usd > 0 THEN 1 END),
+		COALESCE(SUM(input_tokens + output_tokens), 0) FROM pipeline_runs
 		WHERE started_at >= ? AND (? = '' OR started_at < ?) AND pipeline IN (` + placeholders(len(pipelines)) + `)`
 	args := []any{sinceStamp, until, until}
 	for _, p := range pipelines {
 		args = append(args, p)
 	}
 	var (
-		pipeUSD   float64
-		pipeCount int
+		pipeUSD    float64
+		pipeCount  int
+		pipeTokens int64
 	)
-	if err := db.QueryRow(q, args...).Scan(&pipeUSD, &pipeCount); err != nil {
+	if err := db.QueryRow(q, args...).Scan(&pipeUSD, &pipeCount, &pipeTokens); err != nil {
 		return sum, fmt.Errorf("reading the pipeline costs of automation %d: %w", automationID, err)
 	}
 	sum.USD += pipeUSD
+	sum.Tokens += pipeTokens
 	sum.Reported = sum.Reported || pipeCount > 0
 	return sum, nil
 }

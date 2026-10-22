@@ -184,3 +184,28 @@ func TestCard_UnreadableCopyIsCopyError(t *testing.T) {
 		t.Errorf("copy_error = %q", card.CopyError)
 	}
 }
+
+// TestCard_CostsCountTokensAndAStoppedBuiltinShowsOff: the primitives report
+// tokens but no cost, so Costs carries the tokens with reported false; a
+// built-in the daemon stopped (AUTO-08) shows off while its features are on.
+func TestCard_CostsCountTokensAndAStoppedBuiltinShowsOff(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	f.brief.res.Usage = automations.PrimitiveUsage{InputTokens: 100, OutputTokens: 20}
+	if o := f.slotOnce(t); o.Status != db.RunSucceeded {
+		t.Fatalf("slot = %+v", o)
+	}
+	card, err := Card(f.d, f.cfg, f.ws, mustEntry(t), f.row(t), f.clock.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.Costs.Tokens != 120 || card.Costs.Reported || !card.Enabled {
+		t.Errorf("card costs = %+v enabled=%v; want 120 tokens, not reported, on", card.Costs, card.Enabled)
+	}
+	if err := f.d.DisableRunawayAutomation(f.row(t).ID, "runaway", f.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if card, err = Card(f.d, f.cfg, f.ws, mustEntry(t), f.row(t), f.clock.Now()); err != nil || card.Enabled {
+		t.Errorf("a stopped built-in's card: enabled=%v, %v; want off", card.Enabled, err)
+	}
+}

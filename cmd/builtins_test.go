@@ -27,6 +27,7 @@ import (
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 )
 
 // TestWireBuiltins_SlotExecutorHasMainBackends: the slot executor runs on
@@ -126,7 +127,19 @@ func newBuiltinCLI(t *testing.T, featuresOn bool, replies ...string) *builtinCLI
 	require.NoError(t, err)
 	gen := &automationstest.FakeGenerator{Replies: replies, Usage: []digest.Usage{{InputTokens: 10, OutputTokens: 5}}}
 	useBuiltinGenerator(t, gen)
+	// The Morning brief has moved to Automations (the daemon's one-time step).
+	require.NoError(t, d.RecordBuiltinMigration(morningBriefID, db.BuiltinMigrationDone, "", time.Now()))
 	return &builtinCLI{d: d, cfg: cfg, gen: gen, ws: cfg.WorkspaceDir()}
+}
+
+// newUnmovedBuiltinCLI is newBuiltinCLI before the Morning brief's one-time
+// move: no builtin_migrations row.
+func newUnmovedBuiltinCLI(t *testing.T, featuresOn bool, replies ...string) *builtinCLI {
+	t.Helper()
+	c := newBuiltinCLI(t, featuresOn, replies...)
+	_, err := c.d.Exec(`DELETE FROM builtin_migrations`)
+	require.NoError(t, err)
+	return c
 }
 
 // row syncs the Morning brief and returns its row.
@@ -169,6 +182,9 @@ func executeCLI(t *testing.T, args ...string) (int, string) {
 	rootCmd.SetArgs(append(args, "--config", cfgPath))
 	code := Execute()
 	flagConfig = cfgPath
+	// The parse marked --config changed: a later runRootCmd's resetSetFlags
+	// would then put flagConfig back to the real config path.
+	rootCmd.PersistentFlags().Lookup("config").Changed = false
 	os.Stderr = orig
 	require.NoError(t, w.Close())
 	stderr, err := io.ReadAll(r)
@@ -554,4 +570,82 @@ func TestAutomationsSave_BuiltinRefusedUnderAgentBeforeReading(t *testing.T) {
 	_, err := runAutomations(t, "save", "--file", filepath.Join(t.TempDir(), "missing.md"), "--path", "builtin:morning-brief")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "under an AI agent", "refused before the missing file is read")
+}
+
+// TestBuiltin_RunawayStopStaysUntilTheOwnerTurnsItOn (AUTO-08): a Morning
+// brief the daemon stopped after a run that would not end is refused by
+// Run Now and the generate commands, stays stopped through a sync, and is
+// turned on again only by the owner's `features enable` (the card's Turn
+// On) — never under an AI agent's markers.
+func TestBuiltin_RunawayStopStaysUntilTheOwnerTurnsItOn(t *testing.T) {
+	c := newBuiltinCLI(t, true, builtinBriefReply)
+	a := c.row(t)
+	require.NoError(t, c.d.DisableRunawayAutomation(a.ID, "runaway script — check and re-enable", time.Now()))
+
+	_, err := runAutomations(t, "run", idArg(a.ID))
+	require.Error(t, err)
+	assert.Equal(t, "Morning brief was stopped after a run that would not end — turn it on again in Automations → Built in", err.Error())
+	code, stderr := executeCLI(t, "briefing", "generate")
+	assert.NotEqual(t, 0, code)
+	assert.Equal(t, msgMorningBriefStopped+"\n", stderr)
+	assert.Zero(t, c.gen.CallCount())
+	assert.False(t, c.row(t).Enabled, "a sync never turns a stopped built-in on")
+
+	enable := func() string {
+		buf := new(bytes.Buffer)
+		featuresEnableCmd.SetOut(buf)
+		featuresEnableCmd.SetErr(buf)
+		t.Cleanup(func() { featuresEnableCmd.SetOut(nil); featuresEnableCmd.SetErr(nil) })
+		require.NoError(t, featuresEnableCmd.RunE(featuresEnableCmd, []string{"briefing"}))
+		return buf.String()
+	}
+	t.Setenv(agentEnvMarkers[0], "1")
+	assert.Contains(t, enable(), "Morning brief stays stopped")
+	assert.NotEmpty(t, c.row(t).DisabledReason, "an agent cannot turn it on again")
+	require.NoError(t, os.Unsetenv(agentEnvMarkers[0]))
+
+	assert.Contains(t, enable(), "Turned Morning brief on again.")
+	row := c.row(t)
+	assert.True(t, row.Enabled)
+	assert.Empty(t, row.DisabledReason)
+	code, stderr = executeCLI(t, "briefing", "generate")
+	require.Equal(t, 0, code, stderr)
+	assert.Equal(t, 1, c.gen.CallCount())
+}
+
+// Before the Morning brief moved to Automations (its builtin_migrations row
+// is not done), `automations run` queues nothing: nothing would take it.
+func TestAutomationsRun_BuiltinRefusedBeforeItsMove(t *testing.T) {
+	c := newUnmovedBuiltinCLI(t, true)
+	a := c.row(t)
+	require.NoError(t, c.d.RecordBuiltinMigration(morningBriefID, db.BuiltinMigrationFailed, "disk full", time.Now()))
+	_, err := runAutomations(t, "run", idArg(a.ID))
+	require.Error(t, err)
+	assert.Equal(t, "Morning brief hasn't moved to Automations yet — use Retry in the Inbox", err.Error())
+	assert.Empty(t, (&autoCLI{d: c.d}).runs(t, a.ID))
+}
+
+// TestBriefingGenerate_LegacyPathBeforeTheMove: with the move failed, the
+// generate commands run the pipelines as before the built-in — the owner's
+// customised prompt-store row is the prompt, and no automation run is
+// written.
+func TestBriefingGenerate_LegacyPathBeforeTheMove(t *testing.T) {
+	c := newUnmovedBuiltinCLI(t, true, builtinBriefReply, builtinPlanReply)
+	require.NoError(t, c.d.RecordBuiltinMigration(morningBriefID, db.BuiltinMigrationFailed, "disk full", time.Now()))
+	for id, marker := range map[string]string{prompts.BriefingDaily: "CUSTOM BRIEF MARKER", prompts.DayPlanGenerate: "CUSTOM PLAN MARKER"} {
+		c.customisePrompt(t, id, marker+"\n"+prompts.Defaults[id])
+	}
+	a := c.row(t)
+
+	code, stderr := executeCLI(t, "briefing", "generate")
+	require.Equal(t, 0, code, stderr)
+	code, stderr = executeCLI(t, "day-plan", "generate", "--date", "2026-04-23")
+	require.Equal(t, 0, code, stderr)
+	require.Len(t, c.gen.Calls, 2)
+	assert.Contains(t, c.gen.Calls[0].SystemPrompt, "CUSTOM BRIEF MARKER", "the briefing uses the customised store row")
+	assert.Contains(t, c.gen.Calls[1].SystemPrompt, "CUSTOM PLAN MARKER", "the day plan uses the customised store row")
+	assert.Empty(t, (&autoCLI{d: c.d}).runs(t, a.ID), "no automation run before the move")
+	b, err := c.d.GetBriefing("U001", time.Now().Format(time.DateOnly))
+	require.NoError(t, err)
+	assert.NotNil(t, b)
 }

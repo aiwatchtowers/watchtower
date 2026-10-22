@@ -67,6 +67,20 @@ final class AppStateBuiltinAutomationsTests: XCTestCase {
         XCTAssertEqual(daemon.restarts, 2)
     }
 
+    /// Turn On with every feature on already: the daemon stopped the built-in
+    /// (AUTO-08), so `features enable` of its first feature turns it on again
+    /// (the CLI clears the stop) — once, with no daemon restart.
+    func testSetBuiltinEnabledWithFeaturesOnTurnsAStoppedBuiltinOnAgain() async {
+        let runner = FeaturesRunner(["briefing": "enabled", "day-plan": "enabled"])
+        let (appState, daemon) = make(runner)
+
+        let on = await appState.setBuiltinEnabled(["briefing", "day-plan"], on: true)
+
+        XCTAssertNil(on)
+        XCTAssertEqual(runner.calls.filter { $0[1] != "list" }, [["features", "enable", "briefing"]])
+        XCTAssertEqual(daemon.restarts, 0)
+    }
+
     func testSetBuiltinEnabledSaysBusyAndPassesTheFailureOn() async {
         let runner = FeaturesRunner(["briefing": "enabled"])
         let (appState, daemon) = make(runner)

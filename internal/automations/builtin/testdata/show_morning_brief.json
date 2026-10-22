@@ -69,6 +69,7 @@
   "costs": {
     "usd": 0,
     "days": 7,
-    "reported": false
+    "reported": false,
+    "tokens": 0
   }
 }

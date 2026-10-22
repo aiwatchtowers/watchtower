@@ -112,6 +112,9 @@ final class BuiltinAutomationCardModelTests: XCTestCase {
         runner.set("show", .success(try Self.show(["costs": ["usd": 1.234, "days": 7, "reported": true]])))
         await card.load()
         XCTAssertEqual(card.costsLine, "About $1.23 in the last 7 days")
+        runner.set("show", .success(try Self.show(["costs": ["usd": 0, "days": 7, "reported": false, "tokens": 12345]])))
+        await card.load()
+        XCTAssertEqual(card.costsLine, "12,345 tokens in the last 7 days (cost not reported)")
     }
 
     func testResetKeepsConfirmRowOnFailure() async throws {

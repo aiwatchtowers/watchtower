@@ -13,7 +13,7 @@ Your morning read used to have its switches and hours spread over Settings. Now 
 - **When:** once a day, at the first sync after its **Time** (default 08:00). The plan no longer has an hour of its own: it is made right after the brief. On a new install the first brief and plan don't wait for the hour.
 - **Same rules as before:** it needs to know who you are and something to summarise, and after three failed tries in a day it waits until tomorrow.
 - **No confirming:** the version that ships with the app runs without your confirmation; an update moves it to the new version by itself. Your own edited version runs only after you confirm it, like any recipe.
-- **On and off:** **Turn On** and **Turn Off** switch Daily Briefing and Day Plan together.
+- **On and off:** **Turn On** and **Turn Off** switch Daily Briefing and Day Plan together. If a run would not end and Watchtower stopped it, the card shows **Off** until you press **Turn On**.
 
 ## Using it
 

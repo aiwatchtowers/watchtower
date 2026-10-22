@@ -3,14 +3,17 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
+	"watchtower/internal/automations/builtin"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/features"
@@ -189,7 +192,15 @@ func runFeaturesEnable(cmd *cobra.Command, args []string) error {
 	// so "enable" on a fresh install is the common case. Mirrors the Desktop's
 	// `FeatureManagerService.enableNow` guard.
 	if f.Enabled(cfg) {
-		fmt.Fprintf(cmd.OutOrStdout(), "%q is already enabled (%s = true); nothing to do.\n", id, f.ConfigKey)
+		// No fast-forward: the feature was on. Only a built-in the daemon
+		// stopped (AUTO-08) is turned on again — the card's Turn On.
+		resumed, err := resumeStoppedBuiltinsIfDB(cmd, cfg, id)
+		if err != nil {
+			return err
+		}
+		if !resumed {
+			fmt.Fprintf(cmd.OutOrStdout(), "%q is already enabled (%s = true); nothing to do.\n", id, f.ConfigKey)
+		}
 		return nil
 	}
 
@@ -216,6 +227,9 @@ func runFeaturesEnable(cmd *cobra.Command, args []string) error {
 
 	out := cmd.OutOrStdout()
 	fmt.Fprintf(out, "Enabled %q (%s = true).\n", id, f.ConfigKey)
+	if _, err := resumeStoppedBuiltins(cmd, database, id); err != nil {
+		return err
+	}
 	// Reaction commands has no watermark to fast-forward (fastforward.go's
 	// doc comment): its hook seeds the reaction ledger instead, so it earns
 	// its own line naming what actually happened, not the watermark claim.
@@ -225,6 +239,61 @@ func runFeaturesEnable(cmd *cobra.Command, args []string) error {
 		fmt.Fprintln(out, "Fast-forwarded any backlog watermarks to now, so it resumes from now instead of catching up on history.")
 	}
 	return nil
+}
+
+// resumeStoppedBuiltinsIfDB is resumeStoppedBuiltins over cfg's database;
+// with no database file yet there is no built-in row to resume.
+func resumeStoppedBuiltinsIfDB(cmd *cobra.Command, cfg *config.Config, featureID string) (bool, error) {
+	if _, err := os.Stat(cfg.DBPath()); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("opening database: %w", err)
+	}
+	database, err := db.Open(cfg.DBPath())
+	if err != nil {
+		return false, fmt.Errorf("opening database: %w", err)
+	}
+	defer database.Close()
+	return resumeStoppedBuiltins(cmd, database, featureID)
+}
+
+// resumeStoppedBuiltins is the owner's turn-on of every built-in that has
+// featureID among its features and that the daemon stopped after a run that
+// would not end (AUTO-08: only the owner's turn-on clears it, never a
+// sync). Owner-only like `automations enable` (AGENT-07): under an AI
+// agent's markers nothing is cleared and the built-in stays stopped. It
+// reports whether any built-in was turned on again.
+func resumeStoppedBuiltins(cmd *cobra.Command, database *db.DB, featureID string) (bool, error) {
+	resumed := false
+	for _, e := range builtin.All() {
+		if !slices.Contains(e.FeatureIDs, featureID) {
+			continue
+		}
+		a, err := database.GetBuiltinAutomation(e.ID)
+		if errors.Is(err, db.ErrAutomationNotFound) {
+			continue
+		}
+		if err != nil {
+			return resumed, err
+		}
+		if a.DisabledReason == "" {
+			continue
+		}
+		if err := refuseUnderAgent("turn a stopped built-in automation on again"); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "%s stays stopped: %v\n", e.Name, err)
+			continue
+		}
+		ok, err := database.ResumeBuiltin(e.ID, time.Now())
+		if err != nil {
+			return resumed, err
+		}
+		if ok {
+			resumed = true
+			fmt.Fprintf(cmd.OutOrStdout(), "Turned %s on again.\n", e.Name)
+		}
+	}
+	return resumed, nil
 }
 
 // seedReactionLedgerFn seeds the reaction-commands ledger via a live Slack

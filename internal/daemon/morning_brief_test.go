@@ -311,10 +311,14 @@ func TestMorningBrief_LegacyPathWhenNotActive(t *testing.T) {
 
 // TestMorningBrief_NoDataBriefBacksOffAnHour: a sync brief that finds nothing
 // to summarize writes one run; the next cycles of the hour write none (the
-// plan is not due either); an hour later the brief is due again.
+// plan is not due either); an hour later the brief is due again. (An earlier
+// day's briefing exists: a fresh install has no backoff, see
+// TestMorningBrief_FreshInstallNoDataHasNoBackoff.)
 func TestMorningBrief_NoDataBriefBacksOffAnHour(t *testing.T) {
 	f := newMBFixture(t, func(cfg *config.Config) { cfg.DayPlan.Enabled = false })
 	_, err := f.db.Exec(`DELETE FROM digests`)
+	require.NoError(t, err)
+	_, err = f.db.Exec(`INSERT INTO briefings (workspace_id, user_id, date) VALUES ('T1', 'U001', '2026-10-21')`)
 	require.NoError(t, err)
 
 	f.cycle(mbAt(10, 0))
@@ -330,6 +334,31 @@ func TestMorningBrief_NoDataBriefBacksOffAnHour(t *testing.T) {
 	f.cycle(mbAt(11, 1))
 	assert.Len(t, f.runs(t), 2, "an hour later the brief is due again")
 	assert.Zero(t, f.d.briefingAttempts, "no data is not a failed attempt")
+}
+
+// TestMorningBrief_FreshInstallNoDataHasNoBackoff: while no briefing was
+// ever made, a no-data brief does not hold the next cycle back, so the first
+// brief comes in the first cycle after the first digests land.
+func TestMorningBrief_FreshInstallNoDataHasNoBackoff(t *testing.T) {
+	f := newMBFixture(t, func(cfg *config.Config) { cfg.DayPlan.Enabled = false })
+	_, err := f.db.Exec(`DELETE FROM digests`)
+	require.NoError(t, err)
+
+	f.cycle(mbAt(10, 0))
+	require.Len(t, f.runs(t), 1)
+	assert.Zero(t, f.gen.count(), "no data, no model call")
+
+	day := mbAt(0, 0)
+	_, err = f.db.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: float64(day.AddDate(0, 0, -1).Unix()), PeriodTo: float64(day.AddDate(0, 0, 1).Unix()),
+		Summary: "some discussion", Topics: `[]`, Decisions: `[]`, ActionItems: `[]`, MessageCount: 5,
+	})
+	require.NoError(t, err)
+	f.cycle(mbAt(10, 15))
+	assert.Len(t, f.runs(t), 2, "no backoff on a fresh install")
+	assert.Equal(t, 1, f.gen.count(), "the first brief is made as soon as there is data")
+	assert.Equal(t, 1, countRows(t, f.db, `SELECT COUNT(*) FROM briefings WHERE date = '2026-10-22'`))
 }
 
 // TestMorningBrief_ManualRunChargesNoAttempt: a manual run (Run Now) that
@@ -401,4 +430,20 @@ func TestBuiltinPrimitives_HoldsMorningBriefPrimitives(t *testing.T) {
 	for _, name := range automations.BuiltinPrimitiveNames {
 		assert.NotNil(t, prims[name], "primitive %s has no implementation", name)
 	}
+}
+
+// A Run Now queued for the Morning brief while it runs on its legacy phases
+// (its move failed) is cancelled: only the slot runner would take it.
+func TestMorningBrief_LegacyPathCancelsQueuedRunNow(t *testing.T) {
+	f := newMBFixture(t, nil)
+	a, err := f.db.GetBuiltinAutomation(morningBriefID)
+	require.NoError(t, err)
+	queued, _, err := f.db.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerManual, Now: mbAt(9, 0)})
+	require.NoError(t, err)
+	f.d.builtinActive[morningBriefID] = false
+	f.cycle(mbAt(10, 0))
+	run, err := f.db.GetAutomationRun(queued)
+	require.NoError(t, err)
+	assert.Equal(t, db.RunCancelled, run.Status)
+	assert.Equal(t, db.ErrKindNotRunnable, run.ErrorKind)
 }

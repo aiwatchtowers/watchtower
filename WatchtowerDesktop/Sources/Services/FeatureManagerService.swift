@@ -307,6 +307,21 @@ final class FeatureManagerService {
         return (result.changed, result.restarted, result.busy)
     }
 
+    /// A built-in's **Turn On** when its features are on already: the daemon
+    /// stopped it after a run that would not end (AUTO-08). `features enable`
+    /// of an enabled feature runs no fast-forward hook (the CLI's
+    /// already-enabled guard) and turns such a built-in on again. Returns why
+    /// it did not land, nil on success.
+    func resumeStoppedBuiltin(_ id: String) async -> String? {
+        guard !isApplying else { return nil }
+        do {
+            _ = try await runner.run(args: ["features", "enable", id])
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
     /// `enableNow(_:restart:)`'s mirror — a built-in's **Turn Off** on its
     /// Automations card: each named feature still on is disabled in order
     /// (`features disable <id>`, never `--with-dependents`, so only the named

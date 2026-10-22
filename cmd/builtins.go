@@ -80,6 +80,7 @@ const (
 	msgMorningBriefRunning     = "Morning brief is running now — try again in a minute"
 	msgMorningBriefQueued      = "Morning brief is already queued for the next sync"
 	msgMorningBriefCopyError   = "Morning brief: your edited copy has an error — fix it in Automations → Built in"
+	msgMorningBriefStopped     = "Morning brief was stopped after a run that would not end — turn it on again in Automations → Built in"
 )
 
 // cliBuiltinGenerator is the generator of the CLI's built-in runs (`briefing
@@ -125,12 +126,25 @@ func newCLIBuiltinRunner(cfg *config.Config, database *db.DB, gen digest.Generat
 // features' real on/off state; the pipelines then run with both features
 // forced on, so the commands work with the feature off, as they always did.
 //
+// Until the Morning brief has moved to Automations (its builtin_migrations
+// row is done: the daemon's one-time step), the commands run the legacy
+// pipelines instead (runMorningBriefLegacy), as the daemon's legacy phases
+// do — the owner's customised prompt-store rows are not carried into a copy
+// yet.
+//
 // SIGINT/SIGTERM end the run here. A CLI killed outright (SIGKILL) leaves its
 // run running; the built-ins' runner ends such a run once it is past its
 // deadline (db.MarkStaleBuiltinRuns), before the next slot or Run Now.
 func runMorningBriefNow(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger, in automations.BuiltinInput) error {
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	moved, err := builtinMoved(database, morningBriefID)
+	if err != nil {
+		return err
+	}
+	if !moved {
+		return runMorningBriefLegacy(ctx, cfg, database, logger, in)
 	}
 	row, err := builtin.SyncOne(ctx, database, cfg.WorkspaceDir(), cfg, morningBriefID, time.Now())
 	if err != nil {
@@ -151,6 +165,8 @@ func runMorningBriefNow(ctx context.Context, cfg *config.Config, database *db.DB
 	}()
 	run, err := newCLIBuiltinRunner(&pipeCfg, database, gen, logger).RunNow(ctx, morningBriefID, in)
 	switch {
+	case errors.Is(err, builtin.ErrBuiltinStopped):
+		return errors.New(msgMorningBriefStopped) //nolint:staticcheck // ST1005: the text the Desktop shows
 	case errors.Is(err, builtin.ErrRunNowQueued):
 		return errors.New(msgMorningBriefQueued) //nolint:staticcheck // ST1005: the text the Desktop shows
 	case errors.Is(err, automations.ErrNotRunnable):
@@ -162,6 +178,60 @@ func runMorningBriefNow(ctx context.Context, cfg *config.Config, database *db.DB
 	}
 	if run.Status != db.RunSucceeded {
 		return fmt.Errorf("Morning brief run #%d %s: %s", run.ID, run.Status, run.Error) //nolint:staticcheck // ST1005: the built-in's name
+	}
+	return nil
+}
+
+// builtinMoved reports whether built-in id has moved to Automations: its
+// one-time settings move (builtin_migrations) is done.
+func builtinMoved(database *db.DB, id string) (bool, error) {
+	rec, err := database.GetBuiltinMigration(id)
+	if err != nil {
+		return false, err
+	}
+	return rec != nil && rec.Status == db.BuiltinMigrationDone, nil
+}
+
+// runMorningBriefLegacy is `briefing generate` / `day-plan generate` before
+// the Morning brief moved to Automations: the briefing and day-plan
+// pipelines straight, with the prompt store's rows and no prompt override,
+// both features forced on — the commands as they ran before the built-in.
+// No automation run is written.
+func runMorningBriefLegacy(ctx context.Context, cfg *config.Config, database *db.DB, logger *log.Logger, in automations.BuiltinInput) error {
+	pipeCfg := *cfg
+	pipeCfg.Briefing.Enabled, pipeCfg.DayPlan.Enabled = true, true
+	gen, closeGen := cliBuiltinGenerator(&pipeCfg)
+	defer closeGen()
+	only := in.Only
+	if len(only) == 0 {
+		only = []string{"brief.compose", "plan.compose"}
+	}
+	date := in.Date
+	if date == "" {
+		date = time.Now().Format(time.DateOnly)
+	}
+	for _, name := range only {
+		switch name {
+		case "brief.compose":
+			pipe := briefing.New(database, &pipeCfg, gen, logger)
+			pipe.SetPromptStore(prompts.New(database, nil))
+			if _, err := pipe.RunForDate(ctx, date); err != nil {
+				return fmt.Errorf("generating briefing: %w", err)
+			}
+		case "plan.compose":
+			owner, err := database.RequireOwner()
+			if err != nil {
+				return err
+			}
+			pipe := dayplan.New(database, &pipeCfg, gen, logger)
+			pipe.SetPromptStore(prompts.New(database, nil))
+			if _, err := pipe.Run(ctx, dayplan.RunOptions{UserID: owner.ID, Owner: owner, Date: date,
+				Force: in.Force || in.Feedback != "", Feedback: in.Feedback}); err != nil {
+				return fmt.Errorf("generating day plan: %w", err)
+			}
+		default:
+			return fmt.Errorf("unknown Morning brief step %q", name)
+		}
 	}
 	return nil
 }

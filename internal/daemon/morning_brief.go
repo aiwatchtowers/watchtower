@@ -63,16 +63,21 @@ func (g morningBriefGate) Due(_ context.Context, _ builtin.Entry, now time.Time)
 
 // briefingNoDataBackoff is how long a sync brief that found no data keeps
 // the brief from being due again the same day: without it every cycle of an
-// install with nothing to summarize yet (a fresh install before its first
-// digests) would write one empty run.
+// install with nothing to summarize would write one empty run. It does not
+// apply while no briefing was ever made (briefingFresh): a fresh install's
+// first brief is made in the first cycle after its first digests land, not
+// up to an hour later.
 const briefingNoDataBackoff = time.Hour
 
 // phaseMorningBrief is the Morning brief slot, where phaseBriefing and the
 // day-plan phases ran. With the built-in not active it runs those legacy
-// phases unchanged; otherwise the built-in's slot run (brief, then plan, one
-// automation run) and then the day plan's conflict phase, which stays Go.
+// phases unchanged — and cancels the built-in's queued Run Now, which only
+// the slot runner would take; otherwise the built-in's slot run (brief, then
+// plan, one automation run) and then the day plan's conflict phase, which
+// stays Go.
 func (d *Daemon) phaseMorningBrief(ctx context.Context, now time.Time) {
 	if d.builtins == nil || !d.builtinActive[morningBriefID] {
+		d.cancelQueuedBuiltinRuns(now)
 		d.phaseBriefingAt(ctx, now)
 		d.runDayPlanPhases(ctx, now)
 		return
@@ -96,6 +101,23 @@ func (d *Daemon) phaseMorningBrief(ctx context.Context, now time.Time) {
 	d.runDayPlanConflictPhase(ctx, now, owner)
 }
 
+// cancelQueuedBuiltinRuns cancels the Morning brief's queued manual runs
+// while it is on its legacy phases (a Run Now queued before the move failed,
+// or by a CLI of this version against an older daemon): nothing would ever
+// take them. A failure is logged.
+func (d *Daemon) cancelQueuedBuiltinRuns(now time.Time) {
+	if d.db == nil {
+		return
+	}
+	n, err := d.db.CancelQueuedBuiltinRuns(morningBriefID, now)
+	switch {
+	case err != nil:
+		d.logger.Printf("built-in %s: cancelling its queued runs: %v", morningBriefID, err)
+	case n > 0:
+		d.logger.Printf("built-in %s: %d queued run(s) cancelled: it runs on its legacy phases", morningBriefID, n)
+	}
+}
+
 // builtinNow is the clock of the slot's primitives: the cycle's now while
 // phaseMorningBrief runs, else the wall clock.
 func (d *Daemon) builtinNow() time.Time {
@@ -107,11 +129,13 @@ func (d *Daemon) builtinNow() time.Time {
 	return time.Now()
 }
 
-// briefDue is phaseBriefing's gate, plus the no-data backoff.
+// briefDue is phaseBriefing's gate, plus the no-data backoff (not on a fresh
+// install).
 func (d *Daemon) briefDue(now time.Time) bool {
 	d.mbMu.Lock()
 	defer d.mbMu.Unlock()
-	if !d.briefNoDataAt.IsZero() && sameCalendarDay(d.briefNoDataAt, now) && now.Sub(d.briefNoDataAt) < briefingNoDataBackoff {
+	if !d.briefNoDataAt.IsZero() && sameCalendarDay(d.briefNoDataAt, now) && now.Sub(d.briefNoDataAt) < briefingNoDataBackoff &&
+		!d.briefingFresh() {
 		return false
 	}
 	return d.config.Briefing.Enabled && d.briefingPipe != nil && d.shouldRunBriefingAt(now) && d.briefingHasOwner(now)
