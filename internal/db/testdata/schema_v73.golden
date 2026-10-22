@@ -47,8 +47,12 @@ CREATE INDEX idx_automation_runs_started_at ON automation_runs(started_at)
 index	idx_automation_runs_status_queued
 CREATE INDEX idx_automation_runs_status_queued ON automation_runs(status, queued_at)
 
+index	idx_automations_builtin_id
+CREATE UNIQUE INDEX idx_automations_builtin_id ON automations(builtin_id) WHERE builtin_id IS NOT NULL
+
 index	idx_automations_scope_slug
 CREATE UNIQUE INDEX idx_automations_scope_slug ON automations(scope, COALESCE(project_id, 0), slug)
+WHERE origin = 'owner'
 
 index	idx_briefings_user_date
 CREATE INDEX idx_briefings_user_date ON briefings(user_id, date DESC)
@@ -735,7 +739,7 @@ table	automation_runs
 CREATE TABLE "automation_runs" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 automation_id INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
-trigger TEXT NOT NULL CHECK (trigger IN ('schedule','catch_up','button','event','manual','dry_run','reply')),
+trigger TEXT NOT NULL CHECK (trigger IN ('schedule','catch_up','button','event','manual','dry_run','reply','sync')),
 scheduled_for TEXT,
 event_cycle TEXT,
 event_json TEXT NOT NULL DEFAULT '',
@@ -784,34 +788,42 @@ PRIMARY KEY (automation_id, tool)
 )
 
 table	automations
-CREATE TABLE automations (
+CREATE TABLE "automations" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
-slug TEXT NOT NULL, -- filename stem
+slug TEXT NOT NULL,
 scope TEXT NOT NULL CHECK (scope IN ('personal','workbench')),
-project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE, -- workbench id; NULL = personal
-path TEXT NOT NULL UNIQUE, -- absolute recipe path
+project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+path TEXT NOT NULL UNIQUE,
 name TEXT NOT NULL DEFAULT '',
-trigger_kind TEXT NOT NULL DEFAULT '' CHECK (trigger_kind IN ('','schedule','button','event','manual')), -- '' while unparsable
-trigger_spec TEXT NOT NULL DEFAULT '{}', -- JSON of the recipe's trigger
+trigger_kind TEXT NOT NULL DEFAULT '' CHECK (trigger_kind IN ('','schedule','button','event','manual','sync')),
+trigger_spec TEXT NOT NULL DEFAULT '{}',
 missed_policy TEXT NOT NULL DEFAULT 'run_once' CHECK (missed_policy IN ('run_once','skip')),
 concurrency INTEGER NOT NULL DEFAULT 1 CHECK (concurrency BETWEEN 1 AND 4),
 budget_tokens INTEGER NOT NULL DEFAULT 50000,
 budget_minutes INTEGER NOT NULL DEFAULT 5,
 pause_timeout_hours INTEGER NOT NULL DEFAULT 72,
-permissions_json TEXT NOT NULL DEFAULT '[]', -- normalised manifest
+permissions_json TEXT NOT NULL DEFAULT '[]',
 outputs_json TEXT NOT NULL DEFAULT '[]',
-recipe_text TEXT NOT NULL DEFAULT '', -- the indexed copy the executor runs
+recipe_text TEXT NOT NULL DEFAULT '',
 content_hash TEXT NOT NULL DEFAULT '',
 approval_hash TEXT NOT NULL DEFAULT '',
-confirmed_hash TEXT NOT NULL DEFAULT '', -- '' = never confirmed; set only by a confirm
+confirmed_hash TEXT NOT NULL DEFAULT '',
 parse_error TEXT NOT NULL DEFAULT '',
 enabled INTEGER NOT NULL DEFAULT 0,
-last_scheduled_for TEXT, -- RFC 3339 UTC
-next_run_at TEXT, -- derived by the scheduler, for the list
-removed_at TEXT, -- the file is gone
+last_scheduled_for TEXT,
+next_run_at TEXT,
+removed_at TEXT,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')), disabled_reason TEXT NOT NULL DEFAULT '', disabled_at TEXT,
-CHECK ((scope = 'workbench') = (project_id IS NOT NULL))
+updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+disabled_reason TEXT NOT NULL DEFAULT '',
+disabled_at TEXT,
+origin TEXT NOT NULL DEFAULT 'owner' CHECK (origin IN ('owner','builtin')),
+builtin_id TEXT,
+overridden INTEGER NOT NULL DEFAULT 0 CHECK (overridden IN (0,1)),
+builtin_base_hash TEXT NOT NULL DEFAULT '',
+CHECK ((scope = 'workbench') = (project_id IS NOT NULL)),
+CHECK ((origin = 'builtin') = (builtin_id IS NOT NULL)),
+CHECK (origin = 'owner' OR scope = 'personal')
 )
 
 table	briefings
@@ -834,6 +846,15 @@ prompt_version INTEGER NOT NULL DEFAULT 0,
 read_at TEXT,
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
 UNIQUE(user_id, date)
+)
+
+table	builtin_migrations
+CREATE TABLE builtin_migrations (
+builtin_id TEXT PRIMARY KEY,
+status TEXT NOT NULL CHECK (status IN ('done','failed')),
+error TEXT NOT NULL DEFAULT '',
+attempts INTEGER NOT NULL DEFAULT 0,
+updated_at TEXT NOT NULL
 )
 
 table	calendar_accounts
@@ -3863,6 +3884,10 @@ GROUP BY up.ancestor
 25	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 26	disabled_reason	TEXT	notnull=1	dflt=''	pk=0
 27	disabled_at	TEXT	notnull=0	dflt=NULL	pk=0
+28	origin	TEXT	notnull=1	dflt='owner'	pk=0
+29	builtin_id	TEXT	notnull=0	dflt=NULL	pk=0
+30	overridden	INTEGER	notnull=1	dflt=0	pk=0
+31	builtin_base_hash	TEXT	notnull=1	dflt=''	pk=0
 
 ## briefings
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
@@ -3882,6 +3907,13 @@ GROUP BY up.ancestor
 14	prompt_version	INTEGER	notnull=1	dflt=0	pk=0
 15	read_at	TEXT	notnull=0	dflt=NULL	pk=0
 16	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ', 'now')	pk=0
+
+## builtin_migrations
+0	builtin_id	TEXT	notnull=0	dflt=NULL	pk=1
+1	status	TEXT	notnull=1	dflt=NULL	pk=0
+2	error	TEXT	notnull=1	dflt=''	pk=0
+3	attempts	INTEGER	notnull=1	dflt=0	pk=0
+4	updated_at	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## calendar_accounts
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
