@@ -143,7 +143,9 @@ final class WorkbenchCodeIndexTests: XCTestCase {
     /// 30 000-symbol index. The assertion allows 300 ms for the slowest query:
     /// a loaded machine took 67–148 ms, while a pathological regression (a
     /// quadratic match over 30 000 symbols) takes seconds. `measure` keeps
-    /// reporting the real figure.
+    /// reporting the real figure. Each query counts with its fastest of the
+    /// `measure` runs: a regression is slow every time, while one run stalled
+    /// by the CI VM's scheduler is not (a single 523 ms sample failed main).
     func testQueryLatencyOnASyntheticRepository() {
         let index = WorkbenchCodeIndex()
         index.applyIndexLines(Self.syntheticRepository(files: 3000, symbolsPerFile: 10), from: .fullRun)
@@ -153,14 +155,17 @@ final class WorkbenchCodeIndexTests: XCTestCase {
             "zz", "x", "parse", "ParseConfig", "pkg/svc/h", "renderView", "rv", "conf", "e", "store.swift"
         ]
         let boosts = CodeRankingBoosts(openTabs: ["Sources/Module7/Feature3/File7.swift"], recent: [], gitModified: [])
-        var worst: Duration = .zero
+        var fastest = [String: Duration]()
         measure {
             for query in queries {
                 let start = ContinuousClock.now
                 _ = index.query(query, scope: .all, boosts: boosts)
-                worst = max(worst, ContinuousClock.now - start)
+                let took = ContinuousClock.now - start
+                fastest[query] = min(fastest[query] ?? took, took)
             }
         }
+        XCTAssertEqual(fastest.count, queries.count)
+        let worst = fastest.values.max() ?? .zero
         XCTAssertLessThanOrEqual(worst, .milliseconds(300), "slowest query took \(worst)")
     }
 
