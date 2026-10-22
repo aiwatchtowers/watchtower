@@ -137,11 +137,10 @@ final class InboxIdeaPaneTests: XCTestCase {
         let decision = try insert(kind: "decision", title: "Ship on Thursdays", status: "active")
         let labels = try buttons(bar(decision))
         XCTAssertTrue(labels.contains("Supersede") && labels.contains("Reverse"), "\(labels)")
-        for absent in ["Approve", "Reject", "Make a Task", "Merge…"] {
+        for absent in ["Approve", "Reject", "Make a Task", "Activate"] {
             XCTAssertFalse(labels.contains(absent), absent)
         }
         XCTAssertThrowsError(try bar(decision).inspect().find(ViewType.Menu.self))
-        XCTAssertThrowsError(try bar(decision).inspect().find(viewWithAccessibilityLabel: "Delete permanently"))
         // Even proposed (the old birth status), a decision gets no verdict.
         let proposed = try insert(kind: "decision", title: "Old proposed decision", status: "proposed")
         XCTAssertFalse(try buttons(bar(proposed)).contains("Approve"))
@@ -154,6 +153,70 @@ final class InboxIdeaPaneTests: XCTestCase {
         await pane(other).actions.reverse()
         XCTAssertEqual(try stored(other.id)?.status, .reversed)
         XCTAssertEqual(changes, 1)
+    }
+
+    /// G4: the decision card keeps what the Ideas screen's pane gave a
+    /// decision — Merge, delete, and Activate out of a resurfaced verdict.
+    func testADecisionKeepsMergeDeleteAndItsWayOut() async throws {
+        let active = try insert(kind: "decision", title: "Ship on Thursdays", status: "active")
+        let labels = try buttons(bar(active))
+        XCTAssertTrue(labels.contains("Merge…"), "\(labels)")
+        XCTAssertNoThrow(try bar(active).inspect().find(viewWithAccessibilityLabel: "Delete permanently"))
+
+        // Brought up again after a Reject (IDEA-04 flags any kind): Activate clears it.
+        let flagged = try insert(kind: "decision", title: "Freeze on Fridays", status: "rejected", needsReview: true)
+        let flaggedLabels = try buttons(bar(flagged))
+        XCTAssertTrue(flaggedLabels.contains("Activate") && flaggedLabels.contains("Merge…"), "\(flaggedLabels)")
+        XCTAssertFalse(flaggedLabels.contains("Approve") || flaggedLabels.contains("Reject"), "never a verdict (F15)")
+        await pane(flagged).actions.activate()
+        let cleared = try XCTUnwrap(try stored(flagged.id))
+        XCTAssertEqual(cleared.status, .active)
+        XCTAssertFalse(cleared.needsReview)
+
+        for status in ["not_now", "dropped"] {
+            let parked = try insert(kind: "decision", title: "Parked \(status)", status: status, needsReview: true)
+            XCTAssertTrue(try buttons(bar(parked)).contains("Activate"), status)
+        }
+
+        // Merge into another decision, and delete, both from the card.
+        let target = try insert(kind: "decision", title: "Release weekly", status: "active")
+        let mergeable = try insert(kind: "decision", title: "Release every week", status: "active")
+        XCTAssertEqual(IdeaMergeRow.eligible([target, mergeable, active], for: mergeable, preselect: nil).map(\.id),
+                       [target.id, active.id])
+        await pane(mergeable).actions.merge(target.id)
+        XCTAssertEqual(try stored(mergeable.id)?.status, .merged)
+        await pane(active).actions.delete()
+        XCTAssertNil(try stored(active.id))
+    }
+
+    /// M7: a press while the card's write is pending writes nothing more,
+    /// and the bar's buttons wait.
+    func testAPressWhileAWriteIsPendingDoesNothing() async throws {
+        let idea = try insert()
+        XCTAssertTrue(try bar(idea).inspect().find(button: "Approve").isDisabled() == false)
+        var writing = bar(idea)
+        writing.isWriting = true
+        XCTAssertTrue(try writing.inspect().find(button: "Approve").isDisabled())
+        XCTAssertTrue(try writing.inspect().find(viewWithAccessibilityLabel: "Delete permanently").isDisabled())
+
+        var changes = 0
+        let card = pane(idea, onChange: { changes += 1 }, onMadeTask: { _ in }, onDeleted: { _ in })
+        await ideas.pendingWrites.run(InboxIdeaPane.writeKey(idea.id)) {
+            await card.actions.reject()
+        }
+        XCTAssertEqual(try stored(idea.id)?.status, .proposed, "the second press did not write")
+        XCTAssertEqual(changes, 0)
+        await card.actions.reject()
+        XCTAssertEqual(try stored(idea.id)?.status, .rejected)
+        XCTAssertEqual(changes, 1)
+    }
+
+    /// M5: while the New idea row's Create is on screen, Approve is not prominent too.
+    func testApproveStepsBackWhileTheNewIdeaRowIsOpen() throws {
+        let idea = try insert()
+        var quiet = bar(idea)
+        quiet.approveIsPrimary = false
+        XCTAssertTrue(try quiet.inspect().find(button: "Approve").buttonStyle() is KitSecondaryButtonStyle)
     }
 
     func testTheIdeaPaneShowsTheBarInTheDetailPane() throws {
@@ -303,6 +366,14 @@ final class InboxIdeaPaneTests: XCTestCase {
         XCTAssertEqual(idea.status, .active)
         XCTAssertEqual(idea.source, "owner")
         XCTAssertEqual(draft, InboxNewIdeaDraft(), "the draft clears once the idea exists")
+
+        // M6: a failed create says why once, in the row, not again in the card's banner.
+        draft = InboxNewIdeaDraft(title: "Another idea")
+        try await dbManager.dbPool.write { db in try db.execute(sql: "DROP TABLE ideas") }
+        await row.create()
+        XCTAssertEqual(created.count, 1, "nothing created")
+        XCTAssertNil(ideas.errorMessage, "the row took the error")
+        XCTAssertEqual(draft.title, "Another idea", "the draft is kept")
 
         draft = InboxNewIdeaDraft(title: "   ")
         XCTAssertTrue(try row.inspect().find(button: "Create").isDisabled(), "a blank title creates nothing")

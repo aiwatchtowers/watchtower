@@ -18,6 +18,8 @@ struct InboxIdeaPane: View {
     let onMadeTask: (Int) -> Void
     /// The idea was deleted (its Discuss chat goes with it).
     let onDeleted: (Int) -> Void
+    /// False while the open New idea row's Create is the screen's prominent action.
+    var approveIsPrimary = true
 
     init(
         idea: Idea,
@@ -40,40 +42,50 @@ struct InboxIdeaPane: View {
             if let error = ideas.errorMessage {
                 WriteErrorBanner(message: error) { ideas.errorMessage = nil }
             }
-            IdeaDetailPane(idea: idea, allIdeas: allIdeas, actions: actions)
+            IdeaDetailPane(idea: idea, allIdeas: allIdeas, actions: actions,
+                           isWriting: ideas.pendingWrites.isPending(Self.writeKey(idea.id)),
+                           approveIsPrimary: approveIsPrimary)
                 // Identity at the call site: the pane's own state (rating
                 // draft, open merge row, Discuss chat) resets per idea.
                 .id(idea.id)
         }
     }
 
-    /// Each write, then the Inbox's re-read.
+    /// One verdict write per idea at a time: the bar waits while it is pending.
+    static func writeKey(_ id: Int) -> String { "verdict:\(id)" }
+
+    /// Each write, then the Inbox's re-read; a press while one is pending does nothing.
     var actions: IdeaActions {
         let idea = idea
         let ideas = ideas
         let onChange = onChange
         let onMadeTask = onMadeTask
         let onDeleted = onDeleted
+        let once: (@escaping @MainActor () async -> Void) -> () async -> Void = { write in
+            {
+                await ideas.pendingWrites.run(Self.writeKey(idea.id)) {
+                    await write()
+                    await onChange()
+                }
+            }
+        }
         return IdeaActions(
-            approve: { await ideas.approve(idea); await onChange() },
-            reject: { await ideas.reject(idea); await onChange() },
-            activate: { await ideas.activate(idea); await onChange() },
-            notNow: { until in await ideas.notNow(idea, until: until); await onChange() },
-            drop: { await ideas.drop(idea); await onChange() },
-            merge: { targetID in await ideas.merge(idea, into: targetID); await onChange() },
-            makeTask: {
-                let targetID = await ideas.convertToTarget(idea)
-                await onChange()
-                if let targetID { onMadeTask(targetID) }
+            approve: once { await ideas.approve(idea) },
+            reject: once { await ideas.reject(idea) },
+            activate: once { await ideas.activate(idea) },
+            notNow: { until in await once { await ideas.notNow(idea, until: until) }() },
+            drop: once { await ideas.drop(idea) },
+            merge: { targetID in await once { await ideas.merge(idea, into: targetID) }() },
+            makeTask: once {
+                if let targetID = await ideas.convertToTarget(idea) { onMadeTask(targetID) }
             },
-            supersede: { await ideas.supersede(idea); await onChange() },
-            reverse: { await ideas.reverse(idea); await onChange() },
+            supersede: once { await ideas.supersede(idea) },
+            reverse: once { await ideas.reverse(idea) },
             rating: { rating, comment in
                 await ideas.setRating(idea, rating: rating, comment: comment)
             },
-            delete: {
+            delete: once {
                 if await ideas.deleteIdea(idea) { onDeleted(idea.id) }
-                await onChange()
             }
         )
     }

@@ -13,7 +13,9 @@ package struct Idea: FetchableRecord, Identifiable, Equatable {
     package let essence: String
     package let statusRaw: String     // column: status
     package let source: String
-    package let snoozeUntil: String   // column: snooze_until
+    /// column: snooze_until — "" (no date), an owner-local `yyyy-MM-dd` (Inbox
+    /// Not now), or a legacy ISO datetime; a reader must accept all three.
+    package let snoozeUntil: String
     package let needsReview: Bool     // column: needs_review
     package let reviewReason: String  // column: review_reason
     package let similarToID: Int?         // column: similar_to_id

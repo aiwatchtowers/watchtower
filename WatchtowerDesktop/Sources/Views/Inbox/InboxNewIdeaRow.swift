@@ -77,7 +77,9 @@ struct InboxNewIdeaRow: View {
         defer { isCreating = false }
         guard let id = await ideas.createManual(kind: draft.kind.rawValue, title: draft.title,
                                                 essence: draft.essence) else {
+            // Shown here, in the row, not again in the selected card's banner.
             createError = ideas.errorMessage ?? "Couldn't create the idea."
+            ideas.errorMessage = nil
             return
         }
         createError = nil

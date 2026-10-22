@@ -230,7 +230,16 @@ struct ActionStripActionsView: View {
                     workbenches: workbenches,
                     onCardAction: onCardAction,
                     dayPane: dayPane,
-                    ideaPane: ideaPane,
+                    ideaPane: ideaPane.map { make in
+                        { idea in
+                            // One prominent action: the open New idea row's Create.
+                            make(idea).map { pane in
+                                var pane = pane
+                                pane.approveIsPrimary = !(vm.filter == .ideas && ideasRow == .newIdea)
+                                return pane
+                            }
+                        }
+                    },
                     onOpenAutomationRun: onOpenAutomationRun,
                     aux: $aux,
                     cheatSheet: cheatSheet,

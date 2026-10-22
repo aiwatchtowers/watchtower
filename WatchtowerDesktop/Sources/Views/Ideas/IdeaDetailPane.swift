@@ -18,6 +18,11 @@ struct IdeaDetailPane: View {
     /// pane's dependency surface small.
     let allIdeas: [Idea]
     let actions: IdeaActions
+    /// A verdict write is under way: the bar's buttons wait.
+    let isWriting: Bool
+    /// False while another prominent action is on screen (the Inbox's open
+    /// New idea row): Approve drops to the regular style.
+    let approveIsPrimary: Bool
 
     @State private var comment: String
     @State private var rating: Int?
@@ -35,10 +40,12 @@ struct IdeaDetailPane: View {
     // so this @State already resets per idea selection change.
     @State private var discuss = IdeaDiscussState()
 
-    init(idea: Idea, allIdeas: [Idea], actions: IdeaActions) {
+    init(idea: Idea, allIdeas: [Idea], actions: IdeaActions, isWriting: Bool = false, approveIsPrimary: Bool = true) {
         self.idea = idea
         self.allIdeas = allIdeas
         self.actions = actions
+        self.isWriting = isWriting
+        self.approveIsPrimary = approveIsPrimary
         _comment = State(initialValue: idea.ratingComment)
         _rating = State(initialValue: idea.ownerRating == 0 ? nil : idea.ownerRating)
     }
@@ -313,7 +320,8 @@ struct IdeaDetailPane: View {
     private var actionBar: some View {
         VStack(spacing: Spacing.cozy) {
             ratingRow
-            IdeaActionBar(idea: idea, allIdeas: allIdeas, actions: actions, openRow: $openRow)
+            IdeaActionBar(idea: idea, allIdeas: allIdeas, actions: actions, openRow: $openRow,
+                          isWriting: isWriting, approveIsPrimary: approveIsPrimary)
         }
         .padding(Spacing.medium)
     }
@@ -438,39 +446,45 @@ extension Idea.Kind {
 /// Task and Not now for ideas only; a note is born active and is never
 /// snoozed or converted). A decided one keeps today's lifecycle: active ↔
 /// not now, converted or dropped; a rejected or dropped one can be
-/// activated again. A decision is informational: its status chip in the
-/// header and, while active, **Supersede** / **Reverse** — never a verdict.
-/// Merge and delete open inline rows below the buttons.
+/// activated again. A decision is informational — its status chip in the
+/// header and, while active, **Supersede** / **Reverse**, never a verdict —
+/// but keeps what the Ideas screen gave it: **Activate** when it sits in
+/// rejected, dropped or not now (the way out of an IDEA-04 flag), Merge and
+/// delete. Merge and delete open inline rows below the buttons.
 struct IdeaActionBar: View {
     let idea: Idea
     let allIdeas: [Idea]
     let actions: IdeaActions
     @Binding var openRow: IdeaActionRow?
+    /// A write is under way: every button waits (no second write).
+    var isWriting = false
+    var approveIsPrimary = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
             HStack(spacing: Spacing.regular) {
                 buttons
                 Spacer()
-                if idea.kind != .decision {
-                    Button(role: .destructive) {
-                        openRow = openRow == .delete ? nil : .delete
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .buttonStyle(.kitIcon(isOn: openRow == .delete))
-                    .help("Delete permanently")
-                    .accessibilityLabel("Delete permanently")
+                Button(role: .destructive) {
+                    openRow = openRow == .delete ? nil : .delete
+                } label: {
+                    Image(systemName: "trash")
                 }
+                .buttonStyle(.kitIcon(isOn: openRow == .delete))
+                .help("Delete permanently")
+                .accessibilityLabel("Delete permanently")
             }
+            .disabled(isWriting)
             switch openRow {
             case .merge(let preselect):
                 IdeaMergeRow(idea: idea, candidates: allIdeas, preselect: preselect,
                              onMerge: { id in run { await actions.merge(id) } },
                              onCancel: { openRow = nil })
+                    .disabled(isWriting)
             case .delete:
                 IdeaDeleteRow(kind: idea.kind, onDelete: { run { await actions.delete() } },
                               onCancel: { openRow = nil })
+                    .disabled(isWriting)
             case nil:
                 EmptyView()
             }
@@ -489,10 +503,19 @@ struct IdeaActionBar: View {
                     Label("Reverse", systemImage: "arrow.uturn.backward")
                 }
                 .buttonStyle(.kitDestructive)
+            } else if [.rejected, .dropped, .notNow].contains(idea.status) {
+                Button("Activate") { run(actions.activate) }
+                    .buttonStyle(.kitSecondary)
             }
+            mergeButton
         } else if idea.awaitsVerdict {
-            Button("Approve") { run(actions.approve) }
-                .buttonStyle(.kitPrimary)
+            if approveIsPrimary {
+                Button("Approve") { run(actions.approve) }
+                    .buttonStyle(.kitPrimary)
+            } else {
+                Button("Approve") { run(actions.approve) }
+                    .buttonStyle(.kitSecondary)
+            }
             if idea.kind == .idea {
                 makeTaskButton
                 notNowMenu
