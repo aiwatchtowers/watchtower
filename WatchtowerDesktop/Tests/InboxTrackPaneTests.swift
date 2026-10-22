@@ -127,6 +127,20 @@ final class InboxTrackPaneTests: XCTestCase {
         XCTAssertTrue(madeTask)
     }
 
+    /// The chat starts folded under **Open chat**, so the card's own buttons
+    /// are not pushed below the fold by it.
+    func testChatStartsFolded() throws {
+        let pane = InboxTrackPane(
+            card: card(try track(custom: false)), tracks: TracksViewModel(dbManager: manager),
+            controls: RecordingCustomTrackControls(), onDone: {}, onStopWatching: {}, onRestore: {},
+            onCommand: { _ in }, workbenches: []
+        ).environment(AppState.isolated())
+
+        XCTAssertNoThrow(try pane.inspect().find(button: "Open chat"))
+        XCTAssertThrowsError(try pane.inspect().find(TrackChatSection.self))
+        XCTAssertThrowsError(try pane.inspect().find(ViewType.VSplitView.self))
+    }
+
     func testDeleteAsksInline() throws {
         let custom = try track(custom: true)
         let confirming = Box(false)

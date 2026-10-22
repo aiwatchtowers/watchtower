@@ -47,7 +47,6 @@ struct IdeaDiscussSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Divider().padding(.vertical, 2)
             header
             if let loadError {
                 Label(loadError, systemImage: "exclamationmark.triangle")

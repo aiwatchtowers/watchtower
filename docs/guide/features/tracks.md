@@ -21,7 +21,7 @@ Scrolling channels to find "what was I asked to do?" is the cost this removes. A
 ## Using it
 
 1. Open the Inbox and pick the **Tracks** filter: every track you follow, updated ones first, with a dot on the unread ones. **All** shows only the unread ones.
-2. Click a track for its context, blocking, sub-items, participants, **Key Messages** (open in Slack), **Related Digests**, linked targets and Jira issues, and a chat at the bottom about this track. The priority badge changes its priority.
+2. Click a track for its context, blocking, sub-items, participants, **Key Messages** (open in Slack), **Related Digests**, linked targets and Jira issues. **Open chat** at the bottom unfolds a chat about this track. The priority badge changes its priority.
 3. Press **Done** when you have read it. **Open in Slack**, **Discuss in Chat** and **Hand to Agent…** sit beside it.
 4. The **⋯** menu has **Stop watching**, which takes the track off the list. A mined track adds **Make a Task**, which creates a [target](targets.md) and opens it; a custom track adds **Go to Target** when it is linked to one, and **Delete…**, which asks inline.
 5. Stopped tracks fold into **Stopped · N** at the end of the Tracks filter; **Show** lists them and **Restore** on a card brings it back.

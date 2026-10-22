@@ -108,6 +108,33 @@ func TestActionsPropose_ApproveAppliesOnce(t *testing.T) {
 	assert.Equal(t, 1, actionRowCount(t, database))
 }
 
+func TestActionsPropose_ContextComesFromTheArgsEvent(t *testing.T) {
+	cases := map[string]func(id string) []string{
+		"a context id naming another event": func(id string) []string {
+			return []string{"--context-type", "track_event", "--context-id", "999"}
+		},
+		"another context type": func(id string) []string {
+			return []string{"--context-type", "target", "--context-id", id}
+		},
+		"no context flags": func(string) []string { return nil },
+	}
+	for name, flags := range cases {
+		t.Run(name, func(t *testing.T) {
+			database := writeActionsConfig(t)
+			_, eventID := seedTrackEvent(t, database)
+			id := strconv.Itoa(eventID)
+			args := append([]string{"--tool", "apply_track_action", "--surface", "inbox",
+				"--args", `{"event_id":` + id + `}`, "--json"}, flags(id)...)
+			out, err := runPropose(t, args...)
+			require.NoError(t, err, out)
+			var ctxType, ctxID string
+			require.NoError(t, database.QueryRow(`SELECT context_type, context_id FROM agent_actions`).Scan(&ctxType, &ctxID))
+			assert.Equal(t, "track_event", ctxType)
+			assert.Equal(t, id, ctxID)
+		})
+	}
+}
+
 func TestActionsPropose_WithoutApproveLeavesPending(t *testing.T) {
 	database := writeActionsConfig(t)
 	targetID, eventID := seedTrackEvent(t, database)

@@ -8,6 +8,8 @@ package struct InboxCardSubject: Equatable, Sendable {
     package let selection: InboxSelection
     package let title: String
     /// One line, e.g. "From the Inbox card of the automation X, run #7."
+    /// Fixed text for every kind but automation output: no sender, subject
+    /// or title, which are other people's words and stay in the data fence.
     package let provenance: String
     /// Markdown; data, never instructions.
     package let body: String
@@ -47,6 +49,29 @@ package struct InboxCardSubject: Equatable, Sendable {
         case let .message(value): ("message", String(value))
         }
         return "inbox-card-\(kind)-\(id).md"
+    }
+
+    /// Whether the card is an automation's output: the one kind whose title
+    /// is the owner's own recipe line and whose texts keep spec B2's words.
+    package var isAutomationOutput: Bool {
+        if case .output = selection { return true }
+        return false
+    }
+
+    /// Hand to Agent…'s first line (the target's title). An automation card
+    /// leads with its title (spec B2); every other kind with fixed text that
+    /// names the kind and id, so a mail subject, a channel or an AI summary
+    /// of colleagues' messages never becomes the first line of a task.
+    package var taskLead: String {
+        switch selection {
+        case .output: title.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+        case let .message(id): "Inbox message #\(id)"
+        case let .track(id): "Track #\(id)"
+        case let .idea(id): "Idea #\(id)"
+        case let .day(date): "Your day \(date)"
+        case let .proposal(id): "Inbox proposal #\(id)"
+        case let .reminder(id): "Inbox reminder #\(id)"
+        }
     }
 }
 
@@ -99,7 +124,7 @@ package extension InboxCardSubject {
         self.init(
             selection: .track(track.id),
             title: track.text,
-            provenance: "From the Inbox track card, \(card.newEventCount) new events.",
+            provenance: "From the Inbox track #\(track.id), \(card.newEventCount) new events.",
             body: parts.filter { !$0.isEmpty }.joined(separator: "\n\n"),
             priority: Self.priority(track.priority)
         )
@@ -114,7 +139,7 @@ package extension InboxCardSubject {
         self.init(
             selection: .idea(idea.id),
             title: idea.title,
-            provenance: "From the Inbox \(idea.kind.rawValue) card.",
+            provenance: "From the Inbox \(idea.kind.rawValue) card #\(idea.id).",
             body: parts.filter { !$0.isEmpty }.joined(separator: "\n\n")
         )
     }
@@ -128,7 +153,7 @@ package extension InboxCardSubject {
         self.init(
             selection: .message(item.id),
             title: "\(Self.line(row.who))\(place)",
-            provenance: "From the Inbox message of \(Self.line(row.who))\(place).",
+            provenance: "From the Inbox message #\(item.id).",
             body: parts.filter { !$0.isEmpty }.joined(separator: "\n\n"),
             link: item.permalink,
             priority: Self.priority(item.priority)

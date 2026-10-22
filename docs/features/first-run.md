@@ -297,9 +297,13 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   `NoOwnerEmptyState` while the owner is unknown, and All keeps the reaction
   cheat sheet. The `dayPlan` row stays for `featureCard` (Getting ready).
   Generate Briefing, the Day Plan screen's empty state and Ideas' Create /
-  Find Ideas left with their screens: the day card's **Make today's plan**
-  and the Ideas filter's `+` and ⋯ → **Find Ideas in Past Messages…** replace
-  them.
+  Find Ideas left with their screens: the day card's **Make today's brief and
+  plan** (today's placeholder), **Make today's brief** (a plan-only today, or
+  the placeholder with Day Plan off), **Make today's plan** (a brief-only
+  today, or the placeholder with Daily Briefing off) and the Ideas filter's
+  `+` and ⋯ → **Find Ideas in Past Messages…** replace them. With both
+  features off no filter lists the placeholder (`InboxFeedSnapshot.briefingOn`
+  / `dayPlanOn`, from the disabled feature ids passed to `InboxFeedQueries.read`).
 - **Views.** `FeatureEmptyState` (`WatchtowerDesktop/Sources/Views/Components/FeatureEmptyState.swift`) is
   values and closures only (ViewInspector-driven, no `@Environment(AppState)`);
   `TabEmptyState` (`WatchtowerDesktop/Sources/Views/Components/TabEmptyState.swift`) binds it to one tab
@@ -341,7 +345,8 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   offers **Make today's brief and plan** (`briefing generate`, then
   `day-plan generate --date <today>`). A brief-only today says "No plan for
   this day yet." and offers **Make today's plan** (`InboxDayPlanBlock`); a
-  plan-only today offers **Make today's brief**.
+  plan-only today offers **Make today's brief**. A half whose feature is off
+  is never offered: the placeholder says and makes only the other one.
 - **Catch Up** reads the readiness of `.digests` only (R10; the spec said digests
   + inbox, the component takes one feature).
 - **Spec §1.5 deviation as built:** the Inbox row has no button — the reaction

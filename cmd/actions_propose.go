@@ -77,13 +77,32 @@ func proposeInboxAction() (int64, error) {
 			return 0, err
 		}
 	}
+	ctxType, ctxID := proposeContext(args)
 	rc, err := reg.Propose(context.Background(), t.Name, args, tools.Binding{
 		Surface:     tools.InboxSurface,
-		ContextType: actionsProposeFlagContextType,
-		ContextID:   actionsProposeFlagContextID,
+		ContextType: ctxType,
+		ContextID:   ctxID,
 	})
 	if err != nil {
 		return 0, err
 	}
 	return rc.ActionID, nil
+}
+
+// proposeContext is the context stored on the row. When the args name an
+// event_id, the row's context is that track event: --context-type/--context-id
+// are kept only when they name the same event, otherwise they are replaced by
+// the args, so the audit row never names an event the press did not act on.
+func proposeContext(args json.RawMessage) (string, string) {
+	var a struct {
+		EventID *int64 `json:"event_id"`
+	}
+	if json.Unmarshal(args, &a) != nil || a.EventID == nil {
+		return actionsProposeFlagContextType, actionsProposeFlagContextID
+	}
+	id := strconv.FormatInt(*a.EventID, 10)
+	if actionsProposeFlagContextType == "track_event" && actionsProposeFlagContextID == id {
+		return actionsProposeFlagContextType, actionsProposeFlagContextID
+	}
+	return "track_event", id
 }

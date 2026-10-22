@@ -110,6 +110,46 @@ enum DesignShotCatalog {
             DesignShot(name: "inbox-message-pane", size: NSSize(width: 1180, height: 720)) {
                 InboxShotFixtures.messagePane()
             },
+            // The one Inbox (C1): every kind under the filter bar, at a fixed moment.
+            DesignShot(name: "inbox-all", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.all()
+            },
+            DesignShot(name: "inbox-filter-day", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.filterDay()
+            },
+            DesignShot(name: "inbox-day-card", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.dayCard()
+            },
+            DesignShot(name: "inbox-day-card-regenerate", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.dayCardRegenerate()
+            },
+            DesignShot(name: "inbox-day-card-empty", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.dayCardEmpty()
+            },
+            DesignShot(name: "inbox-track-card", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.trackCard()
+            },
+            DesignShot(name: "inbox-tracks-stopped", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.tracksStopped()
+            },
+            DesignShot(name: "inbox-idea-card", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.ideaCard()
+            },
+            DesignShot(name: "inbox-decision-card", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.decisionCard()
+            },
+            DesignShot(name: "inbox-message-card", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.messageCard()
+            },
+            DesignShot(name: "inbox-filter-ideas-new", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.ideasNew()
+            },
+            DesignShot(name: "inbox-cheat-sheet", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.cheatSheet()
+            },
+            DesignShot(name: "inbox-day-card-narrow", size: NSSize(width: 420, height: 560)) {
+                OneInboxShotFixtures.dayCardNarrow()
+            },
             // Branch review (#712, artboards A–C).
             DesignShot(name: "branch-review-changes", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.changes()
@@ -164,6 +204,7 @@ enum DesignShotFixtures {
         poolPath = nil
         ReviewShotFixtures.cleanUp()
         InboxShotFixtures.cleanUp()
+        OneInboxShotFixtures.cleanUp()
         AutomationShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil

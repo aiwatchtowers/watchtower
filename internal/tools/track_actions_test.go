@@ -363,6 +363,7 @@ func TestApplyTrackAction_TargetGoneBeforeTheWriteRollsBackTheClaim(t *testing.T
 	row := f.approveApply(t, id)
 
 	assert.Equal(t, "failed", row.Status)
-	assert.Contains(t, row.Error, "no rows")
+	assert.Equal(t, "The task this track is linked to no longer exists.", row.Error)
+	assert.NotContains(t, row.Error, "no rows")
 	assert.Equal(t, "pending", f.eventStatus(t, ev), "the claim rolled back with the failed write")
 }

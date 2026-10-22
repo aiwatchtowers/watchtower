@@ -186,7 +186,6 @@ struct IdeaDetailPane: View {
 
     @ViewBuilder
     private var mentionsSection: some View {
-        Divider()
         VStack(alignment: .leading, spacing: 2) {
             Text("Mentions")
                 .font(.headline)
@@ -394,6 +393,8 @@ enum IdeaActionRow: Equatable {
     /// is listed first when it is a candidate.
     case merge(preselect: Int?)
     case delete
+    /// **Reverse** on an active decision asks first, inline.
+    case reverse
 }
 
 /// **Not now ▾**: until when.
@@ -485,6 +486,12 @@ struct IdeaActionBar: View {
                 IdeaDeleteRow(kind: idea.kind, onDelete: { run { await actions.delete() } },
                               onCancel: { openRow = nil })
                     .disabled(isWriting)
+            case .reverse:
+                IdeaReverseRow(onReverse: {
+                    openRow = nil
+                    run(actions.reverse)
+                }, onCancel: { openRow = nil })
+                    .disabled(isWriting)
             case nil:
                 EmptyView()
             }
@@ -499,10 +506,12 @@ struct IdeaActionBar: View {
                     Label("Supersede", systemImage: "arrow.triangle.2.circlepath")
                 }
                 .buttonStyle(.kitSecondary)
-                Button(role: .destructive) { run(actions.reverse) } label: {
+                Button(role: .destructive) {
+                    openRow = openRow == .reverse ? nil : .reverse
+                } label: {
                     Label("Reverse", systemImage: "arrow.uturn.backward")
                 }
-                .buttonStyle(.kitDestructive)
+                .buttonStyle(.kitSecondary)
             } else if [.rejected, .dropped, .notNow].contains(idea.status) {
                 Button("Activate") { run(actions.activate) }
                     .buttonStyle(.kitSecondary)
@@ -520,8 +529,9 @@ struct IdeaActionBar: View {
                 makeTaskButton
                 notNowMenu
             }
+            // One prominent action: Reject is a plain soft button beside Approve.
             Button("Reject", role: .destructive) { run(actions.reject) }
-                .buttonStyle(.kitDestructive)
+                .buttonStyle(.kitSecondary)
             mergeButton
         } else {
             decidedButtons
@@ -583,7 +593,7 @@ struct IdeaActionBar: View {
         // Merge is an owner action on any item still in the registry.
         if idea.status != .merged && idea.status != .converted {
             Button {
-                openRow = openRow == nil || openRow == .delete ? .merge(preselect: idea.similarToID) : nil
+                if case .merge = openRow { openRow = nil } else { openRow = .merge(preselect: idea.similarToID) }
             } label: {
                 Label("Merge…", systemImage: "arrow.triangle.merge")
             }
@@ -663,6 +673,29 @@ struct IdeaMergeRow: View {
                 Button("Cancel", action: onCancel)
                     .buttonStyle(.kitQuiet)
             }
+        }
+        .padding(Spacing.medium)
+        .card()
+    }
+}
+
+// MARK: - IdeaReverseRow
+
+/// Reverse inline: **Reverse** and **Cancel**, so a decision is never
+/// reversed by one stray press.
+struct IdeaReverseRow: View {
+    let onReverse: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: Spacing.regular) {
+            Text("Reverse this decision?")
+                .font(.callout.weight(.semibold))
+            Spacer()
+            Button("Cancel", action: onCancel)
+                .buttonStyle(.kitQuiet)
+            Button("Reverse", role: .destructive, action: onReverse)
+                .buttonStyle(.kitDestructive)
         }
         .padding(Spacing.medium)
         .card()

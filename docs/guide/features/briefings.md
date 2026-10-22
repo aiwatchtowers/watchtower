@@ -53,7 +53,7 @@ Before today's brief exists, today's card says "No briefings yet" and "Generated
 - **Starts after the first sync / Within ~15 min / After this sync / Today at 08:00 / Tomorrow at 08:00.** It is on its way; the line says when.
 - **Didn't work yet — retries automatically.** The last attempt failed, with the reason in the line. After three failures it waits until tomorrow.
 - **No briefing today though the hour passed.** The sync may not have run (the Mac was off or the daemon isn't running), or there was nothing to summarise. See [Day Plan](day-plan.md) for the same gate.
-- **Make it now.** Press **Make today's brief and plan** on today's card, or **Make today's brief** when the card has only a plan. A refusal shows in red on the card.
+- **Make it now.** Press **Make today's brief and plan** on today's card, or **Make today's brief** when the card has only a plan or Day Plan is off. A refusal shows in red on the card.
 
 No briefing today? See [No briefing or day plan today](../troubleshooting/no-briefing-or-day-plan.md).
 

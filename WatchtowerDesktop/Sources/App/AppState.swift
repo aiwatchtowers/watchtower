@@ -123,8 +123,9 @@ final class AppState {
 
     /// App-wide home of the embedded assistant chats' engines (track, idea,
     /// meeting, …), so a reply keeps streaming after its screen closes or its
-    /// section collapses; at most three such turns run at once.
-    @ObservationIgnored private let embeddedChats = EmbeddedChatEngineFactory()
+    /// section collapses; at most three such turns run at once. Not private:
+    /// a design shot points its database chats at the fixture database.
+    @ObservationIgnored let embeddedChats = EmbeddedChatEngineFactory()
     /// Once a minute: idle embedded chats and code indexes are released.
     @ObservationIgnored private var idleReleaseSweep: Timer?
     var embeddedChatCenter: EmbeddedChatCenter { embeddedChats.center }
@@ -465,6 +466,9 @@ final class AppState {
     @ObservationIgnored var homeDefaultsOverride: UserDefaults?
     /// Test seam: the database path the compaction step checks (no live config).
     @ObservationIgnored var compactionDBPathOverride: (() throws -> String)?
+    /// Test seam: the CLI a custom track's activity applies actions through
+    /// (design shots have no installed CLI); nil finds the installed one.
+    @ObservationIgnored var trackActionRunnerOverride: (any CLIRunnerProtocol)?
 
     /// `onboardingDefaults` backs the onboarding step and goals,
     /// `workbenchDefaults` the workbench page's state, `migrateDatabase` and
@@ -1598,9 +1602,7 @@ final class AppState {
         dbManager: DatabaseManager,
         cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault()
     ) {
-        let vm = BriefingViewModel(dbManager: dbManager, cliRunner: cliRunner)
-        vm.startObserving()
-        briefingViewModel = vm
+        briefingViewModel = BriefingViewModel(dbManager: dbManager, cliRunner: cliRunner)
     }
 
     /// Not marked `private` (unlike most of its siblings above) so XCTest can call it
@@ -1753,6 +1755,7 @@ final class AppState {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
             try await AutomationsCLI(runner: runner).wake()
         }
+        vm.disabledFeatures = featureVisibility.disabledFeatureIDs
         Task { await vm.refresh() }
         actionStripViewModel = vm
     }

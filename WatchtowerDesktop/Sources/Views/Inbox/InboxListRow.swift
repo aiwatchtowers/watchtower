@@ -2,7 +2,9 @@ import SwiftUI
 import WatchtowerCore
 
 /// One row of the Inbox list (spec B1): an unread dot, the title on one
-/// line with a High chip, the source line and a one-line preview.
+/// line with a High chip, the source line and a one-line preview. A day
+/// whose plan has conflicts carries a red dot after its title (the old
+/// sidebar Day Plan dot, G4).
 struct InboxListRow: View {
     let item: InboxListItem
     /// A proposal's "⚙ <automation> · run #<n>" when an automation run made it.
@@ -24,6 +26,13 @@ struct InboxListRow: View {
                         .lineLimit(1)
                     if content.high {
                         Chip(text: "High", color: Tone.priority("high"))
+                    }
+                    if content.conflicts {
+                        Circle()
+                            .fill(Tone.error)
+                            .frame(width: Self.dotSize, height: Self.dotSize)
+                            .help("The plan has conflicts")
+                            .accessibilityLabel("The plan has conflicts")
                     }
                 }
                 Text(content.source)
@@ -49,6 +58,8 @@ struct InboxListRow: View {
         let high: Bool
         let source: String
         let preview: String
+        /// A day card whose plan has conflicts (`day_plans.has_conflicts`).
+        var conflicts = false
     }
 
     /// The row's words. A proposal is "unread" while it waits on the owner.
@@ -72,7 +83,7 @@ struct InboxListRow: View {
                            preview: action.reason)
         case .day(let card):
             return Content(unread: card.isUnread, title: dayTitle(card), high: false, source: daySource(card),
-                           preview: dayPreview(card))
+                           preview: dayPreview(card), conflicts: card.plan?.hasConflicts == true)
         case .track(let card):
             return Content(unread: card.isUnread, title: card.track.text, high: card.track.priority == "high",
                            source: InboxCardTexts.stamped("Track", at: card.lastEventAt, now: now),

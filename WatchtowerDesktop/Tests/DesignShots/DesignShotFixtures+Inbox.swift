@@ -18,7 +18,7 @@ enum InboxShotFixtures {
         poolPath = nil
     }
 
-    private static let now = AutomationDates.parse("2026-10-21T12:00:00Z") ?? Date()
+    nonisolated private static let now = AutomationDates.parse("2026-10-21T12:00:00Z") ?? Date()
 
     private static let body = """
         **Verdict:** bug, high priority.
@@ -69,7 +69,9 @@ enum InboxShotFixtures {
                     priority: "high", createdAt: "2026-10-21T10:00:00Z", readAt: "2026-10-21T10:01:00Z",
                     link: "https://example.com/acme/issue/482", actionsJSON: actions)
             }
-            let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+            // Labeled: a trailing closure would bind to `automationsWake`.
+            // swiftlint:disable:next trailing_closure
+            let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), clock: { now })
             refreshed(vm)
             vm.selection = .output(selected)
             return AnyView(InboxSplitView(
@@ -113,7 +115,9 @@ enum InboxShotFixtures {
                     reason: "Every weekday morning, the mail that needs your reply, newsletters skipped.",
                     createdAt: "2026-10-21T10:12:00Z")
             }
-            let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+            // Labeled: a trailing closure would bind to `automationsWake`.
+            // swiftlint:disable:next trailing_closure
+            let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), clock: { now })
             refreshed(vm)
             vm.selection = .proposal(selected)
             return AnyView(InboxSplitView(
@@ -181,12 +185,14 @@ enum InboxShotFixtures {
             let suite = "InboxShotFixtures.messagePane"
             let defaults = UserDefaults(suiteName: suite) ?? .standard
             defaults.removePersistentDomain(forName: suite)
-            let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults)
+            // Labeled: a trailing closure would bind to `automationsWake`.
+            // swiftlint:disable:next trailing_closure
+            let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults, clock: { now })
             refreshed(vm)
             vm.selection = .message(Int(selected))
             return AnyView(ActionStripActionsView(
                 vm: vm, cheatSheetRows: [], feature: .on(lastCheck: nil), isEnabling: false, featureError: nil,
-                onEnable: {}, onOpenSettings: {}, onOpen: { _ in }
+                onEnable: {}, onOpenSettings: {}, onOpen: { _ in }, now: now
             )
             .detailBackground())
         } catch {

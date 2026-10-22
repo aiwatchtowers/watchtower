@@ -275,9 +275,33 @@ final class InboxReadingPaneTests: XCTestCase {
                        .init(unread: true, title: "Can you review the launch plan?", high: false,
                              source: "Ann · #eng · 09:12", preview: ""))
 
+        XCTAssertFalse(content(.day(try dayCard())).conflicts)
+
         let readIdea = Idea(row: Row(["id": 5, "kind": "decision", "status": "not_now", "title": "Ship weekly"]))
         XCTAssertEqual(content(.idea(readIdea)).source, "Decision · not now")
         XCTAssertFalse(content(.idea(readIdea)).unread)
+    }
+
+    /// G4: the old sidebar Day Plan dot lives on the day row, only while the
+    /// day's plan has conflicts.
+    func testDayRowMarksAPlanWithConflicts() throws {
+        let now = try local(10, 30)
+        func row(conflicts: Bool) -> InboxListRow.Content {
+            let card = InboxDayCard(date: "2025-10-22", briefing: nil,
+                                    plan: .stub(planDate: "2025-10-22", hasConflicts: conflicts),
+                                    planDone: 0, planTotal: 2, stamp: now)
+            return InboxListRow.content(.day(card), proposalLabel: nil, now: now)
+        }
+        XCTAssertTrue(row(conflicts: true).conflicts)
+        XCTAssertFalse(row(conflicts: false).conflicts)
+
+        let card = InboxDayCard(date: "2025-10-22", briefing: nil,
+                                plan: .stub(planDate: "2025-10-22", hasConflicts: true),
+                                planDone: 0, planTotal: 2, stamp: now)
+        let marked = InboxListRow(item: .day(card), now: now)
+        XCTAssertNoThrow(try marked.inspect().find(viewWithAccessibilityLabel: "The plan has conflicts"))
+        let plain = InboxListRow(item: .day(try dayCard()), now: now)
+        XCTAssertThrowsError(try plain.inspect().find(viewWithAccessibilityLabel: "The plan has conflicts"))
     }
 
     // MARK: - The header

@@ -10,7 +10,9 @@ import WatchtowerCore
 /// comes and offers **Make today's brief and plan**; today's plan without a
 /// brief offers **Make today's brief** (G4: the old Briefings and Day Plan
 /// screens' Generate buttons). Both run the CLI, so they need the owner
-/// (OWNER-02).
+/// (OWNER-02). A half whose feature is off (Settings → Features) is never
+/// offered: the placeholder then makes only the other one.
+/// The reading pane's `InboxCardColumn` scrolls and pads the card.
 struct InboxDayPane: View {
     let card: InboxDayCard
     /// "YYYY-MM-DD": only today's card offers Add and Regenerate (R10).
@@ -19,12 +21,10 @@ struct InboxDayPane: View {
     /// Regenerate runs the `day-plan` CLI, which needs the owner (OWNER-02).
     let owner: Owner
     let onDone: () -> Void
-    /// The header's Discuss in Chat (`InboxCommonRow`); the pane takes no
-    /// environment, so tests drive it with a closure.
+    /// The header's Discuss in Chat; the pane takes no environment, so
+    /// tests drive it with a closure.
     let onCommand: (InboxCardCommand) -> Void
     let onOpenSource: (DayPlanItem) -> Void
-    var navScreens: Set<String> = []
-    var workbenches: [Workbench] = []
     var isWriting = false
     var onOpenBriefingLink: (BriefingLink) -> Void = { _ in }
     /// Returns the failure to show, or nil.
@@ -37,53 +37,57 @@ struct InboxDayPane: View {
     var onOpenConnections: () -> Void = {}
     /// The Inbox re-reads once a Make run ended.
     var onMade: () async -> Void = {}
+    /// The inline row open when the card shows (a design shot opens one).
+    var initialRow: InboxDayPlanRow?
+    /// The briefing and day-plan features are on (`InboxFeedSnapshot`).
+    var briefingOn = true
+    var dayPlanOn = true
 
     @State private var openRow: InboxDayPlanRow?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Spacing.page) {
-                header
-                if showsNothingReady {
-                    InboxDayNothingReady(
-                        owner: owner,
-                        briefing: briefing,
-                        plan: plan,
-                        emptyState: emptyState,
-                        onMake: { Task { await makeBriefAndPlan() } },
-                        onOpenConnections: onOpenConnections
-                    )
-                }
-                // The view model holds one date; until it has read this
-                // card's, the plan half waits rather than show another day.
-                // Today with no plan yet still shows it, to make one.
-                if showsPlan {
-                    InboxDayPlanBlock(
-                        plan: plan,
-                        isToday: card.date == today,
-                        owner: owner,
-                        openRow: $openRow,
-                        onOpenSource: onOpenSource
-                    )
-                }
-                if let briefing = card.briefing {
-                    BriefingSectionsView(briefing: briefing, onOpen: onOpenBriefingLink, onMakeTask: onMakeTask)
-                } else if showsPlan, card.date == today, owner.isKnown, let briefing {
-                    InboxDayBriefRow(briefing: briefing) { Task { await makeBrief() } }
-                }
+        VStack(alignment: .leading, spacing: Spacing.page) {
+            header
+            if showsNothingReady {
+                InboxDayNothingReady(
+                    owner: owner,
+                    briefing: briefing,
+                    plan: plan,
+                    emptyState: emptyState,
+                    briefingOn: briefingOn,
+                    dayPlanOn: dayPlanOn,
+                    onMake: { Task { await makeBriefAndPlan() } },
+                    onOpenConnections: onOpenConnections
+                )
             }
-            .padding(Spacing.page)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            // The view model holds one date; until it has read this
+            // card's, the plan half waits rather than show another day.
+            // Today with no plan yet still shows it, to make one.
+            if showsPlan {
+                InboxDayPlanBlock(
+                    plan: plan,
+                    isToday: card.date == today,
+                    owner: owner,
+                    openRow: $openRow,
+                    onOpenSource: onOpenSource
+                )
+            }
+            if let briefing = card.briefing {
+                BriefingSectionsView(briefing: briefing, onOpen: onOpenBriefingLink, onMakeTask: onMakeTask)
+            } else if showsPlan, briefingOn, card.date == today, owner.isKnown, let briefing {
+                InboxDayBriefRow(briefing: briefing) { Task { await makeBrief() } }
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .task(id: card.date) {
-            openRow = nil
+            openRow = initialRow
             await plan.loadFor(date: card.date)
         }
     }
 
     private var showsPlan: Bool {
         guard plan.loadedDate == card.date, !showsNothingReady else { return false }
-        return plan.plan != nil || (card.date == today && owner.isKnown)
+        return plan.plan != nil || (card.date == today && owner.isKnown && dayPlanOn)
     }
 
     /// Today's card while it has neither a brief nor a plan.
@@ -93,11 +97,12 @@ struct InboxDayPane: View {
 
     /// **Make today's brief and plan**: `briefing generate`, then, unless the
     /// CLI refused it, `day-plan generate --date <today>`; then the Inbox
-    /// re-reads. A refusal stays on the view models, shown inline.
+    /// re-reads. A refusal stays on the view models, shown inline. A half
+    /// whose feature is off is skipped (**Make today's brief** / **plan**).
     func makeBriefAndPlan() async {
-        guard let briefing, !briefing.isGenerating, !plan.isGenerating else { return }
-        await briefing.generateBriefing()
-        if briefing.generateError == nil {
+        guard let briefing, !briefing.isGenerating, !plan.isGenerating, briefingOn || dayPlanOn else { return }
+        if briefingOn { await briefing.generateBriefing() }
+        if dayPlanOn, !briefingOn || briefing.generateError == nil {
             // By date: the owner may have opened another day meanwhile.
             await plan.regenerate(feedback: nil, date: today)
         }
@@ -123,23 +128,25 @@ struct InboxDayPane: View {
             Spacer()
             // Today's placeholder has nothing to discuss or finish yet.
             if !card.isEmpty {
-                commonRow
+                headerActions
             }
         }
     }
 
-    private var commonRow: some View {
-        InboxCommonRow(
-            subject: InboxCardSubject(day: card, items: plan.loadedDate == card.date ? plan.items : []),
-            link: nil,
-            navScreens: navScreens,
-            workbenches: workbenches,
-            isWriting: isWriting,
-            showsHandToAgent: false,
-            onCommand: onCommand
-        ) {
+    /// Discuss in Chat beside Done, trailing in the header. The day card has
+    /// no source link and no Hand to Agent…, so it needs none of
+    /// `InboxCommonRow`'s wrapping row (which stretches to the pane's width).
+    private var headerActions: some View {
+        HStack(spacing: Spacing.regular) {
+            Button("Discuss in Chat") {
+                let subject = InboxCardSubject(day: card, items: plan.loadedDate == card.date ? plan.items : [])
+                onCommand(.chat(subject, message: InboxCardTexts.discussMessage(subject)))
+            }
             Button("Done", action: onDone)
+                .disabled(isWriting)
         }
+        .buttonStyle(.kitQuiet)
+        .controlSize(.small)
     }
 
     /// "Wed 22 Oct" for "2026-10-22"; the raw string when it does not parse.
@@ -174,8 +181,19 @@ struct InboxDayNothingReady: View {
     let briefing: BriefingViewModel?
     @Bindable var plan: DayPlanViewModel
     let emptyState: EmptyStateContext
+    var briefingOn = true
+    var dayPlanOn = true
     let onMake: () -> Void
     let onOpenConnections: () -> Void
+
+    /// The Make button's title: only the halves whose feature is on.
+    static func makeTitle(briefingOn: Bool, dayPlanOn: Bool) -> String {
+        switch (briefingOn, dayPlanOn) {
+        case (true, false): "Make today's brief"
+        case (false, true): "Make today's plan"
+        default: "Make today's brief and plan"
+        }
+    }
 
     static func todaysBriefLine(hour: Int) -> String {
         "Today's brief at or after \(String(format: "%02d:00", hour))"
@@ -189,9 +207,13 @@ struct InboxDayNothingReady: View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
             Text("Nothing is ready for today yet.")
                 .font(.headline)
-            half(.briefing, copyKey: InboxFilter.day.emptyCopyKey,
-                 established: Self.todaysBriefLine(hour: emptyState.briefingHour))
-            half(.dayPlan, copyKey: "dayPlan", established: Self.todaysPlanLine(hour: emptyState.dayPlanHour))
+            if briefingOn {
+                half(.briefing, copyKey: InboxFilter.day.emptyCopyKey,
+                     established: Self.todaysBriefLine(hour: emptyState.briefingHour))
+            }
+            if dayPlanOn {
+                half(.dayPlan, copyKey: "dayPlan", established: Self.todaysPlanLine(hour: emptyState.dayPlanHour))
+            }
             if !owner.isKnown {
                 NoOwnerEmptyState(openConnections: onOpenConnections)
             } else if let briefing {
@@ -229,7 +251,7 @@ struct InboxDayNothingReady: View {
     private func makeControls(_ briefing: BriefingViewModel) -> some View {
         let running = briefing.isGenerating || plan.isGenerating
         HStack(spacing: Spacing.regular) {
-            Button("Make today's brief and plan", action: onMake)
+            Button(Self.makeTitle(briefingOn: briefingOn, dayPlanOn: dayPlanOn), action: onMake)
                 .buttonStyle(.kitPrimary)
                 .disabled(running)
             if running {

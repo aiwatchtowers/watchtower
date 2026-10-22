@@ -21,7 +21,7 @@ It reads your calendar, targets, today's briefing, your open Jira issues (and Li
 
 The first plan on a new install skips the hour and comes in the first cycle that can make it.
 
-Every sync cycle after that, calendar events are synced into today's plan and conflicts are re-detected. A red **Calendar conflicts detected** banner appears when events overlap.
+Every sync cycle after that, calendar events are synced into today's plan and conflicts are re-detected. A red **Calendar conflicts detected** banner appears when events overlap, and the day's row in the Inbox list gets a red dot.
 
 ## Using it
 
@@ -42,7 +42,7 @@ These show on today's card only; an older day's plan is read-only. Each opens an
 - **Regenerate with feedback…**: say what should change and press **Regenerate**. Items you added by hand are kept.
 - **Reset plan…**: **Reset** deletes today's plan with the items you added. Your targets are not touched.
 - With a brief but no plan yet, the card says "No plan for this day yet." and offers **Make today's plan**. A failure shows the reason in red.
-- With neither yet, today's card says "Nothing is ready for today yet.", when each comes ("Today's plan at or after 08:00" once the plan has run before), and offers **Make today's brief and plan**: it writes the brief, then the plan, with progress and any refusal on the card.
+- With neither yet, today's card says "Nothing is ready for today yet.", when each comes ("Today's plan at or after 08:00" once the plan has run before), and offers **Make today's brief and plan**: it writes the brief, then the plan, with progress and any refusal on the card. With Daily Briefing off it offers **Make today's plan** only; with both features off there is no card for today.
 
 ### Tune it
 

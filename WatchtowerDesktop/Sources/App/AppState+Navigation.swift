@@ -1,5 +1,8 @@
 import Foundation
+import OSLog
 import WatchtowerCore
+
+private let navigationLog = Logger(subsystem: Constants.bundleID, category: "inbox")
 
 /// Cross-tab links: each switches the sidebar to its destination with the
 /// item to select there.
@@ -61,7 +64,13 @@ extension AppState {
         return Task {
             var date: String?
             if let pool {
-                date = try? await pool.read { try BriefingQueries.fetchByID($0, id: briefingID)?.date }
+                do {
+                    date = try await pool.read { try BriefingQueries.fetchByID($0, id: briefingID)?.date }
+                } catch {
+                    // Today's card still opens; the failed read is logged.
+                    navigationLog.error(
+                        "reading briefing \(briefingID) for its day card: \(error.localizedDescription, privacy: .public)")
+                }
             }
             await navigateToDayPlan(date)?.value
         }

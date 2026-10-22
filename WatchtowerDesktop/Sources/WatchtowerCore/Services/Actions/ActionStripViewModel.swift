@@ -69,12 +69,22 @@ package final class ActionStripViewModel {
     /// — the cheat sheet's "last check". Nil until the phase has run once.
     package private(set) var lastReactionCheck: String?
     package var lastError: String?
+    /// The feature registry ids turned off (AppState's feature visibility);
+    /// a change re-reads, since the read gates today's placeholder on them.
+    package var disabledFeatures: Set<String> = [] {
+        didSet {
+            if disabledFeatures != oldValue { Task { await refresh() } }
+        }
+    }
 
     private let dbPool: DatabasePool
     /// nil = the installed CLI, found at press time.
     private let cliRunner: CLIRunnerProtocol?
     private let customTrackControls: any CustomTrackControlling
     private let defaults: UserDefaults
+    /// The moment the list is read and laid out at (Today, Earlier, due
+    /// reminders); the design shots fix it.
+    private let clock: @Sendable () -> Date
     /// One write per card (board #670).
     private let pendingWrites = PendingWrites()
     private var refreshGate = ForegroundRefreshGate()
@@ -99,9 +109,11 @@ package final class ActionStripViewModel {
         cliRunner: CLIRunnerProtocol? = nil,
         customTrackControls: (any CustomTrackControlling)? = nil,
         defaults: UserDefaults = .standard,
-        automationsWake: (() async throws -> Void)? = nil
+        automationsWake: (() async throws -> Void)? = nil,
+        clock: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.dbPool = dbPool
+        self.clock = clock
         self.cliRunner = cliRunner
         self.customTrackControls = customTrackControls ?? DirectCustomTrackControls(
             dbPool: dbPool, scanService: TrackScanService(runner: cliRunner ?? InstalledCLIRunner()))
@@ -185,13 +197,14 @@ package final class ActionStripViewModel {
 
     private func readFeed() async {
         lastError = nil
-        let now = Date()
+        let now = clock()
         let nowUTC = AutomationDates.format(now)
-        let today = HomeFeedBuilder.dayString(now, calendar: .current)
         let dayLimit = dayLimit
+        let disabledFeatures = disabledFeatures
         do {
             let snapshot = try await dbPool.read { db in
-                let feed = try InboxFeedQueries.read(db, nowUTC: nowUTC, today: today, dayLimit: dayLimit)
+                let feed = try InboxFeedQueries.read(
+                    db, nowUTC: nowUTC, dayLimit: dayLimit, disabledFeatures: disabledFeatures)
                 let runLabels = try AutomationQueries.runLabels(
                     db, runIDs: feed.proposals.compactMap(Self.automationRunID))
                 return (
@@ -216,7 +229,7 @@ package final class ActionStripViewModel {
     package private(set) var sections: [InboxSection] = []
 
     private func rebuildSections() {
-        let now = Date()
+        let now = clock()
         sections = InboxListBuilder.sections(
             feed, filter: filter, dayDone: dayDone, today: HomeFeedBuilder.dayString(now, calendar: .current),
             now: now, calendar: .current, showsStopped: showsStopped, placeholdsToday: true)
@@ -240,14 +253,31 @@ package final class ActionStripViewModel {
 
     /// Routing entry (old links, Home): shows `filter` and opens `item`.
     /// A day past the loaded pages reads older pages until it is listed;
-    /// a day that is nowhere selects nothing.
+    /// a day that is nowhere selects nothing. A stopped track opens the
+    /// Tracks filter's Stopped fold; a merged idea opens the idea it was
+    /// merged into. Anything else not listed selects nothing, so the pane
+    /// never opens on a card the next refresh would drop.
     package func open(_ filter: InboxFilter, select item: InboxSelection?) async {
         self.filter = filter
         await refresh()
-        guard case .day(let date)? = item else {
+        switch item {
+        case .track(let id)?:
+            if !isListed(.track(id)), feed.stoppedTracks.contains(where: { $0.track.id == id }) {
+                showsStopped = true
+            }
+            await select(isListed(.track(id)) ? item : nil)
+            return
+        case .idea(let id)?:
+            let listed = isListed(.idea(id)) ? id : await mergeTarget(of: id)
+            await select(listed.map(InboxSelection.idea))
+            return
+        case .day?:
+            break
+        default:
             await select(item)
             return
         }
+        guard case .day(let date)? = item else { return }
         // Stops on a failed read and on a page that added no date.
         while lastError == nil, !isListed(.day(date)), feed.hasOlderDays,
               let oldest = feed.days.last?.date, date < oldest {
@@ -257,6 +287,27 @@ package final class ActionStripViewModel {
         }
         await select(isListed(.day(date)) ? item : nil)
     }
+
+    /// The listed idea a merged one ended up in (merges can chain), or nil.
+    private func mergeTarget(of id: Int) async -> Int? {
+        do {
+            let ids = try await dbPool.read { db -> [Int] in
+                var chain: [Int] = []
+                var next = try IdeaQueries.fetchOne(db, id: id)?.mergedIntoID
+                while let current = next, chain.count < Self.mergeHops, !chain.contains(current) {
+                    chain.append(current)
+                    next = try IdeaQueries.fetchOne(db, id: current)?.mergedIntoID
+                }
+                return chain
+            }
+            return ids.first { isListed(.idea($0)) }
+        } catch {
+            lastError = error.localizedDescription
+            return nil
+        }
+    }
+
+    private static let mergeHops = 8
 
     private func isListed(_ item: InboxSelection) -> Bool {
         sections.contains { $0.items.contains { $0.id == item } }

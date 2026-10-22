@@ -87,6 +87,11 @@ package struct InboxFeedSnapshot: Equatable, Sendable {
     /// Watchtower knows the owner (OWNER-01). Without one, All shows no
     /// placeholder day card, so the empty Inbox says why (OWNER-02).
     package var ownerKnown = true
+    /// The briefing and day-plan features are on (Settings → Features). With
+    /// both off no list shows today's placeholder day card, and its pane
+    /// offers to make only the halves still on.
+    package var briefingOn = true
+    package var dayPlanOn = true
     package var tracks: [InboxTrackCard] = []
     /// Dismissed tracks: only the Tracks filter's Stopped fold lists them,
     /// nothing counts them.

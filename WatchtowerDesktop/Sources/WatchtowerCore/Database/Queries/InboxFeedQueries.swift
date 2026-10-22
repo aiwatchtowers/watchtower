@@ -5,18 +5,17 @@ import GRDB
 /// own query. A table missing mid-migration reads as that source being empty
 /// (only "no such table"); any other error throws.
 package enum InboxFeedQueries {
-    /// Tables the read uses, for the Inbox's ValueObservation region.
-    package static let observedTables: [String] = [
-        "briefings", "day_plans", "day_plan_items", "tracks", "track_events", "ideas", "inbox_items", "users",
-        "channels", "agent_actions", "reminders", "automation_outputs", "automations"
-    ]
-
     private static let terminalTailHours = 24.0
 
-    /// `nowUTC` is an RFC 3339 UTC string, `dayLimit` the Day pages' size. `today`
-    /// is the caller's local day; the list builder places it, the read needs no bound from it.
-    package static func read(_ db: Database, nowUTC: String, today: String, dayLimit: Int) throws -> InboxFeedSnapshot {
+    /// `nowUTC` is an RFC 3339 UTC string, `dayLimit` the Day pages' size,
+    /// `disabledFeatures` the feature registry ids turned off (the briefing
+    /// and day-plan switches gate today's placeholder day card).
+    package static func read(
+        _ db: Database, nowUTC: String, dayLimit: Int, disabledFeatures: Set<String> = []
+    ) throws -> InboxFeedSnapshot {
         var snapshot = InboxFeedSnapshot()
+        snapshot.briefingOn = ReadinessFeature.briefing.featureID.map(disabledFeatures.contains) != true
+        snapshot.dayPlanOn = ReadinessFeature.dayPlan.featureID.map(disabledFeatures.contains) != true
         let now = AutomationDates.parse(nowUTC) ?? Date()
         let terminalSince = AutomationDates.format(now.addingTimeInterval(-terminalTailHours * 3600))
         snapshot.proposals = try emptyIfTableMissing { try AgentActionQueries.fetchStrip(db, terminalSince: terminalSince) }

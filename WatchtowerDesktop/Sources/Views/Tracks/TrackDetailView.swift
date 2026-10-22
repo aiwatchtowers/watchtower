@@ -29,6 +29,8 @@ struct TrackDetailView: View {
     /// Tracks whose first chat is being written (board #670): a spinner
     /// stands in for the chat meanwhile.
     @State private var chatCreates = ChatCreateGate()
+    /// The chat is unfolded (per track: the pane is rebuilt per track).
+    @State private var chatOpen = false
     @State private var cardState: TrackCardState
     @State private var isMakingTask = false
     /// A failed Make a Task or Delete.
@@ -65,52 +67,24 @@ struct TrackDetailView: View {
     private var track: Track { card.track }
 
     var body: some View {
-        VSplitView {
-            ScrollView {
-                VStack(alignment: .leading, spacing: Spacing.page) {
-                    headerSection
-                    textSection
-                    requesterSection
-                    contextSection
-                    customActivitySection
-                    blockingSection
-                    subItemsSection
-                    decisionSection
-                    decisionOptionsSection
-                    participantsSection
-                    historySection
-                    sourceRefsSection
-                    relatedDigestsSection
-                    linkedTasksSection
-                    jiraIssuesSection
-                    dueDateSection
-                    tagsSection
-                    actionsSection
-                }
-                .frame(maxWidth: InboxCardColumn<EmptyView>.readableWidth, alignment: .leading)
-                .padding(Spacing.page)
-                .frame(maxWidth: .infinity, alignment: .top)
-            }
-            .frame(minHeight: 200)
-
-            // Bottom: embedded chat
-            if let db = appState.databaseManager, let chatConversationID {
-                let engine = trackChatEngine(db: db, conversationID: chatConversationID)
-                Divider()
-                TrackChatSection(engine: engine, trackID: track.id)
+        // The chat starts folded, so the card's own buttons stay above the
+        // fold; **Open chat** gives it the lower part of the pane.
+        Group {
+            if chatOpen {
+                VSplitView {
+                    content.frame(minHeight: 200)
+                    VStack(spacing: 0) {
+                        chatDisclosure
+                        chatPane
+                    }
                     .frame(minHeight: 200, idealHeight: 300)
-                    .embeddedChatVisibility(engine.spec.key, in: appState.embeddedChatCenter)
-            } else if chatCreates.isCreating(String(track.id)) {
-                Divider()
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(maxWidth: .infinity, minHeight: 200)
-            } else if let chatError {
-                Divider()
-                Label(chatError, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(8)
+                }
+            } else {
+                VStack(spacing: 0) {
+                    content
+                    Divider()
+                    chatDisclosure
+                }
             }
         }
         .onAppear {
@@ -125,6 +99,72 @@ struct TrackDetailView: View {
         .onDisappear {
             timelineVM?.stop()
             timelineVM = nil
+        }
+    }
+
+    private var content: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Spacing.page) {
+                headerSection
+                textSection
+                requesterSection
+                contextSection
+                customActivitySection
+                blockingSection
+                subItemsSection
+                decisionSection
+                decisionOptionsSection
+                participantsSection
+                historySection
+                sourceRefsSection
+                relatedDigestsSection
+                linkedTasksSection
+                jiraIssuesSection
+                dueDateSection
+                tagsSection
+                actionsSection
+            }
+            .frame(maxWidth: InboxCardColumn<EmptyView>.readableWidth, alignment: .leading)
+            .padding(Spacing.page)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
+    }
+
+    /// **Open chat** / **Hide chat**: the track's chat folds under one row.
+    private var chatDisclosure: some View {
+        HStack {
+            Button {
+                chatOpen.toggle()
+            } label: {
+                Label(chatOpen ? "Hide chat" : "Open chat",
+                      systemImage: chatOpen ? "chevron.down" : "chevron.right")
+            }
+            .buttonStyle(.kitQuiet)
+            .controlSize(.small)
+            Spacer()
+        }
+        .padding(.horizontal, Spacing.page)
+        .padding(.vertical, Spacing.small)
+    }
+
+    /// The embedded chat, or its spinner or failure.
+    @ViewBuilder
+    private var chatPane: some View {
+        if let db = appState.databaseManager, let chatConversationID {
+            let engine = trackChatEngine(db: db, conversationID: chatConversationID)
+            TrackChatSection(engine: engine, trackID: track.id)
+                .embeddedChatVisibility(engine.spec.key, in: appState.embeddedChatCenter)
+        } else if chatCreates.isCreating(String(track.id)) {
+            ProgressView()
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let chatError {
+            Label(chatError, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(Tone.error)
+                .padding(Spacing.small)
+        } else {
+            Spacer()
         }
     }
 
@@ -223,7 +263,8 @@ struct TrackDetailView: View {
     /// action is applied through the CLI (the registry).
     private func startTimelineIfCustom(db: DatabaseManager) {
         guard track.isCustom, timelineVM == nil,
-              let runner = ProcessCLIRunner.makeDefault() else { return }
+              let runner = appState.trackActionRunnerOverride
+                ?? ProcessCLIRunner.makeDefault() as (any CLIRunnerProtocol)? else { return }
         let vm = CustomTrackTimelineViewModel(
             track: track,
             dbManager: db,

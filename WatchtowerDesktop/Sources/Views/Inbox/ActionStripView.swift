@@ -66,6 +66,10 @@ struct ActionStripView: View {
             appState.reactionDictionaryViewModel?.refresh()
             await appState.refreshOwner()
         }
+        // The briefing and day-plan switches gate today's placeholder card.
+        .onChange(of: appState.featureVisibility.disabledFeatureIDs, initial: true) { _, ids in
+            appState.actionStripViewModel?.disabledFeatures = ids
+        }
         .onAppear { appState.actionStripViewModel?.setOnScreen(true) }
         .onDisappear { appState.actionStripViewModel?.setOnScreen(false) }
     }
@@ -93,7 +97,9 @@ struct ActionStripView: View {
                 appState.settingsTab = .connections
                 openSettings()
             },
-            onMade: { await vm.refresh() }
+            onMade: { await vm.refresh() },
+            briefingOn: vm.feed.briefingOn,
+            dayPlanOn: vm.feed.dayPlanOn
         )
     }
 
@@ -201,9 +207,13 @@ struct ActionStripActionsView: View {
     /// The track card's view model and a custom track's controls.
     var tracks: TracksViewModel?
     var trackControls: (any CustomTrackControlling)?
+    /// The moment the list's times are told from; nil is now (design shots fix it).
+    var now: Date?
 
-    @State private var aux: InboxAuxPane?
-    @State private var ideasRow: InboxIdeasRow?
+    /// What the header opened in the reading pane, and the Ideas filter's
+    /// open row; settable at init so a design shot can open one.
+    @State var aux: InboxAuxPane?
+    @State var ideasRow: InboxIdeasRow?
     @State private var newIdea = InboxNewIdeaDraft()
     @State private var backfillRange = InboxIdeaBackfillRange(from: Date(), to: Date())
 
@@ -253,6 +263,7 @@ struct ActionStripActionsView: View {
                         }
                     },
                     onOpenAutomationRun: onOpenAutomationRun,
+                    now: now,
                     aux: $aux,
                     cheatSheet: cheatSheet,
                     learnedRulesDB: learnedRulesDB,
