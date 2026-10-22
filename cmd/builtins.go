@@ -25,7 +25,8 @@ import (
 // 2026-10-22 §5.1): a slot executor of its own — never Run, it executes the
 // slot runs inline — over the main executor's backends (so slot recipes have
 // the read tools) plus the daemon's primitives and the shipped prompts;
-// every built-in's row synced; the runner handed to the daemon. It runs
+// every built-in's row synced and moved from its old pipeline settings
+// (upgradeBuiltins); the runner handed to the daemon. It runs
 // whatever the owner-recipe upgrade step decided (automationsOK): a failed
 // step never stops the brief. A built-in whose sync failed keeps its legacy
 // phases this run.
@@ -50,8 +51,11 @@ func wireBuiltins(d *daemon.Daemon, cfg *config.Config, database *db.DB, gen dig
 		}
 		active[e.ID] = true
 	}
-	// Task 8 seam: upgradeBuiltins(…) runs here, between the sync and
-	// SetBuiltins, and narrows active.
+	// The one-time settings move: a built-in whose move failed keeps its
+	// legacy phases this run.
+	for id, moved := range upgradeBuiltins(cfg, database, now, logger) {
+		active[id] = active[id] && moved
+	}
 	d.SetBuiltins(runner, active)
 	return runner
 }
