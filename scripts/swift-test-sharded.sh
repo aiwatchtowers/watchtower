@@ -176,8 +176,10 @@ summarize_failure() {
     elif ((rc > 128)); then
         echo "  killed by signal $((rc - 128))"
     fi
-    # XCTest's "Test Case/Suite … started", Swift Testing's "◇ Test … started".
-    last="$(grep -aE "^Test Case '.*' started|^Test Suite '.*' started|◇ Test .* started" "$log" | tail -n 1 || true)"
+    # XCTest's "Test Case/Suite … started", Swift Testing's "◇ Test … started"
+    # (not its "◇ Test run started." banner, which names no test).
+    last="$(grep -aE "^Test Case '.*' started|^Test Suite '.*' started|◇ Test .* started" "$log" |
+        grep -av '◇ Test run started' | tail -n 1 || true)"
     if [[ -n $last ]]; then
         echo "  last started: $last"
     else

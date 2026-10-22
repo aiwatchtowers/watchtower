@@ -13,6 +13,8 @@
 #   - a startup exit with no test started      → the lane's last 10 lines
 #   - a Swift Testing ✘ failure                → the ✘ lines
 #   - a Swift Testing crash                    → the last "◇ Test … started"
+#   - Swift Testing dies after its run banner  → "no test started" and the
+#     log tail, not the banner as a test
 #   - CoreData's "error:" log noise            → not reported as a failure
 #   - print_summary: nothing failed → no output; a crash report of xctest or
 #     swiftpm-testing-helper written during the run is printed, an older one
@@ -139,6 +141,15 @@ lane 5 "Swift Testing" "◇ Test run started.
 out="$(summarize_failure 5 134)"
 check "swift testing crash: signal" "$out" "  killed by signal 6"
 check "swift testing crash: last started" "$out" "  last started: ◇ Test crashes() started."
+
+# --- Swift Testing dies after printing only its run banner
+lane 6 "Swift Testing" "[0/1] Planning build
+◇ Test run started.
+↳ Testing Library Version: 1743"
+out="$(summarize_failure 6 134)"
+check "banner only: no test started" "$out" "  no test started; the lane's last lines:"
+check "banner only: log tail" "$out" "    ↳ Testing Library Version: 1743"
+check_absent "banner only: banner is no test" "$out" "last started:"
 
 # --- print_summary
 : > "$WORK/summary"
