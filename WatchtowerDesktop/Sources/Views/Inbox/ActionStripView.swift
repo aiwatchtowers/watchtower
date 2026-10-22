@@ -41,6 +41,11 @@ struct ActionStripView: View {
                     ideaPane: { ideaPane($0, vm: vm) },
                     onOpenSaveDraft: { appState.openSaveProposalDraft($0) },
                     workbenches: appState.inboxWorkbenches,
+                    onRetryBuiltin: { id in
+                        Task {
+                            await vm.retryBuiltinUpgrade(id) { try await appState.restartOnChain(appState.daemonControl) }
+                        }
+                    },
                     onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
                     sessionHoldsCall: { appState.chatSessionPool?.holdsSessionCall($0) ?? false },
                     emptyState: appState.emptyStateContext,
@@ -190,6 +195,8 @@ struct ActionStripActionsView: View {
     /// The workbenches a card's agent press can go to (and that name a
     /// workbench proposal's scope).
     var workbenches: [Workbench] = []
+    /// A built-in notice's **Retry** (its built-in id).
+    var onRetryBuiltin: ((String) -> Void)?
     /// A failed Slack send's Reconnect Slack button (`AppState.reconnectSlack`).
     var onReconnectSlack: ((Int64) async -> String?)?
     /// `AgentActionCardView.sessionHoldsCall` for a row (a connector call).
@@ -250,6 +257,7 @@ struct ActionStripActionsView: View {
                     proposalCard: card,
                     saveProposal: saveProposal,
                     workbenches: workbenches,
+                    onRetryBuiltin: onRetryBuiltin,
                     onCardAction: onCardAction,
                     dayPane: dayPane,
                     ideaPane: ideaPane.map { make in

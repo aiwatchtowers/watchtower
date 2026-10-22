@@ -18,6 +18,8 @@ struct InboxSplitView<EmptyList: View>: View {
     let saveProposal: ((AgentAction) -> SaveAutomationProposalPane)?
     /// The workbenches a card's agent press can go to.
     let workbenches: [Workbench]
+    /// A built-in notice's **Retry** (its built-in id).
+    let onRetryBuiltin: ((String) -> Void)?
     let onCardAction: (InboxCardCommand) -> Void
     /// The Your day card's pane; nil shows its title and source line.
     let dayPane: ((InboxDayCard) -> InboxDayPane?)?
@@ -48,6 +50,7 @@ struct InboxSplitView<EmptyList: View>: View {
         proposalCard: @escaping (AgentAction) -> AgentActionCardView,
         saveProposal: ((AgentAction) -> SaveAutomationProposalPane)? = nil,
         workbenches: [Workbench] = [],
+        onRetryBuiltin: ((String) -> Void)? = nil,
         onCardAction: @escaping (InboxCardCommand) -> Void,
         dayPane: ((InboxDayCard) -> InboxDayPane?)? = nil,
         ideaPane: ((Idea) -> InboxIdeaPane?)? = nil,
@@ -65,6 +68,7 @@ struct InboxSplitView<EmptyList: View>: View {
         self.proposalCard = proposalCard
         self.saveProposal = saveProposal
         self.workbenches = workbenches
+        self.onRetryBuiltin = onRetryBuiltin
         self.onCardAction = onCardAction
         self.dayPane = dayPane
         self.ideaPane = ideaPane
@@ -196,6 +200,7 @@ struct InboxSplitView<EmptyList: View>: View {
             },
             proposalCard: proposalCard,
             saveProposal: saveProposal,
+            onRetryBuiltin: onRetryBuiltin,
             workbenches: workbenches,
             dayCard: { card in
                 if let pane = dayPane?(card) {
@@ -268,7 +273,7 @@ struct InboxSplitView<EmptyList: View>: View {
         case .message(let message): await vm.messageDone(message)
         case .track(let track): await vm.markTrackDone(track)
         case .day(let date): vm.markDayDone(date)
-        case .proposal, .idea: break
+        case .proposal, .idea, .builtinNotice: break
         }
     }
 
@@ -277,7 +282,7 @@ struct InboxSplitView<EmptyList: View>: View {
         switch id {
         case .output(let output): await vm.dismissOutput(output)
         case .message(let message): await vm.hideMessage(message)
-        case .proposal, .reminder, .day, .track, .idea: break
+        case .proposal, .reminder, .day, .track, .idea, .builtinNotice: break
         }
     }
 
@@ -291,7 +296,7 @@ struct InboxSplitView<EmptyList: View>: View {
             let until = ISO8601DateFormatter().string(from: Date().addingTimeInterval(seconds))
             await vm.snoozeReminder(reminder, until: until)
         case .message(let message): await vm.snoozeMessage(message, duration: duration)
-        case .proposal, .output, .day, .track, .idea: break
+        case .proposal, .output, .day, .track, .idea, .builtinNotice: break
         }
     }
 }

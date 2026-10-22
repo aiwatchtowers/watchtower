@@ -19,8 +19,12 @@ struct FeatureManagerSection: View {
     /// CLI call and no daemon restart.
     @AppStorage(DictationCenter.keepEnginesWarmKey) private var keepEnginesWarm = true
 
+    /// Features whose switch moved to a built-in automation's card
+    /// (Automations → Built in, spec §5.4): not listed here.
+    static let movedToBuiltins: Set<String> = ["briefing", "day-plan"]
+
     private var topLevelFeatures: [FeatureInfo] {
-        service.features.filter { $0.parent.isEmpty }
+        service.features.filter { $0.parent.isEmpty && !Self.movedToBuiltins.contains($0.id) }
     }
 
     var body: some View {
@@ -108,7 +112,7 @@ struct FeatureManagerSection: View {
     }
 
     private func children(of parentID: String) -> [FeatureInfo] {
-        service.features.filter { $0.parent == parentID }
+        service.features.filter { $0.parent == parentID && !Self.movedToBuiltins.contains($0.id) }
     }
 
     private func featureRow(_ feature: FeatureInfo, indent: CGFloat) -> some View {

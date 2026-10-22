@@ -412,8 +412,10 @@ package final class AutomationEditorCenter {
     /// saved. A saved automation saved turned off is disabled first; a
     /// turned-on save enables after the confirmed save. Both run whatever the
     /// loaded `enabled` says (the card may have turned it on or off since the
-    /// draft was loaded); both are idempotent in Go.
-    package func commit(_ key: Int64, plan: AutomationSavePlan, turnOn: Bool) async {
+    /// draft was loaded); both are idempotent in Go. `setsEnabled` false (a
+    /// built-in's **Save**, whose on/off is its feature keys) only saves:
+    /// no disable before it and no enable after it, whatever `turnOn` says.
+    package func commit(_ key: Int64, plan: AutomationSavePlan, turnOn: Bool, setsEnabled: Bool = true) async {
         guard saving[key] != .saving, saving[key] != .validating, let draft = drafts[key] else { return }
         await draft.buffer.flush()
         let text = draft.renderedText()
@@ -423,7 +425,7 @@ package final class AutomationEditorCenter {
             return
         }
         let isNew = Self.isNewDraft(key)
-        let disableFirst = !isNew && !turnOn
+        let disableFirst = setsEnabled && !isNew && !turnOn
         if disableFirst {
             saving[key] = .saving
             do {
@@ -440,7 +442,7 @@ package final class AutomationEditorCenter {
         }
         savedIDs[key] = saved.automationID
         if Self.isNewDraft(key) { removeDraftCache(key) }
-        if turnOn {
+        if turnOn, setsEnabled {
             do {
                 try await cli.setEnabled(saved.automationID, true)
             } catch {

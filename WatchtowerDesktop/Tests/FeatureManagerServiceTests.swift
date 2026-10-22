@@ -940,3 +940,64 @@ extension FeatureManagerServiceTests {
         ])
     }
 }
+
+// MARK: - disableNow() — a built-in's Turn Off (C2)
+
+extension FeatureManagerServiceTests {
+    @Test("disableNow() writes only the named keys still on and restarts once (FEAT-04)")
+    func testDisableNowWritesOnlyNamedKeysAndRestartsOnce() async {
+        let (service, runner) = Self.makeService(stdout: Self.featuresListJSON)
+        await service.load()
+        service.setPending("memory", enabled: true)
+        service.applyWithDependents.insert("ideas")
+        let spy = RestartSpy()
+
+        // "ideas" is on, "tracks" already off, "dashboard" core.
+        let result = await service.disableNow(["ideas", "tracks", "dashboard"]) { await spy.restart() }
+
+        #expect(runner.invocations == [
+            ["features", "list", "--json"],
+            ["features", "list", "--json"],
+            ["features", "disable", "ideas"],
+            ["features", "list", "--json"]
+        ], "never --with-dependents, never anything staged in Settings")
+        #expect(result.disabled == ["ideas"])
+        #expect(result.restarted)
+        #expect(!result.busy)
+        #expect(spy.callCount == 1)
+        #expect(service.pending == ["memory": true])
+        #expect(service.applyWithDependents.isEmpty, "the consent was for the disable that just landed")
+        #expect(service.loadError == nil)
+        #expect(service.isApplying == false)
+    }
+
+    @Test("disableNow() with nothing on writes nothing and does not restart")
+    func disableNowSkipsFeaturesAlreadyOff() async {
+        let (service, runner) = Self.makeService(stdout: Self.featuresListJSON)
+        let spy = RestartSpy()
+
+        let result = await service.disableNow(["tracks", "memory"]) { await spy.restart() }
+
+        #expect(runner.invocations == [["features", "list", "--json"]])
+        #expect(result.disabled.isEmpty)
+        #expect(spy.callCount == 0)
+    }
+
+    @Test("disableNow() surfaces a failed disable via loadError and skips the restart")
+    func disableNowSurfacesFailure() async {
+        let runner = NthCallFailingRunner(
+            failOnCall: 2,
+            error: CLIRunnerError.nonZeroExit(code: 1, stderr: "boom: config locked"),
+            stdout: Data(Self.featuresListJSON.utf8)
+        )
+        let service = FeatureManagerService(runner: runner)
+        let spy = RestartSpy()
+
+        let result = await service.disableNow(["ideas"]) { await spy.restart() }
+
+        #expect(result.disabled.isEmpty)
+        #expect(spy.callCount == 0)
+        #expect(service.loadError?.contains("boom: config locked") == true)
+        #expect(service.isApplying == false)
+    }
+}

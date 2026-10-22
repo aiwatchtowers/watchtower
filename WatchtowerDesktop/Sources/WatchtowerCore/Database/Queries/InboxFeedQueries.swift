@@ -30,6 +30,8 @@ package enum InboxFeedQueries {
         snapshot.stoppedTracks = try emptyIfTableMissing { try TrackQueries.fetchInboxCards(db, stopped: true) }
         snapshot.ideas = try emptyIfTableMissing { try IdeaQueries.fetchInboxRegistry(db) }
         snapshot.messages = try emptyIfTableMissing { try InboxQueries.fetchOpenMessages(db, nowUTC: nowUTC) }
+        // Tolerates a schema before `builtin_migrations` itself.
+        snapshot.builtinNotices = try BuiltinUpgradeNotice.load(db)
         return snapshot
     }
 

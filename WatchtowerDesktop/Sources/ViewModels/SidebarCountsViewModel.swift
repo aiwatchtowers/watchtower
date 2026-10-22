@@ -153,12 +153,13 @@ final class SidebarCountsViewModel {
             // on any write to a tracked table and nothing drops
             // duplicates, so it still refreshes the badge.
             // inbox_items is the badge's Messages term (C1, a message's
-            // read_at re-fires it); day_plans is the Day cards' other half.
+            // read_at re-fires it); day_plans is the Day cards' other half;
+            // builtin_migrations is the built-in upgrade notices' term (C2).
             let tables = ["tracks", "briefings", "targets", "digests",
                           "stream_digests", "catchup_recaps",
                           "memory_dispute_flags", "ideas",
                           "agent_actions", "reminders", "automation_outputs",
-                          "inbox_items", "day_plans"]
+                          "inbox_items", "day_plans", "builtin_migrations"]
             return tables.map { (try? Int.fetchOne(db, sql: "SELECT COUNT(*) FROM \($0)")) ?? 0 }
         }
         return AsyncThrowingStream { continuation in

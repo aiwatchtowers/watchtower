@@ -153,6 +153,26 @@ enum DesignShotCatalog {
             DesignShot(name: "inbox-day-card-narrow", size: NSSize(width: 420, height: 560)) {
                 OneInboxShotFixtures.dayCardNarrow()
             },
+            // Built-in automations (C2): the Inbox notice of a failed move.
+            DesignShot(name: "inbox-builtin-notice", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.builtinNotice()
+            },
+            // Built-in automations (C2): the Built in section and Morning brief's card.
+            DesignShot(name: "automation-builtin-list", size: NSSize(width: 1280, height: 760)) {
+                BuiltinShotFixtures.list()
+            },
+            DesignShot(name: "automation-builtin-card", size: NSSize(width: 900, height: 720)) {
+                BuiltinShotFixtures.card(.shipped)
+            },
+            DesignShot(name: "automation-builtin-card-updated", size: NSSize(width: 900, height: 900)) {
+                BuiltinShotFixtures.card(.updated)
+            },
+            DesignShot(name: "automation-builtin-card-reset", size: NSSize(width: 900, height: 720)) {
+                BuiltinShotFixtures.card(.resetting)
+            },
+            DesignShot(name: "settings-features-builtin", size: NSSize(width: 640, height: 620)) {
+                BuiltinShotFixtures.featuresSettings()
+            },
             // Branch review (#712, artboards A–C).
             DesignShot(name: "branch-review-changes", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.changes()
@@ -209,6 +229,7 @@ enum DesignShotFixtures {
         InboxShotFixtures.cleanUp()
         OneInboxShotFixtures.cleanUp()
         AutomationShotFixtures.cleanUp()
+        BuiltinShotFixtures.cleanUp()
         if let newTaskPoolPath { TestDatabase.cleanup(path: newTaskPoolPath) }
         newTaskPoolPath = nil
         UserDefaults().removePersistentDomain(forName: defaultsSuite)

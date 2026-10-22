@@ -163,12 +163,12 @@ final class FeatureEmptyStateViewTests: XCTestCase {
 
     /// The brief's and the plan's copy (the Inbox's Day filter reads the
     /// brief's) name what the button is for, not where it goes (owner, ask
-    /// #299); it still opens Settings → Features.
+    /// #299); it opens Morning brief's card in Automations → Built in (C2).
     func testHourActionSaysChangeTheHour() throws {
         for destination in ["briefings", "dayPlan"] {
             let copy = try XCTUnwrap(EmptyStateCopyTable.copy(for: destination, briefingHour: 8))
             let action = try XCTUnwrap(copy.primaryAction)
-            XCTAssertEqual(action, .openSettings(tab: "features", label: "Change the hour"))
+            XCTAssertEqual(action, .openBuiltin(id: "morning-brief", label: "Change the hour"))
             XCTAssertEqual(FeatureEmptyState<EmptyView>.label(for: action), "Change the hour")
             let view = makeView(copy: copy, readiness: .scheduled(.nextCycle(minutes: 15)))
             XCTAssertNoThrow(try view.inspect().find(button: "Change the hour"), "\(destination)")

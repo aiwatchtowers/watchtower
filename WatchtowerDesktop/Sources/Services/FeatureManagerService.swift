@@ -303,30 +303,61 @@ final class FeatureManagerService {
         _ ids: [String],
         restart: @MainActor () async throws -> Void
     ) async -> (enabled: [String], restarted: Bool, busy: Bool) {
+        let result = await switchNow(ids, on: true, restart: restart)
+        return (result.changed, result.restarted, result.busy)
+    }
+
+    /// `enableNow(_:restart:)`'s mirror — a built-in's **Turn Off** on its
+    /// Automations card: each named feature still on is disabled in order
+    /// (`features disable <id>`, never `--with-dependents`, so only the named
+    /// keys are written — FEAT-04). Same tail and returns as `enableNow`.
+    @discardableResult
+    func disableNow(
+        _ ids: [String],
+        restart: @MainActor () async throws -> Void
+    ) async -> (disabled: [String], restarted: Bool, busy: Bool) {
+        let result = await switchNow(ids, on: false, restart: restart)
+        return (result.changed, result.restarted, result.busy)
+    }
+
+    /// `enableNow`/`disableNow`'s one body, outside the staged batch: re-reads
+    /// the live state first (nothing on a failed read), switches each named
+    /// non-core feature not yet in the wanted state in order through
+    /// `features enable|disable <id>` (stopping at the first failure; a
+    /// staged entry and cascade consent for a switched id are dropped), then
+    /// restarts the daemon once if anything switched and reloads. `features
+    /// enable` always runs its fast-forward hook (FEAT-03), hence the re-read:
+    /// a feature already on is never enabled again.
+    private func switchNow(
+        _ ids: [String],
+        on: Bool,
+        restart: @MainActor () async throws -> Void
+    ) async -> (changed: [String], restarted: Bool, busy: Bool) {
         guard !isApplying else { return ([], false, true) }
         isApplying = true
         defer { isApplying = false }
 
         await load()
         guard loadError == nil else { return ([], false, false) }
-        let toEnable = ids.filter { id in features.first { $0.id == id }?.state == "disabled" }
-        guard !toEnable.isEmpty else { return ([], false, false) }
+        let from = on ? "disabled" : "enabled"
+        let toSwitch = ids.filter { id in features.first { $0.id == id }?.state == from }
+        guard !toSwitch.isEmpty else { return ([], false, false) }
 
         var failure: Error?
-        var enabled: [String] = []
+        var changed: [String] = []
         var restarted = false
-        for id in toEnable {
+        for id in toSwitch {
             do {
-                try await applyOne(id: id, enabled: true, isFeature: true)
+                _ = try await runner.run(args: ["features", on ? "enable" : "disable", id])
                 pending.removeValue(forKey: id)
                 applyWithDependents.remove(id)
-                enabled.append(id)
+                changed.append(id)
             } catch {
                 failure = error
                 break
             }
         }
-        if !enabled.isEmpty {
+        if !changed.isEmpty {
             do {
                 try await restart()
                 restarted = true
@@ -339,7 +370,7 @@ final class FeatureManagerService {
         if let failure {
             loadError = failure.localizedDescription
         }
-        return (enabled, restarted, false)
+        return (changed, restarted, false)
     }
 
     /// Onboarding's write path: makes exactly `enabled` on and the rest of

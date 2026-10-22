@@ -129,11 +129,8 @@ struct AutomationDraftColumn: View {
     @ViewBuilder private var recipe: some View {
         if let diff = model.recipeDiff {
             DisclosureGroup("Show recipe") {
-                VStack(alignment: .leading, spacing: 0) {
-                    if diff.isIdentical { secondary("No change to the recipe text") }
-                    ForEach(Array(diff.lines.enumerated()), id: \.offset) { _, line in diffRow(line) }
-                }
-                .padding(.top, Spacing.small)
+                AutomationDiffLines(diff: diff)
+                    .padding(.top, Spacing.small)
             }
         } else {
             RecipeTextDisclosure(title: "Show recipe", text: model.recipeText, modelID: recipeModelID,
@@ -166,7 +163,31 @@ struct AutomationDraftColumn: View {
         Text(text).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
     }
 
-    private func diffRow(_ line: OwnerAskSnapshotDiff.Line) -> some View {
+    private func keepBinding(_ tool: String) -> Binding<Bool> {
+        Binding(
+            get: { keepAuto.contains(tool) },
+            set: { on in
+                if on { keepAuto.insert(tool) } else { keepAuto.remove(tool) }
+            }
+        )
+    }
+}
+
+/// A recipe diff's rows: `+` added, `−` removed, unchanged lines dimmed
+/// (the draft column's **Show recipe**, a built-in's **Show changes**).
+struct AutomationDiffLines: View {
+    let diff: OwnerAskSnapshotDiff
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if diff.isIdentical {
+                Text("No change to the recipe text").foregroundStyle(.secondary)
+            }
+            ForEach(Array(diff.lines.enumerated()), id: \.offset) { _, line in row(line) }
+        }
+    }
+
+    private func row(_ line: OwnerAskSnapshotDiff.Line) -> some View {
         let (mark, text, tint): (String, String, Color?) = switch line {
         case let .same(text): (" ", text, nil)
         case let .added(text): ("+", text, Tone.success)
@@ -180,15 +201,6 @@ struct AutomationDraftColumn: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(tint.map { $0.opacity(ChipTint.fillOpacity) } ?? .clear)
         .textSelection(.enabled)
-    }
-
-    private func keepBinding(_ tool: String) -> Binding<Bool> {
-        Binding(
-            get: { keepAuto.contains(tool) },
-            set: { on in
-                if on { keepAuto.insert(tool) } else { keepAuto.remove(tool) }
-            }
-        )
     }
 }
 

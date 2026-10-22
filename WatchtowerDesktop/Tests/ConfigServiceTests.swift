@@ -192,6 +192,58 @@ struct ConfigServiceTests {
         #expect(ai?["ollama_url"] == nil)
     }
 
+    @Test("A built-in card's When fields save to their config keys; unknown keys and bad values are refused")
+    func builtinParametersSave() throws {
+        let path = makeTempConfig("""
+        active_workspace: keep-me
+        briefing:
+          hour: 8
+        """)
+        let svc = ConfigService(configPath: path)
+        try svc.saveBuiltinParameters([
+            "briefing.hour": "9", "day_plan.working_hours_start": "08:30", "day_plan.working_hours_end": "17:00"
+        ])
+        #expect(svc.briefingHour == 9)
+        #expect(throws: ConfigService.BuiltinParameterError.self) { try svc.saveBuiltinParameters(["briefing.hour": "24"]) }
+        #expect(throws: ConfigService.BuiltinParameterError.self) {
+            try svc.saveBuiltinParameters(["day_plan.working_hours_end": "7pm"])
+        }
+        #expect(throws: ConfigService.BuiltinParameterError.self, "on/off is the feature manager's") {
+            try svc.saveBuiltinParameters(["ideas.enabled": "true"])
+        }
+
+        let svc2 = ConfigService(configPath: path)
+        #expect(svc2.briefingHour == 9)
+        #expect(svc2.workingHoursStart == "08:30")
+        #expect(svc2.workingHoursEnd == "17:00")
+        #expect(svc2.activeWorkspace == "keep-me")
+    }
+
+    /// Settings keeps one ConfigService for the window's life: its Save must
+    /// not put back the hour and working hours the card saved meanwhile.
+    @Test("A Settings save after a card save keeps the card's When values")
+    func settingsSaveKeepsCardValues() throws {
+        let path = makeTempConfig("""
+        briefing:
+          hour: 8
+        day_plan:
+          working_hours_start: "09:00"
+          max_timeblocks: 4
+        """)
+        let settings = ConfigService(configPath: path)
+        try ConfigService(configPath: path).saveBuiltinParameters([
+            "briefing.hour": "10", "day_plan.working_hours_start": "07:45"
+        ])
+        settings.digestMinMessages = 7
+        try settings.save()
+
+        let reloaded = ConfigService(configPath: path)
+        #expect(reloaded.briefingHour == 10)
+        #expect(reloaded.workingHoursStart == "07:45")
+        #expect(reloaded.maxTimeblocks == 4)
+        #expect(reloaded.digestMinMessages == 7)
+    }
+
     @Test("Save round-trips ideas tuning, never ideas.enabled, and preserves unrelated keys")
     func saveIdeasRoundTrip() throws {
         let path = makeTempConfig("""
@@ -280,7 +332,7 @@ struct ConfigServiceTests {
             "ideas.enabled must not be created by a save; got: \(raw)"
         )
         #expect(
-            (yaml?["day_plan"] as? [String: Any])?.keys.contains("enabled") == false,
+            (yaml?["day_plan"] as? [String: Any])?.keys.contains("enabled") != true,
             "day_plan.enabled must not be created by a save; got: \(raw)"
         )
     }
@@ -380,14 +432,14 @@ struct ConfigServiceTests {
         try "calendar:\n  enabled: true\ngmail:\n  enabled: true\n"
             .write(toFile: path, atomically: true, encoding: .utf8)
 
-        stale.briefingHour = 10
+        stale.transcriptAudioRetentionDays = 10
         try stale.save()
 
         #expect(stale.calendarEnabled == true, "the saved instance adopts the switch on disk")
         let reloaded = ConfigService(configPath: path)
         #expect(reloaded.calendarEnabled == true)
         #expect(reloaded.gmailEnabled == true)
-        #expect(reloaded.briefingHour == 10)
+        #expect(reloaded.transcriptAudioRetentionDays == 10)
     }
 
     /// #740: a connect or Re-login from Settings turns the switches on from the
@@ -562,7 +614,7 @@ struct ConfigServiceTests {
         svc.aiProvider = "codex"
         svc.calendarEnabled = true
         svc.calendarSyncDaysAhead = 7
-        svc.briefingHour = 11
+        svc.transcriptAudioRetentionDays = 11
         try svc.save()
 
         let svc2 = ConfigService(configPath: path)
@@ -571,7 +623,7 @@ struct ConfigServiceTests {
         #expect(svc2.aiProvider == "codex")
         #expect(svc2.calendarEnabled == true)
         #expect(svc2.calendarSyncDaysAhead == 7)
-        #expect(svc2.briefingHour == 11)
+        #expect(svc2.transcriptAudioRetentionDays == 11)
     }
 
     @Test("Save sets file permissions to 0600")

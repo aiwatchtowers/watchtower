@@ -127,6 +127,27 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
 
     // MARK: - Workbench scope at creation (spec §4)
 
+    /// A built-in's chat lists its shipped prompts as data with the one rule
+    /// line; an owner recipe's never does.
+    func testBuiltinContextListsDefaultPrompts() {
+        let prompts = ["plan": "Plan for %s.", "brief": "Brief ``` for %s on %s."]
+        let builtin = Automation(id: 3, slug: "morning-brief", path: "builtin:morning-brief", name: "Morning brief",
+                                 origin: .builtin, builtinID: "morning-brief")
+        let block = AutomationEditorChatSurface.contextBlock(automation: builtin, defaultPrompts: prompts)
+        XCTAssertTrue(block.contains("To change a prompt, replace builtin.defaultPrompt(\"<name>\") with the text, "
+            + "keeping every %s in order."))
+        let brief = try? XCTUnwrap(block.range(of: "builtin.defaultPrompt(\"brief\"):"))
+        let plan = try? XCTUnwrap(block.range(of: "builtin.defaultPrompt(\"plan\"):"))
+        XCTAssertNotNil(brief)
+        XCTAssertLessThan(brief?.lowerBound ?? block.endIndex, plan?.lowerBound ?? block.startIndex, "by name")
+        XCTAssertTrue(block.contains("````markdown\nBrief ``` for %s on %s.\n````"), "fenced as data")
+
+        let owner = Automation(id: 4, slug: "digest", name: "Digest")
+        XCTAssertFalse(AutomationEditorChatSurface.contextBlock(automation: owner, defaultPrompts: prompts)
+            .contains("DEFAULT PROMPTS"))
+        XCTAssertFalse(AutomationEditorChatSurface.contextBlock(automation: builtin).contains("DEFAULT PROMPTS"))
+    }
+
     func testNewContextBlockPersonal() {
         let block = AutomationEditorChatSurface.newContextBlock(workbench: nil)
         XCTAssertTrue(block.contains("Scope: personal"), block)

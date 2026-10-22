@@ -236,6 +236,17 @@ final class AutomationsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.selectedID, 8)
     }
 
+    /// A built-in's card outlives its panel: the same model per automation.
+    func testBuiltinCardIsKeptPerAutomation() {
+        let vm = makeViewModel()
+        let brief = Automation(id: 3, slug: "morning-brief", path: "builtin:morning-brief", origin: .builtin,
+                               builtinID: "morning-brief")
+        let other = Automation(id: 4, slug: "x", path: "builtin:x", origin: .builtin, builtinID: "x")
+        let card = vm.builtinCard(brief)
+        XCTAssertTrue(vm.builtinCard(brief) === card)
+        XCTAssertFalse(vm.builtinCard(other) === card)
+    }
+
     func testShowNewKeepsTheFixedScope() {
         let vm = makeViewModel()
         let scope = AutomationScopeChoice.workbench(id: 3, name: "acme", folder: "/tmp/acme")

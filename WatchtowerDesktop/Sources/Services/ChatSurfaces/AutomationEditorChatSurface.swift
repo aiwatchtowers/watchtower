@@ -56,8 +56,11 @@ enum AutomationEditorChatSurface {
     /// The chat about `automation`. Its per-turn prompt re-reads the recipe
     /// from the index, so an edit saved between turns is what the model sees.
     /// `outcomes` renders the decisions since the previous owner message.
+    /// `defaultPrompts`: a built-in's shipped prompts by name (`show`'s
+    /// `builtin.default_prompts`), listed in the context block.
     static func spec(
         automation: Automation,
+        defaultPrompts: [String: String] = [:],
         provider: String?,
         conversationID: Int64,
         dbPool: DatabasePool,
@@ -66,7 +69,7 @@ enum AutomationEditorChatSurface {
         skillsDir: String? = SkillsCatalog.defaultDir()
     ) -> ChatSurfaceSpec {
         let tools = toolsAvailable(provider: provider)
-        let context = contextBlock(automation: automation)
+        let context = contextBlock(automation: automation, defaultPrompts: defaultPrompts)
         return ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: contextType, contextID: String(automation.id),
                                  conversationID: conversationID),
@@ -121,7 +124,12 @@ enum AutomationEditorChatSurface {
 
     // MARK: - Prompt
 
-    static func contextBlock(automation: Automation) -> String {
+    /// The one line on a built-in's prompts (C2 plan, Task 10).
+    static let defaultPromptLine =
+        "To change a prompt, replace builtin.defaultPrompt(\"<name>\") with the text, keeping every %s in order."
+
+    /// A built-in's context adds its shipped prompts, by name, as data.
+    static func contextBlock(automation: Automation, defaultPrompts: [String: String] = [:]) -> String {
         let scope = automation.scope == .personal ? "personal" : "workbench \(automation.projectID ?? 0)"
         var lines = [
             "You are Watchtower's assistant, helping the owner change one of their automations in words.",
@@ -135,6 +143,12 @@ enum AutomationEditorChatSurface {
         ]
         if automation.scope == .workbench, let workbench = automation.projectID {
             lines.append("Always pass `workbench_id: \(workbench)` too.")
+        }
+        if automation.isBuiltin, !defaultPrompts.isEmpty {
+            lines += ["", "=== DEFAULT PROMPTS ===", defaultPromptLine]
+            for name in defaultPrompts.keys.sorted() {
+                lines += ["", "builtin.defaultPrompt(\"\(name)\"):", dataFence(defaultPrompts[name] ?? "")]
+            }
         }
         return lines.joined(separator: "\n")
     }

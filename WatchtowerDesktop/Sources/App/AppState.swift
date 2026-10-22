@@ -553,11 +553,12 @@ final class AppState {
         let provider = Constants.aiProviderID()
         let conversationID = try await AutomationEditorChatSurface.conversationID(for: automation, dbPool: pool)
         let box = PanelDraftBox()
+        let prompts = await builtinDefaultPrompts(automation)
         return makeAutomationEditorChat(
             conversationID: conversationID, pool: pool, provider: provider, panelDraftBox: box,
             onSaved: { [weak self] in self?.automationsViewModel?.refresh() },
             makeSpec: { outcomes in
-                AutomationEditorChatSurface.spec(automation: automation, provider: provider,
+                AutomationEditorChatSurface.spec(automation: automation, defaultPrompts: prompts, provider: provider,
                                                  conversationID: conversationID, dbPool: pool, outcomes: outcomes,
                                                  panelDraft: box.read)
             }

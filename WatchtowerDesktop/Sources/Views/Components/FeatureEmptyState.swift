@@ -144,7 +144,7 @@ struct FeatureEmptyState<Extra: View>: View {
                 "Turn on"
             }
         case .connect(let source): source.actionTitle
-        case .openSettings(_, let label): label
+        case .openSettings(_, let label), .openBuiltin(_, let label): label
         case .tabAction(let label): label
         }
     }
@@ -152,7 +152,7 @@ struct FeatureEmptyState<Extra: View>: View {
     private static func isStateGated(_ action: EmptyStateAction) -> Bool {
         switch action {
         case .turnOn, .connect: true
-        case .openSettings, .tabAction: false
+        case .openSettings, .openBuiltin, .tabAction: false
         }
     }
 }
