@@ -248,8 +248,12 @@ package final class ActionStripViewModel {
             await select(item)
             return
         }
-        while !isListed(.day(date)), feed.hasOlderDays, let oldest = feed.days.last?.date, date < oldest {
+        // Stops on a failed read and on a page that added no date.
+        while lastError == nil, !isListed(.day(date)), feed.hasOlderDays,
+              let oldest = feed.days.last?.date, date < oldest {
+            let before = feed.days.count
             await showOlderDays().value
+            if feed.days.count == before { break }
         }
         await select(isListed(.day(date)) ? item : nil)
     }

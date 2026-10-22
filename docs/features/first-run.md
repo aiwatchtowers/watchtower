@@ -346,7 +346,8 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   + inbox, the component takes one feature).
 - **Spec §1.5 deviation as built:** the Inbox row has no button — the reaction
   cheat sheet is inline (spec row updated). Since C1 T11b the All filter
-  always lists today's day card, so the cheat sheet sits behind `?`.
+  lists today's day card once the owner is known, so the cheat sheet then
+  sits behind `?`; with no owner All stays empty, with OWNER-02 and the sheet.
 
 ## Fresh-install first cycle (Go daemon, P4)
 

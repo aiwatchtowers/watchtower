@@ -82,7 +82,7 @@ The **⋯** button above the list opens these in the reading pane, and **?** ope
 
 ## When it's empty or wrong
 
-**All** always lists today's day card, so the reaction cheat sheet is behind **?**. An empty filter says what lands there and, when a feature feeds it, that feature's status line.
+Once Watchtower knows who you are, **All** always lists today's day card, so the reaction cheat sheet is behind **?**. Before that, the empty **All** list says why and shows the cheat sheet. An empty filter says what lands there and, when a feature feeds it, that feature's status line.
 
 - **"Enable Reaction Commands" button.** The feature is off. Click it; reactions you placed earlier are not replayed.
 - **"Watching your Slack reactions — last check N min ago".** It works; the time is the last successful check.

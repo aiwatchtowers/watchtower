@@ -133,7 +133,7 @@ struct InboxSplitView<EmptyList: View>: View {
         Button("Show older") { vm.showOlderDays() }
             .buttonStyle(.kitQuiet)
             .controlSize(.small)
-            .help("Show 30 more days")
+            .help("Show \(ActionStripViewModel.dayPage) more days")
             .selectionDisabled()
             .listRowSeparator(.hidden)
     }

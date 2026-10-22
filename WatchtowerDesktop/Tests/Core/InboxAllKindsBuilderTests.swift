@@ -86,6 +86,10 @@ final class InboxAllKindsBuilderTests: XCTestCase {
             XCTAssertEqual(try placeheld(InboxFeedSnapshot(), filter), [], "\(filter)")
         }
         XCTAssertEqual(try build(InboxFeedSnapshot()), [], "only the Inbox view model asks for the placeholder")
+        var noOwner = InboxFeedSnapshot()
+        noOwner.ownerKnown = false
+        XCTAssertEqual(try placeheld(noOwner, .all), [], "no owner: All stays empty and says why")
+        XCTAssertEqual(try placeheld(noOwner, .day).flatMap(\.items).map(\.id), [.day(today)])
     }
 
     func testThePlaceholderIsOnlyForTodayAndOnlyWhenItHasNoCard() throws {

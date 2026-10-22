@@ -88,10 +88,12 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
 
     /// The daemon skips the inbox without an owner, so the empty strip says
     /// why (it used to show nothing at all) and opens Connections.
-    func testOwner02InboxUnknownOwnerShowsEmptyState() throws {
+    func testOwner02InboxUnknownOwnerShowsEmptyState() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
+        // After a read, as the owner sees it: no owner, so All lists no day card.
+        await vm.refresh()
         var opened = false
         let unknown = makeInboxEmpty(vm, ownerKnown: false) { opened = true }
 
@@ -102,6 +104,27 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
 
         let known = makeInboxEmpty(vm, ownerKnown: true) {}
         XCTAssertThrowsError(try known.inspect().find(text: Self.message))
+    }
+
+    /// With an owner and nothing made yet, All lists today's day card; with
+    /// none, All stays empty and says why (OWNER-02).
+    func testInboxAllShowsTodaysCardOnlyWithAnOwner() async throws {
+        let suite = "NoOwnerEmptyStateViewTests.\(UUID().uuidString)"
+        suites.append(suite)
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let vm = ActionStripViewModel(dbPool: try testPool(), cliRunner: FakeCLIRunner(), defaults: defaults)
+
+        await vm.refresh()
+        XCTAssertEqual(vm.filter, .all)
+        XCTAssertTrue(vm.sections.isEmpty, "no owner: no placeholder on All")
+        XCTAssertNoThrow(try makeInboxEmpty(vm, ownerKnown: false) {}.inspect().find(text: Self.message))
+
+        try await testPool().write { db in
+            _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1")
+        }
+        await vm.refresh()
+        XCTAssertEqual(vm.sections.flatMap(\.items).map(\.id), [.day(AppState.inboxToday())])
+        XCTAssertThrowsError(try makeInboxEmpty(vm, ownerKnown: true) {}.inspect().find(text: Self.message))
     }
 
     // MARK: - Helpers

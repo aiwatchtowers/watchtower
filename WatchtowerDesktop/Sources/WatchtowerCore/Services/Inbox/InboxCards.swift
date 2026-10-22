@@ -84,6 +84,9 @@ package struct InboxFeedSnapshot: Equatable, Sendable {
     package var days: [InboxDayCard] = []
     /// More dates exist past `days` (the Day filter's **Show older**).
     package var hasOlderDays = false
+    /// Watchtower knows the owner (OWNER-01). Without one, All shows no
+    /// placeholder day card, so the empty Inbox says why (OWNER-02).
+    package var ownerKnown = true
     package var tracks: [InboxTrackCard] = []
     /// Dismissed tracks: only the Tracks filter's Stopped fold lists them,
     /// nothing counts them.

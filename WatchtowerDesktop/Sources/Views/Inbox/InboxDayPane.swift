@@ -121,17 +121,24 @@ struct InboxDayPane: View {
                 }
             }
             Spacer()
-            InboxCommonRow(
-                subject: InboxCardSubject(day: card, items: plan.loadedDate == card.date ? plan.items : []),
-                link: nil,
-                navScreens: navScreens,
-                workbenches: workbenches,
-                isWriting: isWriting,
-                showsHandToAgent: false,
-                onCommand: onCommand
-            ) {
-                Button("Done", action: onDone)
+            // Today's placeholder has nothing to discuss or finish yet.
+            if !card.isEmpty {
+                commonRow
             }
+        }
+    }
+
+    private var commonRow: some View {
+        InboxCommonRow(
+            subject: InboxCardSubject(day: card, items: plan.loadedDate == card.date ? plan.items : []),
+            link: nil,
+            navScreens: navScreens,
+            workbenches: workbenches,
+            isWriting: isWriting,
+            showsHandToAgent: false,
+            onCommand: onCommand
+        ) {
+            Button("Done", action: onDone)
         }
     }
 

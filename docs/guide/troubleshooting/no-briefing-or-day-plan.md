@@ -4,7 +4,7 @@ The Inbox has no **Your day** card for today, or today's card has a brief but no
 
 ## What you see
 
-Today's card says "Nothing is ready for today yet." with a status line, or "No plan for this day yet." under **Plan**, or "No brief for today yet." under **Brief**.
+Today's card says "Nothing is ready for today yet." and when each half comes, or "No plan for this day yet." under **Plan**, or "No brief for today yet." under **Brief**.
 
 ## Why
 

@@ -57,30 +57,25 @@ final class ActionStripActionsViewTests: XCTestCase {
         )
     }
 
-    /// With nothing else waiting the All list still holds today's day card
-    /// (T11b), so the cheat sheet sits behind `?`; the sheet it opens carries
-    /// the enable button and the dictionary's rows.
     func testEmptyStripWithFeatureOffShowsTheCheatSheetAndEnableButton() async throws {
         let pool = try makePool { db in
             try TestDatabase.insertReactionCommandMapping(db, emoji: "pushpin", tool: "brief_context")
         }
-        let vm = await stripVM(pool)
-        XCTAssertEqual(vm.sections.flatMap(\.items).map(\.id), [.day(HomeFeedBuilder.dayString(Date(), calendar: .current))])
-        let rows = await dictionaryRows(pool)
-        let sut = view(vm, rows: rows, feature: .off)
-        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
+        let sut = view(await stripVM(pool), rows: await dictionaryRows(pool), feature: .off)
 
-        let sheet = ReactionCheatSheetView(rows: rows, feature: .off)
-        XCTAssertNoThrow(try sheet.inspect().find(button: "Enable Reaction Commands"))
-        XCTAssertNoThrow(try sheet.inspect().find(text: "Brief me"))
+        XCTAssertNoThrow(try sut.inspect().find(ReactionCheatSheetView.self))
+        XCTAssertNoThrow(try sut.inspect().find(button: "Enable Reaction Commands"))
+        XCTAssertNoThrow(try sut.inspect().find(text: "Brief me"))
+        XCTAssertThrowsError(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
     }
 
     func testEmptyStripWithFeatureOnShowsTheStatusLineAndNoEnableButton() async throws {
         let pool = try makePool()
-        let sheet = ReactionCheatSheetView(rows: await dictionaryRows(pool), feature: .on(lastCheck: nil))
+        let sut = view(await stripVM(pool), rows: await dictionaryRows(pool), feature: .on(lastCheck: nil))
 
-        XCTAssertNoThrow(try sheet.inspect().find(text: "Watching your Slack reactions"))
-        XCTAssertThrowsError(try sheet.inspect().find(button: "Enable Reaction Commands"))
+        XCTAssertNoThrow(try sut.inspect().find(ReactionCheatSheetView.self))
+        XCTAssertNoThrow(try sut.inspect().find(text: "Watching your Slack reactions"))
+        XCTAssertThrowsError(try sut.inspect().find(button: "Enable Reaction Commands"))
     }
 
     func testEnableButtonCallsBack() throws {
@@ -116,7 +111,7 @@ final class ActionStripActionsViewTests: XCTestCase {
             try TestDatabase.insertReactionCommandMapping(db, emoji: "rocket", tool: "create_idea")
             try TestDatabase.insertReactionCommandMapping(db, emoji: "eyes", tool: "create_track", enabled: false)
         }
-        let sut = ReactionCheatSheetView(rows: await dictionaryRows(pool), feature: .on(lastCheck: nil))
+        let sut = view(await stripVM(pool), rows: await dictionaryRows(pool), feature: .on(lastCheck: nil))
 
         XCTAssertNoThrow(try sut.inspect().find(text: "Save as idea"))
         XCTAssertNoThrow(try sut.inspect().find(text: ":rocket:"))

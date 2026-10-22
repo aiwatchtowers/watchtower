@@ -26,6 +26,7 @@ package enum InboxFeedQueries {
         let days = try emptyIfTableMissing { try BriefingQueries.fetchDayCards(db, limit: dayLimit + 1) }
         snapshot.days = Array(days.prefix(dayLimit))
         snapshot.hasOlderDays = days.count > dayLimit
+        snapshot.ownerKnown = try OwnerQueries.resolve(db).isKnown
         snapshot.tracks = try emptyIfTableMissing { try TrackQueries.fetchInboxCards(db) }
         snapshot.stoppedTracks = try emptyIfTableMissing { try TrackQueries.fetchInboxCards(db, stopped: true) }
         snapshot.ideas = try emptyIfTableMissing { try IdeaQueries.fetchInboxRegistry(db) }

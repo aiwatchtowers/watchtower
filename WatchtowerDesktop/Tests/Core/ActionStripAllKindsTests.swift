@@ -425,10 +425,36 @@ final class ActionStripAllKindsTests: XCTestCase {
         XCTAssertFalse(vm.feed.hasOlderDays)
     }
 
+    /// A failed read stops the route's paging instead of looping.
+    func testOpeningAnOldDayStopsOnAFailedRead() async throws {
+        try await pool.write { db in
+            for day in 1...31 {
+                try TestDatabase.insertBriefing(db, date: String(format: "2026-08-%02d", day))
+            }
+        }
+        let vm = makeVM()
+        vm.filter = .day
+        await vm.refresh()
+        XCTAssertTrue(vm.feed.hasOlderDays)
+        // Every later read fails on a column the day query orders by.
+        try await pool.write { db in
+            try db.execute(sql: "ALTER TABLE briefings RENAME COLUMN created_at TO created_at_gone")
+        }
+
+        await vm.open(.day, select: .day("2020-01-01"))
+
+        XCTAssertNotNil(vm.lastError)
+        XCTAssertNil(vm.selection)
+        XCTAssertEqual(vm.dayLimit, ActionStripViewModel.dayPage, "no page asked for after the failed read")
+    }
+
     /// Today with neither a brief nor a plan: its placeholder card is listed
     /// (All and Day) but the badge stays 0.
     func testTodaysPlaceholderIsListedButNeverCounted() async throws {
         let vm = makeVM()
+        await vm.refresh()
+        XCTAssertEqual(vm.sections, [], "no owner: All has no placeholder")
+        try await pool.write { db in _ = try TestDatabase.insertSlackAccount(db, currentUserID: "1:U1") }
         await vm.refresh()
 
         XCTAssertEqual(vm.sections.flatMap(\.items).map(\.id), [.day(today)])
