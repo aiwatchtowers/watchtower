@@ -555,6 +555,7 @@ func TestTriggerSpecJSON_Shapes(t *testing.T) {
 		{Trigger{Kind: TriggerEvent, Event: &EventTrigger{Type: "jira.issue_changed", Where: map[string]string{"project": "ACME"}}},
 			`{"event":{"type":"jira.issue_changed","where":{"project":"ACME"}}}`},
 		{Trigger{Kind: TriggerManual}, `{"manual":true}`},
+		{Trigger{Kind: TriggerSync, Sync: "morning_brief"}, `{"sync":"morning_brief"}`},
 	}
 	for _, tc := range cases {
 		got, err := triggerSpecJSON(tc.trigger)

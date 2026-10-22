@@ -624,3 +624,81 @@ func TestRecipe_ParsesSwiftWrittenFrontmatter(t *testing.T) {
 		t.Errorf("swift_written.md:\n got: %+v\nwant: %+v", got, want)
 	}
 }
+
+var builtinScope = Scope{Kind: ScopePersonal, BuiltinID: "morning-brief"}
+
+func syncRecipe(slot string, perms ...string) []byte {
+	fm := "name: Morning brief\ntrigger:\n  sync: " + slot + "\n"
+	if len(perms) > 0 {
+		fm += "permissions: [" + strings.Join(perms, ", ") + "]\n"
+	}
+	return recipeWith(fm, "log(1);\n")
+}
+
+func TestRecipe_BuiltinScopeValidated(t *testing.T) {
+	data := readFixture(t, "ok.md")
+	r := mustParse(t, data, builtinScope)
+	if !r.Scope.IsBuiltin() || r.Scope.String() != "builtin:morning-brief" {
+		t.Errorf("scope = %s (builtin %v)", r.Scope, r.Scope.IsBuiltin())
+	}
+	if (Scope{Kind: ScopePersonal}).IsBuiltin() {
+		t.Error("a plain personal scope reports built-in")
+	}
+	for _, s := range []Scope{
+		{Kind: ScopePersonal, BuiltinID: "Not A Slug"},
+		{Kind: ScopePersonal, BuiltinID: "morning-brief", WorkbenchID: 2},
+		{Kind: ScopeWorkbench, WorkbenchID: 1, BuiltinID: "morning-brief"},
+	} {
+		_, err := ParseRecipe("ok", data, s)
+		var pe *ParseError
+		if !errors.As(err, &pe) || !strings.Contains(pe.Msg, "scope") {
+			t.Errorf("scope %+v: want a scope *ParseError, got %v", s, err)
+		}
+	}
+}
+
+func TestParseRecipe_SyncTriggerBuiltinOnly(t *testing.T) {
+	data := syncRecipe("morning_brief")
+	r := mustParse(t, data, builtinScope)
+	if r.Trigger.Kind != TriggerSync || r.Trigger.Sync != "morning_brief" {
+		t.Errorf("trigger = %+v", r.Trigger)
+	}
+	for _, s := range []Scope{{Kind: ScopePersonal}, {Kind: ScopeWorkbench, WorkbenchID: 1}} {
+		_, err := ParseRecipe("ok", data, s)
+		var pe *ParseError
+		if !errors.As(err, &pe) || !strings.Contains(pe.Msg, "a sync trigger is only for built-in automations") {
+			t.Errorf("scope %s: want the built-in-only refusal, got %v", s, err)
+		}
+	}
+}
+
+func TestParseRecipe_SyncUnknownSlotRefused(t *testing.T) {
+	_, err := ParseRecipe("ok", syncRecipe("weekly_digest"), builtinScope)
+	var pe *ParseError
+	if !errors.As(err, &pe) || !strings.Contains(pe.Msg, `"weekly_digest"`) || !strings.Contains(pe.Msg, strings.Join(SyncSlots, ", ")) {
+		t.Errorf("want an unknown-slot refusal listing the slots, got %v", err)
+	}
+	if _, err := ParseRecipe("ok", recipeWith("name: A\ntrigger:\n  sync: [morning_brief]\n", "log(1);\n"), builtinScope); err == nil {
+		t.Error("a non-string slot parsed")
+	}
+}
+
+func TestApprovalHash_BuiltinScopeAndSyncAreHashed(t *testing.T) {
+	data := syncRecipe("morning_brief", "builtin:brief.compose")
+	base := mustParse(t, data, builtinScope)
+	other := mustParse(t, data, Scope{Kind: ScopePersonal, BuiltinID: "evening-brief"})
+	if ApprovalHash(base) == ApprovalHash(other) {
+		t.Error("two built-in ids hash alike")
+	}
+	slot := mustParse(t, syncRecipe("tracks", "builtin:brief.compose"), builtinScope)
+	if ApprovalHash(base) == ApprovalHash(slot) {
+		t.Error("changing the sync slot kept the hash")
+	}
+	fields := map[string]string{}
+	for _, f := range ApprovalFields(base) {
+		fields[f.Name] = f.Value
+	}
+	if fields["scope"] != "builtin:morning-brief" || fields["trigger"] != `{"sync":"morning_brief"}` {
+		t.Errorf("fields scope=%q trigger=%q", fields["scope"], fields["trigger"])
+	}
+}

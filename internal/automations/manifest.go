@@ -43,6 +43,8 @@ type capabilitySpec struct {
 	scopeValues []string
 	// workbenchOnly capabilities are refused in a personal recipe (D7).
 	workbenchOnly bool
+	// builtinOnly capabilities are refused outside a built-in automation.
+	builtinOnly bool
 }
 
 var readWrite = []string{"read", "write"}
@@ -70,6 +72,25 @@ var capabilitySpecs = map[string]capabilitySpec{
 	// press queues a new run of the recipe (spec B3). It needs
 	// outputs: [inbox] (ParseManifest).
 	"inbox": {verbs: []string{"reply"}},
+	// builtin:<primitive> admits one engine primitive of a built-in
+	// automation (CapabilityForPrimitive).
+	"builtin": {verbs: BuiltinPrimitiveNames, builtinOnly: true},
+}
+
+// BuiltinPrimitiveNames are the engine primitives a builtin: entry may name.
+var BuiltinPrimitiveNames = []string{"brief.compose", "plan.compose"}
+
+// PrimitiveCapability maps a primitive to its capability entry when that is
+// not builtin:<name>.
+var PrimitiveCapability = map[string]string{}
+
+// CapabilityForPrimitive is the manifest entry that admits primitive name:
+// its PrimitiveCapability entry, else "builtin:" + name.
+func CapabilityForPrimitive(name string) string {
+	if c, ok := PrimitiveCapability[name]; ok {
+		return c
+	}
+	return "builtin:" + name
 }
 
 // entryInboxReply is the normalised inbox:reply entry.
@@ -282,6 +303,10 @@ func ParseManifest(entries []string, outputs []string, scope Scope) (*Manifest, 
 		if scope.Kind != ScopeWorkbench && workbenchOnly(p) {
 			return nil, &ManifestError{Field: "permissions", Index: i,
 				Msg: fmt.Sprintf("%q is allowed only in a workbench recipe, not a personal one", e)}
+		}
+		if !scope.IsBuiltin() && capabilitySpecs[p.Capability].builtinOnly {
+			return nil, &ManifestError{Field: "permissions", Index: i,
+				Msg: fmt.Sprintf("%q is allowed only in a built-in automation", e)}
 		}
 		if n := p.String(); !seen[n] {
 			seen[n] = true
@@ -579,6 +604,16 @@ func (m *Manifest) AllowOutput(kind string) (string, error) {
 		return "output:" + kind, nil
 	}
 	return "", denied("output:" + kind)
+}
+
+// AllowPrimitive checks a built-in engine primitive call against its
+// CapabilityForPrimitive entry.
+func (m *Manifest) AllowPrimitive(name string) (string, error) {
+	e := CapabilityForPrimitive(name)
+	if m.has(e) {
+		return e, nil
+	}
+	return "", denied(e)
 }
 
 // AllowInboxReply checks a Reply action on an output.inbox card.
