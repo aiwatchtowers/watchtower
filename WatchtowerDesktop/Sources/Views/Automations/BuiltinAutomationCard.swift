@@ -38,6 +38,9 @@ struct BuiltinAutomationCard: View {
 
     private var automation: Automation { model.automation }
     private var detail: BuiltinAutomationDetail? { model.detail }
+    /// A stepper's top: a count field never needs more.
+    static let countLimit = 20
+
     private var isOn: Bool { detail?.enabled ?? automation.enabled }
     private var isBusy: Bool { model.isWorking || isApplyingFeatures }
 
@@ -229,16 +232,21 @@ struct BuiltinAutomationCard: View {
     @ViewBuilder
     private func parameterFields(_ parameters: [BuiltinAutomationDetail.Parameter]) -> some View {
         if !parameters.isEmpty {
-            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                ForEach(parameters, id: \.key) { parameter in
-                    // The field carries the label for VoiceOver; the text is for the eye.
-                    Text(parameter.label)
-                        .foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
-                    field(parameter)
+            // The times on one row, the counts on the next.
+            let times = parameters.filter { $0.kind != .count }
+            let counts = parameters.filter { $0.kind == .count }
+            ForEach([times, counts].filter { !$0.isEmpty }, id: \.first?.key) { row in
+                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                    ForEach(row, id: \.key) { parameter in
+                        // The field carries the label for VoiceOver; the text is for the eye.
+                        Text(parameter.label)
+                            .foregroundStyle(.secondary)
+                            .accessibilityHidden(true)
+                        field(parameter)
+                    }
                 }
+                .controlSize(.small)
             }
-            .controlSize(.small)
             if let invalid = model.invalidParameter {
                 Text(invalid).font(.caption).foregroundStyle(Tone.error)
             }
@@ -277,6 +285,21 @@ struct BuiltinAutomationCard: View {
             .labelsHidden()
             .fixedSize()
             .accessibilityLabel(parameter.label)
+            .disabled(model.isWorking)
+        case .count:
+            let count = Binding(
+                get: { Int(text.wrappedValue) ?? 0 },
+                set: { text.wrappedValue = String($0) }
+            )
+            HStack(spacing: Spacing.small) {
+                Text(text.wrappedValue)
+                    .monospacedDigit()
+                    .accessibilityHidden(true)
+                Stepper(parameter.label, value: count, in: 0...Self.countLimit)
+                    .labelsHidden()
+                    .accessibilityLabel(parameter.label)
+                    .accessibilityValue(text.wrappedValue)
+            }
             .disabled(model.isWorking)
         case .clock:
             TextField(parameter.label, text: text, prompt: Text("HH:MM"))

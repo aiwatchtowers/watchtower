@@ -100,18 +100,37 @@ package final class BuiltinAutomationCardModel {
     }
 
     /// The first edited field that is not a valid value, said for the owner:
-    /// an hour is 0–23, a clock is HH:MM.
+    /// an hour is 0–23, a clock is HH:MM, a count a whole number from 0; and
+    /// the backlog's at-least never above its at-most.
     package var invalidParameter: String? {
-        for parameter in detail?.parameters ?? [] {
+        let parameters = detail?.parameters ?? []
+        for parameter in parameters {
             guard let value = parameterEdits[parameter.key] else { continue }
             switch parameter.kind {
             case .hour:
                 if Int(value).map({ (0...23).contains($0) }) != true { return "\(parameter.label): pick an hour" }
             case .clock:
                 if !Self.isClock(value) { return "\(parameter.label): use HH:MM, for example 09:00" }
+            case .count:
+                if !Self.isCount(value) { return "\(parameter.label): use a whole number, 0 or more" }
             }
         }
+        let shown = { (key: String) in parameters.first { $0.key == key } }
+        if let least = shown(Self.minBacklogKey), let most = shown(Self.maxBacklogKey),
+           let low = Int(parameterEdits[least.key] ?? least.value),
+           let high = Int(parameterEdits[most.key] ?? most.value), low > high {
+            return "\(least.label) can't be more than \(most.label.lowercased())"
+        }
         return nil
+    }
+
+    /// The backlog bounds' config keys (twin: Go `builtin` Morning brief params).
+    nonisolated package static let minBacklogKey = "day_plan.min_backlog"
+    nonisolated package static let maxBacklogKey = "day_plan.max_backlog"
+
+    /// A count field's text: a whole number, 0 or more.
+    nonisolated package static func isCount(_ text: String) -> Bool {
+        Int(text).map { $0 >= 0 } ?? false
     }
 
     /// "HH:MM", 00:00–23:59.

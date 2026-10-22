@@ -29,11 +29,18 @@ final class BuiltinAutomationDetailDecodingTests: XCTestCase {
         XCTAssertEqual(detail.when, "Every morning at the first sync after 08:00")
         XCTAssertEqual(detail.reads.count, 5)
         XCTAssertEqual(detail.sends, ["Your day card in the Inbox"])
-        XCTAssertEqual(detail.parameters.map(\.key),
-                       ["briefing.hour", "day_plan.working_hours_start", "day_plan.working_hours_end"])
-        XCTAssertEqual(detail.parameters.map(\.kind), [.hour, .clock, .clock])
-        XCTAssertEqual(detail.parameters.map(\.label), ["Time", "Working hours from", "to"])
-        XCTAssertEqual(detail.parameters.map(\.value), ["8", "09:00", "19:00"])
+        XCTAssertEqual(detail.parameters.map(\.key), [
+            "briefing.hour", "day_plan.working_hours_start", "day_plan.working_hours_end",
+            "day_plan.max_timeblocks", "day_plan.min_backlog", "day_plan.max_backlog"
+        ])
+        XCTAssertEqual(detail.parameters.map(\.kind), [.hour, .clock, .clock, .count, .count, .count])
+        XCTAssertEqual(detail.parameters.map(\.label), [
+            "Time", "Working hours from", "to", "Time blocks at most", "Backlog items at least",
+            "Backlog items at most"
+        ])
+        XCTAssertEqual(detail.parameters.map(\.value), ["8", "09:00", "19:00", "3", "3", "8"])
+        // A count's value is a whole number.
+        XCTAssertEqual(detail.parameters.filter { $0.kind == .count }.compactMap { Int($0.value) }, [3, 3, 8])
         XCTAssertEqual(detail.featureIDs, ["briefing", "day-plan"])
         XCTAssertTrue(detail.enabled)
         XCTAssertEqual(detail.copyError, "")

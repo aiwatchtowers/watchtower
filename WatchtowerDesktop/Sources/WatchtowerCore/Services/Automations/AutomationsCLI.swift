@@ -630,7 +630,9 @@ package struct BuiltinAutomationDetail: Decodable, Equatable, Sendable {
     package struct Parameter: Decodable, Equatable, Sendable {
         /// Twin: Go `builtin.ParamKind`.
         package enum Kind: String, Decodable, Sendable {
-            case hour, clock
+            /// 0–23 (`builtin.ParamHour`); "HH:MM" (`ParamClock`); a whole
+            /// number of items, 0 or more (`ParamCount`).
+            case hour, clock, count
         }
 
         package let key: String
