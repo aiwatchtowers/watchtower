@@ -420,6 +420,7 @@ type triggerSpec struct {
 	Button   *triggerSpecButton `json:"button,omitempty"`
 	Event    *triggerSpecEvent  `json:"event,omitempty"`
 	Manual   bool               `json:"manual,omitempty"`
+	Sync     string             `json:"sync,omitempty"`
 }
 
 type triggerSpecButton struct {
@@ -449,13 +450,15 @@ func triggerSpecOf(t Trigger) triggerSpec {
 		}
 	case TriggerManual:
 		spec.Manual = true
+	case TriggerSync:
+		spec.Sync = t.Sync
 	}
 	return spec
 }
 
 func triggerSpecJSON(t Trigger) (string, error) {
 	switch t.Kind {
-	case TriggerSchedule, TriggerButton, TriggerEvent, TriggerManual:
+	case TriggerSchedule, TriggerButton, TriggerEvent, TriggerManual, TriggerSync:
 	default:
 		return "", fmt.Errorf("encoding trigger: unknown kind %q", t.Kind)
 	}

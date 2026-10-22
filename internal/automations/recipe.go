@@ -25,19 +25,30 @@ const (
 )
 
 // Scope binds a recipe to the folder it lives in (spec §20 D15); WorkbenchID
-// is set only for ScopeWorkbench.
+// is set only for ScopeWorkbench. BuiltinID, set only on a ScopePersonal,
+// marks a built-in automation (one Watchtower ships) by its slug.
 type Scope struct {
 	Kind        ScopeKind
 	WorkbenchID int64
+	BuiltinID   string
 }
 
 // String is the scope's canonical form, part of the approval hash:
-// "personal" or "workbench:<id>".
+// "personal", "workbench:<id>" or "builtin:<id>" (so the hash binds the
+// built-in id).
 func (s Scope) String() string {
-	if s.Kind == ScopeWorkbench {
+	switch {
+	case s.Kind == ScopeWorkbench:
 		return "workbench:" + strconv.FormatInt(s.WorkbenchID, 10)
+	case s.BuiltinID != "":
+		return "builtin:" + s.BuiltinID
 	}
 	return string(ScopePersonal)
+}
+
+// IsBuiltin reports whether s is a built-in automation's scope.
+func (s Scope) IsBuiltin() bool {
+	return s.Kind == ScopePersonal && s.BuiltinID != ""
 }
 
 // TriggerKind is the one trigger a recipe declares (spec §7.1).
@@ -49,7 +60,13 @@ const (
 	TriggerButton   TriggerKind = "button"
 	TriggerEvent    TriggerKind = "event"
 	TriggerManual   TriggerKind = "manual"
+	// TriggerSync runs after a daemon sync phase (the slot); only a built-in
+	// automation declares it (syncTriggerAllowed).
+	TriggerSync TriggerKind = "sync"
 )
+
+// SyncSlots are the daemon sync slots a trigger.sync may name.
+var SyncSlots = []string{"morning_brief", "custom_tracks", "tracks", "reactions", "ideas"}
 
 // ButtonTrigger is trigger.button.
 type ButtonTrigger struct {
@@ -63,13 +80,14 @@ type EventTrigger struct {
 	Where map[string]string
 }
 
-// Trigger is the parsed trigger map; exactly one of Schedule, Button and Event
-// is set for its kind, and none for TriggerManual.
+// Trigger is the parsed trigger map; exactly one of Schedule, Button, Event
+// and Sync is set for its kind, and none for TriggerManual.
 type Trigger struct {
 	Kind     TriggerKind
 	Schedule string
 	Button   *ButtonTrigger
 	Event    *EventTrigger
+	Sync     string // the sync slot, one of SyncSlots
 }
 
 // EventTypes are the event types a trigger.event may name (spec §8).
@@ -155,16 +173,17 @@ func normaliseRecipeBytes(data []byte) []byte {
 	return bytes.ReplaceAll(data, []byte("\r"), []byte("\n"))
 }
 
-// validateScope refuses a scope that is neither personal nor a workbench with
-// an id: a zero Scope is a caller bug, never a silent "personal".
+// validateScope refuses a scope that is neither personal (optionally built-in
+// with a slug id) nor a workbench with an id: a zero Scope is a caller bug,
+// never a silent "personal".
 func validateScope(s Scope) error {
 	switch {
-	case s.Kind == ScopePersonal && s.WorkbenchID == 0:
+	case s.Kind == ScopePersonal && s.WorkbenchID == 0 && (s.BuiltinID == "" || ValidSlug(s.BuiltinID)):
 		return nil
-	case s.Kind == ScopeWorkbench && s.WorkbenchID > 0:
+	case s.Kind == ScopeWorkbench && s.WorkbenchID > 0 && s.BuiltinID == "":
 		return nil
 	}
-	return &ParseError{Msg: fmt.Sprintf("invalid recipe scope %+v: want personal, or workbench with an id > 0", s)}
+	return &ParseError{Msg: fmt.Sprintf("invalid recipe scope %+v: want personal, built-in personal with a slug id, or workbench with an id > 0", s)}
 }
 
 // ParseRecipe parses a recipe file. slug is the file stem; scope is the folder
@@ -311,13 +330,18 @@ func applyFields(f map[string]*yaml.Node, r *Recipe) error {
 	if err := applyMissed(f["missed"], r); err != nil {
 		return err
 	}
-	if err := applyLists(f, r); err != nil {
+	m, err := applyLists(f, r)
+	if err != nil {
 		return err
+	}
+	if r.Trigger.Kind == TriggerSync {
+		if err = syncTriggerAllowed(r.Scope, r.Trigger.Sync, m); err != nil {
+			return &ParseError{Line: fileLine(f["trigger"]), Msg: err.Error()}
+		}
 	}
 	if err := applyBudget(f["budget"], r); err != nil {
 		return err
 	}
-	var err error
 	if r.Concurrency, err = boundedInt(f["concurrency"], "concurrency", DefaultConcurrency, 1, MaxConcurrency); err != nil {
 		return err
 	}
@@ -358,15 +382,15 @@ func applyMissed(n *yaml.Node, r *Recipe) error {
 	return &ParseError{Line: fileLine(n), Msg: fmt.Sprintf("missed must be run_once or skip, not %q", s)}
 }
 
-func applyLists(f map[string]*yaml.Node, r *Recipe) error {
+func applyLists(f map[string]*yaml.Node, r *Recipe) (*Manifest, error) {
 	if n := f["permissions"]; n != nil {
 		if err := decodeField(n, "permissions", "a list of strings", &r.Permissions); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if n := f["outputs"]; n != nil {
 		if err := decodeField(n, "outputs", "a list of strings", &r.Outputs); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	return validateManifest(f, r)
@@ -374,18 +398,18 @@ func applyLists(f map[string]*yaml.Node, r *Recipe) error {
 
 // validateManifest runs ParseManifest over the decoded lists and turns its
 // refusal into a *ParseError on the offending entry's line.
-func validateManifest(f map[string]*yaml.Node, r *Recipe) error {
-	_, err := ParseManifest(r.Permissions, r.Outputs, r.Scope)
+func validateManifest(f map[string]*yaml.Node, r *Recipe) (*Manifest, error) {
+	m, err := ParseManifest(r.Permissions, r.Outputs, r.Scope)
 	var me *ManifestError
 	if !errors.As(err, &me) {
-		return err
+		return m, err
 	}
 	n := f[me.Field]
 	line := fileLine(n)
 	if n.Kind == yaml.SequenceNode && me.Index < len(n.Content) {
 		line = fileLine(n.Content[me.Index])
 	}
-	return &ParseError{Line: line, Msg: me.Field + ": " + me.Msg}
+	return nil, &ParseError{Line: line, Msg: me.Field + ": " + me.Msg}
 }
 
 func applyBudget(n *yaml.Node, r *Recipe) error {
@@ -436,7 +460,7 @@ func applyTrigger(n *yaml.Node, r *Recipe) error {
 	if n.Kind != yaml.MappingNode {
 		return &ParseError{Line: fileLine(n), Msg: "trigger must be a map with one of schedule, button, event, manual"}
 	}
-	f, err := mappingFields(n, "trigger.", []string{"schedule", "button", "event", "manual"})
+	f, err := mappingFields(n, "trigger.", []string{"schedule", "button", "event", "manual", "sync"})
 	if err != nil {
 		return err
 	}
@@ -454,6 +478,8 @@ func applyTrigger(n *yaml.Node, r *Recipe) error {
 			r.Trigger.Event, err = parseEvent(v)
 		case TriggerManual:
 			err = parseManual(v)
+		case TriggerSync:
+			r.Trigger.Sync, err = parseSync(v)
 		}
 	}
 	return err
@@ -553,6 +579,29 @@ func validateWhere(n *yaml.Node, e *EventTrigger) error {
 		}
 	}
 	return nil
+}
+
+// parseSync accepts one of SyncSlots; whether the recipe's scope may use the
+// slot is syncTriggerAllowed's call, made once the manifest is parsed.
+func parseSync(n *yaml.Node) (string, error) {
+	var slot string
+	if err := decodeField(n, "trigger.sync", "a string", &slot); err != nil {
+		return "", err
+	}
+	if !slices.Contains(SyncSlots, slot) {
+		return "", &ParseError{Line: fileLine(n), Msg: fmt.Sprintf("trigger.sync %q must be one of %s", slot, strings.Join(SyncSlots, ", "))}
+	}
+	return slot, nil
+}
+
+// syncTriggerAllowed is the one rule on who may declare trigger.sync: in C2
+// only a built-in automation, on any slot of SyncSlots. C3 allows
+// custom_tracks for a Personal recipe holding track:scan.
+func syncTriggerAllowed(scope Scope, _ string, _ *Manifest) error {
+	if scope.IsBuiltin() {
+		return nil
+	}
+	return errors.New("a sync trigger is only for built-in automations")
 }
 
 func parseManual(n *yaml.Node) error {
