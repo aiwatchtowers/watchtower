@@ -96,6 +96,7 @@ func (r *Runner) runEntry(ctx context.Context, e Entry) SlotOutcome {
 		o.Status = StatusError
 		return o
 	}
+	r.endStaleRuns()
 	a, err := r.db.GetBuiltinAutomation(e.ID)
 	if err != nil {
 		return fail("reading its row", err)
@@ -159,6 +160,21 @@ func (r *Runner) execute(ctx context.Context, o SlotOutcome, runID int64, sync b
 	return o
 }
 
+// endStaleRuns ends the built-in runs past their deadline
+// (db.MarkStaleBuiltinRuns): a CLI killed while it ran one inline (SIGKILL;
+// SIGINT/SIGTERM end the run themselves) leaves it running, and it would
+// hold the built-in's one concurrency slot until the next daemon start. A
+// failure is logged; the slot then runs as if nothing were stale.
+func (r *Runner) endStaleRuns() {
+	n, err := r.db.MarkStaleBuiltinRuns(r.clock.Now())
+	switch {
+	case err != nil:
+		r.logger.Printf("built-ins: ending stale runs: %v", err)
+	case n > 0:
+		r.logger.Printf("built-ins: %d stale run(s) whose process stopped ended as interrupted", n)
+	}
+}
+
 // maxQueuedCancels bounds cancelQueuedManual (one queued manual run is the
 // most there should be: a second Run Now coalesces onto the first).
 const maxQueuedCancels = 16
@@ -190,6 +206,7 @@ func (r *Runner) RunNow(ctx context.Context, id string, in automations.BuiltinIn
 	if _, ok := Lookup(id); !ok {
 		return nil, fmt.Errorf("unknown built-in automation %q", id)
 	}
+	r.endStaleRuns()
 	a, err := r.db.GetBuiltinAutomation(id)
 	if err != nil {
 		return nil, err

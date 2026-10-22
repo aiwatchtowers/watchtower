@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"watchtower/internal/automations"
 	"watchtower/internal/db"
@@ -300,5 +301,33 @@ func TestRenderOwnerCopy_ChangesOnlyTheScript(t *testing.T) {
 	}
 	if r.Description != shipped.Description || !strings.Contains(r.Description, "builtin.defaultPrompt(name)") {
 		t.Errorf("the description changed: %q", r.Description)
+	}
+}
+
+// TestRunner_StaleRunOfAKilledCLIIsEnded: a run a killed CLI left running
+// past its deadline does not block Run Now (nor the slot) until the next
+// daemon start.
+func TestRunner_StaleRunOfAKilledCLIIsEnded(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	a := f.row(t)
+	stale, _, err := f.d.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerManual, Now: f.clock.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := f.clock.Now().Add(-time.Duration(a.BudgetMinutes+2) * time.Minute)
+	if ok, err := f.d.ClaimAutomationRun(stale, a.ApprovalHash, a.RecipeText, a.BudgetTokens, a.BudgetMinutes, started); err != nil || !ok {
+		t.Fatalf("claim = %v, %v", ok, err)
+	}
+	run, err := f.runner.RunNow(context.Background(), mbID, automations.BuiltinInput{Only: []string{"brief.compose"}})
+	if err != nil || run.Status != db.RunSucceeded {
+		t.Fatalf("RunNow = %+v, %v; want succeeded", run, err)
+	}
+	old, err := f.d.GetAutomationRun(stale)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.Status != db.RunFailed || old.ErrorKind != db.ErrKindInterrupted {
+		t.Errorf("the stale run is %s/%s, want failed/interrupted", old.Status, old.ErrorKind)
 	}
 }

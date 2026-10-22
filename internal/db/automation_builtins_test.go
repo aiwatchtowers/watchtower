@@ -399,3 +399,40 @@ func TestMarkInterrupted_BuiltinRunsSweptApart(t *testing.T) {
 	assert.Equal(t, 1, n)
 	wantAutomationRun(t, d, slotRun, RunFailed, ErrKindInterrupted)
 }
+
+// A built-in run past its deadline (a killed CLI's) is ended; a live one, an
+// owner run and a queued run are not.
+func TestMarkStaleBuiltinRuns_EndsOnlyBuiltinRunsPastDeadline(t *testing.T) {
+	d := openTestDB(t)
+	bi := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	claimAt := func(a int64, started time.Time) int64 {
+		run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: TriggerManual})
+		ok, err := d.ClaimAutomationRun(run, "h", "s", 50000, 5, started)
+		require.NoError(t, err)
+		require.True(t, ok)
+		return run
+	}
+	owner := claimAt(seedRunAutomation(t, d, "digest", 4), runTestNow.Add(-30*time.Minute))
+	n, err := d.MarkStaleBuiltinRuns(runTestNow)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "no built-in run is running")
+
+	stale := claimAt(bi, runTestNow.Add(-7*time.Minute))
+	queued, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: bi, Trigger: TriggerManual})
+	n, err = d.MarkStaleBuiltinRuns(runTestNow)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	wantAutomationRun(t, d, stale, RunFailed, ErrKindInterrupted)
+	wantAutomationRun(t, d, owner, RunRunning, "")
+	wantAutomationRun(t, d, queued, RunQueued, "")
+
+	_, err = d.CancelAutomationRun(queued, runTestNow)
+	require.NoError(t, err)
+	live := claimAt(bi, runTestNow.Add(-2*time.Minute))
+	n, err = d.MarkStaleBuiltinRuns(runTestNow)
+	require.NoError(t, err)
+	assert.Equal(t, 0, n)
+	wantAutomationRun(t, d, live, RunRunning, "")
+	_, err = d.MarkStaleBuiltinRuns(time.Time{})
+	require.Error(t, err)
+}

@@ -874,6 +874,41 @@ func (db *DB) MarkInterruptedBuiltinRuns(now time.Time) (int, error) {
 		"interrupted by a daemon restart", "marking interrupted built-in runs")
 }
 
+// staleBuiltinRunSQL selects the running/waiting runs of a built-in past
+// their deadline (started_at + budget minutes + the 1-minute grace, as
+// liveDryRunSQL): the CLI process that ran one inline (`briefing generate`)
+// was killed before it could finish the row. The executor's meter ends a live
+// run at its budget, so a run past the deadline has no process left. The one
+// argument is now.
+const staleBuiltinRunSQL = `status IN ('running','waiting') AND ` + builtinRunSQL + `
+	AND started_at IS NOT NULL
+	AND julianday(started_at) + (COALESCE(NULLIF(budget_minutes, 0),
+		(SELECT a.budget_minutes FROM automations a WHERE a.id = automation_runs.automation_id)) + 1) / 1440.0
+	    <= julianday(?)`
+
+// MarkStaleBuiltinRuns ends every running/waiting built-in run past its
+// deadline (staleBuiltinRunSQL) as failed with error_kind='interrupted' and
+// closes its open steps; it returns how many it ended. The built-ins' runner
+// calls it before each slot and Run Now: a run a killed CLI left running
+// would otherwise hold the built-in's one concurrency slot until the next
+// daemon start.
+func (db *DB) MarkStaleBuiltinRuns(now time.Time) (int, error) {
+	if err := requireRunTime(now, "ending stale built-in runs"); err != nil {
+		return 0, err
+	}
+	var found bool
+	err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM automation_runs WHERE `+staleBuiltinRunSQL+`)`,
+		formatAutomationTime(now)).Scan(&found)
+	if err != nil {
+		return 0, fmt.Errorf("ending stale built-in runs: %w", err)
+	}
+	if !found {
+		return 0, nil
+	}
+	return db.endRunsInterrupted(now, staleBuiltinRunSQL, "the process running it stopped before it finished the run",
+		"ending stale built-in runs")
+}
+
 // MarkStaleDryRuns ends every running/waiting dry run past its deadline as
 // failed with error_kind='interrupted' and closes its open steps in the same
 // transaction; it returns how many it ended. The daemon's executor calls it on
