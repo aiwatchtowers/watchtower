@@ -307,6 +307,16 @@ final class IdeasViewModel {
         await write("merge idea") { db in try IdeaQueries.merge(db, id: idea.id, into: targetID) }
     }
 
+    /// A decision's Supersede (no replacing idea named).
+    func supersede(_ idea: Idea) async {
+        await write("supersede decision") { db in try IdeaQueries.supersede(db, id: idea.id, by: nil) }
+    }
+
+    /// A decision's Reverse.
+    func reverse(_ idea: Idea) async {
+        await write("reverse decision") { db in try IdeaQueries.setStatus(db, id: idea.id, status: "reversed") }
+    }
+
     /// Hard delete — the row, its mentions, and its Discuss chat. The reload's
     /// `reconcileSelection()` moves the selection off the vanished id.
     @discardableResult

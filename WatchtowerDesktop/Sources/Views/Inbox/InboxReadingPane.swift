@@ -93,7 +93,10 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         case .track(let card):
             column { trackCard(card) }
         case .idea(let idea):
-            column { ideaCard(idea) }
+            // The idea card scrolls itself and pins its chat composer and
+            // buttons to the bottom of the pane, so it takes the whole pane.
+            ideaCard(idea)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         case .message(let row):
             column {
                 InboxMessagePane(row: row, isWriting: isWriting, onDone: onDone, onHide: onDismiss,

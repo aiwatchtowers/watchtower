@@ -319,28 +319,26 @@ struct IdeasView: View {
             IdeaDetailPane(
                 idea: idea,
                 allIdeas: vm.reviewItems + vm.registryItems,
-                onApprove: { Task { await vm.approve(idea) } },
-                onReject: { Task { await vm.reject(idea) } },
-                onActivate: { Task { await vm.activate(idea) } },
-                onNotNow: { date in Task { await vm.notNow(idea, until: date.map(Self.isoDateString) ?? "") } },
-                onDrop: { Task { await vm.drop(idea) } },
-                onMerge: { targetID in Task { await vm.merge(idea, into: targetID) } },
-                onConvert: {
-                    Task {
+                actions: IdeaActions(
+                    approve: { await vm.approve(idea) },
+                    reject: { await vm.reject(idea) },
+                    activate: { await vm.activate(idea) },
+                    notNow: { until in await vm.notNow(idea, until: until) },
+                    drop: { await vm.drop(idea) },
+                    merge: { targetID in await vm.merge(idea, into: targetID) },
+                    makeTask: {
                         if let targetID = await vm.convertToTarget(idea) {
                             appState.navigateToTarget(targetID)
                         }
-                    }
-                },
-                onRating: { rating, comment in await vm.setRating(idea, rating: rating, comment: comment) },
-                onDelete: {
-                    Task {
+                    },
+                    rating: { rating, comment in await vm.setRating(idea, rating: rating, comment: comment) },
+                    delete: {
                         // Its Discuss chat went with it: stop a reply still streaming.
                         if await vm.deleteIdea(idea) {
                             appState.embeddedChatCenter.dropContext(type: IdeaChatSurface.contextType, id: String(idea.id))
                         }
                     }
-                }
+                )
             )
             // Identity at the CALL SITE, so the pane's OWN @State (rating
             // draft, merge-sheet selection) resets when the selection
@@ -404,11 +402,5 @@ struct IdeasView: View {
                     .padding(.top, 8)
             }
         )
-    }
-
-    private static func isoDateString(_ date: Date) -> String {
-        let fmt = ISO8601DateFormatter()
-        fmt.formatOptions = [.withInternetDateTime]
-        return fmt.string(from: date)
     }
 }

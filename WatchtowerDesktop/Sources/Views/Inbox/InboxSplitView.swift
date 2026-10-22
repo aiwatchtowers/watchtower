@@ -21,6 +21,8 @@ struct InboxSplitView<EmptyList: View>: View {
     let onCardAction: (InboxCardCommand) -> Void
     /// The Your day card's pane; nil shows its title and source line.
     let dayPane: ((InboxDayCard) -> InboxDayPane?)?
+    /// The idea card; nil shows its title and source line.
+    let ideaPane: ((Idea) -> InboxIdeaPane?)?
     let onOpenAutomationRun: ((Int64) -> Void)?
     /// The moment Today starts from; nil is now (design shots fix it).
     let now: Date?
@@ -44,6 +46,7 @@ struct InboxSplitView<EmptyList: View>: View {
         workbenches: [Workbench] = [],
         onCardAction: @escaping (InboxCardCommand) -> Void,
         dayPane: ((InboxDayCard) -> InboxDayPane?)? = nil,
+        ideaPane: ((Idea) -> InboxIdeaPane?)? = nil,
         onOpenAutomationRun: ((Int64) -> Void)? = nil,
         now: Date? = nil,
         aux: Binding<InboxAuxPane?> = .constant(nil),
@@ -58,6 +61,7 @@ struct InboxSplitView<EmptyList: View>: View {
         self.workbenches = workbenches
         self.onCardAction = onCardAction
         self.dayPane = dayPane
+        self.ideaPane = ideaPane
         self.onOpenAutomationRun = onOpenAutomationRun
         self.now = now
         _aux = aux
@@ -163,7 +167,13 @@ struct InboxSplitView<EmptyList: View>: View {
                 }
             },
             trackCard: { InboxCardPlaceholder(track: $0, now: now) },
-            ideaCard: { InboxCardPlaceholder(idea: $0) }
+            ideaCard: { idea in
+                if let pane = ideaPane?(idea) {
+                    pane
+                } else {
+                    InboxCardPlaceholder(idea: idea).padding(Spacing.page)
+                }
+            }
         )
     }
 

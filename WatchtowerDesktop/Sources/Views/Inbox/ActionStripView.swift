@@ -37,6 +37,8 @@ struct ActionStripView: View {
                     onOpenAutomationRun: { runID in appState.openAutomationRun(runID: runID) },
                     onCardAction: { command in Task { await appState.perform(command) } },
                     dayPane: { dayPane($0, vm: vm) },
+                    ideas: appState.ideasViewModel,
+                    ideaPane: { ideaPane($0, vm: vm) },
                     onOpenSaveDraft: { appState.openSaveProposalDraft($0) },
                     workbenches: appState.inboxWorkbenches,
                     onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
@@ -83,6 +85,22 @@ struct ActionStripView: View {
             onOpenSource: appState.openDayPlanItemSource,
             onOpenBriefingLink: appState.openBriefingLink,
             onMakeTask: makeTask
+        )
+    }
+
+    /// The idea card over the AppState-owned ideas view model; nil before it exists.
+    private func ideaPane(_ idea: Idea, vm: ActionStripViewModel) -> InboxIdeaPane? {
+        guard let ideas = appState.ideasViewModel else { return nil }
+        return InboxIdeaPane(
+            idea: idea,
+            ideas: ideas,
+            allIdeas: vm.feed.ideas,
+            onChange: { await vm.refresh() },
+            onMadeTask: { appState.navigateToTarget($0) },
+            onDeleted: { id in
+                // Its Discuss chat went with it: stop a reply still streaming.
+                appState.embeddedChatCenter.dropContext(type: IdeaChatSurface.contextType, id: String(id))
+            }
         )
     }
 
@@ -148,6 +166,10 @@ struct ActionStripActionsView: View {
     var onCardAction: (InboxCardCommand) -> Void = { _ in }
     /// The Your day card's pane (`ActionStripView.dayPane`); nil shows its title.
     var dayPane: ((InboxDayCard) -> InboxDayPane?)?
+    /// The Ideas filter's New idea and Find Ideas rows; nil leaves them out.
+    var ideas: IdeasViewModel?
+    /// The idea card (`ActionStripView.ideaPane`); nil shows its title.
+    var ideaPane: ((Idea) -> InboxIdeaPane?)?
     /// A `save_automation` proposal's **Open Draft** (`AppState.openSaveProposalDraft`).
     var onOpenSaveDraft: (SaveAutomationCardModel) -> Void = { _ in }
     /// The workbenches a card's agent press can go to (and that name a
@@ -169,6 +191,9 @@ struct ActionStripActionsView: View {
     var profile: SecretaryProfileViewModel?
 
     @State private var aux: InboxAuxPane?
+    @State private var ideasRow: InboxIdeasRow?
+    @State private var newIdea = InboxNewIdeaDraft()
+    @State private var backfillRange = InboxIdeaBackfillRange(from: Date(), to: Date())
 
     var body: some View {
         let isEmpty = vm.sections.isEmpty
@@ -179,8 +204,19 @@ struct ActionStripActionsView: View {
             InboxFilterBar(
                 filter: filter,
                 showsCheatSheetButton: !(isEmpty && vm.filter == .all),
-                onOpenAux: openAux
-            )
+                onOpenAux: openAux,
+                onFindIdeas: ideas.map { _ in { openIdeasRow(.findIdeas) } }
+            ) {
+                if let ideas {
+                    InboxIdeasHeader(isMining: ideas.isBackfilling,
+                                     row: Binding(get: { ideasRow }, set: openIdeasRow))
+                }
+            }
+            if vm.filter == .ideas, let ideas, let ideasRow {
+                self.ideasRow(ideasRow, ideas: ideas)
+                    .padding(.horizontal, Spacing.medium)
+                    .padding(.bottom, Spacing.regular)
+            }
             if isEmpty && aux == nil {
                 ScrollView {
                     emptyList.padding(.top, Spacing.wide)
@@ -194,6 +230,7 @@ struct ActionStripActionsView: View {
                     workbenches: workbenches,
                     onCardAction: onCardAction,
                     dayPane: dayPane,
+                    ideaPane: ideaPane,
                     onOpenAutomationRun: onOpenAutomationRun,
                     aux: $aux,
                     cheatSheet: cheatSheet,
@@ -220,6 +257,28 @@ struct ActionStripActionsView: View {
             onEnable: onEnable,
             onOpenSettings: onOpenSettings
         )
+    }
+
+    /// Opens (or closes, nil) the Ideas filter's row; Find Ideas starts from
+    /// the range that is mining, or the last two weeks.
+    private func openIdeasRow(_ row: InboxIdeasRow?) {
+        if row == .findIdeas, ideasRow != .findIdeas, let ideas {
+            backfillRange = .initial(ideas)
+        }
+        ideasRow = row
+    }
+
+    @ViewBuilder
+    private func ideasRow(_ row: InboxIdeasRow, ideas: IdeasViewModel) -> some View {
+        switch row {
+        case .newIdea:
+            InboxNewIdeaRow(ideas: ideas, draft: $newIdea, onCreated: { id in
+                ideasRow = nil
+                await vm.open(.ideas, select: .idea(id))
+            }, onCancel: { ideasRow = nil })
+        case .findIdeas:
+            InboxIdeaBackfillRow(ideas: ideas, range: $backfillRange) { ideasRow = nil }
+        }
     }
 
     /// The header's pane opens in the reading pane in place of the selected card.
