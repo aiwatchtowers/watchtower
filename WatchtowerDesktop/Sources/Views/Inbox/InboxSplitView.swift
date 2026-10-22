@@ -119,10 +119,23 @@ struct InboxSplitView<EmptyList: View>: View {
                             .listRowSeparator(.hidden)
                     }
                 }
+                if vm.filter == .day, vm.feed.hasOlderDays {
+                    showOlderRow
+                }
             }
             .clearPlainList()
             .onExitCommand { Task { await vm.select(nil) } }
         }
+    }
+
+    /// The Day filter's last row while older dates exist: 30 more per press.
+    private var showOlderRow: some View {
+        Button("Show older") { vm.showOlderDays() }
+            .buttonStyle(.kitQuiet)
+            .controlSize(.small)
+            .help("Show 30 more days")
+            .selectionDisabled()
+            .listRowSeparator(.hidden)
     }
 
     /// A section's title; the Tracks filter's Stopped fold opens and closes here.

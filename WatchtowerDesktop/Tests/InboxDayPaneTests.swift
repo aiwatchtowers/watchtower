@@ -62,7 +62,10 @@ final class InboxDayPaneTests: XCTestCase {
         date: String,
         owner: Owner = InboxDayPaneTests.owner,
         onDone: @escaping () -> Void = {},
-        onCommand: @escaping (InboxCardCommand) -> Void = { _ in }
+        onCommand: @escaping (InboxCardCommand) -> Void = { _ in },
+        briefingVM: BriefingViewModel? = nil,
+        emptyState: EmptyStateContext = .neutral,
+        onMade: @escaping () async -> Void = {}
     ) async throws -> InboxDayPane {
         let (briefing, dayPlan) = try await pool.read { db in
             (try BriefingQueries.fetchByDate(db, date: date), try DayPlanQueries.fetchByDate(db, date: date))
@@ -71,8 +74,20 @@ final class InboxDayPaneTests: XCTestCase {
         let card = InboxDayCard(date: date, briefing: briefing, plan: dayPlan,
                                 planDone: 0, planTotal: plan.items.count, stamp: Date())
         let ignoreSource: (DayPlanItem) -> Void = { _ in }
-        return InboxDayPane(card: card, today: Self.today, plan: plan, owner: owner,
-                            onDone: onDone, onCommand: onCommand, onOpenSource: ignoreSource)
+        var sut = InboxDayPane(card: card, today: Self.today, plan: plan, owner: owner,
+                               onDone: onDone, onCommand: onCommand, onOpenSource: ignoreSource)
+        sut.briefing = briefingVM
+        sut.emptyState = emptyState
+        sut.onMade = onMade
+        return sut
+    }
+
+    /// AppState's briefing view model over the same fake CLI, so one
+    /// `invocations` list shows the order of both commands.
+    private func briefingVM() throws -> BriefingViewModel {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        addTeardownBlock { TestDatabase.cleanup(path: path) }
+        return BriefingViewModel(dbManager: manager, cliRunner: cli)
     }
 
     /// The plan block as the pane shows it, with its open row in `row`.
@@ -362,5 +377,88 @@ final class InboxDayPaneTests: XCTestCase {
         try sut.inspect().find(button: "Reply to the release thread").tap()
 
         XCTAssertEqual(opened, [.track(3)])
+    }
+
+    // MARK: - Make today's brief and plan (T11b, G4)
+
+    /// Today with neither: when the brief comes, then one primary button; no
+    /// plan block's own Make today's plan.
+    func testTodayWithNothingOffersMakeBriefAndPlan() async throws {
+        var context = EmptyStateContext.neutral
+        context.readiness = { $0 == .briefing ? .preparing(detail: nil) : nil }
+        context.briefingHour = 9
+        let sut = try await pane(date: Self.today, briefingVM: try briefingVM(), emptyState: context)
+
+        XCTAssertNoThrow(try sut.inspect().find(text: "Nothing is ready for today yet."))
+        XCTAssertNoThrow(try sut.inspect().find(text: "Preparing now"), "the readiness line says when")
+        XCTAssertTrue(try texts(sut).contains { $0.contains("09:00") }, "the brief's hour")
+        XCTAssertNoThrow(try sut.inspect().find(button: "Make today's brief and plan"))
+        XCTAssertThrowsError(try sut.inspect().find(button: "Make today's plan"))
+        XCTAssertThrowsError(try sut.inspect().find(button: "Make today's brief"))
+    }
+
+    func testMakeBriefAndPlanRunsBothInOrderThenRefreshes() async throws {
+        var made = 0
+        let sut = try await pane(date: Self.today, briefingVM: try briefingVM(), onMade: { made += 1 })
+
+        await sut.makeBriefAndPlan()
+
+        XCTAssertEqual(cli.invocations, [["briefing", "generate"], ["day-plan", "generate", "--date", Self.today]])
+        XCTAssertEqual(made, 1)
+    }
+
+    /// A refused brief stops before the plan; the refusal shows on the card.
+    func testMakeBriefAndPlanShowsTheRefusal() async throws {
+        let refusal = "no owner identity: connect Slack, Google or Jira first"
+        cli.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: refusal)
+        let briefing = try briefingVM()
+        let sut = try await pane(date: Self.today, briefingVM: briefing)
+
+        await sut.makeBriefAndPlan()
+
+        XCTAssertEqual(cli.invocations, [["briefing", "generate"]])
+        XCTAssertTrue(try texts(sut).contains { $0.contains(refusal) }, "the CLI's stderr is shown inline")
+        XCTAssertNoThrow(try sut.inspect().find(button: "Make today's brief and plan"), "the owner can try again")
+    }
+
+    /// OWNER-02: no owner, no Make button; the connect-an-identity message.
+    func testNothingReadyWithoutAnOwnerShowsTheOwnerMessage() async throws {
+        let sut = try await pane(date: Self.today, owner: .unknown, briefingVM: try briefingVM())
+
+        XCTAssertNoThrow(try sut.inspect().find(button: "Open Connections"))
+        XCTAssertThrowsError(try sut.inspect().find(button: "Make today's brief and plan"))
+    }
+
+    func testAPastDayNeverOffersToMakeIt() async throws {
+        let sut = try await pane(date: Self.yesterday, briefingVM: try briefingVM())
+
+        XCTAssertThrowsError(try sut.inspect().find(text: "Nothing is ready for today yet."))
+        XCTAssertThrowsError(try sut.inspect().find(button: "Make today's brief and plan"))
+    }
+
+    /// Today's plan without a brief: a secondary Make today's brief.
+    func testPlanOnlyTodayOffersMakeTodaysBrief() async throws {
+        try await insertPlan(date: Self.today)
+        var made = 0
+        let sut = try await pane(date: Self.today, briefingVM: try briefingVM(), onMade: { made += 1 })
+
+        XCTAssertNoThrow(try sut.inspect().find(button: "Make today's brief"))
+        XCTAssertThrowsError(try sut.inspect().find(button: "Make today's brief and plan"))
+        await sut.makeBrief()
+        XCTAssertEqual(cli.invocations, [["briefing", "generate"]])
+        XCTAssertEqual(made, 1)
+
+        let past = try await pane(date: Self.yesterday, briefingVM: try briefingVM())
+        XCTAssertThrowsError(try past.inspect().find(button: "Make today's brief"))
+    }
+
+    /// Today's brief without a plan keeps the plan block's Make today's plan.
+    func testBriefOnlyTodayKeepsMakeTodaysPlan() async throws {
+        try await insertBriefing(date: Self.today)
+        let sut = try await pane(date: Self.today, briefingVM: try briefingVM())
+
+        XCTAssertNoThrow(try sut.inspect().find(button: "Make today's plan"))
+        XCTAssertThrowsError(try sut.inspect().find(button: "Make today's brief and plan"))
+        XCTAssertThrowsError(try sut.inspect().find(button: "Make today's brief"))
     }
 }

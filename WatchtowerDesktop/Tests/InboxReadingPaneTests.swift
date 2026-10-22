@@ -345,6 +345,35 @@ final class InboxReadingPaneTests: XCTestCase {
         XCTAssertNoThrow(try sut.inspect().find(text: "Nothing here"), "the empty list stays on the left")
     }
 
+    /// The Day filter ends with Show older while older dates exist; each
+    /// press reads 30 more, and the row goes once nothing older is left.
+    func testDayFilterShowOlderReadsAnotherPage() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let suite = "InboxReadingPaneTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        try await pool.write { db in
+            for day in 1...31 {
+                try TestDatabase.insertBriefing(db, date: String(format: "2026-08-%02d", day))
+            }
+        }
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), defaults: defaults)
+        vm.filter = .day
+        await vm.refresh()
+        func split() -> some View {
+            InboxSplitView(vm: vm, proposalCard: Self.proposalCard, onCardAction: { _ in },
+                           emptyList: { Text("Nothing here") }) // swiftlint:disable:this trailing_closure
+        }
+
+        try split().inspect().find(button: "Show older").tap()
+        await vm.refresh()
+
+        XCTAssertEqual(vm.dayLimit, 60)
+        XCTAssertEqual(vm.feed.days.count, 31)
+        XCTAssertThrowsError(try split().inspect().find(button: "Show older"), "nothing older left")
+    }
+
     /// Learned Rules adds a rule inline under its `+`, never in a sheet.
     func testLearnedRulesAddsInline() throws {
         let (pool, path) = try TestDatabase.createPool()

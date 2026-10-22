@@ -49,6 +49,16 @@ package struct InboxDayCard: Equatable, Sendable {
     }
 
     package var isUnread: Bool { briefing.map { $0.readAt == nil } ?? false }
+
+    /// Today before its briefing and its plan exist: the list still shows the
+    /// day's card, whose pane offers to make them. Never unread, so never in
+    /// the badge.
+    package static func placeholder(date: String, stamp: Date) -> Self {
+        Self(date: date, briefing: nil, plan: nil, planDone: 0, planTotal: 0, stamp: stamp)
+    }
+
+    /// Neither a briefing nor a plan: the placeholder of `placeholder(date:stamp:)`.
+    package var isEmpty: Bool { briefing == nil && plan == nil }
 }
 
 /// One track of the Tracks filter with its latest activity.
@@ -72,6 +82,8 @@ package struct InboxFeedSnapshot: Equatable, Sendable {
     package var reminders: [Reminder] = []
     package var outputs: [AutomationOutputCard] = []
     package var days: [InboxDayCard] = []
+    /// More dates exist past `days` (the Day filter's **Show older**).
+    package var hasOlderDays = false
     package var tracks: [InboxTrackCard] = []
     /// Dismissed tracks: only the Tracks filter's Stopped fold lists them,
     /// nothing counts them.

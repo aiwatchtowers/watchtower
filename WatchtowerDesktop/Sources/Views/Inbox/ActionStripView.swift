@@ -86,7 +86,14 @@ struct ActionStripView: View {
             onCommand: { command in Task { await appState.perform(command) } },
             onOpenSource: appState.openDayPlanItemSource,
             onOpenBriefingLink: appState.openBriefingLink,
-            onMakeTask: makeTask
+            onMakeTask: makeTask,
+            briefing: appState.briefingViewModel,
+            emptyState: appState.emptyStateContext,
+            onOpenConnections: {
+                appState.settingsTab = .connections
+                openSettings()
+            },
+            onMade: { await vm.refresh() }
         )
     }
 

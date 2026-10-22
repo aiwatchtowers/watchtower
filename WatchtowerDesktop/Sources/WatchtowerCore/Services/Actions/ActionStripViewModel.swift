@@ -219,7 +219,7 @@ package final class ActionStripViewModel {
         let now = Date()
         sections = InboxListBuilder.sections(
             feed, filter: filter, dayDone: dayDone, today: HomeFeedBuilder.dayString(now, calendar: .current),
-            now: now, calendar: .current, showsStopped: showsStopped)
+            now: now, calendar: .current, showsStopped: showsStopped, placeholdsToday: true)
     }
 
     /// The selected card left the list (resolved elsewhere, auto-resolved,

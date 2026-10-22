@@ -187,8 +187,10 @@ final class DayPlanViewModel {
     // MARK: - CLI Actions
 
     /// Calls `watchtower day-plan generate [--feedback <text>] --date <date>`.
-    /// Updates `isGenerating` and reloads from DB on success.
-    func regenerate(feedback: String?) async {
+    /// Updates `isGenerating` and reloads from DB on success. `date` nil =
+    /// the loaded date; another date (a run that outlived a day switch) is
+    /// generated without reloading the shown one.
+    func regenerate(feedback: String?, date: String? = nil) async {
         isGenerating = true
         generationError = nil
         defer { isGenerating = false }
@@ -197,11 +199,12 @@ final class DayPlanViewModel {
         if let fb = feedback, !fb.isEmpty {
             args += ["--feedback", fb]
         }
-        args += ["--date", currentDate]
+        let target = date ?? currentDate
+        args += ["--date", target]
 
         do {
             _ = try await cli.run(args: args)
-            await reload()
+            if target == currentDate { await reload() }
         } catch {
             generationError = error.localizedDescription
         }

@@ -396,11 +396,29 @@ final class ActionStripAllKindsTests: XCTestCase {
         let vm = makeVM()
         await vm.refresh()
         XCTAssertEqual(vm.feed.days.count, 30)
+        XCTAssertTrue(vm.feed.hasOlderDays)
 
         await vm.showOlderDays().value
 
         XCTAssertEqual(vm.dayLimit, 60)
         XCTAssertEqual(vm.feed.days.count, 31)
+        XCTAssertFalse(vm.feed.hasOlderDays, "nothing older left: Show older goes")
+    }
+
+    /// Today with neither a brief nor a plan: its placeholder card is listed
+    /// (All and Day) but the badge stays 0.
+    func testTodaysPlaceholderIsListedButNeverCounted() async throws {
+        let vm = makeVM()
+        await vm.refresh()
+
+        XCTAssertEqual(vm.sections.flatMap(\.items).map(\.id), [.day(today)])
+        vm.filter = .day
+        XCTAssertEqual(vm.sections.flatMap(\.items).map(\.id), [.day(today)])
+        vm.filter = .messages
+        XCTAssertEqual(vm.sections, [])
+        let nowUTC = AutomationDates.format(Date())
+        let badge = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: nowUTC) }
+        XCTAssertEqual(badge, 0)
     }
 
     // MARK: - Polling (board #731)

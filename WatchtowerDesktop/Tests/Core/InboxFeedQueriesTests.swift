@@ -48,6 +48,23 @@ final class InboxFeedQueriesTests: XCTestCase {
         XCTAssertEqual(page.map(\.date), ["2026-10-21"])
     }
 
+    /// The read says whether a date exists past the page (the Day filter's Show older).
+    func testReadTellsWhetherOlderDaysExist() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            for day in ["2026-10-20", "2026-10-21", "2026-10-22"] {
+                try TestDatabase.insertBriefing(db, date: day)
+            }
+        }
+        let nowUTC = "2026-10-22T08:00:00Z"
+        let page = try queue.read { try InboxFeedQueries.read($0, nowUTC: nowUTC, today: "2026-10-22", dayLimit: 2) }
+        XCTAssertEqual(page.days.map(\.date), ["2026-10-22", "2026-10-21"])
+        XCTAssertTrue(page.hasOlderDays)
+        let all = try queue.read { try InboxFeedQueries.read($0, nowUTC: nowUTC, today: "2026-10-22", dayLimit: 3) }
+        XCTAssertEqual(all.days.count, 3)
+        XCTAssertFalse(all.hasOlderDays)
+    }
+
     func testMessagesReadIsCappedAndOnePerRow() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in

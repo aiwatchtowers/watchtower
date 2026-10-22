@@ -66,6 +66,43 @@ final class InboxAllKindsBuilderTests: XCTestCase {
         InboxListBuilder.sections(feed, filter: filter, dayDone: dayDone, today: today, now: try now(), calendar: berlin)
     }
 
+    // MARK: - Today's placeholder (T11b, G4)
+
+    private func placeheld(_ feed: InboxFeedSnapshot, _ filter: InboxFilter = .all) throws -> [InboxSection] {
+        InboxListBuilder.sections(feed, filter: filter, dayDone: nil, today: today, now: try now(), calendar: berlin,
+                                  placeholdsToday: true)
+    }
+
+    func testTodayWithNothingStillHasItsDayCard() throws {
+        for filter in [InboxFilter.all, .day] {
+            let sections = try placeheld(InboxFeedSnapshot(), filter)
+            XCTAssertEqual(sections.map(\.title), ["Today"], "\(filter)")
+            guard case .day(let card)? = sections.first?.items.first else { return XCTFail("\(filter): no day card") }
+            XCTAssertEqual(card.date, today)
+            XCTAssertTrue(card.isEmpty)
+            XCTAssertFalse(card.isUnread, "the placeholder is never unread, so never in the badge")
+        }
+        for filter in [InboxFilter.messages, .tracks, .ideas, .automations] {
+            XCTAssertEqual(try placeheld(InboxFeedSnapshot(), filter), [], "\(filter)")
+        }
+        XCTAssertEqual(try build(InboxFeedSnapshot()), [], "only the Inbox view model asks for the placeholder")
+    }
+
+    func testThePlaceholderIsOnlyForTodayAndOnlyWhenItHasNoCard() throws {
+        let real = try dayCard(today, read: false, stamp: "2026-10-22T05:00:00Z")
+        let withToday = try placeheld(InboxFeedSnapshot(days: [real]), .day)
+        XCTAssertEqual(withToday.flatMap(\.items), [.day(real)])
+
+        let past = try dayCard("2026-10-21", read: true, stamp: "2026-10-21T05:00:00Z")
+        let items = try placeheld(InboxFeedSnapshot(days: [past]), .day).flatMap(\.items)
+        XCTAssertEqual(items.map(\.id), [.day(today), .day("2026-10-21")])
+        let dates = items.compactMap { item -> InboxDayCard? in
+            guard case .day(let card) = item else { return nil }
+            return card
+        }
+        XCTAssertEqual(dates.filter(\.isEmpty).map(\.date), [today], "a past date never gets a placeholder")
+    }
+
     func testNeedsYourDecisionHoldsProposalsAndIdeasAwaitingAVerdict() throws {
         let feed = InboxFeedSnapshot(proposals: [proposal(1)], ideas: [idea(2), idea(3, status: "active")])
         let sections = try build(feed)

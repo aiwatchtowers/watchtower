@@ -60,6 +60,8 @@ package enum InboxListBuilder {
 
     /// `today` is the "YYYY-MM-DD" of `now`; `dayDone` the date whose day card
     /// the owner finished (it then sorts by time instead of staying pinned).
+    /// With `placeholdsToday`, today with neither a briefing nor a plan gets a
+    /// placeholder day card (`InboxDayCard.placeholder`) in All and Day.
     /// The Tracks filter ends with a `Stopped · N` fold of the stopped tracks,
     /// listed only while `showsStopped`; no other filter shows them.
     package static func sections(
@@ -69,7 +71,8 @@ package enum InboxListBuilder {
         today: String,
         now: Date,
         calendar: Calendar,
-        showsStopped: Bool = false
+        showsStopped: Bool = false,
+        placeholdsToday: Bool = false
     ) -> [InboxSection] {
         let showsAll = filter == .all
         let showsProposals = showsAll || filter == .automations
@@ -84,8 +87,13 @@ package enum InboxListBuilder {
             rows += feed.outputs.map { (at: $0.createdAt, item: .output($0)) }
             rows += feed.reminders.map { (at: AutomationDates.parse($0.remindAt) ?? .distantPast, item: .reminder($0)) }
         }
+        let startOfToday = calendar.startOfDay(for: now)
         if showsAll || filter == .day {
-            let days = showsAll ? feed.days.filter { $0.date == today || $0.isUnread } : feed.days
+            var days = showsAll ? feed.days.filter { $0.date == today || $0.isUnread } : feed.days
+            // Today without a briefing or a plan yet still has its card.
+            if placeholdsToday, !feed.days.contains(where: { $0.date == today }) {
+                days.append(.placeholder(date: today, stamp: startOfToday))
+            }
             rows += days.map { (at: $0.stamp, item: .day($0)) }
         }
         if showsAll || filter == .tracks {
@@ -103,7 +111,6 @@ package enum InboxListBuilder {
             lhs.at != rhs.at ? lhs.at > rhs.at : tieOrder(lhs.item) < tieOrder(rhs.item)
         }
 
-        let startOfToday = calendar.startOfDay(for: now)
         // Today's day card stays on top until the owner marks it done.
         func isPinned(_ item: InboxListItem) -> Bool {
             guard case let .day(card) = item else { return false }

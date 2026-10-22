@@ -22,7 +22,10 @@ package enum InboxFeedQueries {
         snapshot.proposals = try emptyIfTableMissing { try AgentActionQueries.fetchStrip(db, terminalSince: terminalSince) }
         snapshot.reminders = try emptyIfTableMissing { try ReminderQueries.fetchDue(db, nowUTC: nowUTC) }
         snapshot.outputs = try emptyIfTableMissing { try AutomationQueries.fetchInboxOutputs(db, includeRead: true) }
-        snapshot.days = try emptyIfTableMissing { try BriefingQueries.fetchDayCards(db, limit: dayLimit) }
+        // One date past the page tells whether an older one exists.
+        let days = try emptyIfTableMissing { try BriefingQueries.fetchDayCards(db, limit: dayLimit + 1) }
+        snapshot.days = Array(days.prefix(dayLimit))
+        snapshot.hasOlderDays = days.count > dayLimit
         snapshot.tracks = try emptyIfTableMissing { try TrackQueries.fetchInboxCards(db) }
         snapshot.stoppedTracks = try emptyIfTableMissing { try TrackQueries.fetchInboxCards(db, stopped: true) }
         snapshot.ideas = try emptyIfTableMissing { try IdeaQueries.fetchInboxRegistry(db) }

@@ -86,9 +86,11 @@ struct InboxListRow: View {
         }
     }
 
-    /// The day card: its briefing, or the plan alone.
+    /// The day card: its briefing, or the plan alone; today's placeholder
+    /// before either exists.
     static func dayTitle(_ card: InboxDayCard) -> String {
-        card.briefing != nil ? "Morning brief" : "Day plan"
+        if card.briefing != nil { return "Morning brief" }
+        return card.plan != nil ? "Day plan" : "Nothing ready yet"
     }
 
     /// "Your day · Wed 22 Oct".
