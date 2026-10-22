@@ -156,6 +156,9 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 // RunForDateWith is RunForDate with run options.
 func (p *Pipeline) RunForDateWith(ctx context.Context, date string, opts RunOptions) (int, error) {
 	p.lastPromptNote = ""
+	// Usage is this run's: a run that stops before the model call reports
+	// zero, never the previous run's numbers.
+	p.lastInputTokens, p.lastOutputTokens, p.lastCostUSD, p.lastTotalAPITokens = 0, 0, 0, 0
 	if !p.cfg.Briefing.Enabled {
 		return 0, nil
 	}
@@ -258,6 +261,18 @@ func (p *Pipeline) RunForDateWith(ctx context.Context, date string, opts RunOpti
 	if err != nil {
 		return 0, fmt.Errorf("generating briefing: %w", err)
 	}
+	var inTok, outTok, totalAPI int
+	var model string
+	if usage != nil {
+		model = usage.Model
+		inTok = usage.InputTokens
+		outTok = usage.OutputTokens
+		totalAPI = usage.TotalAPITokens
+	}
+	// Recorded before the parse: a response that fails to parse was still paid for.
+	p.lastInputTokens = inTok
+	p.lastOutputTokens = outTok
+	p.lastTotalAPITokens = totalAPI
 
 	// Parse result.
 	result, err := parseBriefingResult(response)
@@ -272,19 +287,6 @@ func (p *Pipeline) RunForDateWith(ctx context.Context, date string, opts RunOpti
 	whatHappenedJSON, _ := json.Marshal(result.WhatHappened)
 	teamPulseJSON, _ := json.Marshal(result.TeamPulse)
 	coachingJSON, _ := json.Marshal(result.Coaching)
-
-	var inTok, outTok, totalAPI int
-	var model string
-	if usage != nil {
-		model = usage.Model
-		inTok = usage.InputTokens
-		outTok = usage.OutputTokens
-		totalAPI = usage.TotalAPITokens
-	}
-	p.lastInputTokens = inTok
-	p.lastOutputTokens = outTok
-	p.lastCostUSD = 0
-	p.lastTotalAPITokens = totalAPI
 
 	briefing := db.Briefing{
 		WorkspaceID:   workspaceID,

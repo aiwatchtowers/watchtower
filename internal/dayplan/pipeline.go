@@ -50,6 +50,12 @@ func (p *Pipeline) AccumulatedUsage() (int, int, float64, int) {
 // It is idempotent by default: if a plan already exists and neither Force nor
 // Feedback is set it returns the existing plan immediately.
 func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error) {
+	// Reset per-Run accumulators first so every short-circuited path (the
+	// enabled flag, an existing plan, a gather error) reports zero tokens.
+	p.lastInputTokens = 0
+	p.lastOutputTokens = 0
+	p.lastTotalAPITokens = 0
+	p.lastPromptNote = ""
 	if !p.cfg.DayPlan.Enabled {
 		return nil, nil
 	}
@@ -119,12 +125,6 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 	}
 
 	systemPrompt, promptVer := p.buildPrompt(inputs, opts.Prompt)
-
-	// Reset per-Run accumulators before the AI call so short-circuited paths
-	// (missing enabled flag, existing plan) report zero tokens.
-	p.lastInputTokens = 0
-	p.lastOutputTokens = 0
-	p.lastTotalAPITokens = 0
 
 	resp, usage, _, err := p.generator.Generate(
 		digest.WithSource(ctx, "day_plan.generate"),

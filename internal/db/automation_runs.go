@@ -846,15 +846,32 @@ const interruptedRunSQL = `status IN ('running','waiting') AND NOT (` + liveDryR
 // one argument is now.
 const staleDryRunSQL = `status IN ('running','waiting') AND trigger = 'dry_run' AND NOT (` + liveDryRunSQL + `)`
 
-// MarkInterruptedAutomationRuns is the daemon start's sweep (AUTO-08): in one
-// transaction it keeps every resumable waiting run (resumableRunSQL) for a
-// resume — resume_pending = 1, status still waiting — and ends every other
-// running/waiting run as failed with error_kind='interrupted', closing their
-// open steps. It returns how many runs it ended. Queued runs are untouched,
-// and so is a dry run still within its deadline (see liveDryRunSQL).
+// builtinRunSQL matches the runs of a built-in (they run only at their slot,
+// inline in the daemon's sync cycle).
+const builtinRunSQL = `automation_id IN (SELECT a.id FROM automations a WHERE a.origin = 'builtin')`
+
+// MarkInterruptedAutomationRuns is the owner-recipe executor's start sweep
+// (AUTO-08): in one transaction it keeps every resumable waiting run
+// (resumableRunSQL) for a resume — resume_pending = 1, status still waiting —
+// and ends every other running/waiting run as failed with
+// error_kind='interrupted', closing their open steps. It returns how many runs
+// it ended. Queued runs are untouched, and so is a dry run still within its
+// deadline (see liveDryRunSQL). A built-in's runs are never touched: the
+// daemon sweeps them itself before its first slot (MarkInterruptedBuiltinRuns),
+// so a retried executor sweep cannot end a slot run that is live.
 func (db *DB) MarkInterruptedAutomationRuns(now time.Time) (int, error) {
-	return db.endRunsInterruptedTx(now, interruptedRunSQL+` AND NOT (`+resumableRunSQL+`)`,
+	return db.endRunsInterruptedTx(now, interruptedRunSQL+` AND NOT (`+builtinRunSQL+`) AND NOT (`+resumableRunSQL+`)`,
 		"interrupted by a daemon restart", "marking interrupted automation runs", markResumableTx)
+}
+
+// MarkInterruptedBuiltinRuns is the daemon's start sweep of the built-ins'
+// runs: every running/waiting built-in run (a previous daemon's, or a CLI's
+// that died) ends as failed with error_kind='interrupted' and its open steps
+// closed. A dry run still within its deadline is untouched. It returns how
+// many runs it ended.
+func (db *DB) MarkInterruptedBuiltinRuns(now time.Time) (int, error) {
+	return db.endRunsInterrupted(now, interruptedRunSQL+` AND `+builtinRunSQL,
+		"interrupted by a daemon restart", "marking interrupted built-in runs")
 }
 
 // MarkStaleDryRuns ends every running/waiting dry run past its deadline as

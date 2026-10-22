@@ -125,6 +125,17 @@ func sourceOf(workspaceDir string, e Entry) (source, error) {
 	return source{data: data, contentHash: hash, overridden: true}, nil
 }
 
+// OwnerCopyNote is "" or why the owner's copy of built-in id is not used
+// (it is not a regular file: the shipped text runs), for a caller that syncs
+// with SyncOne and wants Sync's note.
+func OwnerCopyNote(workspaceDir, id string) string {
+	_, note, err := copyState(OwnerCopyPath(workspaceDir, id))
+	if err != nil {
+		return err.Error()
+	}
+	return note
+}
+
 // copyState lstats the owner's copy at path (nothing is followed): whether
 // it is there, and copyNotRegularNote when it is not a regular file.
 func copyState(path string) (present bool, note string, err error) {
