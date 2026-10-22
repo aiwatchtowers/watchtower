@@ -313,7 +313,7 @@ func TestBuiltinSDK_MalformedInputFailsBeforeTheScript(t *testing.T) {
 	p := &fakePrimitive{res: automations.PrimitiveResult{Status: "done"}}
 	f := builtinFixture(t, map[string]*fakePrimitive{"brief.compose": p})
 	a := f.seedBuiltin(t, builtinRecipeText(`brief.compose({prompt: "P"});`, "", "builtin:brief.compose"), true)
-	for _, ev := range []string{`{"builtin":`, `{"builtin":{"date":"20.10.2026"}}`} {
+	for _, ev := range []string{`{"builtin":`, `{"builtin":{"date":"20.10.2026"}}`, `{"builtin":{"only":["brief.compose","weekly.digest"]}}`} {
 		r := f.runBuiltin(t, a, db.TriggerSync, ev)
 		if r.Status != db.RunFailed || r.ErrorKind != db.ErrKindBackend {
 			t.Errorf("%s: run = %s/%s (%s)", ev, r.Status, r.ErrorKind, r.Error)
@@ -336,5 +336,39 @@ func TestConfirmedRecipe_BuiltinRow(t *testing.T) {
 	}
 	if s := automations.ScopeOf(a); s.String() != "builtin:"+testBuiltinID {
 		t.Errorf("ScopeOf = %s", s)
+	}
+}
+
+func TestBuiltinSDK_UnknownPrimitiveStatusFailsAsPrimitiveFailed(t *testing.T) {
+	p := &fakePrimitive{res: automations.PrimitiveResult{Status: "maybe"}}
+	f := builtinFixture(t, map[string]*fakePrimitive{"brief.compose": p})
+	a := f.seedBuiltin(t, builtinRecipeText(`brief.compose({prompt: "P"}); return "end";`, "", "builtin:brief.compose"), true)
+	r := f.runBuiltin(t, a, db.TriggerSync, "")
+	if r.Status != db.RunFailed || r.ErrorKind != db.ErrKindBackend || !strings.Contains(r.Error, automations.ErrNamePrimitiveFailed) ||
+		!strings.Contains(r.Error, `"maybe"`) {
+		t.Errorf("run = %s/%s (%s)", r.Status, r.ErrorKind, r.Error)
+	}
+}
+
+func TestExecutor_PollNeverResumesBuiltinRuns(t *testing.T) {
+	f := builtinFixture(t, nil)
+	a := f.seedBuiltin(t, builtinRecipeText(`return 1;`, "", "builtin:brief.compose"), true)
+	if err := f.d.SetBuiltinEnabled(testBuiltinID, true, exStart); err != nil {
+		t.Fatal(err)
+	}
+	id := f.enqueue(t, a, db.TriggerSync)
+	f.claimAt(t, a, id, exStart)
+	if err := f.d.SetAutomationRunWaiting(id, db.WaitApp); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.d.Exec(`UPDATE automation_runs SET resume_pending = 1 WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	f.step(t, 0)
+	// Unrunnable now: still neither resumed nor ended by the poll.
+	f.seedBuiltin(t, builtinRecipeText(`log(1);`, "", "builtin:brief.compose"), false)
+	f.step(t, 0)
+	if r := f.run(t, id); r.Status != db.RunWaiting {
+		t.Errorf("run = %s/%s (%s); want waiting", r.Status, r.ErrorKind, r.Error)
 	}
 }

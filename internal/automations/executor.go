@@ -338,11 +338,15 @@ const notResumedMessage = "interrupted by a daemon restart: the recipe or its co
 // resume claims a waiting run the start kept for a resume when a running
 // slot is free and starts its replay. A run whose automation is no longer
 // runnable, or confirmed at another hash than the run was claimed with, is
-// ended failed/interrupted instead, as a restart did before (AUTO-08).
+// ended failed/interrupted instead, as a restart did before (AUTO-08). A run
+// of a slot automation (RunsAtSlot) is left alone, as in consider.
 func (p *poll) resume(r db.AutomationRun) error {
 	a, err := p.automation(r.AutomationID)
 	if err != nil {
 		return err
+	}
+	if a.RunsAtSlot() {
+		return nil
 	}
 	if !a.Runnable() || a.ConfirmedHash != r.RecipeHash {
 		err := p.e.db.FinishAutomationRun(r.ID, db.RunFinish{Status: db.RunFailed, ErrorKind: db.ErrKindInterrupted,

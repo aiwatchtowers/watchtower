@@ -36,8 +36,10 @@ type PrimitiveCall struct {
 	Role      string // the owner profile's role, resolved once per run
 }
 
-// PrimitiveUsage is what one primitive call spent on its model calls.
-// Reported: the provider reported CostUSD.
+// PrimitiveUsage is what one primitive call spent on its model calls. A
+// primitive must report its real usage: the meter debits exactly what it
+// reports (no estimate is made), so unreported tokens escape the run's
+// budget. Reported: the provider reported CostUSD.
 type PrimitiveUsage struct {
 	InputTokens, OutputTokens int
 	CostUSD                   float64
@@ -52,6 +54,12 @@ type PrimitiveResult struct {
 	Usage  PrimitiveUsage
 }
 
+// The statuses a primitive may return.
+const (
+	primitiveDone    = "done"
+	primitiveSkipped = "skipped"
+)
+
 // PrimitiveFunc implements one primitive (Backends.Primitives).
 type PrimitiveFunc func(ctx context.Context, call PrimitiveCall) (PrimitiveResult, error)
 
@@ -61,7 +69,8 @@ type builtinPayload struct {
 }
 
 // builtinInputOf decodes a slot run's event_json ("" = no input). A date
-// that is not YYYY-MM-DD is refused.
+// that is not YYYY-MM-DD, or an only entry that is not a primitive
+// (ValidationError), is refused.
 func builtinInputOf(eventJSON string) (BuiltinInput, error) {
 	if eventJSON == "" {
 		return BuiltinInput{}, nil
@@ -69,6 +78,11 @@ func builtinInputOf(eventJSON string) (BuiltinInput, error) {
 	var p builtinPayload
 	if err := json.Unmarshal([]byte(eventJSON), &p); err != nil {
 		return BuiltinInput{}, fmt.Errorf("decoding the run's built-in input: %w", err)
+	}
+	for _, name := range p.Builtin.Only {
+		if !slices.Contains(BuiltinPrimitiveNames, name) {
+			return BuiltinInput{}, validationf("the run's built-in input: only names an unknown primitive %q", name)
+		}
 	}
 	if d := p.Builtin.Date; d != "" {
 		if _, err := time.Parse(time.DateOnly, d); err != nil {
@@ -277,6 +291,9 @@ func (s *builtinSDK) call(env *Env, name string, raw any, argErr error) (any, er
 		err = env.MeteredModelCall(step, func(ctx context.Context) (ModelUsage, error) {
 			var err error
 			res, err = fn(ctx, pc)
+			if err == nil && res.Status != primitiveDone && res.Status != primitiveSkipped {
+				err = fmt.Errorf("%s returned status %q (want %q or %q)", name, res.Status, primitiveDone, primitiveSkipped)
+			}
 			if err != nil {
 				return primitiveUsage(res.Usage), &SDKError{Name: ErrNamePrimitiveFailed, Message: err.Error()}
 			}
