@@ -1347,3 +1347,128 @@ func TestLoadWindowContext_LoadsTicketProjects(t *testing.T) {
 
 	assert.Equal(t, []string{"ACME-4"}, extractFingerprint("ship ACME-4 in UTF-8", "", pipe.ticketProjects))
 }
+
+// seedOverrideRun seeds the one-channel digest window the override tests run on.
+func seedOverrideRun(t *testing.T, role string) *db.DB {
+	t.Helper()
+	database := testDB(t)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test"}))
+	_, err := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U1"})
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertUser(db.User{ID: "U1", Name: "alice", DisplayName: "Alice"}))
+	require.NoError(t, database.UpsertChannel(db.Channel{ID: "C1", Name: "backend", Type: "public"}))
+	if role != "" {
+		require.NoError(t, database.UpsertUserProfile(db.UserProfile{SlackUserID: "U1", Role: role}))
+	}
+	now := time.Now()
+	_, err = database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: float64(now.Add(-2 * time.Hour).Unix()), PeriodTo: float64(now.Unix()),
+		Summary: "Backend review", MessageCount: 10, Model: "test",
+	})
+	require.NoError(t, err)
+	_, err = database.Exec(`INSERT INTO digest_topics (digest_id, idx, title, summary, decisions, action_items, situations, key_messages)
+		VALUES (1, 0, 'Topic', 'Topic summary', '[]', '[{"text":"review code"}]', '[]', '[]')`)
+	require.NoError(t, err)
+	return database
+}
+
+func overridePipeline(t *testing.T, database *db.DB, stored string) (*Pipeline, *capturingGenerator) {
+	t.Helper()
+	store := prompts.New(database, nil)
+	require.NoError(t, store.Seed())
+	if stored != "" {
+		require.NoError(t, store.Update(prompts.TracksExtractBatch, stored, "test"))
+	}
+	gen := &capturingGenerator{response: `[]`}
+	cfg := testConfig()
+	cfg.AI.Workers = 1
+	pipe := New(database, cfg, gen, log.Default())
+	pipe.SetPromptStore(store)
+	return pipe, gen
+}
+
+func verbTemplate(lead string, n int) string {
+	return lead + strings.Repeat(" %s", n)
+}
+
+func TestTracksRunWith_PromptOverrideReachesGenerator(t *testing.T) {
+	database := seedOverrideRun(t, "ic")
+	n := countVerbs(prompts.Defaults[prompts.TracksExtractBatch])
+	pipe, gen := overridePipeline(t, database, verbTemplate("A-STORED", n))
+
+	_, _, err := pipe.RunWith(context.Background(), RunOptions{Prompt: verbTemplate("B-OVERRIDE", n)})
+	require.NoError(t, err)
+	assert.Contains(t, gen.systemSeen+gen.userSeen, "B-OVERRIDE")
+	assert.NotContains(t, gen.systemSeen+gen.userSeen, "A-STORED")
+	assert.Contains(t, gen.systemSeen+gen.userSeen, prompts.GetRoleInstruction("ic"), "the role prefix is still prepended")
+	assert.Empty(t, pipe.LastPromptNote())
+
+	// Without options the stored row still wins.
+	_, _, err = pipe.Run(context.Background())
+	require.NoError(t, err)
+	assert.Contains(t, gen.systemSeen+gen.userSeen, "A-STORED")
+}
+
+func TestTracksRunWith_PlaceholderMismatchUsesDefault(t *testing.T) {
+	database := seedOverrideRun(t, "")
+	pipe, gen := overridePipeline(t, database, "")
+
+	_, _, err := pipe.RunWith(context.Background(), RunOptions{Prompt: "B-OVERRIDE %s only"})
+	require.NoError(t, err)
+	assert.NotContains(t, gen.systemSeen+gen.userSeen, "B-OVERRIDE")
+	assert.Contains(t, pipe.LastPromptNote(), "built-in prompt was used")
+}
+
+func TestTracksHasMaterial_Cases(t *testing.T) {
+	setCreated := func(t *testing.T, database *db.DB, at time.Time) {
+		t.Helper()
+		_, err := database.Exec(`UPDATE digests SET created_at = ?`, at.UTC().Format(time.RFC3339))
+		require.NoError(t, err)
+	}
+	markRun := func(t *testing.T, database *db.DB, at time.Time) {
+		t.Helper()
+		_, err := database.UpsertTrack(db.Track{Text: "task", AssigneeUserID: "U1", Priority: "medium"})
+		require.NoError(t, err)
+		_, err = database.Exec(`INSERT INTO pipeline_runs (pipeline, source, model, status, started_at) VALUES ('tracks','test','m','done',?)`,
+			at.UTC().Format(time.RFC3339))
+		require.NoError(t, err)
+	}
+	now := time.Now()
+
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, database *db.DB)
+		want  bool
+	}{
+		{"fresh install with digests", func(t *testing.T, d *db.DB) {}, true},
+		{"fresh install without digests", func(t *testing.T, d *db.DB) {
+			_, err := d.Exec(`DELETE FROM digests`)
+			require.NoError(t, err)
+		}, false},
+		{"no digest since the last run", func(t *testing.T, d *db.DB) {
+			setCreated(t, d, now.Add(-3*time.Hour))
+			markRun(t, d, now.Add(-2*time.Hour))
+		}, false},
+		{"a new digest since the last run", func(t *testing.T, d *db.DB) {
+			setCreated(t, d, now.Add(-time.Hour))
+			markRun(t, d, now.Add(-2*time.Hour))
+		}, true},
+		{"owed retry digest only", func(t *testing.T, d *db.DB) {
+			setCreated(t, d, now.Add(-3*time.Hour))
+			markRun(t, d, now.Add(-2*time.Hour))
+			_, err := d.Exec(`INSERT INTO track_retry_digests (digest_id, attempts) VALUES (1, 1)`)
+			require.NoError(t, err)
+		}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			database := seedOverrideRun(t, "")
+			tc.setup(t, database)
+			pipe := New(database, testConfig(), &mockGenerator{}, log.Default())
+			got, err := pipe.HasMaterial()
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}

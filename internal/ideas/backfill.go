@@ -51,6 +51,14 @@ var backfillMaxCycles = 50
 // nor pays its stage-1 calls again; the material the run did apply is
 // already in the registry (IDEA-05 dedups a later re-mine).
 func (p *Pipeline) Backfill(ctx context.Context, from, to time.Time, progress func(cycle int)) (result BackfillResult, err error) {
+	return p.BackfillWith(ctx, from, to, progress, RunOptions{})
+}
+
+// BackfillWith is Backfill with run options: opts.Prompt reaches every
+// consolidate cycle of the drain.
+func (p *Pipeline) BackfillWith(ctx context.Context, from, to time.Time, progress func(cycle int), opts RunOptions) (result BackfillResult, err error) {
+	p.lastPromptNote = ""
+
 	// A bounded backfill's stream listing is capped on the row's OWN content
 	// window (period_to <= to), so it can skip going-forward rows the
 	// consolidator then advances the stream floor past — capture the bound now,
@@ -112,7 +120,7 @@ func (p *Pipeline) Backfill(ctx context.Context, from, to time.Time, progress fu
 	// capped out never starves the consolidator of its turn. softErr threads
 	// phase 1's error through so the "first error across BOTH phases wins"
 	// rule holds even though the two phases are now two functions.
-	cycles, proposed, mentionsDeduped, capped2, err := p.drainConsolidate(ctx, from, to, &floors.ws, cycles, progress, softErr)
+	cycles, proposed, mentionsDeduped, capped2, err := p.drainConsolidate(ctx, from, to, &floors.ws, cycles, progress, softErr, opts.Prompt)
 	result.Cycles = cycles
 	result.Proposed = proposed
 	result.MentionsDeduped = mentionsDeduped
@@ -215,7 +223,7 @@ func (p *Pipeline) runStage1Passes(ctx context.Context, to time.Time, boxes []ma
 // error-break path, since an erroring pass says nothing about whether the
 // phase would have converged given more cycles. priorErr is phase 1's
 // already-accumulated error, if any.
-func (p *Pipeline) drainConsolidate(ctx context.Context, from, to time.Time, ws *workspaceFloors, startCycles int, progress func(cycle int), priorErr error) (cycles, proposed, mentionsDeduped int, capped bool, err error) {
+func (p *Pipeline) drainConsolidate(ctx context.Context, from, to time.Time, ws *workspaceFloors, startCycles int, progress func(cycle int), priorErr error, prompt string) (cycles, proposed, mentionsDeduped int, capped bool, err error) {
 	cycles = startCycles
 	firstErr := priorErr
 	converged := false
@@ -226,7 +234,7 @@ func (p *Pipeline) drainConsolidate(ctx context.Context, from, to time.Time, ws 
 			progress(cycles)
 		}
 
-		cProposed, cDeduped, floorsMoved, softErr := p.consolidateCycle(ctx, from, to, ws)
+		cProposed, cDeduped, floorsMoved, softErr := p.consolidateCycle(ctx, from, to, ws, prompt)
 		if softErr != nil {
 			p.logf("ideas: backfill consolidate pass: %v", softErr)
 			if firstErr == nil {
@@ -261,9 +269,9 @@ func consolidateConverged(proposed, mentionsDeduped int, floorsMoved bool) bool 
 // drainConsolidate's single-cycle unit. softErr is an ordinary consolidate
 // failure, which the caller folds into its own "first error wins"
 // accumulator.
-func (p *Pipeline) consolidateCycle(ctx context.Context, from, to time.Time, ws *workspaceFloors) (proposed, mentionsDeduped int, floorsMoved bool, softErr error) {
+func (p *Pipeline) consolidateCycle(ctx context.Context, from, to time.Time, ws *workspaceFloors, prompt string) (proposed, mentionsDeduped int, floorsMoved bool, softErr error) {
 	before := *ws
-	proposed, mentionsDeduped, err := p.consolidate(ctx, from, to, ws)
+	proposed, mentionsDeduped, err := p.consolidate(ctx, from, to, ws, prompt)
 	if err != nil {
 		return 0, 0, false, err
 	}

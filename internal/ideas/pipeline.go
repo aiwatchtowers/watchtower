@@ -16,7 +16,9 @@ package ideas
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"watchtower/internal/config"
@@ -55,6 +57,10 @@ type Pipeline struct {
 	// line per (account, stalled sync stamp, UTC day), so a permanently broken
 	// board logs it once a day instead of every pass.
 	abandonedProjectLogged map[string]bool
+
+	// lastPromptNote is "" or the sentence saying the last consolidate fell
+	// back to the built-in template (see LastPromptNote).
+	lastPromptNote string
 }
 
 // New creates a new ideas pipeline.
@@ -110,13 +116,44 @@ func (p *Pipeline) logf(format string, args ...any) {
 
 // getPrompt resolves a prompt via prompts.Resolve: the store row, else the
 // registered default.
-func (p *Pipeline) getPrompt(id string) (string, int) {
-	tmpl, version, err := prompts.Resolve(p.promptStore, id, "")
-	if err != nil {
-		p.logf("ideas: %v — using the built-in default", err)
+//
+// A non-empty override replaces the resolved template. A template
+// whose %s count differs from the shipped default's is replaced by the
+// default and leaves a note (LastPromptNote): formatting it with the default's
+// argument list would append %!(EXTRA ...) to the prompt.
+func (p *Pipeline) getPrompt(id, override string) string {
+	tmpl := override
+	if tmpl == "" {
+		var err error
+		tmpl, _, err = prompts.Resolve(p.promptStore, id, "")
+		if err != nil {
+			p.logf("ideas: %v — using the built-in default", err)
+		}
+		return tmpl
 	}
-	return tmpl, version
+	if got, want := countVerbs(tmpl), countVerbs(prompts.Defaults[id]); got != want {
+		p.logf("ideas: the edited %s prompt has %d %%s placeholders, the default has %d — using the default", id, got, want)
+		p.lastPromptNote = fmt.Sprintf("The prompt has %d placeholders where %d are required — the built-in prompt was used.", got, want)
+		return prompts.Defaults[id]
+	}
+	return tmpl
 }
+
+// countVerbs counts %s verbs, not counting an escaped %%s.
+func countVerbs(tmpl string) int {
+	return strings.Count(tmpl, "%s") - strings.Count(tmpl, "%%s")
+}
+
+// RunOptions tunes one ideas run.
+type RunOptions struct {
+	// Prompt, when non-empty, replaces the store-resolved
+	// ideas.consolidate template. The placeholder check applies to it.
+	Prompt string
+}
+
+// LastPromptNote is "" or the sentence saying the last run fell back to the
+// built-in template because the override had the wrong placeholder count.
+func (p *Pipeline) LastPromptNote() string { return p.lastPromptNote }
 
 // language returns the digest output language, defaulting via
 // prompts.Directive when cfg is nil or unset.
@@ -158,9 +195,15 @@ func (p *Pipeline) RunStreamDigests(ctx context.Context) error {
 // floors stay honest regardless of how many RunStreamDigests cycles ran in
 // between. Run returns the consolidator's proposed count and error.
 func (p *Pipeline) Run(ctx context.Context) (proposed int, err error) {
+	return p.RunWith(ctx, RunOptions{})
+}
+
+// RunWith is Run with run options.
+func (p *Pipeline) RunWith(ctx context.Context, opts RunOptions) (proposed int, err error) {
+	p.lastPromptNote = ""
 	if p.cfg != nil && !p.cfg.Ideas.Enabled {
 		return 0, nil
 	}
-	proposed, _, err = p.runConsolidate(ctx)
+	proposed, _, err = p.consolidate(ctx, time.Time{}, time.Time{}, nil, opts.Prompt)
 	return proposed, err
 }
