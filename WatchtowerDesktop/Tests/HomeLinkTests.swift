@@ -52,24 +52,27 @@ final class HomeLinkTests: XCTestCase {
         }
     }
 
-    /// An automation note opens its Inbox card (with its buttons); with the
-    /// Inbox tab hidden it falls back to the run.
+    /// An automation note opens its Inbox card (with its buttons); before
+    /// the Inbox exists it falls back to the run.
     func testInboxOutputOpensItsCardOrTheRun() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
+        let (output, automation, run) = try await pool.write { db -> (Int64, Int64, Int64) in
+            let automation = try TestDatabase.insertAutomation(db)
+            let run = try TestDatabase.insertAutomationRun(db, automationID: automation)
+            return (try TestDatabase.insertAutomationOutput(db, automationID: automation, runID: run), automation, run)
+        }
         let appState = AppState.isolated()
         appState.initActionStrip(dbPool: pool)
-        appState.openHomeLink(.inboxOutput(id: 5, automationID: 1, runID: 2))
+        appState.openHomeLink(.inboxOutput(id: output, automationID: automation, runID: run))
         XCTAssertEqual(appState.selectedDestination, .inbox)
         for _ in 0..<2000 where appState.actionStripViewModel?.selection == nil { await Task.yield() }
-        XCTAssertEqual(appState.actionStripViewModel?.selection, .output(5))
+        XCTAssertEqual(appState.actionStripViewModel?.selection, .output(output))
 
-        let hidden = AppState.isolated()
-        hidden.initActionStrip(dbPool: pool)
-        hidden.featureVisibility.connectedSources = .none
-        hidden.selectedDestination = .home
-        hidden.openHomeLink(.inboxOutput(id: 5, automationID: 1, runID: 2))
-        XCTAssertEqual(hidden.selectedDestination, .automations)
+        let early = AppState.isolated()
+        early.selectedDestination = .home
+        early.openHomeLink(.inboxOutput(id: output, automationID: automation, runID: run))
+        XCTAssertEqual(early.selectedDestination, .automations)
     }
 
     func testAskLinkCarriesTheRoute() {
