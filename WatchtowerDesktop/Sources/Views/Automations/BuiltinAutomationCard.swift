@@ -31,10 +31,6 @@ struct BuiltinAutomationCard: View {
     /// After a Turn On/Off or a When save: the list re-reads the row.
     var onChanged: () -> Void = {}
 
-    /// Edited When fields by config key; only the changed ones.
-    @State private var edits: [String: String] = [:]
-    @State private var savingParameters = false
-
     static let resetConfirmLine = "Reset — your changes are lost"
     static let unconfirmedLine = "Your edited copy is not confirmed yet, so it does not run."
     static let runQueuedLine = "Runs at the next sync"
@@ -43,7 +39,7 @@ struct BuiltinAutomationCard: View {
     private var automation: Automation { model.automation }
     private var detail: BuiltinAutomationDetail? { model.detail }
     private var isOn: Bool { detail?.enabled ?? automation.enabled }
-    private var isBusy: Bool { model.isWorking || isApplyingFeatures || savingParameters }
+    private var isBusy: Bool { model.isWorking || isApplyingFeatures }
 
     var body: some View {
         ScrollView {
@@ -66,28 +62,17 @@ struct BuiltinAutomationCard: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: Spacing.medium) {
-            VStack(alignment: .leading, spacing: Spacing.small) {
-                HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-                    Text(automation.name.isEmpty ? automation.slug : automation.name)
-                        .font(.title3.weight(.semibold))
-                        .textSelection(.enabled)
-                    Chip(text: AutomationListSections.builtinTitle, color: Color.accentColor)
-                    Chip(text: isOn ? "On" : "Off", color: isOn ? Tone.success : Color.secondary)
-                }
-                Text(whenLine)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            // The When sentence is the When box's headline, not repeated here.
+            HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
+                Text(automation.name.isEmpty ? automation.slug : automation.name)
+                    .font(.title3.weight(.semibold))
+                    .textSelection(.enabled)
+                Chip(text: AutomationListSections.builtinTitle, color: Color.accentColor)
+                Chip(text: isOn ? "On" : "Off", color: isOn ? Tone.success : Color.secondary)
             }
             Spacer(minLength: Spacing.medium)
             buttonRow
         }
-    }
-
-    /// `show`'s When line ("Every morning at the first sync after 08:00"),
-    /// the trigger in words until it loads.
-    private var whenLine: String {
-        if let when = detail?.when, !when.isEmpty { return when }
-        return AutomationTriggerText.sentence(kind: automation.triggerKind, specJSON: automation.triggerSpecJSON)
     }
 
     private var buttonRow: some View {
@@ -103,7 +88,13 @@ struct BuiltinAutomationCard: View {
             }
             Button("Edit in Chat", action: onEdit)
                 .buttonStyle(.kitSecondary)
-            Button(isOn ? "Turn Off" : "Turn On") { toggle() }
+            Button(isOn ? "Turn Off" : "Turn On") {
+                let on = !isOn
+                Task {
+                    await model.setEnabled(on, actions.setEnabled)
+                    onChanged()
+                }
+            }
                 .buttonStyle(.kitSecondary)
                 .disabled(isBusy || detail?.featureIDs.isEmpty != false)
             if detail?.overridden ?? automation.overridden {
@@ -240,23 +231,30 @@ struct BuiltinAutomationCard: View {
         if !parameters.isEmpty {
             HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
                 ForEach(parameters, id: \.key) { parameter in
-                    Text(parameter.label).foregroundStyle(.secondary)
+                    // The field carries the label for VoiceOver; the text is for the eye.
+                    Text(parameter.label)
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
                     field(parameter)
                 }
             }
             .controlSize(.small)
-            let invalid = Self.invalidField(parameters, edits: edits)
-            if let invalid {
+            if let invalid = model.invalidParameter {
                 Text(invalid).font(.caption).foregroundStyle(Tone.error)
             }
-            if Self.changed(parameters, edits: edits) {
+            if model.parametersChanged {
                 HStack(spacing: Spacing.regular) {
-                    Button("Save") { save(parameters) }
-                        .buttonStyle(.kitSecondary)
-                        .disabled(invalid != nil || isBusy)
-                    Button("Cancel") { edits = [:] }
+                    Button("Save") {
+                        Task {
+                            await model.saveParameters(actions.saveParameters)
+                            onChanged()
+                        }
+                    }
+                    .buttonStyle(.kitSecondary)
+                    .disabled(model.invalidParameter != nil || isBusy)
+                    Button("Cancel") { model.parameterEdits = [:] }
                         .buttonStyle(.kitQuiet)
-                        .disabled(savingParameters)
+                        .disabled(model.isWorking)
                 }
                 .controlSize(.small)
             }
@@ -266,8 +264,8 @@ struct BuiltinAutomationCard: View {
     @ViewBuilder
     private func field(_ parameter: BuiltinAutomationDetail.Parameter) -> some View {
         let text = Binding(
-            get: { edits[parameter.key] ?? parameter.value },
-            set: { edits[parameter.key] = $0 == parameter.value ? nil : $0 }
+            get: { model.parameterEdits[parameter.key] ?? parameter.value },
+            set: { model.parameterEdits[parameter.key] = $0 == parameter.value ? nil : $0 }
         )
         switch parameter.kind {
         case .hour:
@@ -278,12 +276,14 @@ struct BuiltinAutomationCard: View {
             }
             .labelsHidden()
             .fixedSize()
-            .disabled(savingParameters)
+            .accessibilityLabel(parameter.label)
+            .disabled(model.isWorking)
         case .clock:
             TextField(parameter.label, text: text, prompt: Text("HH:MM"))
                 .textFieldStyle(.kit)
                 .frame(width: 64)
-                .disabled(savingParameters)
+                .accessibilityLabel(parameter.label)
+                .disabled(model.isWorking)
         }
     }
 
@@ -295,60 +295,5 @@ struct BuiltinAutomationCard: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .padding(Spacing.medium)
         .card()
-    }
-
-    // MARK: - Writes
-
-    private func toggle() {
-        guard let ids = detail?.featureIDs, !ids.isEmpty else { return }
-        let on = !isOn
-        Task {
-            let error = await actions.setEnabled(ids, on)
-            model.actionError = error
-            await model.load()
-            onChanged()
-        }
-    }
-
-    private func save(_ parameters: [BuiltinAutomationDetail.Parameter]) {
-        let values = edits
-        savingParameters = true
-        Task {
-            let error = await actions.saveParameters(values)
-            model.actionError = error
-            if error == nil { edits = [:] }
-            await model.load()
-            savingParameters = false
-            onChanged()
-        }
-    }
-
-    // MARK: - When fields
-
-    /// Some field differs from the value `show` read.
-    static func changed(_ parameters: [BuiltinAutomationDetail.Parameter], edits: [String: String]) -> Bool {
-        parameters.contains { parameter in edits[parameter.key].map { $0 != parameter.value } ?? false }
-    }
-
-    /// The first edited field that is not a valid value, said for the owner:
-    /// an hour is 0–23, a clock is HH:MM.
-    static func invalidField(_ parameters: [BuiltinAutomationDetail.Parameter], edits: [String: String]) -> String? {
-        for parameter in parameters {
-            guard let value = edits[parameter.key] else { continue }
-            switch parameter.kind {
-            case .hour:
-                if Int(value).map({ (0...23).contains($0) }) != true { return "\(parameter.label): pick an hour" }
-            case .clock:
-                if !isClock(value) { return "\(parameter.label): use HH:MM, for example 09:00" }
-            }
-        }
-        return nil
-    }
-
-    static func isClock(_ text: String) -> Bool {
-        let parts = text.split(separator: ":", omittingEmptySubsequences: false)
-        guard parts.count == 2, parts.allSatisfy({ $0.count == 2 }),
-              let hour = Int(parts[0]), let minute = Int(parts[1]) else { return false }
-        return (0...23).contains(hour) && (0...59).contains(minute)
     }
 }

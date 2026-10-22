@@ -40,8 +40,14 @@ package final class BuiltinAutomationCardModel {
     /// land (those go through the app's feature manager and config, not
     /// this model's CLI); nil after the next success.
     package var actionError: String?
-    /// The last **Run Now** was queued: it runs at the next sync.
-    package private(set) var runQueued = false
+    /// The last **Run Now** was queued and has not finished yet: it runs at
+    /// the next sync. Cleared once the row shows that run finished
+    /// (`observe(_:)`).
+    package var runQueued: Bool { queuedRunID != nil }
+    /// The When fields the owner changed, by config key (only the changed ones).
+    package var parameterEdits: [String: String] = [:]
+    /// The run the last Run Now queued, until the list shows it finished.
+    private var queuedRunID: Int64?
     /// The last `show`: its `needs_confirmation` and `recipe_text` win over the row's.
     private var shown: AutomationDetail?
     /// The `loadError` the last failed Run Now set: its success clears only that one.
@@ -76,6 +82,79 @@ package final class BuiltinAutomationCardModel {
         guard showingChanges, let detail, detail.overridden else { return nil }
         return OwnerAskSnapshotDiff(previous: detail.shippedText, current: shown?.recipeText ?? automation.recipeText)
     }
+
+    /// The newest list row: its automation, and whether the run Run Now
+    /// queued has finished (the newest finished run is that one or later).
+    package func observe(_ item: AutomationListItem) {
+        automation = item.automation
+        if let queued = queuedRunID, let last = item.lastRun?.id, last >= queued { queuedRunID = nil }
+    }
+
+    // MARK: - When fields
+
+    /// Some field differs from the value `show` read.
+    package var parametersChanged: Bool {
+        (detail?.parameters ?? []).contains { parameter in
+            parameterEdits[parameter.key].map { $0 != parameter.value } ?? false
+        }
+    }
+
+    /// The first edited field that is not a valid value, said for the owner:
+    /// an hour is 0–23, a clock is HH:MM.
+    package var invalidParameter: String? {
+        for parameter in detail?.parameters ?? [] {
+            guard let value = parameterEdits[parameter.key] else { continue }
+            switch parameter.kind {
+            case .hour:
+                if Int(value).map({ (0...23).contains($0) }) != true { return "\(parameter.label): pick an hour" }
+            case .clock:
+                if !Self.isClock(value) { return "\(parameter.label): use HH:MM, for example 09:00" }
+            }
+        }
+        return nil
+    }
+
+    /// "HH:MM", 00:00–23:59.
+    nonisolated package static func isClock(_ text: String) -> Bool {
+        let parts = text.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts.allSatisfy({ $0.count == 2 }),
+              let hour = Int(parts[0]), let minute = Int(parts[1]) else { return false }
+        return (0...23).contains(hour) && (0...59).contains(minute)
+    }
+
+    /// The When **Save**: the changed fields through `write` (the app's
+    /// config writer and daemon restart). One card write at a time: a press
+    /// while another runs is ignored.
+    package func saveParameters(_ write: ([String: String]) async -> String?) async {
+        guard !isWorking, parametersChanged, invalidParameter == nil else { return }
+        isWorking = true
+        defer { isWorking = false }
+        let values = parameterEdits
+        actionError = await write(values)
+        if actionError == nil { parameterEdits = [:] }
+        await load()
+    }
+
+    // MARK: - On/off
+
+    /// **Turn On** / **Turn Off** (and **Save and Turn On**): the built-in's
+    /// feature ids through `write` (the app's feature manager and daemon
+    /// restart), then a reload. One card write at a time: a press while
+    /// another runs is ignored. With no `show` yet it is read first.
+    package func setEnabled(_ on: Bool, _ write: ([String], Bool) async -> String?) async {
+        guard !isWorking else { return }
+        isWorking = true
+        defer { isWorking = false }
+        if detail == nil { await load() }
+        guard let ids = detail?.featureIDs, !ids.isEmpty else {
+            actionError = loadError ?? Self.unknownFeatures
+            return
+        }
+        actionError = await write(ids, on)
+        await load()
+    }
+
+    nonisolated package static let unknownFeatures = "Its features are not known, so it was not turned on or off."
 
     package func load() async {
         do {
@@ -121,10 +200,9 @@ package final class BuiltinAutomationCardModel {
         guard !isWorking else { return }
         isWorking = true
         defer { isWorking = false }
-        runQueued = false
+        queuedRunID = nil
         do {
-            _ = try await cli.run(automation.id)
-            runQueued = true
+            queuedRunID = try await cli.run(automation.id).runID
             if let runNowError, loadError == runNowError { loadError = nil }
             runNowError = nil
         } catch {

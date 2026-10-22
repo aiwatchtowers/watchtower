@@ -157,7 +157,8 @@ package enum InboxListBuilder {
         case let .message(row): TieKey(rank: 4, number: Int64(row.item.id))
         case let .idea(idea): TieKey(rank: 5, number: Int64(idea.id))
         case let .proposal(action): TieKey(rank: 6, number: action.id)
-        // Never dated: always first in Needs your decision.
+        // Unused: a notice is never among the dated rows (it heads Needs
+        // your decision); the case only keeps the switch exhaustive.
         case let .builtinNotice(notice): TieKey(rank: 7, text: notice.builtinID)
         }
     }

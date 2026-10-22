@@ -93,25 +93,4 @@ final class BuiltinAutomationCardViewTests: XCTestCase {
         XCTAssertThrowsError(try view(model).inspect().find(button: "Reset to built-in"))
         XCTAssertThrowsError(try view(model).inspect().find(text: BuiltinAutomationCard.unconfirmedLine))
     }
-
-    func testWhenFieldValidation() throws {
-        let parameters = try JSONDecoder().decode(BuiltinAutomationDetail.self,
-                                                  from: try Self.show(), path: "builtin").parameters
-        XCTAssertFalse(BuiltinAutomationCard.changed(parameters, edits: [:]))
-        XCTAssertFalse(BuiltinAutomationCard.changed(parameters, edits: ["briefing.hour": "8"]), "the value it had")
-        XCTAssertTrue(BuiltinAutomationCard.changed(parameters, edits: ["briefing.hour": "9"]))
-        XCTAssertNil(BuiltinAutomationCard.invalidField(parameters, edits: ["day_plan.working_hours_start": "08:30"]))
-        XCTAssertEqual(BuiltinAutomationCard.invalidField(parameters, edits: ["day_plan.working_hours_end": "7pm"]),
-                       "to: use HH:MM, for example 09:00")
-        for bad in ["9:00", "24:00", "09:60", "0900", ""] { XCTAssertFalse(BuiltinAutomationCard.isClock(bad), bad) }
-        XCTAssertTrue(BuiltinAutomationCard.isClock("23:59"))
-    }
-}
-
-private extension JSONDecoder {
-    /// Decodes the object under `key` of a JSON object.
-    func decode<T: Decodable>(_ type: T.Type, from data: Data, path key: String) throws -> T {
-        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        return try decode(type, from: JSONSerialization.data(withJSONObject: try XCTUnwrap(object[key])))
-    }
 }

@@ -45,6 +45,9 @@ package enum EmptyStateAction: Equatable, Sendable {
     /// A Settings tab, e.g. "features" for the briefing and day plan hours,
     /// under the button's own label.
     case openSettings(tab: String, label: String)
+    /// A built-in automation's card in Automations → Built in (by its
+    /// built-in id), e.g. Morning brief for the briefing and day plan hour.
+    case openBuiltin(id: String, label: String)
     /// The tab's own existing action (e.g. "Build a recap").
     case tabAction(label: String)
 }
@@ -85,11 +88,11 @@ package enum EmptyStateCopyTable {
         "briefings": EmptyStateCopy(
             icon: "sun.max", title: "No briefings yet",
             landsHere: "A morning briefing: meetings, what needs you, what changed. Generated once a day at or after {hour}.",
-            feature: .briefing, primaryAction: .openSettings(tab: "features", label: "Change the hour")),
+            feature: .briefing, primaryAction: .openBuiltin(id: "morning-brief", label: "Change the hour")),
         "dayPlan": EmptyStateCopy(
             icon: "calendar.day.timeline.left", title: "No day plan yet",
             landsHere: "Your day in time blocks, from the calendar, targets and the briefing. Once a day at or after {hour}.",
-            feature: .dayPlan, primaryAction: .openSettings(tab: "features", label: "Change the hour")),
+            feature: .dayPlan, primaryAction: .openBuiltin(id: "morning-brief", label: "Change the hour")),
         "inbox": EmptyStateCopy(
             icon: "tray", title: "Nothing waiting for you",
             landsHere: "Your day, messages, tracks, ideas and automation cards that need you.",

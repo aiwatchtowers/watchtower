@@ -242,7 +242,7 @@ struct AutomationsView: View {
             emptyPanel
         case let .card(id):
             if let item = vm.items.first(where: { $0.id == id }), item.automation.isBuiltin {
-                builtinCard(item.automation)
+                builtinCard(item)
             } else if let item = vm.items.first(where: { $0.id == id }) {
                 AutomationCardView(
                     vm: vm,
@@ -296,7 +296,8 @@ struct AutomationsView: View {
     }
 
     /// A built-in's card, kept by the view model; it reads the newest row.
-    private func builtinCard(_ automation: Automation) -> some View {
+    private func builtinCard(_ item: AutomationListItem) -> some View {
+        let automation = item.automation
         let card = vm.builtinCard(automation)
         return BuiltinAutomationCard(
             model: card,
@@ -305,7 +306,7 @@ struct AutomationsView: View {
             onEdit: { vm.showEditor(.existing(automation.id)) },
             onChanged: { vm.refresh(drafts: false) }
         )
-        .onChange(of: automation, initial: true) { _, row in card.automation = row }
+        .onChange(of: item, initial: true) { _, row in card.observe(row) }
         .id(automation.id)
     }
 
@@ -317,15 +318,7 @@ struct AutomationsView: View {
         else { return nil }
         let card = vm.builtinCard(automation)
         let setEnabled = actions.builtin.setEnabled
-        return {
-            if card.detail == nil { await card.load() }
-            guard let ids = card.detail?.featureIDs, !ids.isEmpty else {
-                card.actionError = card.loadError ?? "Saved, but its features are not known, so it was not turned on."
-                return
-            }
-            card.actionError = await setEnabled(ids, true)
-            await card.load()
-        }
+        return { await card.setEnabled(true, setEnabled) }
     }
 
     @ViewBuilder private var emptyPanel: some View {

@@ -14,6 +14,15 @@ extension AppState {
         return card.detail?.defaultPrompts ?? [:]
     }
 
+    /// Automations → Built in with built-in `id`'s card open (an empty
+    /// state's "Change the hour"); the tab alone when its row is not listed.
+    func openBuiltinAutomation(_ id: String) {
+        navigateToAutomations(section: .automations)
+        guard let vm = automationsViewModel,
+              let row = vm.items.first(where: { $0.automation.builtinID == id }) else { return }
+        vm.select(row.id)
+    }
+
     /// A built-in's **Turn On** / **Turn Off**: its feature ids through the
     /// feature manager (`features enable` runs the FEAT-03 hook), then one
     /// daemon restart. Returns why it did not land, nil on success.
@@ -26,16 +35,16 @@ extension AppState {
         return featureManager.loadError
     }
 
-    /// A built-in card's When **Save**: each config key written through a
-    /// fresh `ConfigService` (read just before the write), then one daemon
-    /// restart so the next cycle uses it. Outside the recipe and its hash.
-    func saveBuiltinParameters(_ values: [String: String]) async -> String? {
-        let config = ConfigService()
-        for (key, value) in values.sorted(by: { $0.key < $1.key }) {
-            guard config.setBuiltinParameter(key, value) else { return "This setting can't be saved here: \(key)" }
-        }
+    /// A built-in card's When **Save**: the config keys written through a
+    /// fresh `ConfigService` (only those keys, read just before the write),
+    /// then one daemon restart so the next cycle uses them. Outside the
+    /// recipe and its hash. `config` is a test seam.
+    func saveBuiltinParameters(
+        _ values: [String: String],
+        config: (@MainActor () -> ConfigService)? = nil
+    ) async -> String? {
         do {
-            try config.save()
+            try (config?() ?? ConfigService()).saveBuiltinParameters(values)
         } catch {
             return error.localizedDescription
         }

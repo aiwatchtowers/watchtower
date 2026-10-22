@@ -209,6 +209,109 @@ final class BuiltinAutomationCardModelTests: XCTestCase {
         XCTAssertFalse(card.runQueued, "a refused press queued nothing")
     }
 
+    private func item(_ automation: Automation, lastRunID: Int64?) -> AutomationListItem {
+        let run = lastRunID.map { AutomationRun(id: $0, automationID: automation.id, status: .succeeded) }
+        return AutomationListItem(automation: automation, lastRun: run, activeRun: nil, tokens7d: 0, badges: [],
+                                  triggerText: "")
+    }
+
+    /// "Runs at the next sync" lasts until the row shows the queued run finished.
+    func testRunQueuedClearsOnceTheQueuedRunFinished() async throws {
+        let runner = VerbRunner([
+            "run": .success(Data(#"{"run_id":9,"coalesced":false,"daemon_running":true}"#.utf8))
+        ])
+        let card = model(runner)
+        await card.runNow()
+        card.observe(item(card.automation, lastRunID: 8))
+        XCTAssertTrue(card.runQueued, "an older finished run is not the queued one")
+        card.observe(item(card.automation, lastRunID: nil))
+        XCTAssertTrue(card.runQueued)
+        card.observe(item(card.automation, lastRunID: 9))
+        XCTAssertFalse(card.runQueued)
+    }
+
+    // MARK: - When fields and on/off (C2 Task 10)
+
+    func testWhenFieldValidation() async throws {
+        let card = model(VerbRunner(["show": .success(try Self.show())]))
+        await card.load()
+        XCTAssertFalse(card.parametersChanged)
+        card.parameterEdits = ["briefing.hour": "8"]
+        XCTAssertFalse(card.parametersChanged, "the value it had")
+        card.parameterEdits = ["briefing.hour": "9", "day_plan.working_hours_start": "08:30"]
+        XCTAssertTrue(card.parametersChanged)
+        XCTAssertNil(card.invalidParameter)
+        card.parameterEdits = ["day_plan.working_hours_end": "7pm"]
+        XCTAssertEqual(card.invalidParameter, "to: use HH:MM, for example 09:00")
+        for bad in ["9:00", "24:00", "09:60", "0900", ""] {
+            XCTAssertFalse(BuiltinAutomationCardModel.isClock(bad), bad)
+        }
+        XCTAssertTrue(BuiltinAutomationCardModel.isClock("23:59"))
+    }
+
+    func testSaveParametersWritesTheEditsOnceAndKeepsThemOnFailure() async throws {
+        let card = model(VerbRunner(["show": .success(try Self.show())]))
+        await card.load()
+        card.parameterEdits = ["briefing.hour": "9"]
+        var writes: [[String: String]] = []
+        await card.saveParameters { values in
+            writes.append(values)
+            return "config locked"
+        }
+        XCTAssertEqual(card.actionError, "config locked")
+        XCTAssertEqual(card.parameterEdits, ["briefing.hour": "9"], "a failed save keeps the edits")
+
+        await card.saveParameters { values in
+            writes.append(values)
+            return nil
+        }
+        XCTAssertEqual(writes, [["briefing.hour": "9"], ["briefing.hour": "9"]])
+        XCTAssertNil(card.actionError)
+        XCTAssertEqual(card.parameterEdits, [:])
+        XCTAssertFalse(card.isWorking)
+    }
+
+    /// Turn On/Off and Save and Turn On: the feature ids `show` names, one
+    /// write per press; a press while one runs is ignored.
+    func testSetEnabledSendsTheFeatureIDsAndIgnoresADoublePress() async throws {
+        let card = model(VerbRunner(["show": .success(try Self.show())]))
+        var calls: [([String], Bool)] = []
+        var gate: CheckedContinuation<Void, Never>?
+        let first = Task {
+            await card.setEnabled(false) { ids, on in
+                calls.append((ids, on))
+                await withCheckedContinuation { gate = $0 }
+                return nil
+            }
+        }
+        while gate == nil { await Task.yield() }
+        XCTAssertTrue(card.isWorking)
+        await card.setEnabled(false) { ids, on in
+            calls.append((ids, on))
+            return nil
+        }
+        gate?.resume()
+        await first.value
+        XCTAssertEqual(calls.count, 1, "the second press is ignored, not refused with a message")
+        XCTAssertEqual(calls.first?.0, ["briefing", "day-plan"], "read from show before the write")
+        XCTAssertEqual(calls.first?.1, false)
+        XCTAssertNil(card.actionError)
+
+        await card.setEnabled(true) { _, _ in "busy elsewhere" }
+        XCTAssertEqual(card.actionError, "busy elsewhere")
+    }
+
+    func testSetEnabledWithoutAShowWritesNothing() async {
+        let card = model(VerbRunner([:]))
+        var called = false
+        await card.setEnabled(true) { _, _ in
+            called = true
+            return nil
+        }
+        XCTAssertFalse(called)
+        XCTAssertNotNil(card.actionError)
+    }
+
     func testLoadFailureIsKept() async {
         let runner = VerbRunner([:])
         let card = model(runner)
