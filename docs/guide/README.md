@@ -39,16 +39,16 @@ Every page of the guide is listed below, once, grouped by what it helps with.
 
 - [Home](features/home.md) — what needs you right now, setup progress, and how the menu works
 - [Catch Up](features/catch-up.md) — a recap of a stretch of time you were away: what happened and what needs you
-- [Briefings](features/briefings.md) — one morning read of your attention items, day, channels and people
-- [Day Plan](features/day-plan.md) — today as time blocks plus a backlog, with calendar conflicts flagged
-- [Inbox](features/inbox.md) — reminders, proposals to approve, Slack reaction commands and attention detection
-- [Ideas & Decisions](features/ideas-and-decisions.md) — proposals mined from chats, mail, Jira and meetings, for you to triage
+- [Briefings](features/briefings.md) — one morning read of your attention items, day, channels and people, on the Inbox's Your day card
+- [Day Plan](features/day-plan.md) — today as time blocks plus a backlog on the Inbox's Your day card, with calendar conflicts flagged
+- [Inbox](features/inbox.md) — one list of your day, messages, tracks, ideas, proposals, reminders and automation cards, plus Slack reaction commands
+- [Ideas & Decisions](features/ideas-and-decisions.md) — proposals mined from chats, mail, Jira and meetings, for you to triage in the Inbox
 - [Mail](features/mail.md) — what Gmail, Outlook and IMAP mail feeds into Catch Up, briefings, meeting prep and Ideas
 
 ## Execution
 
 - [Targets](features/targets.md) — your own to-do list, with a next step per target and an assistant that breaks work down on your instruction
-- [Tracks](features/tracks.md) — the requests and decisions waiting on you, pulled out of Slack digests, plus custom watches on topics you describe
+- [Tracks](features/tracks.md) — the requests and decisions waiting on you, pulled out of Slack digests, plus custom watches on topics you describe, as Inbox cards
 - [Jira and Linear](features/jira-and-linear.md) — see stuck, late and overloaded work across your Jira boards and Linear teams
 - [Linear](features/linear.md) — connect Linear workspaces, pick teams, and let the assistant read and change Linear issues
 

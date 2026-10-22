@@ -287,6 +287,19 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   `search`, `usage`, `mcpServer`, `chat` (`EmptyStateCopy.swift:61`).
   `EmptyStateCopyCoverageTests` sweeps `SidebarDestination.allCases`: every tab
   has copy XOR is exempt, and the icon matches the sidebar's.
+- **C1, the one Inbox (2026-10-22, board #861):** the `briefings`, `dayPlan`,
+  `tracks` and `ideas` destinations are gone. The table is now keyed by a
+  `SidebarDestination.rawValue` or an Inbox filter's `InboxFilter.emptyCopyKey`:
+  All → `inbox`, Day → `briefings` (the `{hour}` row, **Change the hour**),
+  Messages → `inboxMessages`, Tracks → `tracks`, Ideas → `ideas`, Automations →
+  `inboxAutomations` (no feature, no status line). `TabEmptyState(copyKey:)`
+  draws a filter's empty list; the empty All and Day lists show
+  `NoOwnerEmptyState` while the owner is unknown, and All keeps the reaction
+  cheat sheet. The `dayPlan` row stays for `featureCard` (Getting ready).
+  Generate Briefing, the Day Plan screen's empty state and Ideas' Create /
+  Find Ideas left with their screens: the day card's **Make today's plan**
+  and the Ideas filter's `+` and ⋯ → **Find Ideas in Past Messages…** replace
+  them.
 - **Views.** `FeatureEmptyState` (`WatchtowerDesktop/Sources/Views/Components/FeatureEmptyState.swift`) is
   values and closures only (ViewInspector-driven, no `@Environment(AppState)`);
   `TabEmptyState` (`WatchtowerDesktop/Sources/Views/Components/TabEmptyState.swift`) binds it to one tab
@@ -318,9 +331,11 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   as **Try again** and only restarts. An error recorded while the feature was
   off goes stale once it is on another way (`emptyStateTurnOnError`, `:1201`).
 - **Day Plan, established install** (owner, ask #299): with day-plan rows
-  (`.dayPlan` ready) but no plan for the date, `DayPlanView.emptyState` shows
+  (`.dayPlan` ready) but no plan for the date, `DayPlanView.emptyState` showed
   only "Today's plan at or after HH:00" (`todaysPlanLine`, the day-plan hour)
-  instead of the first-run screen; a fresh install keeps the shared empty state.
+  instead of the first-run screen. Retired with the Day Plan screen in C1
+  (2026-10-22): today's day card says "No plan for this day yet." and offers
+  **Make today's plan** (`InboxDayPlanBlock`).
 - **Catch Up** reads the readiness of `.digests` only (R10; the spec said digests
   + inbox, the component takes one feature).
 - **Spec §1.5 deviation as built:** the Inbox row has no button — the reaction
@@ -626,7 +641,10 @@ log.") and never reads as empty.
   briefing's weekday), Catch-Up ("new recap", highlighted), Day plan
   ("N of M done"), Digests. Each row only while its tab is visible
   (`AppState.homeLinksAllowed`, `AppState+Home.swift:32`). View:
-  `LinksZoneView.swift`.
+  `LinksZoneView.swift`. Since C1 (2026-10-22) Briefing and Day plan are
+  allowed while `.inbox` is visible and their feature is on, and open today's
+  day card (`InboxRoute.forFeature`); Getting ready's lines for the briefing,
+  day plan, tracks and ideas open the Inbox on the matching filter.
 - **Numbers** — `HomeNumbersQueries.read` (`HomeNumbersQueries.swift:31`), a
   read of its own in `HomeCenter` (own observation task and token, so a slow
   count never blocks the feed), one independent group per source; a throw marks

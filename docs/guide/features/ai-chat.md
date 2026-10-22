@@ -20,7 +20,7 @@ You ask "what did we decide about the payments rollout?" and get an answer drawn
 
 Only the main chat, the target chat and the automation editor can act, through proposals. The meeting, track, idea and setup chats are draft-only: they discuss and draft but never act. At most three replies across all of them run at once; a fourth shows **Queued**.
 
-**Questions about Watchtower itself.** The assistant searches this guide (built into the app, so it matches your version) and links the section it used; if the guide has nothing on it, it says so. An answer can also link a screen, such as **Briefings**: the link opens that tab, and only screens shown in your sidebar become links.
+**Questions about Watchtower itself.** The assistant searches this guide (built into the app, so it matches your version) and links the section it used; if the guide has nothing on it, it says so. An answer can also link a screen, such as **Inbox**: the link opens that tab, and only screens shown in your sidebar become links.
 
 Messages sent from the panel (**⌘/**) also tell the assistant which tab you are on, what status line an empty tab shows and which item is selected. That note goes to your AI provider but is never stored, so the history shows only what you typed.
 
