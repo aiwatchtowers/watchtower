@@ -1,6 +1,7 @@
 package prompts
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -90,4 +91,27 @@ func TestResolve_UnregisteredIDReturnsEmptyAndError(t *testing.T) {
 	require.Error(t, err)
 	assert.Empty(t, tmpl)
 	assert.Equal(t, 0, version)
+}
+
+func TestDefaultForRole(t *testing.T) {
+	assert.Equal(t, Defaults[DigestChannel], DefaultForRole(DigestChannel, ""))
+	assert.Equal(t, Defaults[DigestChannel], DefaultForRole(DigestChannel, "no-such-role"))
+	Defaults["test.role_x"] = "base"
+	Defaults["test.role_x_lead"] = "lead variant"
+	t.Cleanup(func() { delete(Defaults, "test.role_x"); delete(Defaults, "test.role_x_lead") })
+	assert.Equal(t, "lead variant", DefaultForRole("test.role_x", "lead"))
+	assert.Equal(t, "base", DefaultForRole("test.role_x", "other"))
+}
+
+func TestTuner_SkipsMovedPrompts(t *testing.T) {
+	tuner := NewTuner(nil, nil, nil)
+	for id := range MovedToBuiltin {
+		_, err := tuner.Suggest(context.Background(), id)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "Automations")
+		_, err = tuner.SuggestManual(context.Background(), id, "x")
+		require.Error(t, err)
+	}
+	assert.Equal(t, "morning-brief", MovedToBuiltin[BriefingDaily])
+	assert.Equal(t, "morning-brief", MovedToBuiltin[DayPlanGenerate])
 }

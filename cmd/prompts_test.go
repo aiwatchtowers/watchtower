@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -143,4 +144,18 @@ func TestRunPromptsList_RequiresConfig(t *testing.T) {
 func TestTuneFlags(t *testing.T) {
 	assert.NotNil(t, tuneCmd.Flags().Lookup("apply"))
 	assert.NotNil(t, tuneCmd.Flags().Lookup("instructions"))
+}
+
+func TestPromptsShow_MovedPromptNote(t *testing.T) {
+	cleanup := setupWatchTestEnv(t)
+	defer cleanup()
+
+	buf := new(bytes.Buffer)
+	promptsShowCmd.SetOut(buf)
+	require.NoError(t, promptsShowCmd.RunE(promptsShowCmd, []string{"briefing.daily"}))
+	assert.True(t, strings.HasPrefix(buf.String(), "Used by the Morning brief built-in — change it in Automations → Built in.\n"))
+
+	buf.Reset()
+	require.NoError(t, promptsShowCmd.RunE(promptsShowCmd, []string{"digest.channel"}))
+	assert.NotContains(t, buf.String(), "Morning brief built-in")
 }

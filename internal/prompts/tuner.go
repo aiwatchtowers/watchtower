@@ -85,6 +85,9 @@ Return ONLY a JSON object (no markdown fences):
 
 // Suggest generates an improvement suggestion for a prompt based on feedback.
 func (t *Tuner) Suggest(ctx context.Context, promptID string) (*TuneResult, error) {
+	if _, moved := MovedToBuiltin[promptID]; moved {
+		return nil, errMovedToBuiltin(promptID)
+	}
 	// Load current prompt
 	current, version, err := t.store.Get(promptID)
 	if err != nil {
@@ -214,6 +217,9 @@ Return ONLY a JSON object (no markdown fences):
 
 // SuggestManual generates an improvement suggestion based on user-provided instructions.
 func (t *Tuner) SuggestManual(ctx context.Context, promptID, instructions string) (*TuneResult, error) {
+	if _, moved := MovedToBuiltin[promptID]; moved {
+		return nil, errMovedToBuiltin(promptID)
+	}
 	current, version, err := t.store.Get(promptID)
 	if err != nil {
 		return nil, fmt.Errorf("loading prompt %q: %w", promptID, err)
@@ -305,4 +311,10 @@ func (t *Tuner) Apply(result *TuneResult) error {
 		reason = string(runes[:200])
 	}
 	return t.store.Update(result.PromptID, result.Suggestion, reason)
+}
+
+// errMovedToBuiltin is the skip reason for a prompt that a built-in automation
+// owns now.
+func errMovedToBuiltin(promptID string) error {
+	return fmt.Errorf("prompt %q is used by the %s built-in — change it in Automations → Built in", promptID, MovedToBuiltin[promptID])
 }

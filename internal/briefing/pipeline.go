@@ -83,6 +83,10 @@ type Pipeline struct {
 	// outside a run (see shownIDs).
 	shown *shownIDs
 
+	// lastPromptNote is the fallback sentence of the last run ("" when the
+	// template was used as resolved).
+	lastPromptNote string
+
 	// Accumulated usage from the last Run call.
 	lastInputTokens    int
 	lastOutputTokens   int
@@ -132,8 +136,26 @@ func (p *Pipeline) runOwner() (db.Owner, error) {
 	return owner, nil
 }
 
+// RunOptions tunes one briefing run.
+type RunOptions struct {
+	// Prompt, when non-empty, replaces the store-resolved template. The
+	// placeholder check applies to it like to a stored row.
+	Prompt string
+}
+
+// LastPromptNote is "" or the sentence saying the last run fell back to the
+// built-in template because the override or stored row had the wrong
+// placeholder count.
+func (p *Pipeline) LastPromptNote() string { return p.lastPromptNote }
+
 // RunForDate generates a briefing for the given date (YYYY-MM-DD).
 func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
+	return p.RunForDateWith(ctx, date, RunOptions{})
+}
+
+// RunForDateWith is RunForDate with run options.
+func (p *Pipeline) RunForDateWith(ctx context.Context, date string, opts RunOptions) (int, error) {
+	p.lastPromptNote = ""
 	if !p.cfg.Briefing.Enabled {
 		return 0, nil
 	}
@@ -202,7 +224,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 
 	// Build prompt.
 	userName := p.userName(owner)
-	promptTmpl, promptVersion := p.getPrompt(prompts.BriefingDaily, role)
+	promptTmpl, promptVersion := p.getPrompt(prompts.BriefingDaily, role, opts.Prompt)
 	langDirective := prompts.Directive(p.cfg.Digest.Language)
 
 	systemPrompt := fmt.Sprintf(promptTmpl,
@@ -324,13 +346,28 @@ func (p *Pipeline) learnedPrefs() string {
 // the default: that is a row the owner customized before a version added a
 // section, and formatting it with the new argument list would shift every
 // later section and append %!(EXTRA ...) to the prompt.
-func (p *Pipeline) getPrompt(id, role string) (string, int) {
-	tmpl, version, err := prompts.Resolve(p.promptStore, id, role)
-	if err != nil {
-		p.logger.Printf("briefing: %v — using the built-in default", err)
+//
+// A non-empty override replaces the resolved template (version 0) and goes
+// through the same placeholder check.
+func (p *Pipeline) getPrompt(id, role, override string) (string, int) {
+	var tmpl string
+	var version int
+	if override != "" {
+		tmpl = override
+	} else {
+		var err error
+		tmpl, version, err = prompts.Resolve(p.promptStore, id, role)
+		if err != nil {
+			p.logger.Printf("briefing: %v — using the built-in default", err)
+		}
 	}
 	if got, want := countVerbs(tmpl), countVerbs(prompts.Defaults[id]); got != want {
-		p.logger.Printf("briefing: stored %s template has %d placeholders, the default has %d — using the default (reset the prompt in Settings to pick up the new sections)", id, got, want)
+		if override != "" {
+			p.logger.Printf("briefing: the edited Morning brief prompt has %d %%s placeholders, the default has %d — using the default", got, want)
+		} else {
+			p.logger.Printf("briefing: stored %s template has %d placeholders, the default has %d — using the default (reset the prompt in Settings to pick up the new sections)", id, got, want)
+		}
+		p.lastPromptNote = fmt.Sprintf("The prompt has %d placeholders where %d are required — the built-in prompt was used.", got, want)
 		tmpl, version = prompts.Defaults[id], 0
 	}
 	return prompts.WithRoleInstruction(role, tmpl), version
