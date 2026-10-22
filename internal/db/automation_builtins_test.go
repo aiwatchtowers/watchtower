@@ -1,0 +1,341 @@
+package db
+
+import (
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func seedBuiltinRow(t *testing.T, d *DB, builtinID, slug, content, approval string) int64 {
+	t.Helper()
+	id, err := d.UpsertBuiltinAutomation(Automation{
+		BuiltinID: builtinID, Slug: slug, Name: "Acme " + slug,
+		TriggerKind: TriggerKindSync, TriggerSpec: `{"sync":true}`,
+		PermissionsJSON: `["llm"]`, OutputsJSON: `["inbox"]`,
+		RecipeText: "---\nname: x\n---\n", ContentHash: content, ApprovalHash: approval,
+	})
+	require.NoError(t, err)
+	return id
+}
+
+func TestBuiltinAutomation_UpsertNeverSetsOwnerColumns(t *testing.T) {
+	d := openTestDB(t)
+	id := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	again := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c2", "a2")
+	require.Equal(t, id, again, "the upsert is keyed by the built-in's path")
+
+	a := mustGetAutomation(t, d, id)
+	assert.Equal(t, "", a.ConfirmedHash)
+	assert.False(t, a.Enabled)
+	assert.Equal(t, "builtin:morning-brief", a.Path)
+	assert.Equal(t, OriginBuiltin, a.Origin)
+	assert.Equal(t, "morning-brief", a.BuiltinID)
+	assert.Equal(t, "personal", a.Scope)
+	assert.Equal(t, "a2", a.ApprovalHash)
+	assert.True(t, a.IsBuiltin())
+
+	_, err := d.UpsertBuiltinAutomation(Automation{Slug: "x"})
+	require.Error(t, err, "an empty builtin id is refused")
+
+	// Confirmed and enabled survive a re-upsert with the same hash.
+	require.NoError(t, d.ConfirmShippedBuiltin(id, "c2", "a2", time.Now()))
+	require.NoError(t, d.SetBuiltinEnabled("morning-brief", true, time.Now()))
+	seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c2", "a2")
+	a = mustGetAutomation(t, d, id)
+	assert.Equal(t, "a2", a.ConfirmedHash)
+	assert.True(t, a.Enabled)
+	assert.True(t, a.Runnable())
+}
+
+func TestAuto06_ConfirmShippedBuiltinRefusesOtherBytes(t *testing.T) {
+	now := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name          string
+		owner         bool
+		content, appr string
+		want          error
+		confirmed     string
+	}{
+		{name: "owner row", owner: true, content: "c-a1", appr: "a1", want: ErrNotBuiltin, confirmed: ""},
+		{name: "other content", content: "c-other", appr: "a1", want: ErrHashMismatch, confirmed: ""},
+		{name: "other approval", content: "c1", appr: "a-other", want: ErrHashMismatch, confirmed: ""},
+		{name: "empty hashes", content: "", appr: "", want: ErrHashMismatch, confirmed: ""},
+		{name: "matching", content: "c1", appr: "a1", want: nil, confirmed: "a1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := openTestDB(t)
+			var id int64
+			if tc.owner {
+				id = seedAutomationRow(t, d, "digest", "/acme/automations/digest.md", "a1")
+			} else {
+				id = seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+			}
+			err := d.ConfirmShippedBuiltin(id, tc.content, tc.appr, now)
+			if tc.want == nil {
+				require.NoError(t, err)
+			} else {
+				require.ErrorIs(t, err, tc.want)
+			}
+			assert.Equal(t, tc.confirmed, mustGetAutomation(t, d, id).ConfirmedHash)
+		})
+	}
+	d := openTestDB(t)
+	require.ErrorIs(t, d.ConfirmShippedBuiltin(99, "c", "a", now), ErrAutomationNotFound)
+}
+
+func TestMarkAutomationsRemovedExcept_LeavesBuiltinRows(t *testing.T) {
+	d := openTestDB(t)
+	b := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	p := seedAutomationRow(t, d, "digest", "/acme/automations/digest.md", "a1")
+	n, err := d.MarkAutomationsRemovedExcept("personal", 0, nil, time.Now())
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	assert.Nil(t, mustGetAutomation(t, d, b).RemovedAt)
+	assert.NotNil(t, mustGetAutomation(t, d, p).RemovedAt)
+}
+
+func TestGetAutomationBySlug_IgnoresBuiltinTwin(t *testing.T) {
+	d := openTestDB(t)
+	b := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	p := seedAutomationRow(t, d, "morning-brief", "/acme/automations/morning-brief.md", "a1")
+	require.NotEqual(t, b, p)
+	a, err := d.GetAutomationBySlug("personal", 0, "morning-brief")
+	require.NoError(t, err)
+	assert.Equal(t, p, a.ID)
+
+	got, err := d.GetBuiltinAutomation("morning-brief")
+	require.NoError(t, err)
+	assert.Equal(t, b, got.ID)
+	_, err = d.GetBuiltinAutomation("nope")
+	require.ErrorIs(t, err, ErrAutomationNotFound)
+
+	_, err = d.Exec(`UPDATE automations SET slug = 'other', builtin_id = 'other' WHERE id = ?`, b)
+	require.NoError(t, err)
+	seedBuiltinRow(t, d, "third", "third", "c", "a")
+	_, err = d.Exec(`UPDATE automations SET builtin_id = 'other' WHERE builtin_id = 'third'`)
+	require.Error(t, err, "a built-in id is unique")
+	_, err = d.Exec(`UPDATE automations SET origin = 'builtin' WHERE id = ?`, p)
+	require.Error(t, err, "a built-in row carries its id")
+	_, err = d.Exec(`UPDATE automations SET builtin_id = 'x' WHERE id = ?`, p)
+	require.Error(t, err, "an owner row carries no built-in id")
+}
+
+func TestAutomation_RunsAtSlotEqualsIsBuiltin(t *testing.T) {
+	d := openTestDB(t)
+	owner := mustGetAutomation(t, d, seedAutomationRow(t, d, "digest", "/acme/automations/digest.md", "a1"))
+	builtin := mustGetAutomation(t, d, seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1"))
+	assert.False(t, owner.IsBuiltin())
+	assert.Equal(t, OriginOwner, owner.Origin)
+	assert.True(t, builtin.IsBuiltin())
+	for _, a := range []*Automation{owner, builtin} {
+		assert.Equal(t, a.IsBuiltin(), a.RunsAtSlot(), a.Path)
+	}
+}
+
+func TestAutomationRuns_SyncTriggerAccepted(t *testing.T) {
+	d := openTestDB(t)
+	id := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	runID, coalesced, err := d.EnqueueAutomationRun(EnqueueRequest{AutomationID: id, Trigger: TriggerSync, Now: time.Now()})
+	require.NoError(t, err)
+	assert.False(t, coalesced)
+	r, err := d.GetAutomationRun(runID)
+	require.NoError(t, err)
+	assert.Equal(t, TriggerSync, r.Trigger)
+	_, _, err = d.EnqueueAutomationRun(EnqueueRequest{AutomationID: id, Trigger: "bogus", Now: time.Now()})
+	require.Error(t, err, "the CHECK still refuses an unknown trigger")
+}
+
+func TestBuiltin_TakeQueuedRunReturnsOldestManual(t *testing.T) {
+	d := openTestDB(t)
+	id := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	got, err := d.TakeQueuedBuiltinRun(id)
+	require.NoError(t, err)
+	assert.Nil(t, got)
+	_, err = d.Exec(`INSERT INTO automation_runs (id, automation_id, trigger, status, queued_at) VALUES
+		(1, ?, 'sync', 'queued', '2026-10-22T08:00:00Z'),
+		(2, ?, 'manual', 'succeeded', '2026-10-22T08:00:00Z'),
+		(3, ?, 'manual', 'queued', '2026-10-22T09:00:00Z')`, id, id, id)
+	require.NoError(t, err)
+	got, err = d.TakeQueuedBuiltinRun(id)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, int64(3), got.ID)
+}
+
+func TestBuiltin_SetEnabledMirrorsOnly(t *testing.T) {
+	d := openTestDB(t)
+	id := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	_, err := d.Exec(`UPDATE automations SET disabled_reason = 'runaway' WHERE id = ?`, id)
+	require.NoError(t, err)
+	require.NoError(t, d.SetBuiltinEnabled("morning-brief", true, time.Now()))
+	a := mustGetAutomation(t, d, id)
+	assert.True(t, a.Enabled)
+	assert.Equal(t, "runaway", a.DisabledReason)
+	assert.Nil(t, a.LastScheduledFor)
+	require.ErrorIs(t, d.SetBuiltinEnabled("nope", true, time.Now()), ErrAutomationNotFound)
+}
+
+func TestBuiltinMigration_RecordCountsAttempts(t *testing.T) {
+	d := openTestDB(t)
+	m, err := d.GetBuiltinMigration("morning-brief")
+	require.NoError(t, err)
+	assert.Nil(t, m)
+	t0 := time.Date(2026, 10, 22, 9, 0, 0, 0, time.UTC)
+	require.NoError(t, d.RecordBuiltinMigration("morning-brief", BuiltinMigrationFailed, "boom", t0))
+	require.NoError(t, d.RecordBuiltinMigration("morning-brief", BuiltinMigrationFailed, "boom again", t0.Add(time.Hour)))
+	m, err = d.GetBuiltinMigration("morning-brief")
+	require.NoError(t, err)
+	require.NotNil(t, m)
+	assert.Equal(t, 2, m.Attempts)
+	assert.Equal(t, BuiltinMigrationFailed, m.Status)
+	assert.Equal(t, "boom again", m.Error)
+	require.NoError(t, d.RecordBuiltinMigration("morning-brief", BuiltinMigrationDone, "", t0.Add(2*time.Hour)))
+	m, err = d.GetBuiltinMigration("morning-brief")
+	require.NoError(t, err)
+	assert.Equal(t, BuiltinMigrationDone, m.Status)
+	assert.Equal(t, "", m.Error)
+	assert.Equal(t, 3, m.Attempts)
+	assert.True(t, m.UpdatedAt.Equal(t0.Add(2*time.Hour)))
+	require.Error(t, d.RecordBuiltinMigration("morning-brief", "bogus", "", t0), "the CHECK refuses an unknown status")
+}
+
+func TestBuiltinCost_PipelineRunsOnlyBeforeFirstRun(t *testing.T) {
+	d := openTestDB(t)
+	id := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	now := time.Now()
+	day0 := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local)
+	at := func(day, hour int) string {
+		return formatAutomationTime(day0.AddDate(0, 0, day).Add(time.Duration(hour) * time.Hour))
+	}
+
+	sum, err := d.BuiltinCost(id, []string{"briefing"}, day0.AddDate(0, 0, -7))
+	require.NoError(t, err)
+	assert.Equal(t, BuiltinCostSum{}, sum, "nothing ran yet")
+
+	_, err = d.Exec(`INSERT INTO pipeline_runs (pipeline, cost_usd, started_at) VALUES
+		('briefing', 0.25, ?), ('briefing', 0.40, ?), ('tracks', 1.00, ?), ('briefing', 9.00, ?)`,
+		at(-3, 7), at(0, 7), at(-3, 8), at(-10, 7))
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status, queued_at, started_at, reported_cost_usd)
+		VALUES (?, 'sync', 'succeeded', ?, ?, 0.10), (?, 'dry_run', 'succeeded', ?, ?, 5.0)`,
+		id, at(0, 8), at(0, 8), id, at(-5, 8), at(-5, 8))
+	require.NoError(t, err)
+
+	sum, err = d.BuiltinCost(id, []string{"briefing"}, day0.AddDate(0, 0, -7))
+	require.NoError(t, err)
+	assert.InDelta(t, 0.35, sum.USD, 1e-9, "day −3 pipeline cost plus the run's $0.10")
+	assert.True(t, sum.Reported)
+}
+
+func TestMigration00150_KeepsRunsAndChildren(t *testing.T) {
+	d := openTestDB(t)
+	automationObjects := func() map[string]string {
+		rows, err := d.Query(`SELECT type || ':' || name, sql FROM sqlite_master
+			WHERE tbl_name IN ('automations','automation_runs') AND type IN ('index','trigger') AND sql IS NOT NULL`)
+		require.NoError(t, err)
+		defer rows.Close()
+		out := map[string]string{}
+		for rows.Next() {
+			var name, sql string
+			require.NoError(t, rows.Scan(&name, &sql))
+			out[name] = sql
+		}
+		require.NoError(t, rows.Err())
+		return out
+	}
+	seqOf := func(table string) int64 {
+		var seq int64
+		require.NoError(t, d.QueryRow(`SELECT seq FROM sqlite_sequence WHERE name = ?`, table).Scan(&seq))
+		return seq
+	}
+	atHead := automationObjects()
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 149))
+	before := automationObjects()
+
+	wb := newTestWorkbench(t, d)
+	a := seedAutomationRow(t, d, "digest", "/acme/automations/digest.md", "h1")
+	gone := seedAutomationRow(t, d, "gone", "/acme/automations/gone.md", "h2")
+	_, err := d.Exec(`DELETE FROM automations WHERE id = ?`, gone)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO automation_runs (id, automation_id, trigger, status, reported_cost_usd) VALUES
+		(1, ?, 'manual', 'succeeded', 0.5), (2, ?, 'schedule', 'waiting', NULL), (3, ?, 'manual', 'queued', NULL)`, a, a, a)
+	require.NoError(t, err)
+	_, err = d.Exec(`DELETE FROM automation_runs WHERE id = 3`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO automation_run_steps (run_id, seq, kind, status) VALUES (1, 1, 'llm', 'ok')`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO automation_run_replay (run_id, seq, kind, name, args_hash, pending) VALUES (2, 1, 'ask', 'q', 'h', 1)`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO automation_outputs (id, automation_id, run_id, kind, title, body) VALUES (1, ?, 1, 'inbox', 't', 'b')`, a)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO automation_state (automation_id, state_json, run_id) VALUES (?, '{"n":1}', 1)`, a)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO automation_tool_grants (automation_id, tool, grant_hash) VALUES (?, 'create_target', 'h1')`, a)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO owner_asks (project_id, kind, title, automation_run_id) VALUES (?, 'question', 'Q', 2)`, wb)
+	require.NoError(t, err)
+	autoSeq, runSeq := seqOf("automations"), seqOf("automation_runs")
+	require.Equal(t, gone, autoSeq)
+	require.Equal(t, int64(3), runSeq)
+
+	require.NoError(t, gooseUp(d.DB, "migrations"))
+
+	assert.Equal(t, atHead, automationObjects(), "every index and the trigger are recreated")
+	assert.Equal(t, autoSeq, seqOf("automations"))
+	assert.Equal(t, runSeq, seqOf("automation_runs"))
+	assert.Equal(t, 1, countWhere(t, d, `PRAGMA foreign_keys`))
+	got := mustGetAutomation(t, d, a)
+	assert.Equal(t, OriginOwner, got.Origin)
+	assert.Equal(t, "", got.BuiltinID)
+	assert.False(t, got.Overridden)
+	assert.Equal(t, 2, countWhere(t, d, `SELECT COUNT(*) FROM automation_runs WHERE automation_id = ?`, a))
+	assert.Equal(t, 1, countWhere(t, d, `SELECT COUNT(*) FROM automation_run_steps WHERE run_id = 1`))
+	assert.Equal(t, 1, countWhere(t, d, `SELECT COUNT(*) FROM automation_run_replay WHERE run_id = 2`))
+	assert.Equal(t, 1, countWhere(t, d, `SELECT COUNT(*) FROM automation_outputs WHERE id = 1 AND run_id = 1`))
+	assert.Equal(t, 1, countWhere(t, d, `SELECT COUNT(*) FROM automation_state WHERE automation_id = ?`, a))
+	assert.Equal(t, 1, countWhere(t, d, `SELECT COUNT(*) FROM automation_tool_grants WHERE automation_id = ?`, a))
+	assert.Equal(t, 1, countWhere(t, d, `SELECT COUNT(*) FROM owner_asks WHERE automation_run_id = 2`))
+	assert.Equal(t, 0, countWhere(t, d, `SELECT COUNT(*) FROM pragma_foreign_key_check`))
+
+	// A built-in with a sync run and children, and a sync run of the owner row.
+	b := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	_, err = d.Exec(`INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES
+		(10, ?, 'sync', 'succeeded'), (11, ?, 'manual', 'succeeded'), (12, ?, 'sync', 'succeeded')`, b, b, a)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO automation_run_steps (run_id, seq, kind, status) VALUES (10, 1, 'llm', 'ok'), (12, 1, 'llm', 'ok')`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO automation_outputs (automation_id, run_id, kind, title, body) VALUES (?, 11, 'inbox', 't', 'b')`, b)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO automation_state (automation_id, state_json) VALUES (?, '{}')`, b)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO automation_tool_grants (automation_id, tool, grant_hash) VALUES (?, 'x', 'a1')`, b)
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE automation_runs SET rerun_of = 12 WHERE id = 1`)
+	require.NoError(t, err)
+
+	require.NoError(t, gooseDownTo(d.DB, "migrations", 149))
+	assert.Equal(t, before, automationObjects(), "the 00149 indexes and trigger come back verbatim")
+	assert.Equal(t, 0, countWhere(t, d, `SELECT COUNT(*) FROM automations WHERE id = ?`, b))
+	assert.Equal(t, 1, countWhere(t, d, `SELECT COUNT(*) FROM automations WHERE id = ?`, a))
+	assert.Equal(t, 2, countWhere(t, d, `SELECT COUNT(*) FROM automation_runs`))
+	assert.Equal(t, 0, countWhere(t, d, `SELECT COUNT(*) FROM automation_run_steps WHERE run_id IN (10, 12)`))
+	assert.Equal(t, 1, countWhere(t, d, `SELECT COUNT(*) FROM automation_outputs`))
+	assert.Equal(t, 1, countWhere(t, d, `SELECT COUNT(*) FROM automation_state`))
+	assert.Equal(t, 1, countWhere(t, d, `SELECT COUNT(*) FROM automation_tool_grants`))
+	assert.Equal(t, 1, countWhere(t, d, `SELECT COUNT(*) FROM automation_runs WHERE id = 1 AND rerun_of IS NULL`))
+	assert.Equal(t, 0, countWhere(t, d, `SELECT COUNT(*) FROM sqlite_master WHERE name = 'builtin_migrations'`))
+	assert.Equal(t, 0, countWhere(t, d, `SELECT COUNT(*) FROM pragma_foreign_key_check`))
+	assert.Equal(t, 1, countWhere(t, d, `PRAGMA foreign_keys`))
+	_, err = d.Exec(`INSERT INTO automation_runs (automation_id, trigger) VALUES (?, 'sync')`, a)
+	require.Error(t, err, "the old CHECK refuses sync")
+
+	require.NoError(t, gooseUp(d.DB, "migrations"))
+	assert.Equal(t, atHead, automationObjects())
+	_, err = d.Exec(`UPDATE automation_runs SET status = 'failed' WHERE id = 2`)
+	require.NoError(t, err)
+	assert.Equal(t, 0, countWhere(t, d, `SELECT COUNT(*) FROM automation_run_replay WHERE run_id = 2`),
+		"automation_runs_replay_cleanup fires after the rebuild")
+}

@@ -2785,9 +2785,11 @@ CREATE TABLE IF NOT EXISTS workbench_pr_states (
 -- Automations (00113, design spec 2026-10-14 §9.1–§9.4). Go writes every
 -- table; the Desktop writes only automation_outputs.read_at/dismissed_at.
 -- Timestamps are UTC RFC 3339 seconds. Budgets are tokens, never USD.
--- One row per recipe file. The executor runs recipe_text (the parsed copy), not
--- the file. A row is runnable iff parse_error = '', enabled = 1, removed_at IS
--- NULL and confirmed_hash = approval_hash (confirmed_hash '' = never confirmed).
+-- One row per recipe file, or per built-in recipe the app ships (00150,
+-- origin = 'builtin', path 'builtin:<id>'). The executor runs recipe_text (the
+-- parsed copy), not the file. A row is runnable iff parse_error = '', enabled = 1,
+-- removed_at IS NULL and confirmed_hash = approval_hash (confirmed_hash '' =
+-- never confirmed). A built-in runs only at its slot in the daemon's sync cycle.
 CREATE TABLE IF NOT EXISTS automations (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     slug                TEXT NOT NULL,                       -- filename stem
@@ -2795,7 +2797,7 @@ CREATE TABLE IF NOT EXISTS automations (
     project_id          INTEGER REFERENCES projects(id) ON DELETE CASCADE, -- workbench id; NULL = personal
     path                TEXT NOT NULL UNIQUE,                -- absolute recipe path
     name                TEXT NOT NULL DEFAULT '',
-    trigger_kind        TEXT NOT NULL DEFAULT '' CHECK (trigger_kind IN ('','schedule','button','event','manual')), -- '' while unparsable
+    trigger_kind        TEXT NOT NULL DEFAULT '' CHECK (trigger_kind IN ('','schedule','button','event','manual','sync')), -- '' while unparsable; 'sync' = at its slot in every sync cycle (built-ins only)
     trigger_spec        TEXT NOT NULL DEFAULT '{}',          -- JSON of the recipe's trigger
     missed_policy       TEXT NOT NULL DEFAULT 'run_once' CHECK (missed_policy IN ('run_once','skip')),
     concurrency         INTEGER NOT NULL DEFAULT 1 CHECK (concurrency BETWEEN 1 AND 4),
@@ -2817,9 +2819,18 @@ CREATE TABLE IF NOT EXISTS automations (
     updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     disabled_reason     TEXT NOT NULL DEFAULT '',            -- the daemon turned it off (runaway script); '' otherwise
     disabled_at         TEXT,                                -- when; both cleared by any owner enable/disable
-    CHECK ((scope = 'workbench') = (project_id IS NOT NULL))
+    origin              TEXT NOT NULL DEFAULT 'owner' CHECK (origin IN ('owner','builtin')), -- 'builtin' = shipped by the app (00150)
+    builtin_id          TEXT,                                -- the built-in's id; NULL for an owner row
+    overridden          INTEGER NOT NULL DEFAULT 0 CHECK (overridden IN (0,1)), -- 1 = the owner's copy of a built-in
+    builtin_base_hash   TEXT NOT NULL DEFAULT '',            -- content hash of the shipped text an owner copy was made from
+    CHECK ((scope = 'workbench') = (project_id IS NOT NULL)),
+    CHECK ((origin = 'builtin') = (builtin_id IS NOT NULL)),
+    CHECK (origin = 'owner' OR scope = 'personal')
 );
-CREATE UNIQUE INDEX IF NOT EXISTS idx_automations_scope_slug ON automations(scope, COALESCE(project_id, 0), slug);
+-- Slugs are unique among owner rows only: a personal recipe may share a built-in's slug.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_automations_scope_slug ON automations(scope, COALESCE(project_id, 0), slug)
+    WHERE origin = 'owner';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_automations_builtin_id ON automations(builtin_id) WHERE builtin_id IS NOT NULL;
 
 -- One row per run. Triggers only insert queued rows; the executor claims them.
 -- event_json: '' for every non-event run; for trigger = 'event' exactly
@@ -2828,11 +2839,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_automations_scope_slug ON automations(scop
 -- trigger = 'reply' (00149, one owner press of an Inbox card's Reply button)
 -- exactly {"reply": {"output_id": <id>, "action": <index>, "value": "<reply>",
 --  "data": <the action's stored data, null when absent>,
---  "card": {"title": "<card title>", "link": "<card link>"}}}.
+--  "card": {"title": "<card title>", "link": "<card link>"}}}; for a slot
+-- run's manual input (a Run Now of a built-in, 00150) {"builtin": <input>}
+-- with the fields listed on automations.BuiltinInput ('' when Run Now has no
+-- input). trigger = 'sync' is one in-cycle run of a built-in at its slot.
 CREATE TABLE IF NOT EXISTS automation_runs (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     automation_id     INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
-    trigger           TEXT NOT NULL CHECK (trigger IN ('schedule','catch_up','button','event','manual','dry_run','reply')),
+    trigger           TEXT NOT NULL CHECK (trigger IN ('schedule','catch_up','button','event','manual','dry_run','reply','sync')),
     scheduled_for     TEXT,
     event_cycle       TEXT,
     event_json        TEXT NOT NULL DEFAULT '',
@@ -2974,6 +2988,16 @@ CREATE TABLE IF NOT EXISTS plan_usage_status (
     limits_json    TEXT NOT NULL DEFAULT '[]',
     breakdown_json TEXT NOT NULL DEFAULT '[]',
     updated_at     TEXT NOT NULL
+);
+
+-- One row per built-in whose one-time move from the old pipeline settings
+-- ran (done) or failed (00150); attempts counts the tries.
+CREATE TABLE IF NOT EXISTS builtin_migrations (
+    builtin_id TEXT PRIMARY KEY,
+    status     TEXT NOT NULL CHECK (status IN ('done','failed')),
+    error      TEXT NOT NULL DEFAULT '',
+    attempts   INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
 );
 
 -- The owner's per-(automation, tool) auto grant (00117, Automations P2). Active

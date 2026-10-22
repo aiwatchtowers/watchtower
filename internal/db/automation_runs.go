@@ -33,6 +33,8 @@ const (
 	// TriggerReply is one owner press of an Inbox card's Reply button
 	// (00149): never coalesced with another run; event_json is a ReplyPayload.
 	TriggerReply = "reply"
+	// TriggerSync is one in-cycle run of a built-in at its slot (00150).
+	TriggerSync = "sync"
 )
 
 // Waiting reasons (automation_runs.waiting_reason).
