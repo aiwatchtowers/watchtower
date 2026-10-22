@@ -267,7 +267,7 @@ final class AppStateTests: XCTestCase {
         appState.wireAppDatabaseOverride = { _ in }
         appState.databaseManager = dbManager
         await appState.refreshConnectedSources()
-        XCTAssertFalse(SidebarDestination.inbox.isVisible(
+        XCTAssertFalse(SidebarDestination.catchUp.isVisible(
             disabledFeatures: [], connected: appState.featureVisibility.connectedSources
         ))
 
@@ -275,7 +275,7 @@ final class AppStateTests: XCTestCase {
         appState.completeOnboarding()
         await appState.connectedSourcesRefresh?.value
 
-        XCTAssertTrue(SidebarDestination.inbox.isVisible(
+        XCTAssertTrue(SidebarDestination.catchUp.isVisible(
             disabledFeatures: [], connected: appState.featureVisibility.connectedSources
         ))
         await appState.stopSidebarCounts()?.value

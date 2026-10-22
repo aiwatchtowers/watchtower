@@ -19,50 +19,6 @@ final class TrackQueryTests: XCTestCase {
         XCTAssertEqual(tracks[0].text, "High")
     }
 
-    func testFetchAllByPriority() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertTrack(db, text: "A", priority: "high")
-            try TestDatabase.insertTrack(db, text: "B", priority: "low")
-        }
-        let tracks = try db.read { try TrackQueries.fetchAll($0, priority: "high") }
-        XCTAssertEqual(tracks.count, 1)
-        XCTAssertEqual(tracks[0].text, "A")
-    }
-
-    func testFetchAllByHasUpdates() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertTrack(db, text: "Updated", hasUpdates: true)
-            try TestDatabase.insertTrack(db, text: "Stable")
-        }
-        let tracks = try db.read { try TrackQueries.fetchAll($0, hasUpdates: true) }
-        XCTAssertEqual(tracks.count, 1)
-        XCTAssertEqual(tracks[0].text, "Updated")
-    }
-
-    func testFetchAllByChannelID() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertTrack(db, text: "In C001", channelIDs: #"["C001"]"#)
-            try TestDatabase.insertTrack(db, text: "In C002", channelIDs: #"["C002"]"#)
-        }
-        let tracks = try db.read { try TrackQueries.fetchAll($0, channelID: "C002") }
-        XCTAssertEqual(tracks.count, 1)
-        XCTAssertEqual(tracks[0].text, "In C002")
-    }
-
-    func testFetchAllByOwnership() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertTrack(db, text: "Mine", ownership: "mine")
-            try TestDatabase.insertTrack(db, text: "Watching", ownership: "watching")
-        }
-        let tracks = try db.read { try TrackQueries.fetchAll($0, ownership: "watching") }
-        XCTAssertEqual(tracks.count, 1)
-        XCTAssertEqual(tracks[0].text, "Watching")
-    }
-
     func testFetchUpdatedTracks() throws {
         let db = try TestDatabase.create()
         try db.write { db in
@@ -211,38 +167,5 @@ final class TrackQueryTests: XCTestCase {
         }
         let latest = try db.read { try TrackQueries.fetchLatestCustom($0) }
         XCTAssertNil(latest)
-    }
-
-    // MARK: - Bulk dismiss (dual path with Go db.DismissTracks)
-
-    private func dismissedAt(_ db: DatabaseQueue, _ id: Int64) throws -> String {
-        try db.read { try String.fetchOne($0, sql: "SELECT dismissed_at FROM tracks WHERE id = ?", arguments: [id]) ?? "" }
-    }
-
-    func testDismissManyStampsOnlyActiveRows() throws {
-        let db = try TestDatabase.create()
-        var ids: [Int64] = []
-        try db.write { db in
-            for text in ["a", "b", "keep", "already"] { ids.append(try TestDatabase.insertTrack(db, text: text)) }
-            try db.execute(sql: "UPDATE tracks SET dismissed_at = '2000-01-01T00:00:00Z' WHERE id = ?", arguments: [ids[3]])
-        }
-        let n = try db.write { try TrackQueries.dismissMany($0, ids: [Int(ids[0]), Int(ids[1]), Int(ids[3]), 999_999]) }
-        XCTAssertEqual(n, 2, "missing and already-dismissed ids are skipped")
-        XCTAssertFalse(try dismissedAt(db, ids[0]).isEmpty)
-        XCTAssertFalse(try dismissedAt(db, ids[1]).isEmpty)
-        XCTAssertEqual(try dismissedAt(db, ids[2]), "")
-        XCTAssertEqual(try dismissedAt(db, ids[3]), "2000-01-01T00:00:00Z", "an earlier dismissal keeps its stamp")
-        XCTAssertEqual(try db.write { try TrackQueries.dismissMany($0, ids: []) }, 0)
-    }
-
-    func testFetchActiveAutoIDsExcludesCustomAndDismissed() throws {
-        let db = try TestDatabase.create()
-        var ids: [Int64] = []
-        try db.write { db in
-            for text in ["auto", "custom", "dismissed"] { ids.append(try TestDatabase.insertTrack(db, text: text)) }
-            try db.execute(sql: "UPDATE tracks SET origin = 'custom' WHERE id = ?", arguments: [ids[1]])
-            try TrackQueries.dismiss(db, id: Int(ids[2]))
-        }
-        XCTAssertEqual(try db.read { try TrackQueries.fetchActiveAutoIDs($0) }, [Int(ids[0])])
     }
 }

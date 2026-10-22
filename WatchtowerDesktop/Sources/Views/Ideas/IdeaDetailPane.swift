@@ -3,30 +3,26 @@ import WatchtowerCore
 
 // MARK: - IdeaDetailPane
 //
-// The rich single-idea review screen on the right of the Ideas registry's
-// master-detail split (the master-detail house pattern). Shows kind/status
+// The rich single-idea review screen: the Inbox's idea card (`InboxIdeaPane`)
+// and, until it leaves, the Ideas registry's detail. Shows kind/status
 // badges, the title, a needs-review banner, the essence text, a similar-to
 // hint when the miner flagged one, the mentions chronology, a bottom rating
-// row (👍/👎 + teaching comment), and a status-dependent action bar. All
-// mutating actions are delegated to the owning IdeasView via closures.
+// row (👍/👎 + teaching comment), and the verdict bar (`IdeaActionBar`). All
+// mutating actions are delegated through `IdeaActions`.
 struct IdeaDetailPane: View {
     @Environment(AppState.self) private var appState
 
     let idea: Idea
-    /// Every idea currently loaded in the review queue + registry — the
-    /// candidate pool for the merge picker. Passed as plain data (not the
-    /// view model) to keep this pane's dependency surface small.
+    /// Every idea the caller has loaded — the candidate pool for the inline
+    /// merge row. Passed as plain data (not the view model) to keep this
+    /// pane's dependency surface small.
     let allIdeas: [Idea]
-    let onApprove: () -> Void
-    let onReject: () -> Void
-    let onActivate: () -> Void
-    /// nil = an indefinite "not now" (no snooze date).
-    let onNotNow: (Date?) -> Void
-    let onDrop: () -> Void
-    let onMerge: (Int) -> Void
-    let onConvert: () -> Void
-    let onRating: (Int, String) async -> Bool
-    let onDelete: () -> Void
+    let actions: IdeaActions
+    /// A verdict write is under way: the bar's buttons wait.
+    let isWriting: Bool
+    /// False while another prominent action is on screen (the Inbox's open
+    /// New idea row): Approve drops to the regular style.
+    let approveIsPrimary: Bool
 
     @State private var comment: String
     @State private var rating: Int?
@@ -36,39 +32,20 @@ struct IdeaDetailPane: View {
     @State private var mentionsLoaded = false
     @State private var mentionsError: String?
     @State private var jiraSiteURL: String?
-    @State private var showMergeSheet = false
-    @State private var mergePreselectID: Int?
-    @State private var showDeleteConfirmation = false
+    /// The inline merge or delete row under the verdict buttons.
+    @State private var openRow: IdeaActionRow?
 
     // Discuss chat state lives here (not hoisted like the situation pane's)
-    // because IdeasView already applies `.id(idea.id)` at this pane's call
-    // site, so this @State already resets per idea selection change.
+    // because every caller applies `.id(idea.id)` at this pane's call site,
+    // so this @State already resets per idea selection change.
     @State private var discuss = IdeaDiscussState()
 
-    init(
-        idea: Idea,
-        allIdeas: [Idea],
-        onApprove: @escaping () -> Void,
-        onReject: @escaping () -> Void,
-        onActivate: @escaping () -> Void,
-        onNotNow: @escaping (Date?) -> Void,
-        onDrop: @escaping () -> Void,
-        onMerge: @escaping (Int) -> Void,
-        onConvert: @escaping () -> Void,
-        onRating: @escaping (Int, String) async -> Bool,
-        onDelete: @escaping () -> Void
-    ) {
+    init(idea: Idea, allIdeas: [Idea], actions: IdeaActions, isWriting: Bool = false, approveIsPrimary: Bool = true) {
         self.idea = idea
         self.allIdeas = allIdeas
-        self.onApprove = onApprove
-        self.onReject = onReject
-        self.onActivate = onActivate
-        self.onNotNow = onNotNow
-        self.onDrop = onDrop
-        self.onMerge = onMerge
-        self.onConvert = onConvert
-        self.onRating = onRating
-        self.onDelete = onDelete
+        self.actions = actions
+        self.isWriting = isWriting
+        self.approveIsPrimary = approveIsPrimary
         _comment = State(initialValue: idea.ratingComment)
         _rating = State(initialValue: idea.ownerRating == 0 ? nil : idea.ownerRating)
     }
@@ -103,20 +80,6 @@ struct IdeaDetailPane: View {
         }
         .task(id: idea.id) { await loadMentions() }
         .task { jiraSiteURL = JiraConfigHelper.readSiteURL() }
-        .sheet(isPresented: $showMergeSheet) {
-            IdeaMergeSheet(
-                candidates: allIdeas,
-                excludingID: idea.id,
-                preselectedID: mergePreselectID,
-                onMerge: onMerge
-            )
-        }
-        .confirmationDialog("Delete this \(kindLabel.lowercased())?", isPresented: $showDeleteConfirmation) {
-            Button("Delete", role: .destructive, action: onDelete)
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Its mentions, chat, and any duplicates merged into it will be removed permanently.")
-        }
     }
 
     // MARK: - Header
@@ -124,7 +87,7 @@ struct IdeaDetailPane: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                badge(kindLabel, color: kindColor)
+                badge(idea.kind.label, color: kindColor)
                 badge(statusLabel, color: statusColor)
                 Spacer()
                 if let date = TimeFormatting.parseISO(idea.lastMentionAt) {
@@ -148,14 +111,6 @@ struct IdeaDetailPane: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(color.opacity(0.12), in: Capsule())
-    }
-
-    private var kindLabel: String {
-        switch idea.kind {
-        case .idea: return "Idea"
-        case .decision: return "Decision"
-        case .note: return "Note"
-        }
     }
 
     private var kindColor: Color {
@@ -219,11 +174,8 @@ struct IdeaDetailPane: View {
                 Text("Looks similar to #\(similarToID)")
                     .font(.callout)
                 Spacer()
-                Button("Merge") {
-                    mergePreselectID = similarToID
-                    showMergeSheet = true
-                }
-                .buttonStyle(.bordered)
+                Button("Merge…") { openRow = .merge(preselect: similarToID) }
+                    .buttonStyle(.kitSecondary)
             }
             .padding(10)
             .background(Color.blue.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
@@ -234,7 +186,6 @@ struct IdeaDetailPane: View {
 
     @ViewBuilder
     private var mentionsSection: some View {
-        Divider()
         VStack(alignment: .leading, spacing: 2) {
             Text("Mentions")
                 .font(.headline)
@@ -366,22 +317,23 @@ struct IdeaDetailPane: View {
     // MARK: - Action bar
 
     private var actionBar: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: Spacing.cozy) {
             ratingRow
-            statusActionsRow
+            IdeaActionBar(idea: idea, allIdeas: allIdeas, actions: actions, openRow: $openRow,
+                          isWriting: isWriting, approveIsPrimary: approveIsPrimary)
         }
-        .padding(12)
+        .padding(Spacing.medium)
     }
 
     private var ratingRow: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Spacing.regular) {
             Button {
                 submitRating(1)
             } label: {
                 Image(systemName: rating == 1 ? "hand.thumbsup.fill" : "hand.thumbsup")
                     .foregroundStyle(rating == 1 ? AnyShapeStyle(.green) : AnyShapeStyle(.primary))
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.kitSecondary)
             .help("Helpful")
 
             Button {
@@ -390,11 +342,11 @@ struct IdeaDetailPane: View {
                 Image(systemName: rating == -1 ? "hand.thumbsdown.fill" : "hand.thumbsdown")
                     .foregroundStyle(rating == -1 ? AnyShapeStyle(.red) : AnyShapeStyle(.primary))
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.kitSecondary)
             .help("Not helpful")
 
             TextField("Comment to teach the assistant…", text: $comment)
-                .textFieldStyle(.roundedBorder)
+                .textFieldStyle(.kit)
         }
     }
 
@@ -408,175 +360,374 @@ struct IdeaDetailPane: View {
         let sent = comment
         Task {
             defer { isRating = false }
-            guard await onRating(value, sent) else { return }
+            guard await actions.rating(value, sent) else { return }
             if comment == sent { comment = "" }
             rating = value
         }
     }
+}
 
-    /// Buttons offered depend on kind+status per the lifecycle in the design
-    /// doc: idea (mined) proposed → active|rejected; active ↔ not_now;
-    /// active/not_now → converted|dropped; decision proposed → active|rejected;
-    /// active → superseded|reversed; note born active, only dropped/merged
-    /// apply; merge is an owner action available on any non-terminal item.
-    @ViewBuilder
-    private var statusActionsRow: some View {
-        HStack(spacing: 8) {
-            if idea.status == .proposed {
-                Button("Approve", action: onApprove)
-                    .buttonStyle(.borderedProminent)
-                Button("Reject", role: .destructive, action: onReject)
-                    .buttonStyle(.bordered)
-            }
+// MARK: - IdeaActions
 
-            if idea.kind == .idea, idea.status == .active {
-                notNowMenu
-                Button(action: onConvert) {
-                    Label("Convert to Target", systemImage: "checkmark.circle")
-                }
-                .buttonStyle(.bordered)
-                Button("Drop", role: .destructive, action: onDrop)
-                    .buttonStyle(.bordered)
-            }
+/// The writes an idea card can ask for; the caller runs them through
+/// `IdeasViewModel` (today's verdict writes). Each one is awaited, so the
+/// caller can re-read its list after it.
+struct IdeaActions {
+    var approve: () async -> Void = {}
+    var reject: () async -> Void = {}
+    var activate: () async -> Void = {}
+    /// The `snooze_until` date (`yyyy-MM-dd`, owner-local), or "" for no date.
+    var notNow: (String) async -> Void = { _ in }
+    var drop: () async -> Void = {}
+    var merge: (Int) async -> Void = { _ in }
+    var makeTask: () async -> Void = {}
+    var supersede: () async -> Void = {}
+    var reverse: () async -> Void = {}
+    var rating: (Int, String) async -> Bool = { _, _ in false }
+    var delete: () async -> Void = {}
+}
 
-            if idea.kind == .idea, idea.status == .notNow {
-                Button("Activate", action: onActivate)
-                    .buttonStyle(.borderedProminent)
-                Button(action: onConvert) {
-                    Label("Convert to Target", systemImage: "checkmark.circle")
-                }
-                .buttonStyle(.bordered)
-                Button("Drop", role: .destructive, action: onDrop)
-                    .buttonStyle(.bordered)
-            }
+/// The inline row open under the verdict buttons (no sheet, no dialog).
+enum IdeaActionRow: Equatable {
+    /// Pick the idea to merge into; `preselect` (the miner's similar-to hint)
+    /// is listed first when it is a candidate.
+    case merge(preselect: Int?)
+    case delete
+    /// **Reverse** on an active decision asks first, inline.
+    case reverse
+}
 
-            if idea.kind == .note, idea.status == .active {
-                Button("Drop", role: .destructive, action: onDrop)
-                    .buttonStyle(.bordered)
-            }
+/// **Not now ▾**: until when.
+enum IdeaNotNow: CaseIterable {
+    case week, month, noDate
 
-            // A rejected or dropped item is not frozen: the consolidator flags
-            // it needs_review when the same idea comes up again (IDEA-04), and
-            // it then shows in "For review". Without an action here the owner
-            // could see the flag but never clear it — the item would sit in the
-            // review queue permanently. Reconsidering is the whole point of the
-            // resurfacing flag.
-            if idea.status == .rejected || idea.status == .dropped {
-                Button("Activate", action: onActivate)
-                    .buttonStyle(.borderedProminent)
-            }
-
-            if canMerge {
-                Button {
-                    mergePreselectID = idea.similarToID
-                    showMergeSheet = true
-                } label: {
-                    Label("Merge", systemImage: "arrow.triangle.merge")
-                }
-                .buttonStyle(.bordered)
-            }
-
-            Spacer()
-
-            // Offered whatever the entry's status is, idea or note alike: the
-            // owner can throw away entries no status action applies to.
-            Button(role: .destructive) {
-                showDeleteConfirmation = true
-            } label: {
-                Image(systemName: "trash")
-            }
-            .buttonStyle(.bordered)
-            .help("Delete permanently")
+    var label: String {
+        switch self {
+        case .week: "1 week"
+        case .month: "1 month"
+        case .noDate: "No date"
         }
     }
 
-    private var notNowMenu: some View {
-        Menu {
-            Button("1 week") { onNotNow(Calendar.current.date(byAdding: .day, value: 7, to: Date())) }
-            Button("1 month") { onNotNow(Calendar.current.date(byAdding: .month, value: 1, to: Date())) }
-            Button("No date") { onNotNow(nil) }
-        } label: {
-            Label("Not now", systemImage: "clock.arrow.circlepath")
+    /// The owner-local calendar day the idea comes back, `yyyy-MM-dd`; ""
+    /// for no date.
+    func until(now: Date = Date(), calendar: Calendar = .current) -> String {
+        let date: Date?
+        switch self {
+        case .week: date = calendar.date(byAdding: .day, value: 7, to: now)
+        case .month: date = calendar.date(byAdding: .month, value: 1, to: now)
+        case .noDate: date = nil
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-    }
-
-    private var canMerge: Bool {
-        idea.status != .merged && idea.status != .converted
+        guard let date else { return "" }
+        let formatter = DateFormatter()
+        formatter.calendar = calendar
+        formatter.timeZone = calendar.timeZone
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
     }
 }
 
-// MARK: - IdeaMergeSheet
-//
-// Picks a target idea to merge the current one into. Pre-fills the search
-// with the miner's `similar_to_id` hint when present; otherwise the owner
-// searches the active/proposed registry by title.
-private struct IdeaMergeSheet: View {
-    let candidates: [Idea]
-    let excludingID: Int
-    let preselectedID: Int?
-    let onMerge: (Int) -> Void
+extension Idea.Kind {
+    /// "Idea", "Decision", "Note".
+    var label: String {
+        switch self {
+        case .idea: "Idea"
+        case .decision: "Decision"
+        case .note: "Note"
+        }
+    }
+}
 
-    @Environment(\.dismiss) private var dismiss
-    @State private var searchText = ""
-    @State private var selectedID: Int?
+// MARK: - IdeaActionBar
 
-    private var eligible: [Idea] {
-        candidates.filter { $0.id != excludingID && ($0.status == .active || $0.status == .proposed) }
+/// The idea card's buttons, by kind and status. An idea or note waiting for
+/// a verdict (`awaitsVerdict`: proposed, or brought up again — IDEA-04)
+/// gets **Approve**, **Make a Task**, **Not now ▾** and **Reject** (Make a
+/// Task and Not now for ideas only; a note is born active and is never
+/// snoozed or converted). A decided one keeps today's lifecycle: active ↔
+/// not now, converted or dropped; a rejected or dropped one can be
+/// activated again. A decision is informational — its status chip in the
+/// header and, while active, **Supersede** / **Reverse**, never a verdict —
+/// but keeps what the Ideas screen gave it: **Activate** when it sits in
+/// rejected, dropped or not now (the way out of an IDEA-04 flag), Merge and
+/// delete. Merge and delete open inline rows below the buttons.
+struct IdeaActionBar: View {
+    let idea: Idea
+    let allIdeas: [Idea]
+    let actions: IdeaActions
+    @Binding var openRow: IdeaActionRow?
+    /// A write is under way: every button waits (no second write).
+    var isWriting = false
+    var approveIsPrimary = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            HStack(spacing: Spacing.regular) {
+                buttons
+                Spacer()
+                Button(role: .destructive) {
+                    openRow = openRow == .delete ? nil : .delete
+                } label: {
+                    Image(systemName: "trash")
+                }
+                .buttonStyle(.kitIcon(isOn: openRow == .delete))
+                .help("Delete permanently")
+                .accessibilityLabel("Delete permanently")
+            }
+            .disabled(isWriting)
+            switch openRow {
+            case .merge(let preselect):
+                IdeaMergeRow(idea: idea, candidates: allIdeas, preselect: preselect,
+                             onMerge: { id in run { await actions.merge(id) } },
+                             onCancel: { openRow = nil })
+                    .disabled(isWriting)
+            case .delete:
+                IdeaDeleteRow(kind: idea.kind, onDelete: { run { await actions.delete() } },
+                              onCancel: { openRow = nil })
+                    .disabled(isWriting)
+            case .reverse:
+                IdeaReverseRow(onReverse: {
+                    openRow = nil
+                    run(actions.reverse)
+                }, onCancel: { openRow = nil })
+                    .disabled(isWriting)
+            case nil:
+                EmptyView()
+            }
+        }
     }
 
-    private var filtered: [Idea] {
-        guard !searchText.isEmpty else { return eligible }
+    @ViewBuilder
+    private var buttons: some View {
+        if idea.kind == .decision {
+            if idea.status == .active {
+                Button { run(actions.supersede) } label: {
+                    Label("Supersede", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .buttonStyle(.kitSecondary)
+                Button(role: .destructive) {
+                    openRow = openRow == .reverse ? nil : .reverse
+                } label: {
+                    Label("Reverse", systemImage: "arrow.uturn.backward")
+                }
+                .buttonStyle(.kitSecondary)
+            } else if [.rejected, .dropped, .notNow].contains(idea.status) {
+                Button("Activate") { run(actions.activate) }
+                    .buttonStyle(.kitSecondary)
+            }
+            mergeButton
+        } else if idea.awaitsVerdict {
+            if approveIsPrimary {
+                Button("Approve") { run(actions.approve) }
+                    .buttonStyle(.kitPrimary)
+            } else {
+                Button("Approve") { run(actions.approve) }
+                    .buttonStyle(.kitSecondary)
+            }
+            if idea.kind == .idea {
+                makeTaskButton
+                notNowMenu
+            }
+            // One prominent action: Reject is a plain soft button beside Approve.
+            Button("Reject", role: .destructive) { run(actions.reject) }
+                .buttonStyle(.kitSecondary)
+            mergeButton
+        } else {
+            decidedButtons
+            mergeButton
+        }
+    }
+
+    @ViewBuilder
+    private var decidedButtons: some View {
+        switch (idea.kind, idea.status) {
+        case (.idea, .active):
+            makeTaskButton
+            notNowMenu
+            dropButton
+        case (.idea, .notNow):
+            Button("Activate") { run(actions.activate) }
+                .buttonStyle(.kitPrimary)
+            makeTaskButton
+            dropButton
+        case (.note, .active):
+            dropButton
+        case (_, .rejected), (_, .dropped):
+            // IDEA-04: a rejected or dropped item the consolidator brings up
+            // again must stay clearable; Activate is that way out.
+            Button("Activate") { run(actions.activate) }
+                .buttonStyle(.kitPrimary)
+        default:
+            EmptyView()
+        }
+    }
+
+    private var makeTaskButton: some View {
+        Button { run(actions.makeTask) } label: {
+            Label("Make a Task", systemImage: "checkmark.circle")
+        }
+        .buttonStyle(.kitSecondary)
+    }
+
+    private var dropButton: some View {
+        Button("Drop", role: .destructive) { run(actions.drop) }
+            .buttonStyle(.kitDestructive)
+    }
+
+    private var notNowMenu: some View {
+        Menu("Not now") {
+            ForEach(IdeaNotNow.allCases, id: \.self) { choice in
+                Button(choice.label) {
+                    let until = choice.until()
+                    run { await actions.notNow(until) }
+                }
+            }
+        }
+        .menuStyle(.button)
+        .fixedSize()
+    }
+
+    @ViewBuilder
+    private var mergeButton: some View {
+        // Merge is an owner action on any item still in the registry.
+        if idea.status != .merged && idea.status != .converted {
+            Button {
+                if case .merge = openRow { openRow = nil } else { openRow = .merge(preselect: idea.similarToID) }
+            } label: {
+                Label("Merge…", systemImage: "arrow.triangle.merge")
+            }
+            .buttonStyle(.kitSecondary)
+        }
+    }
+
+    private func run(_ action: @escaping () async -> Void) {
+        Task { await action() }
+    }
+}
+
+// MARK: - IdeaMergeRow
+
+/// Merge inline: the ideas of the same kind still open (active or
+/// proposed), searchable by title, each with its own **Merge**; the miner's
+/// similar-to hint is listed first. Replaces the old merge sheet.
+struct IdeaMergeRow: View {
+    let idea: Idea
+    let candidates: [Idea]
+    let preselect: Int?
+    let onMerge: (Int) -> Void
+    let onCancel: () -> Void
+
+    @State private var searchText = ""
+
+    /// Rows shown before the owner searches.
+    static let shownLimit = 8
+
+    /// Same kind, still open, never the idea itself; the hint first.
+    static func eligible(_ candidates: [Idea], for idea: Idea, preselect: Int?) -> [Idea] {
+        let open = candidates.filter {
+            $0.id != idea.id && $0.kind == idea.kind && ($0.status == .active || $0.status == .proposed)
+        }
+        guard let preselect, let hint = open.first(where: { $0.id == preselect }) else { return open }
+        return [hint] + open.filter { $0.id != preselect }
+    }
+
+    private var shown: [Idea] {
+        let eligible = Self.eligible(candidates, for: idea, preselect: preselect)
+        guard !searchText.isEmpty else { return Array(eligible.prefix(Self.shownLimit)) }
         return eligible.filter { $0.title.localizedCaseInsensitiveContains(searchText) }
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Merge into…")
-                    .font(.headline)
-                Spacer()
-                Button("Cancel") { dismiss() }
-                    .buttonStyle(.plain)
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            Text("Merge this \(idea.kind.label.lowercased()) into…")
+                .font(.callout.weight(.semibold))
+            TextField("Search ideas…", text: $searchText)
+                .textFieldStyle(.kit)
+            if shown.isEmpty {
+                Text("Nothing to merge into.")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            .padding(12)
-            Divider()
-
-            TextField("Search ideas…", text: $searchText)
-                .textFieldStyle(.roundedBorder)
-                .padding(12)
-
-            List(filtered, selection: $selectedID) { candidate in
-                Text(candidate.title).tag(candidate.id)
+            ForEach(shown) { candidate in
+                HStack(spacing: Spacing.regular) {
+                    Text(verbatim: candidate.title)
+                        .font(.callout)
+                        .lineLimit(2)
+                    if candidate.id == preselect {
+                        Text("Similar")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Merge") { onMerge(candidate.id) }
+                        .buttonStyle(.kitSecondary)
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, Spacing.regular)
+                .padding(.vertical, Spacing.small)
+                .kitRow(isSelected: false)
             }
-            .frame(minHeight: 220)
-
-            Divider()
             HStack {
                 Spacer()
-                Button("Merge") {
-                    if let selectedID {
-                        onMerge(selectedID)
-                        dismiss()
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(selectedID == nil)
+                Button("Cancel", action: onCancel)
+                    .buttonStyle(.kitQuiet)
             }
-            .padding(12)
         }
-        .frame(width: 420, height: 380)
-        .onAppear {
-            // Only preselect a row the list can actually show — `eligible`,
-            // not `candidates`. The miner's `similar_to_id` hint can point at
-            // another kind (which the Ideas/Notes split now keeps out of the
-            // pool entirely) or at a terminal item; either way preselecting it
-            // would arm Merge against a target the owner cannot see.
-            guard let preselectedID, let match = eligible.first(where: { $0.id == preselectedID }) else { return }
-            selectedID = preselectedID
-            searchText = match.title
+        .padding(Spacing.medium)
+        .card()
+    }
+}
+
+// MARK: - IdeaReverseRow
+
+/// Reverse inline: **Reverse** and **Cancel**, so a decision is never
+/// reversed by one stray press.
+struct IdeaReverseRow: View {
+    let onReverse: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: Spacing.regular) {
+            Text("Reverse this decision?")
+                .font(.callout.weight(.semibold))
+            Spacer()
+            Button("Cancel", action: onCancel)
+                .buttonStyle(.kitQuiet)
+            Button("Reverse", role: .destructive, action: onReverse)
+                .buttonStyle(.kitDestructive)
         }
+        .padding(Spacing.medium)
+        .card()
+    }
+}
+
+// MARK: - IdeaDeleteRow
+
+/// Delete inline: what goes with it, **Delete** and **Cancel**. Replaces the
+/// old confirmation dialog.
+struct IdeaDeleteRow: View {
+    let kind: Idea.Kind
+    let onDelete: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(spacing: Spacing.regular) {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text("Delete this \(kind.label.lowercased())?")
+                    .font(.callout.weight(.semibold))
+                Text("Its mentions, chat, and any duplicates merged into it will be removed permanently.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Button("Cancel", action: onCancel)
+                .buttonStyle(.kitQuiet)
+            Button("Delete", role: .destructive, action: onDelete)
+                .buttonStyle(.kitDestructive)
+        }
+        .padding(Spacing.medium)
+        .card()
     }
 }

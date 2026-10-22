@@ -8,36 +8,38 @@ You open the app after a meeting and want one answer: what is waiting for me? Ho
 
 ## How it works
 
-Home only reads what the rest of the app has produced, and refreshes about every 30 seconds. The feed is on the left. On the right, top to bottom, are **Workbench**, **Links** and **Today in numbers**. A narrow window stacks them in one column, in that order. A zone with nothing to show is left out.
+Home only reads what the app produced, and refreshes about every 30 seconds. The feed is on the left. On the right, top to bottom, are **Workbench**, **Links** and **Today in numbers**. A narrow window stacks them in one column, in that order. A zone with nothing to show is left out.
 
 ### The feed
 
 The feed reads top to bottom like your day: above a **NOW** line is everything that waits on you, below it your meetings and what is still to come.
 
-**Above NOW** are, from the last 72 hours: Slack mentions, direct messages, thread replies and reactions, then Jira and Linear items, proposals and failed actions from the assistant, notes your automations left for you, due reminders, your own targets that are overdue or due today, and email. Rows from Inbox follow its detection and snooze. A read Inbox row stays, shown dimmer; an automation note leaves once you open its card, and a Jira row whose issue was deleted in Jira leaves too. Newest comes first within each kind; seven rows show, and **N more** opens the rest in place. Workbench targets never appear.
+**Above NOW** are, from the last 72 hours: Slack mentions, direct messages, thread replies and reactions, then Jira and Linear items, proposals and failed actions from the assistant, notes your automations left for you, due reminders, your own targets that are overdue or due today, and email. Rows from Inbox follow its detection and snooze. A read Inbox row stays, shown dimmer; an automation note leaves once you open its card, and a Jira row whose issue was deleted in Jira leaves too. Newest first within each kind; seven rows show, **N more** opens the rest. Workbench targets never appear.
 
 **Below NOW** are the meeting in progress, then today's remaining meetings, reminders and timed targets in time order. The next meeting says how soon it starts, such as "in 25 min", and shows "Prep ready" when prep exists. After today, a short block shows the first of the next three days that has meetings: **Tomorrow**, or the weekday, with up to three meetings. All-day, cancelled and declined events are left out.
 
 ### Done and Hide
 
 - Press **Done** on a row to resolve it, or **Hide** to put it away. A hidden reminder or target comes back tomorrow at 09:00; a hidden automation note is dismissed, as in Inbox. Proposals and meetings have no buttons: open them instead.
-- A row leaves at once; if the action fails it comes back with the error, and you can press again.
-- Click a row to open it: Slack, Jira and email open their source, an automation note its Inbox card with its buttons (its run while Inbox is hidden), the rest Inbox, the target or the meeting.
+- A row leaves at once; if the action fails it comes back with the error.
+- Click a row to open it: Slack, Jira and email open their source, an automation note its Inbox card with its buttons, the rest Inbox, the target or the meeting.
 
 ### Workbench
 
-The **Workbench** zone lists your coding-agent sessions that need a look and the questions they have asked you, grouped by workbench, with **Open →** for the Workbench tab. Finished and stopped sessions are left out; others show while they wait for approval, failed, are ready to check, or work (or in the background). Then open questions and review requests, oldest first. Click a session for its terminal (plus its Branch review when ready to check), a question for its session.
+The **Workbench** zone lists your coding-agent sessions that need a look and the questions they have asked you, grouped by workbench, with **Open →** for the Workbench tab. Finished and stopped sessions are left out; others show while they wait for approval, failed, are ready to check, or are working. Then open questions and review requests, oldest first. Click a session for its terminal (and Branch review when ready to check), a question for its session.
 
 If you keep telling agents the same thing, the last row offers it as an instruction: **Add** or **Dismiss**.
 
 ### Links
 
-The **Links** zone has up to four shortcuts, each shown while its tab is visible:
+The **Links** zone has up to four shortcuts, each shown while its tab (for the briefing and plan, the Inbox) is in the menu:
 
 - **Briefing** shows "ready 08:05" once today's briefing exists, else the latest one's weekday.
 - **Catch-Up** shows a highlighted "new recap" while a finished recap waits for **I'm caught up**.
 - **Day plan** shows "2 of 5 done" for today's plan.
 - **Digests** has no status.
+
+**Briefing** and **Day plan** open today's **Your day** card in the [Inbox](inbox.md).
 
 ### Today in numbers
 
@@ -74,9 +76,9 @@ When every feature is ready or retrying on its own, the zone shrinks to "Everyth
 
 ### The menu on the left
 
-The menu lists Home, Targets, Tracks, Workbench, Automations and Calendar first. Below them are three collapsible sections:
+The menu lists Home, Targets, Workbench, Automations and Calendar first. Below them are three collapsible sections:
 
-- **FOCUS**: Catch Up, Briefings, Day Plan, Inbox, Ideas.
+- **FOCUS**: Catch Up, Inbox (briefings, plans, tracks and ideas are its filters).
 - **EXECUTION**: Project Map, Releases, Blockers, Workload.
 - **INSIGHTS**: Digests, People, Memory, Statistics.
 
@@ -86,7 +88,7 @@ AI Chat and the TOOLS (Search, Boards, Usage, MCP Server) sit at the bottom. FOC
 - Right-click a tab and choose **Hide**; it moves to the section's **HIDDEN** list, where **Show** brings it back.
 - A tab appears only when its feature is on in Settings → Features and its source is connected.
 - Until Slack, mail and Jira are all connected, a quiet **+ Connect …** line at the bottom names what is missing and opens Settings → Connections. Its **×** hides it for good.
-- Badges show what waits: unread briefings, Inbox proposals and due reminders, ideas to review, a recap waiting.
+- Badges show what waits: the Inbox's count, a recap.
 
 Home ends with "Stuck? Press **⌘/** to ask, or open the User Guide."; **⌘/** opens the [assistant over this tab](ai-chat.md).
 

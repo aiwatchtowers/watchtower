@@ -117,6 +117,17 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 	pinAutomationSurface(t, reg, main, target, reaction, project)
 	pinAuthoringTools(t, reg, main, target, reaction, project)
 	assert.Equal(t, []string{"main", "target"}, get.Surfaces, "get_confluence_page's surfaces are unchanged")
+
+	// The Inbox's track-action press (spec 2026-10-22 §6.2, gap 17): the
+	// inbox surface only, AlwaysAsk, never on a model's surface.
+	press, ok := reg.Get("apply_track_action")
+	require.True(t, ok, "apply_track_action missing")
+	assert.Equal(t, []string{tools.InboxSurface}, press.Surfaces)
+	assert.True(t, press.AlwaysAsk)
+	for _, m := range []map[string]bool{main, target, reaction, project, surfaceToolNames(reg, tools.AutomationSurface),
+		surfaceToolNames(reg, tools.AutomationEditorSurface)} {
+		assert.False(t, m["apply_track_action"], "apply_track_action is offered to no model")
+	}
 }
 
 // pinAuthoringTools pins draft_automation and save_automation (Automations P3,

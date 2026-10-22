@@ -123,8 +123,9 @@ final class AppState {
 
     /// App-wide home of the embedded assistant chats' engines (track, idea,
     /// meeting, …), so a reply keeps streaming after its screen closes or its
-    /// section collapses; at most three such turns run at once.
-    @ObservationIgnored private let embeddedChats = EmbeddedChatEngineFactory()
+    /// section collapses; at most three such turns run at once. Not private:
+    /// a design shot points its database chats at the fixture database.
+    @ObservationIgnored let embeddedChats = EmbeddedChatEngineFactory()
     /// Once a minute: idle embedded chats and code indexes are released.
     @ObservationIgnored private var idleReleaseSweep: Timer?
     var embeddedChatCenter: EmbeddedChatCenter { embeddedChats.center }
@@ -250,6 +251,15 @@ final class AppState {
     /// Ideas & Decisions registry ViewModel — persists across tab switches so
     /// filters and selection survive navigating away from and back to the tab.
     private(set) var ideasViewModel: IdeasViewModel?
+
+    /// Tracks ViewModel the Inbox's track card reads — AppState-owned like
+    /// `ideasViewModel`, so its state survives moving between cards.
+    private(set) var tracksViewModel: TracksViewModel?
+
+    /// A custom track card's Collecting toggle, instruction, scan and Stop
+    /// watching (R4): C1 writes `tracks` directly; C3 swaps in the watch
+    /// recipe. Shared by the Inbox view model and the track card.
+    private(set) var customTrackControls: (any CustomTrackControlling)?
 
     /// Secretary Profile ViewModel — persists across tab switches so an
     /// in-flight "Generate" style-sample run survives navigating away from
@@ -396,18 +406,9 @@ final class AppState {
     /// Set to navigate to a specific target from anywhere in the app.
     var pendingTargetID: Int?
 
-    /// Set to navigate to a specific briefing from anywhere in the app.
-    var pendingBriefingID: Int?
-
     /// Set to open a specific calendar event from anywhere in the app;
     /// `CalendarEventsView` consumes and clears it.
     var pendingCalendarEventID: String?
-
-    /// Set to navigate to the day plan for a specific date from anywhere in the app.
-    var pendingDayPlanDate: String?
-
-    /// Set to focus a specific track from anywhere in the app.
-    var pendingTrackID: Int?
 
     /// Set to focus a specific person card from anywhere in the app.
     var pendingPersonUserID: String?
@@ -465,6 +466,9 @@ final class AppState {
     @ObservationIgnored var homeDefaultsOverride: UserDefaults?
     /// Test seam: the database path the compaction step checks (no live config).
     @ObservationIgnored var compactionDBPathOverride: (() throws -> String)?
+    /// Test seam: the CLI a custom track's activity applies actions through
+    /// (design shots have no installed CLI); nil finds the installed one.
+    @ObservationIgnored var trackActionRunnerOverride: (any CLIRunnerProtocol)?
 
     /// `onboardingDefaults` backs the onboarding step and goals,
     /// `workbenchDefaults` the workbench page's state, `migrateDatabase` and
@@ -500,6 +504,12 @@ final class AppState {
             guard running else { return }
             self?.daemonStartFailure = nil
             self?.clearRestartFailedTurnOnErrors()
+        }
+        // The Inbox badge counts the daemon's messages and briefing, which the
+        // counts VM's observation never sees: a finished sync re-counts them
+        // while the Inbox (whose own refresh does it) is off screen.
+        daemonManager.onSyncFinished = { [weak self] in
+            Task { await self?.sidebarCountsViewModel?.refresh() }
         }
     }
 
@@ -1525,6 +1535,7 @@ final class AppState {
         initCatchUp(dbPool: manager.dbPool)
         initMemory(dbPool: manager.dbPool)
         initIdeas(dbManager: manager)
+        initTracks(dbManager: manager)
         initBriefings(dbManager: manager)
         initSecretaryProfile(dbManager: manager)
         initExternalConnections(dbPool: manager.dbPool)
@@ -1576,12 +1587,20 @@ final class AppState {
     }
 
     /// Not marked `private` (mirrors `initSecretaryProfile` below), leaving the
-    /// same XCTest entry point open for `ideasViewModel` (used by
-    /// `IdeaNavigationTests` to drive `navigateToIdea`).
+    /// same XCTest entry point open for `ideasViewModel`. The Inbox's idea
+    /// pane uses only its actions (the list is `InboxFeedQueries`'), so it
+    /// observes and polls nothing.
     func initIdeas(dbManager: DatabaseManager) {
-        let vm = IdeasViewModel(dbManager: dbManager)
-        vm.startObserving()
-        ideasViewModel = vm
+        ideasViewModel = IdeasViewModel(dbManager: dbManager)
+    }
+
+    /// The Inbox's track pane uses its actions and its Slack links and
+    /// names, read once here (the list is `InboxFeedQueries`'); a write
+    /// through it reads them again.
+    func initTracks(dbManager: DatabaseManager) {
+        let vm = TracksViewModel(dbManager: dbManager)
+        vm.load()
+        tracksViewModel = vm
     }
 
     /// Not marked `private` (the `initSecretaryProfile` precedent) so XCTest can
@@ -1591,9 +1610,7 @@ final class AppState {
         dbManager: DatabaseManager,
         cliRunner: (any CLIRunnerProtocol)? = ProcessCLIRunner.makeDefault()
     ) {
-        let vm = BriefingViewModel(dbManager: dbManager, cliRunner: cliRunner)
-        vm.startObserving()
-        briefingViewModel = vm
+        briefingViewModel = BriefingViewModel(dbManager: dbManager, cliRunner: cliRunner)
     }
 
     /// Not marked `private` (unlike most of its siblings above) so XCTest can call it
@@ -1739,11 +1756,20 @@ final class AppState {
         // A decision on an automation run's proposal wakes the daemon's
         // automations loop (spec §7.4); the runner resolves per call, like
         // the feed's own.
-        let vm = ActionStripViewModel(dbPool: dbPool) {
+        let controls = DirectCustomTrackControls(
+            dbPool: dbPool, scanService: TrackScanService(runner: InstalledCLIRunner()))
+        customTrackControls = controls
+        let vm = ActionStripViewModel(dbPool: dbPool, customTrackControls: controls) {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
             try await AutomationsCLI(runner: runner).wake()
         }
-        vm.refresh()
+        // The badge counts the rows this read lists, and the daemon's writes
+        // to them never fire the counts VM's observation; resolved at call time.
+        vm.onFeedRefreshed = { [weak self] in
+            await self?.sidebarCountsViewModel?.refresh()
+        }
+        vm.disabledFeatures = featureVisibility.disabledFeatureIDs
+        Task { await vm.refresh() }
         actionStripViewModel = vm
     }
 

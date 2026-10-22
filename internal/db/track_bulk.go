@@ -101,10 +101,6 @@ func (db *DB) TrackBriefsByID(ids []int) ([]TrackBrief, error) {
 // already dismissed keeps its original dismissed_at, and a missing id is
 // skipped — so a retried bulk dismiss is a no-op for the rows it already
 // handled. Same stamp as DismissTrack.
-//
-// Dual path: the Desktop's Tracks tab bulk dismiss is
-// TrackQueries.dismissMany (WatchtowerCore) — same UPDATE, same
-// active-only rule. Change both together.
 func (db *DB) DismissTracks(ids []int) (int, error) {
 	if len(ids) == 0 {
 		return 0, nil

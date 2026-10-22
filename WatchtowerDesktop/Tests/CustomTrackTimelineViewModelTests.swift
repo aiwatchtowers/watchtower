@@ -12,7 +12,8 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
     /// real row to mutate); otherwise the track is standalone (linked id NULL).
     private func makeHarness(
         linkToTarget: Bool = true,
-        scanRunner: CLIRunnerProtocol = FakeCLIRunner(stdout: Data("[]".utf8))
+        scanRunner: CLIRunnerProtocol = FakeCLIRunner(stdout: Data("[]".utf8)),
+        actionRunner: CLIRunnerProtocol = FakeCLIRunner(stdout: Data(#"{"ok":true,"applied_ok":true,"error":""}"#.utf8))
     ) throws -> (manager: DatabaseManager, path: String, track: Track, timeline: CustomTrackTimelineViewModel) {
         let (manager, path) = try TestDatabase.createDatabaseManager()
 
@@ -35,8 +36,8 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
         let timeline = CustomTrackTimelineViewModel(
             track: track,
             dbManager: manager,
-            scanService: TrackScanService(runner: scanRunner),
-            targetsViewModel: TargetsViewModel(dbManager: manager),
+            actionRunner: actionRunner,
+            controls: DirectCustomTrackControls(dbPool: manager.dbPool, scanService: TrackScanService(runner: scanRunner)),
             scanCenter: TrackScanCenter()
         )
         return (manager, path, track, timeline)
@@ -51,66 +52,75 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
         }
     }
 
-    /// Two sequentially approved add_sub_item actions must BOTH persist against
-    /// the LINKED target: the executor's sub-item path is a whole-JSON
-    /// read-modify-write, so applying against a stale snapshot would clobber the
-    /// first write. Ported from ObserverTimelineViewModelTests.
-    func testApplyTwoAddSubItemActions_BothPersistToLinkedTarget() async throws {
-        let (manager, path, track, timeline) = try makeHarness()
-        defer { TestDatabase.cleanup(path: path) }
-
-        try insertPendingEvent(manager, trackID: track.id, summary: "first",
-                               action: #"{"type":"add_sub_item","reason":"r1","text":"first item"}"#)
-        try insertPendingEvent(manager, trackID: track.id, summary: "second",
-                               action: #"{"type":"add_sub_item","reason":"r2","text":"second item"}"#)
-
+    private func firstEvent(_ manager: DatabaseManager, _ track: Track) async throws -> TrackEvent {
         let events = try await manager.dbPool.read { db in try TrackEventQueries.fetchEvents(db, trackId: track.id) }
-        XCTAssertEqual(events.count, 2)
-
-        // fetchEvents is DESC — apply oldest first to mirror timeline order.
-        await timeline.applyAction(for: events[1])
-        await timeline.applyAction(for: events[0])
-
-        XCTAssertNil(timeline.errorMessage)
-        let linkedID = try XCTUnwrap(track.linkedTargetID)
-        let afterRow = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: linkedID) }
-        let after = try XCTUnwrap(afterRow)
-        XCTAssertEqual(after.decodedSubItems.map(\.text).sorted(), ["first item", "second item"])
-        let statuses = try await manager.dbPool.read { db in
-            try String.fetchAll(db, sql: "SELECT action_status FROM track_events ORDER BY id")
-        }
-        XCTAssertEqual(statuses, ["applied", "applied"])
+        return events[0]
     }
 
-    /// Applying an action after the linked target row was deleted must surface an
-    /// error and leave the event pending — silently marking it applied would lose
-    /// the mutation with no feedback.
-    func testApplyActionAgainstDeletedTarget_SetsErrorAndLeavesEventPending() async throws {
-        let (manager, path, track, timeline) = try makeHarness()
+    /// The press goes through the registry: one `actions propose --approve`
+    /// for the event, and the Desktop writes nothing itself. The fake CLI
+    /// marks the event applied (Go's side effect); the timeline shows it
+    /// right after the call, without any observation running.
+    func testApplyRefreshesTheEventAfterThePress() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"applied_ok":true,"error":""}"#.utf8))
+        let (manager, path, track, timeline) = try makeHarness(actionRunner: runner)
         defer { TestDatabase.cleanup(path: path) }
-
-        try insertPendingEvent(manager, trackID: track.id, summary: "stale",
-                               action: #"{"type":"add_sub_item","reason":"r","text":"x"}"#)
-        let events = try await manager.dbPool.read { db in try TrackEventQueries.fetchEvents(db, trackId: track.id) }
-        let linkedID = try XCTUnwrap(track.linkedTargetID)
-        try await manager.dbPool.write { db in
-            try db.execute(sql: "DELETE FROM targets WHERE id = ?", arguments: [linkedID])
+        try insertPendingEvent(manager, trackID: track.id, summary: "first",
+                               action: #"{"type":"add_sub_item","reason":"r1","text":"first item"}"#)
+        let event = try await firstEvent(manager, track)
+        let pool = manager.dbPool
+        runner.onRun = { _ in
+            try? await pool.write { db in try db.execute(sql: "UPDATE track_events SET action_status = 'applied'") }
         }
 
-        await timeline.applyAction(for: events[0])
+        await timeline.applyAction(for: event)
 
-        XCTAssertNotNil(timeline.errorMessage)
+        XCTAssertNil(timeline.errorMessage)
+        XCTAssertEqual(runner.invocations, [TrackActionPress.arguments(eventID: event.id)])
+        XCTAssertEqual(timeline.events.map(\.actionStatus), ["applied"])
+    }
+
+    /// A second press while the first waits must not reach the CLI.
+    func testPressWhileWaitingRunsOnce() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"applied_ok":true,"error":""}"#.utf8))
+        runner.onRun = { _ in try? await Task.sleep(for: .milliseconds(200)) }
+        let (manager, path, track, timeline) = try makeHarness(actionRunner: runner)
+        defer { TestDatabase.cleanup(path: path) }
+        try insertPendingEvent(manager, trackID: track.id, summary: "first",
+                               action: #"{"type":"add_sub_item","reason":"r1","text":"first item"}"#)
+        let event = try await firstEvent(manager, track)
+
+        async let first: Void = timeline.applyAction(for: event)
+        async let second: Void = timeline.applyAction(for: event)
+        _ = await (first, second)
+
+        XCTAssertEqual(runner.invocations.count, 1)
+    }
+
+    /// The CLI's refusal (a non-zero exit) is shown as the error and the
+    /// event stays as the CLI left it.
+    func testRefusedPressShowsTheCLIText() async throws {
+        let runner = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "This change was already applied.\n"))
+        let (manager, path, track, timeline) = try makeHarness(actionRunner: runner)
+        defer { TestDatabase.cleanup(path: path) }
+        try insertPendingEvent(manager, trackID: track.id, summary: "stale",
+                               action: #"{"type":"add_sub_item","reason":"r","text":"x"}"#)
+
+        await timeline.applyAction(for: try await firstEvent(manager, track))
+
+        XCTAssertEqual(timeline.errorMessage, "This change was already applied.")
         let status = try await manager.dbPool.read { db in
             try String.fetchOne(db, sql: "SELECT action_status FROM track_events")
         }
-        XCTAssertEqual(status, "pending", "the event must stay pending when the linked target is gone")
+        XCTAssertEqual(status, "pending")
     }
 
     /// A standalone custom track (no linked target) must not apply proposed
     /// actions: the scan prompt already suppresses them, and there is no target
-    /// to mutate. Apply is a no-op that leaves the event pending, without error.
-    func testApplyActionStandaloneTrack_IsNoOp() async throws {
-        let (manager, path, track, timeline) = try makeHarness(linkToTarget: false)
+    /// to mutate. Apply is a no-op that runs nothing and leaves the event pending.
+    func testApplyOnAStandaloneTrackRunsNothing() async throws {
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"applied_ok":true,"error":""}"#.utf8))
+        let (manager, path, track, timeline) = try makeHarness(linkToTarget: false, actionRunner: runner)
         defer { TestDatabase.cleanup(path: path) }
         XCTAssertNil(track.linkedTargetID)
 
@@ -125,6 +135,8 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
             try String.fetchOne(db, sql: "SELECT action_status FROM track_events")
         }
         XCTAssertEqual(status, "pending", "standalone tracks must not apply/consume the action")
+        XCTAssertTrue(runner.invocations.isEmpty)
+        XCTAssertFalse(timeline.canApplyActions)
     }
 
     /// scanSinceLast force-runs the scan via the CLI; a runner failure must surface

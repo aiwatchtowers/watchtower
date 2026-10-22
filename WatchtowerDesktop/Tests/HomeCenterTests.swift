@@ -556,8 +556,9 @@ final class HomeCenterTests: XCTestCase {
         let appState = AppState.isolated()
         let all = Set(HomeLinkKind.allCases)
         let rows: [(ConnectedSources, Set<String>, Set<HomeLinkKind>)] = [
-            // Briefings, Day Plan and Digests have no source gate; Catch-Up needs any source.
-            (.none, [], all.subtracting([.catchUp])),
+            // Digests has no source gate; Catch-Up needs any source; the
+            // brief and the plan open Inbox day cards, and the Inbox has no gate.
+            (.none, [], [.digests, .briefing, .dayPlan]),
             (ConnectedSources(calendar: true), [], all),
             (ConnectedSources(slack: true), [], all),
             (.all, ["briefing"], all.subtracting([.briefing])),

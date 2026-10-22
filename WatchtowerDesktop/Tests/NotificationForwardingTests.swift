@@ -33,8 +33,9 @@ final class NotificationForwardingTests: XCTestCase {
         XCTAssertEqual(decoded?.userInfo["type"] as? String, "meeting_reminder")
     }
 
-    /// A push carries more than forwarded routing reads (`eventTitle`, `trackId`, …);
-    /// none of it crosses the process boundary. `eventId`/`conferenceUrl` are on that
+    /// A push carries more than forwarded routing reads (`eventTitle`, …);
+    /// none of it crosses the process boundary. `trackId` crosses since C1 (a
+    /// `track_update` opens its Inbox card), but only an integer is restored. `eventId`/`conferenceUrl` are on that
     /// list too: forwarded routing is navigation-only, so it never reads them, and a
     /// conference link may embed a passcode.
     func testEncodeDropsUnroutedKeys() {
@@ -49,8 +50,11 @@ final class NotificationForwardingTests: XCTestCase {
             ]
         )
 
-        XCTAssertEqual(decoded?.payload, ["type": "track_update"])
-        XCTAssertNil(decoded?.userInfo["trackId"])
+        XCTAssertEqual(decoded?.payload, ["type": "track_update", "trackId": "T-9"])
+        XCTAssertNil(decoded?.userInfo["trackId"], "a non-integer track id is dropped")
+        let numeric = roundTrip(actionID: UNNotificationDefaultActionIdentifier,
+                                userInfo: ["type": "track_update", "trackId": 9])
+        XCTAssertEqual(numeric?.userInfo["trackId"] as? Int, 9)
         XCTAssertNil(decoded?.userInfo["eventTitle"])
         XCTAssertNil(decoded?.userInfo["eventId"])
         XCTAssertNil(decoded?.userInfo["conferenceUrl"])

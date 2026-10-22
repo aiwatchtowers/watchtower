@@ -1,92 +1,100 @@
 # Inbox
 
-The Inbox is a short queue of things waiting for your decision: reminders that came due, actions the assistant proposed, and notes from your automations. It also hides the machinery that spots what is aimed at you, which feeds Catch Up and the briefing.
+The Inbox is one list of everything that waits on you: your day (the morning brief and today's plan), messages aimed at you, tracks, ideas to judge, actions the assistant proposed, due reminders and notes from your automations. Briefings, Day Plan, Tracks and Ideas have no screens of their own; they are filters here.
 
 ## Why use it
 
-You see a Slack message you can't deal with now and react with an alarm clock. Tomorrow at 09:00 it comes back in the Inbox as a reminder with a link to the message. Another reaction turns a thread into a draft Jira issue, and it waits in the Inbox until you click **Approve**.
-
-Nothing lands here on its own: every card exists because of something you did.
+You open the Inbox at 09:00. Your day sits on top with the plan and the brief, then a colleague's mention, then a draft Jira issue your :ticket: reaction asked for, waiting for **Approve**. One list, top to bottom, and you are done.
 
 ## How it works
 
+### Filters and sections
+
+The bar above the list has six filters. The one you picked is remembered.
+
+| Filter | Shows |
+|---|---|
+| **All** | What waits: decisions, today's day card and older unread ones, unread tracks, open messages, due reminders, automation cards |
+| **Day** | One **Your day** card per date with a brief or a plan, and today's even before either exists; the last 30 dates, then **Show older** for 30 more |
+| **Messages** | Open mentions, DMs, thread replies, mail and Jira or Linear items for you, newest first, up to 200 |
+| **Tracks** | Every track you follow, then a folded **Stopped · N** |
+| **Ideas** | Ideas, notes and decisions, in every status but merged |
+| **Automations** | Proposals, due reminders and your automations' cards |
+
+The list has up to three sections: **Needs your decision** (proposals, a proposed automation, ideas waiting for your verdict), **Today** and **Earlier**, newest first. Today's day card stays first in **Today** until you press **Done** on it.
+
+### What the badge counts
+
+The sidebar badge counts what needs your decision, unread messages, one for an unread latest brief, and due reminders. Tracks, automation cards and ideas of the decision kind never count (everything under **Needs your decision** does); they show only an unread dot in the list.
+
 ### Reaction commands
 
-Reacting to a Slack message with an emoji from your dictionary makes the assistant gather the message's thread, compose an action and bring it back as a card. Reactions are checked on every sync cycle, so **Sync Now** in the menu bar picks one up at once. The feature is **Reaction Commands**, on by default.
+Reacting to a Slack message with an emoji from your dictionary makes the assistant gather the thread, compose an action and bring it back as a card. Reactions are checked on every sync cycle, so **Sync Now** in the menu bar picks one up at once. The feature is **Reaction Commands**, on by default.
 
 | Emoji | Does | Lands in | Default |
 |---|---|---|---|
-| :eyes: | Starts a track following the topic | Tracks | Asks first |
-| :bulb: | Captures the message as an idea | Ideas | Applies at once |
+| :eyes: | Starts a track following the topic | Tracks filter | Asks first |
+| :bulb: | Captures the message as an idea | Ideas filter | Applies at once |
 | :alarm_clock: | Resurfaces the message later (tomorrow 09:00 unless it names a time) | Inbox | Applies at once |
 | :pushpin: | Summarises the thread: topic, people, decisions, what you're asked | Inbox | Applies at once |
 | :white_check_mark: | Turns the message into a target | Targets | Asks first |
 | :ticket: | Drafts an issue in Jira or Linear | Jira or Linear | Always asks |
 
-You edit the dictionary in Automations → Reactions. A recipe can also run on a reaction; see [Reactions and tracks in Automations](automations-rules.md). Reactions you had placed before the first check are recorded as history, never acted on, and removing then re-adding the same emoji on the same message doesn't trigger it again. React on a different message instead.
+You edit the dictionary in Automations → Reactions; a recipe can also run on a reaction (see [Reactions and tracks in Automations](automations-rules.md)). Reactions placed before the first check are never acted on, and removing then re-adding an emoji on the same message doesn't fire again.
 
 ### Which tracker an issue reaction files in
 
-An issue reaction drafts the issue in the tracker whose issue keys the channel mentions. A channel that talks about `ENG-41` (a Linear team) gets a Linear issue, one that talks about `ABC-9` (a Jira project) gets a Jira issue. With only one tracker connected, that one is used. A channel that mentions both, or neither while both are connected, gets the tracker your dictionary names, so :ticket: means Jira there.
+An issue reaction drafts the issue in the tracker whose keys the channel mentions: `ENG-41` (a Linear team) gets Linear, `ABC-9` (a Jira project) gets Jira. With one tracker connected, that one is used. A channel that mentions both, or neither while both are connected, gets the tracker your dictionary names.
 
 ### Proposals from everywhere
 
-The **Proposals** section holds every action waiting for a decision, whatever started it: a reaction, the AI Chat, a target's chat, an automation or a Workbench terminal (for example a Slack message it wants to send). Actions that touch an outside system, such as Jira, always wait for **Approve**.
+**Needs your decision** holds every action waiting for you, whatever started it: a reaction, the AI Chat, a target's chat, an automation or a Workbench terminal. Actions that touch an outside system, such as Jira, always wait for **Approve**.
 
 ### Attention detection
 
-Behind the scenes, **Attention detection** collects the mentions, DMs, thread replies, Jira and Linear issues assigned to you and comments that mention you, calendar invites and mail addressed to you. It closes each one when you answer in the source.
+**Attention detection** collects the mentions, DMs, thread replies, Jira and Linear issues assigned to you or mentioning you, calendar invites and mail to you. They are the **Messages** cards, and they also feed Catch Up's **For you** list and the brief. An item closes on its own when you answer in the source.
 
-Messages for you in one channel outside threads, such as several mentions or DMs, stay one item that keeps them: Catch Up shows "3 mentions" (or "3 messages" when they are not all mentions), each with its sender and an **Open** link, the 20 newest plus "+N earlier". A new message adds to the item and marks it unread again, so an older one is never replaced, and the item comes back in the next recap.
-
-It makes no AI calls, runs every sync cycle, and needs an account that identifies you. It has no screen of its own: its output is Catch Up's **For you** list and the briefing's **Needs Attention**.
+Messages for you in one channel outside threads stay one card that lists each message with its sender and an **Open** link, the 20 newest plus "+N earlier". It makes no AI calls, runs every sync cycle, and needs an account that identifies you.
 
 ## Using it
 
-The tab has three views: **Actions**, **Learned** and **Profile**.
+### Handle a card
 
-### Handle the Actions list
+Click a card to open it on the right. **Up** and **Down** move between cards, **Esc** closes the card. The list re-reads every 30 seconds while the Inbox is on screen.
 
-**Actions** reads like mail: a list on the left, the open card on the right. The list has up to three sections: **Needs your decision** (proposals), **Today** and **Earlier** (reminders and automation cards, newest first). A dot marks what you haven't opened. **Up** and **Down** move the selection, **Esc** clears it.
+- **Opening marks read** a brief, a message and an automation card, and only that. A track is marked read by its **Done**.
+- **Your day**: the plan, then the brief. Before either exists, today's card offers **Make today's brief and plan**. See [Day Plan](day-plan.md) and [Briefings](briefings.md).
+- **Messages**: **Open in Slack** (or Mail, Jira, Linear), **Discuss in Chat**, **Hand to Agent…**, **Done** (resolved), **Hide** and **Snooze** (**Tomorrow**, **In 3 days**, **Next week**). These three run the `watchtower` command line, so an error shows on the card.
+- **Tracks**: **Done**, and **Stop watching** in **⋯**. See [Tracks](tracks.md).
+- **Ideas**: **Approve**, **Make a Task**, **Not now**, **Reject**. See [Ideas & Decisions](ideas-and-decisions.md).
+- **Reminders** appear once due: **Done**, or **Snooze 1h**.
+- **Automation cards**: their own buttons, then **Open source**, **Discuss in Chat**, **Hand to Agent…**, **Done** and **Dismiss**. See [Buttons on automation cards](automations-inbox-buttons.md).
+- **Proposals**: **Approve**, **Reject** or, after a failure, **Retry**. A Slack message offers **Approve & send** so you can edit the text first. A proposed automation shows **Open Draft** and **Reject**.
 
-- **Opening a card marks it read**, and only that. Done and Dismiss are separate: **Done** says you dealt with it, **Dismiss** puts it away. Either one opens the next card.
-- **Reminders** appear once they are due. **Done** clears one, **Snooze 1h** brings it back in an hour.
-- **Automation cards** can carry their own buttons, then **Open source**, **Discuss in Chat**, **Hand to Agent…**, **Done** and **Dismiss**. The source line opens the run. See [Buttons on automation cards](automations-inbox-buttons.md).
-- **Proposals** offer **Approve**, **Reject** or, after a failure, **Retry**. A Slack message offers **Approve & send** so you can edit the text first. A proposed automation shows a summary with **Open Draft** and **Reject**.
-
-When an action is done, its card links to the result, such as **Open →** for the new idea, target or track, or **Open ABC-7 →** for a Jira issue. Cards that came from a reaction and due reminders also show **Slack message ↗**. The badge on the tab counts proposals, due reminders and automation cards you haven't opened yet.
+**Hand to Agent…** asks which workbench when it can't tell. A done action links to its result, such as **Open →** or **Open ABC-7 →**; reaction cards and reminders also show **Slack message ↗**.
 
 ### Teach it your preferences
 
-**Learned** lists **Mutes** and **Boosts**: weighted rules for a sender, channel, Jira label or trigger. Add one with the plus button, or remove it with the trash button. Rules also come from comments you leave on Catch Up topics, and the briefing and recaps follow them.
+The **⋯** button above the list opens these in the reading pane, and **?** opens the reaction cheat sheet there:
 
-**Profile** has **Who you are**, a short description of your role and priorities that Catch Up recaps and the idea chat read, and **Communication style**, which **Generate from my messages** fills for you.
+- **Learned Rules**: **Mutes** and **Boosts** for a sender, channel, Jira label or trigger. The plus adds one, the trash removes one. The brief and recaps follow them.
+- **Assistant Profile**: **Who you are**, read by Catch Up and the idea chat, and **Communication style**, which **Generate from my messages** fills for you.
 
 ## When it's empty or wrong
 
-The empty tab says "Nothing waiting for you". It shows a reaction cheat sheet: one line per enabled emoji. The **?** button above a non-empty list opens the same sheet.
+Once Watchtower knows who you are, **All** always lists today's day card, so the reaction cheat sheet is behind **?**. Before that, the empty **All** list says why and shows the cheat sheet. An empty filter says what lands there and, when a feature feeds it, that feature's status line.
 
 - **"Enable Reaction Commands" button.** The feature is off. Click it; reactions you placed earlier are not replayed.
-- **"Watching your Slack reactions — last check N min ago".** Reaction Commands is working. The time is the last successful check.
-- **A reaction did nothing.** Check that the emoji is in the dictionary and enabled, that it was a new reaction on a different message, and that Slack is connected. Then run **Sync Now**.
-- **A status line under the empty message.** It follows Attention detection, not the list, and the Inbox list works without it:
+- **"Watching your Slack reactions — last check N min ago".** It works; the time is the last successful check.
+- **A reaction did nothing.** Check that the emoji is in the dictionary and enabled, that it was a new reaction, and that Slack is connected. Then run **Sync Now**.
+- **"Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are".** No owner, so Attention detection and the day never run. Click **Open Connections**; a calendar alone is not enough.
+- **The badge is lower than the dots.** Tracks, automation cards and decision-kind ideas never count.
+- **No reminder yet.** It shows only once due.
 
-| Line | Meaning |
-|---|---|
-| Off — Turn on | Attention detection is off; **Turn on** enables it for Catch Up and the briefing |
-| Connect a source to get this | No account connected yet |
-| Starts after the first sync | The first sync hasn't finished |
-| Preparing now | A detection pass is running |
-| Within ~15 min, After this sync | The next pass is due on the next cycle |
-| Didn't work yet — retries automatically | The last pass failed; the reason follows the dash |
-
-- **"Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are".** There is no owner, so Attention detection never runs. Click **Open Connections** and connect one; a calendar alone is not enough.
-- **No reminder yet.** A reminder shows only once it is due.
-
-Tab still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
+Still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
 
 ## Related
 
-[Catch Up](catch-up.md), [Briefings](briefings.md), [Ideas & Decisions](ideas-and-decisions.md), [Home](home.md).
+[Catch Up](catch-up.md), [Home](home.md), [Automations](automations.md).
 
 For developers: [docs/features/reaction-commands.md](../../features/reaction-commands.md), [attention-detection.md](../../features/attention-detection.md), [agent-actions.md](../../features/agent-actions.md)

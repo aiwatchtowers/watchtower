@@ -527,23 +527,6 @@ final class TracksViewModelTests: XCTestCase {
     }
 
     @MainActor
-    func testLoadWithPriorityFilter() throws {
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertWorkspace(db)
-            try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U001')")
-            try TestDatabase.insertTrack(db, text: "High", priority: "high")
-            try TestDatabase.insertTrack(db, text: "Low", priority: "low")
-        }
-
-        let vm = TracksViewModel(dbManager: dbManager)
-        vm.priorityFilter = "high"
-        vm.load()
-
-        XCTAssertEqual(vm.allTracks.count, 1)
-        XCTAssertEqual(vm.allTracks[0].text, "High")
-    }
-
-    @MainActor
     func testMarkRead() async throws {
         try await dbManager.dbPool.write { db in
             try TestDatabase.insertWorkspace(db)
@@ -552,16 +535,15 @@ final class TracksViewModelTests: XCTestCase {
         }
 
         let vm = TracksViewModel(dbManager: dbManager)
-        vm.showRead = true // show read tracks to verify they move correctly
         vm.load()
         XCTAssertEqual(vm.updatedTracks.count, 1)
 
         let item = vm.updatedTracks[0]
         await vm.markRead(item)
 
-        // After markRead, the track moves from updatedTracks to allTracks
+        // After markRead, the track leaves updatedTracks; read tracks stay hidden
         XCTAssertTrue(vm.updatedTracks.isEmpty)
-        XCTAssertEqual(vm.allTracks.count, 1)
+        XCTAssertTrue(vm.allTracks.isEmpty)
         let updated = vm.itemByID(item.id)
         XCTAssertTrue(updated?.isRead ?? false)
     }
@@ -589,23 +571,6 @@ final class TracksViewModelTests: XCTestCase {
         // No workspace loaded — teamID is nil, so URL should be nil
         let url = vm.slackMessageURL(channelID: "C001", messageTS: "123.456")
         XCTAssertNil(url)
-    }
-
-    @MainActor
-    func testLoadWithChannelFilter() throws {
-        try dbManager.dbPool.write { db in
-            try TestDatabase.insertWorkspace(db)
-            try db.execute(sql: "INSERT INTO slack_accounts (id, current_user_id) VALUES (1, 'U001')")
-            try TestDatabase.insertTrack(db, text: "Task 1", channelIDs: #"["C001"]"#)
-            try TestDatabase.insertTrack(db, text: "Task 2", channelIDs: #"["C002"]"#)
-        }
-
-        let vm = TracksViewModel(dbManager: dbManager)
-        vm.channelFilter = "C002"
-        vm.load()
-
-        let total = vm.updatedTracks.count + vm.allTracks.count
-        XCTAssertEqual(total, 1)
     }
 }
 

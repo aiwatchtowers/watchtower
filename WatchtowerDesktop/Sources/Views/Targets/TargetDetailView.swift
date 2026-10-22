@@ -1047,7 +1047,7 @@ struct TargetDetailView: View {
             target: target,
             dbManager: db,
             scanService: TrackScanService(runner: runner),
-            targetsViewModel: viewModel,
+            actionRunner: runner,
             scanCenter: appState.trackScanCenter
         )
         vm.start()

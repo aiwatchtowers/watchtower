@@ -12,7 +12,7 @@ import os
 /// chat-mode MCP server inserts proposals mid-turn, `watchtower actions …`
 /// transitions them. GRDB `ValueObservation` fires only on the app's own
 /// writer connection, so the observation alone would never see any of it
-/// (`DigestViewModel`, `IdeasViewModel`, `CatchUpViewModel`,
+/// (`DigestViewModel`, `ActionStripViewModel`, `CatchUpViewModel`,
 /// `TargetWatchesViewModel.refreshEvents` all hit the same wall). Three
 /// readers close the gap: `refresh()` after every CLI call, a safety-net
 /// poll while started, and the chat VMs' stream-end hook. The observation
@@ -42,7 +42,7 @@ package final class AgentActionFeed {
     /// row an automation run proposed, so the run waiting on it resumes now
     /// rather than on the executor's next poll. Nil = never wake.
     private let automationsWake: (() async throws -> Void)?
-    /// Safety-net poll cadence, at `IdeasViewModel.pollInterval`'s 30 s: the
+    /// Safety-net poll cadence, at the Inbox poll's 30 s: the
     /// turn-boundary refresh is what makes proposals feel immediate, this only
     /// has to catch a turn that never reaches its end. Injectable for tests.
     private let pollInterval: Duration
@@ -220,10 +220,26 @@ package final class AgentActionFeed {
         return fmt.string(from: date)
     }
 
-    /// Only `error` is read: it surfaces regardless of `ok`/`applied_ok`, so
-    /// an approve/apply that exits 0 but failed to execute still reports.
-    private struct Envelope: Decodable {
-        let error: String?
+    /// The `--json` envelope of `actions approve|apply|propose`. `error`
+    /// surfaces regardless of `ok`/`applied_ok`, so an approve/apply that
+    /// exits 0 but failed to execute still reports.
+    package struct Envelope: Decodable {
+        /// A missing `ok` / `applied_ok` reads as true: only an explicit false is a failure.
+        package let ok: Bool
+        package let appliedOK: Bool
+        package let error: String?
+
+        enum CodingKeys: String, CodingKey {
+            case ok, error
+            case appliedOK = "applied_ok"
+        }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            ok = try c.decodeIfPresent(Bool.self, forKey: .ok) ?? true
+            appliedOK = try c.decodeIfPresent(Bool.self, forKey: .appliedOK) ?? true
+            error = try c.decodeIfPresent(String.self, forKey: .error)
+        }
     }
 
     /// Clears only this row's error: another row's failure stays on its card.

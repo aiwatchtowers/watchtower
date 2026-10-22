@@ -4,105 +4,63 @@ import WatchtowerCore
 @testable import WatchtowerDesktop
 import WatchtowerTestSupport
 
-/// `AppState.navigateToIdea` / `IdeasViewModel.reveal` — the Inbox strip
-/// card's "Open" for a `create_idea` action must land on the idea even when
-/// the Ideas tab's browse state (segment, status filter, search) hides it.
+/// `AppState.navigateToIdea` — an Inbox action card's "Open" for a
+/// `create_idea` action, Quick Capture's Open Ideas — lands on the idea's
+/// card in the Inbox's Ideas filter. The Ideas screen's browse state (its
+/// segment, status filter and search, which `IdeasViewModel.reveal` used to
+/// clear) is gone: the Ideas filter lists every idea, note and decision but
+/// merged ones, so any of them opens.
 @MainActor
 final class IdeaNavigationTests: XCTestCase {
     private var dbManager: DatabaseManager!
-    private var dbPath: String!
+    private var dbPath = ""
+    private var savedFilter: Any?
 
-    override func setUp() {
-        super.setUp()
-        do {
-            (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
-        } catch {
-            XCTFail("setUp failed: \(error)")
-        }
+    override func setUp() async throws {
+        (dbManager, dbPath) = try TestDatabase.createDatabaseManager()
+        savedFilter = UserDefaults.standard.object(forKey: "inbox.filter")
+        UserDefaults.standard.removeObject(forKey: "inbox.filter")
     }
 
-    override func tearDown() {
+    override func tearDown() async throws {
+        UserDefaults.standard.set(savedFilter, forKey: "inbox.filter")
         TestDatabase.cleanup(path: dbPath)
-        super.tearDown()
+        dbManager = nil
     }
 
-    /// Browse state that hides every active idea: the Notes segment, a
-    /// "rejected" status filter and a search nothing matches.
-    private func hideEverything(_ vm: IdeasViewModel, selecting id: Int?) {
-        vm.kindMode = "note"
-        vm.statusFilter = "rejected"
-        vm.searchText = "zzz-no-match"
-        vm.load()
-        vm.select(id)
-    }
-
-    func testNavigateToIdeaRevealsAnIdeaHiddenByFiltersAndSurvivesReturning() throws {
-        let (visibleID, targetID) = try dbManager.dbPool.write { db in
-            (try TestDatabase.insertIdea(db, kind: "note", title: "A note", status: "rejected"),
-             try TestDatabase.insertIdea(db, title: "Reacted idea", status: "active", source: "owner"))
-        }
+    private func appStateOnTheInbox() throws -> (AppState, ActionStripViewModel) {
         let appState = AppState.isolated()
-        appState.initIdeas(dbManager: dbManager)
-        let vm = try XCTUnwrap(appState.ideasViewModel)
-        hideEverything(vm, selecting: Int(visibleID))
-        XCTAssertFalse(vm.registryItems.contains { $0.id == Int(targetID) }, "precondition: hidden")
-
-        appState.navigateToIdea(Int(targetID))
-
-        XCTAssertEqual(appState.selectedDestination, .ideas)
-        XCTAssertEqual(vm.kindMode, "idea")
-        XCTAssertNil(vm.statusFilter)
-        XCTAssertEqual(vm.searchText, "")
-        XCTAssertEqual(vm.selectedID, Int(targetID))
-        XCTAssertEqual(vm.selectedItem?.title, "Reacted idea")
-
-        // Leave the tab and come back: IdeasView's onAppear refresh must not
-        // move the selection off the revealed idea.
-        appState.selectedDestination = .inbox
-        vm.refresh()
-        XCTAssertEqual(vm.selectedID, Int(targetID))
+        appState.databaseManager = dbManager
+        appState.initActionStrip(dbPool: dbManager.dbPool)
+        return (appState, try XCTUnwrap(appState.actionStripViewModel))
     }
 
-    func testRevealSwitchesToTheNotesSegmentForANote() throws {
-        let noteID = try dbManager.dbPool.write { db in
-            try TestDatabase.insertIdea(db, kind: "note", title: "Scratch", status: "active")
+    func testNavigateToIdeaOpensItsCardOnTheIdeasFilter() async throws {
+        let ids = try await dbManager.dbPool.write { db in
+            [try TestDatabase.insertIdea(db, kind: "note", title: "A note", status: "rejected"),
+             try TestDatabase.insertIdea(db, title: "Reacted idea", status: "active", source: "owner"),
+             try TestDatabase.insertIdea(db, kind: "decision", title: "Ship on Fridays", status: "active")]
         }
-        let vm = IdeasViewModel(dbManager: dbManager)
-        vm.load()
-        XCTAssertEqual(vm.kindMode, "idea")
+        for id in ids.map(Int.init) {
+            let (appState, inbox) = try appStateOnTheInbox()
+            inbox.filter = .messages
+            await appState.navigateToIdea(id)?.value
 
-        vm.reveal(Int(noteID))
-
-        XCTAssertEqual(vm.kindMode, "note")
-        XCTAssertEqual(vm.selectedItem?.title, "Scratch")
+            XCTAssertEqual(appState.selectedDestination, .inbox)
+            XCTAssertEqual(inbox.filter, .ideas)
+            XCTAssertEqual(inbox.selection, .idea(id))
+            XCTAssertTrue(inbox.feed.ideas.contains { $0.id == id }, "the card is listed")
+        }
     }
 
-    func testRevealFindsAnIdeaInTheReviewQueue() throws {
-        let id = try dbManager.dbPool.write { db in
-            try TestDatabase.insertIdea(db, title: "Proposed one", status: "proposed")
-        }
-        let vm = IdeasViewModel(dbManager: dbManager)
-        hideEverything(vm, selecting: nil)
+    /// A deleted idea's link still opens the Ideas filter — never an error.
+    func testNavigateToAMissingIdeaStillOpensTheIdeasFilter() async throws {
+        let (appState, inbox) = try appStateOnTheInbox()
+        await appState.navigateToIdea(99_999)?.value
 
-        vm.reveal(Int(id))
-
-        XCTAssertEqual(vm.selectedItem?.title, "Proposed one")
-        XCTAssertTrue(vm.reviewItems.contains { $0.id == Int(id) })
-    }
-
-    /// A deleted idea's link degrades to the Ideas segment with the ordinary
-    /// fallback selection — never an error, never a stale id.
-    func testRevealOfAMissingIdeaFallsBackToTheFirstRow() throws {
-        let otherID = try dbManager.dbPool.write { db in
-            try TestDatabase.insertIdea(db, title: "Only idea", status: "active")
-        }
-        let vm = IdeasViewModel(dbManager: dbManager)
-        hideEverything(vm, selecting: nil)
-
-        vm.reveal(99_999)
-
-        XCTAssertEqual(vm.kindMode, "idea")
-        XCTAssertEqual(vm.selectedID, Int(otherID))
-        XCTAssertNil(vm.errorMessage)
+        XCTAssertEqual(appState.selectedDestination, .inbox)
+        XCTAssertEqual(inbox.filter, .ideas)
+        XCTAssertFalse(inbox.feed.ideas.contains { $0.id == 99_999 })
+        XCTAssertNil(inbox.lastError)
     }
 }

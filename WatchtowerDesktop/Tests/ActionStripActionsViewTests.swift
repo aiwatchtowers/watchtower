@@ -26,9 +26,9 @@ final class ActionStripActionsViewTests: XCTestCase {
         return pool
     }
 
-    private func stripVM(_ pool: DatabasePool) -> ActionStripViewModel {
+    private func stripVM(_ pool: DatabasePool) async -> ActionStripViewModel {
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        vm.refresh()
+        await vm.refresh()
         return vm
     }
 
@@ -61,7 +61,7 @@ final class ActionStripActionsViewTests: XCTestCase {
         let pool = try makePool { db in
             try TestDatabase.insertReactionCommandMapping(db, emoji: "pushpin", tool: "brief_context")
         }
-        let sut = view(stripVM(pool), rows: await dictionaryRows(pool), feature: .off)
+        let sut = view(await stripVM(pool), rows: await dictionaryRows(pool), feature: .off)
 
         XCTAssertNoThrow(try sut.inspect().find(ReactionCheatSheetView.self))
         XCTAssertNoThrow(try sut.inspect().find(button: "Enable Reaction Commands"))
@@ -71,7 +71,7 @@ final class ActionStripActionsViewTests: XCTestCase {
 
     func testEmptyStripWithFeatureOnShowsTheStatusLineAndNoEnableButton() async throws {
         let pool = try makePool()
-        let sut = view(stripVM(pool), rows: await dictionaryRows(pool), feature: .on(lastCheck: nil))
+        let sut = view(await stripVM(pool), rows: await dictionaryRows(pool), feature: .on(lastCheck: nil))
 
         XCTAssertNoThrow(try sut.inspect().find(ReactionCheatSheetView.self))
         XCTAssertNoThrow(try sut.inspect().find(text: "Watching your Slack reactions"))
@@ -95,7 +95,7 @@ final class ActionStripActionsViewTests: XCTestCase {
             try TestDatabase.insertAgentAction(db, tool: "brief_context", status: "pending")
             try TestDatabase.insertReactionCommandMapping(db, emoji: "pushpin", tool: "brief_context")
         }
-        let vm = stripVM(pool)
+        let vm = await stripVM(pool)
         XCTAssertFalse(vm.actionRows.isEmpty, "fixture must produce a non-empty strip")
         let sut = view(vm, rows: await dictionaryRows(pool), feature: .off)
 
@@ -111,11 +111,28 @@ final class ActionStripActionsViewTests: XCTestCase {
             try TestDatabase.insertReactionCommandMapping(db, emoji: "rocket", tool: "create_idea")
             try TestDatabase.insertReactionCommandMapping(db, emoji: "eyes", tool: "create_track", enabled: false)
         }
-        let sut = view(stripVM(pool), rows: await dictionaryRows(pool), feature: .on(lastCheck: nil))
+        let sut = view(await stripVM(pool), rows: await dictionaryRows(pool), feature: .on(lastCheck: nil))
 
         XCTAssertNoThrow(try sut.inspect().find(text: "Save as idea"))
         XCTAssertNoThrow(try sut.inspect().find(text: ":rocket:"))
         XCTAssertThrowsError(try sut.inspect().find(text: "Track this"), "a disabled mapping is omitted")
+    }
+
+    /// An empty filter other than All shows its own empty state; the cheat
+    /// sheet stays behind `?` there.
+    func testEmptyFilterShowsItsOwnEmptyState() async throws {
+        let suite = "ActionStripActionsViewTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let vm = ActionStripViewModel(dbPool: try makePool(), cliRunner: FakeCLIRunner(), defaults: defaults)
+        await vm.refresh()
+        vm.filter = .messages
+        let sut = view(vm, rows: [], feature: .off)
+
+        XCTAssertNoThrow(try sut.inspect().find(text: "No messages waiting"))
+        XCTAssertThrowsError(try sut.inspect().find(ReactionCheatSheetView.self))
+        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "actionStrip.cheatSheetButton"))
+        XCTAssertNoThrow(try sut.inspect().find(viewWithAccessibilityIdentifier: "inbox.emptyFilter"))
     }
 
     func testFeatureStateFollowsTheLoadedFeatureList() {

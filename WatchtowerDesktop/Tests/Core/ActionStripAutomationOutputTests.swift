@@ -58,7 +58,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        vm.refresh()
+        await vm.refresh()
 
         XCTAssertEqual(vm.outputRows.map(\.id), [newer, read, unread])
         XCTAssertEqual(vm.outputRows.map(\.isUnread), [true, false, true])
@@ -77,7 +77,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         }
         let before = try outputRow(pool, id)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        vm.refresh()
+        await vm.refresh()
 
         await vm.markOutputDone(id)
 
@@ -102,7 +102,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         }
         let before = try outputRow(pool, id)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        vm.refresh()
+        await vm.refresh()
 
         await vm.dismissOutput(id)
 
@@ -129,7 +129,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         let badgeBefore = try await badge()
         let before = try outputRow(pool, id)
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        vm.refresh()
+        await vm.refresh()
 
         await vm.select(.output(id))
 
@@ -145,7 +145,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         XCTAssertEqual(vm.outputRows.map(\.id), [id])
         XCTAssertEqual(vm.outputRows.first?.isUnread, false)
         let badgeAfter = try await badge()
-        XCTAssertEqual(badgeAfter, badgeBefore - 1)
+        XCTAssertEqual(badgeAfter, badgeBefore, "unread outputs are not in the badge (R1)")
         XCTAssertNil(vm.lastError)
 
         await vm.select(nil)
@@ -164,7 +164,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
              try TestDatabase.insertAutomationOutput(db, automationID: seed.automationID, runID: seed.runID))
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        vm.refresh()
+        await vm.refresh()
 
         await vm.select(.output(first))
         await vm.markOutputDone(second)
@@ -175,7 +175,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         let third = try await pool.write { db in
             try TestDatabase.insertAutomationOutput(db, automationID: seed.automationID, runID: seed.runID)
         }
-        vm.refresh()
+        await vm.refresh()
         await vm.select(.output(third))
         await vm.dismissOutput(third)
         XCTAssertNil(vm.selection)
@@ -192,7 +192,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
             try TestDatabase.insertAutomationOutput(db, automationID: seed.automationID, runID: seed.runID)
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        vm.refresh()
+        await vm.refresh()
         // Hold the writer, so the opening write waits for it.
         let started = DispatchSemaphore(value: 0)
         let release = DispatchSemaphore(value: 0)
@@ -249,7 +249,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        vm.refresh()
+        await vm.refresh()
 
         let cards = Dictionary(uniqueKeysWithValues: vm.outputRows.map { ($0.id, $0) })
         let pressed = try XCTUnwrap(cards[ids.pressed])
@@ -273,7 +273,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
             try TestDatabase.insertAutomationOutput(db, automationID: seed.automationID, runID: seed.runID)
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
-        vm.refresh()
+        await vm.refresh()
         try await pool.write { db in
             try db.execute(sql: """
                 CREATE TRIGGER refuse_output_update BEFORE UPDATE ON automation_outputs
@@ -315,8 +315,8 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         let before = try await snapshot()
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        vm.refresh()
-        vm.refresh()
+        await vm.refresh()
+        await vm.refresh()
 
         let after = try await snapshot()
         XCTAssertEqual(after, before)
@@ -335,14 +335,14 @@ final class ActionStripAutomationOutputTests: XCTestCase {
         }
         let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner())
 
-        vm.refresh()
+        await vm.refresh()
 
         XCTAssertTrue(vm.outputRows.isEmpty)
         let badge = try await pool.read { db in try ActionStripViewModel.badgeCount(db, nowUTC: "2026-10-16T00:00:00Z") }
         XCTAssertEqual(badge, 0)
     }
 
-    func testInboxBadgeCountsOutputs() async throws {
+    func testInboxBadgeLeavesOutputsOut() async throws {
         let (pool, path) = try TestDatabase.createPool()
         defer { TestDatabase.cleanup(path: path) }
         let seed = try await seedAutomation(pool)
@@ -353,7 +353,7 @@ final class ActionStripAutomationOutputTests: XCTestCase {
                 db, automationID: seed.automationID, runID: seed.runID,
                 readAt: "2026-10-01T10:00:00Z", doneAt: "2026-10-01T10:00:00Z"
             )
-            // Read but not done: still open, no longer counted.
+            // Read but not done: still open.
             try TestDatabase.insertAutomationOutput(
                 db, automationID: seed.automationID, runID: seed.runID, readAt: "2026-10-01T11:00:00Z"
             )
@@ -366,8 +366,8 @@ final class ActionStripAutomationOutputTests: XCTestCase {
 
         let badge = try await pool.read { db in try ActionStripViewModel.badgeCount(db, nowUTC: "2026-10-16T00:00:00Z") }
 
-        // 1 proposal + 1 due reminder + 2 unread inbox outputs.
-        XCTAssertEqual(badge, 4)
+        // 1 proposal + 1 due reminder; unread outputs leave the badge (R1, spec §6.1).
+        XCTAssertEqual(badge, 2)
     }
 
     /// J13: a source whose table is missing (an older schema) counts 0; any

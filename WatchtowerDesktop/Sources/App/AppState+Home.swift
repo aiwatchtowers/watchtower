@@ -6,12 +6,13 @@ extension AppState {
     /// Feed sources with no tab or feature of their own to follow.
     static let homeFeedAlwaysAllowed: Set<FeedSource> = [.reminders, .proposals, .automations, .targets]
 
-    /// Each Home link's tab: the link shows only while its tab does.
-    private static let homeLinkTabs: [(HomeLinkKind, SidebarDestination)] = [
-        (.briefing, .briefings),
-        (.catchUp, .catchUp),
-        (.dayPlan, .dayPlan),
-        (.digests, .digests)
+    /// Each Home link's tab, and the feature it also needs: the link shows
+    /// only while both do. The brief and the plan open Inbox day cards.
+    private static let homeLinkTabs: [(HomeLinkKind, SidebarDestination, ReadinessFeature?)] = [
+        (.briefing, .inbox, .briefing),
+        (.catchUp, .catchUp, nil),
+        (.dayPlan, .inbox, .dayPlan),
+        (.digests, .digests, nil)
     ]
 
     /// The first sync's line while it runs (Catch-Up's empty pane, Home); the
@@ -28,12 +29,16 @@ extension AppState {
         return text.map { FirstSyncLine(title: $0.title, detail: $0.detail) }
     }
 
-    /// The links Home's links zone may show: each only while its tab is visible.
+    /// The links Home's links zone may show: each only while its tab is
+    /// visible (and, for the brief and the plan, their feature is on).
     var homeLinksAllowed: Set<HomeLinkKind> {
         let disabled = featureVisibility.disabledFeatureIDs
         let connected = featureVisibility.connectedSources
         return Set(Self.homeLinkTabs
-            .filter { $0.1.isVisible(disabledFeatures: disabled, connected: connected) }
+            .filter { _, tab, feature in
+                tab.isVisible(disabledFeatures: disabled, connected: connected)
+                    && feature?.featureID.map(disabled.contains) != true
+            }
             .map(\.0))
     }
 
@@ -84,23 +89,28 @@ extension AppState {
         case .catchUp: selectedDestination = .catchUp
         case let .automationRun(automationID, runID): openAutomationRun(automationID: automationID, runID: runID)
         case let .inboxOutput(id, automationID, runID): openInboxOutput(id, automationID: automationID, runID: runID)
-        case .feature(let feature): selectedDestination = Self.homeDestination(for: feature)
+        case .feature(let feature): openFeature(feature)
         case .connect(let source): performEmptyStateAction(.connect(source))
         case .turnOn(let featureID): performEmptyStateAction(.turnOn(featureID: featureID))
         }
     }
 
-    /// An automation note's Inbox card, selected so its buttons show; the
-    /// run in the Automations tab while the Inbox tab is hidden.
-    private func openInboxOutput(_ id: Int64, automationID: Int64, runID: Int64) {
-        let inboxVisible = SidebarDestination.inbox.isVisible(
-            disabledFeatures: featureVisibility.disabledFeatureIDs, connected: featureVisibility.connectedSources)
-        guard inboxVisible, let strip = actionStripViewModel else {
-            openAutomationRun(automationID: automationID, runID: runID)
-            return
+    /// A Getting ready card's Open: the Inbox filter of a feature whose cards
+    /// live there, else the feature's tab.
+    private func openFeature(_ feature: ReadinessFeature) {
+        if let route = InboxRoute.forFeature(feature, today: Self.inboxToday()) {
+            openInbox(route)
+        } else if let destination = Self.homeDestination(for: feature) {
+            selectedDestination = destination
         }
-        selectedDestination = .inbox
-        Task { await strip.select(.output(id)) }
+    }
+
+    /// An automation note's Inbox card, selected so its buttons show; the
+    /// run in the Automations tab while the Inbox has no view model yet.
+    private func openInboxOutput(_ id: Int64, automationID: Int64, runID: Int64) {
+        if openInbox(InboxRoute(filter: .all, selection: .output(id))) == nil {
+            openAutomationRun(automationID: automationID, runID: runID)
+        }
     }
 
     /// Add / Dismiss from Home's suggestion row; the CLI's refusal (an
@@ -124,16 +134,14 @@ extension AppState {
         return nil
     }
 
-    /// The tab a Getting ready card's Open lands on.
-    static func homeDestination(for feature: ReadinessFeature) -> SidebarDestination {
+    /// The tab a Getting ready card's Open lands on; nil for the four
+    /// features whose cards live in the Inbox (`InboxRoute.forFeature`).
+    static func homeDestination(for feature: ReadinessFeature) -> SidebarDestination? {
         switch feature {
         case .slackSync: .statistics
         case .digests, .streamDigests: .digests
-        case .tracks: .tracks
+        case .tracks, .briefing, .dayPlan, .ideas: nil
         case .peopleCards: .people
-        case .briefing: .briefings
-        case .dayPlan: .dayPlan
-        case .ideas: .ideas
         case .memory: .memory
         case .inbox: .inbox
         case .knowledgeIndex: .search

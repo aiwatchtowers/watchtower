@@ -175,6 +175,23 @@ final class AgentActionQueriesTests: XCTestCase {
         XCTAssertEqual(try dbq.read { try AgentActionQueries.awaitingOwnerCount($0) }, 1)
     }
 
+    func testStripAndBadgeLeaveOutInboxPressRows() throws {
+        let dbq = try TestDatabase.create()
+        try dbq.write { db in
+            _ = try TestDatabase.insertAgentAction(
+                db, surface: "inbox", turnID: "inbox-applied", status: "applied",
+                createdAt: "2026-09-04T13:00:00Z", decidedAt: "2026-09-04T13:00:05Z", appliedAt: "2026-09-04T13:00:05Z"
+            )
+            _ = try TestDatabase.insertAgentAction(
+                db, surface: "inbox", turnID: "inbox-failed", status: "failed", createdAt: "2026-09-04T13:01:00Z"
+            )
+            _ = try TestDatabase.insertAgentAction(db, turnID: "normal-pending", status: "pending")
+        }
+        let rows = try dbq.read { try AgentActionQueries.fetchStrip($0, terminalSince: "2026-09-04T00:00:00Z") }
+        XCTAssertEqual(rows.map(\.turnID), ["normal-pending"])
+        XCTAssertEqual(try dbq.read { try AgentActionQueries.awaitingOwnerCount($0) }, 1)
+    }
+
     /// #166: a Slack send proposed from a workbench terminal is External and
     /// only ever pending/failed for the owner — it shows on the strip and the
     /// badge, while the project's direct-apply audit rows stay hidden.

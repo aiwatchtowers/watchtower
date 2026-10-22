@@ -60,7 +60,9 @@ package enum KeyboardShortcutCatalog {
             Entry("⌘Return / ⌃Return", "Send a comment, or save the text you are editing (target comments)"),
             Entry("Esc", "Cancel editing")
         ]),
-        Area("Ideas", [
+        Area("Inbox", [
+            Entry("↑ / ↓", "Move between cards"),
+            Entry("Esc", "Close the card"),
             Entry("⌘Return", "Create (new idea)")
         ]),
         Area("Workbench", note: "The Workbench menu lists most of these.", [

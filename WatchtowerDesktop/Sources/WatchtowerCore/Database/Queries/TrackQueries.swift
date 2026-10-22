@@ -5,47 +5,39 @@ package enum TrackQueries {
 
     // MARK: - Fetch
 
-    package static func fetchAll(
-        _ db: Database,
-        priority: String? = nil,
-        hasUpdates: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
-        channelID: String? = nil,
-        ownership: String? = nil,
-        includeDismissed: Bool = false,
-        limit: Int = 200
-    ) throws -> [Track] {
-        var conditions: [String] = []
-        var args: [any DatabaseValueConvertible] = []
+    /// The non-dismissed tracks, updated ones first, then newest update.
+    package static func fetchAll(_ db: Database, limit: Int = 200) throws -> [Track] {
+        try Track.fetchAll(db, sql: """
+            SELECT * FROM tracks WHERE dismissed_at = ''
+            ORDER BY has_updates DESC, updated_at DESC
+            LIMIT ?
+            """, arguments: [limit])
+    }
 
-        if !includeDismissed {
-            conditions.append("dismissed_at = ''")
+    /// Every non-dismissed track — or, `stopped`, every dismissed one — with
+    /// its latest activity (the Inbox's Tracks filter; no limit, F1): `lastEventAt` is the later of the track's
+    /// `updated_at` and its newest event, `newEventCount` its unread events.
+    package static func fetchInboxCards(_ db: Database, stopped: Bool = false) throws -> [InboxTrackCard] {
+        // Stopped = dismissed (TRACKS-07): listed only in the Tracks filter's
+        // Stopped fold, so the owner can restore one; newest stop first.
+        let filter = stopped ? "t.dismissed_at != ''" : "t.dismissed_at = ''"
+        let order = stopped ? "t.dismissed_at DESC, t.id DESC" : "t.has_updates DESC, t.updated_at DESC, t.id DESC"
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT t.*,
+                   (SELECT MAX(e.created_at) FROM track_events e WHERE e.track_id = t.id) AS last_event_at,
+                   (SELECT COUNT(*) FROM track_events e
+                    WHERE e.track_id = t.id AND (e.read_at IS NULL OR e.read_at = '')) AS new_events
+            FROM tracks t
+            WHERE \(filter)
+            ORDER BY \(order)
+            """)
+        return rows.map { row in
+            let track = Track(row: row)
+            let updated = AutomationDates.parse(track.updatedAt)
+            let event = AutomationDates.parse(row["last_event_at"] as String?)
+            let last = [updated, event].compactMap { $0 }.max() ?? Date(timeIntervalSince1970: 0)
+            return InboxTrackCard(track: track, lastEventAt: last, newEventCount: row["new_events"] ?? 0)
         }
-        if let priority {
-            conditions.append("priority = ?")
-            args.append(priority)
-        }
-        if let hasUpdates {
-            conditions.append("has_updates = ?")
-            args.append(hasUpdates ? 1 : 0)
-        }
-        if let channelID {
-            conditions.append("channel_ids LIKE ?")
-            args.append("%\(channelID)%")
-        }
-        if let ownership {
-            conditions.append("ownership = ?")
-            args.append(ownership)
-        }
-
-        var sql = "SELECT * FROM tracks"
-        if !conditions.isEmpty {
-            sql += " WHERE " + conditions.joined(separator: " AND ")
-        }
-        sql += " ORDER BY has_updates DESC, updated_at DESC"
-        sql += " LIMIT ?"
-        args.append(limit)
-
-        return try Track.fetchAll(db, sql: sql, arguments: StatementArguments(args))
     }
 
     package static func fetchUpdatedTracks(_ db: Database) throws -> [Track] {
@@ -173,34 +165,6 @@ package enum TrackQueries {
             arguments: [id]
         )
         try db.requireUpdated("track", id: id)
-    }
-
-    /// Bulk soft dismiss; returns how many tracks it dismissed. Only active
-    /// rows are stamped — an already-dismissed track keeps its original
-    /// `dismissed_at`, a vanished id is skipped (no `requireUpdated`: the
-    /// daemon may delete a row between the owner's selection and the write).
-    ///
-    /// Dual path: Go `db.DismissTracks` (`internal/db/track_bulk.go`, the
-    /// chat's `dismiss_tracks` apply) — same UPDATE, same active-only rule.
-    /// Change both together.
-    package static func dismissMany(_ db: Database, ids: [Int]) throws -> Int {
-        guard !ids.isEmpty else { return 0 }
-        let marks = Array(repeating: "?", count: ids.count).joined(separator: ",")
-        try db.execute(
-            sql: """
-                UPDATE tracks SET dismissed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-                WHERE dismissed_at = '' AND id IN (\(marks))
-                """,
-            arguments: StatementArguments(ids)
-        )
-        return db.changesCount
-    }
-
-    /// Ids of every active auto (pipeline-found) track — what "Dismiss all
-    /// auto tracks" counts in its confirmation and then dismisses, so the
-    /// write touches exactly the set the owner confirmed.
-    package static func fetchActiveAutoIDs(_ db: Database) throws -> [Int] {
-        try Int.fetchAll(db, sql: "SELECT id FROM tracks WHERE origin = 'auto' AND dismissed_at = '' ORDER BY id")
     }
 
     package static func restore(_ db: Database, id: Int) throws {

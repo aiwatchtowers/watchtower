@@ -65,6 +65,9 @@ package final class DaemonManager {
     package private(set) var notRunningSince: Date?
     /// Called when `isRunning` flips (the status poll included).
     @ObservationIgnored package var onRunningChanged: (@MainActor (Bool) -> Void)?
+    /// Called when the status poll sees a newer `lastSyncTime`: a sync cycle
+    /// finished, so rows the daemon wrote from its process are there to read.
+    @ObservationIgnored package var onSyncFinished: (@MainActor () -> Void)?
     /// The daemon's live sync heartbeat, refreshed by `checkStatus()`. nil when
     /// no heartbeat file exists yet (no sync has run since the daemon shipped
     /// this file) — read it through `SyncProgress.isSyncing`, never through
@@ -104,7 +107,10 @@ package final class DaemonManager {
     package func checkStatus() {
         isRunning = Self.isDaemonRunning()
         syncProgress = Self.readSyncProgress()
+        let previous = lastSyncTime
         lastSyncTime = Self.readLastSyncTime() ?? lastSyncTime
+        // A first sync (no previous time) counts too; at most one extra refresh.
+        if let latest = lastSyncTime, previous.map({ latest > $0 }) ?? true { onSyncFinished?() }
     }
 
     /// When the active workspace's last sync finished: `last_sync.json` is

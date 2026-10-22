@@ -1,11 +1,23 @@
 import SwiftUI
 import WatchtowerCore
 
+/// A track read in full as an Inbox card (`InboxTrackPane`): its narrative,
+/// a custom track's controls and activity, its links, the card's buttons
+/// (`TrackCardActions`) and its chat below.
 struct TrackDetailView: View {
-    let track: Track
+    let card: InboxTrackCard
     let viewModel: TracksViewModel
-    var onClose: (() -> Void)?
+    /// A custom track's toggle, instruction and scans (the C3 seam).
+    let controls: any CustomTrackControlling
+    let isWriting: Bool
+    let onDone: () -> Void
+    let onStopWatching: () -> Void
+    /// A stopped track's Restore (the undo of Stop watching).
+    let onRestore: () -> Void
+    let onCommand: (InboxCardCommand) -> Void
+    let workbenches: [Workbench]
     @Environment(AppState.self) private var appState
+    @Environment(\.markdownNavScreens) private var navScreens
     /// The track's chat conversation, resolved on appear. The chat itself
     /// lives in `AppState.embeddedChatCenter`: leaving the track never stops
     /// a reply.
@@ -17,70 +29,62 @@ struct TrackDetailView: View {
     /// Tracks whose first chat is being written (board #670): a spinner
     /// stands in for the chat meanwhile.
     @State private var chatCreates = ChatCreateGate()
-    @State private var showCreateTarget = false
-    @State private var targetPrefill: TargetPrefill?
-    @State private var targetPrefillError: String?
-    @State private var isBuildingPrefill = false
+    /// The chat is unfolded (per track: the pane is rebuilt per track).
+    @State private var chatOpen = false
+    @State private var cardState: TrackCardState
+    @State private var isMakingTask = false
+    /// A failed Make a Task or Delete.
+    @State private var cardError: String?
     @State private var linkedTargets: [Target] = []
     @State private var jiraIssues: [JiraIssue] = []
     @State private var trackStates: [TrackState] = []
     @State private var expandedTrackStateIDs: Set<Int> = []
     @State private var timelineVM: CustomTrackTimelineViewModel?
-    // Custom-track manage state (local so edits reflect before a snapshot reload).
-    @State private var displayedInstruction = ""
-    @State private var collecting = true
-    @State private var isEditingInstruction = false
-    @State private var draftInstruction = ""
-    /// A failed collecting toggle or instruction save — e.g. the watch was
-    /// deleted elsewhere. Cleared by the next successful edit or track switch.
-    @State private var watchEditError: String?
-    @State private var showDeleteConfirm = false
+
+    init(
+        card: InboxTrackCard,
+        viewModel: TracksViewModel,
+        controls: any CustomTrackControlling,
+        isWriting: Bool = false,
+        onDone: @escaping () -> Void,
+        onStopWatching: @escaping () -> Void,
+        onRestore: @escaping () -> Void,
+        onCommand: @escaping (InboxCardCommand) -> Void,
+        workbenches: [Workbench]
+    ) {
+        self.card = card
+        self.viewModel = viewModel
+        self.controls = controls
+        self.isWriting = isWriting
+        self.onDone = onDone
+        self.onStopWatching = onStopWatching
+        self.onRestore = onRestore
+        self.onCommand = onCommand
+        self.workbenches = workbenches
+        _cardState = State(initialValue: TrackCardState(track: card.track))
+    }
+
+    private var track: Track { card.track }
 
     var body: some View {
-        VSplitView {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    headerSection
-                    textSection
-                    requesterSection
-                    contextSection
-                    customActivitySection
-                    blockingSection
-                    subItemsSection
-                    decisionSection
-                    decisionOptionsSection
-                    participantsSection
-                    historySection
-                    sourceRefsSection
-                    relatedDigestsSection
-                    linkedTasksSection
-                    jiraIssuesSection
-                    dueDateSection
-                    tagsSection
-                    actionsSection
-                }
-                .padding()
-            }
-            .frame(minHeight: 200)
-
-            // Bottom: embedded chat
-            if let db = appState.databaseManager, let chatConversationID {
-                let engine = trackChatEngine(db: db, conversationID: chatConversationID)
-                Divider()
-                TrackChatSection(engine: engine, trackID: track.id)
+        // The chat starts folded, so the card's own buttons stay above the
+        // fold; **Open chat** gives it the lower part of the pane.
+        Group {
+            if chatOpen {
+                VSplitView {
+                    content.frame(minHeight: 200)
+                    VStack(spacing: 0) {
+                        chatDisclosure
+                        chatPane
+                    }
                     .frame(minHeight: 200, idealHeight: 300)
-                    .embeddedChatVisibility(engine.spec.key, in: appState.embeddedChatCenter)
-            } else if chatCreates.isCreating(String(track.id)) {
-                Divider()
-                ProgressView()
-                    .controlSize(.small)
-                    .frame(maxWidth: .infinity, minHeight: 200)
-            } else if let chatError {
-                Divider()
-                Label(chatError, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.red)
-                    .padding(8)
+                }
+            } else {
+                VStack(spacing: 0) {
+                    content
+                    Divider()
+                    chatDisclosure
+                }
             }
         }
         .onAppear {
@@ -90,30 +94,77 @@ struct TrackDetailView: View {
                 loadJiraIssues(db: db)
                 loadTrackStates(db: db)
                 startTimelineIfCustom(db: db)
-                displayedInstruction = track.instruction
-                collecting = track.enabled
-            }
-        }
-        .onChange(of: track.id) {
-            if let db = appState.databaseManager { openChat(db: db) }
-            timelineVM?.stop()
-            timelineVM = nil
-            isEditingInstruction = false
-            watchEditError = nil
-            displayedInstruction = track.instruction
-            collecting = track.enabled
-            if let db = appState.databaseManager {
-                startTimelineIfCustom(db: db)
             }
         }
         .onDisappear {
             timelineVM?.stop()
             timelineVM = nil
         }
-        .onChange(of: showCreateTarget) { _, isShowing in
-            if !isShowing, let db = appState.databaseManager {
-                loadLinkedTargets(db: db)
+    }
+
+    private var content: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: Spacing.page) {
+                headerSection
+                textSection
+                requesterSection
+                contextSection
+                customActivitySection
+                blockingSection
+                subItemsSection
+                decisionSection
+                decisionOptionsSection
+                participantsSection
+                historySection
+                sourceRefsSection
+                relatedDigestsSection
+                linkedTasksSection
+                jiraIssuesSection
+                dueDateSection
+                tagsSection
+                actionsSection
             }
+            .frame(maxWidth: InboxCardColumn<EmptyView>.readableWidth, alignment: .leading)
+            .padding(Spacing.page)
+            .frame(maxWidth: .infinity, alignment: .top)
+        }
+    }
+
+    /// **Open chat** / **Hide chat**: the track's chat folds under one row.
+    private var chatDisclosure: some View {
+        HStack {
+            Button {
+                chatOpen.toggle()
+            } label: {
+                Label(chatOpen ? "Hide chat" : "Open chat",
+                      systemImage: chatOpen ? "chevron.down" : "chevron.right")
+            }
+            .buttonStyle(.kitQuiet)
+            .controlSize(.small)
+            Spacer()
+        }
+        .padding(.horizontal, Spacing.page)
+        .padding(.vertical, Spacing.small)
+    }
+
+    /// The embedded chat, or its spinner or failure.
+    @ViewBuilder
+    private var chatPane: some View {
+        if let db = appState.databaseManager, let chatConversationID {
+            let engine = trackChatEngine(db: db, conversationID: chatConversationID)
+            TrackChatSection(engine: engine, trackID: track.id)
+                .embeddedChatVisibility(engine.spec.key, in: appState.embeddedChatCenter)
+        } else if chatCreates.isCreating(String(track.id)) {
+            ProgressView()
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let chatError {
+            Label(chatError, systemImage: "exclamationmark.triangle")
+                .font(.caption)
+                .foregroundStyle(Tone.error)
+                .padding(Spacing.small)
+        } else {
+            Spacer()
         }
     }
 
@@ -170,149 +221,55 @@ struct TrackDetailView: View {
 
     // MARK: - Custom-track Activity
 
-    /// Timeline of scan-produced events for a custom track. Standalone tracks
-    /// (no linked target) still see the timeline; only the per-event "Apply"
-    /// affordance is gated on the track being linked (see the VM's
-    /// `canApplyActions`).
+    /// A custom track's controls, then its activity timeline. Standalone
+    /// tracks (no linked target) still see the timeline; only the per-event
+    /// "Apply" is gated on the track being linked (the VM's `canApplyActions`).
     @ViewBuilder
     private var customActivitySection: some View {
         if track.isCustom {
-            VStack(alignment: .leading, spacing: 12) {
-                // Manage row: collecting toggle + edit affordance.
-                HStack {
-                    Toggle(isOn: Binding(
-                        get: { collecting },
-                        set: { setCollecting($0) }
-                    )) {
-                        Text(collecting ? "Collecting" : "Paused")
-                            .font(.subheadline)
-                    }
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-                    .help(collecting
-                          ? "The daemon scans this watch each cycle. Turn off to pause."
-                          : "Paused — the daemon skips this watch until re-enabled.")
-                    Spacer()
-                    if !isEditingInstruction {
-                        Button {
-                            draftInstruction = displayedInstruction
-                            isEditingInstruction = true
-                        } label: {
-                            Label("Edit", systemImage: "pencil")
-                        }
-                        .buttonStyle(.borderless)
-                    }
+            VStack(alignment: .leading, spacing: Spacing.medium) {
+                CustomTrackControlsSection(track: track, controls: controls, state: $cardState) {
+                    viewModel.load()
                 }
-
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Watch instruction").font(.headline)
-                    if isEditingInstruction {
-                        TextField("What to watch for…", text: $draftInstruction, axis: .vertical)
-                            .lineLimit(3...10)
-                            .textFieldStyle(.roundedBorder)
-                        HStack {
-                            Spacer()
-                            Button("Cancel") { isEditingInstruction = false }
-                            Button("Save") { saveInstruction() }
-                                .keyboardShortcut(.defaultAction)
-                                .disabled(draftInstruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
-                    } else if !displayedInstruction.isEmpty {
-                        Text(displayedInstruction)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    if let watchEditError {
-                        Label(watchEditError, systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
-                }
-
                 if let vm = timelineVM {
-                    CustomTrackTimelineView(viewModel: vm)
+                    CustomTrackTimelineView(viewModel: vm, scanRowOpen: $cardState.scanRowOpen,
+                                            showsEarlier: $cardState.showsEarlier)
                 }
             }
         }
     }
 
-    /// Persists an edited watch instruction and reflects it once the write
-    /// lands — off the main thread, so a database busy with the daemon never
-    /// freezes the pane. A failed save keeps the editor open with the draft.
-    private func saveInstruction() {
-        let text = draftInstruction.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, let db = appState.databaseManager else { return }
-        let trackID = track.id
-        Task {
-            await ViewWrite.run(db.dbPool, { database in
-                try TrackQueries.updateInstruction(database, id: trackID, instruction: text)
-            }, onSuccess: {
-                watchEditError = nil
-                displayedInstruction = text
-                isEditingInstruction = false
-            }, onFailure: { reportWatchEditFailure("save the instruction", $0) })
-        }
-    }
-
-    /// A watch deleted elsewhere reloads the tracks list so it leaves the
-    /// screen; the message stays on this pane until then.
-    private func reportWatchEditFailure(_ what: String, _ error: Error) {
-        if error is RowNotFoundError { viewModel.load() }
-        watchEditError = "Failed to \(what): \(error.localizedDescription)"
-    }
-
-    /// Toggles whether the daemon collects for this watch once the write
-    /// lands; a failed write leaves the toggle where it was.
-    private func setCollecting(_ on: Bool) {
-        guard let db = appState.databaseManager else { return }
-        let trackID = track.id
-        Task {
-            await ViewWrite.run(db.dbPool, { database in
-                try TrackQueries.setEnabled(database, id: trackID, enabled: on)
-            }, onSuccess: {
-                watchEditError = nil
-                collecting = on
-            }, onFailure: { reportWatchEditFailure("update collecting", $0) })
-        }
-    }
-
-    /// Permanently deletes a custom track (and its events) and closes the pane;
-    /// the list's tracks-count observation drops it automatically.
+    /// Permanently deletes a custom track (and its events) through the
+    /// seam; the Inbox reads again so the card leaves and the next one shows.
     private func deleteTrack() {
-        guard let db = appState.databaseManager else { return }
+        let track = track
         let trackID = track.id
         Task {
             do {
-                try await db.dbPool.write { database in
-                    try TrackQueries.delete(database, id: trackID)
-                }
+                try await controls.delete(track)
             } catch {
                 NSLog("TrackDetailView: deleting track %d failed: %@", trackID, String(describing: error))
-                watchEditError = "Couldn't delete the watch: \(error.localizedDescription)"
+                cardError = "Couldn't delete the watch: \(error.localizedDescription)"
                 return
             }
             // Only once it is gone: a reply in its chat stops with it.
             appState.embeddedChatCenter.dropContext(type: TrackChatSurface.contextType, id: String(trackID))
-            onClose?()
+            viewModel.load()
+            await appState.actionStripViewModel?.refresh()
         }
     }
 
-    /// Builds and starts the custom-track timeline VM. When the track is linked
-    /// to a target, a TargetsViewModel is supplied so a confirmed proposed
-    /// action can mutate that target; standalone tracks pass nil.
+    /// Builds and starts the custom-track timeline VM; a confirmed proposed
+    /// action is applied through the CLI (the registry).
     private func startTimelineIfCustom(db: DatabaseManager) {
         guard track.isCustom, timelineVM == nil,
-              let runner = ProcessCLIRunner.makeDefault() else { return }
-        let targetsVM: TargetsViewModel? = track.linkedTargetID != nil
-            ? TargetsViewModel(dbManager: db)
-            : nil
+              let runner = appState.trackActionRunnerOverride
+                ?? ProcessCLIRunner.makeDefault() as (any CLIRunnerProtocol)? else { return }
         let vm = CustomTrackTimelineViewModel(
             track: track,
             dbManager: db,
-            scanService: TrackScanService(runner: runner),
-            targetsViewModel: targetsVM,
+            actionRunner: runner,
+            controls: controls,
             scanCenter: appState.trackScanCenter
         )
         vm.start()
@@ -342,15 +299,6 @@ struct TrackDetailView: View {
                 Text(track.updatedAgo)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-
-                if let onClose {
-                    Button { onClose() } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.borderless)
-                }
             }
 
             // Main track text as title
@@ -486,7 +434,10 @@ struct TrackDetailView: View {
 
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                     Button {
-                        Task { await viewModel.toggleSubItem(track, at: index) }
+                        Task {
+                            await viewModel.toggleSubItem(track, at: index)
+                            await refreshInbox()
+                        }
                     } label: {
                         HStack(spacing: 8) {
                             Image(
@@ -742,85 +693,31 @@ struct TrackDetailView: View {
     // MARK: - Actions
 
     private var actionsSection: some View {
-        HStack(spacing: 8) {
-            if let slackURL {
-                Button {
-                    NSWorkspace.shared.open(slackURL)
-                } label: {
-                    Label("Open in Slack", systemImage: "arrow.up.right.square")
-                }
-                .buttonStyle(.borderedProminent)
-            }
-
-            if let msg = targetPrefillError {
-                Text(msg)
+        VStack(alignment: .leading, spacing: Spacing.regular) {
+            TrackCardActions(
+                subject: InboxCardSubject(track: card, events: timelineVM?.events ?? []),
+                link: slackURL,
+                isCustom: track.isCustom,
+                isStopped: track.isDismissed,
+                linkedTargetID: track.linkedTargetID,
+                navScreens: navScreens,
+                workbenches: workbenches,
+                isWriting: isWriting,
+                isMakingTask: isMakingTask,
+                confirmingDelete: $cardState.confirmingDelete,
+                onCommand: onCommand,
+                onDone: onDone,
+                onStopWatching: onStopWatching,
+                onRestore: onRestore,
+                onMakeTask: makeTask,
+                onGoToTarget: { appState.navigateToTarget($0) },
+                onDelete: deleteTrack
+            )
+            if let cardError {
+                Label(cardError, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Tone.status("red"))
             }
-
-            // A custom track is a watch, not extracted work — "Create Target"
-            // makes no sense for it. When it's linked to a target, offer a jump
-            // to that target instead; standalone custom tracks show neither.
-            if track.isCustom {
-                if let linkedID = track.linkedTargetID {
-                    Button {
-                        appState.navigateToTarget(linkedID)
-                    } label: {
-                        Label("Go to Target", systemImage: "scope")
-                    }
-                    .buttonStyle(.bordered)
-                }
-            } else {
-                Button {
-                    openCreateTarget()
-                } label: {
-                    Label("Create Target", systemImage: "scope")
-                }
-                .buttonStyle(.bordered)
-                .disabled(isBuildingPrefill)
-                .sheet(isPresented: $showCreateTarget) {
-                    CreateTargetSheet(prefill: targetPrefill)
-                }
-            }
-
-            if track.isCustom {
-                // A watch is user-created and one-off — offer a real delete
-                // (cascades its events) rather than the soft dismiss used for
-                // auto-extracted tracks.
-                Button(role: .destructive) {
-                    showDeleteConfirm = true
-                } label: {
-                    Label("Delete", systemImage: "trash")
-                }
-                .buttonStyle(.bordered)
-                .confirmationDialog(
-                    "Delete this watch?",
-                    isPresented: $showDeleteConfirm,
-                    titleVisibility: .visible
-                ) {
-                    Button("Delete", role: .destructive) { deleteTrack() }
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("The watch and its collected activity are removed. This can't be undone.")
-                }
-            } else if track.isDismissed {
-                Button {
-                    Task { await viewModel.restoreTrack(track) }
-                } label: {
-                    Label("Restore", systemImage: "arrow.uturn.backward")
-                }
-                .buttonStyle(.bordered)
-            } else {
-                Button {
-                    onClose?()
-                    Task { await viewModel.dismissTrack(track) }
-                } label: {
-                    Label("Dismiss", systemImage: "archivebox")
-                }
-                .buttonStyle(.bordered)
-            }
-
-            Spacer()
             if let dbManager = appState.databaseManager {
                 FeedbackButtons(
                     entityType: "track",
@@ -829,6 +726,23 @@ struct TrackDetailView: View {
                 )
             }
         }
+    }
+
+    /// Make a Task (R9): a target from the track's prefill, opened in Targets.
+    private func makeTask() {
+        guard !isMakingTask else { return }
+        isMakingTask = true
+        let track = track
+        Task {
+            defer { isMakingTask = false }
+            cardError = await appState.makeTask(fromTrack: track)
+        }
+    }
+
+    /// The Inbox's list shows this track too: it reads again after an edit
+    /// here, so its row and this card agree.
+    private func refreshInbox() async {
+        await appState.actionStripViewModel?.refresh()
     }
 
     private var slackURL: URL? {
@@ -1111,7 +1025,10 @@ struct TrackDetailView: View {
         Menu {
             ForEach(["high", "medium", "low"], id: \.self) { priority in
                 Button {
-                    Task { await viewModel.updatePriority(track, to: priority) }
+                    Task {
+                        await viewModel.updatePriority(track, to: priority)
+                        await refreshInbox()
+                    }
                 } label: {
                     if priority == track.priority {
                         Label(priority.capitalized, systemImage: "checkmark")
@@ -1141,7 +1058,10 @@ struct TrackDetailView: View {
         Menu {
             ForEach(["mine", "delegated", "watching"], id: \.self) { own in
                 Button {
-                    Task { await viewModel.updateOwnership(track, to: own) }
+                    Task {
+                        await viewModel.updateOwnership(track, to: own)
+                        await refreshInbox()
+                    }
                 } label: {
                     if own == track.ownership {
                         Label(ownershipLabel(own), systemImage: "checkmark")
@@ -1220,25 +1140,6 @@ struct TrackDetailView: View {
         case "reviewer": .purple
         case "neutral": .secondary
         default: .secondary
-        }
-    }
-
-    private func openCreateTarget() {
-        guard let db = appState.databaseManager else {
-            targetPrefillError = "Database not available"
-            return
-        }
-        Task { @MainActor in
-            isBuildingPrefill = true
-            defer { isBuildingPrefill = false }
-            do {
-                let pf = try await TargetPrefillBuilder.fromTrack(track, db: db)
-                targetPrefill = pf
-                targetPrefillError = nil
-                showCreateTarget = true
-            } catch {
-                targetPrefillError = "Failed to prepare prefill: \(error.localizedDescription)"
-            }
         }
     }
 }

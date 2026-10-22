@@ -1,6 +1,6 @@
 # A tab is empty
 
-A tab shows "No briefings yet", "No tracks yet" or a similar title plus a status line, and stays that way. This page tells you which switch and source that tab waits for, and what to do when the status line does not clear.
+A tab, or one of the Inbox's filters, shows "No briefings yet", "No tracks yet" or a similar title plus a status line, and stays that way. This page tells you which switch and source it waits for, and what to do when the status line does not clear.
 
 ## What you see
 
@@ -8,22 +8,22 @@ An icon, a title, one sentence on what will land there, a **status line** and at
 
 ## Why
 
-A tab shows what a background job wrote. It stays empty until its feature is on, its source is connected, and the job has run once. These are the tabs whose status line follows a feature:
+A tab shows what a background job wrote. It stays empty until its feature is on, its source is connected, and the job has run once. These are the tabs and Inbox filters whose status line follows a feature:
 
-| Tab | Feature (**Settings → Features**) | Needs |
+| Tab or filter | Feature (**Settings → Features**) | Needs |
 |---|---|---|
 | Catch Up, Digests | Slack Digests | Slack |
-| Tracks, People | Tracks, People Cards, plus Slack Digests | Slack |
-| Ideas | Ideas & Decisions | Slack |
-| Briefings, Day Plan | Daily Briefing, Day Plan | Any source, and Watchtower knows who you are |
-| Inbox | Attention detection | Any source, and Watchtower knows who you are |
+| Inbox → Tracks, People | Tracks, People Cards, plus Slack Digests | Slack |
+| Inbox → Ideas | Ideas & Decisions | Slack |
+| Inbox → Day | Daily Briefing (the plan follows Day Plan) | Any source, and Watchtower knows who you are |
+| Inbox → All, Messages | Attention detection | Any source, and Watchtower knows who you are |
 | Memory | Memory (off by default) | Any source |
 | Calendar | none | A calendar |
 | Workload, Project map, Releases, Boards | none | Jira |
 | Blockers | none | Jira or Linear |
 | Statistics | none | Slack (the tab also shows with only mail connected, but stays empty) |
 
-Targets, Workbench and Automations have no status line: they stay empty until you add something.
+Targets, Workbench, Automations and the Inbox's **Automations** filter have no status line: they stay empty until you add something.
 
 ## Fix
 
@@ -45,4 +45,4 @@ The tab fills after the next cycle, or the status line changes to a time.
 
 ## If it did not help
 
-Open the tab's feature page ([Catch Up](../features/catch-up.md), [Briefings](../features/briefings.md), [Digests](../features/digests.md)) for its own rules. Briefings and Day Plan have [their own page](no-briefing-or-day-plan.md).
+Open the tab's feature page ([Catch Up](../features/catch-up.md), [Inbox](../features/inbox.md), [Digests](../features/digests.md)) for its own rules. A missing brief or plan has [its own page](no-briefing-or-day-plan.md).
