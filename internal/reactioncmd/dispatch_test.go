@@ -12,6 +12,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 )
 
 // recordingDispatcher records every Dispatch it is handed and returns out.
@@ -157,7 +158,7 @@ func TestReactionCmd_DispatchWithPromptReachesGenerator(t *testing.T) {
 	_, err = p2.Run(context.Background(), nil)
 	require.NoError(t, err)
 	require.Len(t, gen2.systems, 1)
-	want, _ := p2.getPrompt("reactioncmd.command")
+	want, _ := p2.getPrompt(prompts.ReactionCommand)
 	assert.NotEmpty(t, want)
 	assert.Equal(t, want, gen2.systems[0])
 }
@@ -233,4 +234,70 @@ func TestReactionCmd_ResumeDispatchesWhatWasPlacedWhilePaused(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, n)
 	assert.Equal(t, 1, gen.calls)
+}
+
+// An outcome the ledger cannot record becomes a failed finalize naming it.
+func TestReactionCmd_InvalidDispatcherOutcomeFinalizesFailed(t *testing.T) {
+	cases := []struct {
+		name string
+		out  Outcome
+		want string
+	}{
+		{name: "zero outcome", out: Outcome{}, want: `dispatcher returned an invalid outcome (step 0, status "")`},
+		{name: "pending status", out: Outcome{Status: "pending", Step: StepFinalize}, want: `dispatcher returned an invalid outcome (step 0, status "pending")`},
+		{name: "unknown step", out: Outcome{Status: "dispatched", Step: Step(7)}, want: `dispatcher returned an invalid outcome (step 7, status "dispatched")`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			database := seededPipelineDB(t, 1)
+			p := newTestPipeline(t, database, &mockGenerator{}, checkReaction())
+			rec := &recordingDispatcher{out: tc.out}
+			p.SetDispatcher(rec.dispatch)
+
+			n, err := p.Run(context.Background(), nil)
+			require.NoError(t, err)
+			assert.Equal(t, 0, n)
+			var status, errText string
+			require.NoError(t, database.QueryRow(`SELECT status, error FROM reaction_commands`).Scan(&status, &errText))
+			assert.Equal(t, "failed", status)
+			assert.Equal(t, tc.want, errText)
+		})
+	}
+}
+
+// A panicking dispatcher fails its own row (logged) and the pass goes on to
+// the next command.
+func TestReactionCmd_DispatcherPanicFailsRowAndPassContinues(t *testing.T) {
+	database := seededPipelineDB(t, 1)
+	var logs bytes.Buffer
+	p := newLoggingTestPipeline(t, database, &mockGenerator{}, dictionaryReactions("C1", 2), &logs)
+	calls := 0
+	p.SetDispatcher(func(context.Context, Dispatch) Outcome {
+		calls++
+		if calls == 1 {
+			panic("boom")
+		}
+		return Outcome{Status: "dispatched", Step: StepFinalize}
+	})
+
+	n, err := p.Run(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "the second command still dispatches")
+	assert.Equal(t, 2, calls)
+	assert.ElementsMatch(t, []string{"dispatched", "failed"}, ledgerStatuses(t, database))
+	var errText string
+	require.NoError(t, database.QueryRow(`SELECT error FROM reaction_commands WHERE status = 'failed'`).Scan(&errText))
+	assert.Equal(t, "dispatcher panic: boom", errText)
+	assert.Contains(t, logs.String(), "dispatcher panicked")
+}
+
+// DispatchWith refuses a Dispatch the pipeline did not build (no resolved tool).
+func TestReactionCmd_DispatchWithoutToolFails(t *testing.T) {
+	database := seededPipelineDB(t, 1)
+	gen := &mockGenerator{}
+	p := newTestPipeline(t, database, gen, nil)
+	out := p.DispatchWith(context.Background(), Dispatch{Tool: "create_target", ChannelID: "1:C1", MessageTS: "1.1"}, "")
+	assert.Equal(t, Outcome{Status: "failed", Detail: "dispatch: no resolved tool", Step: StepFinalize}, out)
+	assert.Equal(t, 0, gen.calls)
+	assert.Equal(t, 0, countAllAgentActions(t, database))
 }

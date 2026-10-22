@@ -3,6 +3,7 @@ package reactioncmd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"watchtower/internal/prompts"
 	"watchtower/internal/tools"
 )
@@ -68,19 +69,51 @@ func (p *Pipeline) SetDispatcher(fn Dispatcher) {
 }
 
 // SetDispatchPaused stops (true) or resumes (false) dispatching. A paused
-// poll still lists, seeds unseeded accounts and publishes reaction events, but
-// claims nothing: no ledger row is written and no budget is spent, so every
-// command placed meanwhile stays unseen and is dispatched once resumed.
+// poll still seeds unseeded accounts and publishes reaction events (it lists
+// reactions only through the event path), but claims nothing: no ledger row is
+// written and no budget is spent, so every command placed meanwhile stays
+// unseen and is dispatched once resumed.
 func (p *Pipeline) SetDispatchPaused(paused bool) { p.paused.Store(paused) }
 
 // dispatchPaused reports whether SetDispatchPaused(true) is in effect.
 func (p *Pipeline) dispatchPaused() bool { return p.paused.Load() }
 
-func (p *Pipeline) runDispatcher(ctx context.Context, d Dispatch) Outcome {
+// runDispatcher hands d to the custom dispatcher (or DispatchWith) and returns
+// an Outcome the ledger can record: a panic or an outcome that is neither a
+// release, a strand nor a finalize with dispatched/failed becomes a finalize
+// with failed, naming what went wrong, so one bad dispatch never stops the
+// pass or leaves a row the ledger CHECK refuses.
+func (p *Pipeline) runDispatcher(ctx context.Context, d Dispatch) (out Outcome) {
+	defer func() {
+		if r := recover(); r != nil {
+			p.logf("reaction-commands: ERROR dispatcher panicked for :%s: (%s): %v", d.Emoji, d.Tool, r)
+			out = Outcome{Status: "failed", Detail: fmt.Sprintf("dispatcher panic: %v", r), Step: StepFinalize}
+		}
+	}()
 	if fn := p.dispatcher.Load(); fn != nil {
-		return (*fn)(ctx, d)
+		out = (*fn)(ctx, d)
+	} else {
+		out = p.DispatchWith(ctx, d, "")
 	}
-	return p.DispatchWith(ctx, d, "")
+	return normaliseOutcome(out)
+}
+
+// normaliseOutcome turns an outcome the ledger cannot record into a failed
+// finalize whose detail names the bad outcome.
+func normaliseOutcome(out Outcome) Outcome {
+	switch out.Step {
+	case StepRelease, StepStrand:
+		return out
+	case StepFinalize:
+		if out.Status == "dispatched" || out.Status == "failed" {
+			return out
+		}
+	}
+	return Outcome{
+		Status: "failed",
+		Detail: fmt.Sprintf("dispatcher returned an invalid outcome (step %d, status %q)", out.Step, out.Status),
+		Step:   StepFinalize,
+	}
 }
 
 // DispatchWith is the built-in dispatch: it composes the tool's arguments with
