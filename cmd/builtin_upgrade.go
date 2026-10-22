@@ -44,7 +44,7 @@ var rolelessLegacyPrompts = map[string]bool{prompts.DayPlanGenerate: true}
 // upgradeBuiltins is the one-time move of every built-in from its old
 // pipeline settings (spec 2026-10-22 §5.4), run by the daemon at start after
 // the built-ins' sync: active[id] is whether built-in id runs this daemon
-// life — false keeps its legacy phases. An entry already moved (a done
+// life — false (or no key) keeps its legacy phases. An entry already moved (a done
 // record) is skipped; any other is moved now (upgradeBuiltin). It runs under
 // agent markers too: it carries only prompt text that was already running
 // and introduces no code.
@@ -54,6 +54,7 @@ func upgradeBuiltins(cfg *config.Config, database *db.DB, now time.Time, logger 
 		rec, err := database.GetBuiltinMigration(e.ID)
 		if err != nil {
 			logger.Printf("built-in %s: reading its settings move failed, its legacy phases run: %v", e.ID, err)
+			active[e.ID] = false
 			continue
 		}
 		if rec != nil && rec.Status == db.BuiltinMigrationDone {
@@ -173,9 +174,11 @@ func writeUpgradeCopy(path string, data []byte) error {
 // (prompts.Resolve with role, as briefing and day plan do) when it came from
 // a row the owner customised: the role variant row when it exists, else the
 // base row — a shipped role variant default with no row wins over the base
-// row, as in Store.GetForRole. A customised template the pipeline replaced
-// with the shipped default (blank, or a %s count other than the default's)
-// was never running, so it is not carried.
+// row, as in Store.GetForRole. A blank customised template is not carried
+// (Resolve ran the shipped default instead), nor one whose %s count is not
+// the default's: the brief ran the default in its place, and the day plan
+// ran it garbled (only its overrides fall back) — as an override in the
+// built-in it would fall back to the default anyway.
 func customisedLegacyPrompt(store *prompts.Store, database *db.DB, id, role string, logger *log.Logger) (string, bool, error) {
 	var row *db.Prompt
 	if role != "" {
@@ -207,7 +210,7 @@ func customisedLegacyPrompt(store *prompts.Store, database *db.DB, id, role stri
 		return "", false, fmt.Errorf("prompt %s changed while it was read; try again", row.ID)
 	}
 	if countPromptVerbs(tmpl) != countPromptVerbs(prompts.Defaults[id]) {
-		logger.Printf("prompt %s: its %%s placeholders differ from the default's, so the default ran; it is not carried", row.ID)
+		logger.Printf("prompt %s: its %%s placeholders differ from the default's; it is not carried", row.ID)
 		return "", false, nil
 	}
 	return tmpl, true, nil
@@ -221,9 +224,14 @@ func countPromptVerbs(tmpl string) int {
 
 // runAutomationsUpgradeBuiltins is `automations upgrade-builtins`: the
 // failed settings moves run again now (the Inbox's Retry). Each result is
-// printed; a move that failed again is a result, not an error. The daemon
+// printed; a move that failed again is a result, not an error. Owner-only,
+// like every CLI path to ConfirmAutomation: refused under an agent's markers
+// (the daemon's step itself runs under them). The daemon
 // picks its path at start, so the Desktop restarts it when a move is done.
 func runAutomationsUpgradeBuiltins(cmd *cobra.Command, _ []string) error {
+	if err := refuseUnderAgent("retry a built-in's settings move"); err != nil {
+		return err
+	}
 	cfg, database, err := openAutomationsCmd()
 	if err != nil {
 		return err

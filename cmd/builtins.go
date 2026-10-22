@@ -53,8 +53,9 @@ func wireBuiltins(d *daemon.Daemon, cfg *config.Config, database *db.DB, gen dig
 	}
 	// The one-time settings move: a built-in whose move failed keeps its
 	// legacy phases this run.
-	for id, moved := range upgradeBuiltins(cfg, database, now, logger) {
-		active[id] = active[id] && moved
+	moved := upgradeBuiltins(cfg, database, now, logger)
+	for id := range active {
+		active[id] = active[id] && moved[id] // no key: not moved
 	}
 	d.SetBuiltins(runner, active)
 	return runner

@@ -263,3 +263,55 @@ func TestAuto06_UpgradeConfirmsOnlyCarriedPrompt(t *testing.T) {
 	assert.False(t, after.Confirmed(), "an owner's copy is never confirmed by the step")
 	assert.Equal(t, a.ContentHash, after.ContentHash)
 }
+
+// TestBuiltinUpgrade_UnreadableRecordKeepsLegacy: a migration record that
+// cannot be read leaves the built-in on its legacy phases (its key false,
+// and wireBuiltins narrows every registry entry by it).
+func TestBuiltinUpgrade_UnreadableRecordKeepsLegacy(t *testing.T) {
+	c := newBuiltinCLI(t, true)
+	_, err := c.d.Exec(`INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at)
+		VALUES (?, 'done', '', 1, 'not a time')`, morningBriefID)
+	require.NoError(t, err)
+	var buf bytes.Buffer
+	active := upgradeBuiltins(c.cfg, c.d, time.Now(), log.New(&buf, "", 0))
+	v, ok := active[morningBriefID]
+	assert.True(t, ok, "the key is there")
+	assert.False(t, v, "the legacy phases run")
+	assert.Contains(t, buf.String(), "reading its settings move failed")
+}
+
+func TestBuiltinUpgrade_RetryRefusedUnderAgentMarkers(t *testing.T) {
+	c := newBuiltinCLI(t, true)
+	c.customisePrompt(t, prompts.BriefingDaily, "CARRIED\n"+prompts.Defaults[prompts.BriefingDaily])
+	require.NoError(t, c.d.RecordBuiltinMigration(morningBriefID, db.BuiltinMigrationFailed, "disk full", time.Now()))
+	for _, marker := range agentEnvMarkers {
+		t.Run(marker, func(t *testing.T) {
+			t.Setenv(marker, "1")
+			_, err := runAutomations(t, "upgrade-builtins", "--json")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "under an AI agent")
+			assert.NoFileExists(t, builtin.OwnerCopyPath(c.ws, morningBriefID))
+			m := c.migration(t)
+			assert.Equal(t, db.BuiltinMigrationFailed, m.Status)
+			assert.Equal(t, 1, m.Attempts)
+		})
+	}
+}
+
+// TestBuiltinUpgrade_ShippedRoleDefaultWinsOverCustomBase: with no role
+// variant row but a shipped role variant default, GetForRole ran that
+// default, not the customised base row — nothing is carried.
+func TestBuiltinUpgrade_ShippedRoleDefaultWinsOverCustomBase(t *testing.T) {
+	const variant = prompts.BriefingDaily + "_testrole"
+	prompts.Defaults[variant] = prompts.Defaults[prompts.BriefingDaily]
+	t.Cleanup(func() { delete(prompts.Defaults, variant) })
+	c := newBuiltinCLI(t, true)
+	o, err := c.d.RequireOwner()
+	require.NoError(t, err)
+	require.NoError(t, c.d.UpsertOwnerProfile(o, db.UserProfile{Role: "testrole"}))
+	c.customisePrompt(t, prompts.BriefingDaily, "BASE MARKER\n"+prompts.Defaults[prompts.BriefingDaily])
+	_, err = c.d.Exec(`DELETE FROM prompts WHERE id = ?`, variant) // the seed wrote it; no row is the case
+	require.NoError(t, err)
+	assert.True(t, c.upgrade(t))
+	assert.NoFileExists(t, builtin.OwnerCopyPath(c.ws, morningBriefID))
+}
