@@ -19,6 +19,8 @@ struct InboxSplitView<EmptyList: View>: View {
     /// The workbenches a card's agent press can go to.
     let workbenches: [Workbench]
     let onCardAction: (InboxCardCommand) -> Void
+    /// The Your day card's pane; nil shows its title and source line.
+    let dayPane: ((InboxDayCard) -> InboxDayPane?)?
     let onOpenAutomationRun: ((Int64) -> Void)?
     /// The moment Today starts from; nil is now (design shots fix it).
     let now: Date?
@@ -41,6 +43,7 @@ struct InboxSplitView<EmptyList: View>: View {
         saveProposal: ((AgentAction) -> SaveAutomationProposalPane)? = nil,
         workbenches: [Workbench] = [],
         onCardAction: @escaping (InboxCardCommand) -> Void,
+        dayPane: ((InboxDayCard) -> InboxDayPane?)? = nil,
         onOpenAutomationRun: ((Int64) -> Void)? = nil,
         now: Date? = nil,
         aux: Binding<InboxAuxPane?> = .constant(nil),
@@ -54,6 +57,7 @@ struct InboxSplitView<EmptyList: View>: View {
         self.saveProposal = saveProposal
         self.workbenches = workbenches
         self.onCardAction = onCardAction
+        self.dayPane = dayPane
         self.onOpenAutomationRun = onOpenAutomationRun
         self.now = now
         _aux = aux
@@ -150,8 +154,26 @@ struct InboxSplitView<EmptyList: View>: View {
             },
             proposalCard: proposalCard,
             saveProposal: saveProposal,
-            workbenches: workbenches
+            workbenches: workbenches,
+            dayCard: { card in
+                if let pane = dayPane?(card) {
+                    around(pane, card)
+                } else {
+                    InboxCardPlaceholder(day: card)
+                }
+            },
+            trackCard: { InboxCardPlaceholder(track: $0, now: now) },
+            ideaCard: { InboxCardPlaceholder(idea: $0) }
         )
+    }
+
+    /// The day pane with what only the split view knows.
+    private func around(_ pane: InboxDayPane, _ card: InboxDayCard) -> InboxDayPane {
+        var pane = pane
+        pane.navScreens = navScreens
+        pane.workbenches = workbenches
+        pane.isWriting = vm.isWriting(.day(card.date))
+        return pane
     }
 
     /// Runs `write` on the shown row; once the row has left the list, opens

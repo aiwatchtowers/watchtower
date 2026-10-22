@@ -220,6 +220,42 @@ final class InboxReadingPaneTests: XCTestCase {
         }
     }
 
+    func testSelectingADayCardShowsTheDayPane() async throws {
+        let date = "2025-10-22"
+        let pool = try TestDatabase.create()
+        try await pool.write { db in
+            let planID = try TestDatabase.insertDayPlan(db, planDate: date)
+            try TestDatabase.insertDayPlanItem(db, dayPlanID: planID, kind: "backlog", sourceType: "manual",
+                                               title: "Write tests")
+            try TestDatabase.insertBriefing(
+                db, date: date,
+                attention: #"[{"text":"Reply to the release thread","priority":"high","source_type":"track","source_id":"3"}]"#)
+        }
+        let (briefing, dayPlan) = try await pool.read { db in
+            (try BriefingQueries.fetchByDate(db, date: date), try DayPlanQueries.fetchByDate(db, date: date))
+        }
+        let plan = DayPlanViewModel(databasePool: pool, cliRunner: FakeCLIRunner())
+        await plan.loadFor(date: date)
+        let card = InboxDayCard(date: date, briefing: briefing, plan: dayPlan, planDone: 0,
+                                planTotal: plan.items.count, stamp: Date())
+        let owner = Owner(id: "1:U1", source: .slack, slackUserID: "1:U1", email: "", jiraAccountID: "",
+                          displayName: "Me")
+        let sut = InboxReadingPane(
+            item: .day(card), navScreens: [], onCommand: { _ in },
+            dayCard: { card in
+                InboxDayPane(card: card, today: date, plan: plan, owner: owner, onDone: {},
+                             onCommand: { _ in }, onOpenSource: { _ in })
+            },
+            trackCard: { InboxCardPlaceholder(track: $0, now: Date()) },
+            ideaCard: { InboxCardPlaceholder(idea: $0) })
+
+        XCTAssertNoThrow(try sut.inspect().find(InboxDayPane.self))
+        let texts = try sut.inspect().findAll(ViewType.Text.self).compactMap { try? $0.string() }
+        let item = try XCTUnwrap(texts.firstIndex(of: "Write tests"))
+        let needsYou = try XCTUnwrap(texts.firstIndex(of: "Needs you"))
+        XCTAssertLessThan(item, needsYou, "the plan block comes before Needs you")
+    }
+
     func testListRowContentForEveryKind() throws {
         let now = try local(10, 30)
         func content(_ item: InboxListItem) -> InboxListRow.Content {

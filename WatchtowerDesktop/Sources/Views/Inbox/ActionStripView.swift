@@ -36,6 +36,7 @@ struct ActionStripView: View {
                     onOpen: open,
                     onOpenAutomationRun: { runID in appState.openAutomationRun(runID: runID) },
                     onCardAction: { command in Task { await appState.perform(command) } },
+                    dayPane: { dayPane($0, vm: vm) },
                     onOpenSaveDraft: { appState.openSaveProposalDraft($0) },
                     workbenches: appState.inboxWorkbenches,
                     onReconnectSlack: { id in await appState.reconnectSlack(accountID: id) },
@@ -63,6 +64,26 @@ struct ActionStripView: View {
         }
         .onAppear { appState.actionStripViewModel?.setOnScreen(true) }
         .onDisappear { appState.actionStripViewModel?.setOnScreen(false) }
+    }
+
+    /// The Your day card over the AppState-owned plan; nil without a CLI.
+    private func dayPane(_ day: InboxDayCard, vm: ActionStripViewModel) -> InboxDayPane? {
+        guard let plan = appState.dayPlanViewModel else { return nil }
+        let makeTask: (BriefingTaskSource) async -> String? = { source in
+            guard let briefing = day.briefing else { return nil }
+            return await appState.makeTask(from: source, briefing: briefing)
+        }
+        return InboxDayPane(
+            card: day,
+            today: HomeFeedBuilder.dayString(Date(), calendar: .current),
+            plan: plan,
+            owner: appState.owner,
+            onDone: { vm.markDayDone(day.date) },
+            onCommand: { command in Task { await appState.perform(command) } },
+            onOpenSource: appState.openDayPlanItemSource,
+            onOpenBriefingLink: appState.openBriefingLink,
+            onMakeTask: makeTask
+        )
     }
 
     /// The live dictionary (`reaction_command_map` + `tool_trust`) through
@@ -125,6 +146,8 @@ struct ActionStripActionsView: View {
     var onOpenAutomationRun: ((Int64) -> Void)?
     /// A press on a card's buttons (`InboxCardCommand`).
     var onCardAction: (InboxCardCommand) -> Void = { _ in }
+    /// The Your day card's pane (`ActionStripView.dayPane`); nil shows its title.
+    var dayPane: ((InboxDayCard) -> InboxDayPane?)?
     /// A `save_automation` proposal's **Open Draft** (`AppState.openSaveProposalDraft`).
     var onOpenSaveDraft: (SaveAutomationCardModel) -> Void = { _ in }
     /// The workbenches a card's agent press can go to (and that name a
@@ -170,6 +193,7 @@ struct ActionStripActionsView: View {
                     saveProposal: saveProposal,
                     workbenches: workbenches,
                     onCardAction: onCardAction,
+                    dayPane: dayPane,
                     onOpenAutomationRun: onOpenAutomationRun,
                     aux: $aux,
                     cheatSheet: cheatSheet,

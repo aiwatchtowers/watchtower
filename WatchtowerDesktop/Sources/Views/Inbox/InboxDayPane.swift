@@ -14,11 +14,13 @@ struct InboxDayPane: View {
     /// Regenerate runs the `day-plan` CLI, which needs the owner (OWNER-02).
     let owner: Owner
     let onDone: () -> Void
+    /// The header's Discuss in Chat (`InboxCommonRow`); the pane takes no
+    /// environment, so tests drive it with a closure.
     let onCommand: (InboxCardCommand) -> Void
     let onOpenSource: (DayPlanItem) -> Void
-    /// The header's Discuss in Chat. Stands in for `InboxCommonRow` until
-    /// the Inbox card commands take any card's subject (C1 Task 7).
-    var onDiscuss: () -> Void = {}
+    var navScreens: Set<String> = []
+    var workbenches: [Workbench] = []
+    var isWriting = false
     var onOpenBriefingLink: (BriefingLink) -> Void = { _ in }
     /// Returns the failure to show, or nil.
     var onMakeTask: (BriefingTaskSource) async -> String? = { _ in nil }
@@ -69,11 +71,18 @@ struct InboxDayPane: View {
                 }
             }
             Spacer()
-            Button("Discuss in Chat", action: onDiscuss)
-            Button("Done", action: onDone)
+            InboxCommonRow(
+                subject: InboxCardSubject(day: card, items: plan.loadedDate == card.date ? plan.items : []),
+                link: nil,
+                navScreens: navScreens,
+                workbenches: workbenches,
+                isWriting: isWriting,
+                showsHandToAgent: false,
+                onCommand: onCommand
+            ) {
+                Button("Done", action: onDone)
+            }
         }
-        .buttonStyle(.kitQuiet)
-        .controlSize(.small)
     }
 
     /// "Wed 22 Oct" for "2026-10-22"; the raw string when it does not parse.

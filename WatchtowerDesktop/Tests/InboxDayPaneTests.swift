@@ -62,7 +62,7 @@ final class InboxDayPaneTests: XCTestCase {
         date: String,
         owner: Owner = InboxDayPaneTests.owner,
         onDone: @escaping () -> Void = {},
-        onDiscuss: @escaping () -> Void = {}
+        onCommand: @escaping (InboxCardCommand) -> Void = { _ in }
     ) async throws -> InboxDayPane {
         let (briefing, dayPlan) = try await pool.read { db in
             (try BriefingQueries.fetchByDate(db, date: date), try DayPlanQueries.fetchByDate(db, date: date))
@@ -70,8 +70,9 @@ final class InboxDayPaneTests: XCTestCase {
         await plan.loadFor(date: date)
         let card = InboxDayCard(date: date, briefing: briefing, plan: dayPlan,
                                 planDone: 0, planTotal: plan.items.count, stamp: Date())
+        let ignoreSource: (DayPlanItem) -> Void = { _ in }
         return InboxDayPane(card: card, today: Self.today, plan: plan, owner: owner,
-                            onDone: onDone, onCommand: { _ in }, onOpenSource: { _ in }, onDiscuss: onDiscuss)
+                            onDone: onDone, onCommand: onCommand, onOpenSource: ignoreSource)
     }
 
     /// The plan block as the pane shows it, with its open row in `row`.
@@ -100,13 +101,18 @@ final class InboxDayPaneTests: XCTestCase {
     func testHeaderButtons() async throws {
         try await insertPlan(date: Self.today)
         var done = 0
-        var discussed = 0
-        let sut = try await pane(date: Self.today, onDone: { done += 1 }, onDiscuss: { discussed += 1 })
+        var commands: [InboxCardCommand] = []
+        let sut = try await pane(date: Self.today, onDone: { done += 1 }, onCommand: { commands.append($0) })
 
         try sut.inspect().find(button: "Discuss in Chat").tap()
         try sut.inspect().find(button: "Done").tap()
 
-        XCTAssertEqual(discussed, 1)
+        guard case .chat(let subject, _)? = commands.first, commands.count == 1 else {
+            return XCTFail("Discuss in Chat emits one chat command, got \(commands)")
+        }
+        XCTAssertEqual(subject.selection, .day(Self.today))
+        XCTAssertThrowsError(try sut.inspect().find(button: "Hand to Agent…"))
+        XCTAssertThrowsError(try sut.inspect().find(button: "Open source"))
         XCTAssertEqual(done, 1)
     }
 
