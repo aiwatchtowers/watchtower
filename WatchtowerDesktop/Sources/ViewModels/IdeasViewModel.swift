@@ -57,13 +57,6 @@ final class IdeasViewModel {
     @ObservationIgnored private let writes = SerialWrites()
     /// One pending create or conversion (board #670).
     let pendingWrites = PendingWrites()
-    private var observationTask: Task<Void, Never>?
-    private var pollTask: Task<Void, Never>?
-    private var refreshGate = ForegroundRefreshGate()
-    /// The load `setOnScreen` started — held so tests can await it.
-    private(set) var onScreenRefresh: Task<Void, Never>?
-    private var loadsStarted = 0
-    private var loadApplied = 0
     /// SB4: retained so cancelBackfill() has something to cancel — started
     /// and cleared by startBackfillTask, the sheet's Start-button entry point.
     private var backfillTask: Task<Void, Never>?
@@ -71,12 +64,6 @@ final class IdeasViewModel {
     /// Overrides CLI resolution for tests; production falls back to
     /// `ProcessCLIRunner.makeDefault()` (mirrors `TargetsViewModel`).
     private let cliRunner: CLIRunnerProtocol?
-
-    /// Interval for the safety-net poll. GRDB ValueObservation cannot see writes
-    /// from the Go daemon (separate process, separate SQLite update hooks), so
-    /// the registry needs a periodic reload to surface daemon-mined ideas —
-    /// only while the UI is on screen (`refreshGate`, board #731).
-    private let pollInterval: Duration = .seconds(30)
 
     /// SB1: pinned to UTC so the `--from`/`--to` calendar day the CLI parses
     /// matches what the owner picked, regardless of the machine's local time
@@ -104,76 +91,11 @@ final class IdeasViewModel {
         selectedID = id
     }
 
-    func startObserving() {
-        guard observationTask == nil else { return }
-        load()
-        let dbPool = dbManager.dbPool
-        observationTask = Task { [weak self] in
-            let observation = ValueObservation.tracking { db in
-                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ideas") ?? 0
-            }
-            .removeDuplicates()
-            do {
-                for try await _ in observation.values(in: dbPool).dropFirst() {
-                    guard !Task.isCancelled else { break }
-                    self?.load()
-                }
-            } catch {}
-        }
-        startPolling()
-    }
-
-    /// Force an immediate reload from disk. Called on tab-appear so daemon-mined
-    /// ideas surface even when the user takes no action while away.
-    func refresh() {
-        load()
-    }
-
-    private func startPolling() {
-        guard pollTask == nil else { return }
-        let interval = pollInterval
-        pollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                try? await Task.sleep(for: interval)
-                guard !Task.isCancelled, let self else { break }
-                await self.pollTick()
-            }
-        }
-    }
-
     func load() {
         isLoading = true
-        let token = beginLoad()
         let query = currentQuery()
-        apply(Result { try dbManager.dbPool.read { try Self.read($0, query) } }, token: token)
+        apply(Result { try dbManager.dbPool.read { try Self.read($0, query) } })
         isLoading = false
-    }
-
-    /// The same load, its read off the main actor (the poll and the return
-    /// on screen, board #731).
-    func reload() async {
-        let token = beginLoad()
-        let query = currentQuery()
-        let pool = dbManager.dbPool
-        let result: Result<Loaded, Error>
-        do {
-            result = .success(try await pool.read { try Self.read($0, query) })
-        } catch {
-            result = .failure(error)
-        }
-        apply(result, token: token)
-    }
-
-    /// The UI went on or off screen (board #731): off screen the poll skips
-    /// its loads; back on screen after a skipped one, it loads at once.
-    func setOnScreen(_ onScreen: Bool) {
-        guard refreshGate.setOnScreen(onScreen) else { return }
-        onScreenRefresh = Task { await reload() }
-    }
-
-    /// One tick of the 30 s poll (its loop's body; tests call it directly).
-    func pollTick() async {
-        if refreshGate.tick() { await reload() }
     }
 
     private struct Query {
@@ -192,22 +114,12 @@ final class IdeasViewModel {
         Query(kind: kindMode, limit: registryLimit)
     }
 
-    /// Loads overlap (a poll, an action's synchronous one): only one started
-    /// after the last applied load lands, so a slow older read never undoes
-    /// a newer one.
-    private func beginLoad() -> Int {
-        loadsStarted += 1
-        return loadsStarted
-    }
-
     nonisolated private static func read(_ db: Database, _ query: Query) throws -> Loaded {
         Loaded(
             review: try IdeaQueries.fetchForReview(db, kind: query.kind),
             registry: try IdeaQueries.fetchList(
                 db,
                 kind: query.kind,
-                status: nil,
-                query: nil,
                 limit: query.limit,
                 excludingReviewQueue: true
             ),
@@ -216,9 +128,7 @@ final class IdeasViewModel {
         )
     }
 
-    private func apply(_ result: Result<Loaded, Error>, token: Int) {
-        guard token > loadApplied else { return }
-        loadApplied = token
+    private func apply(_ result: Result<Loaded, Error>) {
         switch result {
         case let .success(loaded):
             reviewItems = loaded.review

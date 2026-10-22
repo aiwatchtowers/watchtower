@@ -232,11 +232,12 @@ final class SidebarSectionTests: XCTestCase {
         XCTAssertTrue(SidebarDestination.chat.isVisible(disabledFeatures: everythingDisabled, connected: .none))
     }
 
-    /// Inbox and Calendar have no feature gate, only a source one.
-    func testInboxAndCalendarIgnoreFeaturesButNeedTheirSource() {
+    /// The Inbox has neither gate (C1: it also holds the briefings, plans,
+    /// tracks and ideas); Calendar has no feature gate, only a source one.
+    func testInboxHasNoGateAndCalendarNeedsItsSource() {
         let everythingDisabled: Set<String> = ["secretary-inbox", "briefing", "day-plan"]
         XCTAssertTrue(SidebarDestination.inbox.isVisible(disabledFeatures: everythingDisabled, connected: ConnectedSources(slack: true)))
-        XCTAssertFalse(SidebarDestination.inbox.isVisible(disabledFeatures: [], connected: .none))
+        XCTAssertTrue(SidebarDestination.inbox.isVisible(disabledFeatures: everythingDisabled, connected: .none))
         XCTAssertTrue(SidebarDestination.calendar.isVisible(disabledFeatures: everythingDisabled, connected: ConnectedSources(calendar: true)))
         XCTAssertFalse(SidebarDestination.calendar.isVisible(disabledFeatures: [], connected: .none))
     }
@@ -254,15 +255,16 @@ final class SidebarSectionTests: XCTestCase {
         }
         // Automations' feature is unmanaged by onboarding, so a dev-only
         // install keeps whatever state it has (here: on).
-        XCTAssertEqual(Set(visible), [.home, .workbench, .automations, .chat, .targets, .search, .usage, .mcpServer])
+        XCTAssertEqual(Set(visible), [.home, .inbox, .workbench, .automations, .chat, .targets, .search, .usage, .mcpServer])
     }
 
     func testDevOnlyFallbackIsHome() {
         XCTAssertEqual(
-            SidebarDestination.fallbackDestination(current: .inbox, disabled: Self.devOnlyDisabled, connected: .none),
+            SidebarDestination.fallbackDestination(current: .catchUp, disabled: Self.devOnlyDisabled, connected: .none),
             .home
         )
         XCTAssertNil(SidebarDestination.fallbackDestination(current: .targets, disabled: Self.devOnlyDisabled, connected: .none))
+        XCTAssertNil(SidebarDestination.fallbackDestination(current: .inbox, disabled: Self.devOnlyDisabled, connected: .none))
     }
 
     func testFallbackIsHomeEvenWhenInboxShows() {
@@ -297,13 +299,12 @@ final class SidebarSectionTests: XCTestCase {
         }
     }
 
-    /// Inbox needs any source and no feature (#284).
-    func testInboxShowsWithAnySource() {
+    /// Inbox needs no source and no feature (C1; before, any source, #284).
+    func testInboxShowsWithoutAnySource() {
         let everythingDisabled: Set<String> = ["secretary-inbox", "slack-digests", "stream-digests"]
-        for connected in [ConnectedSources(jira: true), ConnectedSources(calendar: true), ConnectedSources(slack: true)] {
+        for connected in [ConnectedSources(jira: true), ConnectedSources(calendar: true), ConnectedSources(slack: true), .none] {
             XCTAssertTrue(SidebarDestination.inbox.isVisible(disabledFeatures: everythingDisabled, connected: connected), "\(connected)")
         }
-        XCTAssertFalse(SidebarDestination.inbox.isVisible(disabledFeatures: [], connected: .none))
     }
 
     /// A Jira-only install that lands on a hidden tab falls back to Home.
@@ -319,10 +320,6 @@ final class SidebarSectionTests: XCTestCase {
         let cases: [(SidebarDestination, ConnectedSources, Bool)] = [
             (.calendar, ConnectedSources(calendar: true), true),
             (.calendar, ConnectedSources(slack: true, mail: true, jira: true), false),
-            (.inbox, ConnectedSources(slack: true), true),
-            (.inbox, ConnectedSources(mail: true), true),
-            (.inbox, ConnectedSources(calendar: true, jira: true), true),
-            (.inbox, .none, false),
             (.statistics, ConnectedSources(mail: true), true),
             (.statistics, ConnectedSources(calendar: true, jira: true), false),
             (.catchUp, ConnectedSources(mail: true), true),
@@ -375,9 +372,9 @@ final class SidebarSectionTests: XCTestCase {
     }
 
     /// Same rule on the source axis: with no source at all, Catch-Up's 2
-    /// and Inbox's 5 drop out.
+    /// drops out; the ungated Inbox's 5 stays.
     func testSectionBadgeExcludesSourceGatedItems() {
-        XCTAssertEqual(todayBadge(connected: .none), 0)
+        XCTAssertEqual(todayBadge(connected: .none), 5)
     }
 
     func testSectionBadgeExcludesUserHiddenItems() {

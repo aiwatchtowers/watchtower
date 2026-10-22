@@ -98,22 +98,6 @@ final class BackgroundRefreshTests: XCTestCase {
         }
     }
 
-    // MARK: - IdeasViewModel
-
-    func testIdeasSkipItsPollOffScreenAndLoadOnTheWayBack() async throws {
-        let vm = IdeasViewModel(dbManager: dbManager)
-        vm.load()
-        vm.setOnScreen(false)
-        try await pool.write { try TestDatabase.insertIdea($0, title: "Mined while away", status: "proposed") }
-
-        await vm.pollTick()
-        XCTAssertTrue(vm.reviewItems.isEmpty, "off screen: the tick reads nothing")
-
-        vm.setOnScreen(true)
-        await vm.onScreenRefresh?.value
-        XCTAssertEqual(vm.reviewItems.map(\.title), ["Mined while away"])
-    }
-
     // MARK: - WorkbenchesViewModel
 
     func testTheWorkbenchListSkipsThePollOffScreenAndReloadsOnTheWayBack() async throws {
@@ -162,13 +146,11 @@ final class BackgroundRefreshTests: XCTestCase {
     func testAppStateHandsTheVisibilityToEveryPoller() async throws {
         let appState = AppState.isolated()
         appState.initCalendar(dbPool: pool)
-        appState.initIdeas(dbManager: dbManager)
         appState.initWorkbenches(
             dbPool: pool, cliRunner: FakeCLIRunner(), notifier: RecordingWorkbenchNotifier(),
             sessionNotifier: RecordingSessionNotifier()
         )
         let calendar = try XCTUnwrap(appState.calendarViewModel)
-        let ideas = try XCTUnwrap(appState.ideasViewModel)
         let workbenches = try XCTUnwrap(appState.workbenchesViewModel)
         defer {
             calendar.stopObserving()
@@ -177,16 +159,13 @@ final class BackgroundRefreshTests: XCTestCase {
         appState.applyUIVisibility(false)
         XCTAssertFalse(workbenches.codeFiles.isOnScreen)
         await calendar.pollTick()
-        await ideas.pollTick()
         await workbenches.refreshOnPoll()
         appState.applyUIVisibility(true)
         XCTAssertTrue(workbenches.codeFiles.isOnScreen)
 
         XCTAssertNotNil(calendar.onScreenRefresh)
-        XCTAssertNotNil(ideas.onScreenRefresh)
         XCTAssertNotNil(workbenches.onScreenRefresh)
         await calendar.onScreenRefresh?.value
-        await ideas.onScreenRefresh?.value
         await workbenches.onScreenRefresh?.value
     }
 

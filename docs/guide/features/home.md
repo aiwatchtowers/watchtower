@@ -22,7 +22,7 @@ The feed reads top to bottom like your day: above a **NOW** line is everything t
 
 - Press **Done** on a row to resolve it, or **Hide** to put it away. A hidden reminder or target comes back tomorrow at 09:00; a hidden automation note is dismissed, as in Inbox. Proposals and meetings have no buttons: open them instead.
 - A row leaves at once; if the action fails it comes back with the error.
-- Click a row to open it: Slack, Jira and email open their source, an automation note its Inbox card with its buttons (its run while Inbox is hidden), the rest Inbox, the target or the meeting.
+- Click a row to open it: Slack, Jira and email open their source, an automation note its Inbox card with its buttons, the rest Inbox, the target or the meeting.
 
 ### Workbench
 

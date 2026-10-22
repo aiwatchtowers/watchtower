@@ -1581,17 +1581,19 @@ final class AppState {
     }
 
     /// Not marked `private` (mirrors `initSecretaryProfile` below), leaving the
-    /// same XCTest entry point open for `ideasViewModel` (the Inbox's Ideas
-    /// filter reads it).
+    /// same XCTest entry point open for `ideasViewModel`. The Inbox's idea
+    /// pane uses only its actions (the list is `InboxFeedQueries`'), so it
+    /// observes and polls nothing.
     func initIdeas(dbManager: DatabaseManager) {
-        let vm = IdeasViewModel(dbManager: dbManager)
-        vm.startObserving()
-        ideasViewModel = vm
+        ideasViewModel = IdeasViewModel(dbManager: dbManager)
     }
 
+    /// The Inbox's track pane uses its actions and its Slack links and
+    /// names, read once here (the list is `InboxFeedQueries`'); a write
+    /// through it reads them again.
     func initTracks(dbManager: DatabaseManager) {
         let vm = TracksViewModel(dbManager: dbManager)
-        vm.startObserving()
+        vm.load()
         tracksViewModel = vm
     }
 
@@ -1754,6 +1756,11 @@ final class AppState {
         let vm = ActionStripViewModel(dbPool: dbPool, customTrackControls: controls) {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
             try await AutomationsCLI(runner: runner).wake()
+        }
+        // The badge counts the rows this read lists, and the daemon's writes
+        // to them never fire the counts VM's observation; resolved at call time.
+        vm.onFeedRefreshed = { [weak self] in
+            await self?.sidebarCountsViewModel?.refresh()
         }
         vm.disabledFeatures = featureVisibility.disabledFeatureIDs
         Task { await vm.refresh() }

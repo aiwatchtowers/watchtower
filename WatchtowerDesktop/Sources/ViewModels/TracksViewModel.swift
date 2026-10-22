@@ -29,7 +29,6 @@ final class TracksViewModel {
     @ObservationIgnored private let writes = SerialWrites()
     /// One pending sub-item write per track (board #670).
     let pendingWrites = PendingWrites()
-    private var observationTask: Task<Void, Never>?
 
     // User name cache for resolving Slack user IDs
     private(set) var userNameCache: [String: String] = [:]
@@ -41,24 +40,6 @@ final class TracksViewModel {
     init(dbManager: DatabaseManager) {
         self.dbManager = dbManager
         refreshJiraStatus()
-    }
-
-    /// Start observing the tracks table for live updates.
-    func startObserving() {
-        guard observationTask == nil else { return }
-        load()
-        let dbPool = dbManager.dbPool
-        observationTask = Task { [weak self] in
-            let observation = ValueObservation.tracking { db in
-                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks") ?? 0
-            }
-            do {
-                for try await _ in observation.values(in: dbPool).dropFirst() {
-                    guard !Task.isCancelled else { break }
-                    self?.load()
-                }
-            } catch {}
-        }
     }
 
     func load() {

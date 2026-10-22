@@ -102,6 +102,29 @@ final class SidebarCountsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.inboxStripCount, 4, "2 proposals awaiting the owner + 1 due reminder + 1 unread message")
     }
 
+    /// A message written out of this pool's sight (another connection, as
+    /// the daemon's writes are) reaches the badge through the Inbox read's
+    /// `onFeedRefreshed`, the hook AppState wires to the counts' refresh.
+    func testInboxBadgeFollowsAWriteTheObservationNeverSees() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let counts = SidebarCountsViewModel(dbPool: manager.dbPool)
+        await counts.loadInitial()
+        let strip = ActionStripViewModel(dbPool: manager.dbPool, cliRunner: FakeCLIRunner())
+        strip.onFeedRefreshed = { await counts.refresh() }
+        XCTAssertEqual(counts.inboxStripCount, 0)
+
+        let other = try DatabaseQueue(path: manager.dbPool.path)
+        try await other.write { db in
+            try TestDatabase.insertInboxItem(db, channelID: "C001", messageTS: "1700000000.000100")
+        }
+        try other.close()
+        XCTAssertEqual(counts.inboxStripCount, 0, "no observation runs")
+
+        await strip.refresh()
+        XCTAssertEqual(counts.inboxStripCount, 1)
+    }
+
     func testInboxBadgeIsZeroOnEmptyDB() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }

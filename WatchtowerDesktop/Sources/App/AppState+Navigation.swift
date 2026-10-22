@@ -18,23 +18,15 @@ extension AppState {
     }
 
     /// The Inbox on `route`'s filter with its card open (old screen links,
-    /// Home, notifications, the four helpers below). Does nothing while the
-    /// Inbox itself is hidden (no source connected): a link must not land on
-    /// a tab the sidebar does not show. The returned task is the Inbox's
-    /// read and selection, for a test to await.
+    /// Home, notifications, the four helpers below). The Inbox has no
+    /// feature or source gate (C1), so it always shows. The returned task is
+    /// the Inbox's read and selection, for a test to await; nil before the
+    /// Inbox's view model exists.
     @discardableResult
     func openInbox(_ route: InboxRoute) -> Task<Void, Never>? {
-        guard isInboxVisible else { return nil }
         selectedDestination = .inbox
         guard let inbox = actionStripViewModel else { return nil }
         return Task { await inbox.open(route.filter, select: route.selection) }
-    }
-
-    private var isInboxVisible: Bool {
-        SidebarDestination.inbox.isVisible(
-            disabledFeatures: featureVisibility.disabledFeatureIDs,
-            connected: featureVisibility.connectedSources
-        )
     }
 
     /// Today's local day, "YYYY-MM-DD" — the Inbox's own day key.
@@ -58,7 +50,6 @@ extension AppState {
     /// opens; a briefing that is gone (or no database) opens today's card.
     @discardableResult
     func navigateToBriefing(_ briefingID: Int) -> Task<Void, Never>? {
-        guard isInboxVisible else { return nil }
         selectedDestination = .inbox
         let pool = databaseManager?.dbPool
         return Task {

@@ -69,6 +69,11 @@ package final class ActionStripViewModel {
     /// — the cheat sheet's "last check". Nil until the phase has run once.
     package private(set) var lastReactionCheck: String?
     package var lastError: String?
+    /// Called once a `refresh()` read is done (the 30 s poll and every
+    /// press included): the sidebar's Inbox badge counts the same rows, and
+    /// its observation never sees the daemon's writes, so AppState refreshes
+    /// the counts here (the `onRecapsChanged` precedent).
+    @ObservationIgnored package var onFeedRefreshed: (@MainActor () async -> Void)?
     /// The feature registry ids turned off (AppState's feature visibility);
     /// a change re-reads, since the read gates today's placeholder on them.
     package var disabledFeatures: Set<String> = [] {
@@ -193,6 +198,7 @@ package final class ActionStripViewModel {
         }
         refreshTask = task
         await task.value
+        await onFeedRefreshed?()
     }
 
     private func readFeed() async {
@@ -274,7 +280,7 @@ package final class ActionStripViewModel {
         case .day?:
             break
         default:
-            await select(item)
+            await select(item.flatMap { isListed($0) ? $0 : nil })
             return
         }
         guard case .day(let date)? = item else { return }

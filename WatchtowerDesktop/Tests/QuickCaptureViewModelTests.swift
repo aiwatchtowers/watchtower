@@ -62,7 +62,7 @@ final class QuickCaptureViewModelTests: MeetingRecorderTestCase {
 
         XCTAssertNil(vm.savedIdeaID)
         XCTAssertNotNil(vm.error)
-        let ideas = try await dbManager.dbPool.read { try IdeaQueries.fetchList($0, kind: nil, status: nil, query: nil, limit: 10) }
+        let ideas = try await dbManager.dbPool.read { try IdeaQueries.fetchList($0, kind: nil, limit: 10) }
         XCTAssertTrue(ideas.isEmpty)
     }
 
@@ -73,7 +73,7 @@ final class QuickCaptureViewModelTests: MeetingRecorderTestCase {
 
         XCTAssertNil(vm.savedIdeaID)
         XCTAssertNotNil(vm.error)
-        let ideas = try await dbManager.dbPool.read { try IdeaQueries.fetchList($0, kind: nil, status: nil, query: nil, limit: 10) }
+        let ideas = try await dbManager.dbPool.read { try IdeaQueries.fetchList($0, kind: nil, limit: 10) }
         XCTAssertTrue(ideas.isEmpty)
     }
 

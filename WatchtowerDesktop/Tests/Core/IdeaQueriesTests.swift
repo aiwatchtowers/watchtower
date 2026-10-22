@@ -17,7 +17,7 @@ final class IdeaQueriesTests: XCTestCase {
             try TestDatabase.insertIdea(db, kind: "note", title: "A note")
         }
 
-        let ideas = try db.read { try IdeaQueries.fetchList($0, kind: "decision", status: nil, query: nil, limit: 10) }
+        let ideas = try db.read { try IdeaQueries.fetchList($0, kind: "decision", limit: 10) }
 
         XCTAssertEqual(ideas.map(\.title), ["A decision"])
     }
@@ -32,7 +32,7 @@ final class IdeaQueriesTests: XCTestCase {
             try TestDatabase.insertIdea(db, kind: "note", title: "A note")
         }
 
-        let ideas = try db.read { try IdeaQueries.fetchList($0, kind: nil, status: nil, query: nil, limit: 10) }
+        let ideas = try db.read { try IdeaQueries.fetchList($0, kind: nil, limit: 10) }
 
         XCTAssertEqual(Set(ideas.map(\.title)), ["An idea", "A note"])
     }
@@ -44,48 +44,9 @@ final class IdeaQueriesTests: XCTestCase {
             try TestDatabase.insertIdea(db, kind: "decision", title: "A decision")
         }
 
-        let ideas = try db.read { try IdeaQueries.fetchList($0, kind: "decision", status: nil, query: nil, limit: 10) }
+        let ideas = try db.read { try IdeaQueries.fetchList($0, kind: "decision", limit: 10) }
 
         XCTAssertEqual(ideas.map(\.title), ["A decision"])
-    }
-
-    func testFetchListFiltersByStatus() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertIdea(db, title: "Proposed", status: "proposed")
-            try TestDatabase.insertIdea(db, title: "Active", status: "active")
-            try TestDatabase.insertIdea(db, title: "Dropped", status: "dropped")
-        }
-
-        let ideas = try db.read { try IdeaQueries.fetchList($0, kind: nil, status: "active", query: nil, limit: 10) }
-
-        XCTAssertEqual(ideas.map(\.title), ["Active"])
-    }
-
-    func testFetchListQueryMatchesTitleOrEssence() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertIdea(db, title: "Ship weekly digest", essence: "")
-            try TestDatabase.insertIdea(db, title: "Unrelated", essence: "mentions digest work too")
-            try TestDatabase.insertIdea(db, title: "Nothing relevant", essence: "")
-        }
-
-        let ideas = try db.read { try IdeaQueries.fetchList($0, kind: nil, status: nil, query: "digest", limit: 10) }
-
-        XCTAssertEqual(Set(ideas.map(\.title)), ["Ship weekly digest", "Unrelated"])
-    }
-
-    func testFetchListQueryMatchesMentionQuote() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            let ideaID = try TestDatabase.insertIdea(db, title: "Renaming the dashboard")
-            try TestDatabase.insertIdeaMention(db, ideaID: ideaID, quote: "we should rename the sidebar tab")
-            try TestDatabase.insertIdea(db, title: "Completely unrelated idea")
-        }
-
-        let ideas = try db.read { try IdeaQueries.fetchList($0, kind: nil, status: nil, query: "sidebar", limit: 10) }
-
-        XCTAssertEqual(ideas.map(\.title), ["Renaming the dashboard"])
     }
 
     func testFetchListOrderedByUpdatedAtDescending() throws {
@@ -95,7 +56,7 @@ final class IdeaQueriesTests: XCTestCase {
             try TestDatabase.insertIdea(db, title: "Newer", updatedAt: "2026-04-29T00:00:00Z")
         }
 
-        let ideas = try db.read { try IdeaQueries.fetchList($0, kind: nil, status: nil, query: nil, limit: 10) }
+        let ideas = try db.read { try IdeaQueries.fetchList($0, kind: nil, limit: 10) }
 
         XCTAssertEqual(ideas.map(\.title), ["Newer", "Older"])
     }
@@ -108,7 +69,7 @@ final class IdeaQueriesTests: XCTestCase {
             try TestDatabase.insertIdea(db, title: "C")
         }
 
-        let ideas = try db.read { try IdeaQueries.fetchList($0, kind: nil, status: nil, query: nil, limit: 2) }
+        let ideas = try db.read { try IdeaQueries.fetchList($0, kind: nil, limit: 2) }
 
         XCTAssertEqual(ideas.count, 2)
     }
@@ -147,25 +108,6 @@ final class IdeaQueriesTests: XCTestCase {
 
         let count = try db.read { try IdeaQueries.countForReview($0) }
         XCTAssertEqual(count, 2, "the sidebar badge counts both kinds regardless of the active segment")
-    }
-
-    /// An active search must narrow the review queue too — review items that
-    /// don't match a search staying on screen read as a broken search. The
-    /// predicate is the same title/essence/mention-quote triple as `fetchList`.
-    func testFetchForReviewQueryFiltersQueue() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertIdea(db, title: "DevOps knowledge base", status: "proposed")
-            let quoted = try TestDatabase.insertIdea(db, title: "Release notes automation", status: "proposed")
-            try TestDatabase.insertIdeaMention(db, ideaID: quoted, quote: "the DevOps team asked for this")
-            try TestDatabase.insertIdea(db, title: "SumSub umbrella account", status: "proposed")
-        }
-
-        let matched = try db.read { try IdeaQueries.fetchForReview($0, kind: "idea", query: "DevOps") }
-        XCTAssertEqual(Set(matched.map(\.title)), ["DevOps knowledge base", "Release notes automation"])
-
-        let all = try db.read { try IdeaQueries.fetchForReview($0, kind: "idea") }
-        XCTAssertEqual(all.count, 3, "no query keeps the queue unfiltered")
     }
 
     func testCountForReviewMatchesFetchForReview() throws {
@@ -253,7 +195,7 @@ final class IdeaQueriesTests: XCTestCase {
         }
 
         let ideas = try db.read {
-            try IdeaQueries.fetchList($0, kind: nil, status: nil, query: nil, limit: 2, excludingReviewQueue: true)
+            try IdeaQueries.fetchList($0, kind: nil, limit: 2, excludingReviewQueue: true)
         }
 
         XCTAssertEqual(Set(ideas.map(\.title)), ["Reg1", "Reg2"])

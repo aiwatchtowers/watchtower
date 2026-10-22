@@ -7,7 +7,7 @@ import WatchtowerTestSupport
 /// Briefings, Day Plan, Tracks and Ideas left the sidebar for the Inbox's
 /// filters (C1 Task 11): every old way in — a `watchtower-nav://` link, the
 /// four navigate helpers, Home — lands on the Inbox with the filter and the
-/// card, and nothing does while the Inbox itself is hidden.
+/// card. The Inbox has no feature or source gate, so it is never hidden.
 @MainActor
 final class InboxRouteTests: XCTestCase {
     private static let today = AppState.inboxToday()
@@ -108,25 +108,15 @@ final class InboxRouteTests: XCTestCase {
         XCTAssertEqual(SidebarSection.today.partition(hidden: Set(expected.keys)).visible, [.catchUp, .inbox])
     }
 
-    func testOldNavHostIgnoredWhileInboxHidden() {
+    /// With no source connected the Inbox still shows (no gate since C1),
+    /// so the old screen names still open its filters.
+    func testOldNavHostOpensTheInboxWithNoSource() {
         for host in InboxRoute.aliasHosts.keys {
             let state = appState(connected: .none)
-            XCTAssertFalse(state.visibleHelpScreenIDs.contains(host), host)
+            XCTAssertTrue(state.visibleHelpScreenIDs.contains(host), host)
             state.openNavLink(NavLink.url(host))
-            XCTAssertEqual(state.selectedDestination, .home, host)
+            XCTAssertEqual(state.selectedDestination, .inbox, host)
         }
-    }
-
-    /// F17: no way in moves to a hidden Inbox.
-    func testOpenInboxIsANoOpWhileInboxHidden() {
-        let state = appState(connected: .none)
-        XCTAssertNil(state.openInbox(InboxRoute(filter: .tracks)))
-        XCTAssertNil(state.navigateToTrack(3))
-        XCTAssertNil(state.navigateToIdea(4))
-        XCTAssertNil(state.navigateToDayPlan())
-        XCTAssertNil(state.navigateToBriefing(2))
-        XCTAssertEqual(state.selectedDestination, .home)
-        XCTAssertEqual(state.actionStripViewModel?.selection, nil)
     }
 
     func testUnknownHostIsNotAnAlias() {
@@ -143,7 +133,7 @@ final class InboxRouteTests: XCTestCase {
         let state = appState()
         let url = try XCTUnwrap(URL(string: "watchtower-nav://day-plan"))
         XCTAssertEqual(InboxCardLinkPolicy.route(url, navScreens: state.visibleHelpScreenIDs), .screen(url))
-        XCTAssertNil(InboxCardLinkPolicy.route(url, navScreens: appState(connected: .none).visibleHelpScreenIDs))
+        XCTAssertEqual(InboxCardLinkPolicy.route(url, navScreens: appState(connected: .none).visibleHelpScreenIDs), .screen(url))
     }
 
     // MARK: - Navigate helpers
@@ -207,16 +197,15 @@ final class InboxRouteTests: XCTestCase {
         assertLanding(plan, .day, .day(Self.today), "plan")
     }
 
-    /// The brief and plan links show while the Inbox does and their feature is on.
+    /// The brief and plan links show while their feature is on (the Inbox always shows).
     func testHomeBriefAndPlanLinksFollowTheInboxAndTheirFeature() {
         let state = appState()
         XCTAssertTrue(state.homeLinksAllowed.isSuperset(of: [.briefing, .dayPlan]))
         state.featureVisibility.disabledFeatureIDs = ["briefing"]
         XCTAssertFalse(state.homeLinksAllowed.contains(.briefing))
         XCTAssertTrue(state.homeLinksAllowed.contains(.dayPlan))
-        let hidden = appState(connected: .none)
-        XCTAssertFalse(hidden.homeLinksAllowed.contains(.briefing))
-        XCTAssertFalse(hidden.homeLinksAllowed.contains(.dayPlan))
+        let noSource = appState(connected: .none)
+        XCTAssertTrue(noSource.homeLinksAllowed.isSuperset(of: [.briefing, .dayPlan]))
     }
 
     func testGettingReadyOpenForTheFourFeatures() async {

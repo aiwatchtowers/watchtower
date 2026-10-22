@@ -387,6 +387,23 @@ final class ActionStripAllKindsTests: XCTestCase {
         XCTAssertNotNil(try row("inbox_items", id)["read_at"] as String?)
     }
 
+    /// A route to a message no longer listed (resolved meanwhile) selects
+    /// nothing and writes no read mark.
+    func testOpenOnAMessageNoLongerListedSelectsNothing() async throws {
+        let id = try await pool.write { db -> Int in
+            let id = try Self.message(db, 1)
+            try db.execute(sql: "UPDATE inbox_items SET status = 'resolved' WHERE id = ?", arguments: [id])
+            return id
+        }
+        let vm = makeVM()
+
+        await vm.open(.messages, select: .message(id))
+
+        XCTAssertEqual(vm.filter, .messages)
+        XCTAssertNil(vm.selection)
+        XCTAssertNil(try row("inbox_items", id)["read_at"] as String?)
+    }
+
     func testShowOlderDaysReadsAnotherPage() async throws {
         try await pool.write { db in
             for day in 1...31 {

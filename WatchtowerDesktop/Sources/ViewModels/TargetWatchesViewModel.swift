@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import os
 import WatchtowerCore
 
 /// Drives the target's "Watch" tab: the watches linked to the target, the
@@ -9,6 +10,7 @@ import WatchtowerCore
 @Observable
 final class TargetWatchesViewModel {
     let target: Target
+    private static let log = Logger(subsystem: Constants.bundleID, category: "target-watches")
     private let dbPool: DatabasePool
     /// Every write of this view model, in order (board #670).
     @ObservationIgnored private let writes = SerialWrites()
@@ -171,9 +173,12 @@ final class TargetWatchesViewModel {
         refreshWatches()
     }
 
+    /// A failed read keeps the rows shown and is logged.
     private func refreshWatches() {
-        if let rows = try? dbPool.read({ db in try TrackQueries.fetchByLinkedTarget(db, targetID: target.id) }) {
-            watches = rows
+        do {
+            watches = try dbPool.read { db in try TrackQueries.fetchByLinkedTarget(db, targetID: target.id) }
+        } catch {
+            Self.log.error("reading target \(self.target.id)'s watches: \(error.localizedDescription, privacy: .public)")
         }
     }
 

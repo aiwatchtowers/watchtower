@@ -106,7 +106,7 @@ extension AppState {
     }
 
     /// An automation note's Inbox card, selected so its buttons show; the
-    /// run in the Automations tab while the Inbox tab is hidden.
+    /// run in the Automations tab while the Inbox has no view model yet.
     private func openInboxOutput(_ id: Int64, automationID: Int64, runID: Int64) {
         if openInbox(InboxRoute(filter: .all, selection: .output(id))) == nil {
             openAutomationRun(automationID: automationID, runID: runID)

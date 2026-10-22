@@ -15,7 +15,6 @@ extension AppState {
     /// built, so one built off screen starts gated.
     func applyUIVisibility(_ onScreen: Bool) {
         calendarViewModel?.setOnScreen(onScreen)
-        ideasViewModel?.setOnScreen(onScreen)
         workbenchesViewModel?.setOnScreen(onScreen)
         workbenchesViewModel?.codeFiles.setOnScreen(onScreen)
     }

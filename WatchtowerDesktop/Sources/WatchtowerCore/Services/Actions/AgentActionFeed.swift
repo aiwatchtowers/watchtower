@@ -12,7 +12,7 @@ import os
 /// chat-mode MCP server inserts proposals mid-turn, `watchtower actions …`
 /// transitions them. GRDB `ValueObservation` fires only on the app's own
 /// writer connection, so the observation alone would never see any of it
-/// (`DigestViewModel`, `IdeasViewModel`, `CatchUpViewModel`,
+/// (`DigestViewModel`, `ActionStripViewModel`, `CatchUpViewModel`,
 /// `TargetWatchesViewModel.refreshEvents` all hit the same wall). Three
 /// readers close the gap: `refresh()` after every CLI call, a safety-net
 /// poll while started, and the chat VMs' stream-end hook. The observation
@@ -42,7 +42,7 @@ package final class AgentActionFeed {
     /// row an automation run proposed, so the run waiting on it resumes now
     /// rather than on the executor's next poll. Nil = never wake.
     private let automationsWake: (() async throws -> Void)?
-    /// Safety-net poll cadence, at `IdeasViewModel.pollInterval`'s 30 s: the
+    /// Safety-net poll cadence, at the Inbox poll's 30 s: the
     /// turn-boundary refresh is what makes proposals feel immediate, this only
     /// has to catch a turn that never reaches its end. Injectable for tests.
     private let pollInterval: Duration

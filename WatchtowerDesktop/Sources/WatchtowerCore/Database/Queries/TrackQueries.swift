@@ -5,47 +5,13 @@ package enum TrackQueries {
 
     // MARK: - Fetch
 
-    package static func fetchAll(
-        _ db: Database,
-        priority: String? = nil,
-        hasUpdates: Bool? = nil, // swiftlint:disable:this discouraged_optional_boolean
-        channelID: String? = nil,
-        ownership: String? = nil,
-        includeDismissed: Bool = false,
-        limit: Int = 200
-    ) throws -> [Track] {
-        var conditions: [String] = []
-        var args: [any DatabaseValueConvertible] = []
-
-        if !includeDismissed {
-            conditions.append("dismissed_at = ''")
-        }
-        if let priority {
-            conditions.append("priority = ?")
-            args.append(priority)
-        }
-        if let hasUpdates {
-            conditions.append("has_updates = ?")
-            args.append(hasUpdates ? 1 : 0)
-        }
-        if let channelID {
-            conditions.append("channel_ids LIKE ?")
-            args.append("%\(channelID)%")
-        }
-        if let ownership {
-            conditions.append("ownership = ?")
-            args.append(ownership)
-        }
-
-        var sql = "SELECT * FROM tracks"
-        if !conditions.isEmpty {
-            sql += " WHERE " + conditions.joined(separator: " AND ")
-        }
-        sql += " ORDER BY has_updates DESC, updated_at DESC"
-        sql += " LIMIT ?"
-        args.append(limit)
-
-        return try Track.fetchAll(db, sql: sql, arguments: StatementArguments(args))
+    /// The non-dismissed tracks, updated ones first, then newest update.
+    package static func fetchAll(_ db: Database, limit: Int = 200) throws -> [Track] {
+        try Track.fetchAll(db, sql: """
+            SELECT * FROM tracks WHERE dismissed_at = ''
+            ORDER BY has_updates DESC, updated_at DESC
+            LIMIT ?
+            """, arguments: [limit])
     }
 
     /// Every non-dismissed track — or, `stopped`, every dismissed one — with

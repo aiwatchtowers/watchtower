@@ -128,8 +128,10 @@ extension SidebarDestination {
         case .boards, .workload, .projectMap, .releases: [.jira]
         // Blockers read Jira and Linear through `tracker_issues`.
         case .blockers: [.jira, .linear]
-        // Inbox and Catch-Up also surface tracker mentions and meeting items.
-        case .inbox, .catchUp: [.messages, .jira, .linear, .calendar]
+        // Catch-Up also surfaces tracker mentions and meeting items. The
+        // Inbox has no source gate: it also holds the briefings, day plans,
+        // tracks and ideas (C1), whose own tabs never had one.
+        case .catchUp: [.messages, .jira, .linear, .calendar]
         case .statistics: [.messages]
         default: nil
         }

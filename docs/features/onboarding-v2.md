@@ -127,8 +127,9 @@ still decides only the `briefing` feature.
 **Sidebar visibility.** A tab shows when its feature rule AND its source
 rule hold (`SidebarDestination.isVisible`, `ConnectedSources`): Calendar
 needs a calendar; Boards, Workload, Project Map and Releases need
-Jira, Blockers Jira or Linear; Statistics needs Slack or mail; Inbox and Catch-Up need any source
-(Slack, mail, Jira, Linear or a calendar). Inbox has no feature rule; Catch-Up needs
+Jira, Blockers Jira or Linear; Statistics needs Slack or mail; Catch-Up needs any source
+(Slack, mail, Jira, Linear or a calendar). Inbox has neither rule since C1 (it
+also holds the briefings, plans, tracks and ideas, whose tabs had none); Catch-Up needs
 `secretary-inbox`, `slack-digests` or `stream-digests` on (owner decision
 2026-10-03, #284). A selection that lands on a hidden tab falls back to
 Home, which has no gate (first-run P2, `docs/features/first-run.md`). The quiet "+ Connect Slack, Mail, Jira…"
@@ -139,8 +140,8 @@ for good with its × (`sidebar_connect_row_dismissed`).
 **C1, the one Inbox (2026-10-22, board #861):** the Briefings, Day Plan,
 Tracks and Ideas destinations are gone; the root items are Home, Targets,
 Workbench, Automations and Calendar, and FOCUS is Catch-Up and Inbox. Their
-output is the Inbox's Day, Tracks and Ideas filters, so it shows wherever the
-Inbox does (any source). A persisted `sidebar.hiddenItems` entry naming a
+output is the Inbox's Day, Tracks and Ideas filters, and the Inbox has no
+feature or source gate, so it always shows. A persisted `sidebar.hiddenItems` entry naming a
 removed destination is ignored. The goal → feature mapping
 (`OnboardingFeaturePlan`) is unchanged (plan ruling R11): a goal still turns
 `briefing`, `day-plan`, `tracks` and `ideas` on, and only where their output

@@ -567,8 +567,8 @@ content width). No migration, no AI, no daemon phase.
     opens its Inbox card with its buttons (`HomeLink.inboxOutput` →
     `ActionStripViewModel.select(.output)`, which marks it read, so it leaves
     the feed), or its run in the Automations tab (`openAutomationRun`) while
-    the Inbox tab is hidden (no message, tracker or calendar source) — since
-    #449 (2026-10-22). `includeRead: false`: an opened note is not shown.
+    the Inbox's view model is not built yet (the Inbox has no source gate
+    since C1) — since #449 (2026-10-22). `includeRead: false`: an opened note is not shown.
   - Calendar (`events`): today and the next 4 days through
     `isShownEvent` — no all-day, no `cancelled`, none the owner
     declined (attendee email equal to the event's `accountEmail`,
@@ -668,7 +668,7 @@ log.") and never reads as empty.
   ("N of M done"), Digests. Each row only while its tab is visible
   (`AppState.homeLinksAllowed`, `AppState+Home.swift:32`). View:
   `LinksZoneView.swift`. Since C1 (2026-10-22) Briefing and Day plan are
-  allowed while `.inbox` is visible and their feature is on, and open today's
+  allowed while their feature is on (`.inbox` has no gate), and open today's
   day card (`InboxRoute.forFeature`); Getting ready's lines for the briefing,
   day plan, tracks and ideas open the Inbox on the matching filter.
 - **Numbers** — `HomeNumbersQueries.read` (`HomeNumbersQueries.swift:31`), a

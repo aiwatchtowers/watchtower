@@ -19,50 +19,6 @@ final class TrackQueryTests: XCTestCase {
         XCTAssertEqual(tracks[0].text, "High")
     }
 
-    func testFetchAllByPriority() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertTrack(db, text: "A", priority: "high")
-            try TestDatabase.insertTrack(db, text: "B", priority: "low")
-        }
-        let tracks = try db.read { try TrackQueries.fetchAll($0, priority: "high") }
-        XCTAssertEqual(tracks.count, 1)
-        XCTAssertEqual(tracks[0].text, "A")
-    }
-
-    func testFetchAllByHasUpdates() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertTrack(db, text: "Updated", hasUpdates: true)
-            try TestDatabase.insertTrack(db, text: "Stable")
-        }
-        let tracks = try db.read { try TrackQueries.fetchAll($0, hasUpdates: true) }
-        XCTAssertEqual(tracks.count, 1)
-        XCTAssertEqual(tracks[0].text, "Updated")
-    }
-
-    func testFetchAllByChannelID() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertTrack(db, text: "In C001", channelIDs: #"["C001"]"#)
-            try TestDatabase.insertTrack(db, text: "In C002", channelIDs: #"["C002"]"#)
-        }
-        let tracks = try db.read { try TrackQueries.fetchAll($0, channelID: "C002") }
-        XCTAssertEqual(tracks.count, 1)
-        XCTAssertEqual(tracks[0].text, "In C002")
-    }
-
-    func testFetchAllByOwnership() throws {
-        let db = try TestDatabase.create()
-        try db.write { db in
-            try TestDatabase.insertTrack(db, text: "Mine", ownership: "mine")
-            try TestDatabase.insertTrack(db, text: "Watching", ownership: "watching")
-        }
-        let tracks = try db.read { try TrackQueries.fetchAll($0, ownership: "watching") }
-        XCTAssertEqual(tracks.count, 1)
-        XCTAssertEqual(tracks[0].text, "Watching")
-    }
-
     func testFetchUpdatedTracks() throws {
         let db = try TestDatabase.create()
         try db.write { db in
