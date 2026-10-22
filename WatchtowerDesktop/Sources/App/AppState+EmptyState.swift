@@ -14,7 +14,6 @@ extension AppState {
             },
             syncLine: syncProgress?.isSyncing() == true ? syncProgress?.summary : nil,
             briefingHour: readinessCenter.briefingHour,
-            dayPlanHour: readinessCenter.dayPlanHour,
             turnOnError: { [weak self] in self?.emptyStateTurnOnError(for: $0) },
             isTurningOn: { [weak self] in self?.turningOnFeatureID == $0 },
             perform: { [weak self] in self?.performEmptyStateAction($0) }

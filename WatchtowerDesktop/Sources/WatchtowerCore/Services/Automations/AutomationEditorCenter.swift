@@ -731,5 +731,6 @@ extension AutomationDetail {
         autoTools = []
         llmAutoWrites = []
         feedsSourcesToLLM = false
+        builtin = nil
     }
 }

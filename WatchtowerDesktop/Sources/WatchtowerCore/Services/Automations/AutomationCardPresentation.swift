@@ -235,8 +235,18 @@ package enum AutomationCardPresentation {
             + "later (for example when the repository is updated) and will then run unattended without asking again."
     }
 
-    /// `tool:`, `mcp:` and `shell:` entries.
+    /// A built-in's engine primitives (`builtin:<name>`), twin of Go
+    /// `automations.BuiltinPrimitiveNames`.
+    private static let builtinPrimitives: [String: String] = [
+        "brief.compose": "Write your daily brief",
+        "plan.compose": "Plan your day"
+    ]
+
+    /// `tool:`, `mcp:`, `shell:` and `builtin:` entries.
     private static func prefixedLine(_ permission: String) -> String? {
+        if permission.hasPrefix("builtin:") {
+            return builtinPrimitives[String(permission.dropFirst("builtin:".count))]
+        }
         if permission.hasPrefix("tool:") {
             return "Use the tool " + permission.dropFirst("tool:".count)
         }
@@ -373,6 +383,7 @@ package enum AutomationCardPresentation {
         case "manual": return "Run now"
         case "reply": return "Inbox button"
         case "dry_run": return "Dry run"
+        case "sync": return "At its slot in the sync cycle"
         default: return run.trigger
         }
     }

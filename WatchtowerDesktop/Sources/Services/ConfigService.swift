@@ -55,7 +55,6 @@ final class ConfigService {
     /// Display-only — `save()` never writes `day_plan.enabled`. See
     /// `digestEnabled`.
     var dayPlanEnabled: Bool = true
-    var dayPlanHour: Int = 8
     var workingHoursStart: String = "09:00"
     var workingHoursEnd: String = "19:00"
     var maxTimeblocks: Int = 3
@@ -197,7 +196,6 @@ final class ConfigService {
 
             if let dayPlan = yaml["day_plan"] as? [String: Any] {
                 dayPlanEnabled = (dayPlan["enabled"] as? Bool) ?? true
-                dayPlanHour = (dayPlan["hour"] as? Int) ?? 8
                 workingHoursStart = (dayPlan["working_hours_start"] as? String) ?? "09:00"
                 workingHoursEnd = (dayPlan["working_hours_end"] as? String) ?? "19:00"
                 maxTimeblocks = (dayPlan["max_timeblocks"] as? Int) ?? 3
@@ -333,9 +331,9 @@ final class ConfigService {
         yaml["ideas"] = ideas
 
         // Day Plan section — `enabled` is deliberately not written, see the
-        // `dayPlanEnabled` property.
+        // `dayPlanEnabled` property. `hour` is retired (the plan is made
+        // with the brief, after `briefing.hour`) and left as written.
         var dayPlan = (yaml["day_plan"] as? [String: Any]) ?? [:]
-        dayPlan["hour"] = dayPlanHour
         dayPlan["working_hours_start"] = workingHoursStart
         dayPlan["working_hours_end"] = workingHoursEnd
         dayPlan["max_timeblocks"] = maxTimeblocks

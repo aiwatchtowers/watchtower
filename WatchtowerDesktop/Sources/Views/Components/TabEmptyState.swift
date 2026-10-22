@@ -9,7 +9,6 @@ struct EmptyStateContext {
     /// The live sync line (`SyncProgress.summary`) while a sync runs.
     var syncLine: String?
     var briefingHour = 8
-    var dayPlanHour = 8
     var turnOnError: (String) -> String? = { _ in nil }
     var isTurningOn: (String) -> Bool = { _ in false }
     /// Turn on, Connect and Open Settings; a tab's own action is the tab's.
@@ -94,7 +93,7 @@ struct TabEmptyState<Extra: View>: View {
 
     private var shownCopy: EmptyStateCopy? {
         guard let copy = EmptyStateCopyTable.copy(
-            for: copyKey, briefingHour: context.briefingHour, dayPlanHour: context.dayPlanHour
+            for: copyKey, briefingHour: context.briefingHour
         ) else { return nil }
         guard let icon else { return copy }
         return EmptyStateCopy(icon: icon, title: copy.title, landsHere: copy.landsHere, feature: copy.feature,
@@ -135,7 +134,7 @@ struct ContentAwareEmptyState<Own: View>: View {
     }
 
     private var hasContent: Bool {
-        let copy = EmptyStateCopyTable.copy(for: destination.rawValue, briefingHour: 8, dayPlanHour: 8)
+        let copy = EmptyStateCopyTable.copy(for: destination.rawValue, briefingHour: 8)
         guard let feature = copy?.feature else { return false }
         return context.readiness(feature) == .ready
     }

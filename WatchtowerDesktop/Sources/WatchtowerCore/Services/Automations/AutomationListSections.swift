@@ -107,9 +107,9 @@ package enum AutomationDraftRows {
 
 // MARK: - Sections
 
-/// One section of the list: Personal, or one workbench.
+/// One section of the list: Built in, Personal, or one workbench.
 package struct AutomationListSection: Identifiable, Equatable, Sendable {
-    /// "personal" or "workbench-<id>".
+    /// "builtin", "personal" or "workbench-<id>".
     package let id: String
     package let title: String
     package let drafts: [AutomationDraftRow]
@@ -129,8 +129,10 @@ package struct AutomationListSection: Identifiable, Equatable, Sendable {
 
 package enum AutomationListSections {
     package static let personalTitle = "Personal"
+    package static let builtinTitle = "Built in"
 
-    /// Personal first, then each workbench by name, drafts at the top of
+    /// Built in first (every `isBuiltin` item, never in Personal; a built-in
+    /// has no drafts), then Personal, then each workbench by name, drafts at the top of
     /// their section. `query` filters items (name or slug) and drafts (name),
     /// ignoring case; a section with nothing left is omitted. A workbench
     /// recipe or draft whose workbench is not in `workbenches` is not shown.
@@ -148,10 +150,14 @@ package enum AutomationListSections {
         let shownDrafts = drafts.filter { matches($0.name) }
 
         var sections: [AutomationListSection] = []
+        let builtin = AutomationListSection(
+            id: "builtin", title: builtinTitle, drafts: [], items: shownItems.filter(\.automation.isBuiltin)
+        )
+        if !builtin.isEmpty { sections.append(builtin) }
         let personal = AutomationListSection(
             id: "personal", title: personalTitle,
             drafts: shownDrafts.filter { $0.workbenchID == nil },
-            items: shownItems.filter { $0.automation.scope == .personal }
+            items: shownItems.filter { $0.automation.scope == .personal && !$0.automation.isBuiltin }
         )
         if !personal.isEmpty { sections.append(personal) }
 

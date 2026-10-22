@@ -14,7 +14,6 @@ final class FakeReadinessEnvironment: ReadinessEnvironment {
     var disabledFeatureIDs: Set<String> = []
     var connected = ConnectedSources(slack: true)
     var briefingHour = 8
-    var dayPlanHour = 8
     var pollInterval: String?
     var backfillDays: Int?
     var stamps: [String: Date] = [:]

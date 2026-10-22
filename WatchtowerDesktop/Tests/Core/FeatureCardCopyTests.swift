@@ -2,8 +2,8 @@ import XCTest
 @testable import WatchtowerCore
 
 final class FeatureCardCopyTests: XCTestCase {
-    private func card(_ feature: ReadinessFeature, briefingHour: Int = 8, dayPlanHour: Int = 8) -> FeatureCardCopy {
-        EmptyStateCopyTable.featureCard(feature, briefingHour: briefingHour, dayPlanHour: dayPlanHour)
+    private func card(_ feature: ReadinessFeature, briefingHour: Int = 8) -> FeatureCardCopy {
+        EmptyStateCopyTable.featureCard(feature, briefingHour: briefingHour)
     }
 
     func testEveryFeatureHasCardCopy() {
@@ -20,8 +20,8 @@ final class FeatureCardCopyTests: XCTestCase {
             (.digests, "digests"), (.briefing, "briefings"), (.peopleCards, "people"), (.memory, "memory")
         ]
         for (feature, rawValue) in tabs {
-            let tab = try XCTUnwrap(EmptyStateCopyTable.copy(for: rawValue, briefingHour: 7, dayPlanHour: 9))
-            XCTAssertEqual(card(feature, briefingHour: 7, dayPlanHour: 9).whatItIs, tab.landsHere, "\(feature)")
+            let tab = try XCTUnwrap(EmptyStateCopyTable.copy(for: rawValue, briefingHour: 7))
+            XCTAssertEqual(card(feature, briefingHour: 7).whatItIs, tab.landsHere, "\(feature)")
         }
     }
 

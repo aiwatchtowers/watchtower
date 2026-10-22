@@ -54,14 +54,12 @@ package enum EmptyStateCopyTable {
     /// Keyed by `SidebarDestination.rawValue` (SidebarDestination lives in the
     /// Desktop target; Workbench's persisted raw value is "projects"), plus
     /// the Inbox filters' own keys (`InboxFilter.emptyCopyKey`).
-    package static func copy(for destinationRawValue: String, briefingHour: Int, dayPlanHour: Int) -> EmptyStateCopy? {
+    package static func copy(for destinationRawValue: String, briefingHour: Int) -> EmptyStateCopy? {
         guard let row = rows[destinationRawValue] else { return nil }
-        let hour: Int? = switch destinationRawValue {
-        case "briefings": briefingHour
-        case "dayPlan": dayPlanHour
-        default: nil
-        }
-        guard let hour else { return row }
+        // The day plan is made with the brief, after the briefing hour
+        // (`day_plan.hour` is retired).
+        guard ["briefings", "dayPlan"].contains(destinationRawValue) else { return row }
+        let hour = briefingHour
         return EmptyStateCopy(
             icon: row.icon,
             title: row.title,
@@ -160,7 +158,7 @@ extension EmptyStateCopyTable {
     /// this feature, `whatItIs` IS that row's `landsHere` (hour filled in); the
     /// five features with no tab row of their own (slackSync, streamDigests,
     /// knowledgeIndex, jira, linear) have their own sentence here.
-    package static func featureCard(_ feature: ReadinessFeature, briefingHour: Int, dayPlanHour: Int) -> FeatureCardCopy {
+    package static func featureCard(_ feature: ReadinessFeature, briefingHour: Int) -> FeatureCardCopy {
         let title = cardTitle(feature)
         let tab: String
         switch feature {
@@ -189,7 +187,7 @@ extension EmptyStateCopyTable {
         case .calendar: tab = "calendar"
         }
         // Every tab above has a row in `rows`.
-        let landsHere = copy(for: tab, briefingHour: briefingHour, dayPlanHour: dayPlanHour)?.landsHere ?? ""
+        let landsHere = copy(for: tab, briefingHour: briefingHour)?.landsHere ?? ""
         return FeatureCardCopy(title: title, whatItIs: landsHere)
     }
 

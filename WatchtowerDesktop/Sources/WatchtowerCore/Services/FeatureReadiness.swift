@@ -111,9 +111,11 @@ package enum FeatureReadiness {
             // Fresh install, dual path with Go's `dayPlanFresh`
             // (internal/daemon/daemon.go): no `day_plans` row at all. The
             // daemon's last day-plan date is in memory only, so there is no
-            // stamp to read.
+            // stamp to read. The plan is made with the brief, after the
+            // briefing hour (twin: the daemon's `shouldRunDayPlan` hour;
+            // `day_plan.hour` is retired).
             let fresh = !inputs.contentPresent.contains(.dayPlan)
-            return daily(fresh: fresh, last: nil, hour: inputs.dayPlanHour, now: now, cycle: cycle)
+            return daily(fresh: fresh, last: nil, hour: inputs.briefingHour, now: now, cycle: cycle)
         case .peopleCards:
             guard let last = inputs.stamps.lastPeople, now.timeIntervalSince(last) < peopleInterval else { return cycle }
             return .inAboutADay

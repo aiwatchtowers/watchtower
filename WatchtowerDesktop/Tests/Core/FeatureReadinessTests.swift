@@ -603,4 +603,20 @@ final class FeatureReadinessTests: XCTestCase {
         XCTAssertEqual(FeatureReadiness.trackerReadiness(jira: soon, linear: .waitingForSync(detail: nil)), soon)
         XCTAssertEqual(FeatureReadiness.trackerReadiness(jira: .needsSource(.jira), linear: nil), .needsSource(.jira))
     }
+
+    // MARK: - Day plan on the briefing hour (twin of TestMorningBrief_PlanWaitsForBriefingHour)
+
+    /// `day_plan.hour` is retired: the plan is made with the brief. Before any
+    /// plan exists the hour gate is bypassed (Go's fresh install,
+    /// `TestMorningBrief_FreshInstallBypassesHour`); the hour the day plan's
+    /// copy names is the briefing hour.
+    func testDayPlanReadinessUsesBriefingHour() {
+        var input = inputs(now: today(8, 30))
+        input.briefingHour = 9
+        XCTAssertEqual(evaluate(.dayPlan, input), .scheduled(.nextCycle(minutes: 15)))
+        let copy = EmptyStateCopyTable.featureCard(.dayPlan, briefingHour: input.briefingHour)
+        XCTAssertTrue(copy.whatItIs.contains("09:00"), copy.whatItIs)
+        input.contentPresent = [.dayPlan]
+        XCTAssertEqual(evaluate(.dayPlan, input), .ready)
+    }
 }

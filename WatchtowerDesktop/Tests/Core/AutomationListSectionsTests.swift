@@ -175,4 +175,20 @@ final class AutomationListSectionsTests: XCTestCase {
         XCTAssertNil(AutomationDraftRows.workbenchID(fromContextID: "d-wb"))
         XCTAssertNil(AutomationDraftRows.workbenchID(fromContextID: "d-wbx"))
     }
+
+    func testBuiltinItemsListedInBuiltIn() {
+        let brief = Automation(id: 9, slug: "morning-brief", name: "Morning brief", origin: .builtin,
+                               builtinID: "morning-brief")
+        let builtin = AutomationListItem(automation: brief, lastRun: nil, activeRun: nil, tokens7d: 0, badges: [],
+                                         triggerText: "")
+        let sections = AutomationListSections.make(
+            items: [item(id: 1, name: "Mail digest"), builtin], drafts: [draft(5, name: "Draft")],
+            workbenches: [], query: "")
+        XCTAssertEqual(sections.map(\.title), [AutomationListSections.builtinTitle, AutomationListSections.personalTitle])
+        XCTAssertEqual(AutomationListSections.builtinTitle, "Built in")
+        XCTAssertEqual(sections[0].items.map(\.id), [9])
+        XCTAssertEqual(sections[0].drafts, [])
+        XCTAssertEqual(sections[1].items.map(\.id), [1], "never in Personal")
+        XCTAssertEqual(AutomationListSections.make(items: [builtin], drafts: [], workbenches: [], query: "zzz"), [])
+    }
 }

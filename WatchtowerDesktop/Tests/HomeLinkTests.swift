@@ -141,7 +141,7 @@ final class HomeLinkTests: XCTestCase {
             } else {
                 key = try XCTUnwrap(AppState.homeDestination(for: feature), "\(feature)").rawValue
             }
-            guard let copy = EmptyStateCopyTable.copy(for: key, briefingHour: 8, dayPlanHour: 9),
+            guard let copy = EmptyStateCopyTable.copy(for: key, briefingHour: 8),
                   let copyFeature = copy.feature else {
                 XCTAssertEqual(feature, .knowledgeIndex, "\(feature) → \(key) has no empty state")
                 XCTAssertEqual(key, SidebarDestination.search.rawValue)

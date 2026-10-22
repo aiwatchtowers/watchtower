@@ -214,7 +214,6 @@ package struct ReadinessInputs: Equatable {
     package var contentPresent: Set<ReadinessFeature>
     package var stamps: ReadinessStamps
     package var briefingHour: Int
-    package var dayPlanHour: Int
     package var pollIntervalMinutes: Int
     /// `started_at` of every `history_backfill` row with status `running`
     /// (a held row included), for memory's backfill wait (#578).
@@ -241,7 +240,6 @@ package struct ReadinessInputs: Equatable {
         contentPresent: Set<ReadinessFeature> = [],
         stamps: ReadinessStamps = ReadinessStamps(),
         briefingHour: Int = 8,
-        dayPlanHour: Int = 8,
         pollIntervalMinutes: Int = 15,
         runningBackfillStarts: [Date] = [],
         memoryHasRun: Bool = false,
@@ -259,7 +257,6 @@ package struct ReadinessInputs: Equatable {
         self.contentPresent = contentPresent
         self.stamps = stamps
         self.briefingHour = briefingHour
-        self.dayPlanHour = dayPlanHour
         self.pollIntervalMinutes = pollIntervalMinutes
         self.runningBackfillStarts = runningBackfillStarts
         self.memoryHasRun = memoryHasRun
