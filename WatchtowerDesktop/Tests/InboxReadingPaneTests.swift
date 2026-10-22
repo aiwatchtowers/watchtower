@@ -7,7 +7,8 @@ import ViewInspector
 import WatchtowerTestSupport
 
 /// The pane with the day, track and idea placeholders (before Tasks 8–10).
-private typealias PlaceholderPane = InboxReadingPane<InboxCardPlaceholder, InboxCardPlaceholder, InboxCardPlaceholder>
+private typealias PlaceholderPane = InboxReadingPane<
+    InboxCardPlaceholder, InboxCardColumn<InboxCardPlaceholder>, InboxCardPlaceholder>
 
 /// The Inbox reading pane (spec B1, B2): an automation card's own buttons
 /// from its stored `actions`, then the common row; Reply's states; links

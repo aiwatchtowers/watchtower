@@ -30,6 +30,10 @@ struct InboxSplitView<EmptyList: View>: View {
     let learnedRulesDB: DatabasePool?
     /// Assistant Profile's view model; nil says it is unavailable.
     let profile: SecretaryProfileViewModel?
+    /// The track card's view model and a custom track's controls; nil
+    /// (tests, design shots) shows a track card's title and source line.
+    let tracks: TracksViewModel?
+    let trackControls: (any CustomTrackControlling)?
     /// The list column when the filter has nothing.
     let emptyList: EmptyList
 
@@ -47,6 +51,8 @@ struct InboxSplitView<EmptyList: View>: View {
         cheatSheet: ReactionCheatSheetView? = nil,
         learnedRulesDB: DatabasePool? = nil,
         profile: SecretaryProfileViewModel? = nil,
+        tracks: TracksViewModel? = nil,
+        trackControls: (any CustomTrackControlling)? = nil,
         @ViewBuilder emptyList: () -> EmptyList
     ) {
         self.vm = vm
@@ -60,6 +66,8 @@ struct InboxSplitView<EmptyList: View>: View {
         self.cheatSheet = cheatSheet
         self.learnedRulesDB = learnedRulesDB
         self.profile = profile
+        self.tracks = tracks
+        self.trackControls = trackControls
         self.emptyList = emptyList()
     }
 
@@ -150,8 +158,27 @@ struct InboxSplitView<EmptyList: View>: View {
             },
             proposalCard: proposalCard,
             saveProposal: saveProposal,
-            workbenches: workbenches
+            workbenches: workbenches,
+            dayCard: { InboxCardPlaceholder(day: $0) },
+            trackCard: { trackPane($0, in: sections, now: now) },
+            ideaCard: { InboxCardPlaceholder(idea: $0) }
         )
+    }
+
+    /// The track card; Done and Stop watching open the next row once it left.
+    @ViewBuilder
+    private func trackPane(_ card: InboxTrackCard, in sections: [InboxSection], now: Date) -> some View {
+        let id = InboxSelection.track(card.track.id)
+        if let tracks, let trackControls {
+            InboxTrackPane(
+                card: card, tracks: tracks, controls: trackControls, isWriting: vm.isWriting(id),
+                onDone: { close(id, in: sections, done) },
+                onStopWatching: { close(id, in: sections) { _ in await vm.stopWatching(card.track) } },
+                onCommand: onCardAction, workbenches: workbenches
+            )
+        } else {
+            InboxCardColumn { InboxCardPlaceholder(track: card, now: now) }
+        }
     }
 
     /// Runs `write` on the shown row; once the row has left the list, opens

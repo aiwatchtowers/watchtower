@@ -38,6 +38,7 @@ final class CustomTrackTimelineViewModelTests: XCTestCase {
             dbManager: manager,
             scanService: TrackScanService(runner: scanRunner),
             actionRunner: actionRunner,
+            controls: DirectCustomTrackControls(dbPool: manager.dbPool, scanService: TrackScanService(runner: scanRunner)),
             scanCenter: TrackScanCenter()
         )
         return (manager, path, track, timeline)

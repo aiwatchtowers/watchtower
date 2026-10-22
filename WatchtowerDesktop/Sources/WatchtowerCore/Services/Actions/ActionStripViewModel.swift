@@ -537,9 +537,11 @@ package final class ActionStripViewModel {
     }
 }
 
-/// The installed CLI, found at each call: the scan runner when the view model was given none.
-private struct InstalledCLIRunner: CLIRunnerProtocol {
-    func run(args: [String]) async throws -> Data {
+/// The installed CLI, found at each call: the scan runner when no other is given.
+package struct InstalledCLIRunner: CLIRunnerProtocol {
+    package init() {}
+
+    package func run(args: [String]) async throws -> Data {
         guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
         return try await runner.run(args: args)
     }

@@ -47,7 +47,9 @@ struct ActionStripView: View {
                     },
                     ownerKnown: appState.owner.isKnown,
                     learnedRulesDB: appState.databaseManager?.dbPool,
-                    profile: appState.secretaryProfileViewModel
+                    profile: appState.secretaryProfileViewModel,
+                    tracks: appState.tracksViewModel,
+                    trackControls: appState.customTrackControls
                 )
             } else {
                 ProgressView()
@@ -144,6 +146,9 @@ struct ActionStripActionsView: View {
     /// Learned Rules' database and Assistant Profile's view model (the ⋯ menu).
     var learnedRulesDB: DatabasePool?
     var profile: SecretaryProfileViewModel?
+    /// The track card's view model and a custom track's controls.
+    var tracks: TracksViewModel?
+    var trackControls: (any CustomTrackControlling)?
 
     @State private var aux: InboxAuxPane?
 
@@ -174,7 +179,9 @@ struct ActionStripActionsView: View {
                     aux: $aux,
                     cheatSheet: cheatSheet,
                     learnedRulesDB: learnedRulesDB,
-                    profile: profile
+                    profile: profile,
+                    tracks: tracks,
+                    trackControls: trackControls
                 ) {
                     emptyList
                 }

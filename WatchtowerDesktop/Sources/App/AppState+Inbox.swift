@@ -110,6 +110,47 @@ extension AppState {
         await workbenches.workOn(targetID: targetID, targetText: title, projectID: workbenchID)
     }
 
+    /// A track card's **Make a Task** (R9): a target from the track's prefill
+    /// (`TargetPrefillBuilder.fromTrack`, what Create Target's sheet showed),
+    /// for today, opened in Targets. Returns the reason it failed, else nil.
+    func makeTask(fromTrack track: Track) async -> String? {
+        guard let db = databaseManager else { return "Database not available" }
+        let prefill: TargetPrefill
+        do {
+            prefill = try await TargetPrefillBuilder.fromTrack(track, db: db)
+        } catch {
+            return "Couldn't prepare the task: \(error.localizedDescription)"
+        }
+        let title = TargetComposerLogic.deriveTitle(from: prefill.text)
+        // A cut title keeps the whole text in the intent.
+        let fullText = prefill.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let intent = title == fullText ? prefill.intent : [fullText, prefill.intent]
+            .filter { !$0.isEmpty }.joined(separator: "\n\n")
+        let today = Self.inboxTaskDay.string(from: Date())
+        do {
+            let id = try await db.dbPool.write { dbConn in
+                try TargetQueries.create(
+                    dbConn, text: title, intent: intent, periodStart: today, periodEnd: today,
+                    sourceType: prefill.sourceType, sourceID: prefill.sourceID,
+                    secondaryLinks: prefill.secondaryLinks
+                )
+            }
+            navigateToTarget(id)
+            return nil
+        } catch {
+            inboxLog.error("making a task from track \(track.id): \(error.localizedDescription, privacy: .public)")
+            return "Couldn't make the task: \(error.localizedDescription)"
+        }
+    }
+
+    /// A made task's day period: the owner's local calendar day.
+    private static let inboxTaskDay: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter
+    }()
+
     /// A `save_automation` proposal's **Open Draft**: the recipe it proposes
     /// in the editor panel, unsaved — over the saved automation it replaces,
     /// or as a new draft in its scope. Only the owner's press there saves.
