@@ -61,42 +61,66 @@ func (g morningBriefGate) Due(_ context.Context, _ builtin.Entry, now time.Time)
 	return g.d.briefDue(now) || g.d.planDue(now)
 }
 
+// briefingNoDataBackoff is how long a sync brief that found no data keeps
+// the brief from being due again the same day: without it every cycle of an
+// install with nothing to summarize yet (a fresh install before its first
+// digests) would write one empty run.
+const briefingNoDataBackoff = time.Hour
+
 // phaseMorningBrief is the Morning brief slot, where phaseBriefing and the
 // day-plan phases ran. With the built-in not active it runs those legacy
 // phases unchanged; otherwise the built-in's slot run (brief, then plan, one
 // automation run) and then the day plan's conflict phase, which stays Go.
 func (d *Daemon) phaseMorningBrief(ctx context.Context, now time.Time) {
 	if d.builtins == nil || !d.builtinActive[morningBriefID] {
-		d.phaseBriefing(ctx)
+		d.phaseBriefingAt(ctx, now)
 		d.runDayPlanPhases(ctx, now)
 		return
 	}
-	d.mbOwner = db.Owner{}
-	if d.config.DayPlan.Enabled && d.dayPlanPipeline != nil && d.db != nil {
-		d.mbOwner = d.dayPlanOwner(now)
+	if !d.builtinsSwept {
+		d.sweepBuiltinRuns() // the start's sweep failed: retried before the slot
 	}
-	d.mbNow = now
-	defer func() { d.mbNow = time.Time{} }()
+	owner := db.Owner{}
+	if d.config.DayPlan.Enabled && d.dayPlanPipeline != nil && d.db != nil {
+		owner = d.dayPlanOwner(now)
+	}
+	d.mbMu.Lock()
+	d.mbOwner, d.mbNow = owner, now
+	d.mbMu.Unlock()
+	defer func() {
+		d.mbMu.Lock()
+		d.mbNow = time.Time{}
+		d.mbMu.Unlock()
+	}()
 	d.builtins.RunSlot(ctx, builtin.SlotMorningBrief)
-	d.runDayPlanConflictPhase(ctx, now, d.mbOwner)
+	d.runDayPlanConflictPhase(ctx, now, owner)
 }
 
 // builtinNow is the clock of the slot's primitives: the cycle's now while
 // phaseMorningBrief runs, else the wall clock.
 func (d *Daemon) builtinNow() time.Time {
+	d.mbMu.Lock()
+	defer d.mbMu.Unlock()
 	if !d.mbNow.IsZero() {
 		return d.mbNow
 	}
 	return time.Now()
 }
 
-// briefDue is phaseBriefing's gate.
+// briefDue is phaseBriefing's gate, plus the no-data backoff.
 func (d *Daemon) briefDue(now time.Time) bool {
+	d.mbMu.Lock()
+	defer d.mbMu.Unlock()
+	if !d.briefNoDataAt.IsZero() && sameCalendarDay(d.briefNoDataAt, now) && now.Sub(d.briefNoDataAt) < briefingNoDataBackoff {
+		return false
+	}
 	return d.config.Briefing.Enabled && d.briefingPipe != nil && d.shouldRunBriefingAt(now) && d.briefingHasOwner(now)
 }
 
 // planDue is the day-plan phase's gate over the cycle's owner.
 func (d *Daemon) planDue(now time.Time) bool {
+	d.mbMu.Lock()
+	defer d.mbMu.Unlock()
 	return d.config.DayPlan.Enabled && d.shouldRunDayPlan(now, d.mbOwner)
 }
 
@@ -118,31 +142,41 @@ func (d *Daemon) planItems(planID int64) (int, error) {
 }
 
 // trackBrief is phaseBriefing's tracked run around one brief.compose: a
-// pipeline_runs row named briefing, a no-owner benign skip logged once a
-// day, a real failure charged to the day's attempt budget, last_briefing.txt
-// stamped when today's briefing was made.
-func (d *Daemon) trackBrief(date string, run func() (int, error)) (int, error) {
+// pipeline_runs row named briefing and last_briefing.txt stamped when today's
+// briefing was made. A sync run's no-owner result is the benign skip (logged
+// once a day), its real failure is charged to the day's attempt budget and
+// its no-data result starts the no-data backoff. A manual run is the owner's
+// own: it charges no attempt and surfaces no owner as db.ErrNoOwner
+// (OWNER-02).
+func (d *Daemon) trackBrief(trigger, date string, run func() (int, error)) (int, error) {
+	sync := trigger == db.TriggerSync
 	var id int
 	var runErr error
 	d.trackedPipelineRun("briefing", func() pipelineRunStats {
 		now := d.builtinNow()
 		id, runErr = run()
 		err := runErr
-		if errors.Is(err, db.ErrNoOwner) {
+		today := now.Format(time.DateOnly)
+		d.mbMu.Lock()
+		switch {
+		case sync && errors.Is(err, db.ErrNoOwner):
 			d.logNoOwnerOnce(now, "briefing")
 			err, runErr = nil, nil
-		}
-		today := now.Format(time.DateOnly)
-		if err != nil {
-			d.recordBriefingAttempt(today)
+		case err != nil:
+			if sync {
+				d.recordBriefingAttempt(today)
+			}
 			d.logger.Printf("briefing error: %v", err)
-		} else if id > 0 {
+		case id > 0:
 			d.logger.Printf("generated briefing (id=%d)", id)
 			if date == today {
 				d.lastBriefing = now
 				d.saveLastBriefing()
 			}
+		case sync:
+			d.briefNoDataAt = now
 		}
+		d.mbMu.Unlock()
 		items := 0
 		if id > 0 {
 			items = 1
@@ -154,9 +188,9 @@ func (d *Daemon) trackBrief(date string, run func() (int, error)) (int, error) {
 }
 
 // trackPlan is runDayPlanPhase's tracked run around one plan.compose: a
-// pipeline_runs row named day_plan, a failure charged to the day's attempt
-// budget, today's plan remembered.
-func (d *Daemon) trackPlan(date string, run func() (*db.DayPlan, error)) (*db.DayPlan, error) {
+// pipeline_runs row named day_plan and today's plan remembered; a sync run's
+// failure is charged to the day's attempt budget, a manual run's is not.
+func (d *Daemon) trackPlan(trigger, date string, run func() (*db.DayPlan, error)) (*db.DayPlan, error) {
 	var plan *db.DayPlan
 	var runErr error
 	d.trackedPipelineRun("day_plan", func() pipelineRunStats {
@@ -167,8 +201,11 @@ func (d *Daemon) trackPlan(date string, run func() (*db.DayPlan, error)) (*db.Da
 			items = 1
 		}
 		inTok, outTok, cost, totalAPI := d.dayPlanPipeline.AccumulatedUsage()
+		d.mbMu.Lock()
 		if runErr != nil {
-			d.recordDayPlanAttempt(today)
+			if trigger == db.TriggerSync {
+				d.recordDayPlanAttempt(today)
+			}
 			d.logger.Printf("dayplan: generation failed: %v", runErr)
 		} else {
 			if date == today {
@@ -176,24 +213,29 @@ func (d *Daemon) trackPlan(date string, run func() (*db.DayPlan, error)) (*db.Da
 			}
 			d.logger.Printf("dayplan: generated plan for %s", date)
 		}
+		d.mbMu.Unlock()
 		return pipelineRunStats{items: items, inTok: inTok, outTok: outTok, cost: cost, totalAPI: totalAPI, err: runErr}
 	})
 	return plan, runErr
 }
 
-// sweepBuiltinRuns ends the runs a previous daemon left running or waiting
-// (the executor's start sweep, AUTO-08): a built-in's run left running would
-// otherwise block every later slot run of it. Done before the sync loop and
-// the owner-recipe executor start, also when that executor is not wired.
+// sweepBuiltinRuns ends the built-in runs a previous daemon (or a CLI that
+// died) left running or waiting: one left running would block every later
+// slot run of its built-in. It runs at the daemon's start, before the sync
+// loop and the owner-recipe executor (whose own start sweep leaves the
+// built-ins' runs alone, so it can never end a live slot run), and — until it
+// has succeeded — again before each Morning brief slot.
 func (d *Daemon) sweepBuiltinRuns() {
 	if d.builtins == nil || d.db == nil {
 		return
 	}
-	n, err := d.db.MarkInterruptedAutomationRuns(time.Now())
+	n, err := d.db.MarkInterruptedBuiltinRuns(time.Now())
 	switch {
 	case err != nil:
-		d.logger.Printf("built-ins: ending the runs left by the previous daemon: %v", err)
+		d.logger.Printf("built-ins: ending the runs left by the previous daemon: %v (retried before the next slot)", err)
+		return
 	case n > 0:
 		d.logger.Printf("built-ins: %d run(s) left by the previous daemon ended as interrupted", n)
 	}
+	d.builtinsSwept = true
 }

@@ -34,9 +34,11 @@ type MorningBriefHooks struct {
 	// BriefDue/PlanDue are the sync-run gates (nil = always due: the CLI).
 	BriefDue, PlanDue func(now time.Time) bool
 	// Track wraps one real attempt (daemon: trackedPipelineRun + attempt
-	// budget + stamps; CLI: direct). nil = run directly.
-	TrackBrief func(date string, run func() (int, error)) (int, error)
-	TrackPlan  func(date string, run func() (*db.DayPlan, error)) (*db.DayPlan, error)
+	// budget + stamps; CLI: direct). trigger is the run's (db.TriggerSync,
+	// db.TriggerManual, …): only a sync run's attempt is the daemon's
+	// schedule's. nil = run directly.
+	TrackBrief func(trigger, date string, run func() (int, error)) (int, error)
+	TrackPlan  func(trigger, date string, run func() (*db.DayPlan, error)) (*db.DayPlan, error)
 	// Owner is the owner a plan is made for.
 	Owner func() (db.Owner, error)
 	// Items counts a plan's items (the result's items field); nil = 0.
@@ -75,7 +77,7 @@ func MorningBriefPrimitives(brief BriefRunner, plan PlanRunner, h MorningBriefHo
 			var id int
 			var err error
 			if h.TrackBrief != nil {
-				id, err = h.TrackBrief(date, run)
+				id, err = h.TrackBrief(call.Trigger.Kind, date, run)
 			} else {
 				id, err = run()
 			}
@@ -104,7 +106,7 @@ func MorningBriefPrimitives(brief BriefRunner, plan PlanRunner, h MorningBriefHo
 			run := func() (*db.DayPlan, error) { return plan.Run(ctx, opts) }
 			var p *db.DayPlan
 			if h.TrackPlan != nil {
-				p, err = h.TrackPlan(date, run)
+				p, err = h.TrackPlan(call.Trigger.Kind, date, run)
 			} else {
 				p, err = run()
 			}

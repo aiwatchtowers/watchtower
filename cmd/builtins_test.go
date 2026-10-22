@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log"
@@ -12,6 +13,7 @@ import (
 
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/automationstest"
+	"watchtower/internal/automations/builtin"
 	"watchtower/internal/briefing"
 	"watchtower/internal/config"
 	"watchtower/internal/daemon"
@@ -55,10 +57,28 @@ func TestWireBuiltins_SlotExecutorHasMainBackends(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, a.Confirmed(), "the shipped text is confirmed by the sync")
 
-	// The runner executes on the slot executor: a no-owner install's brief
-	// is a benign skip in the daemon, so the run succeeds with no model call.
+	// The runner executes on the slot executor: a manual run on a no-owner
+	// install fails with db.ErrNoOwner (OWNER-02), with no model call.
 	run, err := r.RunNow(context.Background(), "morning-brief", automations.BuiltinInput{Only: []string{"brief.compose"}})
 	require.NoError(t, err)
-	assert.Equal(t, db.RunSucceeded, run.Status, run.Error)
+	assert.Equal(t, db.RunFailed, run.Status)
+	assert.Contains(t, run.Error, db.ErrNoOwner.Error())
 	assert.Zero(t, gen.CallCount())
+}
+
+// TestWireBuiltins_LogsAnUnusedOwnerCopy: an owner copy that is not a
+// regular file is not used, and the daemon's start says so.
+func TestWireBuiltins_LogsAnUnusedOwnerCopy(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	cfg := &config.Config{ActiveWorkspace: "acme", Briefing: config.BriefingConfig{Enabled: true}}
+	require.NoError(t, os.MkdirAll(builtin.OwnerCopyPath(cfg.WorkspaceDir(), "morning-brief"), 0o755)) // a directory
+	database := db.OpenTestDB(t)
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	d := daemon.New(cfg)
+	d.SetLogger(logger)
+	d.SetDB(database)
+
+	wireBuiltins(d, cfg, database, &automationstest.FakeGenerator{}, logger)
+	assert.Contains(t, buf.String(), "built-in morning-brief: the edited copy is not a regular file; using the built-in")
 }

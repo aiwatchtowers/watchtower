@@ -299,23 +299,81 @@ func TestMorningBrief_InterruptedRunDoesNotBlockNextCycle(t *testing.T) {
 
 func TestMorningBrief_LegacyPathWhenNotActive(t *testing.T) {
 	f := newMBFixture(t, nil)
-	// The legacy phases read the wall clock: a digest for today too (a fresh
-	// install does not wait for the hour).
-	now := time.Now()
-	_, err := f.db.UpsertDigest(db.Digest{
-		ChannelID: "C2", Type: "channel",
-		PeriodFrom: float64(now.AddDate(0, 0, -1).Unix()), PeriodTo: float64(now.AddDate(0, 0, 1).Unix()),
-		Summary: "more discussion", Topics: `[]`, Decisions: `[]`, ActionItems: `[]`, MessageCount: 5,
-	})
-	require.NoError(t, err)
 	f.d.builtinActive[morningBriefID] = false
-	f.d.phaseMorningBrief(context.Background(), now)
+	f.cycle(mbAt(10, 0))
 
 	assertNoAutomationRuns(t, f.db)
 	assert.Equal(t, 1, countRows(t, f.db, `SELECT COUNT(*) FROM pipeline_runs WHERE pipeline = 'briefing'`))
 	assert.Equal(t, 1, countRows(t, f.db, `SELECT COUNT(*) FROM pipeline_runs WHERE pipeline = 'day_plan'`))
-	assert.Equal(t, 1, countRows(t, f.db, `SELECT COUNT(*) FROM briefings`))
-	assert.Equal(t, 1, countRows(t, f.db, `SELECT COUNT(*) FROM day_plans`))
+	assert.Equal(t, 1, countRows(t, f.db, `SELECT COUNT(*) FROM briefings WHERE date = '2026-10-22'`))
+	assert.Equal(t, 1, countRows(t, f.db, `SELECT COUNT(*) FROM day_plans WHERE plan_date = '2026-10-22'`))
+}
+
+// TestMorningBrief_NoDataBriefBacksOffAnHour: a sync brief that finds nothing
+// to summarize writes one run; the next cycles of the hour write none (the
+// plan is not due either); an hour later the brief is due again.
+func TestMorningBrief_NoDataBriefBacksOffAnHour(t *testing.T) {
+	f := newMBFixture(t, func(cfg *config.Config) { cfg.DayPlan.Enabled = false })
+	_, err := f.db.Exec(`DELETE FROM digests`)
+	require.NoError(t, err)
+
+	f.cycle(mbAt(10, 0))
+	runs := f.runs(t)
+	require.Len(t, runs, 1)
+	assert.Equal(t, db.RunSucceeded, runs[0].Status, runs[0].Error)
+	assert.Zero(t, f.gen.count(), "no data, no model call")
+
+	f.cycle(mbAt(10, 15))
+	f.cycle(mbAt(10, 45))
+	assert.Len(t, f.runs(t), 1, "within the hour a no-data brief is not due")
+
+	f.cycle(mbAt(11, 1))
+	assert.Len(t, f.runs(t), 2, "an hour later the brief is due again")
+	assert.Zero(t, f.d.briefingAttempts, "no data is not a failed attempt")
+}
+
+// TestMorningBrief_ManualRunChargesNoAttempt: a manual run (Run Now) that
+// fails is the owner's own run — it charges neither day's attempt budget.
+func TestMorningBrief_ManualRunChargesNoAttempt(t *testing.T) {
+	f := newMBFixture(t, nil)
+	f.gen.briefErr, f.gen.planErr = errors.New("boom"), errors.New("boom")
+
+	run, err := f.d.builtins.RunNow(context.Background(), morningBriefID, automations.BuiltinInput{Date: "2026-10-22"})
+	require.NoError(t, err)
+	assert.Equal(t, db.RunFailed, run.Status)
+	assert.Equal(t, 2, f.gen.count(), "both model calls were made")
+	assert.Zero(t, f.d.briefingAttempts)
+	assert.Zero(t, f.d.dayPlanAttempts)
+	assert.Equal(t, 1, countRows(t, f.db, `SELECT COUNT(*) FROM pipeline_runs WHERE pipeline = 'briefing'`))
+	assert.Equal(t, 1, countRows(t, f.db, `SELECT COUNT(*) FROM pipeline_runs WHERE pipeline = 'day_plan'`))
+}
+
+// TestMorningBrief_ManualRunWithoutOwnerFails pins OWNER-02 for a manual
+// run: no owner fails the run with db.ErrNoOwner's text, for the brief and
+// for the plan alike, with no model call and no budget.
+func TestMorningBrief_ManualRunWithoutOwnerFails(t *testing.T) {
+	for _, only := range []string{"brief.compose", "plan.compose"} {
+		t.Run(only, func(t *testing.T) {
+			cfg := &config.Config{
+				Digest:   config.DigestConfig{Enabled: true, Language: "English"},
+				Briefing: config.BriefingConfig{Enabled: true, Hour: 1},
+				DayPlan:  config.DayPlanConfig{Enabled: true},
+			}
+			d, database, _ := noOwnerDaemon(t, cfg)
+			gen := &mbGenerator{}
+			d.SetBriefingPipeline(briefing.New(database, cfg, gen, d.logger))
+			d.SetDayPlanPipeline(dayplan.New(database, cfg, gen, d.logger))
+			wireTestBuiltins(t, d, database, cfg, automations.RealClock{})
+
+			run, err := d.builtins.RunNow(context.Background(), morningBriefID, automations.BuiltinInput{Only: []string{only}})
+			require.NoError(t, err)
+			assert.Equal(t, db.RunFailed, run.Status)
+			assert.Contains(t, run.Error, db.ErrNoOwner.Error())
+			assert.Zero(t, gen.count())
+			assert.Zero(t, d.briefingAttempts)
+			assert.Zero(t, d.dayPlanAttempts)
+		})
+	}
 }
 
 func TestMorningBrief_ConflictPhaseStillEveryCycle(t *testing.T) {

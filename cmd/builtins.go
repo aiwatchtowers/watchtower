@@ -37,6 +37,9 @@ func wireBuiltins(d *daemon.Daemon, cfg *config.Config, database *db.DB, gen dig
 			logger.Printf("built-in %s: sync failed, its legacy phases run: %v", e.ID, err)
 			continue
 		}
+		if note := builtin.OwnerCopyNote(cfg.WorkspaceDir(), e.ID); note != "" {
+			logger.Printf("built-in %s: %s", e.ID, note)
+		}
 		active[e.ID] = true
 	}
 	// Task 8 seam: upgradeBuiltins(…) runs here, between the sync and

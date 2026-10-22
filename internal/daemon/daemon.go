@@ -145,18 +145,25 @@ type Daemon struct {
 	// stage-1 drain got to, so its retry starts there (backfillStreams).
 	// In memory only: a restart re-drains the chunk once. Touched only by
 	// the sequential history-backfill phase.
-	backfillResume             map[backfillResumeKey]time.Time
-	backfillCursor             int64 // the last history-backfill row a Step got to (Runner.Cursor); in memory only
-	nextStepPipe               *targets.Pipeline
-	customTracksPipe           *customtracks.Pipeline
-	reactionCmdPipe            *reactioncmd.Pipeline
-	calendarSyncers            []*calendar.Syncer
-	calDAVSyncers              []*caldav.Syncer
-	gmailSyncers               []mailSyncer
-	imapSyncers                []mailSyncer
-	jiraSyncers                []jiraAccountSyncer
-	externalSync               ExternalSyncRunner
-	dayPlanPipeline            DayPlanRunner
+	backfillResume   map[backfillResumeKey]time.Time
+	backfillCursor   int64 // the last history-backfill row a Step got to (Runner.Cursor); in memory only
+	nextStepPipe     *targets.Pipeline
+	customTracksPipe *customtracks.Pipeline
+	reactionCmdPipe  *reactioncmd.Pipeline
+	calendarSyncers  []*calendar.Syncer
+	calDAVSyncers    []*caldav.Syncer
+	gmailSyncers     []mailSyncer
+	imapSyncers      []mailSyncer
+	jiraSyncers      []jiraAccountSyncer
+	externalSync     ExternalSyncRunner
+	dayPlanPipeline  DayPlanRunner
+	// mbMu guards what the Morning brief's gate and primitives read and write
+	// (lastBriefing, the briefing/day-plan attempt counters, lastDayPlanDate,
+	// briefNoDataAt, mbOwner, mbNow): a primitive runs on the script's
+	// goroutine, which can outlive the slot when the executor abandons it.
+	mbMu                       gosync.Mutex
+	briefNoDataAt              time.Time       // when a sync brief last found no data (the no-data backoff)
+	builtinsSwept              bool            // sweepBuiltinRuns succeeded this process
 	builtins                   *builtin.Runner // the built-ins' slot runner (SetBuiltins); nil = legacy phases
 	builtinActive              map[string]bool // by built-in id: false = its producers run as legacy phases
 	mbOwner                    db.Owner        // phaseMorningBrief's owner for this cycle (day-plan gate)
@@ -194,6 +201,7 @@ type Daemon struct {
 	// noOwnerLoggedDay maps a phase to the UTC day its "no owner identity"
 	// skip line was last printed (logNoOwnerOnce).
 	noOwnerLoggedDay map[string]string
+	noOwnerMu        gosync.Mutex // guards noOwnerLoggedDay (a Morning brief primitive may log from the script's goroutine)
 
 	heartbeatErrLogged atomic.Bool // one-shot latch for sync_progress.json write failures
 	agentLogSkipLogged atomic.Bool // one-shot latch for the analytics phase's nil-agentlog.db skip line
@@ -2108,20 +2116,24 @@ func (d *Daemon) phaseCustomTrackScan(ctx context.Context) {
 }
 
 // phaseBriefing generates the daily briefing once per scheduled day.
-func (d *Daemon) phaseBriefing(ctx context.Context) {
+func (d *Daemon) phaseBriefing(ctx context.Context) { d.phaseBriefingAt(ctx, time.Now()) }
+
+// phaseBriefingAt is phaseBriefing at the cycle's clock now.
+func (d *Daemon) phaseBriefingAt(ctx context.Context, now time.Time) {
 	if !d.config.Briefing.Enabled {
 		return
 	}
-	if d.briefingPipe == nil || !d.shouldRunBriefing() || !d.briefingHasOwner(time.Now()) {
+	if d.briefingPipe == nil || !d.shouldRunBriefingAt(now) || !d.briefingHasOwner(now) {
 		return
 	}
+	today := now.Format("2006-01-02")
 	d.trackedPipelineRun("briefing", func() pipelineRunStats {
-		id, err := d.briefingPipe.Run(ctx)
+		id, err := d.briefingPipe.RunForDate(ctx, today)
 		if errors.Is(err, db.ErrNoOwner) {
 			// No owner is a benign skip: no budget, one line a day. The
 			// briefingHasOwner gate normally catches it before this run is
 			// tracked; this covers a daemon with no DB of its own.
-			d.logNoOwnerOnce(time.Now(), "briefing")
+			d.logNoOwnerOnce(now, "briefing")
 			err = nil
 		}
 		if err != nil {
@@ -2129,11 +2141,11 @@ func (d *Daemon) phaseBriefing(ctx context.Context) {
 			// point — RunForDate's benign skips (no owner, handled above;
 			// "no data yet", (0, nil)) never consume budget; only a real
 			// error does.
-			d.recordBriefingAttempt(time.Now().Format("2006-01-02"))
+			d.recordBriefingAttempt(today)
 			d.logger.Printf("briefing error: %v", err)
 		} else if id > 0 {
 			d.logger.Printf("generated briefing (id=%d)", id)
-			d.lastBriefing = time.Now()
+			d.lastBriefing = now
 			d.saveLastBriefing()
 		}
 		items := 0

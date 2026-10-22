@@ -52,17 +52,22 @@ func TestOwner02_DaemonDayPlanNoOwnerLoggedOncePerUTCDay(t *testing.T) {
 			fp := &fakeDayPlanRunner{}
 			d.SetDayPlanPipeline(fp)
 			day1 := time.Date(2026, 4, 23, 10, 0, 0, 0, time.UTC)
+			clock := automationstest.NewFakeClock(day1)
 			if active {
-				wireTestBuiltins(t, d, database, cfg, automationstest.NewFakeClock(day1))
+				wireTestBuiltins(t, d, database, cfg, clock)
+			}
+			cycle := func(now time.Time) {
+				clock.Set(now) // the runner's gate and the phase on one clock
+				d.phaseMorningBrief(context.Background(), now)
 			}
 			const line = "daemon: day_plan skipped: no owner identity (connect Slack, Google, Jira, Linear or an email account)"
 
 			for i := range 3 {
-				d.phaseMorningBrief(context.Background(), day1.Add(time.Duration(i)*time.Hour))
+				cycle(day1.Add(time.Duration(i) * time.Hour))
 			}
 			assert.Equal(t, 1, strings.Count(buf.String(), line), "three cycles on one UTC day log one line")
 
-			d.phaseMorningBrief(context.Background(), day1.AddDate(0, 0, 1))
+			cycle(day1.AddDate(0, 0, 1))
 			assert.Equal(t, 2, strings.Count(buf.String(), line), "the next UTC day logs one more")
 			assert.Equal(t, 0, fp.runCalls, "no owner never reaches Run")
 			assert.Equal(t, 0, d.dayPlanAttempts, "no owner consumes no budget")

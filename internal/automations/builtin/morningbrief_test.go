@@ -95,12 +95,12 @@ func TestMorningBriefPrimitives_PassesPromptDateFeedbackAndUsage(t *testing.T) {
 	b, p := &fakeBrief{id: 2, in: 100}, &fakePlan{plan: &db.DayPlan{ID: 3}}
 	var tracked []string
 	h := mbHooks(true, true)
-	h.TrackBrief = func(date string, run func() (int, error)) (int, error) {
-		tracked = append(tracked, "brief:"+date)
+	h.TrackBrief = func(trigger, date string, run func() (int, error)) (int, error) {
+		tracked = append(tracked, "brief:"+trigger+":"+date)
 		return run()
 	}
-	h.TrackPlan = func(date string, run func() (*db.DayPlan, error)) (*db.DayPlan, error) {
-		tracked = append(tracked, "plan:"+date)
+	h.TrackPlan = func(trigger, date string, run func() (*db.DayPlan, error)) (*db.DayPlan, error) {
+		tracked = append(tracked, "plan:"+trigger+":"+date)
 		return run()
 	}
 	prims := MorningBriefPrimitives(b, p, h)
@@ -128,7 +128,7 @@ func TestMorningBriefPrimitives_PassesPromptDateFeedbackAndUsage(t *testing.T) {
 	if res.Usage.InputTokens != 30 || res.Usage.OutputTokens != 4 {
 		t.Fatalf("plan usage: %+v", res.Usage)
 	}
-	if len(tracked) != 2 || tracked[0] != "brief:2026-10-22" || tracked[1] != "plan:2026-10-20" {
+	if len(tracked) != 2 || tracked[0] != "brief:sync:2026-10-22" || tracked[1] != "plan:manual:2026-10-20" {
 		t.Fatalf("tracked: %v", tracked)
 	}
 }

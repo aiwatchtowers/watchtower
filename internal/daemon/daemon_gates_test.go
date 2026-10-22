@@ -239,8 +239,14 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 				wireTestBuiltins(t, d, database, cfg, automations.RealClock{})
 			},
 			// The plan phase and the conflict phase both sit in the Morning
-			// brief slot (phaseMorningBrief), legacy and built-in.
-			run:   runMorningBriefBothWays,
+			// brief slot (phaseMorningBrief), legacy and built-in; the
+			// conflict phase is also driven directly with the resolved owner,
+			// so its own Enabled gate is what stops it.
+			run: func(d *Daemon) {
+				runMorningBriefBothWays(d)
+				now := time.Now()
+				d.runDayPlanConflictPhase(context.Background(), now, d.dayPlanOwner(now))
+			},
 			check: assertNoPipelineOrAutomationRuns,
 		},
 	}

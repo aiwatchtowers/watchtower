@@ -374,3 +374,28 @@ func TestMigration00150_KeepsRunsAndChildren(t *testing.T) {
 	assert.Equal(t, 0, countWhere(t, d, `SELECT COUNT(*) FROM automation_run_replay WHERE run_id = 2`),
 		"automation_runs_replay_cleanup fires after the rebuild")
 }
+
+// The owner-recipe executor's start sweep never ends a built-in's run (the
+// daemon sweeps those itself before its first slot, so a retried executor
+// sweep cannot end a live slot run); MarkInterruptedBuiltinRuns ends only
+// the built-ins' runs.
+func TestMarkInterrupted_BuiltinRunsSweptApart(t *testing.T) {
+	d := openTestDB(t)
+	owner := seedRunAutomation(t, d, "digest", 4)
+	builtin := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	ownerRun, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: owner, Trigger: TriggerManual})
+	slotRun, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: builtin, Trigger: TriggerSync})
+	mustClaimAutomationRun(t, d, ownerRun)
+	mustClaimAutomationRun(t, d, slotRun)
+
+	n, err := d.MarkInterruptedAutomationRuns(runTestNow)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	wantAutomationRun(t, d, ownerRun, RunFailed, ErrKindInterrupted)
+	wantAutomationRun(t, d, slotRun, RunRunning, "")
+
+	n, err = d.MarkInterruptedBuiltinRuns(runTestNow)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	wantAutomationRun(t, d, slotRun, RunFailed, ErrKindInterrupted)
+}
