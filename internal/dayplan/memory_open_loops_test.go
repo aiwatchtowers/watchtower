@@ -166,7 +166,7 @@ func TestBuildPrompt_GateOffMatchesSentinelSection(t *testing.T) {
 	in := minimalInputs()
 	in.MemoryOpenLoops = "(no memory open loops)"
 
-	got, _ := p.buildPrompt(in)
+	got, _ := p.buildPrompt(in, "")
 
 	assert.Contains(t, got, "MEMORY OPEN LOOPS")
 	assert.Contains(t, got, "(no memory open loops)")
@@ -181,7 +181,7 @@ func TestBuildPrompt_MemoryOpenLoopsRendered(t *testing.T) {
 	in := minimalInputs()
 	in.MemoryOpenLoops = "- Ship the release: cut the RC branch"
 
-	got, _ := p.buildPrompt(in)
+	got, _ := p.buildPrompt(in, "")
 
 	assert.Contains(t, got, "- Ship the release: cut the RC branch")
 	assert.NotContains(t, got, "%!")

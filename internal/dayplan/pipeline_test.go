@@ -429,3 +429,10 @@ func TestRun_AllItemsInvalidOnMeetingDayIsAFailedAttempt(t *testing.T) {
 		})
 	}
 }
+
+type capturingGen struct{ response, system string }
+
+func (m *capturingGen) Generate(_ context.Context, system, _, _ string) (string, *digest.Usage, string, error) {
+	m.system = system
+	return m.response, &digest.Usage{InputTokens: 10, OutputTokens: 5}, "s1", nil
+}

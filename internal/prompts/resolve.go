@@ -39,3 +39,22 @@ func WithRoleInstruction(role, tmpl string) string {
 	}
 	return tmpl
 }
+
+// DefaultForRole is the built-in template for id: the role-specific variant
+// Defaults[id+"_"+role] when one exists, else Defaults[id].
+func DefaultForRole(id, role string) string {
+	if role != "" {
+		if tmpl, ok := Defaults[id+"_"+role]; ok {
+			return tmpl
+		}
+	}
+	return Defaults[id]
+}
+
+// MovedToBuiltin lists the prompt ids whose text now belongs to a built-in
+// automation (id -> built-in automation id): the owner edits them there, the
+// prompt tuner leaves them alone and `prompts show` points to the new home.
+var MovedToBuiltin = map[string]string{
+	BriefingDaily:   "morning-brief",
+	DayPlanGenerate: "morning-brief",
+}

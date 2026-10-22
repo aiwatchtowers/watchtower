@@ -598,3 +598,85 @@ func TestFormatUserProfile_NoCustomContext_RendersRoleAndReports(t *testing.T) {
 	assert.Contains(t, got, `Reports: ["U20"]`)
 	assert.Equal(t, "", formatUserProfile(&db.UserProfile{}))
 }
+
+// overrideFixture is a database with an owner and one digest, so a run
+// reaches the generator.
+func overrideFixture(t *testing.T) *db.DB {
+	t.Helper()
+	database := testDB(t)
+	require.NoError(t, database.UpsertWorkspace(db.Workspace{ID: "T1", Name: "test", Domain: "test"}))
+	_, err := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, err)
+	require.NoError(t, database.UpsertUser(db.User{ID: "U001", Name: "alice", DisplayName: "Alice"}))
+	now := time.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day()-1, 0, 0, 0, 0, now.Location())
+	dayEnd := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
+	_, err = database.UpsertDigest(db.Digest{
+		ChannelID: "C1", Type: "channel",
+		PeriodFrom: float64(dayStart.Unix()), PeriodTo: float64(dayEnd.Unix()),
+		Summary: "Discussion about new feature release", Topics: `["release"]`,
+		Decisions: `[]`, ActionItems: `[]`, MessageCount: 15,
+	})
+	require.NoError(t, err)
+	return database
+}
+
+const emptyBriefingJSON = `{"attention":[],"your_day":[],"what_happened":[],"team_pulse":[],"coaching":[]}`
+
+func overrideTemplate(marker string, verbs int) string {
+	return marker + "\n" + strings.Repeat("%s\n", verbs)
+}
+
+func TestRunForDateWith_PromptOverrideReplacesStoredTemplate(t *testing.T) {
+	database := overrideFixture(t)
+	verbs := countVerbs(prompts.Defaults[prompts.BriefingDaily])
+	store := prompts.New(database, nil)
+	require.NoError(t, store.Seed())
+	require.NoError(t, store.Update(prompts.BriefingDaily, overrideTemplate("STORED-A", verbs), "test"))
+
+	gen := &capturingGenerator{response: emptyBriefingJSON}
+	pipe := New(database, testConfig(), gen, log.New(io.Discard, "", 0))
+	pipe.SetPromptStore(store)
+
+	id, err := pipe.RunForDateWith(context.Background(), time.Now().Format("2006-01-02"),
+		RunOptions{Prompt: overrideTemplate("OVERRIDE-B", verbs)})
+	require.NoError(t, err)
+	require.Greater(t, id, 0)
+	assert.Contains(t, gen.systemMsg, "OVERRIDE-B")
+	assert.NotContains(t, gen.systemMsg, "STORED-A")
+	assert.Empty(t, pipe.LastPromptNote())
+	// The role instruction (when the role has one) is prefixed to the override.
+	assert.Equal(t, 1, strings.Count(gen.systemMsg, "OVERRIDE-B"))
+}
+
+func TestComposeBrief_PlaceholderMismatchUsesDefault(t *testing.T) {
+	database := overrideFixture(t)
+	verbs := countVerbs(prompts.Defaults[prompts.BriefingDaily])
+	gen := &capturingGenerator{response: emptyBriefingJSON}
+	pipe := New(database, testConfig(), gen, log.New(io.Discard, "", 0))
+
+	id, err := pipe.RunForDateWith(context.Background(), time.Now().Format("2006-01-02"),
+		RunOptions{Prompt: overrideTemplate("OVERRIDE-B", verbs-1)})
+	require.NoError(t, err)
+	require.Greater(t, id, 0)
+	assert.NotContains(t, gen.systemMsg, "OVERRIDE-B")
+	assert.Contains(t, gen.systemMsg, "personalized daily briefing")
+	assert.NotEmpty(t, pipe.LastPromptNote())
+}
+
+func TestRunForDateWith_ExistingBriefingStillIdempotent(t *testing.T) {
+	database := overrideFixture(t)
+	verbs := countVerbs(prompts.Defaults[prompts.BriefingDaily])
+	gen := &capturingGenerator{response: emptyBriefingJSON}
+	pipe := New(database, testConfig(), gen, log.New(io.Discard, "", 0))
+	date := time.Now().Format("2006-01-02")
+	opts := RunOptions{Prompt: overrideTemplate("OVERRIDE-B", verbs)}
+
+	id1, err := pipe.RunForDateWith(context.Background(), date, opts)
+	require.NoError(t, err)
+	gen.systemMsg = ""
+	id2, err := pipe.RunForDateWith(context.Background(), date, opts)
+	require.NoError(t, err)
+	assert.Equal(t, id1, id2)
+	assert.Empty(t, gen.systemMsg, "the second run must not call the generator")
+}

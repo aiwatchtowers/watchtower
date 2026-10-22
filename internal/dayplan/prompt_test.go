@@ -1,6 +1,7 @@
 package dayplan
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -57,7 +58,7 @@ func TestBuildPrompt_AlwaysHasLanguageDirective(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := newPromptPipeline(tc.lang)
-			got, _ := p.buildPrompt(minimalInputs())
+			got, _ := p.buildPrompt(minimalInputs(), "")
 			if !prompts.HasDirective(got) {
 				t.Fatalf("system prompt missing language directive\n%s", got)
 			}
@@ -92,4 +93,37 @@ func TestFormatCalendarSection_RendersLocalTimeConsistentWithValidation(t *testi
 
 	assert.Contains(t, got, "14:00", "should render in the same local zone used for now/validation")
 	assert.NotContains(t, got, "11:00", "must not leak the raw UTC wall-clock time")
+}
+
+func dayPlanOverride(marker string, verbs int) string {
+	return marker + "\n" + strings.Repeat("%s\n", verbs)
+}
+
+func TestDayPlanRun_PromptOverride(t *testing.T) {
+	p := newPromptPipeline("English")
+	verbs := countVerbs(prompts.Defaults[prompts.DayPlanGenerate])
+	got, ver := p.buildPrompt(minimalInputs(), dayPlanOverride("OVERRIDE-B", verbs))
+	assert.Contains(t, got, "OVERRIDE-B")
+	assert.Equal(t, "default", ver)
+	assert.Empty(t, p.LastPromptNote())
+}
+
+func TestDayPlanRun_PromptPlaceholderMismatchUsesDefault(t *testing.T) {
+	p := newPromptPipeline("English")
+	verbs := countVerbs(prompts.Defaults[prompts.DayPlanGenerate])
+	got, _ := p.buildPrompt(minimalInputs(), dayPlanOverride("OVERRIDE-B", verbs-1))
+	assert.NotContains(t, got, "OVERRIDE-B")
+	assert.Contains(t, got, "personal day-planner")
+	assert.NotEmpty(t, p.LastPromptNote())
+}
+
+func TestDayPlanRun_OptionsPromptReachesGenerator(t *testing.T) {
+	d := gatherTestDB(t)
+	gen := &capturingGen{response: validResponse()}
+	p := newTestPipeline(d, gen)
+	verbs := countVerbs(prompts.Defaults[prompts.DayPlanGenerate])
+	_, err := p.Run(context.Background(), RunOptions{UserID: "U1", Date: time.Now().Format("2006-01-02"),
+		Prompt: dayPlanOverride("OVERRIDE-B", verbs)})
+	assert.NoError(t, err)
+	assert.Contains(t, gen.system, "OVERRIDE-B")
 }

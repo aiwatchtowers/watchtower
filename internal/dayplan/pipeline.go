@@ -22,6 +22,9 @@ type Pipeline struct {
 	logger      *log.Logger
 	promptStore *prompts.Store
 
+	// lastPromptNote: "" or the fallback sentence of the last Run.
+	lastPromptNote string
+
 	// Accumulated usage from the last Run call.
 	lastInputTokens    int
 	lastOutputTokens   int
@@ -115,7 +118,7 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 		MemoryOpenLoops:   p.gatherMemoryOpenLoops(),
 	}
 
-	systemPrompt, promptVer := p.buildPrompt(inputs)
+	systemPrompt, promptVer := p.buildPrompt(inputs, opts.Prompt)
 
 	// Reset per-Run accumulators before the AI call so short-circuited paths
 	// (missing enabled flag, existing plan) report zero tokens.
@@ -259,3 +262,7 @@ func normalizePriority(s string) string {
 		return "medium"
 	}
 }
+
+// LastPromptNote is "" or the sentence saying the last Run used the built-in
+// template because the override had the wrong placeholder count.
+func (p *Pipeline) LastPromptNote() string { return p.lastPromptNote }
