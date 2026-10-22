@@ -109,7 +109,8 @@ package final class DaemonManager {
         syncProgress = Self.readSyncProgress()
         let previous = lastSyncTime
         lastSyncTime = Self.readLastSyncTime() ?? lastSyncTime
-        if let previous, let latest = lastSyncTime, latest > previous { onSyncFinished?() }
+        // A first sync (no previous time) counts too; at most one extra refresh.
+        if let latest = lastSyncTime, previous.map({ latest > $0 }) ?? true { onSyncFinished?() }
     }
 
     /// When the active workspace's last sync finished: `last_sync.json` is
