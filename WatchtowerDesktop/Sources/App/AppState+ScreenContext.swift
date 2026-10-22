@@ -16,7 +16,7 @@ extension AppState {
         let context = emptyStateContext
         var status: String?
         if let feature = EmptyStateCopyTable.copy(
-            for: destination.rawValue, briefingHour: context.briefingHour, dayPlanHour: context.dayPlanHour
+            for: destination.rawValue, briefingHour: context.briefingHour
         )?.feature, let readiness = context.readiness(feature), readiness != .ready {
             status = FeatureReadiness.line(readiness)
         }

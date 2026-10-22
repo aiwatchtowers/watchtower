@@ -31,8 +31,9 @@ import Foundation
 package final class AutomationFailureWatch {
     nonisolated package static let failedStatuses: Set<AutomationRunStatus> = [.failed, .budgetExceeded, .timedOut, .expired]
     /// Runs the daemon starts later, nobody watching: an Inbox reply runs
-    /// on a later daemon cycle, like an event run.
-    nonisolated package static let backgroundTriggers: Set<String> = ["schedule", "catch_up", "event", "reply"]
+    /// on a later daemon cycle, like an event run, and a built-in's `sync`
+    /// run (twin: Go `db.TriggerSync`) at its slot in the cycle.
+    nonisolated package static let backgroundTriggers: Set<String> = ["schedule", "catch_up", "event", "reply", "sync"]
     nonisolated package static let noticeInterval: TimeInterval = 24 * 60 * 60
     /// More failure notices than this in one pass post one summary instead.
     nonisolated package static let coalesceAbove = 2

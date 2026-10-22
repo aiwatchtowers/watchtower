@@ -121,7 +121,6 @@ struct ConfigServiceTests {
         let path = makeTempConfig("active_workspace: x\n")
         let svc = ConfigService(configPath: path)
         #expect(svc.dayPlanEnabled == true)
-        #expect(svc.dayPlanHour == 8)
         #expect(svc.workingHoursStart == "09:00")
         #expect(svc.workingHoursEnd == "19:00")
         #expect(svc.maxTimeblocks == 3)

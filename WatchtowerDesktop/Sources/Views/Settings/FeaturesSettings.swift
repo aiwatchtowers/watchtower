@@ -135,13 +135,6 @@ struct FeaturesSettings: View {
 
     private var dayPlanSection: some View {
         Section("Day Plan") {
-            Picker("Generate at hour", selection: $config.dayPlanHour) {
-                ForEach(5..<13, id: \.self) { h in
-                    Text(String(format: "%02d:00", h)).tag(h)
-                }
-            }
-            .help("Hour of day when the day plan should be generated (5-12)")
-
             HStack {
                 Text("Working hours:")
                 TextField(

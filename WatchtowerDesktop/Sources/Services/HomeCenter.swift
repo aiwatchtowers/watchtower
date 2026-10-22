@@ -353,7 +353,6 @@ final class HomeCenter {
             Inputs(
                 readiness: readiness.readiness,
                 briefingHour: readiness.briefingHour,
-                dayPlanHour: readiness.dayPlanHour,
                 ownerKnown: environment.ownerKnown,
                 ownerPendingSource: environment.ownerPendingSource,
                 firstSync: environment.firstSync,
@@ -382,7 +381,6 @@ final class HomeCenter {
     private struct Inputs {
         let readiness: [ReadinessFeature: Readiness]
         let briefingHour: Int
-        let dayPlanHour: Int
         let ownerKnown: Bool
         let ownerPendingSource: String?
         let firstSync: FirstSyncLine?
@@ -398,7 +396,7 @@ final class HomeCenter {
         let step = GettingReadyPolicy.step(
             readiness: inputs.readiness, ownerKnown: inputs.ownerKnown, ownerPendingSource: inputs.ownerPendingSource,
             memory: memory, sawUnready: sawUnready,
-            now: now, briefingHour: inputs.briefingHour, dayPlanHour: inputs.dayPlanHour)
+            now: now, briefingHour: inputs.briefingHour)
         sawUnready = step.sawUnready
         if step.memory != memory { store.memory = step.memory }
         let links = HomeLinksBuilder.links(linksData, allowed: inputs.links, now: now, calendar: calendar)

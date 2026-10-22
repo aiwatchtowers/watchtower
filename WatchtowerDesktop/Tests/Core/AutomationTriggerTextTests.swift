@@ -1,4 +1,6 @@
 import XCTest
+import GRDB
+import WatchtowerTestSupport
 @testable import WatchtowerCore
 
 final class AutomationTriggerTextTests: XCTestCase {
@@ -28,5 +30,59 @@ final class AutomationTriggerTextTests: XCTestCase {
         for c in cases {
             XCTAssertEqual(AutomationTriggerText.describe(kind: c.kind, specJSON: c.spec), c.want, "\(c.kind) \(c.spec)")
         }
+    }
+
+    // MARK: - Built-ins
+
+    /// Twin of Go `db.TriggerSync`: a built-in's run at its slot in the sync cycle.
+    func testSyncTriggerDecodesAndLabels() throws {
+        let queue = try TestDatabase.create()
+        let (automation, run) = try queue.write { db in
+            try db.execute(sql: """
+                INSERT INTO automations (slug, scope, path, name, trigger_kind, trigger_spec, origin, builtin_id,
+                    overridden, builtin_base_hash)
+                VALUES ('morning-brief', 'personal', 'builtin:morning-brief', 'Morning brief', 'sync',
+                    '{"sync":"morning_brief"}', 'builtin', 'morning-brief', 1, 'base')
+                """)
+            let id = db.lastInsertedRowID
+            try TestDatabase.insertAutomationRun(db, automationID: id, trigger: "sync")
+            return (try XCTUnwrap(Automation.fetchOne(db, sql: "SELECT * FROM automations WHERE id = ?",
+                                                      arguments: [id])),
+                    try XCTUnwrap(AutomationRun.fetchOne(db, sql: "SELECT * FROM automation_runs")))
+        }
+        XCTAssertTrue(automation.isBuiltin)
+        XCTAssertEqual(automation.origin, .builtin)
+        XCTAssertEqual(automation.builtinID, "morning-brief")
+        XCTAssertTrue(automation.overridden)
+        XCTAssertEqual(automation.builtinBaseHash, "base")
+        XCTAssertEqual(run.trigger, "sync")
+        XCTAssertEqual(AutomationCardPresentation.triggerLabel(run), "At its slot in the sync cycle")
+        let words = "Every morning, at the first sync after its time"
+        XCTAssertEqual(AutomationTriggerText.describe(kind: "sync", specJSON: #"{"sync":"morning_brief"}"#), words)
+        XCTAssertEqual(AutomationTriggerText.sentence(kind: "sync", specJSON: #"{"sync":"morning_brief"}"#), words)
+    }
+
+    func testOwnerRowDecodesAsOwner() throws {
+        let queue = try TestDatabase.create()
+        let automation = try queue.write { db in
+            let id = try TestDatabase.insertAutomation(db)
+            return try XCTUnwrap(Automation.fetchOne(db, sql: "SELECT * FROM automations WHERE id = ?",
+                                                     arguments: [id]))
+        }
+        XCTAssertFalse(automation.isBuiltin)
+        XCTAssertNil(automation.builtinID)
+        XCTAssertFalse(automation.overridden)
+        XCTAssertEqual(automation.builtinBaseHash, "")
+    }
+
+    func testSyncIsABackgroundTrigger() {
+        XCTAssertTrue(AutomationFailureWatch.backgroundTriggers.contains("sync"))
+    }
+
+    /// Twin of Go `automations.BuiltinPrimitiveNames`.
+    func testBuiltinPermissionLines() {
+        XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:brief.compose"), "Write your daily brief")
+        XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:plan.compose"), "Plan your day")
+        XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:x.y"), "builtin:x.y", "unknown stays as written")
     }
 }
