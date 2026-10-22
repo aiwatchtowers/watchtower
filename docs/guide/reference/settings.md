@@ -22,10 +22,9 @@ A list of services (Slack, Google, Email, Calendar, Jira, Linear, Quick Connecti
 ## Features
 
 - The list turns each feature on or off, asking first if others depend on the one turned off. **Keep ML engines in memory** keeps the speech models loaded. **Save** restarts the background sync once. See [Features on and off](../concepts/features-on-and-off.md).
+- **Briefing and Day Plan** have no switch here: "These now live in Automations → Built in", and **Open Automations** leads to the **Morning brief** card. See [Built-in automations](../features/automations-built-in.md).
 - Tuning sections appear only while their feature is on:
   - **Digest**: minimum messages.
-  - **Briefing**: **Briefing Hour**. See [Briefings](../features/briefings.md).
-  - **Day Plan**: **Generate at hour**, **Working hours:**, **Max timeblocks**, and **Backlog min** / **Backlog max** (saved, unused by the plan today). See [Day plan](../features/day-plan.md).
   - **Ideas**: **Mining interval (hours)**, 1–48. See [Ideas and decisions](../features/ideas-and-decisions.md).
 - Notifications:
   - One **Notifications** section holds every switch: **Pause notifications**, **Decision notifications**, **Briefing notifications**, **Workbench notifications**, **Claude plan limits**, **Notify about unknown voices** and **Meeting reminders** with **Remind before meeting** (0–60 minutes; 0 is **Off**).

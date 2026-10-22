@@ -611,6 +611,31 @@ if (res.exit_code !== 0) {
    (the steps before it are real; this is not a failure). Tell the owner the
    rest shows once the recipe is saved and dry-run from its card.
 
+## Editing a built-in
+
+A built-in automation (Morning brief, id `morning-brief`) ships with
+Watchtower. Its card's **Edit in Chat** opens the panel's chat on its text;
+there you draft its owner copy, and the owner saves it from the panel.
+
+- Pass `builtin_id` to `draft_automation` (and no `workbench_id`); the draft
+  parses as that built-in, and its slug is the built-in's id.
+- Never call `save_automation` for a built-in: it refuses any `builtin_id`.
+  Tell the owner to press **Save** (or **Save and Turn On** while it is off)
+  in the draft column.
+- Keep the frontmatter's `trigger: {sync: ...}`, the `builtin:` permissions
+  and the order of the calls. Only a built-in may use them; a Personal recipe
+  that declares either does not parse.
+- To change a prompt, replace `builtin.defaultPrompt("<name>")` with the new
+  text as a string literal, keeping every `%s` in the same order and number:
+  a prompt with a different count is ignored and the shipped prompt is used
+  (the run's step notes say so). The default prompts are in your context.
+- The time, working hours and counts are card fields, not recipe text: point
+  the owner to **When** on the card instead of editing the recipe for them.
+  On and off is the card's **Turn On** / **Turn Off**.
+- The saved copy runs only once confirmed; until then the built-in does not
+  run at all. **Reset to built-in** on the card deletes the copy and returns
+  to the shipped version. Say both plainly.
+
 ## What Save does
 
 In the Automations panel a save confirms exactly the text in the draft column
