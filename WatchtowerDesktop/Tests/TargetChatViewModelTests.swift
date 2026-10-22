@@ -802,10 +802,14 @@ final class TargetChatViewModelTests: XCTestCase {
         defer { TestDatabase.cleanup(path: path) }
         let target = try makeTarget(manager, intent: "x")
         let vm = TargetsViewModel(dbManager: manager)
+        // The first turn stays open until released: a turn that streamed to
+        // its end before the approval would take the follow-up itself.
         let mock = MockClaudeService(eventSequence: [
             [.sessionID("s1"), .text("first reply"), .done],
             [.text("second reply"), .done]
-        ])
+        ], thenAwaitsRelease: true)
+        // A failed assertion before the release must not leave the stream parked.
+        defer { mock.release() }
         let chat = try makeChat(target: target, vm: vm, manager: manager,
                                 aiService: mock)
 
@@ -828,7 +832,10 @@ final class TargetChatViewModelTests: XCTestCase {
             try manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: target.id) }?.status
         }
         XCTAssertEqual(try storedStatus(), "done")
+        XCTAssertTrue(chat.isStreaming, "the first turn is still running")
+        XCTAssertEqual(mock.prompts.count, 1, "the follow-up waits for the running turn")
 
+        mock.release()
         try await waitForStreamEnd(chat)
 
         // The queued follow-up went out as its own turn after the first finished.

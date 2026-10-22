@@ -2210,3 +2210,13 @@ Entry format:
 - weak-dimension: 7 — every gate relaxation shipped with tests of the conditions kept, none of the conditions silently dropped; the sweep's keep-set has no launch-order test.
 - rule-gap (candidate, dim 6/7): *a variant of a safety gate that drops one hold ships a table test over every state kind (incl. not-started and stale) asserting the variant differs from the original only in the dropped hold.*
 - outcome: TBD
+
+## 2026-10-22 — fix/895-swift-shard-flake (board #895: three Swift CI flakes fixed in the tests (TargetChatViewModel first turn held open by a new `MockClaudeService(eventSequence:thenAwaitsRelease:)`, ReviewChangesModel awaits the open's cached overview read before Deep, WorkbenchCodeIndex latency judged per query by its fastest `measure` run) plus an end-of-run failure summary in `scripts/swift-test-sharded.sh`; 5 files +65/−5; panel: prosecutor (4) + codex (0, second attempt) + all 3 specialists; judge verified against 6a4ede13b by reading the diff, the engine's `consume` loop and the script under `set -euo pipefail`, no runs; judge synthesis, round 1) — verdict: approve
+
+- contested (flake A): does parking the mock's stream after `.done` really keep the turn open? Yes: `EmbeddedChatEngine.consume` ends the turn only when the stream finishes (`endRunningTurn` after the `for try await` loop) and never on the `.done` event. **To judge a "hold the stream open" flake fix, read what ends the turn in the consumer (stream end or a terminal event) before trusting the gate.** [7]
+- contested (silent-failure HIGH-1/HIGH-2, held minor): the gaps in the summary only cost diagnostics. The function cannot change the exit status: every fallible command in it carries `|| true`, and `exit "$status"` still runs after it. The lane header keeps the exit code, so a signal can still be read from it. [9]
+- false-positive (downgraded): the silent-failure lane's HIGH ratings on a diagnostics-only summary. Severity follows the effect on pass/fail and on merging, not on how complete the log is. [9]
+- miss: none. Codex ran the summary on synthetic logs, which was the only executed check of the script.
+- weak-dimension: 7. A new shell function shipped without a `scripts/tests/test-*.sh` case even though `make test-scripts` exists. This is the second time (#876) workflow and CI shell has landed untested.
+- rule-gap (candidate, dim 7): *new or changed logic in a `scripts/*.sh` used by CI (parsing, branching on exit codes) comes with a case in `scripts/tests/` that runs it on fixture input.*
+- outcome: TBD
