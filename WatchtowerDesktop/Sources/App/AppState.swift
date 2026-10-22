@@ -505,6 +505,12 @@ final class AppState {
             self?.daemonStartFailure = nil
             self?.clearRestartFailedTurnOnErrors()
         }
+        // The Inbox badge counts the daemon's messages and briefing, which the
+        // counts VM's observation never sees: a finished sync re-counts them
+        // while the Inbox (whose own refresh does it) is off screen.
+        daemonManager.onSyncFinished = { [weak self] in
+            Task { await self?.sidebarCountsViewModel?.refresh() }
+        }
     }
 
     /// Ensures chat ViewModels exist (lazy init, called from ChatView).
