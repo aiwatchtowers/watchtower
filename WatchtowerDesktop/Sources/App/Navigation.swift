@@ -236,8 +236,8 @@ struct MainNavigationView: View {
         .onAppear { applyFeatureFallback() }
         .onChange(of: appState.featureVisibility.disabledFeatureIDs) { _, _ in applyFeatureFallback() }
         .onChange(of: appState.featureVisibility.connectedSources) { _, _ in applyFeatureFallback() }
-        // Direct writes (deep links, Day Plan, the action strip, Catch-Up
-        // cards) must not land on a hidden tab either.
+        // Direct writes (deep links, the Inbox, Catch-Up cards) must not
+        // land on a hidden tab either.
         .onChange(of: appState.selectedDestination) { _, new in
             applyFeatureFallback()
             // The AI Chat tab shows the same thread; one view of it at a time.
@@ -322,38 +322,12 @@ struct MainNavigationView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        case .briefings:
-            if let vm = appState.briefingViewModel {
-                BriefingsListView(vm: vm)
-            } else {
-                Text("Briefings unavailable")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        case .dayPlan:
-            if let vm = appState.dayPlanViewModel {
-                DayPlanView(vm: vm)
-            } else {
-                Text("Day Plan unavailable")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
         case .inbox:
             ActionStripView()
-        case .ideas:
-            if let vm = appState.ideasViewModel {
-                IdeasView(vm: vm)
-            } else {
-                Text("Ideas unavailable")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
         case .calendar:
             CalendarEventsView()
         case .targets:
             TargetsListView()
-        case .tracks:
-            TracksListView()
         case .workbench:
             if let vm = appState.workbenchesViewModel {
                 WorkbenchesView(vm: vm)
@@ -370,10 +344,7 @@ struct MainNavigationView: View {
                     emptyStateContext: appState.emptyStateContext,
                     editor: appState.automationEditorCenter,
                     hooks: automationHooks(vm),
-                    tracksVisible: SidebarDestination.tracks.isVisible(
-                        disabledFeatures: appState.featureVisibility.disabledFeatureIDs,
-                        connected: appState.featureVisibility.connectedSources
-                    )
+                    disabledFeatures: appState.featureVisibility.disabledFeatureIDs
                 )
             } else {
                 Text("Automations unavailable")

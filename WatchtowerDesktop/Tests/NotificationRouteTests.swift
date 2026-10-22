@@ -3,6 +3,7 @@ import UserNotifications
 import XCTest
 @testable import WatchtowerDesktop
 import WatchtowerCore
+import WatchtowerTestSupport
 
 /// `NotificationDelegate.route` — the notification-response dispatch table, and the
 /// `forwarded` gate that downgrades a response handed over by a deferring duplicate to
@@ -254,8 +255,9 @@ final class NotificationRouteTests: XCTestCase {
     /// destination — the gate touches only the action-bearing branches.
     func testNavigationTypesRouteToTheirTab() async {
         let cases: [(type: String, destination: SidebarDestination)] = [
-            ("track", .tracks),
-            ("track_update", .tracks),
+            ("track", .inbox),
+            ("track_update", .inbox),
+            ("briefing", .inbox),
             ("task_overdue", .targets),
             ("target_extract", .targets),
             ("daily_summary", .digests),
@@ -292,6 +294,43 @@ final class NotificationRouteTests: XCTestCase {
                     )
                 }
             }
+        }
+    }
+
+    /// The track and briefing pushes open Inbox cards (C1): `track` the
+    /// Tracks filter, `track_update` with a `trackId` that track's card (also
+    /// after the forwarding round trip), `briefing` today's day card.
+    func testTrackAndBriefingPushesOpenInboxCards() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let savedFilter = UserDefaults.standard.object(forKey: "inbox.filter")
+        defer { UserDefaults.standard.set(savedFilter, forKey: "inbox.filter") }
+        let today = AppState.inboxToday()
+        let forwardedUpdate = try XCTUnwrap(
+            NotificationForwarding.encode(actionID: UNNotificationDefaultActionIdentifier,
+                                          userInfo: ["type": "track_update", "trackId": 7])
+                .flatMap(NotificationForwarding.decode)
+        ).userInfo
+        let cases: [([AnyHashable: Any], InboxFilter, InboxSelection?)] = [
+            (["type": "track"], .tracks, nil),
+            (["type": "track_update", "trackId": 7], .tracks, .track(7)),
+            (forwardedUpdate, .tracks, .track(7)),
+            (["type": "briefing"], .day, .day(today))
+        ]
+        for (userInfo, filter, selection) in cases {
+            UserDefaults.standard.removeObject(forKey: "inbox.filter")
+            let appState = AppState.isolated()
+            appState.initActionStrip(dbPool: pool)
+            await NotificationDelegate.route(
+                actionID: UNNotificationDefaultActionIdentifier, userInfo: userInfo, appState: appState, forwarded: true)
+            let vm = try XCTUnwrap(appState.actionStripViewModel)
+            let deadline = Date().addingTimeInterval(5)
+            while Date() < deadline, vm.filter != filter || vm.selection != selection {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            XCTAssertEqual(appState.selectedDestination, .inbox, "\(userInfo)")
+            XCTAssertEqual(vm.filter, filter, "\(userInfo)")
+            XCTAssertEqual(vm.selection, selection, "\(userInfo)")
         }
     }
 
@@ -466,7 +505,7 @@ final class NotificationRouteTests: XCTestCase {
             NotificationForwarding.routedKeys,
             [
                 "type", NotificationForwarding.digestIDKey, NotificationForwarding.ideaIDKey,
-                NotificationForwarding.transcriptIDKey, NotificationForwarding.workbenchIDKey,
+                NotificationForwarding.trackIDKey, NotificationForwarding.transcriptIDKey, NotificationForwarding.workbenchIDKey,
                 NotificationForwarding.workbenchSubjectIDKey, NotificationForwarding.workbenchPaneKey,
                 NotificationForwarding.workbenchAskIDKey, NotificationForwarding.automationIDKey,
                 NotificationForwarding.runIDKey
@@ -474,6 +513,7 @@ final class NotificationRouteTests: XCTestCase {
         )
         XCTAssertEqual(NotificationForwarding.digestIDKey, "digestId")
         XCTAssertEqual(NotificationForwarding.ideaIDKey, "ideaId")
+        XCTAssertEqual(NotificationForwarding.trackIDKey, "trackId")
         XCTAssertEqual(NotificationForwarding.transcriptIDKey, "transcriptID")
         XCTAssertEqual(NotificationForwarding.workbenchIDKey, "projectId")
         XCTAssertEqual(NotificationForwarding.workbenchSubjectIDKey, "subjectId")

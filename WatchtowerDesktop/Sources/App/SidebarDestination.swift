@@ -1,17 +1,17 @@
 import SwiftUI
 import WatchtowerCore
 
+/// `briefings`, `dayPlan`, `ideas` and `tracks` were destinations until the
+/// one Inbox (C1). A stored raw value of theirs decodes to nil (a
+/// `sidebar.hiddenItems` entry is ignored), and a `watchtower-nav://` link
+/// naming one opens the matching Inbox filter (`InboxRoute.aliasHosts`).
 enum SidebarDestination: String, CaseIterable, Identifiable {
     case home
     case chat
     case catchUp
-    case briefings
-    case dayPlan
     case inbox
-    case ideas
     case calendar
     case targets
-    case tracks
     // The raw value is persisted (`sidebar.hiddenItems`, the tab id), so the
     // Workbench rename keeps its bytes (spec 2026-10-02 A9).
     case workbench = "projects"
@@ -36,13 +36,9 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .home: "Home"
         case .chat: "AI Chat"
         case .catchUp: "Catch Up"
-        case .briefings: "Briefings"
-        case .dayPlan: "Day Plan"
         case .inbox: "Inbox"
-        case .ideas: "Ideas"
         case .calendar: "Calendar"
         case .targets: "Targets"
-        case .tracks: "Tracks"
         case .workbench: "Workbench"
         case .automations: "Automations"
         case .digests: "Digests"
@@ -65,13 +61,9 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
         case .home: "house"
         case .chat: "bubble.left.and.bubble.right"
         case .catchUp: "tray.and.arrow.down"
-        case .briefings: "sun.max"
-        case .dayPlan: "calendar.day.timeline.left"
         case .inbox: "tray"
-        case .ideas: "lightbulb"
         case .calendar: "calendar"
         case .targets: "scope"
-        case .tracks: "binoculars"
         case .workbench: "folder.badge.gearshape"
         case .automations: "gearshape.2"
         case .digests: "doc.text.magnifyingglass"
@@ -93,9 +85,10 @@ enum SidebarDestination: String, CaseIterable, Identifiable {
     /// first. Automations follows Workbench (hidden with its feature off).
     /// Calendar sits right under them (board #206; it was in FOCUS before): a root
     /// item has no hide menu, so a `sidebar.hiddenItems` entry left from
-    /// hiding it in FOCUS is ignored and the tab shows again.
+    /// hiding it in FOCUS is ignored and the tab shows again. Tracks left the
+    /// root with the one Inbox (C1): its cards are the Inbox's Tracks filter.
     static var rootItems: [Self] {
-        [.home, .targets, .tracks, .workbench, .automations, .calendar]
+        [.home, .targets, .workbench, .automations, .calendar]
     }
 
     /// Always-visible items rendered below the collapsible sections, as the last
@@ -121,11 +114,7 @@ extension SidebarDestination {
         switch self {
         case .catchUp: ["secretary-inbox", "slack-digests", "stream-digests"]
         case .digests: ["slack-digests", "stream-digests", "ideas"]
-        case .ideas: ["ideas"]
         case .memory: ["memory"]
-        case .briefings: ["briefing"]
-        case .dayPlan: ["day-plan"]
-        case .tracks: ["tracks"]
         case .people: ["people-cards"]
         default: nil
         }

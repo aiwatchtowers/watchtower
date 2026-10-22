@@ -339,22 +339,3 @@ struct BriefingSectionsView: View {
         JiraKeyLinkBadgesView(text: text, siteURL: jiraSiteURL, isConnected: jiraConnected)
     }
 }
-
-/// The Briefings screen's detail, kept as a thin wrapper over
-/// `BriefingSectionsView` until that screen leaves (C1 Task 11).
-struct BriefingDetailView: View {
-    let briefing: Briefing
-    @Environment(AppState.self) private var appState
-
-    var body: some View {
-        ScrollView {
-            BriefingSectionsView(
-                briefing: briefing,
-                onOpen: { appState.openBriefingLink($0) },
-                onMakeTask: { await appState.makeTask(from: $0, briefing: briefing) }
-            )
-            .padding(Spacing.page)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-}

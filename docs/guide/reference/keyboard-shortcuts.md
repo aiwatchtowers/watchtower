@@ -41,10 +41,12 @@ Every key equivalent in the app, by area. **Help → Keyboard Shortcuts** shows 
 | **⌘Return / ⌃Return** | Send a comment, or save the text you are editing (target comments) |
 | **Esc** | Cancel editing |
 
-### Ideas
+### Inbox
 
 | Keys | Action |
 |---|---|
+| **↑ / ↓** | Move between cards |
+| **Esc** | Close the card |
 | **⌘Return** | Create (new idea) |
 
 ### Workbench

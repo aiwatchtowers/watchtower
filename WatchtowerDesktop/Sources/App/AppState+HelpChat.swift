@@ -64,21 +64,30 @@ extension AppState {
 
     /// The sidebar destinations shown right now (feature and source rules):
     /// the only screens a `watchtower-nav://` link in a chat answer may open.
+    /// While the Inbox shows, the old Briefings, Day Plan, Tracks and Ideas
+    /// names count too (`InboxRoute.aliasHosts`): they open its filters.
     var visibleHelpScreenIDs: Set<String> {
         let disabled = featureVisibility.disabledFeatureIDs
         let connected = featureVisibility.connectedSources
-        return Set(SidebarDestination.allCases
-            .filter { $0.isVisible(disabledFeatures: disabled, connected: connected) }
-            .map(\.rawValue))
+        let visible = SidebarDestination.allCases.filter { $0.isVisible(disabledFeatures: disabled, connected: connected) }
+        var ids = Set(visible.map(\.rawValue))
+        if visible.contains(.inbox) { ids.formUnion(InboxRoute.aliasHosts.keys) }
+        return ids
     }
 
-    /// A `watchtower-nav://<screen>` link from AI Chat or the popup: opens a
-    /// visible screen and closes the popup. An unknown or hidden screen is
-    /// ignored (the link does nothing).
+    /// A `watchtower-nav://<screen>` link from AI Chat, the popup or an Inbox
+    /// card: opens a visible screen — an old screen name its Inbox filter —
+    /// and closes the popup. An unknown or hidden screen is ignored (the link
+    /// does nothing).
     func openNavLink(_ url: URL) {
-        guard let raw = NavLink.destination(from: url, allowed: visibleHelpScreenIDs),
-              let destination = SidebarDestination(rawValue: raw) else { return }
-        selectedDestination = destination
+        guard let raw = NavLink.destination(from: url, allowed: visibleHelpScreenIDs) else { return }
+        if let route = InboxRoute.fromNavHost(raw, today: Self.inboxToday()) {
+            openInbox(route)
+        } else if let destination = SidebarDestination(rawValue: raw) {
+            selectedDestination = destination
+        } else {
+            return
+        }
         isHelpChatShown = false
     }
 

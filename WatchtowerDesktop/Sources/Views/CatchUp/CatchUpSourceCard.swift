@@ -71,7 +71,7 @@ struct CatchUpSourceCard: View {
             // Outside the expand Button — a nested control inside its label would
             // never receive the click.
             if let destination = Self.destination(ref.area) {
-                Button("Open") { appState.selectedDestination = destination }
+                Button("Open") { open(destination) }
                     .buttonStyle(.link)
                     .font(.caption)
                     .help("Open the \(destination.title) tab")
@@ -184,15 +184,23 @@ struct CatchUpSourceCard: View {
         }
     }
 
-    /// The tab a source can be opened in, for the three areas that have one.
-    /// The rest are fully rendered inline, so sending the reader away would only
-    /// cost them their place.
+    /// The tab a source can be opened in, for the three areas that have one
+    /// (a track's card is in the Inbox). The rest are fully rendered inline,
+    /// so sending the reader away would only cost them their place.
     private static func destination(_ area: String) -> SidebarDestination? {
         switch area {
-        case "inbox": .inbox
-        case "tracks": .tracks
+        case "inbox", "tracks": .inbox
         case "targets": .targets
         default: nil
+        }
+    }
+
+    /// A track opens on its own Inbox card; the rest on their tab.
+    private func open(_ destination: SidebarDestination) {
+        if ref.area == "tracks" {
+            appState.navigateToTrack(ref.id)
+        } else {
+            appState.selectedDestination = destination
         }
     }
 }
