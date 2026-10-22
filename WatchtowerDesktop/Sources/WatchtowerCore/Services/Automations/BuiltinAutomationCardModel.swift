@@ -36,8 +36,10 @@ package final class BuiltinAutomationCardModel {
     package private(set) var resetConfirming = false
     package var showingChanges = false
     package private(set) var isWorking = false
-    /// The last `show`: its `needs_confirmation` wins over the row's.
+    /// The last `show`: its `needs_confirmation` and `recipe_text` win over the row's.
     private var shown: AutomationDetail?
+    /// The `loadError` the last failed Run Now set: its success clears only that one.
+    private var runNowError: String?
 
     @ObservationIgnored private let cli: AutomationsCLI
 
@@ -66,7 +68,7 @@ package final class BuiltinAutomationCardModel {
     /// The shipped text → the owner's copy, only while **Show changes** is on.
     package var changes: OwnerAskSnapshotDiff? {
         guard showingChanges, let detail, detail.overridden else { return nil }
-        return OwnerAskSnapshotDiff(previous: detail.shippedText, current: automation.recipeText)
+        return OwnerAskSnapshotDiff(previous: detail.shippedText, current: shown?.recipeText ?? automation.recipeText)
     }
 
     package func load() async {
@@ -115,9 +117,12 @@ package final class BuiltinAutomationCardModel {
         defer { isWorking = false }
         do {
             _ = try await cli.run(automation.id)
-            loadError = nil
+            if let runNowError, loadError == runNowError { loadError = nil }
+            runNowError = nil
         } catch {
-            loadError = AutomationsViewModel.message(for: error)
+            let message = AutomationsViewModel.message(for: error)
+            loadError = message
+            runNowError = message
         }
     }
 }

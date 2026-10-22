@@ -43,14 +43,16 @@ final class BuiltinAutomationCardModelTests: XCTestCase {
 
     /// `show --json` for built-in 3 with the golden block, `builtin` fields
     /// replaced by `overrides`.
-    private static func show(needsConfirmation: Bool = false, _ overrides: [String: Any] = [:]) throws -> Data {
+    private static func show(
+        needsConfirmation: Bool = false, recipeText: String = ownCopy, _ overrides: [String: Any] = [:]
+    ) throws -> Data {
         var block = try XCTUnwrap(
             JSONSerialization.jsonObject(with: BuiltinAutomationDetailDecodingTests.golden()) as? [String: Any])
         block.merge(overrides) { _, new in new }
         let detail: [String: Any] = [
             "id": 3, "slug": "morning-brief", "scope": "personal", "path": "builtin:morning-brief",
             "name": "Morning brief", "enabled": true, "runnable": !needsConfirmation,
-            "needs_confirmation": needsConfirmation, "builtin": block
+            "needs_confirmation": needsConfirmation, "recipe_text": recipeText, "builtin": block
         ]
         return try JSONSerialization.data(withJSONObject: detail)
     }
@@ -158,6 +160,37 @@ final class BuiltinAutomationCardModelTests: XCTestCase {
         let shipped = try XCTUnwrap(card.detail?.shippedText)
         XCTAssertEqual(diff, OwnerAskSnapshotDiff(previous: shipped, current: Self.ownCopy))
         XCTAssertTrue(diff.lines.contains(.added("My own words.")))
+    }
+
+    func testShowChangesUsesTheFreshestRecipeText() async throws {
+        let fresh = "---\nname: Morning brief\n---\nEdited since.\n"
+        let runner = VerbRunner(["show": .success(try Self.show(recipeText: fresh, ["overridden": true]))])
+        let card = model(runner, overridden: true)
+        await card.load()
+        card.showingChanges = true
+        let diff = try XCTUnwrap(card.changes)
+        XCTAssertTrue(diff.lines.contains(.added("Edited since.")), "the show's text, not the init row's")
+        XCTAssertFalse(diff.lines.contains(.added("My own words.")))
+    }
+
+    func testRunNowKeepsAShowError() async throws {
+        let runner = VerbRunner([
+            "show": .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "show failed")),
+            "run": .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "run failed"))
+        ])
+        let card = model(runner)
+        await card.load()
+        XCTAssertEqual(card.loadError, "show failed")
+        runner.set("run", .success(Data(#"{"run_id":9,"coalesced":false,"daemon_running":true}"#.utf8)))
+        await card.runNow()
+        XCTAssertEqual(card.loadError, "show failed", "a Run Now success clears only its own error")
+
+        runner.set("run", .failure(CLIRunnerError.nonZeroExit(code: 1, stderr: "run failed")))
+        await card.runNow()
+        XCTAssertEqual(card.loadError, "run failed")
+        runner.set("run", .success(Data(#"{"run_id":10,"coalesced":false,"daemon_running":true}"#.utf8)))
+        await card.runNow()
+        XCTAssertNil(card.loadError)
     }
 
     func testRunNowQueuesAManualRun() async throws {

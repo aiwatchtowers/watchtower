@@ -40,6 +40,8 @@ package struct BuiltinUpgradeNotice: Equatable, Sendable {
                 SELECT builtin_id, error, updated_at FROM builtin_migrations
                 WHERE status = 'failed' ORDER BY updated_at DESC, builtin_id
                 """)
+            // Go always writes RFC 3339 UTC; an unparsable date only orders the
+            // notice last, it is still a failed move the owner must see.
             return rows.map { row in
                 Self(builtinID: row["builtin_id"], error: row["error"],
                      updatedAt: AutomationDates.parse(row["updated_at"]) ?? .distantPast)
