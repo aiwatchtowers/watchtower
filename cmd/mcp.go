@@ -231,7 +231,7 @@ func mcpAutomationOptions(cfg *config.Config, database *db.DB) ([]internalmcp.Se
 	if err != nil {
 		return nil, fmt.Errorf("reading the automation of run %d: %w", runID, err)
 	}
-	r, err := automations.ParseRecipe(a.Slug, []byte(run.RecipeSnapshot), automations.Scope{Kind: automations.ScopeKind(a.Scope), WorkbenchID: a.ProjectID})
+	r, err := automations.ParseRecipe(a.Slug, []byte(run.RecipeSnapshot), automations.ScopeOf(*a))
 	if err != nil {
 		return nil, fmt.Errorf("automation run %d: the recipe does not parse: %w", runID, err)
 	}

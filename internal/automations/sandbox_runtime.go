@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -180,6 +182,10 @@ func (s *Sandbox) defineGlobal(parent *goja.Object, name string, v goja.Value) e
 func (s *Sandbox) installModules(modules []Module) error {
 	d := &definer{fns: map[string]SDKFunc{}}
 	for _, m := range modules {
+		if em, ok := m.(envModule); ok {
+			em.installFor(s.env, d)
+			continue
+		}
 		m.Install(d)
 	}
 	if d.err != nil {
@@ -202,6 +208,17 @@ func (s *Sandbox) installModules(modules []Module) error {
 		}
 		namespaces = append(namespaces, created...)
 	}
+	for _, p := range slices.Sorted(maps.Keys(d.vals)) {
+		v, err := s.frozenJSON(d.vals[p])
+		if err != nil {
+			return fmt.Errorf("automation sandbox: %s: %w", p, err)
+		}
+		created, err := s.installAt(p, v)
+		if err != nil {
+			return err
+		}
+		namespaces = append(namespaces, created...)
+	}
 	for _, ns := range namespaces {
 		if _, err := s.freeze(goja.Undefined(), ns); err != nil {
 			return fmt.Errorf("automation sandbox: freezing an SDK namespace: %w", err)
@@ -213,6 +230,25 @@ func (s *Sandbox) installModules(modules []Module) error {
 // installPath defines fn at path, creating namespace objects on the way; it
 // returns the namespaces it created.
 func (s *Sandbox) installPath(path string, fn SDKFunc) ([]goja.Value, error) {
+	return s.installAt(path, s.rt.ToValue(s.wrap(path, fn)))
+}
+
+// frozenJSON is v as a fresh, deeply frozen JS value built from its JSON.
+func (s *Sandbox) frozenJSON(v any) (goja.Value, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	obj, err := s.jsonParse(goja.Undefined(), s.rt.ToValue(string(raw)))
+	if err != nil {
+		return nil, err
+	}
+	return s.freeze(goja.Undefined(), obj)
+}
+
+// installAt defines v at path, creating namespace objects on the way; it
+// returns the namespaces it created.
+func (s *Sandbox) installAt(path string, v goja.Value) ([]goja.Value, error) {
 	segs := strings.Split(path, ".")
 	parent := s.rt.GlobalObject()
 	var created []goja.Value
@@ -233,7 +269,7 @@ func (s *Sandbox) installPath(path string, fn SDKFunc) ([]goja.Value, error) {
 		}
 		parent = obj
 	}
-	return created, s.defineGlobal(parent, segs[len(segs)-1], s.rt.ToValue(s.wrap(path, fn)))
+	return created, s.defineGlobal(parent, segs[len(segs)-1], v)
 }
 
 // wrap adapts fn to goja: Go panics and contract breaks end the run, the

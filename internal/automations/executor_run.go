@@ -23,8 +23,9 @@ func failedEnd(kind string, err error) *runEnd {
 
 // claimKind is how a run came to runClaimed.
 type claimKind struct {
-	// inline is ExecuteInline's run (the CLI's dry run): a ctx that ends
-	// there is the CLI stopping, not the daemon.
+	// inline is ExecuteInline's run (the CLI's dry run) or
+	// ExecuteBuiltinInline's (a slot run): a ctx that ends there is the
+	// caller stopping, and the run does not stay waiting for a resume.
 	inline bool
 	// resumeReason is set for a run resumed after a restart: the reason it
 	// waited with, which it gets back when the daemon stops again before
@@ -108,8 +109,7 @@ func (e *Executor) runGone(runID int64) bool {
 // snapshot that does not parse (failed/not_runnable), a malformed event payload or an unreadable
 // store (failed/backend), a script that does not compile (failed/script).
 func (e *Executor) prepare(ctx context.Context, run *db.AutomationRun, a *db.Automation, how claimKind) (*Env, *Sandbox, *runEnd) {
-	scope := Scope{Kind: ScopeKind(a.Scope), WorkbenchID: a.ProjectID}
-	r, err := ParseRecipe(a.Slug, []byte(run.RecipeSnapshot), scope)
+	r, err := ParseRecipe(a.Slug, []byte(run.RecipeSnapshot), ScopeOf(*a))
 	if err != nil {
 		return nil, nil, failedEnd(db.ErrKindNotRunnable, fmt.Errorf("the recipe does not parse: %w", err))
 	}
@@ -124,7 +124,7 @@ func (e *Executor) prepare(ctx context.Context, run *db.AutomationRun, a *db.Aut
 			return nil, nil, failedEnd(db.ErrKindPermission, err)
 		}
 	}
-	trig, err := triggerInfo(run, r)
+	trig, err := triggerInfo(run, a, r)
 	if err != nil {
 		return nil, nil, failedEnd(db.ErrKindBackend, err)
 	}
@@ -211,11 +211,17 @@ func pauseTimeout(r *Recipe) time.Duration {
 // triggerInfo builds the script's trigger object. An event run's event_json
 // must decode as db.AutomationEventPayload with every event an object (S5);
 // so must a dry run's, when it carries one (the events an event recipe's dry
-// run plays). A reply run's must decode as db.ReplyPayload.
-func triggerInfo(run *db.AutomationRun, r *Recipe) (TriggerInfo, error) {
+// run plays). A reply run's must decode as db.ReplyPayload. Every run of a
+// slot automation (RunsAtSlot) carries its input instead, {"builtin": …}.
+func triggerInfo(run *db.AutomationRun, a *db.Automation, r *Recipe) (TriggerInfo, error) {
 	t := TriggerInfo{
 		Kind: run.Trigger, RunID: run.ID, ScheduledFor: run.ScheduledFor,
 		CatchUp: run.Trigger == db.TriggerCatchUp, DryRun: run.Trigger == db.TriggerDryRun,
+	}
+	if a.RunsAtSlot() {
+		in, err := builtinInputOf(run.EventJSON)
+		t.Builtin = in
+		return t, err
 	}
 	if run.Trigger == db.TriggerButton && r.Trigger.Button != nil {
 		t.Button = r.Trigger.Button.Label
@@ -345,7 +351,7 @@ func (e *Executor) outcome(ctx context.Context, env *Env, v any, runErr error, i
 	}
 	end := classifyRunError(runErr)
 	if end.status == db.RunCancelled && ctx.Err() != nil {
-		end.status, end.kind, end.msg = db.RunFailed, db.ErrKindInterrupted, stoppedMessage(inline)
+		end.status, end.kind, end.msg = db.RunFailed, db.ErrKindInterrupted, stoppedMessage(inline, env.DryRun)
 	}
 	f.Status, f.ErrorKind, f.Error = end.status, end.kind, end.msg
 	return f, nil, end.abandoned
@@ -367,9 +373,12 @@ func ranDifferently(runErr error) bool {
 }
 
 // stoppedMessage is the error of a run whose executor's ctx ended under it.
-func stoppedMessage(inline bool) string {
-	if inline {
+func stoppedMessage(inline, dry bool) string {
+	switch {
+	case inline && dry:
 		return "the dry run was stopped before it finished"
+	case inline:
+		return "the run was stopped before it finished"
 	}
 	return "the daemon stopped while the run was in flight"
 }
@@ -386,6 +395,8 @@ func classifyRunError(err error) *runEnd {
 		return end
 	case errors.As(err, &se) && se.Name == ErrNamePermissionDenied:
 		return failedEnd(db.ErrKindPermission, err)
+	case errors.As(err, &se) && se.Name == ErrNamePrimitiveFailed:
+		return failedEnd(db.ErrKindBackend, err)
 	case errors.As(err, &se), errors.As(err, &pe):
 		return failedEnd(db.ErrKindScript, err)
 	default:
