@@ -8,13 +8,13 @@ Your calendar says you have three meetings and nothing else. The Day Plan fits t
 
 ## How it works
 
-The plan is made by the background sync, once a day, right after the briefing step. Like the briefing it runs at or after the plan hour (default **08:00**), on the first sync cycle that finds it due.
+The plan is made once a day by **Morning brief**, a [built-in automation](automations-built-in.md) the background sync runs: right after the briefing, in the same run. It has no hour of its own: it comes at or after the briefing's **Time** (default **08:00**), on the first sync cycle that finds it due.
 
 It reads your calendar, targets, today's briefing, your open Jira issues (and Linear issues when Linear is switched on), people context and, when Memory's Day Plan surface is on, open loops. It also reads yesterday's plan and the items you added by hand.
 
 | Condition | Why |
 |---|---|
-| **Day Plan** is on in Settings → Features | The switch for the feature |
+| **Morning brief** is on in Automations → **Built in** | Its **Turn On** / **Turn Off** is the switch for the plan and the briefing |
 | An account that tells Watchtower who you are | Slack, Google, Jira, Linear or an email account; see [Briefings](briefings.md) |
 | No plan for today yet | One plan per day |
 | Fewer than three failed attempts today | After three failures it gives up until tomorrow |
@@ -46,14 +46,14 @@ These show on today's card only; an older day's plan is read-only. Each opens an
 
 ### Tune it
 
-Settings → Features → **Day Plan** sets **Generate at hour** (05:00 to 12:00), **Working hours** (default 09:00 to 19:00), and three steppers, **Max timeblocks**, **Backlog min** and **Backlog max**, that are saved but do not change the plan today (see [Known issues](../troubleshooting/known-issues.md)).
+The **Morning brief** card in Automations → **Built in** holds the plan's settings under **When**: **Time** (shared with the briefing), **Working hours from** and **to** (default 09:00 to 19:00), and three counts, **Time blocks at most**, **Backlog items at least** and **Backlog items at most**, that are saved but do not change the plan today (see [Known issues](../troubleshooting/known-issues.md)). **Edit in Chat** there changes how the plan is written.
 
 ## When it's empty or wrong
 
 Before today's brief and plan exist, today's card shows each one's status line.
 
 - **Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are.** There is no owner. Click **Open Connections**. Without one, the card has no Make, Regenerate or Reset, but an existing plan stays readable.
-- **Off — Turn on.** Turn **Day Plan** on in Settings → Features.
+- **Off — Turn on.** Click **Turn on**, or **Turn On** on the **Morning brief** card.
 - **Preparing now / Within ~15 min / Today at 08:00.** It is on its way.
 - **Didn't work yet — retries automatically.** The last attempt failed. After three failures it waits until tomorrow.
 - **Plan missing though the hour passed.** The daemon may not have run (Mac off or asleep), or no connected account identifies you. Press **Make today's plan** on today's card, or **Make today's brief and plan** when it has neither.
@@ -62,6 +62,6 @@ No plan today? See [No briefing or day plan today](../troubleshooting/no-briefin
 
 ## Related
 
-[Inbox](inbox.md), [Briefings](briefings.md), [Home](home.md).
+[Inbox](inbox.md), [Briefings](briefings.md), [Built-in automations](automations-built-in.md), [Home](home.md).
 
-For developers: [docs/features/strong-tier-cost-fixes.md](../../features/strong-tier-cost-fixes.md)
+For developers: [docs/features/built-in-automations.md](../../features/built-in-automations.md), [docs/features/strong-tier-cost-fixes.md](../../features/strong-tier-cost-fixes.md)

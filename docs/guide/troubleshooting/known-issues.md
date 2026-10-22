@@ -8,9 +8,9 @@ Places where Watchtower does something other than what its own screen says. Each
 
 Workaround: before removing, read or export what you need. Slack and Jira rows have an **Enabled** switch that stops syncing an account without removing it (turning it back on does not resume a month of history that was still loading); Email and Calendar rows have none, so leave the account connected if you want to keep its data. After you add the account again, recent mail and events sync back and older mail returns through [history backfill](../concepts/history-backfill.md). See [Sources and accounts](../concepts/sources-and-accounts.md).
 
-## Briefing Hour 00:00 runs at 08:00
+## Morning brief at 00:00 runs at 08:00
 
-**Known issue.** **Briefing Hour** in **Settings → Features** lists 00:00, but the briefing is then made at 08:00, as if the hour was not set. **Generate at hour** for the Day Plan starts at 05:00 and is not affected.
+**Known issue.** **Time** on the **Morning brief** card (Automations → **Built in**) lists 00:00, but the briefing and the day plan are then made at 08:00, as if the time was not set.
 
 Workaround: pick 01:00 or later. See [No briefing or day plan today](no-briefing-or-day-plan.md).
 
@@ -26,9 +26,9 @@ Workaround: filter the registry by **Not now** and press **Activate** when you w
 
 Workaround: use the **Daily** digest and [Tracks](../features/tracks.md). See [Digests](../features/digests.md).
 
-## Day Plan steppers change nothing
+## Day plan counts change nothing
 
-**Known issue.** **Max timeblocks**, **Backlog min** and **Backlog max** in **Settings → Features → Day Plan** are saved but the plan ignores them. **Working hours** and **Generate at hour** do work.
+**Known issue.** **Time blocks at most**, **Backlog items at least** and **Backlog items at most** on the **Morning brief** card (Automations → **Built in**) are saved but the plan ignores them. **Time** and the working hours do work.
 
 Workaround: press **Regenerate with feedback…** and say how many blocks or backlog items you want. See [Day Plan](../features/day-plan.md).
 

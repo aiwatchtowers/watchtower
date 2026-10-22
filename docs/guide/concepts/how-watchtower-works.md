@@ -52,8 +52,7 @@ Times are local. "Every cycle" means every 15 minutes by default.
 | Ideas & Decisions | Every 6 hours (**Settings → Features → Ideas → Mining interval**, 1 to 48) | Ideas on |
 | Memory | Every cycle; waits while history backfill runs | Memory on (off by default) |
 | Next-step suggestions | Every cycle, for targets with none or a stale one | Next Step Suggestions on |
-| Briefing | Once a day, at or after 08:00 (**Briefing Hour**) | Briefing on; Watchtower knows who you are |
-| Day plan | Once a day, at or after 08:00 (**Generate at hour**); conflicts are re-checked every cycle after | Day Plan on; Watchtower knows who you are |
+| Briefing, then day plan | Once a day, at or after 08:00 (**Time** on the [Morning brief](../features/automations-built-in.md) card), in one run; the plan's conflicts are re-checked every cycle after | Morning brief on; Watchtower knows who you are |
 | History backfill | After everything else, while a new source is loading | A newly connected source |
 | Search index | Every cycle, in slices of up to 60 seconds | Knowledge search on (on by default) |
 | Agent analytics | Every cycle | A Workbench with agent analytics enabled |

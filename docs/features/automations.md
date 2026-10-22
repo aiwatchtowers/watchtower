@@ -1,4 +1,4 @@
-# Automations (P1 core + P2 writes + P3 authoring and Desktop + P4 events + P5 workbench + P6 `mcp()`/`agent()` + templates, 2026-10-17 — P1–P6 shipped; open follow-ups are listed in this note)
+# Automations (P1 core + P2 writes + P3 authoring and Desktop + P4 events + P5 workbench + P6 `mcp()`/`agent()` + templates, 2026-10-17 — P1–P6 shipped; built-ins and the Morning brief, C2, 2026-10-22; open follow-ups are listed in this note)
 
 Owner-written recipes the daemon runs on a schedule or on demand: a Markdown file with a strict YAML frontmatter (trigger, permission manifest, outputs, budget) and one synchronous JavaScript block, executed in a goja sandbox whose only world is the automation SDK. Spec: `docs/superpowers/specs/2026-10-14-automations-design.md` (decisions §20 ask #270, §20.1 asks #271–#273/#277, §20.2 asks #280/#287); business spec `…-business.md`; plans `docs/superpowers/plans/2026-10-14-automations-p1.md` … `-p6.md`. Contracts AUTO-01..13: `docs/inventory/automations.md`. Board #753.
 
@@ -341,6 +341,17 @@ Spec `docs/superpowers/specs/2026-10-22-inbox-built-in-automations-design.md` §
 - **No pop-ups:** the reaction cheat sheet (`?`), Learned Rules and Assistant Profile (header ⋯) open in the reading pane (`InboxAuxPane`); New idea, Find Ideas in Past Messages…, the day plan's Add / Regenerate with feedback… / Reset plan… and a custom track's Delete… are inline rows. The only popover left is Hand to Agent's workbench picker.
 - **Routing:** `InboxRoute` maps the old nav hosts (`briefings`, `dayPlan`, `day-plan` → Day with today's card, `tracks`, `ideas`) to a filter and selection while the Inbox is visible; `navigateToBriefing`/`DayPlan`/`Track`/`Idea` keep their names and open the Inbox; notifications, Home's Briefing and Day plan links and Getting ready lines route the same way.
 - **Tests:** `InboxFeedQueriesTests`, `InboxListBuilderTests`, `ActionStripAllKindsTests` (incl. `testRefreshIsStillOnePureRead`), `TrackActionPressTests`, `AgentActionQueriesTests::testStripAndBadgeLeaveOutInboxPressRows`, `ActionStripAutomationOutputTests::testInboxBadgeLeavesOutputsOut`, `SidebarCountsViewModelTests::testInboxBadgeCountsTheInboxCards`, `InboxRouteTests`.
+
+## Built-ins (C2, 2026-10-22)
+
+Watchtower's own recipes, embedded in the binary and run at a slot in the daemon's sync cycle (`trigger: {sync: <slot>}`), one `automations` row each with `origin = 'builtin'` and `path = 'builtin:<id>'`; the owner's edited copy is `<workspace>/automations/.builtin/<id>.md`. The first is **Morning brief** (`morning-brief`), which makes the daily briefing and the day plan in one run. What changes for owner recipes:
+
+- **AUTO-06 amended (ask #500):** shipped bytes run without the owner's confirmation; the owner's copy needs it like any recipe. Only a built-in scope may declare a `sync` trigger or a `builtin:` capability; a Personal recipe doing either is a parse error.
+- The Personal scanner skips `.builtin/` and never treats a built-in row as one of its files; a Personal recipe with a built-in's slug is its own row (`idx_automations_scope_slug` is unique over owner rows only).
+- The executor's poll never claims, cancels or resumes a built-in's run (`RunsAtSlot()`); the daemon's slot executor runs them inline. `automations run` on a built-in queues for the next sync (AUTO-09 amended); `enable`, `disable`, `delete` and `auto` refuse a built-in; `reset` and `upgrade-builtins` are new. `show --json` gains `builtin`, `list --json` gains `origin`, `builtin_id`, `overridden`.
+- The Automations tab lists them first under **Built in**, on their own card.
+
+Registry, row model, primitives, the Morning brief, the CLI paths, the one-time upgrade step, the dual paths and how C3 adds its built-ins: [built-in-automations.md](built-in-automations.md).
 
 ## Phase status (P1–P6 shipped)
 

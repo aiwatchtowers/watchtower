@@ -8,11 +8,11 @@ You sit down at 09:00 with coffee. Instead of opening Slack, mail and Jira in tu
 
 ## How it works
 
-One briefing is made per calendar day, by the background sync. It is generated at or after the briefing hour (default **08:00**), not at that exact minute: if the Mac was asleep at 08:00, it comes on the first sync cycle after you wake it. Sync cycles run every 15 minutes by default.
+One briefing is made per calendar day by **Morning brief**, a [built-in automation](automations-built-in.md) the background sync runs; the day plan is made right after it in the same run. It is generated at or after the Morning brief's **Time** (default **08:00**), not at that exact minute: if the Mac was asleep at 08:00, it comes on the first sync cycle after you wake it. Sync cycles run every 15 minutes by default.
 
 | Condition | Why |
 |---|---|
-| **Daily Briefing** is on in Settings → Features | The switch for the whole feature |
+| **Morning brief** is on in Automations → **Built in** | Its **Turn On** / **Turn Off** is the switch for the briefing and the day plan |
 | An account that tells Watchtower who you are | Slack account #1, else your first Google account, else the first Jira site with a known owner, else the first Linear workspace, else the address of your first email (IMAP or Outlook) account |
 | Something to summarise | Channel digests or the daily rollup, tracks, your targets, attention items, Workbench activity or automation notes |
 | Fewer than three failed attempts today | After three failures it gives up until tomorrow |
@@ -40,7 +40,7 @@ Opening a day card marks its briefing read, the same mark **I'm caught up** in [
 - In the Inbox, today's card is first under **Today** on **All**. The **Day** filter lists one card per date, the last 30 dates, and **Show older** adds 30 more. A briefing notification and Home's **Briefing** link open today's card.
 - Click an item to jump to its track, digest, target or person. Items that suggest new work show **Make a Task**, which creates the target and opens it.
 - The card's header has **Discuss in Chat** and **Done**.
-- Change the time in Settings → Features → **Briefing Hour**. The section shows only while the feature is on.
+- Change the time with **Time** under **When** on the **Morning brief** card (Automations → **Built in**). To change what the briefing says, use **Edit in Chat** there; see [Built-in automations](automations-built-in.md).
 
 ## When it's empty or wrong
 
@@ -59,6 +59,6 @@ No briefing today? See [No briefing or day plan today](../troubleshooting/no-bri
 
 ## Related
 
-[Inbox](inbox.md), [Day Plan](day-plan.md), [Catch Up](catch-up.md), [Home](home.md).
+[Inbox](inbox.md), [Day Plan](day-plan.md), [Built-in automations](automations-built-in.md), [Catch Up](catch-up.md), [Home](home.md).
 
-For developers: [docs/features/strong-tier-cost-fixes.md](../../features/strong-tier-cost-fixes.md)
+For developers: [docs/features/built-in-automations.md](../../features/built-in-automations.md), [docs/features/strong-tier-cost-fixes.md](../../features/strong-tier-cost-fixes.md)

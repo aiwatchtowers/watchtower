@@ -4,7 +4,7 @@ Every background output has its own switch in **Settings → Features**, and a t
 
 ## What the switches do
 
-Settings → Features lists each feature with a description, a cost badge (None, Light, Medium, Heavy) and a switch. The badge is a fixed estimate of how much AI the feature spends per cycle, not live usage. Targets and Assistant Chat are marked **Core**: they have no switch. Automations are not in the list: they are always there and spend nothing until you confirm a recipe (see [Automations](../features/automations.md)).
+Settings → Features lists each feature with a description, a cost badge (None, Light, Medium, Heavy) and a switch. The badge is a fixed estimate of how much AI the feature spends per cycle, not live usage. Targets and Assistant Chat are marked **Core**: they have no switch. Automations are not in the list: they are always there and spend nothing until you confirm a recipe (see [Automations](../features/automations.md)). Daily Briefing and Day Plan are not in it either: their switch is **Turn On** / **Turn Off** on the **Morning brief** card in Automations → **Built in**, and Settings → Features shows "These now live in Automations → Built in" with **Open Automations** (see [Built-in automations](../features/automations-built-in.md)).
 
 - **Off means no work, not no data.** An off feature makes no AI calls and writes nothing new. What it already produced stays and stays readable.
 - **On resumes from now.** Turning a feature back on does not process the time it was off, so there is a gap. It is the same for a feature you never turned on before.
@@ -62,7 +62,7 @@ Which source each feature waits for:
 
 The brief, the plan and the Inbox's messages also need Watchtower to know who you are. Until a source supplies your identity they show no time at all; see [Sources and accounts](sources-and-accounts.md#why-watchtower-needs-to-know-who-you-are).
 
-The Inbox's empty **Day** filter offers **Change the hour**, which opens Settings → Features, where the hours are **Briefing Hour** and **Generate at hour**. Before that hour the status reads "Today at 08:00" (your hour). On a brand-new install the first briefing and first day plan do not wait for it.
+The Inbox's empty **Day** filter offers **Change the hour**, which opens the **Morning brief** card in Automations, where **Time** sets the hour of both the brief and the plan. Before that hour the status reads "Today at 08:00" (your hour). On a brand-new install the first briefing and first day plan do not wait for it.
 
 ## After you connect a source
 
