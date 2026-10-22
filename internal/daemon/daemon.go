@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"watchtower/internal/agentlogdb"
 	"watchtower/internal/automations"
+	"watchtower/internal/automations/builtin"
 	"watchtower/internal/briefing"
 	"watchtower/internal/caldav"
 	"watchtower/internal/calendar"
@@ -52,6 +53,7 @@ type DayPlanRunner interface {
 	DetectConflicts(ctx context.Context, userID, date string) error
 	SyncCalendarItemsForDate(ctx context.Context, userID, date string) error
 	AccumulatedUsage() (int, int, float64, int)
+	LastPromptNote() string
 }
 
 // linearAccountSyncer is the slice of *linear.Syncer behaviour phaseLinearSync uses.
@@ -155,6 +157,10 @@ type Daemon struct {
 	jiraSyncers                []jiraAccountSyncer
 	externalSync               ExternalSyncRunner
 	dayPlanPipeline            DayPlanRunner
+	builtins                   *builtin.Runner // the built-ins' slot runner (SetBuiltins); nil = legacy phases
+	builtinActive              map[string]bool // by built-in id: false = its producers run as legacy phases
+	mbOwner                    db.Owner        // phaseMorningBrief's owner for this cycle (day-plan gate)
+	mbNow                      time.Time       // phaseMorningBrief's clock while its slot runs; zero = time.Now
 	lastJira                   time.Time
 	linearSyncers              []linearAccountSyncer
 	purgeHold                  map[purgeKey]bool // accounts purged or being purged; refreshed by phaseAccountPurge, read by the sync phases
@@ -452,6 +458,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
+	// Before the owner-recipe executor's own start sweep and the first slot:
+	// a built-in run left running would block its slot (the executor may not
+	// be wired at all).
+	d.sweepBuiltinRuns()
+
 	// Automations run beside the sync loop, not in it; stopped and reaped
 	// before Run returns (and before the PID file is removed).
 	stopAutomations := d.startAutomations(ctx)
@@ -603,9 +614,7 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	d.phaseIdeas(ctx)
 	d.phaseMemory(ctx)
 	d.phaseNextStep(ctx)
-	d.phaseBriefing(ctx)
-
-	d.runDayPlanPhases(ctx, time.Now())
+	d.phaseMorningBrief(ctx, time.Now())
 
 	// Last, and alone: it shares the digest pipeline and the ideas lock with
 	// the forward phases above, so it must stay out of any parallel group.
@@ -2537,9 +2546,10 @@ func (d *Daemon) runDayPlanPhases(ctx context.Context, now time.Time) {
 }
 
 // shouldRunDayPlan returns true when the day-plan pipeline should generate a
-// plan: enabled, hour gate passed (skipped for the first plan on a fresh
-// install, dayPlanFresh), real-attempt budget not exhausted today, a known
-// owner, no plan yet for today.
+// plan: enabled, hour gate passed (briefing.hour — the Morning brief's one
+// time; skipped for the first plan on a fresh install, dayPlanFresh),
+// real-attempt budget not exhausted today, a known owner, no plan yet for
+// today.
 func (d *Daemon) shouldRunDayPlan(now time.Time, owner db.Owner) bool {
 	if d.dayPlanPipeline == nil {
 		return false
@@ -2548,9 +2558,9 @@ func (d *Daemon) shouldRunDayPlan(now time.Time, owner db.Owner) bool {
 	if !cfg.Enabled {
 		return false
 	}
-	targetHour := cfg.Hour
+	targetHour := d.config.Briefing.Hour
 	if targetHour <= 0 {
-		targetHour = config.DefaultDayPlanHour
+		targetHour = config.DefaultBriefingHour
 	}
 	// dayPlanFresh queries the DB, so it is asked only when the hour refuses.
 	if now.Hour() < targetHour && !d.dayPlanFresh() {

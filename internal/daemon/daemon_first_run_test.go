@@ -328,7 +328,8 @@ func TestDaemon_FirstBriefingNoDataKeepsBudget(t *testing.T) {
 func dayPlanFirstRunSetup(t *testing.T) (*Daemon, *db.DB) {
 	t.Helper()
 	d, database := firstRunTestSetup(t)
-	d.config.DayPlan = config.DayPlanConfig{Enabled: true, Hour: 8}
+	d.config.DayPlan = config.DayPlanConfig{Enabled: true}
+	d.config.Briefing.Hour = 8 // the day plan waits for briefing.hour
 	d.SetDayPlanPipeline(&fakeDayPlanRunner{database: database})
 	return d, database
 }
@@ -338,7 +339,7 @@ var firstRunOwner = db.Owner{ID: "U001", Source: db.OwnerSourceSlack, SlackUserI
 func TestShouldRunDayPlan_FreshInstallIgnoresHour(t *testing.T) {
 	d, _ := dayPlanFirstRunSetup(t)
 
-	assert.True(t, d.shouldRunDayPlan(firstRunClock(6), firstRunOwner), "the first day plan does not wait for day_plan.hour")
+	assert.True(t, d.shouldRunDayPlan(firstRunClock(6), firstRunOwner), "the first day plan does not wait for briefing.hour")
 }
 
 func TestShouldRunDayPlan_HourGateAppliesAfterFirst(t *testing.T) {

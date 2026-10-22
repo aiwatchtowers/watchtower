@@ -347,7 +347,7 @@ func TestApplyLegacyDigestOff_FlipsNineGatesAndNothingElse(t *testing.T) {
 		Ideas:           IdeasConfig{Enabled: true, MineIntervalHours: 12},
 		Memory:          MemoryConfig{Enabled: true},
 		Briefing:        BriefingConfig{Enabled: true, Hour: 9},
-		DayPlan:         DayPlanConfig{Enabled: true, Hour: 8},
+		DayPlan:         DayPlanConfig{Enabled: true},
 		Targets:         TargetsConfig{NextStep: TargetsNextStepConfig{Enabled: true}},
 		Calendar:        CalendarConfig{Enabled: true},
 		Gmail:           GmailConfig{Enabled: true},

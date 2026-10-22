@@ -288,7 +288,6 @@ type TranscriptsConfig struct {
 // DayPlanConfig holds settings for the daily plan generation pipeline.
 type DayPlanConfig struct {
 	Enabled           bool   `yaml:"enabled" mapstructure:"enabled"`
-	Hour              int    `yaml:"hour" mapstructure:"hour"`
 	WorkingHoursStart string `yaml:"working_hours_start" mapstructure:"working_hours_start"`
 	WorkingHoursEnd   string `yaml:"working_hours_end" mapstructure:"working_hours_end"`
 	MaxTimeblocks     int    `yaml:"max_timeblocks" mapstructure:"max_timeblocks"`
@@ -526,7 +525,6 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("jira.changelog_issues_per_sync", DefaultJiraChangelogIssuesPerSync)
 	setJiraFeatureDefaults(v)
 	v.SetDefault("day_plan.enabled", DefaultDayPlanEnabled)
-	v.SetDefault("day_plan.hour", DefaultDayPlanHour)
 	v.SetDefault("day_plan.working_hours_start", DefaultDayPlanWorkingHoursStart)
 	v.SetDefault("day_plan.working_hours_end", DefaultDayPlanWorkingHoursEnd)
 	v.SetDefault("day_plan.max_timeblocks", DefaultDayPlanMaxTimeblocks)

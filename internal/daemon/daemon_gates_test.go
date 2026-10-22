@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/automations"
 	"watchtower/internal/briefing"
 	"watchtower/internal/config"
 	"watchtower/internal/customtracks"
@@ -209,8 +210,12 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 				// a day, rather than skipping the case outright.
 				cfg.Briefing.Hour = 1
 				d.SetBriefingPipeline(briefing.New(database, cfg, gen, l))
+				wireTestBuiltins(t, d, database, cfg, automations.RealClock{})
 			},
-			run: func(d *Daemon) { d.phaseBriefing(context.Background()) },
+			// The Morning brief slot, on the legacy phases and on the
+			// built-in: neither writes a pipeline_runs or automation_runs row.
+			run:   runMorningBriefBothWays,
+			check: assertNoPipelineOrAutomationRuns,
 		},
 		{
 			name: "day_plan",
@@ -231,12 +236,12 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 				})
 				require.NoError(t, err)
 				d.SetDayPlanPipeline(dayplan.New(database, cfg, gen, l))
+				wireTestBuiltins(t, d, database, cfg, automations.RealClock{})
 			},
-			run: func(d *Daemon) {
-				now := time.Now()
-				d.runDayPlanPhase(context.Background(), now, d.dayPlanOwner(now))
-				d.runDayPlanConflictPhase(context.Background(), now, d.dayPlanOwner(now))
-			},
+			// The plan phase and the conflict phase both sit in the Morning
+			// brief slot (phaseMorningBrief), legacy and built-in.
+			run:   runMorningBriefBothWays,
+			check: assertNoPipelineOrAutomationRuns,
 		},
 	}
 
@@ -267,6 +272,23 @@ func TestFeatureGates_DisabledPhaseWritesNoPipelineRun(t *testing.T) {
 			check(t, cfg, database)
 		})
 	}
+}
+
+// runMorningBriefBothWays drives the Morning brief slot on the legacy phases
+// and then on the built-in.
+func runMorningBriefBothWays(d *Daemon) {
+	d.builtinActive[morningBriefID] = false
+	d.phaseMorningBrief(context.Background(), time.Now())
+	d.builtinActive[morningBriefID] = true
+	d.phaseMorningBrief(context.Background(), time.Now())
+}
+
+// assertNoPipelineOrAutomationRuns is assertNoPipelineRuns plus zero
+// automation_runs rows (the Morning brief built-in's runs).
+func assertNoPipelineOrAutomationRuns(t *testing.T, cfg *config.Config, database *db.DB) {
+	t.Helper()
+	assertNoPipelineRuns(t, cfg, database)
+	assertNoAutomationRuns(t, database)
 }
 
 // TestDaemon_RunDayPlanConflictPhase_DisabledSkipsEntirely pins the gate this

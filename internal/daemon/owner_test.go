@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -12,6 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/automations"
+	"watchtower/internal/automations/automationstest"
 	"watchtower/internal/briefing"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
@@ -39,57 +42,77 @@ func noOwnerDaemon(t *testing.T, cfg *config.Config) (*Daemon, *db.DB, *bytes.Bu
 // TestOwner02_DaemonDayPlanNoOwnerLoggedOncePerUTCDay pins the daemon half of
 // OWNER-02: a no-owner skip is visible in the log, but once per UTC day per
 // phase — not once per 15-minute cycle. The conflict phase shares the day
-// plan's line.
+// plan's line. Driven through the Morning brief slot (phaseMorningBrief), on
+// the legacy phases and on the built-in alike: no automation run either.
 func TestOwner02_DaemonDayPlanNoOwnerLoggedOncePerUTCDay(t *testing.T) {
-	d, _, buf := noOwnerDaemon(t, &config.Config{DayPlan: config.DayPlanConfig{Enabled: true, Hour: 1}})
-	fp := &fakeDayPlanRunner{}
-	d.SetDayPlanPipeline(fp)
-	const line = "daemon: day_plan skipped: no owner identity (connect Slack, Google, Jira, Linear or an email account)"
+	for _, active := range []bool{false, true} {
+		t.Run(fmt.Sprintf("builtin_active=%v", active), func(t *testing.T) {
+			cfg := &config.Config{DayPlan: config.DayPlanConfig{Enabled: true}, Briefing: config.BriefingConfig{Hour: 1}}
+			d, database, buf := noOwnerDaemon(t, cfg)
+			fp := &fakeDayPlanRunner{}
+			d.SetDayPlanPipeline(fp)
+			day1 := time.Date(2026, 4, 23, 10, 0, 0, 0, time.UTC)
+			if active {
+				wireTestBuiltins(t, d, database, cfg, automationstest.NewFakeClock(day1))
+			}
+			const line = "daemon: day_plan skipped: no owner identity (connect Slack, Google, Jira, Linear or an email account)"
 
-	day1 := time.Date(2026, 4, 23, 10, 0, 0, 0, time.UTC)
-	for i := range 3 {
-		d.runDayPlanPhases(context.Background(), day1.Add(time.Duration(i)*time.Hour))
+			for i := range 3 {
+				d.phaseMorningBrief(context.Background(), day1.Add(time.Duration(i)*time.Hour))
+			}
+			assert.Equal(t, 1, strings.Count(buf.String(), line), "three cycles on one UTC day log one line")
+
+			d.phaseMorningBrief(context.Background(), day1.AddDate(0, 0, 1))
+			assert.Equal(t, 2, strings.Count(buf.String(), line), "the next UTC day logs one more")
+			assert.Equal(t, 0, fp.runCalls, "no owner never reaches Run")
+			assert.Equal(t, 0, d.dayPlanAttempts, "no owner consumes no budget")
+			assertNoAutomationRuns(t, database)
+		})
 	}
-	assert.Equal(t, 1, strings.Count(buf.String(), line), "three cycles on one UTC day log one line")
-
-	d.runDayPlanPhases(context.Background(), day1.AddDate(0, 0, 1))
-	assert.Equal(t, 2, strings.Count(buf.String(), line), "the next UTC day logs one more")
-	assert.Equal(t, 0, fp.runCalls, "no owner never reaches Run")
-	assert.Equal(t, 0, d.dayPlanAttempts, "no owner consumes no budget")
 }
 
 // TestOwner02_DaemonBriefingNoOwnerIsBenignAndLoggedOnce: no owner is a
 // benign skip in the daemon — no budget charge, no generate call, no
-// pipeline_runs row, and one log line however many cycles run the same day.
+// pipeline_runs row, no automation run, and one log line however many cycles
+// run the same day. Driven through the Morning brief slot, on the legacy
+// phases and on the built-in alike.
 func TestOwner02_DaemonBriefingNoOwnerIsBenignAndLoggedOnce(t *testing.T) {
 	if time.Now().Hour() < 1 {
 		t.Skip("hour is below briefing threshold")
 	}
-	cfg := &config.Config{
-		Digest:   config.DigestConfig{Enabled: true, Language: "English"},
-		Briefing: config.BriefingConfig{Enabled: true, Hour: 1},
-	}
-	d, database, buf := noOwnerDaemon(t, cfg)
-	gen := &erroringGenerator{}
-	d.SetBriefingPipeline(briefing.New(database, cfg, gen, d.logger))
+	for _, active := range []bool{false, true} {
+		t.Run(fmt.Sprintf("builtin_active=%v", active), func(t *testing.T) {
+			cfg := &config.Config{
+				Digest:   config.DigestConfig{Enabled: true, Language: "English"},
+				Briefing: config.BriefingConfig{Enabled: true, Hour: 1},
+			}
+			d, database, buf := noOwnerDaemon(t, cfg)
+			gen := &erroringGenerator{}
+			d.SetBriefingPipeline(briefing.New(database, cfg, gen, d.logger))
+			if active {
+				wireTestBuiltins(t, d, database, cfg, automations.RealClock{})
+			}
 
-	for range 3 {
-		d.phaseBriefing(context.Background())
-	}
+			for range 3 {
+				d.phaseMorningBrief(context.Background(), time.Now())
+			}
 
-	assert.Equal(t, 1, strings.Count(buf.String(), "daemon: briefing skipped: no owner identity (connect Slack, Google, Jira, Linear or an email account)"))
-	assert.NotContains(t, buf.String(), "briefing error", "no owner is not logged as a failure")
-	assert.Equal(t, 0, gen.calls)
-	assert.Equal(t, 0, d.briefingAttempts)
-	var runs int
-	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM pipeline_runs WHERE pipeline = 'briefing'`).Scan(&runs))
-	assert.Equal(t, 0, runs, "a no-owner skip is not a pipeline run")
+			assert.Equal(t, 1, strings.Count(buf.String(), "daemon: briefing skipped: no owner identity (connect Slack, Google, Jira, Linear or an email account)"))
+			assert.NotContains(t, buf.String(), "briefing error", "no owner is not logged as a failure")
+			assert.Equal(t, 0, gen.calls)
+			assert.Equal(t, 0, d.briefingAttempts)
+			var runs int
+			require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM pipeline_runs WHERE pipeline = 'briefing'`).Scan(&runs))
+			assert.Equal(t, 0, runs, "a no-owner skip is not a pipeline run")
+			assertNoAutomationRuns(t, database)
+		})
+	}
 }
 
 // A real owner-lookup error is a signal and is logged — once per cycle, not
 // once per day-plan phase: the owner is resolved once for both phases.
 func TestDaemon_DayPlanOwnerLookupErrorLoggedOncePerCycle(t *testing.T) {
-	d, database, buf := noOwnerDaemon(t, &config.Config{DayPlan: config.DayPlanConfig{Enabled: true, Hour: 1}})
+	d, database, buf := noOwnerDaemon(t, &config.Config{DayPlan: config.DayPlanConfig{Enabled: true}, Briefing: config.BriefingConfig{Hour: 1}})
 	fp := &fakeDayPlanRunner{}
 	d.SetDayPlanPipeline(fp)
 	require.NoError(t, database.Close()) // every query now errors

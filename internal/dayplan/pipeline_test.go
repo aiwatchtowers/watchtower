@@ -26,7 +26,6 @@ func (m *mockGenerator) Generate(_ context.Context, _, _, _ string) (string, *di
 func pipeTestCfg() *config.Config {
 	return &config.Config{DayPlan: config.DayPlanConfig{
 		Enabled:           true,
-		Hour:              8,
 		WorkingHoursStart: "09:00",
 		WorkingHoursEnd:   "19:00",
 		MaxTimeblocks:     3,
