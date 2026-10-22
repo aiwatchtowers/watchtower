@@ -249,6 +249,27 @@ final class BuiltinAutomationCardModelTests: XCTestCase {
         XCTAssertTrue(BuiltinAutomationCardModel.isClock("23:59"))
     }
 
+    /// The counts: whole numbers from 0, and the backlog's at-least never
+    /// above its at-most (edited or as shown); no save while it is.
+    func testCountFieldsAndBacklogOrder() async throws {
+        let card = model(VerbRunner(["show": .success(try Self.show())]))
+        await card.load()
+        card.parameterEdits = ["day_plan.max_timeblocks": "-1"]
+        XCTAssertEqual(card.invalidParameter, "Time blocks at most: use a whole number, 0 or more")
+        card.parameterEdits = ["day_plan.max_timeblocks": "0", "day_plan.min_backlog": "8"]
+        XCTAssertNil(card.invalidParameter, "8 ≤ the shown 8")
+        card.parameterEdits = ["day_plan.min_backlog": "9"]
+        XCTAssertEqual(card.invalidParameter, "Backlog items at least can't be more than backlog items at most")
+        card.parameterEdits = ["day_plan.max_backlog": "2"]
+        XCTAssertNotNil(card.invalidParameter, "the shown at-least 3 > the edited at-most 2")
+        var wrote = false
+        await card.saveParameters { _ in
+            wrote = true
+            return nil
+        }
+        XCTAssertFalse(wrote, "an invalid edit is never saved")
+    }
+
     func testSaveParametersWritesTheEditsOnceAndKeepsThemOnFailure() async throws {
         let card = model(VerbRunner(["show": .success(try Self.show())]))
         await card.load()

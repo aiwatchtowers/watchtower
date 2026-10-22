@@ -279,7 +279,8 @@ final class ConfigService {
 
     /// The Morning brief card's When **Save** (`show`'s
     /// `builtin.parameters[].key`, twin: Go `builtin.Param` keys): the only
-    /// writer of `briefing.hour` and `day_plan.working_hours_start/end`.
+    /// writer of `briefing.hour`, `day_plan.working_hours_start/end`,
+    /// `day_plan.max_timeblocks` and `day_plan.min_backlog/max_backlog`.
     /// Re-reads the file and writes just these keys, so nothing else this
     /// instance holds is written. Every value is checked before anything is.
     func saveBuiltinParameters(_ values: [String: String]) throws {
@@ -293,6 +294,12 @@ final class ConfigService {
             case "day_plan.working_hours_start", "day_plan.working_hours_end":
                 guard BuiltinAutomationCardModel.isClock(value) else { throw BuiltinParameterError(key: key) }
                 (section, field, stored) = ("day_plan", String(key.dropFirst("day_plan.".count)), value)
+            case "day_plan.max_timeblocks", BuiltinAutomationCardModel.minBacklogKey,
+                 BuiltinAutomationCardModel.maxBacklogKey:
+                guard BuiltinAutomationCardModel.isCount(value), let count = Int(value) else {
+                    throw BuiltinParameterError(key: key)
+                }
+                (section, field, stored) = ("day_plan", String(key.dropFirst("day_plan.".count)), count)
             default:
                 throw BuiltinParameterError(key: key)
             }
@@ -300,12 +307,21 @@ final class ConfigService {
             dict[field] = stored
             yaml[section] = dict
         }
+        // The backlog's at-least never above its at-most, as the file will hold them.
+        let planned = (yaml["day_plan"] as? [String: Any]) ?? [:]
+        // Absent keys read as Go's defaults (3 and 8), as `reload()` does.
+        if (planned["min_backlog"] as? Int ?? 3) > (planned["max_backlog"] as? Int ?? 8) {
+            throw BuiltinParameterError(key: BuiltinAutomationCardModel.minBacklogKey)
+        }
         try write(yaml)
         rawYAML = yaml
         if let hour = (yaml["briefing"] as? [String: Any])?["hour"] as? Int { briefingHour = hour }
         let dayPlan = (yaml["day_plan"] as? [String: Any]) ?? [:]
         if let start = dayPlan["working_hours_start"] as? String { workingHoursStart = start }
         if let end = dayPlan["working_hours_end"] as? String { workingHoursEnd = end }
+        if let count = dayPlan["max_timeblocks"] as? Int { maxTimeblocks = count }
+        if let count = dayPlan["min_backlog"] as? Int { minBacklog = count }
+        if let count = dayPlan["max_backlog"] as? Int { maxBacklog = count }
     }
 
     /// Writes the whole file, owner-only (it holds tokens).

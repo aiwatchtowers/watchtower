@@ -219,6 +219,31 @@ struct ConfigServiceTests {
         #expect(svc2.activeWorkspace == "keep-me")
     }
 
+    @Test("The card's count fields save as integers; a backlog at-least above its at-most is refused")
+    func builtinCountParametersSave() throws {
+        let path = makeTempConfig("day_plan:\n  max_backlog: 6\n")
+        let svc = ConfigService(configPath: path)
+        try svc.saveBuiltinParameters([
+            "day_plan.max_timeblocks": "2", "day_plan.min_backlog": "4", "day_plan.max_backlog": "7"
+        ])
+        let raw = try String(contentsOfFile: path, encoding: .utf8)
+        let dayPlan = (try Yams.load(yaml: raw) as? [String: Any])?["day_plan"] as? [String: Any]
+        #expect(dayPlan?["max_timeblocks"] as? Int == 2, "an integer, not text; got: \(raw)")
+        #expect(dayPlan?["min_backlog"] as? Int == 4)
+        #expect(dayPlan?["max_backlog"] as? Int == 7)
+        #expect(svc.maxTimeblocks == 2)
+
+        #expect(throws: ConfigService.BuiltinParameterError.self) {
+            try svc.saveBuiltinParameters(["day_plan.min_backlog": "8"])
+        }
+        #expect(throws: ConfigService.BuiltinParameterError.self) {
+            try svc.saveBuiltinParameters(["day_plan.max_timeblocks": "-1"])
+        }
+        let reloaded = ConfigService(configPath: path)
+        #expect(reloaded.minBacklog == 4, "a refused save writes nothing")
+        #expect(reloaded.maxTimeblocks == 2)
+    }
+
     /// Settings keeps one ConfigService for the window's life: its Save must
     /// not put back the hour and working hours the card saved meanwhile.
     @Test("A Settings save after a card save keeps the card's When values")
