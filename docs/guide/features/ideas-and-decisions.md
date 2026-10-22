@@ -29,7 +29,7 @@ Click one to see its essence, a thumbs-up and thumbs-down, and every mention wit
 - **Not now** parks an idea for **1 week**, **1 month** or **No date**. The date is only a note: nothing brings it back on that day, only a new mention does. **Activate** returns it.
 - **Make a Task** turns an idea into a target and opens it. **Drop** closes it.
 - **Merge…** folds duplicates together; "Looks similar to #N" offers a suggested one.
-- A decision shows its status, with **Supersede** and **Reverse** while active, or **Activate** when it was rejected, dropped or put off.
+- A decision shows its status, with **Supersede** and **Reverse** while active (**Reverse** asks inline first), or **Activate** when it was rejected, dropped or put off.
 - The trash button deletes the item for good, after an inline **Delete**, together with its mentions, its chat and anything merged into it.
 
 Converting or merging never deletes the original; it stays linked to the target or item it became. Deleting a mined entry can let the miner propose it again, so use **Drop** or **Reject** to say no and have it stay said.
