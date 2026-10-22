@@ -115,10 +115,11 @@ func (db *DB) GetBuiltinAutomation(builtinID string) (*Automation, error) {
 
 // SetBuiltinEnabled mirrors the on/off state of built-in builtinID into its
 // row. It only writes enabled (and updated_at): disabled_reason and the
-// schedule columns are left alone. ErrAutomationNotFound when there is no row.
+// schedule columns are left alone, and an unchanged value writes nothing.
+// ErrAutomationNotFound when there is no row.
 func (db *DB) SetBuiltinEnabled(builtinID string, on bool, now time.Time) error {
-	res, err := db.Exec(`UPDATE automations SET enabled = ?, updated_at = ? WHERE builtin_id = ?`,
-		on, formatAutomationTime(now), builtinID)
+	res, err := db.Exec(`UPDATE automations SET enabled = ?, updated_at = ? WHERE builtin_id = ? AND enabled != ?`,
+		on, formatAutomationTime(now), builtinID, on)
 	if err != nil {
 		return fmt.Errorf("setting built-in automation %s enabled=%v: %w", builtinID, on, err)
 	}
@@ -126,10 +127,11 @@ func (db *DB) SetBuiltinEnabled(builtinID string, on bool, now time.Time) error 
 	if err != nil {
 		return fmt.Errorf("setting built-in automation %s enabled=%v: %w", builtinID, on, err)
 	}
-	if n == 0 {
-		return fmt.Errorf("built-in automation %s: %w", builtinID, ErrAutomationNotFound)
+	if n == 1 {
+		return nil
 	}
-	return nil
+	_, err = db.GetBuiltinAutomation(builtinID) // unchanged, or no row
+	return err
 }
 
 // TakeQueuedBuiltinRun returns the oldest queued manual run of automationID
@@ -209,9 +211,12 @@ type BuiltinCostSum struct {
 // BuiltinCost sums automationID's reported run costs (automation_runs.
 // reported_cost_usd, dry runs left out) from the moment since on, plus the
 // cost_usd of the pipeline_runs of pipelines from that moment on local dates
-// before the built-in's first run: the old pipeline's cost before the
-// built-in took over, never counted twice for one day. With no run yet every
-// pipeline row from that moment on counts.
+// before the built-in's first succeeded run (any trigger). After that run the
+// primitives' usage lands in reported_cost_usd, so counting the pipeline rows
+// of that day or later would count it twice; a failed run does not cut the
+// old pipeline's cost off. With no succeeded run every pipeline row from that
+// moment on counts. Reported is true when a counted run carries a cost or a
+// counted pipeline row has cost_usd > 0 (a zero row reported nothing).
 func (db *DB) BuiltinCost(automationID int64, pipelines []string, since time.Time) (BuiltinCostSum, error) {
 	var (
 		sum      BuiltinCostSum
@@ -225,8 +230,8 @@ func (db *DB) BuiltinCost(automationID int64, pipelines []string, since time.Tim
 		   AND reported_cost_usd IS NOT NULL AND COALESCE(started_at, queued_at) >= ?),
 		(SELECT COUNT(*) FROM automation_runs WHERE automation_id = ? AND trigger != 'dry_run'
 		   AND reported_cost_usd IS NOT NULL AND COALESCE(started_at, queued_at) >= ?),
-		(SELECT MIN(started_at) FROM automation_runs WHERE automation_id = ? AND trigger != 'dry_run'
-		   AND started_at IS NOT NULL)`,
+		(SELECT MIN(COALESCE(started_at, queued_at)) FROM automation_runs WHERE automation_id = ?
+		   AND status = 'succeeded')`,
 		automationID, sinceStamp, automationID, sinceStamp, automationID).Scan(&runUSD, &runCount, &first)
 	if err != nil {
 		return sum, fmt.Errorf("reading the run costs of automation %d: %w", automationID, err)
@@ -239,12 +244,12 @@ func (db *DB) BuiltinCost(automationID int64, pipelines []string, since time.Tim
 	if first.Valid {
 		t, err := time.Parse(automationTimeLayout, first.String)
 		if err != nil {
-			return sum, fmt.Errorf("automation %d first run started_at %q: %w", automationID, first.String, err)
+			return sum, fmt.Errorf("automation %d first succeeded run at %q: %w", automationID, first.String, err)
 		}
 		local := t.Local()
 		until = formatAutomationTime(time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.Local))
 	}
-	q := `SELECT COALESCE(SUM(cost_usd), 0), COUNT(*) FROM pipeline_runs
+	q := `SELECT COALESCE(SUM(cost_usd), 0), COUNT(CASE WHEN cost_usd > 0 THEN 1 END) FROM pipeline_runs
 		WHERE started_at >= ? AND (? = '' OR started_at < ?) AND pipeline IN (` + placeholders(len(pipelines)) + `)`
 	args := []any{sinceStamp, until, until}
 	for _, p := range pipelines {

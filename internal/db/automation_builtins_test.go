@@ -176,6 +176,19 @@ func TestBuiltin_SetEnabledMirrorsOnly(t *testing.T) {
 	assert.Equal(t, "runaway", a.DisabledReason)
 	assert.Nil(t, a.LastScheduledFor)
 	require.ErrorIs(t, d.SetBuiltinEnabled("nope", true, time.Now()), ErrAutomationNotFound)
+	require.ErrorIs(t, d.SetBuiltinEnabled("nope", false, time.Now()), ErrAutomationNotFound)
+
+	// An unchanged value writes nothing (updated_at stays) and is no error.
+	_, err = d.Exec(`UPDATE automations SET updated_at = '2026-01-01T00:00:00Z' WHERE id = ?`, id)
+	require.NoError(t, err)
+	require.NoError(t, d.SetBuiltinEnabled("morning-brief", true, time.Now()))
+	a = mustGetAutomation(t, d, id)
+	assert.True(t, a.Enabled)
+	assert.Equal(t, "2026-01-01T00:00:00Z", formatAutomationTime(a.UpdatedAt))
+	require.NoError(t, d.SetBuiltinEnabled("morning-brief", false, time.Now()))
+	a = mustGetAutomation(t, d, id)
+	assert.False(t, a.Enabled)
+	assert.NotEqual(t, "2026-01-01T00:00:00Z", formatAutomationTime(a.UpdatedAt))
 }
 
 func TestBuiltinMigration_RecordCountsAttempts(t *testing.T) {
@@ -220,13 +233,35 @@ func TestBuiltinCost_PipelineRunsOnlyBeforeFirstRun(t *testing.T) {
 		at(-3, 7), at(0, 7), at(-3, 8), at(-10, 7))
 	require.NoError(t, err)
 	_, err = d.Exec(`INSERT INTO automation_runs (automation_id, trigger, status, queued_at, started_at, reported_cost_usd)
-		VALUES (?, 'sync', 'succeeded', ?, ?, 0.10), (?, 'dry_run', 'succeeded', ?, ?, 5.0)`,
-		id, at(0, 8), at(0, 8), id, at(-5, 8), at(-5, 8))
+		VALUES (?, 'sync', 'succeeded', ?, ?, 0.10), (?, 'dry_run', 'failed', ?, ?, 5.0),
+		       (?, 'sync', 'failed', ?, ?, NULL)`,
+		id, at(0, 8), at(0, 8), id, at(-5, 8), at(-5, 8), id, at(-4, 8), at(-4, 8))
 	require.NoError(t, err)
 
 	sum, err = d.BuiltinCost(id, []string{"briefing"}, day0.AddDate(0, 0, -7))
 	require.NoError(t, err)
-	assert.InDelta(t, 0.35, sum.USD, 1e-9, "day −3 pipeline cost plus the run's $0.10")
+	assert.InDelta(t, 0.35, sum.USD, 1e-9,
+		"day −3 pipeline cost plus the run's $0.10: the failed day −4 run cuts nothing off, the dry run costs nothing")
+	assert.True(t, sum.Reported)
+}
+
+func TestBuiltinCost_ZeroCostPipelineRowsAreNotReported(t *testing.T) {
+	d := openTestDB(t)
+	id := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	since := time.Now().AddDate(0, 0, -7)
+	_, err := d.Exec(`INSERT INTO pipeline_runs (pipeline, cost_usd, started_at) VALUES ('briefing', 0, ?), ('briefing', 0, ?)`,
+		formatAutomationTime(time.Now().AddDate(0, 0, -2)), formatAutomationTime(time.Now().AddDate(0, 0, -1)))
+	require.NoError(t, err)
+	sum, err := d.BuiltinCost(id, []string{"briefing"}, since)
+	require.NoError(t, err)
+	assert.Equal(t, BuiltinCostSum{}, sum, "zero-cost rows and no runs: cost not reported")
+
+	_, err = d.Exec(`INSERT INTO pipeline_runs (pipeline, cost_usd, started_at) VALUES ('briefing', 0.2, ?)`,
+		formatAutomationTime(time.Now().AddDate(0, 0, -3)))
+	require.NoError(t, err)
+	sum, err = d.BuiltinCost(id, []string{"briefing"}, since)
+	require.NoError(t, err)
+	assert.InDelta(t, 0.2, sum.USD, 1e-9)
 	assert.True(t, sum.Reported)
 }
 
