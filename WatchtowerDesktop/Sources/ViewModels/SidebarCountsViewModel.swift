@@ -5,6 +5,9 @@ import WatchtowerCore
 @MainActor
 @Observable
 final class SidebarCountsViewModel {
+    /// The owner-gated track counts (OWNER-01's
+    /// `testOwner01GoogleOnlyInstallCountsTracks`). No sidebar badge reads
+    /// them since the Tracks tab became an Inbox filter (C1).
     var updatedTrackCount: Int = 0
     var totalTrackCount: Int = 0
     var unreadDigestCount: Int = 0
@@ -12,7 +15,6 @@ final class SidebarCountsViewModel {
     var unreadStreamCount: Int = 0
     /// Unread decisions in the ledger (Digests → Decisions tab).
     var unreadDecisionCount: Int = 0
-    var unreadBriefingCount: Int = 0
     var recommendationCount: Int = 0
     var activeTaskCount: Int = 0
     var overdueTaskCount: Int = 0
@@ -22,9 +24,6 @@ final class SidebarCountsViewModel {
 
     /// Pending memory dispute flags — beliefs waiting for the owner's verdict.
     var memoryDisputedCount: Int = 0
-
-    /// Ideas & Decisions awaiting owner review — freshly proposed, or flagged.
-    var ideasCount: Int = 0
 
     /// 1 while a finished absence recap is still waiting for "I'm caught up",
     /// 0 otherwise — one recap waiting is the whole signal, so this never counts
@@ -182,16 +181,14 @@ final class SidebarCountsViewModel {
         let totalTrackCount: Int
         let unreadDigestCount: Int
         // var (not let): user-independent, so the zero path (no workspace user
-        // yet) still surfaces them, like inboxStripCount/ideasCount below.
+        // yet) still surfaces them, like inboxStripCount below.
         var unreadStreamCount: Int
         var unreadDecisionCount: Int
-        let unreadBriefingCount: Int
         let recommendationCount: Int
         let activeTaskCount: Int
         let overdueTaskCount: Int
         var inboxStripCount: Int
         var memoryDisputedCount: Int
-        var ideasCount: Int
         var unacknowledgedRecapCount: Int
 
         static let zero = Self(
@@ -200,13 +197,11 @@ final class SidebarCountsViewModel {
             unreadDigestCount: 0,
             unreadStreamCount: 0,
             unreadDecisionCount: 0,
-            unreadBriefingCount: 0,
             recommendationCount: 0,
             activeTaskCount: 0,
             overdueTaskCount: 0,
             inboxStripCount: 0,
             memoryDisputedCount: 0,
-            ideasCount: 0,
             unacknowledgedRecapCount: 0
         )
     }
@@ -228,8 +223,6 @@ final class SidebarCountsViewModel {
                 let stripCount = try ActionStripViewModel.badgeCount(db, nowUTC: nowUTC)
                 // Memory disputes, tolerant of a pre-memory schema.
                 let disputed = (try? MemoryQueries.fetchDisputedCount(db)) ?? 0
-                // Ideas awaiting review, tolerant of a pre-ideas-registry schema.
-                let ideasForReview = (try? IdeaQueries.countForReview(db)) ?? 0
                 // Digests-tab feed counts, tolerant of a pre-stream/ideas schema.
                 // User-independent, so surfaced even before a workspace user.
                 let unreadStream = (try? StreamDigestQueries.unreadCount(db)) ?? 0
@@ -241,7 +234,6 @@ final class SidebarCountsViewModel {
                     zero.unacknowledgedRecapCount = waitingRecap
                     zero.inboxStripCount = stripCount
                     zero.memoryDisputedCount = disputed
-                    zero.ideasCount = ideasForReview
                     zero.unreadStreamCount = unreadStream
                     zero.unreadDecisionCount = unreadDecision
                     return zero
@@ -270,13 +262,11 @@ final class SidebarCountsViewModel {
                     unreadDigestCount: try DigestQueries.unreadDigestCount(db),
                     unreadStreamCount: unreadStream,
                     unreadDecisionCount: unreadDecision,
-                    unreadBriefingCount: try BriefingQueries.unreadCount(db),
                     recommendationCount: recCount,
                     activeTaskCount: taskCounts.active,
                     overdueTaskCount: taskCounts.overdue,
                     inboxStripCount: stripCount,
                     memoryDisputedCount: disputed,
-                    ideasCount: ideasForReview,
                     unacknowledgedRecapCount: waitingRecap
                 )
             }
@@ -292,13 +282,11 @@ final class SidebarCountsViewModel {
         unreadDigestCount = c.unreadDigestCount
         unreadStreamCount = c.unreadStreamCount
         unreadDecisionCount = c.unreadDecisionCount
-        unreadBriefingCount = c.unreadBriefingCount
         recommendationCount = c.recommendationCount
         activeTaskCount = c.activeTaskCount
         overdueTaskCount = c.overdueTaskCount
         inboxStripCount = c.inboxStripCount
         memoryDisputedCount = c.memoryDisputedCount
-        ideasCount = c.ideasCount
         unacknowledgedRecapCount = c.unacknowledgedRecapCount
     }
 }

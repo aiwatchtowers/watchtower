@@ -14,12 +14,35 @@ extension AppState {
         selectedDestination = .digests
     }
 
-    /// Unlike its siblings there is no pending field: `ideasViewModel` is
-    /// AppState-owned and exists whenever the DB is open, so the selection is
-    /// set on it directly and survives the Ideas view not being mounted yet.
-    func navigateToIdea(_ ideaID: Int) {
-        ideasViewModel?.reveal(ideaID)
-        selectedDestination = .ideas
+    /// The Inbox on `route`'s filter with its card open (old screen links,
+    /// Home, notifications, the four helpers below). Does nothing while the
+    /// Inbox itself is hidden (no source connected): a link must not land on
+    /// a tab the sidebar does not show. The returned task is the Inbox's
+    /// read and selection, for a test to await.
+    @discardableResult
+    func openInbox(_ route: InboxRoute) -> Task<Void, Never>? {
+        guard isInboxVisible else { return nil }
+        selectedDestination = .inbox
+        guard let inbox = actionStripViewModel else { return nil }
+        return Task { await inbox.open(route.filter, select: route.selection) }
+    }
+
+    private var isInboxVisible: Bool {
+        SidebarDestination.inbox.isVisible(
+            disabledFeatures: featureVisibility.disabledFeatureIDs,
+            connected: featureVisibility.connectedSources
+        )
+    }
+
+    /// Today's local day, "YYYY-MM-DD" — the Inbox's own day key.
+    nonisolated static func inboxToday(_ now: Date = Date()) -> String {
+        HomeFeedBuilder.dayString(now, calendar: .current)
+    }
+
+    /// The idea's card in the Inbox's Ideas filter.
+    @discardableResult
+    func navigateToIdea(_ ideaID: Int) -> Task<Void, Never>? {
+        openInbox(InboxRoute(filter: .ideas, selection: .idea(ideaID)))
     }
 
     func navigateToTarget(_ targetID: Int) {
@@ -27,9 +50,21 @@ extension AppState {
         selectedDestination = .targets
     }
 
-    func navigateToBriefing(_ briefingID: Int) {
-        pendingBriefingID = briefingID
-        selectedDestination = .briefings
+    /// The briefing's day card in the Inbox's Day filter: the Inbox shows at
+    /// once, the briefing's date is read off the main thread, then its card
+    /// opens; a briefing that is gone (or no database) opens today's card.
+    @discardableResult
+    func navigateToBriefing(_ briefingID: Int) -> Task<Void, Never>? {
+        guard isInboxVisible else { return nil }
+        selectedDestination = .inbox
+        let pool = databaseManager?.dbPool
+        return Task {
+            var date: String?
+            if let pool {
+                date = try? await pool.read { try BriefingQueries.fetchByID($0, id: briefingID)?.date }
+            }
+            await navigateToDayPlan(date)?.value
+        }
     }
 
     func navigateToCalendarEvent(_ eventID: String) {
@@ -37,14 +72,16 @@ extension AppState {
         selectedDestination = .calendar
     }
 
-    func navigateToDayPlan(_ date: String? = nil) {
-        pendingDayPlanDate = date
-        selectedDestination = .dayPlan
+    /// The day card of `date` ("YYYY-MM-DD", today when nil) in the Day filter.
+    @discardableResult
+    func navigateToDayPlan(_ date: String? = nil) -> Task<Void, Never>? {
+        openInbox(InboxRoute(filter: .day, selection: .day(date ?? Self.inboxToday())))
     }
 
-    func navigateToTrack(_ trackID: Int) {
-        pendingTrackID = trackID
-        selectedDestination = .tracks
+    /// The track's card in the Inbox's Tracks filter.
+    @discardableResult
+    func navigateToTrack(_ trackID: Int) -> Task<Void, Never>? {
+        openInbox(InboxRoute(filter: .tracks, selection: .track(trackID)))
     }
 
     func navigateToPerson(_ userID: String) {
@@ -70,11 +107,12 @@ extension AppState {
         case .briefingAttention:
             // briefing_attention source_id points at the attention item's inner source
             // (track/digest/people/task), not a briefings.id. Route to the plan's linked
-            // briefing, or fall back to the briefings list.
-            if let plan = dayPlanViewModel?.plan, plan.id == item.dayPlanId, let bid = plan.briefingId {
+            // briefing, or fall back to the plan's own day card.
+            let plan = dayPlanViewModel?.plan.flatMap { $0.id == item.dayPlanId ? $0 : nil }
+            if let bid = plan?.briefingId {
                 navigateToBriefing(Int(bid))
             } else {
-                selectedDestination = .briefings
+                navigateToDayPlan(plan?.planDate)
             }
         case .jira:
             selectedDestination = .boards
@@ -92,7 +130,7 @@ extension AppState {
     func openBriefingLink(_ link: BriefingLink) {
         switch link {
         case .track(let id):
-            if let id { navigateToTrack(id) } else { selectedDestination = .tracks }
+            if let id { navigateToTrack(id) } else { openInbox(InboxRoute(filter: .tracks)) }
         case .digest(let id):
             if let id { navigateToDigest(id) } else { selectedDestination = .digests }
         case .person(let userID):

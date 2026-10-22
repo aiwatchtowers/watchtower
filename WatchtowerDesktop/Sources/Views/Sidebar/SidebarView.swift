@@ -77,18 +77,15 @@ struct SidebarView: View {
     }
 
     private var counts: SidebarCountsViewModel? { appState.sidebarCountsViewModel }
-    private var updatedTrackCount: Int { counts?.updatedTrackCount ?? 0 }
     private var unreadDigestCount: Int { counts?.unreadDigestCount ?? 0 }
     /// The Digests badge: Slack + stream + decision unread, matching the
     /// Digests tab header (see `SidebarCountsViewModel.digestsBadgeCount`).
     private var digestsBadgeCount: Int { counts?.digestsBadgeCount ?? 0 }
-    private var unreadBriefingCount: Int { counts?.unreadBriefingCount ?? 0 }
     private var recommendationCount: Int { counts?.recommendationCount ?? 0 }
     private var activeTaskCount: Int { counts?.activeTaskCount ?? 0 }
     private var overdueTaskCount: Int { counts?.overdueTaskCount ?? 0 }
     private var inboxStripCount: Int { counts?.inboxStripCount ?? 0 }
     private var memoryDisputedCount: Int { counts?.memoryDisputedCount ?? 0 }
-    private var ideasCount: Int { counts?.ideasCount ?? 0 }
     private var catchUpTotalCount: Int { counts?.catchUpTotalCount ?? 0 }
 
     var body: some View {
@@ -237,13 +234,7 @@ struct SidebarView: View {
 
     @ViewBuilder
     private func badgeCount(for item: SidebarDestination) -> some View {
-        if item == .dayPlan {
-            if appState.dayPlanViewModel?.hasConflicts == true {
-                Circle()
-                    .fill(Color.red)
-                    .frame(width: 6, height: 6)
-            }
-        } else if item == .calendar {
+        if item == .calendar {
             if !connectedSources.calendar {
                 Image(systemName: "exclamationmark.circle.fill")
                     .font(.caption)
@@ -274,11 +265,8 @@ struct SidebarView: View {
     private func count(for item: SidebarDestination) -> Int {
         switch item {
         case .catchUp: catchUpTotalCount
-        case .briefings: unreadBriefingCount
         case .inbox: inboxStripCount
-        case .ideas: ideasCount
         case .targets: overdueTaskCount > 0 ? overdueTaskCount : activeTaskCount
-        case .tracks: updatedTrackCount
         case .workbench: appState.workbenchesViewModel?.badgeCount ?? 0
         // Polled by its own view model: the daemon writes these rows from
         // another process, which the counts VM's observation never sees.
@@ -330,7 +318,7 @@ struct SidebarView: View {
     }
 
     /// Color of the collapsed-header badge: red if any visible child is a red source
-    /// (digests/briefings/statistics/catch-up), otherwise blue. The Inbox is not
+    /// (digests/statistics/catch-up), otherwise blue. The Inbox is not
     /// one: its badge counts the action strip, and the high-priority inbox_items
     /// that used to turn it red are no longer shown on that tab.
     private func sectionBadgeColor(_ section: SidebarSection) -> Color {
@@ -338,7 +326,6 @@ struct SidebarView: View {
             in: section, hidden: hiddenItems, disabledFeatures: disabledFeatures, connected: connectedSources
         )
         if visible.contains(.digests), digestsBadgeCount > 0 { return .red }
-        if visible.contains(.briefings), unreadBriefingCount > 0 { return .red }
         if visible.contains(.statistics), recommendationCount > 0 { return .red }
         if visible.contains(.catchUp), catchUpTotalCount > 0 { return .red }
         return .blue
@@ -473,7 +460,7 @@ struct SidebarView: View {
     /// in the rail. Targets turn red once anything is overdue.
     static func badgeColor(for item: SidebarDestination, overdue: Bool) -> Color {
         switch item {
-        case .tracks, .memory, .ideas, .automations: .orange
+        case .memory, .automations: .orange
         case .inbox, .workbench: .blue
         case .targets: overdue ? .red : .blue
         default: .red
@@ -481,17 +468,15 @@ struct SidebarView: View {
     }
 
     /// The rail's dot for an item, or nil for none — the menu's badge rule
-    /// without the number: Day Plan's conflict dot, Calendar's not-connected
-    /// indicator, otherwise `badgeColor` whenever the count is positive.
+    /// without the number: Calendar's not-connected indicator, otherwise
+    /// `badgeColor` whenever the count is positive.
     static func railDotColor(
         for item: SidebarDestination,
         count: Int,
         overdue: Bool,
-        dayPlanHasConflicts: Bool,
         calendarConnected: Bool
     ) -> Color? {
         switch item {
-        case .dayPlan: dayPlanHasConflicts ? .red : nil
         case .calendar: calendarConnected ? nil : .orange
         default: count > 0 ? badgeColor(for: item, overdue: overdue) : nil
         }
@@ -565,7 +550,6 @@ struct SidebarView: View {
             for: item,
             count: count,
             overdue: overdueTaskCount > 0,
-            dayPlanHasConflicts: appState.dayPlanViewModel?.hasConflicts == true,
             calendarConnected: connectedSources.calendar
         )
         var help = Self.railHelp(title: item.title, count: count)

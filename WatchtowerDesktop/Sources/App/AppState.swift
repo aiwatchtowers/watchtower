@@ -405,18 +405,9 @@ final class AppState {
     /// Set to navigate to a specific target from anywhere in the app.
     var pendingTargetID: Int?
 
-    /// Set to navigate to a specific briefing from anywhere in the app.
-    var pendingBriefingID: Int?
-
     /// Set to open a specific calendar event from anywhere in the app;
     /// `CalendarEventsView` consumes and clears it.
     var pendingCalendarEventID: String?
-
-    /// Set to navigate to the day plan for a specific date from anywhere in the app.
-    var pendingDayPlanDate: String?
-
-    /// Set to focus a specific track from anywhere in the app.
-    var pendingTrackID: Int?
 
     /// Set to focus a specific person card from anywhere in the app.
     var pendingPersonUserID: String?
@@ -1586,8 +1577,8 @@ final class AppState {
     }
 
     /// Not marked `private` (mirrors `initSecretaryProfile` below), leaving the
-    /// same XCTest entry point open for `ideasViewModel` (used by
-    /// `IdeaNavigationTests` to drive `navigateToIdea`).
+    /// same XCTest entry point open for `ideasViewModel` (the Inbox's Ideas
+    /// filter reads it).
     func initIdeas(dbManager: DatabaseManager) {
         let vm = IdeasViewModel(dbManager: dbManager)
         vm.startObserving()
