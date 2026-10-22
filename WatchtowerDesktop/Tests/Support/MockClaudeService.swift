@@ -78,6 +78,18 @@ package final class MockClaudeService: AIServiceProtocol, @unchecked Sendable {
         self.error = nil
     }
 
+    /// Create a mock that answers each call from `eventSequence` in turn, like
+    /// `init(eventSequence:)`. A stream started before `release()` yields its
+    /// events and then stays OPEN until `release()` finishes it; one started
+    /// after `release()` finishes straight away. Use it to keep a first turn
+    /// running for as long as the test needs it to.
+    package init(eventSequence: [[StreamEvent]], thenAwaitsRelease: Bool) {
+        self.events = []
+        self.eventSequence = eventSequence
+        self.error = nil
+        self.gated = thenAwaitsRelease
+    }
+
     package init(error: any Error) {
         self.events = []
         self.eventSequence = []
