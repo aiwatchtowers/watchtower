@@ -22,46 +22,6 @@ final class TracksViewModel {
     var jiraSiteURL: String?
     var trackJiraIssues: [Int: [JiraIssue]] = [:]
 
-    // Filters
-    var priorityFilter: String?
-    var channelFilter: String?
-    var tagFilter: String?
-    var ownershipFilter: String?
-    var jiraFilter: JiraFilter = .all
-    var showRead: Bool = false
-    var showDismissed: Bool = false
-    var sortOrder: SortOrder = .updatedNewest
-
-    /// Multi-select for bulk dismiss: while on, a row tap toggles its id.
-    var isSelecting = false
-    var selectedIDs: Set<Int> = []
-    /// A non-error outcome of a bulk dismiss the owner should see ("nothing
-    /// to dismiss", "3 were already gone"); shown like `errorMessage`.
-    var notice: String?
-
-    /// Every track the list shows right now, across its three sections.
-    private var visibleTracks: [Track] { customTracks + updatedTracks + allTracks }
-
-    enum JiraFilter: String, CaseIterable {
-        case all = "All"
-        case withJira = "With Jira"
-        case withoutJira = "Without Jira"
-    }
-
-    enum SortOrder: String, CaseIterable {
-        case updatedNewest = "Newest first"
-        case updatedOldest = "Oldest first"
-        case createdNewest = "Created — newest"
-        case createdOldest = "Created — oldest"
-
-        var systemImage: String {
-            switch self {
-            case .updatedNewest, .createdNewest: return "arrow.down"
-            case .updatedOldest, .createdOldest: return "arrow.up"
-            }
-        }
-    }
-
     private(set) var workspaceDomain: String?
     private(set) var slackLinks: SlackLinkResolver?
     private let dbManager: DatabaseManager
@@ -107,13 +67,7 @@ final class TracksViewModel {
             let result = try dbManager.dbPool.read { db in
                 let ws = try WorkspaceQueries.fetchWorkspace(db)
                 let counts = try TrackQueries.fetchCounts(db)
-                let all = try TrackQueries.fetchAll(
-                    db,
-                    priority: self.priorityFilter,
-                    channelID: self.channelFilter,
-                    ownership: self.ownershipFilter,
-                    includeDismissed: self.showDismissed
-                )
+                let all = try TrackQueries.fetchAll(db)
                 let taskRows = try Row.fetchAll(
                     db,
                     sql: """
@@ -142,32 +96,14 @@ final class TracksViewModel {
                 loadJiraData(trackIDs: tracks.map(\.id))
             }
 
-            // Apply tag filter in memory (tags is JSON array)
-            if let tagFilter, !tagFilter.isEmpty {
-                tracks = tracks.filter { $0.decodedTags.contains(tagFilter) }
-            }
-
-            // Apply Jira filter
-            switch jiraFilter {
-            case .all:
-                break
-            case .withJira:
-                tracks = tracks.filter { !(trackJiraIssues[$0.id]?.isEmpty ?? true) }
-            case .withoutJira:
-                tracks = tracks.filter { trackJiraIssues[$0.id]?.isEmpty ?? true }
-            }
-
-            tracks = applySort(tracks)
             // Custom tracks are pinned in their own section — partition them out
             // of the auto sections so they aren't listed twice.
             customTracks = tracks.filter { $0.isCustom }
             let autoTracks = tracks.filter { !$0.isCustom }
             updatedTracks = autoTracks.filter { $0.hasUpdates }
             let rest = autoTracks.filter { !$0.hasUpdates }
-            // Hide read tracks unless showRead is enabled
-            allTracks = showRead ? rest : rest.filter { $0.isUnread }
-            // A selection never reaches rows a filter change just hid.
-            selectedIDs.formIntersection(visibleTracks.map(\.id))
+            // Read tracks stay hidden
+            allTracks = rest.filter { $0.isUnread }
             totalCount = result.3.total
             updatedCount = result.3.updated
             refreshUserNameCache(tracks: tracks)
@@ -183,19 +119,6 @@ final class TracksViewModel {
 
     func taskCount(for trackID: Int) -> Int {
         trackTaskCounts[trackID] ?? 0
-    }
-
-    private func applySort(_ tracks: [Track]) -> [Track] {
-        switch sortOrder {
-        case .updatedNewest:
-            return tracks.sorted { $0.updatedDate > $1.updatedDate }
-        case .updatedOldest:
-            return tracks.sorted { $0.updatedDate < $1.updatedDate }
-        case .createdNewest:
-            return tracks.sorted { $0.createdDate > $1.createdDate }
-        case .createdOldest:
-            return tracks.sorted { $0.createdDate < $1.createdDate }
-        }
     }
 
     func markRead(_ track: Track) async {
@@ -280,62 +203,6 @@ final class TracksViewModel {
             load()
         } catch {
             reportWriteFailure("dismiss", error)
-        }
-    }
-
-    // MARK: - Bulk dismiss
-
-    func toggleSelection(_ id: Int) {
-        if selectedIDs.contains(id) {
-            selectedIDs.remove(id)
-        } else {
-            selectedIDs.insert(id)
-        }
-    }
-
-    /// Selects every active track the list shows right now.
-    func selectAllVisible() {
-        selectedIDs = Set(visibleTracks.filter { !$0.isDismissed }.map(\.id))
-    }
-
-    func endSelection() {
-        isSelecting = false
-        selectedIDs = []
-    }
-
-    /// The ids "Dismiss all auto tracks" would dismiss, read when the owner
-    /// opens the confirmation — the confirmed write then touches exactly
-    /// these, not whatever the daemon added in between. Nil when there is
-    /// nothing to confirm: no auto track (`notice`) or a read error
-    /// (`errorMessage`).
-    func activeAutoTrackIDs() -> [Int]? {
-        do {
-            let ids = try dbManager.dbPool.read { db in try TrackQueries.fetchActiveAutoIDs(db) }
-            if ids.isEmpty { notice = "No active auto tracks to dismiss." }
-            return ids.isEmpty ? nil : ids
-        } catch {
-            errorMessage = "Failed to count auto tracks: \(error.localizedDescription)"
-            return nil
-        }
-    }
-
-    /// Soft-dismisses `ids` in one write (reversible one by one via Restore)
-    /// and leaves selection mode.
-    @discardableResult
-    func dismissTracks(ids: [Int]) async -> Bool {
-        do {
-            let dismissed = try await chained { db in
-                try TrackQueries.dismissMany(db, ids: ids)
-            }
-            endSelection()
-            load()
-            if dismissed < ids.count {
-                notice = "Dismissed \(dismissed) of \(ids.count); the rest were already dismissed or gone."
-            }
-            return true
-        } catch {
-            errorMessage = "Failed to dismiss tracks: \(error.localizedDescription)"
-            return false
         }
     }
 

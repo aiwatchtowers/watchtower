@@ -39,13 +39,6 @@ final class IdeasViewModel {
     /// review queue included, so a flagged note is reviewed under Notes.
     var kindMode: String = "idea"
 
-    /// Registry browse filters. The status filter is ignored by the review
-    /// queue (its items are proposed/flagged by definition); the search text
-    /// narrows BOTH sections — review items that don't match a search staying
-    /// on screen read as a broken search.
-    var statusFilter: String?
-    var searchText: String = ""
-
     /// Ideas + notes across BOTH segments: what the full-screen empty state
     /// keys off, so an empty Notes segment doesn't take the segmented control
     /// off screen while ideas exist.
@@ -185,8 +178,6 @@ final class IdeasViewModel {
 
     private struct Query {
         let kind: String
-        let status: String?
-        let text: String?
         let limit: Int
     }
 
@@ -198,7 +189,7 @@ final class IdeasViewModel {
     }
 
     private func currentQuery() -> Query {
-        Query(kind: kindMode, status: statusFilter, text: searchText.isEmpty ? nil : searchText, limit: registryLimit)
+        Query(kind: kindMode, limit: registryLimit)
     }
 
     /// Loads overlap (a poll, an action's synchronous one): only one started
@@ -211,12 +202,12 @@ final class IdeasViewModel {
 
     nonisolated private static func read(_ db: Database, _ query: Query) throws -> Loaded {
         Loaded(
-            review: try IdeaQueries.fetchForReview(db, kind: query.kind, query: query.text),
+            review: try IdeaQueries.fetchForReview(db, kind: query.kind),
             registry: try IdeaQueries.fetchList(
                 db,
                 kind: query.kind,
-                status: query.status,
-                query: query.text,
+                status: nil,
+                query: nil,
                 limit: query.limit,
                 excludingReviewQueue: true
             ),
@@ -321,15 +312,10 @@ final class IdeasViewModel {
             let newID = try await chained { db in
                 try IdeaQueries.createManual(db, kind: kind, title: title, essence: essence)
             }
-            // Show what was just created: switch to its segment, clear the
-            // browse filters that could hide it (it is born active, so a
-            // "Proposed" filter or a stale search would swallow it silently),
-            // and select it. The Decisions ledger creates through this same VM
+            // Show what was just created: switch to its segment and select it. The Decisions ledger creates through this same VM
             // and has no segment here, so a decision leaves the tab as it was.
             if kind == "idea" || kind == "note" {
                 kindMode = kind
-                statusFilter = nil
-                searchText = ""
                 selectedID = Int(newID)
             }
             load()
