@@ -9,7 +9,8 @@ import WatchtowerCore
 /// any other proposal its `AgentActionCardView`; a message its
 /// `InboxMessagePane`. The day, track and idea cards come from `dayCard`,
 /// `trackCard` and `ideaCard` (Tasks 8–10); `InboxCardPlaceholder` shows a
-/// card's title and source line until then.
+/// card's title and source line until then. The track card lays out its
+/// own column (`InboxTrackPane`: its chat sits below the scrolling card).
 struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     let item: InboxListItem?
     /// The screens a `watchtower-nav://` link may open.
@@ -72,7 +73,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     }
 
     /// The pane's one readable column (style guide: "one readable column").
-    static var readableWidth: CGFloat { 640 }
+    static var readableWidth: CGFloat { InboxCardColumn<EmptyView>.readableWidth }
 
     var body: some View {
         switch item {
@@ -91,7 +92,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
         case .day(let card):
             column { dayCard(card) }
         case .track(let card):
-            column { trackCard(card) }
+            trackCard(card)
         case .idea(let idea):
             // The idea card scrolls itself and pins its chat composer and
             // buttons to the bottom of the pane, so it takes the whole pane.
@@ -109,12 +110,7 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
     }
 
     private func column(@ViewBuilder _ content: () -> some View) -> some View {
-        ScrollView {
-            content()
-                .frame(maxWidth: Self.readableWidth, alignment: .leading)
-                .padding(Spacing.page)
-                .frame(maxWidth: .infinity, alignment: .top)
-        }
+        InboxCardColumn(content: content)
     }
 
     private var nothingSelected: some View {
@@ -188,7 +184,8 @@ struct InboxReadingPane<DayCard: View, TrackCard: View, IdeaCard: View>: View {
 }
 
 extension InboxReadingPane
-where DayCard == InboxCardPlaceholder, TrackCard == InboxCardPlaceholder, IdeaCard == InboxCardPlaceholder {
+where DayCard == InboxCardPlaceholder, TrackCard == InboxCardColumn<InboxCardPlaceholder>,
+      IdeaCard == InboxCardPlaceholder {
     /// Day, track and idea cards as their title and source line.
     init(
         item: InboxListItem?,
@@ -209,9 +206,29 @@ where DayCard == InboxCardPlaceholder, TrackCard == InboxCardPlaceholder, IdeaCa
             onOpenAutomationRun: onOpenAutomationRun, onDone: onDone, onDismiss: onDismiss, onSnooze: onSnooze,
             proposalCard: proposalCard, saveProposal: saveProposal, workbenches: workbenches,
             dayCard: { InboxCardPlaceholder(day: $0) },
-            trackCard: { InboxCardPlaceholder(track: $0, now: now) },
+            trackCard: { card in InboxCardColumn { InboxCardPlaceholder(track: card, now: now) } },
             ideaCard: { InboxCardPlaceholder(idea: $0) }
         )
+    }
+}
+
+/// A card in the reading pane's one readable column, scrolling.
+struct InboxCardColumn<Content: View>: View {
+    static var readableWidth: CGFloat { 640 }
+
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        ScrollView {
+            content
+                .frame(maxWidth: Self.readableWidth, alignment: .leading)
+                .padding(Spacing.page)
+                .frame(maxWidth: .infinity, alignment: .top)
+        }
     }
 }
 

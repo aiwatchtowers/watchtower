@@ -20,11 +20,31 @@ struct TracksListView: View {
             if let vm = viewModel {
                 listPanel(vm)
 
-                if let id = selectedItemID, let item = vm.itemByID(id) {
+                if let id = selectedItemID, let item = vm.itemByID(id), let controls = appState.customTrackControls {
                     Divider()
-                    // A delete closes the pane after its write lands: only
-                    // while this watch is still the one selected.
-                    TrackDetailView(track: item, viewModel: vm) { if selectedItemID == id { selectedItemID = nil } }
+                    // The Inbox's track card until this screen leaves (C1
+                    // Task 11); a deleted or dismissed track leaves the pane.
+                    TrackDetailView(
+                        card: InboxTrackCard(track: item, lastEventAt: Date(), newEventCount: 0),
+                        viewModel: vm,
+                        controls: controls,
+                        onDone: { Task { await vm.markRead(item) } },
+                        onStopWatching: {
+                            Task {
+                                await appState.actionStripViewModel?.stopWatching(item)
+                                vm.load()
+                                if selectedItemID == id { selectedItemID = nil }
+                            }
+                        },
+                        onRestore: {
+                            Task {
+                                await appState.actionStripViewModel?.restoreTrack(item)
+                                vm.load()
+                            }
+                        },
+                        onCommand: { command in Task { await appState.perform(command) } },
+                        workbenches: appState.inboxWorkbenches
+                    )
                         .id(id)
                         .frame(minWidth: 400, idealWidth: 500)
                         .transition(.move(edge: .trailing).combined(with: .opacity))

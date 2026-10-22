@@ -128,6 +128,34 @@ final class InboxAllKindsBuilderTests: XCTestCase {
         XCTAssertEqual(try build(feed, .tracks).flatMap(\.items).count, 302)
     }
 
+    /// Stopped tracks sit only in the Tracks filter's `Stopped · N` fold,
+    /// closed by default; no other filter shows them, unread or not.
+    func testTracksFilterFoldsStoppedTracks() throws {
+        let stopped = try [trackCard(7, unread: true), trackCard(8, unread: false)]
+        let feed = InboxFeedSnapshot(tracks: [try trackCard(1, unread: true)], stoppedTracks: stopped)
+
+        let folded = try build(feed, .tracks)
+        let fold = try XCTUnwrap(folded.last)
+        XCTAssertEqual(fold.title, "Stopped · 2")
+        XCTAssertTrue(fold.foldable)
+        XCTAssertTrue(fold.items.isEmpty)
+        XCTAssertEqual(folded.flatMap(\.items).map(\.id), [.track(1)])
+
+        let open = InboxListBuilder.sections(feed, filter: .tracks, dayDone: nil, today: today, now: try now(),
+                                             calendar: berlin, showsStopped: true)
+        XCTAssertEqual(open.last?.items.map(\.id), [.track(7), .track(8)])
+        XCTAssertEqual(open.dropLast().flatMap(\.items).map(\.id), [.track(1)])
+
+        for filter in InboxFilter.allCases where filter != .tracks {
+            let sections = InboxListBuilder.sections(feed, filter: filter, dayDone: nil, today: today,
+                                                     now: try now(), calendar: berlin, showsStopped: true)
+            XCTAssertFalse(sections.contains(where: \.foldable), "\(filter)")
+            XCTAssertFalse(sections.flatMap(\.items).contains { [.track(7), .track(8)].contains($0.id) }, "\(filter)")
+        }
+        // No stopped track, no fold.
+        XCTAssertFalse(try build(InboxFeedSnapshot(tracks: feed.tracks), .tracks).contains(where: \.foldable))
+    }
+
     func testTrackSortsByItsLastEvent() throws {
         let feed = InboxFeedSnapshot(outputs: [try output(5, at: "2026-10-22T07:00:00Z")],
                                      tracks: [try trackCard(9, unread: true, at: "2026-10-22T07:30:00Z")])

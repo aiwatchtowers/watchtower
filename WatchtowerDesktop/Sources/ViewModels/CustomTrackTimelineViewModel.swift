@@ -20,7 +20,9 @@ final class CustomTrackTimelineViewModel {
     /// One pending apply or dismiss per event (board #670).
     let pendingWrites = PendingWrites()
     private let actionPress: TrackActionPress
-    private let scanService: TrackScanService
+    /// Every scan goes through the card's seam (C3 drives the track's watch
+    /// recipe there).
+    private let controls: any CustomTrackControlling
     /// Shared registry so the "scanning" indicator survives navigation away
     /// from this detail (the list/sidebar read it too).
     private let scanCenter: TrackScanCenter
@@ -47,12 +49,12 @@ final class CustomTrackTimelineViewModel {
 
     init(track: Track,
          dbManager: DatabaseManager,
-         scanService: TrackScanService,
          actionRunner: any CLIRunnerProtocol,
+         controls: any CustomTrackControlling,
          scanCenter: TrackScanCenter) {
         self.track = track
         self.dbPool = dbManager.dbPool
-        self.scanService = scanService
+        self.controls = controls
         self.actionPress = TrackActionPress(runner: actionRunner)
         self.scanCenter = scanCenter
         self.lastRunAt = track.lastRunAt
@@ -114,21 +116,24 @@ final class CustomTrackTimelineViewModel {
             // The CLI subprocess writes any new rows on its own connection, so
             // the ValueObservation above (same-process only) will not see them —
             // refreshEvents() below does the explicit refetch.
-            let created = try await scanService.run(trackID: track.id)
+            let known = Set(events.map(\.id))
+            try await controls.scan(track, from: nil)
             refreshLastRunAt()
             refreshEvents()
-            lastScanNote = created.isEmpty
+            let found = events.filter { !known.contains($0.id) }.count
+            lastScanNote = found == 0
                 ? "Scan complete — no new activity since the last check. Pick a wider range to backfill older activity."
-                : "Found \(created.count) new update\(created.count == 1 ? "" : "s")."
+                : "Found \(found) new update\(found == 1 ? "" : "s")."
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
     /// Backfills the timeline by scanning history from `since` (nil = all history)
-    /// up to now, deduping against existing events. `label` describes the range
-    /// for the in-progress banner. The scan runs several AI calls and can take a
-    /// few minutes, so `scanStatus` stays set for the whole duration.
+    /// up to now, deduping against existing events, through the card's seam.
+    /// `label` describes the range for the in-progress banner. The scan runs
+    /// several AI calls and can take a few minutes, so `scanStatus` stays set
+    /// for the whole duration. The new events are the ones the refetch adds.
     func scanHistory(since: Date?, label: String) async {
         scanCenter.begin(track.id)
         isRefreshing = true
@@ -136,14 +141,15 @@ final class CustomTrackTimelineViewModel {
         errorMessage = nil
         lastScanNote = nil
         defer { isRefreshing = false; scanStatus = nil; scanCenter.finish(track.id, note: lastScanNote ?? errorMessage) }
-        let iso = Self.isoFormatter.string(from: since ?? Date(timeIntervalSince1970: 0))
+        let known = Set(events.map(\.id))
         do {
-            let created = try await scanService.run(trackID: track.id, since: iso)
+            try await controls.scan(track, from: since ?? Date(timeIntervalSince1970: 0))
             refreshLastRunAt()
             refreshEvents()
-            lastScanNote = created.isEmpty
+            let found = events.filter { !known.contains($0.id) }.count
+            lastScanNote = found == 0
                 ? "History scan complete — no matching activity found for \(label)."
-                : "History scan found \(created.count) update\(created.count == 1 ? "" : "s")."
+                : "History scan found \(found) update\(found == 1 ? "" : "s")."
         } catch {
             errorMessage = "History scan failed: \(error.localizedDescription)"
         }
@@ -163,14 +169,6 @@ final class CustomTrackTimelineViewModel {
         return "Last scanned \(rel.localizedString(for: date, relativeTo: Date()))"
     }
 
-    /// UTC ISO8601 without fractional seconds, matching the Go watermark format.
-    private static let isoFormatter: ISO8601DateFormatter = {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
-        f.timeZone = TimeZone(identifier: "UTC")
-        return f
-    }()
-
     /// Resolves an external "open the source" link for an event: an explicit
     /// source_ref if present, else a resolved permalink for the underlying entity
     /// (e.g. the Slack link of an inbox-sourced event). Returns nil when none.
@@ -179,11 +177,6 @@ final class CustomTrackTimelineViewModel {
         return try? dbPool.read { db in
             try TrackEventQueries.sourcePermalink(db, sourceType: event.sourceType, sourceId: event.sourceId)
         }
-    }
-
-    func markRead(_ event: TrackEvent) async {
-        guard event.isUnread else { return }
-        try? await chained { db in try TrackEventQueries.markRead(db, id: event.id) }
     }
 
     /// Applies a confirmed proposed action to the LINKED target through the

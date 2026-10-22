@@ -255,6 +255,11 @@ final class AppState {
     /// `ideasViewModel`, so its state survives moving between cards.
     private(set) var tracksViewModel: TracksViewModel?
 
+    /// A custom track card's Collecting toggle, instruction, scan and Stop
+    /// watching (R4): C1 writes `tracks` directly; C3 swaps in the watch
+    /// recipe. Shared by the Inbox view model and the track card.
+    private(set) var customTrackControls: (any CustomTrackControlling)?
+
     /// Secretary Profile ViewModel — persists across tab switches so an
     /// in-flight "Generate" style-sample run survives navigating away from
     /// and back to the Profile tab.
@@ -1750,7 +1755,10 @@ final class AppState {
         // A decision on an automation run's proposal wakes the daemon's
         // automations loop (spec §7.4); the runner resolves per call, like
         // the feed's own.
-        let vm = ActionStripViewModel(dbPool: dbPool) {
+        let controls = DirectCustomTrackControls(
+            dbPool: dbPool, scanService: TrackScanService(runner: InstalledCLIRunner()))
+        customTrackControls = controls
+        let vm = ActionStripViewModel(dbPool: dbPool, customTrackControls: controls) {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }
             try await AutomationsCLI(runner: runner).wake()
         }

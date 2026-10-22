@@ -73,6 +73,9 @@ package struct InboxFeedSnapshot: Equatable, Sendable {
     package var outputs: [AutomationOutputCard] = []
     package var days: [InboxDayCard] = []
     package var tracks: [InboxTrackCard] = []
+    /// Dismissed tracks: only the Tracks filter's Stopped fold lists them,
+    /// nothing counts them.
+    package var stoppedTracks: [InboxTrackCard] = []
     package var ideas: [Idea] = []
     package var messages: [HomeFeedInboxRow] = []
 
@@ -82,6 +85,7 @@ package struct InboxFeedSnapshot: Equatable, Sendable {
         outputs: [AutomationOutputCard] = [],
         days: [InboxDayCard] = [],
         tracks: [InboxTrackCard] = [],
+        stoppedTracks: [InboxTrackCard] = [],
         ideas: [Idea] = [],
         messages: [HomeFeedInboxRow] = []
     ) {
@@ -90,6 +94,7 @@ package struct InboxFeedSnapshot: Equatable, Sendable {
         self.outputs = outputs
         self.days = days
         self.tracks = tracks
+        self.stoppedTracks = stoppedTracks
         self.ideas = ideas
         self.messages = messages
     }
