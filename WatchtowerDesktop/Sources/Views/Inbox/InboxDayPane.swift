@@ -156,9 +156,12 @@ struct InboxDayPane: View {
     }()
 }
 
-/// Today's card before its brief and plan exist: when the brief comes (the
-/// Day filter's readiness copy), then **Make today's brief and plan**, its
-/// progress and any CLI refusal; with no owner, the OWNER-02 message instead.
+/// Today's card before its brief and plan exist. Per half: a fresh install
+/// (the feature not ready yet) gets the Day filter's first-run copy and its
+/// readiness line; an established one only says when today's comes (owner,
+/// ask #299, from the old Day Plan screen). Then **Make today's brief and
+/// plan**, its progress and any CLI refusal. With no owner, the OWNER-02
+/// message and no time promised (the daemon makes neither without one).
 struct InboxDayNothingReady: View {
     let owner: Owner
     let briefing: BriefingViewModel?
@@ -167,25 +170,50 @@ struct InboxDayNothingReady: View {
     let onMake: () -> Void
     let onOpenConnections: () -> Void
 
+    static func todaysBriefLine(hour: Int) -> String {
+        "Today's brief at or after \(String(format: "%02d:00", hour))"
+    }
+
+    static func todaysPlanLine(hour: Int) -> String {
+        "Today's plan at or after \(String(format: "%02d:00", hour))"
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
             Text("Nothing is ready for today yet.")
                 .font(.headline)
-            if let copy = EmptyStateCopyTable.copy(
-                for: InboxFilter.day.emptyCopyKey,
-                briefingHour: emptyState.briefingHour, dayPlanHour: emptyState.dayPlanHour
-            ) {
-                Text(copy.landsHere)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            if let line = FeatureEmptyState<EmptyView>.readinessLine(emptyState.readiness(.briefing)) {
-                Text(line).font(.callout)
-            }
+            half(.briefing, copyKey: InboxFilter.day.emptyCopyKey,
+                 established: Self.todaysBriefLine(hour: emptyState.briefingHour))
+            half(.dayPlan, copyKey: "dayPlan", established: Self.todaysPlanLine(hour: emptyState.dayPlanHour))
             if !owner.isKnown {
                 NoOwnerEmptyState(openConnections: onOpenConnections)
             } else if let briefing {
                 makeControls(briefing)
+            }
+        }
+    }
+
+    /// One half's "when": the established line, or the first-run copy.
+    @ViewBuilder
+    private func half(_ feature: ReadinessFeature, copyKey: String, established: String) -> some View {
+        let readiness = emptyState.readiness(feature)
+        if readiness == .ready {
+            if owner.isKnown {
+                Text(established)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+        } else if let copy = EmptyStateCopyTable.copy(
+            for: copyKey, briefingHour: emptyState.briefingHour, dayPlanHour: emptyState.dayPlanHour
+        ) {
+            VStack(alignment: .leading, spacing: Spacing.tight) {
+                Text(copy.title).font(.callout.weight(.medium))
+                Text(copy.landsHere)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                if let line = FeatureEmptyState<EmptyView>.readinessLine(readiness) {
+                    Text(line).font(.callout)
+                }
             }
         }
     }

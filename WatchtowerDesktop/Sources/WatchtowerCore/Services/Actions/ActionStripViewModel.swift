@@ -239,10 +239,23 @@ package final class ActionStripViewModel {
     }
 
     /// Routing entry (old links, Home): shows `filter` and opens `item`.
+    /// A day past the loaded pages reads older pages until it is listed;
+    /// a day that is nowhere selects nothing.
     package func open(_ filter: InboxFilter, select item: InboxSelection?) async {
         self.filter = filter
         await refresh()
-        await select(item)
+        guard case .day(let date)? = item else {
+            await select(item)
+            return
+        }
+        while !isListed(.day(date)), feed.hasOlderDays, let oldest = feed.days.last?.date, date < oldest {
+            await showOlderDays().value
+        }
+        await select(isListed(.day(date)) ? item : nil)
+    }
+
+    private func isListed(_ item: InboxSelection) -> Bool {
+        sections.contains { $0.items.contains { $0.id == item } }
     }
 
     /// The Day filter reads one more page of dates; the returned refresh can be awaited.

@@ -39,7 +39,7 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
 
         XCTAssertNoThrow(try view.inspect().find(text: Self.message))
         XCTAssertNoThrow(try view.inspect().find(button: "Open Connections"))
-        XCTAssertThrowsError(try view.inspect().find(text: "Generate Briefing"))
+        XCTAssertThrowsError(try view.inspect().find(button: "Make today's brief and plan"))
     }
 
     // MARK: - Day Plan (the Inbox's day card)
@@ -57,6 +57,7 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
     }
 
     func testDayPlanKnownOwnerOffersGenerateOrRegenerate() async throws {
+        XCTAssertNoThrow(try makeDayFilterEmpty(ownerKnown: true).inspect().find(button: "Make today's brief and plan"))
         let empty = try await makeDayPlanBlock(owner: Self.known, hasPlan: false)
         XCTAssertNoThrow(try empty.inspect().find(button: "Make today's plan"))
 
@@ -152,9 +153,19 @@ final class NoOwnerEmptyStateViewTests: XCTestCase {
         return vm
     }
 
-    /// The Day filter with nothing read yet: its empty list.
-    private func makeDayFilterEmpty(ownerKnown: Bool) throws -> ActionStripActionsView {
-        makeInboxEmpty(try dayFilterVM(), ownerKnown: ownerKnown) {}
+    /// The Day filter with nothing made yet: it lists today's placeholder
+    /// card (T11b), whose pane says why with no owner and offers Make
+    /// today's brief and plan with one.
+    private func makeDayFilterEmpty(ownerKnown: Bool) throws -> InboxDayNothingReady {
+        let pool = try testPool()
+        return InboxDayNothingReady(
+            owner: ownerKnown ? Self.known : .unknown,
+            briefing: BriefingViewModel(dbManager: DatabaseManager(pool: pool), cliRunner: FakeCLIRunner()),
+            plan: DayPlanViewModel(databasePool: pool, cliRunner: FakeCLIRunner()),
+            emptyState: .neutral,
+            onMake: {},
+            onOpenConnections: {}
+        )
     }
 
     /// The Day filter after a read of what the database holds.

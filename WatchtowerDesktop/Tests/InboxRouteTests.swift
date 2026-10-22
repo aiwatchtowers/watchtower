@@ -151,6 +151,8 @@ final class InboxRouteTests: XCTestCase {
     func testNavigateHelpersOpenTheirCard() async throws {
         let briefingDate = "2026-10-20"
         let briefingID = try await manager.dbPool.write { db -> Int in
+            // A day card exists for the date the day-plan route opens.
+            try TestDatabase.insertDayPlan(db, planDate: "2026-10-19")
             try TestDatabase.insertBriefing(db, date: briefingDate)
             return Int(db.lastInsertedRowID)
         }

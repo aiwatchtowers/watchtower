@@ -405,6 +405,26 @@ final class ActionStripAllKindsTests: XCTestCase {
         XCTAssertFalse(vm.feed.hasOlderDays, "nothing older left: Show older goes")
     }
 
+    /// A route to a day past the loaded pages reads older pages until the
+    /// day is listed; a day that is nowhere selects nothing.
+    func testOpeningAnOldDayLoadsOlderPages() async throws {
+        try await pool.write { db in
+            for day in 1...31 {
+                try TestDatabase.insertBriefing(db, date: String(format: "2026-08-%02d", day))
+                try TestDatabase.insertBriefing(db, date: String(format: "2026-07-%02d", day))
+            }
+        }
+        let vm = makeVM()
+
+        await vm.open(.day, select: .day("2026-07-01"))
+        XCTAssertEqual(vm.selection, .day("2026-07-01"))
+        XCTAssertEqual(vm.dayLimit, 90)
+
+        await vm.open(.day, select: .day("2020-01-01"))
+        XCTAssertNil(vm.selection, "not found: nothing selected")
+        XCTAssertFalse(vm.feed.hasOlderDays)
+    }
+
     /// Today with neither a brief nor a plan: its placeholder card is listed
     /// (All and Day) but the badge stays 0.
     func testTodaysPlaceholderIsListedButNeverCounted() async throws {

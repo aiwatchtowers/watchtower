@@ -399,7 +399,7 @@ final class InboxDayPaneTests: XCTestCase {
 
     func testMakeBriefAndPlanRunsBothInOrderThenRefreshes() async throws {
         var made = 0
-        let sut = try await pane(date: Self.today, briefingVM: try briefingVM(), onMade: { made += 1 })
+        let sut = try await pane(date: Self.today, briefingVM: try briefingVM()) { made += 1 }
 
         await sut.makeBriefAndPlan()
 
@@ -440,7 +440,7 @@ final class InboxDayPaneTests: XCTestCase {
     func testPlanOnlyTodayOffersMakeTodaysBrief() async throws {
         try await insertPlan(date: Self.today)
         var made = 0
-        let sut = try await pane(date: Self.today, briefingVM: try briefingVM(), onMade: { made += 1 })
+        let sut = try await pane(date: Self.today, briefingVM: try briefingVM()) { made += 1 }
 
         XCTAssertNoThrow(try sut.inspect().find(button: "Make today's brief"))
         XCTAssertThrowsError(try sut.inspect().find(button: "Make today's brief and plan"))
@@ -460,5 +460,36 @@ final class InboxDayPaneTests: XCTestCase {
         XCTAssertNoThrow(try sut.inspect().find(button: "Make today's plan"))
         XCTAssertThrowsError(try sut.inspect().find(button: "Make today's brief and plan"))
         XCTAssertThrowsError(try sut.inspect().find(button: "Make today's brief"))
+    }
+
+    /// An established install (day plan rows exist) with no plan for today
+    /// yet gets a calm line, not the first-run screen (owner, ask #299).
+    /// Ported from the Day Plan screen's empty state to today's empty card.
+    func testDayPlanEstablishedWithoutTodaysPlanSaysWhen() async throws {
+        let context = EmptyStateContext.neutral
+        let firstRunTitle = try XCTUnwrap(EmptyStateCopyTable.copy(for: "dayPlan", briefingHour: 8, dayPlanHour: 8)).title
+        func view(_ owner: Owner, _ context: EmptyStateContext) async throws -> InboxDayPane {
+            try await pane(date: Self.today, owner: owner, briefingVM: try briefingVM(), emptyState: context)
+        }
+        var established = context
+        established.readiness = { _ in .ready }
+        established.dayPlanHour = 8
+        let sut = try await view(Self.owner, established)
+        XCTAssertNoThrow(try sut.inspect().find(text: "Today's plan at or after 08:00"))
+        XCTAssertThrowsError(try sut.inspect().find(text: firstRunTitle), "not the first-run screen")
+
+        established.dayPlanHour = 10
+        let later = try await view(Self.owner, established)
+        XCTAssertNoThrow(try later.inspect().find(text: "Today's plan at or after 10:00"), "the configured hour")
+
+        // No owner: the daemon makes no plan, so no time is promised.
+        let noOwner = try await view(.unknown, established)
+        XCTAssertThrowsError(try noOwner.inspect().find(text: "Today's plan at or after 10:00"))
+        XCTAssertNoThrow(try noOwner.inspect().find(button: "Open Connections"))
+
+        // A fresh install keeps the first-run copy.
+        let fresh = try await view(Self.owner, context)
+        XCTAssertNoThrow(try fresh.inspect().find(text: firstRunTitle))
+        XCTAssertThrowsError(try fresh.inspect().find(text: "Today's plan at or after 08:00"))
     }
 }

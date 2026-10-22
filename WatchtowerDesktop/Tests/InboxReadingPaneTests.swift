@@ -363,7 +363,7 @@ final class InboxReadingPaneTests: XCTestCase {
         await vm.refresh()
         func split() -> some View {
             InboxSplitView(vm: vm, proposalCard: Self.proposalCard, onCardAction: { _ in },
-                           emptyList: { Text("Nothing here") }) // swiftlint:disable:this trailing_closure
+                           emptyList: { Text("Nothing here") })
         }
 
         try split().inspect().find(button: "Show older").tap()
