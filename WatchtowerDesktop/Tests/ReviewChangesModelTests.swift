@@ -1059,6 +1059,9 @@ final class ReviewChangesModelTests: XCTestCase {
         h.cli.script("diff", [diffJSON(["cmd/x.go"]), diffJSON([]), diffJSON(["cmd/x.go"])])
         h.cli.script("overview", [overviewJSON(), #"{"ok":true}"#])
         await h.model.open()
+        // The open's cached read lands first: switching to Deep during it
+        // would make the overview anew (on the second, empty answer).
+        await awaitOverview(h)
         try await h.model.setMode(.deep)
         await awaitOverview(h)
         guard case .ready = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
