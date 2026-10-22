@@ -96,7 +96,11 @@ func init() {
 	reply := newAutomationsSubcommand("reply", "Press a Reply button on an Inbox card: queue its run (owner only)",
 		cobra.NoArgs, runAutomationsReply)
 
-	for _, c := range []*cobra.Command{list, show, validate, rescan, run, dryRun, runs, steps, save, outputs, auto, reply, reset} {
+	upgrade := newAutomationsSubcommand("upgrade-builtins",
+		"Run the failed one-time moves of built-ins from their old settings again", cobra.NoArgs,
+		runAutomationsUpgradeBuiltins)
+
+	for _, c := range []*cobra.Command{list, show, validate, rescan, run, dryRun, runs, steps, save, outputs, auto, reply, reset, upgrade} {
 		c.Flags().BoolVar(&autoFlags.JSON, "json", false, "output as JSON")
 	}
 	for _, c := range []*cobra.Command{list, show, validate, rescan, auto} {
@@ -119,7 +123,7 @@ func init() {
 	reply.Flags().Int64Var(&autoFlags.Output, "output", 0, "the Inbox card's output id (required)")
 	reply.Flags().IntVar(&autoFlags.Action, "action", 0, "the 0-based index of the card's Reply button (required)")
 	automationsCmd.AddCommand(list, show, validate, rescan, run, dryRun, cancel, runs, steps, enable, disable,
-		confirm, save, del, outputs, wake, auto, reply, reset)
+		confirm, save, del, outputs, wake, auto, reply, reset, upgrade)
 }
 
 // openAutomationsCmd loads the config and opens the database with the

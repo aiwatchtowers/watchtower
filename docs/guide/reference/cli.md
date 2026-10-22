@@ -55,7 +55,7 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 | `watchtower automations` | [Automations](../features/automations.md): list, validate, run, enable, templates |
 | `watchtower automations run morning-brief` | A [built-in automation](../features/automations-built-in.md) runs at the next sync, which starts at once; `enable`, `disable`, `delete` and `auto` refuse a built-in and say what to use instead |
 | `watchtower automations reset <id>` | Put a built-in back on its shipped version, deleting your edited copy (asks you to confirm) |
-| `watchtower automations upgrade-builtins` | Retry moving your old briefing and day-plan prompt edits into Morning brief (the Inbox's **Retry**) |
+| `watchtower automations upgrade-builtins` | Retry moving your old briefing and day-plan prompt edits into Morning brief (the Inbox's **Retry**); refused in a coding agent's shell. Restart the daemon after "moved" |
 | `watchtower automations reply --output <id> --action <n>` | An Inbox card's Reply press: records it and queues one run; [Buttons on automation cards](../features/automations-inbox-buttons.md) |
 | `watchtower actions` | Proposed assistant actions: list, approve, reject, tool trust; `propose --approve` is the Inbox's own Apply press on a track's change |
 | `watchtower reaction-commands` | Slack emoji reactions that drive the assistant |
