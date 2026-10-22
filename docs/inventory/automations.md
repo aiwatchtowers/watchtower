@@ -27,7 +27,11 @@ of these entries; decisions §20, §20.1).
 `internal/tools/automation_reads.go`, `internal/automations/authoring/` (`draft_automation`,
 `save_automation`, P3), the Desktop's automation views and Core services
 (`WatchtowerDesktop/Sources/Views/Automations/`,
-`WatchtowerDesktop/Sources/WatchtowerCore/Services/Automations/`, P3)
+`WatchtowerDesktop/Sources/WatchtowerCore/Services/Automations/`, P3),
+`internal/db/automation_builtins.go`, `internal/db/migrations/00150_builtin_automations.sql`,
+`internal/automations/sdk_builtin.go` and `internal/automations/builtin/` (`registry.go`,
+`recipes/morning-brief.md`, `sync.go`, `runner.go`, `ownercopy.go`, `card.go`; built-in
+automations, C2)
 **Last full audit:** 2026-10-16 (Automations P3)
 
 Phases: P1 (core), P2 (writes), P3 (authoring + Desktop), P4 (events), P5
@@ -227,7 +231,7 @@ a burst of schedules from loading the machine.
 
 **Status:** Enforced (P1: the executor, the indexer and the CLI, including
 the CLI dry-run refusal of ask #271; P3: the `draft_automation` half, ask
-#271)
+#271; C2: amended for shipped built-ins, ask #500)
 
 **Observable:** A run is claimed only when `confirmed_hash = approval_hash`
 (and the row is parsed, enabled and not removed — `Automation.Runnable()`); a
@@ -282,6 +286,20 @@ is not runnable or its confirmed recipe lacks the capability, and the executor
 fails a `reply` run whose claimed snapshot lacks it (`error_kind='permission'`).
 A press runs the currently confirmed text; a button's `value` and `data` only
 steer code the owner confirmed.
+A built-in automation (`origin = 'builtin'`) whose recipe bytes equal the
+version shipped in the running app is runnable without the owner's
+confirmation — the release is its confirmation: the built-in indexer
+(`builtin.Sync`) confirms exactly that text with `db.ConfirmShippedBuiltin`,
+which refuses any other bytes. Everything else holds: the owner's copy
+(`.builtin/<id>.md`) runs only after the owner confirms it, a hand edit of
+any hashed field makes it unconfirmed, the one-time upgrade step's carried
+prompt is confirmed as the owner's content already running, and only built-in recipes may
+declare a `sync` trigger or a `builtin:` capability. An owner copy that is a
+symlink, directory or special file is never read (the shipped text is used);
+one that cannot be read leaves the row as it was. A slot run of an
+unconfirmed built-in is never written, and its queued manual runs are
+cancelled `not_runnable`; `ExecuteBuiltinInline` refuses an unconfirmed
+built-in the same way.
 
 **Why locked:** "What was confirmed is exactly what runs" is the whole
 security model: a git pull, a hand edit or an agent's edit must never run
@@ -295,6 +313,8 @@ code or permissions the owner did not see.
 - `cmd/automations_templates_test.go` — `TestInstallTemplate_InstalledUnconfirmedAndDisabled` (P6: an installed template is unconfirmed and disabled; `run` is refused and a queued run is cancelled `not_runnable`), `TestInstallTemplate_RenderHashMatchesInstall`
 - P3: `internal/automations/authoring/draft_test.go` — `TestDraftAutomation_RefusesDryRunOfUnconfirmedRecipe`, `TestDraftAutomation_RemovedUnconfirmedRecipeDoesNotBlock`; `internal/automations/authoring/save_test.go` — `TestSaveAutomation_AlwaysAskAndPinsHash`, `TestSaveAutomation_RefusesWhenFileChangedSincePropose`, `TestSaveAutomation_RefusesWhenFileAppearedForNewSlug`, `TestSaveAutomation_RefusesHashDrift`; `cmd/automations_test.go` — `TestAutomationsCLI_SaveRefusesWhenFileChangedSinceLoad`, `TestAutomationsCLI_ShowChangesFromConfirmedSnapshot`, `TestAutomationsCLI_ShowChangesUnknownWithoutSource`, `TestAutomationsCLI_ShowChangesUnknownAfterRehash`
 - P3 Desktop: `WatchtowerDesktop/Tests/Core/AutomationEditorCenterTests.swift` — `testSaveConfirmsTheValidatedHashOnly`, `testAuto06_ConfirmSheetPassesTheShownHash`, `testAuto06_ConfirmSheetShowsHashedFieldChanges`, `testAuto06_SavePressAfterAnUnflushedEditRechecksInsteadOfSaving`, `testAuto06_SaveDisabledWhileChecking`; `WatchtowerDesktop/Tests/Core/AutomationTemplatePanelModelTests.swift` — `testAuto06_TemplateConfirmsOnlyTheShownHash`; `WatchtowerDesktop/Tests/Core/AutomationCardPresentationTests.swift` — `testButtonsForStates`; quick run: `WatchtowerDesktop/Tests/Core/QuickRunCenterTests.swift` — `testDimmedRowOpensInsteadOfRunning`, `testConfirmRecipeRunsOnlyAfterRun`; `WatchtowerDesktop/Tests/Core/TrayRunAutomationMenuTests.swift` — `testDisabledItemsAreNotActionable`
+
+- C2 built-ins (ask #500): `internal/automations/builtin/sync_test.go` — `TestAuto06_ShippedBuiltinRunsWithoutOwnerConfirmation`, `TestAuto06_OwnerCopyNeedsConfirmation`, `TestAuto06_HandEditedCopyStopsTheBuiltIn`, `TestAuto06_CopyEqualToShippedRuns`, `TestBuiltinSync_CopySymlinkIsNeverRead`, `TestBuiltinSync_ShippedUpdateMovesSilently`, `TestBuiltinSync_OverriddenKeepsCopyAndFlagsUpdate`, `TestBuiltinSync_ResetReturnsToShipped`, `TestBuiltinSync_PersonalSlugTwinIsSeparate`, `TestBuiltinSync_PersonalRecipeDeclaringSyncIsAParseError`; `internal/automations/builtin/runner_test.go` — `TestRunner_UnconfirmedCancelsQueuedManual`; `internal/automations/sdk_builtin_test.go` — `TestAuto06_BuiltinInlineRefusesUnconfirmed`; `internal/automations/manifest_test.go` — `TestAuto06_PersonalRecipeCannotDeclareSyncOrBuiltinCapability`; `internal/db/automation_builtins_test.go` — `TestAuto06_ConfirmShippedBuiltinRefusesOtherBytes`
 
 - 2026-10-21 (Inbox Reply): `internal/automations/indexer_test.go` — `TestApprovalHash_InboxReplyIsHashed`; `internal/automations/sdk_output_card_test.go` — `TestOutput_ReplyActionNeedsInboxReply`; `cmd/automations_reply_test.go` — `TestAutomationsCLI_ReplyRefusedWhenNotRunnableOrNoCapability`; `internal/automations/executor_test.go` — `TestExecutor_ReplyRunWithoutCapabilityFails`
 
@@ -534,6 +554,7 @@ would make checking as dangerous as running.
 - `internal/automations/sdk_shell_test.go` — `TestShell_DryRunStartsNoProcess` (P5: a dry-run `shell()` returns `{status:"dry_run"}`, journals a `dry_run` step and starts no process)
 - `internal/automations/sdk_session_test.go` — `TestSession_DryRunWaitsForNothing` (P5: a dry-run `session()` returns `{status:"dry_run"}` and asks the Desktop for nothing); `internal/automations/sdk_ask_test.go` — `TestAsk_DryRunCreatesNoRow`
 - `internal/automations/templates_e2e_test.go` — `TestTemplates_DryRunE2E` (P6: every gallery template — the personal ones and each workbench recipe — installed and dry-run, journals its outputs, state writes, `shell()` and `session()` calls `dry_run` while reads and `llm()` run for real; each recipe's journal is pinned step by step, so an empty journal fails)
+- C2: `internal/automations/sdk_builtin_test.go` — `TestAuto12_BuiltinPrimitiveDryRunCallsNothing` (a dry run of a built-in calls no primitive: `brief.compose`/`plan.compose` close their steps `dry_run`)
 - `internal/automations/workbench_e2e_test.go` — `TestAuto12_DryRunStartsNoSessionOrShell` (P5: a dry run of each workbench recipe — `pr-review-rounds`, `release`, `deploy-test`, `deploy-stage` — runs no `shell()` command, leaves no waiting session step, no `terminal_sessions`, `owner_asks`, `agent_actions` or output row, and journals its `shell`/`session` steps `dry_run`)
 
 **Locked since:** 2026-10-14
@@ -587,6 +608,7 @@ turn a recipe into arbitrary code execution.
 
 ## Changelog
 
+- 2026-10-22 (board #801, spec 2026-10-22 §5.2, **AUTO-06 amended, owner approved in ask #500**): shipped built-in bytes run without the owner's confirmation — the built-in indexer confirms a built-in row only while its text is byte-equal to the recipe embedded in the running app (`db.ConfirmShippedBuiltin` refuses any other bytes, an owner row, or a stale hash). The owner's copy `<workspace>/automations/.builtin/<id>.md` is indexed unconfirmed and runs only after the owner confirms it; a hand edit makes it unconfirmed again; a copy that is not a regular file is never read. Only built-in recipes may declare a `sync` trigger or a `builtin:` capability; the Personal scanner never treats a built-in row as a file of its folder (a Personal recipe with a built-in's slug gets a row of its own). A dry run of a built-in calls no primitive (AUTO-12). No guard relaxed. Guards added: as listed under AUTO-06 ("C2 built-ins") and AUTO-12 (`TestAuto12_BuiltinPrimitiveDryRunCallsNothing`).
 - 2026-10-21 (Inbox card actions, spec 2026-10-21 §B3–B4, **owner approved in ask #475**): **AUTO-09 amended** — the Reply press is a trigger that only queues, never coalesced (one press, one run), outside the event bus; **AUTO-06 extended** — `inbox:reply` is hashed and checked at write, press and run. Strengthening; no guard relaxed; `TestRun_CoalescesSecondTrigger` and `TestBus_EventsCarryNoContent` unchanged. Guards added: `TestAuto09_ReplyCommandOnlyQueues`, `TestRun_ReplyIsNeverCoalesced`, `TestPressInboxOutputAction_OnePressOneRun`, `testAuto09_ReplyPressOnlyQueues`, `TestApprovalHash_InboxReplyIsHashed`, `TestOutput_ReplyActionNeedsInboxReply`, `TestAutomationsCLI_ReplyRefusedWhenNotRunnableOrNoCapability`, `TestExecutor_ReplyRunWithoutCapabilityFails`, and `TestAuto08_ResumeRebuildsInboxCard` (AUTO-08).
 - 2026-10-21 (Automations in the panel, board #405; spec `2026-10-21-automations-panel-and-inbox-design.md` §A, **AUTO-06 amended, owner approved in ask #475**): strengthening, no guard relaxed. The Desktop's confirming screen moves from the confirmation and Save sheets to the Automations panel's draft column, which shows every hashed field of the exact bytes saved and the changes since the confirmed text (`validate --json` gains `changes`/`changes_known`, and `fields`: a column that cannot show them turns every save and confirm button off); a press on changed bytes re-validates instead of saving. A panel save is enabled unless the owner picks **Save Turned Off** (`enable` after the confirmed save; Save Turned Off disables first). A template installs from its panel after `install-template --render` showed its validation; `install-template` stays unconfirmed and disabled (`TestInstallTemplate_InstalledUnconfirmedAndDisabled` unchanged) and the Desktop confirms an installed copy only when its `approval_hash` equals the shown one, then enables it. Quick run on a dimmed row opens the card instead of the sheet (`testDimmedRowOpensInsteadOfRunning` unchanged). Guards whose call sites moved with the sheets keep their names and assertions: `testSaveConfirmsTheValidatedHashOnly` and `testNoAutoOnWithoutACheckedBox` save through `check` + `commit(…, turnOn:)`; `testButtonsForStates` is unchanged (the card's ⋯ shows Turn Off / Turn On from a separate helper). AUTO-03 names the draft column's Keep auto boxes (still unchecked by default, `testAuto03_KeepAutoBoxesUncheckedByDefault`). Guards added: `testAuto06_SavePressAfterAnUnflushedEditRechecksInsteadOfSaving`, `testAuto06_SaveDisabledWhileChecking`, `testAuto06_TemplateConfirmsOnlyTheShownHash`, `TestInstallTemplate_RenderHashMatchesInstall`.
 - 2026-10-21 (board #799): the `new-mail-summary` gallery template remembers summed-up messages by id over a two-day lookback window instead of a per-mailbox time cursor (rule 1 of the create-automation skill's "Reliable recipes"), so mail synced after a newer message was summed up is no longer skipped. State `mail = {base, boxes}` with minutes relative to `base`; the done entries are bounded under `MaxStateBytes` by a fair per-mailbox share (a quiet mailbox is never cut by a busy one), a mailbox over its share dropping its oldest whole minutes behind a floor; an older script's `cursors` are re-keyed through the `list_emails` name probe and migrated (mail at or before the cursor marked done, the cursor dropped). Its pinned dry-run journal in `TestTemplates_DryRunE2E` (AUTO-12) gains the second `state.get` (the old `cursors`, read for the migration) — a template change, not a relaxed guard. `TestTemplate_NewMailSummaryKeepsPerAccountCursor` (not an inventory guard) becomes `TestTemplate_NewMailSummaryKeepsPerAccountDone` with message dates relative to now (the window is read against the real clock), asserting the done ids and that a later run still reads the whole window; the `TestTemplates_RunE2E` mail cases assert the done ids where they asserted the cursor, and gain the late-mail, cursor-migration, cursor-by-label, state-budget (fair share) and eviction-floor cases (each floor check, the floor's exclusivity, the name re-keying and the fair share verified to fail the tests when removed). No guard relaxed.

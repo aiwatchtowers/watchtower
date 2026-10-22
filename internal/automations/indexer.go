@@ -218,6 +218,9 @@ func (s *folderScan) run(ctx context.Context) error {
 	s.byPath = make(map[string]db.Automation, len(existing))
 	s.bySlug = make(map[string]db.Automation, len(existing))
 	for _, a := range existing {
+		if a.IsBuiltin() {
+			continue // a built-in row has no file here (its indexer is builtin.Sync)
+		}
 		s.byPath[a.Path] = a
 		s.bySlug[a.Slug] = a
 	}
@@ -290,14 +293,22 @@ func slugTakenReason(slug string, other db.Automation) string {
 }
 
 // candidate is the index row the file's bytes produce.
-// contentHash is over the whole file even when data holds only its first
-// MaxRecipeBytes+1 bytes.
 func (s *folderScan) candidate(slug, path string, data []byte, contentHash string) (db.Automation, error) {
+	return IndexRow(slug, path, data, contentHash, s.scope)
+}
+
+// IndexRow is the index row a recipe's bytes produce in scope, as the
+// indexer writes it: the parsed columns, or the column defaults and the
+// parse error when the recipe does not parse. contentHash is over the whole
+// file even when data holds only its first MaxRecipeBytes+1 bytes. The
+// owner's columns (confirmed_hash, enabled, schedule) and the built-in
+// columns are left zero.
+func IndexRow(slug, path string, data []byte, contentHash string, scope Scope) (db.Automation, error) {
 	a := db.Automation{
-		Slug: slug, Scope: s.scopeName(), ProjectID: s.scope.WorkbenchID, Path: path,
+		Slug: slug, Scope: string(scope.Kind), ProjectID: scope.WorkbenchID, Path: path,
 		RecipeText: string(data), ContentHash: contentHash,
 	}
-	r, perr := ParseRecipe(slug, data, s.scope)
+	r, perr := ParseRecipe(slug, data, scope)
 	if perr != nil {
 		return withParseErrorDefaults(a, perr.Error()), nil
 	}

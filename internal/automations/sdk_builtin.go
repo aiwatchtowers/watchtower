@@ -145,11 +145,11 @@ type builtinSDK struct {
 }
 
 func newBuiltinSDK(b Backends) *builtinSDK {
-	return &builtinSDK{b: b, role: sync.OnceValues(func() (string, error) { return ownerRole(b.DB) })}
+	return &builtinSDK{b: b, role: sync.OnceValues(func() (string, error) { return OwnerRole(b.DB) })}
 }
 
-// ownerRole is the owner profile's role ("" without an owner or profile).
-func ownerRole(d *db.DB) (string, error) {
+// OwnerRole is the owner profile's role ("" without an owner or profile).
+func OwnerRole(d *db.DB) (string, error) {
 	if d == nil {
 		return "", nil
 	}
