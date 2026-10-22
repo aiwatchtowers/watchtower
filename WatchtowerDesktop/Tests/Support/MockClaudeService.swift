@@ -78,6 +78,16 @@ package final class MockClaudeService: AIServiceProtocol, @unchecked Sendable {
         self.error = nil
     }
 
+    /// `eventSequence`, with every stream held OPEN on the release gate until
+    /// `release()` (later streams run straight through): a first turn that is
+    /// still running for as long as the test needs it to.
+    package init(eventSequence: [[StreamEvent]], thenAwaitsRelease: Bool) {
+        self.events = []
+        self.eventSequence = eventSequence
+        self.error = nil
+        self.gated = thenAwaitsRelease
+    }
+
     package init(error: any Error) {
         self.events = []
         self.eventSequence = []
