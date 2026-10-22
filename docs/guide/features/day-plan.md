@@ -27,7 +27,7 @@ Every sync cycle after that, calendar events are synced into today's plan and co
 
 ### Find the plan
 
-In the Inbox, today's **Your day** card is first under **Today** until you press **Done**, which only lets it sort by time. The **Day** filter lists one card per date, the last 30 dates; Home's **Day plan** link opens today's card. The plan lists all-day events, then time blocks in time order ("09:00–09:30"), then the backlog, with "3/5" done in the **Plan** header.
+In the Inbox, today's **Your day** card is first under **Today** until you press **Done**, which only lets it sort by time. The **Day** filter lists one card per date, the last 30 dates, and **Show older** at the end adds 30 more; Home's **Day plan** link opens today's card. The plan lists all-day events, then time blocks in time order ("09:00–09:30"), then the backlog, with "3/5" done in the **Plan** header.
 
 ### Work the plan
 
@@ -42,6 +42,7 @@ These show on today's card only; an older day's plan is read-only. Each opens an
 - **Regenerate with feedback…**: say what should change and press **Regenerate**. Items you added by hand are kept.
 - **Reset plan…**: **Reset** deletes today's plan with the items you added. Your targets are not touched.
 - With a brief but no plan yet, the card says "No plan for this day yet." and offers **Make today's plan**. A failure shows the reason in red.
+- With neither yet, today's card says "Nothing is ready for today yet.", when each comes ("Today's plan at or after 08:00" once the plan has run before), and offers **Make today's brief and plan**: it writes the brief, then the plan, with progress and any refusal on the card.
 
 ### Tune it
 
@@ -49,13 +50,13 @@ Settings → Features → **Day Plan** sets **Generate at hour** (05:00 to 12:00
 
 ## When it's empty or wrong
 
-With no day card yet, the empty **Day** filter shows the briefing's status line; the plan follows the same gate.
+Before today's brief and plan exist, today's card shows each one's status line.
 
 - **Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are.** There is no owner. Click **Open Connections**. Without one, the card has no Make, Regenerate or Reset, but an existing plan stays readable.
 - **Off — Turn on.** Turn **Day Plan** on in Settings → Features.
 - **Preparing now / Within ~15 min / Today at 08:00.** It is on its way.
 - **Didn't work yet — retries automatically.** The last attempt failed. After three failures it waits until tomorrow.
-- **Plan missing though the hour passed.** The daemon may not have run (Mac off or asleep), or no connected account identifies you. Press **Make today's plan** on today's card, or run `watchtower day-plan generate` when there is no card for today.
+- **Plan missing though the hour passed.** The daemon may not have run (Mac off or asleep), or no connected account identifies you. Press **Make today's plan** on today's card, or **Make today's brief and plan** when it has neither.
 
 No plan today? See [No briefing or day plan today](../troubleshooting/no-briefing-or-day-plan.md).
 

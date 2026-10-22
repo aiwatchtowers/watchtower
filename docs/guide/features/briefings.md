@@ -37,14 +37,14 @@ Opening a day card marks its briefing read, the same mark **I'm caught up** in [
 
 ## Using it
 
-- In the Inbox, today's card is first under **Today** on **All**. The **Day** filter lists one card per date, the last 30 dates, so older briefings are there too. A briefing notification and Home's **Briefing** link open today's card.
+- In the Inbox, today's card is first under **Today** on **All**. The **Day** filter lists one card per date, the last 30 dates, and **Show older** adds 30 more. A briefing notification and Home's **Briefing** link open today's card.
 - Click an item to jump to its track, digest, target or person. Items that suggest new work show **Make a Task**, which creates the target and opens it.
 - The card's header has **Discuss in Chat** and **Done**.
 - Change the time in Settings → Features → **Briefing Hour**. The section shows only while the feature is on.
 
 ## When it's empty or wrong
 
-An empty **Day** filter says "No briefings yet" and "Generated once a day at or after 08:00" (your hour), then a status line and **Change the hour**.
+Before today's brief exists, today's card says "No briefings yet" and "Generated once a day at or after 08:00" (your hour), then a status line; once briefings have run before it says "Today's brief at or after 08:00".
 
 - **Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are.** There is no owner yet. Click **Open Connections** and connect one. A freshly connected Jira site or Linear workspace can show this for a moment while your identity is read; Home then says "Waiting for your Jira identity…" (or Linear).
 - **Off — Turn on.** Click **Turn on**.
@@ -53,7 +53,7 @@ An empty **Day** filter says "No briefings yet" and "Generated once a day at or 
 - **Starts after the first sync / Within ~15 min / After this sync / Today at 08:00 / Tomorrow at 08:00.** It is on its way; the line says when.
 - **Didn't work yet — retries automatically.** The last attempt failed, with the reason in the line. After three failures it waits until tomorrow.
 - **No briefing today though the hour passed.** The sync may not have run (the Mac was off or the daemon isn't running), or there was nothing to summarise. See [Day Plan](day-plan.md) for the same gate.
-- **Generate manually.** Run `watchtower briefing generate` in a terminal. Today's briefing is never rebuilt, so once one exists the command returns it.
+- **Make it now.** Press **Make today's brief and plan** on today's card, or **Make today's brief** when the card has only a plan. A refusal shows in red on the card.
 
 No briefing today? See [No briefing or day plan today](../troubleshooting/no-briefing-or-day-plan.md).
 

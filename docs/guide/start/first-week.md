@@ -26,7 +26,7 @@ By now the sync has had time to write something for you.
 - **See:** the **Your day** card on top: today's plan, then one morning read with **Needs you**, **Your day** and **What happened**, each line linking to its source.
 - **Needs:** **Daily Briefing** on, and Slack, Google, Jira, Linear or an email account connected so Watchtower knows who you are.
 
-No briefing yet? `watchtower briefing generate` in a terminal builds one now. Details: [Briefings](../features/briefings.md) and [Inbox](../features/inbox.md).
+No briefing yet? Press **Make today's brief and plan** on today's **Your day** card to build both now. Details: [Briefings](../features/briefings.md) and [Inbox](../features/inbox.md).
 
 ## Day 2: catch up after being away
 

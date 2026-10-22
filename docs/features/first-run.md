@@ -333,13 +333,20 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
 - **Day Plan, established install** (owner, ask #299): with day-plan rows
   (`.dayPlan` ready) but no plan for the date, `DayPlanView.emptyState` showed
   only "Today's plan at or after HH:00" (`todaysPlanLine`, the day-plan hour)
-  instead of the first-run screen. Retired with the Day Plan screen in C1
-  (2026-10-22): today's day card says "No plan for this day yet." and offers
-  **Make today's plan** (`InboxDayPlanBlock`).
+  instead of the first-run screen. Moved with the Day Plan screen in C1
+  (2026-10-22, T11b) to today's placeholder day card (`InboxDayNothingReady`:
+  `todaysPlanLine` and its brief twin `todaysBriefLine` while the feature is
+  `.ready`, the first-run copy otherwise, no time with no owner; test
+  `InboxDayPaneTests.testDayPlanEstablishedWithoutTodaysPlanSaysWhen`), which
+  offers **Make today's brief and plan** (`briefing generate`, then
+  `day-plan generate --date <today>`). A brief-only today says "No plan for
+  this day yet." and offers **Make today's plan** (`InboxDayPlanBlock`); a
+  plan-only today offers **Make today's brief**.
 - **Catch Up** reads the readiness of `.digests` only (R10; the spec said digests
   + inbox, the component takes one feature).
 - **Spec §1.5 deviation as built:** the Inbox row has no button — the reaction
-  cheat sheet is inline (spec row updated).
+  cheat sheet is inline (spec row updated). Since C1 T11b the All filter
+  always lists today's day card, so the cheat sheet sits behind `?`.
 
 ## Fresh-install first cycle (Go daemon, P4)
 

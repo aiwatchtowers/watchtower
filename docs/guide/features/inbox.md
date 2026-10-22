@@ -15,7 +15,7 @@ The bar above the list has six filters. The one you picked is remembered.
 | Filter | Shows |
 |---|---|
 | **All** | What waits: decisions, today's day card and older unread ones, unread tracks, open messages, due reminders, automation cards |
-| **Day** | One **Your day** card per date with a brief or a plan, the last 30 dates |
+| **Day** | One **Your day** card per date with a brief or a plan, and today's even before either exists; the last 30 dates, then **Show older** for 30 more |
 | **Messages** | Open mentions, DMs, thread replies, mail and Jira or Linear items for you, newest first, up to 200 |
 | **Tracks** | Every track you follow, then a folded **Stopped · N** |
 | **Ideas** | Ideas, notes and decisions, in every status but merged |
@@ -25,7 +25,7 @@ The list has up to three sections: **Needs your decision** (proposals, a propose
 
 ### What the badge counts
 
-The sidebar badge counts what needs your decision, unread messages, one for an unread latest brief, and due reminders. Tracks, automation cards and decisions never count; they show only an unread dot in the list.
+The sidebar badge counts what needs your decision, unread messages, one for an unread latest brief, and due reminders. Tracks, automation cards and ideas of the decision kind never count (everything under **Needs your decision** does); they show only an unread dot in the list.
 
 ### Reaction commands
 
@@ -63,8 +63,8 @@ Messages for you in one channel outside threads stay one card that lists each me
 Click a card to open it on the right. **Up** and **Down** move between cards, **Esc** closes the card. The list re-reads every 30 seconds while the Inbox is on screen.
 
 - **Opening marks read** a brief, a message and an automation card, and only that. A track is marked read by its **Done**.
-- **Your day**: the plan, then the brief. See [Day Plan](day-plan.md) and [Briefings](briefings.md).
-- **Messages**: **Open in Slack** (or Mail, Jira, Linear), **Discuss in Chat**, **Hand to Agent…**, **Done** (resolved), **Hide** and **Snooze** (**Tomorrow**, **In 3 days**, **Next week**).
+- **Your day**: the plan, then the brief. Before either exists, today's card offers **Make today's brief and plan**. See [Day Plan](day-plan.md) and [Briefings](briefings.md).
+- **Messages**: **Open in Slack** (or Mail, Jira, Linear), **Discuss in Chat**, **Hand to Agent…**, **Done** (resolved), **Hide** and **Snooze** (**Tomorrow**, **In 3 days**, **Next week**). These three run the `watchtower` command line, so an error shows on the card.
 - **Tracks**: **Done**, and **Stop watching** in **⋯**. See [Tracks](tracks.md).
 - **Ideas**: **Approve**, **Make a Task**, **Not now**, **Reject**. See [Ideas & Decisions](ideas-and-decisions.md).
 - **Reminders** appear once due: **Done**, or **Snooze 1h**.
@@ -82,13 +82,13 @@ The **⋯** button above the list opens these in the reading pane, and **?** ope
 
 ## When it's empty or wrong
 
-The empty **All** list says "Nothing waiting for you" and shows the reaction cheat sheet. Another filter says what lands there and, when a feature feeds it, that feature's status line.
+**All** always lists today's day card, so the reaction cheat sheet is behind **?**. An empty filter says what lands there and, when a feature feeds it, that feature's status line.
 
 - **"Enable Reaction Commands" button.** The feature is off. Click it; reactions you placed earlier are not replayed.
 - **"Watching your Slack reactions — last check N min ago".** It works; the time is the last successful check.
 - **A reaction did nothing.** Check that the emoji is in the dictionary and enabled, that it was a new reaction, and that Slack is connected. Then run **Sync Now**.
 - **"Connect Slack, Google, Jira, Linear or an email account so Watchtower knows who you are".** No owner, so Attention detection and the day never run. Click **Open Connections**; a calendar alone is not enough.
-- **The badge is lower than the dots.** Tracks and automation cards never count.
+- **The badge is lower than the dots.** Tracks, automation cards and decision-kind ideas never count.
 - **No reminder yet.** It shows only once due.
 
 Still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).

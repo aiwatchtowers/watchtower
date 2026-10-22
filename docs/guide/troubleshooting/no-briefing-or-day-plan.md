@@ -4,7 +4,7 @@ The Inbox has no **Your day** card for today, or today's card has a brief but no
 
 ## What you see
 
-The **Day** filter says "No briefings yet" with a status line, or its newest card is yesterday's. Today's card may say "No plan for this day yet." under **Plan**.
+Today's card says "Nothing is ready for today yet." with a status line, or "No plan for this day yet." under **Plan**, or "No brief for today yet." under **Brief**.
 
 ## Why
 
@@ -19,18 +19,18 @@ On a new install the first briefing and the first day plan do not wait for the h
 
 ## Fix
 
-1. Read the status line on the empty **Day** filter ("Today at 08:00", "Tomorrow at 08:00", "Didn't work yet — retries automatically", **Off — Turn on**). The meanings are in [Turning features on and off](../concepts/features-on-and-off.md).
+1. Read the status line on today's card ("Today at 08:00", "Tomorrow at 08:00", "Didn't work yet — retries automatically", **Off — Turn on**). The meanings are in [Turning features on and off](../concepts/features-on-and-off.md).
 2. **Open Connections** appears when there is no owner: connect any one source.
 3. **Turn on** when the feature is off.
-4. **No brief:** run `watchtower briefing generate` in a terminal. Today's briefing is never rebuilt, so once one exists the command returns it.
-5. **A brief but no plan:** press **Make today's plan** on today's card. With no card for today at all, run `watchtower day-plan generate`.
+4. **Neither yet:** press **Make today's brief and plan** on today's card. It writes the brief, then the plan; a refusal shows on the card and stops there. With only a plan, press **Make today's brief**.
+5. **A brief but no plan:** press **Make today's plan** on today's card.
 6. **A plan you dislike:** **Regenerate with feedback…** on today's card rewrites it, and **Reset plan…** deletes it so **Make today's plan** comes back.
 7. A reason that names the Claude or Codex tool: [The Claude or Codex tool is not found or not signed in](ai-tool-not-found-or-not-signed-in.md).
 8. Wanted midnight? **Known issue:** the Briefing Hour list offers 00:00, but the briefing is made at 08:00. Pick 01:00 or later; see [Known issues](known-issues.md).
 
 ## How to check
 
-Today's **Your day** card is first under **Today** in the Inbox. The empty-state line, when you see one again, reads "Tomorrow at 08:00" (your hour).
+Today's **Your day** card is first under **Today** in the Inbox. Tomorrow, before the new one, the card says when it comes (your hour).
 
 ## If it did not help
 
