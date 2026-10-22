@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -180,10 +181,10 @@ func TestRunner_RunNowWithAnotherInputQueuedIsNotClaimed(t *testing.T) {
 func TestRenderOwnerCopy_LiteralPromptParsesAndFlows(t *testing.T) {
 	f := newFixture(t)
 	e := mustEntry(t)
-	brief := "Brief for %s on %s with a `backtick`, a   line separator,\na newline, \"quotes\", </script> and\n```\na fence."
+	brief := "Brief for %s on %s with a `backtick`, a \u2028 line separator,\na newline, \"quotes\", </script> and\n```\na fence."
 	copyText := editedCopy(t, e, brief)
-	if strings.Contains(string(copyText), "builtin.defaultPrompt(") {
-		t.Error("the rendered copy still asks for the default prompt")
+	if n := strings.Count(string(copyText), "builtin.defaultPrompt("); n != 1 {
+		t.Errorf("builtin.defaultPrompt( appears %d times, want once (the helper's fallback)", n)
 	}
 	if _, err := automations.ParseRecipe(mbID, copyText, scopeOf(e)); err != nil {
 		t.Fatalf("the rendered copy does not parse: %v", err)
@@ -212,12 +213,92 @@ func TestRenderOwnerCopy_LiteralPromptParsesAndFlows(t *testing.T) {
 func TestRenderOwnerCopy_RefusesWrongPromptSet(t *testing.T) {
 	e := mustEntry(t)
 	for name, p := range map[string]map[string]string{
-		"missing": {"brief": "x"},
-		"extra":   {"brief": "x", "plan": "y", "other": "z"},
-		"blank":   {"brief": "x", "plan": "  "},
+		"extra": {"brief": "x", "plan": "y", "other": "z"},
+		"blank": {"brief": "x", "plan": "  "},
+		"none":  {},
 	} {
 		if _, err := RenderOwnerCopy(e, p); err == nil {
 			t.Errorf("%s: RenderOwnerCopy succeeded", name)
 		}
+	}
+}
+
+func TestRunner_RunNowWhileActiveCancelsItsRun(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	var (
+		nowErr error
+		nowRun int64
+	)
+	f.brief.during = func() {
+		f.brief.during = nil
+		_, nowErr = f.runner.RunNow(context.Background(), mbID, automations.BuiltinInput{Date: "2026-10-21"})
+		for _, r := range f.runs(t) {
+			if r.Trigger == db.TriggerManual {
+				nowRun = r.ID
+			}
+		}
+	}
+	if o := f.slotOnce(t); o.Status != db.RunSucceeded {
+		t.Fatalf("slot = %+v", o)
+	}
+	if !errors.Is(nowErr, automations.ErrRunNotClaimed) || nowRun == 0 {
+		t.Fatalf("RunNow during the slot run = %v (run %d), want ErrRunNotClaimed", nowErr, nowRun)
+	}
+	run, err := f.d.GetAutomationRun(nowRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != db.RunCancelled {
+		t.Errorf("the refused RunNow's run is %s, want cancelled", run.Status)
+	}
+	f.gate.due = false
+	if o := f.slotOnce(t); o.Skipped != SkippedNotDue || len(f.brief.snapshot()) != 1 {
+		t.Errorf("next slot = %+v, %d briefs; the refused input must never run", o, len(f.brief.snapshot()))
+	}
+}
+
+func TestRenderOwnerCopy_UngivenPromptKeepsTheDefault(t *testing.T) {
+	f := newFixture(t)
+	e := mustEntry(t)
+	copyText, err := RenderOwnerCopy(e, map[string]string{"brief": "Only the brief for %s on %s."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.writeCopy(t, copyText)
+	f.sync(t)
+	a := f.row(t)
+	if err := f.d.ConfirmAutomation(a.ID, a.ApprovalHash, f.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if o := f.slotOnce(t); o.Status != db.RunSucceeded {
+		t.Fatalf("slot = %+v", o)
+	}
+	plan, _ := e.DefaultPrompt("plan", "")
+	if c := f.brief.snapshot(); len(c) != 1 || c[0].Prompt != "Only the brief for %s on %s." {
+		t.Error("brief did not get the inlined prompt")
+	}
+	if c := f.plan.snapshot(); len(c) != 1 || c[0].Prompt != plan {
+		t.Error("plan did not get the shipped default")
+	}
+	if got := f.asked.all(); !slices.Equal(got, []string{"plan"}) {
+		t.Errorf("defaultPrompt asked for %v, want [plan]", got)
+	}
+}
+
+func TestRenderOwnerCopy_ChangesOnlyTheScript(t *testing.T) {
+	e := mustEntry(t)
+	e.Recipe = bytes.Replace(e.Recipe, []byte("when the\nbrief fails"), []byte("builtin.defaultPrompt(name) when the\nbrief fails"), 1)
+	copyText := editedCopy(t, e, "Brief for %s on %s.")
+	shipped, err := ParseShipped(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := automations.ParseRecipe(mbID, copyText, scopeOf(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Description != shipped.Description || !strings.Contains(r.Description, "builtin.defaultPrompt(name)") {
+		t.Errorf("the description changed: %q", r.Description)
 	}
 }

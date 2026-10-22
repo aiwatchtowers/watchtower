@@ -54,9 +54,10 @@ type Costs struct {
 // Card builds e's card from its row a (nil before its first sync): the
 // shipped text and its default prompts for the owner's role, the When
 // parameters read from cfg, whether an overridden copy's base is behind the
-// shipped text (UpdateAvailable), the copy's parse error (CopyError) and the
-// last CostDays days of costs.
-func Card(d *db.DB, cfg *config.Config, e Entry, a *db.Automation, now time.Time) (CardInfo, error) {
+// shipped text (UpdateAvailable), why the owner's copy in workspaceDir is not
+// used (CopyError: not a regular file, read with lstat as Sync does, or the
+// row's parse error) and the last CostDays days of costs.
+func Card(d *db.DB, cfg *config.Config, workspaceDir string, e Entry, a *db.Automation, now time.Time) (CardInfo, error) {
 	c := CardInfo{
 		ID: e.ID, Slot: e.Slot, ShippedHash: e.ShippedContentHash(), ShippedText: string(e.Recipe),
 		DefaultPrompts: map[string]string{}, Reads: nonNil(e.Reads), Sends: nonNil(e.Sends),
@@ -78,10 +79,18 @@ func Card(d *db.DB, cfg *config.Config, e Entry, a *db.Automation, now time.Time
 	for _, p := range e.Parameters {
 		c.Parameters = append(c.Parameters, ParameterValue{Key: p.Key, Kind: p.Kind, Label: p.Label, Value: paramValue(cfg, p.Key)})
 	}
+	_, note, err := copyState(OwnerCopyPath(workspaceDir, e.ID))
+	if err != nil {
+		return c, fmt.Errorf("built-in %s card: %w", e.ID, err)
+	}
+	c.CopyError = note
 	if a == nil {
 		return c, nil
 	}
-	c.Overridden, c.BaseHash, c.CopyError = a.Overridden, a.BuiltinBaseHash, a.ParseError
+	c.Overridden, c.BaseHash = a.Overridden, a.BuiltinBaseHash
+	if c.CopyError == "" {
+		c.CopyError = a.ParseError
+	}
 	c.UpdateAvailable = a.Overridden && a.BuiltinBaseHash != "" && a.BuiltinBaseHash != c.ShippedHash
 	sum, err := d.BuiltinCost(a.ID, e.Pipelines, now.AddDate(0, 0, -CostDays))
 	if err != nil {

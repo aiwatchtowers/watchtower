@@ -131,7 +131,7 @@ func TestRegistry_ShowJSONGolden(t *testing.T) {
 	f := newFixture(t)
 	f.sync(t)
 	e := mustEntry(t)
-	card, err := Card(f.d, f.cfg, e, f.row(t), f.clock.Now())
+	card, err := Card(f.d, f.cfg, f.ws, e, f.row(t), f.clock.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

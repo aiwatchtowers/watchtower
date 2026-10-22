@@ -184,7 +184,8 @@ func (r *Runner) cancelQueuedManual(automationID int64) error {
 // built-in is on. An unconfirmed built-in's run is cancelled and the error
 // wraps automations.ErrNotRunnable; one that cannot be claimed (another run
 // of it is active, or a manual run with other input is already queued for
-// the next slot) wraps automations.ErrRunNotClaimed.
+// the next slot) wraps automations.ErrRunNotClaimed; a run this call queued
+// is then cancelled, so it never runs later with in.
 func (r *Runner) RunNow(ctx context.Context, id string, in automations.BuiltinInput) (*db.AutomationRun, error) {
 	if _, ok := Lookup(id); !ok {
 		return nil, fmt.Errorf("unknown built-in automation %q", id)
@@ -211,5 +212,12 @@ func (r *Runner) RunNow(ctx context.Context, id string, in automations.BuiltinIn
 			return nil, fmt.Errorf("built-in %s: run %d is already queued for the next sync: %w", id, runID, automations.ErrRunNotClaimed)
 		}
 	}
-	return r.exec.ExecuteBuiltinInline(ctx, runID)
+	run, err := r.exec.ExecuteBuiltinInline(ctx, runID)
+	if errors.Is(err, automations.ErrRunNotClaimed) && !coalesced {
+		// The run this call made must never run later with its input.
+		if _, cerr := r.db.CancelAutomationRun(runID, r.clock.Now()); cerr != nil {
+			return nil, errors.Join(err, fmt.Errorf("built-in %s: cancelling run %d: %w", id, runID, cerr))
+		}
+	}
+	return run, err
 }

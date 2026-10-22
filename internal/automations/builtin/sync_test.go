@@ -178,6 +178,10 @@ func TestBuiltinSync_CopySymlinkIsNeverRead(t *testing.T) {
 			if rep.Errors[mbID] != copyNotRegularNote {
 				t.Errorf("report errors = %v", rep.Errors)
 			}
+			card, err := Card(f.d, f.cfg, f.ws, e, a, f.clock.Now())
+			if err != nil || card.CopyError != copyNotRegularNote || card.Overridden {
+				t.Errorf("card copy_error = %q overridden %v (%v)", card.CopyError, card.Overridden, err)
+			}
 		})
 	}
 }
@@ -216,7 +220,7 @@ func TestBuiltinSync_OverriddenKeepsCopyAndFlagsUpdate(t *testing.T) {
 	copyText := editedCopy(t, oldRelease, "Owner prompt for %s on %s.")
 	f.writeCopy(t, copyText)
 	f.sync(t)
-	card, err := Card(f.d, f.cfg, oldRelease, f.row(t), f.clock.Now())
+	card, err := Card(f.d, f.cfg, f.ws, oldRelease, f.row(t), f.clock.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +234,7 @@ func TestBuiltinSync_OverriddenKeepsCopyAndFlagsUpdate(t *testing.T) {
 	if a.RecipeText != string(copyText) || !a.Overridden || a.BuiltinBaseHash != oldRelease.ShippedContentHash() {
 		t.Errorf("after the update: copy kept %v overridden %v base %q", a.RecipeText == string(copyText), a.Overridden, a.BuiltinBaseHash)
 	}
-	card, err = Card(f.d, f.cfg, e, a, f.clock.Now())
+	card, err = Card(f.d, f.cfg, f.ws, e, a, f.clock.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -108,14 +108,14 @@ type source struct {
 func sourceOf(workspaceDir string, e Entry) (source, error) {
 	shipped := source{data: e.Recipe, contentHash: e.ShippedContentHash()}
 	path := OwnerCopyPath(workspaceDir, e.ID)
-	fi, err := os.Lstat(path)
+	present, note, err := copyState(path)
 	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return shipped, nil
 	case err != nil:
-		return source{}, fmt.Errorf("built-in %s: reading the edited copy: %w", e.ID, err)
-	case !fi.Mode().IsRegular():
-		shipped.note = copyNotRegularNote
+		return source{}, fmt.Errorf("built-in %s: %w", e.ID, err)
+	case !present:
+		return shipped, nil
+	case note != "":
+		shipped.note = note
 		return shipped, nil
 	}
 	data, hash, err := automations.ReadRecipeFile(path)
@@ -123,6 +123,21 @@ func sourceOf(workspaceDir string, e Entry) (source, error) {
 		return source{}, fmt.Errorf("built-in %s: %w", e.ID, err)
 	}
 	return source{data: data, contentHash: hash, overridden: true}, nil
+}
+
+// copyState lstats the owner's copy at path (nothing is followed): whether
+// it is there, and copyNotRegularNote when it is not a regular file.
+func copyState(path string) (present bool, note string, err error) {
+	fi, err := os.Lstat(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return false, "", nil
+	case err != nil:
+		return false, "", fmt.Errorf("reading the edited copy: %w", err)
+	case !fi.Mode().IsRegular():
+		return true, copyNotRegularNote, nil
+	}
+	return true, "", nil
 }
 
 func syncEntry(d *db.DB, workspaceDir string, cfg *config.Config, e Entry, now time.Time) (syncResult, error) {
@@ -166,7 +181,7 @@ func syncEntry(d *db.DB, workspaceDir string, cfg *config.Config, e Entry, now t
 		return res, err
 	}
 	if !row.Confirmed() && row.ParseError == "" && row.ContentHash == e.ShippedContentHash() {
-		if err := d.ConfirmShippedBuiltin(id, row.ContentHash, row.ApprovalHash, now); err != nil {
+		if err := d.ConfirmShippedBuiltin(id, e.ShippedContentHash(), row.ApprovalHash, now); err != nil {
 			return res, err
 		}
 		res.confirmed = true

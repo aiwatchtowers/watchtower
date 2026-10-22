@@ -120,13 +120,33 @@ func briefingHour(cfg *config.Config) int {
 }
 
 // All returns every built-in, in card order.
-func All() []Entry { return slices.Clone(registry) }
+func All() []Entry {
+	out := make([]Entry, len(registry))
+	for i, e := range registry {
+		out[i] = e.clone()
+	}
+	return out
+}
+
+// clone is e with its own copies of every slice, so a caller cannot change
+// the registry through it.
+func (e Entry) clone() Entry {
+	e.Recipe = slices.Clone(e.Recipe)
+	e.FeatureIDs = slices.Clone(e.FeatureIDs)
+	e.Primitives = slices.Clone(e.Primitives)
+	e.Prompts = slices.Clone(e.Prompts)
+	e.Parameters = slices.Clone(e.Parameters)
+	e.Pipelines = slices.Clone(e.Pipelines)
+	e.Reads = slices.Clone(e.Reads)
+	e.Sends = slices.Clone(e.Sends)
+	return e
+}
 
 // Lookup returns the built-in with id.
 func Lookup(id string) (Entry, bool) {
 	for _, e := range registry {
 		if e.ID == id {
-			return e, true
+			return e.clone(), true
 		}
 	}
 	return Entry{}, false
@@ -137,7 +157,7 @@ func AtSlot(s Slot) []Entry {
 	var out []Entry
 	for _, e := range registry {
 		if e.Slot == s {
-			out = append(out, e)
+			out = append(out, e.clone())
 		}
 	}
 	return out

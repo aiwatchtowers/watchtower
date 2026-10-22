@@ -39,13 +39,19 @@ type fakePrimitive struct {
 	calls []automations.PrimitiveCall
 	res   automations.PrimitiveResult
 	err   error
+	// during runs inside each call (a call made while the run is active).
+	during func()
 }
 
 func (p *fakePrimitive) fn(_ context.Context, c automations.PrimitiveCall) (automations.PrimitiveResult, error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.calls = append(p.calls, c)
-	return p.res, p.err
+	during, res, err := p.during, p.res, p.err
+	p.mu.Unlock()
+	if during != nil {
+		during()
+	}
+	return res, err
 }
 
 func (p *fakePrimitive) snapshot() []automations.PrimitiveCall {
