@@ -1234,6 +1234,7 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 		roleRules,
 		"", // existing tracks per-channel removed — cross-channel section covers all
 		crossChannelSection,
+		"", // the default's second blank slot after the existing tracks; channel digests belong under their header
 		channelBlocks.String(),
 	)
 

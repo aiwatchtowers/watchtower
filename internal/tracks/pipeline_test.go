@@ -1472,3 +1472,16 @@ func TestTracksHasMaterial_Cases(t *testing.T) {
 		})
 	}
 }
+
+func TestTracksBatchPrompt_DefaultHasNoFormatErrors(t *testing.T) {
+	database := seedOverrideRun(t, "")
+	pipe, gen := overridePipeline(t, database, "")
+
+	_, _, err := pipe.Run(context.Background())
+	require.NoError(t, err)
+	sent := gen.systemSeen + gen.userSeen
+	require.NotEmpty(t, sent)
+	assert.NotContains(t, sent, "%!")
+	assert.Equal(t, 11, countVerbs(prompts.Defaults[prompts.TracksExtractBatch]))
+	assert.Contains(t, sent, "=== CHANNEL DIGESTS ===\n--- #backend")
+}
