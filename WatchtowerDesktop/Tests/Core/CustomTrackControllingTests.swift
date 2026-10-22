@@ -50,12 +50,31 @@ final class CustomTrackControllingTests: XCTestCase {
 
         let from = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-01T00:00:00Z"))
         try await controls.scan(track, from: from)
-        XCTAssertEqual(runner.invocations, [["tracks", "scan", "\(track.id)", "--since", "2026-10-01T00:00:00Z"]])
+        try await controls.scan(track, from: nil)
+        XCTAssertEqual(runner.invocations, [
+            ["tracks", "scan", "\(track.id)", "--since", "2026-10-01T00:00:00Z"],
+            ["tracks", "scan", "\(track.id)"]
+        ])
 
         try await controls.stopWatching(track)
         let stopped = try row(track.id)
         XCTAssertFalse(((stopped["dismissed_at"] as String?) ?? "").isEmpty)
         XCTAssertEqual(stopped["enabled"] as Int?, 0)
+
+        try await controls.resumeWatching(track)
+        let resumed = try row(track.id)
+        XCTAssertEqual(resumed["dismissed_at"] as String?, "")
+        XCTAssertEqual(resumed["enabled"] as Int?, 1)
+
+        try await pool.write { db in
+            try db.execute(sql: "INSERT INTO track_events (track_id, summary) VALUES (?, 'e')", arguments: [track.id])
+        }
+        try await controls.delete(track)
+        let left = try await pool.read { db in
+            [try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks WHERE id = ?", arguments: [track.id]),
+             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM track_events WHERE track_id = ?", arguments: [track.id])]
+        }
+        XCTAssertEqual(left, [0, 0], "the track and its events are gone")
     }
 
     /// A row deleted elsewhere is a `RowNotFoundError`, which the card and
@@ -95,6 +114,37 @@ final class CustomTrackControllingTests: XCTestCase {
         // The fake wrote nothing: the custom row is untouched.
         XCTAssertEqual(try row(custom.id)["enabled"] as Int?, 1)
         XCTAssertFalse(((try row(auto)["dismissed_at"] as String?) ?? "").isEmpty)
+        XCTAssertNil(vm.lastError)
+    }
+
+    /// A stopped track is read into the Stopped fold only; Restore brings it
+    /// back — a custom one through the seam (resume), an auto one directly.
+    func testRestoreUndoesStopWatching() async throws {
+        let custom = try customTrack()
+        let auto = try await pool.write { db -> Int in
+            let id = Int(try TestDatabase.insertTrack(db, text: "Extracted"))
+            try TrackQueries.dismiss(db, id: id)
+            try TrackQueries.dismiss(db, id: custom.id)
+            return id
+        }
+        let suite = "CustomTrackControllingTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let fake = RecordingCustomTrackControls()
+        let vm = ActionStripViewModel(dbPool: pool, cliRunner: FakeCLIRunner(), customTrackControls: fake,
+                                      defaults: defaults)
+        await vm.refresh()
+        XCTAssertTrue(vm.feed.tracks.isEmpty)
+        XCTAssertEqual(Set(vm.feed.stoppedTracks.map(\.track.id)), [custom.id, auto])
+        let stoppedCustom = try XCTUnwrap(vm.feed.stoppedTracks.map(\.track).first { $0.id == custom.id })
+        let stoppedAuto = try XCTUnwrap(vm.feed.stoppedTracks.map(\.track).first { $0.id == auto })
+
+        await vm.restoreTrack(stoppedCustom)
+        await vm.restoreTrack(stoppedAuto)
+
+        XCTAssertEqual(fake.calls, [.resumeWatching(trackID: custom.id)])
+        XCTAssertEqual(try row(auto)["dismissed_at"] as String?, "")
+        XCTAssertEqual(vm.feed.tracks.map(\.track.id), [auto])
         XCTAssertNil(vm.lastError)
     }
 }

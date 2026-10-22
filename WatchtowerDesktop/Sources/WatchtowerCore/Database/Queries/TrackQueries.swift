@@ -48,18 +48,22 @@ package enum TrackQueries {
         return try Track.fetchAll(db, sql: sql, arguments: StatementArguments(args))
     }
 
-    /// Every non-dismissed track with its latest activity (the Inbox's Tracks
-    /// filter; no limit, F1): `lastEventAt` is the later of the track's
+    /// Every non-dismissed track — or, `stopped`, every dismissed one — with
+    /// its latest activity (the Inbox's Tracks filter; no limit, F1): `lastEventAt` is the later of the track's
     /// `updated_at` and its newest event, `newEventCount` its unread events.
-    package static func fetchInboxCards(_ db: Database) throws -> [InboxTrackCard] {
+    package static func fetchInboxCards(_ db: Database, stopped: Bool = false) throws -> [InboxTrackCard] {
+        // Stopped = dismissed (TRACKS-07): listed only in the Tracks filter's
+        // Stopped fold, so the owner can restore one; newest stop first.
+        let filter = stopped ? "t.dismissed_at != ''" : "t.dismissed_at = ''"
+        let order = stopped ? "t.dismissed_at DESC, t.id DESC" : "t.has_updates DESC, t.updated_at DESC, t.id DESC"
         let rows = try Row.fetchAll(db, sql: """
             SELECT t.*,
                    (SELECT MAX(e.created_at) FROM track_events e WHERE e.track_id = t.id) AS last_event_at,
                    (SELECT COUNT(*) FROM track_events e
                     WHERE e.track_id = t.id AND (e.read_at IS NULL OR e.read_at = '')) AS new_events
             FROM tracks t
-            WHERE t.dismissed_at = ''
-            ORDER BY t.has_updates DESC, t.updated_at DESC, t.id DESC
+            WHERE \(filter)
+            ORDER BY \(order)
             """)
         return rows.map { row in
             let track = Track(row: row)

@@ -20,10 +20,8 @@ final class CustomTrackTimelineViewModel {
     /// One pending apply or dismiss per event (board #670).
     let pendingWrites = PendingWrites()
     private let actionPress: TrackActionPress
-    /// "Since last check" (the track's own watermark).
-    private let scanService: TrackScanService
-    /// A scan from a date goes through the card's seam (C3 drives the
-    /// track's watch recipe there).
+    /// Every scan goes through the card's seam (C3 drives the track's watch
+    /// recipe there).
     private let controls: any CustomTrackControlling
     /// Shared registry so the "scanning" indicator survives navigation away
     /// from this detail (the list/sidebar read it too).
@@ -51,13 +49,11 @@ final class CustomTrackTimelineViewModel {
 
     init(track: Track,
          dbManager: DatabaseManager,
-         scanService: TrackScanService,
          actionRunner: any CLIRunnerProtocol,
          controls: any CustomTrackControlling,
          scanCenter: TrackScanCenter) {
         self.track = track
         self.dbPool = dbManager.dbPool
-        self.scanService = scanService
         self.controls = controls
         self.actionPress = TrackActionPress(runner: actionRunner)
         self.scanCenter = scanCenter
@@ -120,12 +116,14 @@ final class CustomTrackTimelineViewModel {
             // The CLI subprocess writes any new rows on its own connection, so
             // the ValueObservation above (same-process only) will not see them —
             // refreshEvents() below does the explicit refetch.
-            let created = try await scanService.run(trackID: track.id)
+            let known = Set(events.map(\.id))
+            try await controls.scan(track, from: nil)
             refreshLastRunAt()
             refreshEvents()
-            lastScanNote = created.isEmpty
+            let found = events.filter { !known.contains($0.id) }.count
+            lastScanNote = found == 0
                 ? "Scan complete — no new activity since the last check. Pick a wider range to backfill older activity."
-                : "Found \(created.count) new update\(created.count == 1 ? "" : "s")."
+                : "Found \(found) new update\(found == 1 ? "" : "s")."
         } catch {
             errorMessage = error.localizedDescription
         }

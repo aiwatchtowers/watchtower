@@ -101,8 +101,7 @@ struct InboxSplitView<EmptyList: View>: View {
                 // Section header: a plain List pins its header and draws a
                 // hairline under it.
                 ForEach(sections, id: \.title) { section in
-                    SectionHeader(title: section.title, systemImage: Self.icon(section.title),
-                                  count: section.items.count)
+                    sectionTitle(section)
                         .padding(.top, Spacing.regular)
                         .selectionDisabled()
                         .listRowSeparator(.hidden)
@@ -115,6 +114,24 @@ struct InboxSplitView<EmptyList: View>: View {
             }
             .clearPlainList()
             .onExitCommand { Task { await vm.select(nil) } }
+        }
+    }
+
+    /// A section's title; the Tracks filter's Stopped fold opens and closes here.
+    @ViewBuilder
+    private func sectionTitle(_ section: InboxSection) -> some View {
+        if section.foldable {
+            HStack(spacing: Spacing.regular) {
+                SectionHeader(title: section.title, systemImage: "pause.circle")
+                Spacer()
+                Button(vm.showsStopped ? "Hide" : "Show") { vm.showsStopped.toggle() }
+                    .buttonStyle(.kitQuiet)
+                    .controlSize(.small)
+                    .help(vm.showsStopped ? "Hide the tracks you stopped watching"
+                                          : "Show the tracks you stopped watching")
+            }
+        } else {
+            SectionHeader(title: section.title, systemImage: Self.icon(section.title), count: section.items.count)
         }
     }
 
@@ -174,6 +191,8 @@ struct InboxSplitView<EmptyList: View>: View {
                 card: card, tracks: tracks, controls: trackControls, isWriting: vm.isWriting(id),
                 onDone: { close(id, in: sections, done) },
                 onStopWatching: { close(id, in: sections) { _ in await vm.stopWatching(card.track) } },
+                // The card stays listed (it moves out of the Stopped fold).
+                onRestore: { Task { await vm.restoreTrack(card.track) } },
                 onCommand: onCardAction, workbenches: workbenches
             )
         } else {

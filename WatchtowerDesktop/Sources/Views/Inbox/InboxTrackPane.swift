@@ -6,7 +6,8 @@ import WatchtowerCore
 /// marks the track and its events read, **Stop watching** (⋯) dismisses it
 /// (a custom track's collection also stops, through `controls`). A custom
 /// track's Collecting toggle, instruction and scans go only through
-/// `controls`, the seam C3 swaps for the track's watch recipe.
+/// `controls`, the seam C3 swaps for the track's watch recipe. A stopped
+/// track's card (the Tracks filter's Stopped fold) offers **Restore**.
 struct InboxTrackPane: View {
     let card: InboxTrackCard
     let tracks: TracksViewModel
@@ -15,6 +16,7 @@ struct InboxTrackPane: View {
     let isWriting: Bool
     let onDone: () -> Void
     let onStopWatching: () -> Void
+    let onRestore: () -> Void
     let onCommand: (InboxCardCommand) -> Void
     let workbenches: [Workbench]
 
@@ -25,6 +27,7 @@ struct InboxTrackPane: View {
         isWriting: Bool = false,
         onDone: @escaping () -> Void,
         onStopWatching: @escaping () -> Void,
+        onRestore: @escaping () -> Void,
         onCommand: @escaping (InboxCardCommand) -> Void,
         workbenches: [Workbench]
     ) {
@@ -34,6 +37,7 @@ struct InboxTrackPane: View {
         self.isWriting = isWriting
         self.onDone = onDone
         self.onStopWatching = onStopWatching
+        self.onRestore = onRestore
         self.onCommand = onCommand
         self.workbenches = workbenches
     }
@@ -41,7 +45,8 @@ struct InboxTrackPane: View {
     var body: some View {
         TrackDetailView(
             card: card, viewModel: tracks, controls: controls, isWriting: isWriting,
-            onDone: onDone, onStopWatching: onStopWatching, onCommand: onCommand, workbenches: workbenches
+            onDone: onDone, onStopWatching: onStopWatching, onRestore: onRestore, onCommand: onCommand,
+            workbenches: workbenches
         )
         // Another track starts with its own edits, folds and inline rows.
         .id(card.track.id)
@@ -72,11 +77,13 @@ struct TrackCardState: Equatable {
 /// The track card's buttons: the Inbox's common row with **Done** and a ⋯
 /// menu — **Stop watching**, **Make a Task** for an extracted track (R9),
 /// and for a custom track **Go to Target** (when linked) and **Delete…**,
-/// which asks inline, never in a dialog.
+/// which asks inline, never in a dialog. A stopped track shows **Restore**
+/// in Done's place, and its menu has no Stop watching.
 struct TrackCardActions: View {
     let subject: InboxCardSubject
     let link: URL?
     let isCustom: Bool
+    let isStopped: Bool
     let linkedTargetID: Int?
     let navScreens: Set<String>
     let workbenches: [Workbench]
@@ -86,6 +93,7 @@ struct TrackCardActions: View {
     let onCommand: (InboxCardCommand) -> Void
     let onDone: () -> Void
     let onStopWatching: () -> Void
+    let onRestore: () -> Void
     let onMakeTask: () -> Void
     let onGoToTarget: (Int) -> Void
     let onDelete: () -> Void
@@ -101,7 +109,11 @@ struct TrackCardActions: View {
                 isWriting: isWriting,
                 onCommand: onCommand
             ) {
-                Button("Done", action: onDone)
+                if isStopped {
+                    Button("Restore", action: onRestore)
+                } else {
+                    Button("Done", action: onDone)
+                }
                 more
             }
             if confirmingDelete {
@@ -112,7 +124,9 @@ struct TrackCardActions: View {
 
     private var more: some View {
         Menu {
-            Button("Stop watching", action: onStopWatching)
+            if !isStopped {
+                Button("Stop watching", action: onStopWatching)
+            }
             if !isCustom {
                 Button("Make a Task", action: onMakeTask)
                     .disabled(isMakingTask)

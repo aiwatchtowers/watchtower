@@ -54,6 +54,10 @@ package final class ActionStripViewModel {
             rebuildSections()
         }
     }
+    /// The Tracks filter's Stopped fold is open (per session).
+    package var showsStopped = false {
+        didSet { rebuildSections() }
+    }
     /// The date whose day card the owner marked Done (it then stops being pinned), remembered per viewer.
     package private(set) var dayDone: String?
     /// How many dates the Day filter reads; `showOlderDays()` adds a page.
@@ -215,7 +219,7 @@ package final class ActionStripViewModel {
         let now = Date()
         sections = InboxListBuilder.sections(
             feed, filter: filter, dayDone: dayDone, today: HomeFeedBuilder.dayString(now, calendar: .current),
-            now: now, calendar: .current)
+            now: now, calendar: .current, showsStopped: showsStopped)
     }
 
     /// The selected card left the list (resolved elsewhere, auto-resolved,
@@ -366,11 +370,31 @@ package final class ActionStripViewModel {
             }
             return
         }
+        await throughSeam(track) { try await $0.stopWatching(track) }
+    }
+
+    /// Restore on a stopped card (the undo of Stop watching, TRACKS-07's
+    /// `RestoreTrack`): an auto track is restored; a custom track goes
+    /// through the seam, which also resumes its collection. The card moves
+    /// from the Stopped fold back to the tracks. A track deleted meanwhile is quiet.
+    package func restoreTrack(_ track: Track) async {
+        let id = track.id
+        guard track.isCustom else {
+            await write(.card(.track(id))) { db in
+                do { try TrackQueries.restore(db, id: id) } catch is RowNotFoundError {}
+            }
+            return
+        }
+        await throughSeam(track) { try await $0.resumeWatching(track) }
+    }
+
+    /// One seam call per card at a time, then a read; a vanished row is quiet.
+    private func throughSeam(_ track: Track, _ call: @escaping (any CustomTrackControlling) async throws -> Void) async {
         let controls = customTrackControls
-        await pendingWrites.run(CardKey.card(.track(id))) {
+        await pendingWrites.run(CardKey.card(.track(track.id))) {
             lastError = nil
             do {
-                try await controls.stopWatching(track)
+                try await call(controls)
                 await refresh()
             } catch is RowNotFoundError {
                 await refresh()

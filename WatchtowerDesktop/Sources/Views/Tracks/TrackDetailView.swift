@@ -12,6 +12,8 @@ struct TrackDetailView: View {
     let isWriting: Bool
     let onDone: () -> Void
     let onStopWatching: () -> Void
+    /// A stopped track's Restore (the undo of Stop watching).
+    let onRestore: () -> Void
     let onCommand: (InboxCardCommand) -> Void
     let workbenches: [Workbench]
     @Environment(AppState.self) private var appState
@@ -44,6 +46,7 @@ struct TrackDetailView: View {
         isWriting: Bool = false,
         onDone: @escaping () -> Void,
         onStopWatching: @escaping () -> Void,
+        onRestore: @escaping () -> Void,
         onCommand: @escaping (InboxCardCommand) -> Void,
         workbenches: [Workbench]
     ) {
@@ -53,6 +56,7 @@ struct TrackDetailView: View {
         self.isWriting = isWriting
         self.onDone = onDone
         self.onStopWatching = onStopWatching
+        self.onRestore = onRestore
         self.onCommand = onCommand
         self.workbenches = workbenches
         _cardState = State(initialValue: TrackCardState(track: card.track))
@@ -195,16 +199,14 @@ struct TrackDetailView: View {
         }
     }
 
-    /// Permanently deletes a custom track (and its events); the Inbox reads
-    /// again so the card leaves and the next one shows.
+    /// Permanently deletes a custom track (and its events) through the
+    /// seam; the Inbox reads again so the card leaves and the next one shows.
     private func deleteTrack() {
-        guard let db = appState.databaseManager else { return }
+        let track = track
         let trackID = track.id
         Task {
             do {
-                try await db.dbPool.write { database in
-                    try TrackQueries.delete(database, id: trackID)
-                }
+                try await controls.delete(track)
             } catch {
                 NSLog("TrackDetailView: deleting track %d failed: %@", trackID, String(describing: error))
                 cardError = "Couldn't delete the watch: \(error.localizedDescription)"
@@ -225,7 +227,6 @@ struct TrackDetailView: View {
         let vm = CustomTrackTimelineViewModel(
             track: track,
             dbManager: db,
-            scanService: TrackScanService(runner: runner),
             actionRunner: runner,
             controls: controls,
             scanCenter: appState.trackScanCenter
@@ -656,6 +657,7 @@ struct TrackDetailView: View {
                 subject: InboxCardSubject(track: card, events: timelineVM?.events ?? []),
                 link: slackURL,
                 isCustom: track.isCustom,
+                isStopped: track.isDismissed,
                 linkedTargetID: track.linkedTargetID,
                 navScreens: navScreens,
                 workbenches: workbenches,
@@ -665,6 +667,7 @@ struct TrackDetailView: View {
                 onCommand: onCommand,
                 onDone: onDone,
                 onStopWatching: onStopWatching,
+                onRestore: onRestore,
                 onMakeTask: makeTask,
                 onGoToTarget: { appState.navigateToTarget($0) },
                 onDelete: deleteTrack

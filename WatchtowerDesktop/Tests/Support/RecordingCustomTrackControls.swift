@@ -8,8 +8,11 @@ package final class RecordingCustomTrackControls: CustomTrackControlling {
     package enum Call: Equatable {
         case saveInstruction(trackID: Int, text: String)
         case setCollecting(trackID: Int, on: Bool)
-        case scan(trackID: Int, from: Date)
+        /// `from` nil = since the track's watermark.
+        case scan(trackID: Int, from: Date?)
         case stopWatching(trackID: Int)
+        case resumeWatching(trackID: Int)
+        case delete(trackID: Int)
     }
 
     package private(set) var calls: [Call] = []
@@ -25,12 +28,20 @@ package final class RecordingCustomTrackControls: CustomTrackControlling {
         try record(.setCollecting(trackID: track.id, on: on))
     }
 
-    package func scan(_ track: Track, from: Date) async throws {
+    package func scan(_ track: Track, from: Date?) async throws {
         try record(.scan(trackID: track.id, from: from))
     }
 
     package func stopWatching(_ track: Track) async throws {
         try record(.stopWatching(trackID: track.id))
+    }
+
+    package func resumeWatching(_ track: Track) async throws {
+        try record(.resumeWatching(trackID: track.id))
+    }
+
+    package func delete(_ track: Track) async throws {
+        try record(.delete(trackID: track.id))
     }
 
     private func record(_ call: Call) throws {

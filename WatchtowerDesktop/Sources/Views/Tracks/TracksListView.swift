@@ -36,6 +36,12 @@ struct TracksListView: View {
                                 if selectedItemID == id { selectedItemID = nil }
                             }
                         },
+                        onRestore: {
+                            Task {
+                                await appState.actionStripViewModel?.restoreTrack(item)
+                                vm.load()
+                            }
+                        },
                         onCommand: { command in Task { await appState.perform(command) } },
                         workbenches: appState.inboxWorkbenches
                     )

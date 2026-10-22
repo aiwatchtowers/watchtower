@@ -27,11 +27,18 @@ package enum InboxListItem: Identifiable, Equatable, Sendable {
 package struct InboxSection: Equatable, Sendable {
     package let title: String
     package let items: [InboxListItem]
+    /// A fold the owner opens on demand (the Tracks filter's Stopped): its
+    /// title shows even while `items` is empty (folded).
+    package let foldable: Bool
 
-    package init(title: String, items: [InboxListItem]) {
+    package init(title: String, items: [InboxListItem], foldable: Bool = false) {
         self.title = title
         self.items = items
+        self.foldable = foldable
     }
+
+    /// The Tracks filter's fold of stopped (dismissed) tracks.
+    package static func stoppedTitle(_ count: Int) -> String { "Stopped · \(count)" }
 }
 
 /// The Inbox list (spec B1, C1 §5): items that wait on the owner first, then
@@ -53,13 +60,16 @@ package enum InboxListBuilder {
 
     /// `today` is the "YYYY-MM-DD" of `now`; `dayDone` the date whose day card
     /// the owner finished (it then sorts by time instead of staying pinned).
+    /// The Tracks filter ends with a `Stopped · N` fold of the stopped tracks,
+    /// listed only while `showsStopped`; no other filter shows them.
     package static func sections(
         _ feed: InboxFeedSnapshot,
         filter: InboxFilter,
         dayDone: String?,
         today: String,
         now: Date,
-        calendar: Calendar
+        calendar: Calendar,
+        showsStopped: Bool = false
     ) -> [InboxSection] {
         let showsAll = filter == .all
         let showsProposals = showsAll || filter == .automations
@@ -110,7 +120,14 @@ package enum InboxListBuilder {
             InboxSection(title: "Today", items: (pinned + rest).map(\.item)),
             InboxSection(title: "Earlier", items: rows.filter { !isToday($0) }.map(\.item))
         ]
-        return sections.filter { !$0.items.isEmpty }
+        var listed = sections.filter { !$0.items.isEmpty }
+        if filter == .tracks, !feed.stoppedTracks.isEmpty {
+            listed.append(InboxSection(
+                title: InboxSection.stoppedTitle(feed.stoppedTracks.count),
+                items: showsStopped ? feed.stoppedTracks.map(InboxListItem.track) : [],
+                foldable: true))
+        }
+        return listed
     }
 
     /// Equal times keep one order across refreshes: outputs, reminders, day

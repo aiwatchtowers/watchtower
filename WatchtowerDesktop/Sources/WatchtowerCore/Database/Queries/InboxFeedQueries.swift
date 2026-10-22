@@ -24,6 +24,7 @@ package enum InboxFeedQueries {
         snapshot.outputs = try emptyIfTableMissing { try AutomationQueries.fetchInboxOutputs(db, includeRead: true) }
         snapshot.days = try emptyIfTableMissing { try BriefingQueries.fetchDayCards(db, limit: dayLimit) }
         snapshot.tracks = try emptyIfTableMissing { try TrackQueries.fetchInboxCards(db) }
+        snapshot.stoppedTracks = try emptyIfTableMissing { try TrackQueries.fetchInboxCards(db, stopped: true) }
         snapshot.ideas = try emptyIfTableMissing { try IdeaQueries.fetchInboxRegistry(db) }
         snapshot.messages = try emptyIfTableMissing { try InboxQueries.fetchOpenMessages(db, nowUTC: nowUTC) }
         return snapshot

@@ -59,7 +59,6 @@ final class InboxTrackPaneTests: XCTestCase {
     ) -> CustomTrackTimelineViewModel {
         CustomTrackTimelineViewModel(
             track: track, dbManager: manager,
-            scanService: TrackScanService(runner: FakeCLIRunner(stdout: Data("[]".utf8))),
             actionRunner: FakeCLIRunner(), controls: controls ?? RecordingCustomTrackControls(),
             scanCenter: TrackScanCenter())
     }
@@ -82,15 +81,16 @@ final class InboxTrackPaneTests: XCTestCase {
     private func actions(
         _ track: Track,
         confirmingDelete: Box<Bool> = Box(false),
+        onRestore: @escaping () -> Void = {},
         onMakeTask: @escaping () -> Void = {},
         onDelete: @escaping () -> Void = {}
     ) -> TrackCardActions {
         TrackCardActions(
             subject: InboxCardSubject(track: card(track), events: []), link: URL(string: "https://example.com/t"),
-            isCustom: track.isCustom, linkedTargetID: track.linkedTargetID, navScreens: [], workbenches: [],
-            isWriting: false, isMakingTask: false, confirmingDelete: confirmingDelete.binding,
-            onCommand: { _ in }, onDone: {}, onStopWatching: {}, onMakeTask: onMakeTask,
-            onGoToTarget: { _ in }, onDelete: onDelete)
+            isCustom: track.isCustom, isStopped: track.isDismissed, linkedTargetID: track.linkedTargetID,
+            navScreens: [], workbenches: [], isWriting: false, isMakingTask: false,
+            confirmingDelete: confirmingDelete.binding, onCommand: { _ in }, onDone: {}, onStopWatching: {},
+            onRestore: onRestore, onMakeTask: onMakeTask, onGoToTarget: { _ in }, onDelete: onDelete)
     }
 
     private func waitUntil(_ condition: @escaping @MainActor () -> Bool) async {
@@ -107,7 +107,7 @@ final class InboxTrackPaneTests: XCTestCase {
         var pressed: [String] = []
         let pane = InboxTrackPane(
             card: card(auto), tracks: TracksViewModel(dbManager: manager), controls: RecordingCustomTrackControls(),
-            onDone: { pressed.append("done") }, onStopWatching: { pressed.append("stop") },
+            onDone: { pressed.append("done") }, onStopWatching: { pressed.append("stop") }, onRestore: {},
             onCommand: { _ in }, workbenches: []
         ).environment(AppState.isolated())
 
@@ -116,6 +116,7 @@ final class InboxTrackPaneTests: XCTestCase {
         }
         // Delete is a custom track's only.
         XCTAssertThrowsError(try pane.inspect().find(button: "Delete…"))
+        XCTAssertThrowsError(try pane.inspect().find(button: "Restore"), "only a stopped track restores")
         try pane.inspect().find(button: "Done").tap()
         try pane.inspect().find(button: "Stop watching").tap()
         XCTAssertEqual(pressed, ["done", "stop"])
@@ -208,23 +209,41 @@ final class InboxTrackPaneTests: XCTestCase {
 
         let vm = timeline(custom, controls: fake)
         let scanOpen = Box(true)
-        try CustomTrackTimelineView(viewModel: vm, scanRowOpen: scanOpen.binding, showsEarlier: .constant(false))
-            .inspect().find(button: "Scan from date").tap()
+        func activity() -> CustomTrackTimelineView {
+            CustomTrackTimelineView(viewModel: vm, scanRowOpen: scanOpen.binding, showsEarlier: .constant(false))
+        }
+        try activity().inspect().find(button: "Since last check").tap()
         XCTAssertFalse(scanOpen.value, "the row closes when the scan starts")
         await waitUntil { fake.calls.count == 3 }
+        await waitUntil { !vm.isRefreshing }
+        scanOpen.value = true
+        // The date picker starts a week back.
+        let weekAgo = try XCTUnwrap(Calendar.current.date(byAdding: .day, value: -7, to: Date()))
+        try activity().inspect().find(button: "Scan from date").tap()
+        await waitUntil { fake.calls.count == 4 }
 
+        let suite = "InboxTrackPaneTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
         let strip = ActionStripViewModel(dbPool: manager.dbPool, cliRunner: FakeCLIRunner(), customTrackControls: fake,
-                                         defaults: try XCTUnwrap(UserDefaults(suiteName: "InboxTrackPaneTests")))
+                                         defaults: defaults)
         await strip.stopWatching(custom)
+        await strip.restoreTrack(custom)
 
-        XCTAssertEqual(fake.calls.count, 4)
-        XCTAssertEqual(Array(fake.calls.prefix(2)), [
+        XCTAssertEqual(fake.calls.count, 6)
+        XCTAssertEqual(Array(fake.calls.prefix(3)), [
             .saveInstruction(trackID: custom.id, text: "watch the refund owner"),
-            .setCollecting(trackID: custom.id, on: false)
+            .setCollecting(trackID: custom.id, on: false),
+            .scan(trackID: custom.id, from: nil)
         ])
-        guard case .scan(let trackID, _) = fake.calls[2] else { return XCTFail("\(fake.calls[2]) is not a scan") }
+        guard case let .scan(trackID, from?) = fake.calls[3] else {
+            return XCTFail("\(fake.calls[3]) is not a scan from a date")
+        }
         XCTAssertEqual(trackID, custom.id)
-        XCTAssertEqual(fake.calls[3], .stopWatching(trackID: custom.id))
+        XCTAssertEqual(from.timeIntervalSince1970, weekAgo.timeIntervalSince1970, accuracy: 60)
+        XCTAssertEqual(Array(fake.calls.suffix(2)), [
+            .stopWatching(trackID: custom.id), .resumeWatching(trackID: custom.id)
+        ])
         // The card reflects the writes the seam accepted, and the database is
         // untouched: nothing but the seam wrote.
         XCTAssertEqual(state.value.instruction, "watch the refund owner")
@@ -362,9 +381,31 @@ final class InboxTrackPaneTests: XCTestCase {
         let custom = try track(custom: true)
         let pane = InboxTrackPane(
             card: card(custom), tracks: TracksViewModel(dbManager: manager), controls: RecordingCustomTrackControls(),
-            onDone: {}, onStopWatching: {}, onCommand: { _ in }, workbenches: []
+            onDone: {}, onStopWatching: {}, onRestore: {}, onCommand: { _ in }, workbenches: []
         ).environment(AppState.isolated())
+        // The pane renders; the source scan above is the real guard.
         XCTAssertNoThrow(try pane.inspect().find(button: "Delete…"))
-        XCTAssertTrue(try pane.inspect().findAll(ViewType.Sheet.self).isEmpty)
+    }
+
+    // MARK: - Restore
+
+    /// A stopped track's card offers Restore in Done's place and no Stop
+    /// watching; Restore reaches the card's callback.
+    func testAStoppedCardRestores() throws {
+        for custom in [false, true] {
+            let stopped = try track(custom: custom)
+            try manager.dbPool.write { db in try TrackQueries.dismiss(db, id: stopped.id) }
+            let fetched = try manager.dbPool.read { db in try TrackQueries.fetchByID(db, id: stopped.id) }
+            let track = try XCTUnwrap(fetched)
+            XCTAssertTrue(track.isDismissed)
+            var restored = 0
+            let restore = { restored += 1 }
+            let sut = actions(track, onRestore: restore)
+
+            XCTAssertThrowsError(try sut.inspect().find(button: "Done"))
+            XCTAssertThrowsError(try sut.inspect().find(button: "Stop watching"))
+            try sut.inspect().find(button: "Restore").tap()
+            XCTAssertEqual(restored, 1, "custom: \(custom)")
+        }
     }
 }
