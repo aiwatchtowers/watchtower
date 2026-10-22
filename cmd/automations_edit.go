@@ -16,8 +16,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/automations"
+	"watchtower/internal/automations/builtin"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/fsutil"
 )
 
 // recipeSlugOf is the slug a recipe file's name gives (its stem).
@@ -146,7 +148,11 @@ func runAutomationsValidate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	v := validateRecipe(recipeSlugOf(args[0]), data, contentHash, scope, confirmed)
+	slug := recipeSlugOf(args[0])
+	if scope.BuiltinID != "" {
+		slug = scope.BuiltinID // --against a built-in: its copy is <id>.md whatever the file is called
+	}
+	v := validateRecipe(slug, data, contentHash, scope, confirmed)
 	w := cmd.OutOrStdout()
 	if autoFlags.JSON {
 		return writeJSON(w, v) // ok:false exits 0: the Desktop decodes it
@@ -261,6 +267,12 @@ func runAutomationsRescan(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
+// The refusals of the verbs a built-in does not take.
+const (
+	msgBuiltinNoDelete = "built-ins cannot be deleted; turn it off instead"
+	msgBuiltinNoAuto   = "built-ins get no auto grants (AUTO-03)"
+)
+
 // ownerOnlyAutomationHint ends the refusal of `automations enable` and
 // `automations delete` under an AI agent's markers (AGENT-07, ask #293).
 const ownerOnlyAutomationHint = "enable and delete are owner-only"
@@ -280,6 +292,9 @@ func runAutomationsEnable(cmd *cobra.Command, args []string) error {
 	if err := refuseOwnerOnlyAutomationVerb("enable an automation"); err != nil {
 		return err
 	}
+	if err := refuseBuiltinOnOff(args[0]); err != nil {
+		return err
+	}
 	if err := confirmWithOwner("enable an automation", automationConfirmDetail(args[0])); err != nil {
 		return err
 	}
@@ -287,7 +302,44 @@ func runAutomationsEnable(cmd *cobra.Command, args []string) error {
 }
 
 func runAutomationsDisable(cmd *cobra.Command, args []string) error {
+	if err := refuseBuiltinOnOff(args[0]); err != nil {
+		return err
+	}
 	return setAutomationsEnabled(cmd, args[0], false)
+}
+
+// refuseBuiltinOnOff refuses enable/disable of a built-in: its features'
+// config keys are its on/off truth (spec 2026-10-22 §5.4).
+func refuseBuiltinOnOff(arg string) error {
+	a, err := builtinArg(arg)
+	if err != nil || a == nil {
+		return err
+	}
+	ids := a.BuiltinID
+	if e, ok := builtinLookup(a.BuiltinID); ok {
+		ids = strings.Join(e.FeatureIDs, " ")
+	}
+	return errors.New("A built-in turns on and off with its features: watchtower features enable|disable " + ids)
+}
+
+// builtinArg is the automation arg names when it is a built-in's row, nil
+// otherwise — also when arg is not an id or names no automation: the command
+// reports that itself.
+func builtinArg(arg string) (*db.Automation, error) {
+	id, err := parseAutomationID("automation id", arg)
+	if err != nil {
+		return nil, nil
+	}
+	_, database, err := openAutomationsCmd()
+	if err != nil {
+		return nil, err
+	}
+	defer database.Close()
+	a, err := database.GetAutomation(id)
+	if err != nil || !a.IsBuiltin() {
+		return nil, nil
+	}
+	return a, nil
 }
 
 func setAutomationsEnabled(cmd *cobra.Command, arg string, on bool) error {
@@ -413,6 +465,9 @@ func runAutomationsSave(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	if id, ok := strings.CutPrefix(autoFlags.Path, builtinPathPrefix); ok {
+		return saveBuiltinCopy(cmd, cfg, database, id, data)
+	}
 	t, err := resolveSaveTarget(cfg, database, autoFlags.File, autoFlags.Path)
 	if err != nil {
 		return err
@@ -522,6 +577,11 @@ func runAutomationsDelete(cmd *cobra.Command, args []string) error {
 	if err := refuseOwnerOnlyAutomationVerb("delete an automation"); err != nil {
 		return err
 	}
+	if a, err := builtinArg(args[0]); err != nil {
+		return err
+	} else if a != nil {
+		return errors.New(msgBuiltinNoDelete)
+	}
 	if err := confirmWithOwner("delete an automation", automationConfirmDetail(args[0])); err != nil {
 		return err
 	}
@@ -590,4 +650,82 @@ func recipeFileRemovable(cfg *config.Config, database *db.DB, a *db.Automation) 
 		return false, fmt.Errorf("checking %s: %w", a.Path, err)
 	}
 	return info.Mode().IsRegular(), nil
+}
+
+// builtinPathPrefix is save's --path for a built-in's edited copy:
+// builtin:<id> (also the built-in row's path).
+const builtinPathPrefix = "builtin:"
+
+// saveBuiltinCopy is `save --path builtin:<id>`: data becomes the owner's
+// copy of built-in id (builtin.OwnerCopyPath, its .builtin folder created
+// 0700), written atomically; the row is synced (the copy is unconfirmed
+// until --confirm-hash, or the owner's confirm, unless it equals the shipped
+// text) and --confirm-hash confirmed as for any save. --expect-content-hash
+// compares with the copy's content hash, or with the shipped text's when
+// there is no copy (the row's content_hash either way). Refused under an
+// agent's markers: an unconfirmed copy stops the built-in, and a built-in is
+// edited from its panel.
+func saveBuiltinCopy(cmd *cobra.Command, cfg *config.Config, database *db.DB, id string, data []byte) error {
+	if err := refuseUnderAgent("save a built-in's edited copy"); err != nil {
+		return err
+	}
+	e, ok := builtinLookup(id)
+	if !ok {
+		return fmt.Errorf("cannot save to %s%s: there is no such built-in", builtinPathPrefix, id)
+	}
+	path := builtin.OwnerCopyPath(cfg.WorkspaceDir(), e.ID)
+	t := saveTarget{scope: automations.Scope{Kind: automations.ScopePersonal, BuiltinID: e.ID},
+		dir: filepath.Dir(path), path: path, slug: e.ID}
+	if err := checkConfirmHash(t, data, autoFlags.ConfirmHash); err != nil {
+		return err
+	}
+	if cmd.Flags().Changed(expectContentHashFlag) {
+		if err := checkBuiltinExpectedContentHash(e, path, autoFlags.ExpectContentHash); err != nil {
+			return err
+		}
+	}
+	if err := confirmSaveWithOwner(t, data); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(t.dir, 0o700); err != nil {
+		return fmt.Errorf("creating %s: %w", t.dir, err)
+	}
+	if fi, err := os.Lstat(t.dir); err != nil {
+		return fmt.Errorf("checking %s: %w", t.dir, err)
+	} else if !fi.IsDir() {
+		return fmt.Errorf("cannot save to %s: %s is not a folder", path, t.dir)
+	}
+	if err := fsutil.WriteFileAtomic(path, data, 0o600); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	a, err := builtin.SyncOne(cmd.Context(), database, cfg.WorkspaceDir(), cfg, e.ID, time.Now())
+	if err != nil {
+		return err
+	}
+	out := saveJSON{AutomationID: a.ID, Path: a.Path, ApprovalHash: a.ApprovalHash, Confirmed: a.Confirmed()}
+	if autoFlags.ConfirmHash != "" {
+		if err := database.ConfirmAutomation(a.ID, autoFlags.ConfirmHash, time.Now()); err != nil {
+			return fmt.Errorf("saved %s but not confirmed: %w", path, err)
+		}
+		out.Confirmed = true
+	}
+	w := cmd.OutOrStdout()
+	if autoFlags.JSON {
+		return writeJSON(w, out)
+	}
+	fmt.Fprintf(w, "Saved %s's edited copy %s (automation #%d, confirmed: %v).\n", e.Name, path, out.AutomationID, out.Confirmed)
+	return nil
+}
+
+// checkBuiltinExpectedContentHash refuses, before anything is written, a
+// save over a built-in whose current text is not want: the copy's content
+// hash when a copy is there, else the shipped text's.
+func checkBuiltinExpectedContentHash(e builtin.Entry, path, want string) error {
+	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+		if want != e.ShippedContentHash() {
+			return fmt.Errorf("not saved: %s changed since you opened it — reload it and review again", e.Name)
+		}
+		return nil
+	}
+	return checkExpectedContentHash(path, want)
 }

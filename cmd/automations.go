@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/automations"
+	"watchtower/internal/automations/builtin"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/tools"
@@ -90,10 +91,12 @@ func init() {
 	auto := newAutomationsSubcommand("auto <id|slug> <tool> on|off",
 		"Turn a tool's auto grant on (owner only, at the current approval hash) or off", cobra.ExactArgs(3),
 		runAutomationsAuto)
+	reset := newAutomationsSubcommand("reset <id>", "Put a built-in back on its shipped text (owner only)",
+		cobra.ExactArgs(1), runAutomationsReset)
 	reply := newAutomationsSubcommand("reply", "Press a Reply button on an Inbox card: queue its run (owner only)",
 		cobra.NoArgs, runAutomationsReply)
 
-	for _, c := range []*cobra.Command{list, show, validate, rescan, run, dryRun, runs, steps, save, outputs, auto, reply} {
+	for _, c := range []*cobra.Command{list, show, validate, rescan, run, dryRun, runs, steps, save, outputs, auto, reply, reset} {
 		c.Flags().BoolVar(&autoFlags.JSON, "json", false, "output as JSON")
 	}
 	for _, c := range []*cobra.Command{list, show, validate, rescan, auto} {
@@ -116,7 +119,7 @@ func init() {
 	reply.Flags().Int64Var(&autoFlags.Output, "output", 0, "the Inbox card's output id (required)")
 	reply.Flags().IntVar(&autoFlags.Action, "action", 0, "the 0-based index of the card's Reply button (required)")
 	automationsCmd.AddCommand(list, show, validate, rescan, run, dryRun, cancel, runs, steps, enable, disable,
-		confirm, save, del, outputs, wake, auto, reply)
+		confirm, save, del, outputs, wake, auto, reply, reset)
 }
 
 // openAutomationsCmd loads the config and opens the database with the
@@ -185,8 +188,8 @@ func workbenchScope(database *db.DB, workbenchID int64) (automations.Scope, stri
 }
 
 // resolveAutomation finds an automation by slug in the scope of --workbench
-// (personal by default) and, when no slug matches and arg is a number, by
-// id. Slug first: an all-digit slug ("2026") is a valid recipe name, and the
+// (personal by default), then — personal only — a built-in by its id, and,
+// when no slug matches and arg is a number, by id. Slug first: an all-digit slug ("2026") is a valid recipe name, and the
 // owner who typed it meant that recipe.
 func resolveAutomation(database *db.DB, arg string, workbenchID int64) (*db.Automation, error) {
 	scope, _, err := workbenchScope(database, workbenchID)
@@ -196,6 +199,9 @@ func resolveAutomation(database *db.DB, arg string, workbenchID int64) (*db.Auto
 	a, err := database.GetAutomationBySlug(string(scope.Kind), scope.WorkbenchID, arg)
 	if err == nil || !errors.Is(err, db.ErrAutomationNotFound) {
 		return a, err
+	}
+	if _, ok := builtinLookup(arg); ok && workbenchID == 0 {
+		return database.GetBuiltinAutomation(arg)
 	}
 	id, perr := strconv.ParseInt(arg, 10, 64)
 	if perr != nil || id <= 0 {
@@ -288,6 +294,10 @@ type automationJSON struct {
 	ChangesKnown bool                   `json:"changes_known"`
 	ChangedBy    string                 `json:"changed_by"`
 	ChangedAt    *string                `json:"changed_at"`
+	// Builtin is a built-in's card (builtin.CardInfo, keys pinned by
+	// internal/automations/builtin/testdata/show_morning_brief.json); null
+	// for an owner automation.
+	Builtin *builtin.CardInfo `json:"builtin"`
 }
 
 // automationChangeJSON is one hashed field that differs from the confirmed
@@ -499,6 +509,17 @@ func runAutomationsShow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	if a.IsBuiltin() {
+		e, ok := builtin.Lookup(a.BuiltinID)
+		if !ok {
+			return fmt.Errorf("automation %d is the unknown built-in %q", a.ID, a.BuiltinID)
+		}
+		card, err := builtin.Card(database, cfg, cfg.WorkspaceDir(), e, a, time.Now())
+		if err != nil {
+			return err
+		}
+		j.Builtin = &card
+	}
 	reg := buildAutomationRegistry(cfg, database)
 	j.AutoTools = automationAutoTools(reg, a)
 	j.LLMAutoWrites = automationLLMAutoWrites(reg, a, grants)
@@ -534,6 +555,13 @@ func printAutomation(w io.Writer, j automationJSON) {
 	}
 	if len(j.LLMAutoWrites) > 0 {
 		fmt.Fprintf(w, "  warning:     %s\n", llmAutoWarning(j.LLMAutoWrites))
+	}
+	if b := j.Builtin; b != nil {
+		fmt.Fprintf(w, "  built-in:    %s, on: %v, edited copy: %v, update available: %v\n", b.ID, b.Enabled, b.Overridden, b.UpdateAvailable)
+		fmt.Fprintf(w, "  when:        %s\n", b.When)
+		if b.CopyError != "" {
+			fmt.Fprintf(w, "  copy:        %s\n", b.CopyError)
+		}
 	}
 }
 

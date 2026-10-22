@@ -36,6 +36,12 @@ type automationListItem struct {
 	// is inactive because the recipe changed since it was granted.
 	Grants     []automationGrantJSON `json:"grants"`
 	AutoPaused bool                  `json:"auto_paused"`
+	// Origin is "owner" or "builtin"; BuiltinID ("" for an owner row) and
+	// Overridden (the built-in runs from the owner's edited copy) are a
+	// built-in's.
+	Origin     string `json:"origin"`
+	BuiltinID  string `json:"builtin_id"`
+	Overridden bool   `json:"overridden"`
 }
 
 func runAutomationsList(cmd *cobra.Command, _ []string) error {
@@ -79,6 +85,7 @@ func runAutomationsList(cmd *cobra.Command, _ []string) error {
 			NeedsConfirmation: automationNeedsConfirmation(a), ParseError: a.ParseError, NextRunAt: a.NextRunAt,
 			DisabledReason: a.DisabledReason, DisabledAt: a.DisabledAt,
 			LastStatus: s.LastStatus, Tokens7d: s.TokensSince, Grants: gj, AutoPaused: anyGrantPaused(gj),
+			Origin: a.Origin, BuiltinID: a.BuiltinID, Overridden: a.Overridden,
 		})
 	}
 	w := cmd.OutOrStdout()

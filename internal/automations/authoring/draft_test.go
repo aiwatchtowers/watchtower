@@ -3,6 +3,7 @@ package authoring
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/automationstest"
+	"watchtower/internal/automations/builtin"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/tools"
@@ -401,6 +403,60 @@ func TestDraftAutomation_NotInReadTools(t *testing.T) {
 	for surface, want := range map[string]bool{"main": true, "automation_editor": true, "automation": false} {
 		if got := tl.VisibleOn(surface); got != want {
 			t.Errorf("VisibleOn(%q) = %v; want %v", surface, got, want)
+		}
+	}
+}
+
+// TestDraftAutomation_BuiltinScope: a draft with builtin_id parses in that
+// built-in's scope (a personal draft of the same text does not: only a
+// built-in declares a sync trigger), widens from the built-in row's
+// confirmed text and dry-runs with the shipped prompts, calling no
+// primitive.
+func TestDraftAutomation_BuiltinScope(t *testing.T) {
+	f := newDraftFixture(t)
+	e, ok := builtin.Lookup("morning-brief")
+	if !ok {
+		t.Fatal("no morning-brief built-in")
+	}
+	if _, err := builtin.SyncOne(context.Background(), f.d, t.TempDir(), nil, e.ID, draftNow); err != nil {
+		t.Fatal(err)
+	}
+
+	personal, _ := f.call(t, map[string]any{"recipe_text": string(e.Recipe)})
+	if personal.OK {
+		t.Fatal("the built-in's text parsed in the personal scope")
+	}
+
+	res, raw := f.call(t, map[string]any{"recipe_text": string(e.Recipe), "builtin_id": e.ID})
+	if !res.OK {
+		t.Fatalf("built-in draft did not parse: %s", raw)
+	}
+	if res.Manifest.Scope != "builtin:morning-brief" || res.Manifest.Slug != e.ID {
+		t.Errorf("manifest scope/slug = %q/%q", res.Manifest.Scope, res.Manifest.Slug)
+	}
+	if len(res.Widening) != 0 {
+		t.Errorf("widening = %v; the shipped text is confirmed", res.Widening)
+	}
+	if res.DryRun == nil || res.DryRun.Status != db.RunSucceeded {
+		t.Fatalf("dry run = %s", raw)
+	}
+	for _, s := range res.DryRun.Steps {
+		if (s.Name == "brief.compose" || s.Name == "plan.compose") && s.Status != "dry_run" {
+			t.Errorf("step %s = %s; a draft calls no primitive", s.Name, s.Status)
+		}
+	}
+	if f.gen.CallCount() != 0 {
+		t.Errorf("the draft made %d model calls", f.gen.CallCount())
+	}
+
+	for _, bad := range []map[string]any{
+		{"recipe_text": string(e.Recipe), "builtin_id": "no-such"},
+		{"recipe_text": string(e.Recipe), "builtin_id": e.ID, "workbench_id": 3},
+		{"recipe_text": string(e.Recipe), "builtin_id": e.ID, "slug": "other"},
+	} {
+		var ve *tools.ValidationError
+		if _, err := f.callErr(bad); !errors.As(err, &ve) {
+			t.Errorf("draft %v = %v; want a ValidationError", bad, err)
 		}
 	}
 }

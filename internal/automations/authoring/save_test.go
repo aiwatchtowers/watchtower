@@ -529,3 +529,19 @@ func TestSaveAutomation_WideningUnknownConfirmedTextIsEverything(t *testing.T) {
 		t.Errorf("widening = %v; want every permission when the confirmed text is unknown", p.Widening)
 	}
 }
+
+// TestSaveAutomation_RefusesBuiltin: save_automation never writes a
+// built-in's copy; a built-in is saved from its panel.
+func TestSaveAutomation_RefusesBuiltin(t *testing.T) {
+	f := newSaveFixture(t)
+	_, err := f.proposeErr(map[string]any{"recipe_text": recipeText([]string{"llm:light"}, "", `return 1`),
+		"slug": "morning-brief", "reason": "r", "builtin_id": "morning-brief"})
+	var ve *tools.ValidationError
+	if !errors.As(err, &ve) || ve.Msg != msgBuiltinSavedFromPanel {
+		t.Fatalf("propose = %v; want %q", err, msgBuiltinSavedFromPanel)
+	}
+	var n int
+	if err := f.d.QueryRow(`SELECT COUNT(*) FROM agent_actions`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("agent_actions rows = %d (%v); want 0", n, err)
+	}
+}

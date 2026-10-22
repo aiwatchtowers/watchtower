@@ -44,7 +44,7 @@ var (
 const minRecapTranscriptChars = 200
 
 // transcriptGeneratorFactory is the seam tests override to inject a mock
-// generator (same pattern as newDayPlanPipelineFactory).
+// generator (same pattern as cliBuiltinGenerator).
 var transcriptGeneratorFactory = func(cfg *config.Config) digest.Generator {
 	return cliGenerator(cfg)
 }

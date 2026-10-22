@@ -230,7 +230,7 @@ func runFeaturesEnable(cmd *cobra.Command, args []string) error {
 // seedReactionLedgerFn seeds the reaction-commands ledger via a live Slack
 // read (reactions.list under each connected account's own token, through the
 // same resolver the daemon poll uses). A package var — the
-// newDayPlanPipelineFactory house pattern — so a test can substitute a stub
+// cliBuiltinGenerator house pattern — so a test can substitute a stub
 // without a real Slack account.
 var seedReactionLedgerFn = func(ctx context.Context, database *db.DB, cfg *config.Config, logger *log.Logger) (int, error) {
 	return reactioncmd.SeedLedger(ctx, database, reactionCommandsAccountsFn(database, cfg, logger))

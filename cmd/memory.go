@@ -120,7 +120,7 @@ var memoryRetrieveCompareCmd = &cobra.Command{
 }
 
 // newMemoryPipelineFactory is the seam tests override to inject a fake
-// pipeline (same pattern as newDayPlanPipelineFactory). The default wires
+// pipeline (same pattern as cliBuiltinGenerator). The default wires
 // the timeout-bounded CLI generator (H8 — the memory phase runs inside the
 // daemon cycle holding sync.lock, so a hung claude/codex subprocess here
 // freezes every later phase exactly as it would in any other phase; the bound
