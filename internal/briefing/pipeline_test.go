@@ -634,6 +634,10 @@ func TestRunForDateWith_PromptOverrideReplacesStoredTemplate(t *testing.T) {
 	require.NoError(t, store.Seed())
 	require.NoError(t, store.Update(prompts.BriefingDaily, overrideTemplate("STORED-A", verbs), "test"))
 
+	require.NoError(t, database.UpsertUserProfile(db.UserProfile{SlackUserID: "U001", Role: "top_management"}))
+	instr := prompts.GetRoleInstruction("top_management")
+	require.NotEmpty(t, instr)
+
 	gen := &capturingGenerator{response: emptyBriefingJSON}
 	pipe := New(database, testConfig(), gen, log.New(io.Discard, "", 0))
 	pipe.SetPromptStore(store)
@@ -645,8 +649,8 @@ func TestRunForDateWith_PromptOverrideReplacesStoredTemplate(t *testing.T) {
 	assert.Contains(t, gen.systemMsg, "OVERRIDE-B")
 	assert.NotContains(t, gen.systemMsg, "STORED-A")
 	assert.Empty(t, pipe.LastPromptNote())
-	// The role instruction (when the role has one) is prefixed to the override.
-	assert.Equal(t, 1, strings.Count(gen.systemMsg, "OVERRIDE-B"))
+	assert.True(t, strings.HasPrefix(gen.systemMsg, instr+"\n\nOVERRIDE-B"),
+		"the role instruction must be prefixed to the override")
 }
 
 func TestComposeBrief_PlaceholderMismatchUsesDefault(t *testing.T) {

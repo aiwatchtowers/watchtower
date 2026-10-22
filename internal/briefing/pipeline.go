@@ -362,7 +362,11 @@ func (p *Pipeline) getPrompt(id, role, override string) (string, int) {
 		}
 	}
 	if got, want := countVerbs(tmpl), countVerbs(prompts.Defaults[id]); got != want {
-		p.logger.Printf("briefing: %s template has %d placeholders, the default has %d — using the default (reset the prompt in Settings to pick up the new sections)", id, got, want)
+		if override != "" {
+			p.logger.Printf("briefing: the edited Morning brief prompt has %d %%s placeholders, the default has %d — using the default", got, want)
+		} else {
+			p.logger.Printf("briefing: stored %s template has %d placeholders, the default has %d — using the default (reset the prompt in Settings to pick up the new sections)", id, got, want)
+		}
 		p.lastPromptNote = fmt.Sprintf("The prompt has %d placeholders where %d are required — the built-in prompt was used.", got, want)
 		tmpl, version = prompts.Defaults[id], 0
 	}
