@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import UniformTypeIdentifiers
 import WatchtowerCore
 
 /// What the Workchat asks of `SessionControl`: its gates and the permission
@@ -8,6 +9,8 @@ import WatchtowerCore
 @MainActor
 protocol WorkchatControl: AnyObject {
     func lineCheck(_ sessionID: Int64) -> SessionControl.LineCheck
+    func workchatLineCheck(_ sessionID: Int64) -> SessionControl.LineCheck
+    func isWorking(_ sessionID: Int64) -> Bool
     func interrupt(_ sessionID: Int64) async throws -> SessionControl.InterruptResult
     func pendingPermission(_ sessionID: Int64) async throws -> SessionControl.PermissionPrompt?
     func answerPermission(requestID: Int64, sessionID: Int64, allow: Bool, decidedBy: String) async throws
@@ -28,8 +31,14 @@ final class WorkchatModel {
 
     let sessionID: Int64
     var draft = ""
+    /// Files and pasted images waiting to go with the next line, as the
+    /// composer's chips; in memory only (negative ids, `path` absolute).
+    private(set) var attachments: [ChatAttachment] = []
     /// The lines sent from here and not yet shown by the feed, oldest first.
     private(set) var outgoing: [WorkchatOutgoing] = []
+    /// Why the last attach did not take (a paste not saved, a path that
+    /// cannot go in a line), under the field; the next attach or send clears it.
+    private(set) var attachmentError: String?
     /// Why the last Stop did not go (refused, or not checked); the next Stop clears it.
     private(set) var stopError: String?
     /// The session's pending permission request, as the card shows it; nil
@@ -46,6 +55,18 @@ final class WorkchatModel {
     @ObservationIgnored private let control: any WorkchatControl
     @ObservationIgnored private let lineDelivery: SessionLineDelivery
     @ObservationIgnored private let now: () -> Date
+    /// Where pasted bytes are saved; nil → a paste is not taken.
+    @ObservationIgnored private let attachmentStore: WorkchatAttachmentStore?
+    @ObservationIgnored private var attachmentCounter: Int64 = 0
+    /// The chips of a line on its way, to bring back if it cannot go.
+    @ObservationIgnored private var sentAttachments: [UUID: [ChatAttachment]] = [:]
+    /// The session's kind, read each time it is needed: a pane restored at
+    /// launch makes its model before the sessions load.
+    @ObservationIgnored private let kind: @MainActor () -> TerminalSession.Kind?
+    /// Whether a line waits for the agent to stop. Only Claude Code is
+    /// known to queue a Return typed mid-turn; Codex (not verified), a shell
+    /// and a kind not known yet keep the phone's busy hold.
+    var holdsUntilIdle: Bool { kind() != .claude }
     /// Feed entries that stood for a line already: one echo, one line.
     @ObservationIgnored private var claimedEntries: Set<String> = []
     /// Bumped by each permission read and answer, so a read that finishes
@@ -55,8 +76,17 @@ final class WorkchatModel {
     /// that already held its echo is matched against it.
     @ObservationIgnored private var lastEntries: [SessionFeedEntry] = []
 
-    init(sessionID: Int64, control: any WorkchatControl, lineDelivery: SessionLineDelivery, now: @escaping () -> Date = Date.init) {
+    init(
+        sessionID: Int64,
+        control: any WorkchatControl,
+        lineDelivery: SessionLineDelivery,
+        attachmentStore: WorkchatAttachmentStore? = nil,
+        kind: @escaping @MainActor () -> TerminalSession.Kind?,
+        now: @escaping () -> Date = Date.init
+    ) {
         self.sessionID = sessionID
+        self.attachmentStore = attachmentStore
+        self.kind = kind
         self.control = control
         self.lineDelivery = lineDelivery
         self.now = now
@@ -69,21 +99,91 @@ final class WorkchatModel {
     /// that cannot go comes back to it.
     func send() async {
         // Line breaks stay (owner ask #421); only the ends are trimmed.
-        let text = draft.replacingOccurrences(of: "\r\n", with: "\n")
+        let typed = draft.replacingOccurrences(of: "\r\n", with: "\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        guard !typed.isEmpty || !attachments.isEmpty else { return }
+        attachmentError = nil
+        let paths = attachments.map(\.path)
+        let text = ([typed].filter { !$0.isEmpty } + paths.map(Self.quoted)).joined(separator: "\n")
         draft = ""
         let id = UUID()
-        outgoing.append(WorkchatOutgoing(id: id, text: text, sentAt: now(), state: .sending))
+        sentAttachments[id] = attachments
+        attachments = []
+        outgoing.append(WorkchatOutgoing(
+            id: id, text: text, sentAt: now(), state: .sending, typedText: typed, attachmentPaths: paths
+        ))
         let delivery = await lineDelivery.deliverLine(
             text, key: .workchat(id), sessionID: sessionID,
-            gate: { [weak control] in Self.gate(control?.lineCheck($0)) },
+            gate: { [weak self, weak control] in
+                // Read at each try: a held line goes once the kind is known.
+                Self.gate((self?.holdsUntilIdle ?? true) ? control?.lineCheck($0) : control?.workchatLineCheck($0))
+            },
             onHeldEvent: { [weak self] event in
                 guard case let .tried(delivery) = event else { return }
                 self?.settle(id, delivery)
             }
         )
         settle(id, delivery)
+    }
+
+    // MARK: - Attachments
+
+    /// Files from Finder or a drop: sent as their own paths. A path with a
+    /// line break is refused (`attachmentError`): it would split the line.
+    func attach(files: [URL]) {
+        attachmentError = nil
+        for url in files {
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey])
+            addChip(path: url.path, name: url.lastPathComponent, size: Int64(values?.fileSize ?? 0))
+        }
+    }
+
+    /// Pasted image or PDF bytes, saved under the session's folder and sent
+    /// as that path. False → the paste is not taken (no store, or a write
+    /// failed) and `attachmentError` says why; nothing is inserted instead.
+    func attach(data: Data, name: String) async -> Bool {
+        attachmentError = nil
+        guard let attachmentStore else {
+            attachmentError = "Pasted files cannot be kept here"
+            return false
+        }
+        do {
+            let url = try attachmentStore.save(data, name: name, sessionID: sessionID)
+            return addChip(path: url.path, name: name, size: Int64(data.count))
+        } catch {
+            NSLog("WorkchatModel: saving a pasted file for session %lld failed: %@", sessionID, String(describing: error))
+            attachmentError = "Could not save the pasted file: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func removeAttachment(_ id: Int64) {
+        attachments.removeAll { $0.id == id }
+    }
+
+    @discardableResult
+    private func addChip(path: String, name: String, size: Int64) -> Bool {
+        guard !path.contains(where: \.isNewline) else {
+            attachmentError = "Cannot attach “\(name)”: its path has a line break"
+            return false
+        }
+        attachmentCounter -= 1
+        let mime = UTType(filenameExtension: (path as NSString).pathExtension)?.preferredMIMEType
+            ?? "application/octet-stream"
+        attachments.append(ChatAttachment(
+            id: attachmentCounter, conversationID: nil, projectID: nil, messageID: nil, name: name,
+            mime: mime, size: size, path: path, sha256: "", createdAt: now().timeIntervalSince1970
+        ))
+        return true
+    }
+
+    /// A path with a space, a double quote or a backslash goes in double
+    /// quotes, with `\` and `"` escaped inside, as a shell reads it. A line
+    /// break never gets here (`addChip` refuses it).
+    private static func quoted(_ path: String) -> String {
+        guard path.contains(where: { $0 == " " || $0 == "\"" || $0 == "\\" }) else { return path }
+        let escaped = path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
     }
 
     /// Drops a queued line before it goes. A line already on its way (its
@@ -227,7 +327,8 @@ final class WorkchatModel {
             guard let delivered = line.deliveredAt else { return true }
             // `matches` already required the entry's date.
             let since = (entry.at ?? delivered).timeIntervalSince(delivered)
-            return since >= -echoLead && since <= WorkchatOutgoing.echoWindow
+            // A line sent mid-turn is echoed when the agent reads it.
+            return since >= -echoLead && (line.sentWhileBusy || since <= WorkchatOutgoing.echoWindow)
         case .typed, .copied: return true
         case .sending, .queued, .notSent: return false
         }
@@ -253,13 +354,18 @@ final class WorkchatModel {
         case .noSession: .notSent
         }
         outgoing[index].state = state
+        if state == .sent, !holdsUntilIdle { outgoing[index].sentWhileBusy = control.isWorking(sessionID) }
         switch state {
         case .sent, .typed, .copied:
+            sentAttachments[id] = nil
             outgoing[index].deliveredAt = now()
             // The feed read that holds its echo may have come while it was
             // still on its way; no later read would bring it again.
             reconcile(with: lastEntries)
-        case .notSent: if draft.isEmpty { draft = outgoing[index].text }
+        case .notSent:
+            if draft.isEmpty { draft = outgoing[index].typedText }
+            if attachments.isEmpty, let chips = sentAttachments[id] { attachments = chips }
+            sentAttachments[id] = nil
         case .sending, .queued: break
         }
     }

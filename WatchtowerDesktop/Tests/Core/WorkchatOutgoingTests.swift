@@ -15,6 +15,27 @@ final class WorkchatOutgoingTests: XCTestCase {
         SessionFeedEntry(id: UUID().uuidString, kind: kind, at: sentAt.addingTimeInterval(seconds), text: text)
     }
 
+    func testMatchesIgnoresImageMarkersAndPaths() {
+        let sent = WorkchatOutgoing(
+            id: UUID(), text: "look\n/x/1.png", sentAt: sentAt, state: .sent,
+            typedText: "look", attachmentPaths: ["/x/1.png"]
+        )
+
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("look [Image #1]"), line: sent))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("look [image]"), line: sent))
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("look /x/1.png"), line: sent))
+        XCTAssertFalse(WorkchatOutgoing.matches(owner("look elsewhere [Image #1]"), line: sent))
+    }
+
+    func testMatchesQuotedPathWithSpace() {
+        let sent = WorkchatOutgoing(
+            id: UUID(), text: "see\n\"/x/a b.png\"", sentAt: sentAt, state: .sent,
+            typedText: "see", attachmentPaths: ["/x/a b.png"]
+        )
+
+        XCTAssertTrue(WorkchatOutgoing.matches(owner("see \"/x/a b.png\""), line: sent))
+    }
+
     func testMatchesCollapsedWhitespace() {
         let sent = line("Fix the  test\nand  run it ")
 

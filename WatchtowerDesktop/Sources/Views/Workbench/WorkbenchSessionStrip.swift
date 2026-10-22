@@ -3,7 +3,7 @@ import WatchtowerCore
 
 /// The slim bar on top of every pane of a session — its terminal, Workchat,
 /// report or Branch review (spec 2026-10-20-workbench-header §2): `session ▾`,
-/// the place and branch crumbs, `[Terminal | Workchat]`, Report, Review,
+/// the place and branch crumbs, one Terminal/Workchat button, Report, Review,
 /// and in a split expand and close. Each strip acts on its own pane and
 /// session (call 8); the crumbs show only on the strip whose session sets
 /// the page's code root (call 9); no pane picker (call 10).
@@ -24,14 +24,10 @@ struct WorkbenchSessionStrip: View {
                 WorkbenchBranchCrumb(vm: vm, project: project)
             }
             Spacer(minLength: Spacing.small)
-            HStack(spacing: Spacing.tight) {
-                modeToggle("Terminal", pane: .session(sessionID))
-                modeToggle("Workchat", pane: .sessionChat(sessionID))
-            }
-            .segmentCapsule()
-            // The toggles never truncate; the session name and the crumbs do.
-            .fixedSize()
-            .layoutPriority(1)
+            modeButton()
+                // The button never truncates; the session name and the crumbs do.
+                .fixedSize()
+                .layoutPriority(1)
             viewToggle("Report", view: .report)
             // Review only while this session has something to review or its
             // Branch review pane is on screen (board #712, spec §5).
@@ -48,25 +44,39 @@ struct WorkbenchSessionStrip: View {
         .padding(.vertical, Spacing.tight)
     }
 
-    /// One half of `[Terminal | Workchat]`, for this strip's session:
-    /// lit when this pane shows that mode. Turning the other half on swaps
-    /// this pane in place — the other pane of a split stays; over the
-    /// session's report or Branch review this pane shows the session in that
-    /// mode. A mode already on screen in the other pane is disabled, not a
-    /// click that does nothing; the lit half stays lit — the capsule picks
-    /// a mode, it never empties the pane.
-    private func modeToggle(_ label: String, pane mode: WorkspacePane) -> some View {
-        let view: WorkspaceView = mode.isWorkchat ? .chat : .terminal
-        let shownElsewhere = pane != mode && vm.layout(projectID: project.id).visiblePanes.contains(mode)
+    /// What the mode button of a pane shows for a session: the mode it
+    /// switches to and that mode's pane. A terminal names Workchat, a
+    /// Workchat names Terminal; over the session's report or Branch review it
+    /// names the session's remembered mode.
+    static func modeButton(pane: WorkspacePane, sessionID: Int64, layout: WorkspaceLayout) -> (label: String, target: WorkspacePane) {
+        let target: WorkspacePane
+        switch pane {
+        case .session(let id) where id == sessionID: target = .sessionChat(sessionID)
+        case .sessionChat(let id) where id == sessionID: target = .session(sessionID)
+        default: target = layout.pane(forSession: sessionID)
+        }
+        return (target.isWorkchat ? "Workchat" : "Terminal", target)
+    }
+
+    /// One button for this strip's session that names the mode it switches
+    /// to. On the session's own pane it swaps this pane in place (the other
+    /// pane of a split stays); over its report or Branch review this pane
+    /// shows the session in the remembered mode. A mode already on screen in
+    /// the other pane is disabled, not a click that does nothing. It is never
+    /// lit: it is an action, not a state.
+    private func modeButton() -> some View {
+        let layout = vm.layout(projectID: project.id)
+        let (label, target) = Self.modeButton(pane: pane, sessionID: sessionID, layout: layout)
+        let view: WorkspaceView = target.isWorkchat ? .chat : .terminal
+        let shownElsewhere = pane != target && layout.visiblePanes.contains(target)
         return Toggle(isOn: Binding(
-            get: { pane == mode },
-            set: { on in
-                guard on else { return }
+            get: { false },
+            set: { _ in
                 if WorkspaceLayout.sessionID(of: pane) == sessionID {
                     vm.toggleMode(sessionID: sessionID, projectID: project.id)
                 } else {
                     Task {
-                        await vm.showSession(sessionID, workchat: mode.isWorkchat, inPane: pane, projectID: project.id)
+                        await vm.showSession(sessionID, workchat: target.isWorkchat, inPane: pane, projectID: project.id)
                     }
                 }
             }
@@ -74,7 +84,8 @@ struct WorkbenchSessionStrip: View {
             Label(label, systemImage: view.icon)
         }
         .toggleStyle(segmentStyle(label))
-        .help(mode.isWorkchat ? "Show this session's Workchat in this pane (⌃`)" : "Show this session's terminal in this pane (⌃`)")
+        .segmentCapsule()
+        .help("Show this session's \(target.isWorkchat ? "Workchat" : "terminal") in this pane (⌃`)")
         .disabled(shownElsewhere)
     }
 

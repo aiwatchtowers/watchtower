@@ -136,6 +136,11 @@ func (st *state) handle(raw []byte) {
 		}
 		st.assistant(rec, at)
 	case "attachment":
+		if e, ok := st.queuedOwnerEntry(rec); ok {
+			e.At, e.Conversation = at, conv
+			res.Entries = append(res.Entries, e)
+			return
+		}
 		if text, ok := briefText(rec.Attachment); ok {
 			res.Entries = append(res.Entries, Entry{ID: rec.UUID, Kind: KindBrief, At: at, Text: text, Conversation: conv})
 		}
@@ -164,6 +169,34 @@ func (st *state) handleUser(rec record, at time.Time) {
 		e.At, e.Conversation = at, st.conv
 		st.res.Entries = append(st.res.Entries, e)
 	}
+}
+
+// queuedOwnerEntry turns a queued_command attachment (an owner line Claude
+// Code took mid-turn; no user record is written for it) into the owner entry
+// a user record would have produced. Other origins and meta records are not
+// owner lines.
+func (st *state) queuedOwnerEntry(rec record) (Entry, bool) {
+	if rec.IsMeta || rec.IsSidechain != st.sidechain {
+		return Entry{}, false
+	}
+	var att struct {
+		Type        string `json:"type"`
+		CommandMode string `json:"commandMode"`
+		Origin      *struct {
+			Kind string `json:"kind"`
+		} `json:"origin"`
+		IsMeta bool            `json:"isMeta"`
+		Prompt json.RawMessage `json:"prompt"`
+	}
+	if json.Unmarshal(rec.Attachment, &att) != nil || att.Type != "queued_command" ||
+		att.CommandMode != "prompt" || att.IsMeta || (att.Origin != nil && att.Origin.Kind != "human") {
+		return Entry{}, false
+	}
+	text, ok := userText(att.Prompt)
+	if !ok {
+		return Entry{}, false
+	}
+	return classifyUserText(rec.UUID, text)
 }
 
 func userEntry(rec record) (Entry, bool) {

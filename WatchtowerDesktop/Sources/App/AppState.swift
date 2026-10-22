@@ -1777,6 +1777,10 @@ final class AppState {
             terminalCenter: terminalCenter, agentStates: agentStates, lineDelivery: lineDelivery,
             sessionControl: makeSessionControl(dbPool: dbPool, agentStates: agentStates, lineDelivery: lineDelivery)
         )
+        vm.attachmentStore = WorkchatAttachmentStore(
+            root: URL(fileURLWithPath: dbPool.path).deletingLastPathComponent()
+                .appendingPathComponent("workchat-attachments", isDirectory: true)
+        )
         // Settings → Workbench → Default agent (board #399, D1), read at each launch.
         vm.readDefaultAgent = { ConfigService.readWorkbenchDefaultAgent() }
         vm.automationsReady = { [weak self] in self?.automationsReady ?? false }
@@ -1825,6 +1829,9 @@ final class AppState {
         ownerPresenceCenter?.start()
         chatQuestionEscalator?.start()
         vm.startHostReattach()
+        // Old pasted Workchat files go once the reattach is done; the runs
+        // live then keep theirs.
+        Task { [weak vm] in await vm?.sweepAttachmentsAfterReattach() }
         initMobileHub(dbPool: dbPool)
         // Once: a setup re-run keeps the center and its launches in flight.
         if automationSessionCenter == nil {

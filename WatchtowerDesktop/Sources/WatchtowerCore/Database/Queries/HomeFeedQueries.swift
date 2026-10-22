@@ -67,7 +67,7 @@ package enum HomeFeedQueries {
         let today = HomeFeedBuilder.dayString(now, calendar: calendar)
         let startOfDay = calendar.startOfDay(for: now)
 
-        data.inbox = readSource(.inbox, db, tables: ["inbox_items", "users", "channels"], failed: &data.failed) {
+        data.inbox = readSource(.inbox, db, tables: ["inbox_items", "users", "channels", "jira_issues"], failed: &data.failed) {
             try inboxRows(db, now: now)
         } ?? []
         if let value = readSource(.reminders, db, tables: ["reminders"], failed: &data.failed, {
@@ -99,6 +99,9 @@ package enum HomeFeedQueries {
 
     // MARK: - Inbox
 
+    /// A Jira row whose issue was deleted at the source (no live
+    /// `jira_issues` row under its key, SRCDEL) leaves the feed: its text is
+    /// blanked and its link leads nowhere.
     private static func inboxRows(_ db: Database, now: Date) throws -> [HomeFeedInboxRow] {
         let formatter = ISO8601DateFormatter()
         let cutoff = formatter.string(from: now.addingTimeInterval(-windowHours * 3600))
@@ -112,6 +115,8 @@ package enum HomeFeedQueries {
         status = 'pending' AND item_class = 'actionable' AND archived_at IS NULL
         AND trigger_type IN (\(feedTriggers.map { "'\($0)'" }.joined(separator: ", ")))
         AND (snooze_until = '' OR snooze_until <= ?)
+        AND (substr(trigger_type, 1, 5) != 'jira_' OR EXISTS (
+          SELECT 1 FROM jira_issues j WHERE j.key = inbox_items.channel_id AND j.is_deleted = 0))
         """
 
     /// The open messages, newest first by `MAX(created_at, mentioned_at)`,

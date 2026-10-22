@@ -186,8 +186,31 @@ final class HomeFeedQueriesTests: XCTestCase {
         XCTAssertEqual(row.whereText, "Invoice 12")
     }
 
+    private func insertJiraIssue(_ d: Database, key: String, deleted: Bool = false) throws {
+        let acct = try TestDatabase.insertJiraAccount(d, cloudID: "c-\(key)")
+        try d.execute(sql: """
+            INSERT INTO jira_issues (account_id, key, project_key, summary, status, status_category,
+                                     created_at, updated_at, synced_at, is_deleted)
+            VALUES (?, ?, 'ACME', 'x', 'Open', 'todo', 't', 't', 't', ?)
+            """, arguments: [acct, key, deleted ? 1 : 0])
+    }
+
+    func testJiraRowOfAnIssueDeletedAtTheSourceLeavesTheFeed() throws {
+        try db.write { d in
+            try self.insertJiraIssue(d, key: "ACME-1")
+            try self.insertJiraIssue(d, key: "ACME-2", deleted: true)
+            try self.insertItem(d, trigger: "jira_assigned", channelID: "ACME-1")
+            try self.insertItem(d, trigger: "jira_assigned", channelID: "ACME-2")
+            // Gone entirely: DeleteJiraIssues hard-deletes the issue.
+            try self.insertItem(d, trigger: "jira_comment_mention", channelID: "ACME-3", snippet: "")
+        }
+        XCTAssertEqual(try read().inbox.map(\.who), ["ACME-1"])
+    }
+
     func testJiraWhoIsTheIssueKeyAndWhereTheReason() throws {
         try db.write { d in
+            try self.insertJiraIssue(d, key: "ACME-7")
+            try self.insertJiraIssue(d, key: "ACME-8")
             try self.insertItem(d, trigger: "jira_assigned", channelID: "ACME-7")
             try self.insertItem(d, trigger: "jira_comment_mention", channelID: "ACME-8")
         }

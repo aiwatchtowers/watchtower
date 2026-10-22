@@ -384,7 +384,11 @@ extension WorkbenchesViewModel {
     func workchat(sessionID: Int64) -> WorkchatModel? {
         if let model = workchatModels[sessionID] { return model }
         guard let sessionControl else { return nil }
-        let model = WorkchatModel(sessionID: sessionID, control: sessionControl, lineDelivery: lineDelivery)
+        let model = WorkchatModel(
+            sessionID: sessionID, control: sessionControl, lineDelivery: lineDelivery, attachmentStore: attachmentStore
+        ) { [weak self] in
+            self?.terminalSessions.values.lazy.flatMap { $0 }.first { $0.id == sessionID }?.kind
+        }
         workchatModels[sessionID] = model
         return model
     }

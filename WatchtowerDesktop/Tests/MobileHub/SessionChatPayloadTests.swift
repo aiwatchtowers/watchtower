@@ -42,6 +42,21 @@ final class SessionChatPayloadTests: XCTestCase {
         try XCTUnwrap(json["entries"] as? [[String: Any]])
     }
 
+    /// FEED-05: the live line is Desktop only; the phone slice never carries it.
+    func testActivityNotPublished() throws {
+        let raw = """
+        {"session_id":7,"cursor":"c","entries":[],"subagents":[],
+         "activity":{"tool":"Bash","summary":"ls","started_at":"2026-10-21T10:00:00Z","more":1}}
+        """
+        let payload = try JSONDecoder().decode(SessionFeedPayload.self, from: Data(raw.utf8))
+        XCTAssertNotNil(payload.activity)
+        let data = try SessionChatPayload.encode(payload, sessionID: 7, agentID: nil, live: true)
+        let json = try SliceJSON.object(data)
+        XCTAssertNil(json["activity"])
+        let text = try XCTUnwrap(String(bytes: data, encoding: .utf8))
+        XCTAssertFalse(text.contains("activity"))
+    }
+
     func testKeepsNewest300() throws {
         let json = try encode((0..<350).map { entry($0) }).json
         let list = try items(json)

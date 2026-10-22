@@ -88,6 +88,7 @@ extension AppState {
         case .workbenches: selectedDestination = .workbench
         case .catchUp: selectedDestination = .catchUp
         case let .automationRun(automationID, runID): openAutomationRun(automationID: automationID, runID: runID)
+        case let .inboxOutput(id, automationID, runID): openInboxOutput(id, automationID: automationID, runID: runID)
         case .feature(let feature): openFeature(feature)
         case .connect(let source): performEmptyStateAction(.connect(source))
         case .turnOn(let featureID): performEmptyStateAction(.turnOn(featureID: featureID))
@@ -101,6 +102,14 @@ extension AppState {
             openInbox(route)
         } else if let destination = Self.homeDestination(for: feature) {
             selectedDestination = destination
+        }
+    }
+
+    /// An automation note's Inbox card, selected so its buttons show; the
+    /// run in the Automations tab while the Inbox tab is hidden.
+    private func openInboxOutput(_ id: Int64, automationID: Int64, runID: Int64) {
+        if openInbox(InboxRoute(filter: .all, selection: .output(id))) == nil {
+            openAutomationRun(automationID: automationID, runID: runID)
         }
     }
 

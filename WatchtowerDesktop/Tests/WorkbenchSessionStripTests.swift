@@ -156,7 +156,7 @@ final class WorkbenchSessionStripTests: XCTestCase {
             .inspect()
             .findAll(ViewType.Toggle.self)
             .map(Self.title)
-        XCTAssertEqual(titles, ["Terminal", "Workchat", "Report", "Review"])
+        XCTAssertEqual(titles, ["Workchat", "Report", "Review"])
     }
 
     private static func status(branch: String, dirty: Bool) -> WorkbenchGitStatus {
@@ -206,16 +206,36 @@ final class WorkbenchSessionStripTests: XCTestCase {
         XCTAssertEqual(vm.layout(projectID: p).visiblePanes, [terminal])
     }
 
-    /// Each strip lights its own half: the terminal pane's Terminal, the
-    /// Workchat pane's Workchat.
-    func testStripLightsItsOwnHalf() async throws {
+    /// One button per strip, naming the mode it switches to; it is never lit.
+    func testStripModeButtonNamesTheOtherMode() async throws {
         let (vm, s) = try await loaded()
         let id = s.first.id
         vm.setLayout(Self.split(.session(id), .sessionChat(id)), projectID: s.project.id)
-        XCTAssertTrue(try toggle("Terminal", strip(vm, s.project, .session(id))).isOn())
+        XCTAssertNoThrow(try toggle("Workchat", strip(vm, s.project, .session(id))))
+        XCTAssertThrowsError(try toggle("Terminal", strip(vm, s.project, .session(id))))
+        XCTAssertNoThrow(try toggle("Terminal", strip(vm, s.project, .sessionChat(id))))
         XCTAssertFalse(try toggle("Workchat", strip(vm, s.project, .session(id))).isOn())
-        XCTAssertFalse(try toggle("Terminal", strip(vm, s.project, .sessionChat(id))).isOn())
-        XCTAssertTrue(try toggle("Workchat", strip(vm, s.project, .sessionChat(id))).isOn())
+    }
+
+    func testModeButtonOnTerminalNamesWorkchat() {
+        let r = WorkbenchSessionStrip.modeButton(pane: .session(7), sessionID: 7, layout: .default)
+        XCTAssertEqual(r.label, "Workchat")
+        XCTAssertEqual(r.target, .sessionChat(7))
+    }
+
+    func testModeButtonOnWorkchatNamesTerminal() {
+        let r = WorkbenchSessionStrip.modeButton(pane: .sessionChat(7), sessionID: 7, layout: .default)
+        XCTAssertEqual(r.label, "Terminal")
+        XCTAssertEqual(r.target, .session(7))
+    }
+
+    func testModeButtonOverReportUsesRememberedMode() {
+        var layout = WorkspaceLayout.default
+        XCTAssertEqual(WorkbenchSessionStrip.modeButton(pane: .sessionReport(7), sessionID: 7, layout: layout).label, "Terminal")
+        layout.workchatSessions = [7]
+        let r = WorkbenchSessionStrip.modeButton(pane: .sessionReport(7), sessionID: 7, layout: layout)
+        XCTAssertEqual(r.label, "Workchat")
+        XCTAssertEqual(r.target, .sessionChat(7))
     }
 
     /// Report keeps today's action: on puts the report beside its
@@ -272,8 +292,8 @@ final class WorkbenchSessionStripTests: XCTestCase {
 
     // MARK: - Its own slot
 
-    /// On a report or Changes pane, Terminal and Workchat put this strip's
-    /// session in this pane only, in the chosen mode; the other pane stays.
+    /// On a report or Changes pane, the mode button puts this strip's
+    /// session in this pane only, in its remembered mode; the other pane stays.
     func testStripModeOnAReportPaneReplacesThisPaneOnly() async throws {
         let (vm, s) = try await loaded()
         let p = s.project.id
@@ -282,7 +302,9 @@ final class WorkbenchSessionStripTests: XCTestCase {
         try toggle("Terminal", strip(vm, s.project, .sessionReport(one))).tap()
         await waitUntil { vm.layout(projectID: p).visiblePanes == [.session(one), .board] }
 
-        vm.setLayout(Self.split(.changes(one), .board), projectID: p)
+        var remembered = Self.split(.changes(one), .board)
+        remembered.workchatSessions = [one]
+        vm.setLayout(remembered, projectID: p)
         try toggle("Workchat", strip(vm, s.project, .changes(one))).tap()
         await waitUntil { vm.layout(projectID: p).visiblePanes == [.sessionChat(one), .board] }
         XCTAssertEqual(vm.layout(projectID: p).pane(forSession: one), .sessionChat(one), "the mode is recorded")
@@ -297,11 +319,12 @@ final class WorkbenchSessionStripTests: XCTestCase {
         vm.setLayout(Self.split(.session(one), .sessionChat(one)), projectID: p)
         XCTAssertTrue(try toggle("Workchat", strip(vm, s.project, .session(one))).isDisabled())
         XCTAssertTrue(try toggle("Terminal", strip(vm, s.project, .sessionChat(one))).isDisabled())
-        XCTAssertFalse(try toggle("Terminal", strip(vm, s.project, .session(one))).isDisabled())
+
+        vm.setLayout(Self.split(.session(one), .board), projectID: p)
+        XCTAssertFalse(try toggle("Workchat", strip(vm, s.project, .session(one))).isDisabled())
 
         vm.setLayout(Self.split(.session(one), .sessionReport(one)), projectID: p)
         XCTAssertTrue(try toggle("Terminal", strip(vm, s.project, .sessionReport(one))).isDisabled())
-        XCTAssertFalse(try toggle("Workchat", strip(vm, s.project, .sessionReport(one))).isDisabled())
     }
 
     /// The sessions menu ticks off the pane's own session on a report or

@@ -19,10 +19,10 @@ final class SessionFeedStoreTests: XCTestCase {
         }
     }
 
-    private func payload(cursor: String = "c1", entries: String = "", subagents: String = "") -> String {
+    private func payload(cursor: String = "c1", entries: String = "", subagents: String = "", activity: String = "null") -> String {
         """
         {"session_id":7,"cursor":"\(cursor)","entries":[\(entries)],"subagents":[\(subagents)],
-         "skipped":0,"unknown_records":{}}
+         "activity":\(activity),"skipped":0,"unknown_records":{}}
         """
     }
 
@@ -132,11 +132,56 @@ final class SessionFeedStoreTests: XCTestCase {
         XCTAssertEqual(store.entries.map(\.id), ["a"])
     }
 
+    private let bashActivity = #"{"tool":"Bash","summary":"go test ./...","started_at":"2026-10-21T10:00:00Z","more":2}"#
+
+    func testRefreshSetsActivity() async {
+        let runner = FakeRunner([.success(payload(entries: entry("a", "agent"), activity: bashActivity))])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        XCTAssertEqual(store.activity?.tool, "Bash")
+        XCTAssertEqual(store.activity?.summary, "go test ./...")
+        XCTAssertEqual(store.activity?.more, 2)
+        XCTAssertEqual(store.activity?.startedAt, ISO8601DateFormatter().date(from: "2026-10-21T10:00:00Z"))
+        XCTAssertEqual(store.entries.map(\.id), ["a"], "the activity is never an entry")
+    }
+
+    func testEmptyRefreshKeepsServerActivity() async {
+        let runner = FakeRunner([.success(payload(activity: bashActivity))])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        XCTAssertTrue(store.entries.isEmpty)
+        XCTAssertEqual(store.activity?.tool, "Bash")
+    }
+
+    func testNullActivityClears() async {
+        let runner = FakeRunner([.success(payload(activity: bashActivity)), .success(payload(cursor: "c2"))])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        await store.refresh()
+        XCTAssertNil(store.activity)
+    }
+
+    func testClearActivity() async {
+        let runner = FakeRunner([.success(payload(activity: bashActivity))])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        await store.refresh()
+        store.clearActivity()
+        XCTAssertNil(store.activity)
+    }
+
+    func testSubagentFeedCarriesActivity() async throws {
+        let runner = FakeRunner([.success(payload(activity: bashActivity))])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        let read = try await store.subagentFeed("tu1")
+        XCTAssertEqual(read.activity?.tool, "Bash")
+        XCTAssertNil(store.activity, "the main line is not touched")
+    }
+
     func testSubagentFeedArgs() async throws {
         let runner = FakeRunner([.success(payload(entries: entry("s1", "agent")))])
         let store = SessionFeedStore(sessionID: 7, runner: runner)
         let list = try await store.subagentFeed("tu1")
-        XCTAssertEqual(list.map(\.id), ["s1"])
+        XCTAssertEqual(list.entries.map(\.id), ["s1"])
         XCTAssertEqual(runner.calls[0], ["workbench", "session-feed", "--session", "7", "--subagent", "tu1", "--json"])
         XCTAssertTrue(store.entries.isEmpty)
     }
@@ -235,6 +280,28 @@ final class SessionFeedStoreTests: XCTestCase {
         XCTAssertTrue(runner.calls.allSatisfy { $0.contains("--subagent") && $0.contains("tu1") })
         XCTAssertEqual(seen.last, ["s1", "s2", "s3"])
         XCTAssertTrue(store.entries.isEmpty, "a subagent's feed never enters the main feed")
+    }
+
+    /// An open subagent's marker lives in the main feed: with
+    /// `readsMainFeed` each tick also reads the main feed (after the
+    /// subagent's, one CLI at a time), so the status the loop checks is
+    /// current and the loop ends once the marker says finished.
+    func testSubagentFollowReadsMainFeedForTheMarkerStatus() async {
+        let runner = FakeRunner([
+            .success(payload(cursor: "", entries: entry("s1", "agent"))),
+            .success(payload(entries: marker("tu1", status: "running"))),
+            .success(payload(cursor: "", entries: entry("s1", "agent"))),
+            .success(payload(cursor: "c2", subagents: marker("tu1", status: "finished")))
+        ])
+        let store = SessionFeedStore(sessionID: 7, runner: runner)
+        let pushed = SessionFeedSubagent(toolUseID: "tu1", status: "running")
+        await store.followSubagent("tu1", interval: .milliseconds(1), readsMainFeed: true,
+                                   isRunning: { SessionFeedSubagent.currentStatus(of: pushed, in: store.entries) == "running" },
+                                   isOnScreen: { true }, onEntries: { _ in })
+        XCTAssertEqual(runner.calls.count, 4, "subagent + main per tick, none after finished")
+        XCTAssertTrue(runner.calls[0].contains("--subagent"))
+        XCTAssertFalse(runner.calls[1].contains("--subagent"))
+        XCTAssertEqual(store.entries.first?.subagent?.status, "finished")
     }
 
     func testSubagentFollowFinishedReadsOnce() async {

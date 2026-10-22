@@ -211,7 +211,7 @@ final class OwnerAsksViewModel {
     @ObservationIgnored var watchedProjectID: () -> Int64? = { nil }
     /// An answer's line went to `sessionID` (sent, typed, copied or held):
     /// the page shows that terminal and moves the keyboard into it.
-    @ObservationIgnored var onDelivered: ((_ projectID: Int64, _ sessionID: Int64) -> Void)?
+    @ObservationIgnored var onDelivered: ((_ projectID: Int64, _ sessionID: Int64, _ delivery: Delivery) -> Void)?
     /// A workbench's open asks were read: the page opens a new one's drawer
     /// if its session is on screen (`WorkbenchesViewModel.openNewAsk`).
     @ObservationIgnored var onLoaded: ((_ projectID: Int64) -> Void)?
@@ -712,7 +712,7 @@ final class OwnerAsksViewModel {
         if delivery != .noSession, let sessionID = ask.sessionID {
             showHint(delivery, sessionID: sessionID)
             if drawerAskIDs[projectID] == askID { closeDrawer(projectID: projectID) }
-            onDelivered?(projectID, sessionID)
+            onDelivered?(projectID, sessionID, delivery)
         }
         await load(projectID: projectID)
         await onAnswered?()
