@@ -8,7 +8,7 @@ You sit down at 09:00 with coffee. Instead of opening Slack, mail and Jira in tu
 
 ## How it works
 
-One briefing is made per calendar day by **Morning brief**, a [built-in automation](automations-built-in.md) the background sync runs; the day plan is made right after it in the same run. It is generated at or after the briefing hour (default **08:00**), not at that exact minute: if the Mac was asleep at 08:00, it comes on the first sync cycle after you wake it. Sync cycles run every 15 minutes by default.
+One briefing is made per calendar day by **Morning brief**, a [built-in automation](automations-built-in.md) the background sync runs; the day plan is made right after it in the same run. It is generated at or after the Morning brief's **Time** (default **08:00**), not at that exact minute: if the Mac was asleep at 08:00, it comes on the first sync cycle after you wake it. Sync cycles run every 15 minutes by default.
 
 | Condition | Why |
 |---|---|
