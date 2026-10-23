@@ -316,6 +316,49 @@ draft against them before you show it to the owner.
    that work. Put the ask at the end, after the work, and ask only what needs
    the owner.
 
+## Watch for something
+
+When the owner says "keep an eye on X" or "tell me when Y comes up", write a
+watch recipe: a personal recipe that, at every sync, adds what matches an
+instruction to a track. It is the one recipe shape that may use `track:scan`,
+and it is personal only (a workbench draft is refused).
+
+````markdown
+---
+name: Watch acme launch
+trigger: {sync: custom_tracks}
+permissions:
+  - track:scan
+budget: {tokens: 200000, minutes: 10}
+---
+Watches your new activity — channel digests, your tracks and the Inbox — at
+every sync and adds what matches the instruction below to this track's
+timeline. Change the instruction to change what it looks for.
+
+```js
+const instruction = "Anything about the acme launch date, its blockers or who owns the rollout.";
+track.scan({ instruction });
+```
+````
+
+- The shape is fixed: `trigger: {sync: custom_tracks}`, `permissions:
+  [track:scan]`, then `const instruction = <a JSON string>;` and
+  `track.scan({ instruction });`. Write the instruction as one clear sentence
+  or two saying what to look for; nothing else in the script is needed.
+- `track.scan` reads the digests, the owner's tracks and the Inbox by itself.
+  To widen the sources (mail, Jira, Linear, Slack search), read them with
+  `tool()` since the watch's last scan and pass the items as `extra`:
+  `track.scan({ instruction, extra: items })`. `extra` is an array of at most
+  40 items, each `{source_type, source_id, text, at}` with `source_type` one
+  of `slack`, `email`, `jira`, `linear`, `at` an RFC 3339 time and a non-empty
+  `text`. Keep the state of the last scan in `state`; never pass `since`, the
+  scan sets its own window. Add the read permissions the `tool()` calls need
+  (for example `gmail:read@work`).
+- One recipe watches one thing. For two things, write two recipes.
+- The owner confirms a watch like any recipe: `draft_automation` shows its
+  dry run (`track.scan` reports `{"would": "track.scan"}` and scans nothing)
+  and the owner saves and confirms it.
+
 ## Templates
 
 Each is a complete recipe. Adapt it; keep permissions at the minimum.

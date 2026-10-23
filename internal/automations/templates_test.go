@@ -3,6 +3,7 @@ package automations_test
 import (
 	"encoding/json"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -71,6 +72,14 @@ var specTemplates = []specTemplate{
 		"release":      {trigger: buttonTrigger("Release"), permissions: []string{`shell:"make release"`, "session:start"}, outputs: []string{"report"}},
 		"deploy-test":  {trigger: buttonTrigger("Deploy to test"), permissions: []string{`shell:"make deploy-test"`, "session:start"}, outputs: []string{"report"}},
 		"deploy-stage": {trigger: buttonTrigger("Deploy to stage"), permissions: []string{`shell:"make deploy-stage"`, "session:start"}, outputs: []string{"report"}},
+	}},
+	{"on-reaction", automations.ScopePersonal, []string{"on-reaction"}, map[string]wantTemplateRecipe{
+		"on-reaction": {
+			trigger: automations.Trigger{Kind: automations.TriggerEvent,
+				Event: &automations.EventTrigger{Type: "slack.reaction_added", Where: map[string]string{"emoji": "eyes"}}},
+			permissions: []string{"slack:read@*"},
+			outputs:     []string{"inbox"},
+		},
 	}},
 }
 
@@ -175,7 +184,7 @@ func checkTemplateIndex(t *testing.T) {
 	}
 	slices.Sort(indexed)
 	slices.Sort(onDisk)
-	want := []string{"deploy-stage", "deploy-test", "jira-state-report", "new-mail-summary", "pr-review-rounds", "release", "team-performance-report"}
+	want := []string{"deploy-stage", "deploy-test", "jira-state-report", "new-mail-summary", "on-reaction", "pr-review-rounds", "release", "team-performance-report"}
 	if !slices.Equal(indexed, want) || !slices.Equal(onDisk, want) {
 		t.Errorf("index.json names %v and templates/ holds %v; want exactly %v", indexed, onDisk, want)
 	}
@@ -205,7 +214,7 @@ func triggersEqual(a, b automations.Trigger) bool {
 	if (a.Event == nil) != (b.Event == nil) {
 		return false
 	}
-	return a.Event == nil || a.Event.Type == b.Event.Type && len(a.Event.Where) == 0 && len(b.Event.Where) == 0
+	return a.Event == nil || a.Event.Type == b.Event.Type && maps.Equal(a.Event.Where, b.Event.Where)
 }
 
 // #582: a list value repeats the permission line per project and fills the
@@ -237,6 +246,10 @@ func TestRenderTemplate_EveryTemplateParsesWithListParams(t *testing.T) {
 		params := map[string]string{}
 		for _, p := range tpl.Params {
 			params[p.Key] = p.Example + ",OTHER"
+			if tpl.Name == "on-reaction" {
+				// One emoji per copy: a repeated where key is not a list.
+				params[p.Key] = p.Example
+			}
 		}
 		files, err := automations.RenderTemplate(tpl.Name, params)
 		if err != nil {
@@ -347,4 +360,26 @@ func TestTemplate_NewMailSummaryKeepsPerAccountDone(t *testing.T) {
 func hasKey(m map[string]int64, k string) bool {
 	_, ok := m[k]
 	return ok
+}
+
+// on-reaction takes one emoji short name: EMOJI=eyes renders and parses with
+// the emoji in the trigger's where; a value with a space is refused.
+func TestTemplates_OnReactionRendersAndParses(t *testing.T) {
+	files, err := automations.RenderTemplate("on-reaction", map[string]string{"EMOJI": "eyes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := automations.ParseRecipe("on-reaction", files["on-reaction"], automations.Scope{Kind: automations.ScopePersonal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Trigger.Event == nil || r.Trigger.Event.Type != "slack.reaction_added" || r.Trigger.Event.Where["emoji"] != "eyes" {
+		t.Errorf("trigger = %+v; want slack.reaction_added where emoji=eyes", r.Trigger)
+	}
+	if strings.Contains(string(files["on-reaction"]), "<EMOJI>") {
+		t.Error("EMOJI not substituted everywhere")
+	}
+	if _, err := automations.RenderTemplate("on-reaction", map[string]string{"EMOJI": "a b"}); err == nil || !strings.Contains(err.Error(), "EMOJI") {
+		t.Errorf("EMOJI=\"a b\": err = %v; want an error naming EMOJI", err)
+	}
 }

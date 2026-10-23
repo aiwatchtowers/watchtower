@@ -460,3 +460,40 @@ func TestDraftAutomation_BuiltinScope(t *testing.T) {
 		}
 	}
 }
+
+const watchDraftRecipe = "---\nname: Watch acme\ntrigger: {sync: custom_tracks}\npermissions:\n  - track:scan\n---\n" +
+	"Watches acme.\n\n```js\nconst instruction = \"acme launch\";\ntrack.scan({ instruction });\n```\n"
+
+// TestDraftAutomation_WatchRecipeDryRuns: a watch recipe drafts in the
+// personal scope, its track.scan step reports "would" and calls nothing
+// (AUTO-12); the same text in a workbench is refused with the parser's
+// message.
+func TestDraftAutomation_WatchRecipeDryRuns(t *testing.T) {
+	f := newDraftFixture(t)
+	before := f.counts(t)
+	res, raw := f.call(t, map[string]any{"recipe_text": watchDraftRecipe})
+	if !res.OK || res.DryRun == nil || res.DryRun.Status != db.RunSucceeded {
+		t.Fatalf("watch draft = %s", raw)
+	}
+	var scan *DraftStep
+	for i, s := range res.DryRun.Steps {
+		if s.Name == "track.scan" {
+			scan = &res.DryRun.Steps[i]
+		}
+	}
+	if scan == nil || scan.Status != "dry_run" {
+		t.Fatalf("steps = %s; want a track.scan step in dry_run", stepStatuses(res.DryRun.Steps))
+	}
+	if scan.Result != `{"would":"track.scan"}` {
+		t.Errorf("track.scan result = %s; want {\"would\":\"track.scan\"}", scan.Result)
+	}
+	if f.gen.CallCount() != 0 {
+		t.Errorf("the draft made %d model calls", f.gen.CallCount())
+	}
+	f.assertNoRowWritten(t, before)
+
+	bad, _ := f.call(t, map[string]any{"recipe_text": watchDraftRecipe, "workbench_id": 3})
+	if bad.OK || !strings.Contains(strings.Join(bad.Errors, " "), `"track:scan" is allowed only in a personal automation`) {
+		t.Errorf("workbench watch draft = %+v; want the personal-only refusal", bad)
+	}
+}
