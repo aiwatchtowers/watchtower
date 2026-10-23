@@ -377,9 +377,12 @@ final class ConfigService {
         if let val = digestLanguage, !val.isEmpty { digest["language"] = val } else { digest.removeValue(forKey: "language") }
         if !digest.isEmpty { yaml["digest"] = digest } else { yaml.removeValue(forKey: "digest") }
 
-        // `briefing.hour` and the day plan's keys are not written here: the
-        // Morning brief card (`saveBuiltinParameters`) is their only writer,
-        // and a Settings window's snapshot would revert its saves (C2).
+        // `briefing.hour`, the day plan's keys and `ideas.mine_interval_hours`
+        // are not written here: the Morning brief and Idea finder cards
+        // (`saveBuiltinParameters`) are their only writer, and a Settings
+        // window's snapshot would revert their saves (C2, C3). Nothing else
+        // of `ideas` is written: `enabled` is the Feature Manager's (see the
+        // `ideasEnabled` property).
 
         // AI section
         applyAISection(to: &yaml)
@@ -396,12 +399,6 @@ final class ConfigService {
             gmailDict["enabled"] = gmailEnabled
             yaml["gmail"] = gmailDict
         }
-
-        // Ideas section — `enabled` is deliberately not written, see the
-        // `ideasEnabled` property.
-        var ideas = (yaml["ideas"] as? [String: Any]) ?? [:]
-        ideas["mine_interval_hours"] = ideasMineIntervalHours
-        yaml["ideas"] = ideas
 
         // Transcripts section
         var transcripts = (yaml["transcripts"] as? [String: Any]) ?? [:]

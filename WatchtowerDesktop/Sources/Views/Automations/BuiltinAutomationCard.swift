@@ -338,19 +338,20 @@ struct BuiltinAutomationCard: View {
                 .accessibilityLabel(parameter.label)
                 .disabled(model.isWorking)
         case .interval:
-            // "Every" (the label) "6 hours", 1–24.
+            // "Every" (the label) "6 hours", 1–48; a stored value outside shows clamped.
+            let range = BuiltinAutomationCardModel.intervalRange
             let hours = Binding(
-                get: { Int(text.wrappedValue) ?? BuiltinAutomationCardModel.intervalRange.lowerBound },
+                get: { min(max(Int(text.wrappedValue) ?? range.lowerBound, range.lowerBound), range.upperBound) },
                 set: { text.wrappedValue = String($0) }
             )
             HStack(spacing: Spacing.small) {
-                Text(Self.hoursText(text.wrappedValue))
+                Text(Self.hoursText(String(hours.wrappedValue)))
                     .monospacedDigit()
                     .accessibilityHidden(true)
-                Stepper(parameter.label, value: hours, in: BuiltinAutomationCardModel.intervalRange)
+                Stepper(parameter.label, value: hours, in: range)
                     .labelsHidden()
                     .accessibilityLabel(parameter.label)
-                    .accessibilityValue(Self.hoursText(text.wrappedValue))
+                    .accessibilityValue(Self.hoursText(String(hours.wrappedValue)))
             }
             .disabled(model.isWorking)
         case .dictionary:

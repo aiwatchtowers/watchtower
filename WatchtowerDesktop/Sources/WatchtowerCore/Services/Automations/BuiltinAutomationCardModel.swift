@@ -141,8 +141,9 @@ package final class BuiltinAutomationCardModel {
 
     /// Idea finder's interval (twin: Go `builtin` Idea finder param).
     nonisolated package static let ideasIntervalKey = "ideas.mine_interval_hours"
-    /// An interval stepper's range, in hours.
-    nonisolated package static let intervalRange = 1...24
+    /// An interval stepper's range, in hours (the old Settings stepper's;
+    /// Go has no maximum, so a larger stored value shows clamped).
+    nonisolated package static let intervalRange = 1...48
 
     /// A count field's text: a whole number, 0 or more.
     nonisolated package static func isCount(_ text: String) -> Bool {

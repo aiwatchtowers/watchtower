@@ -161,7 +161,7 @@ package final class AgentActionFeed {
     nonisolated package static let startVerb = "start"
     nonisolated package static let notWatchedPrefix = "Approved, but the track is not watched yet: "
 
-    /// An approved `create_track` that applied: the owner's press is the
+    /// An approved (or retried) `create_track` that applied: the owner's press is the
     /// confirmation, so its track is watched now (`tracks start`, C3 ruling:
     /// the tools layer only creates the row). A failure shows on the card;
     /// the track keeps **Start Watching**. Any other row, or an approve that
@@ -192,6 +192,7 @@ package final class AgentActionFeed {
     /// Re-runs `apply` for a `failed`/`approved` row.
     package func retry(_ id: Int64) async {
         await run("apply", id: id)
+        await startWatchingIfTrack(id)
     }
 
     /// Dismiss on a session call whose outcome is unknown

@@ -105,6 +105,8 @@ struct TrackDetailView: View {
         .onDisappear {
             timelineVM?.stop()
             timelineVM = nil
+            // A re-appear reads the watch again (Collecting may have changed elsewhere).
+            watch = nil
         }
     }
 
