@@ -128,6 +128,10 @@ func paramValue(cfg *config.Config, key string) string {
 		return strconv.Itoa(cfg.DayPlan.MinBacklog)
 	case "day_plan.max_backlog":
 		return strconv.Itoa(cfg.DayPlan.MaxBacklog)
+	case "ideas.mine_interval_hours":
+		return strconv.Itoa(ideasIntervalHours(cfg))
+	case "reaction_command_map":
+		return "[]" // a dictionary: the Desktop reads the table
 	}
 	return ""
 }

@@ -84,12 +84,14 @@ func (g *fakeGate) count() int {
 // features on, a real slot executor over fake primitives, a fake gate and
 // the runner.
 type fixture struct {
-	d      *db.DB
-	ws     string
-	cfg    *config.Config
-	clock  *automationstest.FakeClock
-	brief  *fakePrimitive
-	plan   *fakePrimitive
+	d     *db.DB
+	ws    string
+	cfg   *config.Config
+	clock *automationstest.FakeClock
+	brief *fakePrimitive
+	plan  *fakePrimitive
+	// c3 holds the fakes of the C3 built-ins' primitives, by name.
+	c3     map[string]*fakePrimitive
 	asked  *promptLog
 	gate   *fakeGate
 	exec   *automations.Executor
@@ -130,10 +132,15 @@ func newFixture(t *testing.T) *fixture {
 		d: db.OpenTestDB(t), ws: t.TempDir(), cfg: testConfig(t), clock: automationstest.NewFakeClock(testStart),
 		brief: &fakePrimitive{res: automations.PrimitiveResult{Status: "done"}},
 		plan:  &fakePrimitive{res: automations.PrimitiveResult{Status: "done"}},
-		asked: &promptLog{}, gate: &fakeGate{due: true},
+		asked: &promptLog{}, gate: &fakeGate{due: true}, c3: map[string]*fakePrimitive{},
+	}
+	prims := map[string]automations.PrimitiveFunc{"brief.compose": f.brief.fn, "plan.compose": f.plan.fn}
+	for _, name := range []string{"tracks.extract", "ideas.consolidate", "reaction.compose"} {
+		f.c3[name] = &fakePrimitive{res: automations.PrimitiveResult{Status: "done"}}
+		prims[name] = f.c3[name].fn
 	}
 	b := automations.Backends{DB: f.d, Clock: f.clock,
-		Primitives: map[string]automations.PrimitiveFunc{"brief.compose": f.brief.fn, "plan.compose": f.plan.fn},
+		Primitives: prims,
 		DefaultPrompt: func(builtinID, name, role string) (string, error) {
 			f.asked.add(name)
 			return DefaultPromptFunc(builtinID, name, role)
@@ -155,11 +162,26 @@ func (f *fixture) sync(t *testing.T) SyncReport {
 
 func (f *fixture) row(t *testing.T) *db.Automation {
 	t.Helper()
-	a, err := f.d.GetBuiltinAutomation(mbID)
+	return f.rowOf(t, mbID)
+}
+
+// rowOf is built-in id's row.
+func (f *fixture) rowOf(t *testing.T, id string) *db.Automation {
+	t.Helper()
+	a, err := f.d.GetBuiltinAutomation(id)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return a
+}
+
+// allIDs is every built-in's id, in card order.
+func allIDs() []string {
+	var ids []string
+	for _, e := range All() {
+		ids = append(ids, e.ID)
+	}
+	return ids
 }
 
 func (f *fixture) runs(t *testing.T) []db.AutomationRun {
@@ -174,7 +196,13 @@ func (f *fixture) runs(t *testing.T) []db.AutomationRun {
 // writeCopy writes the owner's copy of the Morning brief.
 func (f *fixture) writeCopy(t *testing.T, data []byte) {
 	t.Helper()
-	path := OwnerCopyPath(f.ws, mbID)
+	f.writeCopyOf(t, mbID, data)
+}
+
+// writeCopyOf writes the owner's copy of built-in id.
+func (f *fixture) writeCopyOf(t *testing.T, id string, data []byte) {
+	t.Helper()
+	path := OwnerCopyPath(f.ws, id)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}

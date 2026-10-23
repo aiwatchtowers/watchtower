@@ -43,7 +43,7 @@ func TestAuto06_ShippedBuiltinRunsWithoutOwnerConfirmation(t *testing.T) {
 	if !a.Confirmed() || a.ConfirmedHash != automations.ApprovalHash(r) {
 		t.Errorf("confirmed %v at %q, want the shipped approval hash", a.Confirmed(), a.ConfirmedHash)
 	}
-	if !slices.Equal(rep.Confirmed, []string{mbID}) || !slices.Equal(rep.Indexed, []string{mbID}) || len(rep.Errors) != 0 {
+	if !slices.Equal(rep.Confirmed, allIDs()) || !slices.Equal(rep.Indexed, allIDs()) || len(rep.Errors) != 0 {
 		t.Errorf("report = %+v", rep)
 	}
 	if o := f.slotOnce(t); o.Status != db.RunSucceeded {
@@ -314,8 +314,8 @@ func TestBuiltinSync_PersonalSlugTwinIsSeparate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(rows) != 2 {
-				t.Errorf("%d personal rows, want the twin and the built-in", len(rows))
+			if len(rows) != 1+len(All()) {
+				t.Errorf("%d personal rows, want the twin and the %d built-ins", len(rows), len(All()))
 			}
 		})
 	}

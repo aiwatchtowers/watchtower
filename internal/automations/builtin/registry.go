@@ -24,20 +24,28 @@ var recipeFS embed.FS
 // recipe's trigger.sync).
 type Slot string
 
-// The sync slots. C3 adds custom_tracks, tracks, reactions and ideas.
+// The sync slots (automations.SyncSlots). SlotCustomTracks holds the watch
+// recipes (Personal), no built-in.
 const (
 	SlotMorningBrief Slot = "morning_brief"
+	SlotCustomTracks Slot = "custom_tracks"
+	SlotTracks       Slot = "tracks"
+	SlotReactions    Slot = "reactions"
+	SlotIdeas        Slot = "ideas"
 )
 
-// ParamKind is how a card parameter is edited. C3 adds "interval" and
-// "dictionary".
+// ParamKind is how a card parameter is edited.
 type ParamKind string
 
 // The parameter kinds.
 const (
-	ParamHour  ParamKind = "hour"  // an hour of the day, 0–23
-	ParamClock ParamKind = "clock" // a time of day, "HH:MM"
-	ParamCount ParamKind = "count" // a whole number of items
+	ParamHour     ParamKind = "hour"     // an hour of the day, 0–23
+	ParamClock    ParamKind = "clock"    // a time of day, "HH:MM"
+	ParamCount    ParamKind = "count"    // a whole number of items
+	ParamInterval ParamKind = "interval" // a whole number of hours
+	// ParamDictionary is a table the Desktop reads and edits itself: the
+	// parameter's Key is the table name and its card value is "[]".
+	ParamDictionary ParamKind = "dictionary"
 )
 
 // Parameter is one When field on a built-in's card. It lives in the config,
@@ -105,6 +113,53 @@ var registry = []Entry{
 		},
 		RunNow: true,
 	},
+	{
+		ID:         "track-my-threads",
+		Name:       "Track my threads",
+		Slot:       SlotTracks,
+		Recipe:     mustRecipe("track-my-threads"),
+		FeatureIDs: []string{"tracks"},
+		Primitives: []string{"tracks.extract"},
+		Prompts:    []PromptRef{{Name: "extract", PromptID: prompts.TracksExtractBatch}},
+		Pipelines:  []string{"tracks"},
+		Reads:      []string{"Slack channel digests, your profile and your tracks"},
+		Sends:      []string{"Track cards in your Inbox"},
+		When:       func(*config.Config) string { return "After every sync, while Slack Digests are on" },
+		RunNow:     true,
+	},
+	{
+		ID:         "idea-finder",
+		Name:       "Idea finder",
+		Slot:       SlotIdeas,
+		Recipe:     mustRecipe("idea-finder"),
+		FeatureIDs: []string{"ideas"},
+		Primitives: []string{"ideas.consolidate"},
+		Prompts:    []PromptRef{{Name: "consolidate", PromptID: prompts.IdeasConsolidate}},
+		Parameters: []Parameter{{Key: "ideas.mine_interval_hours", Kind: ParamInterval, Label: "Every"}},
+		Pipelines:  []string{"ideas"},
+		Reads:      []string{"Slack digest topics, mail and tracker digests, meeting recaps"},
+		Sends:      []string{"Idea cards in your Inbox; decisions to your brief"},
+		When: func(cfg *config.Config) string {
+			return fmt.Sprintf("Every %d hours", ideasIntervalHours(cfg))
+		},
+		RunNow: true,
+	},
+	{
+		ID:           "reactions",
+		Name:         "Reactions",
+		Slot:         SlotReactions,
+		Recipe:       mustRecipe("reactions"),
+		FeatureIDs:   []string{"reaction-commands"},
+		Primitives:   []string{"reaction.compose"},
+		Prompts:      []PromptRef{{Name: "compose", PromptID: prompts.ReactionCommand}},
+		Parameters:   []Parameter{{Key: "reaction_command_map", Kind: ParamDictionary, Label: "Reactions"}},
+		Pipelines:    []string{"reaction-commands"},
+		Reads:        []string{"The message you reacted to and its thread"},
+		Sends:        []string{"Proposals in your Inbox (ideas, reminders and brief notes apply at once)"},
+		When:         func(*config.Config) string { return "When you react to a Slack message" },
+		RunNow:       false,
+		NoRunNowNote: "Reactions run for each reaction you place",
+	},
 }
 
 func mustRecipe(id string) []byte {
@@ -121,6 +176,15 @@ func briefingHour(cfg *config.Config) int {
 		return config.DefaultBriefingHour
 	}
 	return cfg.Briefing.Hour
+}
+
+// ideasIntervalHours is cfg's ideas mining interval (the default without a
+// config or with a value below one hour).
+func ideasIntervalHours(cfg *config.Config) int {
+	if cfg == nil || cfg.Ideas.MineIntervalHours < 1 {
+		return config.DefaultIdeasMineIntervalHours
+	}
+	return cfg.Ideas.MineIntervalHours
 }
 
 // All returns every built-in, in card order.
