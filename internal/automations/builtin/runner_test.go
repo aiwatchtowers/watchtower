@@ -425,42 +425,20 @@ func TestRunner_RunNowNeverCancelsARunTheSlotClaimed(t *testing.T) {
 	}
 }
 
-func TestRunSyncInline_OneRowSyncTrigger(t *testing.T) {
-	f := newFixture(t)
-	f.sync(t)
-	run, err := f.runner.RunSyncInline(context.Background(), mbID, automations.BuiltinInput{Date: "2026-10-21"})
-	if err != nil {
-		t.Fatalf("RunSyncInline: %v", err)
-	}
-	runs := f.runs(t)
-	if len(runs) != 1 || runs[0].ID != run.ID || runs[0].Trigger != db.TriggerSync || run.Status != db.RunSucceeded {
-		t.Fatalf("runs = %+v, run = %+v; want one succeeded sync run", runs, run)
-	}
-	if runs[0].EventJSON != `{"builtin":{"date":"2026-10-21"}}` {
-		t.Errorf("event_json = %s", runs[0].EventJSON)
-	}
-	if calls := f.brief.snapshot(); len(calls) != 1 || calls[0].Input.Date != "2026-10-21" || calls[0].Trigger.Kind != db.TriggerSync {
-		t.Errorf("brief calls = %+v; want one sync call with the input", calls)
-	}
-	if f.gate.count() != 0 {
-		t.Error("RunSyncInline asked the gate")
-	}
-}
-
+// The guard keeps its name from RunSyncInline (removed: no caller); the
+// refusal it pins was always EnqueueSync's, which every sync run outside
+// the slot goes through.
 func TestRunSyncInline_OffOrUnconfirmedWritesNothing(t *testing.T) {
 	f := newFixture(t)
 	f.sync(t)
 	f.cfg.Briefing.Enabled, f.cfg.DayPlan.Enabled = false, false
-	if _, err := f.runner.RunSyncInline(context.Background(), mbID, automations.BuiltinInput{}); !isNotRunnable(err) {
-		t.Errorf("off: %v; want ErrNotRunnable", err)
-	}
 	if _, err := f.runner.EnqueueSync(mbID, automations.BuiltinInput{}); !isNotRunnable(err) {
 		t.Errorf("off EnqueueSync: %v; want ErrNotRunnable", err)
 	}
 	f.cfg.Briefing.Enabled, f.cfg.DayPlan.Enabled = true, true
 	f.writeCopy(t, editedCopy(t, mustEntry(t), "the owner's brief"))
 	f.sync(t)
-	if _, err := f.runner.RunSyncInline(context.Background(), mbID, automations.BuiltinInput{}); !isNotRunnable(err) {
+	if _, err := f.runner.EnqueueSync(mbID, automations.BuiltinInput{}); !isNotRunnable(err) {
 		t.Errorf("unconfirmed: %v; want ErrNotRunnable", err)
 	}
 	if n := len(f.runs(t)); n != 0 || len(f.brief.snapshot()) != 0 {

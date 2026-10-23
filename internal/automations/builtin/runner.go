@@ -298,21 +298,10 @@ func (r *Runner) runManualInline(ctx context.Context, label string, id int64, in
 	return run, err
 }
 
-// RunSyncInline runs built-in id now, inline, as one sync run with input in
-// (EnqueueSync, then ExecuteRun): the CLI's and the passes' runs that belong
-// to the built-in's own cycle work, not to a Run Now. It writes nothing when
-// EnqueueSync refuses.
-func (r *Runner) RunSyncInline(ctx context.Context, id string, in automations.BuiltinInput) (*db.AutomationRun, error) {
-	run, err := r.EnqueueSync(id, in)
-	if err != nil {
-		return nil, err
-	}
-	return r.ExecuteRun(ctx, run.ID)
-}
-
 // EnqueueSync queues a sync run of built-in id with event_json {"builtin":
 // in} and returns it, unexecuted (the reaction pass hands the run its
-// command before ExecuteRun). A built-in whose features are off or whose
+// command before ExecuteRun; the run belongs to the built-in's own cycle
+// work, not to a Run Now). A built-in whose features are off or whose
 // text is not confirmed is refused with ErrNotRunnable, and one the daemon
 // stopped (AUTO-08) with ErrBuiltinStopped; neither writes a row. A sync run
 // still queued with this input is returned as it is; one queued with other
