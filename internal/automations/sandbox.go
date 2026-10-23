@@ -47,6 +47,10 @@ type Env struct {
 	// (nil = neither: a dry run, a test env). The sandbox's clock reads
 	// through it.
 	Replay *Replay
+	// capturePrompt and stopAtModelCalls are a capture dry run's
+	// (DryRunOptions.CapturePrompts, StopAtModelCalls); unset otherwise.
+	capturePrompt    func(primitive, prompt string)
+	stopAtModelCalls bool
 }
 
 // Binding is the registry binding of this run's tool calls (spec §6.1). A
@@ -118,6 +122,12 @@ func (e *Env) call(kind, name string, args any, opts callOpts, fn func(step *Ste
 		// write steps for its whole budget (board #562).
 		e.Journal.Begin(kind, name, args).Fail(errStepCap)
 		return nil, errStepCap
+	}
+	if e.stopsAtModelCall(kind, name) {
+		fn = func(step *Step) (any, error) {
+			dryRunResult(step, map[string]any{"note": ModelCallStop})
+			return nil, &RunInterrupted{Reason: InterruptModelCallStop}
+		}
 	}
 	step, played, err := e.beginStep(kind, name, args, opts)
 	if err != nil {
