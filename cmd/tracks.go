@@ -849,6 +849,17 @@ func runTracksCreate(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	// The recipe is confirmed only by the owner (AGENT-07): no agent marker,
+	// and the owner's confirmation in the Desktop, asked before the compose
+	// call (up to 120 s) so the Desktop's launch grant is still live; a
+	// denial writes nothing. Under an agent's markers the recipe waits,
+	// unconfirmed, for Automations.
+	confirm := refuseUnderAgent(tracksStartVerb) == nil
+	if confirm {
+		if err := confirmWithOwner(tracksStartVerb, tracksCreateConfirmDetail(text)); err != nil {
+			return err
+		}
+	}
 	applyProviderOverride(cfg)
 	gen, closeGen := cliBuiltinGenerator(cfg)
 	defer closeGen()
@@ -866,11 +877,6 @@ func runTracksCreate(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	// The recipe is confirmed only by the owner (AGENT-07): no agent marker,
-	// and the owner's confirmation in the Desktop; otherwise it waits,
-	// unconfirmed, for Automations.
-	confirm := refuseUnderAgent(tracksStartVerb) == nil &&
-		confirmWithOwner(tracksStartVerb, trackWatchConfirmDetail(database, int(id))) == nil
 	if _, err := startTrackWatch(ctx, cfg, database, int(id), confirm); err != nil {
 		return fmt.Errorf("track #%d was created but is not watched: %w — run `watchtower tracks start %d`", id, err, id)
 	}
@@ -939,6 +945,12 @@ func runTracksStart(cmd *cobra.Command, args []string) error {
 // trackWatchConfirmDetail is the owner's confirmation window text for
 // starting track id's watch: the bound recipe as it is, or the recipe Start
 // would write.
+// tracksCreateConfirmDetail is the confirmation window of `tracks
+// create|watch`: the text the owner gave, which the watch is composed from.
+func tracksCreateConfirmDetail(text string) string {
+	return "Watch for:\n\n" + text + "\n\nWatchtower writes the watch's instruction from this text."
+}
+
 func trackWatchConfirmDetail(database *db.DB, id int) string {
 	t, err := database.GetTrackByID(id)
 	if err != nil {

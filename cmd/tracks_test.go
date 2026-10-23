@@ -667,8 +667,8 @@ func TestTracksStart_BoundRecipeConfirmedOnlyWhenUntouched(t *testing.T) {
 }
 
 // AGENT-07: with no agent marker, the owner-only watch verbs still run only
-// after the owner confirms in the Desktop; tracks create then leaves its
-// recipe unconfirmed.
+// after the owner confirms in the Desktop; tracks create, denied, writes
+// nothing (the window is asked before its compose call).
 func TestTracksOwnerVerbs_NeedTheDesktopsConfirmation(t *testing.T) {
 	c := newC3CLI(t, `{"title":"Refund decision","instruction":"watch the refund decision"}`)
 	watchedID, watched := c.watchedTrack(t, "watch the hiring")
@@ -693,15 +693,17 @@ func TestTracksOwnerVerbs_NeedTheDesktopsConfirmation(t *testing.T) {
 	assert.Contains(t, stderr, "refusing to turn a watch on")
 	assert.False(t, c.automation(t, watched.ID).Enabled)
 
-	code, stdout, stderr := runCLI(t, "tracks", "create", "--text", "the refund for acme")
-	require.Equal(t, 0, code, stderr)
-	var m map[string]any
-	require.NoError(t, json.Unmarshal([]byte(stdout), &m), stdout)
-	assert.Equal(t, false, m["confirmed"])
-	assert.Equal(t, "Confirm it in Automations.", m["note"])
-	assert.False(t, c.automation(t, c.track(t, int(m["id"].(float64))).AutomationID).Confirmed())
+	before := c.watchFiles(t)
+	tracksBefore := countRows(t, c.d, `SELECT COUNT(*) FROM tracks`)
+	code, _, stderr = runCLI(t, "tracks", "create", "--text", "the refund for acme")
+	assert.NotEqual(t, 0, code)
+	assert.Contains(t, stderr, "refusing to start watching a track")
+	assert.Zero(t, c.gen.CallCount(), "a denial is asked before the compose call")
+	assert.Equal(t, before, c.watchFiles(t), "a denial writes nothing")
+	assert.Equal(t, tracksBefore, countRows(t, c.d, `SELECT COUNT(*) FROM tracks`), "no track is created")
 
 	require.Len(t, *reqs, 4)
+	assert.Contains(t, (*reqs)[3].Detail, "the refund for acme", "the window shows the text the owner gave")
 	assert.Contains(t, (*reqs)[0].Detail, "watch the launch", "the window shows the recipe Start would write")
 	assert.Contains(t, (*reqs)[1].Detail, "watch the payroll", "the window shows the new instruction")
 }
