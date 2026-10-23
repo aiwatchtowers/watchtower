@@ -121,6 +121,64 @@ enum BuiltinShotFixtures {
         }
     }
 
+    // MARK: - C3 cards
+
+    /// `show --json` of a C3 built-in over its Go golden block.
+    private static func c3Show(_ golden: String, id: Int64, slug: String, name: String) throws -> Data {
+        let url = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // DesignShots
+            .deletingLastPathComponent() // Tests
+            .deletingLastPathComponent() // WatchtowerDesktop
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("internal/automations/builtin/testdata/show_\(golden).json")
+        var block = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        block["costs"] = ["usd": 0.18, "days": 7, "reported": true] as [String: Any]
+        return try JSONSerialization.data(withJSONObject: [
+            "id": id, "slug": slug, "scope": "personal", "path": "builtin:\(slug)", "name": name,
+            "enabled": true, "runnable": true, "needs_confirmation": false,
+            "recipe_text": block["shipped_text"] as? String ?? "", "builtin": block
+        ] as [String: Any])
+    }
+
+    /// The Reactions card (its emoji table under When, no Run Now) or Idea
+    /// finder's (the "Every 6 hours" stepper).
+    static func c3Card(reactions: Bool) -> AnyView {
+        do {
+            let pool = try makePool()
+            let (golden, slug, name) = reactions
+                ? ("reactions", "reactions", "Reactions") : ("idea_finder", "idea-finder", "Idea finder")
+            let id = try pool.write { db -> Int64 in
+                let id = try TestDatabase.insertAutomation(db, slug: slug, name: name, triggerKind: "sync",
+                                                           triggerSpec: #"{"sync":"x"}"#)
+                try db.execute(sql: """
+                    UPDATE automations SET path = ?, origin = 'builtin', builtin_id = ? WHERE id = ?
+                    """, arguments: ["builtin:\(slug)", slug, id])
+                for (emoji, tool, enabled) in [("eyes", "create_track", true), ("bulb", "create_idea", true),
+                                               ("white_check_mark", "create_target", true),
+                                               ("alarm_clock", "remind_me", false)] {
+                    _ = try TestDatabase.insertReactionCommandMapping(db, emoji: emoji, tool: tool, enabled: enabled)
+                }
+                return id
+            }
+            let vm = AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: ShowRunner(
+                show: try c3Show(golden, id: id, slug: slug, name: name))))
+            vm.refresh()
+            let item = try XCTUnwrap(vm.items.first)
+            let card = vm.builtinCard(item.automation)
+            loaded(card)
+            let dictionary = ReactionDictionaryViewModel(dbPool: pool)
+            Task { await dictionary.refreshAsync() }
+            let deadline = Date().addingTimeInterval(5)
+            while dictionary.mappings.isEmpty, Date() < deadline {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            }
+            return AnyView(BuiltinAutomationCard(model: card, onEdit: {}, onNewReactionAutomation: {},
+                                                 reactionDictionary: dictionary).detailBackground())
+        } catch {
+            return failure(error)
+        }
+    }
+
     enum CardScene { case shipped, updated, resetting }
 
     static func card(_ scene: CardScene) -> AnyView {
@@ -157,6 +215,15 @@ enum BuiltinShotFixtures {
        "feeds_into":[],"sub_toggles":[]},
       {"id":"ideas","title":"Ideas & Decisions","description":"Mines ideas.","tagline":"","benefits":[],
        "icon":"","state":"enabled","core":false,"parent":"","config_key":"ideas.enabled","cost":"medium",
+       "feeds_into":[],"sub_toggles":[]},
+      {"id":"tracks","title":"Tracks","description":"Narrative tracks.","tagline":"","benefits":[],
+       "icon":"","state":"enabled","core":false,"parent":"","config_key":"tracks.enabled","cost":"medium",
+       "feeds_into":[],"sub_toggles":[]},
+      {"id":"reaction-commands","title":"Reaction commands","description":"React to act.","tagline":"",
+       "benefits":[],"icon":"","state":"enabled","core":false,"parent":"","config_key":"reaction_commands.enabled",
+       "cost":"light","feeds_into":[],"sub_toggles":[]},
+      {"id":"memory","title":"Memory","description":"Remembers context.","tagline":"","benefits":[],
+       "icon":"","state":"enabled","core":false,"parent":"","config_key":"memory.enabled","cost":"heavy",
        "feeds_into":[],"sub_toggles":[]}
     ]}
     """

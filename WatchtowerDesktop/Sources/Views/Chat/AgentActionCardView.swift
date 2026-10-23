@@ -352,7 +352,10 @@ struct AgentActionCardView: View {
     /// the row has since been decided elsewhere (a terminal card needs no
     /// retry, and a stale red line would contradict its status).
     private var shownGestureError: String? {
-        guard let message = gestureError?.message, !message.isEmpty, !action.isTerminal else { return nil }
+        guard let message = gestureError?.message, !message.isEmpty else { return nil }
+        // An applied create_track's failed `tracks start` stays on its card.
+        if gestureError?.verb == AgentActionFeed.startVerb { return message }
+        guard !action.isTerminal else { return nil }
         if !action.error.isEmpty, message.contains(action.error) || action.error.contains(message) { return nil }
         return message
     }

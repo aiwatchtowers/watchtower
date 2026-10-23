@@ -1000,4 +1000,31 @@ extension FeatureManagerServiceTests {
         #expect(service.loadError?.contains("boom: config locked") == true)
         #expect(service.isApplying == false)
     }
+
+    @Test("Settings → Features hides the rows the C3 built-ins took over (tracks, ideas, reaction-commands)")
+    func testSettingsHidesC3FeatureRows() async throws {
+        func row(_ id: String, parent: String = "") -> String {
+            """
+            {"id":"\(id)","title":"\(id)","description":"","tagline":"","benefits":[],"icon":"","state":"enabled",
+             "core":false,"parent":"\(parent)","config_key":"\(id).enabled","cost":"light","feeds_into":[],"sub_toggles":[]}
+            """
+        }
+        let ids = ["slack-digests", "tracks", "ideas", "reaction-commands", "briefing", "day-plan", "memory"]
+        let json = #"{"features":["# + (ids.map { row($0) } + [row("stream-digests", parent: "slack-digests")])
+            .joined(separator: ",") + "]}"
+        let (service, _) = Self.makeService(stdout: json)
+        await service.load()
+        #expect(service.features.count == 8)
+
+        #expect(FeatureManagerSection.listed(service.features).map(\.id) == ["slack-digests", "memory"])
+        #expect(FeatureManagerSection.listed(service.features, parent: "slack-digests").map(\.id) == ["stream-digests"])
+        #expect(BuiltinFeaturesPointer.title == "Briefing, Day Plan, Tracks, Ideas and Reaction commands")
+        // The ideas interval moved to Idea finder's card: no Ideas tuning section left.
+        let settings = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/Views/Settings/FeaturesSettings.swift")
+        let source = try String(contentsOf: settings, encoding: .utf8)
+        #expect(!source.contains("ideasMineIntervalHours"))
+    }
 }

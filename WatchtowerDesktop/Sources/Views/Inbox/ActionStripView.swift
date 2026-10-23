@@ -154,10 +154,9 @@ struct ActionStripView: View {
         }
     }
 
+    /// The dictionary is edited on the Reactions built-in's card (C3).
     private func openReactionDictionary() {
-        appState.settingsTab = .connections
-        appState.settingsConnection = .slack
-        openSettings()
+        appState.openBuiltinAutomation(BuiltinAutomationCard.reactionsID)
     }
 }
 

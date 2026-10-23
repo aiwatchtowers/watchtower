@@ -271,3 +271,172 @@ struct CustomTrackControlsSection: View {
         state.watchEditError = "Failed to \(what): \(error.localizedDescription)"
     }
 }
+
+/// Which controls a custom track's card shows (C3): a track bound to a watch
+/// recipe is driven through it (`WatchTrackSection`); an unbound one, once
+/// the one-time custom-tracks move is done, is no longer scanned and offers
+/// **Start Watching** (`NotWatchedRow`); before the move it keeps C1's
+/// controls (`CustomTrackControlsSection`), as the legacy path still scans it.
+enum TrackWatchMode: Equatable {
+    case legacy, watched, notWatched
+
+    static func of(isBound: Bool, moveDone: Bool) -> Self {
+        if isBound { return .watched }
+        return moveDone ? .notWatched : .legacy
+    }
+}
+
+/// A watched track's Collecting / Paused toggle and instruction (C1's
+/// labels), through `WatchTrackControls` over the card's seam: nothing here
+/// writes a `tracks` column. A watch changed in the chat shows its
+/// instruction read-only with **Edit in Chat**; a refusal shows the CLI's
+/// own words.
+struct WatchTrackSection: View {
+    static let changedInChat = "This watch was changed in the chat — change it there."
+
+    let watch: WatchTrackControls
+    @Binding var state: TrackCardState
+    /// **Edit in Chat**: the automation editor on the watch's recipe.
+    let onEditInChat: (Int64) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.medium) {
+            HStack(spacing: Spacing.regular) {
+                Toggle(isOn: Binding(get: { watch.collecting }, set: { on in Task { await watch.setCollecting(on) } })) {
+                    Text(watch.collecting ? "Collecting" : "Paused")
+                        .font(.subheadline)
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .disabled(watch.isWorking)
+                .help(watch.collecting
+                      ? "The daemon scans this watch each sync. Turn off to pause."
+                      : "Paused — the daemon skips this watch until turned on.")
+                if watch.isWorking {
+                    ProgressView().controlSize(.small)
+                }
+                Spacer()
+                if watch.templateShaped, !state.editingInstruction {
+                    Button {
+                        watch.instructionDraft = state.instruction
+                        state.editingInstruction = true
+                    } label: {
+                        Label("Edit", systemImage: "pencil")
+                    }
+                    .buttonStyle(.kitQuiet)
+                    .controlSize(.small)
+                }
+            }
+            VStack(alignment: .leading, spacing: Spacing.compact) {
+                Text("Watch instruction").font(.headline)
+                if state.editingInstruction, watch.templateShaped {
+                    editor
+                } else if !state.instruction.isEmpty {
+                    Text(verbatim: state.instruction)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                if !watch.templateShaped {
+                    changedInChatRow
+                }
+                if let error = watch.error {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(Tone.status("red"))
+                        .textSelection(.enabled)
+                } else if let note = watch.note {
+                    Label(note, systemImage: "checkmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var changedInChatRow: some View {
+        HStack(spacing: Spacing.regular) {
+            Text(Self.changedInChat)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            if let id = watch.track.automationID {
+                Button("Edit in Chat") { onEditInChat(id) }
+                    .buttonStyle(.kitSecondary)
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    private var editor: some View {
+        @Bindable var watch = watch
+        return VStack(alignment: .leading, spacing: Spacing.regular) {
+            TextField("What to watch for…", text: $watch.instructionDraft, axis: .vertical)
+                .lineLimit(3...10)
+                .textFieldStyle(.kit)
+            HStack(spacing: Spacing.regular) {
+                Spacer()
+                Button("Cancel") { state.editingInstruction = false }
+                    .buttonStyle(.kitQuiet)
+                Button("Save") { Task { await save() } }
+                    .buttonStyle(.kitSecondary)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(watch.isWorking)
+            }
+            .controlSize(.small)
+        }
+    }
+
+    /// Saves the draft; the editor closes and shows it once the write
+    /// landed. A refusal keeps the editor open with the draft.
+    func save() async {
+        await watch.saveInstruction()
+        guard watch.error == nil, watch.note == WatchTrackControls.savedNote else { return }
+        state.instruction = watch.instructionDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        state.editingInstruction = false
+    }
+}
+
+/// An unbound custom track after the custom-tracks move: nothing scans it
+/// until the owner presses **Start Watching** (`tracks start`, which binds
+/// it to a new watch recipe). A refusal shows the CLI's words.
+struct NotWatchedRow: View {
+    static let line = "Not watched yet."
+
+    let watch: WatchTrackControls
+    /// After a successful start: the card reads the bound track again.
+    let onStarted: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.compact) {
+            HStack(spacing: Spacing.regular) {
+                Image(systemName: "eye.slash")
+                    .foregroundStyle(.secondary)
+                Text(Self.line)
+                    .font(.subheadline)
+                Spacer()
+                if watch.isWorking {
+                    ProgressView().controlSize(.small)
+                }
+                Button("Start Watching") { Task { await start() } }
+                    .buttonStyle(.kitSecondary)
+                    .controlSize(.small)
+                    .disabled(watch.isWorking)
+            }
+            if let error = watch.error {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(Tone.status("red"))
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(Spacing.medium)
+        .card()
+    }
+
+    func start() async {
+        await watch.startWatching()
+        if watch.isBound { onStarted() }
+    }
+}

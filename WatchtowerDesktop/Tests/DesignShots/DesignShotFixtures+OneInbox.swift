@@ -41,6 +41,20 @@ enum OneInboxShotFixtures {
         var aux: InboxAuxPane?
         /// A built-in's failed move to Automations (C2) in the database.
         var builtinNotice = false
+        /// The custom track's watch (C3).
+        var watch: WatchScene = .legacy
+    }
+
+    /// The custom track before the custom-tracks move (C1's controls), bound
+    /// to a watch recipe (as shipped, or changed in the chat), or unbound
+    /// after the move.
+    enum WatchScene { case legacy, bound, edited, unbound }
+
+    private static func watchJSON(templateShaped: Bool) -> Data {
+        Data(#"""
+            {"watch":{"track_id":1,"instruction":"Tell me when finance decides on the acme refund",
+             "template_shaped":\#(templateShaped)}}
+            """#.utf8)
     }
 
     /// The ids the seed wrote.
@@ -65,6 +79,9 @@ enum OneInboxShotFixtures {
         inbox(Scene(filter: .day, select: { _ in .day(today) }, withToday: false))
     }
     static func trackCard() -> AnyView { inbox(Scene(filter: .tracks) { .track($0.customTrack) }) }
+    static func trackCard(_ watch: WatchScene) -> AnyView {
+        inbox(Scene(filter: .tracks, select: { .track($0.customTrack) }, watch: watch))
+    }
     static func tracksStopped() -> AnyView {
         inbox(Scene(filter: .tracks, select: { .track($0.stoppedTrack) }, showsStopped: true))
     }
@@ -106,6 +123,16 @@ enum OneInboxShotFixtures {
             let manager = try freshDatabase()
             let seeded = try manager.dbPool.write { db in
                 let seeded = try seed(db, withToday: scene.withToday)
+                if scene.watch == .bound || scene.watch == .edited {
+                    try db.execute(sql: "UPDATE tracks SET automation_id = 42 WHERE id = ?",
+                                   arguments: [seeded.customTrack])
+                }
+                if scene.watch == .unbound {
+                    try db.execute(sql: """
+                        INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at)
+                        VALUES ('custom-tracks', 'done', '', 1, '2026-10-21T06:00:00Z')
+                        """)
+                }
                 if scene.builtinNotice {
                     try db.execute(sql: """
                         INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at)
@@ -134,7 +161,7 @@ enum OneInboxShotFixtures {
             let appState = AppState()
             appState.databaseManager = manager
             appState.embeddedChats.dbPool = manager.dbPool
-            appState.trackActionRunnerOverride = FakeCLIRunner()
+            appState.trackActionRunnerOverride = FakeCLIRunner(stdout: watchJSON(templateShaped: scene.watch != .edited))
             return AnyView(ActionStripActionsView(
                 vm: vm, cheatSheetRows: cheatSheetRows, feature: .on(lastCheck: nil),
                 isEnabling: false, featureError: nil, onEnable: {}, onOpenSettings: {}, onOpen: { _ in },

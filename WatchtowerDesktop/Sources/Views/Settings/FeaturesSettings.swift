@@ -18,8 +18,9 @@ private enum FeatureManagerApplyError: LocalizedError {
 
 /// Features tab — the Feature Manager (on/off toggles + cascade dialog) on
 /// top, the pointer to Automations → Built in (Briefing and Day Plan moved
-/// there, C2), then per-feature tuning (Digest, Ideas) for whichever of
-/// those pillars is currently enabled, plus notification
+/// there in C2; Tracks, Ideas and Reaction commands in C3, the ideas
+/// interval with them), then the Digest tuning while Slack Digests is on,
+/// plus notification
 /// preferences. Save runs the ordinary config.yaml save AND replays any
 /// staged Feature Manager changes through the CLI, restarting the daemon
 /// once — see `ConfigSaveBar.extraSave`.
@@ -36,9 +37,6 @@ struct FeaturesSettings: View {
             }
             if slackDigestsEnabled {
                 digestSection
-            }
-            if ideasEnabled {
-                ideasSection
             }
             NotificationSettings()
         }
@@ -85,10 +83,6 @@ struct FeaturesSettings: View {
         !appState.featureManager.disabledFeatureIDs.contains("slack-digests")
     }
 
-    private var ideasEnabled: Bool {
-        !appState.featureManager.disabledFeatureIDs.contains("ideas")
-    }
-
     // MARK: - Tuning sections
     //
     // On/off belongs to the Feature Manager section above and to it alone
@@ -109,23 +103,15 @@ struct FeaturesSettings: View {
             )
         }
     }
-
-    private var ideasSection: some View {
-        Section("Ideas") {
-            Stepper(
-                "Mining interval (hours): \(config.ideasMineIntervalHours)",
-                value: $config.ideasMineIntervalHours,
-                in: 1...48
-            )
-            .help("How often the daemon's regular (non-backfill) mining pass runs")
-        }
-    }
 }
 
-/// Settings → Features' row for Briefing and Day Plan, which moved to the
-/// Morning brief built-in (spec §5.4): its card turns it on or off and holds
-/// its hour and working hours. **Open Automations** goes there.
+/// Settings → Features' row for the features that moved to built-in
+/// automations (spec §5.4): Briefing and Day Plan (Morning brief), Tracks
+/// (Track my threads), Ideas (Idea finder) and Reaction commands
+/// (Reactions). Their cards turn them on or off and hold their settings.
+/// **Open Automations** goes there.
 struct BuiltinFeaturesPointer: View {
+    static let title = "Briefing, Day Plan, Tracks, Ideas and Reaction commands"
     static let line = "These now live in Automations → Built in"
 
     let onOpen: () -> Void
@@ -134,7 +120,7 @@ struct BuiltinFeaturesPointer: View {
         Section {
             HStack(spacing: Spacing.regular) {
                 VStack(alignment: .leading, spacing: Spacing.tight) {
-                    Text("Briefing and Day Plan")
+                    Text(Self.title)
                     Text(Self.line)
                         .font(.caption)
                         .foregroundStyle(.secondary)
