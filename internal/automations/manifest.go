@@ -45,6 +45,9 @@ type capabilitySpec struct {
 	workbenchOnly bool
 	// builtinOnly capabilities are refused outside a built-in automation.
 	builtinOnly bool
+	// personalOnly capabilities are refused in a workbench recipe and in a
+	// built-in automation.
+	personalOnly bool
 }
 
 var readWrite = []string{"read", "write"}
@@ -75,14 +78,17 @@ var capabilitySpecs = map[string]capabilitySpec{
 	// builtin:<primitive> admits one engine primitive of a built-in
 	// automation (CapabilityForPrimitive).
 	"builtin": {verbs: BuiltinPrimitiveNames, builtinOnly: true},
+	// track:scan admits the track.scan primitive of a Personal watch recipe,
+	// which runs on trigger: {sync: custom_tracks} (syncTriggerAllowed).
+	"track": {verbs: []string{"scan"}, personalOnly: true},
 }
 
 // BuiltinPrimitiveNames are the engine primitives a builtin: entry may name.
-var BuiltinPrimitiveNames = []string{"brief.compose", "plan.compose"}
+var BuiltinPrimitiveNames = []string{"brief.compose", "plan.compose", "tracks.extract", "ideas.consolidate", "reaction.compose"}
 
 // PrimitiveCapability maps a primitive to its capability entry when that is
 // not builtin:<name>.
-var PrimitiveCapability = map[string]string{}
+var PrimitiveCapability = map[string]string{"track.scan": entryTrackScan}
 
 // CapabilityForPrimitive is the manifest entry that admits primitive name:
 // its PrimitiveCapability entry, else "builtin:" + name.
@@ -95,6 +101,9 @@ func CapabilityForPrimitive(name string) string {
 
 // entryInboxReply is the normalised inbox:reply entry.
 const entryInboxReply = "inbox:reply"
+
+// entryTrackScan is the normalised track:scan entry.
+const entryTrackScan = "track:scan"
 
 // removedCapabilities are capability names refused with a pointer to the
 // tool: entries to list instead: their tools read across sources, so only an
@@ -307,6 +316,10 @@ func ParseManifest(entries []string, outputs []string, scope Scope) (*Manifest, 
 		if !scope.IsBuiltin() && capabilitySpecs[p.Capability].builtinOnly {
 			return nil, &ManifestError{Field: "permissions", Index: i,
 				Msg: fmt.Sprintf("%q is allowed only in a built-in automation", e)}
+		}
+		if (scope.Kind != ScopePersonal || scope.IsBuiltin()) && capabilitySpecs[p.Capability].personalOnly {
+			return nil, &ManifestError{Field: "permissions", Index: i,
+				Msg: fmt.Sprintf("%q is allowed only in a personal automation", e)}
 		}
 		if n := p.String(); !seen[n] {
 			seen[n] = true

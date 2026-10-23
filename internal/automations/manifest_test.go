@@ -764,3 +764,23 @@ func TestCapabilityForPrimitive_DefaultsToBuiltinPrefix(t *testing.T) {
 		t.Errorf("AllowPrimitive(brief.compose) = %v; want PermissionDenied needing builtin:brief.compose", err)
 	}
 }
+
+func TestCapabilityForPrimitive_TrackScanIsPersonal(t *testing.T) {
+	if got := CapabilityForPrimitive("track.scan"); got != "track:scan" {
+		t.Errorf("CapabilityForPrimitive(track.scan) = %q", got)
+	}
+	m, err := ParseManifest([]string{"track:scan"}, nil, personalScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := m.AllowPrimitive("track.scan"); err != nil || got != "track:scan" {
+		t.Errorf("AllowPrimitive(track.scan) = %q, %v", got, err)
+	}
+	for _, s := range []Scope{workbenchScope, {Kind: ScopePersonal, BuiltinID: "tracks"}} {
+		_, err := ParseManifest([]string{"llm:light", "track:scan"}, nil, s)
+		var me *ManifestError
+		if !errors.As(err, &me) || me.Index != 1 || me.Msg != `"track:scan" is allowed only in a personal automation` {
+			t.Errorf("track:scan in %s: want the personal-only refusal, got %v", s, err)
+		}
+	}
+}

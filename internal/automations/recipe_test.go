@@ -702,3 +702,66 @@ func TestApprovalHash_BuiltinScopeAndSyncAreHashed(t *testing.T) {
 		t.Errorf("fields scope=%q trigger=%q", fields["scope"], fields["trigger"])
 	}
 }
+
+func watchRecipe(trigger string, perms ...string) []byte {
+	fm := "name: Watch\ntrigger:\n  " + trigger + "\n"
+	if len(perms) > 0 {
+		fm += "permissions: [" + strings.Join(perms, ", ") + "]\n"
+	}
+	return recipeWith(fm, "log(1);\n")
+}
+
+func TestParseRecipe_PersonalWatchRecipeParses(t *testing.T) {
+	r := mustParse(t, watchRecipe("sync: custom_tracks", "track:scan"), Scope{Kind: ScopePersonal})
+	if r.Trigger.Kind != TriggerSync || r.Trigger.Sync != "custom_tracks" {
+		t.Errorf("trigger = %+v", r.Trigger)
+	}
+	if !reflect.DeepEqual(r.Permissions, []string{"track:scan"}) {
+		t.Errorf("permissions = %v", r.Permissions)
+	}
+}
+
+func TestParseRecipe_WatchShapeRefusals(t *testing.T) {
+	personal := Scope{Kind: ScopePersonal}
+	watch := watchRecipe("sync: custom_tracks", "track:scan")
+	cases := []struct {
+		name  string
+		data  []byte
+		scope Scope
+		want  string
+	}{
+		{"track:scan on a cron trigger", watchRecipe(`schedule: "0 9 * * *"`, "track:scan"), personal,
+			"track:scan needs trigger: {sync: custom_tracks}"},
+		{"custom_tracks without track:scan", watchRecipe("sync: custom_tracks", "llm:light"), personal,
+			"a sync trigger is only for built-in automations"},
+		{"workbench scope", watch, Scope{Kind: ScopeWorkbench, WorkbenchID: 1},
+			`"track:scan" is allowed only in a personal automation`},
+		{"built-in scope", watch, Scope{Kind: ScopePersonal, BuiltinID: "tracks"},
+			`"track:scan" is allowed only in a personal automation`},
+		{"personal at slot tracks", watchRecipe("sync: tracks", "track:scan"), personal,
+			"track:scan needs trigger: {sync: custom_tracks}"},
+	}
+	for _, c := range cases {
+		_, err := ParseRecipe("ok", c.data, c.scope)
+		var pe *ParseError
+		if !errors.As(err, &pe) || !strings.Contains(pe.Msg, c.want) {
+			t.Errorf("%s: want a *ParseError containing %q, got %v", c.name, c.want, err)
+		}
+	}
+}
+
+func TestApprovalHash_TrackScanIsHashed(t *testing.T) {
+	personal := Scope{Kind: ScopePersonal}
+	base := mustParse(t, watchRecipe("sync: custom_tracks", "track:scan"), personal)
+	more := mustParse(t, watchRecipe("sync: custom_tracks", "track:scan", "llm:light"), personal)
+	if ApprovalHash(base) == ApprovalHash(more) {
+		t.Error("adding llm:light beside track:scan kept the hash")
+	}
+	fields := map[string]string{}
+	for _, f := range ApprovalFields(base) {
+		fields[f.Name] = f.Value
+	}
+	if !strings.Contains(fields["permissions"], "track:scan") || fields["trigger"] != `{"sync":"custom_tracks"}` {
+		t.Errorf("fields permissions=%q trigger=%q", fields["permissions"], fields["trigger"])
+	}
+}
