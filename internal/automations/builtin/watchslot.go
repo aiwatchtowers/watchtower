@@ -260,6 +260,24 @@ func (r *Runner) runWatch(ctx context.Context, g WatchGate, a db.Automation) Slo
 	return r.execute(ctx, o, runID, true)
 }
 
+// CancelQueuedWatchRuns cancels the queued manual runs (Run Now, Scan from)
+// of every watch recipe as not_runnable: the daemon calls it when the watch
+// slot does not run this cycle (Track my threads or Slack Digests off), so
+// no run waits for a slot that never comes. One recipe's failure is logged
+// and the next is tried.
+func (r *Runner) CancelQueuedWatchRuns() {
+	recipes, err := r.db.ListSlotRecipes(string(SlotCustomTracks))
+	if err != nil {
+		r.logger.Printf("watch recipes: %v", err)
+		return
+	}
+	for _, a := range recipes {
+		if err := r.cancelQueuedOf(a.ID); err != nil {
+			r.logger.Printf("watch recipe %d: cancelling its queued runs: %v", a.ID, err)
+		}
+	}
+}
+
 // cancelQueuedOf cancels the queued manual runs of automation id as
 // not_runnable, as the executor would, logging how many.
 func (r *Runner) cancelQueuedOf(id int64) error {

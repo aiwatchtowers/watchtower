@@ -329,10 +329,14 @@ const msgSinceOnlyForWatch = "--since is only for a watch"
 // queues): a manual run with {"builtin": {"since": --since}} for the watch
 // slot of the daemon's next sync, which is asked for now. A manual run with
 // other input already queued is refused, so no run executes with a Scan
-// from it was not given.
+// from it was not given. Refused while the watch slot does not run
+// (tracks.enabled or digest.enabled off).
 func queueWatchRun(cmd *cobra.Command, cfg *config.Config, database *db.DB, a *db.Automation) error {
 	if reason := notRunnableReason(a); reason != "" {
 		return fmt.Errorf("automation %d cannot run: %s", a.ID, reason)
+	}
+	if !cfg.Tracks.Enabled || !cfg.Digest.Enabled {
+		return errors.New(msgWatchesNeedTracksAndDigests) //nolint:staticcheck // ST1005: the feature's name
 	}
 	if autoFlags.RerunOf != 0 {
 		return fmt.Errorf("%s has no reruns: run it again without --rerun-of", a.Name)

@@ -1148,6 +1148,27 @@ func TestAutomationsRun_WatchSinceQueues(t *testing.T) {
 	}
 }
 
+// TestAutomationsRun_WatchRefusedWithTracksOrDigestsOff: the watch slot
+// does not run with Track my threads or Slack Digests off, so a run would
+// wait forever; it is refused and nothing is queued.
+func TestAutomationsRun_WatchRefusedWithTracksOrDigestsOff(t *testing.T) {
+	for name, key := range map[string]string{"tracks_off": "tracks:\n  enabled: true", "digests_off": "digest:\n  enabled: true"} {
+		t.Run(name, func(t *testing.T) {
+			c := newC3CLI(t)
+			_, a := c.watchedTrack(t, "watch the refund decision")
+			raw, err := os.ReadFile(flagConfig)
+			require.NoError(t, err)
+			off := strings.Replace(string(raw), key, strings.Replace(key, "true", "false", 1), 1)
+			require.NotEqual(t, string(raw), off)
+			require.NoError(t, os.WriteFile(flagConfig, []byte(off), 0o600))
+			_, err = runAutomations(t, "run", idArg(a.ID))
+			require.Error(t, err)
+			assert.Equal(t, "Watches need Track my threads and Slack Digests on", err.Error())
+			assert.Empty(t, c.runs(t, a.ID))
+		})
+	}
+}
+
 func TestAutomationsRun_ReactionsRefused(t *testing.T) {
 	c := newC3CLI(t)
 	c.moved(t, reactionsID)

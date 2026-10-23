@@ -111,6 +111,11 @@ const (
 // Digests off: it would find nothing and write an empty succeeded run.
 const msgTrackMyThreadsNeedsDigests = "Track my threads needs Slack Digests on"
 
+// msgWatchesNeedTracksAndDigests refuses a watch run while the watch slot
+// does not run (tracks.enabled or digest.enabled off): the queued run would
+// never be taken.
+const msgWatchesNeedTracksAndDigests = "Watches need Track my threads and Slack Digests on"
+
 // builtinNowError is RunNow's error as the CLI prints it: C2's refusal
 // texts for built-in name, any other error as it is.
 func builtinNowError(name string, err error) error {

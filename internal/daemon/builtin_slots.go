@@ -155,6 +155,9 @@ func (d *Daemon) ensureBuiltinsSwept() {
 // automation run of its own. A watch run writes no pipeline_runs row.
 func (d *Daemon) phaseWatchSlot(ctx context.Context) {
 	if !d.config.Tracks.Enabled || !d.config.Digest.Enabled {
+		if d.builtins != nil { // a queued Run Now or Scan from would wait forever
+			d.builtins.CancelQueuedWatchRuns()
+		}
 		return
 	}
 	if !d.builtinOn(customTracksID) {

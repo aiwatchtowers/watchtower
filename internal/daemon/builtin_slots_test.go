@@ -423,3 +423,27 @@ func TestWatchSlot_StopsWithTracksOrDigestsOff(t *testing.T) {
 		})
 	}
 }
+
+// TestWatchSlot_GatesOffCancelQueuedManualRuns: a manual watch run queued
+// before tracks or digests went off is cancelled not_runnable by the slot
+// that does not run, so it never waits forever.
+func TestWatchSlot_GatesOffCancelQueuedManualRuns(t *testing.T) {
+	for name, off := range map[string]func(cfg *config.Config){
+		"tracks_off":  func(cfg *config.Config) { cfg.Tracks.Enabled = false },
+		"digests_off": func(cfg *config.Config) { cfg.Digest.Enabled = false },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newSlotFixture(t, nil)
+			a := addWatchRecipe(t, f.db, f.cfg, "launch", "watch the launch sentinel")
+			runID, _, err := builtin.EnqueueManual(f.db, a.ID, automations.BuiltinInput{}, time.Now())
+			require.NoError(t, err)
+			off(f.cfg)
+			f.d.phaseWatchSlot(context.Background())
+			run, err := f.db.GetAutomationRun(runID)
+			require.NoError(t, err)
+			assert.Equal(t, db.RunCancelled, run.Status)
+			assert.Equal(t, db.ErrKindNotRunnable, run.ErrorKind)
+			assert.Zero(t, f.gen.callsWith("watch the launch sentinel"))
+		})
+	}
+}
