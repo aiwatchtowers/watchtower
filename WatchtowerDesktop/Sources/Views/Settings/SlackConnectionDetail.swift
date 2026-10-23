@@ -321,7 +321,7 @@ struct SlackConnectionDetail: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Open") { appState.navigateToAutomations(section: .reactions) }
+                Button("Open") { appState.openBuiltinAutomation("reactions") }
             }
         }
     }

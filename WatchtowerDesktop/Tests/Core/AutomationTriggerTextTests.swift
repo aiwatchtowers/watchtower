@@ -85,4 +85,30 @@ final class AutomationTriggerTextTests: XCTestCase {
         XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:plan.compose"), "Plan your day")
         XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:x.y"), "builtin:x.y", "unknown stays as written")
     }
+
+    /// Each sync slot in words (twin: Go `builtin` slot names).
+    func testSyncSlotTexts() {
+        let words = [
+            "tracks": "After every sync",
+            "ideas": "Every few hours",
+            "reactions": "When you react in Slack",
+            "custom_tracks": "After every sync"
+        ]
+        for (slot, text) in words {
+            let spec = #"{"sync":"\#(slot)"}"#
+            XCTAssertEqual(AutomationTriggerText.describe(kind: "sync", specJSON: spec), text, slot)
+            XCTAssertEqual(AutomationTriggerText.sentence(kind: "sync", specJSON: spec), text, slot)
+        }
+    }
+
+    /// Twin of Go `automations.BuiltinPrimitiveNames` and `CapabilityForPrimitive`.
+    func testC3PermissionLines() {
+        XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:tracks.extract"),
+                       "Update your tracks from Slack digests")
+        XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:ideas.consolidate"),
+                       "Find ideas and decisions in your messages")
+        XCTAssertEqual(AutomationCardPresentation.permissionLine("builtin:reaction.compose"),
+                       "Turn your reactions into proposals")
+        XCTAssertEqual(AutomationCardPresentation.permissionLine("track:scan"), "Add events to this watch's track")
+    }
 }

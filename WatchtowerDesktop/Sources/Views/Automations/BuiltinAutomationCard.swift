@@ -307,6 +307,9 @@ struct BuiltinAutomationCard: View {
                 .frame(width: 64)
                 .accessibilityLabel(parameter.label)
                 .disabled(model.isWorking)
+        case .interval, .dictionary:
+            // No field yet for these kinds: the card's parameter rows for them come with the C3 cards.
+            EmptyView()
         }
     }
 

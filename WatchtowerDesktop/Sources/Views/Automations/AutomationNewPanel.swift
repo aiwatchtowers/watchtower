@@ -90,6 +90,11 @@ struct AutomationNewPanel: View {
             tile(title: "Describe it in words", systemImage: "sparkles",
                  line: "Opens the chat; the assistant drafts the recipe as you talk.",
                  isSelected: start == item) { start = item }
+        case .watch:
+            tile(title: "Watch for something", systemImage: "eye",
+                 line: "Opens the chat; tell it what to watch for, and each new event lands on the track's card "
+                     + "in your Inbox.",
+                 isSelected: start == item) { start = item }
         case let .template(name):
             if let template = templates.first(where: { $0.name == name }) {
                 tile(title: template.title, systemImage: "doc.text",

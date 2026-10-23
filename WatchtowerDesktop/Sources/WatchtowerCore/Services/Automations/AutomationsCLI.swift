@@ -32,6 +32,15 @@ package struct AutomationsCLI {
         case reset(Int64)
         /// Retries the one-time move of the built-ins' old settings.
         case upgradeBuiltins
+        /// Queues a watch recipe's run for the next sync, scanning from
+        /// `since` (nil = from its own watermark, "Since last check").
+        case runSince(Int64, since: Date?)
+        /// `show --json` read for its `watch` block only.
+        case showWatch(Int64)
+        /// Binds an unbound custom track to a new watch recipe (owner only).
+        case trackStart(Int)
+        /// Rewrites a bound watch's instruction line from `file` (owner only).
+        case trackInstruction(Int, file: String)
     }
 
     /// How a `session()` step's session ended, as `session-ended --status`
@@ -103,6 +112,16 @@ package struct AutomationsCLI {
             return ["automations", "reset", String(id), "--json"]
         case .upgradeBuiltins:
             return ["automations", "upgrade-builtins", "--json"]
+        case let .runSince(id, since):
+            var out = ["automations", "run", String(id)]
+            if let since { out += ["--since", AutomationDates.format(since)] }
+            return out + ["--json"]
+        case let .showWatch(id):
+            return ["automations", "show", String(id), "--json"]
+        case let .trackStart(trackID):
+            return ["tracks", "start", String(trackID), "--json"]
+        case let .trackInstruction(trackID, file):
+            return ["tracks", "instruction", String(trackID), "--text-file", file]
         }
     }
 
@@ -218,6 +237,31 @@ package struct AutomationsCLI {
         return result.results
     }
 
+    /// Queues watch `id`'s run for the next sync (`at_next_sync`), from
+    /// `since` or, nil, from the watch's own watermark.
+    package func runSince(_ id: Int64, since: Date?) async throws -> RunResult {
+        try await decode(.runSince(id, since: since))
+    }
+
+    /// Watch `id`'s `watch` block of `show --json`; nil for any other automation.
+    package func showWatch(_ id: Int64) async throws -> AutomationWatch? {
+        let result: ShowWatch = try await decode(.showWatch(id))
+        return result.watch
+    }
+
+    /// Binds custom track `trackID` to a new, confirmed watch recipe.
+    package func trackStart(_ trackID: Int) async throws -> TrackStartResult {
+        try await decode(.trackStart(trackID))
+    }
+
+    /// Rewrites bound track `trackID`'s watch instruction and confirms the new
+    /// text; refused (stderr) for a recipe changed in the chat.
+    package func trackInstruction(_ trackID: Int, text: String) async throws {
+        _ = try await CLITextFile.with(text) { path in
+            try await runner.run(args: Self.args(.trackInstruction(trackID, file: path)))
+        }
+    }
+
     private func decode<T: Decodable>(_ op: Op) async throws -> T {
         let data = try await runner.run(args: Self.args(op))
         return try JSONDecoder().decode(T.self, from: data)
@@ -231,14 +275,37 @@ extension AutomationsCLI {
     private struct Attached: Decodable { let attached: Bool }
     private struct Ended: Decodable { let ended: Bool }
 
-    /// `run --json`.
+    /// `run --json`; `at_next_sync` (a watch's run queued for the next sync)
+    /// is false when absent.
     package struct RunResult: Decodable, Equatable, Sendable {
         package let runID: Int64
         package let coalesced: Bool
         package let daemonRunning: Bool
+        package let atNextSync: Bool
 
         enum CodingKeys: String, CodingKey {
-            case runID = "run_id", coalesced, daemonRunning = "daemon_running"
+            case runID = "run_id", coalesced, daemonRunning = "daemon_running", atNextSync = "at_next_sync"
+        }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            runID = try c.decode(Int64.self, forKey: .runID)
+            coalesced = try c.decode(Bool.self, forKey: .coalesced)
+            daemonRunning = try c.decode(Bool.self, forKey: .daemonRunning)
+            atNextSync = try c.decodeIfPresent(Bool.self, forKey: .atNextSync) ?? false
+        }
+    }
+
+    /// `show --json` read for its `watch` block (`null` for a non-watch).
+    private struct ShowWatch: Decodable { let watch: AutomationWatch? }
+
+    /// `tracks start --json`.
+    package struct TrackStartResult: Decodable, Equatable, Sendable {
+        package let trackID: Int
+        package let automationID: Int64
+
+        enum CodingKeys: String, CodingKey {
+            case trackID = "track_id", automationID = "automation_id"
         }
     }
 
@@ -476,6 +543,27 @@ extension AutomationsCLI {
     }
 }
 
+/// A watch recipe's `watch` block of `show --json` (twin: cmd
+/// `automations show`): its bound track, the instruction (the track's mirror
+/// when the recipe is not template-shaped) and whether the card may rewrite
+/// the instruction (`template_shaped`; false = changed in the chat).
+package struct AutomationWatch: Decodable, Equatable, Sendable {
+    package let trackID: Int
+    package let instruction: String
+    package let templateShaped: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case trackID = "track_id", instruction, templateShaped = "template_shaped"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        trackID = try c.decode(Int.self, forKey: .trackID)
+        instruction = try c.decodeIfPresent(String.self, forKey: .instruction) ?? ""
+        templateShaped = try c.decodeIfPresent(Bool.self, forKey: .templateShaped) ?? false
+    }
+}
+
 /// One hashed field that differs from the confirmed recipe (`show --json`
 /// `changes`); `old`/`new` are always strings.
 package struct AutomationChange: Decodable, Equatable, Sendable {
@@ -631,8 +719,11 @@ package struct BuiltinAutomationDetail: Decodable, Equatable, Sendable {
         /// Twin: Go `builtin.ParamKind`.
         package enum Kind: String, Decodable, Sendable {
             /// 0–23 (`builtin.ParamHour`); "HH:MM" (`ParamClock`); a whole
-            /// number of items, 0 or more (`ParamCount`).
-            case hour, clock, count
+            /// number of items, 0 or more (`ParamCount`); a whole number of
+            /// hours, 1 or more, as text such as "6" (`ParamInterval`); a table
+            /// the Desktop reads and edits itself, `key` is its name and the
+            /// value "[]" (`ParamDictionary`).
+            case hour, clock, count, interval, dictionary
         }
 
         package let key: String

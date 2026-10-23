@@ -105,7 +105,8 @@ package final class BuiltinAutomationCardModel {
     }
 
     /// The first edited field that is not a valid value, said for the owner:
-    /// an hour is 0–23, a clock is HH:MM, a count a whole number from 0; and
+    /// an hour is 0–23, a clock is HH:MM, a count a whole number from 0, an
+    /// interval a whole number of hours from 1; and
     /// the backlog's at-least never above its at-most.
     package var invalidParameter: String? {
         let parameters = detail?.parameters ?? []
@@ -118,6 +119,11 @@ package final class BuiltinAutomationCardModel {
                 if !Self.isClock(value) { return "\(parameter.label): use HH:MM, for example 09:00" }
             case .count:
                 if !Self.isCount(value) { return "\(parameter.label): use a whole number, 0 or more" }
+            case .interval:
+                if !Self.isInterval(value) { return "\(parameter.label): use a whole number of hours, 1 or more" }
+            case .dictionary:
+                // The table is edited by its own editor, never as a field value.
+                continue
             }
         }
         let shown = { (key: String) in parameters.first { $0.key == key } }
@@ -136,6 +142,11 @@ package final class BuiltinAutomationCardModel {
     /// A count field's text: a whole number, 0 or more.
     nonisolated package static func isCount(_ text: String) -> Bool {
         Int(text).map { $0 >= 0 } ?? false
+    }
+
+    /// An interval field's text: a whole number of hours, 1 or more.
+    nonisolated package static func isInterval(_ text: String) -> Bool {
+        Int(text).map { $0 >= 1 } ?? false
     }
 
     /// "HH:MM", 00:00–23:59.

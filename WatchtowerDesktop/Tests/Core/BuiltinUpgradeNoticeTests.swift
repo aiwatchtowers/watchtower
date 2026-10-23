@@ -31,6 +31,17 @@ final class BuiltinUpgradeNoticeTests: XCTestCase {
         XCTAssertEqual(BuiltinUpgradeNotice.name(for: "x-y"), "x-y")
     }
 
+    /// Twin of Go `builtin.Entry.Name` for C3's built-ins and the watch recipes' move.
+    func testNoticeNamesForC3Ids() {
+        XCTAssertEqual(BuiltinUpgradeNotice.name(for: "track-my-threads"), "Track my threads")
+        XCTAssertEqual(BuiltinUpgradeNotice.name(for: "idea-finder"), "Idea finder")
+        XCTAssertEqual(BuiltinUpgradeNotice.name(for: "reactions"), "Reactions")
+        XCTAssertEqual(BuiltinUpgradeNotice.name(for: "custom-tracks"), "your watched tracks")
+        XCTAssertEqual(BuiltinUpgradeNotice(builtinID: "custom-tracks", error: "", updatedAt: .distantPast).title,
+                       "Couldn't move your watched tracks to Automations")
+        XCTAssertEqual(BuiltinUpgradeNotice.name(for: "acme-new"), "acme-new")
+    }
+
     func testUpgradeNoticeOnASchemaWithoutTheTable() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in

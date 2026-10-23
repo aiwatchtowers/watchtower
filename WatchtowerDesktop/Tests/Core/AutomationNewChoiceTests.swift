@@ -18,7 +18,7 @@ final class AutomationNewChoiceTests: XCTestCase {
     func testStartsListWordsFirstThenMatchingTemplates() throws {
         let all = try templates()
         XCTAssertEqual(AutomationNewChoice.starts(templates: all, scope: .personal),
-                       [.words, .template("new-mail-summary"), .template("jira-state-report"),
+                       [.words, .watch, .template("new-mail-summary"), .template("jira-state-report"),
                         .template("team-performance-report")])
         let workbench = AutomationScopeChoice.workbench(id: 3, name: "acme", folder: "/work/acme")
         XCTAssertEqual(AutomationNewChoice.starts(templates: all, scope: workbench),
@@ -26,8 +26,16 @@ final class AutomationNewChoiceTests: XCTestCase {
     }
 
     func testNoTemplatesOnlyWords() {
-        XCTAssertEqual(AutomationNewChoice.starts(templates: [], scope: .personal), [.words])
+        XCTAssertEqual(AutomationNewChoice.starts(templates: [], scope: .personal), [.words, .watch])
         XCTAssertEqual(AutomationNewChoice.starts(templates: [], scope: .workbench(id: 3, name: "acme", folder: "/w")),
                        [.words])
+    }
+
+    /// A watch recipe is Personal only (Go `track:scan` is `personalOnly`).
+    func testWatchTileOnlyForPersonal() throws {
+        let all = try templates()
+        XCTAssertEqual(Array(AutomationNewChoice.starts(templates: all, scope: .personal).prefix(2)), [.words, .watch])
+        let workbench = AutomationScopeChoice.workbench(id: 3, name: "acme", folder: "/work/acme")
+        XCTAssertFalse(AutomationNewChoice.starts(templates: all, scope: workbench).contains(.watch))
     }
 }
