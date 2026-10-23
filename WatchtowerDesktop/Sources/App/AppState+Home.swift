@@ -57,10 +57,10 @@ extension AppState {
         return allowed
     }
 
-    /// Open the Automations tab on one of its sections (the Settings pointer).
-    func navigateToAutomations(section: AutomationsSection) {
-        UserDefaults.standard.set(section.rawValue, forKey: AutomationsSection.storageKey)
+    /// Opens the Automations tab, with automation `id`'s row selected when given.
+    func navigateToAutomations(select id: Int64? = nil) {
         selectedDestination = .automations
+        if let id { automationsViewModel?.select(id) }
     }
 
     /// The Slack Digests Turn on for Home's Getting ready cards (#575); read inside a

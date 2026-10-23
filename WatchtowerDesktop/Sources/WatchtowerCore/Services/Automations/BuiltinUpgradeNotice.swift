@@ -20,7 +20,12 @@ package struct BuiltinUpgradeNotice: Equatable, Sendable {
     /// The built-ins' names by id, twin of Go `builtin.Entry.Name`
     /// (internal/automations/builtin/registry.go).
     private static let names: [String: String] = [
-        "morning-brief": "Morning brief"
+        "morning-brief": "Morning brief",
+        "track-my-threads": "Track my threads",
+        "idea-finder": "Idea finder",
+        "reactions": "Reactions",
+        // The watch recipes' move: "Couldn't move your watched tracks to Automations".
+        "custom-tracks": "your watched tracks"
     ]
 
     /// The built-in's name; the id itself for one this table does not know.

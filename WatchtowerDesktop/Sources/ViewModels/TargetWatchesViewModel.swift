@@ -19,6 +19,9 @@ final class TargetWatchesViewModel {
     private let scanCenter: TrackScanCenter
     private let actionPress: TrackActionPress
     private let scanService: TrackScanService
+    /// A bound watch's scan goes through the custom-track seam (its recipe);
+    /// nil, or an unbound watch, runs `tracks scan` through `scanService`.
+    private let trackControls: (any CustomTrackControlling)?
 
     var watches: [Track] = []
     var originTrack: Track?
@@ -32,10 +35,12 @@ final class TargetWatchesViewModel {
          dbManager: DatabaseManager,
          scanService: TrackScanService,
          actionRunner: any CLIRunnerProtocol,
-         scanCenter: TrackScanCenter) {
+         scanCenter: TrackScanCenter,
+         trackControls: (any CustomTrackControlling)? = nil) {
         self.target = target
         self.dbPool = dbManager.dbPool
         self.scanService = scanService
+        self.trackControls = trackControls
         self.actionPress = TrackActionPress(runner: actionRunner)
         self.scanCenter = scanCenter
     }
@@ -99,6 +104,11 @@ final class TargetWatchesViewModel {
         var note: String?
         defer { scanCenter.finish(watch.id, note: note) }
         do {
+            if watch.automationID != nil, let trackControls {
+                try await trackControls.scan(watch, from: since)
+                note = "\(watch.text): \(WatchTrackControls.nextSyncNote.lowercased())."
+                return
+            }
             let iso = since.map { Self.isoFormatter.string(from: $0) }
             let created = try await scanService.run(trackID: watch.id, since: iso)
             note = created.isEmpty

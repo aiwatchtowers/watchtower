@@ -6,14 +6,44 @@ import WatchtowerTestSupport
 /// `internal/automations/builtin/testdata/show_morning_brief.json` (Go
 /// `builtin.CardInfo` writes it; dual path pinned from both sides).
 final class BuiltinAutomationDetailDecodingTests: XCTestCase {
-    static func golden() throws -> Data {
+    static func golden(_ name: String = "show_morning_brief") throws -> Data {
         let url = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent() // Core
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // WatchtowerDesktop
             .deletingLastPathComponent() // repo root
-            .appendingPathComponent("internal/automations/builtin/testdata/show_morning_brief.json")
+            .appendingPathComponent("internal/automations/builtin/testdata/\(name).json")
         return try Data(contentsOf: url)
+    }
+
+    /// C3's three goldens (Go `builtin.CardInfo`), with the `interval` and
+    /// `dictionary` kinds (twin: Go `builtin.ParamKind`).
+    func testDecodesC3ShowGoldens() throws {
+        let decode = { (name: String) in try JSONDecoder().decode(BuiltinAutomationDetail.self, from: Self.golden(name)) }
+
+        let threads = try decode("show_track_my_threads")
+        XCTAssertEqual(threads.id, "track-my-threads")
+        XCTAssertEqual(threads.slot, "tracks")
+        XCTAssertEqual(threads.parameters, [])
+        XCTAssertEqual(threads.featureIDs, ["tracks"])
+        XCTAssertTrue(threads.runNow)
+
+        let ideas = try decode("show_idea_finder")
+        XCTAssertEqual(ideas.id, "idea-finder")
+        XCTAssertEqual(ideas.slot, "ideas")
+        XCTAssertEqual(ideas.when, "Every 6 hours")
+        XCTAssertEqual(ideas.parameters.map(\.kind), [.interval])
+        XCTAssertEqual(ideas.parameters.map(\.key), ["ideas.mine_interval_hours"])
+        XCTAssertEqual(ideas.parameters.first.flatMap { Int($0.value) }, 6, "an interval is whole hours as text")
+        XCTAssertTrue(ideas.runNow)
+
+        let reactions = try decode("show_reactions")
+        XCTAssertEqual(reactions.id, "reactions")
+        XCTAssertEqual(reactions.slot, "reactions")
+        XCTAssertEqual(reactions.parameters.map(\.kind), [.dictionary])
+        XCTAssertEqual(reactions.parameters.map(\.key), ["reaction_command_map"])
+        XCTAssertEqual(reactions.parameters.map(\.value), ["[]"])
+        XCTAssertFalse(reactions.runNow)
     }
 
     func testDecodesSharedGoldenBlock() throws {

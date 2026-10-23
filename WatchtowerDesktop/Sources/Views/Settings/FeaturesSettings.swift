@@ -31,7 +31,7 @@ struct FeaturesSettings: View {
         Form {
             FeatureManagerSection(service: appState.featureManager)
             BuiltinFeaturesPointer {
-                appState.navigateToAutomations(section: .automations)
+                appState.navigateToAutomations()
                 appState.bringMainWindowForward()
             }
             if slackDigestsEnabled {

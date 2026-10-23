@@ -77,6 +77,79 @@ final class CustomTrackControllingTests: XCTestCase {
         XCTAssertEqual(left, [0, 0], "the track and its events are gone")
     }
 
+    /// C3's controls: a bound track drives its watch recipe through the
+    /// CLI and never writes `tracks.enabled` or `tracks.instruction` from
+    /// Swift (the CLI and the SQL trigger mirror them); an unbound track
+    /// stops through C1's direct controls and refuses the rest.
+    func testRecipeControlsDriveTheRecipe() async throws {
+        let track = try customTrack()
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE tracks SET automation_id = 42 WHERE id = ?", arguments: [track.id])
+        }
+        let fetched = try await pool.read { db in try TrackQueries.fetchByID(db, id: track.id) }
+        let bound = try XCTUnwrap(fetched)
+        XCTAssertEqual(bound.automationID, 42)
+        let runner = FakeCLIRunner(stdout: Data(#"{"run_id":3,"coalesced":false,"daemon_running":true}"#.utf8))
+        let cli = AutomationsCLI(runner: runner)
+        let direct = DirectCustomTrackControls(dbPool: pool, scanService: TrackScanService(runner: runner))
+        let controls = RecipeCustomTrackControls(cli: cli, direct: direct)
+
+        try await controls.saveInstruction(bound, text: "watch the refund owner")
+        try await controls.setCollecting(bound, on: false)
+        try await controls.setCollecting(bound, on: true)
+        let from = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-01T00:00:00Z"))
+        try await controls.scan(bound, from: from)
+        try await controls.scan(bound, from: nil)
+        let untouched = try row(track.id)
+        XCTAssertEqual(untouched["instruction"] as String?, "old")
+        XCTAssertEqual(untouched["enabled"] as Int?, 1)
+
+        try await controls.stopWatching(bound)
+        let stopped = try row(track.id)
+        XCTAssertFalse(((stopped["dismissed_at"] as String?) ?? "").isEmpty)
+        XCTAssertEqual(stopped["enabled"] as Int?, 1, "the recipe's disable mirrors it, not Swift")
+
+        try await controls.resumeWatching(bound)
+        XCTAssertEqual(try row(track.id)["dismissed_at"] as String?, "")
+
+        try await controls.delete(bound)
+        let left = try await pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks WHERE id = ?", arguments: [track.id])
+        }
+        XCTAssertEqual(left, 0)
+
+        let calls = runner.invocations
+        XCTAssertEqual(calls.count, 8)
+        XCTAssertEqual(Array(calls[0].prefix(4)), ["tracks", "instruction", "\(track.id)", "--text-file"])
+        XCTAssertEqual(runner.textFileContents, ["watch the refund owner"])
+        XCTAssertEqual(Array(calls.dropFirst()), [
+            ["automations", "disable", "42"],
+            ["automations", "enable", "42"],
+            ["automations", "run", "42", "--since", "2026-10-01T00:00:00Z", "--json"],
+            ["automations", "run", "42", "--json"],
+            ["automations", "disable", "42"],
+            ["automations", "enable", "42"],
+            ["automations", "delete", "42"]
+        ])
+
+        // Unbound: Stop watching is C1's direct write; the rest are refused.
+        let unbound = try customTrack()
+        XCTAssertNil(unbound.automationID)
+        let before = runner.invocations.count
+        try await controls.stopWatching(unbound)
+        let stoppedUnbound = try row(unbound.id)
+        XCTAssertEqual(stoppedUnbound["enabled"] as Int?, 0)
+        XCTAssertFalse(((stoppedUnbound["dismissed_at"] as String?) ?? "").isEmpty)
+        do {
+            try await controls.scan(unbound, from: nil)
+            XCTFail("an unbound track is not scanned through its recipe")
+        } catch {
+            XCTAssertEqual(error as? RecipeCustomTrackControls.NotWatched,
+                           RecipeCustomTrackControls.NotWatched(trackID: unbound.id))
+        }
+        XCTAssertEqual(runner.invocations.count, before, "no CLI call for an unbound track")
+    }
+
     /// A row deleted elsewhere is a `RowNotFoundError`, which the card and
     /// the view model treat as "the watch is gone".
     func testDirectControlsOnADeletedTrackSayItIsGone() async throws {

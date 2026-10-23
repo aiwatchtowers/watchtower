@@ -112,6 +112,10 @@ package struct Track: FetchableRecord, Identifiable, Equatable {
     package let enabled: Bool
     package let lastRunAt: String
     package let linkedTargetID: Int?
+    /// A custom track's watch recipe (`tracks.automation_id`, twin: Go
+    /// `db.Track.AutomationID`); nil = unbound. Set inside Core only when
+    /// Start Watching binds the track before its row is read again.
+    package internal(set) var automationID: Int64?
 
     package init(row: Row) {
         id = row["id"]
@@ -151,6 +155,7 @@ package struct Track: FetchableRecord, Identifiable, Equatable {
         enabled = row["enabled"] ?? true
         lastRunAt = row["last_run_at"] ?? ""
         linkedTargetID = row["linked_target_id"]
+        automationID = row["automation_id"]
     }
 
     // MARK: - Ownership predicates

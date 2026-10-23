@@ -33,8 +33,8 @@ struct AutomationEditorChatHooks {
     let startTemplate: (_ name: String, _ scope: AutomationScopeChoice) -> AutomationTemplatePanelModel?
 }
 
-/// The Automations tab (spec A1): **Automations | Reactions | Tracks** above
-/// a list of sections — Personal, then one per workbench, drafts first —
+/// The Automations tab (spec A1): a list of sections — Personal, then one
+/// per workbench, drafts first —
 /// with the detail panel on the right. Every flow (a card, New, a template,
 /// the editor) happens in that panel; none is a sheet. State lives in the
 /// `AppState`-owned `AutomationsViewModel`, `AutomationEditorCenter` and
@@ -45,26 +45,15 @@ struct AutomationsView: View {
     var emptyStateContext: EmptyStateContext = .neutral
     var editor: AutomationEditorCenter?
     let hooks: AutomationEditorChatHooks
-    /// The Feature Manager's disabled ids: the Tracks section shows while
-    /// the `tracks` feature is on.
+    /// The Feature Manager's disabled ids.
     var disabledFeatures: Set<String> = []
     /// The feature manager is applying a change: a built-in's Turn On/Off waits.
     var isApplyingFeatures = false
 
-    /// The one place the Tracks section's visibility is decided.
-    private var tracksVisible: Bool {
-        !disabledFeatures.contains("tracks")
-    }
-
-    /// The Reactions **+**: a personal automation whose chat starts on a reaction trigger.
-    static let reactionPrefill = "When I react to a Slack message with :<emoji>: (trigger slack.reaction_added), "
-
-    @AppStorage(AutomationsSection.storageKey) private var storedSection = ""
     @State private var searchText = ""
 
-    private var section: AutomationsSection {
-        AutomationsSection.resolve(stored: storedSection, tracksVisible: tracksVisible)
-    }
+    /// **Watch for something**: the editor chat starts on a watch recipe.
+    static let watchPrefill = "Watch for "
 
     private var workbenches: [(id: Int64, name: String)] {
         hooks.scopes.compactMap {
@@ -81,38 +70,14 @@ struct AutomationsView: View {
     private var isEmpty: Bool { vm.items.isEmpty && vm.draftRows.isEmpty }
 
     var body: some View {
-        VStack(spacing: 0) {
-            let visible = AutomationsSection.visible(tracksVisible: tracksVisible)
-            KitSegmentedPicker(
-                title: "Section",
-                selection: Binding(get: { section }, set: { storedSection = $0.rawValue }),
-                segments: visible.map { KitSegment(value: $0, title: $0.title) }
-            )
-            .padding(.vertical, Spacing.cozy)
-            .frame(maxWidth: .infinity)
-            switch section {
-            case .automations:
-                PanelSplit(
-                    isPanelShown: true,
-                    width: PanelSplitWidth(key: "automations.detailWidth", range: 720...1600, ideal: 900)
-                ) {
-                    listColumn
-                } panel: {
-                    panel
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            case .reactions:
-                ReactionsSectionView(items: vm.items, onOpenAutomation: { id in
-                    storedSection = AutomationsSection.automations.rawValue
-                    searchText = ""
-                    vm.select(id)
-                }, onNew: {
-                    storedSection = AutomationsSection.automations.rawValue
-                    vm.showNew(AutomationNewFlow(fixedScope: .personal, composerPrefill: Self.reactionPrefill))
-                })
-            case .tracks:
-                TracksSectionView()
-            }
+        PanelSplit(
+            isPanelShown: true,
+            width: PanelSplitWidth(key: "automations.detailWidth", range: 720...1600, ideal: 900)
+        ) {
+            listColumn
+        } panel: {
+            panel
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .detailBackground()
         .navigationTitle("Automations")
@@ -122,9 +87,7 @@ struct AutomationsView: View {
         }
         .onDisappear { vm.setTabVisible(false) }
         .onChange(of: vm.items.map(\.id)) { _, _ in autoSelect() }
-        .onChange(of: vm.pendingConfirmID, initial: true) { _, pending in
-            // The card it opens is in the Automations section: show it.
-            if pending != nil { storedSection = AutomationsSection.automations.rawValue }
+        .onChange(of: vm.pendingConfirmID, initial: true) { _, _ in
             vm.consumePendingConfirm()
         }
     }
@@ -345,6 +308,9 @@ struct AutomationsView: View {
         case .words:
             vm.showEditor(.newDraft(contextID: hooks.draftContextID(scope), scope: scope, startText: nil),
                           composerPrefill: flow.composerPrefill)
+        case .watch:
+            vm.showEditor(.newDraft(contextID: hooks.draftContextID(scope), scope: scope, startText: nil),
+                          composerPrefill: Self.watchPrefill)
         case let .template(name):
             guard hooks.startTemplate(name, scope) != nil else { return }
             vm.showTemplate(name: name, scope: scope)

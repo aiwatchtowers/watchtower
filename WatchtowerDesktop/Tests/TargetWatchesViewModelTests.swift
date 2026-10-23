@@ -90,6 +90,40 @@ final class TargetWatchesViewModelTests: XCTestCase {
         XCTAssertEqual(vm.events.map(\.summary), ["new update"], "the feed must reflect the CLI's write without an active observation")
     }
 
+    /// A bound watch scans through the custom-track seam (its recipe, at the
+    /// next sync); `tracks scan` is not run for it.
+    func testScanWatchSendsABoundWatchThroughTheSeam() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let targetID = try await manager.dbPool.write { db -> Int in
+            try TargetQueries.create(db, text: "goal", periodStart: "2026-06-01", periodEnd: "2026-06-30")
+        }
+        let watchID = try await manager.dbPool.write { db -> Int in
+            try db.execute(sql: """
+                INSERT INTO tracks (assignee_user_id, text, context, category, ownership, priority,
+                    origin, instruction, enabled, linked_target_id, automation_id)
+                VALUES ('U1', 'watch A', '', 'task', 'watching', 'medium', 'custom', 'watch', 1, ?, 42)
+                """, arguments: [targetID])
+            return Int(db.lastInsertedRowID)
+        }
+        let fetchedTarget = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: targetID) }
+        let target = try XCTUnwrap(fetchedTarget)
+        let fetchedWatch = try await manager.dbPool.read { db in try TrackQueries.fetchByID(db, id: watchID) }
+        let watch = try XCTUnwrap(fetchedWatch)
+        let scanRunner = FakeCLIRunner(stdout: Data("[]".utf8))
+        let seam = RecordingCustomTrackControls()
+        let center = TrackScanCenter()
+        let vm = TargetWatchesViewModel(
+            target: target, dbManager: manager, scanService: TrackScanService(runner: scanRunner),
+            actionRunner: FakeCLIRunner(), scanCenter: center, trackControls: seam)
+
+        await vm.scanWatch(watch, since: nil, label: "since last check")
+
+        XCTAssertEqual(seam.calls, [.scan(trackID: watchID, from: nil)])
+        XCTAssertEqual(scanRunner.invocations, [])
+        XCTAssertEqual(center.note[watchID], "watch A: runs at the next sync.")
+    }
+
     func testApplyActionPressesThroughTheRegistryAndShowsApplied() async throws {
         let (manager, path) = try TestDatabase.createDatabaseManager()
         defer { TestDatabase.cleanup(path: path) }

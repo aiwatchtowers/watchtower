@@ -19,9 +19,14 @@ package enum AutomationTriggerText {
         let sync: String?
     }
 
-    /// A built-in's sync slot in words; the hour itself is the card's `when`.
+    /// A built-in's (or the watch recipes') sync slot in words, twin of Go
+    /// `builtin` slot names; the hour or the number of hours is the card's `when`.
     private static let syncWords: [String: String] = [
-        "morning_brief": "Every morning, at the first sync after its time"
+        "morning_brief": "Every morning, at the first sync after its time",
+        "tracks": "After every sync",
+        "ideas": "Every few hours",
+        "reactions": "When you react in Slack",
+        "custom_tracks": "After every sync"
     ]
 
     private static let eventWords: [String: String] = [
