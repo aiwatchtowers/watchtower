@@ -3,6 +3,7 @@ package customtracks
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -69,20 +70,33 @@ func (p *Pipeline) Due(t db.Track, now time.Time) bool {
 	return !spent
 }
 
-// extraAfter keeps the items stamped after the watermark since (ISO8601).
-func extraAfter(items []ExtraItem, since string) ([]ExtraItem, error) {
+// extraInWindow keeps the items stamped in the scan window (since, until]
+// (ISO8601; until becomes the next watermark, so an item is fed at most once
+// and a future-dated one never), the newest defaultActivityLimit of them —
+// the per-source cap of the activity read.
+func (p *Pipeline) extraInWindow(trackID int, items []ExtraItem, since, until string) ([]ExtraItem, error) {
 	if len(items) == 0 {
 		return nil, nil
 	}
-	mark, err := time.Parse(time.RFC3339, since)
+	from, err := time.Parse(time.RFC3339, since)
 	if err != nil {
 		return nil, fmt.Errorf("parsing the scan watermark %q: %w", since, err)
 	}
+	to, err := time.Parse(time.RFC3339, until)
+	if err != nil {
+		return nil, fmt.Errorf("parsing the scan window end %q: %w", until, err)
+	}
 	var out []ExtraItem
 	for _, it := range items {
-		if it.At.After(mark) {
+		if it.At.After(from) && !it.At.After(to) {
 			out = append(out, it)
 		}
+	}
+	if len(out) > defaultActivityLimit {
+		sort.SliceStable(out, func(i, j int) bool { return out[i].At.After(out[j].At) })
+		p.logger.Printf("customtracks: track %d: %d recipe item(s) over the cap (%d) dropped, oldest first",
+			trackID, len(out)-defaultActivityLimit, defaultActivityLimit)
+		out = out[:defaultActivityLimit]
 	}
 	return out, nil
 }

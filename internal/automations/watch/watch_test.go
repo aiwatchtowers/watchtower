@@ -243,3 +243,52 @@ func TestWatchStart_SameTitleTwoTracksTwoFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestWatchStart_RetryRepairsPartialStart(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("bound but unconfirmed: a confirming retry confirms", func(t *testing.T) {
+		f := newStartFixture(t)
+		tr := f.track(t, db.Track{Text: "Retry confirm"})
+		a, err := Start(ctx, f.d, f.ix, f.ws, tr, StartOptions{Now: testNow})
+		if err != nil || a.ConfirmedHash != "" {
+			t.Fatalf("Start = %+v, %v; want bound and unconfirmed", a, err)
+		}
+		again, err := Start(ctx, f.d, f.ix, f.ws, tr, StartOptions{Confirm: true, Now: testNow})
+		if err != nil {
+			t.Fatalf("retry: %v", err)
+		}
+		if again.ID != a.ID || again.ConfirmedHash != again.ApprovalHash {
+			t.Fatalf("retry = id %d confirmed %q approval %q; want %d confirmed", again.ID, again.ConfirmedHash, again.ApprovalHash, a.ID)
+		}
+	})
+
+	t.Run("failed enable: nothing is bound and the retry carries the track's state", func(t *testing.T) {
+		f := newStartFixture(t)
+		tr := f.track(t, db.Track{Text: "Retry enable"})
+		if _, err := f.d.Exec(`CREATE TRIGGER fail_enable BEFORE UPDATE OF enabled ON automations
+			BEGIN SELECT RAISE(ABORT, 'enable refused'); END`); err != nil {
+			t.Fatalf("create trigger: %v", err)
+		}
+		if _, err := Start(ctx, f.d, f.ix, f.ws, tr, StartOptions{Confirm: true, Now: testNow}); err == nil {
+			t.Fatal("Start succeeded with the enable refused")
+		}
+		if got, _ := f.d.GetTrackByID(tr.ID); got.AutomationID != 0 || !got.Enabled {
+			t.Fatalf("after the failed enable the track is %+v; want unbound and still enabled", got)
+		}
+		if _, err := f.d.Exec(`DROP TRIGGER fail_enable`); err != nil {
+			t.Fatal(err)
+		}
+		a, err := Start(ctx, f.d, f.ix, f.ws, tr, StartOptions{Confirm: true, Now: testNow})
+		if err != nil {
+			t.Fatalf("retry: %v", err)
+		}
+		bound, err := f.d.GetWatchTrack(a.ID)
+		if err != nil || bound == nil || bound.ID != tr.ID || !bound.Enabled || !a.Enabled || a.ConfirmedHash != a.ApprovalHash {
+			t.Fatalf("retry bound %+v (%v), automation %+v; want bound, enabled and confirmed", bound, err, a)
+		}
+		if entries, _ := os.ReadDir(automations.PersonalDir(f.ws)); len(entries) != 1 {
+			t.Errorf("personal folder holds %d files; want 1", len(entries))
+		}
+	})
+}

@@ -144,8 +144,9 @@ type StartOptions struct {
 // Start makes custom track t a watch: it writes its recipe to
 // <workspaceDir>/automations/watch-<id>-<slug>.md through the indexer, binds
 // the track to it, carries the track's enabled over to the recipe and, with
-// opts.Confirm, confirms it. A track already bound returns its automation
-// and writes nothing. The track is re-read, so a stale t cannot bind twice.
+// opts.Confirm, confirms it. A track already bound writes no file and returns
+// its automation, confirming it first when opts.Confirm is set and it is not
+// (a retry after a failed confirm). The track is re-read, so a stale t cannot bind twice.
 func Start(ctx context.Context, d *db.DB, ix *automations.Indexer, workspaceDir string, t db.Track, opts StartOptions) (*db.Automation, error) {
 	now := opts.Now
 	if now.IsZero() {
@@ -159,7 +160,7 @@ func Start(ctx context.Context, d *db.DB, ix *automations.Indexer, workspaceDir 
 		return nil, fmt.Errorf("starting the watch of track %d: %w", t.ID, db.ErrNotCustomTrack)
 	}
 	if cur.AutomationID != 0 {
-		return d.GetAutomation(cur.AutomationID)
+		return confirmBound(d, cur.AutomationID, opts.Confirm, now)
 	}
 	data, err := Render(cur.Text, startInstruction(*cur))
 	if err != nil {
@@ -174,12 +175,13 @@ func Start(ctx context.Context, d *db.DB, ix *automations.Indexer, workspaceDir 
 	if err != nil {
 		return nil, fmt.Errorf("starting the watch of track %d: %w", t.ID, err)
 	}
-	if err := d.BindWatchTrack(cur.ID, a.ID); err != nil {
+	// The recipe takes the track's enabled before the bind, which copies the
+	// recipe's onto the track: the copy is then already right, and a failure
+	// before the bind leaves nothing a retry would not redo.
+	if err := d.SetAutomationEnabled(a.ID, cur.Enabled, now); err != nil {
 		return nil, fmt.Errorf("starting the watch of track %d: %w", t.ID, err)
 	}
-	// Binding copied the new recipe's enabled onto the track; the track's own
-	// state wins (the trigger mirrors it back onto the track).
-	if err := d.SetAutomationEnabled(a.ID, cur.Enabled, now); err != nil {
+	if err := d.BindWatchTrack(cur.ID, a.ID); err != nil {
 		return nil, fmt.Errorf("starting the watch of track %d: %w", t.ID, err)
 	}
 	if opts.Confirm {
@@ -188,6 +190,19 @@ func Start(ctx context.Context, d *db.DB, ix *automations.Indexer, workspaceDir 
 		}
 	}
 	return d.GetAutomation(a.ID)
+}
+
+// confirmBound returns bound automation id, confirming its current approval
+// hash first when confirm is set and that hash is not the confirmed one.
+func confirmBound(d *db.DB, id int64, confirm bool, now time.Time) (*db.Automation, error) {
+	a, err := d.GetAutomation(id)
+	if err != nil || !confirm || a.ConfirmedHash == a.ApprovalHash {
+		return a, err
+	}
+	if err := d.ConfirmAutomation(id, a.ApprovalHash, now); err != nil {
+		return nil, fmt.Errorf("confirming watch recipe %d: %w", id, err)
+	}
+	return d.GetAutomation(id)
 }
 
 // startInstruction is t's watch instruction, else its context, else its text.

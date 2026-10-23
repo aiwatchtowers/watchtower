@@ -145,7 +145,7 @@ func (db *DB) FoldSourceRefsIntoTrack(id int, sourceRefs, channelIDs, relatedDig
 // rule GetCustomTracksDueForScan filters by.
 func (db *DB) CustomTrackScanBudgetSpent(id int, day string, maxAttempts int) (bool, error) {
 	var spent bool
-	err := db.QueryRow(`SELECT scan_attempts >= ? AND substr(scan_attempted_at, 1, 10) = ?
+	err := db.QueryRow(`SELECT COALESCE(scan_attempts >= ? AND substr(scan_attempted_at, 1, 10) = ?, 0)
 		FROM tracks WHERE id = ?`, maxAttempts, day, id).Scan(&spent)
 	if err != nil {
 		return false, fmt.Errorf("reading the scan budget of track %d: %w", id, err)

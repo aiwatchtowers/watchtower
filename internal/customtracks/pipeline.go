@@ -201,7 +201,7 @@ func (p *Pipeline) runOne(ctx context.Context, t db.Track, opts runOpts) ([]db.T
 	} else {
 		act, err = p.db.GetScanActivity(since, until, defaultActivityLimit)
 		if err == nil {
-			extra, err = extraAfter(opts.extra, since)
+			extra, err = p.extraInWindow(t.ID, opts.extra, since, until)
 		}
 	}
 	if err != nil {
@@ -216,6 +216,8 @@ func (p *Pipeline) runOne(ctx context.Context, t db.Track, opts runOpts) ([]db.T
 	// When a source hit the per-source cap the window was only partially read:
 	// advance the watermark to the last row actually loaded, not to now, so the
 	// overflow is picked up by the next run instead of being skipped forever.
+	// Recipe material in (CappedAt, until] is fed again by that next run; the
+	// summary dedup below keeps it from re-creating the same events.
 	next := until
 	if !opts.isBackfill() && act.CappedAt != "" {
 		next = act.CappedAt

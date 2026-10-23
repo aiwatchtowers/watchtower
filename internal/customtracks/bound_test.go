@@ -61,14 +61,13 @@ func TestScanBound_ExtraOlderThanWatermarkDropped(t *testing.T) {
 		t.Fatalf("watermark = %q; want advanced", got)
 	}
 
-	// Fresh material alone is enough for a scan; the stale item stays out.
-	mark, err := time.Parse(time.RFC3339, watermark(t, d, id))
-	if err != nil {
-		t.Fatalf("parse watermark: %v", err)
+	// Fresh material alone is enough for a scan; the item at the watermark stays out.
+	if err := d.SetTrackLastRun(id, scanTS(base, 0)); err != nil {
+		t.Fatalf("reset watermark: %v", err)
 	}
 	items := []ExtraItem{
-		{SourceType: "jira", SourceID: "ACME-1", Text: "stale-item", At: mark},
-		{SourceType: "jira", SourceID: "ACME-2", Text: "fresh-item", At: mark.Add(time.Second)},
+		{SourceType: "jira", SourceID: "ACME-1", Text: "stale-item", At: base},
+		{SourceType: "jira", SourceID: "ACME-2", Text: "fresh-item", At: base.Add(time.Minute)},
 	}
 	if _, err := p.ScanBound(context.Background(), loadTrack(t, d, id), ScanOptions{Extra: items}); err != nil {
 		t.Fatalf("ScanBound: %v", err)
@@ -206,5 +205,41 @@ func TestDue_BudgetAndDismissed(t *testing.T) {
 	tr.Enabled, tr.DismissedAt = true, now.Format(time.RFC3339)
 	if p.Due(tr, now) {
 		t.Fatal("a dismissed track is due")
+	}
+}
+
+func TestScanBound_ExtraAfterWindowEndDropped(t *testing.T) {
+	d, id, _ := newScanFixture(t)
+	mock := &mockGenerator{out: `{"events":[]}`}
+	p := New(d, mock, "", nil)
+	future := []ExtraItem{{SourceType: "calendar", SourceID: "ev1", Text: "future-item", At: time.Now().UTC().Add(24 * time.Hour)}}
+
+	for i := range 2 {
+		if _, err := p.ScanBound(context.Background(), loadTrack(t, d, id), ScanOptions{Extra: future}); err != nil {
+			t.Fatalf("ScanBound %d: %v", i, err)
+		}
+	}
+	if mock.calls != 0 {
+		t.Fatalf("AI called %d time(s) for an item past the window end", mock.calls)
+	}
+}
+
+func TestScanBound_ExtraCappedNewestFirst(t *testing.T) {
+	d, id, base := newScanFixture(t)
+	mock := &mockGenerator{out: `{"events":[]}`}
+	p := New(d, mock, "", nil)
+	var items []ExtraItem
+	for i := 1; i <= defaultActivityLimit+5; i++ {
+		items = append(items, ExtraItem{SourceType: "jira", SourceID: fmt.Sprintf("ACME-%d", i),
+			Text: fmt.Sprintf("item-%02d", i), At: base.Add(time.Duration(i) * time.Second)})
+	}
+	if _, err := p.ScanBound(context.Background(), loadTrack(t, d, id), ScanOptions{Extra: items}); err != nil {
+		t.Fatalf("ScanBound: %v", err)
+	}
+	if n := strings.Count(mock.lastUser, "[jira ACME-"); n != defaultActivityLimit {
+		t.Fatalf("fed %d items; want the cap %d", n, defaultActivityLimit)
+	}
+	if strings.Contains(mock.lastUser, "item-05\n") || !strings.Contains(mock.lastUser, fmt.Sprintf("item-%02d", defaultActivityLimit+5)) {
+		t.Fatalf("the cap did not keep the newest items:\n%s", mock.lastUser)
 	}
 }
