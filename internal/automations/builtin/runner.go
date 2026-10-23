@@ -43,14 +43,24 @@ var ErrBuiltinStopped = errors.New("the built-in was stopped after a run that wo
 // (a database or executor failure, logged).
 const StatusError = "error"
 
-// SlotOutcome is what one built-in did at its slot: the run it executed
-// (RunID, and Status = the run's status, "queued" when its claim lost) or why
-// it did not run (Skipped).
+// SlotOutcome is what one built-in (BuiltinID) or watch recipe
+// (AutomationID) did at its slot: the run it executed (RunID, and Status =
+// the run's status, "queued" when its claim lost) or why it did not run
+// (Skipped).
 type SlotOutcome struct {
-	BuiltinID string
-	RunID     int64
-	Status    string
-	Skipped   string
+	BuiltinID    string
+	AutomationID int64 // a watch recipe's; 0 for a built-in
+	RunID        int64
+	Status       string
+	Skipped      string
+}
+
+// label names the outcome's automation in a log line.
+func (o SlotOutcome) label() string {
+	if o.BuiltinID != "" {
+		return "built-in " + o.BuiltinID
+	}
+	return fmt.Sprintf("watch recipe %d", o.AutomationID)
 }
 
 // Runner executes the built-ins at their slots and their manual runs.
@@ -158,18 +168,18 @@ func (r *Runner) execute(ctx context.Context, o SlotOutcome, runID int64, sync b
 	case err == nil:
 		o.Status = run.Status
 	case errors.Is(err, automations.ErrRunNotClaimed) && sync:
-		r.logger.Printf("built-in %s: another run is active; sync run %d cancelled", o.BuiltinID, runID)
+		r.logger.Printf("%s: another run is active; sync run %d cancelled", o.label(), runID)
 		if _, cerr := r.db.CancelAutomationRun(runID, r.clock.Now()); cerr != nil {
-			r.logger.Printf("built-in %s: cancelling sync run %d: %v", o.BuiltinID, runID, cerr)
+			r.logger.Printf("%s: cancelling sync run %d: %v", o.label(), runID, cerr)
 		}
 		o.Status = db.RunCancelled
 	case errors.Is(err, automations.ErrRunNotClaimed):
-		r.logger.Printf("built-in %s: another run is active; run %d waits for the next slot", o.BuiltinID, runID)
+		r.logger.Printf("%s: another run is active; run %d waits for the next slot", o.label(), runID)
 		o.Status = db.RunQueued
 	case errors.Is(err, automations.ErrNotRunnable):
 		o.Status = db.RunCancelled
 	default:
-		r.logger.Printf("built-in %s: executing run %d: %v", o.BuiltinID, runID, err)
+		r.logger.Printf("%s: executing run %d: %v", o.label(), runID, err)
 		o.Status = StatusError
 	}
 	return o
@@ -265,4 +275,90 @@ func (r *Runner) RunNow(ctx context.Context, id string, in automations.BuiltinIn
 		}
 	}
 	return run, err
+}
+
+// RunSyncInline runs built-in id now, inline, as one sync run with input in
+// (EnqueueSync, then ExecuteRun): the CLI's and the passes' runs that belong
+// to the built-in's own cycle work, not to a Run Now. It writes nothing when
+// EnqueueSync refuses.
+func (r *Runner) RunSyncInline(ctx context.Context, id string, in automations.BuiltinInput) (*db.AutomationRun, error) {
+	run, err := r.EnqueueSync(id, in)
+	if err != nil {
+		return nil, err
+	}
+	return r.ExecuteRun(ctx, run.ID)
+}
+
+// EnqueueSync queues a sync run of built-in id with event_json {"builtin":
+// in} and returns it, unexecuted (the reaction pass hands the run its
+// command before ExecuteRun). A built-in whose features are off or whose
+// text is not confirmed is refused with ErrNotRunnable, and one the daemon
+// stopped (AUTO-08) with ErrBuiltinStopped; neither writes a row. A sync run
+// still queued with this input is returned as it is; one queued with other
+// input (left by a process that died before executing it) is cancelled and
+// a new run queued, so no run ever executes with input it was not given.
+func (r *Runner) EnqueueSync(id string, in automations.BuiltinInput) (*db.AutomationRun, error) {
+	e, ok := Lookup(id)
+	if !ok {
+		return nil, fmt.Errorf("unknown built-in automation %q", id)
+	}
+	if !e.Enabled(r.cfg) {
+		return nil, fmt.Errorf("built-in %s is off: %w", id, automations.ErrNotRunnable)
+	}
+	r.endStaleRuns()
+	a, err := r.db.GetBuiltinAutomation(id)
+	if err != nil {
+		return nil, err
+	}
+	if a.DisabledReason != "" {
+		return nil, fmt.Errorf("built-in %s: %w", id, ErrBuiltinStopped)
+	}
+	if !a.Confirmed() {
+		return nil, fmt.Errorf("built-in %s is not confirmed: %w", id, automations.ErrNotRunnable)
+	}
+	payload, err := json.Marshal(map[string]automations.BuiltinInput{"builtin": in})
+	if err != nil {
+		return nil, fmt.Errorf("built-in %s: encoding the run's input: %w", id, err)
+	}
+	for attempt := 0; ; attempt++ {
+		runID, coalesced, err := r.db.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerSync,
+			EventJSON: string(payload), Now: r.clock.Now()})
+		if err != nil {
+			return nil, err
+		}
+		run, err := r.db.GetAutomationRun(runID)
+		if err != nil {
+			return nil, err
+		}
+		if !coalesced || run.EventJSON == string(payload) {
+			return run, nil
+		}
+		if attempt > 0 {
+			return nil, fmt.Errorf("built-in %s: sync run %d with other input is queued: %w", id, runID, automations.ErrRunNotClaimed)
+		}
+		if _, err := r.db.CancelQueuedAutomationRun(runID, r.clock.Now()); err != nil {
+			return nil, fmt.Errorf("built-in %s: cancelling stale sync run %d: %w", id, runID, err)
+		}
+		r.logger.Printf("built-in %s: stale sync run %d with other input cancelled", id, runID)
+	}
+}
+
+// ExecuteRun executes the queued slot run runID inline
+// (ExecuteBuiltinInline) and returns the finished row. A sync run whose
+// claim lost is cancelled while still queued, so it never runs later.
+func (r *Runner) ExecuteRun(ctx context.Context, runID int64) (*db.AutomationRun, error) {
+	run, err := r.exec.ExecuteBuiltinInline(ctx, runID)
+	if !errors.Is(err, automations.ErrRunNotClaimed) {
+		return run, err
+	}
+	queued, gerr := r.db.GetAutomationRun(runID)
+	if gerr != nil {
+		return nil, errors.Join(err, gerr)
+	}
+	if queued.Trigger == db.TriggerSync {
+		if _, cerr := r.db.CancelQueuedAutomationRun(runID, r.clock.Now()); cerr != nil {
+			return nil, errors.Join(err, fmt.Errorf("cancelling sync run %d: %w", runID, cerr))
+		}
+	}
+	return nil, err
 }

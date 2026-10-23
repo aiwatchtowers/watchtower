@@ -208,3 +208,22 @@ func (db *DB) ListUnboundCustomTracks() ([]Track, error) {
 		FROM tracks WHERE origin = 'custom' AND automation_id IS NULL AND dismissed_at = ''
 		ORDER BY created_at, id`)
 }
+
+// UnbindRemovedWatchTracks unbinds and pauses every track bound to a watch
+// recipe the indexer marked removed (removed_at set: its file is gone), as
+// the delete trigger does for a deleted row: automation_id = NULL, enabled =
+// 0, the track and its events kept. It returns how many tracks it unbound. A
+// recipe whose file comes back is indexed again and gets a new track.
+func (db *DB) UnbindRemovedWatchTracks() (int, error) {
+	res, err := db.Exec(`UPDATE tracks SET automation_id = NULL, enabled = 0,
+		updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE automation_id IN (SELECT id FROM automations WHERE removed_at IS NOT NULL)`)
+	if err != nil {
+		return 0, fmt.Errorf("unbinding the tracks of removed watch recipes: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("unbinding the tracks of removed watch recipes: %w", err)
+	}
+	return int(n), nil
+}

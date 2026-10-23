@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"watchtower/internal/db"
@@ -53,6 +54,41 @@ type Pipeline struct {
 	gen    digest.Generator
 	lang   string // workspace response language (digest.language); "" falls back to the prompts default
 	logger *log.Logger
+
+	mu    sync.Mutex // guards usage
+	usage pipelineUsage
+}
+
+// pipelineUsage is what the pipeline's model calls spent since New.
+type pipelineUsage struct {
+	in, out, calls int
+	cost           float64
+}
+
+// AccumulatedUsage returns the input tokens, output tokens, cost and number
+// of model calls of every call this pipeline made since New (scan,
+// shortlist and compose alike). It only grows: a caller that wants one
+// scan's usage reads it before and after (the track.scan primitive does).
+// Safe for concurrent use.
+func (p *Pipeline) AccumulatedUsage() (int, int, float64, int) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.usage.in, p.usage.out, p.usage.cost, p.usage.calls
+}
+
+// generate is gen.Generate with its usage added to the pipeline's; a call
+// that failed still counts, with whatever usage it reported.
+func (p *Pipeline) generate(ctx context.Context, sys, user string) (string, error) {
+	raw, u, _, err := p.gen.Generate(ctx, sys, user, "")
+	p.mu.Lock()
+	p.usage.calls++
+	if u != nil {
+		p.usage.in += u.InputTokens
+		p.usage.out += u.OutputTokens
+		p.usage.cost += u.CostUSD
+	}
+	p.mu.Unlock()
+	return raw, err
 }
 
 // New constructs a Pipeline. lang is the workspace response language
@@ -228,7 +264,7 @@ func (p *Pipeline) runOne(ctx context.Context, t db.Track, opts runOpts) ([]db.T
 	user := buildScanPrompt(t, act, extra)
 	ctx2 := digest.WithSource(ctx, "customtrack.run")
 	sys := p.promptFor(prompts.TrackRun) + "\n\n" + prompts.Directive(p.lang)
-	raw, _, _, err := p.gen.Generate(ctx2, sys, user, "")
+	raw, err := p.generate(ctx2, sys, user)
 	if err != nil {
 		return nil, fmt.Errorf("custom-track AI call: %w", err)
 	}
@@ -328,7 +364,7 @@ func (p *Pipeline) gatherBackfillActivity(ctx context.Context, t db.Track, since
 		end := min(start+shortlistChunk, len(titles))
 		user := buildShortlistPrompt(t, titles[start:end], maxCandidates)
 		ctx2 := digest.WithSource(ctx, "customtrack.shortlist")
-		raw, _, _, err := p.gen.Generate(ctx2, sys, user, "")
+		raw, err := p.generate(ctx2, sys, user)
 		if err != nil {
 			return db.ScanActivity{}, fmt.Errorf("custom-track shortlist AI call: %w", err)
 		}
@@ -391,7 +427,7 @@ func (p *Pipeline) Compose(ctx context.Context, linkedTargetID int, input string
 	user := buildComposePrompt(target, input)
 	ctx2 := digest.WithSource(ctx, "customtrack.compose")
 	sys := p.promptFor(prompts.TrackCompose) + "\n\n" + prompts.Directive(p.lang)
-	raw, _, _, err := p.gen.Generate(ctx2, sys, user, "")
+	raw, err := p.generate(ctx2, sys, user)
 	if err != nil {
 		return ComposeResult{}, fmt.Errorf("custom-track compose AI call: %w", err)
 	}
