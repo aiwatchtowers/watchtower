@@ -26,12 +26,15 @@ struct ReactionCheatSheetView: View {
     }
 
     static let reactionCommandsFeatureID = "reaction-commands"
+    /// Opens the Reactions built-in's card, where the dictionary is edited.
+    static let editLabel = "Edit reaction commands in Automations…"
 
     let rows: [ReactionCheatSheet.Row]
     var feature: FeatureState = .unknown
     var isEnabling = false
     var error: String?
     var onEnable: () -> Void = {}
+    /// **Edit reaction commands in Automations…**: the Reactions built-in.
     var onOpenSettings: (() -> Void)?
 
     var body: some View {
@@ -67,7 +70,7 @@ struct ReactionCheatSheetView: View {
             }
 
             if let onOpenSettings {
-                Button("Edit reaction commands in Settings…", action: onOpenSettings)
+                Button(Self.editLabel, action: onOpenSettings)
                     .buttonStyle(.link)
             }
         }

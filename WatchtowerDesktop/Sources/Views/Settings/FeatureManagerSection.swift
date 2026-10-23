@@ -20,11 +20,17 @@ struct FeatureManagerSection: View {
     @AppStorage(DictationCenter.keepEnginesWarmKey) private var keepEnginesWarm = true
 
     /// Features whose switch moved to a built-in automation's card
-    /// (Automations → Built in, spec §5.4): not listed here.
-    static let movedToBuiltins: Set<String> = ["briefing", "day-plan"]
+    /// (Automations → Built in, spec §5.4): Morning brief (C2), Track my
+    /// threads, Idea finder and Reactions (C3). Not listed here.
+    static let movedToBuiltins: Set<String> = ["briefing", "day-plan", "tracks", "ideas", "reaction-commands"]
+
+    /// The rows listed under `parent` ("" = top level): every feature but the moved ones.
+    static func listed(_ features: [FeatureInfo], parent: String = "") -> [FeatureInfo] {
+        features.filter { $0.parent == parent && !movedToBuiltins.contains($0.id) }
+    }
 
     private var topLevelFeatures: [FeatureInfo] {
-        service.features.filter { $0.parent.isEmpty && !Self.movedToBuiltins.contains($0.id) }
+        Self.listed(service.features)
     }
 
     var body: some View {
@@ -112,7 +118,7 @@ struct FeatureManagerSection: View {
     }
 
     private func children(of parentID: String) -> [FeatureInfo] {
-        service.features.filter { $0.parent == parentID && !Self.movedToBuiltins.contains($0.id) }
+        Self.listed(service.features, parent: parentID)
     }
 
     private func featureRow(_ feature: FeatureInfo, indent: CGFloat) -> some View {

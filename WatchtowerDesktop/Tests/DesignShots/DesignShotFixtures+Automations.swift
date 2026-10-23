@@ -140,7 +140,7 @@ enum AutomationShotFixtures {
         }
     }
 
-    /// The five templates in `automations templates --json` order.
+    /// The six templates in `automations templates --json` order.
     private static let templatesJSON = #"""
     [{"name":"new-mail-summary","title":"New mail summary","description":"Sums up new mail.","scope":"personal",
       "trigger_text":"On new Gmail","permissions":["reads your mail"],"outputs":["inbox"]},
@@ -151,7 +151,10 @@ enum AutomationShotFixtures {
      {"name":"team-performance-report","title":"Team performance report","description":"Weekly.",
       "scope":"personal","trigger_text":"Fridays 17:00","permissions":["reads Jira and Slack"],"outputs":["report"]},
      {"name":"release-buttons","title":"Release and deploy buttons","description":"Buttons.","scope":"workbench",
-      "trigger_text":"Button: Release","permissions":["runs a shell command"],"outputs":["report"]}]
+      "trigger_text":"Button: Release","permissions":["runs a shell command"],"outputs":["report"]},
+     {"name":"on-reaction","title":"When I react with an emoji","description":"Runs on a reaction.",
+      "scope":"personal","trigger_text":"When you react with :eyes:","permissions":["reads Slack"],
+      "outputs":["inbox"]}]
     """#
 
     private static let acme = AutomationScopeChoice.workbench(id: 3, name: "acme", folder: "/work/acme")

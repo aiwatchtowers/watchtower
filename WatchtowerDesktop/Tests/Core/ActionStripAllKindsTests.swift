@@ -302,6 +302,61 @@ final class ActionStripAllKindsTests: XCTestCase {
         XCTAssertNil(vm.lastError)
     }
 
+    /// Approving a `create_track` proposal (C3 ruling): once it applied,
+    /// its track is watched (`tracks start`); a refused start shows on the
+    /// card and leaves the track unbound, so it keeps **Start Watching**.
+    func testApprovedCreateTrackStartsWatching() async throws {
+        for refused in [false, true] {
+            let (actionID, trackID) = try await pool.write { db -> (Int64, Int) in
+                let track = Int(try TestDatabase.insertTrack(db, text: "Watch the refund"))
+                try db.execute(sql: "UPDATE tracks SET origin = 'custom' WHERE id = ?", arguments: [track])
+                let action = try TestDatabase.insertAgentAction(
+                    db, tool: "create_track", argsJSON: #"{"text":"Watch the refund"}"#, contextType: "reaction")
+                return (action, track)
+            }
+            let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"track_id":\#(trackID),"automation_id":9}"#.utf8))
+            let pool = try XCTUnwrap(pool)
+            let refusal = "confirm this watch in Automations first"
+            runner.onRun = { [weak runner] args in
+                if args.count > 1, args[1] == "approve" {
+                    try? await pool.write { db in
+                        try db.execute(sql: "UPDATE agent_actions SET status = 'applied', result_json = ? WHERE id = ?",
+                                       arguments: [#"{"track_id":\#(trackID)}"#, actionID])
+                    }
+                } else if refused, args.first == "tracks" {
+                    runner?.shouldThrow = CLIRunnerError.nonZeroExit(code: 1, stderr: refusal + "\n")
+                }
+            }
+            let vm = makeVM(runner)
+
+            await vm.approve(actionID, shownArgs: #"{"text":"Watch the refund"}"#)
+
+            let calls = runner.invocations
+            XCTAssertEqual(calls.count, 2, "refused: \(refused)")
+            XCTAssertEqual(Array(calls[0].prefix(3)), ["actions", "approve", String(actionID)])
+            XCTAssertEqual(calls[1], ["tracks", "start", String(trackID), "--json"])
+            let error = vm.actionFeed.rowErrors[actionID]
+            if refused {
+                XCTAssertEqual(error?.verb, AgentActionFeed.startVerb)
+                XCTAssertEqual(error?.message, AgentActionFeed.notWatchedPrefix + refusal)
+            } else {
+                XCTAssertNil(error)
+            }
+        }
+
+        // A proposal of another tool, or one that did not apply, starts nothing.
+        let other = try await pool.write { db in try TestDatabase.insertAgentAction(db, tool: "create_target") }
+        let quiet = FakeCLIRunner(stdout: Data(#"{"ok":true}"#.utf8))
+        await makeVM(quiet).approve(other, shownArgs: #"{"text":"Call Vasya","reason":"r"}"#)
+        XCTAssertEqual(quiet.invocations.count, 1)
+        let pendingTrack = try await pool.write { db in
+            try TestDatabase.insertAgentAction(db, tool: "create_track", argsJSON: #"{"text":"x"}"#)
+        }
+        let stays = FakeCLIRunner(stdout: Data(#"{"ok":true}"#.utf8))
+        await makeVM(stays).approve(pendingTrack, shownArgs: #"{"text":"x"}"#)
+        XCTAssertEqual(stays.invocations.count, 1, "still pending: nothing applied, nothing to watch")
+    }
+
     // MARK: - Messages
 
     func testMessageButtonsRunTheInboxCLI() async throws {

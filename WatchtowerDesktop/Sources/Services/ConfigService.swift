@@ -277,32 +277,17 @@ final class ConfigService {
         var errorDescription: String? { "This setting can't be saved here: \(key)" }
     }
 
-    /// The Morning brief card's When **Save** (`show`'s
-    /// `builtin.parameters[].key`, twin: Go `builtin.Param` keys): the only
-    /// writer of `briefing.hour`, `day_plan.working_hours_start/end`,
-    /// `day_plan.max_timeblocks` and `day_plan.min_backlog/max_backlog`.
+    /// A built-in card's When **Save** (`show`'s `builtin.parameters[].key`,
+    /// twin: Go `builtin.Param` keys): the only writer of `briefing.hour`,
+    /// `day_plan.working_hours_start/end`, `day_plan.max_timeblocks`,
+    /// `day_plan.min_backlog/max_backlog` (Morning brief) and
+    /// `ideas.mine_interval_hours` (Idea finder).
     /// Re-reads the file and writes just these keys, so nothing else this
     /// instance holds is written. Every value is checked before anything is.
     func saveBuiltinParameters(_ values: [String: String]) throws {
         var yaml = currentYAMLOnDisk() ?? rawYAML
         for (key, value) in values.sorted(by: { $0.key < $1.key }) {
-            let section: String, field: String, stored: Any
-            switch key {
-            case "briefing.hour":
-                guard let hour = Int(value), (0...23).contains(hour) else { throw BuiltinParameterError(key: key) }
-                (section, field, stored) = ("briefing", "hour", hour)
-            case "day_plan.working_hours_start", "day_plan.working_hours_end":
-                guard BuiltinAutomationCardModel.isClock(value) else { throw BuiltinParameterError(key: key) }
-                (section, field, stored) = ("day_plan", String(key.dropFirst("day_plan.".count)), value)
-            case "day_plan.max_timeblocks", BuiltinAutomationCardModel.minBacklogKey,
-                 BuiltinAutomationCardModel.maxBacklogKey:
-                guard BuiltinAutomationCardModel.isCount(value), let count = Int(value) else {
-                    throw BuiltinParameterError(key: key)
-                }
-                (section, field, stored) = ("day_plan", String(key.dropFirst("day_plan.".count)), count)
-            default:
-                throw BuiltinParameterError(key: key)
-            }
+            let (section, field, stored) = try Self.builtinParameter(key: key, value: value)
             var dict = (yaml[section] as? [String: Any]) ?? [:]
             dict[field] = stored
             yaml[section] = dict
@@ -322,6 +307,32 @@ final class ConfigService {
         if let count = dayPlan["max_timeblocks"] as? Int { maxTimeblocks = count }
         if let count = dayPlan["min_backlog"] as? Int { minBacklog = count }
         if let count = dayPlan["max_backlog"] as? Int { maxBacklog = count }
+        if let hours = (yaml["ideas"] as? [String: Any])?["mine_interval_hours"] as? Int { ideasMineIntervalHours = hours }
+    }
+
+    /// Where a built-in parameter lives in the file and its checked value.
+    private static func builtinParameter(key: String, value: String) throws -> (String, String, Any) {
+        switch key {
+        case "briefing.hour":
+            guard let hour = Int(value), (0...23).contains(hour) else { throw BuiltinParameterError(key: key) }
+            return ("briefing", "hour", hour)
+        case "day_plan.working_hours_start", "day_plan.working_hours_end":
+            guard BuiltinAutomationCardModel.isClock(value) else { throw BuiltinParameterError(key: key) }
+            return ("day_plan", String(key.dropFirst("day_plan.".count)), value)
+        case "day_plan.max_timeblocks", BuiltinAutomationCardModel.minBacklogKey,
+             BuiltinAutomationCardModel.maxBacklogKey:
+            guard BuiltinAutomationCardModel.isCount(value), let count = Int(value) else {
+                throw BuiltinParameterError(key: key)
+            }
+            return ("day_plan", String(key.dropFirst("day_plan.".count)), count)
+        case BuiltinAutomationCardModel.ideasIntervalKey:
+            guard BuiltinAutomationCardModel.isInterval(value), let hours = Int(value) else {
+                throw BuiltinParameterError(key: key)
+            }
+            return ("ideas", "mine_interval_hours", hours)
+        default:
+            throw BuiltinParameterError(key: key)
+        }
     }
 
     /// Writes the whole file, owner-only (it holds tokens).

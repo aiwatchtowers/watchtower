@@ -422,4 +422,192 @@ final class InboxTrackPaneTests: XCTestCase {
             XCTAssertEqual(restored, 1, "custom: \(custom)")
         }
     }
+
+    // MARK: - Through the watch recipe (C3)
+
+    private static func watchJSON(templateShaped: Bool = true) -> Data {
+        Data(#"""
+            {"watch":{"track_id":1,"instruction":"watch the refund owner","template_shaped":\#(templateShaped)},
+             "run_id":3,"coalesced":false,"daemon_running":true,"at_next_sync":true,"track_id":1,"automation_id":42}
+            """#.utf8)
+    }
+
+    private func bind(_ track: Track, to automationID: Int64?) throws -> Track {
+        try manager.dbPool.write { db in
+            try db.execute(sql: "UPDATE tracks SET automation_id = ? WHERE id = ?", arguments: [automationID, track.id])
+        }
+        return try XCTUnwrap(manager.dbPool.read { db in try TrackQueries.fetchByID(db, id: track.id) })
+    }
+
+    /// C3's seam (`AppState.customTrackControls`) over a fake CLI.
+    private func recipeControls(_ runner: FakeCLIRunner) -> RecipeCustomTrackControls {
+        RecipeCustomTrackControls(
+            cli: AutomationsCLI(runner: runner),
+            direct: DirectCustomTrackControls(dbPool: manager.dbPool, scanService: TrackScanService(runner: runner)))
+    }
+
+    private func watch(_ track: Track, runner: FakeCLIRunner) -> WatchTrackControls {
+        WatchTrackControls(track: track, cli: AutomationsCLI(runner: runner), controls: recipeControls(runner),
+                           reader: manager.dbPool)
+    }
+
+    private func trackRow(_ id: Int) throws -> Row {
+        try XCTUnwrap(manager.dbPool.read { db in
+            try Row.fetchOne(db, sql: "SELECT enabled, instruction, dismissed_at, automation_id FROM tracks WHERE id = ?",
+                             arguments: [id])
+        })
+    }
+
+    /// A bound track's Collecting flips its recipe (`automations disable`)
+    /// and its scan is queued for the next sync; nothing writes `tracks`.
+    func testBoundTrackControlsUseRecipe() async throws {
+        let bound = try bind(try track(custom: true), to: 42)
+        let runner = FakeCLIRunner(stdout: Self.watchJSON())
+        let model = watch(bound, runner: runner)
+        await model.load()
+        let state = Box(TrackCardState(track: bound))
+        state.value.instruction = model.instructionDraft
+        func section() -> WatchTrackSection { WatchTrackSection(watch: model, state: state.binding) { _ in } }
+
+        XCTAssertEqual(TrackWatchMode.of(isBound: model.isBound, moveDone: false), .watched)
+        XCTAssertNoThrow(try section().inspect().find(text: "Collecting"))
+        XCTAssertNoThrow(try section().inspect().find(text: "watch the refund owner"))
+        XCTAssertNoThrow(try section().inspect().find(button: "Edit"))
+        try section().inspect().find(ViewType.Toggle.self).tap()
+        await waitUntil { !model.collecting }
+        XCTAssertNoThrow(try section().inspect().find(text: "Paused"))
+
+        let vm = timeline(bound, controls: recipeControls(runner))
+        await vm.scanSinceLast()
+        XCTAssertEqual(vm.lastScanNote, WatchTrackControls.nextSyncNote)
+        await vm.scanHistory(since: nil, label: "all history")
+        XCTAssertEqual(vm.lastScanNote, WatchTrackControls.nextSyncNote)
+
+        XCTAssertEqual(runner.invocations, [
+            ["automations", "show", "42", "--json"],
+            ["automations", "disable", "42"],
+            ["automations", "run", "42", "--json"],
+            ["automations", "run", "42", "--since", "1970-01-01T00:00:00Z", "--json"]
+        ])
+        let row = try trackRow(bound.id)
+        XCTAssertEqual(row["enabled"] as Int?, 1, "the SQL trigger mirrors enabled, never Swift")
+        XCTAssertEqual(row["instruction"] as String?, "watch the refund decision")
+    }
+
+    /// A watch changed in the chat: the instruction is read-only, with the
+    /// line and **Edit in Chat** on its recipe.
+    func testEditedWatchShowsEditInChat() async throws {
+        let bound = try bind(try track(custom: true), to: 42)
+        let model = watch(bound, runner: FakeCLIRunner(stdout: Self.watchJSON(templateShaped: false)))
+        await model.load()
+        let state = Box(TrackCardState(track: bound))
+        state.value.instruction = model.instructionDraft
+        var edited: [Int64] = []
+        let sut = WatchTrackSection(watch: model, state: state.binding) { edited.append($0) }
+
+        XCTAssertNoThrow(try sut.inspect().find(text: "This watch was changed in the chat — change it there."))
+        XCTAssertNoThrow(try sut.inspect().find(text: "watch the refund owner"))
+        XCTAssertThrowsError(try sut.inspect().find(button: "Edit"))
+        XCTAssertThrowsError(try sut.inspect().find(ViewType.TextField.self))
+        try sut.inspect().find(button: "Edit in Chat").tap()
+        XCTAssertEqual(edited, [42])
+
+        // A refusal's own words show on the card, the draft kept.
+        let refusal = "This watch was changed in the chat — change it there."
+        let refusing = watch(bound, runner: FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: refusal)))
+        refusing.instructionDraft = "watch the refund window"
+        state.value.editingInstruction = true
+        await WatchTrackSection(watch: refusing, state: state.binding) { _ in }.save()
+        XCTAssertEqual(refusing.error, refusal)
+        XCTAssertTrue(state.value.editingInstruction)
+        XCTAssertEqual(refusing.instructionDraft, "watch the refund window")
+    }
+
+    /// An unbound custom track: C1's controls before the custom-tracks move
+    /// (or after a failed one), "Not watched yet." with **Start Watching**
+    /// once it is done.
+    func testUnboundTrackShowsStartWatching() async throws {
+        let unbound = try track(custom: true)
+        func moveDone() throws -> Bool {
+            try manager.dbPool.read { try BuiltinUpgradeNotice.isMoveDone($0, id: BuiltinUpgradeNotice.customTracksID) }
+        }
+        XCTAssertFalse(try moveDone(), "no row: not moved yet")
+        try await manager.dbPool.write { db in
+            try db.execute(sql: """
+                INSERT INTO builtin_migrations (builtin_id, status, error, updated_at)
+                VALUES ('custom-tracks', 'failed', 'disk full', '2026-10-22T08:00:00Z')
+                """)
+        }
+        XCTAssertFalse(try moveDone(), "a failed move keeps the legacy path")
+        XCTAssertEqual(TrackWatchMode.of(isBound: false, moveDone: try moveDone()), .legacy)
+        try await manager.dbPool.write { db in
+            try db.execute(sql: "UPDATE builtin_migrations SET status = 'done', error = '' WHERE builtin_id = 'custom-tracks'")
+        }
+        XCTAssertTrue(try moveDone())
+        XCTAssertEqual(TrackWatchMode.of(isBound: false, moveDone: true), .notWatched)
+        XCTAssertEqual(TrackWatchMode.of(isBound: true, moveDone: false), .watched)
+
+        // Before the move the card keeps C1's controls exactly (the legacy scan runs).
+        let legacy = CustomTrackControlsSection(track: unbound, controls: RecordingCustomTrackControls(),
+                                                state: .constant(TrackCardState(track: unbound))) {}
+        XCTAssertNoThrow(try legacy.inspect().find(text: "Collecting"))
+
+        // After it: Start Watching binds the track through `tracks start`.
+        let runner = FakeCLIRunner(stdout: Self.watchJSON())
+        let pool = manager.dbPool
+        let trackID = unbound.id
+        runner.onRun = { args in
+            guard args.prefix(2) == ["tracks", "start"] else { return }
+            try? await pool.write { db in
+                try db.execute(sql: "UPDATE tracks SET automation_id = 42 WHERE id = ?", arguments: [trackID])
+            }
+        }
+        let model = watch(unbound, runner: runner)
+        var started = 0
+        let row = NotWatchedRow(watch: model) { started += 1 }
+        XCTAssertNoThrow(try row.inspect().find(text: "Not watched yet."))
+        XCTAssertNoThrow(try row.inspect().find(button: "Start Watching"))
+        let activity = CustomTrackTimelineView(viewModel: timeline(unbound), scanRowOpen: .constant(false),
+                                               showsEarlier: .constant(false), canScan: false)
+        XCTAssertThrowsError(try activity.inspect().find(button: "Scan"), "nothing scans an unwatched track")
+
+        await row.start()
+
+        XCTAssertEqual(started, 1)
+        XCTAssertTrue(model.isBound)
+        XCTAssertEqual(runner.invocations.first, ["tracks", "start", String(trackID), "--json"])
+        XCTAssertEqual(TrackWatchMode.of(isBound: model.isBound, moveDone: true), .watched)
+
+        // A refused start says why and the track keeps Start Watching.
+        let refusal = "Track my threads needs Slack Digests on"
+        let other = try track(custom: true)
+        let refused = watch(other, runner: FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: refusal)))
+        var none = 0
+        let refusedRow = NotWatchedRow(watch: refused) { none += 1 }
+        await refusedRow.start()
+        XCTAssertEqual(none, 0)
+        XCTAssertFalse(refused.isBound)
+        XCTAssertNoThrow(try refusedRow.inspect().find(text: refusal))
+    }
+
+    /// Stop watching (⋯) of a bound track through the Inbox: the recipe off
+    /// (`automations disable`) and the track dismissed; `tracks.enabled` is
+    /// the SQL trigger's, never written from Swift.
+    func testStopWatchingBoundDisablesRecipe() async throws {
+        let bound = try bind(try track(custom: true), to: 42)
+        let runner = FakeCLIRunner()
+        let suite = "InboxTrackPaneTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let strip = ActionStripViewModel(dbPool: manager.dbPool, cliRunner: FakeCLIRunner(),
+                                         customTrackControls: recipeControls(runner), defaults: defaults)
+
+        await strip.stopWatching(bound)
+
+        XCTAssertNil(strip.lastError)
+        XCTAssertEqual(runner.invocations, [["automations", "disable", "42"]])
+        let row = try trackRow(bound.id)
+        XCTAssertNotEqual(row["dismissed_at"] as String?, "")
+        XCTAssertEqual(row["enabled"] as Int?, 1)
+    }
 }

@@ -139,6 +139,11 @@ package final class BuiltinAutomationCardModel {
     nonisolated package static let minBacklogKey = "day_plan.min_backlog"
     nonisolated package static let maxBacklogKey = "day_plan.max_backlog"
 
+    /// Idea finder's interval (twin: Go `builtin` Idea finder param).
+    nonisolated package static let ideasIntervalKey = "ideas.mine_interval_hours"
+    /// An interval stepper's range, in hours.
+    nonisolated package static let intervalRange = 1...24
+
     /// A count field's text: a whole number, 0 or more.
     nonisolated package static func isCount(_ text: String) -> Bool {
         Int(text).map { $0 >= 0 } ?? false

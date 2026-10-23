@@ -45,8 +45,8 @@ struct AutomationsView: View {
     var emptyStateContext: EmptyStateContext = .neutral
     var editor: AutomationEditorCenter?
     let hooks: AutomationEditorChatHooks
-    /// The Feature Manager's disabled ids.
-    var disabledFeatures: Set<String> = []
+    /// The Reactions built-in's emoji table, edited on its card.
+    var reactionDictionary: ReactionDictionaryViewModel?
     /// The feature manager is applying a change: a built-in's Turn On/Off waits.
     var isApplyingFeatures = false
 
@@ -54,6 +54,9 @@ struct AutomationsView: View {
 
     /// **Watch for something**: the editor chat starts on a watch recipe.
     static let watchPrefill = "Watch for "
+    /// **New reaction automation**'s template (Go `templates/on-reaction.md`).
+    static let reactionTemplate = "on-reaction"
+    static let reactionTemplateMissing = "The reaction template is not available."
 
     private var workbenches: [(id: Int64, name: String)] {
         hooks.scopes.compactMap {
@@ -267,7 +270,9 @@ struct AutomationsView: View {
             isApplyingFeatures: isApplyingFeatures,
             actions: actions.builtin,
             onEdit: { vm.showEditor(.existing(automation.id)) },
-            onChanged: { vm.refresh(drafts: false) }
+            onChanged: { vm.refresh(drafts: false) },
+            onNewReactionAutomation: { Task { await Self.openReactionTemplate(vm: vm, hooks: hooks) } },
+            reactionDictionary: reactionDictionary
         )
         .onChange(of: item, initial: true) { _, row in card.observe(row) }
         .id(automation.id)
@@ -300,17 +305,39 @@ struct AutomationsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// **New reaction automation**: the `on-reaction` template's panel in
+    /// Personal (the gallery read first when it is not yet).
+    static func openReactionTemplate(vm: AutomationsViewModel, hooks: AutomationEditorChatHooks) async {
+        if !vm.templates.contains(where: { $0.name == reactionTemplate }) { await vm.loadTemplates() }
+        guard hooks.startTemplate(reactionTemplate, .personal) != nil else {
+            vm.lastError = vm.templatesError ?? reactionTemplateMissing
+            return
+        }
+        vm.showTemplate(name: reactionTemplate, scope: .personal)
+    }
+
     /// **Continue** in the New panel: the editor chat on a fresh draft (the
-    /// composer prefill carried), or the template's panel — started afresh
-    /// when its last install in that scope finished.
+    /// composer prefill carried; **Watch for something** prefills "Watch
+    /// for "), or the template's panel — started afresh when its last
+    /// install in that scope finished.
     private func continueNew(_ flow: AutomationNewFlow, scope: AutomationScopeChoice, start: AutomationStart) {
+        Self.continueNew(flow, scope: scope, start: start, vm: vm, hooks: hooks)
+    }
+
+    static func continueNew(
+        _ flow: AutomationNewFlow,
+        scope: AutomationScopeChoice,
+        start: AutomationStart,
+        vm: AutomationsViewModel,
+        hooks: AutomationEditorChatHooks
+    ) {
         switch start {
         case .words:
             vm.showEditor(.newDraft(contextID: hooks.draftContextID(scope), scope: scope, startText: nil),
                           composerPrefill: flow.composerPrefill)
         case .watch:
             vm.showEditor(.newDraft(contextID: hooks.draftContextID(scope), scope: scope, startText: nil),
-                          composerPrefill: Self.watchPrefill)
+                          composerPrefill: watchPrefill)
         case let .template(name):
             guard hooks.startTemplate(name, scope) != nil else { return }
             vm.showTemplate(name: name, scope: scope)

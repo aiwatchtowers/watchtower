@@ -118,6 +118,7 @@ final class CustomTrackTimelineViewModel {
             // refreshEvents() below does the explicit refetch.
             let known = Set(events.map(\.id))
             try await controls.scan(track, from: nil)
+            if queuedForNextSync() { return }
             refreshLastRunAt()
             refreshEvents()
             let found = events.filter { !known.contains($0.id) }.count
@@ -143,7 +144,8 @@ final class CustomTrackTimelineViewModel {
         defer { isRefreshing = false; scanStatus = nil; scanCenter.finish(track.id, note: lastScanNote ?? errorMessage) }
         let known = Set(events.map(\.id))
         do {
-            try await controls.scan(track, from: since ?? Date(timeIntervalSince1970: 0))
+            try await controls.scan(track, from: since ?? WatchTrackControls.allHistory)
+            if queuedForNextSync() { return }
             refreshLastRunAt()
             refreshEvents()
             let found = events.filter { !known.contains($0.id) }.count
@@ -153,6 +155,15 @@ final class CustomTrackTimelineViewModel {
         } catch {
             errorMessage = "History scan failed: \(error.localizedDescription)"
         }
+    }
+
+    /// A watched track's scan is only queued (`automations run --since`): it
+    /// runs at the next sync, so there is nothing to refetch yet and the note
+    /// says so. Sets the note; true for a bound track.
+    private func queuedForNextSync() -> Bool {
+        guard track.automationID != nil else { return false }
+        lastScanNote = WatchTrackControls.nextSyncNote
+        return true
     }
 
     /// Human "Last scanned" line for the header: relative age of the watermark.
