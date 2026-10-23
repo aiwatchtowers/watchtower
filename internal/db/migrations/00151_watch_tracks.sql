@@ -11,6 +11,7 @@
 --    its track, so every reader of tracks.enabled sees Collecting/Paused.
 -- 3. trg_automations_delete_watch_track unbinds and pauses the track of a
 --    deleted recipe; the track and its history stay.
+-- A later rebuild of automations or tracks must recreate both triggers.
 ALTER TABLE tracks ADD COLUMN automation_id INTEGER;
 CREATE UNIQUE INDEX idx_tracks_automation_id ON tracks(automation_id) WHERE automation_id IS NOT NULL;
 

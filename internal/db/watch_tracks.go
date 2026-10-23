@@ -143,8 +143,12 @@ func (db *DB) SetWatchInstruction(trackID int, instruction string) error {
 	if err != nil {
 		return fmt.Errorf("setting the instruction of track %d: %w", trackID, err)
 	}
-	if n, err := res.RowsAffected(); err != nil || n > 0 {
-		return err
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("setting the instruction of track %d: %w", trackID, err)
+	}
+	if n > 0 {
+		return nil
 	}
 	var exists bool
 	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM tracks WHERE id = ? AND origin = 'custom')`, trackID).Scan(&exists); err != nil {
