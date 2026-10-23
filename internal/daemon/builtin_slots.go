@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"time"
 
 	"watchtower/internal/automations"
@@ -259,11 +260,12 @@ func (d *Daemon) dispatchReaction(ctx context.Context, rd reactioncmd.Dispatch) 
 	defer func() {
 		r := recover()
 		stored, composed := d.reactionSlot.End(run.ID)
+		if r != nil {
+			d.logger.Printf("reaction-commands: ERROR Reactions run %d panicked for :%s: (%s, composed=%t): %v\n%s",
+				run.ID, rd.Emoji, rd.Tool, composed, r, debug.Stack())
+		}
 		switch {
 		case composed:
-			if r != nil {
-				d.logger.Printf("reaction-commands: Reactions run %d panicked after composing :%s: (%s): %v", run.ID, rd.Emoji, rd.Tool, r)
-			}
 			out = stored
 		case r != nil:
 			out = noComposeOutcome(fmt.Sprintf("panic: %v", r))

@@ -208,16 +208,20 @@ func TestDaemon_PhaseReactionCommands_NoSlackAccountsWritesNoRun(t *testing.T) {
 
 // reactionsGen answers every compose call with out (or err), counting calls.
 type reactionsGen struct {
-	mu    gosync.Mutex
-	out   string
-	err   error
-	calls int
+	mu     gosync.Mutex
+	out    string
+	err    error
+	calls  int
+	onCall func()
 }
 
 func (g *reactionsGen) Generate(ctx context.Context, _, _, _ string) (string, *digest.Usage, string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.calls++
+	if g.onCall != nil {
+		g.onCall()
+	}
 	if err := ctx.Err(); err != nil {
 		return "", nil, "", err // a real provider call fails on a cancelled context
 	}
@@ -225,6 +229,13 @@ func (g *reactionsGen) Generate(ctx context.Context, _, _, _ string) (string, *d
 		return "", nil, "", g.err
 	}
 	return g.out, &digest.Usage{}, "", nil
+}
+
+// onCall, when set, runs inside each compose call (before the reply).
+func (g *reactionsGen) hook(fn func()) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.onCall = fn
 }
 
 func (g *reactionsGen) set(out string, err error) {
@@ -609,4 +620,61 @@ func TestReactionsBuiltin_CancelledPassReleases(t *testing.T) {
 	f.poll()
 	assert.Equal(t, []string{"dispatched"}, f.ledger(t))
 	assert.Equal(t, 1, countRows(t, f.db, `SELECT COUNT(*) FROM agent_actions`))
+}
+
+// stopReactions marks the Reactions row stopped by the daemon (AUTO-08).
+func (f *reactionsFixture) stopReactions(t *testing.T) {
+	t.Helper()
+	_, err := f.db.Exec(`UPDATE automations SET disabled_reason = 'runaway script' WHERE builtin_id = ?`, reactionsID)
+	require.NoError(t, err)
+}
+
+func TestReactionsBuiltin_StoppedCopyClaimsNothing(t *testing.T) {
+	f := newReactionsFixture(t)
+	bus := newRecordingEvents(automations.SlackReactionAdded)
+	f.d.SetAutomationEvents(bus)
+	f.d.cycleEvents = bus
+	f.poll() // seeds the event ledger
+	f.stopReactions(t)
+
+	ts := fmt.Sprintf("%d.000100", time.Now().Unix()+5)
+	var items []slack.ReactedItem
+	items = append(items, ownerReaction(ts, "white_check_mark"))
+	for i := range 30 {
+		items = append(items, ownerReaction(fmt.Sprintf("10%02d.1", i), "white_check_mark"))
+	}
+	f.lister.set(items...)
+	f.poll()
+	f.poll()
+
+	assert.Empty(t, f.ledger(t), "a stopped built-in claims nothing")
+	assert.Empty(t, f.runs(t))
+	assert.Zero(t, f.gen.calls, "no budget spent")
+	assert.Equal(t, 1, published(bus), "events are still published")
+}
+
+// The row is stopped while the pass runs (inside the first compose): the
+// first reaction dispatches, the next ones' EnqueueSync refuses, so they are
+// released with no run and no action, and dispatch once it can run again.
+func TestReactionsBuiltin_StoppedMidPassReleases(t *testing.T) {
+	f := newReactionsFixture(t)
+	f.gen.hook(func() {
+		f.gen.onCall = nil // runs under g.mu: clear directly
+		f.stopReactions(t)
+	})
+	f.lister.set(ownerReaction("111.1", "white_check_mark"), ownerReaction("222.2", "white_check_mark"),
+		ownerReaction("333.3", "white_check_mark"))
+	f.poll()
+
+	assert.Equal(t, []string{"dispatched"}, f.ledger(t), "the rest were released")
+	assert.Len(t, f.runs(t), 1, "no run for a released row")
+	assert.Equal(t, 1, countRows(t, f.db, `SELECT COUNT(*) FROM agent_actions`))
+	assert.Equal(t, 1, f.gen.calls)
+	f.assertSlotFree(t)
+
+	_, err := f.db.Exec(`UPDATE automations SET disabled_reason = '' WHERE builtin_id = ?`, reactionsID)
+	require.NoError(t, err)
+	f.poll()
+	assert.Equal(t, []string{"dispatched", "dispatched", "dispatched"}, f.ledger(t))
+	assert.Equal(t, 3, countRows(t, f.db, `SELECT COUNT(*) FROM agent_actions`), "each reaction once")
 }
