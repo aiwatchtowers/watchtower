@@ -34,9 +34,9 @@ struct AutomationEditorChatHooks {
 }
 
 /// The Automations tab (spec A1): a list of sections — Personal, then one
-/// per workbench, drafts first —
-/// with the detail panel on the right. Every flow (a card, New, a template,
-/// the editor) happens in that panel; none is a sheet. State lives in the
+/// per workbench, drafts first — with the detail panel on the right. Every
+/// flow (a card, New, a template, the editor) happens in that panel; none is
+/// a sheet. State lives in the
 /// `AppState`-owned `AutomationsViewModel`, `AutomationEditorCenter` and
 /// template panels; only the search text is local.
 struct AutomationsView: View {

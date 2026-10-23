@@ -113,9 +113,8 @@ package struct Track: FetchableRecord, Identifiable, Equatable {
     package let lastRunAt: String
     package let linkedTargetID: Int?
     /// A custom track's watch recipe (`tracks.automation_id`, twin: Go
-    /// `db.Track.AutomationID`); nil = unbound. Set inside Core only when
-    /// Start Watching binds the track before its row is read again.
-    package internal(set) var automationID: Int64?
+    /// `db.Track.AutomationID`); nil = unbound.
+    package let automationID: Int64?
 
     package init(row: Row) {
         id = row["id"]

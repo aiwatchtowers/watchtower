@@ -132,22 +132,68 @@ final class CustomTrackControllingTests: XCTestCase {
             ["automations", "delete", "42"]
         ])
 
-        // Unbound: Stop watching is C1's direct write; the rest are refused.
+        // Unbound (a legacy custom track before its move): C1's direct controls throughout.
         let unbound = try customTrack()
         XCTAssertNil(unbound.automationID)
+        let scans = FakeCLIRunner(stdout: Data("[]".utf8))
+        let legacy = RecipeCustomTrackControls(
+            cli: AutomationsCLI(runner: runner),
+            direct: DirectCustomTrackControls(dbPool: pool, scanService: TrackScanService(runner: scans)))
         let before = runner.invocations.count
-        try await controls.stopWatching(unbound)
+        try await legacy.saveInstruction(unbound, text: "watch the refund window")
+        XCTAssertEqual(try row(unbound.id)["instruction"] as String?, "watch the refund window")
+        try await legacy.setCollecting(unbound, on: false)
+        XCTAssertEqual(try row(unbound.id)["enabled"] as Int?, 0)
+        try await legacy.setCollecting(unbound, on: true)
+        try await legacy.scan(unbound, from: nil)
+        try await legacy.scan(unbound, from: from)
+        XCTAssertEqual(scans.invocations, [
+            ["tracks", "scan", "\(unbound.id)"],
+            ["tracks", "scan", "\(unbound.id)", "--since", "2026-10-01T00:00:00Z"]
+        ])
+        try await legacy.stopWatching(unbound)
         let stoppedUnbound = try row(unbound.id)
         XCTAssertEqual(stoppedUnbound["enabled"] as Int?, 0)
         XCTAssertFalse(((stoppedUnbound["dismissed_at"] as String?) ?? "").isEmpty)
-        do {
-            try await controls.scan(unbound, from: nil)
-            XCTFail("an unbound track is not scanned through its recipe")
-        } catch {
-            XCTAssertEqual(error as? RecipeCustomTrackControls.NotWatched,
-                           RecipeCustomTrackControls.NotWatched(trackID: unbound.id))
+        XCTAssertEqual(runner.invocations.count, before, "no recipe verb for an unbound track")
+    }
+
+    /// A recipe deleted elsewhere since the track was read (Go
+    /// `db.ErrAutomationNotFound`) counts as deleted: the track still goes.
+    /// Any other refusal stops before the track is touched.
+    func testRecipeDeleteOfAGoneRecipeStillDeletesTheTrack() async throws {
+        let track = try customTrack()
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE tracks SET automation_id = 42 WHERE id = ?", arguments: [track.id])
         }
-        XCTAssertEqual(runner.invocations.count, before, "no CLI call for an unbound track")
+        let fetched = try await pool.read { db in try TrackQueries.fetchByID(db, id: track.id) }
+        let bound = try XCTUnwrap(fetched)
+        let pool = try XCTUnwrap(pool)
+        let count = {
+            try await pool.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks WHERE id = ?", arguments: [track.id])
+            }
+        }
+        let busy = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "automation 42 is running\n"))
+        let refused = RecipeCustomTrackControls(
+            cli: AutomationsCLI(runner: busy),
+            direct: DirectCustomTrackControls(dbPool: pool, scanService: TrackScanService(runner: busy)))
+        do {
+            try await refused.delete(bound)
+            XCTFail("another refusal is thrown")
+        } catch {}
+        let kept = try await count()
+        XCTAssertEqual(kept, 1)
+
+        let gone = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(
+            code: 1, stderr: "automation 42: automation not found\n"))
+        let controls = RecipeCustomTrackControls(
+            cli: AutomationsCLI(runner: gone),
+            direct: DirectCustomTrackControls(dbPool: pool, scanService: TrackScanService(runner: gone)))
+        try await controls.delete(bound)
+        XCTAssertEqual(gone.invocations, [["automations", "delete", "42"]])
+        let left = try await count()
+        XCTAssertEqual(left, 0)
     }
 
     /// A row deleted elsewhere is a `RowNotFoundError`, which the card and

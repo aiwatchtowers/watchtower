@@ -97,8 +97,11 @@ final class TargetWatchesViewModel {
 
     func isScanning(_ trackID: Int) -> Bool { scanCenter.isRunning(trackID) }
 
-    /// Scans one watch over the given range (nil since = all history), tracked
-    /// in the shared center so the indicator survives navigation.
+    /// Scans one watch over the given range (nil = since the last check,
+    /// `WatchTrackControls.allHistory` = all history), tracked in the shared
+    /// center so the indicator survives navigation. A bound watch gets the
+    /// epoch as its Scan from for all history; an unbound one keeps the
+    /// legacy flagless `tracks scan`.
     func scanWatch(_ watch: Track, since: Date?, label: String) async {
         scanCenter.begin(watch.id)
         var note: String?
@@ -109,7 +112,8 @@ final class TargetWatchesViewModel {
                 note = "\(watch.text): \(WatchTrackControls.nextSyncNote.lowercased())."
                 return
             }
-            let iso = since.map { Self.isoFormatter.string(from: $0) }
+            let legacySince = since == WatchTrackControls.allHistory ? nil : since
+            let iso = legacySince.map { Self.isoFormatter.string(from: $0) }
             let created = try await scanService.run(trackID: watch.id, since: iso)
             note = created.isEmpty
                 ? "\(watch.text): no new activity (\(label))."

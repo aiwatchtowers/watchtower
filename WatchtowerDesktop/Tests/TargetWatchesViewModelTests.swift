@@ -118,10 +118,43 @@ final class TargetWatchesViewModelTests: XCTestCase {
             actionRunner: FakeCLIRunner(), scanCenter: center, trackControls: seam)
 
         await vm.scanWatch(watch, since: nil, label: "since last check")
+        await vm.scanWatch(watch, since: WatchTrackControls.allHistory, label: "all history")
 
-        XCTAssertEqual(seam.calls, [.scan(trackID: watchID, from: nil)])
+        XCTAssertEqual(seam.calls, [.scan(trackID: watchID, from: nil),
+                                    .scan(trackID: watchID, from: WatchTrackControls.allHistory)])
         XCTAssertEqual(scanRunner.invocations, [])
         XCTAssertEqual(center.note[watchID], "watch A: runs at the next sync.")
+    }
+
+    /// An unbound watch keeps the legacy flagless `tracks scan` for All history.
+    func testScanWatchAllHistoryOfAnUnboundWatchKeepsTheLegacyScan() async throws {
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let targetID = try await manager.dbPool.write { db -> Int in
+            try TargetQueries.create(db, text: "goal", periodStart: "2026-06-01", periodEnd: "2026-06-30")
+        }
+        let watchID = try await manager.dbPool.write { db -> Int in
+            try db.execute(sql: """
+                INSERT INTO tracks (assignee_user_id, text, context, category, ownership, priority,
+                    origin, instruction, enabled, linked_target_id)
+                VALUES ('U1', 'watch A', '', 'task', 'watching', 'medium', 'custom', 'watch', 1, ?)
+                """, arguments: [targetID])
+            return Int(db.lastInsertedRowID)
+        }
+        let fetchedTarget = try await manager.dbPool.read { db in try TargetQueries.fetchByID(db, id: targetID) }
+        let target = try XCTUnwrap(fetchedTarget)
+        let fetchedWatch = try await manager.dbPool.read { db in try TrackQueries.fetchByID(db, id: watchID) }
+        let watch = try XCTUnwrap(fetchedWatch)
+        let scanRunner = FakeCLIRunner(stdout: Data("[]".utf8))
+        let seam = RecordingCustomTrackControls()
+        let vm = TargetWatchesViewModel(
+            target: target, dbManager: manager, scanService: TrackScanService(runner: scanRunner),
+            actionRunner: FakeCLIRunner(), scanCenter: TrackScanCenter(), trackControls: seam)
+
+        await vm.scanWatch(watch, since: WatchTrackControls.allHistory, label: "all history")
+
+        XCTAssertEqual(scanRunner.invocations, [["tracks", "scan", "\(watchID)"]])
+        XCTAssertEqual(seam.calls, [])
     }
 
     func testApplyActionPressesThroughTheRegistryAndShowsApplied() async throws {

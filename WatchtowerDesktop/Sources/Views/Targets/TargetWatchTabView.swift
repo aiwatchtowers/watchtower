@@ -82,7 +82,9 @@ struct TargetWatchTabView: View {
                 Button("Last 7 days") { scan(watch, days: 7) }
                 Button("Last 30 days") { scan(watch, days: 30) }
                 Button("Last 90 days") { scan(watch, days: 90) }
-                Button("All history") { Task { await viewModel.scanWatch(watch, since: nil, label: "all history") } }
+                Button("All history") {
+                    Task { await viewModel.scanWatch(watch, since: WatchTrackControls.allHistory, label: "all history") }
+                }
             } label: {
                 Image(systemName: "arrow.clockwise")
             }

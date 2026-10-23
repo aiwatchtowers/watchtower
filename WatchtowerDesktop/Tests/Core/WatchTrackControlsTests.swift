@@ -44,7 +44,7 @@ final class WatchTrackControlsTests: XCTestCase {
         let cli = AutomationsCLI(runner: runner)
         let direct = DirectCustomTrackControls(dbPool: pool, scanService: TrackScanService(runner: runner))
         return WatchTrackControls(track: track, cli: cli,
-                                  controls: RecipeCustomTrackControls(cli: cli, direct: direct))
+                                  controls: RecipeCustomTrackControls(cli: cli, direct: direct), reader: pool)
     }
 
     func testWatchControlsCallTheCLI() async throws {
@@ -124,6 +124,33 @@ final class WatchTrackControlsTests: XCTestCase {
         XCTAssertFalse(watch.isWorking)
     }
 
+    func testEmptyDraftSaysWhy() async throws {
+        let runner = FakeCLIRunner(stdout: Self.stdout)
+        let watch = controls(try track(automationID: 42), runner: runner)
+        watch.instructionDraft = "  \n "
+
+        await watch.saveInstruction()
+
+        XCTAssertEqual(watch.error, "Say what to watch for first.")
+        XCTAssertNil(watch.note)
+        XCTAssertEqual(runner.invocations, [])
+    }
+
+    /// All history is the epoch (the legacy `RunForTrackSince` meaning);
+    /// Since last check is nil, the recipe's own watermark.
+    func testAllHistoryScansFromTheEpoch() async throws {
+        let runner = FakeCLIRunner(stdout: Self.stdout)
+        let watch = controls(try track(automationID: 42), runner: runner)
+        watch.scanFrom = WatchTrackControls.allHistory
+        await watch.scan()
+        watch.scanFrom = nil
+        await watch.scan()
+        XCTAssertEqual(runner.invocations, [
+            ["automations", "run", "42", "--since", "1970-01-01T00:00:00Z", "--json"],
+            ["automations", "run", "42", "--json"]
+        ])
+    }
+
     func testScanShowsNextSyncNote() async throws {
         let track = try track(automationID: 42)
         let runner = FakeCLIRunner(stdout: Self.stdout)
@@ -138,6 +165,14 @@ final class WatchTrackControlsTests: XCTestCase {
     func testUnboundTrackOffersStart() async throws {
         let track = try track(automationID: nil)
         let runner = FakeCLIRunner(stdout: Self.stdout)
+        // `tracks start` binds the row in the CLI's own process.
+        let pool = try XCTUnwrap(pool)
+        runner.onRun = { args in
+            guard args.prefix(2) == ["tracks", "start"] else { return }
+            try? await pool.write { db in
+                try db.execute(sql: "UPDATE tracks SET automation_id = 42 WHERE id = ?", arguments: [track.id])
+            }
+        }
         let watch = controls(track, runner: runner)
         XCTAssertFalse(watch.isBound)
 
@@ -151,10 +186,55 @@ final class WatchTrackControlsTests: XCTestCase {
         await watch.startWatching()
 
         XCTAssertTrue(watch.isBound)
-        XCTAssertEqual(watch.track.automationID, 42)
+        XCTAssertEqual(watch.track.automationID, 42, "the track row is read again")
         XCTAssertEqual(runner.invocations, [["tracks", "start", "\(track.id)", "--json"],
                                             ["automations", "show", "42", "--json"]])
         XCTAssertEqual(watch.instructionDraft, "watch the refund owner")
         XCTAssertNil(watch.error)
+    }
+
+    /// AGENT-07: the Desktop's own `tracks start`, `tracks instruction` and
+    /// `automations enable` launches carry an `OwnerConfirmGrants` entry for
+    /// their exact argv and pid while they run (the CLI's `confirmWithOwner`
+    /// sends `os.Args[1:]`), so the owner's press opens no confirm window.
+    func testOwnerLaunchesOfTheWatchVerbsAreGranted() async throws {
+        let granted = try await grantedArgs { try await $0.trackStart(7) }
+        XCTAssertEqual(granted, ["tracks", "start", "7", "--json"])
+        let instruction = try await grantedArgs { try await $0.trackInstruction(7, text: "watch refunds") }
+        XCTAssertEqual(Array(instruction.prefix(4)), ["tracks", "instruction", "7", "--text-file"])
+        let enable = try await grantedArgs { try await $0.setEnabled(42, true) }
+        XCTAssertEqual(enable, ["automations", "enable", "42"])
+    }
+
+    /// Runs `op` against a stub binary that records its argv and pid, and
+    /// returns the argv once a live grant for it was consumed while it ran.
+    private func grantedArgs(_ op: @escaping @Sendable (AutomationsCLI) async throws -> Void) async throws -> [String] {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("watch-grant-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let stub = dir.appendingPathComponent("watchtower")
+        try """
+            #!/bin/sh
+            d="\(dir.path)"
+            printf '%s\\n' "$@" > "$d/args.tmp" && mv "$d/args.tmp" "$d/args"
+            echo $$ > "$d/pid.tmp" && mv "$d/pid.tmp" "$d/pid"
+            sleep 1
+            echo '{"track_id":7,"automation_id":42}'
+            """.write(to: stub, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: stub.path)
+        let cli = AutomationsCLI(runner: ProcessCLIRunner(binaryPath: stub.path))
+        let run = Task { try await op(cli) }
+        var pid: Int32?
+        for _ in 0..<150 where pid == nil {
+            try await Task.sleep(for: .milliseconds(20))
+            pid = (try? String(contentsOf: dir.appendingPathComponent("pid"), encoding: .utf8))
+                .flatMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        }
+        let child = try XCTUnwrap(pid)
+        let args = try String(contentsOf: dir.appendingPathComponent("args"), encoding: .utf8)
+            .split(separator: "\n").map(String.init)
+        XCTAssertTrue(OwnerConfirmGrants.shared.consume(args, pid: child), "\(args)")
+        try await run.value
+        return args
     }
 }
