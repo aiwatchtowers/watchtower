@@ -41,7 +41,8 @@ const (
 // sinceOverride to a deeper watermark and switches to the two-stage
 // shortlist→extract path with dedup.
 type runOpts struct {
-	sinceOverride string // non-empty => scan from here instead of the watermark
+	sinceOverride string      // non-empty => scan from here instead of the watermark
+	extra         []ExtraItem // recipe-gathered material (ScanBound); forward runs only
 }
 
 func (o runOpts) isBackfill() bool { return o.sinceOverride != "" }
@@ -94,7 +95,7 @@ func (p *Pipeline) Run(ctx context.Context) (int, error) {
 				return total, ctx.Err()
 			}
 			failed++
-			p.recordScanFailure(due[i].ID, now, err)
+			p.RecordFailure(due[i].ID, now, err)
 			continue
 		}
 		total += len(events)
@@ -117,9 +118,9 @@ func (p *Pipeline) HasDueTracks() (bool, error) {
 	return len(due) > 0, nil
 }
 
-// recordScanFailure logs a failed scan and charges it to the track's daily
+// RecordFailure logs a failed scan and charges it to the track's daily
 // budget, noting once when that failure spends the budget.
-func (p *Pipeline) recordScanFailure(trackID int, now time.Time, scanErr error) {
+func (p *Pipeline) RecordFailure(trackID int, now time.Time, scanErr error) {
 	p.logger.Printf("customtracks: track %d: %v", trackID, scanErr)
 	attempts, err := p.db.RecordCustomTrackScanFailure(trackID, now)
 	if err != nil {
@@ -193,18 +194,22 @@ func (p *Pipeline) runOne(ctx context.Context, t db.Track, opts runOpts) ([]db.T
 	// Forward runs feed recent activity directly; a backfill window holds too much
 	// to feed whole, so it goes through the cheap shortlist → extract retrieval.
 	var act db.ScanActivity
+	var extra []ExtraItem
 	var err error
 	if opts.isBackfill() {
 		act, err = p.gatherBackfillActivity(ctx, t, since)
 	} else {
 		act, err = p.db.GetScanActivity(since, until, defaultActivityLimit)
+		if err == nil {
+			extra, err = extraAfter(opts.extra, since)
+		}
 	}
 	if err != nil {
 		return nil, err
 	}
 
 	// No new activity since the watermark: advance it and exit without an AI call.
-	if len(act.Digests) == 0 && len(act.Tracks) == 0 && len(act.Inbox) == 0 {
+	if len(act.Digests) == 0 && len(act.Tracks) == 0 && len(act.Inbox) == 0 && len(extra) == 0 {
 		return nil, p.db.SetTrackLastRun(t.ID, until)
 	}
 
@@ -218,7 +223,7 @@ func (p *Pipeline) runOne(ctx context.Context, t db.Track, opts runOpts) ([]db.T
 			t.ID, defaultActivityLimit, next)
 	}
 
-	user := buildScanPrompt(t, act)
+	user := buildScanPrompt(t, act, extra)
 	ctx2 := digest.WithSource(ctx, "customtrack.run")
 	sys := p.promptFor(prompts.TrackRun) + "\n\n" + prompts.Directive(p.lang)
 	raw, _, _, err := p.gen.Generate(ctx2, sys, user, "")
