@@ -53,7 +53,7 @@ Because the file belongs to the repository, it can arrive with a `git pull` or b
 | `new-mail-summary` | personal | after a mail sync brings new mail | summarises new mail, at most 600 messages per mailbox per run |
 | `jira-state-report` | personal | Mondays 09:00 | weekly Jira report to reports and the briefing, on your active projects |
 | `team-performance-report` | personal | Fridays 17:00 | report from Jira, people cards and Slack |
-| `on-reaction` | personal | you react with an emoji you pick | puts that Slack message in your Inbox |
+| `on-reaction` | personal | you react with an emoji you pick | puts that Slack message in your Inbox (text for recent ones only) |
 | `pr-review-rounds` | workbench | weekdays 10:00 and 16:00 | lists open pull requests with `gh` and opens a review session for each changed one, at most 10 per round; the rest wait for the next round |
 | `release-buttons` | workbench | by hand | three recipes (release, deploy to test, deploy to stage), each running one `make` target and asking before it acts |
 

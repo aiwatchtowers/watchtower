@@ -48,7 +48,7 @@
   {
     "name": "on-reaction",
     "title": "When I react with an emoji",
-    "description": "When you react to a Slack message with the emoji you choose, puts that message and its link in your Inbox.",
+    "description": "When you react to a Slack message with the emoji you choose, puts that message and its link in your Inbox (the text only for recent messages).",
     "scope": "personal",
     "trigger_text": "When you react with :<EMOJI>:",
     "files": ["on-reaction"],

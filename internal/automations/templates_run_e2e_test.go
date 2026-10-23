@@ -73,8 +73,8 @@ func TestTemplates_RunE2E(t *testing.T) {
 	t.Run("on-reaction", testRunOnReaction)
 }
 
-// on-reaction: a reaction event for a synced message puts one Inbox card with
-// that message; an event for a message that is not synced puts none.
+// on-reaction: a reaction event for a synced message puts a full Inbox card;
+// one for a message that is not synced puts a fallback card naming the channel.
 func testRunOnReaction(t *testing.T) {
 	f := newTplFixture(t, &automationstest.FakeGenerator{})
 	a := f.installTemplate(t, "on-reaction", map[string]string{"EMOJI": "eyes"})
@@ -90,17 +90,19 @@ func testRunOnReaction(t *testing.T) {
 	missing := event("c1", "1760000000.000000")
 	f.step(t, 1)
 	f.wantRun(t, missing, db.RunSucceeded, "")
-	if n := len(f.outputs(t)); n != 0 {
-		t.Fatalf("outputs for a message that is not synced = %d; want none", n)
+	outs := f.outputs(t)
+	if len(outs) != 1 || outs[0].Kind != "inbox" || outs[0].Title != "Reacted with :eyes:" || !strings.Contains(outs[0].Body, "1:C0REL") ||
+		!strings.Contains(outs[0].Body, "1760000000.000000") {
+		t.Fatalf("outputs for a message that is not synced = %+v; want one fallback card naming the channel", outs)
 	}
 
 	found := event("c2", "1760428800.000200")
 	f.step(t, 1)
 	f.wantRun(t, found, db.RunSucceeded, "")
-	outs := f.outputs(t)
-	if len(outs) != 1 || outs[0].Kind != "inbox" || !strings.Contains(outs[0].Body, "Payout retries are blocked on the fraud check") ||
-		!strings.Contains(outs[0].Title, ":eyes:") {
-		t.Fatalf("outputs = %+v; want one inbox card with the message", outs)
+	outs = f.outputs(t)
+	if len(outs) != 2 || outs[1].Kind != "inbox" || !strings.Contains(outs[1].Body, "Payout retries are blocked on the fraud check") ||
+		!strings.Contains(outs[1].Title, "Reacted with :eyes: in") {
+		t.Fatalf("outputs = %+v; want the fallback card, then one with the message", outs)
 	}
 }
 
