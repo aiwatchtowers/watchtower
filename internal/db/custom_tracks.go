@@ -139,3 +139,16 @@ func (db *DB) FoldSourceRefsIntoTrack(id int, sourceRefs, channelIDs, relatedDig
 	_ = sourceRefs // reserved: appending quote-level refs is out of scope for v1
 	return err
 }
+
+// CustomTrackScanBudgetSpent reports whether track id has spent its daily
+// scan budget: maxAttempts failed scans on UTC day (YYYY-MM-DD), the same
+// rule GetCustomTracksDueForScan filters by.
+func (db *DB) CustomTrackScanBudgetSpent(id int, day string, maxAttempts int) (bool, error) {
+	var spent bool
+	err := db.QueryRow(`SELECT COALESCE(scan_attempts >= ? AND substr(scan_attempted_at, 1, 10) = ?, 0)
+		FROM tracks WHERE id = ?`, maxAttempts, day, id).Scan(&spent)
+	if err != nil {
+		return false, fmt.Errorf("reading the scan budget of track %d: %w", id, err)
+	}
+	return spent, nil
+}
