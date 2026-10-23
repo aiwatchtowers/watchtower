@@ -16,9 +16,7 @@ package ideas
 
 import (
 	"context"
-	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"watchtower/internal/config"
@@ -131,17 +129,12 @@ func (p *Pipeline) getPrompt(id, override string) string {
 		}
 		return tmpl
 	}
-	if got, want := countVerbs(tmpl), countVerbs(prompts.Defaults[id]); got != want {
+	if got, want := prompts.CountVerbs(tmpl), prompts.CountVerbs(prompts.Defaults[id]); got != want {
 		p.logf("ideas: the edited %s prompt has %d %%s placeholders, the default has %d — using the default", id, got, want)
-		p.lastPromptNote = fmt.Sprintf("The prompt has %d placeholders where %d are required — the built-in prompt was used.", got, want)
+		p.lastPromptNote = prompts.PlaceholderNote(got, want)
 		return prompts.Defaults[id]
 	}
 	return tmpl
-}
-
-// countVerbs counts %s verbs, not counting an escaped %%s.
-func countVerbs(tmpl string) int {
-	return strings.Count(tmpl, "%s") - strings.Count(tmpl, "%%s")
 }
 
 // RunOptions tunes one ideas run.

@@ -101,7 +101,7 @@ func dayPlanOverride(marker string, verbs int) string {
 
 func TestDayPlanRun_PromptOverride(t *testing.T) {
 	p := newPromptPipeline("English")
-	verbs := countVerbs(prompts.Defaults[prompts.DayPlanGenerate])
+	verbs := prompts.CountVerbs(prompts.Defaults[prompts.DayPlanGenerate])
 	got, ver := p.buildPrompt(minimalInputs(), dayPlanOverride("OVERRIDE-B", verbs))
 	assert.Contains(t, got, "OVERRIDE-B")
 	assert.Equal(t, "default", ver)
@@ -110,7 +110,7 @@ func TestDayPlanRun_PromptOverride(t *testing.T) {
 
 func TestDayPlanRun_PromptPlaceholderMismatchUsesDefault(t *testing.T) {
 	p := newPromptPipeline("English")
-	verbs := countVerbs(prompts.Defaults[prompts.DayPlanGenerate])
+	verbs := prompts.CountVerbs(prompts.Defaults[prompts.DayPlanGenerate])
 	got, _ := p.buildPrompt(minimalInputs(), dayPlanOverride("OVERRIDE-B", verbs-1))
 	assert.NotContains(t, got, "OVERRIDE-B")
 	assert.Contains(t, got, "personal day-planner")
@@ -121,7 +121,7 @@ func TestDayPlanRun_OptionsPromptReachesGenerator(t *testing.T) {
 	d := gatherTestDB(t)
 	gen := &capturingGen{response: validResponse()}
 	p := newTestPipeline(d, gen)
-	verbs := countVerbs(prompts.Defaults[prompts.DayPlanGenerate])
+	verbs := prompts.CountVerbs(prompts.Defaults[prompts.DayPlanGenerate])
 	_, err := p.Run(context.Background(), RunOptions{UserID: "U1", Date: time.Now().Format("2006-01-02"),
 		Prompt: dayPlanOverride("OVERRIDE-B", verbs)})
 	assert.NoError(t, err)

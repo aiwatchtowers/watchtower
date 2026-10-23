@@ -1037,7 +1037,7 @@ func TestIdeasRunWith_PromptOverride(t *testing.T) {
 	seedOverrideTopic(t, d)
 	gen := &systemGen{}
 	p := New(d, backfillCfg(), gen, testLogger())
-	n := countVerbs(prompts.Defaults[prompts.IdeasConsolidate])
+	n := prompts.CountVerbs(prompts.Defaults[prompts.IdeasConsolidate])
 
 	_, err := p.RunWith(context.Background(), RunOptions{Prompt: ideasOverride("B-OVERRIDE", n)})
 	require.NoError(t, err)
@@ -1073,12 +1073,27 @@ func TestIdeasBackfillWith_UsesPromptEveryCycle(t *testing.T) {
 	}
 	gen := &systemGen{}
 	p := New(d, backfillCfg(), gen, testLogger())
-	n := countVerbs(prompts.Defaults[prompts.IdeasConsolidate])
+	n := prompts.CountVerbs(prompts.Defaults[prompts.IdeasConsolidate])
 
 	_, err := p.BackfillWith(context.Background(), from, to, nil, RunOptions{Prompt: ideasOverride("B-OVERRIDE", n)})
 	require.NoError(t, err)
 	require.NotEmpty(t, gen.systems)
 	for i, s := range gen.systems {
 		assert.Contains(t, s, "B-OVERRIDE", "call %d", i)
+	}
+}
+
+func TestIdeasRunWith_OtherDirectiveUsesDefault(t *testing.T) {
+	n := prompts.CountVerbs(prompts.Defaults[prompts.IdeasConsolidate])
+	for _, extra := range []string{"100% sure", "count %d"} {
+		d := newTestDB(t)
+		seedOverrideTopic(t, d)
+		gen := &systemGen{}
+		p := New(d, backfillCfg(), gen, testLogger())
+		_, err := p.RunWith(context.Background(), RunOptions{Prompt: ideasOverride("B-OVERRIDE "+extra, n)})
+		require.NoError(t, err)
+		require.Len(t, gen.systems, 1)
+		assert.NotContains(t, gen.systems[0], "B-OVERRIDE", extra)
+		assert.Contains(t, p.LastPromptNote(), "other than %s", extra)
 	}
 }

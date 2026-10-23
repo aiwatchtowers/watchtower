@@ -629,7 +629,7 @@ func overrideTemplate(marker string, verbs int) string {
 
 func TestRunForDateWith_PromptOverrideReplacesStoredTemplate(t *testing.T) {
 	database := overrideFixture(t)
-	verbs := countVerbs(prompts.Defaults[prompts.BriefingDaily])
+	verbs := prompts.CountVerbs(prompts.Defaults[prompts.BriefingDaily])
 	store := prompts.New(database, nil)
 	require.NoError(t, store.Seed())
 	require.NoError(t, store.Update(prompts.BriefingDaily, overrideTemplate("STORED-A", verbs), "test"))
@@ -655,7 +655,7 @@ func TestRunForDateWith_PromptOverrideReplacesStoredTemplate(t *testing.T) {
 
 func TestComposeBrief_PlaceholderMismatchUsesDefault(t *testing.T) {
 	database := overrideFixture(t)
-	verbs := countVerbs(prompts.Defaults[prompts.BriefingDaily])
+	verbs := prompts.CountVerbs(prompts.Defaults[prompts.BriefingDaily])
 	gen := &capturingGenerator{response: emptyBriefingJSON}
 	pipe := New(database, testConfig(), gen, log.New(io.Discard, "", 0))
 
@@ -670,7 +670,7 @@ func TestComposeBrief_PlaceholderMismatchUsesDefault(t *testing.T) {
 
 func TestRunForDateWith_ExistingBriefingStillIdempotent(t *testing.T) {
 	database := overrideFixture(t)
-	verbs := countVerbs(prompts.Defaults[prompts.BriefingDaily])
+	verbs := prompts.CountVerbs(prompts.Defaults[prompts.BriefingDaily])
 	gen := &capturingGenerator{response: emptyBriefingJSON}
 	pipe := New(database, testConfig(), gen, log.New(io.Discard, "", 0))
 	date := time.Now().Format("2006-01-02")

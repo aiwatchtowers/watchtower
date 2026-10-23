@@ -362,17 +362,11 @@ func customisedLegacyPrompt(store *prompts.Store, database *db.DB, id, role stri
 	if tmpl != row.Template {
 		return "", false, fmt.Errorf("prompt %s changed while it was read; try again", row.ID)
 	}
-	if countPromptVerbs(tmpl) != countPromptVerbs(prompts.Defaults[id]) {
+	if prompts.CountVerbs(tmpl) != prompts.CountVerbs(prompts.Defaults[id]) {
 		logger.Printf("prompt %s: its %%s placeholders differ from the default's; it is not carried", row.ID)
 		return "", false, nil
 	}
 	return tmpl, true, nil
-}
-
-// countPromptVerbs counts %s verbs, not counting an escaped %%s (the
-// pipelines' own check).
-func countPromptVerbs(tmpl string) int {
-	return strings.Count(tmpl, "%s") - strings.Count(tmpl, "%%s")
 }
 
 // runAutomationsUpgradeBuiltins is `automations upgrade-builtins`: the

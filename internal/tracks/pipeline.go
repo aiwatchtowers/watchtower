@@ -1717,21 +1717,16 @@ func (p *Pipeline) getPrompt(id string) (string, int) {
 	// A template whose %s count differs from the shipped default's (an old
 	// customised row, or a bad override) would shift every section and append
 	// %!(EXTRA ...): the default is used instead.
-	if got, want := countVerbs(tmpl), countVerbs(prompts.Defaults[id]); got != want {
+	if got, want := prompts.CountVerbs(tmpl), prompts.CountVerbs(prompts.Defaults[id]); got != want {
 		if p.promptOverride != "" {
 			p.logger.Printf("tracks: the edited prompt has %d %%s placeholders, the default has %d — using the default", got, want)
 		} else {
 			p.logger.Printf("tracks: stored %s template has %d placeholders, the default has %d — using the default (reset the prompt in Settings to pick up the new sections)", id, got, want)
 		}
-		p.lastPromptNote = fmt.Sprintf("The prompt has %d placeholders where %d are required — the built-in prompt was used.", got, want)
+		p.lastPromptNote = prompts.PlaceholderNote(got, want)
 		tmpl, version = prompts.DefaultForRole(id, role), 0
 	}
 	return prompts.WithRoleInstruction(role, tmpl), version
-}
-
-// countVerbs counts %s verbs, not counting an escaped %%s.
-func countVerbs(tmpl string) int {
-	return strings.Count(tmpl, "%s") - strings.Count(tmpl, "%%s")
 }
 
 // --- helpers: caches ---

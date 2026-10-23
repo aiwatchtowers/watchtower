@@ -1394,7 +1394,7 @@ func verbTemplate(lead string, n int) string {
 
 func TestTracksRunWith_PromptOverrideReachesGenerator(t *testing.T) {
 	database := seedOverrideRun(t, "ic")
-	n := countVerbs(prompts.Defaults[prompts.TracksExtractBatch])
+	n := prompts.CountVerbs(prompts.Defaults[prompts.TracksExtractBatch])
 	pipe, gen := overridePipeline(t, database, verbTemplate("A-STORED", n))
 
 	_, _, err := pipe.RunWith(context.Background(), RunOptions{Prompt: verbTemplate("B-OVERRIDE", n)})
@@ -1496,6 +1496,22 @@ func TestTracksBatchPrompt_DefaultHasNoFormatErrors(t *testing.T) {
 	sent := gen.systemSeen + gen.userSeen
 	require.NotEmpty(t, sent)
 	assert.NotContains(t, sent, "%!")
-	assert.Equal(t, 11, countVerbs(prompts.Defaults[prompts.TracksExtractBatch]))
+	assert.Equal(t, 11, prompts.CountVerbs(prompts.Defaults[prompts.TracksExtractBatch]))
 	assert.Contains(t, sent, "=== CHANNEL DIGESTS ===\n--- #backend")
+}
+
+// An override with the right %s count plus another fmt directive ("100%
+// sure" is the directive "% s") would take a section's argument: the
+// default is used and nothing prints %!.
+func TestTracksRunWith_OtherDirectiveUsesDefault(t *testing.T) {
+	n := prompts.CountVerbs(prompts.Defaults[prompts.TracksExtractBatch])
+	for _, extra := range []string{"100% sure", "count %d"} {
+		database := seedOverrideRun(t, "")
+		pipe, gen := overridePipeline(t, database, "")
+		_, _, err := pipe.RunWith(context.Background(), RunOptions{Prompt: verbTemplate("B-OVERRIDE "+extra, n)})
+		require.NoError(t, err)
+		assert.NotContains(t, gen.systemSeen+gen.userSeen, "B-OVERRIDE", extra)
+		assert.NotContains(t, gen.systemSeen+gen.userSeen, "%!", extra)
+		assert.Contains(t, pipe.LastPromptNote(), "other than %s", extra)
+	}
 }
