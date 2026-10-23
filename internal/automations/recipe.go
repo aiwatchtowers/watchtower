@@ -66,7 +66,11 @@ const (
 )
 
 // SyncSlots are the daemon sync slots a trigger.sync may name.
-var SyncSlots = []string{"morning_brief", "custom_tracks", "tracks", "reactions", "ideas"}
+var SyncSlots = []string{"morning_brief", slotCustomTracks, "tracks", "reactions", "ideas"}
+
+// slotCustomTracks is the one sync slot a Personal recipe may use: a watch
+// recipe holding track:scan.
+const slotCustomTracks = "custom_tracks"
 
 // ButtonTrigger is trigger.button.
 type ButtonTrigger struct {
@@ -334,6 +338,9 @@ func applyFields(f map[string]*yaml.Node, r *Recipe) error {
 	if err != nil {
 		return err
 	}
+	if m.has(entryTrackScan) && (r.Trigger.Kind != TriggerSync || r.Trigger.Sync != slotCustomTracks) {
+		return &ParseError{Line: fileLine(f["trigger"]), Msg: entryTrackScan + " needs trigger: {sync: " + slotCustomTracks + "}"}
+	}
 	if r.Trigger.Kind == TriggerSync {
 		if err = syncTriggerAllowed(r.Scope, r.Trigger.Sync, m); err != nil {
 			return &ParseError{Line: fileLine(f["trigger"]), Msg: err.Error()}
@@ -455,17 +462,17 @@ func boundedInt(n *yaml.Node, key string, def, lo, hi int) (int, error) {
 
 func applyTrigger(n *yaml.Node, r *Recipe) error {
 	if n == nil {
-		return &ParseError{Line: 2, Msg: `"trigger" is required (one of schedule, button, event, manual)`}
+		return &ParseError{Line: 2, Msg: `"trigger" is required (one of schedule, button, event, manual, sync)`}
 	}
 	if n.Kind != yaml.MappingNode {
-		return &ParseError{Line: fileLine(n), Msg: "trigger must be a map with one of schedule, button, event, manual"}
+		return &ParseError{Line: fileLine(n), Msg: "trigger must be a map with one of schedule, button, event, manual, sync"}
 	}
 	f, err := mappingFields(n, "trigger.", []string{"schedule", "button", "event", "manual", "sync"})
 	if err != nil {
 		return err
 	}
 	if len(f) != 1 {
-		return &ParseError{Line: fileLine(n), Msg: fmt.Sprintf("trigger must have exactly one of schedule, button, event, manual; it has %d", len(f))}
+		return &ParseError{Line: fileLine(n), Msg: fmt.Sprintf("trigger must have exactly one of schedule, button, event, manual, sync; it has %d", len(f))}
 	}
 	for key, v := range f { // exactly one entry
 		r.Trigger.Kind = TriggerKind(key)
@@ -594,11 +601,14 @@ func parseSync(n *yaml.Node) (string, error) {
 	return slot, nil
 }
 
-// syncTriggerAllowed is the one rule on who may declare trigger.sync: in C2
-// only a built-in automation, on any slot of SyncSlots. C3 allows
-// custom_tracks for a Personal recipe holding track:scan.
-func syncTriggerAllowed(scope Scope, _ string, _ *Manifest) error {
-	if scope.IsBuiltin() {
+// syncTriggerAllowed is the one rule on who may declare trigger.sync: a
+// built-in automation, on any slot of SyncSlots, and a Personal recipe only
+// on custom_tracks with track:scan in its manifest.
+func syncTriggerAllowed(scope Scope, slot string, m *Manifest) error {
+	switch {
+	case scope.IsBuiltin():
+		return nil
+	case scope.Kind == ScopePersonal && slot == slotCustomTracks && m.has(entryTrackScan):
 		return nil
 	}
 	return errors.New("a sync trigger is only for built-in automations")
