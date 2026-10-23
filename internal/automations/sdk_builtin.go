@@ -23,8 +23,9 @@ type BuiltinInput struct {
 	Date     string   `json:"date,omitempty"`     // YYYY-MM-DD; "" = today (local)
 	Feedback string   `json:"feedback,omitempty"` // plan.compose only
 	Force    bool     `json:"force,omitempty"`    // plan.compose only
-	// Since is Run Now's Scan from, an RFC 3339 UTC instant (track.scan
-	// only). A script never passes it: track.scan takes it from here.
+	// Since is Run Now's Scan from, an RFC 3339 instant normalised to UTC at
+	// decode (track.scan only). A script never passes it: track.scan takes
+	// it from here.
 	Since string `json:"since,omitempty"`
 }
 
@@ -94,9 +95,11 @@ func builtinInputOf(eventJSON string) (BuiltinInput, error) {
 		}
 	}
 	if since := p.Builtin.Since; since != "" {
-		if _, err := time.Parse(time.RFC3339, since); err != nil {
+		at, err := time.Parse(time.RFC3339, since)
+		if err != nil {
 			return BuiltinInput{}, fmt.Errorf("decoding the run's built-in input: since %q is not an RFC 3339 instant", since)
 		}
+		p.Builtin.Since = at.UTC().Format(time.RFC3339Nano) // the primitive always gets UTC
 	}
 	return p.Builtin, nil
 }
@@ -176,7 +179,8 @@ func trackScanItem(raw any) (TrackScanItem, error) {
 		return it, errors.New("an item must be an object {source_type, source_id, text, at}")
 	}
 	fields := map[string]*string{"source_type": &it.SourceType, "source_id": &it.SourceID, "text": &it.Text, "at": &it.At}
-	for k, v := range obj {
+	for _, k := range slices.Sorted(maps.Keys(obj)) {
+		v := obj[k]
 		dst, ok := fields[k]
 		if !ok {
 			return it, fmt.Errorf("unknown key %q", k)
@@ -190,6 +194,8 @@ func trackScanItem(raw any) (TrackScanItem, error) {
 		return it, fmt.Errorf("source_type %q is not one of %s", it.SourceType, strings.Join(TrackScanSourceTypes, ", "))
 	case strings.TrimSpace(it.SourceID) == "":
 		return it, errors.New("source_id must be a non-empty string")
+	case strings.TrimSpace(it.Text) == "":
+		return it, errors.New("text must be a non-empty string")
 	case len(it.Text) > MaxTrackScanItemText:
 		return it, fmt.Errorf("text is %d bytes; at most %d", len(it.Text), MaxTrackScanItemText)
 	}
@@ -316,7 +322,8 @@ type primitiveArgs struct {
 // parsePrimitiveArgs reads the call's one argument {prompt, ...} (track.scan:
 // {instruction, extra?}): an object whose prompt key (promptKeyOf) is a
 // non-empty string and whose other keys the primitive takes and pass their
-// check (primitiveExtraArgs).
+// check (primitiveExtraArgs). The prompt key is checked first, then the other
+// keys in sorted order, so the error is the same on every run.
 func parsePrimitiveArgs(name string, raw any) (primitiveArgs, error) {
 	var a primitiveArgs
 	key := promptKeyOf(name)
@@ -324,7 +331,12 @@ func parsePrimitiveArgs(name string, raw any) (primitiveArgs, error) {
 	if !ok {
 		return a, validationf("%s({%s}): the argument must be an object", name, key)
 	}
-	for k, v := range obj {
+	keys := slices.Sorted(maps.Keys(obj))
+	if i := slices.Index(keys, key); i > 0 {
+		keys = slices.Concat([]string{key}, keys[:i], keys[i+1:])
+	}
+	for _, k := range keys {
+		v := obj[k]
 		check, extra := primitiveExtraArgs[name][k]
 		switch {
 		case k == key:

@@ -474,7 +474,7 @@ func TestTrackSDK_SinceComesFromInputOnly(t *testing.T) {
 	a := f.seedWatch(t, "watch", `let caught = "";
 try { track.scan({instruction: "acme", since: "2026-01-01T00:00:00Z"}); } catch (e) { caught = e.name; }
 return caught + ":" + track.scan({instruction: "acme"}).status;`, false)
-	r := f.runBuiltin(t, a, db.TriggerManual, `{"builtin":{"since":"2026-10-01T00:00:00Z"}}`)
+	r := f.runBuiltin(t, a, db.TriggerManual, `{"builtin":{"since":"2026-10-01T02:00:00+02:00"}}`)
 	if r.Status != db.RunSucceeded || r.Summary != automations.ErrNameValidation+":done" {
 		t.Fatalf("run = %s %q (%s)", r.Status, r.Summary, r.Error)
 	}
@@ -500,12 +500,12 @@ const many = (n) => Array.from({length: n}, (_, i) => item(i));
 const out = [];
 for (const extra of [many(41), [Object.assign(item(0), {source_type: "fax"})], [Object.assign(item(0), {text: "x".repeat(4097)})],
   [Object.assign(item(0), {at: "yesterday"})], [Object.assign(item(0), {colour: "red"})], [Object.assign(item(0), {source_id: ""})],
-  "not an array", many(40)]) {
+  [Object.assign(item(0), {text: " "})], "not an array", many(40)]) {
   try { track.scan({instruction: "acme", extra}); out.push("ok"); } catch (e) { out.push(e.name); }
 }
 return out.join(",");`, false)
 	r := f.runBuiltin(t, a, db.TriggerSync, "")
-	want := strings.Repeat(automations.ErrNameValidation+",", 7) + "ok"
+	want := strings.Repeat(automations.ErrNameValidation+",", 8) + "ok"
 	if r.Status != db.RunSucceeded || r.Summary != want {
 		t.Fatalf("run = %s %q (%s); want %q", r.Status, r.Summary, r.Error, want)
 	}
@@ -534,5 +534,20 @@ func TestTrackSDK_StepPermissionIsTrackScan(t *testing.T) {
 		steps[0].Permission != "track:scan" || steps[0].Status != automations.StepOK ||
 		!strings.Contains(steps[0].ArgsJSON, `"instruction":"acme"`) {
 		t.Errorf("steps = %+v", steps)
+	}
+}
+
+// With a bad prompt and a bad extra, the prompt's error is the one reported,
+// on every run.
+func TestTrackSDK_ArgumentErrorIsDeterministic(t *testing.T) {
+	f := builtinFixture(t, map[string]*fakePrimitive{"track.scan": {res: automations.PrimitiveResult{Status: "done"}}})
+	a := f.seedWatch(t, "watch", `const out = new Set();
+for (let i = 0; i < 20; i++) {
+  try { track.scan({zzz: 1, extra: "no", instruction: 3}); } catch (e) { out.add(e.message); }
+}
+return [...out].join("|");`, false)
+	r := f.runBuiltin(t, a, db.TriggerSync, "")
+	if r.Status != db.RunSucceeded || !strings.Contains(r.Summary, "instruction must be a non-empty string") || strings.Contains(r.Summary, "|") {
+		t.Errorf("run = %s %q (%s)", r.Status, r.Summary, r.Error)
 	}
 }

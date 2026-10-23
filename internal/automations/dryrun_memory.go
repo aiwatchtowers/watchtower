@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 
 	"watchtower/internal/db"
 )
@@ -27,6 +28,18 @@ type DryRunOptions struct {
 // ModelCallStop is why a StopAtModelCalls dry run stopped: the recipe makes
 // a model call before its primitive, so its prompt cannot be captured.
 const ModelCallStop = "this recipe calls the model before its primitive"
+
+// modelCallKinds are the step kinds a StopAtModelCalls dry run stops at: a
+// model call (llm, not a primitive's llm step) or a call that can lead to
+// one (agent, mcp, shell, session, ask).
+var modelCallKinds = []string{StepKindLLM, StepKindAgent, StepKindMCP, StepKindShell, StepKindSession, StepKindAsk}
+
+// stopsAtModelCall reports whether a StopAtModelCalls dry run stops at the
+// call of kind and name.
+func (e *Env) stopsAtModelCall(kind, name string) bool {
+	return e.stopAtModelCalls && slices.Contains(modelCallKinds, kind) &&
+		(kind != StepKindLLM || !slices.Contains(sdkPrimitiveNames, name))
+}
 
 // DryRunStopped is DryRunReport.Status when a draft stopped at a call a
 // draft never makes (mcp(), ask #326); Error says why. Not a failure: the
