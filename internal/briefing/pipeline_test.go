@@ -704,7 +704,10 @@ func TestPipelineHasMaterial(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, has)
 
-	dayStart := time.Now().Truncate(24 * time.Hour)
+	// Local midnight: gatherDigests windows the local day; Truncate(24h)
+	// would be UTC midnight and fall outside it east of UTC.
+	now := time.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	_, err = database.UpsertDigest(db.Digest{ChannelID: "C1", Type: "channel",
 		PeriodFrom: float64(dayStart.Unix()), PeriodTo: float64(dayStart.Add(24 * time.Hour).Unix()),
 		Summary: "Discussion about new feature release", Topics: `[]`, Decisions: `[]`, ActionItems: `[]`, MessageCount: 15})
