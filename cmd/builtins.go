@@ -36,7 +36,11 @@ import (
 // on/off and hour reads are the daemon's.
 func wireBuiltins(d *daemon.Daemon, cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger) *builtin.Runner {
 	exec := automations.NewExecutor(database, slotBackends(d, cfg, database, gen), automations.ExecutorOptions{Logger: logger})
-	gates := map[string]builtin.Gate{"morning-brief": d.MorningBriefGate()}
+	gates := map[string]builtin.Gate{
+		"morning-brief":    d.MorningBriefGate(),
+		"track-my-threads": d.TrackMyThreadsGate(),
+		"idea-finder":      d.IdeaFinderGate(),
+	}
 	runner := builtin.NewRunner(database, exec, gates, cfg, automations.RealClock{}, logger)
 
 	active := map[string]bool{}

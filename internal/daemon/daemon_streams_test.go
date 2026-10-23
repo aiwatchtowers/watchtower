@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/automations"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
 	"watchtower/internal/ideas"
@@ -129,26 +130,12 @@ func (g *usageFakeGen) Generate(_ context.Context, _, user, _ string) (string, *
 	return out, &digest.Usage{InputTokens: 10, OutputTokens: 5, TotalAPITokens: 15}, "sess", nil
 }
 
-// TestDaemon_PhaseStreamDigestsThenPhaseIdeas_UsageDeltaNotDoubleCounted pins
-// the fix-wave item: phaseStreamDigests and phaseIdeas share one
-// ideas.Pipeline instance, so AccumulatedUsage() is a LIFETIME total across
-// both phases. Run them in the real runSync order (streams, then ideas) and
-// assert each phase's recorded pipeline_runs usage reflects only its own
-// Generate calls — not the running sum — proving stage-1 (stream digest)
-// tokens are never double-counted into phaseIdeas' reported stats.
-func TestDaemon_PhaseStreamDigestsThenPhaseIdeas_UsageDeltaNotDoubleCounted(t *testing.T) {
-	orch, cfg, _ := testDaemonWithTempHome(t)
-	cfg.Ideas.Enabled = true
-	cfg.Ideas.MineIntervalHours = 6
-	cfg.Streams.Enabled = true
-	cfg.Streams.IntervalHours = 6
-	cfg.Digest.Language = "English"
-
-	database := db.OpenTestDB(t)
-
-	// Seed the singleton workspace row (SetIdeasFloorsTx precedent) plus one
-	// Gmail account/message so stage 1's email pass has exactly one thing to
-	// digest — one Generate call.
+// seedIdeasEmailMaterial seeds the singleton workspace row
+// (SetIdeasFloorsTx precedent) plus one Gmail account/message so stage 1's
+// email pass has exactly one thing to digest — one Generate call; it
+// returns the message's thread tag.
+func seedIdeasEmailMaterial(t *testing.T, database *db.DB) string {
+	t.Helper()
 	_, err := database.Exec(`INSERT INTO workspace (id, name) VALUES ('T1', 'Test')`)
 	require.NoError(t, err)
 
@@ -165,7 +152,37 @@ func TestDaemon_PhaseStreamDigestsThenPhaseIdeas_UsageDeltaNotDoubleCounted(t *t
 		(account_id, id, thread_id, from_email, from_name, subject, body_text, internal_date)
 		VALUES (?, 'm1', 'thr-1', 'a@example.com', 'Ann', 'Subj', 'an idea about X', ?)`, acctID, iso)
 	require.NoError(t, err)
-	emailTag := fmt.Sprintf("gmail:%d:thr-1", acctID)
+	return fmt.Sprintf("gmail:%d:thr-1", acctID)
+}
+
+// TestDaemon_PhaseStreamDigestsThenPhaseIdeas_UsageDeltaNotDoubleCounted pins
+// the fix-wave item: phaseStreamDigests and phaseIdeas share one
+// ideas.Pipeline instance, so AccumulatedUsage() is a LIFETIME total across
+// both phases. Run them in the real runSync order (streams, then ideas) and
+// assert each phase's recorded pipeline_runs usage reflects only its own
+// Generate calls — not the running sum — proving stage-1 (stream digest)
+// tokens are never double-counted into phaseIdeas' reported stats. The
+// ideas half is driven through the Idea finder slot (phaseIdeaFinder), on
+// the legacy phase and on the built-in, whose automation run carries the
+// same delta.
+func TestDaemon_PhaseStreamDigestsThenPhaseIdeas_UsageDeltaNotDoubleCounted(t *testing.T) {
+	for _, active := range []bool{false, true} {
+		t.Run(map[bool]string{false: "legacy", true: "builtin"}[active], func(t *testing.T) {
+			streamsThenIdeasUsageDelta(t, active)
+		})
+	}
+}
+
+func streamsThenIdeasUsageDelta(t *testing.T, active bool) {
+	orch, cfg, _ := testDaemonWithTempHome(t)
+	cfg.Ideas.Enabled = true
+	cfg.Ideas.MineIntervalHours = 6
+	cfg.Streams.Enabled = true
+	cfg.Streams.IntervalHours = 6
+	cfg.Digest.Language = "English"
+
+	database := db.OpenTestDB(t)
+	emailTag := seedIdeasEmailMaterial(t, database)
 
 	gen := &usageFakeGen{reply: func(user string) (string, error) {
 		if strings.Contains(user, "=== NEW MATERIAL ===") {
@@ -182,13 +199,15 @@ func TestDaemon_PhaseStreamDigestsThenPhaseIdeas_UsageDeltaNotDoubleCounted(t *t
 	d.SetLogger(log.New(os.Stderr, "[test-usage] ", 0))
 	d.SetDB(database)
 	d.SetIdeasPipeline(pipe)
+	wireTestBuiltins(t, d, database, cfg, automations.RealClock{})
+	d.builtinActive[ideaFinderID] = active
 
-	// runSync order: streams before ideas (daemon.go:898-899).
+	// runSync order: streams before the Idea finder slot.
 	d.phaseStreamDigests(context.Background())
 	callsAfterStreams := gen.calls
 	require.Positive(t, callsAfterStreams, "stage-1 email pass must have called Generate at least once")
 
-	d.phaseIdeas(context.Background())
+	d.phaseIdeaFinder(context.Background())
 	callsAfterIdeas := gen.calls
 	require.Greater(t, callsAfterIdeas, callsAfterStreams, "stage-2 consolidate must have made at least one more Generate call, or this test can't distinguish delta from lifetime-total reporting")
 
@@ -228,4 +247,17 @@ func TestDaemon_PhaseStreamDigestsThenPhaseIdeas_UsageDeltaNotDoubleCounted(t *t
 	// double-counting stage-1's tokens into stage-2's reported stats.
 	assert.NotEqual(t, callsAfterIdeas*10, ideasRun.InputTokens,
 		"ideas' reported input tokens must not equal the lifetime total across both phases")
+
+	if !active {
+		assertNoAutomationRuns(t, database)
+		return
+	}
+	a, err := database.GetBuiltinAutomation(ideaFinderID)
+	require.NoError(t, err)
+	autoRuns, err := database.ListAutomationRuns(a.ID, 0)
+	require.NoError(t, err)
+	require.Len(t, autoRuns, 1)
+	assert.Equal(t, db.RunSucceeded, autoRuns[0].Status, autoRuns[0].Error)
+	assert.EqualValues(t, wantIdeasIn, autoRuns[0].InputTokens, "the Idea finder run carries only stage 2's delta")
+	assert.EqualValues(t, wantIdeasOut, autoRuns[0].OutputTokens)
 }

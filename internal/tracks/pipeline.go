@@ -204,7 +204,7 @@ func (p *Pipeline) lastTracksStartedAt() string {
 // Digest.Enabled gate and no override forcing it true (contrast
 // cmd/people.go/cmd/digest.go, which force cfg.Digest.Enabled = true before
 // constructing their pipe), so it genuinely relies on this no-op for a
-// digest-disabled config. The daemon path (phaseTracksAndRollups) now
+// digest-disabled config. The daemon path (phaseTracks) now
 // compound-gates on Tracks.Enabled && Digest.Enabled before ever reaching
 // here, making this check redundant-but-harmless from the daemon, and load-
 // bearing only for that one CLI command.
