@@ -44,5 +44,14 @@
     "trigger_text": "Button: Release",
     "files": ["release", "deploy-test", "deploy-stage"],
     "params": []
+  },
+  {
+    "name": "on-reaction",
+    "title": "When I react with an emoji",
+    "description": "When you react to a Slack message with the emoji you choose, puts that message and its link in your Inbox.",
+    "scope": "personal",
+    "trigger_text": "When you react with :<EMOJI>:",
+    "files": ["on-reaction"],
+    "params": [{"key": "EMOJI", "label": "Emoji short name", "example": "eyes"}]
   }
 ]

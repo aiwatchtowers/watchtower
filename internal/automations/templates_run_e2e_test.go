@@ -69,6 +69,39 @@ func TestTemplates_RunE2E(t *testing.T) {
 	t.Run("jira-state-report two projects", testRunJiraStateReportTwoProjects)
 
 	t.Run("team-performance-report", testRunTeamPerformanceReport)
+
+	t.Run("on-reaction", testRunOnReaction)
+}
+
+// on-reaction: a reaction event for a synced message puts one Inbox card with
+// that message; an event for a message that is not synced puts none.
+func testRunOnReaction(t *testing.T) {
+	f := newTplFixture(t, &automationstest.FakeGenerator{})
+	a := f.installTemplate(t, "on-reaction", map[string]string{"EMOJI": "eyes"})
+	event := func(cycle, ts string) int64 {
+		raw, err := json.Marshal(db.AutomationEventPayload{Cycles: []string{cycle}, Count: 1, Events: []json.RawMessage{
+			json.RawMessage(`{"type":"slack.reaction_added","account":"1","channel_id":"1:C0REL","message_ts":"` + ts + `","emoji":"eyes"}`)}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return f.enqueueReq(t, db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerEvent, EventCycle: cycle, EventJSON: string(raw)})
+	}
+
+	missing := event("c1", "1760000000.000000")
+	f.step(t, 1)
+	f.wantRun(t, missing, db.RunSucceeded, "")
+	if n := len(f.outputs(t)); n != 0 {
+		t.Fatalf("outputs for a message that is not synced = %d; want none", n)
+	}
+
+	found := event("c2", "1760428800.000200")
+	f.step(t, 1)
+	f.wantRun(t, found, db.RunSucceeded, "")
+	outs := f.outputs(t)
+	if len(outs) != 1 || outs[0].Kind != "inbox" || !strings.Contains(outs[0].Body, "Payout retries are blocked on the fraud check") ||
+		!strings.Contains(outs[0].Title, ":eyes:") {
+		t.Fatalf("outputs = %+v; want one inbox card with the message", outs)
+	}
 }
 
 func testRunNewMailSummary(t *testing.T) {
