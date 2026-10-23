@@ -4,7 +4,7 @@ Every background output has its own switch in **Settings → Features**, and a t
 
 ## What the switches do
 
-Settings → Features lists each feature with a description, a cost badge (None, Light, Medium, Heavy) and a switch. The badge is a fixed estimate of how much AI the feature spends per cycle, not live usage. Targets and Assistant Chat are marked **Core**: they have no switch. Automations are not in the list: they are always there and spend nothing until you confirm a recipe (see [Automations](../features/automations.md)). Daily Briefing and Day Plan are not in it either: their switch is **Turn On** / **Turn Off** on the **Morning brief** card in Automations → **Built in**, and Settings → Features shows "These now live in Automations → Built in" with **Open Automations** (see [Built-in automations](../features/automations-built-in.md)).
+Settings → Features lists each feature with a description, a cost badge (None, Light, Medium, Heavy) and a switch. The badge is a fixed estimate of how much AI the feature spends per cycle, not live usage. Targets and Assistant Chat are marked **Core**: they have no switch. Automations are not in the list: they are always there and spend nothing until you confirm a recipe (see [Automations](../features/automations.md)). Daily Briefing, Day Plan, Tracks, Ideas & Decisions and Reaction Commands are not in it either: their switch is **Turn On** / **Turn Off** on the **Morning brief**, **Track my threads**, **Idea finder** and **Reactions** cards in Automations → **Built in**, and Settings → Features shows "These now live in Automations → Built in" with **Open Automations** (see [Built-in automations](../features/automations-built-in.md)).
 
 - **Off means no work, not no data.** An off feature makes no AI calls and writes nothing new. What it already produced stays and stays readable.
 - **On resumes from now.** Turning a feature back on does not process the time it was off, so there is a gap. It is the same for a feature you never turned on before.
@@ -31,6 +31,8 @@ Setup picks the starting set from your goals; see [Set up Watchtower](../start/s
 | Day Plan | Light | |
 | Next Step Suggestions | Medium | |
 | Claude plan limits (no AI) | None | |
+
+The Tracks, Ideas & Decisions, Reaction Commands, Daily Briefing and Day Plan rows are switched on their built-in cards. Turning **Track my threads** off also pauses your custom-track watches.
 
 Tracks and People Cards read what Slack Digests writes, so they run only while Slack Digests is on too. With Slack Digests off, the empty Tracks filter, the People tab and their Home lines say **Needs Slack Digests** with a **Turn on Slack Digests** button, and onboarding's **Customize** screen shows **Needs Slack Digests** with a **Turn on Slack Digests** button under them. Memory has an **Advanced** section with switches for each source and each place memory is used.
 

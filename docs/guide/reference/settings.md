@@ -12,7 +12,7 @@ A list of services (Slack, Google, Email, Calendar, Jira, Linear, Quick Connecti
 
 - **Remove** stops syncing and deletes the sign-in. Slack, Jira and Linear keep their synced data (with [revoked-access deletion](../concepts/revoked-access.md) on, until 30 days without access); Google deletes its synced mail and events; Email and Calendar do too, although their dialogs say they are kept (see [Known issues](../troubleshooting/known-issues.md)). A disabled account (**Enabled** off, Slack, Jira and Linear only) stops syncing and keeps its data.
 - After you connect a source, a **Turn on related features?** sheet may offer features that source can feed. Nothing turns on unless you press **Turn on**. See [Features on and off](../concepts/features-on-and-off.md).
-- **Slack** — **Reconnect** also grants a newly needed permission, such as sending messages from chat. The emoji-to-action list used by the [Inbox](../features/inbox.md) action strip is edited in **Automations**, **Reactions** ([Reactions and tracks in Automations](../features/automations-rules.md)); here **Open** takes you there.
+- **Slack** — **Reconnect** also grants a newly needed permission, such as sending messages from chat. The emoji-to-action list used by the [Inbox](../features/inbox.md) action strip is edited on the **Reactions** card in **Automations** → **Built in** ([Reactions and tracks in Automations](../features/automations-rules.md)); here **Open** takes you there.
 - **Google** — **Add Google Account** grants Calendar and/or Gmail per account. **Sync days ahead** for Calendar: 2, 3, 5, 7 or 14. See [Calendar](../features/calendar-and-meeting-prep.md) and [Mail](../features/mail.md).
 - **Jira** — **Manage Boards** selects boards, shows board profiles and user mapping. See [Jira and Linear](../features/jira-and-linear.md).
 - **Linear** — workspaces (browser sign-in or API key), **Enabled**, **Re-login**, **Remove**, and the **Teams** to sync per workspace. See [Linear](../features/linear.md).
@@ -22,10 +22,9 @@ A list of services (Slack, Google, Email, Calendar, Jira, Linear, Quick Connecti
 ## Features
 
 - The list turns each feature on or off, asking first if others depend on the one turned off. **Keep ML engines in memory** keeps the speech models loaded. **Save** restarts the background sync once. See [Features on and off](../concepts/features-on-and-off.md).
-- **Briefing and Day Plan** have no switch here: "These now live in Automations → Built in", and **Open Automations** leads to the **Morning brief** card. See [Built-in automations](../features/automations-built-in.md).
+- **Briefing, Day Plan, Tracks, Ideas and Reaction commands** have no switch here: "These now live in Automations → Built in", and **Open Automations** leads there. See [Built-in automations](../features/automations-built-in.md).
 - Tuning sections appear only while their feature is on:
   - **Digest**: minimum messages.
-  - **Ideas**: **Mining interval (hours)**, 1–48. See [Ideas and decisions](../features/ideas-and-decisions.md).
 - Notifications:
   - One **Notifications** section holds every switch: **Pause notifications**, **Decision notifications**, **Briefing notifications**, **Workbench notifications**, **Claude plan limits**, **Notify about unknown voices** and **Meeting reminders** with **Remind before meeting** (0–60 minutes; 0 is **Off**).
   - **Pause notifications** (off by default) silences every notice, including the "still recording" alert, which no other switch affects. When you turn it off, new decisions and briefings, plan-limit warnings and reminders for meetings still ahead are sent; an update is announced on a later check; the rest are dropped.

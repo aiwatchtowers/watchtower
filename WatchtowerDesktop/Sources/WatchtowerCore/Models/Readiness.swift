@@ -58,7 +58,7 @@ package enum ReadinessFeature: String, CaseIterable, Sendable {
 
     /// Whether the daemon runs the feature only while Slack Digests is on too.
     /// Dual path with the compound gates in `internal/daemon/daemon.go`
-    /// (`phaseTracksAndRollups`, `phaseCustomTrackScan`, `phasePeopleCards`:
+    /// (`phaseTrackMyThreads`, `phaseWatchSlot`, `phasePeopleCards`:
     /// `Tracks.Enabled && Digest.Enabled`, `People.Enabled && Digest.Enabled`) —
     /// tracks and people cards mine what the digests produce (#575).
     package var runsOnlyWithDigests: Bool { self == .tracks || self == .peopleCards }

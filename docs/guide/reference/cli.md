@@ -40,7 +40,7 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 | `watchtower day-plan` | The [day plan](../features/day-plan.md); `day-plan generate [--feedback <text>]` makes or redoes it the same way |
 | `watchtower inbox`, `remind <text>` | [Inbox](../features/inbox.md) and reminders |
 | `watchtower digest`, `decisions`, `ideas` | [Digests](../features/digests.md), decisions, [ideas](../features/ideas-and-decisions.md) |
-| `watchtower targets`, `tracks` | [Targets](../features/targets.md) and [tracks](../features/tracks.md) |
+| `watchtower targets`, `tracks` | [Targets](../features/targets.md) and [tracks](../features/tracks.md); `tracks start <id>` makes a track's watch, `tracks instruction <id> --text <t>` edits it |
 | `watchtower people`, `trends`, `users`, `channels` | [People](../features/people.md), trends (no weekly digest is generated today), synced users and channels |
 | `watchtower meeting-prep [event-id\|next]` | Meeting preparation |
 | `watchtower ask "<question>"` | Ask the assistant a question from the terminal |
@@ -53,16 +53,16 @@ Account groups differ: Slack, Google, Jira and Linear list with `accounts`, the 
 | Command | What it does |
 |---|---|
 | `watchtower automations` | [Automations](../features/automations.md): list, validate, run, enable, templates |
-| `watchtower automations run morning-brief` | A [built-in automation](../features/automations-built-in.md) runs at the next sync, which starts at once; `enable`, `disable`, `delete` and `auto` refuse a built-in and say what to use instead |
+| `watchtower automations run morning-brief` | A [built-in automation](../features/automations-built-in.md) runs at the next sync, which starts at once; on a watch, `--since <date>` sets where the scan starts; `enable`, `disable`, `delete` and `auto` refuse a built-in and say what to use instead |
 | `watchtower automations reset <id>` | Put a built-in back on its shipped version, deleting your edited copy (asks you to confirm) |
-| `watchtower automations upgrade-builtins` | Retry moving your old briefing and day-plan prompt edits into Morning brief (the Inbox's **Retry**); refused in a coding agent's shell. Restart the daemon after "moved" |
+| `watchtower automations upgrade-builtins` | Retry moving your old settings and prompt edits into the built-ins and watches (the Inbox's **Retry**); refused in a coding agent's shell. Restart the daemon after "moved" |
 | `watchtower automations reply --output <id> --action <n>` | An Inbox card's Reply press: records it and queues one run; [Buttons on automation cards](../features/automations-inbox-buttons.md) |
 | `watchtower actions` | Proposed assistant actions: list, approve, reject, tool trust; `propose --approve` is the Inbox's own Apply press on a track's change |
 | `watchtower reaction-commands` | Slack emoji reactions that drive the assistant |
 
 ### Why the app asks you to confirm a command
 
-Some commands are yours alone: `actions approve`, `apply` and `propose --approve`, `actions trust … execute`, `automations confirm`, `enable`, `delete`, `reset`, `reply` and `auto … on`, review Undo and lessons, and the ask guard and finish check of `workbench methodology`. Run one from a terminal and Watchtower shows a **Confirm in Watchtower** window with the whole command and what it changes (the action's args, the recipe, the hunk). The command waits up to 100 seconds; **Confirm** turns on after a second, and **Deny**, Return and Escape refuse it.
+Some commands are yours alone: `actions approve`, `apply` and `propose --approve`, `actions trust … execute`, `tracks start`, `tracks instruction`, `automations confirm`, `enable`, `delete`, `reset`, `reply` and `auto … on`, review Undo and lessons, and the ask guard and finish check of `workbench methodology`. Run one from a terminal and Watchtower shows a **Confirm in Watchtower** window with the whole command and what it changes (the action's args, the recipe, the hunk). The command waits up to 100 seconds; **Confirm** turns on after a second, and **Deny**, Return and Escape refuse it.
 
 - The buttons in the app never ask: the app confirms its own commands.
 - With the app closed, the command is refused with **open Watchtower to confirm this**.

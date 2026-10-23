@@ -41,8 +41,8 @@ until the next morning's hour.
      zone open (`GettingReadyPolicy.entries`);
   3b. `needsDigests` (#575, after 3a; the two never meet: their features are disjoint) — no content, the feature `runsOnlyWithDigests`
      (tracks, people cards) and `slack-digests` is in `disabledFeatureIDs`.
-     Dual path with the daemon's compound gates (`phaseTracksAndRollups`,
-     `phaseCustomTrackScan`, `phasePeopleCards` in `internal/daemon/daemon.go`,
+     Dual path with the daemon's compound gates (`phaseTrackMyThreads`,
+     `phaseWatchSlot`, `phasePeopleCards` in `internal/daemon/daemon.go`,
      the people backfill hook in `history_backfill.go`); the Go guard rows
      `tracks_starved_without_digest` / `people_starved_without_digest` pin the
      gates, and `FeatureReadinessTests.testRunsOnlyWithDigestsMatchesTheDaemonGates`
@@ -367,7 +367,7 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   (`internal/daemon/daemon.go:1213`) asks `Pipeline.HasData`
   (`internal/guide/pipeline.go:189`, the negation of `OutcomeNoData`) **before**
   `trackedPipelineRun` (`daemon.go:1235`), so a workspace without data writes no
-  empty `people` row in `pipeline_runs` every cycle (the `phaseCustomTrackScan`
+  empty `people` row in `pipeline_runs` every cycle (the `phaseWatchSlot`
   precedent). A failed check logs and runs anyway, so the error lands in a
   tracked row. `LastOutcome() == OutcomeNoData` after the run (`daemon.go:1250`)
   is the backstop for a window that moved between the check and the run: no

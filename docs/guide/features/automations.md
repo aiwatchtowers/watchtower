@@ -20,7 +20,7 @@ A recipe never runs until you confirm it, every run has its own token and time b
 
 1. Open **Automations** in the sidebar and click **+**.
 2. Under **What is it for?** pick **Personal** or one of your workbenches. This decides what the automation can see and where its recipe lives, and it can't be moved later. A workbench's ⚡ menu has **New Automation…**, which skips this step.
-3. Under **How do you want to start?** pick **Describe it in words** or one of the templates for that choice (see [Recipes and templates](automations-recipes.md)), then **Continue**.
+3. Under **How do you want to start?** pick **Describe it in words**, **Watch for something** (Personal only; see [Tracks](tracks.md)) or one of the templates (see [Recipes and templates](automations-recipes.md)), then **Continue**.
 4. Talk to the assistant in **Chat**. The draft column beside it fills in as you go: when it runs, what it may do, what it sends, what each run may spend, the sessions it starts and a dry run that writes nothing. **Form** and **Script** edit the same draft by hand. A draft does not call Quick Connections or start agents; save it and use **Dry Run** on its card to see the rest.
 5. Press **Save and Turn On**, or **Save Turned Off**. Saving confirms exactly what the column lists, so check it first. The buttons stay off while it says "Checking…", when the recipe has errors, or when the column cannot list everything the save would confirm.
 
@@ -52,11 +52,11 @@ The **Automations** badge counts automations whose last run failed, until you op
 
 ### Built in
 
-The first section, **Built in**, holds the automations that ship with Watchtower, such as **Morning brief**, which writes your briefing and day plan: see [Built-in automations](automations-built-in.md).
+The first section, **Built in**, holds the automations that ship with Watchtower, such as **Morning brief**, **Track my threads**, **Idea finder** and **Reactions**: see [Built-in automations](automations-built-in.md).
 
 ### Reactions and tracks
 
-The tab also shows your reaction commands and custom tracks next to your recipes: see [Reactions and tracks in Automations](automations-rules.md).
+Reaction commands are the **Reactions** card in **Built in**, and each custom track is a watch in the list: see [Reactions and tracks in Automations](automations-rules.md).
 
 ## When it's empty or wrong
 

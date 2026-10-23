@@ -66,8 +66,8 @@ final class FeatureReadinessTests: XCTestCase {
     }
 
     /// #575: the daemon runs tracks and people cards only while Slack
-    /// Digests is on (dual path with `phaseTracksAndRollups`,
-    /// `phaseCustomTrackScan` and `phasePeopleCards`), so with Digests off
+    /// Digests is on (dual path with `phaseTrackMyThreads`,
+    /// `phaseWatchSlot` and `phasePeopleCards`), so with Digests off
     /// they say so instead of promising the next cycle for ever.
     func testTracksAndPeopleNeedDigestsWhileDigestsOff() {
         let now = today(10)
