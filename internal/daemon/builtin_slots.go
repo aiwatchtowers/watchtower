@@ -88,7 +88,10 @@ func (g trackMyThreadsGate) Due(_ context.Context, _ builtin.Entry, now time.Tim
 	if failed := d.tracksFailedAttempt(); !failed.IsZero() {
 		// A run failed before tracks.extract ran (the owner's copy threw):
 		// only digests newer than that attempt make the next one due.
-		fresh, err := d.db.GetDigestsCreatedAfter("channel", failed.UTC().Format(time.RFC3339))
+		// created_at has whole seconds and the compare is strict, so the
+		// bound steps back one second: a digest from the attempt's own
+		// second counts (at most one extra attempt, never hidden material).
+		fresh, err := d.db.GetDigestsCreatedAfter("channel", failed.Add(-time.Second).UTC().Format(time.RFC3339))
 		if err != nil {
 			d.logger.Printf("tracks: checking for new digests: %v", err)
 			return true

@@ -209,3 +209,4 @@ A watch is a Personal recipe, file `<workspace>/automations/watch-<track id>-<sl
 - A Retry while the daemon runs can double-scan one cycle (the daemon changes path at restart, as in C2).
 - `tracks watch <target-id>` requires `--text` but has no such flag (pre-existing; follow-up).
 - Turning off Track my threads also stops the watches (FEAT-01).
+- A failed owner copy of Track my threads waits for a digest newer than the failed attempt; that mark lives in memory, so a daemon restart allows one more attempt.
