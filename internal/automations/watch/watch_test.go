@@ -326,3 +326,41 @@ func TestWatchStart_RetryNeverConfirmsAnEditedRecipe(t *testing.T) {
 		t.Fatal("the edited recipe was confirmed")
 	}
 }
+
+// TestWatchStart_MatchTrackRefusesAnEditedInstruction: an instruction line
+// edited on disk is still the template shape; MatchTrack (the daemon's move,
+// no owner window) refuses it, while an owner's confirm (tracks start) still
+// confirms it (AUTO-06).
+func TestWatchStart_MatchTrackRefusesAnEditedInstruction(t *testing.T) {
+	ctx := context.Background()
+	f := newStartFixture(t)
+	tr := f.track(t, db.Track{Text: "Refund", Instruction: "watch the refund"})
+	a, err := Start(ctx, f.d, f.ix, f.ws, tr, StartOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	edited, err := SetInstruction([]byte(a.RecipeText), "watch every message")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := automations.CanonicalDir(automations.PersonalDir(f.ws))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.ix.WriteRecipe(ctx, personal(), dir, a.Path, edited); err != nil {
+		t.Fatalf("hand edit: %v", err)
+	}
+	if _, err := Start(ctx, f.d, f.ix, f.ws, tr, StartOptions{Confirm: true, MatchTrack: true, Now: testNow}); !errors.Is(err, ErrEditedSinceRendered) {
+		t.Fatalf("move retry = %v; want ErrEditedSinceRendered", err)
+	}
+	if got, err := f.d.GetAutomation(a.ID); err != nil || got.Confirmed() {
+		t.Fatalf("after the move retry: confirmed=%v err=%v; want unconfirmed", got != nil && got.Confirmed(), err)
+	}
+	got, err := Start(ctx, f.d, f.ix, f.ws, tr, StartOptions{Confirm: true, Now: testNow})
+	if err != nil {
+		t.Fatalf("owner start: %v", err)
+	}
+	if !got.Confirmed() {
+		t.Fatal("the owner's Start Watching confirms the shown instruction")
+	}
+}

@@ -139,8 +139,13 @@ var upgradeWatchStart = watch.Start
 // before the move, by `tracks start` or an agent's `tracks create`, stays
 // the owner's to confirm.
 //
+// The first attempt stamps its moment (db.StampBuiltinMigrationStart)
+// before any start, so an attempt that dies before its record keeps it.
+//
 // A start that failed after binding its track is tried once more, so the
-// confirm gets a second chance. A recipe found edited since it was
+// confirm gets a second chance. A bound recipe is confirmed only while its
+// instruction is still the track's own (watch.StartOptions.MatchTrack): an
+// instruction line edited on disk after a failed attempt is the owner's. A recipe found edited since it was
 // rendered (watch.ErrEditedSinceRendered) is left bound and unconfirmed for
 // the owner; the move goes on. The first other error stops the move.
 func startCustomTrackWatches(cfg *config.Config, database *db.DB, now time.Time, logger *log.Logger) error {
@@ -151,6 +156,10 @@ func startCustomTrackWatches(cfg *config.Config, database *db.DB, now time.Time,
 	cutoff := now.UTC().Truncate(time.Second)
 	if rec != nil {
 		cutoff = rec.FirstAttemptedAt
+	} else if err := database.StampBuiltinMigrationStart(customTracksID, cutoff); err != nil {
+		// The first moment is on disk before any start: an attempt that
+		// dies midway keeps it, so no later track is ever the move's.
+		return err
 	}
 	list, err := database.ListUnboundCustomTracks()
 	if err != nil {
@@ -165,7 +174,7 @@ func startCustomTrackWatches(cfg *config.Config, database *db.DB, now time.Time,
 	}
 	ix := automations.NewIndexer(database, cfg.WorkspaceDir(), automations.RealClock{})
 	start := func(t db.Track) error {
-		_, err := upgradeWatchStart(context.Background(), database, ix, cfg.WorkspaceDir(), t, watch.StartOptions{Confirm: true, Now: now})
+		_, err := upgradeWatchStart(context.Background(), database, ix, cfg.WorkspaceDir(), t, watch.StartOptions{Confirm: true, MatchTrack: true, Now: now})
 		return err
 	}
 	for _, t := range list {

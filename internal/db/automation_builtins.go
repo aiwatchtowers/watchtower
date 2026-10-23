@@ -234,6 +234,30 @@ func (db *DB) RecordBuiltinMigration(builtinID, status, errText string, now time
 	return nil
 }
 
+// BuiltinMigrationInterrupted is the error of the record StampBuiltinMigrationStart
+// writes: read later, it says the attempt did not finish.
+const BuiltinMigrationInterrupted = "the move was interrupted before it finished"
+
+// StampBuiltinMigrationStart persists now as builtinID's first_attempted_at
+// before an attempt changes anything, when there is no record yet: a row
+// 'failed' (status has no "running" value) with BuiltinMigrationInterrupted
+// and no attempt counted, so an attempt that dies before its record write
+// reads as failed and retryable and keeps its first moment. The attempt's
+// RecordBuiltinMigration then overwrites status and error and counts it. An
+// existing record is left as it is.
+func (db *DB) StampBuiltinMigrationStart(builtinID string, now time.Time) error {
+	if err := requireRunTime(now, "stamping built-in migration "+builtinID); err != nil {
+		return err
+	}
+	_, err := db.Exec(`INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at, first_attempted_at)
+		VALUES (?, 'failed', ?, 0, ?3, ?3) ON CONFLICT(builtin_id) DO NOTHING`,
+		builtinID, BuiltinMigrationInterrupted, formatAutomationTime(now))
+	if err != nil {
+		return fmt.Errorf("stamping built-in migration %s: %w", builtinID, err)
+	}
+	return nil
+}
+
 // GetBuiltinMigration returns builtinID's migration record, nil when none.
 func (db *DB) GetBuiltinMigration(builtinID string) (*BuiltinMigration, error) {
 	var (

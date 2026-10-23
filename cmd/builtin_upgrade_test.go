@@ -788,3 +788,63 @@ func TestBuiltinUpgrade_RetrySkipsCustomTracksWithNoRecord(t *testing.T) {
 	assert.Zero(t, c.track(t, id).AutomationID)
 	assert.Empty(t, c.watchFiles(t))
 }
+
+// TestCustomTracksUpgrade_FirstMomentPersistedBeforeAnyStart: the move dies
+// after one start with no record of its own; the stamp written before that
+// start keeps the first moment, so the next attempt does not confirm a
+// track created in between.
+func TestCustomTracksUpgrade_FirstMomentPersistedBeforeAnyStart(t *testing.T) {
+	c := newC3CLI(t)
+	a := c.customTrack(t, db.Track{Text: "One", Instruction: "watch one"})
+	b := c.customTrack(t, db.Track{Text: "Two", Instruction: "watch two"})
+	_, err := c.d.Exec(`UPDATE tracks SET created_at = '2026-01-01T00:00:00Z' WHERE id IN (?, ?)`, a, b)
+	require.NoError(t, err)
+	first := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	failStartOn(t, 2)
+	// startCustomTrackWatches alone: the daemon died before recordUpgrade.
+	require.Error(t, startCustomTrackWatches(c.cfg, c.d, first, log.New(io.Discard, "", 0)))
+	m := c.tracksMigration(t)
+	assert.Equal(t, db.BuiltinMigrationFailed, m.Status, "a crash reads as failed and retryable")
+	assert.Equal(t, db.BuiltinMigrationInterrupted, m.Error)
+	assert.Zero(t, m.Attempts)
+	assert.True(t, m.FirstAttemptedAt.Equal(first))
+	later := c.customTrack(t, db.Track{Text: "Later", Instruction: "watch everything"})
+
+	upgradeWatchStart = watch.Start
+	require.True(t, c.upgradeAll(t)[customTracksID])
+	m = c.tracksMigration(t)
+	assert.Equal(t, db.BuiltinMigrationDone, m.Status)
+	assert.Equal(t, 1, m.Attempts)
+	assert.True(t, m.FirstAttemptedAt.Equal(first), "the stamped moment is the cutoff")
+	assert.True(t, c.recipeOf(t, a).Confirmed())
+	assert.True(t, c.recipeOf(t, b).Confirmed())
+	assert.Zero(t, c.track(t, later).AutomationID, "a track created after the first moment is not the move's")
+}
+
+// TestAuto06_UpgradeRetryNeverConfirmsAnInstructionEditedOnDisk: a failed
+// attempt left the recipe bound and unconfirmed; its instruction line is
+// edited on disk (still template-shaped); the Retry leaves it unconfirmed
+// for the owner and the move is done.
+func TestAuto06_UpgradeRetryNeverConfirmsAnInstructionEditedOnDisk(t *testing.T) {
+	c := newC3CLI(t)
+	id := c.customTrack(t, db.Track{Text: "Refund", Instruction: "watch the refund"})
+	failConfirm(t, -1)
+	assert.False(t, c.upgradeAll(t)[customTracksID])
+	bound := c.recipeOf(t, id)
+	require.False(t, bound.Confirmed())
+	edited, err := watch.SetInstruction([]byte(bound.RecipeText), "watch every message in every channel")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(bound.Path, edited, 0o600))
+	ix := automations.NewIndexer(c.d, c.cfg.WorkspaceDir(), automations.RealClock{})
+	_, err = ix.RescanPersonal(context.Background())
+	require.NoError(t, err)
+	require.Equal(t, string(edited), c.recipeOf(t, id).RecipeText)
+
+	upgradeWatchStart = watch.Start
+	raw, err := runAutomations(t, "upgrade-builtins", "--json")
+	require.NoError(t, err, raw)
+	assert.Equal(t, db.BuiltinMigrationDone, c.tracksMigration(t).Status)
+	r := c.recipeOf(t, id)
+	assert.Equal(t, bound.ID, r.ID)
+	assert.False(t, r.Confirmed(), "an instruction edited on disk is the owner's to confirm")
+}

@@ -135,10 +135,14 @@ func jsonString(s string) string {
 
 // StartOptions tunes Start. Confirm records the owner's confirmation of the
 // written recipe (the owner pressed Start Watching); Now is the clock, zero =
-// time.Now.
+// time.Now. MatchTrack (with Confirm) confirms an already bound recipe only
+// while its instruction is still the track's own start instruction: a caller
+// with no owner window (the daemon's custom-track move) never confirms an
+// instruction edited on disk (AUTO-06).
 type StartOptions struct {
-	Confirm bool
-	Now     time.Time
+	Confirm    bool
+	MatchTrack bool
+	Now        time.Time
 }
 
 // Start makes custom track t a watch: it writes its recipe to
@@ -160,7 +164,11 @@ func Start(ctx context.Context, d *db.DB, ix *automations.Indexer, workspaceDir 
 		return nil, fmt.Errorf("starting the watch of track %d: %w", t.ID, db.ErrNotCustomTrack)
 	}
 	if cur.AutomationID != 0 {
-		return confirmBound(d, cur.AutomationID, opts.Confirm, now)
+		want := ""
+		if opts.MatchTrack {
+			want = startInstruction(*cur)
+		}
+		return confirmBound(d, cur.AutomationID, opts.Confirm, opts.MatchTrack, want, now)
 	}
 	data, err := StartRecipe(*cur)
 	if err != nil {
@@ -200,14 +208,18 @@ var ErrEditedSinceRendered = errors.New("the watch recipe was edited since it wa
 // confirmBound returns bound automation id, confirming its current approval
 // hash first when confirm is set and that hash is not the confirmed one —
 // only while the recipe's text is still exactly the template rendered with
-// its own name and instruction (a retry after a failed confirm); edited
-// text is refused with ErrEditedSinceRendered and stays unconfirmed.
-func confirmBound(d *db.DB, id int64, confirm bool, now time.Time) (*db.Automation, error) {
+// its own name and instruction (a retry after a failed confirm) and, with
+// match, that instruction is want (the track's own); edited text is refused
+// with ErrEditedSinceRendered and stays unconfirmed.
+func confirmBound(d *db.DB, id int64, confirm, match bool, want string, now time.Time) (*db.Automation, error) {
 	a, err := d.GetAutomation(id)
 	if err != nil || !confirm || a.ConfirmedHash == a.ApprovalHash {
 		return a, err
 	}
 	if !untouchedTemplate(*a) {
+		return nil, fmt.Errorf("confirming watch recipe %d: %w", id, ErrEditedSinceRendered)
+	}
+	if got, _ := Instruction([]byte(a.RecipeText)); match && got != want {
 		return nil, fmt.Errorf("confirming watch recipe %d: %w", id, ErrEditedSinceRendered)
 	}
 	if err := d.ConfirmAutomation(id, a.ApprovalHash, now); err != nil {
