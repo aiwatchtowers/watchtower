@@ -124,25 +124,68 @@ func recordUpgrade(database *db.DB, id string, err error, now time.Time) builtin
 // upgradeWatchStart is watch.Start behind a test seam.
 var upgradeWatchStart = watch.Start
 
-// startCustomTrackWatches makes every custom track bound to no recipe and
-// not dismissed (db.ListUnboundCustomTracks, in created order) a confirmed
-// watch recipe: the owner's track already scanned with exactly this
-// instruction (AUTO-06: the step confirms only what watch.Start renders).
-// Collecting or Paused carries over through the track's enabled, its events
-// and link stay. A track already bound, by `tracks start` or an earlier
-// attempt, is not listed, so an unconfirmed recipe an agent started stays
-// the owner's to confirm. A recipe found edited since it was rendered
-// (watch.ErrEditedSinceRendered: bound between the listing and the start)
-// is left bound and unconfirmed for the owner; the move goes on. The first
-// other error stops the move.
+// startCustomTrackWatches makes every custom track the move covers a
+// confirmed watch recipe (watch.Start with Confirm), in created order: the
+// owner's track already scanned with exactly this instruction (AUTO-06: the
+// step confirms only what watch.Start renders). Collecting or Paused carries
+// over through the track's enabled; its events and link stay.
+//
+// The move covers the tracks created by its first attempt (the record's
+// first_attempted_at, now on the first): a track made afterwards — an
+// agent's `tracks create`, a reaction's track — is never confirmed by it.
+// Of those it visits the ones bound to no recipe and not dismissed
+// (db.ListUnboundCustomTracks) and, on a later attempt, the ones an earlier
+// attempt bound but did not confirm (watchesLeftUnconfirmed). A track bound
+// before the move, by `tracks start` or an agent's `tracks create`, stays
+// the owner's to confirm.
+//
+// A start that failed after binding its track is tried once more, so the
+// confirm gets a second chance. A recipe found edited since it was
+// rendered (watch.ErrEditedSinceRendered) is left bound and unconfirmed for
+// the owner; the move goes on. The first other error stops the move.
 func startCustomTrackWatches(cfg *config.Config, database *db.DB, now time.Time, logger *log.Logger) error {
+	rec, err := database.GetBuiltinMigration(customTracksID)
+	if err != nil {
+		return err
+	}
+	cutoff := now.UTC().Truncate(time.Second)
+	if rec != nil {
+		cutoff = rec.FirstAttemptedAt
+	}
 	list, err := database.ListUnboundCustomTracks()
 	if err != nil {
 		return err
 	}
+	if rec != nil {
+		left, err := watchesLeftUnconfirmed(database, cutoff)
+		if err != nil {
+			return err
+		}
+		list = append(left, list...)
+	}
 	ix := automations.NewIndexer(database, cfg.WorkspaceDir(), automations.RealClock{})
-	for _, t := range list {
+	start := func(t db.Track) error {
 		_, err := upgradeWatchStart(context.Background(), database, ix, cfg.WorkspaceDir(), t, watch.StartOptions{Confirm: true, Now: now})
+		return err
+	}
+	for _, t := range list {
+		created, err := time.Parse(time.RFC3339, t.CreatedAt)
+		if err != nil {
+			return fmt.Errorf("track #%d created_at %q: %w", t.ID, t.CreatedAt, err)
+		}
+		if created.After(cutoff) {
+			continue
+		}
+		err = start(t)
+		if err != nil && !errors.Is(err, watch.ErrEditedSinceRendered) && t.AutomationID == 0 {
+			if cur, rerr := database.GetTrackByID(t.ID); rerr == nil && cur.AutomationID != 0 {
+				if again := start(*cur); again == nil {
+					err = nil
+				} else {
+					err = errors.Join(err, again)
+				}
+			}
+		}
 		if errors.Is(err, watch.ErrEditedSinceRendered) {
 			logger.Printf("custom tracks: track #%d's watch recipe was edited since it was made; it is left for you to confirm in Automations", t.ID)
 			continue
@@ -152,6 +195,37 @@ func startCustomTrackWatches(cfg *config.Config, database *db.DB, now time.Time,
 		}
 	}
 	return nil
+}
+
+// watchesLeftUnconfirmed is the custom tracks, not dismissed, whose watch
+// recipe was written at cutoff or later (by an
+// attempt of the move) and is not confirmed: a start that bound its track
+// and failed before its confirm. watch.Start confirms one only while it is
+// still the untouched template.
+func watchesLeftUnconfirmed(database *db.DB, cutoff time.Time) ([]db.Track, error) {
+	recipes, err := database.ListSlotRecipes(string(builtin.SlotCustomTracks))
+	if err != nil {
+		return nil, err
+	}
+	byRecipe, err := database.WatchTrackIDs()
+	if err != nil {
+		return nil, err
+	}
+	var out []db.Track
+	for _, a := range recipes {
+		id, ok := byRecipe[a.ID]
+		if !ok || a.Confirmed() || a.CreatedAt.Before(cutoff) {
+			continue
+		}
+		t, err := database.GetTrackByID(id)
+		if err != nil {
+			return nil, err
+		}
+		if t.Origin == "custom" && t.DismissedAt == "" {
+			out = append(out, *t)
+		}
+	}
+	return out, nil
 }
 
 // carryCustomPrompts carries e's customised prompt-store prompts into the

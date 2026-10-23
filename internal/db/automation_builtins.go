@@ -204,7 +204,8 @@ func (db *DB) TakeQueuedBuiltinRun(automationID int64) (*AutomationRun, error) {
 type BuiltinMigration struct {
 	BuiltinID, Status, Error string
 	Attempts                 int
-	UpdatedAt                time.Time
+	UpdatedAt                time.Time // the latest attempt
+	FirstAttemptedAt         time.Time // the first attempt, kept by later ones
 }
 
 // Built-in migration statuses (builtin_migrations.status).
@@ -214,15 +215,18 @@ const (
 )
 
 // RecordBuiltinMigration records one attempt of builtinID's move: status
-// 'done' or 'failed', errText ("" when done), attempts incremented.
+// 'done' or 'failed', errText ("" when done), attempts incremented. The
+// first attempt's now stays its first_attempted_at.
 func (db *DB) RecordBuiltinMigration(builtinID, status, errText string, now time.Time) error {
 	if err := requireRunTime(now, "recording built-in migration "+builtinID); err != nil {
 		return err
 	}
-	_, err := db.Exec(`INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at)
-		VALUES (?, ?, ?, 1, ?)
+	_, err := db.Exec(`INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at, first_attempted_at)
+		VALUES (?, ?, ?, 1, ?4, ?4)
 		ON CONFLICT(builtin_id) DO UPDATE SET status = excluded.status, error = excluded.error,
-		 attempts = builtin_migrations.attempts + 1, updated_at = excluded.updated_at`,
+		 attempts = builtin_migrations.attempts + 1, updated_at = excluded.updated_at,
+		 first_attempted_at = CASE WHEN builtin_migrations.first_attempted_at = ''
+		  THEN excluded.first_attempted_at ELSE builtin_migrations.first_attempted_at END`,
 		builtinID, status, errText, formatAutomationTime(now))
 	if err != nil {
 		return fmt.Errorf("recording built-in migration %s: %w", builtinID, err)
@@ -233,11 +237,11 @@ func (db *DB) RecordBuiltinMigration(builtinID, status, errText string, now time
 // GetBuiltinMigration returns builtinID's migration record, nil when none.
 func (db *DB) GetBuiltinMigration(builtinID string) (*BuiltinMigration, error) {
 	var (
-		m       BuiltinMigration
-		updated string
+		m              BuiltinMigration
+		updated, first string
 	)
-	err := db.QueryRow(`SELECT builtin_id, status, error, attempts, updated_at FROM builtin_migrations
-		WHERE builtin_id = ?`, builtinID).Scan(&m.BuiltinID, &m.Status, &m.Error, &m.Attempts, &updated)
+	err := db.QueryRow(`SELECT builtin_id, status, error, attempts, updated_at, first_attempted_at FROM builtin_migrations
+		WHERE builtin_id = ?`, builtinID).Scan(&m.BuiltinID, &m.Status, &m.Error, &m.Attempts, &updated, &first)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -246,6 +250,12 @@ func (db *DB) GetBuiltinMigration(builtinID string) (*BuiltinMigration, error) {
 	}
 	if m.UpdatedAt, err = time.Parse(automationTimeLayout, updated); err != nil {
 		return nil, fmt.Errorf("built-in migration %s updated_at %q: %w", builtinID, updated, err)
+	}
+	m.FirstAttemptedAt = m.UpdatedAt
+	if first != "" {
+		if m.FirstAttemptedAt, err = time.Parse(automationTimeLayout, first); err != nil {
+			return nil, fmt.Errorf("built-in migration %s first_attempted_at %q: %w", builtinID, first, err)
+		}
 	}
 	return &m, nil
 }

@@ -671,4 +671,120 @@ func TestAuto06_UpgradeConfirmsOnlyRenderedWatchRecipes(t *testing.T) {
 	after := c.recipeOf(t, agents)
 	assert.Equal(t, pending.ID, after.ID)
 	assert.False(t, after.Confirmed(), "a watch recipe already bound stays the owner's to confirm")
+
+	// Nor on a Retry: a recipe written before the move's first attempt is
+	// not one the move left unconfirmed.
+	_, err = c.d.Exec(`UPDATE automations SET created_at = '2026-01-01T00:00:00Z' WHERE id = ?`, pending.ID)
+	require.NoError(t, err)
+	_, err = c.d.Exec(`UPDATE builtin_migrations SET status = 'failed', error = 'disk full' WHERE builtin_id = ?`, customTracksID)
+	require.NoError(t, err)
+	raw, err := runAutomations(t, "upgrade-builtins", "--json")
+	require.NoError(t, err, raw)
+	assert.Equal(t, db.BuiltinMigrationDone, c.tracksMigration(t).Status)
+	assert.False(t, c.recipeOf(t, agents).Confirmed(), "the Retry leaves it the owner's to confirm")
+}
+
+// failConfirm makes the upgrade step's starts bind their track and then
+// fail before the confirm, as a busy database at the confirm does; times
+// says how many starts fail so (-1: all of them).
+func failConfirm(t *testing.T, times int) {
+	t.Helper()
+	upgradeWatchStart = func(ctx context.Context, d *db.DB, ix *automations.Indexer, ws string, tr db.Track, opts watch.StartOptions) (*db.Automation, error) {
+		if times == 0 {
+			return watch.Start(ctx, d, ix, ws, tr, opts)
+		}
+		times--
+		if _, err := watch.Start(ctx, d, ix, ws, tr, watch.StartOptions{Now: opts.Now}); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("confirming: database is locked")
+	}
+	t.Cleanup(func() { upgradeWatchStart = watch.Start })
+}
+
+// TestCustomTracksUpgrade_ConfirmFailureAfterBindResumesOnRetry: a start
+// that bound its track and failed at the confirm leaves the move failed;
+// the Retry confirms that recipe (still the untouched template) with no
+// second file, and the move is done.
+func TestCustomTracksUpgrade_ConfirmFailureAfterBindResumesOnRetry(t *testing.T) {
+	c := newC3CLI(t)
+	id := c.customTrack(t, db.Track{Text: "Refund", Instruction: "watch the refund"})
+	failConfirm(t, -1)
+	assert.False(t, c.upgradeAll(t)[customTracksID])
+	m := c.tracksMigration(t)
+	assert.Equal(t, db.BuiltinMigrationFailed, m.Status)
+	assert.Contains(t, m.Error, "database is locked")
+	first := c.recipeOf(t, id)
+	assert.False(t, first.Confirmed(), "bound, not confirmed")
+
+	upgradeWatchStart = watch.Start
+	raw, err := runAutomations(t, "upgrade-builtins", "--json")
+	require.NoError(t, err, raw)
+	var out upgradeBuiltinsJSON
+	require.NoError(t, json.Unmarshal([]byte(raw), &out))
+	require.Len(t, out.Results, 1)
+	assert.Equal(t, builtinUpgradeResult{BuiltinID: customTracksID, Status: db.BuiltinMigrationDone}, out.Results[0])
+	r := c.recipeOf(t, id)
+	assert.Equal(t, first.ID, r.ID)
+	assert.True(t, r.Confirmed())
+	assert.Len(t, c.watchFiles(t), 1)
+}
+
+// TestCustomTracksUpgrade_ConfirmRetriedOnceInTheSameAttempt: a start that
+// failed after binding is tried once more at once; when that confirms, the
+// move goes on and is done.
+func TestCustomTracksUpgrade_ConfirmRetriedOnceInTheSameAttempt(t *testing.T) {
+	c := newC3CLI(t)
+	a := c.customTrack(t, db.Track{Text: "One", Instruction: "watch one"})
+	b := c.customTrack(t, db.Track{Text: "Two", Instruction: "watch two"})
+	failConfirm(t, 1)
+	assert.True(t, c.upgradeAll(t)[customTracksID])
+	assert.Equal(t, db.BuiltinMigrationDone, c.tracksMigration(t).Status)
+	assert.True(t, c.recipeOf(t, a).Confirmed())
+	assert.True(t, c.recipeOf(t, b).Confirmed())
+	assert.Len(t, c.watchFiles(t), 2)
+}
+
+// TestCustomTracksUpgrade_TrackMadeAfterFirstAttemptNotConfirmed: a Retry
+// covers only the tracks created by the move's first attempt; one made
+// afterwards (an agent's, a reaction's) is never confirmed by the move.
+func TestCustomTracksUpgrade_TrackMadeAfterFirstAttemptNotConfirmed(t *testing.T) {
+	c := newC3CLI(t)
+	a := c.customTrack(t, db.Track{Text: "One", Instruction: "watch one"})
+	b := c.customTrack(t, db.Track{Text: "Two", Instruction: "watch two"})
+	_, err := c.d.Exec(`UPDATE tracks SET created_at = '2026-01-01T00:00:00Z' WHERE id IN (?, ?)`, a, b)
+	require.NoError(t, err)
+	failStartOn(t, 2)
+	assert.False(t, c.upgradeAll(t)[customTracksID])
+	_, err = c.d.Exec(`UPDATE builtin_migrations SET first_attempted_at = '2026-01-02T00:00:00Z' WHERE builtin_id = ?`, customTracksID)
+	require.NoError(t, err)
+	later := c.customTrack(t, db.Track{Text: "Later", Instruction: "watch everything"})
+
+	upgradeWatchStart = watch.Start
+	raw, err := runAutomations(t, "upgrade-builtins", "--json")
+	require.NoError(t, err, raw)
+	m := c.tracksMigration(t)
+	assert.Equal(t, db.BuiltinMigrationDone, m.Status)
+	assert.True(t, m.FirstAttemptedAt.Equal(time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)), "the first attempt's moment is kept")
+	assert.True(t, c.recipeOf(t, a).Confirmed())
+	assert.True(t, c.recipeOf(t, b).Confirmed())
+	assert.Zero(t, c.track(t, later).AutomationID, "a track made after the first attempt is not the move's")
+	assert.Len(t, c.watchFiles(t), 2)
+}
+
+// TestBuiltinUpgrade_RetrySkipsCustomTracksWithNoRecord: with no
+// custom-tracks record the move is the daemon's; the Retry runs nothing.
+func TestBuiltinUpgrade_RetrySkipsCustomTracksWithNoRecord(t *testing.T) {
+	c := newC3CLI(t)
+	id := c.customTrack(t, db.Track{Text: "Refund", Instruction: "watch the refund"})
+	raw, err := runAutomations(t, "upgrade-builtins", "--json")
+	require.NoError(t, err, raw)
+	var out upgradeBuiltinsJSON
+	require.NoError(t, json.Unmarshal([]byte(raw), &out))
+	assert.Empty(t, out.Results)
+	m, err := c.d.GetBuiltinMigration(customTracksID)
+	require.NoError(t, err)
+	assert.Nil(t, m, "no record is written")
+	assert.Zero(t, c.track(t, id).AutomationID)
+	assert.Empty(t, c.watchFiles(t))
 }
