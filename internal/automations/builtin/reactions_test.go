@@ -7,6 +7,7 @@ import (
 
 	"watchtower/internal/automations"
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 	"watchtower/internal/reactioncmd"
 )
 
@@ -164,5 +165,26 @@ func TestReactions_EndDuringComposeIsStranded(t *testing.T) {
 	}
 	if _, ok := s.End(11); ok {
 		t.Error("the late outcome was kept after End")
+	}
+}
+
+// reaction.compose reports the compose call's usage as its own, dispatched
+// or not, so the run row, Costs and the token budget see it.
+func TestReactions_ComposeReportsUsage(t *testing.T) {
+	usage := digest.Usage{InputTokens: 120, OutputTokens: 30}
+	want := automations.PrimitiveUsage{InputTokens: 120, OutputTokens: 30}
+	p := &fakeDispatcher{out: reactioncmd.Outcome{Status: "dispatched", ActionID: 1, Step: reactioncmd.StepFinalize, Usage: usage}}
+	s := NewReactionSlot()
+	compose := ReactionPrimitives(p, s)["reaction.compose"]
+	mustBegin(t, s, 1, reactioncmd.Dispatch{ChannelID: "1:C1", MessageTS: "1.1"})
+	res, err := compose(context.Background(), composeCall(1))
+	if err != nil || res.Usage != want {
+		t.Errorf("dispatched: usage = %+v, err = %v; want %+v", res.Usage, err, want)
+	}
+	p.out = reactioncmd.Outcome{Status: "failed", Detail: "compose: no JSON", Step: reactioncmd.StepFinalize, Usage: usage}
+	mustBegin(t, s, 2, reactioncmd.Dispatch{ChannelID: "1:C1", MessageTS: "2.2"})
+	res, err = compose(context.Background(), composeCall(2))
+	if err == nil || res.Usage != want {
+		t.Errorf("failed: usage = %+v, err = %v; want %+v and an error", res.Usage, err, want)
 	}
 }

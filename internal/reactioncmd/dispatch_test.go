@@ -301,3 +301,41 @@ func TestReactionCmd_DispatchWithoutToolFails(t *testing.T) {
 	assert.Equal(t, 0, gen.calls)
 	assert.Equal(t, 0, countAllAgentActions(t, database))
 }
+
+// usageGenerator replies out with usage.
+type usageGenerator struct {
+	out   string
+	usage digest.Usage
+}
+
+func (g *usageGenerator) Generate(context.Context, string, string, string) (string, *digest.Usage, string, error) {
+	u := g.usage
+	return g.out, &u, "", nil
+}
+
+// DispatchWith carries the compose call's usage on its Outcome, dispatched
+// or failed, for the Reactions built-in to report.
+func TestReactionCmd_DispatchWithCarriesComposeUsage(t *testing.T) {
+	for name, reply := range map[string]string{
+		"dispatched": `{"text":"Handle the deploy","reason":"owner flagged it"}`,
+		"failed":     "no json here",
+	} {
+		t.Run(name, func(t *testing.T) {
+			database := seededPipelineDB(t, 1)
+			gen := &usageGenerator{out: reply, usage: digest.Usage{InputTokens: 120, OutputTokens: 30}}
+			p := newTestPipeline(t, database, gen, checkReaction())
+			var got []Outcome
+			p.SetDispatcher(func(ctx context.Context, d Dispatch) Outcome {
+				out := p.DispatchWith(ctx, d, "")
+				got = append(got, out)
+				return out
+			})
+			_, err := p.Run(context.Background(), nil)
+			require.NoError(t, err)
+			require.Len(t, got, 1)
+			assert.Equal(t, name, got[0].Status)
+			assert.Equal(t, 120, got[0].Usage.InputTokens)
+			assert.Equal(t, 30, got[0].Usage.OutputTokens)
+		})
+	}
+}

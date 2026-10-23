@@ -382,8 +382,9 @@ func (p *Pipeline) newDispatch(c candidate, tool *tools.Tool, prefixes *prefixCa
 // down / timeout) and the caller should retry later rather than record a
 // terminal failure; a reply that arrived but carried no JSON is terminal.
 // thread is the thread's lines (threadContext); the first maxThreadLines go
-// into the brief. system is the system prompt.
-func (p *Pipeline) compose(ctx context.Context, c candidate, toolName string, thread []string, system string) (args json.RawMessage, transient bool, err error) {
+// into the brief. system is the system prompt. usage is the call's (nil when
+// the generator reported none).
+func (p *Pipeline) compose(ctx context.Context, c candidate, toolName string, thread []string, system string) (args json.RawMessage, usage *digest.Usage, transient bool, err error) {
 	choices := p.issueChoices(toolName)
 	threadLines := thread[:min(len(thread), maxThreadLines)]
 	// The daemon runs in the owner's TZ (the create_target due precedent), so
@@ -394,15 +395,15 @@ func (p *Pipeline) compose(ctx context.Context, c candidate, toolName string, th
 	ownerNow := now.Format("2006-01-02T15:04:05-07:00 (MST)")
 	userMsg := buildComposeUserMessage(toolName, c, argGuide(toolName), threadLines, choices, today, ownerNow, prompts.Directive(p.language()))
 
-	reply, _, _, err := p.generator.Generate(digest.WithSource(ctx, prompts.ReactionCommand), system, userMsg, "")
+	reply, usage, _, err := p.generator.Generate(digest.WithSource(ctx, prompts.ReactionCommand), system, userMsg, "")
 	if err != nil {
-		return nil, true, err
+		return nil, usage, true, err
 	}
 	obj, err := prompts.ExtractJSONObject(reply)
 	if err != nil {
-		return nil, false, fmt.Errorf("no JSON object in reply: %w", err)
+		return nil, usage, false, fmt.Errorf("no JSON object in reply: %w", err)
 	}
-	return json.RawMessage(obj), false, nil
+	return json.RawMessage(obj), usage, false, nil
 }
 
 // issueChoices lists the projects (Jira) or teams (Linear) an issue tool may

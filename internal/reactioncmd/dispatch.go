@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"watchtower/internal/digest"
 	"watchtower/internal/prompts"
 	"watchtower/internal/tools"
 )
@@ -45,11 +47,15 @@ const (
 // Outcome is a dispatcher's result. With StepFinalize, Status is the terminal
 // ledger status (dispatched|failed), ActionID the agent-action id (0 unless
 // dispatched) and Detail the ledger's error text; the other steps ignore them.
+// Usage is the compose call's token usage (zero when no call ran or the
+// generator reported none), whatever the step: the Reactions built-in reports
+// it as its run's usage.
 type Outcome struct {
 	Status   string
 	ActionID int64
 	Detail   string
 	Step     Step
+	Usage    digest.Usage
 }
 
 // Dispatcher runs one claimed command. The pipeline keeps the budget, the
@@ -122,7 +128,7 @@ func normaliseOutcome(out Outcome) Outcome {
 // the Outcome carries the terminal status (dispatched/failed); StepRelease
 // marks a TRANSIENT failure that produced no action (the pipeline releases the
 // row so the next poll retries), StepStrand one whose outcome is unknown.
-func (p *Pipeline) DispatchWith(ctx context.Context, d Dispatch, prompt string) Outcome {
+func (p *Pipeline) DispatchWith(ctx context.Context, d Dispatch, prompt string) (out Outcome) {
 	if d.tool == nil {
 		return Outcome{Status: "failed", Detail: "dispatch: no resolved tool", Step: StepFinalize}
 	}
@@ -130,7 +136,10 @@ func (p *Pipeline) DispatchWith(ctx context.Context, d Dispatch, prompt string) 
 	if prompt == "" {
 		prompt, _ = p.getPrompt(prompts.ReactionCommand)
 	}
-	args, transient, err := p.compose(ctx, c, tool.Name, d.thread, prompt)
+	args, usage, transient, err := p.compose(ctx, c, tool.Name, d.thread, prompt)
+	if usage != nil {
+		defer func() { out.Usage = *usage }()
+	}
 	if err != nil {
 		if transient {
 			p.logf("reaction-commands: transient compose failure for :%s: (%s), will retry: %v", c.Emoji, tool.Name, err)

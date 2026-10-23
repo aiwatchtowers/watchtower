@@ -110,8 +110,9 @@ func (s *ReactionSlot) store(runID int64, out reactioncmd.Outcome) {
 // {status: "done", outcome: "dispatched", action_id} (the SDK admits only
 // done|skipped as a primitive's status); any other outcome — a failed
 // finalize, a release or a strand — is stored the same way and then fails
-// the call with its detail, so the run's status is honest. Its usage is
-// zero: reactioncmd does not meter, the run row is the history.
+// the call with its detail, so the run's status is honest. Its usage is the
+// compose call's (Outcome.Usage), failed or not, so the run row, Costs and
+// the recipe's token budget see it.
 func ReactionPrimitives(p ReactionDispatcher, s *ReactionSlot) map[string]automations.PrimitiveFunc {
 	return map[string]automations.PrimitiveFunc{
 		"reaction.compose": func(ctx context.Context, call automations.PrimitiveCall) (automations.PrimitiveResult, error) {
@@ -124,11 +125,12 @@ func ReactionPrimitives(p ReactionDispatcher, s *ReactionSlot) map[string]automa
 			}
 			out := p.DispatchWith(ctx, d, call.Prompt)
 			s.store(call.Trigger.RunID, out)
+			usage := automations.PrimitiveUsage{InputTokens: out.Usage.InputTokens, OutputTokens: out.Usage.OutputTokens}
 			if out.Step != reactioncmd.StepFinalize || out.Status != reactionDispatched {
-				return automations.PrimitiveResult{}, fmt.Errorf("the reaction was not dispatched (%s): %s",
+				return automations.PrimitiveResult{Usage: usage}, fmt.Errorf("the reaction was not dispatched (%s): %s",
 					outcomeKind(out), out.Detail)
 			}
-			return automations.PrimitiveResult{Status: "done",
+			return automations.PrimitiveResult{Status: "done", Usage: usage,
 				Fields: map[string]any{"outcome": out.Status, "action_id": out.ActionID}}, nil
 		},
 	}
