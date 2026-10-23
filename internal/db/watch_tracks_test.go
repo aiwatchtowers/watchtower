@@ -324,3 +324,35 @@ func TestMigration00151_UpAndDown(t *testing.T) {
 	assert.Equal(t, afterBind, snapshot(), "the rows are kept")
 	assert.Equal(t, 0, countWhere(t, d, `SELECT COUNT(*) FROM pragma_foreign_key_check`))
 }
+
+func TestUnbindRemovedWatchTracks_PausesOnlyRemovedRecipesTracks(t *testing.T) {
+	d := openTestDB(t)
+	gone := seedSyncRecipe(t, d, "gone", TriggerKindSync, `{"sync":"custom_tracks"}`)
+	kept := seedSyncRecipe(t, d, "kept", TriggerKindSync, `{"sync":"custom_tracks"}`)
+	setAutomationEnabled(t, d, gone, true)
+	setAutomationEnabled(t, d, kept, true)
+	goneTrack, err := d.EnsureWatchTrack(gone, "U1", "gone", "x")
+	require.NoError(t, err)
+	keptTrack, err := d.EnsureWatchTrack(kept, "U1", "kept", "y")
+	require.NoError(t, err)
+	_, err = d.InsertTrackEvent(TrackEvent{TrackID: goneTrack, Summary: "seen", SourceRefs: "[]"})
+	require.NoError(t, err)
+	_, err = d.Exec(`UPDATE automations SET removed_at = '2026-10-22T09:00:00Z' WHERE id = ?`, gone)
+	require.NoError(t, err)
+
+	n, err := d.UnbindRemovedWatchTracks()
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	tr, err := d.GetTrackByID(goneTrack)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), tr.AutomationID)
+	assert.False(t, tr.Enabled)
+	evs, err := d.GetTrackEvents(goneTrack, 10)
+	require.NoError(t, err)
+	assert.Len(t, evs, 1, "the track keeps its events")
+	assert.True(t, trackEnabled(t, d, keptTrack))
+
+	n, err = d.UnbindRemovedWatchTracks()
+	require.NoError(t, err)
+	assert.Equal(t, 0, n, "a second call writes nothing")
+}
