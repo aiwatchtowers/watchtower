@@ -76,19 +76,17 @@ func (p *Pipeline) AccumulatedUsage() (int, int, float64, int) {
 	return p.usage.in, p.usage.out, p.usage.cost, p.usage.calls
 }
 
-// generate is gen.Generate with its usage added to the pipeline's; a call
-// that failed still counts, with whatever usage it reported.
-func (p *Pipeline) generate(ctx context.Context, sys, user string) (string, error) {
-	raw, u, _, err := p.gen.Generate(ctx, sys, user, "")
+// addUsage adds one model call's usage to the pipeline's; a call that
+// failed still counts, with whatever usage it reported.
+func (p *Pipeline) addUsage(u *digest.Usage) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.usage.calls++
 	if u != nil {
 		p.usage.in += u.InputTokens
 		p.usage.out += u.OutputTokens
 		p.usage.cost += u.CostUSD
 	}
-	p.mu.Unlock()
-	return raw, err
 }
 
 // New constructs a Pipeline. lang is the workspace response language
@@ -264,7 +262,8 @@ func (p *Pipeline) runOne(ctx context.Context, t db.Track, opts runOpts) ([]db.T
 	user := buildScanPrompt(t, act, extra)
 	ctx2 := digest.WithSource(ctx, "customtrack.run")
 	sys := p.promptFor(prompts.TrackRun) + "\n\n" + prompts.Directive(p.lang)
-	raw, err := p.generate(ctx2, sys, user)
+	raw, u, _, err := p.gen.Generate(ctx2, sys, user, "")
+	p.addUsage(u)
 	if err != nil {
 		return nil, fmt.Errorf("custom-track AI call: %w", err)
 	}
@@ -364,7 +363,8 @@ func (p *Pipeline) gatherBackfillActivity(ctx context.Context, t db.Track, since
 		end := min(start+shortlistChunk, len(titles))
 		user := buildShortlistPrompt(t, titles[start:end], maxCandidates)
 		ctx2 := digest.WithSource(ctx, "customtrack.shortlist")
-		raw, err := p.generate(ctx2, sys, user)
+		raw, u, _, err := p.gen.Generate(ctx2, sys, user, "")
+		p.addUsage(u)
 		if err != nil {
 			return db.ScanActivity{}, fmt.Errorf("custom-track shortlist AI call: %w", err)
 		}
@@ -427,7 +427,8 @@ func (p *Pipeline) Compose(ctx context.Context, linkedTargetID int, input string
 	user := buildComposePrompt(target, input)
 	ctx2 := digest.WithSource(ctx, "customtrack.compose")
 	sys := p.promptFor(prompts.TrackCompose) + "\n\n" + prompts.Directive(p.lang)
-	raw, err := p.generate(ctx2, sys, user)
+	raw, u, _, err := p.gen.Generate(ctx2, sys, user, "")
+	p.addUsage(u)
 	if err != nil {
 		return ComposeResult{}, fmt.Errorf("custom-track compose AI call: %w", err)
 	}
