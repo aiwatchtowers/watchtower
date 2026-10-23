@@ -11,9 +11,9 @@ Someone says "we could cache this per tenant" in a thread, and it is buried by l
 The registry is filled in two steps, both by the background sync.
 
 1. **Cheap pre-digests.** Slack digests and meeting recaps already pick out ideas and decisions. Mail, Jira and Linear get their own digest passes over recent threads, issues and comments. That pass is the separate **Stream Digests** feature, which runs about every 6 hours.
-2. **Consolidation.** About every 6 hours (Settings → Features → **Ideas**, **Mining interval (hours)**, 1 to 48), a stronger AI pass reads only the new material and your recent verdicts. It proposes new ideas or attaches a repeat mention to an existing one.
+2. **Consolidation.** A stronger AI pass reads only the new material and your recent verdicts. It proposes new ideas or attaches a repeat mention to an existing one. This pass is the built-in **Idea finder** in Automations → **Built in**: its card has **Turn On** and **Turn Off**, **Every** (hours, 1 to 24, default 6; press **Save**) and **Edit in Chat** if you want it to judge differently. See [Built-in automations](automations-built-in.md). Settings → Features no longer lists Ideas.
 
-It needs **Ideas & Decisions** on in Settings → Features (on by default). For mail, Jira and Linear ideas, Stream Digests must also be on. The daemon's regular pass looks only at recent activity; use **Find Ideas in Past Messages…** to reach further back (it does not cover Linear).
+It needs the **Idea finder** on (on by default). For mail, Jira and Linear ideas, Stream Digests must also be on. The daemon's regular pass looks only at recent activity; use **Find Ideas in Past Messages…** to reach further back (it does not cover Linear).
 
 A mention of something you rejected, dropped or put on **Not now** brings it back into **Needs your decision** with the reason "brought up again". An exact repeat of a mention it already has does not.
 
@@ -52,7 +52,7 @@ Running the same or an overlapping range again never creates duplicates, and dec
 
 An empty **Ideas** filter says "No ideas yet" and "Ideas and decisions picked up from conversations, every ~6 h", with a status line.
 
-- **Off — Turn on.** Click **Turn on**.
+- **Off — Turn on.** Click **Turn on**, or **Turn On** on the Idea finder card.
 - **Connect Slack to get this.** The status line follows Slack, even though mail, Jira and meetings also feed it. Connect Slack, or use **Find Ideas in Past Messages…** over a range.
 - **Starts after the first sync.** The first sync hasn't finished.
 - **Preparing now.** A mining pass is running.

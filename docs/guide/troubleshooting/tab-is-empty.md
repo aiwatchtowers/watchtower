@@ -10,10 +10,10 @@ An icon, a title, one sentence on what will land there, a **status line** and at
 
 A tab shows what a background job wrote. It stays empty until its feature is on, its source is connected, and the job has run once. These are the tabs and Inbox filters whose status line follows a feature:
 
-| Tab or filter | Feature (**Settings → Features**) | Needs |
+| Tab or filter | Feature (**Settings → Features**, or its **Built in** card) | Needs |
 |---|---|---|
 | Catch Up, Digests | Slack Digests | Slack |
-| Inbox → Tracks, People | Tracks, People Cards, plus Slack Digests | Slack |
+| Inbox → Tracks, People | Tracks (Track my threads), People Cards, plus Slack Digests | Slack |
 | Inbox → Ideas | Ideas & Decisions | Slack |
 | Inbox → Day | Daily Briefing (the plan follows Day Plan) | Any source, and Watchtower knows who you are |
 | Inbox → All, Messages | Attention detection | Any source, and Watchtower knows who you are |

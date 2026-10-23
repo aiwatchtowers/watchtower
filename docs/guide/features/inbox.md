@@ -29,7 +29,7 @@ The sidebar badge counts what needs your decision, unread messages, one for an u
 
 ### Reaction commands
 
-Reacting to a Slack message with an emoji from your dictionary makes the assistant gather the thread, compose an action and bring it back as a card. Reactions are checked on every sync cycle, so **Sync Now** in the menu bar picks one up at once. The feature is **Reaction Commands**, on by default.
+Reacting to a Slack message with an emoji from your dictionary makes the assistant gather the thread, compose an action and bring it back as a card. Reactions are checked on every sync cycle, so **Sync Now** in the menu bar picks one up at once. The built-in **Reactions** runs it, on by default.
 
 | Emoji | Does | Lands in | Default |
 |---|---|---|---|
@@ -40,7 +40,7 @@ Reacting to a Slack message with an emoji from your dictionary makes the assista
 | :white_check_mark: | Turns the message into a target | Targets | Asks first |
 | :ticket: | Drafts an issue in Jira or Linear | Jira or Linear | Always asks |
 
-You edit the dictionary in Automations → Reactions; a recipe can also run on a reaction (see [Reactions and tracks in Automations](automations-rules.md)). Reactions placed before the first check are never acted on, and removing then re-adding an emoji on the same message doesn't fire again.
+You edit the dictionary on the **Reactions** card in Automations → **Built in**, which the cheat sheet's **Edit reaction commands in Automations…** button opens; a recipe can also run on a reaction (see [Reactions and tracks in Automations](automations-rules.md)). Reactions placed before the first check are never acted on, and removing then re-adding an emoji on the same message doesn't fire again.
 
 ### Which tracker an issue reaction files in
 

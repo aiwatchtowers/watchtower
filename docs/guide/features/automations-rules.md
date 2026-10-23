@@ -1,25 +1,27 @@
 # Reactions and tracks in Automations
 
-The Automations tab gathers your three kinds of rules in one place: recipes, reaction commands and custom tracks. For recipes themselves, see [Automations](automations.md).
+Reaction commands and custom tracks are automations too. This page says where each one lives in the **Automations** tab and how to add your own. For recipes themselves, see [Automations](automations.md).
 
 ## How it works
 
-A row of three choices above the tab switches between **Automations**, **Reactions** and **Tracks**. They gather your three kinds of rules in one place; each keeps working as before.
+There is one list in the tab, with no switch between sections. The **Built in** section holds **Reactions**, **Track my threads** and **Idea finder** next to **Morning brief** (see [Built-in automations](automations-built-in.md)), and your recipes follow it.
 
-- **Reactions** holds the **Reaction commands** list: an emoji you put on a Slack message runs a tool on it, such as a reminder or a draft Jira issue (see [Inbox](inbox.md#reaction-commands)). Below the list, **Automations that listen to reactions** shows each recipe that runs on a reaction, with its emoji, and **New reaction automation** starts a Personal automation in the editor chat with a reaction prompt already in the composer. When reading reactions is off, a banner says so and **Turn on** fixes it; the list stays editable.
-- **Tracks** lists your custom tracks. Click one to open its card in the Inbox's **Tracks** filter; **New track** creates one. The choice appears only while the **Tracks** feature is on.
-
-An emoji can be in the list and also trigger a recipe: both happen, once each.
+- **Reactions** is the card behind your reaction commands: an emoji you put on a Slack message runs a tool on it, such as a reminder or a draft Jira issue (see [Inbox](inbox.md#reaction-commands)). Under **When**, the dictionary lists each emoji with its tool, how much it asks first, an on/off switch and **Remove**. The **+** adds a row; changes apply at once. The card has no **Run Now**, because it works for each reaction you place. **Turn On** and **Turn Off** switch reaction commands.
+- **New reaction automation**, under **When** on the Reactions card, opens a Personal automation from the `on-reaction` template: pick the emoji and it leaves a card in your Inbox when you react. An emoji can be in the dictionary and also trigger a recipe: both happen, once each.
+- **Custom tracks** are watches: one automation per track, listed with your recipes. **+** → **Watch for something** makes a new one; the track and its events are in the Inbox's **Tracks** filter, and its card has **Collecting / Paused** and the instruction (see [Tracks](tracks.md)).
 
 ## When it's empty or wrong
 
-- **Reactions banner says reactions aren't being read.** Reaction commands is off. Press **Turn on**; reactions you placed earlier are never acted on.
-- **Tracks choice missing.** The **Tracks** feature is off; turn it on in Settings → Features and the choice comes back.
+- **Reactions card says reactions aren't being read.** It is off. Press **Turn On**; reactions you placed earlier are never acted on.
+- **Your edited Reactions copy isn't confirmed.** Nothing is read from your reactions until you **Save** or **Confirm** it, or **Reset to built-in**. Reactions placed meanwhile fire once after you confirm, at most 25 at a time.
 - **A reaction recipe didn't run.** The first poll after a recipe starts listening only records the reactions already there, so they never fire. A reaction you remove and put back on the same message doesn't fire again.
+- **The card from `on-reaction` has no message text.** The text is shown only for the channel's latest 200 messages; an older message gets a short card that names the channel and has no text or link.
+- **A watch isn't in the list.** A track made by a 👀 reaction has no watch until you **Approve** it in the Inbox or press **Start Watching** on its card.
 
 ## Related
 
 - [Automations](automations.md)
+- [Built-in automations](automations-built-in.md)
 - [Recipes and templates](automations-recipes.md)
 - [Inbox](inbox.md)
 
