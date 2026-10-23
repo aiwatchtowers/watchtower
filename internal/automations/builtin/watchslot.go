@@ -30,6 +30,9 @@ type WatchScanner interface {
 	ScanBound(ctx context.Context, t db.Track, o customtracks.ScanOptions) ([]db.TrackEvent, error)
 	Due(t db.Track, now time.Time) bool
 	RecordFailure(trackID int, now time.Time, err error)
+	// AccumulatedUsage is the input tokens, output tokens, cost and model
+	// calls of every scan so far; it only grows.
+	AccumulatedUsage() (int, int, float64, int)
 }
 
 // WatchPrimitives returns track.scan over d and s: it ensures the run's
@@ -39,21 +42,26 @@ type WatchScanner interface {
 // owner, or a dismissed track, gives {status: "skipped"} and scans nothing;
 // a sync run of a track that is not due (paused, or today's failure budget
 // spent) is skipped too, and a sync run's failed scan is charged to the
-// budget. A done call returns {events: <how many the scan added>}. Its usage
-// is zero: the scan's model call is metered by the pipeline, not reported
-// here.
-func WatchPrimitives(d *db.DB, s WatchScanner, owner func() (db.Owner, error)) map[string]automations.PrimitiveFunc {
+// budget (both on now's UTC day; nil now = time.Now). A done call returns
+// {events: <how many the scan added>}. The call reports the tokens its scan
+// spent (s.AccumulatedUsage before and after, a failed scan's too), so they
+// land on the run and its token budget applies; the scans of one scanner
+// must not overlap (the slot runs its recipes one after another).
+func WatchPrimitives(d *db.DB, s WatchScanner, owner func() (db.Owner, error), now func() time.Time) map[string]automations.PrimitiveFunc {
+	if now == nil {
+		now = time.Now
+	}
 	return map[string]automations.PrimitiveFunc{
 		"track.scan": func(ctx context.Context, call automations.PrimitiveCall) (automations.PrimitiveResult, error) {
 			if d == nil || s == nil || owner == nil {
 				return automations.PrimitiveResult{}, errNotWired
 			}
-			return trackScan(ctx, d, s, owner, call)
+			return trackScan(ctx, d, s, owner, now(), call)
 		},
 	}
 }
 
-func trackScan(ctx context.Context, d *db.DB, s WatchScanner, owner func() (db.Owner, error), call automations.PrimitiveCall) (automations.PrimitiveResult, error) {
+func trackScan(ctx context.Context, d *db.DB, s WatchScanner, owner func() (db.Owner, error), now time.Time, call automations.PrimitiveCall) (automations.PrimitiveResult, error) {
 	skipped := func(note string) (automations.PrimitiveResult, error) {
 		return automations.PrimitiveResult{Status: "skipped", Note: note}, nil
 	}
@@ -86,21 +94,24 @@ func trackScan(ctx context.Context, d *db.DB, s WatchScanner, owner func() (db.O
 	if t.DismissedAt != "" {
 		return skipped("the track is dismissed")
 	}
-	now := time.Now()
 	sync := call.Trigger.Kind == db.TriggerSync
 	if sync && !s.Due(*t, now) {
 		return skipped("the track is paused or spent today's scan budget")
 	}
+	in0, out0, _, _ := s.AccumulatedUsage()
 	events, err := s.ScanBound(ctx, *t, customtracks.ScanOptions{
 		Instruction: call.Prompt, Since: call.Input.Since, Extra: extraItems(call.Args["extra"]),
 	})
+	in1, out1, _, _ := s.AccumulatedUsage()
+	// The pipeline reports no cost: the meter prices the tokens (usageOf).
+	usage := usageOf(in1-in0, out1-out0, 0, 0)
 	if err != nil {
 		if sync {
 			s.RecordFailure(t.ID, now, err)
 		}
-		return automations.PrimitiveResult{}, err
+		return automations.PrimitiveResult{Usage: usage}, err
 	}
-	return automations.PrimitiveResult{Status: "done", Fields: map[string]any{"events": len(events)}}, nil
+	return automations.PrimitiveResult{Status: "done", Fields: map[string]any{"events": len(events)}, Usage: usage}, nil
 }
 
 // extraItems maps track.scan's checked extra argument onto the scan's
@@ -127,12 +138,19 @@ type WatchGate interface {
 // NewWatchGate is the watch slot's gate: track t is due (s.Due: enabled, not
 // dismissed, under today's failure budget) and there is activity since its
 // watermark (a never-scanned track: the last 7 days) up to the last whole
-// second — the window the scan itself reads.
-func NewWatchGate(d *db.DB, s WatchScanner) WatchGate { return watchGate{d: d, s: s} }
+// second — the window the scan itself reads. A failed probe is logged to
+// logger (the runner's; nil = log.Default()) and reads as not due.
+func NewWatchGate(d *db.DB, s WatchScanner, logger *log.Logger) WatchGate {
+	if logger == nil {
+		logger = log.Default()
+	}
+	return watchGate{d: d, s: s, logger: logger}
+}
 
 type watchGate struct {
-	d *db.DB
-	s WatchScanner
+	d      *db.DB
+	s      WatchScanner
+	logger *log.Logger
 }
 
 func (g watchGate) Due(_ context.Context, a db.Automation, t db.Track, now time.Time) bool {
@@ -145,7 +163,7 @@ func (g watchGate) Due(_ context.Context, a db.Automation, t db.Track, now time.
 	}
 	has, err := g.d.HasScanActivity(since, now.UTC().Add(-time.Second).Format(watermarkLayout))
 	if err != nil {
-		log.Printf("watch recipe %d (%s): %v; not scanned this cycle", a.ID, a.Slug, err)
+		g.logger.Printf("watch recipe %d (%s): %v; not scanned this cycle", a.ID, a.Slug, err)
 		return false
 	}
 	return has

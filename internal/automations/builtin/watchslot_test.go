@@ -28,6 +28,8 @@ type scanGenerator struct {
 	prompts []string
 	failOn  string
 	out     string
+	// in and outTokens are the usage each call reports.
+	in, outTokens int
 }
 
 func (g *scanGenerator) Generate(_ context.Context, _, user, _ string) (string, *digest.Usage, string, error) {
@@ -41,7 +43,7 @@ func (g *scanGenerator) Generate(_ context.Context, _, user, _ string) (string, 
 	if out == "" {
 		out = `{"events":[]}`
 	}
-	return out, &digest.Usage{}, "", nil
+	return out, &digest.Usage{InputTokens: g.in, OutputTokens: g.outTokens}, "", nil
 }
 
 func (g *scanGenerator) all() []string {
@@ -74,6 +76,8 @@ func (s *recScanner) RecordFailure(trackID int, now time.Time, err error) {
 	s.mu.Unlock()
 	s.p.RecordFailure(trackID, now, err)
 }
+
+func (s *recScanner) AccumulatedUsage() (int, int, float64, int) { return s.p.AccumulatedUsage() }
 
 func (s *recScanner) scanCalls() []customtracks.ScanOptions {
 	s.mu.Lock()
@@ -113,7 +117,7 @@ func newWatchFixture(t *testing.T) *watchFixture {
 	gen := &scanGenerator{}
 	logger := log.New(io.Discard, "", 0)
 	scan := &recScanner{p: customtracks.New(d, gen, "", logger)}
-	b := automations.Backends{DB: d, Clock: clock, Primitives: WatchPrimitives(d, scan, d.ResolveOwner)}
+	b := automations.Backends{DB: d, Clock: clock, Primitives: WatchPrimitives(d, scan, d.ResolveOwner, clock.Now)}
 	exec := automations.NewExecutor(d, b, automations.ExecutorOptions{Logger: logger})
 	cfg, err := config.Load(filepath.Join(t.TempDir(), "absent.yaml"))
 	if err != nil {
@@ -200,7 +204,7 @@ func (f *watchFixture) seedActivity(t *testing.T, snippet string) {
 
 func (f *watchFixture) slot(t *testing.T) []SlotOutcome {
 	t.Helper()
-	return f.runner.RunWatchSlot(context.Background(), NewWatchGate(f.d, f.scan))
+	return f.runner.RunWatchSlot(context.Background(), NewWatchGate(f.d, f.scan, log.New(io.Discard, "", 0)))
 }
 
 // outcomeOf is the slot outcome of automation id.
@@ -495,7 +499,7 @@ func TestWatchPrimitive_NoOwnerSkipsAndDismissedNeverScans(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scan := WatchPrimitives(f.d, f.scan, func() (db.Owner, error) { return db.Owner{}, nil })["track.scan"]
+	scan := WatchPrimitives(f.d, f.scan, func() (db.Owner, error) { return db.Owner{}, nil }, f.clock.Now)["track.scan"]
 	call := automations.PrimitiveCall{Name: "track.scan", Prompt: "watch the refund",
 		Trigger: automations.TriggerInfo{Kind: db.TriggerManual, RunID: runID}}
 	res, err := scan(context.Background(), call)
@@ -506,7 +510,7 @@ func TestWatchPrimitive_NoOwnerSkipsAndDismissedNeverScans(t *testing.T) {
 		t.Error("a track was created without an owner")
 	}
 
-	scan = WatchPrimitives(f.d, f.scan, f.d.ResolveOwner)["track.scan"]
+	scan = WatchPrimitives(f.d, f.scan, f.d.ResolveOwner, f.clock.Now)["track.scan"]
 	id, err := f.d.EnsureWatchTrack(a.ID, "1:U1", a.Name, "watch the refund")
 	if err != nil {
 		t.Fatal(err)
@@ -520,5 +524,81 @@ func TestWatchPrimitive_NoOwnerSkipsAndDismissedNeverScans(t *testing.T) {
 	}
 	if n := len(f.scan.scanCalls()); n != 0 {
 		t.Errorf("%d scans of a dismissed track", n)
+	}
+}
+
+func TestWatchSlot_ScanUsageLandsOnTheRun(t *testing.T) {
+	f := newWatchFixture(t)
+	f.gen.in, f.gen.outTokens = 1200, 300
+	a := f.addWatch(t, "usage", "watch the refund", true, true)
+	f.seedActivity(t, "the refund was approved")
+
+	o := outcomeOf(t, f.slot(t), a.ID)
+	if o.Status != db.RunSucceeded {
+		t.Fatalf("slot = %+v", o)
+	}
+	run, err := f.d.GetAutomationRun(o.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.InputTokens != 1200 || run.OutputTokens != 300 {
+		t.Errorf("run tokens = %d/%d; want the scan's 1200/300", run.InputTokens, run.OutputTokens)
+	}
+	steps, err := f.d.ListAutomationRunSteps(o.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, st := range steps {
+		if st.Name == "track.scan" {
+			found = true
+			if st.InputTokens != 1200 || st.OutputTokens != 300 {
+				t.Errorf("step tokens = %d/%d; want 1200/300", st.InputTokens, st.OutputTokens)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("no track.scan step in %+v", steps)
+	}
+}
+
+func TestWatchSlot_UnparsableRecipeScansNothing(t *testing.T) {
+	f := newWatchFixture(t)
+	a := f.addWatch(t, "broken", "watch the refund", true, true)
+	f.seedActivity(t, "the refund was approved")
+	if o := outcomeOf(t, f.slot(t), a.ID); o.Status != db.RunSucceeded {
+		t.Fatalf("first slot: %+v", o)
+	}
+	tr := f.trackOf(t, a.ID)
+	if tr == nil {
+		t.Fatal("no bound track after the first scan")
+	}
+	_, path := f.recipePath(t, "broken")
+	if err := os.WriteFile(path, []byte("---\nname: broken\ntrigger: {sync: custom_tracks\n---\nnot a recipe\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.ix.RescanPersonal(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if b := f.automation(t, a.ID); b.ParseError == "" {
+		t.Fatalf("the broken recipe parsed: %+v", b)
+	}
+	if err := f.d.SetTrackLastRun(tr.ID, time.Now().UTC().Add(-time.Hour).Format("2006-01-02T15:04:05Z")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, o := range f.slot(t) {
+		if o.AutomationID == a.ID && (o.RunID != 0 || o.Skipped == "") {
+			t.Errorf("an unparsable recipe ran: %+v", o)
+		}
+	}
+	if n := len(f.runsOf(t, a.ID)); n != 1 {
+		t.Errorf("%d runs; want only the one before the break", n)
+	}
+	if n := len(f.scan.scanCalls()); n != 1 {
+		t.Errorf("%d scans; want only the one before the break", n)
+	}
+	if got := f.trackOf(t, a.ID); got == nil || got.ID != tr.ID {
+		t.Errorf("track = %+v; want it still bound", got)
 	}
 }

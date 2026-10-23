@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 )
 
 func loadTrack(t *testing.T, d *db.DB, id int) db.Track {
@@ -241,5 +242,41 @@ func TestScanBound_ExtraCappedNewestFirst(t *testing.T) {
 	}
 	if strings.Contains(mock.lastUser, "item-05\n") || !strings.Contains(mock.lastUser, fmt.Sprintf("item-%02d", defaultActivityLimit+5)) {
 		t.Fatalf("the cap did not keep the newest items:\n%s", mock.lastUser)
+	}
+}
+
+// usageGenerator answers like mockGenerator and reports fixed usage.
+type usageGenerator struct{ mockGenerator }
+
+func (g *usageGenerator) Generate(ctx context.Context, sys, user, sess string) (string, *digest.Usage, string, error) {
+	out, _, model, err := g.mockGenerator.Generate(ctx, sys, user, sess)
+	return out, &digest.Usage{InputTokens: 120, OutputTokens: 30, CostUSD: 0.5}, model, err
+}
+
+func TestAccumulatedUsage_GrowsWithEveryModelCall(t *testing.T) {
+	d, id, base := newScanFixture(t)
+	seedInboxAt(t, d, "activity", scanTS(base, 1))
+	gen := &usageGenerator{mockGenerator{out: `{"events":[]}`}}
+	p := New(d, gen, "", nil)
+	if in, out, cost, calls := p.AccumulatedUsage(); in != 0 || out != 0 || cost != 0 || calls != 0 {
+		t.Fatalf("fresh usage = %d/%d/%v/%d", in, out, cost, calls)
+	}
+	if _, err := p.ScanBound(context.Background(), loadTrack(t, d, id), ScanOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	in, out, cost, calls := p.AccumulatedUsage()
+	if in != 120 || out != 30 || cost != 0.5 || calls != 1 {
+		t.Fatalf("usage after one scan = %d/%d/%v/%d; want 120/30/0.5/1", in, out, cost, calls)
+	}
+	gen.err = fmt.Errorf("boom")
+	seedInboxAt(t, d, "more", scanTS(base, 2))
+	if err := d.SetTrackLastRun(id, scanTS(base, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.ScanBound(context.Background(), loadTrack(t, d, id), ScanOptions{}); err == nil {
+		t.Fatal("want the model error")
+	}
+	if _, _, _, calls := p.AccumulatedUsage(); calls != 2 {
+		t.Errorf("calls = %d; a failed call counts too", calls)
 	}
 }
