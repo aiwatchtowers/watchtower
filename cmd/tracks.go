@@ -942,15 +942,15 @@ func runTracksStart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// trackWatchConfirmDetail is the owner's confirmation window text for
-// starting track id's watch: the bound recipe as it is, or the recipe Start
-// would write.
 // tracksCreateConfirmDetail is the confirmation window of `tracks
 // create|watch`: the text the owner gave, which the watch is composed from.
 func tracksCreateConfirmDetail(text string) string {
 	return "Watch for:\n\n" + text + "\n\nWatchtower writes the watch's instruction from this text."
 }
 
+// trackWatchConfirmDetail is the owner's confirmation window text for
+// starting track id's watch: the bound recipe as it is, or the recipe Start
+// would write.
 func trackWatchConfirmDetail(database *db.DB, id int) string {
 	t, err := database.GetTrackByID(id)
 	if err != nil {
