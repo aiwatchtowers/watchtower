@@ -52,3 +52,6 @@ func SessionReady(d *db.DB, runID, stepID int64) (bool, error) {
 // SetBusBeforeMerge installs a hook run between Flush's enqueue and its merge
 // into the coalesced run (tests claim the run there).
 func SetBusBeforeMerge(b *Bus, hook func(runID int64)) { b.beforeMerge = hook }
+
+// CheckTemplateParamForTest exposes checkTemplateParam to the external tests.
+var CheckTemplateParamForTest = checkTemplateParam

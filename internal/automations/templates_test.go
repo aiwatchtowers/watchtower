@@ -383,3 +383,33 @@ func TestTemplates_OnReactionRendersAndParses(t *testing.T) {
 		t.Errorf("EMOJI=\"a b\": err = %v; want an error naming EMOJI", err)
 	}
 }
+
+// <EMOJI> takes + and - (+1, -1) and exactly one value: a list would render
+// a trigger that matches nothing.
+func TestTemplates_OnReactionEmojiRule(t *testing.T) {
+	for _, emoji := range []string{"+1", "-1", "white_check_mark", "thumbsup"} {
+		files, err := automations.RenderTemplate("on-reaction", map[string]string{"EMOJI": emoji})
+		if err != nil {
+			t.Fatalf("EMOJI=%q: %v", emoji, err)
+		}
+		r, err := automations.ParseRecipe("on-reaction", files["on-reaction"], automations.Scope{Kind: automations.ScopePersonal})
+		if err != nil {
+			t.Fatalf("EMOJI=%q: %v", emoji, err)
+		}
+		if r.Trigger.Event == nil || r.Trigger.Event.Where["emoji"] != emoji {
+			t.Errorf("EMOJI=%q: trigger = %+v", emoji, r.Trigger)
+		}
+	}
+	for _, bad := range []string{"eyes,+1", "eyes,eyes2", "a b", `a"b`, ""} {
+		if _, err := automations.RenderTemplate("on-reaction", map[string]string{"EMOJI": bad}); err == nil || !strings.Contains(err.Error(), "EMOJI") {
+			t.Errorf("EMOJI=%q: err = %v; want an error naming EMOJI", bad, err)
+		}
+	}
+	// The other params keep the default rule: no + and lists allowed.
+	if err := automations.CheckTemplateParamForTest("PROJECT", "ACME,OPS"); err != nil {
+		t.Errorf("PROJECT list: %v", err)
+	}
+	if err := automations.CheckTemplateParamForTest("PROJECT", "AC+ME"); err == nil {
+		t.Error("PROJECT=AC+ME: want refused")
+	}
+}
