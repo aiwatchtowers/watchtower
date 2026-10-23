@@ -228,7 +228,7 @@ CREATE TABLE IF NOT EXISTS tracks (
     updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 , origin TEXT NOT NULL DEFAULT 'auto'
     CHECK(origin IN ('auto','custom')), instruction TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, last_run_at TEXT NOT NULL DEFAULT '', linked_target_id INTEGER
-    REFERENCES targets(id) ON DELETE SET NULL, scan_attempts INTEGER NOT NULL DEFAULT 0, scan_attempted_at TEXT NOT NULL DEFAULT '');
+    REFERENCES targets(id) ON DELETE SET NULL, scan_attempts INTEGER NOT NULL DEFAULT 0, scan_attempted_at TEXT NOT NULL DEFAULT '', automation_id INTEGER);
 CREATE TABLE IF NOT EXISTS track_states (
     id                 INTEGER PRIMARY KEY AUTOINCREMENT,
     track_id           INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
@@ -2167,7 +2167,7 @@ CREATE TABLE IF NOT EXISTS builtin_migrations (
     error      TEXT NOT NULL DEFAULT '',
     attempts   INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
-);
+, first_attempted_at TEXT NOT NULL DEFAULT '');
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,
@@ -2499,6 +2499,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_queued_trigger ON automati
     WHERE status = 'queued' AND trigger <> 'reply';
 CREATE INDEX IF NOT EXISTS idx_automation_runs_rerun_of ON automation_runs(rerun_of);
 CREATE INDEX IF NOT EXISTS idx_automation_runs_started_at ON automation_runs(started_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_automation_id ON tracks(automation_id) WHERE automation_id IS NOT NULL;
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;
@@ -2798,6 +2799,15 @@ WHEN NEW.status NOT IN ('queued','running','waiting')
 BEGIN
     DELETE FROM automation_run_replay WHERE run_id = NEW.id;
     UPDATE automation_runs SET resume_pending = 0 WHERE id = NEW.id AND resume_pending = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_automations_enabled_watch_track AFTER UPDATE OF enabled ON automations
+WHEN NEW.enabled <> OLD.enabled
+BEGIN
+    UPDATE tracks SET enabled = NEW.enabled WHERE automation_id = NEW.id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_automations_delete_watch_track AFTER DELETE ON automations
+BEGIN
+    UPDATE tracks SET automation_id = NULL, enabled = 0 WHERE automation_id = OLD.id;
 END;
 """#
 }

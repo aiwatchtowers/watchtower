@@ -372,3 +372,182 @@ func TestExecutor_PollNeverResumesBuiltinRuns(t *testing.T) {
 		t.Errorf("run = %s/%s (%s); want waiting", r.Status, r.ErrorKind, r.Error)
 	}
 }
+
+// watchRecipeText is a Personal watch recipe (trigger sync custom_tracks)
+// with track:scan and the extra permissions given.
+func watchRecipeText(script string, perms ...string) string {
+	var p strings.Builder
+	for _, e := range append([]string{"track:scan"}, perms...) {
+		p.WriteString("  - " + e + "\n")
+	}
+	return "---\nname: Watch acme\ntrigger:\n  sync: custom_tracks\npermissions:\n" + p.String() +
+		"---\nA watch test recipe.\n\n```js\n" + script + "\n```\n"
+}
+
+// seedWatch indexes slug as a Personal watch recipe; unless unconfirmed it
+// is confirmed and enabled.
+func (f *exFixture) seedWatch(t *testing.T, slug, script string, unconfirmed bool, perms ...string) db.Automation {
+	t.Helper()
+	a := f.seedText(t, slug, watchRecipeText(script, perms...), unconfirmed)
+	if a.ParseError != "" || !a.RunsAtSlot() {
+		t.Fatalf("watch recipe %s: parse error %q, runs at slot %v", slug, a.ParseError, a.RunsAtSlot())
+	}
+	return a
+}
+
+func TestExecutor_PollNeverClaimsWatchRecipeRuns(t *testing.T) {
+	p := &fakePrimitive{res: automations.PrimitiveResult{Status: "done"}}
+	f := builtinFixture(t, map[string]*fakePrimitive{"track.scan": p})
+	a := f.seedWatch(t, "watch", `track.scan({instruction: "acme launch"});`, false)
+	if !a.Runnable() {
+		t.Fatalf("watch recipe not runnable: %+v", a)
+	}
+	id := f.enqueue(t, a, db.TriggerManual)
+	f.step(t, 0)
+	if r := f.run(t, id); r.Status != db.RunQueued || p.count() != 0 {
+		t.Errorf("run = %s, primitive calls %d; want queued and none", r.Status, p.count())
+	}
+}
+
+func TestExecutor_InlineRunsWatchRecipeOnlyWhenEnabled(t *testing.T) {
+	p := &fakePrimitive{res: automations.PrimitiveResult{Status: "done", Fields: map[string]any{"events": 2}}}
+	f := builtinFixture(t, map[string]*fakePrimitive{"track.scan": p})
+	a := f.seedWatch(t, "watch", `return track.scan({instruction: "acme launch"}).events;`, false)
+	r := f.runBuiltin(t, a, db.TriggerSync, "")
+	if r.Status != db.RunSucceeded || r.Summary != "2" || p.count() != 1 {
+		t.Fatalf("enabled: run = %s %q (%s), calls %d", r.Status, r.Summary, r.Error, p.count())
+	}
+	if err := f.d.SetAutomationEnabled(a.ID, false, exStart); err != nil {
+		t.Fatal(err)
+	}
+	id := f.enqueue(t, a, db.TriggerManual)
+	if _, err := f.e.ExecuteBuiltinInline(context.Background(), id); !errors.Is(err, automations.ErrNotRunnable) {
+		t.Fatalf("disabled: err = %v; want ErrNotRunnable", err)
+	}
+	f.wantRun(t, id, db.RunCancelled, db.ErrKindNotRunnable)
+	if p.count() != 1 {
+		t.Errorf("primitive called %d times; want 1", p.count())
+	}
+}
+
+func TestAuto06_InlineRefusesUnconfirmedWatchRecipe(t *testing.T) {
+	p := &fakePrimitive{res: automations.PrimitiveResult{Status: "done"}}
+	f := builtinFixture(t, map[string]*fakePrimitive{"track.scan": p})
+	a := f.seedWatch(t, "watch", `track.scan({instruction: "acme launch"});`, true)
+	if a.Confirmed() {
+		t.Fatal("the seeded watch recipe is confirmed")
+	}
+	id := f.enqueue(t, a, db.TriggerManual)
+	if _, err := f.e.ExecuteBuiltinInline(context.Background(), id); !errors.Is(err, automations.ErrNotRunnable) {
+		t.Fatalf("err = %v; want ErrNotRunnable", err)
+	}
+	f.wantRun(t, id, db.RunCancelled, db.ErrKindNotRunnable)
+	if p.count() != 0 {
+		t.Errorf("primitive called %d times", p.count())
+	}
+}
+
+func TestTrackSDK_InstalledOnlyWithCapability(t *testing.T) {
+	f := builtinFixture(t, nil)
+	plain := f.seed(t, "plain", `return [typeof track, typeof tracks].join(",");`, false)
+	id := f.enqueue(t, plain, db.TriggerManual)
+	f.step(t, 1)
+	if r := f.wantRun(t, id, db.RunSucceeded, ""); r.Summary != "undefined,undefined" {
+		t.Errorf("plain: summary = %q", r.Summary)
+	}
+	w := f.seedWatch(t, "watch",
+		`return [typeof track, typeof track.scan, typeof tracks, typeof ideas, typeof reaction, typeof builtin].join(",");`, false)
+	if r := f.runBuiltin(t, w, db.TriggerSync, ""); r.Status != db.RunSucceeded ||
+		r.Summary != "object,function,undefined,undefined,undefined,undefined" {
+		t.Errorf("watch: run = %s %q (%s)", r.Status, r.Summary, r.Error)
+	}
+	b := f.seedBuiltin(t, builtinRecipeText(`return [typeof tracks, typeof tracks.extract, typeof track].join(",");`,
+		"", "builtin:tracks.extract"), true)
+	if r := f.runBuiltin(t, b, db.TriggerSync, ""); r.Status != db.RunSucceeded || r.Summary != "object,function,undefined" {
+		t.Errorf("built-in: run = %s %q (%s)", r.Status, r.Summary, r.Error)
+	}
+}
+
+func TestTrackSDK_SinceComesFromInputOnly(t *testing.T) {
+	p := &fakePrimitive{res: automations.PrimitiveResult{Status: "done", Fields: map[string]any{"events": 0}}}
+	f := builtinFixture(t, map[string]*fakePrimitive{"track.scan": p})
+	a := f.seedWatch(t, "watch", `let caught = "";
+try { track.scan({instruction: "acme", since: "2026-01-01T00:00:00Z"}); } catch (e) { caught = e.name; }
+return caught + ":" + track.scan({instruction: "acme"}).status;`, false)
+	r := f.runBuiltin(t, a, db.TriggerManual, `{"builtin":{"since":"2026-10-01T02:00:00+02:00"}}`)
+	if r.Status != db.RunSucceeded || r.Summary != automations.ErrNameValidation+":done" {
+		t.Fatalf("run = %s %q (%s)", r.Status, r.Summary, r.Error)
+	}
+	if p.count() != 1 {
+		t.Fatalf("primitive called %d times; want 1", p.count())
+	}
+	if c := p.calls[0]; c.Name != "track.scan" || c.Input.Since != "2026-10-01T00:00:00Z" || c.Prompt != "acme" ||
+		c.Trigger.Kind != db.TriggerManual || len(c.Args) != 0 {
+		t.Errorf("call = %+v", c)
+	}
+	// A since that is not an RFC 3339 instant fails the run before the script.
+	r = f.runBuiltin(t, a, db.TriggerManual, `{"builtin":{"since":"2026-10-01"}}`)
+	if r.Status != db.RunFailed || r.ErrorKind != db.ErrKindBackend || p.count() != 1 {
+		t.Errorf("bad since: run = %s/%s (%s), calls %d", r.Status, r.ErrorKind, r.Error, p.count())
+	}
+}
+
+func TestTrackSDK_ExtraIsCapped(t *testing.T) {
+	p := &fakePrimitive{res: automations.PrimitiveResult{Status: "done", Fields: map[string]any{"events": 0}}}
+	f := builtinFixture(t, map[string]*fakePrimitive{"track.scan": p})
+	a := f.seedWatch(t, "watch", `const item = (i) => ({source_type: "slack", source_id: "C1:" + i, text: "hi", at: "2026-10-20T09:00:00Z"});
+const many = (n) => Array.from({length: n}, (_, i) => item(i));
+const out = [];
+for (const extra of [many(41), [Object.assign(item(0), {source_type: "fax"})], [Object.assign(item(0), {text: "x".repeat(4097)})],
+  [Object.assign(item(0), {at: "yesterday"})], [Object.assign(item(0), {colour: "red"})], [Object.assign(item(0), {source_id: ""})],
+  [Object.assign(item(0), {text: " "})], "not an array", many(40)]) {
+  try { track.scan({instruction: "acme", extra}); out.push("ok"); } catch (e) { out.push(e.name); }
+}
+return out.join(",");`, false)
+	r := f.runBuiltin(t, a, db.TriggerSync, "")
+	want := strings.Repeat(automations.ErrNameValidation+",", 8) + "ok"
+	if r.Status != db.RunSucceeded || r.Summary != want {
+		t.Fatalf("run = %s %q (%s); want %q", r.Status, r.Summary, r.Error, want)
+	}
+	if p.count() != 1 {
+		t.Fatalf("primitive called %d times; want 1", p.count())
+	}
+	extra, ok := p.calls[0].Args["extra"].([]automations.TrackScanItem)
+	if !ok || len(extra) != 40 {
+		t.Fatalf("extra = %#v", p.calls[0].Args["extra"])
+	}
+	if want := (automations.TrackScanItem{SourceType: "slack", SourceID: "C1:3", Text: "hi", At: "2026-10-20T09:00:00Z"}); extra[3] != want {
+		t.Errorf("extra[3] = %+v; want %+v", extra[3], want)
+	}
+}
+
+func TestTrackSDK_StepPermissionIsTrackScan(t *testing.T) {
+	p := &fakePrimitive{res: automations.PrimitiveResult{Status: "skipped"}}
+	f := builtinFixture(t, map[string]*fakePrimitive{"track.scan": p})
+	a := f.seedWatch(t, "watch", `return track.scan({instruction: "acme"}).status;`, false)
+	r := f.runBuiltin(t, a, db.TriggerSync, "")
+	if r.Status != db.RunSucceeded || r.Summary != "skipped" {
+		t.Fatalf("run = %s %q (%s)", r.Status, r.Summary, r.Error)
+	}
+	steps := f.steps(t, r.ID)
+	if len(steps) != 1 || steps[0].Kind != automations.StepKindLLM || steps[0].Name != "track.scan" ||
+		steps[0].Permission != "track:scan" || steps[0].Status != automations.StepOK ||
+		!strings.Contains(steps[0].ArgsJSON, `"instruction":"acme"`) {
+		t.Errorf("steps = %+v", steps)
+	}
+}
+
+// With a bad prompt and a bad extra, the prompt's error is the one reported,
+// on every run.
+func TestTrackSDK_ArgumentErrorIsDeterministic(t *testing.T) {
+	f := builtinFixture(t, map[string]*fakePrimitive{"track.scan": {res: automations.PrimitiveResult{Status: "done"}}})
+	a := f.seedWatch(t, "watch", `const out = new Set();
+for (let i = 0; i < 20; i++) {
+  try { track.scan({zzz: 1, extra: "no", instruction: 3}); } catch (e) { out.add(e.message); }
+}
+return [...out].join("|");`, false)
+	r := f.runBuiltin(t, a, db.TriggerSync, "")
+	if r.Status != db.RunSucceeded || !strings.Contains(r.Summary, "instruction must be a non-empty string") || strings.Contains(r.Summary, "|") {
+		t.Errorf("run = %s %q (%s)", r.Status, r.Summary, r.Error)
+	}
+}

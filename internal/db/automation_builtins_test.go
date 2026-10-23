@@ -123,15 +123,95 @@ func TestGetAutomationBySlug_IgnoresBuiltinTwin(t *testing.T) {
 	require.Error(t, err, "an owner row carries no built-in id")
 }
 
-func TestAutomation_RunsAtSlotEqualsIsBuiltin(t *testing.T) {
+// seedWatchRow is a Personal owner recipe with a sync trigger (a
+// custom_tracks watch recipe) and concurrency 4.
+func seedWatchRow(t *testing.T, d *DB, slug string) int64 {
+	t.Helper()
+	id := seedAutomationRow(t, d, slug, "/acme/automations/"+slug+".md", "a-"+slug)
+	_, err := d.Exec(`UPDATE automations SET trigger_kind = 'sync', trigger_spec = '{"sync":"custom_tracks"}', concurrency = 4
+		WHERE id = ?`, id)
+	require.NoError(t, err)
+	return id
+}
+
+// slotAutomationSQL is RunsAtSlot() in SQL: the two agree on a watch
+// recipe, a manual owner recipe, a workbench recipe with a sync trigger and
+// a built-in whatever its trigger.
+func TestAutomation_RunsAtSlotMatchesSlotSQL(t *testing.T) {
 	d := openTestDB(t)
-	owner := mustGetAutomation(t, d, seedAutomationRow(t, d, "digest", "/acme/automations/digest.md", "a1"))
-	builtin := mustGetAutomation(t, d, seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1"))
-	assert.False(t, owner.IsBuiltin())
-	assert.Equal(t, OriginOwner, owner.Origin)
-	assert.True(t, builtin.IsBuiltin())
-	for _, a := range []*Automation{owner, builtin} {
-		assert.Equal(t, a.IsBuiltin(), a.RunsAtSlot(), a.Path)
+	watch := seedWatchRow(t, d, "watch")
+	owner := seedAutomationRow(t, d, "digest", "/acme/automations/digest.md", "a1")
+	wb, err := d.CreateWorkbench("acme", t.TempDir())
+	require.NoError(t, err)
+	wbSync := seedAutomationRow(t, d, "wb-sync", "/acme/wb/automations/wb-sync.md", "a2")
+	_, err = d.Exec(`UPDATE automations SET scope = 'workbench', project_id = ?, trigger_kind = 'sync' WHERE id = ?`, wb, wbSync)
+	require.NoError(t, err)
+	builtin := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")
+	_, err = d.Exec(`UPDATE automations SET trigger_kind = 'manual' WHERE id = ?`, builtin)
+	require.NoError(t, err)
+
+	for id, want := range map[int64]bool{watch: true, owner: false, wbSync: false, builtin: true} {
+		a := mustGetAutomation(t, d, id)
+		var inSQL bool
+		require.NoError(t, d.QueryRow(`SELECT EXISTS (SELECT 1 FROM automations a WHERE a.id = ? AND (`+slotAutomationSQL+`))`,
+			id).Scan(&inSQL))
+		assert.Equal(t, want, a.RunsAtSlot(), "RunsAtSlot of %s", a.Slug)
+		assert.Equal(t, a.RunsAtSlot(), inSQL, "slotAutomationSQL of %s", a.Slug)
+	}
+}
+
+// A watch recipe's runs are slot runs: the executor's restart sweep leaves
+// a running and a waiting one alone, the slot sweep ends them, and the
+// stale-run guard covers a watch run a killed CLI left running.
+func TestMarkInterruptedRuns_WatchRunsAreSlotRuns(t *testing.T) {
+	d := openTestDB(t)
+	watch := seedWatchRow(t, d, "watch")
+	claimAt := func(a int64, trigger string, started time.Time) int64 {
+		run, _ := mustEnqueueAutomationRun(t, d, EnqueueRequest{AutomationID: a, Trigger: trigger})
+		ok, err := d.ClaimAutomationRun(run, "h", "s", 50000, 5, started)
+		require.NoError(t, err)
+		require.True(t, ok)
+		return run
+	}
+	running := claimAt(watch, TriggerSync, runTestNow.Add(-time.Minute))
+	waiting := claimAt(watch, TriggerManual, runTestNow.Add(-time.Minute))
+	require.NoError(t, d.SetAutomationRunWaiting(waiting, WaitApproval))
+	owner := claimAt(seedRunAutomation(t, d, "digest", 1), TriggerManual, runTestNow.Add(-time.Minute))
+
+	n, err := d.MarkInterruptedAutomationRuns(runTestNow)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n, "only the owner recipe's run")
+	wantAutomationRun(t, d, owner, RunFailed, ErrKindInterrupted)
+	wantAutomationRun(t, d, running, RunRunning, "")
+	wantAutomationRun(t, d, waiting, RunWaiting, "")
+	var pending int
+	require.NoError(t, d.QueryRow(`SELECT resume_pending FROM automation_runs WHERE id = ?`, waiting).Scan(&pending))
+	assert.Equal(t, 0, pending, "a waiting watch run is not kept for the executor's resume")
+
+	n, err = d.MarkInterruptedBuiltinRuns(runTestNow)
+	require.NoError(t, err)
+	assert.Equal(t, 2, n)
+	wantAutomationRun(t, d, running, RunFailed, ErrKindInterrupted)
+	wantAutomationRun(t, d, waiting, RunFailed, ErrKindInterrupted)
+
+	stale := claimAt(watch, TriggerManual, runTestNow.Add(-7*time.Minute))
+	n, err = d.MarkStaleBuiltinRuns(runTestNow)
+	require.NoError(t, err)
+	assert.Equal(t, 1, n)
+	wantAutomationRun(t, d, stale, RunFailed, ErrKindInterrupted)
+}
+
+func TestAutomation_RunsAtSlotHoldsPersonalSyncRecipes(t *testing.T) {
+	for _, c := range []struct {
+		a    Automation
+		want bool
+	}{
+		{Automation{Scope: "personal", TriggerKind: TriggerKindSync}, true},
+		{Automation{Scope: "personal", TriggerKind: "manual"}, false},
+		{Automation{Scope: "workbench", TriggerKind: TriggerKindSync}, false},
+		{Automation{Scope: "personal", TriggerKind: "manual", Origin: OriginBuiltin}, true},
+	} {
+		assert.Equal(t, c.want, c.a.RunsAtSlot(), "%+v", c.a)
 	}
 }
 
@@ -204,6 +284,8 @@ func TestBuiltinMigration_RecordCountsAttempts(t *testing.T) {
 	assert.Equal(t, 2, m.Attempts)
 	assert.Equal(t, BuiltinMigrationFailed, m.Status)
 	assert.Equal(t, "boom again", m.Error)
+	assert.True(t, m.UpdatedAt.Equal(t0.Add(time.Hour)))
+	assert.True(t, m.FirstAttemptedAt.Equal(t0), "the first attempt's moment is kept")
 	require.NoError(t, d.RecordBuiltinMigration("morning-brief", BuiltinMigrationDone, "", t0.Add(2*time.Hour)))
 	m, err = d.GetBuiltinMigration("morning-brief")
 	require.NoError(t, err)
@@ -211,6 +293,7 @@ func TestBuiltinMigration_RecordCountsAttempts(t *testing.T) {
 	assert.Equal(t, "", m.Error)
 	assert.Equal(t, 3, m.Attempts)
 	assert.True(t, m.UpdatedAt.Equal(t0.Add(2*time.Hour)))
+	assert.True(t, m.FirstAttemptedAt.Equal(t0))
 	require.Error(t, d.RecordBuiltinMigration("morning-brief", "bogus", "", t0), "the CHECK refuses an unknown status")
 }
 

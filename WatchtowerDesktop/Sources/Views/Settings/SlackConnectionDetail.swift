@@ -313,15 +313,18 @@ struct SlackConnectionDetail: View {
         }
     }
 
-    /// The dictionary editor lives only in Automations → Reactions (ask #366).
+    /// The dictionary editor lives only on the Reactions built-in's card (ask #366, C3).
     private var reactionDictionarySection: some View {
         Section("Reaction commands") {
             HStack {
-                Text("Reaction commands live in Automations → Reactions")
+                Text("Reaction commands live in Automations → Built in → Reactions")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Open") { appState.navigateToAutomations(section: .reactions) }
+                Button("Open") {
+                    appState.openBuiltinAutomation(BuiltinAutomationCard.reactionsID)
+                    appState.bringMainWindowForward()
+                }
             }
         }
     }

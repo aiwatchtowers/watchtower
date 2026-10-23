@@ -46,6 +46,11 @@ package enum AgentActionQueries {
             """, arguments: [conversationID, after, after])
     }
 
+    /// One row by id; nil when it is gone.
+    package static func fetch(_ db: Database, id: Int64) throws -> AgentAction? {
+        try AgentAction.fetchOne(db, sql: "SELECT * FROM agent_actions WHERE id = ?", arguments: [id])
+    }
+
     /// The row's `context_type`; nil when the row is gone.
     package static func contextType(_ db: Database, id: Int64) throws -> String? {
         try String.fetchOne(db, sql: "SELECT context_type FROM agent_actions WHERE id = ?", arguments: [id])

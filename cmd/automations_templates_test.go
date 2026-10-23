@@ -245,7 +245,7 @@ func TestTemplatesCLI_JSON(t *testing.T) {
 	require.NoError(t, err, out)
 	var entries []map[string]any
 	require.NoError(t, json.Unmarshal([]byte(out), &entries), out)
-	require.Len(t, entries, 5)
+	require.Len(t, entries, 6) // on-reaction joined the five (C3)
 	for _, e := range entries {
 		for _, k := range []string{"name", "title", "description", "scope", "trigger_text", "permissions", "outputs", "files", "params", "notes"} {
 			assert.Contains(t, e, k, "entry %v", e["name"])

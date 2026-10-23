@@ -629,7 +629,7 @@ func overrideTemplate(marker string, verbs int) string {
 
 func TestRunForDateWith_PromptOverrideReplacesStoredTemplate(t *testing.T) {
 	database := overrideFixture(t)
-	verbs := countVerbs(prompts.Defaults[prompts.BriefingDaily])
+	verbs := prompts.CountVerbs(prompts.Defaults[prompts.BriefingDaily])
 	store := prompts.New(database, nil)
 	require.NoError(t, store.Seed())
 	require.NoError(t, store.Update(prompts.BriefingDaily, overrideTemplate("STORED-A", verbs), "test"))
@@ -655,7 +655,7 @@ func TestRunForDateWith_PromptOverrideReplacesStoredTemplate(t *testing.T) {
 
 func TestComposeBrief_PlaceholderMismatchUsesDefault(t *testing.T) {
 	database := overrideFixture(t)
-	verbs := countVerbs(prompts.Defaults[prompts.BriefingDaily])
+	verbs := prompts.CountVerbs(prompts.Defaults[prompts.BriefingDaily])
 	gen := &capturingGenerator{response: emptyBriefingJSON}
 	pipe := New(database, testConfig(), gen, log.New(io.Discard, "", 0))
 
@@ -670,7 +670,7 @@ func TestComposeBrief_PlaceholderMismatchUsesDefault(t *testing.T) {
 
 func TestRunForDateWith_ExistingBriefingStillIdempotent(t *testing.T) {
 	database := overrideFixture(t)
-	verbs := countVerbs(prompts.Defaults[prompts.BriefingDaily])
+	verbs := prompts.CountVerbs(prompts.Defaults[prompts.BriefingDaily])
 	gen := &capturingGenerator{response: emptyBriefingJSON}
 	pipe := New(database, testConfig(), gen, log.New(io.Discard, "", 0))
 	date := time.Now().Format("2006-01-02")
@@ -704,7 +704,10 @@ func TestPipelineHasMaterial(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, has)
 
-	dayStart := time.Now().Truncate(24 * time.Hour)
+	// Local midnight: gatherDigests windows the local day; Truncate(24h)
+	// would be UTC midnight and fall outside it east of UTC.
+	now := time.Now()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 	_, err = database.UpsertDigest(db.Digest{ChannelID: "C1", Type: "channel",
 		PeriodFrom: float64(dayStart.Unix()), PeriodTo: float64(dayStart.Add(24 * time.Hour).Unix()),
 		Summary: "Discussion about new feature release", Topics: `[]`, Decisions: `[]`, ActionItems: `[]`, MessageCount: 15})

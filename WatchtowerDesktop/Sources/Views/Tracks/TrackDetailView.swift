@@ -40,6 +40,11 @@ struct TrackDetailView: View {
     @State private var trackStates: [TrackState] = []
     @State private var expandedTrackStateIDs: Set<Int> = []
     @State private var timelineVM: CustomTrackTimelineViewModel?
+    /// A custom track's watch controls, once it is bound or the
+    /// custom-tracks move is done (C3); nil keeps C1's controls.
+    @State private var watch: WatchTrackControls?
+    /// The one-time custom-tracks move is done (`builtin_migrations`).
+    @State private var moveDone = false
 
     init(
         card: InboxTrackCard,
@@ -93,12 +98,15 @@ struct TrackDetailView: View {
                 loadLinkedTargets(db: db)
                 loadJiraIssues(db: db)
                 loadTrackStates(db: db)
-                startTimelineIfCustom(db: db)
+                startWatchIfCustom(db: db)
+                startTimelineIfCustom(db: db, track: watch?.track ?? track)
             }
         }
         .onDisappear {
             timelineVM?.stop()
             timelineVM = nil
+            // A re-appear reads the watch again (Collecting may have changed elsewhere).
+            watch = nil
         }
     }
 
@@ -221,28 +229,84 @@ struct TrackDetailView: View {
 
     // MARK: - Custom-track Activity
 
-    /// A custom track's controls, then its activity timeline. Standalone
-    /// tracks (no linked target) still see the timeline; only the per-event
-    /// "Apply" is gated on the track being linked (the VM's `canApplyActions`).
+    /// The card's track as last read: the watch's copy once Start Watching
+    /// bound it, before the list reads it again.
+    private var currentTrack: Track { watch?.track ?? track }
+
+    private var watchMode: TrackWatchMode {
+        TrackWatchMode.of(isBound: currentTrack.automationID != nil, moveDone: moveDone)
+    }
+
+    /// A custom track's controls (`TrackWatchMode`), then its activity
+    /// timeline. Standalone tracks (no linked target) still see the timeline;
+    /// only the per-event "Apply" is gated on the track being linked (the
+    /// VM's `canApplyActions`). A track nothing watches has no Scan.
     @ViewBuilder
     private var customActivitySection: some View {
         if track.isCustom {
             VStack(alignment: .leading, spacing: Spacing.medium) {
-                CustomTrackControlsSection(track: track, controls: controls, state: $cardState) {
-                    viewModel.load()
+                switch (watchMode, watch) {
+                case let (.watched, watch?):
+                    WatchTrackSection(watch: watch, state: $cardState) { id in
+                        appState.openAutomationEditor(.existing(id))
+                    }
+                case let (.notWatched, watch?):
+                    NotWatchedRow(watch: watch, onStarted: watchStarted)
+                default:
+                    CustomTrackControlsSection(track: track, controls: controls, state: $cardState) {
+                        viewModel.load()
+                    }
                 }
                 if let vm = timelineVM {
                     CustomTrackTimelineView(viewModel: vm, scanRowOpen: $cardState.scanRowOpen,
-                                            showsEarlier: $cardState.showsEarlier)
+                                            showsEarlier: $cardState.showsEarlier,
+                                            canScan: watchMode != .notWatched)
                 }
             }
         }
     }
 
+    /// Reads whether the custom-tracks move is done and, for a bound track
+    /// or after the move, builds its watch controls and reads the watch. A
+    /// failed read keeps C1's controls (the legacy path), and says so in the log.
+    private func startWatchIfCustom(db: DatabaseManager) {
+        guard track.isCustom, watch == nil else { return }
+        do {
+            moveDone = try db.dbPool.read { try BuiltinUpgradeNotice.isMoveDone($0, id: BuiltinUpgradeNotice.customTracksID) }
+        } catch {
+            NSLog("TrackDetailView: reading the custom-tracks move failed: %@", String(describing: error))
+            moveDone = false
+        }
+        guard track.automationID != nil || moveDone else { return }
+        let runner = appState.trackActionRunnerOverride ?? InstalledCLIRunner()
+        let model = WatchTrackControls(track: track, cli: AutomationsCLI(runner: runner),
+                                       controls: controls, reader: db.dbPool)
+        watch = model
+        Task { await loadWatch(model) }
+    }
+
+    /// The watch's instruction is the recipe's text: the card shows it.
+    private func loadWatch(_ model: WatchTrackControls) async {
+        await model.load()
+        if model.error == nil, !model.instructionDraft.isEmpty { cardState.instruction = model.instructionDraft }
+    }
+
+    /// Start Watching landed: the timeline scans the bound track, and the
+    /// list and the Inbox read the binding.
+    private func watchStarted() {
+        guard let db = appState.databaseManager, let watch else { return }
+        timelineVM?.stop()
+        timelineVM = nil
+        startTimelineIfCustom(db: db, track: watch.track)
+        if watch.error == nil, !watch.instructionDraft.isEmpty { cardState.instruction = watch.instructionDraft }
+        viewModel.load()
+        Task { await refreshInbox() }
+    }
+
     /// Permanently deletes a custom track (and its events) through the
     /// seam; the Inbox reads again so the card leaves and the next one shows.
     private func deleteTrack() {
-        let track = track
+        let track = currentTrack
         let trackID = track.id
         Task {
             do {
@@ -261,7 +325,7 @@ struct TrackDetailView: View {
 
     /// Builds and starts the custom-track timeline VM; a confirmed proposed
     /// action is applied through the CLI (the registry).
-    private func startTimelineIfCustom(db: DatabaseManager) {
+    private func startTimelineIfCustom(db: DatabaseManager, track: Track) {
         guard track.isCustom, timelineVM == nil,
               let runner = appState.trackActionRunnerOverride
                 ?? ProcessCLIRunner.makeDefault() as (any CLIRunnerProtocol)? else { return }

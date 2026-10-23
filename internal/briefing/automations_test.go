@@ -146,7 +146,7 @@ func TestBriefing_StoredTemplateWithOldVerbCountFallsBack(t *testing.T) {
 	insertAutomationOutput(t, d, a, run, "briefing", "Fallback output", "body", time.Now().Add(-time.Minute))
 
 	const sentinel = "SENTINEL-V11-BRIEFING-5B07"
-	verbs := countVerbs(prompts.Defaults[prompts.BriefingDaily])
+	verbs := prompts.CountVerbs(prompts.Defaults[prompts.BriefingDaily])
 	require.Equal(t, 17, verbs, "v12 carries 17 verbs")
 	v11 := sentinel + "\n" + strings.Repeat("%s\n", verbs-1)
 	store := prompts.New(d, nil)

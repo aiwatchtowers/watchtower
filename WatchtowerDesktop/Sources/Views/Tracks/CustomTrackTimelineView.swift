@@ -13,12 +13,14 @@ struct CustomTrackTimelineView: View {
     /// The card owns its inline rows and folds (`TrackCardState`).
     @Binding var scanRowOpen: Bool
     @Binding var showsEarlier: Bool
+    /// False for a track nothing watches (C3 "Not watched yet."): no Scan.
+    var canScan = true
     @State private var customSince = Calendar.current.date(byAdding: .day, value: -7, to: Date()) ?? Date()
 
     var body: some View {
         VStack(alignment: .leading, spacing: Spacing.regular) {
             header
-            if scanRowOpen {
+            if scanRowOpen, canScan {
                 scanRow
             }
             status
@@ -36,11 +38,13 @@ struct CustomTrackTimelineView: View {
             if viewModel.isScanRunning {
                 ProgressView().controlSize(.small)
             }
-            Button("Scan") { scanRowOpen.toggle() }
-                .buttonStyle(.kitQuiet)
-                .controlSize(.small)
-                .disabled(viewModel.isScanRunning)
-                .help("Scan a chosen range and fill the timeline")
+            if canScan {
+                Button("Scan") { scanRowOpen.toggle() }
+                    .buttonStyle(.kitQuiet)
+                    .controlSize(.small)
+                    .disabled(viewModel.isScanRunning)
+                    .help("Scan a chosen range and fill the timeline")
+            }
         }
     }
 

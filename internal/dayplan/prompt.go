@@ -39,11 +39,11 @@ func (p *Pipeline) buildPrompt(in *promptInputs, override string) (string, strin
 	}
 	// An override with the wrong verb count would shift every later section
 	// and append %!(EXTRA ...): use the default instead.
-	if got, want := countVerbs(tmpl), countVerbs(prompts.Defaults[prompts.DayPlanGenerate]); override != "" && got != want {
+	if got, want := prompts.CountVerbs(tmpl), prompts.CountVerbs(prompts.Defaults[prompts.DayPlanGenerate]); override != "" && got != want {
 		if p.logger != nil {
 			p.logger.Printf("dayplan: override template has %d placeholders, the default has %d — using the default", got, want)
 		}
-		p.lastPromptNote = fmt.Sprintf("The prompt has %d placeholders where %d are required — the built-in prompt was used.", got, want)
+		p.lastPromptNote = prompts.PlaceholderNote(got, want)
 		tmpl, v = prompts.Defaults[prompts.DayPlanGenerate], 0
 	}
 	version := "default"
@@ -265,9 +265,4 @@ func issueKeyTrackers(issues []db.TrackerIssue) map[string][]string {
 		}
 	}
 	return m
-}
-
-// countVerbs counts %s verbs, not counting an escaped %%s.
-func countVerbs(tmpl string) int {
-	return strings.Count(tmpl, "%s") - strings.Count(tmpl, "%%s")
 }

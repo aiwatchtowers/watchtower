@@ -173,6 +173,25 @@ enum DesignShotCatalog {
             DesignShot(name: "settings-features-builtin", size: NSSize(width: 640, height: 620)) {
                 BuiltinShotFixtures.featuresSettings()
             },
+            // C3: the Reactions and Idea finder cards, Watch for something, the track card through its watch.
+            DesignShot(name: "automations-builtin-reactions", size: NSSize(width: 900, height: 820)) {
+                BuiltinShotFixtures.c3Card(reactions: true)
+            },
+            DesignShot(name: "automations-builtin-ideas", size: NSSize(width: 900, height: 620)) {
+                BuiltinShotFixtures.c3Card(reactions: false)
+            },
+            DesignShot(name: "automations-new-watch", size: NSSize(width: 900, height: 720)) {
+                AnyView(AutomationShotFixtures.newPanel(fixedToAcme: false).detailBackground())
+            },
+            DesignShot(name: "inbox-track-card-watch", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.trackCard(.bound)
+            },
+            DesignShot(name: "inbox-track-card-watch-edited", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.trackCard(.edited)
+            },
+            DesignShot(name: "inbox-track-card-unbound", size: NSSize(width: 1180, height: 720)) {
+                OneInboxShotFixtures.trackCard(.unbound)
+            },
             // Branch review (#712, artboards A–C).
             DesignShot(name: "branch-review-changes", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.changes()

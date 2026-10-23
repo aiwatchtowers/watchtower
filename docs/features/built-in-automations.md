@@ -117,3 +117,96 @@ In this order (C3 appends its own section below and does not rewrite this one):
 6. Its `PrimitiveFunc`s added to `Daemon.BuiltinPrimitives()`.
 7. Its `PromptRef`s and `Parameter`s (new `ParamKind`s in lockstep with Swift's `Parameter.Kind`).
 8. The golden show JSON `testdata/show_<id>.json`, plus a `BuiltinUpgradeNotice.name(for:)` row on the Swift side.
+
+## C3 — Track my threads, Idea finder, Reactions and watched tracks (2026-10-23, board #801)
+
+Tracks, ideas, reactions and custom tracks run on C2's engine, following the eight steps above in order. Spec: `docs/superpowers/specs/2026-10-22-inbox-built-in-automations-design.md` §5.1–§5.4, §6.3, §8.
+
+### The three entries and their slots
+
+| Entry (`id`) | Slot (`trigger: {sync: …}`) | Primitive (capability) | Feature | Prompt | Parameters |
+|---|---|---|---|---|---|
+| Track my threads (`track-my-threads`) | `tracks` | `tracks.extract` (`builtin:tracks.extract`) | `tracks` | `tracks.extract_batch` | none |
+| Idea finder (`idea-finder`) | `ideas` | `ideas.consolidate` | `ideas` | `ideas.consolidate` | `ideas.mine_interval_hours` (`interval`, label **Every**, 1–24 h) |
+| Reactions (`reactions`) | `reactions` | `reaction.compose` | `reaction-commands` | `reactioncmd.command` | `reaction_command_map` (`dictionary`, label **Reactions**) |
+
+Watched tracks are not built-ins: they are Personal recipes at the `custom_tracks` slot (below). `ParamKind` gained `interval` and `dictionary`, in lockstep with Swift's `BuiltinAutomationDetail.Parameter.Kind`. Run Now: Track my threads and Idea finder yes; Reactions no (`NoRunNowNote` "Reactions run for each reaction you place").
+
+### Primitive contracts and seams
+
+- `tracks.extract` → `tracks.Pipeline.RunWith(RunOptions{Prompt})` through `ThreadsHooks.Track` (the `pipeline_runs` "tracks" row). Usage is read after the call (the pipeline resets its counters per run). `tracks.RunOptions` / `LastPromptNote`: an override that does not keep the default's verb count falls back to the default with a note.
+- `ideas.consolidate` → `ideas.Pipeline.RunWith`, `IdeaHooks.Lock` first (`ideas.AcquireBackfillLock`); `ErrBackfillLockHeld` is `skipped`, any other lock error fails the call. Usage is the delta of `AccumulatedUsage`.
+- `reaction.compose` → the seam in `internal/reactioncmd` (`Dispatch`, `Outcome`, `Step`, `Dispatcher`, `SetDispatcher`, `SetDispatchPaused`, `DispatchWith(ctx, d, prompt)`). The pass keeps the tool routing, the budget, the claim and the 25-per-run cap; the dispatcher composes. The primitive returns `{status: done, outcome: dispatched, action_id}`; any other outcome is stored in `builtin.ReactionSlot` and the call errors (the SDK admits only `done|skipped`), and the pass reads the Outcome from `ReactionSlot.End`, not from the run status. `Begin` refuses a second pending entry for one run (`ErrReactionRunBusy`); `End` of a run that ended mid-compose returns a strand outcome. The compose call's token usage rides on `Outcome.Usage` and is the primitive's usage, dispatched or not, so the run row, Costs and the recipe's 20000-token budget count it.
+- `track.scan` (capability `track:scan`, Personal only) → `customtracks.Pipeline.ScanBound`. The instruction arrives as `PrimitiveCall.Prompt`, extra items as `Args["extra"]` (`[]automations.TrackScanItem`, ≤ 40, source_type slack/email/jira/linear, text ≤ 4096 bytes), `since` only from the run input (`BuiltinInput.Since`, RFC 3339, normalised to UTC), never from the script. The scan reports its tokens (`Pipeline.AccumulatedUsage` delta, error path included).
+- Prompt capture: `builtin.CapturePrompts` (confirmed copy only, `DryRunInMemory` with `CapturePrompts` + `StopAtModelCalls`) gives `ideas mine --from` the recipe's prompt.
+
+### Gates
+
+- **Track my threads** (`TrackMyThreadsGate`): tracks on, digests on, a pipeline, a known owner and `tracks.HasMaterial()` (new digests since the last tracks run, or owed retry digests). A quiet cycle writes neither an `automation_runs` nor a `pipeline_runs` row. A failed `HasMaterial` read logs and counts as due. `TrackContext` injection and the rollups stay in `phaseTrackMyThreads` and run even when extraction is not due.
+- **Idea finder** (`IdeaFinderGate`): ideas on, the throttle (`ideas.mine_interval_hours`, default 6; the stamp advances whenever the pipeline ran, errors included) and no fresh `BackfillLockFresh`. The primitive takes the lock itself; losing the race is `skipped`.
+- **Reactions**: no gate. Each claimed ledger row gets its own `sync` run (`Runner.EnqueueSync`, `ExecuteRun`) from `Daemon.setReactionDispatch` / `builtin.ReactionDispatch` (shared by the daemon and the CLI poll). An unconfirmed copy, or a built-in stopped by AUTO-08, pauses claiming (`SetDispatchPaused`); polling, seeding and `slack.reaction_added` events continue, and those reactions fire once after confirmation (cap 25). A dispatch that refuses before the script ran releases the row (REACT-03 holds: nothing composed, nothing lost); a transient executor failure after the claim finalizes `failed`. A cancelled pass releases. The Reactions card has no Run Now.
+- **Watch slot** (`phaseWatchSlot`, before Track my threads): `tracks.enabled && digest.enabled` (FEAT-01: Track my threads off also stops the watches). `NewWatchGate` = `Pipeline.Due` and `HasScanActivity` (digests, auto tracks, inbox; a failed probe reads as not due).
+
+Run order in `runSync`: `phaseWatchSlot` → `phaseTrackMyThreads` → … → `phaseIdeaFinder` (pinned by a static parser test).
+
+### The watch recipe
+
+A watch is a Personal recipe, file `<workspace>/automations/watch-<track id>-<slug>.md`, rendered by `watch.Render` from `internal/automations/watch/template.md`: `trigger: {sync: custom_tracks}`, `permissions: [track:scan]`, no outputs, budget 200000 tokens / 10 minutes, a script of two lines (the `const instruction = "<JSON>";` line at column 0 and a `track.scan({instruction})` call).
+
+- **Binding.** `tracks.automation_id` (migration 00151, unique partial index, no SQL foreign key so the down migration is a `DROP COLUMN`). `db.BindWatchTrack` also copies the recipe's `enabled` to the track; `EnsureWatchTrack` creates the track for a hand-written recipe; `UnbindRemovedWatchTracks` unbinds and pauses the tracks of soft-removed recipes. `GetCustomTracksDueForScan` skips bound tracks (the legacy scan covers only unbound ones).
+- **Collecting/Paused is the recipe's `enabled`.** Two SQL triggers (00151): `trg_automations_enabled_watch_track` mirrors `automations.enabled` to `tracks.enabled`, `trg_automations_delete_watch_track` unbinds and pauses the track when the recipe row is deleted. Auto-disable after repeated failures pauses the track too.
+- **Instruction is recipe text.** The track's `instruction` column mirrors the recipe line on every scan (only for a run of the current `approval_hash`). The card's inline **Save** rewrites only that line (`tracks instruction`); the owner's press is the confirmation. A watch edited into another shape is changed only in the chat.
+- **Triggers and slot.** `syncTriggerAllowed`: a Personal recipe may use `trigger: {sync: custom_tracks}` only with `track:scan` in its manifest, and `track:scan` needs that trigger and is refused in workbench and built-in scopes (AUTO-06 amended). `RunsAtSlot()` = built-in or (Personal and `sync`); the executor poll never claims such runs, the slot sweeps (`slotRunSQL`) include them, `ExecuteBuiltinInline` refuses an unconfirmed or disabled watch.
+- **Run Now** is the manual run with **Scan from** (`automations run <id> --since <RFC 3339>`); it queues a run with `{"builtin":{"since":…}}`, wakes the daemon and says "Runs at the next sync" (`at_next_sync: true` in `--json`). A queued run with another Scan from is refused. "All history" sends `1970-01-01T00:00:00Z`.
+- **Forward dedup is kept** (a cap-hit window overlap would duplicate events); only the two-stage shortlist is backfill-only. Extra items are kept only inside the scan window `(watermark, until]`.
+- **Owner copies of the built-ins** carry the customised prompts through C2's `carryCustomPrompts` (role variant first). Custom-track system prompts (`customtrack.run`, `.shortlist`, `.compose`) stay in Go; a watch's owner-editable text is its instruction.
+
+### CLI paths and the capture rule
+
+- `tracks generate`: after the move, `RunNow` inline of Track my threads (refused with Slack Digests off: "Track my threads needs Slack Digests on"); before it, the legacy pipeline.
+- `tracks scan [<id>] [--since]`: a bound track runs only through `Runner.RunWatchNow` (never `RunForTrack`); an unbound custom track after the move is refused with "track #N is not watched — run `watchtower tracks start N`"; before the move it scans the legacy way.
+- `tracks start <id> [--json]` (owner only; JSON `{"track_id","automation_id"}`) writes, binds and confirms the watch (`watch.Start`); `tracks instruction <id> --text|--text-file` (owner only) rescans the file, requires a confirmed recipe, rewrites the line, writes and confirms. `tracks enable|disable <id>` toggles the track's own recipe; `enable` is owner-only. `tracks create|watch` write a watch and confirm it, except under agent markers (JSON `"confirmed": false`); the owner's confirmation window (showing the text given) is asked before the compose call, so the Desktop's launch grant is still live, and a denial writes nothing.
+- Every owner verb that confirms goes through `refuseUnderAgent` then `confirmWithOwner` (AGENT-07); the Desktop's launches are granted by `OwnerConfirmGrants`. `confirmBound` confirms a bound, unconfirmed recipe only while its text is the untouched template render.
+- `automations run <watch id> [--since]`; `--since` on anything else is refused. `show --json` adds `watch` (`track_id`, `instruction`, `template_shaped`), `list --json` adds `track_id`.
+- `ideas mine` (flagless): after the move, stage-1 as before, then `RunNow` of Idea finder with `AcquireBackfillLock(ws, "cli")`; a held lock prints the lock-held line and writes no run. `ideas mine --from`: `CapturePrompts` takes the prompt from the current recipe and the multi-cycle drain runs in Go under the "CLI backfill" lock; **it writes no `automation_runs` row**, so a long backfill is never cut by a per-run token budget. `reaction-commands poll` installs the dispatcher over a CLI runner (unconfirmed or stopped copy: polls paused, prints why).
+- Before a built-in's move is `done`, each of these paths runs its legacy code unchanged.
+
+### The upgrade (`custom-tracks`)
+
+`upgradeBuiltins` also moves the three entries (as in C2) and ends with `upgradeCustomTracksOnce` (`cmd/builtin_upgrade.go`): for each live (non-dismissed, `ListUnboundCustomTracks`) custom track created at or before the move's first attempt, `watch.Start(Confirm: true)` writes one confirmed recipe, keeping Collecting/Paused, history and linked target. A recipe that was edited since it was rendered (`ErrEditedSinceRendered`) is logged and left unconfirmed, not a failure. A start error after the bind gets one more `Start` in the same attempt; a Retry (`automations upgrade-builtins`) also visits tracks bound earlier whose recipe is still unconfirmed and was written at or after the first attempt (an agent's `tracks create` is never visited). Dismissed tracks stay unbound; `tracks restore` of one prints the `tracks start` hint. `wireBuiltins` sets `active["custom-tracks"]` only when the move is `done` (`activeBuiltins`); until then `phaseWatchSlot` runs the legacy `phaseCustomTrackScan` for unbound tracks and recipes for bound ones, so nothing is scanned twice. The Inbox notice names it "your watched tracks".
+
+### Dual paths
+
+1. `tracks.automation_id` ↔ Swift `Track.automationID` (read-only in Swift; only Core's `WatchTrackControls` sets its copy, then re-reads the row).
+2. `tracks.enabled` / `tracks.instruction` are never written from Swift for a bound track: Collecting goes through `automations enable|disable`, the instruction through `tracks instruction`.
+3. `trg_automations_enabled_watch_track` and `trg_automations_delete_watch_track` (migration 00151) keep `tracks.enabled`/`automation_id` honest for every reader, including the briefing and MCP. A table recreation of `tracks` or `automations` must recreate both triggers.
+4. Migration 00152: `builtin_migrations.first_attempted_at` (TEXT, backfilled from `updated_at`; `RecordBuiltinMigration` sets it on insert and keeps it) bounds which tracks a Retry may move. The Swift notice query names its columns, so it is unaffected.
+5. `RunsAtSlot()` ↔ `slotAutomationSQL` (`a.origin = 'builtin' OR (a.scope = 'personal' AND a.trigger_kind = 'sync')`), pinned by `TestAutomation_RunsAtSlotMatchesSlotSQL`.
+6. `builtin.ParamKind` `interval`/`dictionary` ↔ `Parameter.Kind`; goldens `show_track_my_threads.json`, `show_idea_finder.json`, `show_reactions.json` decoded through `#filePath`.
+7. `AutomationTriggerText` (`tracks` → "After every sync", `ideas` → "Every few hours", `reactions` → "When you react in Slack", `custom_tracks` → "After every sync") and `AutomationCardPresentation` permission lines (`builtin:tracks.extract` "Update your tracks from Slack digests", `builtin:ideas.consolidate` "Find ideas and decisions in your messages", `builtin:reaction.compose` "Turn your reactions into proposals", `track:scan` "Add events to this watch's track") ↔ the manifest.
+8. `BuiltinUpgradeNotice.names` (Track my threads, Idea finder, Reactions, "your watched tracks") ↔ `builtin.Entry.Name` and the `custom-tracks` migration id; `isMoveDone` reads `builtin_migrations`.
+9. `ideas.mine_interval_hours` ↔ the Idea finder card's **Every** stepper (`ConfigService.saveBuiltinParameters`, one daemon restart), the `reaction_command_map` ↔ `ReactionDictionaryEditor` under **When**.
+10. Daemon gates ↔ `FeatureReadiness` (`phaseTrackMyThreads`, `phaseWatchSlot`, `phasePeopleCards`: `Tracks.Enabled && Digest.Enabled`).
+
+### Desktop
+
+- Automations: one list (no section picker, no `automations.section` key); the Reactions, Track my threads and Idea finder cards under **Built in**. The Idea finder card has **Every N hours** (stepper 1–24, saved with **Save**). The Reactions card embeds the dictionary editor under **When** (in-place tool picker, on/off switch, **Remove**, a **+** that opens an inline add row), has no Run Now, and has **New reaction automation**, which opens the `on-reaction` gallery template in Personal.
+- **+** → **Watch for something**: opens the editor chat with "Watch for " prefilled (Personal only).
+- Track card (`TrackDetailView`): `TrackWatchMode` `.watched` (Collecting/Paused switch, **Watch instruction** with **Edit**/**Save**, a watch changed in the chat shows the instruction read-only with **Edit in Chat**), `.notWatched` (unbound, after the move: "Not watched yet." and **Start Watching**, no Scan) and `.legacy` (before the move: C1's controls). **Scan** ranges send `--since` for a watch; a bound scan notes "Runs at the next sync".
+- Approving a `create_track` card runs `tracks start` for the new track (`AgentActionFeed.approve`); a failure shows "Approved, but the track is not watched yet: …". A track applied with no press shows "Not watched yet.".
+- Settings → Features: the Tracks, Ideas and Reaction commands rows and the Ideas tuning section are gone (`FeatureManagerSection.movedToBuiltins`); the pointer reads "Briefing, Day Plan, Tracks, Ideas and Reaction commands". The Inbox cheat sheet's button is **Edit reaction commands in Automations…**, Slack's **Open** goes to the Reactions card.
+- `AutomationsSection`, `ReactionsSectionView`, `TracksSectionView` and `ReactionAutomationRows` are deleted; `CustomTrackManagementSheet` stays for Targets.
+
+### v1 limits
+
+- The legacy `phaseTracks`, `phaseIdeas` and `phaseCustomTrackScan` code stays until the release after C3 (fallback for a failed move or a failed sync of the row).
+- Dismissed custom tracks are not migrated and stay unbound.
+- `ideas mine --from` writes no `automation_runs` row.
+- The `on-reaction` template shows the message text only for the channel's latest 200 messages; an older one gets a fallback card "Reacted with :<emoji>:" naming the channel id and ts (the event holds ids only, so there is no link).
+- A watch's **All history** is a full backfill from the epoch, bounded only by what Watchtower holds and the scan's caps.
+- A recipe an agent binds in the same second as the move's first attempt counts as the move's (it is confirmed only while still the untouched template).
+- The gate probes only the pipeline's own activity: a hand-written watch that gathers `extra` through read tools does not run in a cycle without digests, auto tracks or inbox activity.
+- A Retry while the daemon runs can double-scan one cycle (the daemon changes path at restart, as in C2).
+- `tracks watch <target-id>` requires `--text` but has no such flag (pre-existing; follow-up).
+- Turning off Track my threads also stops the watches (FEAT-01).
+- A failed owner copy of Track my threads waits for a digest newer than the failed attempt; that mark lives in memory, so a daemon restart allows one more attempt.

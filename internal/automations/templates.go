@@ -124,6 +124,43 @@ func templateByName(name string) (Template, bool) {
 // comma-separated list of such values (templateParamValues).
 var templateParamValue = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
 
+// templateParamRule is a param's own value rule, in place of
+// templateParamValue and the comma list: value is what its value may hold,
+// single refuses a list, allowed is the refusal's hint.
+type templateParamRule struct {
+	value   *regexp.Regexp
+	single  bool
+	allowed string
+}
+
+// templateParamRules are the params with their own rule, by key. <EMOJI> is
+// one Slack emoji short name, which may hold + and - (+1, -1); it lands in a
+// YAML double-quoted string, where neither needs escaping.
+var templateParamRules = map[string]templateParamRule{
+	"EMOJI": {value: regexp.MustCompile(`^[A-Za-z0-9_.+-]+$`), single: true,
+		allowed: "one emoji short name: letters, digits, _ . + and -"},
+}
+
+// checkTemplateParam checks one --param value against its rule (or the
+// default: a comma-separated list of templateParamValue values).
+func checkTemplateParam(key, value string) error {
+	rule, ok := templateParamRules[key]
+	if !ok {
+		rule = templateParamRule{value: templateParamValue,
+			allowed: "letters, digits, _ . and -; several values separated by commas"}
+	}
+	values := TemplateParamValues(value)
+	if rule.single && len(values) != 1 {
+		return fmt.Errorf("param %s: %q is not a valid value (allowed: %s)", key, value, rule.allowed)
+	}
+	for _, v := range values {
+		if !rule.value.MatchString(v) {
+			return fmt.Errorf("param %s: %q is not a valid value (allowed: %s)", key, value, rule.allowed)
+		}
+	}
+	return nil
+}
+
 // templateParamDefaults resolve a param the owner left out at install, so a
 // one-click install (the Desktop gallery passes no --param) gives a copy
 // that parses (#582).
@@ -228,11 +265,8 @@ func RenderTemplate(name string, params map[string]string) (map[string][]byte, e
 		if !slices.ContainsFunc(t.Params, func(p TemplateParam) bool { return p.Key == key }) {
 			return nil, fmt.Errorf("template %s has no param %s", name, key)
 		}
-		for _, v := range TemplateParamValues(value) {
-			if !templateParamValue.MatchString(v) {
-				return nil, fmt.Errorf("param %s: %q is not a valid value (allowed: letters, digits, _ . and -; "+
-					"several values separated by commas)", key, value)
-			}
+		if err := checkTemplateParam(key, value); err != nil {
+			return nil, err
 		}
 	}
 	out := make(map[string][]byte, len(t.Files))

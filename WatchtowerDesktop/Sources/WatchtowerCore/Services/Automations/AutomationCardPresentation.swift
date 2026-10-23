@@ -239,7 +239,10 @@ package enum AutomationCardPresentation {
     /// `automations.BuiltinPrimitiveNames`.
     private static let builtinPrimitives: [String: String] = [
         "brief.compose": "Write your daily brief",
-        "plan.compose": "Plan your day"
+        "plan.compose": "Plan your day",
+        "tracks.extract": "Update your tracks from Slack digests",
+        "ideas.consolidate": "Find ideas and decisions in your messages",
+        "reaction.compose": "Turn your reactions into proposals"
     ]
 
     /// `tool:`, `mcp:`, `shell:` and `builtin:` entries.
@@ -286,7 +289,8 @@ package enum AutomationCardPresentation {
         }
     }
 
-    /// The model, agent, ask, session and Inbox-button capabilities.
+    /// The model, agent, ask, session, Inbox-button and watch capabilities
+    /// (`track:scan`, twin of Go `automations.CapabilityForPrimitive`).
     private static func runtimeLine(cap: String, verb: String, scope: String?) -> String? {
         switch (cap, verb, scope) {
         case ("llm", "light", nil): "Use the light model"
@@ -297,6 +301,7 @@ package enum AutomationCardPresentation {
         case ("session", "start", "claude"): "Start Claude Code sessions"
         case ("session", "start", "codex"): "Start Codex sessions"
         case ("inbox", "reply", nil): "Reacts to its own Inbox buttons"
+        case ("track", "scan", nil): "Add events to this watch's track"
         default: nil
         }
     }

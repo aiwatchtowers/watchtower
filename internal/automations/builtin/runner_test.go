@@ -424,3 +424,49 @@ func TestRunner_RunNowNeverCancelsARunTheSlotClaimed(t *testing.T) {
 		t.Errorf("runs = %+v, want the claimed run still running", runs)
 	}
 }
+
+// The guard keeps its name from RunSyncInline (removed: no caller); the
+// refusal it pins was always EnqueueSync's, which every sync run outside
+// the slot goes through.
+func TestRunSyncInline_OffOrUnconfirmedWritesNothing(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	f.cfg.Briefing.Enabled, f.cfg.DayPlan.Enabled = false, false
+	if _, err := f.runner.EnqueueSync(mbID, automations.BuiltinInput{}); !isNotRunnable(err) {
+		t.Errorf("off EnqueueSync: %v; want ErrNotRunnable", err)
+	}
+	f.cfg.Briefing.Enabled, f.cfg.DayPlan.Enabled = true, true
+	f.writeCopy(t, editedCopy(t, mustEntry(t), "the owner's brief"))
+	f.sync(t)
+	if _, err := f.runner.EnqueueSync(mbID, automations.BuiltinInput{}); !isNotRunnable(err) {
+		t.Errorf("unconfirmed: %v; want ErrNotRunnable", err)
+	}
+	if n := len(f.runs(t)); n != 0 || len(f.brief.snapshot()) != 0 {
+		t.Errorf("%d runs, %d brief calls; want none", n, len(f.brief.snapshot()))
+	}
+}
+
+func TestEnqueueSync_StaleQueuedRunWithOtherInputIsReplaced(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	stale, _, err := f.d.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: f.row(t).ID, Trigger: db.TriggerSync,
+		EventJSON: `{"builtin":{"date":"2026-10-01"}}`, Now: f.clock.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := f.runner.EnqueueSync(mbID, automations.BuiltinInput{Date: "2026-10-21"})
+	if err != nil {
+		t.Fatalf("EnqueueSync: %v", err)
+	}
+	if run.ID == stale || run.EventJSON != `{"builtin":{"date":"2026-10-21"}}` {
+		t.Fatalf("run = %+v; want a new run with its own input", run)
+	}
+	old, err := f.d.GetAutomationRun(stale)
+	if err != nil || old.Status != db.RunCancelled {
+		t.Errorf("stale run = %+v, %v; want cancelled", old, err)
+	}
+	same, err := f.runner.EnqueueSync(mbID, automations.BuiltinInput{Date: "2026-10-21"})
+	if err != nil || same.ID != run.ID {
+		t.Errorf("same input = %+v, %v; want the queued run %d", same, err, run.ID)
+	}
+}

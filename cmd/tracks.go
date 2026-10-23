@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"watchtower/internal/automations"
+	"watchtower/internal/automations/builtin"
+	"watchtower/internal/automations/watch"
 	"watchtower/internal/config"
 	"watchtower/internal/customtracks"
 	"watchtower/internal/db"
@@ -108,6 +112,26 @@ var tracksEventsCmd = &cobra.Command{
 	RunE:  runTracksEvents,
 }
 
+var (
+	tracksStartFlagJSON           bool
+	tracksInstructionFlagText     string
+	tracksInstructionFlagTextFile string
+)
+
+var tracksStartCmd = &cobra.Command{
+	Use:   "start <id>",
+	Short: "Watch a custom track: make its watch recipe and confirm it (owner only)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTracksStart,
+}
+
+var tracksInstructionCmd = &cobra.Command{
+	Use:   "instruction <id>",
+	Short: "Change a watched track's instruction and confirm it (owner only)",
+	Args:  cobra.ExactArgs(1),
+	RunE:  runTracksInstruction,
+}
+
 var tracksEnableCmd = &cobra.Command{
 	Use:   "enable <id>",
 	Short: "Enable scanning for a custom track",
@@ -130,7 +154,11 @@ func init() {
 	tracksCmd.AddCommand(tracksRestoreCmd)
 	tracksCmd.AddCommand(tracksGenerateCmd)
 	tracksCmd.AddCommand(tracksCreateCmd, tracksWatchCmd, tracksScanCmd,
-		tracksEventsCmd, tracksEnableCmd, tracksDisableCmd)
+		tracksEventsCmd, tracksEnableCmd, tracksDisableCmd, tracksStartCmd, tracksInstructionCmd)
+	tracksStartCmd.Flags().BoolVar(&tracksStartFlagJSON, "json", false, "print {track_id, automation_id} as JSON")
+	tracksInstructionCmd.Flags().StringVar(&tracksInstructionFlagText, "text", "", "the new watch instruction")
+	tracksInstructionCmd.Flags().StringVar(&tracksInstructionFlagTextFile, "text-file", "", "read the instruction from this file instead of --text")
+	tracksInstructionCmd.MarkFlagsMutuallyExclusive("text", "text-file")
 	tracksCreateCmd.Flags().StringVar(&tracksCreateFlagText, "text", "", "description of what to watch")
 	tracksCreateCmd.Flags().StringVar(&tracksCreateFlagTextFile, "text-file", "", "read the description from this file instead of --text")
 	tracksCreateCmd.MarkFlagsMutuallyExclusive("text", "text-file")
@@ -607,10 +635,39 @@ func runTracksRestore(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(cmd.OutOrStdout(), "Track #%d restored\n", id)
+	// A dismissed custom track was not moved to a watch recipe (it scanned
+	// nothing); restored, it scans again only once it is watched.
+	if t, err := database.GetTrackByID(id); err == nil && t.Origin == "custom" && t.AutomationID == 0 {
+		fmt.Fprintf(cmd.OutOrStdout(), "Run `watchtower tracks start %d` to watch it again.\n", id)
+	}
 	return nil
 }
 
-func runTracksGenerate(cmd *cobra.Command, args []string) error {
+// tracksProgressJSON is one `tracks generate --progress-json` line.
+type tracksProgressJSON struct {
+	Pipeline         string  `json:"pipeline"`
+	Done             int     `json:"done"`
+	Total            int     `json:"total"`
+	Status           string  `json:"status,omitempty"`
+	InputTokens      int     `json:"input_tokens"`
+	OutputTokens     int     `json:"output_tokens"`
+	Error            string  `json:"error,omitempty"`
+	Finished         bool    `json:"finished"`
+	ItemsFound       int     `json:"items_found"`
+	StepDurationSec  float64 `json:"step_duration_seconds,omitempty"`
+	StepInputTokens  int     `json:"step_input_tokens,omitempty"`
+	StepOutputTokens int     `json:"step_output_tokens,omitempty"`
+	TotalAPITokens   int     `json:"total_api_tokens,omitempty"`
+}
+
+// runTracksGenerate runs the tracks extraction once now. Once Track my
+// threads has moved to Automations it runs through the built-in's current
+// recipe (the shipped text or the owner's confirmed copy) as one manual run
+// inline in this process; before, the pipeline straight with the prompt
+// store's row, as the daemon's legacy phase does. Either way the run is
+// tracked as pipeline_runs "tracks" (cli), and the output and progress lines
+// are as they always were.
+func runTracksGenerate(cmd *cobra.Command, _ []string) error {
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
@@ -633,38 +690,34 @@ func runTracksGenerate(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 
-	logger := log.New(cmd.ErrOrStderr(), "[tracks] ", log.LstdFlags)
+	moved, err := builtinMoved(database, trackMyThreadsID)
+	if err != nil {
+		return err
+	}
+	ctx := cmdContext(cmd)
+	if moved {
+		if !cfg.Digest.Enabled {
+			return errors.New(msgTrackMyThreadsNeedsDigests) //nolint:staticcheck // ST1005: the built-in's name
+		}
+		if err := syncBuiltinForCLI(ctx, cfg, database, trackMyThreadsID); err != nil {
+			return err
+		}
+	}
 
-	gen, cleanupPool := cliPooledGenerator(cfg)
+	logger := log.New(cmd.ErrOrStderr(), "[tracks] ", log.LstdFlags)
+	gen, cleanupPool := cliBuiltinGenerator(cfg)
 	defer cleanupPool()
 	pipe := tracks.New(database, cfg, gen, logger)
 	pipe.SetPromptStore(prompts.New(database, nil))
 
 	out := cmd.OutOrStdout()
+	emit := func(p tracksProgressJSON) { data, _ := json.Marshal(p); fmt.Fprintln(out, string(data)) }
 
+	var runID int64
 	if tracksGenFlagProgress {
-		type pj struct {
-			Pipeline         string  `json:"pipeline"`
-			Done             int     `json:"done"`
-			Total            int     `json:"total"`
-			Status           string  `json:"status,omitempty"`
-			InputTokens      int     `json:"input_tokens"`
-			OutputTokens     int     `json:"output_tokens"`
-			Error            string  `json:"error,omitempty"`
-			Finished         bool    `json:"finished"`
-			ItemsFound       int     `json:"items_found"`
-			StepDurationSec  float64 `json:"step_duration_seconds,omitempty"`
-			StepInputTokens  int     `json:"step_input_tokens,omitempty"`
-			StepOutputTokens int     `json:"step_output_tokens,omitempty"`
-			TotalAPITokens   int     `json:"total_api_tokens,omitempty"`
-		}
-		emit := func(p pj) { data, _ := json.Marshal(p); fmt.Fprintln(out, string(data)) }
-
-		runID, _ := database.CreatePipelineRun("tracks", "cli", "auto")
-
 		pipe.OnProgress = func(done, total int, status string) {
 			inTok, outTok, _, totalAPI := pipe.AccumulatedUsage()
-			p := pj{Pipeline: "tracks", Done: done, Total: total, Status: status, InputTokens: inTok, OutputTokens: outTok, TotalAPITokens: totalAPI}
+			p := tracksProgressJSON{Pipeline: "tracks", Done: done, Total: total, Status: status, InputTokens: inTok, OutputTokens: outTok, TotalAPITokens: totalAPI}
 			if pipe.LastStepDurationSeconds > 0 {
 				p.StepDurationSec = pipe.LastStepDurationSeconds
 			}
@@ -684,18 +737,23 @@ func runTracksGenerate(cmd *cobra.Command, args []string) error {
 				})
 			}
 		}
+	} else {
+		fmt.Fprintln(out, "Running tracks pipeline...")
+	}
 
-		created, updated, err := pipe.Run(cmd.Context())
-		inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
-		errMsg := ""
-		if err != nil {
-			errMsg = err.Error()
-			emit(pj{Pipeline: "tracks", Finished: true, Error: errMsg, InputTokens: inTok, OutputTokens: outTok, TotalAPITokens: totalAPI})
-		} else {
-			emit(pj{Pipeline: "tracks", Finished: true, ItemsFound: created + updated, InputTokens: inTok, OutputTokens: outTok, TotalAPITokens: totalAPI})
-		}
-
+	// track is the run's pipeline_runs row: the recipe's tracks.extract and
+	// the legacy run alike.
+	var created, updated int
+	track := func(run func() (int, int, error)) (int, int, error) {
+		runID, _ = database.CreatePipelineRun("tracks", "cli", "auto")
+		var runErr error
+		created, updated, runErr = run()
 		if runID > 0 {
+			inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
+			errMsg := ""
+			if runErr != nil {
+				errMsg = runErr.Error()
+			}
 			var pFrom, pTo *float64
 			if pipe.LastFrom > 0 {
 				pFrom = &pipe.LastFrom
@@ -705,43 +763,38 @@ func runTracksGenerate(cmd *cobra.Command, args []string) error {
 			}
 			_ = database.CompletePipelineRun(runID, created+updated, inTok, outTok, cost, totalAPI, pFrom, pTo, errMsg)
 		}
+		return created, updated, runErr
+	}
 
+	if moved {
+		r := newCLIBuiltinRunner(cfg, database, gen, logger, cliBuiltinPipes{tracks: pipe, tracksHooks: builtin.ThreadsHooks{Track: track}})
+		err = runBuiltinNow(ctx, r, trackMyThreadsID, automations.BuiltinInput{})
+	} else {
+		_, _, err = track(func() (int, int, error) { return pipe.Run(ctx) })
 		if err != nil {
-			return fmt.Errorf("tracks pipeline: %w", err)
+			err = fmt.Errorf("tracks pipeline: %w", err)
 		}
-		return nil
 	}
 
-	fmt.Fprintln(out, "Running tracks pipeline...")
-
-	runID, _ := database.CreatePipelineRun("tracks", "cli", "auto")
-
-	created, updated, err := pipe.Run(cmd.Context())
-	inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
-	errMsg := ""
-	if err != nil {
-		errMsg = err.Error()
-	}
-	if runID > 0 {
-		var pFrom, pTo *float64
-		if pipe.LastFrom > 0 {
-			pFrom = &pipe.LastFrom
+	if tracksGenFlagProgress {
+		inTok, outTok, _, totalAPI := pipe.AccumulatedUsage()
+		p := tracksProgressJSON{Pipeline: "tracks", Finished: true, InputTokens: inTok, OutputTokens: outTok, TotalAPITokens: totalAPI}
+		if err != nil {
+			p.Error = err.Error()
+		} else {
+			p.ItemsFound = created + updated
 		}
-		if pipe.LastTo > 0 {
-			pTo = &pipe.LastTo
-		}
-		_ = database.CompletePipelineRun(runID, created+updated, inTok, outTok, cost, totalAPI, pFrom, pTo, errMsg)
+		emit(p)
+		return err
 	}
 	if err != nil {
-		return fmt.Errorf("tracks pipeline: %w", err)
+		return err
 	}
-
 	if created > 0 || updated > 0 {
 		fmt.Fprintf(out, "Tracks: created %d, updated %d\n", created, updated)
 	} else {
 		fmt.Fprintln(out, "No new or updated tracks.")
 	}
-
 	return nil
 }
 
@@ -768,6 +821,15 @@ func openTracksDB() (*db.DB, error) {
 	return database, err
 }
 
+// msgConfirmInAutomations is the note of a watch recipe left unconfirmed
+// (written under an AI agent's markers).
+const msgConfirmInAutomations = "Confirm it in Automations."
+
+// runTracksCreate composes a custom track from a description, creates it and
+// starts its watch recipe (watch.Start). The owner's command confirms the
+// recipe it renders; under an AI agent's markers the recipe is left
+// unconfirmed (it scans nothing until the owner confirms it) and the JSON
+// says so.
 func runTracksCreate(cmd *cobra.Command, _ []string) error {
 	text, err := textFlagValue(tracksCreateFlagText, tracksCreateFlagTextFile)
 	if err != nil {
@@ -787,9 +849,22 @@ func runTracksCreate(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	// The recipe is confirmed only by the owner (AGENT-07): no agent marker,
+	// and the owner's confirmation in the Desktop, asked before the compose
+	// call (up to 120 s) so the Desktop's launch grant is still live; a
+	// denial writes nothing. Under an agent's markers the recipe waits,
+	// unconfirmed, for Automations.
+	confirm := refuseUnderAgent(tracksStartVerb) == nil
+	if confirm {
+		if err := confirmWithOwner(tracksStartVerb, tracksCreateConfirmDetail(text)); err != nil {
+			return err
+		}
+	}
 	applyProviderOverride(cfg)
-	pipe := customtracks.New(database, cliGenerator(cfg), cfg.Digest.Language, nil)
-	ctx, cancel := context.WithTimeout(cmd.Context(), 120*time.Second)
+	gen, closeGen := cliBuiltinGenerator(cfg)
+	defer closeGen()
+	pipe := customtracks.New(database, gen, cfg.Digest.Language, nil)
+	ctx, cancel := context.WithTimeout(cmdContext(cmd), 120*time.Second)
 	defer cancel()
 	res, err := pipe.Compose(ctx, tracksCreateFlagTarget, text)
 	if err != nil {
@@ -802,9 +877,28 @@ func runTracksCreate(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	if _, err := startTrackWatch(ctx, cfg, database, int(id), confirm); err != nil {
+		return fmt.Errorf("track #%d was created but is not watched: %w — run `watchtower tracks start %d`", id, err, id)
+	}
+	body := map[string]any{"id": id, "title": res.Title, "instruction": res.Instruction}
+	if !confirm {
+		body["confirmed"] = false
+		body["note"] = msgConfirmInAutomations
+	}
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	enc.SetIndent("", "  ")
-	return enc.Encode(map[string]any{"id": id, "title": res.Title, "instruction": res.Instruction})
+	return enc.Encode(body)
+}
+
+// startTrackWatch makes custom track id a watch (watch.Start through the
+// personal folder's indexer), confirming the recipe when confirm is set.
+func startTrackWatch(ctx context.Context, cfg *config.Config, database *db.DB, id int, confirm bool) (*db.Automation, error) {
+	t, err := database.GetTrackByID(id)
+	if err != nil {
+		return nil, fmt.Errorf("track #%d not found: %w", id, err)
+	}
+	ix := automations.NewIndexer(database, cfg.WorkspaceDir(), automations.RealClock{})
+	return watch.Start(ctx, database, ix, cfg.WorkspaceDir(), *t, watch.StartOptions{Confirm: confirm})
 }
 
 func runTracksWatch(cmd *cobra.Command, args []string) error {
@@ -816,6 +910,187 @@ func runTracksWatch(cmd *cobra.Command, args []string) error {
 	return runTracksCreate(cmd, nil)
 }
 
+// runTracksStart is `tracks start <id>`, owner only: it makes custom track
+// id a watch with its recipe confirmed (Start Watching).
+func runTracksStart(cmd *cobra.Command, args []string) error {
+	if err := refuseUnderAgent(tracksStartVerb); err != nil {
+		return err
+	}
+	id, err := parseTrackID(args[0])
+	if err != nil {
+		return err
+	}
+	database, cfg, err := openTracksDBWithConfig()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	if err := confirmWithOwner(tracksStartVerb, trackWatchConfirmDetail(database, id)); err != nil {
+		return err
+	}
+	a, err := startTrackWatch(cmdContext(cmd), cfg, database, id, true)
+	if errors.Is(err, watch.ErrEditedSinceRendered) {
+		return errors.New(msgWatchNotConfirmed)
+	}
+	if err != nil {
+		return err
+	}
+	if tracksStartFlagJSON {
+		return writeJSON(cmd.OutOrStdout(), map[string]any{"track_id": id, "automation_id": a.ID})
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Track #%d is watched by automation #%d.\n", id, a.ID)
+	return nil
+}
+
+// tracksCreateConfirmDetail is the confirmation window of `tracks
+// create|watch`: the text the owner gave, which the watch is composed from.
+func tracksCreateConfirmDetail(text string) string {
+	return "Watch for:\n\n" + text + "\n\nWatchtower writes the watch's instruction from this text."
+}
+
+// trackWatchConfirmDetail is the owner's confirmation window text for
+// starting track id's watch: the bound recipe as it is, or the recipe Start
+// would write.
+func trackWatchConfirmDetail(database *db.DB, id int) string {
+	t, err := database.GetTrackByID(id)
+	if err != nil {
+		return detailUnavailable(err)
+	}
+	if t.AutomationID != 0 {
+		a, err := database.GetAutomation(t.AutomationID)
+		if err != nil {
+			return detailUnavailable(err)
+		}
+		return fmt.Sprintf("Track #%d %q\n\n%s", t.ID, t.Text, recipeConfirmDetail(a))
+	}
+	data, err := watch.StartRecipe(*t)
+	if err != nil {
+		return detailUnavailable(err)
+	}
+	return fmt.Sprintf("Track #%d %q\n\n%s", t.ID, t.Text, data)
+}
+
+// The `tracks instruction` refusals.
+const (
+	tracksStartVerb        = "start watching a track"
+	msgWatchChangedInChat  = "This watch was changed in the chat — change it there."
+	msgWatchNotConfirmed   = "confirm this watch in Automations first"
+	msgWatchScanningNow    = "this watch is scanning now — try again in a minute"
+	msgTrackNotWatchedFmt  = "track #%d is not watched — run `watchtower tracks start %d`"
+	msgWatchScanQueued     = "a scan of this watch with another Scan from is already queued for the next sync"
+	msgWatchPausedFmt      = "this watch is paused — run `watchtower tracks enable %d` first"
+	msgWatchStoppedFmt     = "this watch was stopped after a run that would not end — run `watchtower tracks enable %d` to turn it on again"
+	tracksInstructionVerb  = "change a watch's instruction"
+	tracksWatchEnableVerb  = "turn a watch on"
+	tracksWatchScanTimeout = 420 * time.Second
+)
+
+// runTracksInstruction is `tracks instruction <id> --text|--text-file`,
+// owner only: it rewrites the bound watch recipe's instruction line
+// (watch.SetInstruction), saves it through the indexer, confirms the new
+// text (the owner's press is the confirmation) and mirrors the instruction
+// onto the track. Only a confirmed, template-shaped recipe is changed here.
+func runTracksInstruction(cmd *cobra.Command, args []string) error {
+	if err := refuseUnderAgent(tracksInstructionVerb); err != nil {
+		return err
+	}
+	id, err := parseTrackID(args[0])
+	if err != nil {
+		return err
+	}
+	text, err := textFlagValue(tracksInstructionFlagText, tracksInstructionFlagTextFile)
+	if err != nil {
+		return err
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return errors.New("--text or --text-file is required")
+	}
+	database, cfg, err := openTracksDBWithConfig()
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	t, err := database.GetTrackByID(id)
+	if err != nil {
+		return fmt.Errorf("track #%d not found: %w", id, err)
+	}
+	if t.AutomationID == 0 {
+		return fmt.Errorf(msgTrackNotWatchedFmt, id, id)
+	}
+	ctx := cmdContext(cmd)
+	ix := automations.NewIndexer(database, cfg.WorkspaceDir(), automations.RealClock{})
+	scope := automations.Scope{Kind: automations.ScopePersonal}
+	dir, err := automations.CanonicalDir(automations.PersonalDir(cfg.WorkspaceDir()))
+	if err != nil {
+		return err
+	}
+	a, err := database.GetAutomation(t.AutomationID)
+	if err != nil {
+		return err
+	}
+	// The file as it is now (a hand edit not indexed yet counts).
+	if a, err = ix.IndexedRecipeAt(ctx, scope, dir, a.Path); err != nil {
+		return err
+	}
+	if !a.Confirmed() {
+		return errors.New(msgWatchNotConfirmed)
+	}
+	data, err := watch.SetInstruction([]byte(a.RecipeText), text)
+	if errors.Is(err, watch.ErrNotTemplateShaped) {
+		return errors.New(msgWatchChangedInChat) //nolint:staticcheck // ST1005: the text the Desktop shows
+	}
+	if err != nil {
+		return err
+	}
+	detail := fmt.Sprintf("Track #%d %q\nNew instruction:\n%s\n\n%s", t.ID, t.Text, text, data)
+	if err := confirmWithOwner(tracksInstructionVerb, detail); err != nil {
+		return err
+	}
+	saved, err := ix.WriteRecipe(ctx, scope, dir, a.Path, data)
+	if err != nil {
+		return err
+	}
+	if err := database.ConfirmAutomation(saved.ID, saved.ApprovalHash, time.Now()); err != nil {
+		return err
+	}
+	if err := database.SetWatchInstruction(t.ID, text); err != nil {
+		return err
+	}
+	fmt.Fprintf(cmd.OutOrStdout(), "Track #%d watches for: %s\n", id, text)
+	return nil
+}
+
+// parseTrackID parses a positive track id.
+func parseTrackID(arg string) (int, error) {
+	id, err := strconv.Atoi(arg)
+	if err != nil || id <= 0 {
+		return 0, fmt.Errorf("invalid track id %q: must be a positive integer", arg)
+	}
+	return id, nil
+}
+
+// eventsScanner is the custom-track scan as track.scan calls it, keeping
+// the events of every scan it ran (`tracks scan` prints them).
+type eventsScanner struct {
+	*customtracks.Pipeline
+	events []db.TrackEvent
+}
+
+func (s *eventsScanner) ScanBound(ctx context.Context, t db.Track, o customtracks.ScanOptions) ([]db.TrackEvent, error) {
+	events, err := s.Pipeline.ScanBound(ctx, t, o)
+	s.events = append(s.events, events...)
+	return events, err
+}
+
+// runTracksScan scans now. A track bound to a watch recipe is scanned only
+// through its recipe, as one manual run inline (Run Now; --since is its Scan
+// from), never with the track's own instruction: a hand-edited recipe the
+// owner has not confirmed is never scanned. An unbound custom track is
+// scanned the old way only while the custom tracks have not moved to watch
+// recipes; after the move it is not watched. With no id: the unbound tracks
+// the old way (before the move only), then every enabled, confirmed watch
+// recipe, one after another.
 func runTracksScan(cmd *cobra.Command, args []string) error {
 	database, cfg, err := openTracksDBWithConfig()
 	if err != nil {
@@ -823,38 +1098,143 @@ func runTracksScan(cmd *cobra.Command, args []string) error {
 	}
 	defer database.Close()
 	applyProviderOverride(cfg)
-	pipe := customtracks.New(database, cliGenerator(cfg), cfg.Digest.Language, nil)
-	ctx, cancel := context.WithTimeout(cmd.Context(), 420*time.Second)
+	since := ""
+	if tracksScanFlagSince != "" {
+		at, err := time.Parse(time.RFC3339, tracksScanFlagSince)
+		if err != nil {
+			return fmt.Errorf("invalid --since %q: want an ISO8601 instant", tracksScanFlagSince)
+		}
+		since = at.UTC().Format(watermarkLayout)
+	}
+	moved, err := builtinMoved(database, customTracksID)
+	if err != nil {
+		return err
+	}
+	gen, closeGen := cliBuiltinGenerator(cfg)
+	defer closeGen()
+	scanner := &eventsScanner{Pipeline: customtracks.New(database, gen, cfg.Digest.Language, nil)}
+	logger := log.New(cmd.ErrOrStderr(), "[tracks] ", log.LstdFlags)
+	runner := newCLIBuiltinRunner(cfg, database, gen, logger, cliBuiltinPipes{watch: scanner})
+	ctx, cancel := context.WithTimeout(cmdContext(cmd), tracksWatchScanTimeout)
 	defer cancel()
+	ctx, stop := inlineRunContext(ctx)
+	defer stop()
 	if len(args) == 1 {
-		id, err := strconv.Atoi(args[0])
+		id, err := parseTrackID(args[0])
 		if err != nil {
-			return fmt.Errorf("invalid track id: %w", err)
+			return err
 		}
-		var events []db.TrackEvent
-		if tracksScanFlagSince != "" {
-			events, err = pipe.RunForTrackSince(ctx, id, tracksScanFlagSince)
-		} else {
-			events, err = pipe.RunForTrack(ctx, id)
-		}
+		events, err := scanOneTrack(ctx, database, runner, scanner, moved, id, since)
 		if err != nil {
-			return fmt.Errorf("scan failed: %w", err)
-		}
-		if events == nil {
-			events = []db.TrackEvent{}
+			return err
 		}
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
 		return enc.Encode(events)
 	}
-	n, err := pipe.Run(ctx)
+	n := 0
+	if !moved {
+		if n, err = scanner.Run(ctx); err != nil {
+			return err
+		}
+	}
+	recipes, err := database.ListSlotRecipes(string(builtin.SlotCustomTracks))
 	if err != nil {
 		return err
 	}
+	var failed []error
+	for i := range recipes {
+		a := &recipes[i]
+		if !a.Runnable() || ctx.Err() != nil {
+			continue
+		}
+		if err := scanWatch(ctx, database, runner, a.ID, ""); err != nil {
+			failed = append(failed, fmt.Errorf("%s: %w", a.Name, err))
+		}
+	}
+	n += len(scanner.events)
 	fmt.Fprintf(cmd.OutOrStdout(), "scanned enabled custom tracks: %d new event(s)\n", n)
+	return errors.Join(failed...)
+}
+
+// watermarkLayout is the custom-track scan's watermark format.
+const watermarkLayout = "2006-01-02T15:04:05Z"
+
+// scanOneTrack is `tracks scan <id>`: the bound track through its recipe,
+// an unbound one the old way before the move only; its new events.
+func scanOneTrack(ctx context.Context, database *db.DB, runner *builtin.Runner, scanner *eventsScanner, moved bool, id int, since string) ([]db.TrackEvent, error) {
+	t, err := database.GetTrackByID(id)
+	if err != nil {
+		return nil, fmt.Errorf("track #%d not found: %w", id, err)
+	}
+	var events []db.TrackEvent
+	switch {
+	case t.AutomationID != 0:
+		if err := scanWatch(ctx, database, runner, t.AutomationID, since); err != nil {
+			return nil, err
+		}
+		events = scanner.events
+	case t.Origin != "custom":
+		return nil, fmt.Errorf("track %d is not a custom track", id)
+	case moved:
+		return nil, fmt.Errorf(msgTrackNotWatchedFmt, id, id)
+	case since != "":
+		events, err = scanner.RunForTrackSince(ctx, id, since)
+	default:
+		events, err = scanner.RunForTrack(ctx, id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan failed: %w", err)
+	}
+	if events == nil {
+		events = []db.TrackEvent{}
+	}
+	return events, nil
+}
+
+// scanWatch runs watch recipe automationID now (RunWatchNow) with since as
+// its Scan from.
+func scanWatch(ctx context.Context, database *db.DB, runner *builtin.Runner, automationID int64, since string) error {
+	run, err := runner.RunWatchNow(ctx, automationID, automations.BuiltinInput{Since: since})
+	switch {
+	case errors.Is(err, builtin.ErrRunNowQueued):
+		return errors.New(msgWatchScanQueued)
+	case errors.Is(err, automations.ErrRunNotClaimed):
+		return errors.New(msgWatchScanningNow)
+	case errors.Is(err, automations.ErrNotRunnable):
+		return watchNotRunnable(database, automationID)
+	case err != nil:
+		return fmt.Errorf("scan failed: %w", err)
+	case run.Status != db.RunSucceeded:
+		return fmt.Errorf("scan failed: run #%d %s: %s", run.ID, run.Status, run.Error)
+	}
 	return nil
 }
 
+// watchNotRunnable says why watch recipe automationID cannot run.
+func watchNotRunnable(database *db.DB, automationID int64) error {
+	a, err := database.GetAutomation(automationID)
+	if err != nil {
+		return err
+	}
+	t, err := database.GetWatchTrack(automationID)
+	if err != nil {
+		return err
+	}
+	trackID := 0
+	if t != nil {
+		trackID = t.ID
+	}
+	switch {
+	case !a.Confirmed():
+		return errors.New(msgWatchNotConfirmed)
+	case a.DisabledReason != "":
+		return fmt.Errorf(msgWatchStoppedFmt, trackID)
+	case !a.Enabled:
+		return fmt.Errorf(msgWatchPausedFmt, trackID)
+	}
+	return fmt.Errorf("watch recipe %d cannot run now", automationID)
+}
 func runTracksEvents(cmd *cobra.Command, args []string) error {
 	database, err := openTracksDB()
 	if err != nil {
@@ -874,6 +1254,10 @@ func runTracksEvents(cmd *cobra.Command, args []string) error {
 	return enc.Encode(events)
 }
 
+// setTrackEnabled is `tracks enable|disable <id>`. A track bound to a watch
+// recipe toggles the recipe's enabled (the track mirrors it): Collecting or
+// Paused. Turning a watch on is the owner's, as `automations enable` is
+// (D24). An unbound track toggles its own enabled, as before.
 func setTrackEnabled(cmd *cobra.Command, args []string, enabled bool) error {
 	database, err := openTracksDB()
 	if err != nil {
@@ -884,7 +1268,23 @@ func setTrackEnabled(cmd *cobra.Command, args []string, enabled bool) error {
 	if err != nil {
 		return fmt.Errorf("invalid track id: %w", err)
 	}
-	if err := database.SetTrackEnabled(id, enabled); err != nil {
+	t, err := database.GetTrackByID(id)
+	if err != nil {
+		return fmt.Errorf("track #%d not found: %w", id, err)
+	}
+	if t.AutomationID != 0 {
+		if enabled {
+			if err := refuseUnderAgent(tracksWatchEnableVerb); err != nil {
+				return err
+			}
+			if err := confirmWithOwner(tracksWatchEnableVerb, trackWatchConfirmDetail(database, id)); err != nil {
+				return err
+			}
+		}
+		if err := database.SetAutomationEnabled(t.AutomationID, enabled, time.Now()); err != nil {
+			return err
+		}
+	} else if err := database.SetTrackEnabled(id, enabled); err != nil {
 		return err
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "track #%d enabled=%v\n", id, enabled)

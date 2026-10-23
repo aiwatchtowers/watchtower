@@ -257,8 +257,8 @@ final class AppState {
     private(set) var tracksViewModel: TracksViewModel?
 
     /// A custom track card's Collecting toggle, instruction, scan and Stop
-    /// watching (R4): C1 writes `tracks` directly; C3 swaps in the watch
-    /// recipe. Shared by the Inbox view model and the track card.
+    /// watching (R4): through a bound track's watch recipe (C3), else C1's
+    /// direct `tracks` writes. Shared by the Inbox view model and the card.
     private(set) var customTrackControls: (any CustomTrackControlling)?
 
     /// Secretary Profile ViewModel — persists across tab switches so an
@@ -1326,7 +1326,7 @@ final class AppState {
         automationsViewModel = vm
         let quickRun = QuickRunCenter(dbPool: dbPool, viewModel: vm, cli: cli,
                                       notifier: notifier)
-        quickRun.showAutomationsTab = { [weak self] in self?.navigateToAutomations(section: .automations) }
+        quickRun.showAutomationsTab = { [weak self] in self?.navigateToAutomations() }
         quickRunCenter = quickRun
         let editorCenter = AutomationEditorCenter(
             cli: cli,
@@ -1757,8 +1757,10 @@ final class AppState {
         // A decision on an automation run's proposal wakes the daemon's
         // automations loop (spec §7.4); the runner resolves per call, like
         // the feed's own.
-        let controls = DirectCustomTrackControls(
-            dbPool: dbPool, scanService: TrackScanService(runner: InstalledCLIRunner()))
+        let runner = InstalledCLIRunner()
+        let controls = RecipeCustomTrackControls(
+            cli: AutomationsCLI(runner: runner),
+            direct: DirectCustomTrackControls(dbPool: dbPool, scanService: TrackScanService(runner: runner)))
         customTrackControls = controls
         let vm = ActionStripViewModel(dbPool: dbPool, customTrackControls: controls) {
             guard let runner = ProcessCLIRunner.makeDefault() else { throw CLIRunnerError.binaryNotFound }

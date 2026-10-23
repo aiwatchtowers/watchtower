@@ -17,10 +17,7 @@ extension AppState {
     /// Automations → Built in with built-in `id`'s card open (an empty
     /// state's "Change the hour"); the tab alone when its row is not listed.
     func openBuiltinAutomation(_ id: String) {
-        navigateToAutomations(section: .automations)
-        guard let vm = automationsViewModel,
-              let row = vm.items.first(where: { $0.automation.builtinID == id }) else { return }
-        vm.select(row.id)
+        navigateToAutomations(select: automationsViewModel?.items.first { $0.automation.builtinID == id }?.id)
     }
 
     /// A built-in's **Turn On** / **Turn Off**: its feature ids through the

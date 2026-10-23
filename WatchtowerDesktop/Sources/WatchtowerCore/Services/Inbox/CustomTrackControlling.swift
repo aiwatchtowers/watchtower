@@ -20,7 +20,8 @@ import GRDB
 
 /// C1's controls: the `tracks` row through `TrackQueries`, a scan through `watchtower tracks scan`.
 @MainActor package final class DirectCustomTrackControls: CustomTrackControlling {
-    private let dbPool: DatabasePool
+    /// Also `RecipeCustomTrackControls`' pool for a bound track's dismiss and restore.
+    package let dbPool: DatabasePool
     private let scanService: TrackScanService
 
     package init(dbPool: DatabasePool, scanService: TrackScanService) {

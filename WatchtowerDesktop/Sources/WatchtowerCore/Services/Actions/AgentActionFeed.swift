@@ -153,6 +153,30 @@ package final class AgentActionFeed {
     package func approve(_ id: Int64, shownArgs: String, patch: String? = nil) async {
         let pin = ["--args-sha256", Self.argsSHA256(shownArgs)]
         await run("approve", id: id, extra: pin + (patch.map { ["--patch", $0] } ?? []))
+        await startWatchingIfTrack(id)
+    }
+
+    /// The verb of a failed `tracks start` after an approved `create_track`:
+    /// its error shows on the applied card.
+    nonisolated package static let startVerb = "start"
+    nonisolated package static let notWatchedPrefix = "Approved, but the track is not watched yet: "
+
+    /// An approved (or retried) `create_track` that applied: the owner's press is the
+    /// confirmation, so its track is watched now (`tracks start`, C3 ruling:
+    /// the tools layer only creates the row). A failure shows on the card;
+    /// the track keeps **Start Watching**. Any other row, or an approve that
+    /// did not apply, starts nothing.
+    private func startWatchingIfTrack(_ id: Int64) async {
+        guard rowErrors[id] == nil, let runner = cliRunner ?? ProcessCLIRunner.makeDefault() else { return }
+        do {
+            let row = try await dbPool.read { db in try AgentActionQueries.fetch(db, id: id) }
+            guard let row, row.tool == "create_track", row.status == "applied",
+                  case let .track(trackID)? = row.destination else { return }
+            _ = try await AutomationsCLI(runner: runner).trackStart(trackID)
+        } catch {
+            rowErrors[id] = RowError(verb: Self.startVerb,
+                                     message: Self.notWatchedPrefix + AutomationsViewModel.message(for: error))
+        }
     }
 
     /// Hex sha256 of the args text's UTF-8 bytes — Go `tools.ArgsSHA256` over
@@ -168,6 +192,7 @@ package final class AgentActionFeed {
     /// Re-runs `apply` for a `failed`/`approved` row.
     package func retry(_ id: Int64) async {
         await run("apply", id: id)
+        await startWatchingIfTrack(id)
     }
 
     /// Dismiss on a session call whose outcome is unknown

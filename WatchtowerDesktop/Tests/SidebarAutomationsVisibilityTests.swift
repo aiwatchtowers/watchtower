@@ -143,16 +143,9 @@ final class SidebarAutomationsVisibilityTests: XCTestCase {
             return try XCTUnwrap(Workbench.fetchOne(db, sql: "SELECT * FROM projects WHERE id = ?", arguments: [id]))
         }
 
-        // The tab was last left on Reactions: the panel must still be seen.
-        let key = AutomationsSection.storageKey
-        let saved = UserDefaults.standard.object(forKey: key)
-        defer { UserDefaults.standard.set(saved, forKey: key) }
-        UserDefaults.standard.set(AutomationsSection.reactions.rawValue, forKey: key)
-
         appState.newAutomation(forWorkbench: workbench)
 
         XCTAssertEqual(appState.selectedDestination, .automations)
-        XCTAssertEqual(UserDefaults.standard.string(forKey: key), AutomationsSection.automations.rawValue)
         XCTAssertEqual(appState.automationsViewModel?.panel, .new(AutomationNewFlow(
             fixedScope: .workbench(id: workbench.id, name: "acme", folder: "/tmp/acme"))))
     }
@@ -175,20 +168,63 @@ final class SidebarAutomationsVisibilityTests: XCTestCase {
             appState.stopSidebarCounts()
         }
 
-        let key = AutomationsSection.storageKey
-        let saved = UserDefaults.standard.object(forKey: key)
-        defer { UserDefaults.standard.set(saved, forKey: key) }
-        UserDefaults.standard.set(AutomationsSection.tracks.rawValue, forKey: key)
-
         appState.openAutomationDraft(text: "---\nname: Digest\n---\n", scope: .personal)
 
         XCTAssertEqual(appState.selectedDestination, .automations)
-        XCTAssertEqual(UserDefaults.standard.string(forKey: key), AutomationsSection.automations.rawValue)
         guard case let .editor(.newDraft(contextID, scope, startText)) = appState.automationsViewModel?.panel else {
             return XCTFail("the editor opens on a new draft")
         }
         XCTAssertFalse(contextID.isEmpty)
         XCTAssertEqual(scope, .personal)
         XCTAssertEqual(startText, "---\nname: Digest\n---\n")
+    }
+
+    /// One list (Built in, Personal, workbenches): the segmented section
+    /// picker and the Reactions / Tracks sections are gone (C3), and the
+    /// Slack pointer and the cheat sheet select the Reactions built-in.
+    func testAutomationsHasNoSectionPicker() throws {
+        let automations = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/Views/Automations")
+        let view = try String(contentsOf: automations.appendingPathComponent("AutomationsView.swift"), encoding: .utf8)
+        for gone in ["KitSegmentedPicker", "automations.section", "ReactionsSectionView", "TracksSectionView",
+                     "tracksVisible"] {
+            XCTAssertFalse(view.contains(gone), "AutomationsView still has \(gone)")
+        }
+        for file in ["ReactionsSectionView.swift", "TracksSectionView.swift"] {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: automations.appendingPathComponent(file).path), file)
+        }
+
+        let (manager, path) = try TestDatabase.createDatabaseManager()
+        defer { TestDatabase.cleanup(path: path) }
+        let id = try manager.dbPool.write { db -> Int64 in
+            try db.execute(sql: """
+                INSERT INTO automations (slug, scope, path, name, trigger_kind, trigger_spec, origin, builtin_id, enabled)
+                VALUES ('reactions', 'personal', 'builtin:reactions', 'Reactions', 'sync', '{"sync":"reactions"}',
+                    'builtin', 'reactions', 1)
+                """)
+            return db.lastInsertedRowID
+        }
+        let suite = "SidebarAutomationsVisibilityTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let features = FeatureManagerService(runner: FakeCLIRunner(stdout: Data(#"{"features":[]}"#.utf8)))
+        let appState = AppState(onboardingDefaults: defaults, featureManager: features)
+        appState.wireAppDatabaseOverride = { _ in }
+        appState.databaseManager = manager
+        appState.completeOnboarding()
+        defer {
+            appState.automationsViewModel?.stop()
+            appState.stopSidebarCounts()
+        }
+        appState.automationsViewModel?.refresh()
+
+        appState.openBuiltinAutomation(BuiltinAutomationCard.reactionsID)
+
+        XCTAssertEqual(appState.selectedDestination, .automations)
+        XCTAssertEqual(appState.automationsViewModel?.selectedID, id)
+        XCTAssertEqual(appState.automationsViewModel?.panel, .card(id))
+        XCTAssertEqual(ReactionCheatSheetView.editLabel, "Edit reaction commands in Automations…")
     }
 }

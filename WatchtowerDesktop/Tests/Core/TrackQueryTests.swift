@@ -30,6 +30,19 @@ final class TrackQueryTests: XCTestCase {
         XCTAssertEqual(tracks[0].text, "Updated")
     }
 
+    /// `tracks.automation_id` (twin: Go `db.Track.AutomationID`): nil = unbound.
+    func testTrackDecodesAutomationID() throws {
+        let db = try TestDatabase.create()
+        try db.write { db in
+            let bound = try TestDatabase.insertTrack(db, text: "Bound")
+            try TestDatabase.insertTrack(db, text: "Unbound")
+            try db.execute(sql: "UPDATE tracks SET automation_id = 42 WHERE id = ?", arguments: [bound])
+        }
+        let tracks = try db.read { try TrackQueries.fetchAll($0) }
+        XCTAssertEqual(tracks.first { $0.text == "Bound" }?.automationID, 42)
+        XCTAssertEqual(tracks.first { $0.text == "Unbound" }.map { $0.automationID == nil }, true)
+    }
+
     func testFetchByID() throws {
         let db = try TestDatabase.create()
         _ = try db.write { try TestDatabase.insertTrack($0, text: "Find me") }

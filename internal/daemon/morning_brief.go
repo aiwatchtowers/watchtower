@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"maps"
 	"time"
 
 	"watchtower/internal/automations"
@@ -24,7 +25,13 @@ func (d *Daemon) SetBuiltins(r *builtin.Runner, active map[string]bool) {
 // BuiltinPrimitives is the one map the slot executor gets: the union of
 // every built-in's primitives.
 func (d *Daemon) BuiltinPrimitives() map[string]automations.PrimitiveFunc {
-	return d.MorningBriefPrimitives()
+	out := d.MorningBriefPrimitives()
+	for _, m := range []map[string]automations.PrimitiveFunc{
+		d.TrackMyThreadsPrimitives(), d.IdeaFinderPrimitives(), d.ReactionPrimitives(), d.WatchPrimitives(),
+	} {
+		maps.Copy(out, m)
+	}
+	return out
 }
 
 // MorningBriefPrimitives are brief.compose and plan.compose over the
@@ -77,15 +84,13 @@ const briefingNoDataBackoff = time.Hour
 // plan, one automation run) and then the day plan's conflict phase, which
 // stays Go.
 func (d *Daemon) phaseMorningBrief(ctx context.Context, now time.Time) {
-	if d.builtins == nil || !d.builtinActive[morningBriefID] {
-		d.cancelQueuedBuiltinRuns(now)
+	if !d.builtinOn(morningBriefID) {
+		d.cancelQueuedBuiltinRuns(morningBriefID, now)
 		d.phaseBriefingAt(ctx, now)
 		d.runDayPlanPhases(ctx, now)
 		return
 	}
-	if !d.builtinsSwept {
-		d.sweepBuiltinRuns() // the start's sweep failed: retried before the slot
-	}
+	d.ensureBuiltinsSwept() // the start's sweep failed: retried before the slot
 	owner := db.Owner{}
 	if d.config.DayPlan.Enabled && d.dayPlanPipeline != nil && d.db != nil {
 		owner = d.dayPlanOwner(now)
@@ -102,20 +107,20 @@ func (d *Daemon) phaseMorningBrief(ctx context.Context, now time.Time) {
 	d.runDayPlanConflictPhase(ctx, now, owner)
 }
 
-// cancelQueuedBuiltinRuns cancels the Morning brief's queued manual runs
-// while it is on its legacy phases (a Run Now queued before the move failed,
-// or by a CLI of this version against an older daemon): nothing would ever
-// take them. A failure is logged.
-func (d *Daemon) cancelQueuedBuiltinRuns(now time.Time) {
+// cancelQueuedBuiltinRuns cancels built-in id's queued manual runs while it
+// is on its legacy phases (a Run Now queued before the move failed, or by a
+// CLI of this version against an older daemon): nothing would ever take
+// them. A failure is logged.
+func (d *Daemon) cancelQueuedBuiltinRuns(id string, now time.Time) {
 	if d.db == nil {
 		return
 	}
-	n, err := d.db.CancelQueuedBuiltinRuns(morningBriefID, now)
+	n, err := d.db.CancelQueuedBuiltinRuns(id, now)
 	switch {
 	case err != nil:
-		d.logger.Printf("built-in %s: cancelling its queued runs: %v", morningBriefID, err)
+		d.logger.Printf("built-in %s: cancelling its queued runs: %v", id, err)
 	case n > 0:
-		d.logger.Printf("built-in %s: %d queued run(s) cancelled: it runs on its legacy phases", morningBriefID, n)
+		d.logger.Printf("built-in %s: %d queued run(s) cancelled: it runs on its legacy phases", id, n)
 	}
 }
 

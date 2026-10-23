@@ -20,7 +20,12 @@ package struct BuiltinUpgradeNotice: Equatable, Sendable {
     /// The built-ins' names by id, twin of Go `builtin.Entry.Name`
     /// (internal/automations/builtin/registry.go).
     private static let names: [String: String] = [
-        "morning-brief": "Morning brief"
+        "morning-brief": "Morning brief",
+        "track-my-threads": "Track my threads",
+        "idea-finder": "Idea finder",
+        "reactions": "Reactions",
+        // The watch recipes' move: "Couldn't move your watched tracks to Automations".
+        "custom-tracks": "your watched tracks"
     ]
 
     /// The built-in's name; the id itself for one this table does not know.
@@ -30,6 +35,23 @@ package struct BuiltinUpgradeNotice: Equatable, Sendable {
 
     package var title: String {
         "Couldn't move \(Self.name(for: builtinID)) to Automations"
+    }
+
+    /// The `custom-tracks` move's id: once it is done, an unbound custom
+    /// track is no longer scanned by the legacy path (Go `builtinOn`).
+    package static let customTracksID = "custom-tracks"
+
+    /// Built-in `id`'s one-time move finished (`status = 'done'`). A schema
+    /// without `builtin_migrations` (before 00150) moved nothing; any other
+    /// error is thrown.
+    package static func isMoveDone(_ db: Database, id: String) throws -> Bool {
+        do {
+            return try Bool.fetchOne(db, sql: """
+                SELECT 1 FROM builtin_migrations WHERE builtin_id = ? AND status = 'done'
+                """, arguments: [id]) ?? false
+        } catch let error as DatabaseError where ActionStripViewModel.isMissingTable(error) {
+            return false
+        }
     }
 
     /// Every failed move, newest first. A schema without `builtin_migrations`

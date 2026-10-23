@@ -115,3 +115,12 @@ func TestTuner_SkipsMovedPrompts(t *testing.T) {
 	assert.Equal(t, "morning-brief", MovedToBuiltin[BriefingDaily])
 	assert.Equal(t, "morning-brief", MovedToBuiltin[DayPlanGenerate])
 }
+
+func TestMovedToBuiltin_CThreeIDs(t *testing.T) {
+	assert.Equal(t, "track-my-threads", MovedToBuiltin[TracksExtractBatch])
+	assert.Equal(t, "idea-finder", MovedToBuiltin[IdeasConsolidate])
+	assert.Equal(t, "reactions", MovedToBuiltin[ReactionCommand])
+	_, err := NewTuner(nil, nil, nil).Suggest(context.Background(), IdeasConsolidate)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "idea-finder")
+}

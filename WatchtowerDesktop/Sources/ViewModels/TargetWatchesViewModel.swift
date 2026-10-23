@@ -19,6 +19,9 @@ final class TargetWatchesViewModel {
     private let scanCenter: TrackScanCenter
     private let actionPress: TrackActionPress
     private let scanService: TrackScanService
+    /// A bound watch's scan goes through the custom-track seam (its recipe);
+    /// nil, or an unbound watch, runs `tracks scan` through `scanService`.
+    private let trackControls: (any CustomTrackControlling)?
 
     var watches: [Track] = []
     var originTrack: Track?
@@ -32,10 +35,12 @@ final class TargetWatchesViewModel {
          dbManager: DatabaseManager,
          scanService: TrackScanService,
          actionRunner: any CLIRunnerProtocol,
-         scanCenter: TrackScanCenter) {
+         scanCenter: TrackScanCenter,
+         trackControls: (any CustomTrackControlling)? = nil) {
         self.target = target
         self.dbPool = dbManager.dbPool
         self.scanService = scanService
+        self.trackControls = trackControls
         self.actionPress = TrackActionPress(runner: actionRunner)
         self.scanCenter = scanCenter
     }
@@ -92,14 +97,23 @@ final class TargetWatchesViewModel {
 
     func isScanning(_ trackID: Int) -> Bool { scanCenter.isRunning(trackID) }
 
-    /// Scans one watch over the given range (nil since = all history), tracked
-    /// in the shared center so the indicator survives navigation.
+    /// Scans one watch over the given range (nil = since the last check,
+    /// `WatchTrackControls.allHistory` = all history), tracked in the shared
+    /// center so the indicator survives navigation. A bound watch gets the
+    /// epoch as its Scan from for all history; an unbound one keeps the
+    /// legacy flagless `tracks scan`.
     func scanWatch(_ watch: Track, since: Date?, label: String) async {
         scanCenter.begin(watch.id)
         var note: String?
         defer { scanCenter.finish(watch.id, note: note) }
         do {
-            let iso = since.map { Self.isoFormatter.string(from: $0) }
+            if watch.automationID != nil, let trackControls {
+                try await trackControls.scan(watch, from: since)
+                note = "\(watch.text): \(WatchTrackControls.nextSyncNote.lowercased())."
+                return
+            }
+            let legacySince = since == WatchTrackControls.allHistory ? nil : since
+            let iso = legacySince.map { Self.isoFormatter.string(from: $0) }
             let created = try await scanService.run(trackID: watch.id, since: iso)
             note = created.isEmpty
                 ? "\(watch.text): no new activity (\(label))."

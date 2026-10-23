@@ -348,7 +348,7 @@ struct MainNavigationView: View {
                     emptyStateContext: appState.emptyStateContext,
                     editor: appState.automationEditorCenter,
                     hooks: automationHooks(vm),
-                    disabledFeatures: appState.featureVisibility.disabledFeatureIDs,
+                    reactionDictionary: appState.reactionDictionaryViewModel,
                     isApplyingFeatures: appState.featureManager.isApplying
                 )
             } else {

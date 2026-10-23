@@ -42,6 +42,8 @@ type automationListItem struct {
 	Origin     string `json:"origin"`
 	BuiltinID  string `json:"builtin_id"`
 	Overridden bool   `json:"overridden"`
+	// TrackID is the track a watch recipe is bound to (0 when none).
+	TrackID int `json:"track_id"`
 }
 
 func runAutomationsList(cmd *cobra.Command, _ []string) error {
@@ -74,6 +76,10 @@ func runAutomationsList(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
+	watchTracks, err := database.WatchTrackIDs()
+	if err != nil {
+		return err
+	}
 	items := make([]automationListItem, 0, len(rows))
 	for i := range rows {
 		a := &rows[i]
@@ -85,7 +91,7 @@ func runAutomationsList(cmd *cobra.Command, _ []string) error {
 			NeedsConfirmation: automationNeedsConfirmation(a), ParseError: a.ParseError, NextRunAt: a.NextRunAt,
 			DisabledReason: a.DisabledReason, DisabledAt: a.DisabledAt,
 			LastStatus: s.LastStatus, Tokens7d: s.TokensSince, Grants: gj, AutoPaused: anyGrantPaused(gj),
-			Origin: a.Origin, BuiltinID: a.BuiltinID, Overridden: a.Overridden,
+			Origin: a.Origin, BuiltinID: a.BuiltinID, Overridden: a.Overridden, TrackID: watchTracks[a.ID],
 		})
 	}
 	w := cmd.OutOrStdout()

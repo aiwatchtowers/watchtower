@@ -77,6 +77,125 @@ final class CustomTrackControllingTests: XCTestCase {
         XCTAssertEqual(left, [0, 0], "the track and its events are gone")
     }
 
+    /// C3's controls: a bound track drives its watch recipe through the
+    /// CLI and never writes `tracks.enabled` or `tracks.instruction` from
+    /// Swift (the CLI and the SQL trigger mirror them); an unbound track
+    /// stops through C1's direct controls and refuses the rest.
+    func testRecipeControlsDriveTheRecipe() async throws {
+        let track = try customTrack()
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE tracks SET automation_id = 42 WHERE id = ?", arguments: [track.id])
+        }
+        let fetched = try await pool.read { db in try TrackQueries.fetchByID(db, id: track.id) }
+        let bound = try XCTUnwrap(fetched)
+        XCTAssertEqual(bound.automationID, 42)
+        let runner = FakeCLIRunner(stdout: Data(#"{"run_id":3,"coalesced":false,"daemon_running":true}"#.utf8))
+        let cli = AutomationsCLI(runner: runner)
+        let direct = DirectCustomTrackControls(dbPool: pool, scanService: TrackScanService(runner: runner))
+        let controls = RecipeCustomTrackControls(cli: cli, direct: direct)
+
+        try await controls.saveInstruction(bound, text: "watch the refund owner")
+        try await controls.setCollecting(bound, on: false)
+        try await controls.setCollecting(bound, on: true)
+        let from = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-10-01T00:00:00Z"))
+        try await controls.scan(bound, from: from)
+        try await controls.scan(bound, from: nil)
+        let untouched = try row(track.id)
+        XCTAssertEqual(untouched["instruction"] as String?, "old")
+        XCTAssertEqual(untouched["enabled"] as Int?, 1)
+
+        try await controls.stopWatching(bound)
+        let stopped = try row(track.id)
+        XCTAssertFalse(((stopped["dismissed_at"] as String?) ?? "").isEmpty)
+        XCTAssertEqual(stopped["enabled"] as Int?, 1, "the recipe's disable mirrors it, not Swift")
+
+        try await controls.resumeWatching(bound)
+        XCTAssertEqual(try row(track.id)["dismissed_at"] as String?, "")
+
+        try await controls.delete(bound)
+        let left = try await pool.read { db in
+            try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks WHERE id = ?", arguments: [track.id])
+        }
+        XCTAssertEqual(left, 0)
+
+        let calls = runner.invocations
+        XCTAssertEqual(calls.count, 8)
+        XCTAssertEqual(Array(calls[0].prefix(4)), ["tracks", "instruction", "\(track.id)", "--text-file"])
+        XCTAssertEqual(runner.textFileContents, ["watch the refund owner"])
+        XCTAssertEqual(Array(calls.dropFirst()), [
+            ["automations", "disable", "42"],
+            ["automations", "enable", "42"],
+            ["automations", "run", "42", "--since", "2026-10-01T00:00:00Z", "--json"],
+            ["automations", "run", "42", "--json"],
+            ["automations", "disable", "42"],
+            ["automations", "enable", "42"],
+            ["automations", "delete", "42"]
+        ])
+
+        // Unbound (a legacy custom track before its move): C1's direct controls throughout.
+        let unbound = try customTrack()
+        XCTAssertNil(unbound.automationID)
+        let scans = FakeCLIRunner(stdout: Data("[]".utf8))
+        let legacy = RecipeCustomTrackControls(
+            cli: AutomationsCLI(runner: runner),
+            direct: DirectCustomTrackControls(dbPool: pool, scanService: TrackScanService(runner: scans)))
+        let before = runner.invocations.count
+        try await legacy.saveInstruction(unbound, text: "watch the refund window")
+        XCTAssertEqual(try row(unbound.id)["instruction"] as String?, "watch the refund window")
+        try await legacy.setCollecting(unbound, on: false)
+        XCTAssertEqual(try row(unbound.id)["enabled"] as Int?, 0)
+        try await legacy.setCollecting(unbound, on: true)
+        try await legacy.scan(unbound, from: nil)
+        try await legacy.scan(unbound, from: from)
+        XCTAssertEqual(scans.invocations, [
+            ["tracks", "scan", "\(unbound.id)"],
+            ["tracks", "scan", "\(unbound.id)", "--since", "2026-10-01T00:00:00Z"]
+        ])
+        try await legacy.stopWatching(unbound)
+        let stoppedUnbound = try row(unbound.id)
+        XCTAssertEqual(stoppedUnbound["enabled"] as Int?, 0)
+        XCTAssertFalse(((stoppedUnbound["dismissed_at"] as String?) ?? "").isEmpty)
+        XCTAssertEqual(runner.invocations.count, before, "no recipe verb for an unbound track")
+    }
+
+    /// A recipe deleted elsewhere since the track was read (Go
+    /// `db.ErrAutomationNotFound`) counts as deleted: the track still goes.
+    /// Any other refusal stops before the track is touched.
+    func testRecipeDeleteOfAGoneRecipeStillDeletesTheTrack() async throws {
+        let track = try customTrack()
+        try await pool.write { db in
+            try db.execute(sql: "UPDATE tracks SET automation_id = 42 WHERE id = ?", arguments: [track.id])
+        }
+        let fetched = try await pool.read { db in try TrackQueries.fetchByID(db, id: track.id) }
+        let bound = try XCTUnwrap(fetched)
+        let pool = try XCTUnwrap(pool)
+        let count = {
+            try await pool.read { db in
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tracks WHERE id = ?", arguments: [track.id])
+            }
+        }
+        let busy = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(code: 1, stderr: "automation 42 is running\n"))
+        let refused = RecipeCustomTrackControls(
+            cli: AutomationsCLI(runner: busy),
+            direct: DirectCustomTrackControls(dbPool: pool, scanService: TrackScanService(runner: busy)))
+        do {
+            try await refused.delete(bound)
+            XCTFail("another refusal is thrown")
+        } catch {}
+        let kept = try await count()
+        XCTAssertEqual(kept, 1)
+
+        let gone = FakeCLIRunner(error: CLIRunnerError.nonZeroExit(
+            code: 1, stderr: "automation 42: automation not found\n"))
+        let controls = RecipeCustomTrackControls(
+            cli: AutomationsCLI(runner: gone),
+            direct: DirectCustomTrackControls(dbPool: pool, scanService: TrackScanService(runner: gone)))
+        try await controls.delete(bound)
+        XCTAssertEqual(gone.invocations, [["automations", "delete", "42"]])
+        let left = try await count()
+        XCTAssertEqual(left, 0)
+    }
+
     /// A row deleted elsewhere is a `RowNotFoundError`, which the card and
     /// the view model treat as "the watch is gone".
     func testDirectControlsOnADeletedTrackSayItIsGone() async throws {

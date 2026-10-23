@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/prompts"
 )
 
 // seedWorkspace seeds the singleton workspace row the ideas floors live on
@@ -1007,4 +1009,91 @@ func TestGB5_AttachMention_RefKnownOnDifferentIdea_StillInsertsOnTarget(t *testi
 	otherMentions, err := d.ListIdeaMentions(otherID)
 	require.NoError(t, err)
 	require.Len(t, otherMentions, 1)
+}
+
+// systemGen records the system prompt of every call.
+type systemGen struct {
+	systems []string
+}
+
+func (g *systemGen) Generate(_ context.Context, system, _, _ string) (string, *digest.Usage, string, error) {
+	g.systems = append(g.systems, system)
+	return `{"ops":[]}`, &digest.Usage{InputTokens: 10, OutputTokens: 5}, "sess", nil
+}
+
+func ideasOverride(lead string, n int) string {
+	return lead + strings.Repeat(" %s", n)
+}
+
+func seedOverrideTopic(t *testing.T, d *db.DB) {
+	t.Helper()
+	seedWorkspace(t, d)
+	seedDigestTopicIdeas(t, d, "C1", "general",
+		[]digest.IdeaCandidate{{Text: "we should try X", By: "Ann", MessageTS: "123.45"}}, nil)
+}
+
+func TestIdeasRunWith_PromptOverride(t *testing.T) {
+	d := newTestDB(t)
+	seedOverrideTopic(t, d)
+	gen := &systemGen{}
+	p := New(d, backfillCfg(), gen, testLogger())
+	n := prompts.CountVerbs(prompts.Defaults[prompts.IdeasConsolidate])
+
+	_, err := p.RunWith(context.Background(), RunOptions{Prompt: ideasOverride("B-OVERRIDE", n)})
+	require.NoError(t, err)
+	require.Len(t, gen.systems, 1)
+	assert.Contains(t, gen.systems[0], "B-OVERRIDE")
+	assert.Empty(t, p.LastPromptNote())
+}
+
+func TestIdeasRunWith_PlaceholderMismatchUsesDefault(t *testing.T) {
+	d := newTestDB(t)
+	seedOverrideTopic(t, d)
+	gen := &systemGen{}
+	p := New(d, backfillCfg(), gen, testLogger())
+
+	_, err := p.RunWith(context.Background(), RunOptions{Prompt: "B-OVERRIDE with no verbs"})
+	require.NoError(t, err)
+	require.Len(t, gen.systems, 1)
+	assert.NotContains(t, gen.systems[0], "B-OVERRIDE")
+	assert.NotContains(t, gen.systems[0], "%!")
+	assert.Contains(t, p.LastPromptNote(), "built-in prompt was used")
+}
+
+func TestIdeasBackfillWith_UsesPromptEveryCycle(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	from := time.Now().Add(-48 * time.Hour)
+	to := time.Now()
+	// Two drain cycles: each call proposes one new idea from a fresh topic.
+	for _, ch := range []string{"CA", "CB"} {
+		seedDigestTopicIdeasAt(t, d, ch, "general",
+			[]digest.IdeaCandidate{{Text: "try " + ch, By: "Ann", MessageTS: "1.1"}}, nil,
+			float64(from.Add(24*time.Hour).Unix()))
+	}
+	gen := &systemGen{}
+	p := New(d, backfillCfg(), gen, testLogger())
+	n := prompts.CountVerbs(prompts.Defaults[prompts.IdeasConsolidate])
+
+	_, err := p.BackfillWith(context.Background(), from, to, nil, RunOptions{Prompt: ideasOverride("B-OVERRIDE", n)})
+	require.NoError(t, err)
+	require.NotEmpty(t, gen.systems)
+	for i, s := range gen.systems {
+		assert.Contains(t, s, "B-OVERRIDE", "call %d", i)
+	}
+}
+
+func TestIdeasRunWith_OtherDirectiveUsesDefault(t *testing.T) {
+	n := prompts.CountVerbs(prompts.Defaults[prompts.IdeasConsolidate])
+	for _, extra := range []string{"100% sure", "count %d"} {
+		d := newTestDB(t)
+		seedOverrideTopic(t, d)
+		gen := &systemGen{}
+		p := New(d, backfillCfg(), gen, testLogger())
+		_, err := p.RunWith(context.Background(), RunOptions{Prompt: ideasOverride("B-OVERRIDE "+extra, n)})
+		require.NoError(t, err)
+		require.Len(t, gen.systems, 1)
+		assert.NotContains(t, gen.systems[0], "B-OVERRIDE", extra)
+		assert.Contains(t, p.LastPromptNote(), "other than %s", extra)
+	}
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/automations"
+	"watchtower/internal/automations/builtin"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
@@ -85,7 +86,16 @@ func runAutomationsRun(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if a.IsBuiltin() {
+		if autoFlags.Since != "" {
+			return errors.New(msgSinceOnlyForWatch)
+		}
 		return queueBuiltinRun(cmd, cfg, database, a)
+	}
+	if isWatchRecipe(a) {
+		return queueWatchRun(cmd, cfg, database, a)
+	}
+	if autoFlags.Since != "" {
+		return errors.New(msgSinceOnlyForWatch)
 	}
 	if reason := notRunnableReason(a); reason != "" {
 		return fmt.Errorf("automation %d cannot run: %s", id, reason)
@@ -292,6 +302,8 @@ func queueBuiltinRun(cmd *cobra.Command, cfg *config.Config, database *db.DB, a 
 		return fmt.Errorf("%s hasn't moved to Automations yet — use Retry in the Inbox", e.Name)
 	case !e.Enabled(cfg):
 		return fmt.Errorf("%s is off — turn it on first", e.Name)
+	case e.ID == trackMyThreadsID && !cfg.Digest.Enabled:
+		return errors.New(msgTrackMyThreadsNeedsDigests) //nolint:staticcheck // ST1005: the built-in's name
 	case a.DisabledReason != "":
 		return fmt.Errorf("%s was stopped after a run that would not end — turn it on again in Automations → Built in", e.Name)
 	case !a.Confirmed():
@@ -306,6 +318,51 @@ func queueBuiltinRun(cmd *cobra.Command, cfg *config.Config, database *db.DB, a 
 	if err != nil {
 		return err
 	}
+	return reportQueuedSlotRun(cmd, cfg, runID, coalesced)
+}
+
+// msgSinceOnlyForWatch refuses `run --since` of an automation that is not a
+// watch recipe.
+const msgSinceOnlyForWatch = "--since is only for a watch"
+
+// queueWatchRun is `automations run` of a watch recipe (AUTO-09: it only
+// queues): a manual run with {"builtin": {"since": --since}} for the watch
+// slot of the daemon's next sync, which is asked for now. A manual run with
+// other input already queued is refused, so no run executes with a Scan
+// from it was not given. Refused while the watch slot does not run
+// (tracks.enabled or digest.enabled off).
+func queueWatchRun(cmd *cobra.Command, cfg *config.Config, database *db.DB, a *db.Automation) error {
+	if reason := notRunnableReason(a); reason != "" {
+		return fmt.Errorf("automation %d cannot run: %s", a.ID, reason)
+	}
+	if !cfg.Tracks.Enabled || !cfg.Digest.Enabled {
+		return errors.New(msgWatchesNeedTracksAndDigests) //nolint:staticcheck // ST1005: the feature's name
+	}
+	if autoFlags.RerunOf != 0 {
+		return fmt.Errorf("%s has no reruns: run it again without --rerun-of", a.Name)
+	}
+	in := automations.BuiltinInput{}
+	if autoFlags.Since != "" {
+		since, err := time.Parse(time.RFC3339, autoFlags.Since)
+		if err != nil {
+			return fmt.Errorf("invalid --since %q: want an RFC 3339 instant", autoFlags.Since)
+		}
+		in.Since = since.UTC().Format(time.RFC3339)
+	}
+	runID, coalesced, err := builtin.EnqueueManual(database, a.ID, in, time.Now())
+	if errors.Is(err, builtin.ErrRunNowQueued) {
+		return fmt.Errorf("a scan of %s with another Scan from is already queued for the next sync (run #%d)", a.Name, runID)
+	}
+	if err != nil {
+		return err
+	}
+	return reportQueuedSlotRun(cmd, cfg, runID, coalesced)
+}
+
+// reportQueuedSlotRun wakes the daemon for a run queued for a slot of its
+// next sync (a built-in's or a watch's) and reports it: the JSON adds
+// "at_next_sync": true.
+func reportQueuedSlotRun(cmd *cobra.Command, cfg *config.Config, runID int64, coalesced bool) error {
 	out := runJSON{RunID: runID, Coalesced: coalesced, AtNextSync: true}
 	pid, sigErr := builtinRunSignal(cfg)
 	out.DaemonRunning = pid != 0

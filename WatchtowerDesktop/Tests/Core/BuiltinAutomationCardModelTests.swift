@@ -273,6 +273,22 @@ final class BuiltinAutomationCardModelTests: XCTestCase {
         XCTAssertFalse(wrote, "an invalid edit is never saved")
     }
 
+    /// An interval is whole hours from 1; a dictionary is never a field value.
+    func testIntervalAndDictionaryFields() async throws {
+        let parameters: [[String: String]] = [
+            ["key": "ideas.mine_interval_hours", "kind": "interval", "label": "Every", "value": "6"],
+            ["key": "reaction_command_map", "kind": "dictionary", "label": "Reactions", "value": "[]"]
+        ]
+        let card = model(VerbRunner(["show": .success(try Self.show(["parameters": parameters]))]))
+        await card.load()
+        for bad in ["0", "-1", "x", ""] {
+            card.parameterEdits = ["ideas.mine_interval_hours": bad]
+            XCTAssertEqual(card.invalidParameter, "Every: use a whole number of hours, 1 or more", bad)
+        }
+        card.parameterEdits = ["ideas.mine_interval_hours": "12", "reaction_command_map": "anything"]
+        XCTAssertNil(card.invalidParameter)
+    }
+
     func testSaveParametersWritesTheEditsOnceAndKeepsThemOnFailure() async throws {
         let card = model(VerbRunner(["show": .success(try Self.show())]))
         await card.load()

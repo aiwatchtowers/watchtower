@@ -342,7 +342,8 @@ CREATE TABLE IF NOT EXISTS tracks (
     last_run_at         TEXT NOT NULL DEFAULT '',        -- custom tracks: scan watermark, ''=never
     linked_target_id    INTEGER REFERENCES targets(id) ON DELETE SET NULL,
     scan_attempts       INTEGER NOT NULL DEFAULT 0,      -- custom tracks: failed scans on the UTC day of scan_attempted_at (3/day cap)
-    scan_attempted_at   TEXT NOT NULL DEFAULT ''         -- custom tracks: last failed scan, ISO8601 UTC
+    scan_attempted_at   TEXT NOT NULL DEFAULT '',        -- custom tracks: last failed scan, ISO8601 UTC
+    automation_id       INTEGER                          -- custom tracks: the watch recipe bound to it (automations.id, no FK; NULL = unbound)
 );
 CREATE INDEX IF NOT EXISTS idx_tracks_priority ON tracks(priority);
 CREATE INDEX IF NOT EXISTS idx_tracks_has_updates ON tracks(has_updates);
@@ -351,6 +352,7 @@ CREATE INDEX IF NOT EXISTS idx_tracks_ownership ON tracks(ownership);
 CREATE INDEX IF NOT EXISTS idx_tracks_assignee ON tracks(assignee_user_id);
 CREATE INDEX IF NOT EXISTS idx_tracks_origin ON tracks(origin);
 CREATE INDEX IF NOT EXISTS idx_tracks_custom_enabled ON tracks(origin, enabled) WHERE origin = 'custom';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_automation_id ON tracks(automation_id) WHERE automation_id IS NOT NULL;
 
 -- TRACKS-06: per-track narrative-state history
 CREATE TABLE IF NOT EXISTS track_states (
@@ -2936,6 +2938,18 @@ BEGIN
     UPDATE automation_runs SET resume_pending = 0 WHERE id = NEW.id AND resume_pending = 1;
 END;
 
+-- A watch recipe's enabled mirrors into its bound track; a deleted recipe
+-- unbinds and pauses it (00151).
+CREATE TRIGGER IF NOT EXISTS trg_automations_enabled_watch_track AFTER UPDATE OF enabled ON automations
+WHEN NEW.enabled <> OLD.enabled
+BEGIN
+    UPDATE tracks SET enabled = NEW.enabled WHERE automation_id = NEW.id;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_automations_delete_watch_track AFTER DELETE ON automations
+BEGIN
+    UPDATE tracks SET automation_id = NULL, enabled = 0 WHERE automation_id = OLD.id;
+END;
+
 -- The state a script keeps between runs; replaced only by a succeeded run.
 CREATE TABLE IF NOT EXISTS automation_state (
     automation_id INTEGER PRIMARY KEY REFERENCES automations(id) ON DELETE CASCADE,
@@ -2997,7 +3011,8 @@ CREATE TABLE IF NOT EXISTS builtin_migrations (
     status     TEXT NOT NULL CHECK (status IN ('done','failed')),
     error      TEXT NOT NULL DEFAULT '',
     attempts   INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    first_attempted_at TEXT NOT NULL DEFAULT ''  -- the first attempt (00152), kept by later ones; updated_at is the latest
 );
 
 -- The owner's per-(automation, tool) auto grant (00117, Automations P2). Active

@@ -174,13 +174,29 @@ type Daemon struct {
 	lastLinear                 time.Time
 	lastPeople                 time.Time // when people cards last ran (once per day)
 	lastBriefing               time.Time // when briefing last ran (once per day)
-	lastIdeas                  time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours)
+	lastIdeas                  time.Time // when the ideas registry last ran (throttled by ideas.mine_interval_hours); ideasMu
 	lastInstructionSuggestions time.Time // when the instruction suggestion miner last ran (once per day)
 	lastIdeasLockSkip          time.Time // when phaseIdeas last LOGGED a lock-held skip (GB7 — throttles the log line, not the skip itself)
 	lastStreams                time.Time // when the stage-1 stream digests last ran (throttled by streams.interval_hours, decoupled from ideas.enabled)
 	lastStreamsLockSkip        time.Time // when phaseStreamDigests last LOGGED a lock-held skip (the lastIdeasLockSkip precedent)
 	lastReactionCmd            time.Time // when phaseReactionCommands last polled reactions.list (throttled by reaction_commands.interval_hours)
 	lastDayPlanDate            string    // YYYY-MM-DD of last generation, for dedup
+
+	// ideasMu guards lastIdeas and lastIdeasLockSkip on every path: the Idea
+	// finder's gate reads them on the slot's goroutine and its primitive
+	// stamps lastIdeas on the script's, which can outlive the slot; the
+	// legacy phaseIdeas takes it too.
+	ideasMu gosync.Mutex
+	// tracksMu guards tracksRanAt (when tracks.extract last started, set by
+	// runTracksTracked on the script's goroutine) and tracksFailedAt (a Track
+	// my threads run that failed before tracks.extract ran: the gate waits
+	// for digests newer than it).
+	tracksMu       gosync.Mutex
+	tracksRanAt    time.Time
+	tracksFailedAt time.Time
+	// reactionSlot carries each Reactions run's claimed command to its
+	// reaction.compose primitive (one per daemon; the reaction pass).
+	reactionSlot *builtin.ReactionSlot
 
 	// Real-failure attempt budgets for day plan / briefing / daily rollup (max
 	// 3/day, see maxDailyAIAttempts). Loaded from disk at daemon start
@@ -227,8 +243,9 @@ type Daemon struct {
 // and pipelines still run.
 func New(cfg *config.Config) *Daemon {
 	return &Daemon{
-		config: cfg,
-		logger: log.New(os.Stderr, "[daemon] ", log.LstdFlags),
+		config:       cfg,
+		logger:       log.New(os.Stderr, "[daemon] ", log.LstdFlags),
+		reactionSlot: builtin.NewReactionSlot(),
 	}
 }
 
@@ -591,17 +608,18 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	// through the triggers — so it runs once the cycle's sync is done.
 	d.phaseMessagesSearchRebuild(ctx)
 
-	d.phaseCustomTrackScan(ctx) // before auto extraction so folds land
+	// The custom-track slot: before auto extraction so folds land.
+	d.phaseWatchSlot(ctx)
 
 	// Phases 2-4 run in parallel where possible:
-	//   Group A: Tracks → inject track context → Rollups
+	//   Group A: Track my threads → inject track context → Rollups
 	//   Group B: People Cards (only depends on Phase 1 channel digests)
 	var phasesWg gosync.WaitGroup
 	phasesWg.Add(2)
 	rollupNow := time.Now()
 	go func() {
 		defer phasesWg.Done()
-		d.phaseTracksAndRollups(ctx, rollupNow)
+		d.phaseTrackMyThreads(ctx, rollupNow)
 	}()
 	go func() {
 		defer phasesWg.Done()
@@ -619,7 +637,7 @@ func (d *Daemon) runSync(ctx, fetchCtx context.Context) {
 	}
 	d.phaseInbox(ctx)
 	d.phaseStreamDigests(ctx)
-	d.phaseIdeas(ctx)
+	d.phaseIdeaFinder(ctx)
 	d.phaseMemory(ctx)
 	d.phaseNextStep(ctx)
 	d.phaseMorningBrief(ctx, time.Now())
@@ -1538,52 +1556,64 @@ func isBenignShutdownErr(ctx context.Context, err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// phaseTracksAndRollups (group A) runs the tracks pipeline, injects active
-// track context into the digest pipeline, then runs daily/weekly rollups.
-// The tracks half is compound-gated on Digest.Enabled too: tracks mine
-// digests (its own Run reads from the digests table), so with tracks.enabled
-// but digest.enabled off there is nothing for it to read — gating on
-// Tracks.Enabled alone would still create an empty pipeline_runs row every
-// cycle instead of skipping outright. The rollups half stays gated on
-// Digest.Enabled alone, unrelated to whether tracks itself is on. The Desktop
-// mirrors the tracks gate as readiness "Needs Slack Digests"
-// (ReadinessFeature.runsOnlyWithDigests, #575): keep the two in step. now is used
-// only for the rollup attempt budget's date (rollupBudgetDate) — the
-// runDayPlanPhase/phaseBriefing shape, threaded through so the budget's date
-// is provably the UTC date of the instant the phase actually ran, not a
-// second, independent read of the wall clock a test cannot control.
-func (d *Daemon) phaseTracksAndRollups(ctx context.Context, now time.Time) {
-	if d.config.Tracks.Enabled && d.config.Digest.Enabled && d.tracksPipe != nil {
-		d.trackedPipelineRun("tracks", func() pipelineRunStats {
-			n, updated, err := d.tracksPipe.Run(ctx)
-			if err != nil {
-				d.logger.Printf("tracks error: %v", err)
-			} else if n > 0 || updated > 0 {
-				d.logger.Printf("tracks: created %d, updated %d", n, updated)
-			}
-			inTok, outTok, cost, totalAPI := d.tracksPipe.AccumulatedUsage()
-			stats := pipelineRunStats{
-				items: n + updated, inTok: inTok, outTok: outTok,
-				cost: cost, totalAPI: totalAPI, err: err,
-			}
-			if d.tracksPipe.LastFrom > 0 {
-				stats.pFrom = &d.tracksPipe.LastFrom
-			}
-			if d.tracksPipe.LastTo > 0 {
-				stats.pTo = &d.tracksPipe.LastTo
-			}
-			return stats
-		})
+// phaseTracks is Track my threads' legacy phase (the built-in not active):
+// one tracks run, tracked as pipeline_runs "tracks". It is compound-gated on
+// Digest.Enabled too: tracks mine digests (its own Run reads from the
+// digests table), so with tracks.enabled but digest.enabled off there is
+// nothing for it to read — gating on Tracks.Enabled alone would still
+// create an empty pipeline_runs row every cycle instead of skipping
+// outright. The Desktop mirrors the gate as readiness "Needs Slack Digests"
+// (ReadinessFeature.runsOnlyWithDigests, #575): keep the two in step.
+func (d *Daemon) phaseTracks(ctx context.Context) {
+	if !d.config.Tracks.Enabled || !d.config.Digest.Enabled || d.tracksPipe == nil {
+		return
+	}
+	_, _, _ = d.runTracksTracked(func() (int, int, error) { return d.tracksPipe.Run(ctx) })
+}
 
-		// Inject track context into digest pipeline for track-aware rollups.
-		if trackCtx, err := d.tracksPipe.FormatActiveTracksForPrompt(); err == nil && trackCtx != "" {
-			if d.digestPipe != nil {
-				d.digestPipe.TrackContext = trackCtx
-			}
+// runTracksTracked runs one tracks run (run) as pipeline_runs "tracks", with
+// the run's window as period_from/period_to and its usage, and logs it: the
+// legacy phase's run and the tracks.extract primitive's.
+func (d *Daemon) runTracksTracked(run func() (int, int, error)) (int, int, error) {
+	d.tracksMu.Lock()
+	d.tracksRanAt, d.tracksFailedAt = time.Now(), time.Time{}
+	d.tracksMu.Unlock()
+	var n, updated int
+	var runErr error
+	d.trackedPipelineRun("tracks", func() pipelineRunStats {
+		n, updated, runErr = run()
+		if runErr != nil {
+			d.logger.Printf("tracks error: %v", runErr)
+		} else if n > 0 || updated > 0 {
+			d.logger.Printf("tracks: created %d, updated %d", n, updated)
+		}
+		inTok, outTok, cost, totalAPI := d.tracksPipe.AccumulatedUsage()
+		stats := pipelineRunStats{
+			items: n + updated, inTok: inTok, outTok: outTok,
+			cost: cost, totalAPI: totalAPI, err: runErr,
+		}
+		if from := d.tracksPipe.LastFrom; from > 0 {
+			stats.pFrom = &from
+		}
+		if to := d.tracksPipe.LastTo; to > 0 {
+			stats.pTo = &to
+		}
+		return stats
+	})
+	return n, updated, runErr
+}
+
+// injectTrackContext hands the active tracks to the digest pipeline for
+// track-aware rollups, while tracks and digests are on.
+func (d *Daemon) injectTrackContext() {
+	if !d.config.Tracks.Enabled || !d.config.Digest.Enabled || d.tracksPipe == nil {
+		return
+	}
+	if trackCtx, err := d.tracksPipe.FormatActiveTracksForPrompt(); err == nil && trackCtx != "" {
+		if d.digestPipe != nil {
+			d.digestPipe.TrackContext = trackCtx
 		}
 	}
-
-	d.runRollupPhase(ctx, now)
 }
 
 // runRollupPhase runs daily/weekly rollups (track-aware), gated by a
@@ -1740,25 +1770,33 @@ func (d *Daemon) phaseIdeas(ctx context.Context) {
 	if d.ideasPipe == nil {
 		return
 	}
-	interval := time.Duration(d.config.Ideas.MineIntervalHours) * time.Hour
-	if d.config.Ideas.MineIntervalHours <= 0 {
-		interval = time.Duration(config.DefaultIdeasMineIntervalHours) * time.Hour
-	}
 	now := time.Now()
-	if !d.lastIdeas.IsZero() && now.Sub(d.lastIdeas) < interval {
+	if !d.ideasThrottleElapsed(now) {
 		return
 	}
 
 	release, err := ideas.AcquireBackfillLock(d.config.WorkspaceDir(), "daemon")
 	if err != nil {
+		d.ideasMu.Lock()
 		if d.lastIdeasLockSkip.IsZero() || now.Sub(d.lastIdeasLockSkip) >= ideasLockSkipLogThrottle {
 			d.logger.Printf("ideas: skipping cycle — %v", err)
 			d.lastIdeasLockSkip = now
 		}
+		d.ideasMu.Unlock()
 		return
 	}
 	defer release()
 
+	_, _ = d.runIdeasTracked(func() (int, error) { return d.ideasPipe.Run(ctx) })
+}
+
+// runIdeasTracked runs one ideas run (run) as pipeline_runs "ideas" and
+// stamps the lastIdeas throttle whenever it ran, error or not: the legacy
+// phase's run and the ideas.consolidate primitive's.
+func (d *Daemon) runIdeasTracked(run func() (int, error)) (int, error) {
+	now := time.Now()
+	var proposed int
+	var runErr error
 	d.trackedPipelineRun("ideas", func() pipelineRunStats {
 		// The pipeline instance outlives this cycle — and is shared with
 		// phaseStreamDigests — so both its drop counters and its usage
@@ -1767,9 +1805,9 @@ func (d *Daemon) phaseIdeas(ctx context.Context) {
 		// tokens double-count into this phase's reported usage too.
 		dropped0, rejected0 := d.ideasPipe.AccumulatedDrops()
 		inTok0, outTok0, cost0, totalAPI0 := d.ideasPipe.AccumulatedUsage()
-		proposed, err := d.ideasPipe.Run(ctx)
-		if err != nil {
-			d.logger.Printf("ideas error: %v", err)
+		proposed, runErr = run()
+		if runErr != nil {
+			d.logger.Printf("ideas error: %v", runErr)
 		} else if proposed > 0 {
 			d.logger.Printf("ideas: proposed %d", proposed)
 		}
@@ -1782,11 +1820,14 @@ func (d *Daemon) phaseIdeas(ctx context.Context) {
 		// unconsumed material simply waits. Retrying an erroring pipeline on
 		// the very next cycle buys nothing but repeated AI cost — and one
 		// stuck account would otherwise pin the whole phase to every cycle.
+		d.ideasMu.Lock()
 		d.lastIdeas = now
 		d.saveLastIdeas()
+		d.ideasMu.Unlock()
 		inTok, outTok, cost, totalAPI := d.ideasPipe.AccumulatedUsage()
-		return pipelineRunStats{items: proposed, inTok: inTok - inTok0, outTok: outTok - outTok0, cost: cost - cost0, totalAPI: totalAPI - totalAPI0, err: err}
+		return pipelineRunStats{items: proposed, inTok: inTok - inTok0, outTok: outTok - outTok0, cost: cost - cost0, totalAPI: totalAPI - totalAPI0, err: runErr}
 	})
+	return proposed, runErr
 }
 
 // streamsLockSkipLogThrottle is the ideasLockSkipLogThrottle precedent
@@ -1899,6 +1940,7 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 		}
 	}
 
+	d.setReactionDispatch()
 	sink := d.reactionEventSink()
 	d.trackedPipelineRun("reaction-commands", func() pipelineRunStats {
 		dispatched, err := d.reactionCmdPipe.Run(ctx, sink)
@@ -2082,13 +2124,15 @@ func (d *Daemon) phaseNextStep(ctx context.Context) {
 	})
 }
 
-// phaseCustomTrackScan runs enabled custom tracks over recent activity,
-// appending timeline events. Runs before auto-track extraction so folds land.
-// Compound-gated on Digest.Enabled too: the activity it scans
+// phaseCustomTrackScan is the custom-track slot's legacy scan (until the
+// custom-tracks move is done): it runs the enabled custom tracks bound to no
+// watch recipe over recent activity, appending timeline events (a bound
+// track is its recipe's, phaseWatchSlot). Runs before auto-track extraction
+// so folds land. Compound-gated on Digest.Enabled too: the activity it scans
 // (db.GetScanActivity) includes digest-derived events, so with digest off
 // there is materially less for it to find — the same "tracks mine digests"
-// dependency phaseTracksAndRollups's tracks half has (and the same Desktop
-// dual path, ReadinessFeature.runsOnlyWithDigests, #575).
+// dependency phaseTracks has (and the same Desktop dual path,
+// ReadinessFeature.runsOnlyWithDigests, #575).
 func (d *Daemon) phaseCustomTrackScan(ctx context.Context) {
 	if !d.config.Tracks.Enabled || !d.config.Digest.Enabled {
 		return

@@ -30,11 +30,19 @@ struct BuiltinAutomationCard: View {
     let onEdit: () -> Void
     /// After a Turn On/Off or a When save: the list re-reads the row.
     var onChanged: () -> Void = {}
+    /// **New reaction automation** on the Reactions card: the template
+    /// panel on `on-reaction`. Nil hides the button.
+    var onNewReactionAutomation: (() -> Void)?
+    /// A `dictionary` row's editor (the Reactions built-in's emoji table).
+    var reactionDictionary: ReactionDictionaryViewModel?
 
     static let resetConfirmLine = "Reset — your changes are lost"
     static let unconfirmedLine = "Your edited copy is not confirmed yet, so it does not run."
     static let runQueuedLine = "Runs at the next sync"
     static let updatedLine = "Built-in version updated"
+    static let newReactionAutomation = "New reaction automation"
+    /// The Reactions built-in's id (twin: Go `builtin` registry).
+    static let reactionsID = "reactions"
 
     private var automation: Automation { model.automation }
     private var detail: BuiltinAutomationDetail? { model.detail }
@@ -203,7 +211,16 @@ struct BuiltinAutomationCard: View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
             box(title: "When", systemImage: "clock") {
                 Text(detail.when).fontWeight(.semibold)
-                parameterFields(detail.parameters)
+                parameterFields(detail.parameters.filter { $0.kind != .dictionary })
+                dictionaries(detail.parameters.filter { $0.kind == .dictionary })
+                if detail.id == Self.reactionsID, let onNewReactionAutomation {
+                    Button(action: onNewReactionAutomation) {
+                        Label(Self.newReactionAutomation, systemImage: "plus")
+                    }
+                    .buttonStyle(.kitQuiet)
+                    .controlSize(.small)
+                    .help("An automation of your own that runs when you react with an emoji")
+                }
             }
             HStack(alignment: .top, spacing: Spacing.medium) {
                 box(title: "Reads", systemImage: "doc.text.magnifyingglass") {
@@ -227,6 +244,19 @@ struct BuiltinAutomationCard: View {
             Text("Nothing").foregroundStyle(.secondary)
         }
         ForEach(lines, id: \.self) { Text($0).fixedSize(horizontal: false, vertical: true) }
+    }
+
+    /// A `dictionary` row edits its table in place; only the reaction
+    /// dictionary exists.
+    @ViewBuilder
+    private func dictionaries(_ parameters: [BuiltinAutomationDetail.Parameter]) -> some View {
+        ForEach(parameters, id: \.key) { parameter in
+            if let reactionDictionary {
+                ReactionDictionaryEditor(vm: reactionDictionary, title: parameter.label)
+            } else {
+                Text("Loading…").font(.caption).foregroundStyle(.secondary)
+            }
+        }
     }
 
     @ViewBuilder
@@ -307,7 +337,31 @@ struct BuiltinAutomationCard: View {
                 .frame(width: 64)
                 .accessibilityLabel(parameter.label)
                 .disabled(model.isWorking)
+        case .interval:
+            // "Every" (the label) "6 hours", 1–48; a stored value outside shows clamped.
+            let range = BuiltinAutomationCardModel.intervalRange
+            let hours = Binding(
+                get: { min(max(Int(text.wrappedValue) ?? range.lowerBound, range.lowerBound), range.upperBound) },
+                set: { text.wrappedValue = String($0) }
+            )
+            HStack(spacing: Spacing.small) {
+                Text(Self.hoursText(String(hours.wrappedValue)))
+                    .monospacedDigit()
+                    .accessibilityHidden(true)
+                Stepper(parameter.label, value: hours, in: range)
+                    .labelsHidden()
+                    .accessibilityLabel(parameter.label)
+                    .accessibilityValue(Self.hoursText(String(hours.wrappedValue)))
+            }
+            .disabled(model.isWorking)
+        case .dictionary:
+            // Edited by its own editor below the fields (`dictionaries`).
+            EmptyView()
         }
+    }
+
+    static func hoursText(_ value: String) -> String {
+        value == "1" ? "1 hour" : "\(value) hours"
     }
 
     private func box(title: String, systemImage: String, @ViewBuilder content: () -> some View) -> some View {

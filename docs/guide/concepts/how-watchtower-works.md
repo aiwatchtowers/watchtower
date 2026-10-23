@@ -38,18 +38,18 @@ Times are local. "Every cycle" means every 15 minutes by default.
 | Output | When | Needs |
 |---|---|---|
 | Slack messages | Every cycle | Slack workspace connected and enabled |
-| Reaction commands | Every cycle, right after the Slack sync | Slack; Reaction Commands on (on by default) |
+| Reaction commands | Every cycle, right after the Slack sync; the [Reactions](../features/automations-rules.md) built-in composes each | Slack; Reactions on (on by default) |
 | Calendar events, mail | Every cycle | An account connected; calendar and Gmail sync on (on by default) |
 | Jira issues | Every cycle, at most every 15 minutes (own interval) | A Jira site connected |
 | Linear issues | Every cycle, at most every 15 minutes (own interval) | A Linear workspace connected in **Settings** → **Connections** → **Linear** |
 | Confluence pages | Every cycle | A space picked; Confluence in search on |
 | Channel digests | Every cycle, for channels with new messages | Slack Digests on |
 | Daily rollup | Every cycle, once there are new digests (at least two channels); gives up after 3 failed tries a day | Slack Digests on |
-| Tracks | Every cycle | Tracks and Slack Digests on |
+| Tracks | Every cycle with new digests ([Track my threads](../features/tracks.md)); custom-track watches every cycle | Track my threads and Slack Digests on |
 | People cards | At most once every 24 hours | People Cards and Slack Digests on |
 | Attention detection (no AI) | Every cycle | Attention detection on; Watchtower knows who you are |
 | Stream digests (mail and Jira) | Every 6 hours | Stream Digests on; Gmail or Jira connected |
-| Ideas & Decisions | Every 6 hours (**Settings → Features → Ideas → Mining interval**, 1 to 48) | Ideas on |
+| Ideas & Decisions | Every 6 hours (**Every** on the Idea finder card, 1 to 24) | Idea finder on |
 | Memory | Every cycle; waits while history backfill runs | Memory on (off by default) |
 | Next-step suggestions | Every cycle, for targets with none or a stale one | Next Step Suggestions on |
 | Briefing, then day plan | Once a day, at or after 08:00 (**Time** on the [Morning brief](../features/automations-built-in.md) card), in one run; the plan's conflicts are re-checked every cycle after | Morning brief on; Watchtower knows who you are |

@@ -15,6 +15,7 @@ import (
 
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/builtin"
+	"watchtower/internal/automations/watch"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/tools"
@@ -34,6 +35,7 @@ type automationsFlags struct {
 	ExpectContentHash string
 	Against           int64
 	RerunOf           int64
+	Since             string // run --since (a watch recipe's Scan from)
 	Limit             int
 	Kind              string
 	Step              int64    // session-launched/-ended
@@ -117,6 +119,7 @@ func init() {
 	confirm.Flags().StringVar(&autoFlags.Hash, "hash", "", "the approval hash being confirmed (required)")
 	auto.Flags().StringVar(&autoFlags.Hash, "hash", "", "the approval hash the grant binds to (required for on)")
 	run.Flags().Int64Var(&autoFlags.RerunOf, "rerun-of", 0, "the run this one reruns")
+	run.Flags().StringVar(&autoFlags.Since, "since", "", "a watch recipe's run: scan history from this RFC 3339 instant")
 	runs.Flags().IntVar(&autoFlags.Limit, "limit", 0, "how many runs (default 20)")
 	outputs.Flags().IntVar(&autoFlags.Limit, "limit", 0, "how many outputs (default 20)")
 	outputs.Flags().StringVar(&autoFlags.Kind, "kind", "", "only outputs of this kind (inbox, briefing, report)")
@@ -302,6 +305,40 @@ type automationJSON struct {
 	// internal/automations/builtin/testdata/show_morning_brief.json); null
 	// for an owner automation.
 	Builtin *builtin.CardInfo `json:"builtin"`
+	// Watch is a watch recipe's block (watchJSON); null otherwise.
+	Watch *watchJSON `json:"watch"`
+}
+
+// watchJSON is `show --json`'s block of a watch recipe: its bound track (0
+// before its first scan), its instruction, and whether the recipe still has
+// the template's one instruction line (the card's inline Save edits only
+// that; otherwise the instruction is the track's mirror and changes only in
+// the chat).
+type watchJSON struct {
+	TrackID        int    `json:"track_id"`
+	Instruction    string `json:"instruction"`
+	TemplateShaped bool   `json:"template_shaped"`
+}
+
+// isWatchRecipe reports whether a is a watch recipe: a Personal recipe at
+// the custom_tracks sync slot.
+func isWatchRecipe(a *db.Automation) bool { return !a.IsBuiltin() && a.RunsAtSlot() }
+
+// newWatchJSON is a watch recipe's show block.
+func newWatchJSON(database *db.DB, a *db.Automation) (*watchJSON, error) {
+	t, err := database.GetWatchTrack(a.ID)
+	if err != nil {
+		return nil, err
+	}
+	j := &watchJSON{}
+	j.Instruction, j.TemplateShaped = watch.Instruction([]byte(a.RecipeText))
+	if t != nil {
+		j.TrackID = t.ID
+		if !j.TemplateShaped {
+			j.Instruction = t.Instruction
+		}
+	}
+	return j, nil
 }
 
 // automationChangeJSON is one hashed field that differs from the confirmed
@@ -523,6 +560,11 @@ func runAutomationsShow(cmd *cobra.Command, args []string) error {
 			return err
 		}
 		j.Builtin = &card
+	}
+	if isWatchRecipe(a) {
+		if j.Watch, err = newWatchJSON(database, a); err != nil {
+			return err
+		}
 	}
 	reg := buildAutomationRegistry(cfg, database)
 	j.AutoTools = automationAutoTools(reg, a)

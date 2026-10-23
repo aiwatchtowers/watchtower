@@ -1,0 +1,39 @@
+{
+  "id": "reactions",
+  "slot": "reactions",
+  "overridden": false,
+  "shipped_hash": "d55a100c2990f4e6bf9402fd5eec6f4d5563737ff11dd7235506db88bef100e7",
+  "base_hash": "",
+  "update_available": false,
+  "shipped_text": "---\nname: Reactions\ntrigger:\n  sync: reactions\npermissions:\n  - builtin:reaction.compose\nbudget: {tokens: 20000, minutes: 2}\n---\nWhen you react to a Slack message with an emoji from your dictionary, reads\nthe message you reacted to and its thread and composes the action the emoji\nstands for — a proposal in your Inbox (ideas, reminders and brief notes apply\nat once). One run handles one reaction.\n\n```js\nreaction.compose({ prompt: builtin.defaultPrompt(\"compose\") });\n```\n",
+  "default_prompts": {
+    "compose": "You turn a Slack message the owner flagged (by reacting to it) into the arguments for ONE Watchtower action.\n\nThe user message tells you:\n- WHICH action to build and what each of its arguments means.\n- The Slack message the owner reacted to, plus any thread context and available facts.\n\nRules:\n- Output ONLY a single JSON object whose keys are the action's arguments. No prose, no markdown fences, no explanation.\n- Base every field on the message and thread. Do NOT invent facts, names, dates, projects, or numbers that are not present.\n- Write the title/summary as a concise, imperative line — what the owner would want done about this message.\n- Always include a \"reason\": one sentence, why this action is proposed, phrased for the owner to read.\n- If a required argument cannot be grounded in the provided context, still return your best JSON; the caller validates it."
+  },
+  "when": "When you react to a Slack message",
+  "reads": [
+    "The message you reacted to and its thread"
+  ],
+  "sends": [
+    "Proposals in your Inbox (ideas, reminders and brief notes apply at once)"
+  ],
+  "parameters": [
+    {
+      "key": "reaction_command_map",
+      "kind": "dictionary",
+      "label": "Reactions",
+      "value": "[]"
+    }
+  ],
+  "feature_ids": [
+    "reaction-commands"
+  ],
+  "enabled": true,
+  "run_now": false,
+  "copy_error": "",
+  "costs": {
+    "usd": 0,
+    "days": 7,
+    "reported": false,
+    "tokens": 0
+  }
+}

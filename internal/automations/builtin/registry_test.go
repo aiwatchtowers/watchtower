@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,7 +18,7 @@ import (
 	"watchtower/internal/features"
 )
 
-var update = flag.Bool("update", false, "rewrite testdata/show_morning_brief.json")
+var update = flag.Bool("update", false, "rewrite the testdata/show_*.json goldens")
 
 func TestRegistry_ShippedRecipesParse(t *testing.T) {
 	ids := map[string]bool{}
@@ -64,9 +66,8 @@ func TestRegistry_PromptsCoverDefaultPromptCalls(t *testing.T) {
 		t.Run(e.ID, func(t *testing.T) {
 			f := newFixture(t)
 			f.sync(t)
-			run, err := f.runner.RunNow(context.Background(), e.ID, automations.BuiltinInput{})
-			if err != nil || run.Status != db.RunSucceeded {
-				t.Fatalf("RunNow = %+v, %v", run, err)
+			if run := f.runOnce(t, e.ID); run.Status != db.RunSucceeded {
+				t.Fatalf("run = %+v", run)
 			}
 			var want []string
 			for _, p := range e.Prompts {
@@ -104,6 +105,37 @@ func TestRegistry_RunNowNoteOnlyWhenNoRunNow(t *testing.T) {
 	}
 }
 
+// TestRunner_RunNowRefusedWithoutRunNow: a built-in that offers no Run Now
+// (Reactions) is refused with its note, and nothing is queued.
+func TestRunner_RunNowRefusedWithoutRunNow(t *testing.T) {
+	f := newFixture(t)
+	f.sync(t)
+	e, ok := Lookup("reactions")
+	if !ok || e.RunNow {
+		t.Fatalf("reactions = %+v, %v; want an entry without Run Now", e, ok)
+	}
+	_, err := f.runner.RunNow(context.Background(), e.ID, automations.BuiltinInput{})
+	if !errors.Is(err, ErrNoRunNow) || !strings.Contains(err.Error(), e.NoRunNowNote) {
+		t.Fatalf("RunNow(reactions) = %v; want ErrNoRunNow naming %q", err, e.NoRunNowNote)
+	}
+	runs, err := f.d.ListAutomationRuns(f.rowOf(t, e.ID).ID, 0)
+	if err != nil || len(runs) != 0 {
+		t.Errorf("runs = %+v, %v; want none queued", runs, err)
+	}
+	if calls := f.c3["reaction.compose"].snapshot(); len(calls) != 0 {
+		t.Errorf("reaction.compose ran %d times", len(calls))
+	}
+}
+
+// TestCard_IntervalWithoutConfigIsTheDefault: with no config the interval
+// shows the default hours, matching the When line.
+func TestCard_IntervalWithoutConfigIsTheDefault(t *testing.T) {
+	e, _ := Lookup("idea-finder")
+	if got := paramValue(nil, "ideas.mine_interval_hours"); got != "6" || e.When(nil) != "Every 6 hours" {
+		t.Errorf("value %q, When %q; want 6 and \"Every 6 hours\"", got, e.When(nil))
+	}
+}
+
 func TestRegistry_ParametersHaveValues(t *testing.T) {
 	cfg := testConfig(t)
 	for _, e := range All() {
@@ -131,31 +163,72 @@ func TestRegistry_LookupAndAtSlot(t *testing.T) {
 func TestRegistry_ShowJSONGolden(t *testing.T) {
 	f := newFixture(t)
 	f.sync(t)
-	e := mustEntry(t)
-	card, err := Card(f.d, f.cfg, f.ws, e, f.row(t), f.clock.Now())
-	if err != nil {
-		t.Fatal(err)
+	for _, e := range All() {
+		t.Run(e.ID, func(t *testing.T) {
+			card, err := Card(f.d, f.cfg, f.ws, e, f.rowOf(t, e.ID), f.clock.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := json.MarshalIndent(card, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, '\n')
+			if want := fmt.Sprintf(`"run_now": %v`, e.RunNow); !bytes.Contains(got, []byte(want)) {
+				t.Errorf("card has no %s:\n%s", want, got)
+			}
+			path := filepath.Join("testdata", "show_"+strings.ReplaceAll(e.ID, "-", "_")+".json")
+			if *update {
+				if err := os.WriteFile(path, got, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("%v (run with -update)", err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Errorf("card JSON differs from %s (run with -update):\n%s", path, got)
+			}
+		})
 	}
-	got, err := json.MarshalIndent(card, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got = append(got, '\n')
-	if !bytes.Contains(got, []byte(`"run_now": true`)) {
-		t.Errorf("card has no \"run_now\": true:\n%s", got)
-	}
-	path := filepath.Join("testdata", "show_morning_brief.json")
-	if *update {
-		if err := os.WriteFile(path, got, 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	want, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("%v (run with -update)", err)
-	}
-	if !bytes.Equal(got, want) {
-		t.Errorf("card JSON differs from %s (run with -update):\n%s", path, got)
+}
+
+// TestRenderOwnerCopy_ForEachC3Entry: each C3 built-in's owner copy with an
+// edited prompt parses, and once confirmed its primitive gets exactly that
+// text.
+func TestRenderOwnerCopy_ForEachC3Entry(t *testing.T) {
+	for id, prim := range map[string]string{
+		"track-my-threads": "tracks.extract", "idea-finder": "ideas.consolidate", "reactions": "reaction.compose",
+	} {
+		t.Run(id, func(t *testing.T) {
+			f := newFixture(t)
+			e, ok := Lookup(id)
+			if !ok || len(e.Prompts) != 1 {
+				t.Fatalf("Lookup(%q) = %+v, %v; want one prompt", id, e, ok)
+			}
+			text := "My own " + e.Prompts[0].Name + " prompt: `%s` \u2028 \"quoted\"\n```\nend"
+			data, err := RenderOwnerCopy(e, map[string]string{e.Prompts[0].Name: text})
+			if err != nil {
+				t.Fatalf("RenderOwnerCopy: %v", err)
+			}
+			f.writeCopyOf(t, id, data)
+			f.sync(t)
+			a := f.rowOf(t, id)
+			if !a.Overridden || a.ParseError != "" {
+				t.Fatalf("row = overridden %v parse %q", a.Overridden, a.ParseError)
+			}
+			if err := f.d.ConfirmAutomation(a.ID, a.ApprovalHash, f.clock.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if run := f.runOnce(t, id); run.Status != db.RunSucceeded {
+				t.Fatalf("run = %+v", run)
+			}
+			calls := f.c3[prim].snapshot()
+			if len(calls) != 1 || calls[0].Prompt != text {
+				t.Fatalf("%s calls = %+v, want one with the copy's text", prim, calls)
+			}
+		})
 	}
 }
 
