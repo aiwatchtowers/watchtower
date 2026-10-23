@@ -48,7 +48,9 @@ func IdeaFinderPrimitives(p IdeasRunner, h IdeaHooks) map[string]automations.Pri
 				if err != nil {
 					return automations.PrimitiveResult{}, err
 				}
-				defer release()
+				if release != nil {
+					defer release()
+				}
 			}
 			in0, out0, _, _ := p.AccumulatedUsage()
 			run := func() (int, error) { return p.RunWith(ctx, ideas.RunOptions{Prompt: call.Prompt}) }

@@ -250,3 +250,30 @@ func withShipped(t *testing.T, data []byte) {
 }
 
 func isNotRunnable(err error) bool { return errors.Is(err, automations.ErrNotRunnable) }
+
+// runOnce runs built-in id once, inline: a Run Now, or — for one that
+// offers none (Reactions) — a sync run, as its slot would queue it.
+func (f *fixture) runOnce(t *testing.T, id string) *db.AutomationRun {
+	t.Helper()
+	e, ok := Lookup(id)
+	if !ok {
+		t.Fatalf("no built-in %q", id)
+	}
+	if e.RunNow {
+		run, err := f.runner.RunNow(context.Background(), id, automations.BuiltinInput{})
+		if err != nil {
+			t.Fatalf("RunNow(%s): %v", id, err)
+		}
+		return run
+	}
+	runID, _, err := f.d.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: f.rowOf(t, id).ID,
+		Trigger: db.TriggerSync, Now: f.clock.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := f.exec.ExecuteBuiltinInline(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("executing %s's sync run: %v", id, err)
+	}
+	return run
+}

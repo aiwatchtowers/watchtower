@@ -112,6 +112,9 @@ func Card(d *db.DB, cfg *config.Config, workspaceDir string, e Entry, a *db.Auto
 // paramValue is the current value of a card parameter's config key, as
 // text ("" for a key the card does not know).
 func paramValue(cfg *config.Config, key string) string {
+	if key == "ideas.mine_interval_hours" {
+		return strconv.Itoa(ideasIntervalHours(cfg)) // the default without a config, as When says
+	}
 	if cfg == nil {
 		return ""
 	}
@@ -128,8 +131,6 @@ func paramValue(cfg *config.Config, key string) string {
 		return strconv.Itoa(cfg.DayPlan.MinBacklog)
 	case "day_plan.max_backlog":
 		return strconv.Itoa(cfg.DayPlan.MaxBacklog)
-	case "ideas.mine_interval_hours":
-		return strconv.Itoa(ideasIntervalHours(cfg))
 	case "reaction_command_map":
 		return "[]" // a dictionary: the Desktop reads the table
 	}

@@ -36,8 +36,8 @@ func TestReactions_ComposeUsesPendingDispatch(t *testing.T) {
 	p := &fakeDispatcher{out: reactioncmd.Outcome{Status: "dispatched", ActionID: 42, Step: reactioncmd.StepFinalize}}
 	s := NewReactionSlot()
 	compose := ReactionPrimitives(p, s)["reaction.compose"]
-	s.Begin(7, reactioncmd.Dispatch{ChannelID: "1:C1", MessageTS: "1.1", Emoji: "white_check_mark"})
-	s.Begin(8, reactioncmd.Dispatch{ChannelID: "1:C2", MessageTS: "2.2", Emoji: "bulb"})
+	mustBegin(t, s, 7, reactioncmd.Dispatch{ChannelID: "1:C1", MessageTS: "1.1", Emoji: "white_check_mark"})
+	mustBegin(t, s, 8, reactioncmd.Dispatch{ChannelID: "1:C2", MessageTS: "2.2", Emoji: "bulb"})
 
 	res, err := compose(context.Background(), composeCall(8))
 	if err != nil {
@@ -75,7 +75,7 @@ func TestReactions_SecondComposeInOneRunRefused(t *testing.T) {
 	p := &fakeDispatcher{out: reactioncmd.Outcome{Status: "dispatched", ActionID: 1, Step: reactioncmd.StepFinalize}}
 	s := NewReactionSlot()
 	compose := ReactionPrimitives(p, s)["reaction.compose"]
-	s.Begin(3, reactioncmd.Dispatch{MessageTS: "1.1"})
+	mustBegin(t, s, 3, reactioncmd.Dispatch{MessageTS: "1.1"})
 	if _, err := compose(context.Background(), composeCall(3)); err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestReactions_SecondComposeInOneRunRefused(t *testing.T) {
 
 func TestReactions_EndWithoutComposeReportsFalse(t *testing.T) {
 	s := NewReactionSlot()
-	s.Begin(5, reactioncmd.Dispatch{MessageTS: "1.1"})
+	mustBegin(t, s, 5, reactioncmd.Dispatch{MessageTS: "1.1"})
 	if _, ok := s.End(5); ok {
 		t.Error("End of a run that never composed reported an outcome")
 	}
@@ -103,5 +103,66 @@ func TestReactions_EndWithoutComposeReportsFalse(t *testing.T) {
 	compose := ReactionPrimitives(&fakeDispatcher{}, s)["reaction.compose"]
 	if _, err := compose(context.Background(), composeCall(5)); !isValidation(err) {
 		t.Errorf("compose after End: %v, want a ValidationError", err)
+	}
+}
+
+func mustBegin(t *testing.T, s *ReactionSlot, runID int64, d reactioncmd.Dispatch) {
+	t.Helper()
+	if err := s.Begin(runID, d); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestReactions_BeginTwiceRefused: a run that already carries a command
+// keeps it; the second Begin is refused.
+func TestReactions_BeginTwiceRefused(t *testing.T) {
+	p := &fakeDispatcher{out: reactioncmd.Outcome{Status: "dispatched", ActionID: 1, Step: reactioncmd.StepFinalize}}
+	s := NewReactionSlot()
+	mustBegin(t, s, 4, reactioncmd.Dispatch{MessageTS: "first"})
+	if err := s.Begin(4, reactioncmd.Dispatch{MessageTS: "second"}); !errors.Is(err, ErrReactionRunBusy) {
+		t.Fatalf("second Begin = %v, want ErrReactionRunBusy", err)
+	}
+	if _, err := ReactionPrimitives(p, s)["reaction.compose"](context.Background(), composeCall(4)); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.got) != 1 || p.got[0].MessageTS != "first" {
+		t.Errorf("dispatched %+v, want the first command", p.got)
+	}
+}
+
+// blockingDispatcher blocks DispatchWith until release is closed.
+type blockingDispatcher struct {
+	started, release chan struct{}
+}
+
+func (b *blockingDispatcher) DispatchWith(context.Context, reactioncmd.Dispatch, string) reactioncmd.Outcome {
+	close(b.started)
+	<-b.release
+	return reactioncmd.Outcome{Status: "dispatched", ActionID: 9, Step: reactioncmd.StepFinalize}
+}
+
+// TestReactions_EndDuringComposeIsStranded: a run that ends while its
+// compose is still dispatching reports an unknown outcome (strand), never a
+// finalize.
+func TestReactions_EndDuringComposeIsStranded(t *testing.T) {
+	b := &blockingDispatcher{started: make(chan struct{}), release: make(chan struct{})}
+	s := NewReactionSlot()
+	mustBegin(t, s, 11, reactioncmd.Dispatch{MessageTS: "1.1"})
+	done := make(chan error, 1)
+	go func() {
+		_, err := ReactionPrimitives(b, s)["reaction.compose"](context.Background(), composeCall(11))
+		done <- err
+	}()
+	<-b.started
+	out, ok := s.End(11)
+	close(b.release)
+	if err := <-done; err != nil {
+		t.Errorf("compose = %v", err)
+	}
+	if !ok || out.Step != reactioncmd.StepStrand || out.Detail != "the run ended before reaction.compose returned" {
+		t.Errorf("End during compose = %+v, %v; want a strand", out, ok)
+	}
+	if _, ok := s.End(11); ok {
+		t.Error("the late outcome was kept after End")
 	}
 }

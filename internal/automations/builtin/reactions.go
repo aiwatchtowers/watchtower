@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -26,7 +27,8 @@ type ReactionSlot struct {
 // reactionCall is one run's command and, once composed, its outcome.
 type reactionCall struct {
 	d        reactioncmd.Dispatch
-	composed bool
+	composed bool // reaction.compose took the command
+	stored   bool // and DispatchWith returned out
 	out      reactioncmd.Outcome
 }
 
@@ -35,24 +37,41 @@ func NewReactionSlot() *ReactionSlot {
 	return &ReactionSlot{pending: map[int64]*reactionCall{}}
 }
 
-// Begin hands d to run runID (it replaces a Dispatch Begun earlier for the
-// same run).
-func (s *ReactionSlot) Begin(runID int64, d reactioncmd.Dispatch) {
+// ErrReactionRunBusy is Begin's refusal of a run that already carries a
+// command (an enqueue that coalesced into a still-queued run).
+var ErrReactionRunBusy = errors.New("the run already carries a reaction command")
+
+// strandedNote is End's detail for a run that ended while reaction.compose
+// was still dispatching.
+const strandedNote = "the run ended before reaction.compose returned"
+
+// Begin hands d to run runID. A run that already carries a command is
+// refused with ErrReactionRunBusy and keeps its first command.
+func (s *ReactionSlot) Begin(runID int64, d reactioncmd.Dispatch) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, ok := s.pending[runID]; ok {
+		return fmt.Errorf("run %d: %w", runID, ErrReactionRunBusy)
+	}
 	s.pending[runID] = &reactionCall{d: d}
+	return nil
 }
 
 // End removes run runID's command and returns the Outcome reaction.compose
 // stored; false = the script never called reaction.compose (or the run was
-// never Begun).
+// never Begun). A run that ended while its compose was still dispatching
+// (an abandoned script) returns a StepStrand outcome: whether an action was
+// proposed is unknown.
 func (s *ReactionSlot) End(runID int64) (reactioncmd.Outcome, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.pending[runID]
 	delete(s.pending, runID)
-	if !ok || !c.composed {
+	switch {
+	case !ok || !c.composed:
 		return reactioncmd.Outcome{}, false
+	case !c.stored:
+		return reactioncmd.Outcome{Step: reactioncmd.StepStrand, Detail: strandedNote}, true
 	}
 	return c.out, true
 }
@@ -78,7 +97,7 @@ func (s *ReactionSlot) store(runID int64, out reactioncmd.Outcome) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if c, ok := s.pending[runID]; ok {
-		c.out = out
+		c.out, c.stored = out, true
 	}
 }
 
