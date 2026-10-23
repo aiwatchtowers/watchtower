@@ -18,7 +18,7 @@ Your morning read, your tracks, your ideas and your reaction commands used to ha
 The other three work the same way, each with its own page:
 
 - **Track my threads** mines your Slack digests for [tracks](tracks.md). It runs at the first sync after new digests land, and does nothing when there are none. It needs Slack Digests on.
-- **Idea finder** consolidates [ideas and decisions](ideas-and-decisions.md) every few hours (**Every**, 1 to 24, default 6) and skips a run while a past-messages search is mining.
+- **Idea finder** consolidates [ideas and decisions](ideas-and-decisions.md) every few hours (**Every**, 1 to 48, default 6) and skips a run while a past-messages search is mining.
 - **Reactions** turns each Slack reaction from your dictionary into a proposal in the Inbox, one run per reaction. It has no **Run Now**. See [Reactions and tracks](automations-rules.md).
 
 **Where the switches went.** Settings → Features no longer lists Tracks, Ideas or Reaction commands. Its row "Briefing, Day Plan, Tracks, Ideas and Reaction commands" says "These now live in Automations → Built in", with **Open Automations**. **Turn On** and **Turn Off** on a card do what the switch did, and **Turn Off** on Track my threads also pauses your watches.

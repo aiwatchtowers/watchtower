@@ -11,7 +11,7 @@ Someone says "we could cache this per tenant" in a thread, and it is buried by l
 The registry is filled in two steps, both by the background sync.
 
 1. **Cheap pre-digests.** Slack digests and meeting recaps already pick out ideas and decisions. Mail, Jira and Linear get their own digest passes over recent threads, issues and comments. That pass is the separate **Stream Digests** feature, which runs about every 6 hours.
-2. **Consolidation.** A stronger AI pass reads only the new material and your recent verdicts. It proposes new ideas or attaches a repeat mention to an existing one. This pass is the built-in **Idea finder** in Automations → **Built in**: its card has **Turn On** and **Turn Off**, **Every** (hours, 1 to 24, default 6; press **Save**) and **Edit in Chat** if you want it to judge differently. See [Built-in automations](automations-built-in.md). Settings → Features no longer lists Ideas.
+2. **Consolidation.** A stronger AI pass reads only the new material and your recent verdicts. It proposes new ideas or attaches a repeat mention to an existing one. This pass is the built-in **Idea finder** in Automations → **Built in**: its card has **Turn On** and **Turn Off**, **Every** (hours, 1 to 48, default 6; press **Save**) and **Edit in Chat** if you want it to judge differently. See [Built-in automations](automations-built-in.md). Settings → Features no longer lists Ideas.
 
 It needs the **Idea finder** on (on by default). For mail, Jira and Linear ideas, Stream Digests must also be on. The daemon's regular pass looks only at recent activity; use **Find Ideas in Past Messages…** to reach further back (it does not cover Linear).
 

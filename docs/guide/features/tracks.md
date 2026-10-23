@@ -48,7 +48,7 @@ To watch a new topic, open Automations, click **+**, choose **Watch for somethin
 - **Duplicates.** The AI matches by meaning and prefers a duplicate to a wrong merge. Press **Stop watching** on the extra one.
 - **A custom watch shows nothing.** It scans only while **Collecting** is on and only reads what Watchtower already holds, so use **Scan** to backfill history.
 - **Scan says to confirm the watch.** You or the chat changed the watch's recipe. Open it in Automations and confirm it.
-- **"Track my threads needs Slack Digests on".** Turn on Slack Digests; watches and Track my threads wait for it.
+- **"Track my threads needs Slack Digests on"** (when you run it from the terminal). Turn on Slack Digests; watches and Track my threads wait for it.
 
 Filter still empty? See [A tab is empty](../troubleshooting/tab-is-empty.md).
 
