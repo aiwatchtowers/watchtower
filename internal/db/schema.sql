@@ -3011,7 +3011,8 @@ CREATE TABLE IF NOT EXISTS builtin_migrations (
     status     TEXT NOT NULL CHECK (status IN ('done','failed')),
     error      TEXT NOT NULL DEFAULT '',
     attempts   INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    first_attempted_at TEXT NOT NULL DEFAULT ''  -- the first attempt (00152), kept by later ones; updated_at is the latest
 );
 
 -- The owner's per-(automation, tool) auto grant (00117, Automations P2). Active

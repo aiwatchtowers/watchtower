@@ -2167,7 +2167,7 @@ CREATE TABLE IF NOT EXISTS builtin_migrations (
     error      TEXT NOT NULL DEFAULT '',
     attempts   INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
-);
+, first_attempted_at TEXT NOT NULL DEFAULT '');
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,

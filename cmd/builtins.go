@@ -48,7 +48,7 @@ func wireBuiltins(d *daemon.Daemon, cfg *config.Config, database *db.DB, gen dig
 	}
 	runner := builtin.NewRunner(database, exec, gates, cfg, automations.RealClock{}, logger)
 
-	active := map[string]bool{}
+	synced := map[string]bool{}
 	now := time.Now()
 	for _, e := range builtin.All() {
 		if _, err := builtin.SyncOne(context.Background(), database, cfg.WorkspaceDir(), cfg, e.ID, now); err != nil {
@@ -58,16 +58,24 @@ func wireBuiltins(d *daemon.Daemon, cfg *config.Config, database *db.DB, gen dig
 		if note := builtin.OwnerCopyNote(cfg.WorkspaceDir(), e.ID); note != "" {
 			logger.Printf("built-in %s: %s", e.ID, note)
 		}
-		active[e.ID] = true
+		synced[e.ID] = true
 	}
 	// The one-time settings move: a built-in whose move failed keeps its
 	// legacy phases this run.
-	moved := upgradeBuiltins(cfg, database, now, logger)
-	for id := range active {
-		active[id] = active[id] && moved[id] // no key: not moved
-	}
-	d.SetBuiltins(runner, active)
+	d.SetBuiltins(runner, activeBuiltins(synced, upgradeBuiltins(cfg, database, now, logger)))
 	return runner
+}
+
+// activeBuiltins is the daemon's active set: a built-in whose row synced and
+// whose move is done (no key in moved: not moved), plus the custom tracks'
+// move, true only when done — the daemon's watch slot then stops the legacy
+// custom-track scan.
+func activeBuiltins(synced, moved map[string]bool) map[string]bool {
+	active := map[string]bool{customTracksID: moved[customTracksID]}
+	for id := range synced {
+		active[id] = moved[id]
+	}
+	return active
 }
 
 // slotBackends are the slot executor's backends: automationBackends with the
