@@ -57,4 +57,8 @@ func DefaultForRole(id, role string) string {
 var MovedToBuiltin = map[string]string{
 	BriefingDaily:   "morning-brief",
 	DayPlanGenerate: "morning-brief",
+
+	TracksExtractBatch: "track-my-threads",
+	IdeasConsolidate:   "idea-finder",
+	ReactionCommand:    "reactions",
 }

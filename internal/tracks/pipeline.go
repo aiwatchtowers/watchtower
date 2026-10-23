@@ -104,6 +104,10 @@ type Pipeline struct {
 	ticketProjects     map[string]bool // synced Jira project keys: the only ticket keys a fingerprint counts
 	allActiveTracksRef []db.Track      // cached active tracks for the run
 
+	// promptOverride and lastPromptNote belong to one RunWith (see RunOptions).
+	promptOverride string
+	lastPromptNote string
+
 	// jiraKeyDetector, if set, detects Jira keys in extracted tracks.
 	jiraKeyDetector interface {
 		ProcessTrack(trackID int, text string, sourceRefs string, channelIDs string) (int, error)
@@ -205,6 +209,62 @@ func (p *Pipeline) lastTracksStartedAt() string {
 // here, making this check redundant-but-harmless from the daemon, and load-
 // bearing only for that one CLI command.
 func (p *Pipeline) Run(ctx context.Context) (int, int, error) {
+	return p.RunWith(ctx, RunOptions{})
+}
+
+// RunOptions tunes one tracks run.
+type RunOptions struct {
+	// Prompt, when non-empty, replaces the store-resolved
+	// tracks.extract_batch template (the role instruction is still
+	// prepended). The placeholder check applies to it.
+	Prompt string
+}
+
+// LastPromptNote is "" or the sentence saying the last run fell back to the
+// built-in template because the override had the wrong placeholder count.
+func (p *Pipeline) LastPromptNote() string { return p.lastPromptNote }
+
+// HasMaterial reports whether a run would have digests to look at: any digest
+// created after the last tracks run started, any owed retry digest, or — with
+// no prior run or no tracks for the owner yet — any digest at all. It makes
+// no AI call and writes nothing.
+func (p *Pipeline) HasMaterial() (bool, error) {
+	retry, err := p.db.GetTrackRetryDigests()
+	if err != nil {
+		return false, fmt.Errorf("loading retry digests: %w", err)
+	}
+	if len(retry) > 0 {
+		return true, nil
+	}
+	since := ""
+	owner, err := p.db.ResolveOwner()
+	if err != nil {
+		return false, fmt.Errorf("resolving owner: %w", err)
+	}
+	if owner.Known() {
+		hasTracks, err := p.db.HasTracksForUser(owner.ID)
+		if err != nil {
+			return false, fmt.Errorf("checking existing tracks: %w", err)
+		}
+		if hasTracks {
+			since = p.lastTracksStartedAt()
+		}
+	}
+	if since == "" {
+		since = "0000-01-01T00:00:00Z"
+	}
+	digests, err := p.db.GetDigestsCreatedAfter("channel", since)
+	if err != nil {
+		return false, fmt.Errorf("loading new digests: %w", err)
+	}
+	return len(digests) > 0, nil
+}
+
+// RunWith is Run with run options.
+func (p *Pipeline) RunWith(ctx context.Context, opts RunOptions) (int, int, error) {
+	p.promptOverride = opts.Prompt
+	p.lastPromptNote = ""
+	defer func() { p.promptOverride = "" }()
 	// Reset accumulated usage from previous run (pipeline is reused across daemon cycles).
 	p.totalInputTokens.Store(0)
 	p.totalOutputTokens.Store(0)
@@ -1174,6 +1234,7 @@ func (p *Pipeline) generateBatchTracks(ctx context.Context, entries []digestEntr
 		roleRules,
 		"", // existing tracks per-channel removed — cross-channel section covers all
 		crossChannelSection,
+		"", // the default's second blank slot after the existing tracks; channel digests belong under their header
 		channelBlocks.String(),
 	)
 
@@ -1642,11 +1703,35 @@ func (p *Pipeline) getPrompt(id string) (string, int) {
 	if p.profile != nil {
 		role = p.profile.Role
 	}
-	tmpl, version, err := prompts.Resolve(p.promptStore, id, role)
-	if err != nil {
-		p.logger.Printf("tracks: %v — using the built-in default", err)
+	var tmpl string
+	var version int
+	if p.promptOverride != "" {
+		tmpl = p.promptOverride
+	} else {
+		var err error
+		tmpl, version, err = prompts.Resolve(p.promptStore, id, role)
+		if err != nil {
+			p.logger.Printf("tracks: %v — using the built-in default", err)
+		}
+	}
+	// A template whose %s count differs from the shipped default's (an old
+	// customised row, or a bad override) would shift every section and append
+	// %!(EXTRA ...): the default is used instead.
+	if got, want := countVerbs(tmpl), countVerbs(prompts.Defaults[id]); got != want {
+		if p.promptOverride != "" {
+			p.logger.Printf("tracks: the edited prompt has %d %%s placeholders, the default has %d — using the default", got, want)
+		} else {
+			p.logger.Printf("tracks: stored %s template has %d placeholders, the default has %d — using the default (reset the prompt in Settings to pick up the new sections)", id, got, want)
+		}
+		p.lastPromptNote = fmt.Sprintf("The prompt has %d placeholders where %d are required — the built-in prompt was used.", got, want)
+		tmpl, version = prompts.DefaultForRole(id, role), 0
 	}
 	return prompts.WithRoleInstruction(role, tmpl), version
+}
+
+// countVerbs counts %s verbs, not counting an escaped %%s.
+func countVerbs(tmpl string) int {
+	return strings.Count(tmpl, "%s") - strings.Count(tmpl, "%%s")
 }
 
 // --- helpers: caches ---

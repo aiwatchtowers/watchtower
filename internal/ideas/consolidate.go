@@ -136,7 +136,7 @@ type transcriptRecap struct {
 // Returns the number of ideas/decisions rows created and the number of
 // mentions dropped because their ref was already recorded (IDEA-05).
 func (p *Pipeline) runConsolidate(ctx context.Context) (proposed, mentionsDeduped int, err error) {
-	return p.consolidate(ctx, time.Time{}, time.Time{}, nil)
+	return p.consolidate(ctx, time.Time{}, time.Time{}, nil, "")
 }
 
 // consolidate is runConsolidate with an optional [from, to] window on every
@@ -149,8 +149,10 @@ func (p *Pipeline) runConsolidate(ctx context.Context) (proposed, mentionsDedupe
 // loop watches mentionsDeduped to know when re-mining an already-mined
 // window has stopped finding anything new. A nil mem reads and advances the
 // stored floors; Backfill passes its own, which the run starts from and
-// advances instead (after a committed apply), writing no stored floor.
-func (p *Pipeline) consolidate(ctx context.Context, from, to time.Time, mem *workspaceFloors) (proposed, mentionsDeduped int, err error) {
+// advances instead (after a committed apply), writing no stored floor. prompt,
+// when non-empty, overrides the consolidate template for this call only (a
+// parameter, never a field: the pipeline is shared with phaseStreamDigests).
+func (p *Pipeline) consolidate(ctx context.Context, from, to time.Time, mem *workspaceFloors, prompt string) (proposed, mentionsDeduped int, err error) {
 	if p.generator == nil {
 		return 0, 0, nil
 	}
@@ -176,7 +178,7 @@ func (p *Pipeline) consolidate(ctx context.Context, from, to time.Time, mem *wor
 		return 0, 0, fmt.Errorf("listing registry for prompt: %w", err)
 	}
 
-	tmpl, _ := p.getPrompt("ideas.consolidate")
+	tmpl := p.getPrompt(prompts.IdeasConsolidate, prompt)
 	system := fmt.Sprintf(tmpl, prompts.Directive(p.language()))
 	userMsg := buildConsolidateUserMessage(registry, buildPreferencesBlock(p.db), in.block)
 
