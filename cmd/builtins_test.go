@@ -773,6 +773,19 @@ func runCLI(t *testing.T, args ...string) (int, string, string) {
 	require.NoError(t, err)
 	orig := os.Stderr
 	os.Stderr = w
+	restored := false
+	restore := func() {
+		if !restored {
+			os.Stderr = orig
+			restored = true
+		}
+	}
+	t.Cleanup(restore) // a panic in the command still gives the test its stderr back
+	drained := make(chan []byte, 1)
+	go func() { // drained as written: a command that writes much never blocks on the pipe
+		b, _ := io.ReadAll(r)
+		drained <- b
+	}()
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
 	cfgPath := flagConfig
@@ -780,10 +793,9 @@ func runCLI(t *testing.T, args ...string) (int, string, string) {
 	code := Execute()
 	flagConfig = cfgPath
 	rootCmd.PersistentFlags().Lookup("config").Changed = false
-	os.Stderr = orig
+	restore()
 	require.NoError(t, w.Close())
-	stderr, err := io.ReadAll(r)
-	require.NoError(t, err)
+	stderr := <-drained
 	rootCmd.SetArgs(nil)
 	rootCmd.SetOut(nil)
 	for _, c := range cmds {

@@ -843,3 +843,23 @@ func TestIdeasMineFrom_RefusedWhileSlotHoldsLock(t *testing.T) {
 	assert.Empty(t, gen.calls)
 	assert.Empty(t, c.runs(t, a.ID))
 }
+
+// Flagless ideas mine while another ideas run holds the backfill lock: the
+// Idea finder's consolidation is skipped with a note, the command exits 0,
+// and neither a run nor a consolidation call is made.
+func TestIdeasMine_LockHeldSkipsConsolidation(t *testing.T) {
+	c := newC3CLI(t)
+	gen := seedIdeasMail(t, c, time.Now().Add(-3*time.Hour))
+	c.moved(t, ideaFinderID)
+	a := c.builtinRow(t, ideaFinderID)
+	release, err := ideas.AcquireBackfillLock(c.ws, "CLI backfill")
+	require.NoError(t, err)
+	defer release()
+
+	code, stdout, stderr := runCLI(t, "ideas", "mine")
+	require.Equal(t, 0, code, stderr)
+	assert.Contains(t, stdout, "consolidation skipped: another ideas run holds the lock")
+	assert.Contains(t, stdout, "proposed=0")
+	assert.Empty(t, gen.consolidations())
+	assert.Empty(t, c.runs(t, a.ID), "no run while the lock is held")
+}

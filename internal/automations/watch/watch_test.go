@@ -292,3 +292,37 @@ func TestWatchStart_RetryRepairsPartialStart(t *testing.T) {
 		}
 	})
 }
+
+// A bound recipe edited since Start rendered it is never confirmed by a
+// confirming retry (AUTO-06): only the untouched template is.
+func TestWatchStart_RetryNeverConfirmsAnEditedRecipe(t *testing.T) {
+	ctx := context.Background()
+	f := newStartFixture(t)
+	tr := f.track(t, db.Track{Text: "Edited after start"})
+	a, err := Start(ctx, f.d, f.ix, f.ws, tr, StartOptions{Now: testNow})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// The instruction line is the template's; the rest of the text is not.
+	edited := []byte(strings.Replace(a.RecipeText, "budget: {tokens: 200000, minutes: 10}", "budget: {tokens: 900000, minutes: 30}", 1))
+	if string(edited) == a.RecipeText {
+		t.Fatal("the edit changed nothing")
+	}
+	dir, err := automations.CanonicalDir(automations.PersonalDir(f.ws))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.ix.WriteRecipe(ctx, personal(), dir, a.Path, edited); err != nil {
+		t.Fatalf("hand edit: %v", err)
+	}
+	if _, err := Start(ctx, f.d, f.ix, f.ws, tr, StartOptions{Confirm: true, Now: testNow}); !errors.Is(err, ErrEditedSinceRendered) {
+		t.Fatalf("retry = %v; want ErrEditedSinceRendered", err)
+	}
+	got, err := f.d.GetAutomation(a.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Confirmed() {
+		t.Fatal("the edited recipe was confirmed")
+	}
+}

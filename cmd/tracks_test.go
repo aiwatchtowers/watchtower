@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/watch"
 	"watchtower/internal/db"
+	"watchtower/internal/ownerconfirm"
 )
 
 func TestTracksCommandRegistered(t *testing.T) {
@@ -640,4 +641,67 @@ func TestTracksRestore_UnboundCustomTrackHintsStart(t *testing.T) {
 	require.NoError(t, c.d.DismissTrack(bound))
 	_, stdout, _ = runCLI(t, "tracks", "restore", strconv.Itoa(bound))
 	assert.NotContains(t, stdout, "tracks start")
+}
+
+// AUTO-06: tracks start confirms an already-bound recipe only while it is
+// still the untouched template; a hand-edited one stays unconfirmed.
+func TestTracksStart_BoundRecipeConfirmedOnlyWhenUntouched(t *testing.T) {
+	c := newC3CLI(t)
+	untouched, err := c.d.CreateCustomTrack(db.Track{AssigneeUserID: "U001", Text: "Refund", Instruction: "watch the refund"})
+	require.NoError(t, err)
+	a, err := startTrackWatch(context.Background(), c.cfg, c.d, int(untouched), false)
+	require.NoError(t, err)
+	code, _, stderr := runCLI(t, "tracks", "start", strconv.Itoa(int(untouched)))
+	require.Equal(t, 0, code, stderr)
+	assert.True(t, c.automation(t, a.ID).Confirmed(), "the untouched template is confirmed")
+
+	edited, err := c.d.CreateCustomTrack(db.Track{AssigneeUserID: "U001", Text: "Hiring", Instruction: "watch the hiring"})
+	require.NoError(t, err)
+	b, err := startTrackWatch(context.Background(), c.cfg, c.d, int(edited), false)
+	require.NoError(t, err)
+	c.handEdit(t, b, []byte(strings.Replace(b.RecipeText, "budget: {tokens: 200000, minutes: 10}", "budget: {tokens: 900000, minutes: 30}", 1)))
+	code, _, stderr = runCLI(t, "tracks", "start", strconv.Itoa(int(edited)))
+	assert.NotEqual(t, 0, code)
+	assert.Equal(t, "confirm this watch in Automations first\n", stderr)
+	assert.False(t, c.automation(t, b.ID).Confirmed(), "edited text the owner never saw stays unconfirmed")
+}
+
+// AGENT-07: with no agent marker, the owner-only watch verbs still run only
+// after the owner confirms in the Desktop; tracks create then leaves its
+// recipe unconfirmed.
+func TestTracksOwnerVerbs_NeedTheDesktopsConfirmation(t *testing.T) {
+	c := newC3CLI(t, `{"title":"Refund decision","instruction":"watch the refund decision"}`)
+	watchedID, watched := c.watchedTrack(t, "watch the hiring")
+	code, _, stderr := runCLI(t, "tracks", "disable", strconv.Itoa(watchedID))
+	require.Equal(t, 0, code, stderr)
+	unbound, err := c.d.CreateCustomTrack(db.Track{AssigneeUserID: "U001", Text: "Launch", Instruction: "watch the launch"})
+	require.NoError(t, err)
+	reqs := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Denied}, nil)
+
+	code, _, stderr = runCLI(t, "tracks", "start", strconv.Itoa(int(unbound)))
+	assert.NotEqual(t, 0, code)
+	assert.Contains(t, stderr, "refusing to start watching a track")
+	assert.Zero(t, c.track(t, int(unbound)).AutomationID, "no recipe is written")
+
+	code, _, stderr = runCLI(t, "tracks", "instruction", strconv.Itoa(watchedID), "--text", "watch the payroll")
+	assert.NotEqual(t, 0, code)
+	assert.Contains(t, stderr, "refusing to change a watch's instruction")
+	assert.Equal(t, watched.RecipeText, c.automation(t, watched.ID).RecipeText, "nothing was written")
+
+	code, _, stderr = runCLI(t, "tracks", "enable", strconv.Itoa(watchedID))
+	assert.NotEqual(t, 0, code)
+	assert.Contains(t, stderr, "refusing to turn a watch on")
+	assert.False(t, c.automation(t, watched.ID).Enabled)
+
+	code, stdout, stderr := runCLI(t, "tracks", "create", "--text", "the refund for acme")
+	require.Equal(t, 0, code, stderr)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &m), stdout)
+	assert.Equal(t, false, m["confirmed"])
+	assert.Equal(t, "Confirm it in Automations.", m["note"])
+	assert.False(t, c.automation(t, c.track(t, int(m["id"].(float64))).AutomationID).Confirmed())
+
+	require.Len(t, *reqs, 4)
+	assert.Contains(t, (*reqs)[0].Detail, "watch the launch", "the window shows the recipe Start would write")
+	assert.Contains(t, (*reqs)[1].Detail, "watch the payroll", "the window shows the new instruction")
 }
