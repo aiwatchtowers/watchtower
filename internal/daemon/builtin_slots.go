@@ -7,6 +7,7 @@ import (
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/builtin"
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/ideas"
 	"watchtower/internal/reactioncmd"
 )
@@ -83,6 +84,16 @@ func (g trackMyThreadsGate) Due(_ context.Context, _ builtin.Entry, now time.Tim
 	case !owner.Known():
 		d.logNoOwnerOnce(now, "tracks")
 		return false
+	}
+	if failed := d.tracksFailedAttempt(); !failed.IsZero() {
+		// A run failed before tracks.extract ran (the owner's copy threw):
+		// only digests newer than that attempt make the next one due.
+		fresh, err := d.db.GetDigestsCreatedAfter("channel", failed.UTC().Format(time.RFC3339))
+		if err != nil {
+			d.logger.Printf("tracks: checking for new digests: %v", err)
+			return true
+		}
+		return len(fresh) > 0
 	}
 	has, err := d.tracksPipe.HasMaterial()
 	if err != nil {
@@ -179,7 +190,12 @@ func (d *Daemon) phaseWatchSlot(ctx context.Context) {
 func (d *Daemon) phaseTrackMyThreads(ctx context.Context, now time.Time) {
 	if d.builtinOn(trackMyThreadsID) {
 		d.ensureBuiltinsSwept()
-		d.builtins.RunSlot(ctx, builtin.SlotTracks)
+		start := time.Now()
+		for _, o := range d.builtins.RunSlot(ctx, builtin.SlotTracks) {
+			if o.BuiltinID == trackMyThreadsID && slotRunFailed(o) {
+				d.noteTracksFailedAttempt(start)
+			}
+		}
 	} else {
 		d.cancelQueuedBuiltinRuns(trackMyThreadsID, now)
 		d.phaseTracks(ctx)
@@ -198,7 +214,56 @@ func (d *Daemon) phaseIdeaFinder(ctx context.Context) {
 		return
 	}
 	d.ensureBuiltinsSwept()
-	d.builtins.RunSlot(ctx, builtin.SlotIdeas)
+	start := time.Now()
+	for _, o := range d.builtins.RunSlot(ctx, builtin.SlotIdeas) {
+		if o.BuiltinID == ideaFinderID && slotRunFailed(o) {
+			d.stampIdeasIfNotRan(start)
+		}
+	}
+}
+
+// slotRunFailed reports whether o is a run that ended in a failure.
+func slotRunFailed(o builtin.SlotOutcome) bool {
+	if o.RunID == 0 {
+		return false
+	}
+	switch o.Status {
+	case db.RunFailed, db.RunBudgetExceeded, db.RunTimedOut, builtin.StatusError:
+		return true
+	}
+	return false
+}
+
+// stampIdeasIfNotRan stamps the lastIdeas throttle at start when the Idea
+// finder's run failed before ideas.consolidate ran (which stamps it
+// itself): an owner's copy that throws is then tried once per
+// ideas.mine_interval_hours, as an erroring pipeline is, not every cycle.
+func (d *Daemon) stampIdeasIfNotRan(start time.Time) {
+	d.ideasMu.Lock()
+	defer d.ideasMu.Unlock()
+	if d.lastIdeas.Before(start) {
+		d.lastIdeas = start
+		d.saveLastIdeas()
+	}
+}
+
+// noteTracksFailedAttempt records start as a failed Track my threads
+// attempt when tracks.extract did not run since (no pipeline_runs row moved
+// the gate's watermark): the gate then waits for digests newer than it.
+func (d *Daemon) noteTracksFailedAttempt(start time.Time) {
+	d.tracksMu.Lock()
+	defer d.tracksMu.Unlock()
+	if d.tracksRanAt.Before(start) {
+		d.tracksFailedAt = start
+	}
+}
+
+// tracksFailedAttempt is the failed attempt noteTracksFailedAttempt
+// recorded, zero when none is pending (tracks.extract ran since).
+func (d *Daemon) tracksFailedAttempt() time.Time {
+	d.tracksMu.Lock()
+	defer d.tracksMu.Unlock()
+	return d.tracksFailedAt
 }
 
 // setReactionDispatch points the reaction pass at its dispatcher before a

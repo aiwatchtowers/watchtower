@@ -182,10 +182,18 @@ type Daemon struct {
 	lastReactionCmd            time.Time // when phaseReactionCommands last polled reactions.list (throttled by reaction_commands.interval_hours)
 	lastDayPlanDate            string    // YYYY-MM-DD of last generation, for dedup
 
-	// ideasMu guards lastIdeas and lastIdeasLockSkip on the Idea finder's
-	// path: its gate reads them on the slot's goroutine and its primitive
-	// stamps lastIdeas on the script's, which can outlive the slot.
+	// ideasMu guards lastIdeas and lastIdeasLockSkip on every path: the Idea
+	// finder's gate reads them on the slot's goroutine and its primitive
+	// stamps lastIdeas on the script's, which can outlive the slot; the
+	// legacy phaseIdeas takes it too.
 	ideasMu gosync.Mutex
+	// tracksMu guards tracksRanAt (when tracks.extract last started, set by
+	// runTracksTracked on the script's goroutine) and tracksFailedAt (a Track
+	// my threads run that failed before tracks.extract ran: the gate waits
+	// for digests newer than it).
+	tracksMu       gosync.Mutex
+	tracksRanAt    time.Time
+	tracksFailedAt time.Time
 	// reactionSlot carries each Reactions run's claimed command to its
 	// reaction.compose primitive (one per daemon; the reaction pass).
 	reactionSlot *builtin.ReactionSlot
@@ -1567,6 +1575,9 @@ func (d *Daemon) phaseTracks(ctx context.Context) {
 // the run's window as period_from/period_to and its usage, and logs it: the
 // legacy phase's run and the tracks.extract primitive's.
 func (d *Daemon) runTracksTracked(run func() (int, int, error)) (int, int, error) {
+	d.tracksMu.Lock()
+	d.tracksRanAt, d.tracksFailedAt = time.Now(), time.Time{}
+	d.tracksMu.Unlock()
 	var n, updated int
 	var runErr error
 	d.trackedPipelineRun("tracks", func() pipelineRunStats {
@@ -1766,10 +1777,12 @@ func (d *Daemon) phaseIdeas(ctx context.Context) {
 
 	release, err := ideas.AcquireBackfillLock(d.config.WorkspaceDir(), "daemon")
 	if err != nil {
+		d.ideasMu.Lock()
 		if d.lastIdeasLockSkip.IsZero() || now.Sub(d.lastIdeasLockSkip) >= ideasLockSkipLogThrottle {
 			d.logger.Printf("ideas: skipping cycle — %v", err)
 			d.lastIdeasLockSkip = now
 		}
+		d.ideasMu.Unlock()
 		return
 	}
 	defer release()

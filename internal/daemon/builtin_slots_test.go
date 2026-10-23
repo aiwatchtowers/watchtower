@@ -447,3 +447,68 @@ func TestWatchSlot_GatesOffCancelQueuedManualRuns(t *testing.T) {
 		})
 	}
 }
+
+// brokenOwnerCopy installs a confirmed owner copy of built-in id whose
+// script throws before its primitive runs.
+func (f *slotFixture) brokenOwnerCopy(t *testing.T, id string) {
+	t.Helper()
+	e, ok := builtin.Lookup(id)
+	require.True(t, ok)
+	name := e.Prompts[0].Name
+	prompt, err := e.DefaultPrompt(name, "")
+	require.NoError(t, err)
+	data, err := builtin.RenderOwnerCopy(e, map[string]string{name: prompt})
+	require.NoError(t, err)
+	broken := strings.Replace(string(data), "```js\n", "```js\nthrow new Error(\"broken copy\");\n", 1)
+	require.NotEqual(t, string(data), broken)
+	path := builtin.OwnerCopyPath(f.cfg.WorkspaceDir(), id)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(t, os.WriteFile(path, []byte(broken), 0o600))
+	a, err := builtin.SyncOne(context.Background(), f.db, f.cfg.WorkspaceDir(), f.cfg, id, time.Now())
+	require.NoError(t, err)
+	require.NoError(t, f.db.ConfirmAutomation(a.ID, a.ApprovalHash, time.Now()))
+}
+
+// TestIdeaFinder_FailedCopyStampsThrottle: an owner's copy that throws
+// before ideas.consolidate still stamps the throttle, so the next cycle is
+// not due until ideas.mine_interval_hours elapsed.
+func TestIdeaFinder_FailedCopyStampsThrottle(t *testing.T) {
+	f := newSlotFixture(t, nil)
+	f.brokenOwnerCopy(t, ideaFinderID)
+	f.d.phaseIdeaFinder(context.Background())
+	runs := f.builtinRuns(t, ideaFinderID)
+	require.Len(t, runs, 1)
+	assert.Equal(t, db.RunFailed, runs[0].Status)
+	assert.Zero(t, pipelineRunCount(t, f.db, "ideas"), "the primitive never ran")
+	assert.False(t, f.d.lastIdeas.IsZero(), "the failed run stamps the throttle")
+
+	f.d.phaseIdeaFinder(context.Background())
+	assert.Len(t, f.builtinRuns(t, ideaFinderID), 1, "the throttle holds the next cycle")
+}
+
+// TestTrackMyThreads_FailedCopyWaitsForNewDigests: an owner's copy that
+// throws before tracks.extract is not due again on the same material; a
+// digest newer than the failed attempt makes it due.
+func TestTrackMyThreads_FailedCopyWaitsForNewDigests(t *testing.T) {
+	f := newSlotFixture(t, nil)
+	f.brokenOwnerCopy(t, trackMyThreadsID)
+	f.tracksCycle()
+	runs := f.builtinRuns(t, trackMyThreadsID)
+	require.Len(t, runs, 1)
+	assert.Equal(t, db.RunFailed, runs[0].Status)
+	assert.Zero(t, pipelineRunCount(t, f.db, "tracks"), "the primitive never ran")
+
+	f.tracksCycle()
+	assert.Len(t, f.builtinRuns(t, trackMyThreadsID), 1, "the same material is not due again")
+
+	now := time.Now()
+	digestID, err := f.db.UpsertDigest(db.Digest{ChannelID: "C1", Type: "channel",
+		PeriodFrom: float64(now.Add(-time.Hour).Unix()), PeriodTo: float64(now.Add(time.Hour).Unix()),
+		Summary: "new talk", MessageCount: 2, Model: "test"})
+	require.NoError(t, err)
+	_, err = f.db.Exec(`UPDATE digests SET created_at = ? WHERE id = ?`,
+		now.Add(time.Minute).UTC().Format("2006-01-02T15:04:05Z"), digestID)
+	require.NoError(t, err)
+	f.tracksCycle()
+	assert.Len(t, f.builtinRuns(t, trackMyThreadsID), 2, "a newer digest makes it due")
+}
