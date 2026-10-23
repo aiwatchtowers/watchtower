@@ -284,6 +284,8 @@ func TestBuiltinMigration_RecordCountsAttempts(t *testing.T) {
 	assert.Equal(t, 2, m.Attempts)
 	assert.Equal(t, BuiltinMigrationFailed, m.Status)
 	assert.Equal(t, "boom again", m.Error)
+	assert.True(t, m.UpdatedAt.Equal(t0.Add(time.Hour)))
+	assert.True(t, m.FirstAttemptedAt.Equal(t0), "the first attempt's moment is kept")
 	require.NoError(t, d.RecordBuiltinMigration("morning-brief", BuiltinMigrationDone, "", t0.Add(2*time.Hour)))
 	m, err = d.GetBuiltinMigration("morning-brief")
 	require.NoError(t, err)
@@ -291,6 +293,7 @@ func TestBuiltinMigration_RecordCountsAttempts(t *testing.T) {
 	assert.Equal(t, "", m.Error)
 	assert.Equal(t, 3, m.Attempts)
 	assert.True(t, m.UpdatedAt.Equal(t0.Add(2*time.Hour)))
+	assert.True(t, m.FirstAttemptedAt.Equal(t0))
 	require.Error(t, d.RecordBuiltinMigration("morning-brief", "bogus", "", t0), "the CHECK refuses an unknown status")
 }
 
