@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"runtime/debug"
 	"sync"
 
 	"watchtower/internal/automations"
+	"watchtower/internal/db"
 	"watchtower/internal/reactioncmd"
 )
 
@@ -152,4 +155,82 @@ func outcomeKind(out reactioncmd.Outcome) string {
 // validationError is a primitive's ValidationError (the script's fault).
 func validationError(msg string) error {
 	return &automations.SDKError{Name: automations.ErrNameValidation, Message: msg}
+}
+
+// reactionsID is the Reactions built-in's id.
+const reactionsID = "reactions"
+
+// ReactionDispatch is the reaction pass's dispatcher over runner r and slot
+// s (the daemon's and `reaction-commands poll`'s alike): each claimed
+// command goes through one sync run of the Reactions built-in — queued (so
+// its id is known), handed the command (ReactionSlot.Begin), executed
+// inline, and Ended, on every path, a panic included. The Outcome
+// reaction.compose stored is returned as it is. A run that composed nothing
+// finalizes failed (nothing was proposed, and a script that does not
+// compose would fail again), except when its script never got to run: no
+// run could be queued or handed the command, its claim lost, or it became
+// not runnable; and when the pass was cancelled (a shutdown or a sleep must
+// not burn the claimed reactions). Those release the row for the next poll:
+// nothing was composed.
+func ReactionDispatch(r *Runner, s *ReactionSlot, logger *log.Logger) reactioncmd.Dispatcher {
+	if logger == nil {
+		logger = log.Default()
+	}
+	return func(ctx context.Context, rd reactioncmd.Dispatch) reactioncmd.Outcome {
+		return dispatchReaction(ctx, r, s, logger, rd)
+	}
+}
+
+func dispatchReaction(ctx context.Context, r *Runner, s *ReactionSlot, logger *log.Logger, rd reactioncmd.Dispatch) (out reactioncmd.Outcome) {
+	run, err := r.EnqueueSync(reactionsID, automations.BuiltinInput{})
+	if err != nil {
+		logger.Printf("reaction-commands: queueing a Reactions run for :%s:, will retry: %v", rd.Emoji, err)
+		return reactioncmd.Outcome{Step: reactioncmd.StepRelease}
+	}
+	if err := s.Begin(run.ID, rd); err != nil {
+		logger.Printf("reaction-commands: handing :%s: to Reactions run %d, will retry: %v", rd.Emoji, run.ID, err)
+		return reactioncmd.Outcome{Step: reactioncmd.StepRelease}
+	}
+	var finished *db.AutomationRun
+	var execErr error
+	defer func() {
+		rec := recover()
+		stored, composed := s.End(run.ID)
+		if rec != nil {
+			logger.Printf("reaction-commands: ERROR Reactions run %d panicked for :%s: (%s, composed=%t): %v\n%s",
+				run.ID, rd.Emoji, rd.Tool, composed, rec, debug.Stack())
+		}
+		switch {
+		case composed:
+			out = stored
+		case rec != nil:
+			out = noComposeOutcome(fmt.Sprintf("panic: %v", rec))
+		case ctx.Err() != nil, errors.Is(execErr, automations.ErrRunNotClaimed), errors.Is(execErr, automations.ErrNotRunnable):
+			logger.Printf("reaction-commands: Reactions run %d for :%s: did not run, will retry: %v", run.ID, rd.Emoji, errors.Join(execErr, ctx.Err()))
+			out = reactioncmd.Outcome{Step: reactioncmd.StepRelease}
+		default:
+			out = noComposeOutcome(runErrorText(finished, execErr))
+		}
+	}()
+	finished, execErr = r.ExecuteRun(ctx, run.ID)
+	return out
+}
+
+// noComposeOutcome is the failed finalize of a Reactions run that never
+// called reaction.compose; why is its run error or "no compose call".
+func noComposeOutcome(why string) reactioncmd.Outcome {
+	return reactioncmd.Outcome{Status: "failed", Step: reactioncmd.StepFinalize,
+		Detail: "the Reactions automation did not compose: " + why}
+}
+
+// runErrorText is a finished run's error, the executor's, or "no compose
+// call" when the run ended without one.
+func runErrorText(run *db.AutomationRun, err error) string {
+	switch {
+	case run != nil && run.Error != "":
+		return run.Error
+	case err != nil:
+		return err.Error()
+	}
+	return "no compose call"
 }

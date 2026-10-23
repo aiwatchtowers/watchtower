@@ -587,7 +587,7 @@ func TestBuiltin_RunawayStopStaysUntilTheOwnerTurnsItOn(t *testing.T) {
 	assert.Equal(t, "Morning brief was stopped after a run that would not end — turn it on again in Automations → Built in", err.Error())
 	code, stderr := executeCLI(t, "briefing", "generate")
 	assert.NotEqual(t, 0, code)
-	assert.Equal(t, msgMorningBriefStopped+"\n", stderr)
+	assert.Equal(t, "Morning brief was stopped after a run that would not end — turn it on again in Automations → Built in\n", stderr)
 	assert.Zero(t, c.gen.CallCount())
 	assert.False(t, c.row(t).Enabled, "a sync never turns a stopped built-in on")
 
@@ -659,4 +659,139 @@ func TestBriefingGenerate_LegacyPathBeforeTheMove(t *testing.T) {
 	b, err := c.d.GetBriefing("U001", time.Now().Format(time.DateOnly))
 	require.NoError(t, err)
 	assert.NotNil(t, b)
+}
+
+// c3CLI is a temp workspace for the C3 CLI paths (tracks, ideas, reactions):
+// digests, tracks and ideas on, an owner (U001), a requester (U002), channel
+// C1, the personal recipe folder, and a FakeGenerator behind the built-in
+// runs' generator seam.
+type c3CLI struct {
+	d        *db.DB
+	cfg      *config.Config
+	gen      *automationstest.FakeGenerator
+	ws       string
+	personal string
+}
+
+func newC3CLI(t *testing.T, replies ...string) *c3CLI {
+	t.Helper()
+	d := writeActionsConfig(t)
+	require.NoError(t, os.WriteFile(flagConfig, []byte("active_workspace: test\ndigest:\n  enabled: true\n  language: English\n"+
+		"tracks:\n  enabled: true\nideas:\n  enabled: true\nstreams:\n  enabled: false\nai:\n  workers: 1\n"+
+		"db:\n  schema_format: "+strconv.Itoa(db.CurrentSchemaFormat)+"\n"), 0o600))
+	cfg, err := loadAutomationsConfig()
+	require.NoError(t, err)
+	personal := automations.PersonalDir(cfg.WorkspaceDir())
+	require.NoError(t, os.MkdirAll(personal, 0o755))
+	require.NoError(t, d.UpsertWorkspace(db.Workspace{ID: "T001", Name: "acme", Domain: "acme"}))
+	_, err = d.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
+	require.NoError(t, err)
+	require.NoError(t, d.UpsertUser(db.User{ID: "U001", Name: "alice", DisplayName: "Alice"}))
+	require.NoError(t, d.UpsertUser(db.User{ID: "U002", Name: "bob", DisplayName: "Bob"}))
+	require.NoError(t, d.UpsertChannel(db.Channel{ID: "C1", Name: "backend", Type: "public"}))
+	gen := &automationstest.FakeGenerator{Replies: replies, Usage: []digest.Usage{{InputTokens: 10, OutputTokens: 5}}}
+	useBuiltinGenerator(t, gen)
+	return &c3CLI{d: d, cfg: cfg, gen: gen, ws: cfg.WorkspaceDir(), personal: personal}
+}
+
+// moved records the one-time moves of ids as done (the daemon's step).
+func (c *c3CLI) moved(t *testing.T, ids ...string) {
+	t.Helper()
+	for _, id := range ids {
+		require.NoError(t, c.d.RecordBuiltinMigration(id, db.BuiltinMigrationDone, "", time.Now()))
+	}
+}
+
+// builtinRow syncs built-in id and returns its row.
+func (c *c3CLI) builtinRow(t *testing.T, id string) *db.Automation {
+	t.Helper()
+	a, err := builtin.SyncOne(context.Background(), c.d, c.ws, c.cfg, id, time.Now())
+	require.NoError(t, err)
+	return a
+}
+
+// writeBuiltinCopy writes built-in id's owner copy with prompt name set to
+// marker + the shipped prompt, confirming it when asked; the synced row.
+func (c *c3CLI) writeBuiltinCopy(t *testing.T, id, name, marker string, confirm bool) *db.Automation {
+	t.Helper()
+	e, ok := builtin.Lookup(id)
+	require.True(t, ok)
+	shipped, err := e.DefaultPrompt(name, "")
+	require.NoError(t, err)
+	data, err := builtin.RenderOwnerCopy(e, map[string]string{name: marker + "\n" + shipped})
+	require.NoError(t, err)
+	path := builtin.OwnerCopyPath(c.ws, id)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o700))
+	require.NoError(t, os.WriteFile(path, data, 0o600))
+	a := c.builtinRow(t, id)
+	require.True(t, a.Overridden)
+	if confirm {
+		require.NoError(t, c.d.ConfirmAutomation(a.ID, a.ApprovalHash, time.Now()))
+		a = c.builtinRow(t, id)
+	}
+	return a
+}
+
+// runs is automation id's runs.
+func (c *c3CLI) runs(t *testing.T, id int64) []db.AutomationRun {
+	t.Helper()
+	runs, err := c.d.ListAutomationRuns(id, 0)
+	require.NoError(t, err)
+	return runs
+}
+
+// prompts is every model call's system and user text, one string each.
+func (c *c3CLI) prompts() []string {
+	var out []string
+	for _, call := range c.gen.Calls {
+		out = append(out, call.SystemPrompt+"\n"+call.UserMessage)
+	}
+	return out
+}
+
+// claim holds a running sync run of automation a, as a slot mid-run does.
+func (c *c3CLI) claim(t *testing.T, a *db.Automation) int64 {
+	t.Helper()
+	runID, _, err := c.d.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerSync, Now: time.Now()})
+	require.NoError(t, err)
+	ok, err := c.d.ClaimAutomationRun(runID, a.ApprovalHash, a.RecipeText, a.BudgetTokens, a.BudgetMinutes, time.Now())
+	require.NoError(t, err)
+	require.True(t, ok)
+	return runID
+}
+
+// runCLI runs the root command as main does and returns its exit code,
+// stdout and stderr; the C3 commands' flags are reset afterwards.
+func runCLI(t *testing.T, args ...string) (int, string, string) {
+	t.Helper()
+	cmds := append([]*cobra.Command{tracksCmd, ideasCmd, ideasMineCmd, reactionCommandsCmd, reactionCommandsPollCmd}, tracksCmd.Commands()...)
+	for _, c := range cmds { // another test may have set a command's own writer
+		c.SetOut(nil)
+		c.SetErr(nil)
+	}
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	orig := os.Stderr
+	os.Stderr = w
+	var out bytes.Buffer
+	rootCmd.SetOut(&out)
+	cfgPath := flagConfig
+	rootCmd.SetArgs(append(args, "--config", cfgPath))
+	code := Execute()
+	flagConfig = cfgPath
+	rootCmd.PersistentFlags().Lookup("config").Changed = false
+	os.Stderr = orig
+	require.NoError(t, w.Close())
+	stderr, err := io.ReadAll(r)
+	require.NoError(t, err)
+	rootCmd.SetArgs(nil)
+	rootCmd.SetOut(nil)
+	for _, c := range cmds {
+		c.LocalFlags().VisitAll(func(f *pflag.Flag) {
+			_ = f.Value.Set(f.DefValue)
+			f.Changed = false
+		})
+	}
+	tracksCreateFlagTarget = 0
+	return code, out.String(), string(stderr)
 }

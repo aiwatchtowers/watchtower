@@ -227,3 +227,26 @@ func (db *DB) UnbindRemovedWatchTracks() (int, error) {
 	}
 	return int(n), nil
 }
+
+// WatchTrackIDs returns the id of each bound track by its watch recipe's
+// automation id.
+func (db *DB) WatchTrackIDs() (map[int64]int, error) {
+	rows, err := db.Query(`SELECT automation_id, id FROM tracks WHERE automation_id IS NOT NULL`)
+	if err != nil {
+		return nil, fmt.Errorf("listing the watch tracks: %w", err)
+	}
+	defer rows.Close()
+	out := map[int64]int{}
+	for rows.Next() {
+		var automationID int64
+		var id int
+		if err := rows.Scan(&automationID, &id); err != nil {
+			return nil, fmt.Errorf("listing the watch tracks: %w", err)
+		}
+		out[automationID] = id
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing the watch tracks: %w", err)
+	}
+	return out, nil
+}

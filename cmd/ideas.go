@@ -14,6 +14,8 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"watchtower/internal/automations"
+	"watchtower/internal/automations/builtin"
 	"watchtower/internal/config"
 	"watchtower/internal/daemon"
 	"watchtower/internal/db"
@@ -166,8 +168,18 @@ func runIdeasMine(cmd *cobra.Command, _ []string) error {
 	}
 
 	logger := log.New(cmd.ErrOrStderr(), "[ideas] ", log.LstdFlags)
-	pipe := ideas.New(database, cfg, cliGenerator(cfg), logger)
+	gen, closeGen := cliBuiltinGenerator(cfg)
+	defer closeGen()
+	pipe := ideas.New(database, cfg, gen, logger)
 	pipe.SetPromptStore(prompts.New(database, nil))
+	// Once the Idea finder has moved to Automations, its consolidation runs
+	// through the built-in's current recipe (the shipped text or the owner's
+	// confirmed copy); before, the pipeline straight with the prompt store's
+	// row, as the daemon's legacy phase does.
+	moved, err := builtinMoved(database, ideaFinderID)
+	if err != nil {
+		return err
+	}
 
 	ctx := cmd.Context()
 	if ctx == nil {
@@ -189,7 +201,13 @@ func runIdeasMine(cmd *cobra.Command, _ []string) error {
 	if fromStr != "" {
 		ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return runIdeasBackfill(ctx, cmd, cfg, pipe, fromStr, toStr)
+		opts := ideas.RunOptions{}
+		if moved {
+			if opts.Prompt, err = ideaFinderPrompt(ctx, cfg, database, gen, logger); err != nil {
+				return err
+			}
+		}
+		return runIdeasBackfillWith(ctx, cmd, cfg, pipe, fromStr, toStr, opts)
 	}
 
 	// The incremental path has no floor-restore defer to protect (each AI
@@ -197,7 +215,70 @@ func runIdeasMine(cmd *cobra.Command, _ []string) error {
 	// standard second-signal-kills helper.
 	ctx, cancel := notifyShutdownContext(ctx, logger.Printf)
 	defer cancel()
-	return runIdeasMineIncremental(ctx, cfg, pipe, out, logger)
+	consolidate := func() (int, error) { return pipe.Run(ctx) }
+	if moved && cfg.Ideas.Enabled {
+		// Refused before stage 1 spends anything.
+		if _, err := builtinReadyForCLI(ctx, cfg, database, ideaFinderID); err != nil {
+			return err
+		}
+		consolidate = func() (int, error) { return runIdeaFinderNow(ctx, cfg, database, gen, logger, pipe, out) }
+	}
+	return runIdeasMineWith(ctx, cfg, pipe, out, logger, consolidate)
+}
+
+// ideasLockHeldLine is flagless `ideas mine`'s note when the Idea finder's
+// consolidation found another ideas run holding the backfill lock.
+const ideasLockHeldLine = "consolidation skipped: another ideas run holds the lock"
+
+// runIdeaFinderNow is flagless `ideas mine`'s consolidation once the Idea
+// finder has moved to Automations: one manual run of the built-in inline
+// (RunNow), its ideas.consolidate over pipe under the backfill lock taken as
+// "cli". It returns how many ideas were proposed; with ideas off it runs
+// nothing (pipe.Run's no-op), and a lock held by another run skips the
+// consolidation with a note.
+func runIdeaFinderNow(ctx context.Context, cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger, pipe *ideas.Pipeline, out io.Writer) (int, error) {
+	if !cfg.Ideas.Enabled {
+		return 0, nil
+	}
+	proposed, ran := 0, false
+	r := newCLIBuiltinRunner(cfg, database, gen, logger, cliBuiltinPipes{ideas: pipe, ideaHooks: builtin.IdeaHooks{
+		Lock: func() (func(), error) { return ideas.AcquireBackfillLock(cfg.WorkspaceDir(), "cli") },
+		Track: func(run func() (int, error)) (int, error) {
+			ran = true
+			n, err := run()
+			proposed = n
+			return n, err
+		},
+	}})
+	if err := runBuiltinNow(ctx, r, ideaFinderID, automations.BuiltinInput{}); err != nil {
+		return 0, err
+	}
+	if !ran {
+		fmt.Fprintln(out, ideasLockHeldLine)
+	}
+	return proposed, nil
+}
+
+// ideaFinderPrompt is the consolidation prompt of the Idea finder's current
+// recipe, captured by a dry run in memory (builtin.CapturePrompts): `ideas
+// mine --from` runs today's multi-cycle drain with it and writes no
+// automation run, so a long backfill is never cut by a per-run budget. An
+// unconfirmed owner copy is refused with C2's text.
+func ideaFinderPrompt(ctx context.Context, cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger) (string, error) {
+	a, err := builtinReadyForCLI(ctx, cfg, database, ideaFinderID)
+	if err != nil {
+		return "", err
+	}
+	name := builtinName(ideaFinderID)
+	captured, err := builtin.CapturePrompts(ctx, cliBuiltinBackends(cfg, database, gen, logger, cliBuiltinPipes{}), a)
+	if err != nil {
+		return "", builtinNowError(name, err)
+	}
+	prompt, ok := captured["ideas.consolidate"]
+	if !ok {
+		return "", fmt.Errorf("%s: your edited copy never calls ideas.consolidate — fix it in Automations → Built in", name)
+	}
+	return prompt, nil
 }
 
 // ideasDisabledEnvelope is the backfill path's machine-readable body when
@@ -254,13 +335,19 @@ func reportIdeasDisabled(cmd *cobra.Command, fromStr string, out io.Writer) erro
 // note appended below just makes that visible in the printed summary instead
 // of reading as an unexplained "proposed=0".
 func runIdeasMineIncremental(ctx context.Context, cfg *config.Config, pipe *ideas.Pipeline, out io.Writer, logger *log.Logger) error {
+	return runIdeasMineWith(ctx, cfg, pipe, out, logger, func() (int, error) { return pipe.Run(ctx) })
+}
+
+// runIdeasMineWith is runIdeasMineIncremental with its stage-2
+// consolidation given: pipe.Run, or the Idea finder's run (runIdeaFinderNow).
+func runIdeasMineWith(ctx context.Context, cfg *config.Config, pipe *ideas.Pipeline, out io.Writer, logger *log.Logger, consolidate func() (int, error)) error {
 	if cfg.Streams.Enabled {
 		if err := pipe.RunStreamDigests(ctx); err != nil {
 			logger.Printf("stream-digests error: %v", err)
 		}
 	}
 
-	proposed, err := pipe.Run(ctx)
+	proposed, err := consolidate()
 	if err != nil {
 		return fmt.Errorf("mining ideas: %w", err)
 	}
@@ -282,6 +369,12 @@ func runIdeasMineIncremental(ctx context.Context, cfg *config.Config, pipe *idea
 // "cycle=N" progress lines go to stderr — so the Desktop "Find ideas" sheet
 // can parse stdout as exactly one JSON object with no interleaved noise.
 func runIdeasBackfill(ctx context.Context, cmd *cobra.Command, cfg *config.Config, pipe *ideas.Pipeline, fromStr, toStr string) error {
+	return runIdeasBackfillWith(ctx, cmd, cfg, pipe, fromStr, toStr, ideas.RunOptions{})
+}
+
+// runIdeasBackfillWith is runIdeasBackfill with the drain's run options (the
+// Idea finder recipe's prompt).
+func runIdeasBackfillWith(ctx context.Context, cmd *cobra.Command, cfg *config.Config, pipe *ideas.Pipeline, fromStr, toStr string, opts ideas.RunOptions) error {
 	from, to, err := parseBackfillWindow(fromStr, toStr)
 	if err != nil {
 		return err
@@ -294,9 +387,9 @@ func runIdeasBackfill(ctx context.Context, cmd *cobra.Command, cfg *config.Confi
 	defer release()
 
 	errOut := cmd.ErrOrStderr()
-	result, err := pipe.Backfill(ctx, from, to, func(cycle int) {
+	result, err := pipe.BackfillWith(ctx, from, to, func(cycle int) {
 		fmt.Fprintf(errOut, "cycle=%d\n", cycle)
-	})
+	}, opts)
 	if err != nil {
 		return fmt.Errorf("backfilling ideas: %w", err)
 	}

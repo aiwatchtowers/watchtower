@@ -248,11 +248,20 @@ func (r *Runner) RunNow(ctx context.Context, id string, in automations.BuiltinIn
 	if a.DisabledReason != "" {
 		return nil, fmt.Errorf("built-in %s: %w", id, ErrBuiltinStopped)
 	}
+	return r.runManualInline(ctx, "built-in "+id, a.ID, in)
+}
+
+// runManualInline queues a manual run of automation id with event_json
+// {"builtin": in} and executes it inline (RunNow's tail; label names the
+// automation in errors). A manual run with other input already queued is
+// refused with ErrRunNowQueued (and ErrRunNotClaimed); a run this call
+// queued whose claim lost is cancelled while still queued.
+func (r *Runner) runManualInline(ctx context.Context, label string, id int64, in automations.BuiltinInput) (*db.AutomationRun, error) {
 	payload, err := json.Marshal(map[string]automations.BuiltinInput{"builtin": in})
 	if err != nil {
-		return nil, fmt.Errorf("built-in %s: encoding the run's input: %w", id, err)
+		return nil, fmt.Errorf("%s: encoding the run's input: %w", label, err)
 	}
-	runID, coalesced, err := r.db.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerManual,
+	runID, coalesced, err := r.db.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: id, Trigger: db.TriggerManual,
 		EventJSON: string(payload), Now: r.clock.Now()})
 	if err != nil {
 		return nil, err
@@ -263,7 +272,7 @@ func (r *Runner) RunNow(ctx context.Context, id string, in automations.BuiltinIn
 			return nil, err
 		}
 		if queued.EventJSON != string(payload) {
-			return nil, fmt.Errorf("built-in %s: run %d: %w: %w", id, runID, ErrRunNowQueued, automations.ErrRunNotClaimed)
+			return nil, fmt.Errorf("%s: run %d: %w: %w", label, runID, ErrRunNowQueued, automations.ErrRunNotClaimed)
 		}
 	}
 	run, err := r.exec.ExecuteBuiltinInline(ctx, runID)
@@ -271,7 +280,7 @@ func (r *Runner) RunNow(ctx context.Context, id string, in automations.BuiltinIn
 		// The run this call made must never run later with its input; one
 		// the slot claimed meanwhile runs now and is left alone.
 		if _, cerr := r.db.CancelQueuedAutomationRun(runID, r.clock.Now()); cerr != nil {
-			return nil, errors.Join(err, fmt.Errorf("built-in %s: cancelling run %d: %w", id, runID, cerr))
+			return nil, errors.Join(err, fmt.Errorf("%s: cancelling run %d: %w", label, runID, cerr))
 		}
 	}
 	return run, err

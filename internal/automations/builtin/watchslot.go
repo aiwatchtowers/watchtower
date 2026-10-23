@@ -275,3 +275,25 @@ func (r *Runner) cancelQueuedOf(id int64) error {
 		}
 	}
 }
+
+// ErrNotWatchRecipe is RunWatchNow's refusal of an automation that is not a
+// watch recipe (a Personal recipe at the custom_tracks slot).
+var ErrNotWatchRecipe = errors.New("the automation is not a watch recipe")
+
+// RunWatchNow runs watch recipe automationID now, inline, as one manual run
+// with input in (`tracks scan <id>`; in.Since is Scan from): the CLI's only
+// path that executes a watch outside the slot. An unconfirmed or paused
+// recipe's run is cancelled and the error wraps automations.ErrNotRunnable;
+// another active run of it (or, ErrRunNowQueued too, a manual run with other
+// input queued for the next slot) wraps automations.ErrRunNotClaimed.
+func (r *Runner) RunWatchNow(ctx context.Context, automationID int64, in automations.BuiltinInput) (*db.AutomationRun, error) {
+	a, err := r.db.GetAutomation(automationID)
+	if err != nil {
+		return nil, err
+	}
+	if a.IsBuiltin() || !a.RunsAtSlot() {
+		return nil, fmt.Errorf("automation %d: %w", automationID, ErrNotWatchRecipe)
+	}
+	r.endStaleRuns()
+	return r.runManualInline(ctx, fmt.Sprintf("watch recipe %d", a.ID), a.ID, in)
+}

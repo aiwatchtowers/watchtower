@@ -728,3 +728,118 @@ loop:
 	_ = helper.Process.Kill()
 	<-waitCh
 }
+
+// ideasRecGen answers the ideas stage-1 and consolidation calls and records
+// each call's system and user text.
+type ideasRecGen struct {
+	acctID int64
+	calls  []string // system + "\n" + user
+}
+
+func (g *ideasRecGen) Generate(_ context.Context, system, user, _ string) (string, *digest.Usage, string, error) {
+	g.calls = append(g.calls, system+"\n"+user)
+	if strings.Contains(user, "=== REGISTRY ===") {
+		return `{"ops":[]}`, &digest.Usage{InputTokens: 10, OutputTokens: 5}, "", nil
+	}
+	return fmt.Sprintf(`{"topics":[{"title":"t","summary":"s","ideas":[{"text":"try X","author":"Ann","ref":"gmail:%d:thr-0"}],"decisions":[]}]}`, g.acctID),
+		&digest.Usage{InputTokens: 10, OutputTokens: 5}, "", nil
+}
+
+// consolidations are the recorded consolidation calls.
+func (g *ideasRecGen) consolidations() []string {
+	var out []string
+	for _, c := range g.calls {
+		if strings.Contains(c, "=== REGISTRY ===") {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// seedIdeasMail seeds one Gmail account with one message on fromStr's next
+// hour (its ideas floor just before it) and the recording generator for it.
+func seedIdeasMail(t *testing.T, c *c3CLI, at time.Time) *ideasRecGen {
+	t.Helper()
+	res, err := c.d.Exec(`INSERT INTO google_accounts (email, label, gmail_enabled, gmail_last_internal_date)
+		VALUES ('acct@example.com', 'Test', 1, 0)`)
+	require.NoError(t, err)
+	acctID, err := res.LastInsertId()
+	require.NoError(t, err)
+	require.NoError(t, c.d.SetIdeasEmailFloor(acctID, float64(at.Add(-time.Hour).Unix())))
+	_, err = c.d.Exec(`INSERT INTO gmail_messages (account_id, id, thread_id, from_email, from_name, subject, body_text, internal_date)
+		VALUES (?, 'm0', 'thr-0', 'a@example.com', 'Ann', 's', 'we should try X', ?)`, acctID, at.UTC().Format(time.RFC3339))
+	require.NoError(t, err)
+	gen := &ideasRecGen{acctID: acctID}
+	useBuiltinGenerator(t, gen)
+	return gen
+}
+
+func TestIdeasMine_RunsIdeaFinderRecipe(t *testing.T) {
+	c := newC3CLI(t)
+	raw, err := os.ReadFile(flagConfig)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(flagConfig, []byte(strings.Replace(string(raw), "streams:\n  enabled: false", "streams:\n  enabled: true", 1)), 0o600))
+	gen := seedIdeasMail(t, c, time.Now().Add(-3*time.Hour))
+	c.moved(t, ideaFinderID)
+	a := c.writeBuiltinCopy(t, ideaFinderID, "consolidate", "OWNER COPY MARKER", true)
+
+	code, stdout, stderr := runCLI(t, "ideas", "mine")
+	require.Equal(t, 0, code, stderr)
+	assert.Contains(t, stdout, "proposed=0")
+	cons := gen.consolidations()
+	require.NotEmpty(t, cons, "stage 1 made a topic, so the consolidation ran: %v", gen.calls)
+	assert.Contains(t, cons[0], "OWNER COPY MARKER", "the consolidation prompt is the confirmed copy's")
+	runs := c.runs(t, a.ID)
+	require.Len(t, runs, 1)
+	assert.Equal(t, db.TriggerManual, runs[0].Trigger)
+	assert.Equal(t, db.RunSucceeded, runs[0].Status, runs[0].Error)
+	assert.False(t, ideas.BackfillLockFresh(c.ws), "the run's lock is released")
+
+	// An edited copy not confirmed yet is refused with C2's text.
+	c.writeBuiltinCopy(t, ideaFinderID, "consolidate", "EDITED AGAIN", false)
+	code, _, stderr = runCLI(t, "ideas", "mine")
+	assert.NotEqual(t, 0, code)
+	assert.Equal(t, "Idea finder: your edited copy is not confirmed yet — confirm it in Automations → Built in\n", stderr)
+}
+
+func TestIdeasMineFrom_UsesCapturedPrompt(t *testing.T) {
+	c := newC3CLI(t)
+	from := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	gen := seedIdeasMail(t, c, from.Add(time.Hour))
+	c.moved(t, ideaFinderID)
+	a := c.writeBuiltinCopy(t, ideaFinderID, "consolidate", "OWNER COPY MARKER", true)
+
+	code, stdout, stderr := runCLI(t, "ideas", "mine", "--from", "2020-01-01", "--to", "2020-01-02")
+	require.Equal(t, 0, code, stderr)
+	var envelope backfillEnvelope
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(stdout)), &envelope), stdout)
+	cons := gen.consolidations()
+	require.NotEmpty(t, cons, "the drain consolidated: %v", gen.calls)
+	for _, call := range cons {
+		assert.Contains(t, call, "OWNER COPY MARKER", "every cycle uses the captured prompt")
+	}
+	assert.Empty(t, c.runs(t, a.ID), "a backfill writes no automation run")
+
+	c.writeBuiltinCopy(t, ideaFinderID, "consolidate", "EDITED AGAIN", false)
+	n := len(gen.calls)
+	code, _, stderr = runCLI(t, "ideas", "mine", "--from", "2020-01-01")
+	assert.NotEqual(t, 0, code)
+	assert.Equal(t, "Idea finder: your edited copy is not confirmed yet — confirm it in Automations → Built in\n", stderr)
+	assert.Len(t, gen.calls, n, "no model call")
+}
+
+func TestIdeasMineFrom_RefusedWhileSlotHoldsLock(t *testing.T) {
+	c := newC3CLI(t)
+	gen := seedIdeasMail(t, c, time.Date(2020, 1, 1, 1, 0, 0, 0, time.UTC))
+	c.moved(t, ideaFinderID)
+	a := c.builtinRow(t, ideaFinderID)
+	release, err := ideas.AcquireBackfillLock(c.ws, "daemon")
+	require.NoError(t, err)
+	defer release()
+
+	code, _, stderr := runCLI(t, "ideas", "mine", "--from", "2020-01-01")
+	assert.NotEqual(t, 0, code)
+	assert.Contains(t, stderr, "the daemon is mining right now")
+	assert.Empty(t, gen.calls)
+	assert.Empty(t, c.runs(t, a.ID))
+}
