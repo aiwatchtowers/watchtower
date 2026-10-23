@@ -438,7 +438,7 @@ func TestDaemon_BriefingBackoff_SurvivesRestart(t *testing.T) {
 
 // ── daily rollup: end-to-end through the real daemon phase ──────────────────
 //
-// phaseTracksAndRollups takes a `now time.Time` parameter (the
+// phaseTrackMyThreads takes a `now time.Time` parameter (the
 // runDayPlanPhase/phaseBriefing shape) used only for the rollup attempt
 // budget's date — RunDailyRollup itself still always computes its own
 // digest-query window from time.Now().UTC() independently, unaffected by
@@ -534,12 +534,12 @@ func seedTwoChannelDigests(t *testing.T, database *db.DB) {
 func TestDaemon_RollupBackoff_ThreeFailuresExhaustBudget(t *testing.T) {
 	d, _, gen := rollupBackoffTestSetup(t)
 
-	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
-	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
-	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d.phaseTrackMyThreads(context.Background(), rollupFixedNow)
+	d.phaseTrackMyThreads(context.Background(), rollupFixedNow)
+	d.phaseTrackMyThreads(context.Background(), rollupFixedNow)
 	require.Equal(t, 3, gen.calls, "three real failures should each reach the AI generate call")
 
-	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d.phaseTrackMyThreads(context.Background(), rollupFixedNow)
 	assert.Equal(t, 3, gen.calls, "a 4th cycle on the same day must launch nothing once the budget is spent")
 
 	// Exact-match assertion (not a prefix check against the real wall clock)
@@ -568,18 +568,18 @@ func TestDaemon_RollupBackoff_LogsGivingUpOnceBudgetExhausted(t *testing.T) {
 	var buf bytes.Buffer
 	d.SetLogger(log.New(&buf, "", 0))
 
-	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
-	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d.phaseTrackMyThreads(context.Background(), rollupFixedNow)
+	d.phaseTrackMyThreads(context.Background(), rollupFixedNow)
 	require.Equal(t, 2, gen.calls)
 	assert.Equal(t, 0, strings.Count(buf.String(), "giving up"), "must not log giving-up before the budget is actually spent")
 
-	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d.phaseTrackMyThreads(context.Background(), rollupFixedNow)
 	require.Equal(t, 3, gen.calls)
 	assert.Equal(t, 1, strings.Count(buf.String(), "giving up"), "must log giving-up exactly once when the 3rd failure spends the budget")
 
 	// A 4th (and 5th) cycle the same day is a silent skip — no repeat log line.
-	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
-	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d.phaseTrackMyThreads(context.Background(), rollupFixedNow)
+	d.phaseTrackMyThreads(context.Background(), rollupFixedNow)
 	assert.Equal(t, 1, strings.Count(buf.String(), "giving up"), "must not repeat the giving-up line on later silent skips the same day")
 }
 
@@ -627,7 +627,7 @@ func TestDaemon_RollupBackoff_BenignSkipDoesNotConsumeBudget(t *testing.T) {
 	d.SetDigestPipeline(digest.New(database, cfg, gen, d.logger))
 
 	for range 5 {
-		d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+		d.phaseTrackMyThreads(context.Background(), rollupFixedNow)
 	}
 
 	assert.Equal(t, 0, gen.calls, "a benign <2-channel-digests skip must never reach the AI generate call")
@@ -637,9 +637,9 @@ func TestDaemon_RollupBackoff_BenignSkipDoesNotConsumeBudget(t *testing.T) {
 func TestDaemon_RollupBackoff_ResetsNextCalendarDay(t *testing.T) {
 	d, _, gen := rollupBackoffTestSetup(t)
 
-	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
-	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
-	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d.phaseTrackMyThreads(context.Background(), rollupFixedNow)
+	d.phaseTrackMyThreads(context.Background(), rollupFixedNow)
+	d.phaseTrackMyThreads(context.Background(), rollupFixedNow)
 	require.Equal(t, 3, gen.calls)
 	require.True(t, d.rollupAttemptsExhausted(rollupBudgetDate(rollupFixedNow)), "today's budget must be exhausted")
 
@@ -654,16 +654,16 @@ func TestDaemon_RollupBackoff_ResetsNextCalendarDay(t *testing.T) {
 	// counter carried over from yesterday instead of resetting to 0 before
 	// incrementing (a single extra call cannot tell "reset to a fresh 3"
 	// apart from "kept counting from 3").
-	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d.phaseTrackMyThreads(context.Background(), rollupFixedNow)
 	assert.Equal(t, 4, gen.calls, "a new calendar day must get a fresh budget and actually launch a real attempt")
-	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d.phaseTrackMyThreads(context.Background(), rollupFixedNow)
 	assert.Equal(t, 5, gen.calls, "the new day's 2nd attempt must also launch — its budget must not have inherited yesterday's spent count")
-	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d.phaseTrackMyThreads(context.Background(), rollupFixedNow)
 	assert.Equal(t, 6, gen.calls, "the new day's 3rd attempt must also launch")
 
 	// Now the new day's own budget of 3 is spent — a 4th attempt the same day
 	// must be refused again.
-	d.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d.phaseTrackMyThreads(context.Background(), rollupFixedNow)
 	assert.Equal(t, 6, gen.calls, "the new day's 4th cycle must launch nothing once ITS budget is spent")
 }
 
@@ -674,9 +674,9 @@ func TestDaemon_RollupBackoff_ResetsNextCalendarDay(t *testing.T) {
 func TestDaemon_RollupBackoff_SurvivesRestart(t *testing.T) {
 	d1, database, gen1 := rollupBackoffTestSetup(t)
 
-	d1.phaseTracksAndRollups(context.Background(), rollupFixedNow)
-	d1.phaseTracksAndRollups(context.Background(), rollupFixedNow)
-	d1.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d1.phaseTrackMyThreads(context.Background(), rollupFixedNow)
+	d1.phaseTrackMyThreads(context.Background(), rollupFixedNow)
+	d1.phaseTrackMyThreads(context.Background(), rollupFixedNow)
 	require.Equal(t, 3, gen1.calls)
 
 	// Simulate a daemon restart: a brand new Daemon over the same
@@ -689,6 +689,6 @@ func TestDaemon_RollupBackoff_SurvivesRestart(t *testing.T) {
 	d2.SetDigestPipeline(digest.New(database, d1.config, gen2, d2.logger))
 	d2.loadRollupAttempts()
 
-	d2.phaseTracksAndRollups(context.Background(), rollupFixedNow)
+	d2.phaseTrackMyThreads(context.Background(), rollupFixedNow)
 	assert.Equal(t, 0, gen2.calls, "a restarted daemon must honor the already-spent budget instead of resetting it")
 }

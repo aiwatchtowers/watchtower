@@ -134,13 +134,16 @@ func newMBFixture(t *testing.T, edit func(cfg *config.Config)) *mbFixture {
 }
 
 // wireTestBuiltins wires the built-ins as wireBuiltins does: a slot
-// executor over d's primitives, the Morning brief's gate, synced rows, the
-// Morning brief active.
+// executor over d's primitives, every built-in's gate, synced rows, the
+// Morning brief active (the C3 built-ins stay on their legacy phases until a
+// test turns them active).
 func wireTestBuiltins(t *testing.T, d *Daemon, database *db.DB, cfg *config.Config, clock automations.Clock) {
 	t.Helper()
 	b := automations.Backends{DB: database, Clock: clock, Primitives: d.BuiltinPrimitives(), DefaultPrompt: builtin.DefaultPromptFunc}
 	exec := automations.NewExecutor(database, b, automations.ExecutorOptions{Logger: log.New(io.Discard, "", 0)})
-	r := builtin.NewRunner(database, exec, map[string]builtin.Gate{morningBriefID: d.MorningBriefGate()}, cfg, clock, d.logger)
+	gates := map[string]builtin.Gate{morningBriefID: d.MorningBriefGate(),
+		trackMyThreadsID: d.TrackMyThreadsGate(), ideaFinderID: d.IdeaFinderGate()}
+	r := builtin.NewRunner(database, exec, gates, cfg, clock, d.logger)
 	_, err := builtin.Sync(context.Background(), database, cfg.WorkspaceDir(), cfg, clock.Now())
 	require.NoError(t, err)
 	d.SetBuiltins(r, map[string]bool{morningBriefID: true})
