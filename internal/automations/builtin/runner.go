@@ -201,6 +201,10 @@ func (r *Runner) cancelQueued(id string) error {
 	return err
 }
 
+// ErrNoRunNow is RunNow's refusal of a built-in that offers no Run Now
+// (Entry.RunNow false); nothing is queued.
+var ErrNoRunNow = errors.New("the built-in offers no Run Now")
+
 // ErrRunNowQueued is RunNow's refusal (it also wraps
 // automations.ErrRunNotClaimed) when a manual run of the built-in with other
 // input is already queued for its next slot.
@@ -211,14 +215,20 @@ var ErrRunNowQueued = errors.New("a Run Now is already queued for the next sync"
 // built-in is on. A built-in the daemon stopped (AUTO-08) is refused with
 // ErrBuiltinStopped before any run is queued. An unconfirmed built-in's run
 // is cancelled and the error wraps automations.ErrNotRunnable; one that
-// cannot be claimed (another run of it is active, or — ErrRunNowQueued too —
+// offers no Run Now (Entry.RunNow false) is refused with ErrNoRunNow before
+// anything is queued; one that cannot be claimed (another run of it is
+// active, or — ErrRunNowQueued too —
 // a manual run with other input is already queued for the next slot) wraps
 // automations.ErrRunNotClaimed; a run this call queued is then cancelled
 // while it is still queued, so it never runs later with in (one the slot
 // claimed meanwhile is left running: the error still says it runs now).
 func (r *Runner) RunNow(ctx context.Context, id string, in automations.BuiltinInput) (*db.AutomationRun, error) {
-	if _, ok := Lookup(id); !ok {
+	e, ok := Lookup(id)
+	if !ok {
 		return nil, fmt.Errorf("unknown built-in automation %q", id)
+	}
+	if !e.RunNow {
+		return nil, fmt.Errorf("built-in %s has no Run Now: %s: %w", id, e.NoRunNowNote, ErrNoRunNow)
 	}
 	r.endStaleRuns()
 	a, err := r.db.GetBuiltinAutomation(id)
