@@ -200,6 +200,7 @@ type Track struct {
 	Enabled          bool   // custom tracks: scan on/off
 	LastRunAt        string // custom tracks: scan watermark, "" = never
 	LinkedTargetID   int    // custom tracks: linked target id, 0 = none
+	AutomationID     int64  // custom tracks: bound watch recipe (automations.id), 0 = unbound
 }
 
 // Digest represents an AI-generated summary of channel activity.

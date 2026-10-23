@@ -49,12 +49,13 @@ func (db *DB) GetEnabledCustomTracks() ([]Track, error) {
 }
 
 // GetCustomTracksDueForScan returns the enabled custom tracks the daemon may
-// scan on the UTC date day ("2006-01-02"): every enabled track except one that
-// has already failed maxAttempts scans that day. A failure on an earlier day
-// never counts against today.
+// scan on the UTC date day ("2006-01-02"): every enabled unbound track except
+// one that has already failed maxAttempts scans that day. A failure on an
+// earlier day never counts against today. A track bound to a watch recipe
+// (automation_id set) is scanned by its recipe, never here.
 func (db *DB) GetCustomTracksDueForScan(day string, maxAttempts int) ([]Track, error) {
 	return db.queryCustomTracks(`SELECT `+trackSelectCols+`
-		FROM tracks WHERE origin = 'custom' AND enabled = 1 AND dismissed_at = ''
+		FROM tracks WHERE origin = 'custom' AND enabled = 1 AND dismissed_at = '' AND automation_id IS NULL
 		  AND NOT (scan_attempts >= ? AND substr(scan_attempted_at, 1, 10) = ?)
 		ORDER BY created_at`, maxAttempts, day)
 }
