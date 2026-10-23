@@ -1927,6 +1927,7 @@ func (d *Daemon) phaseReactionCommands(ctx context.Context) {
 		}
 	}
 
+	d.setReactionDispatch()
 	sink := d.reactionEventSink()
 	d.trackedPipelineRun("reaction-commands", func() pipelineRunStats {
 		dispatched, err := d.reactionCmdPipe.Run(ctx, sink)

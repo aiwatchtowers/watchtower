@@ -40,6 +40,8 @@ func wireBuiltins(d *daemon.Daemon, cfg *config.Config, database *db.DB, gen dig
 		"morning-brief":    d.MorningBriefGate(),
 		"track-my-threads": d.TrackMyThreadsGate(),
 		"idea-finder":      d.IdeaFinderGate(),
+		// Reactions has no gate: it never runs at a slot. The reaction pass
+		// runs it once per claimed command (Daemon.reactionDispatcher).
 	}
 	runner := builtin.NewRunner(database, exec, gates, cfg, automations.RealClock{}, logger)
 
