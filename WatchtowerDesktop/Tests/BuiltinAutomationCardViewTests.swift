@@ -158,6 +158,12 @@ final class BuiltinAutomationCardViewTests: XCTestCase {
         XCTAssertEqual(config.ideasMineIntervalHours, 7)
         XCTAssertThrowsError(try ConfigService(configPath: configPath)
             .saveBuiltinParameters(["ideas.mine_interval_hours": "0"]), "an interval is 1 hour or more")
+
+        // A stored value above the stepper's 1–48 shows clamped; a step saves an in-range value.
+        model.parameterEdits = [BuiltinAutomationCardModel.ideasIntervalKey: "72"]
+        XCTAssertNoThrow(try view().inspect().find(text: "48 hours"))
+        try view().inspect().find(ViewType.Stepper.self).decrement()
+        XCTAssertEqual(model.parameterEdits[BuiltinAutomationCardModel.ideasIntervalKey], "47")
     }
 
     /// The Reactions card: no Run Now (its golden's `run_now: false`), the

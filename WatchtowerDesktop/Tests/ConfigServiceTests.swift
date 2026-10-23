@@ -269,7 +269,25 @@ struct ConfigServiceTests {
         #expect(reloaded.digestMinMessages == 7)
     }
 
-    @Test("Save round-trips ideas tuning, never ideas.enabled, and preserves unrelated keys")
+    /// The Idea finder card saves the interval through a fresh instance; the
+    /// Settings window's long-lived one must not put the old value back (C3).
+    @Test("A Settings save after Idea finder's card save keeps the card's interval")
+    func settingsSaveKeepsIdeasInterval() throws {
+        let path = makeTempConfig("""
+        ideas:
+          mine_interval_hours: 6
+        """)
+        let settings = ConfigService(configPath: path)
+        try ConfigService(configPath: path).saveBuiltinParameters(["ideas.mine_interval_hours": "9"])
+        settings.digestMinMessages = 7
+        try settings.save()
+
+        let reloaded = ConfigService(configPath: path)
+        #expect(reloaded.ideasMineIntervalHours == 9)
+        #expect(reloaded.digestMinMessages == 7)
+    }
+
+    @Test("Save writes neither ideas.enabled nor the Idea finder interval, and preserves unrelated keys")
     func saveIdeasRoundTrip() throws {
         let path = makeTempConfig("""
         active_workspace: keep-me
@@ -288,7 +306,7 @@ struct ConfigServiceTests {
         try svc.save()
 
         let svc2 = ConfigService(configPath: path)
-        #expect(svc2.ideasMineIntervalHours == 24, "tuning keys still round-trip")
+        #expect(svc2.ideasMineIntervalHours == 12, "the interval's only writer is Idea finder's card")
         #expect(svc2.ideasEnabled == false, "on-disk ideas.enabled must survive a save that changed another field")
         #expect(svc2.activeWorkspace == "keep-me", "unrelated keys must survive the save merge")
     }
@@ -353,8 +371,8 @@ struct ConfigServiceTests {
         let yaml = try Yams.load(yaml: raw) as? [String: Any]
         #expect(yaml?.keys.contains("digest") == false, "an absent digest section must stay absent; got: \(raw)")
         #expect(
-            (yaml?["ideas"] as? [String: Any])?.keys.contains("enabled") == false,
-            "ideas.enabled must not be created by a save; got: \(raw)"
+            (yaml?["ideas"] as? [String: Any])?.keys.contains("enabled") != true,
+            "ideas.enabled must not be created by a save (the save writes no ideas key at all); got: \(raw)"
         )
         #expect(
             (yaml?["day_plan"] as? [String: Any])?.keys.contains("enabled") != true,

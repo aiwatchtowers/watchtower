@@ -357,6 +357,34 @@ final class ActionStripAllKindsTests: XCTestCase {
         XCTAssertEqual(stays.invocations.count, 1, "still pending: nothing applied, nothing to watch")
     }
 
+    /// **Retry** of a failed `create_track` that then applies starts its
+    /// watch too, under the same guards as Approve.
+    func testRetriedCreateTrackStartsWatching() async throws {
+        let (actionID, trackID) = try await pool.write { db -> (Int64, Int) in
+            let track = Int(try TestDatabase.insertTrack(db, text: "Watch the refund"))
+            try db.execute(sql: "UPDATE tracks SET origin = 'custom' WHERE id = ?", arguments: [track])
+            let action = try TestDatabase.insertAgentAction(
+                db, tool: "create_track", argsJSON: #"{"text":"Watch the refund"}"#, status: "failed", error: "busy")
+            return (action, track)
+        }
+        let runner = FakeCLIRunner(stdout: Data(#"{"ok":true,"track_id":\#(trackID),"automation_id":9}"#.utf8))
+        let pool = try XCTUnwrap(pool)
+        runner.onRun = { args in
+            guard args.count > 1, args[1] == "apply" else { return }
+            try? await pool.write { db in
+                try db.execute(sql: "UPDATE agent_actions SET status = 'applied', error = '', result_json = ? WHERE id = ?",
+                               arguments: [#"{"track_id":\#(trackID)}"#, actionID])
+            }
+        }
+        let vm = makeVM(runner)
+
+        await vm.retry(actionID)
+
+        XCTAssertEqual(runner.invocations.map { Array($0.prefix(2)) }, [["actions", "apply"], ["tracks", "start"]])
+        XCTAssertEqual(runner.invocations.last, ["tracks", "start", String(trackID), "--json"])
+        XCTAssertNil(vm.actionFeed.rowErrors[actionID])
+    }
+
     // MARK: - Messages
 
     func testMessageButtonsRunTheInboxCLI() async throws {

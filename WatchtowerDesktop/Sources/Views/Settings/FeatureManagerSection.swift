@@ -47,7 +47,6 @@ struct FeatureManagerSection: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
-            Divider()
             mlResidencyRow
         }
         .disabled(service.isApplying)
