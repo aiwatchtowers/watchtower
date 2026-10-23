@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"watchtower/internal/automations"
+	"watchtower/internal/automations/builtin"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
@@ -345,24 +345,12 @@ func queueWatchRun(cmd *cobra.Command, cfg *config.Config, database *db.DB, a *d
 		}
 		in.Since = since.UTC().Format(time.RFC3339)
 	}
-	payload, err := json.Marshal(map[string]automations.BuiltinInput{"builtin": in})
+	runID, coalesced, err := builtin.EnqueueManual(database, a.ID, in, time.Now())
+	if errors.Is(err, builtin.ErrRunNowQueued) {
+		return fmt.Errorf("a scan of %s with another Scan from is already queued for the next sync (run #%d)", a.Name, runID)
+	}
 	if err != nil {
 		return err
-	}
-	runID, coalesced, err := database.EnqueueAutomationRun(db.EnqueueRequest{
-		AutomationID: a.ID, Trigger: db.TriggerManual, EventJSON: string(payload), Now: time.Now(),
-	})
-	if err != nil {
-		return err
-	}
-	if coalesced {
-		queued, err := database.GetAutomationRun(runID)
-		if err != nil {
-			return err
-		}
-		if queued.EventJSON != string(payload) {
-			return fmt.Errorf("a scan of %s with another Scan from is already queued for the next sync (run #%d)", a.Name, runID)
-		}
 	}
 	return reportQueuedSlotRun(cmd, cfg, runID, coalesced)
 }

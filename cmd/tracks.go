@@ -7,11 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"os"
-	"os/signal"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"watchtower/internal/automations"
@@ -869,7 +866,11 @@ func runTracksCreate(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	confirm := refuseUnderAgent("confirm a watch") == nil
+	// The recipe is confirmed only by the owner (AGENT-07): no agent marker,
+	// and the owner's confirmation in the Desktop; otherwise it waits,
+	// unconfirmed, for Automations.
+	confirm := refuseUnderAgent(tracksStartVerb) == nil &&
+		confirmWithOwner(tracksStartVerb, trackWatchConfirmDetail(database, int(id))) == nil
 	if _, err := startTrackWatch(ctx, cfg, database, int(id), confirm); err != nil {
 		return fmt.Errorf("track #%d was created but is not watched: %w — run `watchtower tracks start %d`", id, err, id)
 	}
@@ -906,7 +907,7 @@ func runTracksWatch(cmd *cobra.Command, args []string) error {
 // runTracksStart is `tracks start <id>`, owner only: it makes custom track
 // id a watch with its recipe confirmed (Start Watching).
 func runTracksStart(cmd *cobra.Command, args []string) error {
-	if err := refuseUnderAgent("start watching a track"); err != nil {
+	if err := refuseUnderAgent(tracksStartVerb); err != nil {
 		return err
 	}
 	id, err := parseTrackID(args[0])
@@ -918,7 +919,13 @@ func runTracksStart(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	defer database.Close()
+	if err := confirmWithOwner(tracksStartVerb, trackWatchConfirmDetail(database, id)); err != nil {
+		return err
+	}
 	a, err := startTrackWatch(cmdContext(cmd), cfg, database, id, true)
+	if errors.Is(err, watch.ErrEditedSinceRendered) {
+		return errors.New(msgWatchNotConfirmed)
+	}
 	if err != nil {
 		return err
 	}
@@ -929,8 +936,31 @@ func runTracksStart(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// trackWatchConfirmDetail is the owner's confirmation window text for
+// starting track id's watch: the bound recipe as it is, or the recipe Start
+// would write.
+func trackWatchConfirmDetail(database *db.DB, id int) string {
+	t, err := database.GetTrackByID(id)
+	if err != nil {
+		return detailUnavailable(err)
+	}
+	if t.AutomationID != 0 {
+		a, err := database.GetAutomation(t.AutomationID)
+		if err != nil {
+			return detailUnavailable(err)
+		}
+		return fmt.Sprintf("Track #%d %q\n\n%s", t.ID, t.Text, recipeConfirmDetail(a))
+	}
+	data, err := watch.StartRecipe(*t)
+	if err != nil {
+		return detailUnavailable(err)
+	}
+	return fmt.Sprintf("Track #%d %q\n\n%s", t.ID, t.Text, data)
+}
+
 // The `tracks instruction` refusals.
 const (
+	tracksStartVerb        = "start watching a track"
 	msgWatchChangedInChat  = "This watch was changed in the chat — change it there."
 	msgWatchNotConfirmed   = "confirm this watch in Automations first"
 	msgWatchScanningNow    = "this watch is scanning now — try again in a minute"
@@ -999,6 +1029,10 @@ func runTracksInstruction(cmd *cobra.Command, args []string) error {
 		return errors.New(msgWatchChangedInChat) //nolint:staticcheck // ST1005: the text the Desktop shows
 	}
 	if err != nil {
+		return err
+	}
+	detail := fmt.Sprintf("Track #%d %q\nNew instruction:\n%s\n\n%s", t.ID, t.Text, text, data)
+	if err := confirmWithOwner(tracksInstructionVerb, detail); err != nil {
 		return err
 	}
 	saved, err := ix.WriteRecipe(ctx, scope, dir, a.Path, data)
@@ -1071,7 +1105,7 @@ func runTracksScan(cmd *cobra.Command, args []string) error {
 	runner := newCLIBuiltinRunner(cfg, database, gen, logger, cliBuiltinPipes{watch: scanner})
 	ctx, cancel := context.WithTimeout(cmdContext(cmd), tracksWatchScanTimeout)
 	defer cancel()
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	ctx, stop := inlineRunContext(ctx)
 	defer stop()
 	if len(args) == 1 {
 		id, err := parseTrackID(args[0])
@@ -1229,6 +1263,9 @@ func setTrackEnabled(cmd *cobra.Command, args []string, enabled bool) error {
 	if t.AutomationID != 0 {
 		if enabled {
 			if err := refuseUnderAgent(tracksWatchEnableVerb); err != nil {
+				return err
+			}
+			if err := confirmWithOwner(tracksWatchEnableVerb, trackWatchConfirmDetail(database, id)); err != nil {
 				return err
 			}
 		}

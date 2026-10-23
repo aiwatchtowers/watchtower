@@ -235,9 +235,15 @@ const ideasLockHeldLine = "consolidation skipped: another ideas run holds the lo
 // (RunNow), its ideas.consolidate over pipe under the backfill lock taken as
 // "cli". It returns how many ideas were proposed; with ideas off it runs
 // nothing (pipe.Run's no-op), and a lock held by another run skips the
-// consolidation with a note.
+// consolidation with a note and writes no run.
 func runIdeaFinderNow(ctx context.Context, cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger, pipe *ideas.Pipeline, out io.Writer) (int, error) {
 	if !cfg.Ideas.Enabled {
+		return 0, nil
+	}
+	// A probe, as the daemon's gate: the primitive takes the lock itself and
+	// skips when it loses that race.
+	if ideas.BackfillLockFresh(cfg.WorkspaceDir()) {
+		fmt.Fprintln(out, ideasLockHeldLine)
 		return 0, nil
 	}
 	proposed, ran := 0, false

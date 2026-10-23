@@ -269,18 +269,26 @@ func builtinName(id string) string {
 	return id
 }
 
+// inlineRunContext is ctx ended by the first SIGINT/SIGTERM, for a run this
+// process executes inline: the first signal ends the run (the executor
+// finalizes it), and a second one quits at once.
+func inlineRunContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-ctx.Done()
+		stop()
+	}()
+	return ctx, stop
+}
+
 // runBuiltinNow runs built-in id now through runner r (RunNow); a refusal is C2's text (builtinNowError), and a run
 // that did not succeed is an error. SIGINT/SIGTERM end the run here. A CLI
 // killed outright (SIGKILL) leaves its run running; the built-ins' runner
 // ends such a run once it is past its deadline (db.MarkStaleBuiltinRuns),
 // before the next slot or Run Now.
 func runBuiltinNow(ctx context.Context, r *builtin.Runner, id string, in automations.BuiltinInput) error {
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	ctx, stop := inlineRunContext(ctx)
 	defer stop()
-	go func() {
-		<-ctx.Done()
-		stop() // the first signal ends the run; a second one quits at once
-	}()
 	name := builtinName(id)
 	run, err := r.RunNow(ctx, id, in)
 	if err != nil {

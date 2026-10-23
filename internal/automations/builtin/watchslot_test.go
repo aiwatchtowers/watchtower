@@ -602,3 +602,50 @@ func TestWatchSlot_UnparsableRecipeScansNothing(t *testing.T) {
 		t.Errorf("track = %+v; want it still bound", got)
 	}
 }
+
+// A run claimed before the recipe's instruction was changed (a Save mid-scan)
+// scans with its own text but never writes it back over the new mirror.
+func TestWatchSlot_StaleRunNeverOverwritesTheMirror(t *testing.T) {
+	f := newWatchFixture(t)
+	a := f.addWatch(t, "stale", "watch the refund", true, true)
+	runID, _, err := f.d.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerManual, Now: f.clock.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ok, err := f.d.ClaimAutomationRun(runID, a.ApprovalHash, a.RecipeText, a.BudgetTokens, a.BudgetMinutes, f.clock.Now())
+	if err != nil || !ok {
+		t.Fatalf("claim = %v, %v", ok, err)
+	}
+	edited, err := watch.SetInstruction([]byte(a.RecipeText), "watch the invoice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, path := f.recipePath(t, "stale")
+	b, err := f.ix.WriteRecipe(context.Background(), automations.Scope{Kind: automations.ScopePersonal}, dir, path, edited)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.d.ConfirmAutomation(b.ID, b.ApprovalHash, f.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	owner, err := f.d.ResolveOwner()
+	if err != nil {
+		t.Fatal(err)
+	}
+	trackID, err := f.d.EnsureWatchTrack(a.ID, owner.ID, a.Name, "watch the invoice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.d.SetWatchInstruction(trackID, "watch the invoice"); err != nil {
+		t.Fatal(err)
+	}
+
+	scan := WatchPrimitives(f.d, f.scan, f.d.ResolveOwner, f.clock.Now)["track.scan"]
+	if _, err := scan(context.Background(), automations.PrimitiveCall{Name: "track.scan", Prompt: "watch the refund",
+		Trigger: automations.TriggerInfo{Kind: db.TriggerManual, RunID: runID}}); err != nil {
+		t.Fatalf("track.scan: %v", err)
+	}
+	if tr := f.trackOf(t, a.ID); tr == nil || tr.Instruction != "watch the invoice" {
+		t.Errorf("track = %+v; want the new instruction kept", tr)
+	}
+}
