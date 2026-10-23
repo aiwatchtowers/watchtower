@@ -6,6 +6,8 @@ import Foundation
 package struct AutomationDraftFooter: Equatable, Sendable {
     package enum Action: Equatable, Sendable {
         case saveAndTurnOn, saveTurnedOff, saveAndConfirm, confirmAndTurnOn, confirmTurnedOff, confirm
+        /// A built-in's save: confirms the shown bytes, leaves on/off alone.
+        case save
 
         package var title: String {
             switch self {
@@ -15,6 +17,7 @@ package struct AutomationDraftFooter: Equatable, Sendable {
             case .confirmAndTurnOn: "Confirm and Turn On"
             case .confirmTurnedOff: "Confirm Turned Off"
             case .confirm: "Confirm"
+            case .save: "Save"
             }
         }
     }
@@ -39,15 +42,23 @@ package struct AutomationDraftFooter: Equatable, Sendable {
     /// `showsAllFields`: the draft column shows every hashed field
     /// (`AutomationDraftColumnModel.showsAllFields`) — false turns every
     /// button off (AUTO-06); `hasErrors`: off because the recipe does not
-    /// validate, which the hint then says.
+    /// validate, which the hint then says. `isBuiltin`: a built-in, whose
+    /// on/off is its feature keys (the card's Turn On/Off), so the footer
+    /// never saves it turned off: **Save**, and **Save and Turn On** while
+    /// it is off.
     package static func make(
         isNew: Bool,
         bytesChanged: Bool,
         enabled: Bool,
         needsConfirmation: Bool,
         showsAllFields: Bool = true,
-        hasErrors: Bool = false
+        hasErrors: Bool = false,
+        isBuiltin: Bool = false
     ) -> Self {
+        if isBuiltin {
+            return builtin(bytesChanged: bytesChanged, enabled: enabled, needsConfirmation: needsConfirmation,
+                           showsAllFields: showsAllFields, hasErrors: hasErrors)
+        }
         guard showsAllFields else {
             let shape = make(isNew: isNew, bytesChanged: bytesChanged, enabled: enabled,
                              needsConfirmation: needsConfirmation)
@@ -67,5 +78,23 @@ package struct AutomationDraftFooter: Equatable, Sendable {
                        hint: confirmHint)
         }
         return Self(primary: .saveAndConfirm, primaryEnabled: false, secondary: nil, hint: noChangesHint)
+    }
+
+    private static func builtin(
+        bytesChanged: Bool, enabled: Bool, needsConfirmation: Bool, showsAllFields: Bool, hasErrors: Bool
+    ) -> Self {
+        guard showsAllFields else {
+            return Self(primary: .save, primaryEnabled: false, secondary: nil,
+                        hint: hasErrors ? hasErrorsHint : cantShowAllHint)
+        }
+        if bytesChanged {
+            return enabled
+                ? Self(primary: .save, primaryEnabled: true, secondary: nil, hint: saveHint)
+                : Self(primary: .saveAndTurnOn, primaryEnabled: true, secondary: .save, hint: turnsOnHint)
+        }
+        if needsConfirmation {
+            return Self(primary: .confirm, primaryEnabled: true, secondary: nil, hint: confirmHint)
+        }
+        return Self(primary: .save, primaryEnabled: false, secondary: nil, hint: noChangesHint)
     }
 }

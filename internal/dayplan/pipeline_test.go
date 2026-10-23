@@ -26,7 +26,6 @@ func (m *mockGenerator) Generate(_ context.Context, _, _, _ string) (string, *di
 func pipeTestCfg() *config.Config {
 	return &config.Config{DayPlan: config.DayPlanConfig{
 		Enabled:           true,
-		Hour:              8,
 		WorkingHoursStart: "09:00",
 		WorkingHoursEnd:   "19:00",
 		MaxTimeblocks:     3,
@@ -428,4 +427,11 @@ func TestRun_AllItemsInvalidOnMeetingDayIsAFailedAttempt(t *testing.T) {
 			require.Nil(t, plan)
 		})
 	}
+}
+
+type capturingGen struct{ response, system string }
+
+func (m *capturingGen) Generate(_ context.Context, system, _, _ string) (string, *digest.Usage, string, error) {
+	m.system = system
+	return m.response, &digest.Usage{InputTokens: 10, OutputTokens: 5}, "s1", nil
 }

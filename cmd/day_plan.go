@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"watchtower/internal/automations"
 	"watchtower/internal/config"
 	"watchtower/internal/dayplan"
 	"watchtower/internal/db"
@@ -55,14 +55,6 @@ var dayPlanGenerateCmd = &cobra.Command{
 	Use:   "generate",
 	Short: "Generate (or regenerate) the day plan for a date",
 	RunE:  runDayPlanGenerate,
-}
-
-// newDayPlanPipelineFactory is the seam tests override to inject a mock generator.
-var newDayPlanPipelineFactory = func(database *db.DB, cfg *config.Config, logger *log.Logger) (*dayplan.Pipeline, error) {
-	gen := cliGenerator(cfg)
-	pipe := dayplan.New(database, cfg, gen, logger)
-	pipe.SetPromptStore(prompts.New(database, nil))
-	return pipe, nil
 }
 
 func init() {
@@ -275,6 +267,9 @@ func runDayPlanCheckConflicts(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// runDayPlanGenerate makes (or remakes) a day plan through the Morning brief
+// built-in (its plan.compose only), so the prompt is the built-in's current
+// recipe. It works with the feature off; --feedback implies --force.
 func runDayPlanGenerate(cmd *cobra.Command, _ []string) error {
 	cfg, err := config.Load(flagConfig)
 	if err != nil {
@@ -288,24 +283,17 @@ func runDayPlanGenerate(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
-	// Force day_plan enabled so CLI generate always works.
-	cfg.DayPlan.Enabled = true
-
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
 		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
 
-	out := cmd.OutOrStdout()
-
 	owner, err := database.RequireOwner()
 	if err != nil {
 		return err
 	}
-	userID := owner.ID
 
-	// Parse flags.
 	dateFlag, _ := cmd.Flags().GetString("date")
 	forceFlag, _ := cmd.Flags().GetBool("force")
 	feedbackFlag, _ := cmd.Flags().GetString("feedback")
@@ -313,7 +301,7 @@ func runDayPlanGenerate(cmd *cobra.Command, _ []string) error {
 
 	date := dateFlag
 	if date == "" {
-		date = time.Now().Format("2006-01-02")
+		date = time.Now().Format(time.DateOnly)
 	}
 
 	logger := log.New(io.Discard, "", 0)
@@ -321,25 +309,16 @@ func runDayPlanGenerate(cmd *cobra.Command, _ []string) error {
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
-	pipe, err := newDayPlanPipelineFactory(database, cfg, logger)
-	if err != nil {
-		return fmt.Errorf("creating day-plan pipeline: %w", err)
+	in := automations.BuiltinInput{Only: []string{"plan.compose"}, Date: date,
+		Force: forceFlag || feedbackFlag != "", Feedback: feedbackFlag}
+	if err := runMorningBriefNow(cmd.Context(), cfg, database, logger, in); err != nil {
+		return err
 	}
 
-	ctx := cmd.Context()
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	plan, err := pipe.Run(ctx, dayplan.RunOptions{
-		UserID:   userID,
-		Owner:    owner,
-		Date:     date,
-		Force:    forceFlag || feedbackFlag != "",
-		Feedback: feedbackFlag,
-	})
+	out := cmd.OutOrStdout()
+	plan, err := database.GetDayPlan(owner.ID, date)
 	if err != nil {
-		return fmt.Errorf("generating day plan: %w", err)
+		return fmt.Errorf("loading day plan: %w", err)
 	}
 	if plan == nil {
 		fmt.Fprintln(out, "Day plan generation is disabled in config.")

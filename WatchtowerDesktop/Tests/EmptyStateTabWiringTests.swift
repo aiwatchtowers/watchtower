@@ -26,7 +26,7 @@ final class EmptyStateTabWiringTests: XCTestCase {
     }
 
     private func copy(_ destination: SidebarDestination) throws -> EmptyStateCopy {
-        try XCTUnwrap(EmptyStateCopyTable.copy(for: destination.rawValue, briefingHour: 8, dayPlanHour: 8))
+        try XCTUnwrap(EmptyStateCopyTable.copy(for: destination.rawValue, briefingHour: 8))
     }
 
     private func assertSharedState<V: View>(

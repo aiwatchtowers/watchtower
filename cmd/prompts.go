@@ -131,6 +131,9 @@ func runPromptsShow(cmd *cobra.Command, args []string) error {
 	if version > 0 {
 		versionStr = fmt.Sprintf("v%d (customized)", version)
 	}
+	if _, moved := prompts.MovedToBuiltin[id]; moved {
+		fmt.Fprintln(out, "Used by the Morning brief built-in — change it in Automations → Built in.")
+	}
 	fmt.Fprintf(out, "Prompt: %s\n", id)
 	fmt.Fprintf(out, "Description: %s\n", desc)
 	fmt.Fprintf(out, "Version: %s\n", versionStr)

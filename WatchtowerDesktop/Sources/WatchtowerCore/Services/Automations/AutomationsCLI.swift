@@ -28,6 +28,10 @@ package struct AutomationsCLI {
         case rescan(workbenchID: Int64)
         /// The owner's press of Reply action `action` of Inbox card `outputID`.
         case reply(outputID: Int64, action: Int)
+        /// Deletes a built-in's owner copy: the shipped text runs again.
+        case reset(Int64)
+        /// Retries the one-time move of the built-ins' old settings.
+        case upgradeBuiltins
     }
 
     /// How a `session()` step's session ended, as `session-ended --status`
@@ -95,6 +99,10 @@ package struct AutomationsCLI {
             return ["automations", "rescan", "--workbench", String(workbenchID)]
         case let .reply(outputID, action):
             return ["automations", "reply", "--output", String(outputID), "--action", String(action), "--json"]
+        case let .reset(id):
+            return ["automations", "reset", String(id), "--json"]
+        case .upgradeBuiltins:
+            return ["automations", "upgrade-builtins", "--json"]
         }
     }
 
@@ -196,6 +204,18 @@ package struct AutomationsCLI {
     /// `trigger='reply'` run (AUTO-09); the CLI wakes the daemon itself.
     package func reply(outputID: Int64, action: Int) async throws -> ReplyResult {
         try await decode(.reply(outputID: outputID, action: action))
+    }
+
+    /// Resets built-in `id` to its shipped text (runnable at once, AUTO-06
+    /// amendment); a `builtin:<id>` save is how its owner copy is written.
+    package func reset(_ id: Int64) async throws -> ResetResult {
+        try await decode(.reset(id))
+    }
+
+    /// Runs the built-ins' settings move again; one result per built-in.
+    package func upgradeBuiltins() async throws -> [UpgradeBuiltinResult] {
+        let result: UpgradeBuiltinsResult = try await decode(.upgradeBuiltins)
+        return result.results
     }
 
     private func decode<T: Decodable>(_ op: Op) async throws -> T {
@@ -339,6 +359,48 @@ extension AutomationsCLI {
 
         enum CodingKeys: String, CodingKey {
             case automationID = "automation_id", path, approvalHash = "approval_hash", confirmed
+        }
+    }
+
+    /// `reset --json`.
+    package struct ResetResult: Decodable, Equatable, Sendable {
+        package let automationID: Int64
+        package let overridden: Bool
+        package let approvalHash: String
+
+        enum CodingKeys: String, CodingKey {
+            case automationID = "automation_id", overridden, approvalHash = "approval_hash"
+        }
+    }
+
+    /// `upgrade-builtins --json`: `{"results":[…]}`.
+    private struct UpgradeBuiltinsResult: Decodable {
+        let results: [UpgradeBuiltinResult]
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            results = try c.decodeIfPresent([UpgradeBuiltinResult].self, forKey: .results) ?? []
+        }
+
+        private enum CodingKeys: String, CodingKey { case results }
+    }
+
+    /// One built-in's settings move: `status` "done" or "failed" (twin:
+    /// Go `db.RecordBuiltinMigration`), `error` "" when done.
+    package struct UpgradeBuiltinResult: Decodable, Equatable, Sendable {
+        package let builtinID: String
+        package let status: String
+        package let error: String
+
+        enum CodingKeys: String, CodingKey {
+            case builtinID = "builtin_id", status, error
+        }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            builtinID = try c.decode(String.self, forKey: .builtinID)
+            status = try c.decode(String.self, forKey: .status)
+            error = try c.decodeIfPresent(String.self, forKey: .error) ?? ""
         }
     }
 
@@ -495,10 +557,12 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
     /// Whether the indexed recipe feeds its sources to `llm()`
     /// (`feeds_sources_to_llm`, #559): the edit form's Auto warning.
     package let feedsSourcesToLLM: Bool
+    /// A built-in's card (`builtin`); nil for an owner recipe or from an older CLI.
+    package let builtin: BuiltinAutomationDetail?
 
     enum CodingKeys: String, CodingKey {
         case id, slug, scope, path, name, description, script, permissions, outputs, concurrency, enabled
-        case runnable, widening, changes
+        case runnable, widening, changes, builtin
         case projectID = "project_id", recipeText = "recipe_text", triggerKind = "trigger_kind"
         case triggerSpec = "trigger_spec", budgetTokens = "budget_tokens", budgetMinutes = "budget_minutes"
         case missedPolicy = "missed_policy", pauseTimeoutHours = "pause_timeout_hours"
@@ -542,6 +606,7 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
         autoTools = try c.decodeIfPresent([AutomationAutoTool].self, forKey: .autoTools) ?? []
         llmAutoWrites = try c.decodeIfPresent([String].self, forKey: .llmAutoWrites) ?? []
         feedsSourcesToLLM = try c.decodeIfPresent(Bool.self, forKey: .feedsSourcesToLLM) ?? false
+        builtin = try c.decodeIfPresent(BuiltinAutomationDetail.self, forKey: .builtin)
         if let text = try c.decodeIfPresent(String.self, forKey: .changedAt) {
             guard let date = AutomationDates.parse(text) else {
                 throw DecodingError.dataCorruptedError(forKey: .changedAt, in: c,
@@ -551,5 +616,103 @@ package struct AutomationDetail: Decodable, Equatable, Sendable {
         } else {
             changedAt = nil
         }
+    }
+}
+
+/// A built-in's card: the `builtin` block of `show --json`. Twin of Go
+/// `builtin.CardInfo` (internal/automations/builtin/card.go); its keys are
+/// pinned by `internal/automations/builtin/testdata/show_morning_brief.json`,
+/// which `BuiltinAutomationDetailDecodingTests` decodes too. Lists and maps
+/// default to empty.
+package struct BuiltinAutomationDetail: Decodable, Equatable, Sendable {
+    /// One When field with its current config value (twin: Go
+    /// `builtin.ParameterValue`); `value` is always text.
+    package struct Parameter: Decodable, Equatable, Sendable {
+        /// Twin: Go `builtin.ParamKind`.
+        package enum Kind: String, Decodable, Sendable {
+            /// 0–23 (`builtin.ParamHour`); "HH:MM" (`ParamClock`); a whole
+            /// number of items, 0 or more (`ParamCount`).
+            case hour, clock, count
+        }
+
+        package let key: String
+        package let label: String
+        package let kind: Kind
+        package let value: String
+    }
+
+    /// The last `days` days' AI cost; `reported` is false when no run or
+    /// pipeline row of the window reported one; `tokens` is the same runs'
+    /// input plus output tokens, reported or not (twin: Go `builtin.Costs`).
+    package struct Costs: Decodable, Equatable, Sendable {
+        package let usd: Double
+        package let days: Int
+        package let reported: Bool
+        package let tokens: Int64
+
+        package init(usd: Double, days: Int, reported: Bool, tokens: Int64 = 0) {
+            self.usd = usd
+            self.days = days
+            self.reported = reported
+            self.tokens = tokens
+        }
+
+        enum CodingKeys: String, CodingKey { case usd, days, reported, tokens }
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            usd = try c.decodeIfPresent(Double.self, forKey: .usd) ?? 0
+            days = try c.decodeIfPresent(Int.self, forKey: .days) ?? 0
+            reported = try c.decodeIfPresent(Bool.self, forKey: .reported) ?? false
+            tokens = try c.decodeIfPresent(Int64.self, forKey: .tokens) ?? 0
+        }
+    }
+
+    package let id: String
+    package let slot: String
+    package let overridden: Bool
+    package let shippedHash: String
+    package let baseHash: String
+    package let updateAvailable: Bool
+    package let shippedText: String
+    package let defaultPrompts: [String: String]
+    package let when: String
+    package let reads: [String]
+    package let sends: [String]
+    package let parameters: [Parameter]
+    package let featureIDs: [String]
+    package let enabled: Bool
+    /// The card shows Run Now (twin: Go `builtin.Entry.RunNow`).
+    package let runNow: Bool
+    /// Why the owner's copy file is not used ("" when it is, or there is none).
+    package let copyError: String
+    package let costs: Costs
+
+    enum CodingKeys: String, CodingKey {
+        case id, slot, overridden, when, reads, sends, parameters, enabled, costs
+        case shippedHash = "shipped_hash", baseHash = "base_hash", updateAvailable = "update_available"
+        case shippedText = "shipped_text", defaultPrompts = "default_prompts", featureIDs = "feature_ids"
+        case runNow = "run_now", copyError = "copy_error"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        slot = try c.decodeIfPresent(String.self, forKey: .slot) ?? ""
+        overridden = try c.decodeIfPresent(Bool.self, forKey: .overridden) ?? false
+        shippedHash = try c.decodeIfPresent(String.self, forKey: .shippedHash) ?? ""
+        baseHash = try c.decodeIfPresent(String.self, forKey: .baseHash) ?? ""
+        updateAvailable = try c.decodeIfPresent(Bool.self, forKey: .updateAvailable) ?? false
+        shippedText = try c.decodeIfPresent(String.self, forKey: .shippedText) ?? ""
+        defaultPrompts = try c.decodeIfPresent([String: String].self, forKey: .defaultPrompts) ?? [:]
+        when = try c.decodeIfPresent(String.self, forKey: .when) ?? ""
+        reads = try c.decodeIfPresent([String].self, forKey: .reads) ?? []
+        sends = try c.decodeIfPresent([String].self, forKey: .sends) ?? []
+        parameters = try c.decodeIfPresent([Parameter].self, forKey: .parameters) ?? []
+        featureIDs = try c.decodeIfPresent([String].self, forKey: .featureIDs) ?? []
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
+        runNow = try c.decodeIfPresent(Bool.self, forKey: .runNow) ?? false
+        copyError = try c.decodeIfPresent(String.self, forKey: .copyError) ?? ""
+        costs = try c.decodeIfPresent(Costs.self, forKey: .costs) ?? Costs(usd: 0, days: 0, reported: false)
     }
 }

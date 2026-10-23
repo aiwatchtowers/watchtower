@@ -992,6 +992,8 @@ func (f *fakeDayPlanRunner) AccumulatedUsage() (int, int, float64, int) {
 	return 0, 0, 0, 0
 }
 
+func (f *fakeDayPlanRunner) LastPromptNote() string { return "" }
+
 func TestDaemon_RunsDayPlanAfterBriefing(t *testing.T) {
 	orch, cfg, _ := testDaemonWithTempHome(t)
 
@@ -1010,7 +1012,7 @@ func TestDaemon_RunsDayPlanAfterBriefing(t *testing.T) {
 	}))
 	_, acctErr := database.CreateSlackAccount(db.SlackAccount{CurrentUserID: "U001"})
 	require.NoError(t, acctErr)
-	cfg.DayPlan = config.DayPlanConfig{Enabled: true, Hour: 0}
+	cfg.DayPlan = config.DayPlanConfig{Enabled: true}
 
 	fp := &fakeDayPlanRunner{database: database}
 

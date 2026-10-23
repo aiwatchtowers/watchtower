@@ -2,6 +2,17 @@ package automations
 
 import "watchtower/internal/db"
 
+// ScopeOf is the scope a's recipe parses in, rebuilt from its row: a
+// built-in row's carries its built-in id (its sync trigger and builtin:
+// capabilities parse only there).
+func ScopeOf(a db.Automation) Scope {
+	s := Scope{Kind: ScopeKind(a.Scope), WorkbenchID: a.ProjectID}
+	if a.IsBuiltin() {
+		s.BuiltinID = a.BuiltinID
+	}
+	return s
+}
+
 // ConfirmedRecipe is the recipe the owner last confirmed for a, parsed in a's
 // scope; nil when a was never confirmed or its confirmed text is unknown.
 // A confirmed a is its own text. Otherwise the candidates are, in order, the
@@ -15,7 +26,7 @@ func ConfirmedRecipe(d *db.DB, a *db.Automation) (*Recipe, error) {
 	if a.ConfirmedHash == "" {
 		return nil, nil
 	}
-	scope := Scope{Kind: ScopeKind(a.Scope), WorkbenchID: a.ProjectID}
+	scope := ScopeOf(*a)
 	candidates := []string{a.RecipeText}
 	if a.ConfirmedHash != a.ApprovalHash || a.ParseError != "" {
 		snapshot, err := d.AutomationRunSnapshotAt(a.ID, a.ConfirmedHash)
@@ -23,7 +34,9 @@ func ConfirmedRecipe(d *db.DB, a *db.Automation) (*Recipe, error) {
 			return nil, err
 		}
 		candidates = []string{snapshot}
-		save, err := d.LatestAppliedAutomationSave(a.Path, scope.String(), a.ConfirmedHash)
+		// A save's scope is its folder's: "personal" for a built-in too.
+		folder := Scope{Kind: scope.Kind, WorkbenchID: scope.WorkbenchID}
+		save, err := d.LatestAppliedAutomationSave(a.Path, folder.String(), a.ConfirmedHash)
 		if err != nil {
 			return nil, err
 		}

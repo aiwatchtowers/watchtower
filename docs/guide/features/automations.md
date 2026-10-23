@@ -50,6 +50,10 @@ The **Automations** badge counts automations whose last run failed, until you op
 - Reports: **Latest reports** on the card.
 - Briefing: notes reach the next daily briefing, from the last 7 days at most.
 
+### Built in
+
+The first section, **Built in**, holds the automations that ship with Watchtower, such as **Morning brief**, which writes your briefing and day plan: see [Built-in automations](automations-built-in.md).
+
 ### Reactions and tracks
 
 The tab also shows your reaction commands and custom tracks next to your recipes: see [Reactions and tracks in Automations](automations-rules.md).
@@ -71,6 +75,7 @@ The tab also shows your reaction commands and custom tracks next to your recipes
 
 ## Related
 
+- [Built-in automations](automations-built-in.md)
 - [Recipes and templates](automations-recipes.md)
 - [Buttons on automation cards](automations-inbox-buttons.md)
 - [Reactions and tracks in Automations](automations-rules.md)

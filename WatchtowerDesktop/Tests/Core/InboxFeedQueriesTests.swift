@@ -200,6 +200,37 @@ final class InboxFeedQueriesTests: XCTestCase {
         // 1 proposal + 1 proposed idea (a decision never counts) + 2 unread messages
         // + the latest briefing + 1 due reminder; outputs and tracks are dots only.
         XCTAssertEqual(badge, 6)
+
+        // + a built-in's failed move (C2); a move that is done counts nothing.
+        try await pool.write { db in
+            try self.builtinMigration(db, "morning-brief", status: "failed")
+            try self.builtinMigration(db, "done-one", status: "done")
+        }
+        let withNotice = try await pool.read { try ActionStripViewModel.badgeCount($0, nowUTC: self.now) }
+        XCTAssertEqual(withNotice, 7)
+    }
+
+    private func builtinMigration(_ db: Database, _ id: String, status: String) throws {
+        try db.execute(sql: """
+            INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at)
+            VALUES (?, ?, ?, 1, '2026-10-22T07:00:00Z')
+            """, arguments: [id, status, status == "failed" ? "config unreadable" : ""])
+    }
+
+    func testReadFillsBuiltinNoticesInTheSameRead() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        try await pool.write { db in
+            try self.builtinMigration(db, "morning-brief", status: "failed")
+            try self.builtinMigration(db, "done-one", status: "done")
+        }
+        let snapshot = try await pool.read { try InboxFeedQueries.read($0, nowUTC: self.now, dayLimit: 30) }
+        XCTAssertEqual(snapshot.builtinNotices.map(\.builtinID), ["morning-brief"])
+        XCTAssertEqual(snapshot.builtinNotices.first?.error, "config unreadable")
+
+        try await pool.write { db in try db.execute(sql: "DROP TABLE builtin_migrations") }
+        let older = try await pool.read { try InboxFeedQueries.read($0, nowUTC: self.now, dayLimit: 30) }
+        XCTAssertEqual(older.builtinNotices, [], "a schema before the table has none")
     }
 
     func testBadgeOnASchemaWithoutTheNewTables() async throws {

@@ -10,6 +10,8 @@ package enum InboxSelection: Hashable, Sendable {
     case track(Int)
     case idea(Int)
     case message(Int)
+    /// A built-in's failed move to Automations, by its built-in id.
+    case builtinNotice(String)
 }
 
 /// The Inbox — every kind of card (C1 §5): pending agent-action proposals,
@@ -130,7 +132,8 @@ package final class ActionStripViewModel {
 
     /// The Inbox sidebar badge (R1, spec §6.1): Needs your decision (proposals
     /// awaiting the owner, ideas awaiting a verdict) + unread Messages + 1 when
-    /// the latest briefing is unread + due reminders. Unread automation outputs
+    /// the latest briefing is unread + due reminders + built-in upgrade
+    /// notices (C2). Unread automation outputs
     /// and track cards show only as the list's unread dots.
     /// Each source tolerates a schema that predates it (its table missing
     /// counts 0); any other read error is thrown, never folded into 0.
@@ -140,6 +143,7 @@ package final class ActionStripViewModel {
             + zeroIfTableMissing { try IdeaQueries.countForReview(db) }
             + zeroIfTableMissing { try InboxQueries.unreadOpenMessageCount(db, nowUTC: nowUTC) }
             + zeroIfTableMissing { try BriefingQueries.latestUnreadCount(db) }
+            + zeroIfTableMissing { try BuiltinUpgradeNotice.load(db).count }
     }
 
     /// `count()`, or 0 when its table does not exist yet (an older schema).
@@ -395,7 +399,7 @@ package final class ActionStripViewModel {
     /// Shows `item` in the reading pane. Opening an unread card writes its
     /// read mark only: an output its `read_at`, a day card its briefing's
     /// `read_at` (CATCHUP-01's surface), a message its `read_at`; a track,
-    /// idea, proposal or reminder writes nothing. The card stays listed, now
+    /// idea, proposal, reminder or built-in notice writes nothing. The card stays listed, now
     /// read. The opening has a key of its own: the card's buttons do not wait
     /// for it, and a Done or Dismiss pressed meanwhile still lands.
     package func select(_ item: InboxSelection?) async {
@@ -417,7 +421,7 @@ package final class ActionStripViewModel {
         case .message(let id):
             guard feed.messages.first(where: { $0.item.id == id })?.item.isUnread == true else { return nil }
             return { try InboxQueries.markRead($0, id: id) }
-        case .proposal, .reminder, .track, .idea:
+        case .proposal, .reminder, .track, .idea, .builtinNotice:
             return nil
         }
     }
@@ -550,6 +554,30 @@ package final class ActionStripViewModel {
             } catch {
                 await refresh()
                 lastError = Self.replyRefusal(AutomationsViewModel.message(for: error))
+            }
+        }
+    }
+
+    /// **Retry** on a built-in's failed move: `automations upgrade-builtins`
+    /// runs every pending move again, then — when one landed — the daemon
+    /// restarts so it stops the old phase for that producer. The Desktop
+    /// writes nothing (STRIP-02); the card leaves once the next read has no
+    /// `failed` row for it, and a move that failed again shows its new error.
+    package func retryBuiltinUpgrade(_ builtinID: String, restart: @MainActor () async throws -> Void) async {
+        let runner = cliRunner
+        await pendingWrites.run(CardKey.card(.builtinNotice(builtinID))) {
+            lastError = nil
+            guard let runner = runner ?? ProcessCLIRunner.makeDefault() else {
+                lastError = CLIRunnerError.binaryNotFound.localizedDescription
+                return
+            }
+            do {
+                let results = try await AutomationsCLI(runner: runner).upgradeBuiltins()
+                if results.contains(where: { $0.status == "done" }) { try await restart() }
+                await refresh()
+            } catch {
+                await refresh()
+                lastError = AutomationsViewModel.message(for: error)
             }
         }
     }

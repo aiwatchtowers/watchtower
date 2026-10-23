@@ -103,6 +103,7 @@ type canonicalTriggerForm struct {
 	Button   *canonicalButton  `json:"button,omitempty"`
 	Event    *triggerSpecEvent `json:"event,omitempty"`
 	Manual   bool              `json:"manual,omitempty"`
+	Sync     string            `json:"sync,omitempty"`
 }
 
 // canonicalButton keeps only what a button changes about a run: whether it
@@ -115,7 +116,7 @@ type canonicalButton struct {
 // hand-built Recipe, never a parsed one) is the empty object.
 func canonicalTrigger(t Trigger) canonicalTriggerForm {
 	spec := triggerSpecOf(t)
-	form := canonicalTriggerForm{Schedule: spec.Schedule, Event: spec.Event, Manual: spec.Manual}
+	form := canonicalTriggerForm{Schedule: spec.Schedule, Event: spec.Event, Manual: spec.Manual, Sync: spec.Sync}
 	if spec.Button != nil {
 		form.Button = &canonicalButton{Confirm: spec.Button.Confirm}
 	}

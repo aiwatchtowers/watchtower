@@ -283,7 +283,8 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
   action. Keyed by `SidebarDestination.rawValue` because `SidebarDestination`
   lives in the Desktop target (plan correction 5); Workbench's key is
   `"projects"`, its persisted raw value (R1). `{hour}` is filled from
-  `briefing.hour`/`day_plan.hour`. Exempt tabs, which keep their own states:
+  `briefing.hour` (the day plan has no hour of its own since C2, 2026-10-22:
+  it is made with the brief by the Morning brief built-in). Exempt tabs, which keep their own states:
   `search`, `usage`, `mcpServer`, `chat` (`EmptyStateCopy.swift:61`).
   `EmptyStateCopyCoverageTests` sweeps `SidebarDestination.allCases`: every tab
   has copy XOR is exempt, and the icon matches the sidebar's.
@@ -321,8 +322,9 @@ stamp"), the same as Go's `loadLast*` (`daemon.go:1679`, `:1803`) and pinned by
 - **The one button** (`FeatureEmptyState.visibleAction`, `:103`): Turn on while
   `off` — for **any** off feature with a registry id, hiding the tab's own
   action while off (R13); Connect <source> while `needsSource`; otherwise the
-  table's action ("Change the hour" for the hours, which opens Settings →
-  Features — owner, ask #299 —, "Build a recap", "New target", "Add a folder"). Turn on and Connect
+  table's action ("Change the hour" for the hours, which since C2 opens
+  Automations on the Morning brief row, `EmptyStateAction.openBuiltin` —
+  Settings → Features until then, owner, ask #299 —, "Build a recap", "New target", "Add a folder"). Turn on and Connect
   never show in a state that doesn't call for them.
 - **Turn on** goes through `AppState.turnOnFeatureFromEmptyState`
   (`WatchtowerDesktop/Sources/App/AppState.swift:1215`, plan correction 6): `FeatureManagerService.enableNow`

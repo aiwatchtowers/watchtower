@@ -39,6 +39,8 @@ enum OneInboxShotFixtures {
         var dayRow: InboxDayPlanRow?
         var ideasRow: InboxIdeasRow?
         var aux: InboxAuxPane?
+        /// A built-in's failed move to Automations (C2) in the database.
+        var builtinNotice = false
     }
 
     /// The ids the seed wrote.
@@ -73,6 +75,9 @@ enum OneInboxShotFixtures {
     }
     static func messageCard() -> AnyView { inbox(Scene(filter: .messages) { .message($0.message) }) }
     static func cheatSheet() -> AnyView { inbox(Scene(aux: .reactionCommands)) }
+    static func builtinNotice() -> AnyView {
+        inbox(Scene(select: { _ in .builtinNotice("morning-brief") }, builtinNotice: true))
+    }
 
     /// Today's day card alone at the reading pane's narrowest (420 pt).
     static func dayCardNarrow() -> AnyView {
@@ -99,7 +104,18 @@ enum OneInboxShotFixtures {
     private static func inbox(_ scene: Scene) -> AnyView {
         do {
             let manager = try freshDatabase()
-            let seeded = try manager.dbPool.write { db in try seed(db, withToday: scene.withToday) }
+            let seeded = try manager.dbPool.write { db in
+                let seeded = try seed(db, withToday: scene.withToday)
+                if scene.builtinNotice {
+                    try db.execute(sql: """
+                        INSERT INTO builtin_migrations (builtin_id, status, error, attempts, updated_at)
+                        VALUES ('morning-brief', 'failed',
+                                'could not read the old briefing prompt: the prompts table is locked', 1,
+                                '2026-10-21T06:00:00Z')
+                        """)
+                }
+                return seeded
+            }
             let defaults = UserDefaults(suiteName: defaultsSuite) ?? .standard
             defaults.removePersistentDomain(forName: defaultsSuite)
             let clock = now
@@ -125,6 +141,7 @@ enum OneInboxShotFixtures {
                 dayPane: { card in dayPane(card, manager: manager, plan: plan, row: scene.dayRow) },
                 ideas: ideas,
                 ideaPane: { idea in InboxIdeaPane(idea: idea, ideas: ideas, allIdeas: vm.feed.ideas) },
+                onRetryBuiltin: { _ in },
                 tracks: TracksViewModel(dbManager: manager),
                 trackControls: RecordingCustomTrackControls(),
                 now: now,
@@ -145,7 +162,7 @@ enum OneInboxShotFixtures {
         var pane = InboxDayPane(card: card, today: today, plan: plan, owner: owner,
                                 onDone: {}, onCommand: { _ in }, onOpenSource: { _ in })
         pane.briefing = BriefingViewModel(dbManager: manager, cliRunner: FakeCLIRunner())
-        pane.emptyState = EmptyStateContext(readiness: { _ in .ready }, briefingHour: 8, dayPlanHour: 9)
+        pane.emptyState = EmptyStateContext(readiness: { _ in .ready }, briefingHour: 8)
         pane.initialRow = row
         return pane
     }

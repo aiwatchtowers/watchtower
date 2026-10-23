@@ -135,7 +135,7 @@ func dayPlanBackoffTestSetup(t *testing.T) (*Daemon, *db.DB, string) {
 
 	cfg := &config.Config{
 		ActiveWorkspace: "test-ws",
-		DayPlan:         config.DayPlanConfig{Enabled: true, Hour: 0},
+		DayPlan:         config.DayPlanConfig{Enabled: true},
 	}
 	d := newDaemon(nil, cfg)
 	d.SetLogger(log.New(io.Discard, "", 0))
@@ -198,7 +198,7 @@ func TestDaemon_DayPlanBackoff_BenignNoUserSkipDoesNotConsumeBudget(t *testing.T
 
 	cfg := &config.Config{
 		ActiveWorkspace: "test-ws",
-		DayPlan:         config.DayPlanConfig{Enabled: true, Hour: 0},
+		DayPlan:         config.DayPlanConfig{Enabled: true},
 	}
 	d := newDaemon(nil, cfg)
 	d.SetLogger(log.New(io.Discard, "", 0))

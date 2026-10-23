@@ -98,6 +98,9 @@ package struct InboxFeedSnapshot: Equatable, Sendable {
     package var stoppedTracks: [InboxTrackCard] = []
     package var ideas: [Idea] = []
     package var messages: [HomeFeedInboxRow] = []
+    /// Built-ins whose one-time move to Automations failed (C2): first in
+    /// Needs your decision under All and Automations, each with **Retry**.
+    package var builtinNotices: [BuiltinUpgradeNotice] = []
 
     package init(
         proposals: [AgentAction] = [],

@@ -33,6 +33,8 @@ const (
 	// TriggerReply is one owner press of an Inbox card's Reply button
 	// (00149): never coalesced with another run; event_json is a ReplyPayload.
 	TriggerReply = "reply"
+	// TriggerSync is one in-cycle run of a built-in at its slot (00150).
+	TriggerSync = "sync"
 )
 
 // Waiting reasons (automation_runs.waiting_reason).
@@ -584,6 +586,25 @@ func requireRunTransition(q interface {
 	return fmt.Errorf("automation run %d: %w", runID, notMatched)
 }
 
+// CancelQueuedAutomationRun cancels run runID (error_kind='cancelled') only
+// while it is still queued; it returns false when the run has moved on
+// (claimed, or already ended) and leaves it alone. A queued run has no steps.
+func (db *DB) CancelQueuedAutomationRun(runID int64, now time.Time) (bool, error) {
+	if err := requireRunTime(now, fmt.Sprintf("cancelling queued automation run %d", runID)); err != nil {
+		return false, err
+	}
+	res, err := db.Exec(`UPDATE automation_runs SET status = 'cancelled', error_kind = 'cancelled', finished_at = ?
+		WHERE id = ? AND status = 'queued'`, formatAutomationTime(now), runID)
+	if err != nil {
+		return false, fmt.Errorf("cancelling queued automation run %d: %w", runID, err)
+	}
+	err = requireRunTransition(db, res, runID, ErrRunNotQueued)
+	if errors.Is(err, ErrRunNotQueued) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // CancelAutomationRun ends a queued, running or waiting run as cancelled with
 // error_kind='cancelled' and closes its open steps in the same transaction.
 // It returns false when the run is already terminal.
@@ -828,8 +849,12 @@ func commitRunTx(tx *sql.Tx, automationID, runID int64, stamp string, c *RunComm
 // budget minutes (the run's snapshot, else the automation's) + a 1-minute
 // grace is after now. Such a dry run belongs to a live CLI process
 // (ExecuteInline), not to a previous daemon. The one argument is now.
-const liveDryRunSQL = `trigger = 'dry_run'
-	AND started_at IS NOT NULL
+const liveDryRunSQL = `trigger = 'dry_run' AND ` + inDeadlineSQL
+
+// inDeadlineSQL matches a run whose started_at + budget minutes (the run's
+// snapshot, else the automation's) + a 1-minute grace is after now. The one
+// argument is now.
+const inDeadlineSQL = `started_at IS NOT NULL
 	AND julianday(started_at) + (COALESCE(NULLIF(budget_minutes, 0),
 		(SELECT a.budget_minutes FROM automations a WHERE a.id = automation_runs.automation_id)) + 1) / 1440.0
 	    > julianday(?)`
@@ -844,15 +869,84 @@ const interruptedRunSQL = `status IN ('running','waiting') AND NOT (` + liveDryR
 // one argument is now.
 const staleDryRunSQL = `status IN ('running','waiting') AND trigger = 'dry_run' AND NOT (` + liveDryRunSQL + `)`
 
-// MarkInterruptedAutomationRuns is the daemon start's sweep (AUTO-08): in one
-// transaction it keeps every resumable waiting run (resumableRunSQL) for a
-// resume — resume_pending = 1, status still waiting — and ends every other
-// running/waiting run as failed with error_kind='interrupted', closing their
-// open steps. It returns how many runs it ended. Queued runs are untouched,
-// and so is a dry run still within its deadline (see liveDryRunSQL).
+// builtinRunSQL matches the runs of a built-in (they run only at their slot,
+// inline in the daemon's sync cycle).
+const builtinRunSQL = `automation_id IN (SELECT a.id FROM automations a WHERE a.origin = 'builtin')`
+
+// MarkInterruptedAutomationRuns is the owner-recipe executor's start sweep
+// (AUTO-08): in one transaction it keeps every resumable waiting run
+// (resumableRunSQL) for a resume — resume_pending = 1, status still waiting —
+// and ends every other running/waiting run as failed with
+// error_kind='interrupted', closing their open steps. It returns how many runs
+// it ended. Queued runs are untouched, and so is a dry run still within its
+// deadline (see liveDryRunSQL). A built-in's runs are never touched: the
+// daemon sweeps them itself before its first slot (MarkInterruptedBuiltinRuns),
+// so a retried executor sweep cannot end a slot run that is live.
 func (db *DB) MarkInterruptedAutomationRuns(now time.Time) (int, error) {
-	return db.endRunsInterruptedTx(now, interruptedRunSQL+` AND NOT (`+resumableRunSQL+`)`,
+	return db.endRunsInterruptedTx(now, interruptedRunSQL+` AND NOT (`+builtinRunSQL+`) AND NOT (`+resumableRunSQL+`)`,
 		"interrupted by a daemon restart", "marking interrupted automation runs", markResumableTx)
+}
+
+// interruptedBuiltinRunSQL selects the built-in runs a daemon start ends:
+// every running/waiting built-in run except one an inline CLI process may
+// still hold — a dry run, or a running manual run (`briefing generate`),
+// inside its deadline (inDeadlineSQL). A waiting run and a sync run are
+// always ended. The one argument is now.
+const interruptedBuiltinRunSQL = `status IN ('running','waiting') AND ` + builtinRunSQL + `
+	AND NOT ((trigger = 'dry_run' OR (trigger = 'manual' AND status = 'running')) AND ` + inDeadlineSQL + `)`
+
+// MarkInterruptedBuiltinRuns is the daemon's start sweep of the built-ins'
+// runs: every running/waiting built-in run (a previous daemon's, or a CLI's
+// that died) ends as failed with error_kind='interrupted' and its open steps
+// closed. A dry run, and a running manual run (a CLI's inline run), still
+// within its deadline are untouched (interruptedBuiltinRunSQL); the stale-run
+// guard ends one past it (MarkStaleBuiltinRuns). It returns how many runs it
+// ended.
+func (db *DB) MarkInterruptedBuiltinRuns(now time.Time) (int, error) {
+	return db.endRunsInterrupted(now, interruptedBuiltinRunSQL,
+		"interrupted by a daemon restart", "marking interrupted built-in runs")
+}
+
+// staleBuiltinRunSQL selects the running built-in runs past their deadline
+// (started_at + budget minutes + the 1-minute grace, as liveDryRunSQL) that
+// never waited: the CLI process that ran one inline (`briefing generate`)
+// was killed before it could finish the row. The deadline holds only for a
+// run that never paused — a wait moves the meter's deadline by the pause —
+// so a waiting run, one kept for a resume, one with a replay call pending,
+// and one with any step that waited (an ask or session step, or a
+// non-auto write step that went past proposed: a {wait} write) are never
+// selected. The one argument is now.
+const staleBuiltinRunSQL = `status = 'running' AND resume_pending = 0 AND ` + builtinRunSQL + `
+	AND started_at IS NOT NULL
+	AND NOT EXISTS (SELECT 1 FROM automation_run_steps s WHERE s.run_id = automation_runs.id
+		AND (s.kind IN ('ask','session') OR s.status = 'waiting' OR s.ask_id IS NOT NULL OR s.session_id IS NOT NULL
+		     OR (s.action_id IS NOT NULL AND s.auto = 0 AND s.status != 'proposed')))
+	AND NOT EXISTS (SELECT 1 FROM automation_run_replay r WHERE r.run_id = automation_runs.id AND r.pending = 1)
+	AND julianday(started_at) + (COALESCE(NULLIF(budget_minutes, 0),
+		(SELECT a.budget_minutes FROM automations a WHERE a.id = automation_runs.automation_id)) + 1) / 1440.0
+	    <= julianday(?)`
+
+// MarkStaleBuiltinRuns ends every running built-in run that never waited and
+// is past its deadline (staleBuiltinRunSQL) as failed with error_kind='interrupted' and
+// closes its open steps; it returns how many it ended. The built-ins' runner
+// calls it before each slot and Run Now: a run a killed CLI left running
+// would otherwise hold the built-in's one concurrency slot until the next
+// daemon start.
+func (db *DB) MarkStaleBuiltinRuns(now time.Time) (int, error) {
+	if err := requireRunTime(now, "ending stale built-in runs"); err != nil {
+		return 0, err
+	}
+	var found bool
+	err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM automation_runs WHERE `+staleBuiltinRunSQL+`)`,
+		formatAutomationTime(now)).Scan(&found)
+	if err != nil {
+		return 0, fmt.Errorf("ending stale built-in runs: %w", err)
+	}
+	if !found {
+		return 0, nil
+	}
+	return db.endRunsInterrupted(now, staleBuiltinRunSQL, "the process running it stopped before it finished the run",
+		"ending stale built-in runs")
 }
 
 // MarkStaleDryRuns ends every running/waiting dry run past its deadline as

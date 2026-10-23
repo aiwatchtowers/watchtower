@@ -83,6 +83,10 @@ type Pipeline struct {
 	// outside a run (see shownIDs).
 	shown *shownIDs
 
+	// lastPromptNote is the fallback sentence of the last run ("" when the
+	// template was used as resolved).
+	lastPromptNote string
+
 	// Accumulated usage from the last Run call.
 	lastInputTokens    int
 	lastOutputTokens   int
@@ -132,8 +136,29 @@ func (p *Pipeline) runOwner() (db.Owner, error) {
 	return owner, nil
 }
 
+// RunOptions tunes one briefing run.
+type RunOptions struct {
+	// Prompt, when non-empty, replaces the store-resolved template. The
+	// placeholder check applies to it like to a stored row.
+	Prompt string
+}
+
+// LastPromptNote is "" or the sentence saying the last run fell back to the
+// built-in template because the override or stored row had the wrong
+// placeholder count.
+func (p *Pipeline) LastPromptNote() string { return p.lastPromptNote }
+
 // RunForDate generates a briefing for the given date (YYYY-MM-DD).
 func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
+	return p.RunForDateWith(ctx, date, RunOptions{})
+}
+
+// RunForDateWith is RunForDate with run options.
+func (p *Pipeline) RunForDateWith(ctx context.Context, date string, opts RunOptions) (int, error) {
+	p.lastPromptNote = ""
+	// Usage is this run's: a run that stops before the model call reports
+	// zero, never the previous run's numbers.
+	p.lastInputTokens, p.lastOutputTokens, p.lastCostUSD, p.lastTotalAPITokens = 0, 0, 0, 0
 	if !p.cfg.Briefing.Enabled {
 		return 0, nil
 	}
@@ -202,7 +227,7 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 
 	// Build prompt.
 	userName := p.userName(owner)
-	promptTmpl, promptVersion := p.getPrompt(prompts.BriefingDaily, role)
+	promptTmpl, promptVersion := p.getPrompt(prompts.BriefingDaily, role, opts.Prompt)
 	langDirective := prompts.Directive(p.cfg.Digest.Language)
 
 	systemPrompt := fmt.Sprintf(promptTmpl,
@@ -236,6 +261,18 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("generating briefing: %w", err)
 	}
+	var inTok, outTok, totalAPI int
+	var model string
+	if usage != nil {
+		model = usage.Model
+		inTok = usage.InputTokens
+		outTok = usage.OutputTokens
+		totalAPI = usage.TotalAPITokens
+	}
+	// Recorded before the parse: a response that fails to parse was still paid for.
+	p.lastInputTokens = inTok
+	p.lastOutputTokens = outTok
+	p.lastTotalAPITokens = totalAPI
 
 	// Parse result.
 	result, err := parseBriefingResult(response)
@@ -250,19 +287,6 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 	whatHappenedJSON, _ := json.Marshal(result.WhatHappened)
 	teamPulseJSON, _ := json.Marshal(result.TeamPulse)
 	coachingJSON, _ := json.Marshal(result.Coaching)
-
-	var inTok, outTok, totalAPI int
-	var model string
-	if usage != nil {
-		model = usage.Model
-		inTok = usage.InputTokens
-		outTok = usage.OutputTokens
-		totalAPI = usage.TotalAPITokens
-	}
-	p.lastInputTokens = inTok
-	p.lastOutputTokens = outTok
-	p.lastCostUSD = 0
-	p.lastTotalAPITokens = totalAPI
 
 	briefing := db.Briefing{
 		WorkspaceID:   workspaceID,
@@ -290,6 +314,30 @@ func (p *Pipeline) RunForDate(ctx context.Context, date string) (int, error) {
 		id, inTok, outTok)
 
 	return int(id), nil
+}
+
+// HasMaterial reports whether a briefing for date would find anything to
+// summarize — the same no-data rule RunForDateWith applies (digests, the
+// daily rollup, tracks, targets, inbox items, workbench activity, automation
+// outputs), with no model call and no write: the daemon's gate asks it before
+// the first briefing ever, so an install with nothing to summarize writes no
+// run. No owner is db.ErrNoOwner.
+func (p *Pipeline) HasMaterial(date string) (bool, error) {
+	owner, err := p.db.RequireOwner()
+	if err != nil {
+		return false, fmt.Errorf("briefing: %w", err)
+	}
+	p.shown = newShownIDs()
+	defer func() { p.shown = nil }()
+	_, hasRealTargets := p.gatherTargets()
+	_, hasRealTracks := p.gatherTracks()
+	_, hasRealInbox := p.gatherInbox()
+	digestsCtx := p.gatherDigests(date)
+	dailyDigestCtx := p.gatherLatestDailyDigest()
+	_, hasRealWorkbenches := p.gatherWorkbenches(p.revisionWindowStart(owner.ID, date))
+	_, hasRealAutomationOutputs := p.gatherAutomationOutputs(p.automationOutputsSince(owner.ID, date))
+	return hasAnyData(digestsCtx, dailyDigestCtx, hasRealTracks, hasRealTargets, hasRealInbox, hasRealWorkbenches,
+		hasRealAutomationOutputs), nil
 }
 
 // hasAnyData reports whether the briefing has real material: a digest, the
@@ -324,13 +372,28 @@ func (p *Pipeline) learnedPrefs() string {
 // the default: that is a row the owner customized before a version added a
 // section, and formatting it with the new argument list would shift every
 // later section and append %!(EXTRA ...) to the prompt.
-func (p *Pipeline) getPrompt(id, role string) (string, int) {
-	tmpl, version, err := prompts.Resolve(p.promptStore, id, role)
-	if err != nil {
-		p.logger.Printf("briefing: %v — using the built-in default", err)
+//
+// A non-empty override replaces the resolved template (version 0) and goes
+// through the same placeholder check.
+func (p *Pipeline) getPrompt(id, role, override string) (string, int) {
+	var tmpl string
+	var version int
+	if override != "" {
+		tmpl = override
+	} else {
+		var err error
+		tmpl, version, err = prompts.Resolve(p.promptStore, id, role)
+		if err != nil {
+			p.logger.Printf("briefing: %v — using the built-in default", err)
+		}
 	}
 	if got, want := countVerbs(tmpl), countVerbs(prompts.Defaults[id]); got != want {
-		p.logger.Printf("briefing: stored %s template has %d placeholders, the default has %d — using the default (reset the prompt in Settings to pick up the new sections)", id, got, want)
+		if override != "" {
+			p.logger.Printf("briefing: the edited Morning brief prompt has %d %%s placeholders, the default has %d — using the default", got, want)
+		} else {
+			p.logger.Printf("briefing: stored %s template has %d placeholders, the default has %d — using the default (reset the prompt in Settings to pick up the new sections)", id, got, want)
+		}
+		p.lastPromptNote = fmt.Sprintf("The prompt has %d placeholders where %d are required — the built-in prompt was used.", got, want)
 		tmpl, version = prompts.Defaults[id], 0
 	}
 	return prompts.WithRoleInstruction(role, tmpl), version

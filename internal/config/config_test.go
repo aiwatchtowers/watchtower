@@ -407,7 +407,6 @@ func TestDayPlanConfig_Defaults(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, DefaultDayPlanEnabled, cfg.DayPlan.Enabled)
-	assert.Equal(t, DefaultDayPlanHour, cfg.DayPlan.Hour)
 	assert.Equal(t, DefaultDayPlanWorkingHoursStart, cfg.DayPlan.WorkingHoursStart)
 	assert.Equal(t, DefaultDayPlanWorkingHoursEnd, cfg.DayPlan.WorkingHoursEnd)
 	assert.Equal(t, DefaultDayPlanMaxTimeblocks, cfg.DayPlan.MaxTimeblocks)
@@ -431,7 +430,6 @@ day_plan:
 	require.NoError(t, err)
 
 	assert.False(t, cfg.DayPlan.Enabled)
-	assert.Equal(t, 7, cfg.DayPlan.Hour)
 	assert.Equal(t, "08:00", cfg.DayPlan.WorkingHoursStart)
 	assert.Equal(t, "18:00", cfg.DayPlan.WorkingHoursEnd)
 	assert.Equal(t, 5, cfg.DayPlan.MaxTimeblocks)

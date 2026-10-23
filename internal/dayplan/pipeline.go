@@ -22,6 +22,9 @@ type Pipeline struct {
 	logger      *log.Logger
 	promptStore *prompts.Store
 
+	// lastPromptNote: "" or the fallback sentence of the last Run.
+	lastPromptNote string
+
 	// Accumulated usage from the last Run call.
 	lastInputTokens    int
 	lastOutputTokens   int
@@ -47,6 +50,12 @@ func (p *Pipeline) AccumulatedUsage() (int, int, float64, int) {
 // It is idempotent by default: if a plan already exists and neither Force nor
 // Feedback is set it returns the existing plan immediately.
 func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error) {
+	// Reset per-Run accumulators first so every short-circuited path (the
+	// enabled flag, an existing plan, a gather error) reports zero tokens.
+	p.lastInputTokens = 0
+	p.lastOutputTokens = 0
+	p.lastTotalAPITokens = 0
+	p.lastPromptNote = ""
 	if !p.cfg.DayPlan.Enabled {
 		return nil, nil
 	}
@@ -115,13 +124,7 @@ func (p *Pipeline) Run(ctx context.Context, opts RunOptions) (*db.DayPlan, error
 		MemoryOpenLoops:   p.gatherMemoryOpenLoops(),
 	}
 
-	systemPrompt, promptVer := p.buildPrompt(inputs)
-
-	// Reset per-Run accumulators before the AI call so short-circuited paths
-	// (missing enabled flag, existing plan) report zero tokens.
-	p.lastInputTokens = 0
-	p.lastOutputTokens = 0
-	p.lastTotalAPITokens = 0
+	systemPrompt, promptVer := p.buildPrompt(inputs, opts.Prompt)
 
 	resp, usage, _, err := p.generator.Generate(
 		digest.WithSource(ctx, "day_plan.generate"),
@@ -259,3 +262,7 @@ func normalizePriority(s string) string {
 		return "medium"
 	}
 }
+
+// LastPromptNote is "" or the sentence saying the last Run used the built-in
+// template because the override had the wrong placeholder count.
+func (p *Pipeline) LastPromptNote() string { return p.lastPromptNote }

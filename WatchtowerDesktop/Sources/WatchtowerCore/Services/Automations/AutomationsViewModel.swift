@@ -114,6 +114,9 @@ package final class AutomationsViewModel {
     @ObservationIgnored private var tabVisible = false
     /// The run last opened as the newest, per automation id: it opens once.
     @ObservationIgnored private var expandedAsNewest: [Int64: Int64] = [:]
+    /// The built-ins' cards by automation id, kept with this AppState-owned
+    /// view model so a Reset or Run Now under way outlives the panel.
+    @ObservationIgnored private var builtinCards: [Int64: BuiltinAutomationCardModel] = [:]
 
     package init(
         dbPool: DatabasePool,
@@ -129,6 +132,15 @@ package final class AutomationsViewModel {
         self.isOwnerLooking = isOwnerLooking
         self.now = now
         self.sleep = sleep
+    }
+
+    /// Built-in `automation`'s card, made on first use and kept after; its
+    /// view hands it the newest row (`automation`).
+    package func builtinCard(_ automation: Automation) -> BuiltinAutomationCardModel {
+        if let card = builtinCards[automation.id] { return card }
+        let card = BuiltinAutomationCardModel(automation: automation, cli: cli)
+        builtinCards[automation.id] = card
+        return card
     }
 
     // MARK: - Poll

@@ -10,8 +10,8 @@ final class EmptyStateCopyTests: XCTestCase {
         "inboxMessages", "inboxAutomations"
     ]
 
-    private func copy(_ rawValue: String, briefingHour: Int = 8, dayPlanHour: Int = 8) -> EmptyStateCopy? {
-        EmptyStateCopyTable.copy(for: rawValue, briefingHour: briefingHour, dayPlanHour: dayPlanHour)
+    private func copy(_ rawValue: String, briefingHour: Int = 8) -> EmptyStateCopy? {
+        EmptyStateCopyTable.copy(for: rawValue, briefingHour: briefingHour)
     }
 
     func testBriefingsCopyNamesConfiguredHour() throws {
@@ -40,17 +40,17 @@ final class EmptyStateCopyTests: XCTestCase {
         }
     }
 
-    func testDayPlanCopyNamesConfiguredHour() throws {
-        let text = try XCTUnwrap(copy("dayPlan", briefingHour: 7, dayPlanHour: 9)).landsHere
-        XCTAssertTrue(text.contains("09:00"), text)
-        XCTAssertFalse(text.contains("07:00"), "the day plan uses its own hour: \(text)")
+    /// `day_plan.hour` is retired: the plan is made with the brief, after the briefing hour.
+    func testDayPlanCopyNamesBriefingHour() throws {
+        let text = try XCTUnwrap(copy("dayPlan", briefingHour: 7)).landsHere
+        XCTAssertTrue(text.contains("07:00"), text)
         XCTAssertFalse(text.contains("{hour}"), text)
     }
 
     func testNoHourGatedCopySaysAfterSync() throws {
         for hour in [0, 8, 23] {
             for rawValue in ["briefings", "dayPlan"] {
-                let text = try XCTUnwrap(copy(rawValue, briefingHour: hour, dayPlanHour: hour)).landsHere
+                let text = try XCTUnwrap(copy(rawValue, briefingHour: hour)).landsHere
                 XCTAssertFalse(text.localizedCaseInsensitiveContains("after sync"), "\(rawValue): \(text)")
             }
         }

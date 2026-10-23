@@ -14,7 +14,7 @@ final class GettingReadyTests: XCTestCase {
     ) -> GettingReadyStep {
         GettingReadyPolicy.step(
             readiness: readiness, ownerKnown: ownerKnown, memory: memory ?? empty, sawUnready: sawUnready,
-            now: date ?? now, briefingHour: 8, dayPlanHour: 8)
+            now: date ?? now, briefingHour: 8)
     }
 
     /// Every feature `.off` unless overridden, so only the features a test
@@ -248,7 +248,7 @@ final class GettingReadyTests: XCTestCase {
         let result = GettingReadyPolicy.step(
             readiness: readinessMap([.briefing: .scheduled(.at(hour: 8, tomorrow: false))]),
             ownerKnown: false, ownerPendingSource: "Jira", memory: empty, sawUnready: false,
-            now: now, briefingHour: 8, dayPlanHour: 8)
+            now: now, briefingHour: 8)
         let card = try XCTUnwrap(cards(result.zone).first { $0.feature == .briefing })
         XCTAssertEqual(card.readiness, .needsSource(.ownerIdentityPending("Jira")))
         XCTAssertEqual(FeatureReadiness.line(.needsSource(.ownerIdentityPending("Jira"))), "Waiting for your Jira identity…")
@@ -270,7 +270,7 @@ final class GettingReadyTests: XCTestCase {
         for (readiness, tone, terminal) in cases {
             let card = GettingReadyCard(
                 feature: .digests,
-                copy: EmptyStateCopyTable.featureCard(.digests, briefingHour: 8, dayPlanHour: 8),
+                copy: EmptyStateCopyTable.featureCard(.digests, briefingHour: 8),
                 readiness: readiness)
             XCTAssertEqual(card.tone, tone, "\(String(describing: readiness))")
             XCTAssertEqual(card.isTerminal, terminal, "\(String(describing: readiness))")

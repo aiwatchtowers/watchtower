@@ -228,6 +228,36 @@ final class InboxAllKindsBuilderTests: XCTestCase {
             XCTAssertEqual(Set(try build(feed, filter).flatMap(\.items).map(\.id)), Set(ids), "\(filter)")
         }
         XCTAssertEqual(try build(feed).flatMap(\.items).count, 6) // everything but the active idea
+
+        // A built-in's failed move (C2): Needs your decision under All and Automations only.
+        var withNotice = feed
+        withNotice.builtinNotices = [notice("morning-brief")]
+        for filter in InboxFilter.allCases {
+            let sections = try build(withNotice, filter)
+            let decision = sections.first { $0.title == "Needs your decision" }?.items.map(\.id) ?? []
+            let shown = [InboxFilter.all, .automations].contains(filter)
+            XCTAssertEqual(decision.contains(.builtinNotice("morning-brief")), shown, "\(filter)")
+            XCTAssertEqual(sections.flatMap(\.items).filter { $0.id == .builtinNotice("morning-brief") }.count,
+                           shown ? 1 : 0, "\(filter): listed once, only there")
+            if let ids = expected[filter] {
+                XCTAssertEqual(Set(sections.flatMap(\.items).map(\.id)),
+                               Set(ids + (shown ? [.builtinNotice("morning-brief")] : [])), "\(filter)")
+            }
+        }
+    }
+
+    private func notice(_ id: String) -> BuiltinUpgradeNotice {
+        BuiltinUpgradeNotice(builtinID: id, error: "config unreadable", updatedAt: .distantPast)
+    }
+
+    func testBuiltinNoticeInNeedsYourDecision() throws {
+        var feed = InboxFeedSnapshot(proposals: [proposal(1)], ideas: [idea(5)])
+        feed.builtinNotices = [notice("morning-brief"), notice("x-y")]
+        let sections = try build(feed)
+        XCTAssertEqual(sections.first?.title, "Needs your decision")
+        XCTAssertEqual(sections.first?.items.map(\.id),
+                       [.builtinNotice("morning-brief"), .builtinNotice("x-y"), .proposal(1), .idea(5)],
+                       "the notices first, in the read's order, before the proposals")
     }
 
     func testFilterTitlesAndEmptyKeys() {

@@ -11,6 +11,8 @@ import (
 // runs every phase every cycle, and a line per cycle would bury the log. The
 // memo is in memory only, so a daemon restart may print the day's line again.
 func (d *Daemon) logNoOwnerOnce(now time.Time, phase string) {
+	d.noOwnerMu.Lock()
+	defer d.noOwnerMu.Unlock()
 	day := now.UTC().Format("2006-01-02")
 	if d.noOwnerLoggedDay[phase] == day {
 		return

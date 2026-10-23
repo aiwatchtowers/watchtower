@@ -467,20 +467,20 @@ final class InboxDayPaneTests: XCTestCase {
     /// Ported from the Day Plan screen's empty state to today's empty card.
     func testDayPlanEstablishedWithoutTodaysPlanSaysWhen() async throws {
         let context = EmptyStateContext.neutral
-        let firstRunTitle = try XCTUnwrap(EmptyStateCopyTable.copy(for: "dayPlan", briefingHour: 8, dayPlanHour: 8)).title
+        let firstRunTitle = try XCTUnwrap(EmptyStateCopyTable.copy(for: "dayPlan", briefingHour: 8)).title
         func view(_ owner: Owner, _ context: EmptyStateContext) async throws -> InboxDayPane {
             try await pane(date: Self.today, owner: owner, briefingVM: try briefingVM(), emptyState: context)
         }
         var established = context
         established.readiness = { _ in .ready }
-        established.dayPlanHour = 8
+        established.briefingHour = 8
         let sut = try await view(Self.owner, established)
         XCTAssertNoThrow(try sut.inspect().find(text: "Today's plan at or after 08:00"))
         XCTAssertThrowsError(try sut.inspect().find(text: firstRunTitle), "not the first-run screen")
 
-        established.dayPlanHour = 10
+        established.briefingHour = 10
         let later = try await view(Self.owner, established)
-        XCTAssertNoThrow(try later.inspect().find(text: "Today's plan at or after 10:00"), "the configured hour")
+        XCTAssertNoThrow(try later.inspect().find(text: "Today's plan at or after 10:00"), "the briefing hour")
 
         // No owner: the daemon makes no plan, so no time is promised.
         let noOwner = try await view(.unknown, established)

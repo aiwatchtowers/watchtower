@@ -218,6 +218,9 @@ func (s *folderScan) run(ctx context.Context) error {
 	s.byPath = make(map[string]db.Automation, len(existing))
 	s.bySlug = make(map[string]db.Automation, len(existing))
 	for _, a := range existing {
+		if a.IsBuiltin() {
+			continue // a built-in row has no file here (its indexer is builtin.Sync)
+		}
 		s.byPath[a.Path] = a
 		s.bySlug[a.Slug] = a
 	}
@@ -290,14 +293,22 @@ func slugTakenReason(slug string, other db.Automation) string {
 }
 
 // candidate is the index row the file's bytes produce.
-// contentHash is over the whole file even when data holds only its first
-// MaxRecipeBytes+1 bytes.
 func (s *folderScan) candidate(slug, path string, data []byte, contentHash string) (db.Automation, error) {
+	return IndexRow(slug, path, data, contentHash, s.scope)
+}
+
+// IndexRow is the index row a recipe's bytes produce in scope, as the
+// indexer writes it: the parsed columns, or the column defaults and the
+// parse error when the recipe does not parse. contentHash is over the whole
+// file even when data holds only its first MaxRecipeBytes+1 bytes. The
+// owner's columns (confirmed_hash, enabled, schedule) and the built-in
+// columns are left zero.
+func IndexRow(slug, path string, data []byte, contentHash string, scope Scope) (db.Automation, error) {
 	a := db.Automation{
-		Slug: slug, Scope: s.scopeName(), ProjectID: s.scope.WorkbenchID, Path: path,
+		Slug: slug, Scope: string(scope.Kind), ProjectID: scope.WorkbenchID, Path: path,
 		RecipeText: string(data), ContentHash: contentHash,
 	}
-	r, perr := ParseRecipe(slug, data, s.scope)
+	r, perr := ParseRecipe(slug, data, scope)
 	if perr != nil {
 		return withParseErrorDefaults(a, perr.Error()), nil
 	}
@@ -318,6 +329,23 @@ func (s *folderScan) candidate(slug, path string, data []byte, contentHash strin
 	a.PauseTimeoutHours, a.PermissionsJSON, a.OutputsJSON = r.PauseTimeoutHours, string(perms), string(outs)
 	a.ApprovalHash = ApprovalHash(r)
 	return a, nil
+}
+
+// IndexBuiltinRow is IndexRow for a built-in whose recipe must keep
+// `trigger: {sync: <slot>}`, its registry slot: a recipe (the owner's copy)
+// with any other trigger kind or slot is the row's parse error, so it never
+// runs (a built-in runs only at its slot; another trigger would leave its
+// runs queued with nobody to take them).
+func IndexBuiltinRow(slug, path string, data []byte, contentHash string, scope Scope, slot string) (db.Automation, error) {
+	r, perr := ParseRecipe(slug, data, scope)
+	if perr == nil && (r.Trigger.Kind != TriggerSync || r.Trigger.Sync != slot) {
+		a := db.Automation{
+			Slug: slug, Scope: string(scope.Kind), ProjectID: scope.WorkbenchID, Path: path,
+			RecipeText: string(data), ContentHash: contentHash,
+		}
+		return withParseErrorDefaults(a, fmt.Sprintf("a built-in's trigger must stay \"sync: %s\"", slot)), nil
+	}
+	return IndexRow(slug, path, data, contentHash, scope)
 }
 
 // withParseErrorDefaults fills an unparsable recipe's row with the column
@@ -420,6 +448,7 @@ type triggerSpec struct {
 	Button   *triggerSpecButton `json:"button,omitempty"`
 	Event    *triggerSpecEvent  `json:"event,omitempty"`
 	Manual   bool               `json:"manual,omitempty"`
+	Sync     string             `json:"sync,omitempty"`
 }
 
 type triggerSpecButton struct {
@@ -449,13 +478,15 @@ func triggerSpecOf(t Trigger) triggerSpec {
 		}
 	case TriggerManual:
 		spec.Manual = true
+	case TriggerSync:
+		spec.Sync = t.Sync
 	}
 	return spec
 }
 
 func triggerSpecJSON(t Trigger) (string, error) {
 	switch t.Kind {
-	case TriggerSchedule, TriggerButton, TriggerEvent, TriggerManual:
+	case TriggerSchedule, TriggerButton, TriggerEvent, TriggerManual, TriggerSync:
 	default:
 		return "", fmt.Errorf("encoding trigger: unknown kind %q", t.Kind)
 	}

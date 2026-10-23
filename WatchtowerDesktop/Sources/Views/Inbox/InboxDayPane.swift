@@ -212,7 +212,7 @@ struct InboxDayNothingReady: View {
                      established: Self.todaysBriefLine(hour: emptyState.briefingHour))
             }
             if dayPlanOn {
-                half(.dayPlan, copyKey: "dayPlan", established: Self.todaysPlanLine(hour: emptyState.dayPlanHour))
+                half(.dayPlan, copyKey: "dayPlan", established: Self.todaysPlanLine(hour: emptyState.briefingHour))
             }
             if !owner.isKnown {
                 NoOwnerEmptyState(openConnections: onOpenConnections)
@@ -233,7 +233,7 @@ struct InboxDayNothingReady: View {
                     .foregroundStyle(.secondary)
             }
         } else if let copy = EmptyStateCopyTable.copy(
-            for: copyKey, briefingHour: emptyState.briefingHour, dayPlanHour: emptyState.dayPlanHour
+            for: copyKey, briefingHour: emptyState.briefingHour
         ) {
             VStack(alignment: .leading, spacing: Spacing.tight) {
                 Text(copy.title).font(.callout.weight(.medium))

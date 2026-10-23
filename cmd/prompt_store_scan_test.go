@@ -324,7 +324,7 @@ func setPromptStoreReceiver(call *ast.CallExpr) (string, bool) {
 
 // functionBodies returns every scope the wiring rule applies to: each
 // top-level function/method body, plus each package-level `var x = func(...)`
-// literal (the newDayPlanPipelineFactory / newMemoryPipelineFactory seam
+// literal (the transcriptGeneratorFactory / newMemoryPipelineFactory seam
 // shape, which is not a FuncDecl). A function literal nested inside a
 // FuncDecl needs no separate entry — it is already inside that body.
 func functionBodies(file *ast.File) []*ast.BlockStmt {

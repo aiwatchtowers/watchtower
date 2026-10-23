@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -716,5 +717,50 @@ func TestManifest_InboxReplyCapability(t *testing.T) {
 	var me *ManifestError
 	if !errors.As(err, &me) || me.Field != "permissions" || me.Index != 1 || !strings.Contains(me.Msg, "needs outputs: [inbox]") {
 		t.Fatalf("inbox:reply without outputs: [inbox] = %#v; want a permissions ManifestError at 1", err)
+	}
+}
+
+func TestAuto06_PersonalRecipeCannotDeclareSyncOrBuiltinCapability(t *testing.T) {
+	builtin := Scope{Kind: ScopePersonal, BuiltinID: "morning-brief"}
+	for _, s := range []Scope{personalScope, workbenchScope} {
+		_, err := ParseManifest([]string{"llm:light", "builtin:brief.compose"}, nil, s)
+		var me *ManifestError
+		if !errors.As(err, &me) || me.Index != 1 || !strings.Contains(me.Msg, "is allowed only in a built-in automation") {
+			t.Errorf("builtin:brief.compose in %s: want ManifestError, got %v", s, err)
+		}
+	}
+	m, err := ParseManifest([]string{"BUILTIN:Brief.Compose"}, nil, builtin)
+	if err != nil {
+		t.Fatalf("builtin:brief.compose in a built-in scope: %v", err)
+	}
+	if got := m.Normalized(); !slices.Equal(got, []string{"builtin:brief.compose"}) {
+		t.Errorf("normalised = %v", got)
+	}
+	if _, err := ParseManifest([]string{"builtin:nope"}, nil, builtin); err == nil {
+		t.Error("builtin:nope accepted")
+	}
+	// A personal recipe cannot carry a sync trigger either (the parser's rule).
+	data := recipeWith("name: A\ntrigger:\n  sync: morning_brief\n", "log(1);\n")
+	if _, err := ParseRecipe("ok", data, personalScope); err == nil || !strings.Contains(err.Error(), "only for built-in automations") {
+		t.Errorf("sync trigger in a personal recipe: got %v", err)
+	}
+}
+
+func TestCapabilityForPrimitive_DefaultsToBuiltinPrefix(t *testing.T) {
+	if got := CapabilityForPrimitive("brief.compose"); got != "builtin:brief.compose" {
+		t.Errorf("CapabilityForPrimitive = %q", got)
+	}
+	builtin := Scope{Kind: ScopePersonal, BuiltinID: "morning-brief"}
+	m, err := ParseManifest([]string{"builtin:plan.compose"}, nil, builtin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := m.AllowPrimitive("plan.compose"); err != nil || got != "builtin:plan.compose" {
+		t.Errorf("AllowPrimitive(plan.compose) = %q, %v", got, err)
+	}
+	_, err = m.AllowPrimitive("brief.compose")
+	var pd *PermissionDenied
+	if !errors.As(err, &pd) || pd.Needed != "builtin:brief.compose" {
+		t.Errorf("AllowPrimitive(brief.compose) = %v; want PermissionDenied needing builtin:brief.compose", err)
 	}
 }

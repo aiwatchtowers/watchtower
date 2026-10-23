@@ -1438,35 +1438,6 @@ CREATE TABLE IF NOT EXISTS "tool_trust" (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     PRIMARY KEY (tool, surface)
 );
-CREATE TABLE IF NOT EXISTS automations (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    slug                TEXT NOT NULL,                       -- filename stem
-    scope               TEXT NOT NULL CHECK (scope IN ('personal','workbench')),
-    project_id          INTEGER REFERENCES projects(id) ON DELETE CASCADE, -- workbench id; NULL = personal
-    path                TEXT NOT NULL UNIQUE,                -- absolute recipe path
-    name                TEXT NOT NULL DEFAULT '',
-    trigger_kind        TEXT NOT NULL DEFAULT '' CHECK (trigger_kind IN ('','schedule','button','event','manual')), -- '' while unparsable
-    trigger_spec        TEXT NOT NULL DEFAULT '{}',          -- JSON of the recipe's trigger
-    missed_policy       TEXT NOT NULL DEFAULT 'run_once' CHECK (missed_policy IN ('run_once','skip')),
-    concurrency         INTEGER NOT NULL DEFAULT 1 CHECK (concurrency BETWEEN 1 AND 4),
-    budget_tokens       INTEGER NOT NULL DEFAULT 50000,
-    budget_minutes      INTEGER NOT NULL DEFAULT 5,
-    pause_timeout_hours INTEGER NOT NULL DEFAULT 72,
-    permissions_json    TEXT NOT NULL DEFAULT '[]',          -- normalised manifest
-    outputs_json        TEXT NOT NULL DEFAULT '[]',
-    recipe_text         TEXT NOT NULL DEFAULT '',            -- the indexed copy the executor runs
-    content_hash        TEXT NOT NULL DEFAULT '',
-    approval_hash       TEXT NOT NULL DEFAULT '',
-    confirmed_hash      TEXT NOT NULL DEFAULT '',            -- '' = never confirmed; set only by a confirm
-    parse_error         TEXT NOT NULL DEFAULT '',
-    enabled             INTEGER NOT NULL DEFAULT 0,
-    last_scheduled_for  TEXT,                                -- RFC 3339 UTC
-    next_run_at         TEXT,                                -- derived by the scheduler, for the list
-    removed_at          TEXT,                                -- the file is gone
-    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')), disabled_reason TEXT NOT NULL DEFAULT '', disabled_at TEXT,
-    CHECK ((scope = 'workbench') = (project_id IS NOT NULL))
-);
 CREATE TABLE IF NOT EXISTS automation_run_steps (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id            INTEGER NOT NULL REFERENCES automation_runs(id) ON DELETE CASCADE,
@@ -2120,10 +2091,47 @@ CREATE TABLE IF NOT EXISTS account_purges (
     error        TEXT NOT NULL DEFAULT '',
     failures     INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS "automations" (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug                TEXT NOT NULL,
+    scope               TEXT NOT NULL CHECK (scope IN ('personal','workbench')),
+    project_id          INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+    path                TEXT NOT NULL UNIQUE,
+    name                TEXT NOT NULL DEFAULT '',
+    trigger_kind        TEXT NOT NULL DEFAULT '' CHECK (trigger_kind IN ('','schedule','button','event','manual','sync')),
+    trigger_spec        TEXT NOT NULL DEFAULT '{}',
+    missed_policy       TEXT NOT NULL DEFAULT 'run_once' CHECK (missed_policy IN ('run_once','skip')),
+    concurrency         INTEGER NOT NULL DEFAULT 1 CHECK (concurrency BETWEEN 1 AND 4),
+    budget_tokens       INTEGER NOT NULL DEFAULT 50000,
+    budget_minutes      INTEGER NOT NULL DEFAULT 5,
+    pause_timeout_hours INTEGER NOT NULL DEFAULT 72,
+    permissions_json    TEXT NOT NULL DEFAULT '[]',
+    outputs_json        TEXT NOT NULL DEFAULT '[]',
+    recipe_text         TEXT NOT NULL DEFAULT '',
+    content_hash        TEXT NOT NULL DEFAULT '',
+    approval_hash       TEXT NOT NULL DEFAULT '',
+    confirmed_hash      TEXT NOT NULL DEFAULT '',
+    parse_error         TEXT NOT NULL DEFAULT '',
+    enabled             INTEGER NOT NULL DEFAULT 0,
+    last_scheduled_for  TEXT,
+    next_run_at         TEXT,
+    removed_at          TEXT,
+    created_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at          TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    disabled_reason     TEXT NOT NULL DEFAULT '',
+    disabled_at         TEXT,
+    origin              TEXT NOT NULL DEFAULT 'owner' CHECK (origin IN ('owner','builtin')),
+    builtin_id          TEXT,
+    overridden          INTEGER NOT NULL DEFAULT 0 CHECK (overridden IN (0,1)),
+    builtin_base_hash   TEXT NOT NULL DEFAULT '',
+    CHECK ((scope = 'workbench') = (project_id IS NOT NULL)),
+    CHECK ((origin = 'builtin') = (builtin_id IS NOT NULL)),
+    CHECK (origin = 'owner' OR scope = 'personal')
+);
 CREATE TABLE IF NOT EXISTS "automation_runs" (
     id                INTEGER PRIMARY KEY AUTOINCREMENT,
     automation_id     INTEGER NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
-    trigger           TEXT NOT NULL CHECK (trigger IN ('schedule','catch_up','button','event','manual','dry_run','reply')),
+    trigger           TEXT NOT NULL CHECK (trigger IN ('schedule','catch_up','button','event','manual','dry_run','reply','sync')),
     scheduled_for     TEXT,
     event_cycle       TEXT,
     event_json        TEXT NOT NULL DEFAULT '',
@@ -2152,6 +2160,13 @@ CREATE TABLE IF NOT EXISTS "automation_runs" (
     resume_pending    INTEGER NOT NULL DEFAULT 0 CHECK (resume_pending IN (0, 1)),
     not_resumable     INTEGER NOT NULL DEFAULT 0 CHECK (not_resumable IN (0, 1)),
     random_seed       INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS builtin_migrations (
+    builtin_id TEXT PRIMARY KEY,
+    status     TEXT NOT NULL CHECK (status IN ('done','failed')),
+    error      TEXT NOT NULL DEFAULT '',
+    attempts   INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
 );
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
@@ -2401,7 +2416,6 @@ CREATE INDEX IF NOT EXISTS idx_project_comments_parent  ON project_comments(pare
 CREATE INDEX IF NOT EXISTS idx_terminal_session_targets_target ON terminal_session_targets(target_id);
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_project ON terminal_sessions(project_id, last_active_at);
 CREATE INDEX IF NOT EXISTS idx_terminal_sessions_target ON terminal_sessions(target_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_automations_scope_slug ON automations(scope, COALESCE(project_id, 0), slug);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_kind ON automation_outputs(kind, created_at);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_automation ON automation_outputs(automation_id);
 CREATE INDEX IF NOT EXISTS idx_automation_outputs_run ON automation_outputs(run_id);
@@ -2474,6 +2488,9 @@ CREATE INDEX IF NOT EXISTS idx_idea_mentions_idea ON idea_mentions(idea_id);
 CREATE INDEX IF NOT EXISTS idx_idea_mentions_ref ON idea_mentions(source, ref);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_account_purges_open
     ON account_purges(source, account_id) WHERE state IN ('scheduled','running');
+CREATE UNIQUE INDEX IF NOT EXISTS idx_automations_scope_slug ON automations(scope, COALESCE(project_id, 0), slug)
+    WHERE origin = 'owner';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_automations_builtin_id ON automations(builtin_id) WHERE builtin_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_automation_runs_automation_status ON automation_runs(automation_id, status);
 CREATE INDEX IF NOT EXISTS idx_automation_runs_status_queued ON automation_runs(status, queued_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_event_cycle ON automation_runs(automation_id, event_cycle)

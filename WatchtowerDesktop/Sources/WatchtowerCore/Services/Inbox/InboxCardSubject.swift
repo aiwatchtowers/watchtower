@@ -47,6 +47,7 @@ package struct InboxCardSubject: Equatable, Sendable {
         case let .track(value): ("track", String(value))
         case let .idea(value): ("idea", String(value))
         case let .message(value): ("message", String(value))
+        case let .builtinNotice(value): ("builtin", value)
         }
         return "inbox-card-\(kind)-\(id).md"
     }
@@ -71,6 +72,7 @@ package struct InboxCardSubject: Equatable, Sendable {
         case let .day(date): "Your day \(date)"
         case let .proposal(id): "Inbox proposal #\(id)"
         case let .reminder(id): "Inbox reminder #\(id)"
+        case let .builtinNotice(id): "Built-in \(id)"
         }
     }
 }

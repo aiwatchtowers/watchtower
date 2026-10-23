@@ -959,6 +959,9 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	if err := database.FillEmptyAccountLabels(); err != nil {
 		logger.Printf("accounts: failed to fill empty labels: %v", err)
 	}
+	// Built-ins (the Morning brief at the briefing slot): wired whatever the
+	// owner-recipe upgrade step did — a failed step never stops the brief.
+	wireBuiltins(d, cfg, database, gen, logger)
 	// Automations: scheduler + executor goroutines, woken by SIGUSR2 — not
 	// this run when the upgrade step failed (fail closed).
 	if automationsOK {

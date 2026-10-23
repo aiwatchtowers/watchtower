@@ -37,6 +37,9 @@ type runJSON struct {
 	RunID         int64 `json:"run_id"`
 	Coalesced     bool  `json:"coalesced"`
 	DaemonRunning bool  `json:"daemon_running"`
+	// AtNextSync: a built-in's run, which the daemon runs at its slot in the
+	// next sync cycle (present only then).
+	AtNextSync bool `json:"at_next_sync,omitempty"`
 }
 
 // dryRunJSON is `dry-run --json` — the pinned key set of plan Task 12; the
@@ -80,6 +83,9 @@ func runAutomationsRun(cmd *cobra.Command, args []string) error {
 	a, err := database.GetAutomation(id)
 	if err != nil {
 		return err
+	}
+	if a.IsBuiltin() {
+		return queueBuiltinRun(cmd, cfg, database, a)
 	}
 	if reason := notRunnableReason(a); reason != "" {
 		return fmt.Errorf("automation %d cannot run: %s", id, reason)
@@ -251,6 +257,73 @@ func runAutomationsCancel(cmd *cobra.Command, args []string) error {
 		if note, _ := wakeNote(running, err, ""); note != "" {
 			fmt.Fprintln(cmd.ErrOrStderr(), note)
 		}
+	}
+	return nil
+}
+
+// builtinDaemonNotRunningNote is run's note for a built-in when no daemon
+// runs: its run waits for the daemon's next sync.
+const builtinDaemonNotRunningNote = "daemon not running; the run starts at its next sync"
+
+// queueBuiltinRun is `automations run` of a built-in (AUTO-09: it only
+// queues): refused with the entry's NoRunNowNote when it offers no Run Now,
+// while it has not moved to Automations yet (its legacy phases would never
+// take the run: before the daemon's first start on this version, or after a
+// failed move), while its features are off, while the daemon has it
+// stopped after a run that would not end (AUTO-08), or while its text is not
+// confirmed; else a
+// manual run is queued and the daemon asked for a sync now — the daemon runs
+// it at the built-in's slot of that cycle, never this process.
+func queueBuiltinRun(cmd *cobra.Command, cfg *config.Config, database *db.DB, a *db.Automation) error {
+	e, ok := builtinLookup(a.BuiltinID)
+	if !ok {
+		return fmt.Errorf("automation %d is the unknown built-in %q", a.ID, a.BuiltinID)
+	}
+	move, err := database.GetBuiltinMigration(e.ID)
+	if err != nil {
+		return err
+	}
+	switch {
+	case !e.RunNow:
+		return errors.New(e.NoRunNowNote)
+	case move == nil: // the daemon never started on this version
+		return fmt.Errorf("%s moves to Automations at the next daemon start — try again after it", e.Name)
+	case move.Status != db.BuiltinMigrationDone:
+		return fmt.Errorf("%s hasn't moved to Automations yet — use Retry in the Inbox", e.Name)
+	case !e.Enabled(cfg):
+		return fmt.Errorf("%s is off — turn it on first", e.Name)
+	case a.DisabledReason != "":
+		return fmt.Errorf("%s was stopped after a run that would not end — turn it on again in Automations → Built in", e.Name)
+	case !a.Confirmed():
+		return fmt.Errorf("%s cannot run: its edited copy is not confirmed yet — confirm it in Automations → Built in", e.Name)
+	}
+	if autoFlags.RerunOf != 0 {
+		return fmt.Errorf("%s has no reruns: run it again without --rerun-of", e.Name)
+	}
+	runID, coalesced, err := database.EnqueueAutomationRun(db.EnqueueRequest{
+		AutomationID: a.ID, Trigger: db.TriggerManual, Now: time.Now(),
+	})
+	if err != nil {
+		return err
+	}
+	out := runJSON{RunID: runID, Coalesced: coalesced, AtNextSync: true}
+	pid, sigErr := builtinRunSignal(cfg)
+	out.DaemonRunning = pid != 0
+	note, _ := wakeNote(out.DaemonRunning, sigErr, builtinDaemonNotRunningNote)
+	w := cmd.OutOrStdout()
+	if autoFlags.JSON {
+		if note != "" {
+			fmt.Fprintln(cmd.ErrOrStderr(), note)
+		}
+		return writeJSON(w, out)
+	}
+	if coalesced {
+		fmt.Fprintf(w, "Run #%d was already queued for the next sync.\n", runID)
+	} else {
+		fmt.Fprintf(w, "Queued run #%d; it runs at the next sync.\n", runID)
+	}
+	if note != "" {
+		fmt.Fprintln(w, note)
 	}
 	return nil
 }

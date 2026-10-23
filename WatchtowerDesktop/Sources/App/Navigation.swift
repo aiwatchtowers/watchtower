@@ -248,6 +248,10 @@ struct MainNavigationView: View {
     /// The Automations tab's links out of a run's steps.
     private var automationsTabActions: AutomationsTabActions {
         var actions = AutomationsTabActions()
+        actions.builtin = BuiltinCardActions(
+            setEnabled: { await appState.setBuiltinEnabled($0, on: $1) },
+            saveParameters: { await appState.saveBuiltinParameters($0) }
+        )
         actions.onOpenInbox = { _ in appState.selectedDestination = .inbox }
         actions.onOpenSession = { projectID, sessionID in
             guard let vm = appState.workbenchesViewModel else { return }
@@ -344,7 +348,8 @@ struct MainNavigationView: View {
                     emptyStateContext: appState.emptyStateContext,
                     editor: appState.automationEditorCenter,
                     hooks: automationHooks(vm),
-                    disabledFeatures: appState.featureVisibility.disabledFeatureIDs
+                    disabledFeatures: appState.featureVisibility.disabledFeatureIDs,
+                    isApplyingFeatures: appState.featureManager.isApplying
                 )
             } else {
                 Text("Automations unavailable")

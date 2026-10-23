@@ -39,6 +39,13 @@ type Backends struct {
 	Workbench WorkbenchResolver
 	MCP       MCPCaller
 	Agent     AgentRunner
+	// Primitives implement the built-ins' primitive calls (brief.compose,
+	// plan.compose), keyed by primitive name; a missing one throws
+	// NotAvailable.
+	Primitives map[string]PrimitiveFunc
+	// DefaultPrompt is builtin.defaultPrompt(name): the shipped default of a
+	// built-in's prompt for the owner's role; nil throws NotAvailable.
+	DefaultPrompt func(builtinID, name, role string) (string, error)
 }
 
 // AgentRequest is one agent() call (P6, spec §6.5) as its runner gets it.
