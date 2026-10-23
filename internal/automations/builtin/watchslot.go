@@ -37,7 +37,8 @@ type WatchScanner interface {
 
 // WatchPrimitives returns track.scan over d and s: it ensures the run's
 // recipe has its bound track (owned by owner(), named after the recipe, with
-// the call's instruction), mirrors the instruction onto it, and scans it
+// the call's instruction), mirrors the instruction onto it while the run's
+// recipe is still the row's current text, and scans it
 // with the run's Since (Run Now's Scan from) and the call's extra items. No
 // owner, or a dismissed track, gives {status: "skipped"} and scans nothing;
 // a sync run of a track that is not due (paused, or today's failure budget
@@ -84,8 +85,12 @@ func trackScan(ctx context.Context, d *db.DB, s WatchScanner, owner func() (db.O
 	if err != nil {
 		return automations.PrimitiveResult{}, fmt.Errorf("track.scan: %w", err)
 	}
-	if err := d.SetWatchInstruction(id, call.Prompt); err != nil {
-		return automations.PrimitiveResult{}, fmt.Errorf("track.scan: %w", err)
+	// Mirrored only from the recipe as it is now: a run claimed before a
+	// Save (tracks instruction) must not write the old text back.
+	if run.RecipeHash == a.ApprovalHash {
+		if err := d.SetWatchInstruction(id, call.Prompt); err != nil {
+			return automations.PrimitiveResult{}, fmt.Errorf("track.scan: %w", err)
+		}
 	}
 	t, err := d.GetTrackByID(id)
 	if err != nil {
@@ -274,4 +279,26 @@ func (r *Runner) cancelQueuedOf(id int64) error {
 			return err
 		}
 	}
+}
+
+// ErrNotWatchRecipe is RunWatchNow's refusal of an automation that is not a
+// watch recipe (a Personal recipe at the custom_tracks slot).
+var ErrNotWatchRecipe = errors.New("the automation is not a watch recipe")
+
+// RunWatchNow runs watch recipe automationID now, inline, as one manual run
+// with input in (`tracks scan <id>`; in.Since is Scan from): the CLI's only
+// path that executes a watch outside the slot. An unconfirmed or paused
+// recipe's run is cancelled and the error wraps automations.ErrNotRunnable;
+// another active run of it (or, ErrRunNowQueued too, a manual run with other
+// input queued for the next slot) wraps automations.ErrRunNotClaimed.
+func (r *Runner) RunWatchNow(ctx context.Context, automationID int64, in automations.BuiltinInput) (*db.AutomationRun, error) {
+	a, err := r.db.GetAutomation(automationID)
+	if err != nil {
+		return nil, err
+	}
+	if a.IsBuiltin() || !a.RunsAtSlot() {
+		return nil, fmt.Errorf("automation %d: %w", automationID, ErrNotWatchRecipe)
+	}
+	r.endStaleRuns()
+	return r.runManualInline(ctx, fmt.Sprintf("watch recipe %d", a.ID), a.ID, in)
 }

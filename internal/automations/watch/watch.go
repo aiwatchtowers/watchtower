@@ -162,7 +162,7 @@ func Start(ctx context.Context, d *db.DB, ix *automations.Indexer, workspaceDir 
 	if cur.AutomationID != 0 {
 		return confirmBound(d, cur.AutomationID, opts.Confirm, now)
 	}
-	data, err := Render(cur.Text, startInstruction(*cur))
+	data, err := StartRecipe(*cur)
 	if err != nil {
 		return nil, fmt.Errorf("starting the watch of track %d: %w", t.ID, err)
 	}
@@ -192,18 +192,47 @@ func Start(ctx context.Context, d *db.DB, ix *automations.Indexer, workspaceDir 
 	return d.GetAutomation(a.ID)
 }
 
+// ErrEditedSinceRendered is Start's refusal to confirm a bound recipe that
+// is no longer the untouched template it rendered: the owner confirms
+// edited text in Automations, where it is shown.
+var ErrEditedSinceRendered = errors.New("the watch recipe was edited since it was made: confirm it in Automations")
+
 // confirmBound returns bound automation id, confirming its current approval
-// hash first when confirm is set and that hash is not the confirmed one.
+// hash first when confirm is set and that hash is not the confirmed one —
+// only while the recipe's text is still exactly the template rendered with
+// its own name and instruction (a retry after a failed confirm); edited
+// text is refused with ErrEditedSinceRendered and stays unconfirmed.
 func confirmBound(d *db.DB, id int64, confirm bool, now time.Time) (*db.Automation, error) {
 	a, err := d.GetAutomation(id)
 	if err != nil || !confirm || a.ConfirmedHash == a.ApprovalHash {
 		return a, err
+	}
+	if !untouchedTemplate(*a) {
+		return nil, fmt.Errorf("confirming watch recipe %d: %w", id, ErrEditedSinceRendered)
 	}
 	if err := d.ConfirmAutomation(id, a.ApprovalHash, now); err != nil {
 		return nil, fmt.Errorf("confirming watch recipe %d: %w", id, err)
 	}
 	return d.GetAutomation(id)
 }
+
+// untouchedTemplate reports whether a's text is byte-equal to the template
+// rendered with a's name and the instruction on its instruction line.
+func untouchedTemplate(a db.Automation) bool {
+	if a.ParseError != "" {
+		return false
+	}
+	instruction, ok := Instruction([]byte(a.RecipeText))
+	if !ok {
+		return false
+	}
+	want, err := Render(a.Name, instruction)
+	return err == nil && string(want) == a.RecipeText
+}
+
+// StartRecipe is the recipe Start would write for unbound track t (the
+// owner's confirmation window shows it).
+func StartRecipe(t db.Track) ([]byte, error) { return Render(t.Text, startInstruction(t)) }
 
 // startInstruction is t's watch instruction, else its context, else its text.
 func startInstruction(t db.Track) string {

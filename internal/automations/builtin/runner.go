@@ -248,30 +248,51 @@ func (r *Runner) RunNow(ctx context.Context, id string, in automations.BuiltinIn
 	if a.DisabledReason != "" {
 		return nil, fmt.Errorf("built-in %s: %w", id, ErrBuiltinStopped)
 	}
+	return r.runManualInline(ctx, "built-in "+id, a.ID, in)
+}
+
+// EnqueueManual queues a manual run of slot automation id with event_json
+// {"builtin": in} (Run Now; `automations run` of a watch) and returns its id
+// and whether it coalesced into one already queued. A queued manual run with
+// other input is refused with ErrRunNowQueued (and ErrRunNotClaimed); the
+// returned id is then that run's, so no run executes with input it was not
+// given.
+func EnqueueManual(d *db.DB, id int64, in automations.BuiltinInput, now time.Time) (int64, bool, error) {
 	payload, err := json.Marshal(map[string]automations.BuiltinInput{"builtin": in})
 	if err != nil {
-		return nil, fmt.Errorf("built-in %s: encoding the run's input: %w", id, err)
+		return 0, false, fmt.Errorf("encoding the run's input: %w", err)
 	}
-	runID, coalesced, err := r.db.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: a.ID, Trigger: db.TriggerManual,
-		EventJSON: string(payload), Now: r.clock.Now()})
+	runID, coalesced, err := d.EnqueueAutomationRun(db.EnqueueRequest{AutomationID: id, Trigger: db.TriggerManual,
+		EventJSON: string(payload), Now: now})
+	if err != nil || !coalesced {
+		return runID, coalesced, err
+	}
+	queued, err := d.GetAutomationRun(runID)
 	if err != nil {
-		return nil, err
+		return 0, false, err
 	}
-	if coalesced {
-		queued, err := r.db.GetAutomationRun(runID)
-		if err != nil {
-			return nil, err
-		}
-		if queued.EventJSON != string(payload) {
-			return nil, fmt.Errorf("built-in %s: run %d: %w: %w", id, runID, ErrRunNowQueued, automations.ErrRunNotClaimed)
-		}
+	if queued.EventJSON != string(payload) {
+		return runID, true, fmt.Errorf("run %d: %w: %w", runID, ErrRunNowQueued, automations.ErrRunNotClaimed)
+	}
+	return runID, true, nil
+}
+
+// runManualInline queues a manual run of automation id with event_json
+// {"builtin": in} and executes it inline (RunNow's tail; label names the
+// automation in errors). A manual run with other input already queued is
+// refused with ErrRunNowQueued (and ErrRunNotClaimed); a run this call
+// queued whose claim lost is cancelled while still queued.
+func (r *Runner) runManualInline(ctx context.Context, label string, id int64, in automations.BuiltinInput) (*db.AutomationRun, error) {
+	runID, coalesced, err := EnqueueManual(r.db, id, in, r.clock.Now())
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", label, err)
 	}
 	run, err := r.exec.ExecuteBuiltinInline(ctx, runID)
 	if errors.Is(err, automations.ErrRunNotClaimed) && !coalesced {
 		// The run this call made must never run later with its input; one
 		// the slot claimed meanwhile runs now and is left alone.
 		if _, cerr := r.db.CancelQueuedAutomationRun(runID, r.clock.Now()); cerr != nil {
-			return nil, errors.Join(err, fmt.Errorf("built-in %s: cancelling run %d: %w", id, runID, cerr))
+			return nil, errors.Join(err, fmt.Errorf("%s: cancelling run %d: %w", label, runID, cerr))
 		}
 	}
 	return run, err
