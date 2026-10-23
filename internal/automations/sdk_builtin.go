@@ -3,6 +3,7 @@ package automations
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -16,12 +17,15 @@ import (
 )
 
 // BuiltinInput is a slot run's manual input (event_json {"builtin": BuiltinInput}).
-// The fields below are the whole list; C3 adds Since.
+// The fields below are the whole list.
 type BuiltinInput struct {
 	Only     []string `json:"only,omitempty"`     // primitive names to run; empty = all
 	Date     string   `json:"date,omitempty"`     // YYYY-MM-DD; "" = today (local)
 	Feedback string   `json:"feedback,omitempty"` // plan.compose only
 	Force    bool     `json:"force,omitempty"`    // plan.compose only
+	// Since is Run Now's Scan from, an RFC 3339 UTC instant (track.scan
+	// only). A script never passes it: track.scan takes it from here.
+	Since string `json:"since,omitempty"`
 }
 
 // PrimitiveCall is one primitive call (brief.compose, plan.compose) as its
@@ -69,8 +73,8 @@ type builtinPayload struct {
 }
 
 // builtinInputOf decodes a slot run's event_json ("" = no input). A date
-// that is not YYYY-MM-DD, or an only entry that is not a primitive
-// (ValidationError), is refused.
+// that is not YYYY-MM-DD, a since that is not an RFC 3339 instant, or an
+// only entry that is not a primitive (ValidationError), is refused.
 func builtinInputOf(eventJSON string) (BuiltinInput, error) {
 	if eventJSON == "" {
 		return BuiltinInput{}, nil
@@ -89,17 +93,116 @@ func builtinInputOf(eventJSON string) (BuiltinInput, error) {
 			return BuiltinInput{}, fmt.Errorf("decoding the run's built-in input: date %q is not YYYY-MM-DD", d)
 		}
 	}
+	if since := p.Builtin.Since; since != "" {
+		if _, err := time.Parse(time.RFC3339, since); err != nil {
+			return BuiltinInput{}, fmt.Errorf("decoding the run's built-in input: since %q is not an RFC 3339 instant", since)
+		}
+	}
 	return p.Builtin, nil
 }
 
-// primitiveExtraArgs are the argument keys a primitive takes besides prompt
-// (none in C2); they reach it as PrimitiveCall.Args.
-var primitiveExtraArgs = map[string][]string{}
+// primitiveTrackScan is the watch recipes' primitive (capability
+// track:scan, PrimitiveCapability), the one primitive outside
+// BuiltinPrimitiveNames.
+const primitiveTrackScan = "track.scan"
+
+// sdkPrimitiveNames are the primitives the SDK may define: the built-ins'
+// and track.scan.
+var sdkPrimitiveNames = append(slices.Clone(BuiltinPrimitiveNames), primitiveTrackScan)
+
+// primitivePromptKey is the argument that carries a primitive's prompt text
+// when it is not "prompt" (track.scan's instruction); it reaches the
+// primitive as PrimitiveCall.Prompt.
+var primitivePromptKey = map[string]string{primitiveTrackScan: "instruction"}
+
+func promptKeyOf(name string) string {
+	if k, ok := primitivePromptKey[name]; ok {
+		return k
+	}
+	return "prompt"
+}
+
+// primitiveExtraArgs are the optional argument keys a primitive takes
+// besides its prompt, each with its check (which returns the value the
+// primitive gets); they reach it as PrimitiveCall.Args. A script never
+// passes track.scan's since: Go takes it from the run's input.
+var primitiveExtraArgs = map[string]map[string]func(v any) (any, error){
+	primitiveTrackScan: {"extra": trackScanExtra},
+}
+
+// TrackScanItem is one item of track.scan's extra argument, which reaches
+// the primitive as PrimitiveCall.Args["extra"] ([]TrackScanItem).
+type TrackScanItem struct {
+	SourceType string `json:"source_type"` // TrackScanSourceTypes
+	SourceID   string `json:"source_id"`
+	Text       string `json:"text"` // ≤ MaxTrackScanItemText bytes
+	At         string `json:"at"`   // RFC 3339
+}
+
+// track.scan's extra limits.
+const (
+	MaxTrackScanExtra    = 40
+	MaxTrackScanItemText = 4 << 10
+)
+
+// TrackScanSourceTypes are the source types a track.scan extra item may name.
+var TrackScanSourceTypes = []string{"slack", "email", "jira", "linear"}
+
+// trackScanExtra checks track.scan's extra: an array of at most
+// MaxTrackScanExtra objects {source_type, source_id, text, at}.
+func trackScanExtra(v any) (any, error) {
+	arr, ok := v.([]any)
+	if !ok {
+		return nil, validationf("track.scan(): extra must be an array")
+	}
+	if len(arr) > MaxTrackScanExtra {
+		return nil, validationf("track.scan(): extra holds %d items; at most %d", len(arr), MaxTrackScanExtra)
+	}
+	items := make([]TrackScanItem, 0, len(arr))
+	for i, raw := range arr {
+		it, err := trackScanItem(raw)
+		if err != nil {
+			return nil, validationf("track.scan(): extra[%d]: %s", i, err)
+		}
+		items = append(items, it)
+	}
+	return items, nil
+}
+
+func trackScanItem(raw any) (TrackScanItem, error) {
+	var it TrackScanItem
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return it, errors.New("an item must be an object {source_type, source_id, text, at}")
+	}
+	fields := map[string]*string{"source_type": &it.SourceType, "source_id": &it.SourceID, "text": &it.Text, "at": &it.At}
+	for k, v := range obj {
+		dst, ok := fields[k]
+		if !ok {
+			return it, fmt.Errorf("unknown key %q", k)
+		}
+		if *dst, ok = v.(string); !ok {
+			return it, fmt.Errorf("%s must be a string", k)
+		}
+	}
+	switch {
+	case !slices.Contains(TrackScanSourceTypes, it.SourceType):
+		return it, fmt.Errorf("source_type %q is not one of %s", it.SourceType, strings.Join(TrackScanSourceTypes, ", "))
+	case strings.TrimSpace(it.SourceID) == "":
+		return it, errors.New("source_id must be a non-empty string")
+	case len(it.Text) > MaxTrackScanItemText:
+		return it, fmt.Errorf("text is %d bytes; at most %d", len(it.Text), MaxTrackScanItemText)
+	}
+	if _, err := time.Parse(time.RFC3339, it.At); err != nil {
+		return it, fmt.Errorf("at %q is not an RFC 3339 instant", it.At)
+	}
+	return it, nil
+}
 
 // BuiltinModule defines the built-in SDK, per declared capability (never
 // keyed on the scope): a primitive's path (brief.compose for
-// builtin:brief.compose) only when the manifest holds
-// CapabilityForPrimitive(primitive), and builtin.defaultPrompt(name) and the
+// builtin:brief.compose, track.scan for track:scan) only when the manifest
+// holds CapabilityForPrimitive(primitive), and builtin.defaultPrompt(name) and the
 // builtin.input value when it holds any builtin: entry. builtin: entries are
 // built-in only, so any other recipe sees none of them.
 func BuiltinModule(b Backends) Module { return builtinModule{b: b} }
@@ -118,7 +221,7 @@ func (m builtinModule) installFor(env *Env, d *definer) {
 		return
 	}
 	s := newBuiltinSDK(m.b)
-	for _, name := range BuiltinPrimitiveNames {
+	for _, name := range sdkPrimitiveNames {
 		if !man.has(CapabilityForPrimitive(name)) {
 			continue
 		}
@@ -210,57 +313,65 @@ type primitiveArgs struct {
 	extra  map[string]any
 }
 
-// parsePrimitiveArgs reads the call's one argument {prompt, ...}: an object
-// whose prompt is a non-empty string and whose other keys the primitive
-// takes (primitiveExtraArgs).
+// parsePrimitiveArgs reads the call's one argument {prompt, ...} (track.scan:
+// {instruction, extra?}): an object whose prompt key (promptKeyOf) is a
+// non-empty string and whose other keys the primitive takes and pass their
+// check (primitiveExtraArgs).
 func parsePrimitiveArgs(name string, raw any) (primitiveArgs, error) {
 	var a primitiveArgs
+	key := promptKeyOf(name)
 	obj, ok := raw.(map[string]any)
 	if !ok {
-		return a, validationf("%s({prompt}): the argument must be an object", name)
+		return a, validationf("%s({%s}): the argument must be an object", name, key)
 	}
 	for k, v := range obj {
+		check, extra := primitiveExtraArgs[name][k]
 		switch {
-		case k == "prompt":
+		case k == key:
 			p, ok := v.(string)
 			if !ok || strings.TrimSpace(p) == "" {
-				return a, validationf("%s({prompt}): prompt must be a non-empty string", name)
+				return a, validationf("%s({%s}): %s must be a non-empty string", name, key, key)
 			}
 			a.prompt = p
-		case slices.Contains(primitiveExtraArgs[name], k):
+		case extra:
+			checked, err := check(v)
+			if err != nil {
+				return a, err
+			}
 			if a.extra == nil {
 				a.extra = map[string]any{}
 			}
-			a.extra[k] = v
+			a.extra[k] = checked
 		default:
 			return a, validationf("%s(): unknown argument %q", name, k)
 		}
 	}
 	if a.prompt == "" {
-		return a, validationf("%s({prompt}): prompt must be a non-empty string", name)
+		return a, validationf("%s({%s}): %s must be a non-empty string", name, key, key)
 	}
 	return a, nil
 }
 
-func (a primitiveArgs) stepArgs() map[string]any {
+func (a primitiveArgs) stepArgs(name string) map[string]any {
 	out := maps.Clone(a.extra)
 	if out == nil {
 		out = map[string]any{}
 	}
-	out["prompt"] = a.prompt
+	out[promptKeyOf(name)] = a.prompt
 	return out
 }
 
 // call runs one primitive call as one llm step named after the primitive:
 // the permission CapabilityForPrimitive(name) first, then the arguments
 // (argErr is a bad argument found before the step began), then — except in a
-// dry run, which calls nothing — the primitive under the run's meter.
+// dry run, which calls nothing (a capture dry run reports the prompt first,
+// DryRunOptions.CapturePrompts) — the primitive under the run's meter.
 func (s *builtinSDK) call(env *Env, name string, raw any, argErr error) (any, error) {
 	var args primitiveArgs
 	if argErr == nil {
 		args, argErr = parsePrimitiveArgs(name, raw)
 	}
-	return env.Call(StepKindLLM, name, args.stepArgs(), func(step *Step) (any, error) {
+	return env.Call(StepKindLLM, name, args.stepArgs(name), func(step *Step) (any, error) {
 		m, err := manifestOf(env)
 		if err != nil {
 			return nil, err
@@ -275,7 +386,10 @@ func (s *builtinSDK) call(env *Env, name string, raw any, argErr error) (any, er
 		}
 		input := env.Trigger.Builtin
 		if env.DryRun || env.Trigger.DryRun {
-			return dryRunResult(step, map[string]any{"would": name, "date": runDate(env, input)}), nil
+			if env.capturePrompt != nil {
+				env.capturePrompt(name, args.prompt)
+			}
+			return dryRunResult(step, primitiveDryRunSummary(env, name, input)), nil
 		}
 		fn := s.b.Primitives[name]
 		if fn == nil {
@@ -304,6 +418,19 @@ func (s *builtinSDK) call(env *Env, name string, raw any, argErr error) (any, er
 		}
 		return primitiveOutcome(step, res), nil
 	})
+}
+
+// primitiveDryRunSummary is a dry run's step summary: what would run, and
+// on which date (track.scan: from which instant, when the input says).
+func primitiveDryRunSummary(env *Env, name string, in BuiltinInput) map[string]any {
+	if name != primitiveTrackScan {
+		return map[string]any{"would": name, "date": runDate(env, in)}
+	}
+	out := map[string]any{"would": name}
+	if in.Since != "" {
+		out["since"] = in.Since
+	}
+	return out
 }
 
 // runDate is the date a slot run works on: its input's, else today (local).

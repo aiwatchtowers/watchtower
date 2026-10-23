@@ -187,3 +187,87 @@ func TestDryRunInMemory_MCPOutsideManifestIsDenied(t *testing.T) {
 		t.Fatalf("step %+v, calls %d; want denied needing mcp:gitlab/list_prs and no call", rep.Steps[0], len(m.Calls()))
 	}
 }
+
+// capturedPrompt is one prompt a capture dry run reported.
+type capturedPrompt struct{ primitive, prompt string }
+
+func captureDryRun(t *testing.T, b automations.Backends, r *automations.Recipe, stop bool) (*automations.DryRunReport, []capturedPrompt) {
+	t.Helper()
+	var got []capturedPrompt
+	rep, err := automations.DryRunInMemory(context.Background(), b, r, automations.DryRunOptions{
+		CapturePrompts:   func(primitive, prompt string) { got = append(got, capturedPrompt{primitive, prompt}) },
+		StopAtModelCalls: stop,
+	})
+	if err != nil {
+		t.Fatalf("DryRunInMemory: %v", err)
+	}
+	return rep, got
+}
+
+func TestDryRunCapture_ReportsPromptsAndWritesNothing(t *testing.T) {
+	d := db.OpenTestDB(t)
+	brief := &fakePrimitive{res: automations.PrimitiveResult{Status: "done"}}
+	scan := &fakePrimitive{res: automations.PrimitiveResult{Status: "done"}}
+	gen := usageGen(10, 5)
+	b := automations.Backends{DB: d, Generator: gen, Registry: fakeTools(), Clock: automationstest.NewFakeClock(exStart),
+		Primitives: map[string]automations.PrimitiveFunc{"brief.compose": brief.fn, "track.scan": scan.fn}}
+	before := tableCounts(t, d)
+
+	builtin, err := automations.ParseRecipe(testBuiltinID, []byte(builtinRecipeText(
+		`const a = brief.compose({prompt: "P1"}).status; const b = brief.compose({prompt: "P2"}).status; return a + "," + b;`,
+		"", "builtin:brief.compose")), automations.Scope{Kind: automations.ScopePersonal, BuiltinID: testBuiltinID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, got := captureDryRun(t, b, builtin, true)
+	if rep.Status != db.RunSucceeded || len(got) != 2 || got[0] != (capturedPrompt{"brief.compose", "P1"}) ||
+		got[1] != (capturedPrompt{"brief.compose", "P2"}) {
+		t.Fatalf("built-in: report %s (%s), captured %+v", rep.Status, rep.Error, got)
+	}
+	if s := stepStatusesOf(rep.Steps); s != "llm:dry_run,llm:dry_run" {
+		t.Errorf("built-in steps = %s", s)
+	}
+
+	watch, err := automations.ParseRecipe("watch", []byte(watchRecipeText(`return track.scan({instruction: "acme launch"}).status;`)),
+		automations.Scope{Kind: automations.ScopePersonal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, got = captureDryRun(t, b, watch, true)
+	if rep.Status != db.RunSucceeded || len(got) != 1 || got[0] != (capturedPrompt{"track.scan", "acme launch"}) {
+		t.Fatalf("watch: report %s (%s), captured %+v", rep.Status, rep.Error, got)
+	}
+	if brief.count() != 0 || scan.count() != 0 || gen.CallCount() != 0 {
+		t.Errorf("calls: brief %d, scan %d, model %d; want none", brief.count(), scan.count(), gen.CallCount())
+	}
+	for table, n := range tableCounts(t, d) {
+		if n != before[table] {
+			t.Errorf("%s rows %d → %d; want unchanged", table, before[table], n)
+		}
+	}
+}
+
+func TestDryRunCapture_StopsAtModelCall(t *testing.T) {
+	scan := &fakePrimitive{res: automations.PrimitiveResult{Status: "done"}}
+	gen := usageGen(10, 5)
+	b := automations.Backends{Generator: gen, Registry: fakeTools(), Clock: automationstest.NewFakeClock(exStart),
+		Primitives: map[string]automations.PrimitiveFunc{"track.scan": scan.fn}}
+	watch, err := automations.ParseRecipe("watch", []byte(watchRecipeText(
+		`const instruction = llm("write the instruction"); return track.scan({instruction}).status;`, "llm:light")),
+		automations.Scope{Kind: automations.ScopePersonal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, got := captureDryRun(t, b, watch, true)
+	if rep.Status != automations.DryRunStopped || rep.Error != "this recipe calls the model before its primitive" || len(got) != 0 {
+		t.Fatalf("report %s (%s), captured %+v", rep.Status, rep.Error, got)
+	}
+	if gen.CallCount() != 0 || scan.count() != 0 {
+		t.Errorf("model calls %d, scan calls %d; want none", gen.CallCount(), scan.count())
+	}
+	// Without StopAtModelCalls the model call runs and the primitive is captured.
+	rep, got = captureDryRun(t, b, watch, false)
+	if rep.Status != db.RunSucceeded || len(got) != 1 || got[0] != (capturedPrompt{"track.scan", "done"}) || gen.CallCount() != 1 {
+		t.Errorf("no stop: report %s (%s), captured %+v, model calls %d", rep.Status, rep.Error, got, gen.CallCount())
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -47,6 +48,22 @@ type Env struct {
 	// (nil = neither: a dry run, a test env). The sandbox's clock reads
 	// through it.
 	Replay *Replay
+	// capturePrompt and stopAtModelCalls are a capture dry run's
+	// (DryRunOptions.CapturePrompts, StopAtModelCalls); unset otherwise.
+	capturePrompt    func(primitive, prompt string)
+	stopAtModelCalls bool
+}
+
+// modelCallKinds are the step kinds a StopAtModelCalls dry run stops at: a
+// model call (llm, not a primitive's llm step) or a call that can lead to
+// one (agent, mcp, shell, session, ask).
+var modelCallKinds = []string{StepKindLLM, StepKindAgent, StepKindMCP, StepKindShell, StepKindSession, StepKindAsk}
+
+// stopsAtModelCall reports whether a StopAtModelCalls dry run stops at the
+// call of kind and name.
+func (e *Env) stopsAtModelCall(kind, name string) bool {
+	return e.stopAtModelCalls && slices.Contains(modelCallKinds, kind) &&
+		(kind != StepKindLLM || !slices.Contains(sdkPrimitiveNames, name))
 }
 
 // Binding is the registry binding of this run's tool calls (spec §6.1). A
@@ -118,6 +135,12 @@ func (e *Env) call(kind, name string, args any, opts callOpts, fn func(step *Ste
 		// write steps for its whole budget (board #562).
 		e.Journal.Begin(kind, name, args).Fail(errStepCap)
 		return nil, errStepCap
+	}
+	if e.stopsAtModelCall(kind, name) {
+		fn = func(step *Step) (any, error) {
+			dryRunResult(step, map[string]any{"note": ModelCallStop})
+			return nil, &RunInterrupted{Reason: InterruptModelCallStop}
+		}
 	}
 	step, played, err := e.beginStep(kind, name, args, opts)
 	if err != nil {

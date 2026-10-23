@@ -448,8 +448,9 @@ func (e *Executor) ExecuteInlinePinned(ctx context.Context, runID int64, approva
 // ExecuteBuiltinInline claims a slot automation's run runID and executes it
 // in the caller's goroutine (the slot executor at its slot, the CLI's
 // built-in commands), then returns the finished row. The automation must be
-// a confirmed slot automation (RunsAtSlot); whether it is enabled is the
-// caller's gate. Otherwise the run is cancelled not_runnable and
+// a confirmed slot automation (RunsAtSlot); whether a built-in is enabled is
+// the caller's gate, while a watch recipe (a Personal slot recipe) must be
+// enabled too. Otherwise the run is cancelled not_runnable and
 // ErrNotRunnable returned. ErrRunNotClaimed when the claim lost (another run
 // of it is active, or the run is no longer queued); the run is left as is.
 func (e *Executor) ExecuteBuiltinInline(ctx context.Context, runID int64) (*db.AutomationRun, error) {
@@ -462,7 +463,7 @@ func (e *Executor) ExecuteBuiltinInline(ctx context.Context, runID int64) (*db.A
 		return nil, fmt.Errorf("automation run %d: %w", runID, err)
 	}
 	now := e.clock.Now()
-	if !a.RunsAtSlot() || !a.Confirmed() {
+	if !a.RunsAtSlot() || !a.Confirmed() || (!a.IsBuiltin() && !a.Enabled) {
 		if err := e.cancelNotRunnable(runID, now); err != nil {
 			return nil, fmt.Errorf("automation run %d: %w", runID, err)
 		}

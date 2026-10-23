@@ -135,6 +135,20 @@ func TestAutomation_RunsAtSlotEqualsIsBuiltin(t *testing.T) {
 	}
 }
 
+func TestAutomation_RunsAtSlotHoldsPersonalSyncRecipes(t *testing.T) {
+	for _, c := range []struct {
+		a    Automation
+		want bool
+	}{
+		{Automation{Scope: "personal", TriggerKind: TriggerKindSync}, true},
+		{Automation{Scope: "personal", TriggerKind: "manual"}, false},
+		{Automation{Scope: "workbench", TriggerKind: TriggerKindSync}, false},
+		{Automation{Scope: "personal", TriggerKind: "manual", Origin: OriginBuiltin}, true},
+	} {
+		assert.Equal(t, c.want, c.a.RunsAtSlot(), "%+v", c.a)
+	}
+}
+
 func TestAutomationRuns_SyncTriggerAccepted(t *testing.T) {
 	d := openTestDB(t)
 	id := seedBuiltinRow(t, d, "morning-brief", "morning-brief", "c1", "a1")

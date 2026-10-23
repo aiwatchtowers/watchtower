@@ -15,7 +15,18 @@ type DryRunOptions struct {
 	Budget Budget
 	// Modules builds the SDK; nil = DefaultModules.
 	Modules func(Backends) []Module
+	// CapturePrompts, when set, is told each primitive call's prompt
+	// (track.scan: its instruction); the call then returns {status:
+	// "dry_run"} as in any dry run.
+	CapturePrompts func(primitive, prompt string)
+	// StopAtModelCalls stops the dry run at its first llm, agent, mcp,
+	// shell, session or ask call: status DryRunStopped, error ModelCallStop.
+	StopAtModelCalls bool
 }
+
+// ModelCallStop is why a StopAtModelCalls dry run stopped: the recipe makes
+// a model call before its primitive, so its prompt cannot be captured.
+const ModelCallStop = "this recipe calls the model before its primitive"
 
 // DryRunStopped is DryRunReport.Status when a draft stopped at a call a
 // draft never makes (mcp(), ask #326); Error says why. Not a failure: the
@@ -66,10 +77,11 @@ func DryRunInMemory(ctx context.Context, b Backends, r *Recipe, opts DryRunOptio
 	}
 	env := &Env{
 		Ctx: ctx, Run: &db.AutomationRun{ID: 0, Trigger: db.TriggerDryRun}, Recipe: r, Manifest: m, DryRun: true,
-		Journal: NewMemoryJournal().UseClock(clock),
-		Meter:   NewMeter(dryRunBudget(opts.Budget, r.Budget), clock),
-		Buffer:  NewCommitBuffer(nil),
-		Trigger: TriggerInfo{Kind: db.TriggerDryRun, DryRun: true},
+		Journal:       NewMemoryJournal().UseClock(clock),
+		Meter:         NewMeter(dryRunBudget(opts.Budget, r.Budget), clock),
+		Buffer:        NewCommitBuffer(nil),
+		Trigger:       TriggerInfo{Kind: db.TriggerDryRun, DryRun: true},
+		capturePrompt: opts.CapturePrompts, stopAtModelCalls: opts.StopAtModelCalls,
 	}
 	sb, runErr := NewSandbox(env, modules(b))
 	if runErr == nil {
@@ -85,6 +97,8 @@ func DryRunInMemory(ctx context.Context, b Backends, r *Recipe, opts DryRunOptio
 	switch {
 	case errors.As(runErr, &ri) && ri.Reason == InterruptDraftStop:
 		rep.Status, rep.Error = DryRunStopped, MCPDraftStop
+	case errors.As(runErr, &ri) && ri.Reason == InterruptModelCallStop:
+		rep.Status, rep.Error = DryRunStopped, ModelCallStop
 	case runErr != nil:
 		end := classifyRunError(runErr)
 		rep.Status, rep.Error = end.status, end.msg

@@ -48,6 +48,10 @@ const (
 	// InterruptDraftStop: a draft's in-memory dry run reached a call it
 	// never makes (mcp(), ask #326); DryRunInMemory reports DryRunStopped.
 	InterruptDraftStop InterruptReason = "draft_stop"
+	// InterruptModelCallStop: a StopAtModelCalls dry run reached a model
+	// call (DryRunOptions); DryRunInMemory reports DryRunStopped with
+	// ModelCallStop.
+	InterruptModelCallStop InterruptReason = "model_call_stop"
 	// InterruptMemory: the run passed RunHeapBudget (Run reports it as that
 	// RangeError, or, when the script then stayed stuck in a native call,
 	// as an abandoned interrupt; the run ends failed).
