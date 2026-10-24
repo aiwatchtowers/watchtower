@@ -789,3 +789,33 @@ func TestWorkbenchSkill_TeachesBoardColumns(t *testing.T) {
 		t.Fatal("the Rules section never teaches the board columns")
 	}
 }
+
+// A new session worktree registers with one `claude mcp add` (each claude
+// run costs about a second of the session start); a registration left over
+// at a reused path is replaced through the full get/remove/add path.
+func TestInstallWorkbenchNewFolderRegistersWithOneAdd(t *testing.T) {
+	folder := fakeRepo(t)
+	f := newFakeClaude()
+	o := workbenchOpts(folder, f)
+	o.NewFolder = true
+	rep, err := InstallWorkbench(context.Background(), o)
+	if err != nil || !rep.MCPRegistered {
+		t.Fatalf("install: registered=%v err=%v", rep.MCPRegistered, err)
+	}
+	if len(f.calls) != 1 || f.calls[0][3] != "add" {
+		t.Fatalf("want one `claude mcp add`, got %v", f.calls)
+	}
+
+	o.Bin = "/tmp/moved/watchtower"
+	f.calls = nil
+	rep, err = InstallWorkbench(context.Background(), o)
+	if err != nil || !rep.MCPRegistered {
+		t.Fatalf("leftover registration: registered=%v err=%v", rep.MCPRegistered, err)
+	}
+	if got := f.registered[folder][6]; got != o.Bin {
+		t.Fatalf("the leftover registration was not replaced: %v", f.registered[folder])
+	}
+	if len(f.calls) < 3 {
+		t.Fatalf("a failed add must fall back to get/remove/add, got %v", f.calls)
+	}
+}
