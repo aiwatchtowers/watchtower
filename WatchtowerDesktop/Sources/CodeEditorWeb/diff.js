@@ -208,95 +208,11 @@
     addCommentAction(editor.getModifiedEditor(), "new");
     addCommentAction(editor.getOriginalEditor(), "old");
 
-    // Go to definition and Usages on the new side only (board #960), as
-    // editor.js does: Cmd+click (or definitionAtCursor) posts `definition`
-    // for the word, which stays underlined (busy) until Swift answers that
-    // req; "Show All Usages" (context menu, usagesAtCursor) posts `usages`.
-    // `id` is the shown file's path. The old side has no navigation.
-    var nav = (function (ed) {
-      var shownPath = "";
-      var definitionReq = 0;
-      var busy = { model: null, ids: [], req: 0 };
-      var link = { model: null, ids: [] };
-
-      function decorate(holder, model, range, cls) {
-        if (holder.model && !holder.model.isDisposed()) { holder.model.deltaDecorations(holder.ids, []); }
-        holder.model = model;
-        holder.ids = model && range ? model.deltaDecorations([], [{ range: range, options: { inlineClassName: cls } }]) : [];
-      }
-
-      function wordRange(model, position) {
-        var word = model.getWordAtPosition(position);
-        return word ? { word: word.word,
-          range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn) } : null;
-      }
-
-      function requestDefinition(position) {
-        var model = ed.getModel();
-        var hit = model && shownPath ? wordRange(model, position) : null;
-        if (!hit) { return false; }
-        definitionReq += 1;
-        decorate(link, null, null, "");
-        decorate(busy, model, hit.range, "wt-def-busy");
-        busy.req = definitionReq;
-        var at = ed.getScrolledVisiblePosition({ lineNumber: position.lineNumber, column: hit.range.startColumn });
-        var box = ed.getDomNode().getBoundingClientRect();
-        post({ type: "definition", req: definitionReq, id: shownPath, word: hit.word,
-          line: position.lineNumber, col: position.column,
-          x: box.left + (at ? at.left : 0), y: box.top + (at ? at.top + at.height : 0) });
-        return true;
-      }
-
-      function requestUsages() {
-        var model = ed.getModel();
-        var position = ed.getPosition();
-        var hit = model && shownPath && position ? wordRange(model, position) : null;
-        if (!hit) { return false; }
-        post({ type: "usages", id: shownPath, word: hit.word, line: position.lineNumber, col: position.column });
-        return true;
-      }
-
-      function isDefinitionGesture(e) {
-        return e.event.metaKey && !e.event.altKey && !e.event.shiftKey && !e.event.ctrlKey
-          && e.target.type === monaco.editor.MouseTargetType.CONTENT_TEXT && e.target.position;
-      }
-
-      ed.onMouseDown(function (e) {
-        if (e.event.leftButton && isDefinitionGesture(e)) { requestDefinition(e.target.position); }
-      });
-      ed.onMouseMove(function (e) {
-        var model = ed.getModel();
-        var hit = model && shownPath && isDefinitionGesture(e) ? wordRange(model, e.target.position) : null;
-        decorate(link, hit ? model : null, hit ? hit.range : null, "wt-def-link");
-      });
-      ed.onMouseLeave(function () { decorate(link, null, null, ""); });
-      ed.onKeyUp(function (e) { if (e.keyCode === monaco.KeyCode.Meta) { decorate(link, null, null, ""); } });
-
-      // No keybinding: Shift+Cmd+U belongs to the app's menu, which asks
-      // usagesAtCursor.
-      ed.addAction({
-        id: "wt.showUsages", label: "Show All Usages", contextMenuGroupId: "navigation", contextMenuOrder: 1,
-        run: function () { requestUsages(); }
-      });
-
-      return {
-        // A new file: its path names the requests; the old one's marks go.
-        show: function (path) {
-          shownPath = path || "";
-          decorate(link, null, null, "");
-          decorate(busy, null, null, "");
-          busy.req = 0;
-        },
-        definitionAtCursor: function () {
-          var position = ed.getPosition();
-          return !!position && requestDefinition(position);
-        },
-        definitionDone: function (req) {
-          if (req === busy.req) { decorate(busy, null, null, ""); busy.req = 0; }
-        },
-        usagesAtCursor: function () { return requestUsages(); }
-      };
-    })(editor.getModifiedEditor());
+    // Go to definition and Usages on the new side only (board #960,
+    // codenav.js): requests name the shown file's path. The old side has no
+    // navigation.
+    var shownPath = "";
+    var nav = wtCodeNav(editor.getModifiedEditor(), function () { return shownPath; }, post);
 
     window.wt = {
       showDiff: function (a) {
@@ -311,7 +227,9 @@
         editor.setModel({ original: models.original, modified: models.modified });
         editor.updateOptions({ renderSideBySide: !a.inline, hideUnchangedRegions: { enabled: !a.fullFile } });
         cursorIsOurs = true;
-        nav.show(a.path);
+        // A new file: its path names the requests; the old one's marks go.
+        shownPath = a.path || "";
+        nav.clear();
         // A focus waiting for the previous file's diff is not this file's.
         pendingFocus = 0;
         // Disposed only once the editor holds the new pair.
