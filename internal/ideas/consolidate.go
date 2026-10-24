@@ -12,15 +12,17 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/instructions"
 	"watchtower/internal/prompts"
+	"watchtower/internal/textutil"
 )
 
 // consolidateOp is one registry mutation the AI proposes for a consolidate
-// cycle: mint a new idea/decision, or attach a fresh sighting to an existing
-// registry item instead of duplicating it (see internal/prompts/defaults.go's
-// defaultIdeasConsolidate).
+// cycle: mint a new idea/decision (or, from chat material only, a note), or
+// attach a fresh sighting to an existing registry item instead of duplicating
+// it (see internal/prompts/defaults.go's defaultIdeasConsolidate).
 type consolidateOp struct {
-	Op        string         `json:"op"` // new_idea|new_decision|attach_mention
+	Op        string         `json:"op"` // new_idea|new_decision|new_note|attach_mention
 	Title     string         `json:"title"`
 	Essence   string         `json:"essence"`
 	IdeaID    int64          `json:"idea_id"`
@@ -60,27 +62,34 @@ type consolidateResult struct {
 // consolidateInput is the gathered, budget-capped stage-1 material for one
 // consolidate cycle: the rendered "=== NEW MATERIAL ===" body, the set of
 // refs it actually contains (ref -> source, "slack"|"meeting"|"gmail"|"imap"|
-// "jira"), and the per-source floor each should advance to — the highest id
-// among the units this run actually consumed, never past a unit that was
+// "jira"|"chat"), and the per-source floor each should advance to — the
+// highest id among the units this run actually consumed, never past a unit that was
 // left out for lack of budget (IDEA-01). The start* fields hold the floors as
 // read, so a run that consumed units without rendering any of them can still
 // tell that its floors moved.
 type consolidateInput struct {
-	startTopicID, startStreamID, startTranscriptID int64
-	maxTopicID, maxStreamID, maxTranscriptID       int64
-	validRefs                                      map[string][]string // ref -> every source it was rendered under
-	block                                          string
-	included                                       int
+	startTopicID, startStreamID, startTranscriptID, startChatID int64
+	maxTopicID, maxStreamID, maxTranscriptID, maxChatID         int64
+	validRefs                                                   map[string][]string // ref -> every source it was rendered under
+	block                                                       string
+	included                                                    int
+	// chatTurns is who said each rendered chat ref and when (mentionRow).
+	chatTurns map[string]chatTurnMeta
 	// memFloors, when set (Backfill), holds the floors this run started from
 	// and is advanced in their place: the run then writes no stored floor.
 	memFloors *workspaceFloors
 }
 
-// workspaceFloors is the three workspace floors (ideas_digest_floor,
-// ideas_stream_digest_floor, ideas_transcript_floor) as Backfill keeps them
-// in memory, so a killed backfill never leaves a lowered floor in the DB.
+// chatTurnMeta is the author ("owner"/"assistant") and created_at of one
+// rendered chat turn.
+type chatTurnMeta struct{ author, saidAt string }
+
+// workspaceFloors is the four workspace floors (ideas_digest_floor,
+// ideas_stream_digest_floor, ideas_transcript_floor, ideas_chat_floor) as
+// Backfill keeps them in memory, so a killed backfill never leaves a lowered
+// floor in the DB.
 type workspaceFloors struct {
-	topic, stream, transcript int64
+	topic, stream, transcript, chat int64
 }
 
 // advanceFloors moves the run's floors to what it consumed: the stored ones
@@ -90,14 +99,17 @@ func (in *consolidateInput) advanceFloors(database *db.DB, tx *sql.Tx) error {
 	if in.memFloors != nil {
 		return nil
 	}
-	return database.SetIdeasFloorsTx(tx, in.maxTopicID, in.maxStreamID, in.maxTranscriptID)
+	if err := database.SetIdeasFloorsTx(tx, in.maxTopicID, in.maxStreamID, in.maxTranscriptID); err != nil {
+		return err
+	}
+	return database.SetIdeasChatFloorTx(tx, in.maxChatID)
 }
 
 // commitMemFloors advances a Backfill run's in-memory floors after its apply
 // committed; a no-op on the ordinary path.
 func (in *consolidateInput) commitMemFloors() {
 	if in.memFloors != nil {
-		*in.memFloors = workspaceFloors{topic: in.maxTopicID, stream: in.maxStreamID, transcript: in.maxTranscriptID}
+		*in.memFloors = workspaceFloors{topic: in.maxTopicID, stream: in.maxStreamID, transcript: in.maxTranscriptID, chat: in.maxChatID}
 	}
 }
 
@@ -106,8 +118,26 @@ func (in *consolidateInput) commitMemFloors() {
 func (in *consolidateInput) floorsAdvanced() bool {
 	return in.maxTopicID != in.startTopicID ||
 		in.maxStreamID != in.startStreamID ||
-		in.maxTranscriptID != in.startTranscriptID
+		in.maxTranscriptID != in.startTranscriptID ||
+		in.maxChatID != in.startChatID
 }
+
+// chatQuietWindow is how long a chat message rests before the consolidator
+// may mine it, so a live discussion is not mined half-way.
+const chatQuietWindow = 30 * time.Minute
+
+// chatTurnsPerRun caps the chat turns one consolidate run reads; the prompt
+// budget usually stops the run well before it, and the rest waits above the
+// floor for the next run.
+const chatTurnsPerRun = 1000
+
+// chatAssistantRuneCap and chatOwnerRuneCap cut one rendered chat turn: an
+// assistant reply's long tail is rarely where a decision or a fact is stated,
+// and a pasted block from the owner must not take the whole prompt budget.
+const (
+	chatAssistantRuneCap = 1500
+	chatOwnerRuneCap     = 4000
+)
 
 // transcriptRecapWaitWindow is how long a just-finished transcript is given
 // a chance for its recap to land before the consolidator stops waiting and
@@ -235,26 +265,31 @@ func (p *Pipeline) maxPromptChars() int {
 	return config.DefaultIdeasMaxPromptChars
 }
 
-// gatherConsolidateInput reads the three registry floors, lists everything
+// gatherConsolidateInput reads the four registry floors, lists everything
 // past them (and, when to is non-zero, at or before it — plus, when from is
 // non-zero, at or after it, digest topics only — see GB3), and renders a
 // budget-capped "=== NEW MATERIAL ===" body in deterministic order — Slack
-// digest topics, then stream digests (Gmail/Jira), then meeting transcripts —
-// appending whole units until maxChars is spent. Once a unit doesn't fit,
+// digest topics, then stream digests (Gmail/Jira), then meeting transcripts,
+// then AI chat turns (past chatQuietWindow, and at or before to) — appending
+// whole units until maxChars is spent. Once a unit doesn't fit,
 // consumption stops entirely (no smaller later unit is smuggled in out of
 // order), so each source's floor advances only past the units this run
 // actually included; a source that contributed nothing keeps its old floor
 // (IDEA-01). mem, when non-nil (Backfill), replaces the stored floors as the
 // starting point and is what the run advances.
 func (p *Pipeline) gatherConsolidateInput(maxChars int, from, to time.Time, mem *workspaceFloors) (*consolidateInput, error) {
-	var topicFloor, streamFloor, transcriptFloor int64
+	var topicFloor, streamFloor, transcriptFloor, chatFloor int64
 	if mem != nil {
-		topicFloor, streamFloor, transcriptFloor = mem.topic, mem.stream, mem.transcript
+		topicFloor, streamFloor, transcriptFloor, chatFloor = mem.topic, mem.stream, mem.transcript, mem.chat
 	} else {
 		var err error
 		topicFloor, streamFloor, transcriptFloor, err = p.db.GetIdeasFloors()
 		if err != nil {
 			return nil, fmt.Errorf("getting ideas floors: %w", err)
+		}
+		chatFloor, err = p.db.GetIdeasChatFloor()
+		if err != nil {
+			return nil, fmt.Errorf("getting ideas chat floor: %w", err)
 		}
 	}
 	fromUnix, toUnix, toISO := consolidateWindowBounds(from, to)
@@ -271,10 +306,18 @@ func (p *Pipeline) gatherConsolidateInput(maxChars int, from, to time.Time, mem 
 	if err != nil {
 		return nil, fmt.Errorf("listing transcripts for ideas: %w", err)
 	}
+	chatCutoff := time.Now().Add(-chatQuietWindow)
+	if !to.IsZero() && to.Before(chatCutoff) {
+		chatCutoff = to
+	}
+	chatTurns, err := p.db.ListChatTurnsForIdeas(chatFloor, chatCutoff.UTC().Format(time.RFC3339), chatTurnsPerRun)
+	if err != nil {
+		return nil, fmt.Errorf("listing chat turns for ideas: %w", err)
+	}
 
 	in := &consolidateInput{
-		startTopicID: topicFloor, startStreamID: streamFloor, startTranscriptID: transcriptFloor,
-		maxTopicID: topicFloor, maxStreamID: streamFloor, maxTranscriptID: transcriptFloor,
+		startTopicID: topicFloor, startStreamID: streamFloor, startTranscriptID: transcriptFloor, startChatID: chatFloor,
+		maxTopicID: topicFloor, maxStreamID: streamFloor, maxTranscriptID: transcriptFloor, maxChatID: chatFloor,
 		validRefs: map[string][]string{}, memFloors: mem,
 	}
 	m := newMaterialAssembler(p, in, maxChars)
@@ -283,6 +326,7 @@ func (p *Pipeline) gatherConsolidateInput(maxChars int, from, to time.Time, mem 
 	}
 	m.addStreams(streams)
 	m.addTranscripts(transcripts)
+	m.addChatTurns(chatTurns)
 
 	in.block = m.b.String()
 	return in, nil
@@ -382,6 +426,19 @@ func (in *consolidateInput) mentionSources(m mentionInput) []string {
 	return srcs
 }
 
+// mentionRow is the idea_mentions row for one validated sighting. For a chat
+// ref the author and said_at come from the rendered turn itself ("owner" or
+// "assistant", its created_at) — the model's values are never trusted there,
+// since a chat line shows neither.
+func (in *consolidateInput) mentionRow(src string, m mentionInput) db.IdeaMention {
+	row := db.IdeaMention{Source: src, Ref: m.Ref, Quote: m.Quote, Author: m.Author, SaidAt: m.SaidAt}
+	if src == "chat" {
+		turn := in.chatTurns[m.Ref]
+		row.Author, row.SaidAt = turn.author, turn.saidAt
+	}
+	return row
+}
+
 // addTopics is materialAssembler's Slack-digest-topics pass. It is the only
 // pass that can fail: rendering a topic reads the messages table to verify
 // each candidate's ts (IDEA-02), and that read failing is an infrastructure
@@ -434,6 +491,86 @@ func (m *materialAssembler) addTranscripts(transcripts []db.TranscriptForIdeas) 
 	}
 }
 
+// addChatTurns is materialAssembler's AI-chat pass. Turns arrive in id order;
+// consecutive turns of one conversation share one header. An owner turn that
+// is a knowledge prefix (written straight to the registry by the app) or a
+// remember command (an owner instruction) is consumed without being rendered,
+// as is an empty turn. The pass stops at the first turn the budget drops, so
+// the chat floor only ever reaches the last rendered or skipped turn (IDEA-01).
+func (m *materialAssembler) addChatTurns(turns []db.ChatTurnForIdeas) {
+	var conv int64
+	for _, t := range turns {
+		if skipChatTurn(t) {
+			if m.stopped {
+				return
+			}
+			m.in.maxChatID = t.ID
+			continue
+		}
+		header := t.ConversationID != conv
+		before := m.in.included
+		ref := fmt.Sprintf("chat:%d:%d", t.ConversationID, t.ID)
+		if !m.include(fmt.Sprintf("chat message %d", t.ID), renderChatUnit(t, header), map[string]string{ref: "chat"}) {
+			return
+		}
+		if m.in.included > before {
+			conv = t.ConversationID // the header is in the block only once a unit carrying it was written
+			if m.in.chatTurns == nil {
+				m.in.chatTurns = map[string]chatTurnMeta{}
+			}
+			m.in.chatTurns[ref] = chatTurnMeta{author: chatRole(t.Role), saidAt: t.CreatedAt}
+		}
+		m.in.maxChatID = t.ID
+	}
+}
+
+// skipChatTurn reports a turn that is consumed but never rendered: an empty
+// one, or an owner turn the app already acted on (a knowledge prefix or a
+// remember command).
+func skipChatTurn(t db.ChatTurnForIdeas) bool {
+	if strings.TrimSpace(t.Text) == "" {
+		return true
+	}
+	if t.Role != "user" {
+		return false
+	}
+	if _, _, ok := ParseKnowledgePrefix(t.Text); ok {
+		return true
+	}
+	_, ok := instructions.ParseRemember(t.Text)
+	return ok
+}
+
+// renderChatUnit renders one chat turn as a single line — "owner: <text>
+// ref=chat:<conv>:<msg>" or "assistant: …", whitespace collapsed and cut to
+// the role's rune cap — preceded, when header is set, by its conversation's
+// `[chat "<title>"]` line.
+func renderChatUnit(t db.ChatTurnForIdeas, header bool) string {
+	role, limit := chatRole(t.Role), chatOwnerRuneCap
+	if role == "assistant" {
+		limit = chatAssistantRuneCap
+	}
+	var b strings.Builder
+	if header {
+		title := t.ConversationTitle
+		if title == "" {
+			title = "(untitled chat)"
+		}
+		fmt.Fprintf(&b, "[chat %q]\n", title)
+	}
+	text := textutil.Truncate(strings.Join(strings.Fields(t.Text), " "), limit, "…")
+	fmt.Fprintf(&b, "%s: %s ref=chat:%d:%d\n", role, text, t.ConversationID, t.ID)
+	return b.String()
+}
+
+// chatRole names a chat turn's speaker as the material shows it.
+func chatRole(role string) string {
+	if role == "assistant" {
+		return "assistant"
+	}
+	return "owner"
+}
+
 // persistFloorsOnly commits the floors a run advanced when it produced no
 // material to send the model (every consumed unit was inert). Without this the
 // same empty stream-digest rows and stale recap-less transcripts are re-read on
@@ -448,7 +585,7 @@ func persistFloorsOnly(database *db.DB, in *consolidateInput) error {
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
-	if err := database.SetIdeasFloorsTx(tx, in.maxTopicID, in.maxStreamID, in.maxTranscriptID); err != nil {
+	if err := in.advanceFloors(database, tx); err != nil {
 		return fmt.Errorf("advancing ideas floors: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -678,7 +815,7 @@ func applyConsolidateOps(database *db.DB, ops []consolidateOp, registryByID map[
 
 	for _, op := range ops {
 		switch op.Op {
-		case "new_idea", "new_decision":
+		case "new_idea", "new_decision", "new_note":
 			created, rejected, deduped, aerr := applyNewIdeaOp(tx, database, op, registryByID, in, mintedThisTx)
 			refsRejected += rejected
 			mentionsDeduped += deduped
@@ -728,8 +865,11 @@ func applyConsolidateOps(database *db.DB, ops []consolidateOp, registryByID map[
 // already-mined count, and any error.
 func applyNewIdeaOp(tx *sql.Tx, database *db.DB, op consolidateOp, registryByID map[int64]db.Idea, in *consolidateInput, mintedThisTx map[string]map[string]struct{}) (created bool, refsRejected, mentionsDeduped int, err error) {
 	kind := "idea"
-	if op.Op == "new_decision" {
+	switch op.Op {
+	case "new_decision":
 		kind = "decision"
+	case "new_note":
+		kind = "note"
 	}
 
 	// First pass: drop invented refs (IDEA-02).
@@ -746,6 +886,21 @@ func applyNewIdeaOp(tx *sql.Tx, database *db.DB, op consolidateOp, registryByID 
 		}
 		for _, src := range srcs {
 			candidates = append(candidates, candidate{m: m, src: src})
+		}
+	}
+
+	// A note is a fact or state change stated in an AI chat: only chat evidence
+	// may carry one, so a note citing anything else is dropped whole, its
+	// non-chat refs counted as rejected — no other source's behaviour changes.
+	if kind == "note" {
+		nonChat := 0
+		for _, c := range candidates {
+			if c.src != "chat" {
+				nonChat++
+			}
+		}
+		if nonChat > 0 {
+			return false, refsRejected + nonChat, mentionsDeduped, nil
 		}
 	}
 
@@ -774,16 +929,19 @@ func applyNewIdeaOp(tx *sql.Tx, database *db.DB, op consolidateOp, registryByID 
 			mentionsDeduped++
 			continue
 		}
-		valid = append(valid, db.IdeaMention{
-			Source: c.src, Ref: c.m.Ref, Quote: c.m.Quote, Author: c.m.Author, SaidAt: c.m.SaidAt,
-		})
+		valid = append(valid, in.mentionRow(c.src, c.m))
 	}
 	if len(valid) == 0 {
 		return false, refsRejected, mentionsDeduped, nil // invented (IDEA-02) or already mined (IDEA-05)
 	}
 
-	idea := db.Idea{Kind: kind, Title: op.Title, Essence: op.Essence}
-	if kind == "decision" {
+	idea := db.Idea{Kind: kind, Title: op.Title, Essence: op.Essence, ChatBorn: allChat(valid)}
+	switch {
+	case idea.ChatBorn:
+		// Evidence from AI chats only: the owner's own conversation with the
+		// assistant is not yet a record, so even a decision waits for Approve.
+		idea.Status = "proposed"
+	case kind == "decision":
 		// Decisions are a journal, not a triage queue: the decision already
 		// happened, so there is nothing to approve.
 		idea.Status = "active"
@@ -810,6 +968,16 @@ func applyNewIdeaOp(tx *sql.Tx, database *db.DB, op consolidateOp, registryByID 
 	return true, refsRejected, mentionsDeduped, nil
 }
 
+// allChat reports whether every mention is chat evidence (ms is never empty).
+func allChat(ms []db.IdeaMention) bool {
+	for _, m := range ms {
+		if m.Source != "chat" {
+			return false
+		}
+	}
+	return len(ms) > 0
+}
+
 // applyAttachMentionOp applies one attach_mention op inside tx (split out of
 // applyConsolidateOps, the applyNewIdeaOp precedent): resolves the target
 // idea (following merged_into_id exactly one hop), validates the ref
@@ -820,8 +988,9 @@ func applyNewIdeaOp(tx *sql.Tx, database *db.DB, op consolidateOp, registryByID 
 // IdeaMentionRefsKnownTx uses for clause 2, since a ref may legitimately be
 // recorded on more than one idea) — inserts the mention and, if the
 // target's status is not_now/dropped/rejected, flags it for review
-// (IDEA-04). Returns the already-mined count, the invented-ref count, and
-// any error.
+// (IDEA-04). It never changes the target's status: in particular, evidence
+// from another source never approves a chat-born item. Returns the
+// already-mined count, the invented-ref count, and any error.
 func applyAttachMentionOp(tx *sql.Tx, database *db.DB, op consolidateOp, registryByID map[int64]db.Idea, in *consolidateInput) (mentionsDeduped, refsRejected int, err error) {
 	if op.Mention == nil {
 		return 0, 0, nil
@@ -840,7 +1009,7 @@ func applyAttachMentionOp(tx *sql.Tx, database *db.DB, op consolidateOp, registr
 		return 0, 1, nil
 	}
 	for _, src := range srcs {
-		deduped, aerr := attachMentionSource(tx, database, target, src, op.Mention)
+		deduped, aerr := attachMentionSource(tx, database, target, in.mentionRow(src, *op.Mention))
 		if aerr != nil {
 			return 0, 0, aerr
 		}
@@ -853,7 +1022,8 @@ func applyAttachMentionOp(tx *sql.Tx, database *db.DB, op consolidateOp, registr
 // target already records it (IDEA-05, target-scoped), flagging a
 // not_now/dropped/rejected target for review (IDEA-04). Returns 1 when it was
 // already recorded.
-func attachMentionSource(tx *sql.Tx, database *db.DB, target db.Idea, src string, mention *mentionInput) (int, error) {
+func attachMentionSource(tx *sql.Tx, database *db.DB, target db.Idea, mention db.IdeaMention) (int, error) {
+	src := mention.Source
 	dup, derr := database.IdeaHasMentionRefTx(tx, target.ID, src, mention.Ref)
 	if derr != nil {
 		return 0, fmt.Errorf("checking known mention ref for idea %d: %w", target.ID, derr)
@@ -864,10 +1034,8 @@ func attachMentionSource(tx *sql.Tx, database *db.DB, target db.Idea, src string
 		// IDEA-04, mirroring PR #78's IDEA-02x04 finding).
 		return 1, nil
 	}
-	if merr := database.InsertIdeaMentionTx(tx, db.IdeaMention{
-		IdeaID: target.ID, Source: src, Ref: mention.Ref,
-		Quote: mention.Quote, Author: mention.Author, SaidAt: mention.SaidAt,
-	}); merr != nil {
+	mention.IdeaID = target.ID
+	if merr := database.InsertIdeaMentionTx(tx, mention); merr != nil {
 		return 0, fmt.Errorf("attaching mention to idea %d: %w", target.ID, merr)
 	}
 	if target.Status == "not_now" || target.Status == "dropped" || target.Status == "rejected" {

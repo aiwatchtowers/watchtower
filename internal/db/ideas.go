@@ -451,6 +451,16 @@ func (db *DB) IdeasFloorTops() (digest, stream, transcript int64, err error) {
 	return digest, stream, transcript, nil
 }
 
+// IdeasChatFloorTop returns the newest chat_messages id (0 when there are
+// none) — the chat floor's fast-forward target, migration 00154's seeding.
+func (db *DB) IdeasChatFloorTop() (int64, error) {
+	var top int64
+	if err := db.QueryRow(`SELECT COALESCE(MAX(id), 0) FROM chat_messages`).Scan(&top); err != nil {
+		return 0, fmt.Errorf("getting ideas chat floor top: %w", err)
+	}
+	return top, nil
+}
+
 // SetIdeasFloorsTx updates the three registry watermarks. A workspace row that
 // does not exist yet is an error, not a silent zero-row update (the
 // SetIdeasEmailFloor sibling shape): the caller's transaction must roll back
@@ -505,6 +515,19 @@ func (db *DB) GetIdeasChatFloor() (int64, error) {
 // the same turns on every run (IDEA-01).
 func (db *DB) SetIdeasChatFloorTx(tx *sql.Tx, id int64) error {
 	res, err := tx.Exec(`UPDATE workspace SET ideas_chat_floor = ?`, id)
+	if err != nil {
+		return fmt.Errorf("setting ideas chat floor: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting ideas chat floor: no workspace row exists")
+	}
+	return nil
+}
+
+// SetIdeasChatFloor is SetIdeasChatFloorTx's non-tx sibling, for the backfill
+// engine's final raise (the SetIdeasFloors precedent).
+func (db *DB) SetIdeasChatFloor(id int64) error {
+	res, err := db.Exec(`UPDATE workspace SET ideas_chat_floor = ?`, id)
 	if err != nil {
 		return fmt.Errorf("setting ideas chat floor: %w", err)
 	}

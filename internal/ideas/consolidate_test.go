@@ -1097,3 +1097,275 @@ func TestIdeasRunWith_OtherDirectiveUsesDefault(t *testing.T) {
 		assert.Contains(t, p.LastPromptNote(), "other than %s", extra)
 	}
 }
+
+// --- AI chats as a registry source -------------------------------------------
+
+// seedChatConversation inserts a chat_conversations row (contextType "" is a
+// plain main-chat conversation) and returns its id.
+func seedChatConversation(t *testing.T, d *db.DB, title, contextType string) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
+		VALUES (?, NULLIF(?, ''), NULLIF(?, ''), 0, 0)`, title, contextType, contextType)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return id
+}
+
+// seedChatTurn inserts one chat message at the given time and returns its id.
+func seedChatTurn(t *testing.T, d *db.DB, conv int64, role, text string, at time.Time) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (?, ?, ?, ?)`,
+		conv, role, text, float64(at.Unix()))
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return id
+}
+
+func chatRef(conv, msg int64) string { return fmt.Sprintf("chat:%d:%d", conv, msg) }
+
+// registryRow is one ideas row read straight from the table: ListIdeas and
+// GetIdea are knowledge readers and hide a chat-born item until it is approved.
+type registryRow struct {
+	ID           int64
+	Kind, Status string
+	ChatBorn     bool
+}
+
+func allRegistryRows(t *testing.T, d *db.DB) []registryRow {
+	t.Helper()
+	rows, err := d.Query(`SELECT id, kind, status, chat_born FROM ideas ORDER BY id`)
+	require.NoError(t, err)
+	defer rows.Close()
+	var out []registryRow
+	for rows.Next() {
+		var r registryRow
+		require.NoError(t, rows.Scan(&r.ID, &r.Kind, &r.Status, &r.ChatBorn))
+		out = append(out, r)
+	}
+	require.NoError(t, rows.Err())
+	return out
+}
+
+// quietAgo is a chat turn time safely past the 30-minute quiet window.
+func quietAgo() time.Time { return time.Now().Add(-2 * time.Hour) }
+
+func chatOps(op string, refs ...string) string {
+	ms := make([]string, len(refs))
+	for i, r := range refs {
+		ms[i] = fmt.Sprintf(`{"ref":%q,"quote":"q","author":"owner","said_at":"2026-10-24T10:00:00Z"}`, r)
+	}
+	return fmt.Sprintf(`{"ops":[{"op":%q,"title":"T","essence":"e","mentions":[%s]}]}`, op, strings.Join(ms, ","))
+}
+
+func TestIdeas02_ChatInventedRefDropped(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	conv := seedChatConversation(t, d, "Rollout", "")
+	shown := seedChatTurn(t, d, conv, "user", "we ship on Monday", quietAgo())
+	fresh := seedChatTurn(t, d, conv, "user", "still talking", time.Now())
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return chatOps("new_decision", chatRef(conv, fresh), chatRef(conv, shown+100)), nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	proposed, _, err := p.runConsolidate(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, proposed)
+	_, rejected := p.AccumulatedDrops()
+	assert.Equal(t, 2, rejected, "a chat ref not rendered this run is invented")
+	assert.Empty(t, allRegistryRows(t, d))
+}
+
+func TestConsolidate_ChatOnlyDecisionBornProposedChatBorn(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	conv := seedChatConversation(t, d, "Rollout", "")
+	owner := seedChatTurn(t, d, conv, "user", "let's ship on Monday", quietAgo())
+	reply := seedChatTurn(t, d, conv, "assistant", "Agreed: Monday it is.", quietAgo())
+
+	var captured string
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		captured = user
+		return chatOps("new_decision", chatRef(conv, owner), chatRef(conv, reply)), nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	proposed, _, err := p.runConsolidate(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, proposed)
+	assert.Contains(t, captured, `[chat "Rollout"]`+"\n"+
+		"owner: let's ship on Monday ref="+chatRef(conv, owner)+"\n"+
+		"assistant: Agreed: Monday it is. ref="+chatRef(conv, reply)+"\n")
+
+	ideas := allRegistryRows(t, d)
+	require.Len(t, ideas, 1)
+	assert.Equal(t, "decision", ideas[0].Kind)
+	assert.Equal(t, "proposed", ideas[0].Status, "a chat-only decision waits for Approve")
+	assert.True(t, ideas[0].ChatBorn)
+	mentions, err := d.ListIdeaMentions(ideas[0].ID)
+	require.NoError(t, err)
+	require.Len(t, mentions, 2)
+	for _, m := range mentions {
+		assert.Equal(t, "chat", m.Source)
+	}
+	floor, err := d.GetIdeasChatFloor()
+	require.NoError(t, err)
+	assert.Equal(t, reply, floor)
+}
+
+func TestConsolidate_MixedEvidenceDecisionBornActive(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	seedDigestTopicIdeas(t, d, "C1", "general", nil,
+		[]digest.Decision{{Text: "we picked X", By: "Bob", MessageTS: "678.9"}})
+	conv := seedChatConversation(t, d, "Vendors", "")
+	owner := seedChatTurn(t, d, conv, "user", "so X it is", quietAgo())
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return chatOps("new_decision", "C1|678.9", chatRef(conv, owner)), nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	proposed, _, err := p.runConsolidate(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, proposed)
+	ideas := allRegistryRows(t, d)
+	require.Len(t, ideas, 1)
+	assert.Equal(t, "active", ideas[0].Status)
+	assert.False(t, ideas[0].ChatBorn)
+}
+
+func TestConsolidate_NewNoteFromSlackRefDropped(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	seedDigestTopicIdeas(t, d, "C1", "general", nil,
+		[]digest.Decision{{Text: "we picked X", By: "Bob", MessageTS: "678.9"}})
+	conv := seedChatConversation(t, d, "Vendors", "")
+	owner := seedChatTurn(t, d, conv, "user", "the X contract ends in March", quietAgo())
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return `{"ops":[` +
+			`{"op":"new_note","title":"Slack only","essence":"e","mentions":[{"ref":"C1|678.9"}]},` +
+			`{"op":"new_note","title":"Mixed","essence":"e","mentions":[{"ref":"C1|678.9"},{"ref":"` + chatRef(conv, owner) + `"}]}` +
+			`]}`, nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	proposed, _, err := p.runConsolidate(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, proposed)
+	_, rejected := p.AccumulatedDrops()
+	assert.Equal(t, 2, rejected, "each non-chat ref of a new_note is rejected")
+	assert.Empty(t, allRegistryRows(t, d))
+}
+
+func TestConsolidate_NewNoteFromChatCreatesProposedNote(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	conv := seedChatConversation(t, d, "Vendors", "")
+	owner := seedChatTurn(t, d, conv, "user", "the X contract ends in March", quietAgo())
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return chatOps("new_note", chatRef(conv, owner)), nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	proposed, _, err := p.runConsolidate(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, 1, proposed)
+	ideas := allRegistryRows(t, d)
+	require.Len(t, ideas, 1)
+	assert.Equal(t, "note", ideas[0].Kind)
+	assert.Equal(t, "proposed", ideas[0].Status)
+	assert.True(t, ideas[0].ChatBorn)
+	mentions, err := d.ListIdeaMentions(ideas[0].ID)
+	require.NoError(t, err)
+	require.Len(t, mentions, 1)
+	assert.Equal(t, "chat", mentions[0].Source)
+	assert.Equal(t, chatRef(conv, owner), mentions[0].Ref)
+}
+
+func TestConsolidate_SlackAttachDoesNotActivateChatBorn(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	itemID := seedIdeaRow(t, d, db.Idea{Kind: "decision", Title: "Ship Monday", Status: "proposed", ChatBorn: true})
+	seedDigestTopicIdeas(t, d, "C1", "general", nil,
+		[]digest.Decision{{Text: "shipping Monday", By: "Bob", MessageTS: "5.5"}})
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return fmt.Sprintf(`{"ops":[{"op":"attach_mention","idea_id":%d,"mention":{"ref":"C1|5.5","quote":"q"}}]}`, itemID), nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	_, _, err := p.runConsolidate(context.Background())
+	require.NoError(t, err)
+	rows := allRegistryRows(t, d)
+	require.Len(t, rows, 1)
+	assert.Equal(t, registryRow{ID: itemID, Kind: "decision", Status: "proposed", ChatBorn: true}, rows[0],
+		"Slack evidence never approves a chat-born item")
+	mentions, err := d.ListIdeaMentions(itemID)
+	require.NoError(t, err)
+	require.Len(t, mentions, 1)
+	assert.Equal(t, "slack", mentions[0].Source)
+}
+
+func TestConsolidate_IdeaContextConversationsNotMined(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	ideaConv := seedChatConversation(t, d, "Discuss idea", "idea")
+	hidden := seedChatTurn(t, d, ideaConv, "user", "discussing the idea card", quietAgo())
+	conv := seedChatConversation(t, d, "Plain", "")
+	shown := seedChatTurn(t, d, conv, "user", "a plain chat line", quietAgo())
+
+	var captured string
+	gen := &fakeGen{reply: func(user string) (string, error) {
+		captured = user
+		return chatOps("new_decision", chatRef(ideaConv, hidden)), nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	proposed, _, err := p.runConsolidate(context.Background())
+	require.NoError(t, err)
+	assert.Zero(t, proposed)
+	assert.NotContains(t, captured, "discussing the idea card")
+	assert.Contains(t, captured, "a plain chat line")
+	_, rejected := p.AccumulatedDrops()
+	assert.Equal(t, 1, rejected)
+	floor, err := d.GetIdeasChatFloor()
+	require.NoError(t, err)
+	assert.Equal(t, shown, floor)
+}
+
+// TestConsolidate_ChatMentionAuthorAndTimeFromTurn: a chat mention's author
+// and said_at are the rendered turn's own (role, created_at), never the
+// model's — on a new item and on an attach alike.
+func TestConsolidate_ChatMentionAuthorAndTimeFromTurn(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	existing := seedIdeaRow(t, d, db.Idea{Kind: "decision", Title: "Ship Monday", Status: "active"})
+	conv := seedChatConversation(t, d, "Rollout", "")
+	ownerAt := quietAgo().Add(-time.Minute)
+	owner := seedChatTurn(t, d, conv, "user", "let's ship on Monday", ownerAt)
+	replyAt := quietAgo()
+	reply := seedChatTurn(t, d, conv, "assistant", "Monday it is.", replyAt)
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return fmt.Sprintf(`{"ops":[
+			{"op":"new_note","title":"N","essence":"e","mentions":[{"ref":%q,"author":"Bob","said_at":"1999-01-01T00:00:00Z"}]},
+			{"op":"attach_mention","idea_id":%d,"mention":{"ref":%q,"author":"Bob","said_at":"1999-01-01T00:00:00Z"}}
+		]}`, chatRef(conv, owner), existing, chatRef(conv, reply)), nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	_, _, err := p.runConsolidate(context.Background())
+	require.NoError(t, err)
+
+	rows := allRegistryRows(t, d)
+	require.Len(t, rows, 2)
+	noteMentions, err := d.ListIdeaMentions(rows[1].ID)
+	require.NoError(t, err)
+	require.Len(t, noteMentions, 1)
+	assert.Equal(t, "owner", noteMentions[0].Author)
+	assert.Equal(t, ownerAt.UTC().Format(time.RFC3339), noteMentions[0].SaidAt)
+
+	attached, err := d.ListIdeaMentions(existing)
+	require.NoError(t, err)
+	require.Len(t, attached, 1)
+	assert.Equal(t, "assistant", attached[0].Author)
+	assert.Equal(t, replyAt.UTC().Format(time.RFC3339), attached[0].SaidAt)
+}

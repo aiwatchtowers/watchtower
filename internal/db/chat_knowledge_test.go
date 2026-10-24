@@ -126,7 +126,12 @@ func TestListChatTurnsForIdeas(t *testing.T) {
 	insertChatMessage(t, d, ideaConv, "user", "discussing an idea", at(-time.Hour))
 	second := insertChatMessage(t, d, plain, "assistant", "agreed", at(0))
 	insertChatMessage(t, d, plain, "tool", "noise", at(-time.Minute))
-	insertChatMessage(t, d, plain, "user", "too fresh", at(time.Second))
+	failed := insertChatMessage(t, d, plain, "assistant", "half an error", at(-time.Minute))
+	_, err = d.Exec(`UPDATE chat_messages SET status = 'error' WHERE id = ?`, failed)
+	require.NoError(t, err)
+	stopped := insertChatMessage(t, d, plain, "assistant", "stopped reply", at(-time.Minute))
+	_, err = d.Exec(`UPDATE chat_messages SET status = 'partial' WHERE id = ?`, stopped)
+	require.NoError(t, err)
 
 	// A branched conversation: root → (offBranch | onBranch), active leaf onBranch.
 	branched := insertChatConversation(t, d, "target", "7")
@@ -137,13 +142,22 @@ func TestListChatTurnsForIdeas(t *testing.T) {
 	_, err = d.Exec(`UPDATE chat_messages SET created_at = ? WHERE conversation_id = ?`, at(-time.Minute), branched)
 	require.NoError(t, err)
 
+	// A message past the cutoff stops the listing: a later id stamped older
+	// (clock skew) is not returned above it, so a floor can never pass it.
+	insertChatMessage(t, d, plain, "user", "too fresh", at(time.Second))
+	insertChatMessage(t, d, plain, "user", "skewed older", at(-time.Hour))
+
+	ids := func(turns []ChatTurnForIdeas) []int64 {
+		out := make([]int64, len(turns))
+		for i, turn := range turns {
+			out[i] = turn.ID
+		}
+		return out
+	}
 	got, err := d.ListChatTurnsForIdeas(below, cutoff.Format(time.RFC3339), 100)
 	require.NoError(t, err)
-	ids := make([]int64, len(got))
-	for i, turn := range got {
-		ids[i] = turn.ID
-	}
-	assert.Equal(t, []int64{first, second, root, onBranch}, ids)
+	assert.Equal(t, []int64{first, second, stopped, root, onBranch}, ids(got),
+		"error replies are left out, a stopped (partial) reply is kept")
 	assert.Equal(t, ChatTurnForIdeas{
 		ID: first, ConversationID: plain, ConversationTitle: "Rollout plan",
 		Role: "user", Text: "we ship on Monday", CreatedAt: cutoff.Add(-time.Hour).Format(time.RFC3339),
@@ -156,6 +170,8 @@ func TestListChatTurnsForIdeas(t *testing.T) {
 
 	_, err = d.ListChatTurnsForIdeas(0, "not a time", 10)
 	require.Error(t, err)
+	_, err = d.ListChatTurnsForIdeas(below, cutoff.Format(time.RFC3339), 0)
+	require.Error(t, err, "a non-positive limit is refused, never read as no limit")
 }
 
 func TestKnowledgeVisibleIdeaCond(t *testing.T) {
