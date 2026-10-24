@@ -99,6 +99,21 @@ final class RecipeFrontmatterTests: XCTestCase {
         XCTAssertEqual(Array(RecipeFrontmatter.render(Self.sample).utf8), Array(data))
     }
 
+    func testRoundTripKeepsSummary() {
+        var f = Self.sample
+        f.summary = #"Your "brief" and plan"#
+        let text = RecipeFrontmatter.render(f) + Self.body
+        XCTAssertEqual(RecipeFrontmatter.summary(in: text), #"Your "brief" and plan"#)
+        XCTAssertEqual(Array(keys(RecipeFrontmatter.render(f), indent: 0).prefix(2)), ["name", "summary"])
+        // Fields that say nothing about the summary keep the recipe's own.
+        XCTAssertEqual(RecipeFrontmatter.splice(Self.sample, into: text), text)
+        // An explicit empty summary removes it.
+        f.summary = ""
+        XCTAssertNil(RecipeFrontmatter.summary(in: RecipeFrontmatter.splice(f, into: text)))
+        XCTAssertEqual(RecipeFrontmatter.summary(in: "---\nname: a\nsummary: 'it''s fine'\n---\nx\n"), "it's fine")
+        XCTAssertEqual(RecipeFrontmatter.summary(in: "---\nname: a\nsummary: plain words\n---\nx\n"), "plain words")
+    }
+
     func testTriggerFromSpecJSON() {
         XCTAssertEqual(RecipeFrontmatter.trigger(kind: "schedule", specJSON: #"{"schedule":"0 9 * * 1-5"}"#),
                        .schedule("0 9 * * 1-5"))

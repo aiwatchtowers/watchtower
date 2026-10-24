@@ -46,6 +46,19 @@ enum DesignShotCatalog {
             DesignShot(name: "chat-rows", size: NSSize(width: 560, height: 280)) {
                 AnyView(DesignShotFixtures.chatRows().padding(12).shotFrame().detailBackground())
             },
+            // Native text runs (§5b): finished and streaming must match.
+            DesignShot(name: "chat-markdown-finished", size: NSSize(width: 784, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.finished(width: 760).shotFrame().detailBackground())
+            },
+            DesignShot(name: "chat-markdown-streaming", size: NSSize(width: 784, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.streaming(width: 760).shotFrame().detailBackground())
+            },
+            DesignShot(name: "chat-markdown-finished-narrow", size: NSSize(width: 344, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.finished(width: 320).shotFrame().detailBackground())
+            },
+            DesignShot(name: "chat-markdown-streaming-narrow", size: NSSize(width: 344, height: 0)) {
+                AnyView(ChatMarkdownShotFixtures.streaming(width: 320).shotFrame().detailBackground())
+            },
             DesignShot(name: "workchat-live-line", size: NSSize(width: 560, height: 120)) {
                 AnyView(DesignShotFixtures.workchatLiveLine().padding(12).shotFrame().detailBackground())
             },
@@ -75,6 +88,9 @@ enum DesignShotCatalog {
             },
             DesignShot(name: "automation-list", size: NSSize(width: 1280, height: 760)) {
                 AutomationShotFixtures.list()
+            },
+            DesignShot(name: "automation-list-collapsed", size: NSSize(width: 1280, height: 760)) {
+                AutomationShotFixtures.list(collapsed: true)
             },
             DesignShot(name: "automation-card", size: NSSize(width: 900, height: 720)) {
                 AnyView(AutomationShotFixtures.card().detailBackground())

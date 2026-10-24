@@ -628,14 +628,21 @@ package final class AutomationEditorCenter {
     /// A save or confirm that landed after its panel went away: nothing
     /// will open the saved card, so its finished state is dropped (with the
     /// draft) and the next Edit opens the editor on the file, not the card.
-    package func settleUnwatched(_ key: Int64) {
+    /// Returns the automation a new draft's landed save wrote (the caller
+    /// then unlists the draft, `AutomationsViewModel.draftSaved`); nil for
+    /// anything else, a failed save included.
+    @discardableResult
+    package func settleUnwatched(_ key: Int64) -> Int64? {
+        var savedNew: Int64?
         if saving[key] == .done {
+            if Self.isNewDraft(key) { savedNew = savedIDs[key] }
             discard(key)
         }
         if confirmations[key] == .done {
             confirmations[key] = nil
             discard(key)
         }
+        return savedNew
     }
 
     /// The panel is done with a confirm: its outcome is no longer shown.

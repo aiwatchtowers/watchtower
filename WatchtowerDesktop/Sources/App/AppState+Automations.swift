@@ -184,3 +184,48 @@ extension AppState {
         selectedDestination = .automations
     }
 }
+
+// MARK: - New automation chat
+
+extension AppState {
+    /// The panel's chat for a new automation, keyed by an explicit context id
+    /// (`draftContextID(for:)`), so each draft keeps its own conversation. A
+    /// workbench that is gone opens nothing (never a personal chat in its place).
+    func newAutomationEditorChat(contextID: String, scope: AutomationScopeChoice) async throws -> AutomationEditorChat? {
+        guard let pool = databaseManager?.dbPool else { return nil }
+        var workbench: AutomationEditorChatSurface.NewWorkbench?
+        if case let .workbench(id, _, _) = scope {
+            guard let project = workbenchesViewModel?.summaries.first(where: { $0.project.id == id })?.project
+            else { return nil }
+            workbench = (id, project.name, project.folderURL.lastPathComponent)
+        }
+        let provider = Constants.aiProviderID()
+        let conversationID = try await AutomationEditorChatSurface.newConversationID(contextID: contextID, dbPool: pool)
+        let box = PanelDraftBox()
+        return makeAutomationEditorChat(
+            conversationID: conversationID, pool: pool, provider: provider, panelDraftBox: box,
+            onSaved: { [weak self] savedID in
+                self?.newDraftSavedFromChat(savedID, contextID: contextID, conversationID: conversationID)
+            },
+            makeSpec: { outcomes in
+                AutomationEditorChatSurface.newSpec(
+                    provider: provider, contextID: contextID, workbench: workbench, conversationID: conversationID,
+                    dbPool: pool, outcomes: outcomes, panelDraft: box.read)
+            }
+        )
+    }
+
+    /// A new draft chat's approved `save_automation` landed: the list is
+    /// re-read; a new recipe (`savedID`) unlists the draft, its chat becoming
+    /// the automation's (`draftSaved`), and opens its card while the panel
+    /// still shows that draft (spec 2026-10-24 §4).
+    private func newDraftSavedFromChat(_ savedID: Int64?, contextID: String, conversationID: Int64) {
+        guard let vm = automationsViewModel else { return }
+        vm.refresh()
+        guard let savedID else { return }
+        Task {
+            await vm.draftSaved(contextID: contextID, conversationID: conversationID, automationID: savedID)
+            if case let .editor(.newDraft(current, _, _)) = vm.panel, current == contextID { vm.showCard(savedID) }
+        }
+    }
+}

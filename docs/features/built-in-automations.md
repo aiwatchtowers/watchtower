@@ -210,3 +210,7 @@ A watch is a Personal recipe, file `<workspace>/automations/watch-<track id>-<sl
 - `tracks watch <target-id>` requires `--text` but has no such flag (pre-existing; follow-up).
 - Turning off Track my threads also stops the watches (FEAT-01).
 - A failed owner copy of Track my threads waits for a digest newer than the failed attempt; that mark lives in memory, so a daemon restart allows one more attempt.
+
+## Card fields `does` and `result_filter` (2026-10-24)
+
+`Entry.Does` (the card's steps in plain words, in order) and `Entry.ResultFilter` (the Inbox filter the result lands in: `day`, `tracks`, `ideas` or `automations`) are `show --json`'s `builtin.does` and `builtin.result_filter` (`builtin.Card`; Swift `AutomationsCLI` decodes `result_filter`). The Desktop card shows the steps in a **Does** box and a **Show in Inbox** button in **Result** that opens that filter. Each built-in's description is one sentence; the card lede (`BuiltinAutomationCardModel.lede`) falls back to `AutomationRowSummary.description(recipeText:)`.

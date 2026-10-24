@@ -57,6 +57,18 @@ func TestRegistry_ShippedRecipesParse(t *testing.T) {
 	}
 }
 
+func TestBuiltinRecipes_HaveSummary(t *testing.T) {
+	for _, e := range All() {
+		r, err := ParseShipped(e)
+		if err != nil {
+			t.Fatalf("%s: %v", e.ID, err)
+		}
+		if n := len([]rune(r.Summary)); n == 0 || n > automations.MaxSummaryRunes {
+			t.Errorf("%s: summary %q has %d runes", e.ID, r.Summary, n)
+		}
+	}
+}
+
 // TestRegistry_PromptsCoverDefaultPromptCalls runs each shipped recipe and
 // checks that builtin.defaultPrompt is asked for exactly the entry's prompt
 // names (the shipped loop names them through a variable, so the script text
@@ -280,5 +292,44 @@ func TestCard_CostsCountTokensAndAStoppedBuiltinShowsOff(t *testing.T) {
 	}
 	if card, err = Card(f.d, f.cfg, f.ws, mustEntry(t), f.row(t), f.clock.Now()); err != nil || card.Enabled {
 		t.Errorf("a stopped built-in's card: enabled=%v, %v; want off", card.Enabled, err)
+	}
+}
+
+// TestCard_DoesAndResultFilter: every card lists what it does and names the
+// Inbox filter its result lands in.
+func TestCard_DoesAndResultFilter(t *testing.T) {
+	want := map[string]string{"morning-brief": "day", "track-my-threads": "tracks", "idea-finder": "ideas", "reactions": "automations"}
+	f := newFixture(t)
+	for _, e := range All() {
+		card, err := Card(f.d, f.cfg, f.ws, e, nil, f.clock.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(card.Does) < 1 {
+			t.Errorf("%s: no Does steps", e.ID)
+		}
+		if card.ResultFilter != want[e.ID] {
+			t.Errorf("%s: result_filter %q, want %q", e.ID, card.ResultFilter, want[e.ID])
+		}
+	}
+}
+
+// TestBuiltinRecipes_DescriptionIsOneSentence: the built-in card's lede shows
+// the whole description, so it stays a single sentence; detail goes in Does.
+func TestBuiltinRecipes_DescriptionIsOneSentence(t *testing.T) {
+	for _, e := range All() {
+		r, err := ParseShipped(e)
+		if err != nil {
+			t.Fatalf("%s: %v", e.ID, err)
+		}
+		d := strings.TrimSpace(r.Description)
+		if d == "" || strings.ContainsAny(d, "\n") {
+			t.Errorf("%s: description %q is empty or spans lines", e.ID, d)
+		}
+		for _, sep := range []string{". ", "! ", "? "} {
+			if strings.Contains(d, sep) {
+				t.Errorf("%s: description %q has more than one sentence", e.ID, d)
+			}
+		}
 	}
 }

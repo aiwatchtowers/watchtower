@@ -124,6 +124,7 @@ type Budget struct {
 type Recipe struct {
 	Slug              string
 	Name              string
+	Summary           string // optional one-liner for the list; not in the approval hash
 	Trigger           Trigger
 	Missed            MissedPolicy
 	Concurrency       int
@@ -152,7 +153,9 @@ func (e *ParseError) Error() string {
 }
 
 const (
-	maxNameRunes        = 80
+	maxNameRunes = 80
+	// MaxSummaryRunes caps the optional `summary` key.
+	MaxSummaryRunes     = 60
 	maxButtonLabelRunes = 24
 	// frontmatterLineOffset turns a yaml line (1 = the line after the opening
 	// "---") into a file line.
@@ -283,7 +286,7 @@ func parseFrontmatter(src string, r *Recipe) error {
 	return applyFields(fields, r)
 }
 
-var topLevelKeys = []string{"name", "trigger", "missed", "concurrency", "permissions", "outputs", "budget", "pause_timeout_hours"}
+var topLevelKeys = []string{"name", "summary", "trigger", "missed", "concurrency", "permissions", "outputs", "budget", "pause_timeout_hours"}
 
 // mappingFields indexes a mapping's values by key, refusing duplicate and
 // unknown keys (strict, spec §2.2) with the key's line.
@@ -328,6 +331,9 @@ func applyFields(f map[string]*yaml.Node, r *Recipe) error {
 	if err := applyName(f["name"], r); err != nil {
 		return err
 	}
+	if err := applySummary(f["summary"], r); err != nil {
+		return err
+	}
 	if err := applyTrigger(f["trigger"], r); err != nil {
 		return err
 	}
@@ -369,6 +375,25 @@ func applyName(n *yaml.Node, r *Recipe) error {
 		return &ParseError{Line: fileLine(n), Msg: fmt.Sprintf("name must be 1-%d characters", maxNameRunes)}
 	}
 	r.Name = s
+	return nil
+}
+
+func applySummary(n *yaml.Node, r *Recipe) error {
+	if n == nil {
+		return nil
+	}
+	var s string
+	if err := decodeField(n, "summary", "a string", &s); err != nil {
+		return err
+	}
+	s = strings.TrimSpace(s)
+	if strings.Contains(s, "\n") {
+		return &ParseError{Line: fileLine(n), Msg: "summary must be one line"}
+	}
+	if utf8.RuneCountInString(s) > MaxSummaryRunes {
+		return &ParseError{Line: fileLine(n), Msg: fmt.Sprintf("summary must be at most %d characters", MaxSummaryRunes)}
+	}
+	r.Summary = s
 	return nil
 }
 
