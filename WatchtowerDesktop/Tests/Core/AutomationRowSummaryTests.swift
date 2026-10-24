@@ -97,7 +97,12 @@ final class AutomationRowSummaryTests: XCTestCase {
             id: "personal", title: "Personal", drafts: [draft],
             items: [item(lastRun: .failed), item(confirmed: false)]
         )
-        XCTAssertEqual(section.attention, "1 failed · 1 draft · 1 needs confirmation")
-        XCTAssertNil(AutomationListSection(id: "p", title: "P", drafts: [], items: [item()]).attention)
+        // Failed and needs confirmation are warnings; a draft is not.
+        XCTAssertEqual(section.attention, [
+            AutomationAttentionPart(text: "1 failed", isWarning: true),
+            AutomationAttentionPart(text: "1 draft", isWarning: false),
+            AutomationAttentionPart(text: "1 needs confirmation", isWarning: true)
+        ])
+        XCTAssertEqual(AutomationListSection(id: "p", title: "P", drafts: [], items: [item()]).attention, [])
     }
 }

@@ -132,15 +132,16 @@ package struct AutomationListSection: Identifiable, Equatable, Sendable {
     package var count: Int { drafts.count + items.count }
     package var isEmpty: Bool { drafts.isEmpty && items.isEmpty }
 
-    /// What a folded header still says: "1 failed", "1 draft",
-    /// "1 needs confirmation", joined by " · "; nil when nothing needs the owner.
-    package var attention: String? {
+    /// What a folded header still says, in order: "1 failed", "1 draft",
+    /// "1 needs confirmation"; empty when nothing needs the owner. Failed and
+    /// needs-confirmation parts are warnings, a draft is not.
+    package var attention: [AutomationAttentionPart] {
         let failed = items.filter { AutomationRowPresentation.isFailed($0) }.count
         let confirm = items.filter { $0.automation.needsConfirmation }.count
-        let parts = [failed > 0 ? "\(failed) failed" : nil,
-                     !drafts.isEmpty ? "\(drafts.count) draft" : nil,
-                     confirm > 0 ? "\(confirm) needs confirmation" : nil].compactMap { $0 }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+        return [failed > 0 ? AutomationAttentionPart(text: "\(failed) failed", isWarning: true) : nil,
+                !drafts.isEmpty ? AutomationAttentionPart(text: "\(drafts.count) draft", isWarning: false) : nil,
+                confirm > 0 ? AutomationAttentionPart(text: "\(confirm) needs confirmation", isWarning: true) : nil]
+            .compactMap { $0 }
     }
 
     package init(id: String, title: String, drafts: [AutomationDraftRow], items: [AutomationListItem]) {
@@ -149,6 +150,12 @@ package struct AutomationListSection: Identifiable, Equatable, Sendable {
         self.drafts = drafts
         self.items = items
     }
+}
+
+/// One part of a folded section header's attention suffix.
+package struct AutomationAttentionPart: Equatable, Sendable {
+    package let text: String
+    package let isWarning: Bool
 }
 
 package enum AutomationListSections {
@@ -251,10 +258,25 @@ package enum AutomationRowPresentation {
         return chips
     }
 
-    /// The row's second line; an off recipe's starts "Off · ".
+    /// The row's third line: the trigger and its fact. A failed last run
+    /// leads with its error, so a cut line still shows it; when line 1 shows
+    /// the next run (`state` is `.next`), the next run is not said again. No
+    /// "Off · ": the dot and line 1 say it.
     package static func line(_ item: AutomationListItem, changes: [AutomationChange]?, now: Date) -> String {
-        let detail = AutomationCardPresentation.rowDetailLine(item, changes: changes, now: now)
-        return isOn(item) ? detail : "Off · " + detail
+        let automation = item.automation
+        if automation.parseError.isEmpty, item.activeRun == nil, let last = item.lastRun, isFailed(item) {
+            let reason = last.error.isEmpty
+                ? AutomationCardPresentation.statusText(last.status).lowercased()
+                : AutomationCardPresentation.firstLine(last.error)
+            return [reason, item.triggerText].filter { !$0.isEmpty }.joined(separator: " · ")
+        }
+        if case .next = state(item, now: now), automation.parseError.isEmpty, !automation.needsConfirmation,
+           item.activeRun == nil, automation.triggerKind != "event" {
+            let tokens = item.tokens7d > 0
+                ? ["\(AutomationCardPresentation.compactTokens(item.tokens7d)) tokens this week"] : []
+            return ([item.triggerText] + tokens).joined(separator: " · ")
+        }
+        return AutomationCardPresentation.rowDetailLine(item, changes: changes, now: now)
     }
 
     /// The row's on/off dot.
@@ -268,8 +290,8 @@ package enum AutomationRowPresentation {
         item.automation.parseError.isEmpty ? AutomationRowSummary.summary(recipeText: item.automation.recipeText) : nil
     }
 
-    /// The last run failed (red or orange badge).
-    static func isFailed(_ item: AutomationListItem) -> Bool {
+    /// The last run failed (red or orange badge): line 3 is in the warning tone.
+    package static func isFailed(_ item: AutomationListItem) -> Bool {
         guard let last = item.lastRun else { return false }
         return [.red, .orange].contains(last.status.badge)
     }

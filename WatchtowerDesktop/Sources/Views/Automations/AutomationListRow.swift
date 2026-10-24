@@ -22,10 +22,8 @@ struct AutomationListRow: View {
             name: item.automation.name.isEmpty ? item.automation.slug : item.automation.name,
             state: state,
             summary: AutomationRowPresentation.summary(item),
-            // Line 1 already says "off": line 3 drops its "Off · ".
-            line: state == .off
-                ? AutomationCardPresentation.rowDetailLine(item, changes: changes, now: now)
-                : AutomationRowPresentation.line(item, changes: changes, now: now)
+            line: AutomationRowPresentation.line(item, changes: changes, now: now),
+            lineIsWarning: AutomationRowPresentation.isFailed(item)
         )
         .panelTab(isSelected: isSelected)
         .onTapGesture(perform: onSelect)
@@ -51,7 +49,8 @@ struct AutomationDraftListRow: View {
             name: row.name,
             state: .chip(.draft),
             summary: row.summary,
-            line: "Not saved · edited \(AutomationCardPresentation.relative(now.timeIntervalSince(row.updatedAt))) ago"
+            line: "Not saved · edited \(AutomationCardPresentation.relative(now.timeIntervalSince(row.updatedAt))) ago",
+            lineIsWarning: false
         )
         .panelTab(isSelected: isSelected)
         .onTapGesture(perform: onSelect)
@@ -81,11 +80,8 @@ struct AutomationSectionHeader: View {
                     .lineLimit(1)
                 Text("\(section.count)")
                     .sidebarSectionLabel()
-                if !expanded, let attention = section.attention {
-                    Text("· " + attention)
-                        .font(.caption2)
-                        .foregroundStyle(Tone.warning)
-                        .lineLimit(1)
+                if !expanded, !section.attention.isEmpty {
+                    attentionText.font(.caption2).lineLimit(1)
                 }
                 Spacer(minLength: 0)
             }
@@ -104,6 +100,16 @@ struct AutomationSectionHeader: View {
     }
 }
 
+extension AutomationSectionHeader {
+    /// "· 1 failed · 1 draft": warnings in the warning tone, the rest secondary.
+    private var attentionText: Text {
+        section.attention.enumerated().reduce(Text("")) { text, entry in
+            text + Text(entry.offset == 0 ? "· " : " · ").foregroundStyle(.secondary)
+                + Text(entry.element.text).foregroundStyle(entry.element.isWarning ? Tone.warning : Color.secondary)
+        }
+    }
+}
+
 /// The three lines both row kinds share.
 private struct AutomationRowContent: View {
     let isOn: Bool
@@ -112,6 +118,7 @@ private struct AutomationRowContent: View {
     let state: AutomationRowState
     let summary: String?
     let line: String
+    let lineIsWarning: Bool
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
@@ -132,7 +139,7 @@ private struct AutomationRowContent: View {
                 }
                 Text(line)
                     .font(.caption)
-                    .foregroundStyle(state == .failed ? AnyShapeStyle(Tone.warning) : AnyShapeStyle(.tertiary))
+                    .foregroundStyle(lineIsWarning ? AnyShapeStyle(Tone.warning) : AnyShapeStyle(.tertiary))
                     .lineLimit(1)
             }
         }
