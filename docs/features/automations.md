@@ -353,6 +353,18 @@ Watchtower's own recipes, embedded in the binary and run at a slot in the daemon
 
 Registry, row model, primitives, the Morning brief, the CLI paths, the one-time upgrade step, the dual paths and how C3 adds its built-ins: [built-in-automations.md](built-in-automations.md).
 
+## Tab polish (2026-10-24)
+
+Spec `docs/superpowers/specs/2026-10-24-automations-tab-polish-design.md`, plan `docs/superpowers/plans/2026-10-24-automations-tab-polish.md`.
+
+- **`summary:`** An optional recipe key, one line, at most 60 runes, **not** part of `approvalCanonical` (editing it never asks for a new confirmation). Without it the list line is `automations.FallbackSummary(description)` (Go) / `AutomationRowSummary.fallback(description:)` (Swift): the description's first sentence, cut to 60 runes on a word boundary plus "…". The two implementations are a dual path; `AutomationRowSummary.description(recipeText:)` mirrors Go's `parseBody` and is also the built-in card's lede fallback.
+- **List panel.** Shaped like Chats: collapsible groups (Built in, Personal, one per workbench; the folded ids live in `UserDefaults` `automations.collapsedSections`, logic in `AutomationListCollapse`), three-line rows (name, `summary`, state line). A failed run's error leads the state line.
+- **Draft carry-over.** Saving a draft removes its row at once (`AutomationsViewModel.draftSaved`); after the engine is idle (`EmbeddedChatCenter.releaseWhenIdle`) the draft's conversation is re-keyed to the new automation (`DatabaseEmbeddedChatStore.rekeyConversation`), so **Edit** opens the same chat.
+- **Draft column toggle.** The editor's chat-and-draft split can hide the draft column (`automations.draftColumnHidden`, the header button **Hide Draft** / **Show Draft**, ⌥⌘0, Automations tab only); with it hidden the save button reads a compact **Save…** that shows the column again.
+- **Editor reads (AGENT-04 note in `docs/inventory/agent-actions.md`).** `automation_editor` gains only `AccessRead` tools: `list_automation_runs`, `get_automation_run`, `list_automations`, `get_automation` (editor only, not on `automation`; any of the owner's automations or runs that are not removed, no scope filter), `list_slack_channels` (`main` + `automation_editor`), the 13 automation-only reads from "Automation read tools" and `get_confluence_page`. `save_automation` is still the only write; no Quick Connections.
+- **Untrusted text.** The editor now reads email bodies and meeting recaps, which are untrusted. Nothing it reads can write: saves stay `AlwaysAsk`, and the owner approves the diff.
+- **Chat performance.** Markdown inline rendering is memoised and `ChatThreadIndex` keeps the feed's per-message lookups off the render path. Finished answers draw prose with a native text view.
+
 ## Phase status (P1–P6 shipped)
 
 - **P4 events:** done — bus, publishers in the sync phases, `Flush` per cycle, `where` matching, `db.MergeQueuedAutomationRunEvents`; the event half of AUTO-09 is Enforced (Event triggers above).
