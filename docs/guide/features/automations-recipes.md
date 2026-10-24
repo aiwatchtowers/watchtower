@@ -43,7 +43,7 @@ The file belongs to the repository, so it can arrive with a `git pull` or be cha
 
 ## Using it
 1. In **Automations**, click **+**, pick the scope, then a template under **How do you want to start?** and **Continue**.
-2. The panel shows the template's fields, if it has any, and the recipe it makes, checked but not written. **Save and Turn On** installs, confirms and turns it on. **Adjust in Chat** opens the recipe in the editor chat instead; a template with several recipes has no such button.
+2. The panel shows the template's fields, if any, and the recipe it makes, checked but not written. **Save and Turn On** installs, confirms and turns it on. **Adjust in Chat** opens the recipe in the editor chat instead; a template with several recipes has no such button.
 
 ### The templates
 | Template | Where | When | What it does |
@@ -55,7 +55,7 @@ The file belongs to the repository, so it can arrive with a `git pull` or be cha
 | `pr-review-rounds` | workbench | weekdays 10:00 and 16:00 | lists open pull requests with `gh` and opens a review session for each changed one, at most 10 per round; the rest wait for the next round |
 | `release-buttons` | workbench | by hand | three recipes (release, deploy to test, deploy to stage), each running one `make` target and asking before it acts |
 
-`new-mail-summary` runs on its own after a Gmail or IMAP sync brings new mail. A run by hand or on a schedule has no mail event, so first put your mailboxes' labels or addresses in `scheduledAccounts` in the script.
+`new-mail-summary` runs on its own after a Gmail or IMAP sync brings new mail. A run by hand or on a schedule has no mail event, so put your mailboxes' labels or addresses in `scheduledAccounts` in the script. Late-synced mail counts only under two days old.
 
 `jira-state-report` picks its projects when you install it: every synced Jira project with an open issue assigned to you or reported by you. The form says which ("Covers: PAY, OPS"). Each project gets its own `jira:read@…` permission and an entry in the script's `projects` list; to add or drop one later, change both.
 
