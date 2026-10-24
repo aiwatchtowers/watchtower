@@ -12,7 +12,7 @@ struct ReviewFileHeader: View {
     var body: some View {
         let previous = model.previousUnviewed(before: file.path)
         let next = model.nextUnviewed(after: file.path)
-        let risk = model.risk(for: file.path)
+        let risk = model.highestRisk(for: file.path)
         HStack(spacing: Spacing.regular) {
             Text(ReviewFileRow.glyph(file.status))
                 .font(.caption.monospaced().weight(.semibold))

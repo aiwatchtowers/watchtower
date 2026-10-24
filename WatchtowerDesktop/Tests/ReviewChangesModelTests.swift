@@ -290,6 +290,8 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.open()
         await h.model.select("a.go")
         try await h.model.addComment(path: "a.go", side: "new", startLine: 2, endLine: 2, body: "why two?")
+        let stored = try await h.comments()
+        XCTAssertEqual(stored.map(\.lens), [""], "a comment without a lens stores an empty lens")
         try await h.model.toggleViewed("a.go")
         await h.model.send()
         XCTAssertEqual(h.model.round?.status, "sent")
@@ -986,10 +988,11 @@ final class ReviewChangesModelTests: XCTestCase {
     // MARK: - Overview, agent notes, undo, the agent's answers (Plan 3)
 
     private func overviewJSON(chapters: String = #"[{"title":"Core","paths":["pkg/y.go"],"core":true,"lenses":["correctness"]}]"#,
-                              coverage: String = "[]") -> String {
+                              coverage: String = "[]",
+                              risk: String = #"[{"path":"pkg/y.go","level":"high","why":"locks"}]"#) -> String {
         """
         {"ok":true,"overview":{"summary":"Adds y.","coverage":\(coverage),"out_of_scope":["cmd/x.go"],
-         "risk":[{"path":"pkg/y.go","level":"high","why":"locks"}],"chapters":\(chapters)},"overview_cached":false}
+         "risk":\(risk),"chapters":\(chapters)},"overview_cached":false}
         """
     }
 
@@ -1267,8 +1270,8 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
         XCTAssertEqual(h.model.chapters.first?.source, .ai)
         XCTAssertFalse(h.model.aiChaptersPending)
-        XCTAssertEqual(h.model.risk(for: "pkg/y.go")?.level, .high)
-        XCTAssertNil(h.model.risk(for: "cmd/x.go"))
+        XCTAssertEqual(h.model.highestRisk(for: "pkg/y.go")?.level, .high)
+        XCTAssertNil(h.model.highestRisk(for: "cmd/x.go"))
         XCTAssertEqual(h.model.estimateMinutes, ReviewChapters.estimateMinutes(changedLines: 4))
         let args = try XCTUnwrap(h.cli.calls("overview").first)
         XCTAssertEqual(args, ["workbench", "review", "overview", "--workbench", String(h.projectID), "--round", "7", "--json"])
@@ -1299,17 +1302,17 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertFalse(h.model.aiChaptersPending)
     }
 
-    func testAIChaptersDoNotReplaceChaptersWithChecks() async throws {
+    func testAIChaptersHeldBackOnceAChapterFileIsViewed() async throws {
         let h = try harness()
         h.cli.script(["overview": overviewJSON()])
         h.cli.hold("overview")
         await openDeep(h)
         XCTAssertEqual(h.model.phase, .chapters)
-        try await h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true)
+        try await h.model.setViewed(["cmd/x.go"], on: true)
         await h.cli.waitPending("overview")
         h.cli.release("overview")
         await awaitOverview(h)
-        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"], "not swapped under the owner's checks")
+        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"], "not swapped under the owner's progress")
         XCTAssertTrue(h.model.aiChaptersPending)
         h.model.useAIChapters()
         XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
@@ -1317,12 +1320,59 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(h.model.currentChapterKey, "dir:cmd")
     }
 
+    func testAIChaptersHeldBackOnceAChapterHasAComment() async throws {
+        let h = try harness()
+        h.cli.script(["overview": overviewJSON(), "file": fileJSON(old: "x\n", new: "one\ntwo\n")])
+        h.cli.hold("overview")
+        await openDeep(h)
+        await h.model.select("cmd/x.go")
+        try await h.model.addComment(path: "cmd/x.go", side: "new", startLine: 1, endLine: 1, body: "why?")
+        await h.cli.waitPending("overview")
+        h.cli.release("overview")
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
+        XCTAssertTrue(h.model.aiChaptersPending)
+    }
+
+    func testAIChaptersAppliedWhenNothingStarted() async throws {
+        let h = try harness()
+        h.cli.script(["overview": overviewJSON()])
+        await openDeep(h)
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
+        XCTAssertFalse(h.model.aiChaptersPending)
+    }
+
+    func testChapterRisksListsEveryRiskOfItsFiles() async throws {
+        let h = try harness()
+        let risks = #"[{"path":"pkg/y.go","level":"low","why":"naming"},{"path":"pkg/y.go","level":"high","why":"locks"},"#
+            + #"{"path":"cmd/x.go","level":"medium","why":"flags"}]"#
+        h.cli.script(["overview": overviewJSON(risk: risks)])
+        await openDeep(h)
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.chapterRisks("ai:1").map(\.why), ["locks", "naming"], "most serious first, only its files")
+        XCTAssertEqual(h.model.chapterRisks("dir:cmd").map(\.why), ["flags"])
+        XCTAssertEqual(h.model.risks(for: "pkg/y.go").count, 2)
+        XCTAssertEqual(h.model.chapterRisks("nope"), [])
+    }
+
+    func testHighestRiskPicksHighLevel() async throws {
+        let h = try harness()
+        let risks = #"[{"path":"pkg/y.go","level":"low","why":"naming"},{"path":"pkg/y.go","level":"high","why":"locks"},"#
+            + #"{"path":"pkg/y.go","level":"medium","why":"flags"}]"#
+        h.cli.script(["overview": overviewJSON(risk: risks)])
+        await openDeep(h)
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.highestRisk(for: "pkg/y.go")?.why, "locks")
+        XCTAssertNil(h.model.highestRisk(for: "cmd/x.go"))
+    }
+
     func testAIChaptersSwitchOutsideTheChaptersPhase() async throws {
         let h = try harness()
         h.cli.script(["overview": overviewJSON()])
         h.cli.hold("overview")
         await openDeep(h)
-        try await h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true)
+        try await h.model.setViewed(["cmd/x.go"], on: true)
         try await h.model.setPhase(.meaning)
         await h.cli.waitPending("overview")
         h.cli.release("overview")
@@ -1465,11 +1515,11 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.open()
         await awaitOverview(h)
         XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
-        XCTAssertEqual(h.model.risk(for: "pkg/y.go")?.level, .high)
+        XCTAssertEqual(h.model.highestRisk(for: "pkg/y.go")?.level, .high)
         await h.model.refresh()
         await awaitOverview(h)
         XCTAssertEqual(h.model.overview, .onRequest)
-        XCTAssertNil(h.model.risk(for: "pkg/y.go"))
+        XCTAssertNil(h.model.highestRisk(for: "pkg/y.go"))
         XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
         XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true, true])
     }
@@ -1494,7 +1544,7 @@ final class ReviewChangesModelTests: XCTestCase {
         await awaitOverview(h)
         guard case .outdated(let earlier) = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
         XCTAssertEqual(earlier.summary, "Adds y.")
-        XCTAssertNil(h.model.risk(for: "pkg/y.go"))
+        XCTAssertNil(h.model.highestRisk(for: "pkg/y.go"))
         XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
         XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true, false, true])
     }
@@ -1863,7 +1913,7 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(h.model.round?.treeSha, "u7")
         XCTAssertEqual(h.model.overview, .loading)
         XCTAssertEqual(h.model.intentItems, items, "the Wrap-up marks keep their items")
-        XCTAssertEqual(h.model.risk(for: "pkg/y.go")?.level, .high)
+        XCTAssertEqual(h.model.highestRisk(for: "pkg/y.go")?.level, .high)
         h.cli.release("overview")
         await awaitOverview(h)
     }

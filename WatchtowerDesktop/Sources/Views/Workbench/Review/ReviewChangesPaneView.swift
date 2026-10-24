@@ -26,15 +26,13 @@ struct ReviewChangesPaneView: View {
     @State private var pace = ReviewPaceWiring()
 
     /// What the shared comment sheet asks for and does with the answer: a line
-    /// comment, a design comment, a checklist question, a Wrap-up note.
+    /// comment, a design comment, a risk, a Wrap-up note.
     struct ComposeRequest: Identifiable {
         let id = UUID()
         let title: String
         var prefill = ""
-        /// Show the lens picker (None + the round's lenses).
-        var lensChoice = false
         var allowsEmpty = false
-        let submit: (_ body: String, _ lens: String) async throws -> Void
+        let submit: (_ body: String) async throws -> Void
     }
 
     var body: some View {
@@ -55,7 +53,7 @@ struct ReviewChangesPaneView: View {
                 if let new, Self.turnOver.contains(new), !(old.map(Self.turnOver.contains) ?? false) { autoRefresh() }
             }
             .sheet(item: $compose) { request in
-                ReviewNewCommentSheet(request: request, lenses: model.lenses)
+                ReviewNewCommentSheet(request: request)
             }
             .sheet(isPresented: $findingRepeats) {
                 if let lessons { ReviewLessonsSheet(model: lessons, lenses: model.lenses) }
@@ -185,11 +183,11 @@ struct ReviewChangesPaneView: View {
         }
     }
 
-    /// Chapters' foot: the checklist, then Next: Wrap-up.
+    /// Chapters' foot: the footer, the chapter's risks, then Next: Wrap-up.
     private var chaptersFoot: some View {
         VStack(spacing: 0) {
             ReviewChapterFooter(model: model)
-            ReviewChecklistView(model: model) { compose = $0 }
+            ReviewChapterRisksView(model: model, onComment: { compose = $0 }, onAsk: { _ in })
             ReviewNextStepButton(model: model)
                 .padding(.horizontal, Spacing.medium)
                 .padding(.vertical, Spacing.regular)
@@ -240,8 +238,8 @@ struct ReviewChangesPaneView: View {
     private func lineComposeRequest(path: String, side: String, start: Int, end: Int) -> ComposeRequest {
         let lines = start == end ? "line \(start)" : "lines \(start)–\(end)"
         let title = "Comment on \(side == "old" ? "removed " : "")\(lines) of \((path as NSString).lastPathComponent)"
-        return ComposeRequest(title: title, lensChoice: model.mode == .deep) { body, lens in
-            try await model.addComment(path: path, side: side, startLine: start, endLine: end, body: body, lens: lens)
+        return ComposeRequest(title: title) { body in
+            try await model.addComment(path: path, side: side, startLine: start, endLine: end, body: body)
         }
     }
 
@@ -293,14 +291,12 @@ struct ReviewChangesPaneView: View {
     }
 }
 
-/// The shared comment sheet: line comments, design comments, checklist
-/// questions and Wrap-up notes differ only in the request they carry.
+/// The shared comment sheet: line comments, design comments, risk
+/// comments and Wrap-up notes differ only in the request they carry.
 private struct ReviewNewCommentSheet: View {
     let request: ReviewChangesPaneView.ComposeRequest
-    let lenses: [ReviewLens]
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
-    @State private var lens = ""
     @State private var error: String?
     /// The comment is being written (board #670): Add, Cancel and Esc wait.
     @State private var isSaving = false
@@ -312,13 +308,6 @@ private struct ReviewNewCommentSheet: View {
                 .font(.callout)
                 .frame(width: 380, height: 120)
                 .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color(nsColor: .separatorColor)))
-            if request.lensChoice {
-                Picker("Lens", selection: $lens) {
-                    Text("None").tag("")
-                    ForEach(lenses) { Text($0.name).tag($0.id) }
-                }
-                .controlSize(.small)
-            }
             if let error {
                 Text(error).font(.caption).foregroundStyle(.orange)
             }
@@ -345,7 +334,7 @@ private struct ReviewNewCommentSheet: View {
         Task {
             defer { isSaving = false }
             do {
-                try await request.submit(text, lens)
+                try await request.submit(text)
                 dismiss()
             } catch {
                 self.error = error.localizedDescription

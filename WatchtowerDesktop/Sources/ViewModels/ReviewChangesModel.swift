@@ -664,7 +664,7 @@ final class ReviewChangesModel {
         }
     }
 
-    func addDesignComment(body: String, lens: String) async throws {
+    func addDesignComment(body: String, lens: String = "") async throws {
         try await run {
             let info = try openRound()
             try await write { _ = try Self.addDesign($0, info: info, body: body, lens: lens) }
@@ -785,8 +785,33 @@ final class ReviewChangesModel {
         return false
     }
 
-    func risk(for path: String) -> ReviewOverview.Risk? {
-        lastReadyOverview?.risk.first { $0.path == path }
+    /// Every risk the AI overview names for a file.
+    func risks(for path: String) -> [ReviewOverview.Risk] {
+        lastReadyOverview?.risk.filter { $0.path == path } ?? []
+    }
+
+    /// The most serious risk of a file (the first of equal levels).
+    func highestRisk(for path: String) -> ReviewOverview.Risk? {
+        risks(for: path).reduce(nil) { best, next in
+            guard let best else { return next }
+            return Self.severity(next.level) > Self.severity(best.level) ? next : best
+        }
+    }
+
+    /// The risks of a chapter's files, most serious first (overview order within a level).
+    func chapterRisks(_ key: String) -> [ReviewOverview.Risk] {
+        guard let chapter = chapters.first(where: { $0.key == key }) else { return [] }
+        let paths = Set(chapter.paths)
+        let mine = (lastReadyOverview?.risk ?? []).filter { paths.contains($0.path) }
+        return [ReviewOverview.Risk.Level.high, .medium, .low].flatMap { level in mine.filter { $0.level == level } }
+    }
+
+    private static func severity(_ level: ReviewOverview.Risk.Level) -> Int {
+        switch level {
+        case .high: 2
+        case .medium: 1
+        case .low: 0
+        }
     }
 
     /// Reading time of the shown diff's changed lines (generated and lock files excluded).
@@ -1026,14 +1051,16 @@ final class ReviewChangesModel {
     }
 
     /// Switches to the overview's chapters, unless they would replace
-    /// chapters the owner already checked in the Chapters phase. AI chapters
-    /// the round already used (a saved `ai:` position or checks) come back.
+    /// chapters the owner already started on in the Chapters phase (a file
+    /// Viewed or a comment on it). AI chapters the round already used (a
+    /// saved `ai:` position or shown `ai:` chapters) come back.
     private func offerAIChapters(_ ready: ReviewOverview) {
         let specs = Self.specs(ready)
-        let shown = Set(chapters.map(\.key))
+        let shownPaths = Set(chapters.flatMap(\.paths))
         let candidate = ReviewChapters.resolve(files, agent: agentChapterSpecs, ai: specs)
-        let usedAI = awaitedAIChapterKey != nil || checks.contains { $0.chapterKey.hasPrefix("ai:") }
-        if !usedAI, candidate != chapters, phase == .chapters, checks.contains(where: { shown.contains($0.chapterKey) }) {
+        let usedAI = awaitedAIChapterKey != nil || chapters.contains { $0.key.hasPrefix("ai:") }
+        let started = shownPaths.contains { isViewed($0) } || comments.contains { $0.path.map(shownPaths.contains) ?? false }
+        if !usedAI, candidate != chapters, phase == .chapters, started {
             aiChaptersPending = true
             return
         }
