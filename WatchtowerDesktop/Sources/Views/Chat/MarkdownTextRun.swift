@@ -448,7 +448,9 @@ final class MarkdownRunTextView: NSTextView {
         guard hasQuoteBars, let layout = textLayoutManager else { return }
         var spans: [Int: CGRect] = [:]
         let origin = textContainerOrigin
-        let top = CGPoint(x: 0, y: max(0, dirtyRect.minY - origin.y))
+        // From a paragraph's spacing above the dirty rect, so a rect that
+        // starts in the gap between two quoted paragraphs repaints the bar.
+        let top = CGPoint(x: 0, y: max(0, dirtyRect.minY - origin.y - MarkdownRunBuilder.blockSpacing - 1))
         let start = layout.textLayoutFragment(for: top)?.rangeInElement.location ?? layout.documentRange.location
         layout.enumerateTextLayoutFragments(from: start, options: []) { fragment in
             guard let paragraph = fragment.textElement as? NSTextParagraph,
@@ -519,8 +521,8 @@ struct MarkdownTextRun: NSViewRepresentable {
         if let width = proposal.width, width.isFinite {
             return CGSize(width: width, height: nsView.fittingHeight(width: width))
         }
-        let ideal = nsView.fittingSize(width: Self.unwrappedWidth)
-        return CGSize(width: ideal.width, height: nsView.fittingHeight(width: ideal.width))
+        // Unwrapped, each paragraph is as many lines as at its widest line.
+        return nsView.fittingSize(width: Self.unwrappedWidth)
     }
 
     private static let unwrappedWidth: CGFloat = 100_000

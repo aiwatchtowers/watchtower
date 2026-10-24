@@ -281,7 +281,12 @@ final class MarkdownTextRunTests: XCTestCase {
         XCTAssertEqual(view.textContainer?.size.width, 200, "the probe put the container back")
         XCTAssertGreaterThan(view.fittingHeight(width: 0), atWidth, "zero is a real width")
         XCTAssertEqual(view.textContainer?.size.width, 200)
-        XCTAssertEqual(view.fittingHeight(width: 200), atWidth, "the last widths stay cached")
+        // The last two widths stay cached: text added behind `show`'s back
+        // is not laid out on a hit.
+        _ = view.fittingHeight(width: 200)
+        _ = view.fittingSize(width: 100_000)
+        view.textStorage?.append(NSAttributedString(string: String(repeating: "\nmore", count: 20)))
+        XCTAssertEqual(view.fittingHeight(width: 200), atWidth, "a hit for the last two widths")
     }
 
     func testAResizeRelaysTheText() throws {
