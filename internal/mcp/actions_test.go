@@ -188,8 +188,27 @@ func TestAgent06_ChatModeReadToolsDoNotWrite(t *testing.T) {
 	// The automation tables a draft's dry run would write if it wrote at all.
 	tables := append(slices.Clone(guardTables),
 		"automations", "automation_runs", "automation_run_steps", "automation_state", "automation_outputs")
-	before := countRows(t, database, tables)
 	reg := chatRegistry(t, database)
+	guardAuto, err := database.UpsertAutomationIndex(db.Automation{
+		Slug: "guard-auto", Scope: "personal", Path: "/acme/guard-auto.md", Name: "Guard auto",
+		TriggerKind: "manual", TriggerSpec: `{"manual":true}`, MissedPolicy: "run_once",
+		Concurrency: 1, BudgetTokens: 50000, BudgetMinutes: 5, PauseTimeoutHours: 72,
+		PermissionsJSON: `["llm"]`, OutputsJSON: `["inbox"]`,
+		RecipeText: "---\nname: x\n---\n", ContentHash: "c-guard", ApprovalHash: "a-guard",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO automation_runs (id, automation_id, trigger, status) VALUES (1, ?, 'manual', 'succeeded')`, guardAuto); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(authoring.NewListAutomationRuns(authoring.Deps{DB: database})); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(authoring.NewGetAutomationRun(authoring.Deps{DB: database})); err != nil {
+		t.Fatal(err)
+	}
+	before := countRows(t, database, tables)
 	gen := &automationstest.FakeGenerator{Replies: []string{"done"}}
 	if err := reg.Register(authoring.NewDraftAutomation(authoring.Deps{
 		DB:       database,
@@ -251,6 +270,9 @@ func chatOnlyReadGuardCalls() []mcpsdk.CallToolParams {
 		"state.set(\"k\", 1); output.inbox({title: \"t\", body: s}); return 1\n```\n"
 	return []mcpsdk.CallToolParams{
 		{Name: "draft_automation", Arguments: map[string]any{"recipe_text": recipe}},
+		// Run history reads (the guard fixture seeds the automation and its run).
+		{Name: "list_automation_runs", Arguments: map[string]any{"automation": "guard-auto"}},
+		{Name: "get_automation_run", Arguments: map[string]any{"run_id": 1}},
 	}
 }
 

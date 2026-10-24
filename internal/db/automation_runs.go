@@ -1286,6 +1286,29 @@ func (db *DB) ListAutomationOutputs(kind string, limit int) ([]AutomationOutput,
 	return out, nil
 }
 
+// ListAutomationOutputsForRun returns the outputs a run wrote, oldest first
+// (never nil).
+func (db *DB) ListAutomationOutputsForRun(runID int64) ([]AutomationOutput, error) {
+	rows, err := db.Query(`SELECT `+automationOutputCols+`
+		FROM automation_outputs WHERE run_id = ? ORDER BY id`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("listing outputs of automation run %d: %w", runID, err)
+	}
+	defer rows.Close()
+	out := []AutomationOutput{}
+	for rows.Next() {
+		o, err := scanAutomationOutput(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing outputs of automation run %d: %w", runID, err)
+	}
+	return out, nil
+}
+
 // GetAutomationOutput returns one output by id; a miss wraps
 // ErrOutputNotFound.
 func (db *DB) GetAutomationOutput(id int64) (*AutomationOutput, error) {

@@ -48,6 +48,8 @@ package enum ChatToolCatalog {
         "list_ideas": Entry(template: nil, fallback: "Listed ideas", keys: []),
         "get_idea": Entry(template: nil, fallback: "Opened an idea", keys: []),
         "load_skill": Entry(template: "Loaded skill {}", fallback: "Loaded a skill", keys: ["name"]),
+        "list_automation_runs": Entry(template: nil, fallback: "Listed automation runs", keys: []),
+        "get_automation_run": Entry(template: nil, fallback: "Opened a run", keys: []),
         "get_action": Entry(template: nil, fallback: "Checked a proposal", keys: [])
     ]
 

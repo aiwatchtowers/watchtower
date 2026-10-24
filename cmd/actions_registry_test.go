@@ -177,8 +177,17 @@ func TestAutomationEditorSurface_MountsOnlyDraftSaveAndReads(t *testing.T) {
 		}
 		assert.Equal(t, tools.AccessRead, tool.Access, "%s is a write tool on automation_editor", tool.Name)
 	}
-	for _, name := range []string{"save_automation", "draft_automation", "workbench_skills", "load_skill"} {
+	for _, name := range []string{"save_automation", "draft_automation", "workbench_skills", "load_skill",
+		"list_automation_runs", "get_automation_run"} {
 		assert.True(t, listed[name], "%s missing on automation_editor", name)
+	}
+	// Run history is for the two authoring chats only (spec 2026-10-24 §7).
+	mainTools := surfaceToolNames(reg, "main")
+	for _, name := range []string{"list_automation_runs", "get_automation_run"} {
+		assert.True(t, mainTools[name], "%s missing on main", name)
+		for _, surface := range []string{"automation", "target", "inbox", "project"} {
+			assert.False(t, surfaceToolNames(reg, surface)[name], "%s leaked onto %s", name, surface)
+		}
 	}
 	for _, rt := range tools.ReadTools() {
 		assert.True(t, listed[rt.Name], "read tool %s missing on automation_editor", rt.Name)
