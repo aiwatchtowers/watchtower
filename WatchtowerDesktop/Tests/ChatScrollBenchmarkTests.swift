@@ -181,12 +181,19 @@ final class ChatScrollBenchmarkTests: XCTestCase {
         host.layoutSubtreeIfNeeded()
         let scroll = try XCTUnwrap(Self.scrollView(in: host))
         let clock = ContinuousClock()
+        // The run loop turns between steps, as between the app's frames:
+        // AppKit releases some views (TextKit 2 text views among them)
+        // only there, so without it a case pays for the views of every
+        // earlier one.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
         func step(to y: CGFloat) -> Duration {
-            clock.measure {
+            let time = clock.measure {
                 scroll.contentView.scroll(to: NSPoint(x: 0, y: y))
                 scroll.reflectScrolledClipView(scroll.contentView)
                 host.layoutSubtreeIfNeeded()
             }
+            RunLoop.main.run(mode: .default, before: Date())
+            return time
         }
         var down: [Duration] = []
         var back: [Duration] = []

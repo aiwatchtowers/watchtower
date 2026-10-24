@@ -5,7 +5,7 @@ import XCTest
 /// segmenting, the paragraph model the app styles, and the memo.
 final class MarkdownRunBuilderTests: XCTestCase {
     private func runs(_ segments: [MarkdownSegment]) -> [MarkdownRun] {
-        segments.compactMap { if case let .textRun(run, _) = $0 { run } else { nil } }
+        segments.compactMap { if case let .textRun(run) = $0 { run } else { nil } }
     }
 
     func testProseBetweenCodeBlocksIsOneRun() {
@@ -35,16 +35,15 @@ final class MarkdownRunBuilderTests: XCTestCase {
             """)
         let segments = MarkdownRunBuilder.segments(blocks)
         XCTAssertEqual(segments.count, 6)
-        guard case let .textRun(first, firstID) = segments[0] else { return XCTFail("the prose is one run") }
+        guard case let .textRun(first) = segments[0] else { return XCTFail("the prose is one run") }
         XCTAssertEqual(first.paragraphs.map(\.kind), [.body, .heading(level: 1), .body, .body, .body])
         guard case .block(.code) = segments[1] else { return XCTFail("a code block keeps its own view") }
-        guard case let .textRun(second, secondID) = segments[2] else { return XCTFail("prose after the code") }
+        guard case let .textRun(second) = segments[2] else { return XCTFail("prose after the code") }
         XCTAssertEqual(second.paragraphs.map(\.inlines), [[.text("After the code.")]])
         guard case .block(.table) = segments[3], case .block(.rule) = segments[4] else {
             return XCTFail("tables and rules keep their own views")
         }
-        guard case .textRun(_, let lastID) = segments[5] else { return XCTFail("the last paragraph") }
-        XCTAssertEqual(Set([firstID, secondID, lastID]).count, 3, "every run has its own id")
+        guard case .textRun = segments[5] else { return XCTFail("the last paragraph") }
     }
 
     /// Spacing between blocks (8) and list items (4), as `MarkdownBlocksView`

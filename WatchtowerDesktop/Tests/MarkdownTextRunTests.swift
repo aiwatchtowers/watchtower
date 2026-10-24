@@ -25,7 +25,7 @@ final class MarkdownTextRunTests: XCTestCase {
 
     private func run(_ markdown: String) throws -> MarkdownRun {
         let segments = MarkdownRunBuilder.segments(MarkdownDocument.parse(markdown))
-        guard case let .textRun(run, _)? = segments.first else { throw XCTSkip("no run in \(markdown)") }
+        guard case let .textRun(run)? = segments.first else { throw XCTSkip("no run in \(markdown)") }
         return run
     }
 
@@ -139,6 +139,39 @@ final class MarkdownTextRunTests: XCTestCase {
         XCTAssertEqual(opened.last, code, "the code popover's links keep their handler")
     }
 
+    /// Right-click on a link: Open Link goes through the same gate as a
+    /// click, and the read-only menu has no editing items.
+    func testContextMenuOpensLinksOnlyThroughTheGate() throws {
+        let (window, root) = makeWindow()
+        let coordinator = MarkdownTextRun.Coordinator()
+        var opened: [URL] = []
+        coordinator.openURL = OpenURLAction { opened.append($0); return .handled }
+        for (raw, expected) in [("https://example.com/a", 1), ("smb://example.com/share", 0)] {
+            opened = []
+            let view = MarkdownRunTextView.make()
+            let url = try XCTUnwrap(URL(string: raw))
+            view.show(NSAttributedString(string: "go there now", attributes: [.link: url, .font: NSFont.systemFont(ofSize: 13)]))
+            view.frame = NSRect(x: 0, y: 0, width: 300, height: 40)
+            root.addSubview(view)
+            view.delegate = coordinator
+            _ = view.fittingHeight(width: 300)
+            let event = try XCTUnwrap(NSEvent.mouseEvent(
+                with: .rightMouseDown, location: view.convert(NSPoint(x: 10, y: 8), to: nil), modifierFlags: [],
+                timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+            let menu = try XCTUnwrap(view.menu(for: event))
+            let actions = menu.items.compactMap(\.action)
+            for editing in [#selector(NSText.cut(_:)), #selector(NSText.paste(_:)), #selector(NSTextView.pasteAsPlainText(_:))] {
+                XCTAssertFalse(actions.contains(editing), "\(editing) has no place in read-only text")
+            }
+            XCTAssertFalse(menu.items.contains { $0.submenu?.items.contains { $0.action == #selector(NSTextView.checkSpelling(_:)) } == true })
+            XCTAssertFalse(actions.contains(NSSelectorFromString("_openLinkFromMenu:")), "AppKit's own Open Link is replaced")
+            let open = try XCTUnwrap(menu.items.first { $0.title == "Open Link" })
+            _ = (open.target as AnyObject?)?.perform(try XCTUnwrap(open.action), with: open)
+            XCTAssertEqual(opened.count, expected, "\(raw): Open Link reaches openURL only through the gate")
+            view.removeFromSuperview()
+        }
+    }
+
     // MARK: - Selection
 
     private func makeWindow() -> (NSWindow, NSView) {
@@ -234,6 +267,31 @@ final class MarkdownTextRunTests: XCTestCase {
             XCTAssertGreaterThan(swiftUI, 200)
             XCTAssertEqual(height(native: true), swiftUI, accuracy: 3, "width \(width)")
         }
+    }
+
+    /// Measuring at another width (an ideal-size probe, a zero width)
+    /// never leaves the shown text laid out at that width.
+    func testProbesKeepTheContainerAtTheViewsWidth() throws {
+        let view = MarkdownRunTextView.make()
+        view.show(try attributed(String(repeating: "words that wrap across lines ", count: 10)))
+        view.setFrameSize(NSSize(width: 200, height: 100))
+        let atWidth = view.fittingHeight(width: 200)
+        let ideal = view.fittingSize(width: 100_000)
+        XCTAssertGreaterThan(ideal.width, 200)
+        XCTAssertEqual(view.textContainer?.size.width, 200, "the probe put the container back")
+        XCTAssertGreaterThan(view.fittingHeight(width: 0), atWidth, "zero is a real width")
+        XCTAssertEqual(view.textContainer?.size.width, 200)
+        XCTAssertEqual(view.fittingHeight(width: 200), atWidth, "the last widths stay cached")
+    }
+
+    func testAResizeRelaysTheText() throws {
+        let view = MarkdownRunTextView.make()
+        view.show(try attributed(String(repeating: "words that wrap across lines ", count: 10)))
+        view.setFrameSize(NSSize(width: 400, height: 100))
+        let wide = view.fittingHeight(width: 400)
+        view.setFrameSize(NSSize(width: 150, height: 100))
+        XCTAssertEqual(view.textContainer?.size.width, 150, "the container follows the view")
+        XCTAssertGreaterThan(view.fittingHeight(width: 150), wide)
     }
 
     private func scrollViews(in view: NSView) -> Int {

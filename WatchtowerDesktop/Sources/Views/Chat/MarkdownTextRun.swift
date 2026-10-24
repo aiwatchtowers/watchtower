@@ -17,7 +17,7 @@ struct MarkdownSegmentsView: View {
         VStack(alignment: .leading, spacing: MarkdownRunBuilder.blockSpacing) {
             ForEach(segments.indices, id: \.self) { index in
                 switch segments[index] {
-                case let .textRun(run, _):
+                case let .textRun(run):
                     MarkdownTextRun(text: MarkdownRunText.attributed(run, links: links), codeLinks: codeLinks,
                                     navScreens: navScreens)
                 case let .block(block):
@@ -248,8 +248,13 @@ enum MarkdownRunText {
 /// the run's paragraphs; ⌘C copies plain text; leaving the view drops the
 /// selection, as a selectable SwiftUI `Text`'s. Draws the block-quote bars.
 final class MarkdownRunTextView: NSTextView {
-    private var measured: (width: CGFloat, size: CGSize)?
+    /// The last two measurements (SwiftUI may alternate two proposals).
+    private var measured: [(width: CGFloat, size: CGSize)] = []
     private weak var shown: NSAttributedString?
+    private var plainTextCache: String?
+    /// Set while `fittingSize` lays the text out at a probe width: a frame
+    /// change AppKit makes meanwhile must not move the container back.
+    private var measuring = false
     /// Whether the text has a block quote, whose bar `draw` adds.
     private var hasQuoteBars = false
 
@@ -263,7 +268,9 @@ final class MarkdownRunTextView: NSTextView {
         view.drawsBackground = false
         view.textContainerInset = .zero
         view.textContainer?.lineFragmentPadding = 0
-        view.textContainer?.widthTracksTextView = true
+        // The width is ours to set (`setFrameSize`, `fittingSize`).
+        view.textContainer?.widthTracksTextView = false
+        view.textContainer?.heightTracksTextView = false
         view.isVerticallyResizable = false
         view.isHorizontallyResizable = false
         view.displaysLinkToolTips = false
@@ -287,7 +294,8 @@ final class MarkdownRunTextView: NSTextView {
         shown = text
         guard !storage.isEqual(to: text) else { return }
         storage.setAttributedString(text)
-        measured = nil
+        measured = []
+        plainTextCache = nil
         hasQuoteBars = false
         text.enumerateAttribute(.markdownQuoteBars, in: NSRange(location: 0, length: text.length)) { value, _, stop in
             if value != nil { hasQuoteBars = true; stop.pointee = true }
@@ -297,16 +305,35 @@ final class MarkdownRunTextView: NSTextView {
 
     /// The text's size laid out at `width`: what SwiftUI sizes the row
     /// with, so a `LazyVStack` row measures right and does not jump when it
-    /// scrolls back in. Its width is the widest line.
+    /// scrolls back in. Its width is the widest line. A probe at another
+    /// width than the view's own puts the container back at the view's
+    /// width, so the shown text never keeps a probe's wrapping.
     func fittingSize(width: CGFloat) -> CGSize {
-        if let measured, measured.width == width { return measured.size }
-        guard let layout = textLayoutManager, let container = textContainer else { return .zero }
-        if container.size.width != width { container.size = CGSize(width: width, height: .greatestFiniteMagnitude) }
+        if let hit = measured.first(where: { $0.width == width }) { return hit.size }
+        guard let layout = textLayoutManager, textContainer != nil else { return .zero }
+        measuring = true
+        // A zero-width container is unbounded in TextKit 2: a 0 proposal is
+        // laid out at the narrowest real width instead.
+        setContainerWidth(max(width, 1))
         layout.ensureLayout(for: layout.documentRange)
         let bounds = layout.usageBoundsForTextContainer
+        measuring = false
         let size = CGSize(width: ceil(bounds.width), height: ceil(bounds.height))
-        measured = (width, size)
+        if frame.width > 0, frame.width != width { setContainerWidth(frame.width) }
+        measured = [(width, size)] + measured.prefix(1)
         return size
+    }
+
+    private func setContainerWidth(_ width: CGFloat) {
+        guard let container = textContainer, container.size.width != width else { return }
+        container.size = CGSize(width: width, height: .greatestFiniteMagnitude)
+    }
+
+    /// The container always follows the view's width (a resize, or the
+    /// frame SwiftUI sets after measuring).
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        if newSize.width > 0, !measuring { setContainerWidth(newSize.width) }
     }
 
     func fittingHeight(width: CGFloat) -> CGFloat { fittingSize(width: width).height }
@@ -314,6 +341,13 @@ final class MarkdownRunTextView: NSTextView {
     /// The text as the owner reads it: a task marker as ☑ / ☐, a line break
     /// as a newline. Same length as `string`, so selection ranges apply.
     var plainText: String {
+        if let plainTextCache { return plainTextCache }
+        let plain = buildPlainText()
+        plainTextCache = plain
+        return plain
+    }
+
+    private func buildPlainText() -> String {
         guard let storage = textStorage else { return string }
         let plain = NSMutableString(string: storage.string.replacingOccurrences(of: "\u{2028}", with: "\n"))
         storage.enumerateAttribute(.markdownPlainText, in: NSRange(location: 0, length: storage.length)) { value, range, _ in
@@ -344,18 +378,79 @@ final class MarkdownRunTextView: NSTextView {
         return resigned
     }
 
+    /// A read-only menu: no editing items, and the link's Open Link is
+    /// ours — it goes through `textView(_:clickedOnLink:at:)`, the same gate
+    /// as a click, whatever AppKit's own item would do
+    /// (`MarkdownTextRunTests.testContextMenuOpensLinksOnlyThroughTheGate`).
+    override func menu(for event: NSEvent) -> NSMenu? {
+        guard let menu = super.menu(for: event) else { return nil }
+        for item in menu.items where Self.isEditingItem(item) || item.action == Self.appKitOpenLink {
+            menu.removeItem(item)
+        }
+        if let (url, index) = link(at: event) {
+            let open = NSMenuItem(title: "Open Link", action: #selector(openLinkFromMenu(_:)), keyEquivalent: "")
+            open.target = self
+            open.representedObject = url
+            open.tag = index
+            menu.insertItem(open, at: 0)
+        }
+        var previousSeparator = true
+        for item in menu.items {
+            if item.isSeparatorItem, previousSeparator { menu.removeItem(item) }
+            previousSeparator = item.isSeparatorItem
+        }
+        if let last = menu.items.last, last.isSeparatorItem { menu.removeItem(last) }
+        return menu
+    }
+
+    @objc private func openLinkFromMenu(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject else { return }
+        _ = delegate?.textView?(self, clickedOnLink: url, at: sender.tag)
+    }
+
+    /// The link under the event, if any, and its character index.
+    private func link(at event: NSEvent) -> (Any, Int)? {
+        guard let window, let storage = textStorage else { return nil }
+        let screenPoint = window.convertPoint(toScreen: event.locationInWindow)
+        let index = characterIndexForInsertion(at: convert(event.locationInWindow, from: nil))
+        for candidate in [index, index - 1] where candidate >= 0 && candidate < storage.length {
+            guard let link = storage.attribute(.link, at: candidate, effectiveRange: nil) else { continue }
+            let box = firstRect(forCharacterRange: NSRange(location: candidate, length: 1), actualRange: nil)
+            if box.insetBy(dx: -1, dy: -1).contains(screenPoint) { return (link, candidate) }
+        }
+        return nil
+    }
+
+    private static let appKitOpenLink = NSSelectorFromString("_openLinkFromMenu:")
+
+    private static let editingActions: Set<Selector> = [
+        #selector(cut(_:)), #selector(paste(_:)), #selector(pasteAsPlainText(_:)),
+        NSSelectorFromString("toggleQuickLookPreviewPanel:")
+    ]
+
+    /// Cut, Paste, Quick Look and the Font / Spelling / Substitutions
+    /// submenus; Speech stays.
+    private static func isEditingItem(_ item: NSMenuItem) -> Bool {
+        if let action = item.action, editingActions.contains(action) { return true }
+        guard let submenu = item.submenu else { return false }
+        return !submenu.items.contains { $0.action == #selector(startSpeaking(_:)) }
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
-        drawQuoteBars()
+        drawQuoteBars(in: dirtyRect)
     }
 
     /// One bar per quote, from its first line's top to its last line's
-    /// bottom (the gaps between its paragraphs included).
-    private func drawQuoteBars() {
+    /// bottom (the gaps between its paragraphs included), over the
+    /// fragments from the dirty rect's top through the first one below it.
+    private func drawQuoteBars(in dirtyRect: NSRect) {
         guard hasQuoteBars, let layout = textLayoutManager else { return }
         var spans: [Int: CGRect] = [:]
         let origin = textContainerOrigin
-        layout.enumerateTextLayoutFragments(from: layout.documentRange.location, options: [.ensuresLayout]) { fragment in
+        let top = CGPoint(x: 0, y: max(0, dirtyRect.minY - origin.y))
+        let start = layout.textLayoutFragment(for: top)?.rangeInElement.location ?? layout.documentRange.location
+        layout.enumerateTextLayoutFragments(from: start, options: []) { fragment in
             guard let paragraph = fragment.textElement as? NSTextParagraph,
                   paragraph.attributedString.length > 0,
                   let bars = paragraph.attributedString.attribute(.markdownQuoteBars, at: 0, effectiveRange: nil) as? [NSNumber]
@@ -369,7 +464,7 @@ final class MarkdownRunTextView: NSTextView {
                 let id = bars[index + 1].intValue
                 spans[id] = spans[id].map { $0.union(rect) } ?? rect
             }
-            return true
+            return origin.y + frame.minY <= dirtyRect.maxY
         }
         guard !spans.isEmpty else { return }
         NSColor.controlAccentColor.withAlphaComponent(0.4).setFill()
@@ -421,7 +516,7 @@ struct MarkdownTextRun: NSViewRepresentable {
     /// The proposed width (the column), or the widest line when none is
     /// proposed; the height of the text at that width.
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: MarkdownRunTextView, context: Context) -> CGSize? {
-        if let width = proposal.width, width.isFinite, width > 0 {
+        if let width = proposal.width, width.isFinite {
             return CGSize(width: width, height: nsView.fittingHeight(width: width))
         }
         let ideal = nsView.fittingSize(width: Self.unwrappedWidth)

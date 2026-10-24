@@ -41,8 +41,7 @@ package struct MarkdownRun: Hashable, Sendable {
 }
 
 package enum MarkdownSegment: Hashable, Sendable {
-    /// `id`: the run's place among the message's segments.
-    case textRun(MarkdownRun, id: Int)
+    case textRun(MarkdownRun)
     /// A block that keeps its own view: a code block, a table, a rule, or a
     /// list or quote holding one.
     case block(MarkdownBlock)
@@ -72,7 +71,7 @@ package enum MarkdownRunBuilder {
         var emitter = Emitter()
         func flush() {
             guard !emitter.paragraphs.isEmpty else { return }
-            segments.append(.textRun(MarkdownRun(paragraphs: emitter.paragraphs), id: segments.count))
+            segments.append(.textRun(MarkdownRun(paragraphs: emitter.paragraphs)))
             emitter = Emitter()
         }
         for block in blocks {
