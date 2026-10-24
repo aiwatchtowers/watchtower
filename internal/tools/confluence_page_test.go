@@ -148,7 +148,7 @@ func TestConfluencePageTools_Shape(t *testing.T) {
 
 	assert.Equal(t, AccessRead, get.Access)
 	assert.False(t, get.External)
-	assert.ElementsMatch(t, []string{"main", "target"}, get.Surfaces)
+	assert.ElementsMatch(t, []string{"main", "target", AutomationEditorSurface}, get.Surfaces)
 	assert.Equal(t, AccessWrite, edit.Access)
 	assert.True(t, edit.External, "a Confluence write leaves the machine (AGENT-03)")
 	assert.ElementsMatch(t, []string{"main", "target"}, edit.Surfaces)

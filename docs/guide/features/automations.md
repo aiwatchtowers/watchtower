@@ -24,7 +24,7 @@ A recipe never runs until you confirm it, every run has its own token and time b
 4. Talk to the assistant in **Chat**. The draft column beside it fills in as you go: when it runs, what it may do, what it sends, what each run may spend, the sessions it starts and a dry run that writes nothing. **Form** and **Script** edit the same draft by hand. A draft does not call Quick Connections or start agents; save it and use **Dry Run** on its card to see the rest.
 5. Press **Save and Turn On**, or **Save Turned Off**. Saving confirms exactly what the column lists, so check it first. The buttons stay off while it says "Checking…", when the recipe has errors, or when the column cannot list everything the save would confirm.
 
-A draft you leave is kept at the top of its section until you save it or choose **Discard Draft**. A draft you edited only in **Form** is lost if you relaunch before saving.
+A draft you leave is kept at the top of its section until you save it or choose **Discard Draft**. A draft you edited only in **Form** is lost if you relaunch before saving. Once you save a draft, its chat goes on as that automation's chat.
 
 ### Run one now
 

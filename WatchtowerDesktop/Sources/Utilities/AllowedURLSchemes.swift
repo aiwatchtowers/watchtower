@@ -77,14 +77,21 @@ enum AllowedURLSchemes {
     ) -> AttributedString {
         var result = attributed
         let disallowed = result.runs.compactMap { run -> Range<AttributedString.Index>? in
-            guard let link = run.link, !permits(link),
-                  !renderOnly.contains(link.scheme?.lowercased() ?? ""),
-                  NavLink.destination(from: link, allowed: navScreens) == nil else { return nil }
+            guard let link = run.link, !keepsLink(link, renderOnly: renderOnly, navScreens: navScreens) else { return nil }
             return run.range
         }
         for range in disallowed {
             result[range].link = nil
         }
         return result
+    }
+
+    /// Whether rendered markdown keeps `link` clickable: an allowed scheme,
+    /// a `renderOnly` scheme of the surface, or a screen link to a listed
+    /// screen. The one predicate behind `strippingDisallowedLinks` and a
+    /// native text run's click (`MarkdownTextRun`).
+    static func keepsLink(_ link: URL, renderOnly: Set<String> = [], navScreens: Set<String> = []) -> Bool {
+        permits(link) || renderOnly.contains(link.scheme?.lowercased() ?? "")
+            || NavLink.destination(from: link, allowed: navScreens) != nil
     }
 }

@@ -300,3 +300,41 @@ func TestWorkbenchReviewOverview_CachedOnlyNeverCallsTheModel(t *testing.T) {
 	assert.Equal(t, "Edits the readme.", hit["overview"].(map[string]any)["summary"])
 	assert.Equal(t, 1, g.calls)
 }
+
+// The agent's form (spec 2026-10-24-finish-whole-ticket, gate 2): the
+// session's folder as it stands, no round opened, cached under the key the
+// Desktop's round on the same tree reads.
+func TestReviewOverview_SessionFormSharesTheRoundsCache(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644))
+	g := &fakeReviewGen{out: overviewReply}
+	useReviewGen(t, g)
+	out := reviewJSON(t, wb, "overview", "--session", itoa(s))
+	require.Equal(t, true, out["ok"], out)
+	assert.Equal(t, "Edits the readme.", out["overview"].(map[string]any)["summary"])
+	var rounds int
+	require.NoError(t, database.QueryRow(`SELECT COUNT(*) FROM review_rounds`).Scan(&rounds))
+	assert.Zero(t, rounds, "the session form opens no round")
+
+	r := reviewJSON(t, wb, "start", "--session", itoa(s))["round"].(map[string]any)
+	again := reviewJSON(t, wb, "overview", "--round", itoa(int64(r["id"].(float64))))
+	assert.Equal(t, true, again["overview_cached"], "the owner's round on the same tree reads the agent's overview")
+	assert.Equal(t, 1, g.calls)
+}
+
+func TestReviewOverview_SessionFormEmptyDiffCallsNoModel(t *testing.T) {
+	_, wb, s, _ := reviewFixture(t)
+	g := &fakeReviewGen{out: overviewReply}
+	useReviewGen(t, g)
+	out := reviewJSON(t, wb, "overview", "--session", itoa(s))
+	assert.Equal(t, true, out["ok"], out)
+	assert.Nil(t, out["overview"])
+	assert.Zero(t, g.calls)
+}
+
+func TestReviewOverview_SessionFormRefusesARound(t *testing.T) {
+	_, wb, s, _ := reviewFixture(t)
+	_, _, err := runWorkbench(t, "review", "overview", "--workbench", itoa(wb), "--json", "--session", itoa(s), "--round", "1")
+	resetSetFlags(workbenchReviewCmd.Commands()...)
+	require.EqualError(t, err, "--round and --session are exclusive")
+}

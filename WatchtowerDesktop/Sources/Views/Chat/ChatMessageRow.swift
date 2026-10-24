@@ -253,7 +253,13 @@ struct AssistantMessageBody: View {
                     ForEach(Array(parsed.segments.enumerated()), id: \.offset) { _, segment in
                         switch segment {
                         case .markdown(let markdown):
-                            MarkdownView(text: markdown)
+                            // A finished answer's prose is native text
+                            // (§5b); the streaming one stays SwiftUI.
+                            if isRunning {
+                                MarkdownView(text: markdown)
+                            } else {
+                                NativeMarkdownView(text: markdown)
+                            }
                         case .artifact(let draft):
                             ArtifactCardView(draft: draft, isWriting: isRunning && !draft.isComplete,
                                              version: versions[draft.key], inKnowledge: keptKeys.contains(draft.key)) { onOpenArtifact(draft.key) }

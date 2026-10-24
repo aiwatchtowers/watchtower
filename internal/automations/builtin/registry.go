@@ -76,7 +76,11 @@ type Entry struct {
 	Pipelines  []string // pipeline_runs names counted in Costs before the built-in's first run
 	Reads      []string // card copy
 	Sends      []string // card copy
-	When       func(cfg *config.Config) string
+	// Does is the card's steps in plain words, in order; ResultFilter is the
+	// Inbox filter ("day", "tracks", "ideas", "automations") the result lands in.
+	Does         []string
+	ResultFilter string
+	When         func(cfg *config.Config) string
 	// RunNow: the card offers Run Now and `automations run <id>` queues a
 	// manual run. Every entry sets it explicitly.
 	RunNow bool
@@ -106,8 +110,14 @@ var registry = []Entry{
 			{Key: "day_plan.max_backlog", Kind: ParamCount, Label: "Backlog items at most"},
 		},
 		Pipelines: []string{"briefing", "day_plan"},
-		Reads:     []string{"Slack digests and tracks", "Calendar", "Targets and tasks", "Jira and Linear", "Inbox items"},
-		Sends:     []string{"Your day card in the Inbox"},
+		Reads:     []string{"Slack digests and tracks", "Your calendar", "Your tasks", "Jira and Linear", "Your Inbox"},
+		Does: []string{
+			"Writes your brief: what changed, what is urgent, who waits on you",
+			"Plans your day around your meetings from that brief, in the same run, at the first sync after your briefing hour",
+			"Still makes the plan when the brief fails",
+		},
+		Sends:        []string{"Your day card in the Inbox, under Day"},
+		ResultFilter: "day",
 		When: func(cfg *config.Config) string {
 			return fmt.Sprintf("Every morning at the first sync after %02d:00", briefingHour(cfg))
 		},
@@ -122,10 +132,16 @@ var registry = []Entry{
 		Primitives: []string{"tracks.extract"},
 		Prompts:    []PromptRef{{Name: "extract", PromptID: prompts.TracksExtractBatch}},
 		Pipelines:  []string{"tracks"},
-		Reads:      []string{"Slack channel digests, your profile and your tracks"},
-		Sends:      []string{"Track cards in your Inbox"},
-		When:       func(*config.Config) string { return "After every sync, while Slack Digests are on" },
-		RunNow:     true,
+		Reads:      []string{"Slack channel digests", "Your profile", "Your existing tracks"},
+		Does: []string{
+			"Looks through new Slack discussions for threads that involve you",
+			"Reads the new channel digests with your profile and your tracks, only while Slack Digests are on",
+			"Starts a track for a new thread, or adds news to one you already follow",
+		},
+		Sends:        []string{"Track cards in your Inbox, under Tracks"},
+		ResultFilter: "tracks",
+		When:         func(*config.Config) string { return "After every sync, while Slack Digests are on" },
+		RunNow:       true,
 	},
 	{
 		ID:         "idea-finder",
@@ -137,25 +153,37 @@ var registry = []Entry{
 		Prompts:    []PromptRef{{Name: "consolidate", PromptID: prompts.IdeasConsolidate}},
 		Parameters: []Parameter{{Key: "ideas.mine_interval_hours", Kind: ParamInterval, Label: "Every"}},
 		Pipelines:  []string{"ideas"},
-		Reads:      []string{"Slack digest topics, mail and tracker digests, meeting recaps, AI chats"},
-		Sends:      []string{"Idea cards in your Inbox; decisions to your brief"},
+		Reads:      []string{"Slack digests", "Mail and tracker digests", "Meeting recaps", "AI chats"},
+		Does: []string{
+			"Collects ideas and decisions that came up in your work",
+			"Reads Slack digests, mail and tracker digests, meeting recaps and your AI chats, every few hours",
+			"Merges repeats and keeps what is worth your attention",
+		},
+		Sends:        []string{"Idea cards in your Inbox, under Ideas; decisions go to your brief"},
+		ResultFilter: "ideas",
 		When: func(cfg *config.Config) string {
 			return fmt.Sprintf("Every %d hours", ideasIntervalHours(cfg))
 		},
 		RunNow: true,
 	},
 	{
-		ID:           "reactions",
-		Name:         "Reactions",
-		Slot:         SlotReactions,
-		Recipe:       mustRecipe("reactions"),
-		FeatureIDs:   []string{"reaction-commands"},
-		Primitives:   []string{"reaction.compose"},
-		Prompts:      []PromptRef{{Name: "compose", PromptID: prompts.ReactionCommand}},
-		Parameters:   []Parameter{{Key: "reaction_command_map", Kind: ParamDictionary, Label: "Reactions"}},
-		Pipelines:    []string{"reaction-commands"},
-		Reads:        []string{"The message you reacted to and its thread"},
-		Sends:        []string{"Proposals in your Inbox (ideas, reminders and brief notes apply at once)"},
+		ID:         "reactions",
+		Name:       "Reactions",
+		Slot:       SlotReactions,
+		Recipe:     mustRecipe("reactions"),
+		FeatureIDs: []string{"reaction-commands"},
+		Primitives: []string{"reaction.compose"},
+		Prompts:    []PromptRef{{Name: "compose", PromptID: prompts.ReactionCommand}},
+		Parameters: []Parameter{{Key: "reaction_command_map", Kind: ParamDictionary, Label: "Reactions"}},
+		Pipelines:  []string{"reaction-commands"},
+		Reads:      []string{"The message you reacted to", "Its thread"},
+		Does: []string{
+			"Finds the emoji you placed in your reactions list",
+			"Reads the message and its thread",
+			"Prepares what that emoji stands for, for example a reminder, an idea or a ticket; one run handles one reaction",
+		},
+		Sends:        []string{"A proposal in your Inbox, under Automations; ideas, reminders and brief notes are saved at once"},
+		ResultFilter: "automations",
 		When:         func(*config.Config) string { return "When you react to a Slack message" },
 		RunNow:       false,
 		NoRunNowNote: "Reactions run for each reaction you place",
@@ -207,6 +235,7 @@ func (e Entry) clone() Entry {
 	e.Pipelines = slices.Clone(e.Pipelines)
 	e.Reads = slices.Clone(e.Reads)
 	e.Sends = slices.Clone(e.Sends)
+	e.Does = slices.Clone(e.Does)
 	return e
 }
 

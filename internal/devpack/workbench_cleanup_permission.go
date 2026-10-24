@@ -217,3 +217,11 @@ func HasCleanupPermission(dir string) (bool, error) {
 	}
 	return slices.ContainsFunc(allow, isOurCleanupRule), nil
 }
+
+// ReviewOverviewCommand is the command finish_session names for the AI
+// overview of session sessionID's folder (spec 2026-10-24-finish-whole-ticket,
+// gate 2), quoted as CleanupCommand quotes bin.
+func ReviewOverviewCommand(bin string, workbenchID, sessionID int64) string {
+	return shellQuote(bin) + " workbench review overview --workbench " + strconv.FormatInt(workbenchID, 10) +
+		" --session " + strconv.FormatInt(sessionID, 10) + " --json"
+}

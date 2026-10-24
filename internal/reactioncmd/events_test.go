@@ -379,3 +379,28 @@ func TestOwnerMessageReactions_SkipsOthersAndNonMessages(t *testing.T) {
 	}
 	assert.Equal(t, seedFixtureKeys(), keys)
 }
+
+// TestRun_PrunesLedgerRowsOlderThanTheSeed: the seeding poll records the
+// pre-existing reactions, which are on messages older than the stamp and can
+// never fire (postedSince drops them first), so the next poll removes them;
+// a reaction on a message posted after the seed keeps its row and still
+// fires only once.
+func TestRun_PrunesLedgerRowsOlderThanTheSeed(t *testing.T) {
+	lister := &countingLister{}
+	old := strconv.FormatInt(time.Now().Add(-24*time.Hour).Unix(), 10) + ".000100"
+	lister.set(eyesItem(old))
+	p, database := eventTestPipeline(t, lister, nil)
+	seedEvents(t, p)
+	require.Equal(t, 1, countRows(t, database, "reaction_events"), "the seed records the old reaction")
+
+	lister.set(eyesItem(old), eyesItem(ts1))
+	sink := &recordingSink{wants: true}
+	_, err := p.Run(context.Background(), sink)
+	require.NoError(t, err)
+	require.Len(t, sink.events, 1)
+	assert.Equal(t, 1, countRows(t, database, "reaction_events"), "only the post-seed reaction's row is left")
+
+	_, err = p.Run(context.Background(), sink)
+	require.NoError(t, err)
+	assert.Len(t, sink.events, 1, "the kept row still stops a second event")
+}

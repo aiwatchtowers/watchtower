@@ -25,7 +25,7 @@ A caption under the session name says what the agent is doing. When several appl
 | **Working** | green | The agent works on your prompt. |
 | **Agents working** (or **N agents working**) | green, pulsing | The agent finished its turn but helper agents or teammates it started are still busy. |
 | **Ready to check · ask #N** | purple | Its open asks are only checks or reviews for you (**Ready for review** when all are reviews). |
-| **Finished** | blue | The agent said it is done. Orange while an ask is still open. |
+| **Finished** | blue | The agent said it is done. Orange while an ask is still open, such as the one that tells you what it left of its target and why. |
 | **Waiting for you · ask #N** | orange | A question of the agent waits for your answer. |
 | **Stopped** | grey | The agent finished its turn. |
 | **Running** / **Not running** | green / grey | No state reported yet, or not started. |

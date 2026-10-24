@@ -4,7 +4,7 @@ Some of Watchtower's own daily work runs as automations that ship with the app. 
 
 ## Why use it
 
-Your morning read, your tracks, your ideas and your reaction commands used to have their switches and settings spread over Settings. Each is now one card: when it runs, what it reads, what it sends, what it cost this week, and **Turn Off** when you don't want it. If the brief should sound different, say so in the chat and keep your own version.
+Your morning read, your tracks, your ideas and your reaction commands used to have their switches and settings spread over Settings. Each is now one card: when it runs, what it reads, the steps it takes (**Does**), where the result lands (**Show in Inbox** opens it), what it cost this week, and **Turn Off** when you don't want it. If the brief should sound different, say so in the chat and keep your own version.
 
 ## How it works
 

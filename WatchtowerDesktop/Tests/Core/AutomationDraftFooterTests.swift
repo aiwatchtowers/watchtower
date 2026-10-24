@@ -19,6 +19,13 @@ final class AutomationDraftFooterTests: XCTestCase {
         XCTAssertEqual(footer.hint, hint, file: file, line: line)
     }
 
+    func testCompactSaveOnlyWhenHiddenAndSavable() {
+        XCTAssertTrue(Footer.showsCompactSave(hidden: true, canSave: true))
+        XCTAssertFalse(Footer.showsCompactSave(hidden: true, canSave: false))
+        XCTAssertFalse(Footer.showsCompactSave(hidden: false, canSave: true))
+        XCTAssertFalse(Footer.showsCompactSave(hidden: false, canSave: false))
+    }
+
     func testTable() {
         let turnsOn = "Saving confirms exactly what's listed above and turns it on"
         let save = "Saving confirms exactly what's listed above"

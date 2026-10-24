@@ -26,6 +26,10 @@ package struct RecipeFrontmatter: Equatable, Sendable {
     package var budgetTokens: Int
     package var budgetMinutes: Int
     package var pauseTimeoutHours: Int
+    /// The optional one-line `summary:` (at most 60 runes). nil: `render`
+    /// writes none and `splice` keeps the one the old frontmatter had; "":
+    /// none is written.
+    package var summary: String?
 
     package init(
         name: String,
@@ -36,7 +40,8 @@ package struct RecipeFrontmatter: Equatable, Sendable {
         outputs: [String] = [],
         budgetTokens: Int = 50000,
         budgetMinutes: Int = 5,
-        pauseTimeoutHours: Int = 72
+        pauseTimeoutHours: Int = 72,
+        summary: String? = nil
     ) {
         self.name = name
         self.trigger = trigger
@@ -47,6 +52,7 @@ package struct RecipeFrontmatter: Equatable, Sendable {
         self.budgetTokens = budgetTokens
         self.budgetMinutes = budgetMinutes
         self.pauseTimeoutHours = pauseTimeoutHours
+        self.summary = summary
     }
 
     /// The fields of a parsed recipe as `show --json` reports them.
@@ -110,7 +116,9 @@ package struct RecipeFrontmatter: Equatable, Sendable {
 
     /// The frontmatter block, `---` lines included, each line `\n`-terminated.
     package static func render(_ f: Self) -> String {
-        var lines = ["---", "name: \(quoted(f.name))", "trigger:"]
+        var lines = ["---", "name: \(quoted(f.name))"]
+        if let summary = f.summary, !summary.isEmpty { lines.append("summary: \(quoted(summary))") }
+        lines.append("trigger:")
         switch f.trigger {
         case let .schedule(expr):
             lines.append("  schedule: \(quoted(expr))")
@@ -171,8 +179,48 @@ package struct RecipeFrontmatter: Equatable, Sendable {
     /// `render(f)`; the bytes after the closing `---` line are kept as they
     /// are. A text without a frontmatter block gets one in front.
     package static func splice(_ f: Self, into recipeText: String) -> String {
+        var f = f
+        if f.summary == nil { f.summary = summary(in: recipeText) }
         guard let end = frontmatterEnd(recipeText) else { return render(f) + recipeText }
         return render(f) + recipeText[end...]
+    }
+
+    /// The top-level `summary:` of the recipe's frontmatter (double-quoted,
+    /// single-quoted or plain), nil when there is none.
+    package static func summary(in recipeText: String) -> String? {
+        guard let block = block(in: recipeText) else { return nil }
+        for line in block.split(separator: "\n", omittingEmptySubsequences: false) where line.hasPrefix("summary:") {
+            let value = line.dropFirst("summary:".count).trimmingCharacters(in: .whitespacesAndNewlines)
+            return unquote(value)
+        }
+        return nil
+    }
+
+    private static func unquote(_ value: String) -> String {
+        if value.count >= 2, value.hasPrefix("'"), value.hasSuffix("'") {
+            return String(value.dropFirst().dropLast()).replacingOccurrences(of: "''", with: "'")
+        }
+        guard value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") else {
+            return value.components(separatedBy: " #").first?.trimmingCharacters(in: .whitespaces) ?? value
+        }
+        var out = ""
+        var escaped = false
+        for ch in value.dropFirst().dropLast() {
+            if escaped {
+                switch ch {
+                case "n": out.append("\n")
+                case "t": out.append("\t")
+                case "r": out.append("\r")
+                default: out.append(ch)
+                }
+                escaped = false
+            } else if ch == "\\" {
+                escaped = true
+            } else {
+                out.append(ch)
+            }
+        }
+        return out
     }
 
     /// The leading frontmatter block of `recipeText`, `---` lines included,

@@ -64,6 +64,14 @@ package final class BuiltinAutomationCardModel {
         self.cli = cli
     }
 
+    /// The recipe description under the header: the last `show`'s, else the row's.
+    package var lede: String {
+        if let text = shown?.description.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty { return text }
+        let recipe = [shown?.recipeText, automation.recipeText, detail?.shippedText]
+            .compactMap { $0 }.first { !$0.isEmpty } ?? ""
+        return AutomationRowSummary.description(recipeText: recipe)
+    }
+
     package var cardState: CardState {
         if let copyError = detail?.copyError, !copyError.isEmpty { return .copyError(copyError) }
         guard detail?.overridden ?? automation.overridden else { return .shipped }
