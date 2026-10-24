@@ -110,7 +110,8 @@ type Options struct {
 	// in the Stop hook's and the brief's fast path.
 	Network bool
 	// OpenOnly checks only open targets: every blocking kind is about one,
-	// so the Stop hook's verdict is the same without the closed ones.
+	// so the Stop hook's verdict is the same without the closed ones. The
+	// brief uses it too, so a session start never waits on the closed walk.
 	OpenOnly bool
 	Run      Runner // nil = ExecRunner
 }

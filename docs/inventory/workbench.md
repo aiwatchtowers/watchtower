@@ -700,8 +700,11 @@ it, else one `--merged` listing per base; a failed read falls back to
 per-branch reads), reads each base's first-parent line once, keeps the
 default branch's patch ids across branches, and reads each branch once
 (2026-10-20, owner approved in ask #434; findings unchanged).
-`workbench brief` shows every finding (offline, 4 s budget), and so does the
-Desktop board: `WorkbenchesViewModel.refreshDrift` runs `workbench check --json
+`workbench brief` shows the open targets' findings (offline, 4 s budget,
+`OpenOnly` like the Stop hook — since 2026-10-24, owner approved in ask #531:
+the closed walk tripled a hook that blocks the session start, so
+`done_but_unmerged` is left to the board and `workbench check`), and the
+Desktop board shows every finding: `WorkbenchesViewModel.refreshDrift` runs `workbench check --json
 --no-network` when the Board pane appears, on the owner's Refresh, and every
 30 s while the pane polls, and `WorkbenchDriftBanner` lists the findings (a
 failed or partial check is shown as such, never as "in step") — the Desktop decodes, never
@@ -740,6 +743,7 @@ timeout would be worse than none.
 - supporting: `cmd/workbench_test.go::TestWorkbench_NoPreRenameCommandOrFlag` (the pre-rename Stop hook argv: no error, empty stdout, the Repair line on stderr, never an `exitCodeError`)
 - `WatchtowerDesktop/Tests/WorkbenchesViewModelDriftTests.swift`, `WatchtowerDesktop/Tests/Core/WorkbenchDriftReportTests.swift`, `WatchtowerDesktop/Tests/WorkbenchCLITests.swift::testMissingStopHookNeedsRepair`
 - `cmd/workbench_brief_test.go::TestProj07_BriefSaysWhenTheDriftCheckWasPartial`
+- `cmd/workbench_check_test.go::TestProjectBrief_DriftChecksOpenTargetsOnly` (supporting: the brief leaves a done target's unmerged branch to `workbench check`)
 - `internal/workbenchcheck/check_test.go` — `TestProj07_UnresolvableDefaultBranchIsANote`, `TestProj07_GitRules`, `TestProj07_SharedBranchAndParents`, `TestProj07_GitErrorsAreNeverFindings`, `TestProj07_NoGitCallOutsideARepository`, `TestProj07_ReadsNothingButGit`, `TestProj07_DeadlineReportsIncompleteNeverFalseFindings`, `TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly`, `TestProj07_GitUnavailableIsANote`
 
 **Locked since:** 2026-10-01

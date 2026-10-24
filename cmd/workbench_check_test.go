@@ -204,6 +204,24 @@ func TestProjectBrief_ShowsTheBoardDrift(t *testing.T) {
 	assert.LessOrEqual(t, len([]rune(brief)), briefMaxChars)
 }
 
+// The brief checks open targets only (it blocks the session start): a done
+// target's unmerged branch is the check's and the board's, not the brief's.
+func TestProjectBrief_DriftChecksOpenTargetsOnly(t *testing.T) {
+	database := writeActionsConfig(t)
+	folder := driftRepo(t)
+	pid, tid := driftWorkbench(t, database, folder, "open")
+	require.NoError(t, database.UpdateTargetStatus(int(tid), "done"))
+
+	stdout, _, err := runWorkbenchCheckCmd(t, strings.NewReader(""), "check", "--workbench", strconv.FormatInt(pid, 10), "--json", "--no-network")
+	require.NoError(t, err)
+	var rep workbenchcheck.Report
+	require.NoError(t, json.Unmarshal([]byte(stdout), &rep), stdout)
+	require.Len(t, rep.Findings, 1, "the full check still sees it")
+	assert.Equal(t, workbenchcheck.KindDoneUnmerged, rep.Findings[0].Kind)
+
+	assert.NotContains(t, loadWorkbenchBrief(pid, io.Discard), "Board drift")
+}
+
 // PROJ-02/PROJ-04: nothing of a deleted project remains in the folder's
 // settings — neither hook — while the owner's own settings survive.
 func TestProj02_ProjectDeleteLeavesNoHookOfTheProject(t *testing.T) {

@@ -35,7 +35,8 @@ const (
 	briefMaxChars  = 4000
 	briefLineChars = 240
 	// briefDriftBudget bounds the brief's offline board drift check (git
-	// only, PROJ-07), so a slow repository never stalls a session start.
+	// only, open targets only, PROJ-07), so a slow repository never stalls a
+	// session start.
 	briefDriftBudget = 4 * time.Second
 
 	// The recent-in-workbench-sources section: documents of the workbench's
@@ -205,7 +206,10 @@ func briefFromDB(database *db.DB, p *db.Workbench) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), briefDriftBudget)
 	defer cancel()
-	drift := workbenchcheck.Check(ctx, p.ID, board, workbenchcheck.Options{Folder: p.FolderPath})
+	// Open targets only: the hook blocks the session start, and the closed
+	// targets' walk (done_but_unmerged) tripled it; the board banner and
+	// `workbench check` still show every kind.
+	drift := workbenchcheck.Check(ctx, p.ID, board, workbenchcheck.Options{Folder: p.FolderPath, OpenOnly: true})
 	now := time.Now()
 	// The mismatch check reads the workbench folder, which resync updates; a
 	// session worktree's own copy follows on its next worktree install.
