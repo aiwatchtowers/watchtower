@@ -29,6 +29,7 @@ var (
 	workbenchReviewDiffCmd    = &cobra.Command{Use: "diff", Short: "The round's diff", RunE: runWorkbenchReviewDiff}
 	workbenchReviewFileCmd    = &cobra.Command{Use: "file", Short: "Both sides of one file of the round", RunE: runWorkbenchReviewFile}
 	workbenchReviewSendCmd    = &cobra.Command{Use: "send", Short: "Close the round and print its delivery line", RunE: runWorkbenchReviewSend}
+	workbenchReviewApproveCmd = &cobra.Command{Use: "approve", Short: "Close the round as approved and print its approved line", RunE: runWorkbenchReviewApprove}
 	workbenchReviewContextCmd = &cobra.Command{Use: "context", Short: "The session's intent card", RunE: runWorkbenchReviewContext}
 
 	reviewFlagWorkbench int64
@@ -39,11 +40,12 @@ var (
 	reviewFlagOldPath   string
 	reviewFlagSince     bool
 	reviewFlagRefresh   bool
+	reviewFlagResolve   bool
 )
 
 func init() {
 	for _, c := range []*cobra.Command{workbenchReviewStartCmd, workbenchReviewDiffCmd, workbenchReviewFileCmd,
-		workbenchReviewSendCmd, workbenchReviewContextCmd} {
+		workbenchReviewSendCmd, workbenchReviewApproveCmd, workbenchReviewContextCmd} {
 		c.Flags().Int64Var(&reviewFlagWorkbench, workbenchFlag, 0, "workbench id")
 		c.Flags().BoolVar(&reviewFlagJSON, "json", false, "output JSON")
 		workbenchReviewCmd.AddCommand(c)
@@ -51,9 +53,10 @@ func init() {
 	for _, c := range []*cobra.Command{workbenchReviewStartCmd, workbenchReviewContextCmd} {
 		c.Flags().Int64Var(&reviewFlagSession, "session", 0, "terminal session id")
 	}
-	for _, c := range []*cobra.Command{workbenchReviewDiffCmd, workbenchReviewFileCmd, workbenchReviewSendCmd} {
+	for _, c := range []*cobra.Command{workbenchReviewDiffCmd, workbenchReviewFileCmd, workbenchReviewSendCmd, workbenchReviewApproveCmd} {
 		c.Flags().Int64Var(&reviewFlagRound, "round", 0, "review round id")
 	}
+	workbenchReviewApproveCmd.Flags().BoolVar(&reviewFlagResolve, "resolve-open", false, "also resolve carried and outdated comments")
 	workbenchReviewDiffCmd.Flags().BoolVar(&reviewFlagSince, "since", false, "diff since the previous round")
 	workbenchReviewFileCmd.Flags().BoolVar(&reviewFlagSince, "since", false, "old side = the previous round")
 	workbenchReviewFileCmd.Flags().StringVar(&reviewFlagPath, "path", "", "file path in the round")
@@ -345,6 +348,24 @@ func runWorkbenchReviewSend(cmd *cobra.Command, _ []string) error {
 	env := reviewEnvelope{OK: true, Sent: &ok, Comments: n}
 	if ok {
 		env.Line = reviewdiff.DeliveryLine(reviewFlagRound, n)
+	}
+	return writeReview(cmd, env)
+}
+
+// runWorkbenchReviewApprove closes the round as approved; like send it stores
+// first and prints the line only once the round is stored (REVIEW-04).
+func runWorkbenchReviewApprove(cmd *cobra.Command, _ []string) error {
+	database, p, err := reviewTarget()
+	if err != nil {
+		return err
+	}
+	ok, err := database.ApproveReviewRound(p.ID, reviewFlagRound, reviewFlagResolve)
+	if err != nil {
+		return failReview(cmd, err)
+	}
+	env := reviewEnvelope{OK: true, Sent: &ok}
+	if ok {
+		env.Line = reviewdiff.ApprovedLine(reviewFlagRound)
 	}
 	return writeReview(cmd, env)
 }

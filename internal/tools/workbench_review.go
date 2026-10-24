@@ -35,6 +35,7 @@ type reviewRevertView struct {
 type reviewView struct {
 	RoundID   int64               `json:"round_id"`
 	Status    string              `json:"status"`
+	Outcome   string              `json:"outcome,omitempty"`
 	Folder    string              `json:"folder"`
 	TreeSHA   string              `json:"tree_sha"`
 	BaseLabel string              `json:"base_label"`
@@ -81,7 +82,7 @@ func NewGetReview() *Tool {
 				}
 				r.Status = "delivered"
 			}
-			v := reviewView{RoundID: r.ID, Status: r.Status, Folder: r.FolderRoot, TreeSHA: r.TreeSHA, BaseLabel: r.BaseLabel,
+			v := reviewView{RoundID: r.ID, Status: r.Status, Outcome: r.Outcome, Folder: r.FolderRoot, TreeSHA: r.TreeSHA, BaseLabel: r.BaseLabel,
 				Comments: []reviewCommentView{}, Reverts: []reviewRevertView{}}
 			for _, c := range cs {
 				if c.Status != "sent" {
@@ -106,6 +107,9 @@ func NewGetReview() *Tool {
 
 func reviewText(v reviewView) string {
 	var b strings.Builder
+	if v.Outcome == "approved" {
+		b.WriteString("Outcome: approved — no changes requested\n")
+	}
 	fmt.Fprintf(&b, "Review round #%d — %d comment(s), folder %s\n", v.RoundID, len(v.Comments), v.Folder)
 	for _, c := range v.Comments {
 		where := "design"

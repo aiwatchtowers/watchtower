@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/reviewdiff"
 )
 
 // reviewFixture: a workbench bound to a git repo (main + README.md, branch
@@ -281,4 +282,26 @@ func TestWorkbenchReviewStart_ReportsDeepState(t *testing.T) {
 	assert.Equal(t, "chapters", got["phase"])
 	assert.Equal(t, "dir:cmd", got["chapter_key"])
 	assert.Equal(t, float64(90), got["active_seconds"])
+}
+
+func TestWorkbenchReview_Approve(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644))
+	rid := int64(reviewJSON(t, wb, "start", "--session", itoa(s))["round"].(map[string]any)["id"].(float64))
+	_, err := database.Exec(`INSERT INTO review_comments (round_id, path, body, status) VALUES (?, 'README.md', 'old', 'carried')`, rid)
+	require.NoError(t, err)
+
+	refused := reviewJSON(t, wb, "approve", "--round", itoa(rid))
+	assert.Equal(t, false, refused["sent"], "an open carried comment refuses without --resolve-open")
+	assert.Empty(t, refused["line"])
+
+	done := reviewJSON(t, wb, "approve", "--round", itoa(rid), "--resolve-open")
+	assert.Equal(t, true, done["ok"])
+	assert.Equal(t, true, done["sent"])
+	assert.Equal(t, reviewdiff.ApprovedLine(rid), done["line"])
+	assert.Nil(t, done["comments"])
+
+	twice := reviewJSON(t, wb, "approve", "--round", itoa(rid))
+	assert.Equal(t, false, twice["sent"])
+	assert.Empty(t, twice["line"])
 }
