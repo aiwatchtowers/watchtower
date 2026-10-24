@@ -13,14 +13,19 @@
   "when": "Every morning at the first sync after 08:00",
   "reads": [
     "Slack digests and tracks",
-    "Calendar",
-    "Targets and tasks",
+    "Your calendar",
+    "Your tasks",
     "Jira and Linear",
-    "Inbox items"
+    "Your Inbox"
+  ],
+  "does": [
+    "Writes your brief: what changed, what is urgent, who waits on you",
+    "Plans your day around your meetings from that brief"
   ],
   "sends": [
-    "Your day card in the Inbox"
+    "Your day card in the Inbox, under Day"
   ],
+  "result_filter": "day",
   "parameters": [
     {
       "key": "briefing.hour",

@@ -294,3 +294,22 @@ func TestCard_CostsCountTokensAndAStoppedBuiltinShowsOff(t *testing.T) {
 		t.Errorf("a stopped built-in's card: enabled=%v, %v; want off", card.Enabled, err)
 	}
 }
+
+// TestCard_DoesAndResultFilter: every card lists what it does and names the
+// Inbox filter its result lands in.
+func TestCard_DoesAndResultFilter(t *testing.T) {
+	want := map[string]string{"morning-brief": "day", "track-my-threads": "tracks", "idea-finder": "ideas", "reactions": "automations"}
+	f := newFixture(t)
+	for _, e := range All() {
+		card, err := Card(f.d, f.cfg, f.ws, e, nil, f.clock.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(card.Does) < 1 {
+			t.Errorf("%s: no Does steps", e.ID)
+		}
+		if card.ResultFilter != want[e.ID] {
+			t.Errorf("%s: result_filter %q, want %q", e.ID, card.ResultFilter, want[e.ID])
+		}
+	}
+}

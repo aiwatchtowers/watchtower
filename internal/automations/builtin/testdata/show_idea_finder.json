@@ -11,11 +11,18 @@
   },
   "when": "Every 6 hours",
   "reads": [
-    "Slack digest topics, mail and tracker digests, meeting recaps"
+    "Slack digests",
+    "Mail and tracker digests",
+    "Meeting recaps"
+  ],
+  "does": [
+    "Collects ideas and decisions that came up in your work",
+    "Merges repeats and keeps what is worth your attention"
   ],
   "sends": [
-    "Idea cards in your Inbox; decisions to your brief"
+    "Idea cards in your Inbox, under Ideas; decisions go to your brief"
   ],
+  "result_filter": "ideas",
   "parameters": [
     {
       "key": "ideas.mine_interval_hours",

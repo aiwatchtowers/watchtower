@@ -11,11 +11,18 @@
   },
   "when": "After every sync, while Slack Digests are on",
   "reads": [
-    "Slack channel digests, your profile and your tracks"
+    "Slack channel digests",
+    "Your profile",
+    "Your existing tracks"
+  ],
+  "does": [
+    "Looks through new Slack discussions for threads that involve you",
+    "Starts a track for a new thread, or adds news to one you already follow"
   ],
   "sends": [
-    "Track cards in your Inbox"
+    "Track cards in your Inbox, under Tracks"
   ],
+  "result_filter": "tracks",
   "parameters": [],
   "feature_ids": [
     "tracks"
