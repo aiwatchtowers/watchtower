@@ -32,7 +32,8 @@ type ChatTurnForIdeas struct {
 
 // ListChatTurnsForIdeas returns up to limit owner and assistant messages with
 // id > afterID, on each conversation's active branch, outside Discuss-an-idea
-// chats (context_type 'idea'), in id order. Failed replies (status 'error')
+// chats (context_type 'idea') and workbench code questions ('code_question',
+// which never leave their Questions tab — spec 2026-10-02 §9.4), in id order. Failed replies (status 'error')
 // are left out; a stopped reply ('partial') is real text and stays. The
 // listing stops below the first message (of any kind) created after cutoffISO
 // (RFC 3339): a caller that advances a floor to the last returned id can then
@@ -54,7 +55,7 @@ func (db *DB) ListChatTurnsForIdeas(afterID int64, cutoffISO string, limit int) 
 		JOIN chat_conversations c ON c.id = m.conversation_id
 		WHERE m.id > ? AND m.role IN ('user', 'assistant') AND m.status != 'error'
 		  AND m.id < COALESCE((SELECT MIN(f.id) FROM chat_messages f WHERE f.id > ? AND f.created_at > ?), 9223372036854775807)
-		  AND COALESCE(c.context_type, '') != 'idea' AND `+onActiveBranch+`
+		  AND COALESCE(c.context_type, '') NOT IN ('idea', 'code_question') AND `+onActiveBranch+`
 		ORDER BY m.id
 		LIMIT ?`, afterID, afterID, at, limit)
 	if err != nil {

@@ -124,6 +124,10 @@ func TestListChatTurnsForIdeas(t *testing.T) {
 	below := insertChatMessage(t, d, plain, "user", "already mined", at(-time.Hour))
 	first := insertChatMessage(t, d, plain, "user", "we ship on Monday", at(-time.Hour))
 	insertChatMessage(t, d, ideaConv, "user", "discussing an idea", at(-time.Hour))
+	// A workbench code question never leaves its Questions tab (spec
+	// 2026-10-02 §9.4): its turns are never mined.
+	codeConv := insertChatConversation(t, d, "code_question", "4:main.go")
+	insertChatMessage(t, d, codeConv, "user", "we decided to inline this helper", at(-time.Hour))
 	second := insertChatMessage(t, d, plain, "assistant", "agreed", at(0))
 	insertChatMessage(t, d, plain, "tool", "noise", at(-time.Minute))
 	failed := insertChatMessage(t, d, plain, "assistant", "half an error", at(-time.Minute))
