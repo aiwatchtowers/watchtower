@@ -514,6 +514,19 @@ func (db *DB) SetIdeasChatFloorTx(tx *sql.Tx, id int64) error {
 	return nil
 }
 
+// SetIdeasChatFloor is SetIdeasChatFloorTx's non-tx sibling, for the backfill
+// engine's final raise (the SetIdeasFloors precedent).
+func (db *DB) SetIdeasChatFloor(id int64) error {
+	res, err := db.Exec(`UPDATE workspace SET ideas_chat_floor = ?`, id)
+	if err != nil {
+		return fmt.Errorf("setting ideas chat floor: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("setting ideas chat floor: no workspace row exists")
+	}
+	return nil
+}
+
 // DigestTopicFloorForTime returns the ideas_digest_floor a backfill run
 // lowers to so the window starting at fromUnix (inclusive) is re-mined: one
 // less than the LOWEST id among topics whose parent digest's period_to falls

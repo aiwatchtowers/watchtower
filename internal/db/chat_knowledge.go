@@ -31,22 +31,32 @@ type ChatTurnForIdeas struct {
 }
 
 // ListChatTurnsForIdeas returns up to limit owner and assistant messages with
-// id > afterID and created_at at or before cutoffISO (RFC 3339), on each
-// conversation's active branch, outside Discuss-an-idea chats
-// (context_type 'idea'), in id order. The chat tables come from migration
+// id > afterID, on each conversation's active branch, outside Discuss-an-idea
+// chats (context_type 'idea'), in id order. Failed replies (status 'error')
+// are left out; a stopped reply ('partial') is real text and stays. The
+// listing stops below the first message (of any kind) created after cutoffISO
+// (RFC 3339): a caller that advances a floor to the last returned id can then
+// never pass a message still inside the quiet window, even when a later id
+// carries an older timestamp (IDEA-01). A non-positive limit is an error —
+// SQLite would read it as no limit. The chat tables come from migration
 // 00076, so they are always present.
 func (db *DB) ListChatTurnsForIdeas(afterID int64, cutoffISO string, limit int) ([]ChatTurnForIdeas, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("listing chat turns for ideas: limit %d is not positive", limit)
+	}
 	cutoff, err := time.Parse(time.RFC3339, cutoffISO)
 	if err != nil {
 		return nil, fmt.Errorf("listing chat turns for ideas: parsing cutoff: %w", err)
 	}
+	at := float64(cutoff.Unix())
 	rows, err := db.Query(activeBranchCTE+`SELECT m.id, m.conversation_id, c.title, m.role, m.text, m.created_at
 		FROM chat_messages m
 		JOIN chat_conversations c ON c.id = m.conversation_id
-		WHERE m.id > ? AND m.created_at <= ? AND m.role IN ('user', 'assistant')
+		WHERE m.id > ? AND m.role IN ('user', 'assistant') AND m.status != 'error'
+		  AND m.id < COALESCE((SELECT MIN(f.id) FROM chat_messages f WHERE f.id > ? AND f.created_at > ?), 9223372036854775807)
 		  AND COALESCE(c.context_type, '') != 'idea' AND `+onActiveBranch+`
 		ORDER BY m.id
-		LIMIT ?`, afterID, float64(cutoff.Unix()), limit)
+		LIMIT ?`, afterID, afterID, at, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing chat turns for ideas: %w", err)
 	}
