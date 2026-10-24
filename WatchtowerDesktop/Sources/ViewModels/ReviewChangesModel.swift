@@ -68,12 +68,41 @@ final class ReviewChangesModel {
     /// path → the content key it was marked Viewed at.
     private(set) var viewed: [String: String] = [:]
     var selectedPath: String? {
-        didSet { if selectedPath != oldValue { fullFile = false } }
+        didSet {
+            guard selectedPath != oldValue else { return }
+            fullFile = false
+            // A line asked for in another file is not this one's.
+            if focusRequest?.path != selectedPath { focusRequest = nil }
+        }
     }
     /// The diff shows the whole file instead of the changes with unchanged
     /// runs folded (board #959); per file view, never persisted.
     var fullFile = false
     var view: View = .all
+    /// Code navigation in the review (board #960): the folder's place in the
+    /// repository, nil until the pane read it (no jump lands here till then).
+    var pathMap: ReviewPathMap?
+    /// A file outside the diff, read-only in the centre area; its path is
+    /// relative to the session's code root.
+    private(set) var preview: CodeNavLocation?
+    /// Bumped per `showLocation` into the preview: the same place asked again
+    /// is revealed again.
+    private(set) var previewSerial = 0
+    /// The preview's cursor, as its page last reported it.
+    private var previewCursor: CodeNavLocation?
+    /// A line the diff puts on screen once its file is shown (`wt.focus`).
+    /// One-shot: cleared once the diff sent it (`focusDelivered`), so a
+    /// rebuilt diff view never jumps there again.
+    private(set) var focusRequest: FocusRequest?
+    private var focusSerial = 0
+    /// The line last asked for, per file, for `currentLocation`.
+    private var focusedLine: (path: String, line: Int)?
+    /// The session's Usages list (`CodeUsagesCenter`) is shown under the
+    /// file area: asked from the diff, the preview or the menu while the
+    /// pane was key.
+    private(set) var showsUsages = false
+    /// The file load a `showLocation` started (tests await it).
+    @ObservationIgnored private(set) var navigationLoad: Task<Void, Never>?
     /// The last sides loaded, with the file, tree and view they belong to;
     /// read `currentSides` to show or anchor on them.
     private(set) var sides: LoadedSides?
@@ -432,7 +461,93 @@ final class ReviewChangesModel {
 
     func select(_ path: String) async {
         selectedPath = path
+        preview = nil
         await reloadSides()
+    }
+
+    // MARK: - Code navigation (board #960)
+
+    /// One ask for a line of a diff file; `serial` makes a repeat fire again.
+    struct FocusRequest: Equatable {
+        let path: String
+        let line: Int
+        let serial: Int
+    }
+
+    /// A jump's target, relative to the code root: a file of the diff is
+    /// selected (read only when it is not the one on screen) and its line
+    /// asked for; any other file opens in the read-only preview. false =
+    /// the folder's place in the repository is not known yet.
+    func showLocation(_ location: CodeNavLocation) -> Bool {
+        guard let pathMap else { return false }
+        let repoPath = pathMap.toRepo(location.path)
+        guard files.contains(where: { $0.path == repoPath }) else {
+            preview = location
+            previewCursor = nil
+            previewSerial += 1
+            return true
+        }
+        preview = nil
+        if selectedPath != repoPath {
+            selectedPath = repoPath
+            navigationLoad = Task { await reloadSides() }
+        }
+        if location.line > 0 { focusLine(location.line) }
+        return true
+    }
+
+    /// A line of the selected file into view in the diff (a comment picked
+    /// in the list, a jump).
+    func focusLine(_ line: Int) {
+        guard let path = selectedPath, line > 0 else { return }
+        focusSerial += 1
+        focusRequest = FocusRequest(path: path, line: line, serial: focusSerial)
+        focusedLine = (path, line)
+    }
+
+    /// The diff sent request `serial` to its page: it is not sent again.
+    func focusDelivered(_ serial: Int) {
+        if focusRequest?.serial == serial { focusRequest = nil }
+    }
+
+    /// "← Back to diff".
+    func closePreview() {
+        preview = nil
+        previewCursor = nil
+    }
+
+    /// The preview page's cursor; a message about another file is stale.
+    func previewCursorMoved(_ location: CodeNavLocation) {
+        guard location.path == preview?.path else { return }
+        previewCursor = location
+    }
+
+    /// The root-relative place a diff page message names (`definition`,
+    /// `usages`): the page posts from the new side of the file it shows,
+    /// by its round path. nil for another file than the selected one (a
+    /// stale message) or one outside the workbench folder (no navigation).
+    func diffNavigationOrigin(path: String, line: Int, col: Int) -> CodeNavLocation? {
+        guard path == selectedPath, let rootPath = pathMap?.toRoot(path) else { return nil }
+        return CodeNavLocation(path: rootPath, line: line, col: col)
+    }
+
+    func showUsages() {
+        showsUsages = true
+    }
+
+    func closeUsages() {
+        showsUsages = false
+    }
+
+    /// Where the review is, root-relative, for Back/Forward: the preview's
+    /// cursor, or the selected diff file at the line last asked for (1 when
+    /// none). nil without a path map or for a file outside the folder.
+    var currentLocation: CodeNavLocation? {
+        guard let pathMap else { return nil }
+        if let preview { return previewCursor ?? preview }
+        guard let selectedPath, let path = pathMap.toRoot(selectedPath) else { return nil }
+        let line = focusedLine.flatMap { $0.path == selectedPath ? $0.line : nil } ?? 1
+        return CodeNavLocation(path: path, line: line, col: 1)
     }
 
     func setView(_ v: View) async {

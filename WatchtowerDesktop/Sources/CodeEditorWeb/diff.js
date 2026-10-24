@@ -96,8 +96,22 @@
       // 3 = CursorChangeReason.Explicit: the owner's click or keys.
       if (e.reason === 3) { cursorIsOurs = false; }
     });
+    // A focus(line) sent before the shown diff is computed waits for it:
+    // the fold computed then would hide the line again.
+    var pendingFocus = 0;
+    function applyFocus() {
+      var mod = editor.getModifiedEditor();
+      var line = pendingFocus;
+      pendingFocus = 0;
+      mod.setPosition({ lineNumber: line, column: 1 });
+      cursorIsOurs = false;
+      mod.revealLineInCenter(line);
+    }
     // A new or recomputed diff folds afresh.
-    editor.onDidUpdateDiff(revealZones);
+    editor.onDidUpdateDiff(function () {
+      revealZones();
+      if (pendingFocus > 0) { applyFocus(); }
+    });
 
     function renderComments(list) {
       var mod = editor.getModifiedEditor();
@@ -212,6 +226,12 @@
     addAskAction(editor.getModifiedEditor(), "new");
     addAskAction(editor.getOriginalEditor(), "old");
 
+    // Go to definition and Usages on the new side only (board #960,
+    // codenav.js): requests name the shown file's path. The old side has no
+    // navigation.
+    var shownPath = "";
+    var nav = wtCodeNav(editor.getModifiedEditor(), function () { return shownPath; }, post);
+
     window.wt = {
       showDiff: function (a) {
         var previous = models;
@@ -225,6 +245,11 @@
         editor.setModel({ original: models.original, modified: models.modified });
         editor.updateOptions({ renderSideBySide: !a.inline, hideUnchangedRegions: { enabled: !a.fullFile } });
         cursorIsOurs = true;
+        // A new file: its path names the requests; the old one's marks go.
+        shownPath = a.path || "";
+        nav.clear();
+        // A focus waiting for the previous file's diff is not this file's.
+        pendingFocus = 0;
         // Disposed only once the editor holds the new pair.
         if (previous.original) { previous.original.dispose(); }
         if (previous.modified) { previous.modified.dispose(); }
@@ -246,12 +271,15 @@
       focus: function (line) {
         var mod = editor.getModifiedEditor();
         if (line > 0) {
-          mod.setPosition({ lineNumber: line, column: 1 });
-          cursorIsOurs = false;
-          mod.revealLineInCenter(line);
+          pendingFocus = line;
+          // null = the shown pair's diff is not computed yet (board #960).
+          if (editor.getLineChanges() !== null) { applyFocus(); }
         }
         mod.focus();
-      }
+      },
+      definitionAtCursor: function () { return nav.definitionAtCursor(); },
+      definitionDone: function (req) { nav.definitionDone(req); },
+      usagesAtCursor: function () { return nav.usagesAtCursor(); }
     };
     post({ type: "ready" });
   }, function (err) {

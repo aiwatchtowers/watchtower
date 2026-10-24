@@ -167,7 +167,9 @@ struct WorkspacePaneView: View {
                     identity: reviewIdentity(sessionID: id),
                     agentStateKind: vm.session(id, projectID: project.id).map { vm.sessionState($0).kind },
                     lessons: vm.reviewLessonsModel(projectID: project.id),
-                    chat: ReviewAgentChat(vm: vm, projectID: project.id, sessionID: id)
+                    chat: ReviewAgentChat(vm: vm, projectID: project.id, sessionID: id),
+                    codeRoot: vm.codeRoot(sessionID: id, project: project),
+                    workbenches: vm
                 )
                 .id(id)
             } else {

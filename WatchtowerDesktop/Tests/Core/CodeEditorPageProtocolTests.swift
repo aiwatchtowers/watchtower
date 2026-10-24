@@ -42,6 +42,43 @@ final class CodeEditorPageProtocolTests: XCTestCase {
         XCTAssertTrue(swift.contains(#"case "ask":"#), "MonacoDiffView does not handle ask")
     }
 
+    /// Go to definition and Usages from the diff's new side (board #960):
+    /// the editor page's messages and calls, documented and handled.
+    func testDiffNavigationIsDocumentedAndHandled() throws {
+        let header = try Self.headerComment(page: "diff.html")
+        for documented in [
+            "definitionAtCursor()", "definitionDone(req)", "usagesAtCursor()",
+            "definition {req, id, word, line, col, x, y}", "usages {id, word, line, col}"
+        ] {
+            XCTAssertTrue(header.contains(documented), "diff.html's header does not document \(documented)")
+        }
+        let script = try String(contentsOf: Self.web.appendingPathComponent("diff.js"), encoding: .utf8)
+        for call in ["definitionAtCursor", "definitionDone", "usagesAtCursor"] {
+            XCTAssertNotNil(
+                script.range(of: #"\#(call):\s*function"#, options: .regularExpression),
+                "diff.js's window.wt does not define \(call)"
+            )
+        }
+        XCTAssertTrue(script.contains("wtCodeNav(editor.getModifiedEditor()"), "diff.js does not use codenav.js on the new side")
+        let shared = try String(contentsOf: Self.web.appendingPathComponent("codenav.js"), encoding: .utf8)
+        for message in [#"type: "definition""#, #"type: "usages""#] {
+            XCTAssertTrue(shared.contains(message), "codenav.js never posts \(message)")
+        }
+    }
+
+    /// One go-to-definition and usages script for both pages: each loads
+    /// codenav.js before its own script, which calls it.
+    func testBothPagesShareCodeNav() throws {
+        for (page, script) in [("index.html", "editor.js"), ("diff.html", "diff.js")] {
+            let html = try String(contentsOf: Self.web.appendingPathComponent(page), encoding: .utf8)
+            let shared = try XCTUnwrap(html.range(of: #"<script src="codenav.js"></script>"#), "\(page) does not load codenav.js")
+            let own = try XCTUnwrap(html.range(of: #"<script src="\#(script)"></script>"#), "\(page) does not load \(script)")
+            XCTAssertLessThan(shared.lowerBound, own.lowerBound, "\(page) loads codenav.js after \(script)")
+            let code = try String(contentsOf: Self.web.appendingPathComponent(script), encoding: .utf8)
+            XCTAssertTrue(code.contains("wtCodeNav("), "\(script) does not call wtCodeNav")
+        }
+    }
+
     /// textmate.js loads only grammars scripts/fetch-textmate.sh vendors,
     /// and every vendored grammar is one textmate.js names (board #738).
     func testTextMateGrammarsMatchTheFetchScript() throws {

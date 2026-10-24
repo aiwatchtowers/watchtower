@@ -285,6 +285,10 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
 
 let helpers = #"""
 window.__h = {
+  // The editor mouse and decorations act on: the page's first editor, or
+  // `__h.target` (the diff page sets its modified editor).
+  target: null,
+  editor: function () { return __h.target || monaco.editor.getEditors()[0]; },
   model: function (id) {
     return monaco.editor.getModels().filter(function (m) { return m.uri.path.indexOf("/" + id + "/") === 0; })[0] || null;
   },
@@ -312,7 +316,7 @@ window.__h = {
   // A mouse event at line:col of the editor, the way a real one reaches
   // Monaco's view (pointerdown records the pointer, mousedown hit-tests).
   mouse: function (types, line, col, meta) {
-    var e = monaco.editor.getEditors()[0];
+    var e = __h.editor();
     e.layout();
     var p = e.getScrolledVisiblePosition({ lineNumber: line, column: col });
     if (!p) { return false; }
@@ -332,7 +336,7 @@ window.__h = {
   hover: function (line, col, meta) { return __h.mouse(["mousemove"], line, col, meta); },
   // Decorations of the model on screen carrying `cls` as their inline class.
   decorations: function (cls) {
-    var m = monaco.editor.getEditors()[0].getModel();
+    var m = __h.editor().getModel();
     if (!m) { return -1; }
     return m.getAllDecorations().filter(function (d) { return d.options.inlineClassName === cls; })
       .map(function (d) { return d.range.startLineNumber + ":" + d.range.startColumn + "-" + d.range.endColumn; });
@@ -1322,7 +1326,75 @@ func diffPageChecks(root: URL) async {
           "\(page.asks)")
     await diffNotesAndHunksChecks(page)
     await diffFoldChecks(page)
+    await diffNavigationChecks(page)
     check("diff page: no error posted during the run", page.errors.isEmpty, page.errors.joined(separator: "; "))
+}
+
+/// Go to definition and Usages on the diff's new side (board #960): ⌘-click
+/// and `definitionAtCursor` post `definition` with the shown path as id,
+/// `definitionDone` clears the busy underline of the latest req only, the
+/// context menu's Show All Usages and `usagesAtCursor` post `usages`; the
+/// old side posts nothing.
+@MainActor
+func diffNavigationChecks(_ page: Page) async {
+    _ = await page.eval(helpers)
+    await page.call("wt.showDiff", [
+        "path": "apps/web/nav.go", "original": "func target() {}\nvar y = 1\n", "modified": "func target() {}\nvar x = target()\n\n",
+        "inline": false, "fullFile": true, "comments": [Any](),
+    ] as [String: Any])
+    await pause(0.3)
+    page.definitions.removeAll()
+    page.usages.removeAll()
+    // Side by side at the harness's 800 px (Monaco goes inline below 900 px).
+    _ = await page.eval("monaco.editor.getDiffEditors()[0].updateOptions({ useInlineViewWhenSpaceIsLimited: false }); true")
+    await pause(0.2)
+    // Hovered before any click: after the harness's synthetic click, its
+    // mousemove no longer reaches the editor's onMouseMove.
+    _ = await page.eval("__h.target = monaco.editor.getDiffEditors()[0].getModifiedEditor(); true")
+    _ = await page.eval("__h.hover(2, 11, true)")
+    let hovered = await page.eval("__h.decorations('wt-def-link')") as? [String]
+    check("diff: ⌘-hover underlines the word", hovered == ["2:9-15"], "\(String(describing: hovered))")
+    _ = await page.eval("__h.hover(2, 11, false)")
+    check("diff: hover without ⌘ leaves no underline", await page.eval("__h.decorations('wt-def-link')") as? [String] == [])
+    _ = await page.eval("__h.target = monaco.editor.getDiffEditors()[0].getOriginalEditor(); true")
+    _ = await page.eval("__h.click(1, 7, true)")
+    await pause(0.2)
+    check("diff: ⌘-click on the old side posts nothing", page.definitions.isEmpty, "\(page.definitions)")
+    _ = await page.eval("__h.target = monaco.editor.getDiffEditors()[0].getModifiedEditor(); true")
+    _ = await page.eval("__h.click(2, 11, true)")
+    let clicked = await wait(2) { !page.definitions.isEmpty }
+    let first = page.definitions.first
+    check("diff: ⌘-click on the new side posts definition {req, id = path, word, line, col}",
+          clicked && first?.id == "apps/web/nav.go" && first?.word == "target" && first?.line == 2 && first?.col == 11,
+          "\(page.definitions)")
+    check("diff: the word gets the busy underline",
+          await page.eval("__h.decorations('wt-def-busy')") as? [String] == ["2:9-15"])
+
+    _ = await page.eval("monaco.editor.getDiffEditors()[0].getModifiedEditor().setPosition({ lineNumber: 1, column: 7 }); true")
+    let asked = await page.eval("wt.definitionAtCursor()") as? Bool
+    let second = page.definitions.last
+    check("diff: definitionAtCursor posts the word at the new side's cursor with the next req",
+          asked == true && page.definitions.count == 2 && second?.line == 1 && second.map { $0.req > first?.req ?? .max } == true,
+          "\(page.definitions)")
+    await page.call("wt.definitionDone", first?.req ?? -1)
+    check("diff: definitionDone of an older req leaves the underline",
+          await page.eval("__h.decorations('wt-def-busy')") as? [String] == ["1:6-12"])
+    await page.call("wt.definitionDone", second?.req ?? -1)
+    check("diff: definitionDone of the latest req clears it",
+          await page.eval("__h.decorations('wt-def-busy')") as? [String] == [])
+
+    let viaMenu = await page.eval("wt.usagesAtCursor()") as? Bool
+    _ = await page.eval("monaco.editor.getDiffEditors()[0].getModifiedEditor().getAction('wt.showUsages').run(); true")
+    let posted = await wait(2) { page.usages.count == 2 }
+    check("diff: usagesAtCursor and the Show All Usages action post usages {id, word, line, col}",
+          viaMenu == true && posted && page.usages.allSatisfy { $0.id == "apps/web/nav.go" && $0.word == "target" && $0.line == 1 },
+          "\(page.usages)")
+    let oldAction = await page.eval("monaco.editor.getDiffEditors()[0].getOriginalEditor().getAction('wt.showUsages') === null") as? Bool
+    check("diff: the old side has no Show All Usages", oldAction == true)
+    _ = await page.eval("monaco.editor.getDiffEditors()[0].getModifiedEditor().setPosition({ lineNumber: 3, column: 1 }); true")
+    let noWord = await page.eval("wt.definitionAtCursor()") as? Bool
+    check("diff: no word at the cursor posts nothing and says so", noWord == false && page.definitions.count == 2)
+    _ = await page.eval("__h.target = null; true")
 }
 
 /// `wt.setNotes` / `wt.setHunks` and the `undo` post on the loaded diff page:

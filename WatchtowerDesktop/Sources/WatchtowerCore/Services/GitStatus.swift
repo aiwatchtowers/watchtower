@@ -124,6 +124,20 @@ extension GitStatusSnapshot {
         return .snapshot(parse(status.stdout, prefix: prefix.stdout.trimmingCharacters(in: .newlines)))
     }
 
+    /// `git rev-parse --show-prefix`: `folder`'s path inside its repository,
+    /// "" at the top; nil without git or outside a repository (the Branch
+    /// review's path map, board #960).
+    package static func repoPrefix(folder: URL) async -> String? {
+        guard let git = MemoryVaultGit.gitPath(developerDir: await MemoryVaultGit.developerDir()) else { return nil }
+        let prefix = await run(git, ["-C", folder.path, "rev-parse", "--show-prefix"])
+        guard prefix.exitCode == 0 else {
+            NSLog("GitStatus: the folder's place in its repository was not read: %@", Self.describe(prefix))
+            return nil
+        }
+        // Only the newline: a folder name may end in a space.
+        return prefix.stdout.trimmingCharacters(in: .newlines)
+    }
+
     private static func describe(_ output: ProcessOutput) -> String {
         "git exited \(output.exitCode): \(CLILog.detail(output.stderr))"
     }

@@ -19,6 +19,11 @@ struct ReviewChangesPaneView: View {
     var lessons: ReviewLessonsModel?
     /// The session agent's chat panel; nil = no panel and no Ask agent.
     var chat: ReviewAgentChat?
+    /// Code navigation (board #960): the session's code root, where jumps
+    /// land while this pane is key, and the view model they go through;
+    /// nil = no navigation into the review.
+    var codeRoot: CodeRoot?
+    var workbenches: WorkbenchesViewModel?
 
     /// The chat panel is open (per workbench, open at first).
     @AppStorage private var chatOpen: Bool
@@ -34,6 +39,7 @@ struct ReviewChangesPaneView: View {
     /// The pane's height; 0 until the first layout (no cap then).
     @State private var paneHeight: CGFloat = 0
     @State private var pace = ReviewPaceWiring()
+    @State private var destination = ReviewNavigationDestination()
 
     /// What the shared comment sheet asks for and does with the answer: a line
     /// comment, a design comment, a risk, a Wrap-up note.
@@ -50,29 +56,38 @@ struct ReviewChangesPaneView: View {
         identity: ReviewSessionIdentity,
         agentStateKind: SessionSwitcherPresentation.State.Kind? = nil,
         lessons: ReviewLessonsModel? = nil,
-        chat: ReviewAgentChat? = nil
+        chat: ReviewAgentChat? = nil,
+        codeRoot: CodeRoot? = nil,
+        workbenches: WorkbenchesViewModel? = nil
     ) {
         self.model = model
         self.identity = identity
         self.agentStateKind = agentStateKind
         self.lessons = lessons
         self.chat = chat
+        self.codeRoot = codeRoot
+        self.workbenches = workbenches
         _chatOpen = AppStorage(wrappedValue: true, chat?.openKey ?? "review.chatPanel.none")
     }
 
     var body: some View {
         content
             .background(WindowKeyObserver(action: { autoRefresh() }, windowChanged: { pace.window = $0 }))
+            .background(ReviewDestinationAnchor(destination: destination))
             .onAppear {
                 onScreen = true
                 pace.start(model: model)
+                registerDestination(previous: nil)
                 if model.load == .idle { Task { await openRound() } }
             }
             .onDisappear {
                 onScreen = false
                 pace.stop()
+                if let workbenchID = codeRoot?.workbenchID { workbenches?.unregisterDestination(destination, workbenchID: workbenchID) }
                 Task { await model.flushState() }
             }
+            .onChange(of: codeRoot) { old, _ in registerDestination(previous: old) }
+            .task(id: codeRoot?.folder) { await readPathMap() }
             .onChange(of: agentStateKind) { old, new in
                 // Into a turn-over kind only: .finished → .stopped is the same turn's end.
                 if let new, Self.turnOver.contains(new), !(old.map(Self.turnOver.contains) ?? false) { autoRefresh() }
@@ -217,7 +232,17 @@ struct ReviewChangesPaneView: View {
     }
 
     @ViewBuilder private func detail(checklist: Bool) -> some View {
-        if let path = model.selectedPath {
+        if let preview = model.preview, let codeRoot {
+            VStack(spacing: 0) {
+                ReviewCodePreview(
+                    model: model, location: preview, root: codeRoot,
+                    navigation: workbenches?.codeFiles.navigation, usages: workbenches?.codeFiles.usages,
+                    destination: destination
+                )
+                usagesList
+                if checklist { chaptersFoot }
+            }
+        } else if let path = model.selectedPath {
             VStack(spacing: 0) {
                 if let file = model.files.first(where: { $0.path == path }) {
                     ReviewFileHeader(model: model, file: file)
@@ -225,6 +250,7 @@ struct ReviewChangesPaneView: View {
                 }
                 diff(path: path)
                 ReviewCommentListView(model: model, path: path)
+                usagesList
                 if checklist { chaptersFoot }
             }
         } else {
@@ -234,6 +260,23 @@ struct ReviewChangesPaneView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if checklist { chaptersFoot }
             }
+        }
+    }
+
+    /// The session root's Usages list, asked from the diff, the preview or
+    /// the menu while this pane was key (board #960); a row opens here.
+    @ViewBuilder private var usagesList: some View {
+        if model.showsUsages, let codeRoot, let usages = workbenches?.codeFiles.usages {
+            Divider()
+            HStack(alignment: .top, spacing: 0) {
+                UsagesView(usages: usages, root: codeRoot)
+                Button { model.closeUsages() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Close Usages")
+                    .help("Close Usages")
+                    .padding(Spacing.small)
+            }
+            .frame(height: 200)
         }
     }
 
@@ -280,7 +323,10 @@ struct ReviewChangesPaneView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                MonacoDiffView(payload: payload(path: path, sides: sides)) { start, end, side in
+                MonacoDiffView(
+                    payload: payload(path: path, sides: sides), focus: model.focusRequest,
+                    navigation: codeRoot == nil ? nil : destination
+                ) { start, end, side in
                     compose = lineComposeRequest(path: path, side: side, start: start, end: end)
                 } onAsk: { start, end, side in
                     let text = side == "old" ? sides.old.text : sides.new.text
@@ -288,7 +334,9 @@ struct ReviewChangesPaneView: View {
                     ask(ReviewAskQuote.code(path: path, side: side, startLine: start, endLine: end, lines: lines))
                 } onUndo: { id in
                     Task { await model.undo(hunkID: id) }
-                } onError: { pageError = $0 }
+                } onError: {
+                    pageError = $0
+                } onFocusSent: { model.focusDelivered($0) }
             }
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -336,6 +384,31 @@ struct ReviewChangesPaneView: View {
                 canUndo: model.canUndo, busy: model.sending || model.undoing
             )
         )
+    }
+
+    /// Jumps in the session's code root land here while the pane is key; a
+    /// changed root moves the registration with it.
+    private func registerDestination(previous: CodeRoot?) {
+        if let previous, previous.workbenchID != codeRoot?.workbenchID {
+            workbenches?.unregisterDestination(destination, workbenchID: previous.workbenchID)
+        }
+        destination.model = model
+        destination.root = codeRoot
+        destination.definitions = workbenches?.codeFiles.navigation
+        destination.usages = workbenches?.codeFiles.usages
+        if let codeRoot { workbenches?.registerDestination(destination, workbenchID: codeRoot.workbenchID) }
+    }
+
+    /// The folder's place in the repository maps the round's paths to the
+    /// code root's; until it is read (or when it cannot be), no jump lands here.
+    private func readPathMap() async {
+        guard let folder = codeRoot?.folder else {
+            model.pathMap = nil
+            return
+        }
+        let prefix = await GitStatusSnapshot.repoPrefix(folder: folder)
+        guard !Task.isCancelled else { return }
+        model.pathMap = prefix.map(ReviewPathMap.init(repoPrefix:))
     }
 
     /// Opens the round, then puts its first file on screen.
