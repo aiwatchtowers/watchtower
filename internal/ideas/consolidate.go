@@ -247,7 +247,7 @@ func (p *Pipeline) consolidate(ctx context.Context, from, to time.Time, mem *wor
 	in.commitMemFloors()
 	if refsRejected > 0 {
 		p.refsRejected += refsRejected
-		p.logf("ideas: consolidate rejected %d ref(s)", refsRejected)
+		p.logf("ideas: consolidate dropped %d invented ref(s)", refsRejected)
 	}
 	if mentionsDeduped > 0 {
 		p.logf("ideas: consolidate deduped %d already-mined mention(s)", mentionsDeduped)

@@ -323,7 +323,7 @@ func TestIdeas02_SlackRefMissingFromMessages_NotRenderedNotCitable(t *testing.T)
 	assert.Empty(t, ideas, "an op whose only ref was never rendered must write nothing")
 
 	assert.Contains(t, logBuf.String(), "dropped 1 unverifiable slack ref")
-	assert.Contains(t, logBuf.String(), "consolidate rejected 1 ref(s)", "the op's citation of the dropped ref counts as refs_rejected")
+	assert.Contains(t, logBuf.String(), "dropped 1 invented ref", "the op's citation of the dropped ref counts as refs_rejected")
 
 	dFloor, _, _, err := d.GetIdeasFloors()
 	require.NoError(t, err)
