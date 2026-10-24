@@ -286,6 +286,7 @@ func instructionsFieldLabel(f db.InstructionField) string {
 		return "target procedure"
 	case db.InstructionChat:
 		return "chat instructions"
+	case db.InstructionSession:
 	}
 	return "session instructions"
 }
