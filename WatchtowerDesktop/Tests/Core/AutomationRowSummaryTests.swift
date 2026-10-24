@@ -42,6 +42,36 @@ final class AutomationRowSummaryTests: XCTestCase {
         XCTAssertEqual(AutomationRowSummary.fallback(description: ""), "")
     }
 
+    /// Each case is what Go's `FallbackSummary` returns for the same input.
+    func testFallbackDivergencesFromEarlierDraft() {
+        // Newlines are not collapsed: a sentence ends only at ". " / "! " / "? ".
+        XCTAssertEqual(AutomationRowSummary.fallback(description: "Wrote it.\nThen more"), "Wrote it.\nThen more")
+        // Cut back to the last space even when the 61st rune is a space.
+        let words = String(repeating: "abcdefghi ", count: 10).trimmingCharacters(in: .whitespaces)
+        XCTAssertEqual(AutomationRowSummary.fallback(description: words),
+                       String(repeating: "abcdefghi ", count: 6).trimmingCharacters(in: .whitespaces) + "…")
+        let tight = String(repeating: "abcdefgh ", count: 8)
+        XCTAssertEqual(AutomationRowSummary.fallback(description: tight),
+                       String(repeating: "abcdefgh ", count: 6).trimmingCharacters(in: .whitespaces) + "…")
+        // Trailing " ,;:" is trimmed before the ellipsis.
+        let comma = String(repeating: "a", count: 55) + ", " + String(repeating: "b", count: 20)
+        XCTAssertEqual(AutomationRowSummary.fallback(description: comma), String(repeating: "a", count: 55) + "…")
+        // Runes are unicode scalars: a 60-scalar emoji run fits, 61 is cut (no space: kept at 60).
+        let flag = "\u{1F1E9}\u{1F1EA}"
+        XCTAssertEqual(AutomationRowSummary.fallback(description: String(repeating: flag, count: 30)).unicodeScalars.count, 60)
+        XCTAssertEqual(AutomationRowSummary.fallback(description: String(repeating: flag, count: 31)).unicodeScalars.count, 61)
+    }
+
+    func testDescriptionMatchesGoBodyParsing() {
+        let fm = "---\nname: \"A\"\ntrigger:\n  manual: true\n---\n"
+        // js fence dropped (info token only), other fences stay in, text after kept.
+        let text = fm + "Intro line.\n\n```js title\ncode();\n```\n~~~\nnot script\n~~~\nTail.\n"
+        XCTAssertEqual(AutomationRowSummary.description(recipeText: text), "Intro line.\n\n~~~\nnot script\n~~~\nTail.")
+        // Lines split on "\n" only; a "\r" stays, as in Go.
+        let crlf = fm + "Intro.\r\nMore.\r\n```js\ncode();\n```\n"
+        XCTAssertEqual(AutomationRowSummary.description(recipeText: crlf), "Intro.\r\nMore.")
+    }
+
     func testNoDescriptionIsNil() {
         let text = "---\nname: \"A\"\ntrigger:\n  manual: true\n---\n```js\noutput.inbox({});\n```\n"
         XCTAssertNil(AutomationRowSummary.summary(recipeText: text))
