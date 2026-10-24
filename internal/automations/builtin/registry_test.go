@@ -313,3 +313,23 @@ func TestCard_DoesAndResultFilter(t *testing.T) {
 		}
 	}
 }
+
+// TestBuiltinRecipes_DescriptionIsOneSentence: the built-in card's lede shows
+// the whole description, so it stays a single sentence; detail goes in Does.
+func TestBuiltinRecipes_DescriptionIsOneSentence(t *testing.T) {
+	for _, e := range All() {
+		r, err := ParseShipped(e)
+		if err != nil {
+			t.Fatalf("%s: %v", e.ID, err)
+		}
+		d := strings.TrimSpace(r.Description)
+		if d == "" || strings.ContainsAny(d, "\n") {
+			t.Errorf("%s: description %q is empty or spans lines", e.ID, d)
+		}
+		for _, sep := range []string{". ", "! ", "? "} {
+			if strings.Contains(d, sep) {
+				t.Errorf("%s: description %q has more than one sentence", e.ID, d)
+			}
+		}
+	}
+}

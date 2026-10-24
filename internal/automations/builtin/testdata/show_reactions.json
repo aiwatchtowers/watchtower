@@ -2,10 +2,10 @@
   "id": "reactions",
   "slot": "reactions",
   "overridden": false,
-  "shipped_hash": "64d873dde3a73d0ed0bd4bfb6090de0c83ae790f94dd4cb6d025de62ad68ef5d",
+  "shipped_hash": "5c45d6b3cfd601b35f355962fcbdf915b4ac6e9e0f23b947c460b3850459dc4d",
   "base_hash": "",
   "update_available": false,
-  "shipped_text": "---\nname: Reactions\nsummary: A Slack emoji turns into an action\ntrigger:\n  sync: reactions\npermissions:\n  - builtin:reaction.compose\nbudget: {tokens: 20000, minutes: 2}\n---\nWhen you react to a Slack message with an emoji from your dictionary, reads\nthe message you reacted to and its thread and composes the action the emoji\nstands for — a proposal in your Inbox (ideas, reminders and brief notes apply\nat once). One run handles one reaction.\n\n```js\nreaction.compose({ prompt: builtin.defaultPrompt(\"compose\") });\n```\n",
+  "shipped_text": "---\nname: Reactions\nsummary: A Slack emoji turns into an action\ntrigger:\n  sync: reactions\npermissions:\n  - builtin:reaction.compose\nbudget: {tokens: 20000, minutes: 2}\n---\nWhen you react to a Slack message with an emoji, prepares the action that emoji stands for.\n\n```js\nreaction.compose({ prompt: builtin.defaultPrompt(\"compose\") });\n```\n",
   "default_prompts": {
     "compose": "You turn a Slack message the owner flagged (by reacting to it) into the arguments for ONE Watchtower action.\n\nThe user message tells you:\n- WHICH action to build and what each of its arguments means.\n- The Slack message the owner reacted to, plus any thread context and available facts.\n\nRules:\n- Output ONLY a single JSON object whose keys are the action's arguments. No prose, no markdown fences, no explanation.\n- Base every field on the message and thread. Do NOT invent facts, names, dates, projects, or numbers that are not present.\n- Write the title/summary as a concise, imperative line — what the owner would want done about this message.\n- Always include a \"reason\": one sentence, why this action is proposed, phrased for the owner to read.\n- If a required argument cannot be grounded in the provided context, still return your best JSON; the caller validates it."
   },
@@ -17,7 +17,7 @@
   "does": [
     "Finds the emoji you placed in your reactions list",
     "Reads the message and its thread",
-    "Prepares what that emoji stands for, for example a reminder, an idea or a ticket"
+    "Prepares what that emoji stands for, for example a reminder, an idea or a ticket; one run handles one reaction"
   ],
   "sends": [
     "A proposal in your Inbox, under Automations; ideas, reminders and brief notes are saved at once"

@@ -113,7 +113,8 @@ var registry = []Entry{
 		Reads:     []string{"Slack digests and tracks", "Your calendar", "Your tasks", "Jira and Linear", "Your Inbox"},
 		Does: []string{
 			"Writes your brief: what changed, what is urgent, who waits on you",
-			"Plans your day around your meetings from that brief",
+			"Plans your day around your meetings from that brief, in the same run, at the first sync after your briefing hour",
+			"Still makes the plan when the brief fails",
 		},
 		Sends:        []string{"Your day card in the Inbox, under Day"},
 		ResultFilter: "day",
@@ -134,6 +135,7 @@ var registry = []Entry{
 		Reads:      []string{"Slack channel digests", "Your profile", "Your existing tracks"},
 		Does: []string{
 			"Looks through new Slack discussions for threads that involve you",
+			"Reads the new channel digests with your profile and your tracks, only while Slack Digests are on",
 			"Starts a track for a new thread, or adds news to one you already follow",
 		},
 		Sends:        []string{"Track cards in your Inbox, under Tracks"},
@@ -154,6 +156,7 @@ var registry = []Entry{
 		Reads:      []string{"Slack digests", "Mail and tracker digests", "Meeting recaps"},
 		Does: []string{
 			"Collects ideas and decisions that came up in your work",
+			"Reads Slack digests, mail and tracker digests and meeting recaps, every few hours",
 			"Merges repeats and keeps what is worth your attention",
 		},
 		Sends:        []string{"Idea cards in your Inbox, under Ideas; decisions go to your brief"},
@@ -177,7 +180,7 @@ var registry = []Entry{
 		Does: []string{
 			"Finds the emoji you placed in your reactions list",
 			"Reads the message and its thread",
-			"Prepares what that emoji stands for, for example a reminder, an idea or a ticket",
+			"Prepares what that emoji stands for, for example a reminder, an idea or a ticket; one run handles one reaction",
 		},
 		Sends:        []string{"A proposal in your Inbox, under Automations; ideas, reminders and brief notes are saved at once"},
 		ResultFilter: "automations",

@@ -8,10 +8,7 @@ permissions:
   - builtin:plan.compose
 budget: {tokens: 400000, minutes: 15}
 ---
-Every morning, at the first sync after your briefing hour, writes your daily
-brief and then plans your day from it — the "Your day" card in the Inbox. The
-brief and the plan are made one after the other in the same run; when the
-brief fails, the plan is still made.
+Every morning, writes your daily brief and plans your day from it.
 
 ```js
 const failed = [];
