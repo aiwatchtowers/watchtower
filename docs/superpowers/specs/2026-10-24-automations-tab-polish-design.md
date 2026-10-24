@@ -172,6 +172,23 @@ The test reproduces the bug first: a draft row exists, the save lands, and the r
 - Fixes in shared code help every chat, so the main chat's behaviour must not change: the same rendering, link rules (`AllowedURLSchemes`) and selection.
 - **Acceptance:** scrolling a 100-message editor thread with long markdown answers holds the display frame rate on the owner's machine. The before and after profiles are recorded in the PR.
 
+### 5b. Native text for finished messages (owner, ask #539)
+
+Measurement in §5 showed the remaining scroll cost lives inside SwiftUI and AppKit: every selectable SwiftUI `Text` (11–20 % of a scroll step), table `Grid` layout (~6 %) and each table's own horizontal scroll view (~3 %). The owner chose to fix it in this branch.
+
+- **What changes.** A *finished* answer's runs of prose are drawn by one non-editable, selectable `NSTextView` (TextKit 2) per run, instead of one SwiftUI `Text` per block. A run is the stretch of paragraphs, headings, lists and block quotes between blocks that keep their own views (code blocks, tables, artifacts, step blocks, question and action cards).
+- **What stays.** A message that is still streaming keeps today's SwiftUI path, and switches when it completes. User bubbles, code blocks and cards are unchanged.
+- **Tables.** A table that fits the column width gets no horizontal scroll view. Only a table wider than the column keeps one.
+- **Same look.** The fonts, sizes, colours (light and dark), list markers, heading weights, inline code, block-quote bar and spacing match the current rendering. The builder compares screenshots of the main chat before and after and records them in the PR.
+- **Same rules:**
+  - Links go through `AllowedURLSchemes` exactly as today.
+  - `watchtower-nav://` links open through `AppState.openNavLink`, never `NSWorkspace`.
+  - Code-reference links keep their popover.
+- **Selection gets better.** Selection works within a run and across its paragraphs, and ⌘C copies plain text. "Ask about this" (`ChatSelectionQuote`) keeps working: it reads the selection from the run's own text view instead of the field editor.
+- **Accessibility.** VoiceOver reads the run as text, with its links reachable.
+- **Height.** The text view reports its height for the width it is given (`sizeThatFits`), so `LazyVStack` rows measure correctly and do not jump when they scroll back in.
+- **Acceptance.** On the 100-message benchmark (`ChatScrollBenchmarkTests`, `WT_BENCH=1`), the selectable-text share of a scroll step drops clearly below today's 11–20 %. The p90 scroll step is recorded before and after in the PR. Then the owner checks by scrolling a long editor chat.
+
 ### 6. Editor draft column toggle (G8)
 
 A toolbar-style icon button sits at the right end of the editor header:

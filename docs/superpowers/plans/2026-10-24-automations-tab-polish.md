@@ -344,6 +344,34 @@ T12 (docs) runs last. Lanes run in their own worktrees and the controller merges
 - [ ] **Step 5: Re-profile and run** the tests, plus `make test-swift FILTER='ChatFeed|ChatMessageRow|Markdown'` and `make lint-swift`. Expected: PASS, with the before and after numbers in the commit body.
 - [ ] **Step 6: Commit** `perf(chat): <what the profile showed>` (in the main chat and embedded chats).
 
+### Task 13: Native text for finished chat messages (owner, ask #539)
+
+**Depends on:** Task 11 (lane-swd: memo, index, `ChatScrollBenchmarkTests`).
+
+**Files:**
+- Create: `WatchtowerDesktop/Sources/Views/Chat/MarkdownTextRun.swift` — `NSViewRepresentable` around a non-editable, selectable TextKit 2 `NSTextView`, sized with `sizeThatFits(_:nsView:context:)`.
+- Create: `WatchtowerDesktop/Sources/WatchtowerCore/Services/Chat/MarkdownRunBuilder.swift` — a pure function from the parsed blocks to `[MarkdownSegment]` (`.textRun(NSAttributedString)` or `.block(MarkdownBlock)`). It applies the same fonts, colours and paragraph styles as `MarkdownView` today, plus the `AllowedURLSchemes`-gated links. It is memoised the same way as the Task 11 inline memo.
+- Modify: `Views/Chat/MarkdownView.swift` (finished messages use the segments; a streaming message keeps the current path), `Views/Chat/ChatMessageRow.swift` (pass `isComplete`), and the tables view (a horizontal scroll view only when the table is wider than the column).
+- Modify: `Views/Chat/ChatSelectionQuote.swift`, to read the selection from a run's `NSTextView` (its `selectedRange()` / `firstRect(forCharacterRange:)`).
+- Test: `Tests/Core/MarkdownRunBuilderTests.swift` covers segmenting, styles, the link gate and the memo. The app-target tests cover `MarkdownTextRun` link clicks routing (`openNavLink`, allowed schemes) and selection quoting.
+
+**Interfaces:**
+- `package enum MarkdownSegment: Equatable { case textRun(NSAttributedString, id: Int), block(MarkdownBlock) }`.
+- `package enum MarkdownRunBuilder { static func segments(_ doc: MarkdownDocument, style: MarkdownRunStyle, links: InlineLinkContext) -> [MarkdownSegment] }`.
+
+- [ ] **Step 1:** Capture before screenshots (main chat and the editor chat, light and dark) and the benchmark baseline (`WT_BENCH=1`, p50/p90 step, selectable-text share).
+- [ ] **Step 2: Write the failing tests:**
+  - `testProseBetweenCodeBlocksIsOneRun`;
+  - `testHeadingAndListStylesMatchCurrent`;
+  - `testDisallowedLinkNotClickableInRun`;
+  - `testNavLinkRoutesToOpenNavLink`;
+  - `testSelectionQuoteReadsRunSelection`;
+  - `testTableFitsWidthHasNoScrollView`.
+- [ ] **Step 3: Run** `make test-swift FILTER='MarkdownRunBuilderTests|MarkdownTextRunTests|ChatSelectionQuote'`. Expected: FAIL.
+- [ ] **Step 4: Implement.** Streaming messages keep the old path, and switch on completion without a visible jump.
+- [ ] **Step 5: Run** the tests, plus `make test-swift FILTER='ChatFeed|ChatMessageRow|Markdown|ChatQuestion|AllowedURLSchemes|EmbeddedChat|ChatThread|ChatSelection'`, `make lint-swift`, the benchmark and the after screenshots. Expected: PASS. The selectable-text share drops clearly, and the before/after numbers and screenshots go in the report.
+- [ ] **Step 6: Commit** `perf(chat): finished answers draw prose with one native text view per run`.
+
 ### Task 12: Docs, inventory note, guide
 
 **Files:**
