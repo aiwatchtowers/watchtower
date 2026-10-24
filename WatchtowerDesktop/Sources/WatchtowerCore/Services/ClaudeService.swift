@@ -36,8 +36,10 @@ package protocol AIServiceProtocol: Sendable {
     /// reads files in it yet (rulings R42/R44): Claude runs as without the
     /// flag and Codex only turns web search off. Only `WatchtowerAIService`
     /// runs it; a test double that does not model it falls back to the run
-    /// without a folder.
-    func stream(
+    /// without a folder. `ownerInstructions` is the bare `--owner-instructions`
+    /// flag (the CLI adds the owner's chat instructions to the system prompt;
+    /// it carries no content).
+    func stream( // swiftlint:disable:this function_parameter_count
         prompt: String,
         systemPrompt: String?,
         sessionID: String?,
@@ -45,7 +47,8 @@ package protocol AIServiceProtocol: Sendable {
         model: String?,
         provider: String?,
         toolMode: ChatToolMode?,
-        readFolder: String?
+        readFolder: String?,
+        ownerInstructions: Bool
     ) -> AsyncThrowingStream<StreamEvent, Error>
 }
 
@@ -59,6 +62,31 @@ extension AIServiceProtocol {
         provider: String?,
         toolMode: ChatToolMode?,
         readFolder: String?
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        stream(
+            prompt: prompt,
+            systemPrompt: systemPrompt,
+            sessionID: sessionID,
+            dbPath: dbPath,
+            model: model,
+            provider: provider,
+            toolMode: toolMode,
+            readFolder: readFolder,
+            ownerInstructions: false
+        )
+    }
+
+    /// A double that models neither flag runs without both.
+    package func stream( // swiftlint:disable:this function_parameter_count
+        prompt: String,
+        systemPrompt: String?,
+        sessionID: String?,
+        dbPath: String?,
+        model: String?,
+        provider: String?,
+        toolMode: ChatToolMode?,
+        readFolder: String?,
+        ownerInstructions: Bool
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         stream(
             prompt: prompt,

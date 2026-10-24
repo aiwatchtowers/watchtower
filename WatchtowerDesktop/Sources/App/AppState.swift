@@ -77,12 +77,12 @@ final class AppState {
     /// With the owner unknown, the source still to report it (`OwnerQueries.pendingIdentitySource`).
     private(set) var ownerPendingSource: String?
 
-    /// The Settings window's selected tab, so an in-app link can open
-    /// Settings on a given tab (the no-owner empty state → Connections).
+    /// The Settings window's selected tab: an in-app link opens Settings on it.
     var settingsTab: SettingsTab = .connections
-
-    /// The Connections tab's selected service, held here for the same reason
-    /// as `settingsTab` (the Inbox cheat sheet → Slack's reaction dictionary).
+    /// A section the tab scrolls to once it shows (the tab clears it).
+    var settingsAnchor: SettingsAnchor?
+    /// The Connections tab's selected service, held for the same reason
+    /// (the Inbox cheat sheet → Slack's reaction dictionary).
     var settingsConnection: ConnectionService = .slack
 
     /// True while initialize() is running (before DB and onboarding check complete).

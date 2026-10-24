@@ -29,6 +29,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
     private func spec(
         conversationID: Int64? = nil,
         toolAccess: ChatSurfaceSpec.ToolAccess = .draftOnly,
+        ownerInstructions: Bool = false,
         postTurn: @escaping @MainActor (ChatPostTurnInput) async -> ChatPostTurnResult = ChatPostTurnResult.identity
     ) -> ChatSurfaceSpec {
         let id = conversationID ?? self.conversationID
@@ -36,6 +37,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
             key: EmbeddedChatKey(contextType: "idea", contextID: "1", conversationID: id),
             persistence: .database(conversationID: id),
             toolAccess: toolAccess,
+            ownerInstructions: ownerInstructions,
             systemPrompt: { "SYSTEM" },
             turnPrompt: { $0.isResumed ? "CONTEXT\n\n\($0.text)" : $0.text },
             postTurn: postTurn,
@@ -47,7 +49,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
     private func switchingSpec(_ options: @escaping @MainActor () -> ChatRunOptions) -> ChatSurfaceSpec {
         let base = spec()
         let system = { @MainActor () -> String in "SYSTEM" }
-        return ChatSurfaceSpec(key: base.key, persistence: base.persistence, toolAccess: .draftOnly,
+        return ChatSurfaceSpec(key: base.key, persistence: base.persistence, toolAccess: .draftOnly, ownerInstructions: false,
                                systemPrompt: system, emptyHint: "", runOptions: options)
     }
 
@@ -74,6 +76,29 @@ final class EmbeddedChatEngineTests: XCTestCase {
     }
 
     // MARK: - Full turn
+
+    func testTheSpecsOwnerInstructionsChoiceReachesTheCliCall() async throws {
+        let on = makeEngine(spec: spec(ownerInstructions: true))
+        XCTAssertTrue(on.send("hi"))
+        await on.finished()
+        XCTAssertEqual(ai.calls.last?.ownerInstructions, true)
+        let off = makeEngine(spec: spec(conversationID: nil, ownerInstructions: false))
+        XCTAssertTrue(off.send("hi"))
+        await off.finished()
+        XCTAssertEqual(ai.calls.last?.ownerInstructions, false)
+    }
+
+    /// Only a database chat with the owner's instructions looks up remember
+    /// marks: a setup assistant's in-memory ids can collide with another
+    /// chat's ledger row, and its Undo would forget a real line.
+    func testOnlyADatabaseChatWithInstructionsShowsRememberMarks() {
+        XCTAssertTrue(spec(ownerInstructions: true).showsRememberMarks)
+        XCTAssertFalse(spec(ownerInstructions: false).showsRememberMarks)
+        let memory = ChatSurfaceSpec(key: EmbeddedChatKey(contextType: "setup", contextID: "", conversationID: nil),
+                                     persistence: .memory, toolAccess: .draftOnly, ownerInstructions: true,
+                                     systemPrompt: { "S" }, emptyHint: "")
+        XCTAssertFalse(memory.showsRememberMarks)
+    }
 
     func testFullTurnStreamsIntoTheLiveRowAndCommitsTheReply() async throws {
         let engine = makeEngine()
@@ -1039,7 +1064,7 @@ final class EmbeddedChatEngineWillSendTests: XCTestCase {
         var seen: [String] = []
         let spec = ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: "target", contextID: "1", conversationID: nil),
-            persistence: .memory, toolAccess: .draftOnly, systemPrompt: { "S" },
+            persistence: .memory, toolAccess: .draftOnly, ownerInstructions: false, systemPrompt: { "S" },
             willSend: { seen.append($0); return allow }, emptyHint: "")
         let engine = EmbeddedChatEngine(spec: spec, store: MemoryEmbeddedChatStore(), aiService: ai,
                                         gate: EmbeddedStreamGate())
@@ -1060,7 +1085,7 @@ final class EmbeddedChatEngineWillSendTests: XCTestCase {
         let ai = ScriptedAIService()
         let spec = ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: "target", contextID: "1", conversationID: nil),
-            persistence: .memory, toolAccess: .actions(surface: "target"), systemPrompt: { "S" }, emptyHint: "")
+            persistence: .memory, toolAccess: .actions(surface: "target"), ownerInstructions: false, systemPrompt: { "S" }, emptyHint: "")
         let engine = EmbeddedChatEngine(spec: spec, store: MemoryEmbeddedChatStore(), aiService: ai,
                                         gate: EmbeddedStreamGate())
         engine.send("q")
@@ -1076,7 +1101,7 @@ final class EmbeddedChatEngineWillSendTests: XCTestCase {
 final class EmbeddedChatEngineSurfaceHookTests: XCTestCase {
     private func spec(mayContinue: @escaping @MainActor () -> Bool) -> ChatSurfaceSpec {
         ChatSurfaceSpec(key: EmbeddedChatKey(contextType: "target", contextID: "1", conversationID: nil),
-                        persistence: .memory, toolAccess: .draftOnly, systemPrompt: { "S" },
+                        persistence: .memory, toolAccess: .draftOnly, ownerInstructions: false, systemPrompt: { "S" },
                         mayContinue: mayContinue, emptyHint: "")
     }
 

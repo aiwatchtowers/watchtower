@@ -676,6 +676,23 @@ struct CodexSetupNotice: Equatable {
     let isWarning: Bool
 }
 
+/// `instructions remember --json`: `added` or `already_present`; `lineID` is
+/// set only for `added`.
+struct InstructionRememberResult: Decodable, Equatable {
+    let outcome: String
+    let lineID: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case outcome
+        case lineID = "line_id"
+    }
+}
+
+/// `instructions forget --json`.
+struct InstructionForgetResult: Decodable, Equatable {
+    let removed: Bool
+}
+
 /// A `WorkbenchCLI` call's own refusals, beyond the runner's errors.
 enum WorkbenchCLIError: LocalizedError, Equatable {
     /// `launch-args` found no binary for the agent (exit 3).
@@ -793,10 +810,25 @@ struct WorkbenchCLI {
     }
 
     /// The exact brief slot and target procedure the agent receives.
-    func instructionsPreview(workbenchID: Int64?) async throws -> (briefSlot: String, procedure: String) {
+    func instructionsPreview(workbenchID: Int64?) async throws -> (briefSlot: String, procedure: String, chatSlot: String) {
         let data = try await instructionsRun(["preview"], workbenchID: workbenchID, stdin: nil)
         let p = try OwnerInstructionsPreview.decode(data)
-        return (p.briefSlot, p.procedure)
+        return (p.briefSlot, p.procedure, p.chatSlot)
+    }
+
+    /// `instructions remember`: the whole owner message goes over stdin (the
+    /// CLI parses the prefix itself); text never reaches argv.
+    func instructionsRemember(text: String, conversationID: Int64, messageID: Int64) async throws -> InstructionRememberResult {
+        let data = try await instructionsRun(
+            ["remember", "--conversation", String(conversationID), "--message", String(messageID), "--stdin"],
+            workbenchID: nil, stdin: Data(text.utf8))
+        return try OwnerInstructionsJSON.decode(InstructionRememberResult.self, from: data)
+    }
+
+    /// `instructions forget <line-id>`: whether the line was still there.
+    func instructionsForget(lineID: Int64) async throws -> Bool {
+        let data = try await instructionsRun(["forget", String(lineID)], workbenchID: nil, stdin: nil)
+        return try OwnerInstructionsJSON.decode(InstructionForgetResult.self, from: data).removed
     }
 
     private func instructionsCall(_ sub: [String], workbenchID: Int64?, stdin: Data? = nil) async throws -> OwnerInstructionsState {
@@ -814,8 +846,17 @@ struct WorkbenchCLI {
             if let stdin { return try await runner.run(args: args, stdin: stdin) }
             return try await runner.run(args: args)
         } catch CLIRunnerError.nonZeroExit(_, let stderr) where !stderr.isEmpty {
-            throw OwnerInstructionsError(message: stderr.trimmingCharacters(in: .whitespacesAndNewlines))
+            let message = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            throw OwnerInstructionsError(message: message, code: Self.refusalCode(message))
         }
+    }
+
+    /// The runner keeps stderr only, so Go's machine-readable `code` is read
+    /// back from the two refusal texts the chat acts on.
+    private static func refusalCode(_ stderr: String) -> String? {
+        if stderr.contains("character limit") { return "too_long" }
+        if stderr.contains("no remembered line") { return "not_found" }
+        return nil
     }
 
     /// Replaces the whole definition (`--set -`, the JSON on stdin) and

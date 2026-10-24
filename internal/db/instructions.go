@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // InstructionField names one of the two owner-written instruction texts.
@@ -13,13 +15,16 @@ type InstructionField string
 const (
 	InstructionSession   InstructionField = "session"
 	InstructionProcedure InstructionField = "procedure"
+	InstructionChat      InstructionField = "chat"
 )
 
-// OwnerInstructions holds both texts of one scope (global or one workbench);
-// "" means none.
-type OwnerInstructions struct{ Session, Procedure string }
+// OwnerInstructions holds the texts of one scope (global or one workbench);
+// "" means none. Chat exists only globally.
+type OwnerInstructions struct{ Session, Procedure, Chat string }
 
-func (f InstructionField) valid() bool { return f == InstructionSession || f == InstructionProcedure }
+func (f InstructionField) valid() bool {
+	return f == InstructionSession || f == InstructionProcedure || f == InstructionChat
+}
 
 func instructionStamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
 
@@ -41,6 +46,8 @@ func (db *DB) GetOwnerInstructions() (OwnerInstructions, error) {
 			out.Session = body
 		case InstructionProcedure:
 			out.Procedure = body
+		case InstructionChat:
+			out.Chat = body
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -92,7 +99,7 @@ func (db *DB) SetWorkbenchInstruction(id int64, f InstructionField, body string)
 }
 
 func setWorkbenchInstructionTx(tx *sql.Tx, id int64, f InstructionField, body string) error {
-	if !f.valid() {
+	if !f.valid() || f == InstructionChat {
 		return fmt.Errorf("unknown instruction field %q", f)
 	}
 	query := `UPDATE projects SET target_procedure = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now') WHERE id = ?`
@@ -271,6 +278,197 @@ func (db *DB) ListInstructionSuggestionTexts(status string) ([]string, error) {
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("listing %s suggestion texts: %w", status, err)
+	}
+	return out, nil
+}
+
+// InstructionChatLine is one line a "remember:" chat message appended to the
+// chat instructions. ConversationID and MessageID are NULL-able: the chat rows
+// they name may be deleted later.
+type InstructionChatLine struct {
+	ID                        int64
+	Line                      string
+	ConversationID, MessageID sql.NullInt64
+	AddedAt                   string
+}
+
+// RememberOutcome is the result of RememberChatLine.
+type RememberOutcome string
+
+const (
+	RememberAdded          RememberOutcome = "added"
+	RememberAlreadyPresent RememberOutcome = "already_present"
+	RememberTooLong        RememberOutcome = "too_long"
+)
+
+const chatLineCols = `id, line, conversation_id, message_id, added_at`
+
+func scanChatLine(sc interface{ Scan(...any) error }) (InstructionChatLine, error) {
+	var l InstructionChatLine
+	err := sc.Scan(&l.ID, &l.Line, &l.ConversationID, &l.MessageID, &l.AddedAt)
+	return l, err
+}
+
+func readChatTextTx(tx *sql.Tx) (string, error) {
+	var body string
+	err := tx.QueryRow(`SELECT body FROM owner_instructions WHERE scope = 'chat'`).Scan(&body)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("reading chat instructions: %w", err)
+	}
+	return body, nil
+}
+
+func hasChatLine(text, line string) bool {
+	want := strings.TrimSpace(line)
+	for _, l := range strings.Split(text, "\n") {
+		if strings.TrimSpace(l) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// RememberChatLine appends line to the chat instructions and records it in the
+// ledger, in one transaction. A line already present (trimmed) is not written;
+// an append that would leave the text over limit runes (surrounding space not
+// counted) is refused. limit is passed in because internal/instructions
+// imports internal/db.
+func (db *DB) RememberChatLine(line string, conversationID, messageID int64, now time.Time, limit int) (InstructionChatLine, RememberOutcome, error) {
+	var row InstructionChatLine
+	outcome := RememberAdded
+	err := db.WithTx(func(tx *sql.Tx) error {
+		text, err := readChatTextTx(tx)
+		if err != nil {
+			return err
+		}
+		if hasChatLine(text, line) {
+			outcome = RememberAlreadyPresent
+			return nil
+		}
+		next := strings.TrimSpace(line)
+		if strings.TrimSpace(text) != "" {
+			next = strings.TrimSpace(text) + "\n" + next
+		}
+		if utf8.RuneCountInString(next) > limit {
+			outcome = RememberTooLong
+			return nil
+		}
+		if err := setOwnerInstructionTx(tx, InstructionChat, next); err != nil {
+			return err
+		}
+		stamp := instructionStamp(now)
+		res, err := tx.Exec(`INSERT INTO instruction_chat_lines (line, conversation_id, message_id, added_at)
+			VALUES (?, ?, ?, ?)`, strings.TrimSpace(line), conversationID, messageID, stamp)
+		if err != nil {
+			return fmt.Errorf("recording chat line: %w", err)
+		}
+		id, err := res.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("recording chat line: %w", err)
+		}
+		row = InstructionChatLine{ID: id, Line: strings.TrimSpace(line),
+			ConversationID: sql.NullInt64{Int64: conversationID, Valid: true},
+			MessageID:      sql.NullInt64{Int64: messageID, Valid: true}, AddedAt: stamp}
+		return nil
+	})
+	if err != nil {
+		return InstructionChatLine{}, "", err
+	}
+	return row, outcome, nil
+}
+
+// ForgetChatLine deletes ledger row id and removes the first trimmed line equal
+// to its line from the chat instructions. removed is false when the owner
+// already edited the line away. An unknown id wraps sql.ErrNoRows.
+func (db *DB) ForgetChatLine(id int64, now time.Time) (removed bool, err error) {
+	_ = now
+	err = db.WithTx(func(tx *sql.Tx) error {
+		var line string
+		if err := tx.QueryRow(`SELECT line FROM instruction_chat_lines WHERE id = ?`, id).Scan(&line); err != nil {
+			return fmt.Errorf("chat line %d: %w", id, err)
+		}
+		if _, err := tx.Exec(`DELETE FROM instruction_chat_lines WHERE id = ?`, id); err != nil {
+			return fmt.Errorf("deleting chat line %d: %w", id, err)
+		}
+		text, err := readChatTextTx(tx)
+		if err != nil {
+			return err
+		}
+		lines := strings.Split(text, "\n")
+		want := strings.TrimSpace(line)
+		for i, l := range lines {
+			if strings.TrimSpace(l) == want {
+				rest := append(append([]string{}, lines[:i]...), lines[i+1:]...)
+				removed = true
+				return setOwnerInstructionTx(tx, InstructionChat, strings.TrimSpace(strings.Join(rest, "\n")))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return removed, nil
+}
+
+// ListPresentChatLines returns the ledger rows whose line is still a trimmed
+// line of the chat instructions, newest first.
+func (db *DB) ListPresentChatLines() ([]InstructionChatLine, error) {
+	var text string
+	err := db.QueryRow(`SELECT body FROM owner_instructions WHERE scope = 'chat'`).Scan(&text)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("reading chat instructions: %w", err)
+	}
+	rows, err := db.Query(`SELECT ` + chatLineCols + ` FROM instruction_chat_lines ORDER BY id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("listing chat lines: %w", err)
+	}
+	defer rows.Close()
+	var out []InstructionChatLine
+	for rows.Next() {
+		l, err := scanChatLine(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning chat line: %w", err)
+		}
+		if hasChatLine(text, l.Line) {
+			out = append(out, l)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing chat lines: %w", err)
+	}
+	return out, nil
+}
+
+// ChatLinesForMessages returns the ledger rows recorded for the given chat
+// message ids, oldest first.
+func (db *DB) ChatLinesForMessages(ids []int64) ([]InstructionChatLine, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := db.Query(`SELECT `+chatLineCols+` FROM instruction_chat_lines
+		WHERE message_id IN (?`+strings.Repeat(",?", len(ids)-1)+`) ORDER BY id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing chat lines for messages: %w", err)
+	}
+	defer rows.Close()
+	var out []InstructionChatLine
+	for rows.Next() {
+		l, err := scanChatLine(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning chat line: %w", err)
+		}
+		out = append(out, l)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing chat lines for messages: %w", err)
 	}
 	return out, nil
 }

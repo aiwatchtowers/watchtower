@@ -93,3 +93,28 @@ func TestFingerprint_IgnoresCaseAndPunctuation(t *testing.T) {
 		t.Fatalf("%q vs %q", a, b)
 	}
 }
+
+func TestChatSlot(t *testing.T) {
+	const head = "Owner's instructions (follow in every turn):"
+	tests := []struct {
+		name string
+		in   db.OwnerInstructions
+		want string
+	}{
+		{"both empty", db.OwnerInstructions{Session: " ", Chat: "\n"}, ""},
+		{"session only", db.OwnerInstructions{Session: " be brief "}, head + "\nbe brief"},
+		{"chat only", db.OwnerInstructions{Chat: " use bullets "}, head + "\nFor the chat:\nuse bullets"},
+		{"both", db.OwnerInstructions{Session: "a", Chat: "b"}, head + "\na\nFor the chat:\nb"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ChatSlot(tc.in); got != tc.want {
+				t.Fatalf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+	maxed := db.OwnerInstructions{Session: strings.Repeat("a", MaxRunes), Chat: strings.Repeat("b", MaxRunes)}
+	if n := len(ChatSlot(maxed)); n != ChatSlotMaxRunes {
+		t.Fatalf("maximal slot is %d, ChatSlotMaxRunes %d", n, ChatSlotMaxRunes)
+	}
+}

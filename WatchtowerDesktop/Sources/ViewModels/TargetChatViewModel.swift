@@ -227,6 +227,7 @@ final class TargetChatViewModel {
             key: EmbeddedChatKey(contextType: "target", contextID: String(targetID), conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: .draftOnly,
+            ownerInstructions: true,
             systemPrompt: { "" },
             willSend: { _ in false },
             emptyHint: ""
@@ -242,6 +243,7 @@ final class TargetChatViewModel {
             // The target chat is an action surface (AGENT-04): a tool mode is
             // sent only while the provider reaches the MCP server.
             toolAccess: tools ? .actions(surface: "target") : .draftOnly,
+            ownerInstructions: true,
             // The closures reach this controller weakly: the engine lives in the
             // app-wide center. Every path that lets the controller go releases
             // the engine too, so a missing controller is only ever logged.

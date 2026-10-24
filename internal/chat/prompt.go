@@ -9,6 +9,7 @@ import (
 	"watchtower/internal/chat/blocks"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/instructions"
 )
 
 // PromptBudgetChars is the prompt target without project files (spec §4.2).
@@ -125,7 +126,7 @@ func toolSections(o PromptOptions, teams []blocks.SlackTeam, fallback string) []
 }
 
 // contextSections is the optional context: skills (tools only), memory and
-// the project block.
+// the owner's instructions slot and the project block.
 func contextSections(d *db.DB, o PromptOptions) ([]string, error) {
 	var sections []string
 	if o.ToolsAvailable {
@@ -138,6 +139,11 @@ func contextSections(d *db.DB, o PromptOptions) ([]string, error) {
 	if o.MemoryChat {
 		sections = append(sections, memoryBlock(o.VaultDir))
 	}
+	g, err := d.GetOwnerInstructions()
+	if err != nil {
+		return nil, err
+	}
+	sections = append(sections, instructions.ChatSlot(g))
 	if o.ProjectID > 0 {
 		pb, err := projectBlock(d, o.ProjectID, o.Provider)
 		if err != nil {
