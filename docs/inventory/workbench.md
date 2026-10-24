@@ -1691,7 +1691,7 @@ owner's and the agent's backs.
 
 ## PROJ-15 — an archived workbench target is hidden, never lost
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-04, ask #33, spec `docs/superpowers/specs/2026-10-04-workbench-board-archive-design.md` §3; amended 2026-10-07 (board #415), approved by the owner in ask #106, spec `docs/superpowers/specs/2026-10-07-workbench-archive-now-design.md` §3)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-04, ask #33, spec `docs/superpowers/specs/2026-10-04-workbench-board-archive-design.md` §3; amended 2026-10-07 (board #415), approved by the owner in ask #106, spec `docs/superpowers/specs/2026-10-07-workbench-archive-now-design.md` §3; amended 2026-10-24 (board #942), approved by the owner in ask #540: the brief no longer shows archived drift)
 
 **Observable:** A workbench target is archived iff it and every descendant
 on the same board are `done` or `dismissed`, every close time among them
@@ -1718,10 +1718,11 @@ alone until the next Archive Now. A group
 is archived only whole: a target with an open descendant, or whose subtree
 closed last less than `archive_after_days` days ago, is never archived, and an
 archived target's whole subtree is archived. The drift check never skips an
-archived target: `workbench check`, the brief's drift section and the Desktop
-banner read the full board, so a `done_but_unmerged` finding on an archived
-target is reported exactly as on a visible one (PROJ-07 unchanged in
-wording).
+archived target: `workbench check` and the Desktop banner read the full
+board, so a `done_but_unmerged` finding on an archived target is reported
+exactly as on a visible one. The brief's drift section checks open targets
+only (PROJ-07, since 2026-10-24), so it shows no finding on a closed target,
+archived or not.
 
 **Why locked:** Owner request (board target #301, ask #33). A long board
 must get short without losing anything: work that vanished, could not be
@@ -1732,7 +1733,7 @@ other direction.
 **Test guards:**
 - `internal/db/proj15_board_archive_test.go` — `TestProj15_ClosedLeafArchivedAfterNDays`, `TestProj15_OpenStatusesAreNeverArchived`, `TestProj15_UmbrellaArchivedOnlyWhole`, `TestProj15_GroupWaitsForItsLastClose`, `TestProj15_HandSetDoneParentWithOpenChildIsNotArchived`, `TestProj15_ReopenRestores`, `TestProj15_ReparentOpenWorkUnderArchivedGroupRestoresIt`, `TestProj15_OpenSubTargetUnderArchivedGroupRestoresIt`, `TestProj15_ArchiveWritesNothing`, `TestProj15_PerWorkbenchSettingAndNever`, `TestProj15_ArchiveDaysOutOfRangeAreRefused`, `TestProj15_CloseTimeFallsBackToUpdatedAt`, `TestProj15_UnparseableCloseTimeKeepsTheChain`, `TestProj15_ReopenAndRecloseStartsThePeriodOver`, `TestProj15_LargeBoardReadIsFast`
 - `internal/db/proj15_archive_now_test.go` — `TestProj15_ArchiveNowArchivesEveryClosedSubtree`, `TestProj15_ArchiveNowGroupsGoWhole`, `TestProj15_ArchiveNowCloseAfterTheStampStays`, `TestProj15_ArchiveNowLaterCloseInAGroupKeepsTheGroup`, `TestProj15_ArchiveNowReopenRestores`, `TestProj15_ArchiveNowSameSecondIsArchived`, `TestProj15_ArchiveNowUnderNever`, `TestProj15_ArchiveNowUnparseableCloseTimeKeepsTheChain`, `TestProj15_ArchivedThroughMustParse`, `TestProj15_UndoArchiveNowRestoresOnlyWhatTheAgeRuleWouldNot`, `TestProj15_ArchiveNowWritesNothingPerTarget`, `TestProj15_ArchiveNowIsPerWorkbench`, `TestProj15_LargeBoardReadIsFastWithAStamp`
-- `cmd/workbench_archive_test.go::TestProj15_DriftStillSeesArchivedUnmergedWork` (age rule and stamp-only cases)
+- `cmd/workbench_archive_test.go::TestProj15_DriftStillSeesArchivedUnmergedWork` (age rule and stamp-only cases; since 2026-10-24, ask #540, it asserts the brief leaves the archived finding out)
 - `internal/tools/workbench_board_archive_test.go` — `TestGetTarget_FindsAnArchivedTargetAndSaysSo`, `TestUpdateTarget_ReopeningRestoresAnArchivedTarget`, `TestCreateTargets_UnderAnArchivedParentBringsItBack`, `TestListTargets_ArchivedOnlyWithIncludeArchived`, `TestListTargets_IncludeArchivedWithoutStatusListsArchivedTargets`, `TestWorkbenchBoard_ArchivedSubtreesOnlyOnRequest`
 - `WatchtowerDesktop/Tests/Core/WorkbenchQueriesTests.swift::testBoardMarksArchivedTargetsFromTheViewAndKeepsThemInTheTree`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardOutlineTests.swift::testSearchAlwaysMatchesArchivedTargets`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardKanbanTests.swift::testSearchShowsArchivedLeaves`, `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift::testArchivedTargetsShowOnlyWithTheToggleAndReopeningRestoresOne`
 - supporting: `internal/db/proj15_board_archive_test.go` (`TestWithoutArchived_CountsArchivedChildren`, `TestWithoutArchived_EmptyAndAllArchived`, `TestGetTargets_WorkbenchLeavesArchivedOut`, `TestMigration00103_DefaultsToFourteen`), `internal/db/proj15_archive_now_test.go` (`TestMigration00105_ArchivedThroughStartsNull`, `TestArchiveNowWriters_UnknownWorkbench`), `internal/tools/workbench_board_archive_test.go` (`TestBuildBoardView_*`, `TestWorkbenchInfo_CountsTheWholeBoardAndTheArchived`, `TestWorkbenchBoard_LongMostlyClosedBoardStaysSmall`, `TestWorkbenchBoard_ArchiveNowLeavesTheBoardSmall`), `cmd/workbench_archive_test.go` (`TestRenderProjectBrief_ArchivedLeaveTheCountsAndAreCounted`, `TestWorkbenchBoardCmd_ArchivedOnlyWithTheFlag`, `TestWorkbenchBoardCmd_AllArchivedRootsAreCounted`, `TestWorkbenchShowCmd_PrintsTheArchiveSetting`, `TestWorkbenchShowCmd_PrintsArchivedThrough`), `internal/sessionreport/report_test.go::TestBuild_KeepsArchivedTargetsTheSessionClosed`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardKanbanTests.swift` (`testArchivedCardCountIsTheArchivedLeavesUnderTheFilter`), `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift` (`testTheArchiveCountFollowsTheMode`), Archive Now: `WatchtowerDesktop/Tests/Core/WorkbenchQueriesTests.swift` (`testArchiveClosedTargetsNowStampsTheWorkbenchAndUndoForgetsIt`, `testArchiveNowWritersThrowForAnUnknownWorkbench`), `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift::testTheArchiveNowStampIsInTheFingerprint`, `WatchtowerDesktop/Tests/WorkbenchesViewModelTests.swift::testArchiveNowAndUndoWriteTheStampReloadAndReportAFailure`, `WatchtowerDesktop/Tests/WorkbenchHeaderControlsTests.swift::testArchiveNowAndUndoArchiveNow`
