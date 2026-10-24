@@ -67,9 +67,11 @@ final class AutomationRowSummaryTests: XCTestCase {
         // js fence dropped (info token only), other fences stay in, text after kept.
         let text = fm + "Intro line.\n\n```js title\ncode();\n```\n~~~\nnot script\n~~~\nTail.\n"
         XCTAssertEqual(AutomationRowSummary.description(recipeText: text), "Intro line.\n\n~~~\nnot script\n~~~\nTail.")
-        // Lines split on "\n" only; a "\r" stays, as in Go.
-        let crlf = fm + "Intro.\r\nMore.\r\n```js\ncode();\n```\n"
-        XCTAssertEqual(AutomationRowSummary.description(recipeText: crlf), "Intro.\r\nMore.")
+        // Go normalises CRLF and lone CR to LF (and drops a BOM) before splitting.
+        let crlf = fm + "Intro.\r\nMore.\r\n```js\r\ncode();\r\n```\r\nAfter.\r\n"
+        XCTAssertEqual(AutomationRowSummary.description(recipeText: crlf), "Intro.\nMore.\nAfter.")
+        let cr = "\u{FEFF}" + fm.replacingOccurrences(of: "\n", with: "\r") + "Lone.\r```js\rx();\r```\rEnd.\r"
+        XCTAssertEqual(AutomationRowSummary.description(recipeText: cr), "Lone.\nEnd.")
     }
 
     func testNoDescriptionIsNil() {

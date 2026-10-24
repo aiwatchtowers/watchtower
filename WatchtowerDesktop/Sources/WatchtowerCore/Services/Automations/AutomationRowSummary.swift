@@ -58,9 +58,18 @@ package enum AutomationRowSummary {
     /// The recipe body outside the frontmatter and the ```js block, as Go's
     /// `parseBody` collects it; other fenced blocks stay in.
     static func description(recipeText: String) -> String {
-        let end = RecipeFrontmatter.block(in: recipeText)?.endIndex ?? recipeText.startIndex
-        // UTF-16 split: "\r\n" is one Character, but Go splits on "\n" and keeps the "\r".
-        let lines = String(recipeText[end...]).components(separatedBy: "\n")
+        // Go `normaliseRecipeBytes` first: drop a leading BOM, CRLF and a lone CR become LF.
+        // (Replacing on unicode scalars: "\r\n" is a single Character.)
+        var scalars = String.UnicodeScalarView()
+        var previousCR = false
+        for scalar in recipeText.unicodeScalars.dropFirst(recipeText.unicodeScalars.first == "\u{FEFF}" ? 1 : 0) {
+            if scalar == "\n", previousCR { previousCR = false; continue }
+            previousCR = scalar == "\r"
+            scalars.append(scalar == "\r" ? "\n" : scalar)
+        }
+        let text = String(scalars)
+        let end = RecipeFrontmatter.block(in: text)?.endIndex ?? text.startIndex
+        let lines = String(text[end...]).components(separatedBy: "\n")
         var out: [String] = []
         var closing: (char: Character, count: Int)?
         var skipping = false
