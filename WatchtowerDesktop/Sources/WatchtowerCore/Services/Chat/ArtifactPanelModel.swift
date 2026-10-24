@@ -129,15 +129,25 @@ package final class ArtifactPanelModel {
     /// Runs the press of the knowledge control: Add / Update pin the shown
     /// version, Remove drops the pin. A failure is shown, nothing changes.
     package func toggleKnowledge() async {
-        guard let state = knowledgeState, let shown = selectedArtifact else { return }
+        guard let state = knowledgeState else { return }
+        await writeKnowledge(remove: state == .remove)
+    }
+
+    /// Drops the pin from the Update menu (kept version older than the shown one).
+    package func removeKnowledge() async {
+        guard knowledgeState != nil, keptVersion != nil else { return }
+        await writeKnowledge(remove: true)
+    }
+
+    private func writeKnowledge(remove: Bool) async {
+        guard let shown = selectedArtifact else { return }
         let (db, conversationID, key, version) = (db, conversationID, key, shown.version)
         do {
             try await db.write {
-                switch state {
-                case .add, .update:
-                    try ChatArtifactQueries.keep($0, conversationID: conversationID, artifactKey: key, version: version)
-                case .remove:
+                if remove {
                     try ChatArtifactQueries.unkeep($0, conversationID: conversationID, artifactKey: key)
+                } else {
+                    try ChatArtifactQueries.keep($0, conversationID: conversationID, artifactKey: key, version: version)
                 }
             }
             reload()

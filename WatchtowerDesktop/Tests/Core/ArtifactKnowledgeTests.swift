@@ -66,6 +66,31 @@ final class ArtifactKnowledgeTests: XCTestCase {
         XCTAssertNil(model.errorMessage)
     }
 
+    func testRemoveFromUpdateStateDropsThePin() async throws {
+        let dbQueue = try TestDatabase.create()
+        let conversation = try await dbQueue.write { db -> Int64 in
+            try db.execute(sql: "INSERT INTO chat_conversations (title, created_at, updated_at) VALUES ('', 0, 0)")
+            let conversation = db.lastInsertedRowID
+            try db.execute(sql: "INSERT INTO chat_messages (conversation_id, role, text, turn_id, created_at) VALUES (?, 'assistant', '', '', 0)",
+                           arguments: [conversation])
+            let message = db.lastInsertedRowID
+            for (content, edited) in [("one", false), ("two", true)] {
+                let draft = ArtifactDraft(key: "q3", kind: "document", title: "Q3", meta: [:], content: content, isComplete: true)
+                try ChatArtifactQueries.saveVersion(db, conversationID: conversation, messageID: message, draft: draft, edited: edited)
+            }
+            try ChatArtifactQueries.keep(db, conversationID: conversation, artifactKey: "q3", version: 1)
+            return conversation
+        }
+        let model = ArtifactPanelModel(db: dbQueue, conversationID: conversation, key: "q3")
+        var changes = 0
+        model.onKnowledgeChanged = { changes += 1 }
+        XCTAssertEqual(model.knowledgeState, .update)
+        await model.removeKnowledge()
+        XCTAssertNil(model.keptVersion)
+        XCTAssertEqual(model.knowledgeState, .add)
+        XCTAssertEqual(changes, 1)
+    }
+
     func testEmailArtifactHasNoControlInPanelModel() async throws {
         let dbQueue = try TestDatabase.create()
         let conversation = try await dbQueue.write { db -> Int64 in

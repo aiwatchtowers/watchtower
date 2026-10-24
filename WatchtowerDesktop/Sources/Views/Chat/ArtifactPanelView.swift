@@ -137,11 +137,9 @@ struct ArtifactPanelView: View {
                 }
                 .disabled(!draft.isComplete)
                 if let state = model.knowledgeState {
-                    Button { Task { await model.toggleKnowledge() } } label: {
-                        Label(state.title, systemImage: state.systemImage)
-                    }
-                    .disabled(!draft.isComplete)
-                    .help(knowledgeHelp(state))
+                    knowledgeControl(state)
+                        .disabled(!draft.isComplete)
+                        .help(knowledgeHelp(state))
                 }
                 if draft.kind == "html" {
                     htmlActions(draft)
@@ -150,6 +148,25 @@ struct ArtifactPanelView: View {
             Spacer()
         }
         .padding(10)
+    }
+
+    @ViewBuilder
+    private func knowledgeControl(_ state: ArtifactKnowledgeState) -> some View {
+        if state == .update {
+            Menu {
+                Button(ArtifactKnowledgeState.remove.title, systemImage: ArtifactKnowledgeState.remove.systemImage) {
+                    Task { await model.removeKnowledge() }
+                }
+            } label: {
+                Label(state.title, systemImage: state.systemImage)
+            } primaryAction: {
+                Task { await model.toggleKnowledge() }
+            }
+        } else {
+            Button { Task { await model.toggleKnowledge() } } label: {
+                Label(state.title, systemImage: state.systemImage)
+            }
+        }
     }
 
     private func knowledgeHelp(_ state: ArtifactKnowledgeState) -> String {
