@@ -1,3 +1,4 @@
+import DesignKit
 import SwiftUI
 import WatchtowerCore
 
@@ -18,14 +19,24 @@ struct MarkdownView: View {
     /// (`MarkdownDocument.withLineBreaks`); the agent's text keeps markdown's
     /// soft breaks.
     var lineBreaks = false
+    /// A finished chat answer: its prose is drawn by one native text view
+    /// per run (`MarkdownSegmentsView`, spec 2026-10-24 §5b) instead of a
+    /// selectable SwiftUI `Text` per block. A streaming answer keeps the
+    /// SwiftUI path and switches when it completes.
+    var nativeText = false
     /// A code answer's `path:line` citations as links (`CodeLineLinks`);
     /// set by the code question popover, whose own `openURL` opens them.
     @Environment(\.markdownCodeLinks) private var codeLinks
 
     var body: some View {
-        let blocks = MarkdownDocument.parse(codeLinks ? CodeLineLinks.linkified(text) : text)
-        MarkdownBlocksView(blocks: lineBreaks ? MarkdownDocument.withLineBreaks(blocks) : blocks)
-            .textSelection(.enabled)
+        let parsed = MarkdownDocument.parse(codeLinks ? CodeLineLinks.linkified(text) : text)
+        let blocks = lineBreaks ? MarkdownDocument.withLineBreaks(parsed) : parsed
+        if nativeText {
+            MarkdownSegmentsView(blocks: blocks)
+        } else {
+            MarkdownBlocksView(blocks: blocks)
+                .textSelection(.enabled)
+        }
     }
 
     /// Inline render with disallowed-scheme links stripped (the gate every
@@ -33,12 +44,20 @@ struct MarkdownView: View {
     /// links, which only the code question popover opens (render-only:
     /// `AllowedURLSchemes.permits` never allows them); `navScreens` keeps
     /// the screen links (`watchtower-nav`) to those screens only.
+    /// Memoised per inline run and link context (`MarkdownInlineRenderer
+    /// .memoized`): the stripped text is what the memo holds, so a hit is
+    /// as gated as a fresh build.
     static func inlineText(
         _ inlines: [MarkdownInline], codeLinks: Bool = false, navScreens: Set<String> = []
     ) -> AttributedString {
-        AllowedURLSchemes.strippingDisallowedLinks(MarkdownInlineRenderer.attributed(inlines),
-                                                   renderOnly: codeLinks ? [CodeLineLinks.scheme] : [],
-                                                   navScreens: navScreens)
+        inlineText(inlines, links: InlineLinkContext(codeLinks: codeLinks, navScreens: navScreens))
+    }
+
+    static func inlineText(_ inlines: [MarkdownInline], links: InlineLinkContext) -> AttributedString {
+        MarkdownInlineRenderer.memoized(inlines, context: links) {
+            AllowedURLSchemes.strippingDisallowedLinks(MarkdownInlineRenderer.attributed($0),
+                                                       renderOnly: links.renderOnly, navScreens: links.navScreens)
+        }
     }
 
     /// One line of markdown as a label (a button's, an ask's focus place):
@@ -56,11 +75,21 @@ struct MarkdownView: View {
     }
 }
 
+/// Everything besides the inlines that rendered markdown text depends on:
+/// the surface's link rules (`MarkdownView.inlineText`, `MarkdownRunText`).
+struct InlineLinkContext: Hashable, Sendable {
+    let codeLinks: Bool
+    let navScreens: Set<String>
+
+    /// Schemes the surface opens itself (`AllowedURLSchemes.keepsLink`).
+    var renderOnly: Set<String> { codeLinks ? [CodeLineLinks.scheme] : [] }
+}
+
 struct MarkdownBlocksView: View {
     let blocks: [MarkdownBlock]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: MarkdownRunBuilder.blockSpacing) {
             ForEach(blocks.indices, id: \.self) { index in
                 MarkdownBlockView(block: blocks[index])
             }
@@ -115,9 +144,9 @@ struct MarkdownListView: View {
     let list: MarkdownList
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: MarkdownRunBuilder.itemSpacing) {
             ForEach(list.items.indices, id: \.self) { index in
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: MarkdownRunText.markerGap) {
                     marker(for: list.items[index], index: index)
                     MarkdownBlocksView(blocks: list.items[index].blocks)
                 }
@@ -143,28 +172,36 @@ struct MarkdownTableView: View {
     @Environment(\.markdownCodeLinks) private var codeLinks
     @Environment(\.markdownNavScreens) private var navScreens
 
+    /// A table that fits the column draws as it is; only a wider one gets a
+    /// horizontal scroll view (spec 2026-10-24 §5b: each scroll view is a
+    /// cost while the chat scrolls).
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 6) {
-                GridRow {
-                    ForEach(table.header.indices, id: \.self) { column in
-                        Text(MarkdownView.inlineText(table.header[column], codeLinks: codeLinks, navScreens: navScreens))
-                            .fontWeight(.semibold)
-                            .gridColumnAlignment(alignment(column))
-                    }
+        ViewThatFits(in: .horizontal) {
+            grid.fixedSize(horizontal: true, vertical: false).frame(maxWidth: .infinity, alignment: .leading)
+            ScrollView(.horizontal, showsIndicators: false) { grid }
+        }
+        .background(Color(.textBackgroundColor).opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+    }
+
+    private var grid: some View {
+        Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 6) {
+            GridRow {
+                ForEach(table.header.indices, id: \.self) { column in
+                    Text(MarkdownView.inlineText(table.header[column], codeLinks: codeLinks, navScreens: navScreens))
+                        .fontWeight(.semibold)
+                        .gridColumnAlignment(alignment(column))
                 }
-                Divider()
-                ForEach(table.rows.indices, id: \.self) { row in
-                    GridRow {
-                        ForEach(table.rows[row].indices, id: \.self) { column in
-                            Text(MarkdownView.inlineText(table.rows[row][column], codeLinks: codeLinks, navScreens: navScreens))
-                        }
+            }
+            Divider()
+            ForEach(table.rows.indices, id: \.self) { row in
+                GridRow {
+                    ForEach(table.rows[row].indices, id: \.self) { column in
+                        Text(MarkdownView.inlineText(table.rows[row][column], codeLinks: codeLinks, navScreens: navScreens))
                     }
                 }
             }
-            .padding(8)
         }
-        .background(Color(.textBackgroundColor).opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+        .padding(Spacing.regular)
     }
 
     private func alignment(_ column: Int) -> HorizontalAlignment {
