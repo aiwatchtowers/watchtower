@@ -234,7 +234,7 @@ func TestTerminalTitlePromptRegistered(t *testing.T) {
 	id := TerminalTitle
 	assert.NotEmpty(t, Defaults[id])
 	assert.True(t, contains(AllIDs, id))
-	assert.Equal(t, 2, DefaultVersions[id])
+	assert.Equal(t, 3, DefaultVersions[id])
 	assert.NotEmpty(t, Descriptions[id])
 	assert.NotContains(t, Defaults[id], "%s")
 	assert.False(t, strings.HasPrefix(Defaults[id], "-"))
@@ -263,9 +263,9 @@ func contains(slice []string, val string) bool {
 	return slices.Contains(slice, val)
 }
 
-// TestPrompts_TerminalTitleIsAgentNeutral pins the v2 text: the title prompt
-// names Claude Code and Codex sessions alike, so neither the template nor its
-// description names one agent.
+// TestPrompts_TerminalTitleIsAgentNeutral pins the text since v2: the title
+// prompt names Claude Code and Codex sessions alike, so neither the template
+// nor its description names one agent (v3 adds the never-answer rule).
 func TestPrompts_TerminalTitleIsAgentNeutral(t *testing.T) {
 	id := TerminalTitle
 	assert.Contains(t, Defaults[id], "an embedded coding-agent session")
@@ -274,7 +274,7 @@ func TestPrompts_TerminalTitleIsAgentNeutral(t *testing.T) {
 		assert.NotContains(t, Defaults[id], agent)
 		assert.NotContains(t, Descriptions[id], agent)
 	}
-	assert.Equal(t, 2, DefaultVersions[id], "an edited shipped template bumps its version")
+	assert.Equal(t, 3, DefaultVersions[id], "an edited shipped template bumps its version")
 }
 
 // TestInstructionSuggestionsPromptRegistered pins instructions.suggest into

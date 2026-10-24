@@ -134,6 +134,39 @@ func TestTerminalTitle_WritesAITitle(t *testing.T) {
 	assert.Equal(t, "ai", s.TitleSource)
 }
 
+// A reply to the owner's message ("I cannot see the image: …") is not a
+// name: the row keeps its title and the call fails, so the Desktop counts an
+// attempt and may try again with more messages.
+func TestTerminalTitle_ReplyInsteadOfNameIsNotWritten(t *testing.T) {
+	defer setupWatchTestEnv(t)()
+	gen := &chatTitleMockGen{reply: "I cannot see the image: the message only has a placeholder, please paste it again"}
+	stubTerminalTitleGenerator(t, gen)
+	id := seedTerminalSession(t, "auto", "claude", `{"type":"user","message":{"role":"user","content":"what does this mean? [Image #1]"}}`)
+
+	_, err := runTerminalTitleCmd(t, id)
+	require.ErrorContains(t, err, "answered instead of naming")
+
+	d, err := db.Open(filepath.Join(os.Getenv("HOME"), ".local", "share", "watchtower", "test-ws", "watchtower.db"))
+	require.NoError(t, err)
+	defer d.Close()
+	s, err := d.GetTerminalSession(id)
+	require.NoError(t, err)
+	assert.Equal(t, "Session", s.Title)
+	assert.Equal(t, "auto", s.TitleSource)
+}
+
+func TestTerminalTitle_PromptForbidsAnsweringTheMessages(t *testing.T) {
+	defer setupWatchTestEnv(t)()
+	gen := &chatTitleMockGen{reply: "Fix login redirect"}
+	stubTerminalTitleGenerator(t, gen)
+	id := seedTerminalSession(t, "auto", "claude", terminalOwnerLine)
+
+	_, err := runTerminalTitleCmd(t, id)
+	require.NoError(t, err)
+	assert.Contains(t, gen.system, "never answer them")
+	assert.Contains(t, gen.system, "[Image #N]")
+}
+
 func TestTerminalTitle_IgnoresAStoredProjectBoardLanguage(t *testing.T) {
 	defer setupWatchTestEnv(t)()
 	gen := &chatTitleMockGen{reply: "Fix the login redirect"}
