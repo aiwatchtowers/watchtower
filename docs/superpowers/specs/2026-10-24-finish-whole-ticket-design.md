@@ -1,6 +1,6 @@
 # A session finishes its whole ticket, checked against the reviewer's AI overview
 
-Board target #947. Status: draft for the owner's review.
+Board target #947. Status: approved by the owner (ask #550).
 
 ## Why
 
@@ -116,14 +116,14 @@ behaves as today. Ask guard modes do not matter here.
 ## Result and refusals
 
 Refusals are `ValidationError`s (nothing written, no audit row — as every
-`Validate`/`Scope` refusal today), so the agent's retry is clean. A pass adds
-to the result `ticket_id`, `open_leaves` (0, or the count handed over) and
-`overview` (`checked` / `handed_over` / `skipped_no_diff` /
-`skipped_no_ticket`).
+`Validate`/`Scope` refusal today), so the agent's retry is clean. A pass
+echoes `handover_ask_id` when one was given; the gates are not re-run in
+`Execute` (that would be a third snapshot), so the result carries no other
+gate keys.
 
-Gate 2's git work runs in `Scope`, bounded by the existing workbench git
-budget; a git failure refuses with the error (the agent retries or hands
-over), never silently passes.
+Gate 2's git work runs in `Scope`, bounded by a 30 s budget; a folder outside
+git (or no git) has no diff to check, any other git failure refuses with the
+error (the agent retries or hands over), never silently passes.
 
 ## Skill pack v14
 
@@ -138,8 +138,8 @@ Core skill, "Finishing a session", new first paragraph:
   Do the same for any open leaf of the ticket.
 
 v13 joins the DEV-04 re-install fixtures; the Codex copy follows. The Stop
-hook's finish reasons (`askGuardReasonFinish*`) gain "check the ticket and
-the overview first" — text only, the decision table is unchanged.
+hook is unchanged: `finish_session`'s own refusal carries the next step, and
+its finish reasons are pinned PROJ-13 texts.
 
 ## Contracts
 
@@ -147,16 +147,19 @@ the overview first" — text only, the decision table is unchanged.
   refuses while the ticket has open leaves or the session's diff has no
   checked overview, unless a handover ask of this session is named. Only the
   session itself still says it finished.
-- **PROJ-13**: reason texts only; no guard relaxed.
+- **PROJ-13**: unchanged.
 - **DEV-06**: tool count unchanged; `finish_session` schema gains one field.
 - **PROJ-04**: pack v14, v13 fixture.
 
-New guards: `TestProj14_FinishRefusesOpenLeaves`,
+New guards (`internal/tools/workbench_finish_gate_test.go`):
+`TestProj14_FinishRefusesOpenLeaves`,
+`TestProj14_FinishTicketFromTargetIDWhenNotLaunched`,
+`TestProj14_HandoverAskPassesBothGates`, `TestProj14_HandoverAskRefusals`,
+`TestProj14_FinishCheckOffSkipsGates`,
 `TestProj14_FinishRefusesWithoutOverview`,
+`TestProj14_ANoteAfterTheOverviewAsksForItAgain`,
 `TestProj14_FinishRefusesUncoveredItems`,
-`TestProj14_HandoverAskPassesBothGates`,
-`TestProj14_HandoverAskOfAnotherSessionRefused`,
-`TestProj14_FinishCheckOffSkipsGates`.
+`TestProj14_EmptyDiffSkipsTheOverview`.
 
 ## v1 limits
 
@@ -165,3 +168,7 @@ New guards: `TestProj14_FinishRefusesOpenLeaves`,
 - The overview judges only the session-linked targets (the reviewer's input
   is unchanged); gate 1 covers the rest of the subtree mechanically.
 - A session with no ticket and no diff is not checked.
+- The gate reads the session's current folder: the skill runs the check
+  before leaving the worktree for the cleanup step.
+- No allow rule for the overview command (unlike `workbench cleanup`): in
+  auto mode it runs through the usual permission classifier.

@@ -202,6 +202,12 @@ read, a failed model call the model call. Switching to Deep makes the overview u
 current tree's is shown. One place shows the spinner (`startOverview`, model calls only; a
 cached read keeps what is shown).
 
+**The agent's overview (2026-10-24, board #947).** `review overview --session S` (exclusive with
+`--round`) snapshots the session's folder as it stands and opens no round; an empty diff answers ok
+with no overview and no model call. It caches under the same (tree, base, intent hash) key, so the
+Desktop round on that tree reads it without a second call. `finish_session` reads that cache to
+check the session's work (PROJ-14, `docs/features/workbench.md`).
+
 A model call in flight (Make overview, Retry, or Deep's own) is never cancelled by a
 refresh, an Undo or a mode switch (`generationID`); only opening another round drops it.
 If the tree moved while it ran, it is followed up when it lands: Deep makes the new tree's

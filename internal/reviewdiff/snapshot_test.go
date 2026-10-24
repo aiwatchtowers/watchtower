@@ -234,3 +234,25 @@ func TestSnapshot_DoneContextIsAnError(t *testing.T) {
 		t.Fatal("hasHead under a cancelled context answered")
 	}
 }
+
+func TestSameTree(t *testing.T) {
+	ctx := context.Background()
+	dir := newRepo(t)
+	r := openRepo(t, dir)
+	base, err := r.Base(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clean, _ := r.Snapshot(ctx)
+	if same, err := r.SameTree(ctx, base.SHA, clean); err != nil || !same {
+		t.Fatalf("a clean work tree reads as a diff (%v)", err)
+	}
+	writeFile(t, dir, "new.txt", "x\n")
+	dirty, _ := r.Snapshot(ctx)
+	if same, err := r.SameTree(ctx, base.SHA, dirty); err != nil || same {
+		t.Fatalf("an untracked file reads as no diff (%v)", err)
+	}
+	if same, err := r.SameTree(ctx, EmptyTree, dirty); err != nil || same {
+		t.Fatalf("the empty tree base reads as the same tree (%v)", err)
+	}
+}

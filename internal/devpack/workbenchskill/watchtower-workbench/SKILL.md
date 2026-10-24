@@ -1,7 +1,7 @@
 ---
 name: watchtower-workbench
 description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) — to set the workbench up, whenever you start work on a target or a group, whenever you need the owner's answer, decision, check or review, and when you finish a session. Keeps the Watchtower board, asks and comments in step with the work.
-x-watchtower-pack: v13
+x-watchtower-pack: v14
 ---
 
 # Watchtower Workbench
@@ -33,7 +33,7 @@ How the work itself is organised — features, specs, plans, groups, reviews, co
 - `reply_review_comment` — answer one comment of a sent round: `comment_id`, `reply`, `resolved` and a `reason` (see "Review rounds").
 - `list_asks` — the workbench's asks: by default the answered ones you have not read, then the open ones.
 - `withdraw_ask` — withdraw an open ask the owner no longer needs to answer.
-- `finish_session` — mark this session finished with a `summary` for the owner (at most 4 lines: what was done, the PRs, what is left) and an optional `target_id` (see "Finishing a session").
+- `finish_session` — mark this session finished with a `summary` for the owner (at most 4 lines: what was done, the PRs, what is left), an optional `target_id` and an optional `handover_ask_id` (see "Finishing a session").
 
 ## Setup
 
@@ -103,6 +103,9 @@ The owner reviews your changes in Watchtower's diff reviewer and sends a round a
 ## Finishing a session
 
 When the work this session was started for is done or handed to the owner — its tasks closed, the PR opened or merged, the remaining owner work filed as asks — call `finish_session`. The owner sees the session as finished, with your summary, in the Watchtower app.
+
+- **The work is the whole ticket.** The session's ticket is the target it was started for (`Work on target #<id>` / `Work on group #<id>`) — every leaf of it, not the part you picked. An order the owner gave ("first A, then B") is a sequence, not a scope cut: after A comes B, in this session.
+- **Check it before you finish**, while you are still in the session's folder or worktree: call `annotate_changes` (if you have notes), then the reviewer's AI overview of your changes — `finish_session` without one refuses and names the exact command (`<watchtower> workbench review overview --workbench <id> --session <id> --json`) — and compare your "done" with its `coverage`. Finish what it marks `partial` or `not_found`, and every open leaf of the ticket. What you leave must be the owner's call: file one `ask_owner` about the ticket (or one of its leaves) that lists what is left and why — or why the reviewer is wrong, or that the overview could not be made — and pass its id as `handover_ask_id`. With the finish check on, `finish_session` refuses while the ticket has open leaves or your changes have no overview that sees all of the work, unless `handover_ask_id` is given; the refusal lists what is open. One overview per finish: it is cached for the same code, so run it again only after you change something.
 
 - **Clean up first.** Leave any worktree you are in (`ExitWorktree`, or `cd` back to the workbench folder) and `git fetch`. Run the brief's `Cleanup:` command as given: it only plans and lists what this session would remove. If you created a worktree or branch the plan does not list, run the plan again with `--worktree`/`--branch` for it first. Then run the same command with `--apply` only when that plan marks something removable; it removes only what the plan marks. Kept items are not a failure: mention them only if the owner must act. Exit 2 (refused or a usage error) or exit 1 (could not plan): do not retry with other flags, say so in your summary. No `Cleanup:` line in the brief: skip this step and say in your summary that cleanup was not available — never invent a command. Never remove a worktree or branch by hand. Put the command's `summary` line into your `finish_session` summary.
 - **The summary** is 2–3 lines, at most 4: what landed (tickets, PR numbers), what is left on the owner (`ask #…`), anything risky, and the cleanup line, which counts within the limit.
