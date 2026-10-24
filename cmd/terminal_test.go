@@ -135,8 +135,8 @@ func TestTerminalTitle_WritesAITitle(t *testing.T) {
 }
 
 // A reply to the owner's message ("I cannot see the image: …") is not a
-// name: the row keeps its title and the call fails, so the Desktop counts an
-// attempt and may try again with more messages.
+// name: the row keeps its title and the call fails, so the Desktop counts a
+// failed attempt and may try again.
 func TestTerminalTitle_ReplyInsteadOfNameIsNotWritten(t *testing.T) {
 	defer setupWatchTestEnv(t)()
 	gen := &chatTitleMockGen{reply: "I cannot see the image: the message only has a placeholder, please paste it again"}
@@ -153,6 +153,29 @@ func TestTerminalTitle_ReplyInsteadOfNameIsNotWritten(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Session", s.Title)
 	assert.Equal(t, "auto", s.TitleSource)
+}
+
+// The guard counts the words of the line the title is taken from: 8 pass,
+// 9 are refused, and markdown or a "Title:" prefix count for nothing.
+func TestTerminalTitle_WordLimitUsesTheTitleLine(t *testing.T) {
+	defer setupWatchTestEnv(t)()
+	for reply, ok := range map[string]bool{
+		"one two three four five six seven eight":           true,
+		"Title: one two three four five six seven eight":    true,
+		"# one two three four five six seven eight":         true,
+		"one two three four five six seven eight nine":      false,
+		"---\none two three four five six seven eight nine": false,
+	} {
+		gen := &chatTitleMockGen{reply: reply}
+		stubTerminalTitleGenerator(t, gen)
+		id := seedTerminalSession(t, "auto", "claude", terminalOwnerLine)
+		_, err := runTerminalTitleCmd(t, id)
+		if ok {
+			assert.NoError(t, err, reply)
+		} else {
+			assert.ErrorContains(t, err, "answered instead of naming", reply)
+		}
+	}
 }
 
 func TestTerminalTitle_PromptForbidsAnsweringTheMessages(t *testing.T) {

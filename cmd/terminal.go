@@ -189,27 +189,18 @@ func generateTerminalTitle(cmd *cobra.Command, cfg *config.Config, database *db.
 	if title == "" {
 		return "", fmt.Errorf("the model returned an empty title")
 	}
-	if n := len(strings.Fields(firstReplyLine(reply))); n > terminalTitleMaxWords {
+	if n := len(strings.Fields(titleLine(reply))); n > terminalTitleMaxWords {
 		return "", fmt.Errorf("the model answered instead of naming the session (%d words)", n)
 	}
 	return title, nil
 }
 
 // terminalTitleMaxWords bounds an accepted name: the prompt asks for 3 to 6
-// words, and a longer first line is the model replying to the owner's
-// message, not naming it.
+// words, and a longer title line is the model replying to the owner's
+// message, not naming it. A backstop only: a short reply ("I cannot see the
+// image") or one in a script written without spaces passes, and is left to
+// the prompt's never-answer rule.
 const terminalTitleMaxWords = 8
-
-// firstReplyLine is the reply's first non-blank line, the one cleanChatTitle
-// takes the title from.
-func firstReplyLine(reply string) string {
-	for line := range strings.SplitSeq(reply, "\n") {
-		if s := strings.TrimSpace(line); s != "" {
-			return s
-		}
-	}
-	return ""
-}
 
 // terminalOwnerText reads the owner's typed messages from the session's
 // transcript. A transcript the agent has not written yet, or one in a format
