@@ -700,8 +700,11 @@ it, else one `--merged` listing per base; a failed read falls back to
 per-branch reads), reads each base's first-parent line once, keeps the
 default branch's patch ids across branches, and reads each branch once
 (2026-10-20, owner approved in ask #434; findings unchanged).
-`workbench brief` shows every finding (offline, 4 s budget), and so does the
-Desktop board: `WorkbenchesViewModel.refreshDrift` runs `workbench check --json
+`workbench brief` shows the open targets' findings (offline, 4 s budget,
+`OpenOnly` like the Stop hook — since 2026-10-24, owner approved in ask #531:
+the closed walk tripled a hook that blocks the session start, so
+`done_but_unmerged` is left to the board and `workbench check`), and the
+Desktop board shows every finding: `WorkbenchesViewModel.refreshDrift` runs `workbench check --json
 --no-network` when the Board pane appears, on the owner's Refresh, and every
 30 s while the pane polls, and `WorkbenchDriftBanner` lists the findings (a
 failed or partial check is shown as such, never as "in step") — the Desktop decodes, never
@@ -740,6 +743,7 @@ timeout would be worse than none.
 - supporting: `cmd/workbench_test.go::TestWorkbench_NoPreRenameCommandOrFlag` (the pre-rename Stop hook argv: no error, empty stdout, the Repair line on stderr, never an `exitCodeError`)
 - `WatchtowerDesktop/Tests/WorkbenchesViewModelDriftTests.swift`, `WatchtowerDesktop/Tests/Core/WorkbenchDriftReportTests.swift`, `WatchtowerDesktop/Tests/WorkbenchCLITests.swift::testMissingStopHookNeedsRepair`
 - `cmd/workbench_brief_test.go::TestProj07_BriefSaysWhenTheDriftCheckWasPartial`
+- `cmd/workbench_check_test.go::TestProjectBrief_DriftChecksOpenTargetsOnly` (supporting: the brief leaves a done target's unmerged branch to `workbench check`)
 - `internal/workbenchcheck/check_test.go` — `TestProj07_UnresolvableDefaultBranchIsANote`, `TestProj07_GitRules`, `TestProj07_SharedBranchAndParents`, `TestProj07_GitErrorsAreNeverFindings`, `TestProj07_NoGitCallOutsideARepository`, `TestProj07_ReadsNothingButGit`, `TestProj07_DeadlineReportsIncompleteNeverFalseFindings`, `TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly`, `TestProj07_GitUnavailableIsANote`
 
 **Locked since:** 2026-10-01
@@ -1687,7 +1691,7 @@ owner's and the agent's backs.
 
 ## PROJ-15 — an archived workbench target is hidden, never lost
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-04, ask #33, spec `docs/superpowers/specs/2026-10-04-workbench-board-archive-design.md` §3; amended 2026-10-07 (board #415), approved by the owner in ask #106, spec `docs/superpowers/specs/2026-10-07-workbench-archive-now-design.md` §3)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-04, ask #33, spec `docs/superpowers/specs/2026-10-04-workbench-board-archive-design.md` §3; amended 2026-10-07 (board #415), approved by the owner in ask #106, spec `docs/superpowers/specs/2026-10-07-workbench-archive-now-design.md` §3; amended 2026-10-24 (board #942), approved by the owner in ask #540: the brief no longer shows archived drift)
 
 **Observable:** A workbench target is archived iff it and every descendant
 on the same board are `done` or `dismissed`, every close time among them
@@ -1714,10 +1718,11 @@ alone until the next Archive Now. A group
 is archived only whole: a target with an open descendant, or whose subtree
 closed last less than `archive_after_days` days ago, is never archived, and an
 archived target's whole subtree is archived. The drift check never skips an
-archived target: `workbench check`, the brief's drift section and the Desktop
-banner read the full board, so a `done_but_unmerged` finding on an archived
-target is reported exactly as on a visible one (PROJ-07 unchanged in
-wording).
+archived target: `workbench check` and the Desktop banner read the full
+board, so a `done_but_unmerged` finding on an archived target is reported
+exactly as on a visible one. The brief's drift section checks open targets
+only (PROJ-07, since 2026-10-24), so it shows no finding on a closed target,
+archived or not.
 
 **Why locked:** Owner request (board target #301, ask #33). A long board
 must get short without losing anything: work that vanished, could not be
@@ -1728,7 +1733,7 @@ other direction.
 **Test guards:**
 - `internal/db/proj15_board_archive_test.go` — `TestProj15_ClosedLeafArchivedAfterNDays`, `TestProj15_OpenStatusesAreNeverArchived`, `TestProj15_UmbrellaArchivedOnlyWhole`, `TestProj15_GroupWaitsForItsLastClose`, `TestProj15_HandSetDoneParentWithOpenChildIsNotArchived`, `TestProj15_ReopenRestores`, `TestProj15_ReparentOpenWorkUnderArchivedGroupRestoresIt`, `TestProj15_OpenSubTargetUnderArchivedGroupRestoresIt`, `TestProj15_ArchiveWritesNothing`, `TestProj15_PerWorkbenchSettingAndNever`, `TestProj15_ArchiveDaysOutOfRangeAreRefused`, `TestProj15_CloseTimeFallsBackToUpdatedAt`, `TestProj15_UnparseableCloseTimeKeepsTheChain`, `TestProj15_ReopenAndRecloseStartsThePeriodOver`, `TestProj15_LargeBoardReadIsFast`
 - `internal/db/proj15_archive_now_test.go` — `TestProj15_ArchiveNowArchivesEveryClosedSubtree`, `TestProj15_ArchiveNowGroupsGoWhole`, `TestProj15_ArchiveNowCloseAfterTheStampStays`, `TestProj15_ArchiveNowLaterCloseInAGroupKeepsTheGroup`, `TestProj15_ArchiveNowReopenRestores`, `TestProj15_ArchiveNowSameSecondIsArchived`, `TestProj15_ArchiveNowUnderNever`, `TestProj15_ArchiveNowUnparseableCloseTimeKeepsTheChain`, `TestProj15_ArchivedThroughMustParse`, `TestProj15_UndoArchiveNowRestoresOnlyWhatTheAgeRuleWouldNot`, `TestProj15_ArchiveNowWritesNothingPerTarget`, `TestProj15_ArchiveNowIsPerWorkbench`, `TestProj15_LargeBoardReadIsFastWithAStamp`
-- `cmd/workbench_archive_test.go::TestProj15_DriftStillSeesArchivedUnmergedWork` (age rule and stamp-only cases)
+- `cmd/workbench_archive_test.go::TestProj15_DriftStillSeesArchivedUnmergedWork` (age rule and stamp-only cases; since 2026-10-24, ask #540, it asserts the brief leaves the archived finding out)
 - `internal/tools/workbench_board_archive_test.go` — `TestGetTarget_FindsAnArchivedTargetAndSaysSo`, `TestUpdateTarget_ReopeningRestoresAnArchivedTarget`, `TestCreateTargets_UnderAnArchivedParentBringsItBack`, `TestListTargets_ArchivedOnlyWithIncludeArchived`, `TestListTargets_IncludeArchivedWithoutStatusListsArchivedTargets`, `TestWorkbenchBoard_ArchivedSubtreesOnlyOnRequest`
 - `WatchtowerDesktop/Tests/Core/WorkbenchQueriesTests.swift::testBoardMarksArchivedTargetsFromTheViewAndKeepsThemInTheTree`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardOutlineTests.swift::testSearchAlwaysMatchesArchivedTargets`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardKanbanTests.swift::testSearchShowsArchivedLeaves`, `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift::testArchivedTargetsShowOnlyWithTheToggleAndReopeningRestoresOne`
 - supporting: `internal/db/proj15_board_archive_test.go` (`TestWithoutArchived_CountsArchivedChildren`, `TestWithoutArchived_EmptyAndAllArchived`, `TestGetTargets_WorkbenchLeavesArchivedOut`, `TestMigration00103_DefaultsToFourteen`), `internal/db/proj15_archive_now_test.go` (`TestMigration00105_ArchivedThroughStartsNull`, `TestArchiveNowWriters_UnknownWorkbench`), `internal/tools/workbench_board_archive_test.go` (`TestBuildBoardView_*`, `TestWorkbenchInfo_CountsTheWholeBoardAndTheArchived`, `TestWorkbenchBoard_LongMostlyClosedBoardStaysSmall`, `TestWorkbenchBoard_ArchiveNowLeavesTheBoardSmall`), `cmd/workbench_archive_test.go` (`TestRenderProjectBrief_ArchivedLeaveTheCountsAndAreCounted`, `TestWorkbenchBoardCmd_ArchivedOnlyWithTheFlag`, `TestWorkbenchBoardCmd_AllArchivedRootsAreCounted`, `TestWorkbenchShowCmd_PrintsTheArchiveSetting`, `TestWorkbenchShowCmd_PrintsArchivedThrough`), `internal/sessionreport/report_test.go::TestBuild_KeepsArchivedTargetsTheSessionClosed`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardKanbanTests.swift` (`testArchivedCardCountIsTheArchivedLeavesUnderTheFilter`), `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift` (`testTheArchiveCountFollowsTheMode`), Archive Now: `WatchtowerDesktop/Tests/Core/WorkbenchQueriesTests.swift` (`testArchiveClosedTargetsNowStampsTheWorkbenchAndUndoForgetsIt`, `testArchiveNowWritersThrowForAnUnknownWorkbench`), `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift::testTheArchiveNowStampIsInTheFingerprint`, `WatchtowerDesktop/Tests/WorkbenchesViewModelTests.swift::testArchiveNowAndUndoWriteTheStampReloadAndReportAFailure`, `WatchtowerDesktop/Tests/WorkbenchHeaderControlsTests.swift::testArchiveNowAndUndoArchiveNow`
@@ -1917,6 +1922,8 @@ session's worktrees, not Watchtower's or Claude Code's) and only with SIGTERM. A
 only on items eligible at that moment and, when items are named, only on those.
 
 *2026-10-14 amendment (board #229, owner approved in asks #122/#124, spec `docs/superpowers/specs/2026-10-14-session-worktrees-design.md` §9):* a session row Watchtower placed in a worktree it created (`terminal_sessions.worktree_branch` set) owns, by record, the linked worktree that is the longest listed root containing its `folder_path`, and its `worktree_branch`, when each was born no later than the row (placement creates them first; `created_at` + 1 s) — although both were born before the row. A later-born item of the same name (a reused `wt/<slug>` of a later session), one whose birth is unknown, or a row whose `folder_path` is not absolute owns nothing by record. Nothing else is owned by record, and every safety catch (W1, W3–W9, B1, B2, B4) still applies. Placement code (`workbench worktree create|ensure|forget`) never removes a worktree or deletes a branch and runs no `--force`, `reset`, `clean`, `checkout` or `stash`.
+
+*2026-10-24 note (board #942, ask #531):* the Desktop now inserts a new agent row in the workbench folder first, so the session is on screen at once, and moves it into its worktree once `worktree create` returned (`TerminalSessionQueries.place`). That move also sets `created_at` to its own moment, so the row is still born after its worktree and branch, and ownership by record is unchanged. A row that cannot be moved is deleted before it ever ran, and the worktree is kept, as before.
 
 As shipped (each stricter than, never weaker than, the wording above):
 - **Fail closed.** A catch git could not answer keeps the item `check_failed`

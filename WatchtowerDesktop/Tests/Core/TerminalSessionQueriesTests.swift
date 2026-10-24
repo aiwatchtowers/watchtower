@@ -302,6 +302,33 @@ final class TerminalSessionQueriesTests: XCTestCase {
         }
     }
 
+    /// The move into a new worktree re-dates the row: PROJ-18 owns a
+    /// worktree and branch by record only when born no later than the row.
+    func testPlaceMovesTheRowAndReDatesIt() throws {
+        let queue = try TestDatabase.create()
+        try queue.write { db in
+            let project = try TestDatabase.insertWorkbench(db, name: "acme")
+            let row = try TerminalSessionQueries.create(db, claude(project))
+            try db.execute(sql: "UPDATE terminal_sessions SET created_at = '2000-01-01T00:00:00Z' WHERE id = ?",
+                           arguments: [row.id])
+
+            let placed = try TerminalSessionQueries.place(
+                db, id: row.id, folderPath: "/tmp/acme/.claude/worktrees/s-2", worktreeBranch: "wt/s-2", worktreeBase: "abc"
+            )
+            XCTAssertEqual(placed.folderPath, "/tmp/acme/.claude/worktrees/s-2")
+            XCTAssertEqual(placed.worktreeBranch, "wt/s-2")
+            XCTAssertEqual(placed.worktreeBase, "abc")
+            let created = try String.fetchOne(db, sql: "SELECT created_at FROM terminal_sessions WHERE id = ?",
+                                              arguments: [row.id])
+            XCTAssertNotEqual(created, "2000-01-01T00:00:00Z")
+
+            try TerminalSessionQueries.delete(db, id: row.id)
+            XCTAssertThrowsError(try TerminalSessionQueries.place(
+                db, id: row.id, folderPath: "/tmp/x", worktreeBranch: "wt/x", worktreeBase: nil
+            ))
+        }
+    }
+
     func testFetchAgentStatesReadsEveryWorkbenchClaudeRowAndTheLiveOnes() throws {
         let queue = try TestDatabase.create()
         try queue.write { db in

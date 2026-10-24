@@ -204,6 +204,9 @@ func installWorktreeIntegration(ctx context.Context, id int64, folder string, ag
 	if err != nil {
 		return err
 	}
+	// Only a worktree git just made (create, or ensure re-adding it) gets
+	// here: its registration is the add alone unless one is left over.
+	o.NewFolder = true
 	_, err = devpack.InstallWorkbench(ctx, o)
 	cfg, cfgErr := config.Load(flagConfig)
 	if cfgErr != nil {

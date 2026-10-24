@@ -294,6 +294,10 @@ final class WorkbenchesViewModel {
     /// Rows a start inserted whose launch has not returned yet, by id: they
     /// count as live for the next start's decision.
     @ObservationIgnored var startingRows: [Int64: TerminalSession] = [:]
+    /// New agent rows on screen while their start decides the place and
+    /// makes the worktree: the pane shows "Starting…" instead of a Resume
+    /// button until the launch.
+    var preparingSessions: Set<Int64> = []
     /// Per workbench, the ticket of the session switch the owner asked for
     /// last (`beginSwitch`); only that switch may still move the layout.
     @ObservationIgnored var latestSwitch: [Int64: Int] = [:]
