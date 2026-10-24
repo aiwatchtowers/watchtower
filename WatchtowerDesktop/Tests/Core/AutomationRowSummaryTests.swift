@@ -31,35 +31,32 @@ final class AutomationRowSummaryTests: XCTestCase {
         XCTAssertEqual(AutomationRowSummary.summary(recipeText: body), "Body.")
     }
 
+    /// Go `TestFallbackSummary`'s cases.
     func testFallbackMatchesGoCases() {
-        XCTAssertEqual(AutomationRowSummary.fallback(description: "Every morning, writes your brief. Then plans."),
-                       "Every morning, writes your brief.")
-        let long = String(repeating: "abcdefghi ", count: 10).trimmingCharacters(in: .whitespaces)
-        let out = AutomationRowSummary.fallback(description: long)
-        XCTAssertLessThanOrEqual(out.count, 61)
-        XCTAssertTrue(out.hasSuffix("…"))
-        XCTAssertEqual(out, String(repeating: "abcdefghi ", count: 6).trimmingCharacters(in: .whitespaces) + "…")
-        XCTAssertEqual(AutomationRowSummary.fallback(description: ""), "")
+        let nine = "abcdefghi "
+        let cases: [(String, String)] = [
+            ("Every morning, writes your brief. Then plans.", "Every morning, writes your brief."),
+            ("", ""),
+            ("Writes the brief.\nThen plans.", "Writes the brief."),
+            ("Writes the\nbrief\n\n and plans", "Writes the brief and plans"),
+            ("Writes the brief.", "Writes the brief."),
+            ("Writes the brief", "Writes the brief"),
+            (String(repeating: nine, count: 10).trimmingCharacters(in: .whitespaces) + ". Next.",
+             String(repeating: nine, count: 5) + "abcdefghi…"),
+            (String(repeating: nine, count: 5) + "abcdefghij tail words here",
+             String(repeating: nine, count: 5) + "abcdefghij…"),
+            (String(repeating: "привет мир ", count: 6).trimmingCharacters(in: .whitespaces),
+             Array(repeating: "привет мир", count: 5).joined(separator: " ") + "…"),
+            (String(repeating: "x", count: 100), String(repeating: "x", count: 60) + "…")
+        ]
+        for (input, want) in cases {
+            XCTAssertEqual(AutomationRowSummary.fallback(description: input), want, input)
+        }
     }
 
-    /// Each case is what Go's `FallbackSummary` returns for the same input.
-    func testFallbackDivergencesFromEarlierDraft() {
-        // Newlines are not collapsed: a sentence ends only at ". " / "! " / "? ".
-        XCTAssertEqual(AutomationRowSummary.fallback(description: "Wrote it.\nThen more"), "Wrote it.\nThen more")
-        // Cut back to the last space even when the 61st rune is a space.
-        let words = String(repeating: "abcdefghi ", count: 10).trimmingCharacters(in: .whitespaces)
-        XCTAssertEqual(AutomationRowSummary.fallback(description: words),
-                       String(repeating: "abcdefghi ", count: 6).trimmingCharacters(in: .whitespaces) + "…")
-        let tight = String(repeating: "abcdefgh ", count: 8)
-        XCTAssertEqual(AutomationRowSummary.fallback(description: tight),
-                       String(repeating: "abcdefgh ", count: 6).trimmingCharacters(in: .whitespaces) + "…")
-        // Trailing " ,;:" is trimmed before the ellipsis.
+    func testFallbackTrimsTrailingPunctuationBeforeEllipsis() {
         let comma = String(repeating: "a", count: 55) + ", " + String(repeating: "b", count: 20)
         XCTAssertEqual(AutomationRowSummary.fallback(description: comma), String(repeating: "a", count: 55) + "…")
-        // Runes are unicode scalars: a 60-scalar emoji run fits, 61 is cut (no space: kept at 60).
-        let flag = "\u{1F1E9}\u{1F1EA}"
-        XCTAssertEqual(AutomationRowSummary.fallback(description: String(repeating: flag, count: 30)).unicodeScalars.count, 60)
-        XCTAssertEqual(AutomationRowSummary.fallback(description: String(repeating: flag, count: 31)).unicodeScalars.count, 61)
     }
 
     func testDescriptionMatchesGoBodyParsing() {

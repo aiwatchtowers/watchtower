@@ -12,23 +12,27 @@ package enum AutomationRowSummary {
         return text.isEmpty ? nil : text
     }
 
-    /// The first sentence of `description` (ends at the first ". ", "! " or
-    /// "? ", or the end of the text), at most `maxRunes` runes: a longer one is
-    /// cut back to the last space within `maxRunes` runes and gets "…".
-    /// Twin: mirrors Go `automations.FallbackSummary` line by line (runes are
-    /// unicode scalars, only the ends are trimmed); change both together.
+    /// The first sentence of `description` after collapsing all whitespace to
+    /// single spaces (it ends at the first ". ", "! " or "? ", punctuation
+    /// kept; none: the whole text). At most `maxRunes` runes come back as is;
+    /// a longer one keeps its first `maxRunes` runes, cut back to the last
+    /// space among them unless the next rune is a space (no space: all of
+    /// them), trailing " ,;:" trimmed, plus "…".
+    /// Twin: mirrors Go `automations.FallbackSummary` (runes are unicode
+    /// scalars); change both together.
     package static func fallback(description: String) -> String {
         var scalars = Array(description.unicodeScalars)
-        trim(&scalars)
+            .split { $0.properties.isWhitespace }
+            .joined(separator: [" "])
+            .map { $0 }
         var end = scalars.count
         for sep in [". ", "! ", "? "] {
             if let i = index(of: sep, in: scalars), i + 1 < end { end = i + 1 }
         }
         scalars = Array(scalars[..<end])
-        trim(&scalars)
         if scalars.count <= maxRunes { return scalarString(scalars) }
         var cut = Array(scalars[..<maxRunes])
-        if let i = cut.lastIndex(of: " "), i > 0 { cut = Array(cut[..<i]) }
+        if scalars[maxRunes] != " ", let i = cut.lastIndex(of: " "), i > 0 { cut = Array(cut[..<i]) }
         while let last = cut.last, " ,;:".unicodeScalars.contains(last) { cut.removeLast() }
         return scalarString(cut) + "…"
     }
@@ -46,13 +50,6 @@ package enum AutomationRowSummary {
             return i
         }
         return nil
-    }
-
-    /// Go `strings.TrimSpace` on both ends.
-    private static func trim(_ scalars: inout [Unicode.Scalar]) {
-        while let last = scalars.last, last.properties.isWhitespace { scalars.removeLast() }
-        let lead = scalars.prefix { $0.properties.isWhitespace }.count
-        scalars.removeFirst(lead)
     }
 
     /// The recipe body outside the frontmatter and the ```js block, as Go's
