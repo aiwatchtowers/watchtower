@@ -556,7 +556,7 @@ final class AppState {
         let prompts = await builtinDefaultPrompts(automation)
         return makeAutomationEditorChat(
             conversationID: conversationID, pool: pool, provider: provider, panelDraftBox: box,
-            onSaved: { [weak self] in self?.automationsViewModel?.refresh() },
+            onSaved: { [weak self] _ in self?.automationsViewModel?.refresh() },
             makeSpec: { outcomes in
                 AutomationEditorChatSurface.spec(automation: automation, defaultPrompts: prompts, provider: provider,
                                                  conversationID: conversationID, dbPool: pool, outcomes: outcomes,
@@ -565,41 +565,17 @@ final class AppState {
         )
     }
 
-    /// The panel's chat for a new automation, keyed by an explicit context id
-    /// (`draftContextID(for:)`), so each draft keeps its own conversation. A
-    /// workbench that is gone opens nothing (never a personal chat in its place).
-    func newAutomationEditorChat(contextID: String, scope: AutomationScopeChoice) async throws -> AutomationEditorChat? {
-        guard let pool = databaseManager?.dbPool else { return nil }
-        var workbench: AutomationEditorChatSurface.NewWorkbench?
-        if case let .workbench(id, _, _) = scope {
-            guard let project = workbenchesViewModel?.summaries.first(where: { $0.project.id == id })?.project
-            else { return nil }
-            workbench = (id, project.name, project.folderURL.lastPathComponent)
-        }
-        let provider = Constants.aiProviderID()
-        let conversationID = try await AutomationEditorChatSurface.newConversationID(contextID: contextID, dbPool: pool)
-        let box = PanelDraftBox()
-        return makeAutomationEditorChat(conversationID: conversationID, pool: pool, provider: provider,
-                                        panelDraftBox: box,
-                                        onSaved: { [weak self] in self?.automationsViewModel?.refresh() },
-                                        makeSpec: { outcomes in
-            AutomationEditorChatSurface.newSpec(
-                provider: provider, contextID: contextID, workbench: workbench, conversationID: conversationID,
-                dbPool: pool, outcomes: outcomes, panelDraft: box.read)
-        })
-    }
-
     /// Starts a new draft and returns its conversation key for `scope`.
     func draftContextID(for scope: AutomationScopeChoice) -> String {
         AutomationEditorChatSurface.draftContextID(draftID: UUID().uuidString, workbenchID: scope.workbenchID)
     }
 
-    private func makeAutomationEditorChat(
+    func makeAutomationEditorChat(
         conversationID: Int64,
         pool: DatabasePool,
         provider: String,
         panelDraftBox: PanelDraftBox,
-        onSaved: @escaping () -> Void,
+        onSaved: @escaping (Int64?) -> Void,
         makeSpec: (@escaping @MainActor (Date?) -> String?) -> ChatSurfaceSpec
     ) -> AutomationEditorChat {
         AutomationEditorChat(
@@ -1338,6 +1314,7 @@ final class AppState {
         )
         // A new draft the editor holds is a list row, cache file or not.
         vm.openNewDrafts = { [weak editorCenter] in editorCenter?.openNewDraftNames ?? [:] }
+        vm.embeddedChats = embeddedChatCenter
         automationEditorCenter = editorCenter
         automationTemplatePanels = AutomationTemplatePanels { [weak vm] template, scope in
             AutomationTemplatePanelModel(template: template, scope: scope, cli: cli) { id in

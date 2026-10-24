@@ -499,10 +499,16 @@ struct AutomationEditorPanel: View {
     private func whenLanded(_ key: Int64, _ work: @escaping @MainActor () async -> Void) {
         pressTask?.cancel()
         let editor = editor
+        let vm = vm
+        let draftContextID = newDraftContextID
         pressTask = Task {
             await Task { await work() }.value
             guard !Task.isCancelled else {
-                editor.settleUnwatched(key)
+                // A new draft saved with the panel away still leaves the list
+                // (its own task: this one is cancelled, which a database write refuses).
+                if let savedID = editor.settleUnwatched(key), let draftContextID {
+                    Task { await vm.draftSaved(contextID: draftContextID, conversationID: -key, automationID: savedID) }
+                }
                 return
             }
             if !finishIfSaved() { finishIfConfirmed() }
@@ -566,10 +572,27 @@ struct AutomationEditorPanel: View {
         return true
     }
 
-    /// The draft is done with: the next Edit loads the file afresh.
+    /// The draft is done with: the next Edit loads the file afresh. A new
+    /// draft first leaves the list, its chat becoming the automation's
+    /// (`draftSaved`); the saved automation opens only while this panel is
+    /// still the one shown.
     private func finish(_ key: Int64, _ savedID: Int64) {
         editor.discard(key)
-        onSaved(savedID)
+        guard let draftContextID = newDraftContextID else {
+            onSaved(savedID)
+            return
+        }
+        let vm = vm, target = target, onSaved = onSaved
+        Task {
+            await vm.draftSaved(contextID: draftContextID, conversationID: -key, automationID: savedID)
+            if vm.panel == .editor(target) { onSaved(savedID) }
+        }
+    }
+
+    /// A new draft's conversation context id; nil for a saved automation.
+    private var newDraftContextID: String? {
+        if case let .newDraft(contextID, _, _) = target { return contextID }
+        return nil
     }
 
     /// A stale confirm: the recipe changed on disk, so the draft is loaded again.
