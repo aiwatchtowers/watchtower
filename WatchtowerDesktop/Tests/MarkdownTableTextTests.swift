@@ -32,7 +32,10 @@ final class MarkdownTableTextTests: XCTestCase {
         """
 
     private func table(_ markdown: String = sample) throws -> MarkdownTable {
-        guard case let .table(table)? = MarkdownDocument.parse(markdown).first else { throw XCTSkip("no table") }
+        guard case let .table(table)? = MarkdownDocument.parse(markdown).first else {
+            XCTFail("no table in \(markdown)")
+            throw CocoaError(.featureUnsupported)
+        }
         return table
     }
 
@@ -69,6 +72,24 @@ final class MarkdownTableTextTests: XCTestCase {
     func testAShortRowKeepsItsColumns() throws {
         let view = try tableView("| a | b | c |\n|---|---|---|\n| 1 |")
         XCTAssertEqual(view.plainText, "a\tb\tc\n1\t\t")
+    }
+
+    /// A tab the cell's text keeps is a space: the row keeps its columns.
+    func testATabInsideACellIsASpace() throws {
+        let (_, root) = makeWindow()
+        func cPosition(_ markdown: String) throws -> (String, CGFloat) {
+            let view = try tableView(markdown)
+            let size = view.fittingSize(width: 600)
+            view.frame = NSRect(origin: .zero, size: size)
+            root.addSubview(view)
+            let string = view.string as NSString
+            let box = view.firstRect(forCharacterRange: string.range(of: "c", options: .backwards), actualRange: nil)
+            return (view.plainText, box.minX)
+        }
+        let (tabbed, tabbedX) = try cPosition("| a\tb | c |\n|---|---|\n| x | y |")
+        XCTAssertEqual(tabbed, "a b\tc\nx\ty")
+        let (_, spacedX) = try cPosition("| a b | c |\n|---|---|\n| x | y |")
+        XCTAssertEqual(tabbedX, spacedX, accuracy: 0.5, "the second cell stays at its column")
     }
 
     func testSelectionAcrossCellsAndRowsQuotes() throws {

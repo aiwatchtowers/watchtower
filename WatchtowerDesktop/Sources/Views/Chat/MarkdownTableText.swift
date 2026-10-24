@@ -34,7 +34,8 @@ struct NativeMarkdownTableView: View {
 /// ⌘C copies) as tab-separated cells, one line per row. Every cell sits at
 /// its column's tab stop, offset inside the column by the column's
 /// alignment; the first cell by the row's first-line indent. Cells never
-/// wrap, as the grid's: the view lays the text out unbounded.
+/// wrap, as the grid's: the view lays the text out unbounded. A line
+/// break or a tab inside a cell reads as a space.
 enum MarkdownTableText {
     /// `MarkdownTableView`'s grid spacing.
     static let columnSpacing: CGFloat = 14
@@ -62,6 +63,10 @@ enum MarkdownTableText {
                 if column < row.count {
                     MarkdownRunText.appendInlines(row[column], links: links, size: MarkdownRunText.bodyFont.pointSize,
                                                   weight: weight, color: .labelColor, lineBreak: " ", to: out)
+                    // A tab the cell's text keeps would move the rest of the
+                    // row to the next stop and split the cell in a copy.
+                    out.mutableString.replaceOccurrences(of: "\t", with: " ", options: [],
+                                                         range: NSRange(location: 0, length: out.length))
                 }
                 return out
             }

@@ -49,7 +49,7 @@ Documents, tables, drafts, events, code and HTML pages open in the artifact pane
 
 Select a passage of a finished answer right in the chat, then click **Ask about this** next to it. The passage joins the quotes above the message box and the cursor moves there, so you type your follow-up. Quotes go out together with your next message, each with an optional comment.
 
-A selection can run across the paragraphs, headings and lists of an answer, up to the next code block or table. A table is selected on its own, across cells and rows, with tabs between cells. ⌘C and the right-click menu copy it as plain text. Your own messages can be selected and copied, not quoted. The chats inside other tabs offer selection and copy only.
+A selection can run across the paragraphs, headings and lists of an answer, up to the next code block or table. A table is selected whole, across cells and rows, with tabs between cells; one inside a list or quote, cell by cell. ⌘C and the right-click menu copy it as plain text. Your own messages can be copied, not quoted. The chats inside other tabs offer selection and copy only.
 
 ### Projects
 
