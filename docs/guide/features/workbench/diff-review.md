@@ -1,6 +1,6 @@
 # Branch review
 
-Branch review lets you read what an agent session changed, comment on lines, and send your comments back to the agent as one round. You use it when a session says it is done and you want to check the code, not the story.
+Branch review lets you read what an agent session changed, comment on lines, and send your comments back to the agent as one round. You use it when a session says it is done.
 
 ## Why use it
 
@@ -16,11 +16,11 @@ The diff hides unchanged stretches and keeps three lines of context. Click a hid
 
 A round moves through three states: you collect drafts, then you close it with one of two verdicts. **Request changes** stores the round, and the agent reads it with its `get_review` tool, which marks it delivered. Watchtower then puts one line into the session, `Review round #N sent (n comments) — read it with get_review N using the watchtower-workbench skill.`.
 
-**Approve** closes the round with no changes requested and tells the agent to finish the branch the way its methodology says. It needs the draft comments sent or deleted first. A popover names what you may have skipped: unviewed chapters and Wrap-up items marked **Partly** or **Not done**. If earlier comments are still open, **Resolve N and approve** closes them too. A closed round shows **Approved** with the time. Approving merges and pushes nothing.
+**Approve** closes the round with no changes requested and tells the agent to finish the branch the way its methodology says. It needs no drafts (send or delete them first) and a session that still exists. A popover names what you may have skipped: unviewed chapters and Wrap-up items marked **Partly** or **Not done**. If earlier comments are still open, **Resolve N and approve** closes them too. A closed round shows **Approved** with the time.
 
 ### The AI overview
 
-The AI overview is a short summary of the round: whether the changes cover the linked targets, which files fall outside them, a risk mark per file and a reading order. Each overview is one call to the strong model, saved per snapshot, so reopening the same snapshot costs nothing. The **Quick** / **Deep** switch in the toolbar decides when it runs:
+The AI overview is a short summary of the round: whether the changes cover the linked targets, which files fall outside them, a risk mark per file and a reading order. Each overview is one strong-model call, saved per snapshot. The **Quick** / **Deep** switch in the toolbar decides when it runs:
 
 - **Deep** makes it by itself when the round opens and whenever **Refresh** finds new changes.
 - **Quick** shows a saved overview at once, and otherwise offers **Make overview**. Until you press it, files are grouped by the agent's chapters or by folder.
@@ -56,7 +56,7 @@ The agent can leave notes, shown in the diff and under **The agent's walkthrough
 
 ### Undo a hunk
 
-**Undo** on a hunk in the diff reverts those lines in the folder at once, with no confirmation, and lists them under **Undone**. The agent is told and does not redo them without asking. Undo is off once the round is sent and while the agent works.
+**Undo** on a hunk in the diff reverts those lines in the folder at once, with no confirmation, and lists them under **Undone**. The agent is told and does not redo them without asking. Undo is off once the round is sent and while the agent works; binary, symlinked and very large files cannot be undone.
 
 ### Next rounds
 
@@ -81,6 +81,7 @@ A draft has **Delete**. A carried comment has **Edit** and **Resolve**; resolved
 - **"The diff is too large; later files show without hunks".** Open those files in the [code viewer](code-viewer.md).
 - **"Undo is off while the agent is working".** Wait until the session stops, then **Undo**.
 - **"This round was already sent".** Press **Refresh** to open the next round.
+- **Git LFS files show a pointer or raw bytes.** Filters are switched off while reading.
 
 ## Related
 
