@@ -573,6 +573,8 @@ func (o WorkbenchInstallOptions) mcpAddArgs() []string {
 // claude-not-found error, since the claude CLI cannot be asked whether it is
 // there.
 func registerWorkbenchMCP(ctx context.Context, o WorkbenchInstallOptions, legacyFolder bool) (registered, legacyRemoved bool, err error) {
+	// A session worktree's path postdates the Workbench rename, so no
+	// pre-rename registration can be there to remove.
 	if o.NewFolder && !legacyFolder {
 		if _, addErr := o.Run(ctx, o.Folder, "claude", o.mcpAddArgs()...); addErr == nil {
 			return true, false, nil

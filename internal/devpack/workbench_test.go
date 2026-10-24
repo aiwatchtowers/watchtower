@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -815,7 +816,13 @@ func TestInstallWorkbenchNewFolderRegistersWithOneAdd(t *testing.T) {
 	if got := f.registered[folder][6]; got != o.Bin {
 		t.Fatalf("the leftover registration was not replaced: %v", f.registered[folder])
 	}
-	if len(f.calls) < 3 {
+	var verbs []string
+	for _, c := range f.calls {
+		verbs = append(verbs, c[slices.Index(c, "mcp")+1])
+	}
+	// add (refused: already there), then the full path: get, remove, add,
+	// and the legacy get.
+	if got := strings.Join(verbs, " "); !strings.HasPrefix(got, "add get remove add") {
 		t.Fatalf("a failed add must fall back to get/remove/add, got %v", f.calls)
 	}
 }

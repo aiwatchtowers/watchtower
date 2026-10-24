@@ -15,8 +15,10 @@ extension WorkbenchesViewModel {
     /// could not be made starts the session in the folder with a notice
     /// saying why. The folder's git status is read only when a worktree is
     /// wanted. `agent`: the session's, so a worktree gets only its install.
-    /// `rowID`: the new row itself, already inserted in the folder — never
-    /// a session that occupies it.
+    /// `rowID`: the new row itself, already inserted in the folder. Of the
+    /// rows other starts are still launching, only earlier ones (a lower
+    /// id) count: a start clicked later never pushes this one into a
+    /// worktree.
     func placementForNewSession(
         project: Workbench,
         choice: WorktreeChoice,
@@ -26,7 +28,7 @@ extension WorkbenchesViewModel {
         rowID: Int64
     ) async -> NewSessionPlacement {
         let folder = project.folderPath
-        let working = workingAgentRows(projectID: project.id).filter { $0.id != rowID }
+        let working = workingAgentRows(projectID: project.id, before: rowID)
         let occupied = working.contains { row in
             SessionStartPlacement.occupies(
                 row: row, place: sessionPlaces.currentPlace(sessionID: row.id), workbenchFolder: folder
@@ -86,11 +88,11 @@ extension WorkbenchesViewModel {
         return try await body()
     }
 
-    /// The workbench's live agent rows and the ones a start inserted and is
-    /// still launching.
-    private func workingAgentRows(projectID: Int64) -> [TerminalSession] {
+    /// The workbench's live agent rows and the ones an earlier start (a
+    /// row id below `rowID`) inserted and is still launching.
+    private func workingAgentRows(projectID: Int64, before rowID: Int64) -> [TerminalSession] {
         var rows: [Int64: TerminalSession] = [:]
-        for row in startingRows.values where row.projectID == projectID && row.kind.isAgent {
+        for row in startingRows.values where row.projectID == projectID && row.kind.isAgent && row.id < rowID {
             rows[row.id] = row
         }
         for row in terminalCenter?.liveAgentRows(ofWorkbench: projectID) ?? [] {

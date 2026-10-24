@@ -536,6 +536,13 @@ extension WorkbenchesViewModel {
         // Clean Up closed — its worktree being removed — is refused
         // (board #535). A Clean Up… apply does not stop a resume.
         guard !closedForCleanup.contains(session.id) else { throw TargetStartError.cleaningUp }
+        // A new row whose start is still placing it launches from that start,
+        // in its own place, never from here in the folder.
+        if preparingSessions.contains(session.id) {
+            placeInLayout(session, fresh: false, placement: placement, ticket: ticket)
+            if checkLaunch { throw TargetStartError.inProgress }
+            return session
+        }
         if let ticket { clearSwitchError(projectID: session.projectID, ticket: ticket) }
         let row: TerminalSession
         do {
@@ -562,7 +569,7 @@ extension WorkbenchesViewModel {
     /// all (Codex mints one; `resetAgentSession`). A shell has no agent
     /// session: it just opens.
     func startFresh(_ session: TerminalSession, placement: Placement = .show) async {
-        guard !cleaningUpSessions.contains(session.id) else { return }
+        guard !cleaningUpSessions.contains(session.id), !preparingSessions.contains(session.id) else { return }
         let ticket = beginSwitch(projectID: session.projectID)
         guard let agent = session.kind.agent else {
             await open(session, placement: placement, ticket: ticket)
@@ -817,6 +824,8 @@ extension WorkbenchesViewModel {
         placing: SessionPlacing? = nil
     ) async throws -> TerminalSession {
         if let ticket { clearSwitchError(projectID: new.projectID, ticket: ticket) }
+        // A failed insert leaves no notice of an earlier start beside its error.
+        if placing != nil, let projectID = new.projectID { startNotice[projectID] = nil }
         var row = try await insertSession(new, ticket: ticket)
         let id = row.id
         defer {
@@ -833,7 +842,7 @@ extension WorkbenchesViewModel {
             let command = placing.project.worktreeSetup.trimmingCharacters(in: .whitespacesAndNewlines)
             if row.worktreeBranch != nil, !command.isEmpty { setup = placing.project.worktreeSetup }
             // Deleted while its place was decided: it never launches.
-            if pendingDeletes.ids.contains(id) { throw TargetStartError.failed("Session #\(id) was deleted.") }
+            if await wasDeleted(id) { throw TargetStartError.failed(Self.deletedBeforeStart(id)) }
         }
         await activate(row, fresh: true, prompt: prompt, placement: placement, ticket: ticket, setup: setup)
         if let setup, let projectID = row.projectID, launchFailure(row) != nil {
@@ -871,7 +880,14 @@ extension WorkbenchesViewModel {
                 }
             } catch {
                 startNotice[projectID] = nil
-                _ = try? await dbPool.write { try TerminalSessionQueries.delete($0, id: row.id) }
+                // The owner deleted it meanwhile: nothing to report.
+                if await wasDeleted(row.id) { throw TargetStartError.failed(Self.deletedBeforeStart(row.id)) }
+                do {
+                    try await dbPool.write { try TerminalSessionQueries.delete($0, id: row.id) }
+                } catch {
+                    NSLog("WorkbenchesViewModel: the unplaced session %lld could not be deleted: %@",
+                          row.id, error.localizedDescription)
+                }
                 forgetInLayout(row.id, projectID: projectID)
                 let message = "Could not move the session into its worktree: \(error.localizedDescription)"
                     + " — the worktree \(place.folderPath) on \(branch) was kept."
@@ -884,6 +900,17 @@ extension WorkbenchesViewModel {
             return placed
         }
     }
+
+    /// Whether the owner deleted the new row while its start placed it: it
+    /// waits in the Undo batch, or the batch already committed. A failed
+    /// read is not a delete.
+    private func wasDeleted(_ id: Int64) async -> Bool {
+        if pendingDeletes.ids.contains(id) { return true }
+        let exists = try? await dbPool.read { try TerminalSessionQueries.fetch($0, id: id) != nil }
+        return exists == false
+    }
+
+    private static func deletedBeforeStart(_ id: Int64) -> String { "Session #\(id) was deleted before it started." }
 
     /// Writes the new row; a failure is reported and thrown.
     private func insertSession(_ new: TerminalSessionQueries.NewSession, ticket: Int?) async throws -> TerminalSession {
