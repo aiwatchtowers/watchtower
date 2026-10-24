@@ -226,14 +226,25 @@ enum ReviewShotFixtures {
                   status: WorkbenchGitStatus(branch: "feature/capsule-corners", dirty: true, changes: 2))
     }
 
-    private static func pane(_ key: String, make: () throws -> (ReviewFixture, ReviewSessionIdentity)) -> AnyView {
+    /// `chat` adds the agent chat panel (#962); the shots have no session
+    /// control, so it shows its "not running" line.
+    private static func pane(
+        _ key: String, chat: Bool = false, make: () throws -> (ReviewFixture, ReviewSessionIdentity)
+    ) -> AnyView {
         do {
             if built[key] == nil {
                 let (fixture, identity) = try make()
                 built[key] = (fixture, identity)
             }
             guard let entry = built[key] else { return AnyView(EmptyView()) }
-            return AnyView(ReviewChangesPaneView(model: entry.fixture.model, identity: entry.identity).detailBackground())
+            var agentChat: ReviewAgentChat?
+            if chat {
+                let defaults = try XCTUnwrap(UserDefaults(suiteName: DesignShotFixtures.defaultsSuite))
+                let vm = WorkbenchesViewModel(dbPool: entry.fixture.pool, cli: nil, defaults: defaults)
+                agentChat = ReviewAgentChat(vm: vm, projectID: entry.fixture.projectID, sessionID: entry.fixture.session.id)
+            }
+            return AnyView(ReviewChangesPaneView(model: entry.fixture.model, identity: entry.identity, chat: agentChat)
+                .detailBackground())
         } catch {
             XCTFail("review shot fixture failed: \(error)")
             return AnyView(Text("fixture failed: \(String(describing: error))").foregroundStyle(.red))
@@ -246,6 +257,15 @@ enum ReviewShotFixtures {
             let fixture = try ReviewFixture(files: files, context: context, drafts: 3, overview: overview)
             fixture.openNow()
             fixture.markViewedNow(Array(files[3...5].map(\.path)))
+            return (fixture, fixture.identity(place: worktree()))
+        }
+    }
+
+    /// Artboard A with the agent chat panel open (#962).
+    static func changesWithChat() -> AnyView {
+        pane("changes-chat", chat: true) {
+            let fixture = try ReviewFixture(files: files, context: context, drafts: 3, overview: overview)
+            fixture.openNow()
             return (fixture, fixture.identity(place: worktree()))
         }
     }

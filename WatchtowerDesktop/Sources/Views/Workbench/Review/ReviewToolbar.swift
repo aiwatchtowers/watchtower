@@ -4,8 +4,8 @@ import WatchtowerCore
 
 /// The Branch review toolbar (board #712, spec §4.3): All changes / Since
 /// round N−1 from round 2, Quick / Deep, Deep's phase strip; then Inline,
-/// Refresh, ⋯ and the one prominent action — Send review (N), or Start
-/// next round once the round was sent.
+/// Refresh, Agent chat (#962), ⋯ and the one prominent action — Send review
+/// (N), or Start next round once the round was sent.
 struct ReviewToolbar: View {
     let model: ReviewChangesModel
     @Binding var inline: Bool
@@ -16,6 +16,8 @@ struct ReviewToolbar: View {
     var findRepeats: (() -> Void)?
     /// Open in Terminal: the session's terminal beside the pane; nil = the item is off.
     var openTerminal: (() -> Void)?
+    /// The session agent's chat panel is open; nil = no panel, no button.
+    var chatPanel: Binding<Bool>?
 
     private var roundOpen: Bool { model.round?.status == "open" }
     /// Quick and Deep's Chapters show a diff, so Inline applies.
@@ -57,6 +59,13 @@ struct ReviewToolbar: View {
                 .disabled(!roundOpen || model.load != .ready || model.sending || model.refreshing)
                 .help("Refresh")
                 .accessibilityLabel("Refresh")
+            if let chatPanel {
+                Button { chatPanel.wrappedValue.toggle() } label: { Image(systemName: "bubble.left.and.bubble.right") }
+                    .buttonStyle(.kitIcon(isOn: chatPanel.wrappedValue))
+                    .keyboardShortcut("c", modifiers: [.option, .command])
+                    .help("Agent chat: the session's Workchat beside the review (⌥⌘C)")
+                    .accessibilityLabel("Agent chat")
+            }
             moreMenu
             if roundOpen {
                 Button("Send review (\(model.draftCount))") { Task { await model.send() } }

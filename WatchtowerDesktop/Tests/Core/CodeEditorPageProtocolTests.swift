@@ -27,6 +27,21 @@ final class CodeEditorPageProtocolTests: XCTestCase {
         )
     }
 
+    /// The diff page's Ask agent post (board #962): documented, registered
+    /// as a Monaco action and decoded by MonacoDiffView.
+    func testDiffAskIsDocumentedAndPosted() throws {
+        let header = try Self.headerComment(page: "diff.html")
+        XCTAssertTrue(header.contains("ask     {startLine, endLine, side}"), "diff.html's header does not document ask")
+        let script = try String(contentsOf: Self.web.appendingPathComponent("diff.js"), encoding: .utf8)
+        XCTAssertTrue(script.contains(#"id: "wt.ask""#), "diff.js does not register wt.ask")
+        XCTAssertTrue(script.contains(#"type: "ask""#), "diff.js does not post ask")
+        let swift = try String(
+            contentsOf: Self.web.deletingLastPathComponent().appendingPathComponent("Views/Workbench/Review/MonacoDiffView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(swift.contains(#"case "ask":"#), "MonacoDiffView does not handle ask")
+    }
+
     /// textmate.js loads only grammars scripts/fetch-textmate.sh vendors,
     /// and every vendored grammar is one textmate.js names (board #738).
     func testTextMateGrammarsMatchTheFetchScript() throws {

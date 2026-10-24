@@ -196,6 +196,9 @@ enum DesignShotCatalog {
             DesignShot(name: "branch-review-changes", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.changes()
             },
+            DesignShot(name: "branch-review-chat-panel", size: NSSize(width: 1180, height: 760)) {
+                ReviewShotFixtures.changesWithChat()
+            },
             DesignShot(name: "branch-review-empty", size: NSSize(width: 1180, height: 520)) {
                 ReviewShotFixtures.empty()
             },

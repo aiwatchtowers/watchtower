@@ -111,6 +111,8 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     var askAIs: [String] = []
     /// The diff page's `comment {startLine, endLine, side}` posts.
     var comments: [[String: Any]] = []
+    /// The diff page's `ask {startLine, endLine, side}` posts.
+    var asks: [[String: Any]] = []
     /// The diff page's `undo {hunkId}` posts.
     var undos: [String] = []
     var errors: [String] = []
@@ -194,6 +196,13 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 return
             }
             comments.append(body)
+        case "ask":
+            // Decoded as MonacoDiffView.Coordinator does.
+            guard body["startLine"] is Int, body["endLine"] is Int, body["side"] is String else {
+                errors.append("malformed ask message: \(body)")
+                return
+            }
+            asks.append(body)
         case "undo":
             // Decoded as MonacoDiffView.Coordinator does: a string hunk id.
             guard let id = body["hunkId"] as? String else {
@@ -1301,6 +1310,16 @@ func diffPageChecks(root: URL) async {
     check("Comment: posts the selection's lines and side",
           posted && first?["startLine"] as? Int == 1 && first?["endLine"] as? Int == 3 && first?["side"] as? String == "new",
           "\(page.comments)")
+    _ = await page.eval(
+        "(function () { var d = monaco.editor.getDiffEditors()[0];"
+            + " var e = d.getOriginalEditor(); e.setSelection(new monaco.Range(1, 1, 2, 1)); e.getAction('wt.ask').run();"
+            + " return true; })()"
+    )
+    let asked = await wait(3) { !page.asks.isEmpty }
+    let ask = page.asks.first
+    check("Ask agent: posts the selection's lines and side (a selection ending at column 1 leaves that line out)",
+          asked && ask?["startLine"] as? Int == 1 && ask?["endLine"] as? Int == 1 && ask?["side"] as? String == "old",
+          "\(page.asks)")
     await diffNotesAndHunksChecks(page)
     await diffFoldChecks(page)
     check("diff page: no error posted during the run", page.errors.isEmpty, page.errors.joined(separator: "; "))

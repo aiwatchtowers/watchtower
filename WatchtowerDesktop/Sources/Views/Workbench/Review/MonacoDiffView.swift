@@ -54,13 +54,15 @@ struct MonacoDiffView: NSViewRepresentable {
     var payload: Payload?
     /// The owner chose Comment on a selection: its lines and side ("old"/"new").
     var onComment: (_ startLine: Int, _ endLine: Int, _ side: String) -> Void
+    /// The owner chose Ask agent on a selection: its lines and side ("old"/"new").
+    var onAsk: (_ startLine: Int, _ endLine: Int, _ side: String) -> Void = { _, _, _ in }
     /// The owner pressed Undo on a hunk of the shown file (its id was checked).
     var onUndo: (_ hunkID: String) -> Void = { _ in }
     /// The page reported an error (also logged).
     var onError: (String) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onComment: onComment, onUndo: onUndo, onError: onError)
+        Coordinator(onComment: onComment, onAsk: onAsk, onUndo: onUndo, onError: onError)
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -78,6 +80,7 @@ struct MonacoDiffView: NSViewRepresentable {
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         context.coordinator.onComment = onComment
+        context.coordinator.onAsk = onAsk
         context.coordinator.onUndo = onUndo
         context.coordinator.onError = onError
         context.coordinator.show(payload)
@@ -87,6 +90,7 @@ struct MonacoDiffView: NSViewRepresentable {
     final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         weak var webView: WKWebView?
         var onComment: (Int, Int, String) -> Void
+        var onAsk: (Int, Int, String) -> Void
         var onUndo: (String) -> Void
         var onError: (String) -> Void
         private var ready = false
@@ -96,10 +100,12 @@ struct MonacoDiffView: NSViewRepresentable {
 
         init(
             onComment: @escaping (Int, Int, String) -> Void,
+            onAsk: @escaping (Int, Int, String) -> Void,
             onUndo: @escaping (String) -> Void,
             onError: @escaping (String) -> Void
         ) {
             self.onComment = onComment
+            self.onAsk = onAsk
             self.onUndo = onUndo
             self.onError = onError
         }
@@ -161,6 +167,13 @@ struct MonacoDiffView: NSViewRepresentable {
                     return
                 }
                 onComment(start, end, side)
+            case "ask":
+                guard let start = body["startLine"] as? Int, let end = body["endLine"] as? Int,
+                      let side = body["side"] as? String else {
+                    NSLog("ReviewDiff: an ask message without its lines was dropped")
+                    return
+                }
+                onAsk(start, end, side)
             case "undo":
                 guard let id = Self.undoTarget(body["hunkId"], shown: told?.hunks ?? []) else {
                     NSLog("ReviewDiff: an undo message for an unknown hunk was dropped")

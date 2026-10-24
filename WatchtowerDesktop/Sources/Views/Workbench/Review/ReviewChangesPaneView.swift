@@ -6,8 +6,10 @@ import WatchtowerCore
 /// (the identity bar), the toolbar, then a session's review round — the
 /// file list on the left, the selected file's header, Monaco diff and its
 /// comments on the right — or one "Nothing to review" state on an empty
-/// branch. The round is re-read when the window becomes key and when the
-/// session's turn ends, while the round is open and the pane on screen.
+/// branch; the session agent's Workchat sits in a panel on the right
+/// (board #962), where Ask agent quotes lines and risks. The round is
+/// re-read when the window becomes key and when the session's turn ends,
+/// while the round is open and the pane on screen.
 struct ReviewChangesPaneView: View {
     let model: ReviewChangesModel
     let identity: ReviewSessionIdentity
@@ -15,7 +17,13 @@ struct ReviewChangesPaneView: View {
     var agentStateKind: SessionSwitcherPresentation.State.Kind?
     /// Find Repeats' model (the workbench's lessons); nil = not available.
     var lessons: ReviewLessonsModel?
+    /// The session agent's chat panel; nil = no panel and no Ask agent.
+    var chat: ReviewAgentChat?
 
+    /// The chat panel is open (per workbench, open at first).
+    @AppStorage private var chatOpen: Bool
+    /// Each new value puts the keyboard in the panel's composer.
+    @State private var chatFocus: UUID?
     @State private var inline = false
     @State private var compose: ComposeRequest?
     @State private var findingRepeats = false
@@ -33,6 +41,21 @@ struct ReviewChangesPaneView: View {
         var prefill = ""
         var allowsEmpty = false
         let submit: (_ body: String) async throws -> Void
+    }
+
+    init(
+        model: ReviewChangesModel,
+        identity: ReviewSessionIdentity,
+        agentStateKind: SessionSwitcherPresentation.State.Kind? = nil,
+        lessons: ReviewLessonsModel? = nil,
+        chat: ReviewAgentChat? = nil
+    ) {
+        self.model = model
+        self.identity = identity
+        self.agentStateKind = agentStateKind
+        self.lessons = lessons
+        self.chat = chat
+        _chatOpen = AppStorage(wrappedValue: true, chat?.openKey ?? "review.chatPanel.none")
     }
 
     var body: some View {
@@ -77,17 +100,36 @@ struct ReviewChangesPaneView: View {
                     refresh: { Task { await refreshOrNextRound() } },
                     findRepeats: lessons == nil ? nil : { findingRepeats = true },
                     // The session gone (no row): nothing to open.
-                    openTerminal: identity.row == nil ? nil : identity.openTerminal
+                    openTerminal: identity.row == nil ? nil : identity.openTerminal,
+                    chatPanel: chat == nil ? nil : $chatOpen
                 )
                 Divider()
             }
+            if let chat {
+                PanelSplit(
+                    isPanelShown: chatOpen,
+                    width: PanelSplitWidth(key: chat.widthKey, range: 280...640, ideal: 360)
+                ) {
+                    review
+                } panel: {
+                    ReviewAgentChatPanel(chat: chat, composerFocus: chatFocus)
+                }
+            } else {
+                review
+            }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { paneHeight = $0 }
+    }
+
+    /// The banners and the round's state, beside the chat panel.
+    private var review: some View {
+        VStack(spacing: 0) {
             ReviewBanners(model: model)
             if let pageError {
                 ReviewBanner(text: pageError, isError: true) { self.pageError = nil }
             }
             state
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { paneHeight = $0 }
     }
 
     /// An open round with nothing to review shows no toolbar; a sent one
@@ -187,7 +229,9 @@ struct ReviewChangesPaneView: View {
     private var chaptersFoot: some View {
         VStack(spacing: 0) {
             ReviewChapterFooter(model: model)
-            ReviewChapterRisksView(model: model, onComment: { compose = $0 }, onAsk: { _ in })
+            ReviewChapterRisksView(model: model, onComment: { compose = $0 }, onAsk: { risk in
+                ask(ReviewAskQuote.risk(path: risk.path, level: risk.level.rawValue, why: risk.why))
+            }, canAsk: chat != nil)
             ReviewNextStepButton(model: model)
                 .padding(.horizontal, Spacing.medium)
                 .padding(.vertical, Spacing.regular)
@@ -226,6 +270,10 @@ struct ReviewChangesPaneView: View {
             } else {
                 MonacoDiffView(payload: payload(path: path, sides: sides)) { start, end, side in
                     compose = lineComposeRequest(path: path, side: side, start: start, end: end)
+                } onAsk: { start, end, side in
+                    let text = side == "old" ? sides.old.text : sides.new.text
+                    let lines = ReviewAskQuote.lines(of: text, startLine: start, endLine: end)
+                    ask(ReviewAskQuote.code(path: path, side: side, startLine: start, endLine: end, lines: lines))
                 } onUndo: { id in
                     Task { await model.undo(hunkID: id) }
                 } onError: { pageError = $0 }
@@ -233,6 +281,15 @@ struct ReviewChangesPaneView: View {
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    /// Ask agent: the quote goes on top of the Workchat draft, the panel
+    /// opens and the keyboard goes to its composer.
+    private func ask(_ quote: String) {
+        guard let chat else { return }
+        chat.ask(quote)
+        chatOpen = true
+        chatFocus = UUID()
     }
 
     private func lineComposeRequest(path: String, side: String, start: Int, end: Int) -> ComposeRequest {

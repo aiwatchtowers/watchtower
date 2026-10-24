@@ -7,7 +7,7 @@
 # navigation chords, the code question messages — selection, scroll, askAI,
 # selectionRect, proposeEdit/clearProposal, applyEdit, setReadOnly) and spot-checks the file associations and Monarch
 # grammars of languages.js and the TextMate highlighting of textmate.js, and smoke-tests the Changes pane's diff page
-# (diff.html: showDiff, setComments, the Comment post, folding and setFullFile). Not part of any gate; run it after touching
+# (diff.html: showDiff, setComments, the Comment and Ask agent posts, folding and setFullFile). Not part of any gate; run it after touching
 # CodeEditorWeb/ or bumping Monaco.
 #
 # Needs the Monaco build and the TextMate grammars: scripts/fetch-monaco.sh. Loads local files only.

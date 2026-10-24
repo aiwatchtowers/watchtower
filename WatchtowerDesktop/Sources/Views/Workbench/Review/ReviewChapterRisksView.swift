@@ -73,7 +73,7 @@ struct ReviewChapterRisksView: View {
             if canAsk {
                 Button("Ask agent") { onAsk(risk) }
                     .buttonStyle(.borderless)
-                    .disabled(model.round?.status != "open")
+                    .help("Quote this risk in the agent's chat")
             }
         }
     }

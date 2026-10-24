@@ -194,6 +194,24 @@
     addCommentAction(editor.getModifiedEditor(), "new");
     addCommentAction(editor.getOriginalEditor(), "old");
 
+    // Ask agent (board #962): the selection's lines go to Swift, which
+    // quotes them into the session's Workchat draft.
+    function addAskAction(ed, side) {
+      ed.addAction({
+        id: "wt.ask", label: "Ask agent", contextMenuGroupId: "navigation",
+        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyA],
+        run: function (target) {
+          var s = target.getSelection();
+          if (!s) { return; }
+          // A selection ending at column 1 of a line does not take that line.
+          var end = s.endLineNumber > s.startLineNumber && s.endColumn === 1 ? s.endLineNumber - 1 : s.endLineNumber;
+          post({ type: "ask", side: side, startLine: s.startLineNumber, endLine: end });
+        }
+      });
+    }
+    addAskAction(editor.getModifiedEditor(), "new");
+    addAskAction(editor.getOriginalEditor(), "old");
+
     window.wt = {
       showDiff: function (a) {
         var previous = models;

@@ -10,6 +10,8 @@ struct SessionChatView: View {
     let vm: WorkbenchesViewModel
     let sessionID: Int64
     let projectID: Int64
+    /// Each new value puts the keyboard in the composer (Branch review's Ask agent).
+    var composerFocus: UUID?
 
     @StateObject private var store: SessionFeedStore
     /// The subagents opened in place; empty = the main feed.
@@ -25,10 +27,11 @@ struct SessionChatView: View {
     private static var bottomID: String { "session-chat-bottom" }
     private static var scrollSpace: String { "session-chat-scroll" }
 
-    init(vm: WorkbenchesViewModel, sessionID: Int64, projectID: Int64) {
+    init(vm: WorkbenchesViewModel, sessionID: Int64, projectID: Int64, composerFocus: UUID? = nil) {
         self.vm = vm
         self.sessionID = sessionID
         self.projectID = projectID
+        self.composerFocus = composerFocus
         // An autoclosure: the store and its CLI lookup are built once per
         // pane, not on every render of the parent.
         _store = StateObject(wrappedValue: SessionFeedStore(sessionID: sessionID, runner: ProcessCLIRunner.makeDefault()))
@@ -144,7 +147,7 @@ struct SessionChatView: View {
                         .padding(.horizontal, Spacing.large)
                         .padding(.top, Spacing.compact)
                 }
-                WorkchatComposer(model: workchat, working: working)
+                WorkchatComposer(model: workchat, working: working, focusRequest: composerFocus)
             }
         }
         // Each hook write for the session reads its permission prompt again
