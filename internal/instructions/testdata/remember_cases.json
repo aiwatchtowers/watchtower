@@ -1,0 +1,12 @@
+[
+  {"text": "запомни: отвечай короче", "ok": true, "line": "отвечай короче"},
+  {"text": "ЗАПОМНИ:  Отвечай коротко", "ok": true, "line": "Отвечай коротко"},
+  {"text": "  Remember This: use bullets", "ok": true, "line": "use bullets"},
+  {"text": "remember:   ", "ok": true, "line": ""},
+  {"text": "запомни:\n- a\n- b", "ok": true, "line": "- a - b"},
+  {"text": "please remember: x", "ok": false, "line": ""},
+  {"text": "remember that x", "ok": false, "line": ""},
+  {"text": "Remember:x", "ok": true, "line": "x"},
+  {"text": "remember this:\tone\r\n two", "ok": true, "line": "one two"},
+  {"text": "", "ok": false, "line": ""}
+]
