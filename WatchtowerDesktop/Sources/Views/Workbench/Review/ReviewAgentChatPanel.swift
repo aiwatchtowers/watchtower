@@ -20,6 +20,13 @@ struct ReviewAgentChat {
         return vm.workchat(sessionID: sessionID)
     }
 
+    /// The session's ask drawer, when this review hosts it: the session's
+    /// terminal and Workchat are not on screen (either would host it there).
+    var drawerAsk: OwnerAsk? {
+        guard !vm.layout(projectID: projectID).showsSession(sessionID) else { return nil }
+        return vm.asks.drawerAsk(projectID: projectID).flatMap { $0.sessionID == sessionID ? $0 : nil }
+    }
+
     /// Puts `quote` at the top of the draft; nothing while the session is not running.
     func ask(_ quote: String) {
         guard let workchat else { return }
@@ -33,18 +40,26 @@ struct ReviewAgentChatPanel: View {
     let chat: ReviewAgentChat
     /// Each new value puts the keyboard in the composer.
     let composerFocus: UUID?
+    /// The panel opened for Ask agent: the composer takes the keyboard as it
+    /// is made (a focus request made with the field is not acted on).
+    let focusOnOpen: Bool
+    /// The panel is on screen: `focusOnOpen` was used.
+    let onShown: () -> Void
 
     var body: some View {
-        if chat.workchat != nil {
-            SessionChatView(vm: chat.vm, sessionID: chat.sessionID, projectID: chat.projectID,
-                            composerFocus: composerFocus)
-                .id(chat.sessionID)
-        } else {
-            Text("The session is not running")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(Spacing.medium)
+        Group {
+            if chat.workchat != nil {
+                SessionChatView(vm: chat.vm, sessionID: chat.sessionID, projectID: chat.projectID,
+                                composerFocus: composerFocus, composerAutoFocus: focusOnOpen)
+                    .id(chat.sessionID)
+            } else {
+                Text("The session is not running")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .padding(Spacing.medium)
+            }
         }
+        .onAppear(perform: onShown)
     }
 }

@@ -24,6 +24,8 @@ struct ReviewChangesPaneView: View {
     @AppStorage private var chatOpen: Bool
     /// Each new value puts the keyboard in the panel's composer.
     @State private var chatFocus: UUID?
+    /// Ask agent opened the closed panel: its composer focuses as it is made.
+    @State private var chatFocusOnOpen = false
     @State private var inline = false
     @State private var compose: ComposeRequest?
     @State private var findingRepeats = false
@@ -106,13 +108,19 @@ struct ReviewChangesPaneView: View {
                 Divider()
             }
             if let chat {
-                PanelSplit(
-                    isPanelShown: chatOpen,
-                    width: PanelSplitWidth(key: chat.widthKey, range: 280...640, ideal: 360)
-                ) {
-                    review
-                } panel: {
-                    ReviewAgentChatPanel(chat: chat, composerFocus: chatFocus)
+                // The session's ask drawer opens here when neither its
+                // terminal nor its Workchat is on screen to host it.
+                OwnerAskDrawerHost(vm: chat.vm, ask: chat.drawerAsk) {
+                    PanelSplit(
+                        isPanelShown: chatOpen,
+                        width: PanelSplitWidth(key: chat.widthKey, range: 280...640, ideal: 360)
+                    ) {
+                        review
+                    } panel: {
+                        ReviewAgentChatPanel(chat: chat, composerFocus: chatFocus, focusOnOpen: chatFocusOnOpen) {
+                            chatFocusOnOpen = false
+                        }
+                    }
                 }
             } else {
                 review
@@ -288,6 +296,9 @@ struct ReviewChangesPaneView: View {
     private func ask(_ quote: String) {
         guard let chat else { return }
         chat.ask(quote)
+        // A panel made now would take the new request as its starting
+        // value and not act on it: it focuses as it is made instead.
+        if !chatOpen { chatFocusOnOpen = true }
         chatOpen = true
         chatFocus = UUID()
     }
