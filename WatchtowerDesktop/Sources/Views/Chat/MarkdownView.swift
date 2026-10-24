@@ -174,7 +174,8 @@ struct MarkdownTableView: View {
     }
 
     private var grid: some View {
-        Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 6) {
+        Grid(alignment: .leading, horizontalSpacing: MarkdownTableText.columnSpacing,
+             verticalSpacing: MarkdownTableText.rowSpacing) {
             GridRow {
                 ForEach(table.header.indices, id: \.self) { column in
                     Text(MarkdownView.inlineText(table.header[column], codeLinks: codeLinks, navScreens: navScreens))

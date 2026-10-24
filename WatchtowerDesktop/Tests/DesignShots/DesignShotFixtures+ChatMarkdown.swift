@@ -28,6 +28,11 @@ enum ChatMarkdownShotFixtures {
         | 1 | `list_messages` | [#acme](https://example.com/1) |
         | 2 | `llm` | **12** messages |
 
+        | Recipe | Channel | Schedule | State | Runs |
+        |:---|---|---|:---:|---:|
+        | Daily digest | #acme-general | weekdays 9:00 | on | 12 |
+        | Weekly recap with a long name | #acme-team | Fridays 17:00 | off | 3 |
+
         ```js
         const msgs = tool("list_messages", { channel: "acme" })
         ```

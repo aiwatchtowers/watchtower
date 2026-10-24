@@ -18,8 +18,9 @@ struct NativeMarkdownView: View {
 }
 
 /// A finished answer's markdown as segments (spec 2026-10-24 §5b): each run
-/// of prose is one native text view (`MarkdownTextRun`), the other blocks
-/// keep their SwiftUI views. Same stack spacing as `MarkdownBlocksView`.
+/// of prose is one native text view (`MarkdownTextRun`), and so is each
+/// table (`NativeMarkdownTableView`, §5c); the other blocks keep their
+/// SwiftUI views. Same stack spacing as `MarkdownBlocksView`.
 struct MarkdownSegmentsView: View {
     let blocks: [MarkdownBlock]
     @Environment(\.markdownCodeLinks) private var codeLinks
@@ -34,6 +35,8 @@ struct MarkdownSegmentsView: View {
                 case let .textRun(run):
                     MarkdownTextRun(text: MarkdownRunText.attributed(run, links: links), codeLinks: codeLinks,
                                     navScreens: navScreens)
+                case let .block(.table(table)):
+                    NativeMarkdownTableView(table: table)
                 case let .block(block):
                     MarkdownBlockView(block: block).textSelection(.enabled)
                 }
@@ -105,13 +108,28 @@ enum MarkdownRunText {
             out.append(NSAttributedString(string: "\t", attributes: [.font: bodyFont]))
         }
         let heading = if case .heading = paragraph.kind { true } else { false }
-        let size = font(for: paragraph.kind).pointSize
-        let inline = MarkdownView.inlineText(paragraph.inlines, links: links)
+        appendInlines(paragraph.inlines, links: links, size: font(for: paragraph.kind).pointSize,
+                      weight: heading ? .bold : .regular, color: color, lineBreak: "\u{2028}", to: out)
+    }
+
+    /// Inline markdown in `weight` (bold where it is strong), italic, mono
+    /// and struck through as marked, its links gated by
+    /// `MarkdownView.inlineText`; a line break inside it becomes `lineBreak`.
+    static func appendInlines(
+        _ inlines: [MarkdownInline],
+        links: InlineLinkContext,
+        size: CGFloat,
+        weight: NSFont.Weight,
+        color: NSColor,
+        lineBreak: String,
+        to out: NSMutableAttributedString
+    ) {
+        let inline = MarkdownView.inlineText(inlines, links: links)
         for piece in inline.runs {
             let intent = piece.inlinePresentationIntent ?? []
-            let text = String(inline[piece.range].characters).replacingOccurrences(of: "\n", with: "\u{2028}")
+            let text = String(inline[piece.range].characters).replacingOccurrences(of: "\n", with: lineBreak)
             var attributes: [NSAttributedString.Key: Any] = [
-                .font: font(size: size, bold: heading || intent.contains(.stronglyEmphasized),
+                .font: font(size: size, weight: intent.contains(.stronglyEmphasized) ? .bold : weight,
                             italic: intent.contains(.emphasized), mono: intent.contains(.code)),
                 .foregroundColor: color
             ]
@@ -123,7 +141,7 @@ enum MarkdownRunText {
 
     // MARK: - Fonts
 
-    private static var bodyFont: NSFont { NSFont.preferredFont(forTextStyle: .body) }
+    static var bodyFont: NSFont { NSFont.preferredFont(forTextStyle: .body) }
 
     /// `MarkdownBlockView.headingFont` with `.bold`, or `.body`.
     private static func font(for kind: MarkdownRunParagraph.Kind) -> NSFont {
@@ -140,8 +158,7 @@ enum MarkdownRunText {
         }
     }
 
-    private static func font(size: CGFloat, bold: Bool, italic: Bool, mono: Bool) -> NSFont {
-        let weight: NSFont.Weight = bold ? .bold : .regular
+    private static func font(size: CGFloat, weight: NSFont.Weight, italic: Bool, mono: Bool) -> NSFont {
         let font = mono ? NSFont.monospacedSystemFont(ofSize: size, weight: weight) : NSFont.systemFont(ofSize: size, weight: weight)
         guard italic else { return font }
         let descriptor = font.fontDescriptor.withSymbolicTraits(font.fontDescriptor.symbolicTraits.union(.italic))
@@ -261,7 +278,8 @@ enum MarkdownRunText {
 /// One run's non-editable, selectable TextKit 2 text view. Selection spans
 /// the run's paragraphs; ⌘C copies plain text; leaving the view drops the
 /// selection, as a selectable SwiftUI `Text`'s. Draws the block-quote bars.
-final class MarkdownRunTextView: NSTextView {
+/// A table's view (`MarkdownTableTextView`) is one with its own width rule.
+class MarkdownRunTextView: NSTextView {
     /// The last two measurements (SwiftUI may alternate two proposals).
     private var measured: [(width: CGFloat, size: CGSize)] = []
     private weak var shown: NSAttributedString?
@@ -274,33 +292,42 @@ final class MarkdownRunTextView: NSTextView {
 
     static func make() -> MarkdownRunTextView {
         let view = MarkdownRunTextView(usingTextLayoutManager: true)
-        view.isEditable = false
-        view.isSelectable = true
-        view.isRichText = true
-        view.importsGraphics = false
-        view.allowsUndo = false
-        view.drawsBackground = false
-        view.textContainerInset = .zero
-        view.textContainer?.lineFragmentPadding = 0
-        // The width is ours to set (`setFrameSize`, `fittingSize`).
-        view.textContainer?.widthTracksTextView = false
-        view.textContainer?.heightTracksTextView = false
-        view.isVerticallyResizable = false
-        view.isHorizontallyResizable = false
-        view.displaysLinkToolTips = false
-        // Read-only text: no checking or detection pass on every layout.
-        view.isContinuousSpellCheckingEnabled = false
-        view.isGrammarCheckingEnabled = false
-        view.isAutomaticSpellingCorrectionEnabled = false
-        view.isAutomaticDataDetectionEnabled = false
-        view.isAutomaticLinkDetectionEnabled = false
-        view.isAutomaticTextCompletionEnabled = false
-        view.isAutomaticTextReplacementEnabled = false
-        view.isAutomaticQuoteSubstitutionEnabled = false
-        view.isAutomaticDashSubstitutionEnabled = false
-        view.linkTextAttributes = [.foregroundColor: NSColor.controlAccentColor, .cursor: NSCursor.pointingHand]
+        view.configureForReading()
         return view
     }
+
+    /// Read-only, selectable, unpadded text with no checking passes.
+    func configureForReading() {
+        isEditable = false
+        isSelectable = true
+        isRichText = true
+        importsGraphics = false
+        allowsUndo = false
+        drawsBackground = false
+        textContainerInset = .zero
+        textContainer?.lineFragmentPadding = 0
+        // The width is ours to set (`setFrameSize`, `fittingSize`).
+        textContainer?.widthTracksTextView = false
+        textContainer?.heightTracksTextView = false
+        isVerticallyResizable = false
+        isHorizontallyResizable = false
+        displaysLinkToolTips = false
+        // Read-only text: no checking or detection pass on every layout.
+        isContinuousSpellCheckingEnabled = false
+        isGrammarCheckingEnabled = false
+        isAutomaticSpellingCorrectionEnabled = false
+        isAutomaticDataDetectionEnabled = false
+        isAutomaticLinkDetectionEnabled = false
+        isAutomaticTextCompletionEnabled = false
+        isAutomaticTextReplacementEnabled = false
+        isAutomaticQuoteSubstitutionEnabled = false
+        isAutomaticDashSubstitutionEnabled = false
+        linkTextAttributes = [.foregroundColor: NSColor.controlAccentColor, .cursor: NSCursor.pointingHand]
+    }
+
+    /// The text container's width for the view (or a measurement) at
+    /// `width`: a run wraps at the view's width.
+    func containerWidth(forViewWidth width: CGFloat) -> CGFloat { width }
 
     /// Shows `text`; the same (memoised) text is left alone.
     func show(_ text: NSAttributedString) {
@@ -328,12 +355,12 @@ final class MarkdownRunTextView: NSTextView {
         measuring = true
         // A zero-width container is unbounded in TextKit 2: a 0 proposal is
         // laid out at the narrowest real width instead.
-        setContainerWidth(max(width, 1))
+        setContainerWidth(containerWidth(forViewWidth: max(width, 1)))
         layout.ensureLayout(for: layout.documentRange)
         let bounds = layout.usageBoundsForTextContainer
         measuring = false
         let size = CGSize(width: ceil(bounds.width), height: ceil(bounds.height))
-        if frame.width > 0, frame.width != width { setContainerWidth(frame.width) }
+        if frame.width > 0, frame.width != width { setContainerWidth(containerWidth(forViewWidth: frame.width)) }
         measured = [(width, size)] + measured.prefix(1)
         return size
     }
@@ -347,7 +374,7 @@ final class MarkdownRunTextView: NSTextView {
     /// frame SwiftUI sets after measuring).
     override func setFrameSize(_ newSize: NSSize) {
         super.setFrameSize(newSize)
-        if newSize.width > 0, !measuring { setContainerWidth(newSize.width) }
+        if newSize.width > 0, !measuring { setContainerWidth(containerWidth(forViewWidth: newSize.width)) }
     }
 
     func fittingHeight(width: CGFloat) -> CGFloat { fittingSize(width: width).height }

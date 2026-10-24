@@ -24,8 +24,10 @@ struct ChatSelectionQuoteListening {
 ///
 /// A finished answer's prose is native text: one read-only
 /// `MarkdownRunTextView` per run (spec 2026-10-24 §5b), so a selection may
-/// span the run's paragraphs. Its other blocks (table cells) and every
-/// other row are SwiftUI `Text` + `.textSelection(.enabled)`: on macOS such
+/// span the run's paragraphs, and one `MarkdownTableTextView` (a run view)
+/// per table (§5c), so a selection may span its cells and rows and reads
+/// as tab-separated cells. Its other blocks and every other row are
+/// SwiftUI `Text` + `.textSelection(.enabled)`: on macOS such
 /// a `Text` is a selectable `NSTextField`, and selecting in it puts the
 /// window's field editor (an `NSTextView`) in it. Either way the selection
 /// is read from that text view through public AppKit: its text,
@@ -130,7 +132,7 @@ final class ChatSelectionQuoteTracker {
 
     func selectionChanged(in textView: NSTextView?) {
         // Only a read-only text view in the feed's own window — a run of an
-        // answer's prose, or the field editor of a selectable SwiftUI
+        // answer's prose or its table, or the field editor of a selectable SwiftUI
         // `Text`: the composer and every field the owner types in are
         // editable, and a selection in another window never touches the
         // feed's.
