@@ -26,7 +26,8 @@ final class ChatSelectionQuoteScanTests: XCTestCase {
             }
         }
         // Only a finished answer draws native text; the streaming one stays SwiftUI.
-        XCTAssertTrue(try source("Views/Chat/ChatMessageRow.swift").contains("MarkdownView(text: markdown, nativeText: !isRunning)"))
+        let row = try source("Views/Chat/ChatMessageRow.swift")
+        XCTAssertTrue(row.contains("if isRunning {\n                                MarkdownView(text: markdown)"))
     }
 
     func testTheSelectionOverlayAndTheBatchViewNeverSend() throws {

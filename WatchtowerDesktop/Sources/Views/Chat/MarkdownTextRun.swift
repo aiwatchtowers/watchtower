@@ -3,6 +3,20 @@ import DesignKit
 import SwiftUI
 import WatchtowerCore
 
+/// A finished chat answer's markdown (spec 2026-10-24 §5b): its prose is
+/// drawn by one native text view per run instead of a selectable SwiftUI
+/// `Text` per block. A streaming answer keeps `MarkdownView` — a separate
+/// view, so the streaming row's body stays exactly as it was — and switches
+/// when it completes. Same parse and link rules as `MarkdownView`.
+struct NativeMarkdownView: View {
+    let text: String
+    @Environment(\.markdownCodeLinks) private var codeLinks
+
+    var body: some View {
+        MarkdownSegmentsView(blocks: MarkdownDocument.parse(codeLinks ? CodeLineLinks.linkified(text) : text))
+    }
+}
+
 /// A finished answer's markdown as segments (spec 2026-10-24 §5b): each run
 /// of prose is one native text view (`MarkdownTextRun`), the other blocks
 /// keep their SwiftUI views. Same stack spacing as `MarkdownBlocksView`.
