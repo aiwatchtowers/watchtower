@@ -1,7 +1,7 @@
 ---
 name: watchtower-workbench
 description: Use in a folder bound to a Watchtower workbench (the watchtower-workbench MCP server is connected) — to set the workbench up, whenever you start work on a target or a group, whenever you need the owner's answer, decision, check or review, and when you finish a session. Keeps the Watchtower board, asks and comments in step with the work.
-x-watchtower-pack: v13
+x-watchtower-pack: v14
 ---
 
 # Watchtower Workbench
@@ -99,6 +99,7 @@ The owner reviews your changes in Watchtower's diff reviewer and sends a round a
 - A design comment (no file) is about the approach as a whole; answer it before the line comments.
 - Hunks listed as undone by the owner were reverted on purpose: do not redo them without asking.
 - Do not ask the owner to re-review: they open the next round themselves.
+- An approved round arrives as `Review round #N approved — …` (`get_review` starts with `Outcome: approved — no changes requested`): the owner accepted the branch. Read it with `get_review N`, then do the methodology's finishing steps (PR and merge, targets `done`, cleanup, `finish_session`) without asking for another review.
 
 ## Finishing a session
 
