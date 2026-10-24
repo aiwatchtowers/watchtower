@@ -136,6 +136,13 @@ struct ArtifactPanelView: View {
                     Button { run(item.action) } label: { Label(item.title, systemImage: item.systemImage) }
                 }
                 .disabled(!draft.isComplete)
+                if let state = model.knowledgeState {
+                    Button { Task { await model.toggleKnowledge() } } label: {
+                        Label(state.title, systemImage: state.systemImage)
+                    }
+                    .disabled(!draft.isComplete)
+                    .help(knowledgeHelp(state))
+                }
                 if draft.kind == "html" {
                     htmlActions(draft)
                 }
@@ -143,6 +150,14 @@ struct ArtifactPanelView: View {
             Spacer()
         }
         .padding(10)
+    }
+
+    private func knowledgeHelp(_ state: ArtifactKnowledgeState) -> String {
+        switch state {
+        case .add: return "Make this version searchable in Knowledge"
+        case .update: return "Replace the kept version with the one shown"
+        case .remove: return "Stop keeping this artifact in Knowledge"
+        }
     }
 
     /// View-only: Reload and a big window (Present = full screen at once).
