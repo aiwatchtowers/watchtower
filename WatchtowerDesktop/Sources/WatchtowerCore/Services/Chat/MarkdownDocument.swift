@@ -1,11 +1,11 @@
 import Foundation
 import Markdown
 
-package enum MarkdownTaskState: Equatable, Sendable { case none, checked, unchecked }
+package enum MarkdownTaskState: Hashable, Sendable { case none, checked, unchecked }
 
-package enum MarkdownAlignment: Equatable, Sendable { case leading, center, trailing }
+package enum MarkdownAlignment: Hashable, Sendable { case leading, center, trailing }
 
-package struct MarkdownListItem: Equatable, Sendable {
+package struct MarkdownListItem: Hashable, Sendable {
     package let task: MarkdownTaskState
     package let blocks: [MarkdownBlock]
 
@@ -15,7 +15,7 @@ package struct MarkdownListItem: Equatable, Sendable {
     }
 }
 
-package struct MarkdownList: Equatable, Sendable {
+package struct MarkdownList: Hashable, Sendable {
     package let ordered: Bool
     package let start: Int
     package let items: [MarkdownListItem]
@@ -27,7 +27,7 @@ package struct MarkdownList: Equatable, Sendable {
     }
 }
 
-package struct MarkdownTable: Equatable, Sendable {
+package struct MarkdownTable: Hashable, Sendable {
     package let header: [[MarkdownInline]]
     package let rows: [[[MarkdownInline]]]
     package let alignments: [MarkdownAlignment]
@@ -39,7 +39,7 @@ package struct MarkdownTable: Equatable, Sendable {
     }
 }
 
-package indirect enum MarkdownBlock: Equatable, Sendable {
+package indirect enum MarkdownBlock: Hashable, Sendable {
     case heading(level: Int, inlines: [MarkdownInline])
     case paragraph([MarkdownInline])
     case code(language: String?, code: String)
@@ -189,41 +189,15 @@ package enum MarkdownInlineRenderer {
         inlines.reduce(into: AttributedString()) { $0 += render($1, intent: [], link: nil) }
     }
 
-    private final class Key: NSObject {
+    private struct Key: Hashable {
         let inlines: [MarkdownInline]
         let context: AnyHashable
-        let hashCode: Int
-
-        init(_ inlines: [MarkdownInline], _ context: AnyHashable) {
-            self.inlines = inlines
-            self.context = context
-            var hasher = Hasher()
-            hasher.combine(inlines)
-            hasher.combine(context)
-            hashCode = hasher.finalize()
-        }
-
-        override var hash: Int { hashCode }
-
-        override func isEqual(_ object: Any?) -> Bool {
-            guard let other = object as? Key else { return false }
-            return hashCode == other.hashCode && context == other.context && inlines == other.inlines
-        }
-    }
-
-    private final class Box {
-        let value: AttributedString
-        init(_ value: AttributedString) { self.value = value }
     }
 
     /// Cost = the text's length, as `MarkdownDocument`'s parse memo; a
     /// streamed row's growing last paragraph adds an entry per delta, so
     /// the limit bounds memory, not the count of rows.
-    private static let cache: NSCache<Key, Box> = {
-        let cache = NSCache<Key, Box>()
-        cache.totalCostLimit = 4 << 20
-        return cache
-    }()
+    private static let cache = MarkdownMemo<Key, AttributedString>(totalCostLimit: 4 << 20)
 
     /// `build(inlines)` memoised by the inline run and `context` (whatever
     /// else the result depends on — the link rules of the surface), beside
@@ -237,11 +211,8 @@ package enum MarkdownInlineRenderer {
         context: some Hashable & Sendable,
         _ build: ([MarkdownInline]) -> AttributedString
     ) -> AttributedString {
-        let key = Key(inlines, AnyHashable(context))
-        if let hit = cache.object(forKey: key) { return hit.value }
-        let value = build(inlines)
-        cache.setObject(Box(value), forKey: key, cost: value.characters.count)
-        return value
+        cache.value(for: Key(inlines: inlines, context: AnyHashable(context)), cost: { $0.characters.count },
+                    build: { build(inlines) })
     }
 
     private static func render(_ inline: MarkdownInline, intent: InlinePresentationIntent, link: URL?) -> AttributedString {

@@ -22,16 +22,17 @@ struct ChatSelectionQuoteListening {
 
 /// Finds the passage the owner selected in an answer, and where it is.
 ///
-/// The feed keeps rendering with SwiftUI `Text` + `.textSelection(.enabled)`
-/// (`MarkdownView`): no per-row text view, so a long thread lays out as
-/// before. On macOS such a `Text` is a selectable `NSTextField`, and
-/// selecting in it puts the window's field editor (an `NSTextView`) in it —
-/// so the selection is read from the field editor through public AppKit:
-/// its `string`, `selectedRange()` and `firstRect(forCharacterRange:)`. A
-/// selection therefore stays inside one text block (a paragraph, a list
-/// item, a table cell). Should SwiftUI stop backing the text this way, the
-/// chip simply never appears and selection + ⌘C keep working
-/// (`ChatSelectionQuoteTrackerTests` pins the assumption).
+/// A finished answer's prose is native text: one read-only
+/// `MarkdownRunTextView` per run (spec 2026-10-24 §5b), so a selection may
+/// span the run's paragraphs. Its other blocks (table cells) and every
+/// other row are SwiftUI `Text` + `.textSelection(.enabled)`: on macOS such
+/// a `Text` is a selectable `NSTextField`, and selecting in it puts the
+/// window's field editor (an `NSTextView`) in it. Either way the selection
+/// is read from that text view through public AppKit: its text,
+/// `selectedRange()` and `firstRect(forCharacterRange:)`. Should SwiftUI
+/// stop backing the text this way, the chip simply never appears there and
+/// selection + ⌘C keep working (`ChatSelectionQuoteTrackerTests` pins the
+/// assumption).
 ///
 /// Only a selection inside a finished answer's body counts: each such body
 /// carries an invisible region view (`ChatAnswerRegionMarker`), and the
@@ -128,14 +129,15 @@ final class ChatSelectionQuoteTracker {
     }
 
     func selectionChanged(in textView: NSTextView?) {
-        // Only a read-only field editor (a selectable SwiftUI `Text`) in the
-        // feed's own window: the composer and every field the owner types in
-        // are editable, and a selection in another window never touches the
+        // Only a read-only text view in the feed's own window — a run of an
+        // answer's prose, or the field editor of a selectable SwiftUI
+        // `Text`: the composer and every field the owner types in are
+        // editable, and a selection in another window never touches the
         // feed's.
         guard let textView, let window = anchor?.window, textView.window === window else { return }
         // The owner moved to a field they type in (the composer, a search
         // field): the answer's selection is gone.
-        guard textView.isFieldEditor, !textView.isEditable else {
+        guard textView.isFieldEditor || textView is MarkdownRunTextView, !textView.isEditable else {
             clear()
             return
         }
@@ -156,7 +158,8 @@ final class ChatSelectionQuoteTracker {
         guard let editor, let anchor, let region, region.window === anchor.window,
               let rect = currentRect(), Self.box(of: region, in: anchor).insetBy(dx: -2, dy: -2).contains(rect),
               rect.intersects(anchor.bounds),
-              let text = ChatQuoteReply.selectedText(editor.string, selection: editor.selectedRange()) else {
+              let text = ChatQuoteReply.selectedText((editor as? MarkdownRunTextView)?.plainText ?? editor.string,
+                                                     selection: editor.selectedRange()) else {
             setSelection(nil)
             return
         }
