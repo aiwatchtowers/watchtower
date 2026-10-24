@@ -32,12 +32,13 @@ const (
 	maxOwnerTextRunes = 60000
 )
 
-// OwnerLine is one message the owner typed in a workbench session, cleaned
-// for the model.
+// OwnerLine is one message the owner typed in a workbench session (ChatID 0)
+// or in an AI chat (ChatID set, SessionID and WorkbenchID 0), cleaned for the
+// model.
 type OwnerLine struct {
-	SessionID, WorkbenchID int64
-	Text                   string
-	at                     time.Time
+	SessionID, WorkbenchID, ChatID int64
+	Text                           string
+	at                             time.Time
 }
 
 // FeedReader returns the chat entries of one session (a test seam; see
@@ -89,12 +90,21 @@ func (m *Miner) Run(ctx context.Context) (written int, usage *digest.Usage, err 
 	if err != nil {
 		return 0, nil, err
 	}
-	lines := m.ownerLines(sessions)
-	bySession := map[int64]int64{} // session -> workbench, sessions with lines only
-	for _, l := range lines {
-		bySession[l.SessionID] = l.WorkbenchID
+	chatTurns, err := m.DB.ListOwnerChatTurnsSince(now.Add(-suggestWindow))
+	if err != nil {
+		return 0, nil, err
 	}
-	if len(bySession) < minSuggestSessions {
+	lines := m.ownerLines(sessions, chatTurns)
+	bySession := map[int64]int64{} // session -> workbench, sessions with lines only
+	byChat := map[int64]bool{}     // chat conversations with lines only
+	for _, l := range lines {
+		if l.ChatID != 0 {
+			byChat[l.ChatID] = true
+		} else {
+			bySession[l.SessionID] = l.WorkbenchID
+		}
+	}
+	if len(bySession)+len(byChat) < minSuggestSessions {
 		return 0, nil, nil
 	}
 	user, err := m.buildUser(lines)
@@ -109,7 +119,7 @@ func (m *Miner) Run(ctx context.Context) (written int, usage *digest.Usage, err 
 	if err != nil {
 		return 0, usage, fmt.Errorf("instruction suggestions: generating: %w", err)
 	}
-	sugs, err := parseSuggestions(raw, bySession)
+	sugs, err := parseSuggestions(raw, bySession, byChat)
 	if err != nil {
 		return 0, usage, err
 	}
@@ -129,10 +139,11 @@ func (m *Miner) Run(ctx context.Context) (written int, usage *digest.Usage, err 
 	return written, usage, nil
 }
 
-// ownerLines collects the owner's messages of every session, cleaned, and
-// keeps the newest within maxOwnerTextRunes. An unreadable session is logged
-// and left out.
-func (m *Miner) ownerLines(sessions []db.RecentWorkbenchSession) []OwnerLine {
+// ownerLines collects the owner's messages of every session and AI chat,
+// cleaned, and keeps the newest within maxOwnerTextRunes (sessions and chats
+// together). A chat turn that is a "remember:" message is dropped: it already
+// wrote its line. An unreadable session is logged and left out.
+func (m *Miner) ownerLines(sessions []db.RecentWorkbenchSession, chatTurns []db.ChatOwnerTurn) []OwnerLine {
 	var lines []OwnerLine
 	for _, s := range sessions {
 		entries, err := m.Read(s)
@@ -149,6 +160,14 @@ func (m *Miner) ownerLines(sessions []db.RecentWorkbenchSession) []OwnerLine {
 			}
 		}
 	}
+	for _, t := range chatTurns {
+		if _, remember := ParseRemember(t.Text); remember {
+			continue
+		}
+		if text, ok := cleanOwnerText(t.Text); ok {
+			lines = append(lines, OwnerLine{ChatID: t.ConversationID, Text: text, at: t.At})
+		}
+	}
 	sort.SliceStable(lines, func(i, j int) bool { return lines[i].at.After(lines[j].at) })
 	total := 0
 	for i, l := range lines {
@@ -159,6 +178,9 @@ func (m *Miner) ownerLines(sessions []db.RecentWorkbenchSession) []OwnerLine {
 		}
 	}
 	sort.SliceStable(lines, func(i, j int) bool {
+		if lines[i].ChatID != lines[j].ChatID {
+			return lines[i].ChatID < lines[j].ChatID
+		}
 		if lines[i].SessionID != lines[j].SessionID {
 			return lines[i].SessionID < lines[j].SessionID
 		}
@@ -226,10 +248,15 @@ func (m *Miner) buildUser(lines []OwnerLine) (string, error) {
 		return "", err
 	}
 	writeTexts(&b, "All workbenches", g)
+	chat := strings.TrimSpace(g.Chat)
+	if chat == "" {
+		chat = "(none)"
+	}
+	fmt.Fprintf(&b, "[All chats — chat]\n%s\n", chat)
 	var wbs []int64
 	seen := map[int64]bool{}
 	for _, l := range lines {
-		if !seen[l.WorkbenchID] {
+		if l.ChatID == 0 && !seen[l.WorkbenchID] {
 			seen[l.WorkbenchID] = true
 			wbs = append(wbs, l.WorkbenchID)
 		}
@@ -257,11 +284,26 @@ func (m *Miner) buildUser(lines []OwnerLine) (string, error) {
 	b.WriteString("\n=== OWNER MESSAGES BY SESSION ===\n")
 	var cur int64 = -1
 	for _, l := range lines {
+		if l.ChatID != 0 {
+			continue
+		}
 		if l.SessionID != cur {
 			cur = l.SessionID
 			fmt.Fprintf(&b, "\n# session s%d (workbench %d)\n", l.SessionID, l.WorkbenchID)
 		}
 		fmt.Fprintf(&b, "s%d: %s\n", l.SessionID, l.Text)
+	}
+	b.WriteString("\n=== OWNER MESSAGES BY CHAT ===\n")
+	cur = -1
+	for _, l := range lines {
+		if l.ChatID == 0 {
+			continue
+		}
+		if l.ChatID != cur {
+			cur = l.ChatID
+			fmt.Fprintf(&b, "\n# chat c%d\n", l.ChatID)
+		}
+		fmt.Fprintf(&b, "c%d: %s\n", l.ChatID, l.Text)
 	}
 	return b.String(), nil
 }
@@ -279,12 +321,14 @@ func writeTexts(b *strings.Builder, scope string, t db.OwnerInstructions) {
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 // parseSuggestions validates a reply against the sessions that had lines
-// (session -> workbench): unknown labels are dropped, at least three distinct
-// sessions must remain, the text is one line of 1-200 runes, the field is
-// session or procedure. Scope is the one shared workbench, else global; a
-// repeated fingerprint keeps its first entry. Malformed JSON or a missing
+// (session -> workbench) and the chats that had lines: unknown labels (s<id>,
+// c<id>) are dropped, at least three distinct sessions and chats must remain,
+// the text is one line of 1-200 runes, the field is session or procedure.
+// Chats only: field chat, global. Chats mixed with sessions: the model's field,
+// global. Sessions only: the one shared workbench, else global. A repeated
+// fingerprint keeps its first entry. Malformed JSON or a missing
 // "suggestions" list is an error.
-func parseSuggestions(raw string, sessions map[int64]int64) ([]db.InstructionSuggestion, error) {
+func parseSuggestions(raw string, sessions map[int64]int64, chats map[int64]bool) ([]db.InstructionSuggestion, error) {
 	js, err := prompts.ExtractJSONObject(raw)
 	if err != nil {
 		return nil, fmt.Errorf("instruction suggestions reply: %w", err)
@@ -313,10 +357,17 @@ func parseSuggestions(raw string, sessions map[int64]int64) ([]db.InstructionSug
 			continue
 		}
 		distinct := map[int64]bool{}
+		distinctChats := map[int64]bool{}
 		workbenches := map[int64]bool{}
 		for _, label := range r.Sessions {
-			id, ok := parseSessionLabel(label)
+			kind, id, ok := parseLabel(label)
 			if !ok {
+				continue
+			}
+			if kind == 'c' {
+				if chats[id] {
+					distinctChats[id] = true
+				}
 				continue
 			}
 			wb, ok := sessions[id]
@@ -326,12 +377,16 @@ func parseSuggestions(raw string, sessions map[int64]int64) ([]db.InstructionSug
 			distinct[id] = true
 			workbenches[wb] = true
 		}
-		if len(distinct) < minSuggestSessions {
+		total := len(distinct) + len(distinctChats)
+		if total < minSuggestSessions {
 			continue
 		}
-		s := db.InstructionSuggestion{Text: text, Field: field, SessionCount: len(distinct),
+		s := db.InstructionSuggestion{Text: text, Field: field, SessionCount: total,
 			WorkbenchCount: len(workbenches), Fingerprint: fp}
-		if len(workbenches) == 1 {
+		if len(distinct) == 0 {
+			s.Field = db.InstructionChat
+		}
+		if len(distinctChats) == 0 && len(workbenches) == 1 {
 			for wb := range workbenches {
 				s.WorkbenchID = sql.NullInt64{Int64: wb, Valid: true}
 			}
@@ -342,12 +397,12 @@ func parseSuggestions(raw string, sessions map[int64]int64) ([]db.InstructionSug
 	return out, nil
 }
 
-// parseSessionLabel reads "s<id>".
-func parseSessionLabel(label string) (int64, bool) {
-	rest, ok := strings.CutPrefix(strings.TrimSpace(label), "s")
-	if !ok {
-		return 0, false
+// parseLabel reads "s<id>" (a session) or "c<id>" (a chat conversation).
+func parseLabel(label string) (kind byte, id int64, ok bool) {
+	label = strings.TrimSpace(label)
+	if len(label) < 2 || (label[0] != 's' && label[0] != 'c') {
+		return 0, 0, false
 	}
-	id, err := strconv.ParseInt(rest, 10, 64)
-	return id, err == nil
+	id, err := strconv.ParseInt(label[1:], 10, 64)
+	return label[0], id, err == nil
 }

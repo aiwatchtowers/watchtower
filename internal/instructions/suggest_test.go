@@ -409,3 +409,104 @@ func TestNewFeedReader_ReadsClaudeTranscript(t *testing.T) {
 		t.Fatalf("entries = %+v", entries)
 	}
 }
+
+func chatSug(text, field string, labels ...string) string {
+	q := make([]string, len(labels))
+	for i, l := range labels {
+		q[i] = fmt.Sprintf("%q", l)
+	}
+	return fmt.Sprintf(`{"text":%q,"field":%q,"sessions":[%s]}`, text, field, strings.Join(q, ","))
+}
+
+func TestParseSuggestions_ChatsOnlyIsChatField(t *testing.T) {
+	out, err := parseSuggestions(reply(chatSug("Answer briefly", "session", "c1", "c2", "c3")),
+		map[int64]int64{}, map[int64]bool{1: true, 2: true, 3: true})
+	if err != nil || len(out) != 1 {
+		t.Fatalf("out=%+v err=%v", out, err)
+	}
+	if out[0].Field != db.InstructionChat || out[0].WorkbenchID.Valid || out[0].SessionCount != 3 || out[0].WorkbenchCount != 0 {
+		t.Fatalf("%+v", out[0])
+	}
+}
+
+func TestParseSuggestions_MixedIsGlobal(t *testing.T) {
+	out, err := parseSuggestions(reply(chatSug("Run the linter", "procedure", "s1", "s2", "c3")),
+		map[int64]int64{1: 9, 2: 9}, map[int64]bool{3: true})
+	if err != nil || len(out) != 1 {
+		t.Fatalf("out=%+v err=%v", out, err)
+	}
+	if out[0].Field != db.InstructionProcedure || out[0].WorkbenchID.Valid || out[0].SessionCount != 3 || out[0].WorkbenchCount != 1 {
+		t.Fatalf("%+v", out[0])
+	}
+}
+
+func TestParseSuggestions_UnknownChatLabelDropped(t *testing.T) {
+	out, err := parseSuggestions(reply(chatSug("Answer briefly", "session", "c1", "c2", "c99", "s7")),
+		map[int64]int64{}, map[int64]bool{1: true, 2: true})
+	if err != nil || len(out) != 0 {
+		t.Fatalf("out=%+v err=%v", out, err)
+	}
+}
+
+func (f *minerFixture) chatTurn(conv int64, role, text string, at time.Time) {
+	f.t.Helper()
+	if _, err := f.d.Exec(`INSERT INTO chat_messages (conversation_id, role, text, created_at) VALUES (?, ?, ?, ?)`,
+		conv, role, text, float64(at.Unix())); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+func (f *minerFixture) chat() int64 {
+	f.t.Helper()
+	res, err := f.d.Exec(`INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
+		VALUES ('', 'situation', '', 0, 0)`)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	id, _ := res.LastInsertId()
+	return id
+}
+
+func TestMinerRun_CountsChatsTowardThree(t *testing.T) {
+	f := newMinerFixture(t)
+	wb := f.workbench("acme")
+	recent := minerNow.Add(-time.Hour)
+	f.session(wb, recent, owner("keep answers short"))
+	f.session(wb, recent, owner("keep answers short please"))
+	c := f.chat()
+	f.chatTurn(c, "user", "keep answers short", recent)
+
+	gen := &fakeGen{out: reply(chatSug("Keep answers short", "session", "s1", "s2", fmt.Sprintf("c%d", c)))}
+	written, _, err := f.miner(gen).Run(context.Background())
+	if err != nil || gen.calls != 1 || written != 1 {
+		t.Fatalf("written=%d calls=%d err=%v", written, gen.calls, err)
+	}
+	for _, want := range []string{"=== OWNER MESSAGES BY CHAT ===", fmt.Sprintf("# chat c%d", c), fmt.Sprintf("c%d: keep answers short", c), "[All chats — chat]"} {
+		if !strings.Contains(gen.stdin, want) {
+			t.Errorf("stdin lacks %q:\n%s", want, gen.stdin)
+		}
+	}
+}
+
+func TestMinerRun_SkipsRememberTurns(t *testing.T) {
+	f := newMinerFixture(t)
+	wb := f.workbench("acme")
+	recent := minerNow.Add(-time.Hour)
+	f.session(wb, recent, owner("a"))
+	f.session(wb, recent, owner("b"))
+	c := f.chat()
+	f.chatTurn(c, "user", "remember: always reply in Russian", recent)
+	f.chatTurn(c, "user", "Запомни: be brief", recent)
+
+	gen := &fakeGen{out: reply()}
+	if _, _, err := f.miner(gen).Run(context.Background()); err != nil || gen.calls != 0 {
+		t.Fatalf("calls=%d err=%v", gen.calls, err)
+	}
+	f.chatTurn(c, "user", "plain remark", recent)
+	if _, _, err := f.miner(gen).Run(context.Background()); err != nil || gen.calls != 1 {
+		t.Fatalf("calls=%d err=%v", gen.calls, err)
+	}
+	if strings.Contains(gen.stdin, "Russian") || strings.Contains(gen.stdin, "be brief") {
+		t.Errorf("remember turns reached the model:\n%s", gen.stdin)
+	}
+}

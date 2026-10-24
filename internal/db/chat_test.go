@@ -296,3 +296,30 @@ func TestListOwnerChatTurns_ActiveBranchOnly(t *testing.T) {
 	}
 	assert.Equal(t, []string{"edited wording", "discuss turn"}, texts)
 }
+
+func TestListOwnerChatTurnsSince(t *testing.T) {
+	db := openTestDB(t)
+	since := time.Date(2026, 10, 10, 0, 0, 0, 0, time.UTC)
+	a := insertChatConversation(t, db, "situation", "")
+	b := insertChatConversation(t, db, "target", "7")
+	insertChatMessage(t, db, a, "user", "old", float64(since.Unix()-10))
+	insertChatMessage(t, db, a, "assistant", "reply", float64(since.Unix()+5))
+	insertChatMessage(t, db, b, "user", "second", float64(since.Unix()+20))
+	insertChatMessage(t, db, a, "user", "first", float64(since.Unix()))
+
+	got, err := db.ListOwnerChatTurnsSince(since)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, ChatOwnerTurn{ConversationID: a, Text: "first", At: since}, got[0])
+	assert.Equal(t, b, got[1].ConversationID)
+	assert.Equal(t, "second", got[1].Text)
+}
+
+func TestListOwnerChatTurnsSince_AbsentTables(t *testing.T) {
+	db := openTestDB(t)
+	_, err := db.Exec(`DROP TABLE chat_messages`)
+	require.NoError(t, err)
+	got, err := db.ListOwnerChatTurnsSince(time.Now())
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
