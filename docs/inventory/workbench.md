@@ -496,7 +496,7 @@ rule from one Repair or Re-run Setup; `workbench resync --json` reports
 `cleanup_permission_added`.
 
 *2026-10-15 (board #266, spec §4.3):* the install writes two skills into `.claude/skills` and
-`.agents/skills`: the core `watchtower-workbench` (pack v13 since board #558) always, and the `watchtower-flow` preset
+`.agents/skills`: the core `watchtower-workbench` (pack v14 since board #964, v13 since board #558) always, and the `watchtower-flow` preset
 unless the effective preset is `none` (`WorkbenchInstallOptions.PresetNone`, resolved like the hooks).
 Both follow the DEV-04 rules. Preset `none` removes the preset only when its bytes are ours (shipped,
 or matching the sidecar); an edited or foreign copy is kept and reported. An owner-edited core from
@@ -504,7 +504,7 @@ before v10 (marker below `v10`) keeps the single-file layout: nothing is written
 `resync` says "Your edited skill keeps the old single-file layout; delete it to take the v10 core and
 preset." A core byte-identical to the shipped v8, v9, v10, v11 or v12 with no sidecar is adopted as ours. A preset change
 through `watchtower workbench methodology` runs `devpack.SyncMethodology` (the skills only: each core
-copy goes through the install first, so a pre-v10 core of ours becomes v13, then the preset follows; no
+copy goes through the install first, so a pre-v10 core of ours becomes v14, then the preset follows; no
 hook or registration is touched); a changed `preset:` in `workflow.md` takes effect on the next install
 or resync, and the brief names the mismatch. An owner-edited preset copy counts as installed under
 `watchtower-flow` (no mismatch line, never rewritten); under `none` it is kept, `methodology --json`

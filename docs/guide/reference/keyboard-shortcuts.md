@@ -118,6 +118,9 @@ With a workbench page on screen; the Navigate menu lists most of these.
 | **⌥⌘Return** | Hand to Session (an Ask AI answer) |
 | **⌥⌘M** | Comment on the selected lines (Branch review pane) |
 | **⌥⌘↑ / ⌥⌘↓** | Previous / next unviewed file (Branch review pane) |
+| **⌥⌘Return** | Chapter viewed, next chapter (Branch review, Deep) |
+| **⇧⌘A** | Ask agent about the selected lines (Branch review) |
+| **⌥⌘C** | Show or hide the review's chat panel |
 
 ### Open Quickly
 
