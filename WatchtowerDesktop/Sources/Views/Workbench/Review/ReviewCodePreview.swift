@@ -17,8 +17,13 @@ struct ReviewCodePreview: View {
     /// The pane's destination: the menu's Go to Definition and Show All
     /// Usages reach this page through it.
     let destination: ReviewNavigationDestination?
+    /// Ask agent with a quote of the selected lines (the page's "Ask AI"
+    /// item and ⌘I); nil when the session has no Workchat to ask in.
+    let onAsk: ((String) -> Void)?
 
-    @State private var text: Result<String, CodeFileBuffer.ReadError>?
+    /// The last read and the file it is of: a read of another file is never
+    /// shown under this one, even for the frame before the new read starts.
+    @State private var read: (file: FileKey, text: Result<String, CodeFileBuffer.ReadError>)?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -26,19 +31,32 @@ struct ReviewCodePreview: View {
             Divider()
             content
         }
-        .task(id: LoadKey(path: location.path, folder: root.folder, serial: model.previewSerial)) {
-            let url = root.folder.appendingPathComponent(location.path)
-            let read = await Task.detached { CodeFileBuffer.read(url) }.value
+        .task(id: LoadKey(file: fileKey, serial: model.previewSerial)) {
+            let file = fileKey
+            if read?.file != file { read = nil }
+            let url = file.folder.appendingPathComponent(file.path)
+            let text = await Task.detached { CodeFileBuffer.read(url) }.value
             guard !Task.isCancelled else { return }
-            text = read
+            read = (file, text)
         }
     }
 
-    /// A new place re-reads the file: what is shown is the current files.
-    private struct LoadKey: Equatable {
+    private struct FileKey: Equatable {
         let path: String
         let folder: URL
+    }
+
+    private var fileKey: FileKey { FileKey(path: location.path, folder: root.folder) }
+
+    /// A new place re-reads the file: what is shown is the current files.
+    private struct LoadKey: Equatable {
+        let file: FileKey
         let serial: Int
+    }
+
+    private var text: Result<String, CodeFileBuffer.ReadError>? {
+        guard let read, read.file == fileKey else { return nil }
+        return read.text
     }
 
     private var header: some View {
@@ -76,7 +94,8 @@ struct ReviewCodePreview: View {
                 reveal: ReviewCodePreviewPage.Reveal(
                     path: location.path, line: location.line, col: location.col, serial: model.previewSerial
                 ),
-                root: root, navigation: navigation, usages: usages, destination: destination
+                root: root, navigation: navigation, usages: usages, destination: destination,
+                onAsk: onAsk
             ) { model.previewCursorMoved($0) }
         }
     }
@@ -84,8 +103,9 @@ struct ReviewCodePreview: View {
 
 /// The code viewer's `index.html` page (`MonacoEditorView`'s) with one
 /// read-only model: no buffer, no autosave, no Files tab. It speaks the
-/// page's `definition`, `usages` and `cursor` messages; edits cannot be
-/// typed, and a `text` message would be ignored.
+/// page's `definition`, `usages` and `cursor` messages, and turns `askAI`
+/// (with the `selection` sent just before it) into Ask agent; edits cannot
+/// be typed, and a `text` message would be ignored.
 struct ReviewCodePreviewPage: NSViewRepresentable {
     struct File: Equatable {
         let path: String
@@ -107,6 +127,7 @@ struct ReviewCodePreviewPage: NSViewRepresentable {
     let navigation: CodeNavigationCenter?
     let usages: CodeUsagesCenter?
     let destination: ReviewNavigationDestination?
+    let onAsk: ((String) -> Void)?
     let cursorMoved: (CodeNavLocation) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -130,6 +151,7 @@ struct ReviewCodePreviewPage: NSViewRepresentable {
         coordinator.navigation = navigation
         coordinator.usages = usages
         coordinator.cursorMoved = cursorMoved
+        coordinator.onAsk = onAsk
         if destination?.page !== coordinator { destination?.page = coordinator }
         coordinator.show(file, reveal: reveal)
     }
@@ -145,7 +167,10 @@ struct ReviewCodePreviewPage: NSViewRepresentable {
         weak var navigation: CodeNavigationCenter?
         weak var usages: CodeUsagesCenter?
         var cursorMoved: (CodeNavLocation) -> Void = { _ in }
+        var onAsk: ((String) -> Void)?
         private var ready = false
+        /// The page's last selection of the shown model (sent before `askAI`).
+        private var selection: (id: String, startLine: Int, endLine: Int, endCol: Int)?
         private var wanted: File?
         private var wantedReveal: Reveal?
         /// What the page shows: the file and its model id (a new id per
@@ -197,12 +222,32 @@ struct ReviewCodePreviewPage: NSViewRepresentable {
             case "cursor":
                 guard let path = shownPath(body), let line = body["line"] as? Int, let col = body["col"] as? Int else { return }
                 cursorMoved(CodeNavLocation(path: path, line: line, col: col))
+            case "selection":
+                guard let id = body["id"] as? String, let start = body["startLine"] as? Int,
+                      let end = body["endLine"] as? Int, let endCol = body["endCol"] as? Int else { return }
+                selection = (id, start, end, endCol)
+            case "askAI":
+                askRequested(body)
             case "error":
                 NSLog("ReviewCodePreview: %@", (body["message"] as? String) ?? "the page reported an error")
             default:
-                // text (never sent: read-only), selection, scroll, askAI: not here.
+                // text (never sent: read-only), scroll: not here.
                 break
             }
+        }
+
+        /// "Ask AI" / ⌘I: the selected lines of the shown file go to Ask agent.
+        private func askRequested(_ body: [String: Any]) {
+            guard let path = shownPath(body), let shown, let selection, selection.id == shown.id else {
+                NSLog("ReviewCodePreview: an askAI message without a selection was dropped")
+                return
+            }
+            guard let onAsk else {
+                NSLog("ReviewCodePreview: askAI with no Workchat to ask in was dropped")
+                return
+            }
+            onAsk(ReviewAskQuote.current(path: path, text: shown.file.text, startLine: selection.startLine,
+                                         endLine: selection.endLine, endCol: selection.endCol))
         }
 
         func requestDefinitionAtCursor() async -> Bool {

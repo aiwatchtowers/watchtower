@@ -77,4 +77,21 @@ final class ReviewAgentChatTests: XCTestCase {
         vm.asks.openDrawer(try XCTUnwrap(vm.asks.openAsks[projectID]?.first { $0.id == askID }))
         XCTAssertNil(ReviewAgentChat(vm: vm, projectID: projectID, sessionID: sessionID).drawerAsk)
     }
+
+    /// No Workchat for the session (not loaded, gone or not running): the
+    /// panel shows one line and no composer, and Ask agent writes no draft.
+    func testPanelWithoutAWorkchatSaysTheSessionIsNotRunning() async throws {
+        let (projectID, sessionID) = try await pool.write { d in
+            let p = try TestDatabase.insertWorkbench(d, folder: "/tmp/acme")
+            let s = try TerminalSessionQueries.create(d, .init(projectID: p, kind: .shell, title: "zsh", folderPath: "/tmp/acme"))
+            return (p, s.id)
+        }
+        let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: FakeCLIRunner()), defaults: defaults)
+        let chat = ReviewAgentChat(vm: vm, projectID: projectID, sessionID: sessionID)
+        XCTAssertNil(chat.workchat)
+        XCTAssertEqual(ReviewAgentChatPanel.content(chat), .notRunning)
+        XCTAssertEqual(ReviewAgentChatPanel.notRunningText, "The session is not running")
+        chat.ask("Re `a.go:1`:")
+        XCTAssertEqual(vm.workchat(sessionID: sessionID)?.draft ?? "", "")
+    }
 }

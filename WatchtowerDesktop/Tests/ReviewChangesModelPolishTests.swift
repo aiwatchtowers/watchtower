@@ -2,7 +2,8 @@ import WatchtowerCore
 import XCTest
 @testable import WatchtowerDesktop
 
-/// Review polish (#958): Full file per file, Deep's chapter Viewed (Chapter
+/// Review polish (#958): Full file per file, the chapter risk list, a refused
+/// Approve, Deep's chapter Viewed (Chapter
 /// viewed → and the chapter list toggle). Split out of ReviewChangesModelTests
 /// to keep that file under the length cap.
 extension ReviewChangesModelTests {
@@ -91,5 +92,48 @@ extension ReviewChangesModelTests {
         _ = await openThreeChapters(h)
         await assertThrowsAsync { try await h.model.setViewed(["cmd/a.go", "nope.go"], on: true) }
         XCTAssertFalse(h.model.isViewed("cmd/a.go"))
+    }
+
+    /// Go refuses because the round was approved elsewhere (another window,
+    /// a CLI): the model shows the stored approved outcome and "already sent".
+    func testApproveRefusedOnARoundApprovedElsewhereShowsItsOutcome() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["approve": #"{"ok":true,"sent":false}"#])
+        await h.model.open()
+        try await h.db.write { try $0.execute(sql: "UPDATE review_rounds SET status = 'sent', outcome = 'approved' WHERE id = 7") }
+        await h.model.approve(resolveOpen: false)
+        XCTAssertTrue(h.sink.lines.isEmpty)
+        XCTAssertNil(h.model.approvedAt, "this window did not approve it")
+        XCTAssertEqual(h.model.lastError, ReviewChangesModel.alreadySentMessage)
+        XCTAssertEqual(h.model.round?.status, "sent")
+        XCTAssertEqual(h.model.round?.outcome, "approved")
+    }
+
+    /// The chapter section shows a ready overview's risks as current, and a
+    /// failed refresh keeps the last ready overview's risks, out of date.
+    func testChapterRiskListMarksAFailedRefreshOutOfDate() async throws {
+        let h = try harness()
+        h.cli.script("overview", [overviewJSON(), #"{"ok":false,"error":"the overview model timed out"}"#])
+        await openDeep(h)
+        await awaitOverview(h)
+        let ready = try XCTUnwrap(h.model.chapterRiskList("ai:1"))
+        XCTAssertEqual(ready.risks.map(\.why), ["locks"])
+        XCTAssertFalse(ready.outOfDate)
+        h.model.makeOverview()
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.overview, .failed("the overview model timed out"))
+        let failed = try XCTUnwrap(h.model.chapterRiskList("ai:1"))
+        XCTAssertEqual(failed.risks.map(\.why), ["locks"])
+        XCTAssertTrue(failed.outOfDate)
+    }
+
+    /// No overview at all: nothing to list (the section offers to run one).
+    func testChapterRiskListIsNilWithoutAnOverview() async throws {
+        let h = try harness()
+        h.cli.script(["overview": #"{"ok":false,"error":"database is locked"}"#])
+        await openDeep(h)
+        await awaitOverview(h)
+        XCTAssertNil(h.model.chapterRiskList("dir:pkg"))
     }
 }

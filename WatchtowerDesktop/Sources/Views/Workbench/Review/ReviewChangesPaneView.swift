@@ -152,7 +152,7 @@ struct ReviewChangesPaneView: View {
             if let pageError {
                 ReviewBanner(text: pageError, isError: true) { self.pageError = nil }
             }
-            if model.round?.outcome == "approved" {
+            if model.round?.outcome == ReviewOutcome.approved {
                 ReviewApprovedBanner(model: model, openWorkchat: identity.row == nil ? nil : identity.openWorkchat)
             }
             state
@@ -237,7 +237,8 @@ struct ReviewChangesPaneView: View {
                 ReviewCodePreview(
                     model: model, location: preview, root: codeRoot,
                     navigation: workbenches?.codeFiles.navigation, usages: workbenches?.codeFiles.usages,
-                    destination: destination
+                    destination: destination,
+                    onAsk: chat == nil ? nil : { ask($0) }
                 )
                 usagesList
                 if checklist { chaptersFoot }

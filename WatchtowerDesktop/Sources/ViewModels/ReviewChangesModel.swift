@@ -702,7 +702,7 @@ final class ReviewChangesModel {
             // Either way the round is closed now: sent by this call, or already before it.
             round?.status = "sent"
             if env.sent == true {
-                round?.outcome = "changes"
+                round?.outcome = ReviewOutcome.changes
                 if let line = env.line, !line.isEmpty {
                     lastSend = await lineDelivery.deliverLine(line, key: .review(info.id), sessionID: sessionID)
                 }
@@ -732,7 +732,7 @@ final class ReviewChangesModel {
             let env = try Self.checked(await cli.reviewApprove(projectID: projectID, roundID: info.id, resolveOpen: resolveOpen))
             if env.sent == true {
                 round?.status = "sent"
-                round?.outcome = "approved"
+                round?.outcome = ReviewOutcome.approved
                 approvedAt = Date()
                 lastSend = nil
                 if let line = env.line, !line.isEmpty {
@@ -999,9 +999,26 @@ final class ReviewChangesModel {
 
     /// The risks of a chapter's files, most serious first (overview order within a level).
     func chapterRisks(_ key: String) -> [ReviewOverview.Risk] {
+        chapterRisks(key, in: lastReadyOverview)
+    }
+
+    /// What the chapter's risk section shows (#961): the ready overview's
+    /// risks; on a failed refresh the last ready overview's and on an
+    /// overview of an earlier version that one's, both out of date. nil = no
+    /// overview to show (the section offers to run one).
+    func chapterRiskList(_ key: String) -> (risks: [ReviewOverview.Risk], outOfDate: Bool)? {
+        switch overview {
+        case .ready: (chapterRisks(key), false)
+        case let .outdated(earlier): (chapterRisks(key, in: earlier), true)
+        case .failed: lastReadyOverview.map { (chapterRisks(key, in: $0), true) }
+        case .idle, .loading, .onRequest: nil
+        }
+    }
+
+    private func chapterRisks(_ key: String, in overview: ReviewOverview?) -> [ReviewOverview.Risk] {
         guard let chapter = chapters.first(where: { $0.key == key }) else { return [] }
         let paths = Set(chapter.paths)
-        let mine = (lastReadyOverview?.risk ?? []).filter { paths.contains($0.path) }
+        let mine = (overview?.risk ?? []).filter { paths.contains($0.path) }
         return [ReviewOverview.Risk.Level.high, .medium, .low].flatMap { level in mine.filter { $0.level == level } }
     }
 

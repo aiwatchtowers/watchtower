@@ -46,14 +46,27 @@ struct ReviewAgentChatPanel: View {
     /// The panel is on screen: `focusOnOpen` was used.
     let onShown: () -> Void
 
+    /// What the panel shows: the Workchat with its composer, or one line.
+    enum Content: Equatable {
+        case workchat
+        case notRunning
+    }
+
+    static let notRunningText = "The session is not running"
+
+    static func content(_ chat: ReviewAgentChat) -> Content {
+        chat.workchat == nil ? .notRunning : .workchat
+    }
+
     var body: some View {
         Group {
-            if chat.workchat != nil {
+            switch Self.content(chat) {
+            case .workchat:
                 SessionChatView(vm: chat.vm, sessionID: chat.sessionID, projectID: chat.projectID,
                                 composerFocus: composerFocus, composerAutoFocus: focusOnOpen)
                     .id(chat.sessionID)
-            } else {
-                Text("The session is not running")
+            case .notRunning:
+                Text(Self.notRunningText)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

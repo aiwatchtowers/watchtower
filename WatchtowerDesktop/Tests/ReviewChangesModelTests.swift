@@ -1201,9 +1201,9 @@ final class ReviewChangesModelTests: XCTestCase {
 
     // MARK: - Overview, agent notes, undo, the agent's answers (Plan 3)
 
-    private func overviewJSON(chapters: String = #"[{"title":"Core","paths":["pkg/y.go"],"core":true,"lenses":["correctness"]}]"#,
-                              coverage: String = "[]",
-                              risk: String = #"[{"path":"pkg/y.go","level":"high","why":"locks"}]"#) -> String {
+    func overviewJSON(chapters: String = #"[{"title":"Core","paths":["pkg/y.go"],"core":true,"lenses":["correctness"]}]"#,
+                      coverage: String = "[]",
+                      risk: String = #"[{"path":"pkg/y.go","level":"high","why":"locks"}]"#) -> String {
         """
         {"ok":true,"overview":{"summary":"Adds y.","coverage":\(coverage),"out_of_scope":["cmd/x.go"],
          "risk":\(risk),"chapters":\(chapters)},"overview_cached":false}
@@ -1211,7 +1211,7 @@ final class ReviewChangesModelTests: XCTestCase {
     }
 
     /// Awaits the overview's load and any follow-up it started.
-    private func awaitOverview(_ h: ReviewModelHarness) async {
+    func awaitOverview(_ h: ReviewModelHarness) async {
         var last: Task<Void, Never>?
         while let task = h.model.overviewTask, task != last {
             last = task
@@ -1686,6 +1686,9 @@ final class ReviewChangesModelTests: XCTestCase {
         guard case .outdated(let earlier) = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
         XCTAssertEqual(earlier.summary, "Adds y.")
         XCTAssertNil(h.model.highestRisk(for: "pkg/y.go"))
+        let outdated = try XCTUnwrap(h.model.chapterRiskList("dir:pkg"), "an earlier version's risks still show")
+        XCTAssertEqual(outdated.risks.map(\.why), ["locks"])
+        XCTAssertTrue(outdated.outOfDate)
         XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
         XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true, false, true])
     }

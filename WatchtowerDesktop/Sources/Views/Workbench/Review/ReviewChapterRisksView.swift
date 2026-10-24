@@ -4,7 +4,9 @@ import WatchtowerCore
 /// What the AI overview flags in the current chapter (#961): one row per
 /// risk of the chapter's files — level, why, the file — with Comment… to turn
 /// it into a design comment and Ask agent to put it to the session's agent.
-/// Without an overview the section offers to run one.
+/// An overview that failed to refresh or is of an earlier version still shows
+/// its risks, marked out of date. Without an overview the section offers to
+/// run one. A long list scrolls.
 struct ReviewChapterRisksView: View {
     let model: ReviewChangesModel
     let onComment: (ReviewChangesPaneView.ComposeRequest) -> Void
@@ -12,17 +14,30 @@ struct ReviewChapterRisksView: View {
     /// Ask agent shows only where the caller wires it.
     var canAsk = false
 
+    /// The list's height before it scrolls, so the diff keeps the pane.
+    private static let maxListHeight: CGFloat = 160
+
     var body: some View {
         if let key = model.currentChapterKey {
-            let risks = model.chapterRisks(key)
             Divider()
             VStack(alignment: .leading, spacing: Spacing.small) {
                 Text("What to look at in this chapter").font(.caption.weight(.semibold))
-                if case .ready = model.overview {
-                    if risks.isEmpty {
-                        Text("The AI overview flags nothing in this chapter.").font(.caption).foregroundStyle(.secondary)
+                if let list = model.chapterRiskList(key) {
+                    if list.outOfDate {
+                        Text("Out of date — from an earlier AI overview of this branch.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
-                    ForEach(Array(risks.enumerated()), id: \.offset) { row($0.element) }
+                    if list.risks.isEmpty {
+                        Text("The AI overview flags nothing in this chapter.").font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: Spacing.small) {
+                                ForEach(Array(list.risks.enumerated()), id: \.offset) { row($0.element) }
+                            }
+                        }
+                        .frame(maxHeight: Self.maxListHeight)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
                 } else {
                     unavailable
                 }
@@ -50,11 +65,7 @@ struct ReviewChapterRisksView: View {
 
     private func row(_ risk: ReviewOverview.Risk) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: Spacing.regular) {
-            Text(Self.label(risk.level))
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(Self.color(risk.level))
-                .padding(.horizontal, Spacing.small)
-                .background(Self.color(risk.level).opacity(0.15), in: Capsule())
+            ReviewRiskBadge(level: risk.level, showsLow: true)
             VStack(alignment: .leading, spacing: Spacing.tight) {
                 Text(risk.why).font(.callout)
                 Button((risk.path as NSString).lastPathComponent) { Task { await model.select(risk.path) } }
@@ -75,22 +86,6 @@ struct ReviewChapterRisksView: View {
                     .buttonStyle(.borderless)
                     .help("Quote this risk in the agent's chat")
             }
-        }
-    }
-
-    private static func label(_ level: ReviewOverview.Risk.Level) -> String {
-        switch level {
-        case .high: "High"
-        case .medium: "Medium"
-        case .low: "Low"
-        }
-    }
-
-    private static func color(_ level: ReviewOverview.Risk.Level) -> Color {
-        switch level {
-        case .high: .red
-        case .medium: .orange
-        case .low: .secondary
         }
     }
 }

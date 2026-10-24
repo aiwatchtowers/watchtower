@@ -26,6 +26,19 @@ final class ReviewAskQuoteTests: XCTestCase {
         XCTAssertFalse(quote.contains("line 41"))
     }
 
+    /// The preview quotes the current file: no side mark, a selection ending
+    /// at column 1 of a later line stops on the line before, and an empty
+    /// selection quotes the cursor's line.
+    func testCurrentFileQuote() {
+        let text = "one\ntwo\nthree\nfour"
+        XCTAssertEqual(ReviewAskQuote.current(path: "a.go", text: text, startLine: 2, endLine: 3, endCol: 4),
+                       "Re `a.go:2–3`:\n```\ntwo\nthree\n```")
+        XCTAssertEqual(ReviewAskQuote.current(path: "a.go", text: text, startLine: 2, endLine: 4, endCol: 1),
+                       "Re `a.go:2–3`:\n```\ntwo\nthree\n```")
+        XCTAssertEqual(ReviewAskQuote.current(path: "a.go", text: text, startLine: 4, endLine: 4, endCol: 1),
+                       "Re `a.go:4`:\n```\nfour\n```")
+    }
+
     func testSingleLineUsesOneNumber() {
         let quote = ReviewAskQuote.code(path: "a/b.swift", side: "new", startLine: 31, endLine: 31, lines: ["x"])
         XCTAssertTrue(quote.hasPrefix("Re `a/b.swift:31`:\n"), quote)

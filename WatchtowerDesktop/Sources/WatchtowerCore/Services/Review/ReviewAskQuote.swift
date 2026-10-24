@@ -19,6 +19,17 @@ package enum ReviewAskQuote {
         return ([header, fence] + body + [fence]).joined(separator: "\n")
     }
 
+    /// The read-only preview's Ask (the code viewer page's "Ask AI" item and
+    /// ⌘I): the selected lines of a current file, which has no diff side, so
+    /// the quote is unmarked like the new side's. A selection ending at
+    /// column 1 of a later line does not take that line; an empty one quotes
+    /// the cursor's line.
+    package static func current(path: String, text: String, startLine: Int, endLine: Int, endCol: Int) -> String {
+        let last = endLine > startLine && endCol <= 1 ? endLine - 1 : endLine
+        return code(path: path, side: "new", startLine: startLine, endLine: last,
+                    lines: lines(of: text, startLine: startLine, endLine: last))
+    }
+
     /// A risk of the AI overview: the file and why, no code.
     package static func risk(path: String, level: String, why: String) -> String {
         "Re `\(path)` — the AI overview flags a \(level) risk: \(why)"

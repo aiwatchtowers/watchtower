@@ -62,8 +62,8 @@ enum ReviewApprovePresentation {
     /// A closed round's outcome in the toolbar; nil when Go's answer did not say.
     static func outcomeText(_ outcome: String?) -> String? {
         switch outcome {
-        case "approved": "Approved"
-        case "changes": "Changes requested"
+        case ReviewOutcome.approved: "Approved"
+        case ReviewOutcome.changes: "Changes requested"
         default: nil
         }
     }
