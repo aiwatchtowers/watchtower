@@ -68,7 +68,12 @@ final class ReviewChangesModel {
     /// path → the content key it was marked Viewed at.
     private(set) var viewed: [String: String] = [:]
     var selectedPath: String? {
-        didSet { if selectedPath != oldValue { fullFile = false } }
+        didSet {
+            guard selectedPath != oldValue else { return }
+            fullFile = false
+            // A line asked for in another file is not this one's.
+            if focusRequest?.path != selectedPath { focusRequest = nil }
+        }
     }
     /// The diff shows the whole file instead of the changes with unchanged
     /// runs folded (board #959); per file view, never persisted.
@@ -86,8 +91,12 @@ final class ReviewChangesModel {
     /// The preview's cursor, as its page last reported it.
     private var previewCursor: CodeNavLocation?
     /// A line the diff puts on screen once its file is shown (`wt.focus`).
+    /// One-shot: cleared once the diff sent it (`focusDelivered`), so a
+    /// rebuilt diff view never jumps there again.
     private(set) var focusRequest: FocusRequest?
     private var focusSerial = 0
+    /// The line last asked for, per file, for `currentLocation`.
+    private var focusedLine: (path: String, line: Int)?
     /// The file load a `showLocation` started (tests await it).
     @ObservationIgnored private(set) var navigationLoad: Task<Void, Never>?
     /// The last sides loaded, with the file, tree and view they belong to;
@@ -462,6 +471,12 @@ final class ReviewChangesModel {
         guard let path = selectedPath, line > 0 else { return }
         focusSerial += 1
         focusRequest = FocusRequest(path: path, line: line, serial: focusSerial)
+        focusedLine = (path, line)
+    }
+
+    /// The diff sent request `serial` to its page: it is not sent again.
+    func focusDelivered(_ serial: Int) {
+        if focusRequest?.serial == serial { focusRequest = nil }
     }
 
     /// "← Back to diff".
@@ -483,7 +498,7 @@ final class ReviewChangesModel {
         guard let pathMap else { return nil }
         if let preview { return previewCursor ?? preview }
         guard let selectedPath, let path = pathMap.toRoot(selectedPath) else { return nil }
-        let line = focusRequest.flatMap { $0.path == selectedPath ? $0.line : nil } ?? 1
+        let line = focusedLine.flatMap { $0.path == selectedPath ? $0.line : nil } ?? 1
         return CodeNavLocation(path: path, line: line, col: 1)
     }
 

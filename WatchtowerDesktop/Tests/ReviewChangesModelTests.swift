@@ -1920,4 +1920,27 @@ extension ReviewChangesModelTests {
         XCTAssertEqual(h.model.focusRequest?.line, 3)
         XCTAssertEqual(h.model.currentLocation, CodeNavLocation(path: "a.go", line: 3, col: 1))
     }
+
+    /// One-shot: a sent request, or one for a file left, is gone — a diff
+    /// view rebuilt later (another file and back, a refresh) sends nothing.
+    func testAFocusRequestIsNotKeptOnceSentOrLeft() async throws {
+        let h = try await navigationHarness()
+        h.model.focusLine(3)
+        let sent = try XCTUnwrap(h.model.focusRequest)
+        h.model.focusDelivered(sent.serial - 1)
+        XCTAssertEqual(h.model.focusRequest, sent, "an older serial's delivery clears nothing")
+        h.model.focusDelivered(sent.serial)
+        XCTAssertNil(h.model.focusRequest)
+        XCTAssertEqual(h.model.currentLocation, CodeNavLocation(path: "a.go", line: 3, col: 1), "the place is kept")
+
+        h.model.focusLine(4)
+        await h.model.select("apps/web/b.go")
+        XCTAssertNil(h.model.focusRequest, "an unsent request for a file left is dropped")
+        await h.model.select("apps/web/a.go")
+        XCTAssertNil(h.model.focusRequest, "coming back does not ask again")
+
+        XCTAssertTrue(h.model.showLocation(CodeNavLocation(path: "b.go", line: 6, col: 1)))
+        XCTAssertEqual(h.model.focusRequest?.path, "apps/web/b.go", "a jump's own request survives its file switch")
+        XCTAssertEqual(h.model.focusRequest?.line, 6)
+    }
 }

@@ -61,6 +61,8 @@ struct MonacoDiffView: NSViewRepresentable {
     var onUndo: (_ hunkID: String) -> Void = { _ in }
     /// The page reported an error (also logged).
     var onError: (String) -> Void = { _ in }
+    /// The focus request was sent to the page (the model clears it).
+    var onFocusSent: (Int) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(onComment: onComment, onUndo: onUndo, onError: onError)
@@ -83,6 +85,7 @@ struct MonacoDiffView: NSViewRepresentable {
         context.coordinator.onComment = onComment
         context.coordinator.onUndo = onUndo
         context.coordinator.onError = onError
+        context.coordinator.onFocusSent = onFocusSent
         context.coordinator.show(payload, focus: focus)
     }
 
@@ -92,6 +95,7 @@ struct MonacoDiffView: NSViewRepresentable {
         var onComment: (Int, Int, String) -> Void
         var onUndo: (String) -> Void
         var onError: (String) -> Void
+        var onFocusSent: (Int) -> Void = { _ in }
         private var ready = false
         /// What the page should show, and what it was last told.
         private var wanted: Payload?
@@ -122,6 +126,9 @@ struct MonacoDiffView: NSViewRepresentable {
             guard ready, let focus = wantedFocus, focus.serial != sentFocusSerial, told?.path == focus.path else { return }
             sentFocusSerial = focus.serial
             call("wt.focus", focus.line)
+            // Not during the view update that carried it.
+            let sent = onFocusSent
+            Task { @MainActor in sent(focus.serial) }
         }
 
         /// Sends `wanted` once the page is ready and when it changed; only

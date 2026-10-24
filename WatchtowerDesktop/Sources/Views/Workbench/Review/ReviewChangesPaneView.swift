@@ -248,7 +248,9 @@ struct ReviewChangesPaneView: View {
                     compose = lineComposeRequest(path: path, side: side, start: start, end: end)
                 } onUndo: { id in
                     Task { await model.undo(hunkID: id) }
-                } onError: { pageError = $0 }
+                } onError: {
+                    pageError = $0
+                } onFocusSent: { model.focusDelivered($0) }
             }
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
