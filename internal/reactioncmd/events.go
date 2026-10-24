@@ -86,6 +86,11 @@ func (p *Pipeline) publishReactionEvents(ctx context.Context, list *reactionList
 		p.logf("reaction-commands: account #%d: recorded %d pre-existing reaction(s) as seen for automation events", accountID, len(reactions))
 		return nil
 	}
+	// The seed's rows are on messages older than the stamp, which postedSince
+	// drops below, so they are dead weight: remove them (once per seed).
+	if _, err := p.db.PruneReactionEventsBefore(accountID, seededAt); err != nil {
+		p.logf("reaction-commands: account #%d: pruning old reaction events: %v", accountID, err)
+	}
 	label, _, err := p.db.SlackEventLabels(accountID)
 	if err != nil {
 		return err

@@ -2,6 +2,7 @@ package db
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -102,4 +103,48 @@ func TestResetReactionEventsSeeded_NoStampNoWrite(t *testing.T) {
 	require.Error(t, err, "query_only must refuse even a no-match UPDATE, or this test proves nothing")
 
 	require.NoError(t, d.ResetReactionEventsSeeded())
+}
+
+func TestPruneReactionEventsBefore_DropsOnlyOlderMessages(t *testing.T) {
+	d := openTestDB(t)
+	for _, r := range []OwnerReaction{
+		{AccountID: 1, ChannelID: "1:C1", MessageTS: "99.000100", Emoji: "eyes"},
+		{AccountID: 1, ChannelID: "1:C1", MessageTS: "not-a-ts", Emoji: "eyes"},
+		{AccountID: 1, ChannelID: "1:C1", MessageTS: "100.000100", Emoji: "eyes"},
+		{AccountID: 1, ChannelID: "1:C1", MessageTS: "101.000100", Emoji: "eyes"},
+		{AccountID: 2, ChannelID: "2:C1", MessageTS: "99.000100", Emoji: "eyes"},
+	} {
+		_, err := d.InsertReactionEvent(r)
+		require.NoError(t, err)
+	}
+
+	n, err := d.PruneReactionEventsBefore(1, time.Unix(100, 0))
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), n, "the older message and the unparseable ts go")
+
+	var left []string
+	rows, err := d.Query(`SELECT account_id || '/' || message_ts FROM reaction_events ORDER BY 1`)
+	require.NoError(t, err)
+	defer rows.Close()
+	for rows.Next() {
+		var s string
+		require.NoError(t, rows.Scan(&s))
+		left = append(left, s)
+	}
+	assert.Equal(t, []string{"1/100.000100", "1/101.000100", "2/99.000100"}, left,
+		"the seed second and later stay (postedSince keeps them); another account is untouched")
+}
+
+// TestPruneReactionEventsBefore_NothingToPruneNoWrite proves a poll with
+// nothing to prune takes no write lock: on a query_only handle any DELETE
+// fails, so the prune succeeds there only if it never issued one.
+func TestPruneReactionEventsBefore_NothingToPruneNoWrite(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.InsertReactionEvent(OwnerReaction{AccountID: 1, ChannelID: "1:C1", MessageTS: "101.000100", Emoji: "eyes"})
+	require.NoError(t, err)
+	require.NoError(t, d.SetReadOnly())
+
+	n, err := d.PruneReactionEventsBefore(1, time.Unix(100, 0))
+	require.NoError(t, err)
+	assert.Zero(t, n)
 }
