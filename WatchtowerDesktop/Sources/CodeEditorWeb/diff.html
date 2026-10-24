@@ -29,6 +29,18 @@
                                                the cursor and is centred
                                                (once the shown diff is
                                                computed, if it is not yet)
+    definitionAtCursor() → Bool                Go to Definition from the
+                                               app's menu: posts `definition`
+                                               for the word at the new side's
+                                               cursor; false = no word there
+    definitionDone(req)                        the definition request `req`
+                                               is settled: its busy underline
+                                               goes (an older req's reply
+                                               changes nothing)
+    usagesAtCursor() → Bool                    Show All Usages from the app's
+                                               menu: posts `usages` for the
+                                               word at the new side's cursor;
+                                               false = no word there
   page → Swift (webkit.messageHandlers.wt):
     ready
     comment {startLine, endLine, side}         the owner chose Comment
@@ -37,6 +49,18 @@
                                                or "new"
     undo    {hunkId}                           the owner pressed Undo on a
                                                hunk (Swift checks the id)
+    definition {req, id, word, line, col, x, y}  Cmd+click on a word of the
+                                               new side (or definitionAtCursor),
+                                               as the code viewer's page posts
+                                               it (board #960): id = the shown
+                                               file's `path`; x, y = the
+                                               word's bottom left in CSS px;
+                                               the word stays underlined
+                                               until definitionDone(req). The
+                                               old side posts none.
+    usages {id, word, line, col}               Show All Usages (the new side's
+                                               context menu, or usagesAtCursor)
+                                               for the word at the cursor
     error   {message}
 -->
 <html>
@@ -67,6 +91,8 @@
   .wt-hunk { box-sizing: border-box; padding: 1px 8px; text-align: right; }
   .wt-undo { font: 11px -apple-system, sans-serif; padding: 0 8px; cursor: pointer; }
   .wt-undo:disabled { cursor: default; opacity: 0.5; }
+  .wt-def-link { text-decoration: underline; cursor: pointer; }
+  .wt-def-busy { text-decoration: underline dotted; }
   #missing { display: none; font: 13px -apple-system, sans-serif; color: #888; padding: 16px; }
 </style>
 </head>

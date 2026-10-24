@@ -19,6 +19,9 @@ protocol CodeLocationDestination: AnyObject {
     func show(_ location: CodeNavLocation, root: CodeRoot) -> Bool
     /// Where the pane is, for the Back/Forward history; nil = not known.
     var currentLocation: CodeNavLocation? { get }
+    /// Shows the root's Usages list (`CodeUsagesCenter`) in the pane.
+    /// false = not taken: the Files pane's inspector shows it.
+    func showUsagesList() -> Bool
 }
 
 /// A registered destination, held weakly: the pane owns it.

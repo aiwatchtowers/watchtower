@@ -130,10 +130,37 @@ final class WorkbenchesViewModelNavigationTests: XCTestCase {
         XCTAssertEqual(destination.shown.last, CodeNavLocation(path: "b.go", line: 20, col: 1))
         XCTAssertEqual(vm.codeFiles.tabs(for: root).paths, [])
     }
+
+    /// The Navigate menu's Go to Definition and Show All Usages ask the key
+    /// destination's own page (a Branch review's), not the Files pane's.
+    func testTheMenuCommandsAskTheKeyDestinationsPage() async {
+        let vm = makeVM()
+        let codeIndex = CodeIndexCenter(resolveExecutable: { nil }, rulesFile: CodeIndexCenter.testRulesFile)
+        let silent: @MainActor () -> Void = {}
+        let navigation = CodeNavigationCenter(codeIndex: codeIndex, beep: silent)
+        let usages = CodeUsagesCenter(defaults: defaults, beep: silent)
+        navigation.workbenches = vm
+        usages.workbenches = vm
+        let files = FakeDestination(root: root, isKey: false)
+        navigation.registerPage(files, for: project.id)
+        usages.registerPage(files, for: project.id)
+        let review = FakeDestination(root: root, isKey: true)
+        vm.registerDestination(review, workbenchID: project.id)
+
+        await navigation.goToDefinitionAtCursor(root: root)
+        await usages.showUsagesAtCursor(root: root)
+        XCTAssertEqual(review.asked, ["definition", "usages"])
+        XCTAssertEqual(files.asked, [])
+
+        vm.unregisterDestination(review, workbenchID: project.id)
+        await navigation.goToDefinitionAtCursor(root: root)
+        XCTAssertEqual(files.asked, ["definition"], "no key destination: the Files pane's page")
+    }
 }
 
+/// A pane jumps land in; also a page the menu commands can ask.
 @MainActor
-private final class FakeDestination: CodeLocationDestination {
+private final class FakeDestination: CodeLocationDestination, CodeDefinitionPage, CodeUsagesPage {
     let root: CodeRoot?
     var isKeyDestination: Bool
     let accepts: Bool
@@ -152,5 +179,19 @@ private final class FakeDestination: CodeLocationDestination {
         shown.append(location)
         if accepts { current = location }
         return accepts
+    }
+
+    func showUsagesList() -> Bool { false }
+
+    private(set) var asked: [String] = []
+
+    func requestDefinitionAtCursor() async -> Bool {
+        asked.append("definition")
+        return true
+    }
+
+    func requestUsagesAtCursor() async -> Bool {
+        asked.append("usages")
+        return true
     }
 }

@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 import WebKit
 
 /// The Changes pane's read-only Monaco diff (board #328), served from the
@@ -55,6 +56,10 @@ struct MonacoDiffView: NSViewRepresentable {
     /// A line to put on screen once its file is shown (board #960); sent
     /// once per serial.
     var focus: ReviewChangesModel.FocusRequest?
+    /// Go to definition and Usages from the new side (board #960): the
+    /// pane's destination, through which the page's messages reach the
+    /// centres and the menu's commands reach the page; nil = none.
+    var navigation: ReviewNavigationDestination?
     /// The owner chose Comment on a selection: its lines and side ("old"/"new").
     var onComment: (_ startLine: Int, _ endLine: Int, _ side: String) -> Void
     /// The owner pressed Undo on a hunk of the shown file (its id was checked).
@@ -86,12 +91,16 @@ struct MonacoDiffView: NSViewRepresentable {
         context.coordinator.onUndo = onUndo
         context.coordinator.onError = onError
         context.coordinator.onFocusSent = onFocusSent
+        context.coordinator.navigation = navigation
+        // The preview may have held the menu's page: the diff is back.
+        if navigation?.page !== context.coordinator { navigation?.page = context.coordinator }
         context.coordinator.show(payload, focus: focus)
     }
 
     @MainActor
-    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, CodeDefinitionPage, CodeUsagesPage {
         weak var webView: WKWebView?
+        weak var navigation: ReviewNavigationDestination?
         var onComment: (Int, Int, String) -> Void
         var onUndo: (String) -> Void
         var onError: (String) -> Void
@@ -190,10 +199,73 @@ struct MonacoDiffView: NSViewRepresentable {
                     return
                 }
                 onUndo(id)
+            case "definition":
+                Task { await definitionRequested(body) }
+            case "usages":
+                usagesRequested(body)
             case "error":
                 report((body["message"] as? String) ?? "The diff view reported an error.")
             default:
                 break
+            }
+        }
+
+        // MARK: Code navigation (board #960)
+
+        /// ⌘-click or the menu's Go to Definition: the centre in the
+        /// session's root, then `definitionDone(req)` on every path.
+        func definitionRequested(_ body: [String: Any]) async {
+            guard let req = body["req"] as? Int else {
+                NSLog("ReviewDiff: a definition message without req was dropped")
+                return
+            }
+            defer { call("wt.definitionDone", req) }
+            guard let origin = origin(body), let word = body["word"] as? String,
+                  let navigation, let root = navigation.root, let definitions = navigation.definitions else { return }
+            let request = CodeDefinitionRequest(req: req, word: word, origin: origin)
+            await definitions.goToDefinition(request, root: root, anchor: menuAnchor(x: body["x"] as? Double, y: body["y"] as? Double))
+        }
+
+        /// Show All Usages: the list of the word in the session's root.
+        func usagesRequested(_ body: [String: Any]) {
+            guard origin(body) != nil, let word = body["word"] as? String,
+                  let navigation, let root = navigation.root, let usages = navigation.usages else {
+                NSLog("ReviewDiff: a usages message was dropped")
+                return
+            }
+            usages.showUsages(of: word, root: root)
+        }
+
+        /// The root-relative place a message names; nil for a file other
+        /// than the one shown or outside the workbench folder.
+        private func origin(_ body: [String: Any]) -> CodeNavLocation? {
+            guard let id = body["id"] as? String, let line = body["line"] as? Int, let col = body["col"] as? Int else { return nil }
+            return navigation?.model?.diffNavigationOrigin(path: id, line: line, col: col)
+        }
+
+        /// The page's point (CSS px from the top left) in the web view.
+        private func menuAnchor(x: Double?, y: Double?) -> DefinitionMenuAnchor? {
+            guard let webView, let x, let y else { return nil }
+            let flippedY = webView.isFlipped ? y : webView.bounds.height - y
+            return DefinitionMenuAnchor(view: webView, point: NSPoint(x: x, y: flippedY))
+        }
+
+        func requestDefinitionAtCursor() async -> Bool {
+            await ask("wt.definitionAtCursor()")
+        }
+
+        func requestUsagesAtCursor() async -> Bool {
+            await ask("wt.usagesAtCursor()")
+        }
+
+        /// A page call answering true or false; false when the page cannot be asked.
+        private func ask(_ script: String) async -> Bool {
+            guard ready, let webView else { return false }
+            do {
+                return try await webView.evaluateJavaScript(script) as? Bool ?? false
+            } catch {
+                NSLog("ReviewDiff: %@ failed: %@", script, error.localizedDescription)
+                return false
             }
         }
 

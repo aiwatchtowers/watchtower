@@ -121,8 +121,10 @@ final class CodeNavigationCenter {
 
     /// ⌃⌘J: the page posts `definition` for the word at its cursor; a beep
     /// when there is no editor or no word.
+    /// A key Branch review pane asks its own page (board #960).
     func goToDefinitionAtCursor(root: CodeRoot) async {
-        guard let page = pages[root.workbenchID]?.page, await page.requestDefinitionAtCursor() else {
+        let review = workbenches?.keyDestination(for: root) as? CodeDefinitionPage
+        guard let page = review ?? pages[root.workbenchID]?.page, await page.requestDefinitionAtCursor() else {
             beep()
             return
         }

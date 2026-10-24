@@ -180,8 +180,10 @@ struct ReviewChangesPaneView: View {
             VStack(spacing: 0) {
                 ReviewCodePreview(
                     model: model, location: preview, root: codeRoot,
-                    navigation: workbenches?.codeFiles.navigation, usages: workbenches?.codeFiles.usages
+                    navigation: workbenches?.codeFiles.navigation, usages: workbenches?.codeFiles.usages,
+                    destination: destination
                 )
+                usagesList
                 if checklist { chaptersFoot }
             }
         } else if let path = model.selectedPath {
@@ -192,6 +194,7 @@ struct ReviewChangesPaneView: View {
                 }
                 diff(path: path)
                 ReviewCommentListView(model: model, path: path)
+                usagesList
                 if checklist { chaptersFoot }
             }
         } else {
@@ -201,6 +204,23 @@ struct ReviewChangesPaneView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if checklist { chaptersFoot }
             }
+        }
+    }
+
+    /// The session root's Usages list, asked from the diff, the preview or
+    /// the menu while this pane was key (board #960); a row opens here.
+    @ViewBuilder private var usagesList: some View {
+        if model.showsUsages, let codeRoot, let usages = workbenches?.codeFiles.usages {
+            Divider()
+            HStack(alignment: .top, spacing: 0) {
+                UsagesView(usages: usages, root: codeRoot)
+                Button { model.closeUsages() } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Close Usages")
+                    .help("Close Usages")
+                    .padding(Spacing.small)
+            }
+            .frame(height: 200)
         }
     }
 
@@ -244,7 +264,10 @@ struct ReviewChangesPaneView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                MonacoDiffView(payload: payload(path: path, sides: sides), focus: model.focusRequest) { start, end, side in
+                MonacoDiffView(
+                    payload: payload(path: path, sides: sides), focus: model.focusRequest,
+                    navigation: codeRoot == nil ? nil : destination
+                ) { start, end, side in
                     compose = lineComposeRequest(path: path, side: side, start: start, end: end)
                 } onUndo: { id in
                     Task { await model.undo(hunkID: id) }
@@ -296,6 +319,8 @@ struct ReviewChangesPaneView: View {
         }
         destination.model = model
         destination.root = codeRoot
+        destination.definitions = workbenches?.codeFiles.navigation
+        destination.usages = workbenches?.codeFiles.usages
         if let codeRoot { workbenches?.registerDestination(destination, workbenchID: codeRoot.workbenchID) }
     }
 

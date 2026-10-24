@@ -27,6 +27,28 @@ final class CodeEditorPageProtocolTests: XCTestCase {
         )
     }
 
+    /// Go to definition and Usages from the diff's new side (board #960):
+    /// the editor page's messages and calls, documented and handled.
+    func testDiffNavigationIsDocumentedAndHandled() throws {
+        let header = try Self.headerComment(page: "diff.html")
+        for documented in [
+            "definitionAtCursor()", "definitionDone(req)", "usagesAtCursor()",
+            "definition {req, id, word, line, col, x, y}", "usages {id, word, line, col}"
+        ] {
+            XCTAssertTrue(header.contains(documented), "diff.html's header does not document \(documented)")
+        }
+        let script = try String(contentsOf: Self.web.appendingPathComponent("diff.js"), encoding: .utf8)
+        for call in ["definitionAtCursor", "definitionDone", "usagesAtCursor"] {
+            XCTAssertNotNil(
+                script.range(of: #"\#(call):\s*function"#, options: .regularExpression),
+                "diff.js's window.wt does not define \(call)"
+            )
+        }
+        for message in [#"type: "definition""#, #"type: "usages""#] {
+            XCTAssertTrue(script.contains(message), "diff.js never posts \(message)")
+        }
+    }
+
     /// textmate.js loads only grammars scripts/fetch-textmate.sh vendors,
     /// and every vendored grammar is one textmate.js names (board #738).
     func testTextMateGrammarsMatchTheFetchScript() throws {

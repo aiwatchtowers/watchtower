@@ -14,6 +14,9 @@ struct ReviewCodePreview: View {
     /// Go to definition and Usages for the page's messages; nil = none.
     let navigation: CodeNavigationCenter?
     let usages: CodeUsagesCenter?
+    /// The pane's destination: the menu's Go to Definition and Show All
+    /// Usages reach this page through it.
+    let destination: ReviewNavigationDestination?
 
     @State private var text: Result<String, CodeFileBuffer.ReadError>?
 
@@ -73,7 +76,7 @@ struct ReviewCodePreview: View {
                 reveal: ReviewCodePreviewPage.Reveal(
                     path: location.path, line: location.line, col: location.col, serial: model.previewSerial
                 ),
-                root: root, navigation: navigation, usages: usages
+                root: root, navigation: navigation, usages: usages, destination: destination
             ) { model.previewCursorMoved($0) }
         }
     }
@@ -103,6 +106,7 @@ struct ReviewCodePreviewPage: NSViewRepresentable {
     let root: CodeRoot
     let navigation: CodeNavigationCenter?
     let usages: CodeUsagesCenter?
+    let destination: ReviewNavigationDestination?
     let cursorMoved: (CodeNavLocation) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -126,6 +130,7 @@ struct ReviewCodePreviewPage: NSViewRepresentable {
         coordinator.navigation = navigation
         coordinator.usages = usages
         coordinator.cursorMoved = cursorMoved
+        if destination?.page !== coordinator { destination?.page = coordinator }
         coordinator.show(file, reveal: reveal)
     }
 
@@ -134,7 +139,7 @@ struct ReviewCodePreviewPage: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKScriptMessageHandler, WKNavigationDelegate, CodeDefinitionPage, CodeUsagesPage {
         weak var webView: WKWebView?
         var root: CodeRoot?
         weak var navigation: CodeNavigationCenter?
@@ -197,6 +202,25 @@ struct ReviewCodePreviewPage: NSViewRepresentable {
             default:
                 // text (never sent: read-only), selection, scroll, askAI: not here.
                 break
+            }
+        }
+
+        func requestDefinitionAtCursor() async -> Bool {
+            await ask("wt.definitionAtCursor()")
+        }
+
+        func requestUsagesAtCursor() async -> Bool {
+            await ask("wt.usagesAtCursor()")
+        }
+
+        /// A page call answering true or false; false when the page cannot be asked.
+        private func ask(_ script: String) async -> Bool {
+            guard ready, let webView else { return false }
+            do {
+                return try await webView.evaluateJavaScript(script) as? Bool ?? false
+            } catch {
+                NSLog("ReviewCodePreview: %@ failed: %@", script, error.localizedDescription)
+                return false
             }
         }
 

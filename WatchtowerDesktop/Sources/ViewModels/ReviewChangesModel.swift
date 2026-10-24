@@ -97,6 +97,10 @@ final class ReviewChangesModel {
     private var focusSerial = 0
     /// The line last asked for, per file, for `currentLocation`.
     private var focusedLine: (path: String, line: Int)?
+    /// The session's Usages list (`CodeUsagesCenter`) is shown under the
+    /// file area: asked from the diff, the preview or the menu while the
+    /// pane was key.
+    private(set) var showsUsages = false
     /// The file load a `showLocation` started (tests await it).
     @ObservationIgnored private(set) var navigationLoad: Task<Void, Never>?
     /// The last sides loaded, with the file, tree and view they belong to;
@@ -489,6 +493,23 @@ final class ReviewChangesModel {
     func previewCursorMoved(_ location: CodeNavLocation) {
         guard location.path == preview?.path else { return }
         previewCursor = location
+    }
+
+    /// The root-relative place a diff page message names (`definition`,
+    /// `usages`): the page posts from the new side of the file it shows,
+    /// by its round path. nil for another file than the selected one (a
+    /// stale message) or one outside the workbench folder (no navigation).
+    func diffNavigationOrigin(path: String, line: Int, col: Int) -> CodeNavLocation? {
+        guard path == selectedPath, let rootPath = pathMap?.toRoot(path) else { return nil }
+        return CodeNavLocation(path: rootPath, line: line, col: col)
+    }
+
+    func showUsages() {
+        showsUsages = true
+    }
+
+    func closeUsages() {
+        showsUsages = false
     }
 
     /// Where the review is, root-relative, for Back/Forward: the preview's
