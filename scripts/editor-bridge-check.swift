@@ -1481,8 +1481,10 @@ func diffFoldChecks(_ page: Page) async {
     }
     let folded = await settles(25, hidden: true)
     check("Changes: an unchanged run far from the change is folded", folded)
-    let shown = [await hidden(5), await hidden(6), await hidden(46), await hidden(89), await hidden(90)]
-    check("Changes: the lines of the comment, note and Undo zones are unfolded",
+    // Each zone's anchor line (the line it sits after) is unfolded: the
+    // comment's last line 5, the Undo zone's 46, the note's 89.
+    let shown = [await hidden(5), await hidden(46), await hidden(89)]
+    check("Changes: the anchor lines of the comment, note and Undo zones are unfolded",
           shown.allSatisfy { $0 == false }, "\(shown)")
     await page.call("wt.setComments", [["id": 9, "startLine": 30, "endLine": 30, "body": "mid", "status": "draft", "reply": ""] as [String: Any]])
     let comment30 = await hidden(30)

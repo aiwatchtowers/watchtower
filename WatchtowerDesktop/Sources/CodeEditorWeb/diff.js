@@ -40,7 +40,7 @@
     var hunkZones = [];
     var models = { original: null, modified: null };
     // The new-side lines each zone needs on screen, by kind ([[from, to]]).
-    var zoneRuns = { comments: [], notes: [], hunks: [] };
+    var zoneAnchors = { comments: [], notes: [], hunks: [] };
     // The cursor is the page's own (set by showDiff or by revealZones), not
     // one the owner placed: revealZones need not put it back.
     var cursorIsOurs = true;
@@ -75,8 +75,9 @@
     // editor unfolds the region holding a line the modified editor's cursor
     // is set to (any reason other than a model swap): that is the public
     // way taken here, so the Full-file fallback of the plan is not needed.
-    // Each line of a zone's run is revealed; the owner's own selection, if
-    // there is one, is put back afterwards.
+    // Only each zone's anchor line (the line it sits after) is revealed,
+    // one cursor move per zone; the owner's own selection, if there is one,
+    // is put back afterwards.
     function revealZones() {
       var mod = editor.getModifiedEditor();
       var model = mod.getModel();
@@ -84,17 +85,15 @@
       var last = model.getLineCount();
       var saved = cursorIsOurs ? null : mod.getSelections();
       ["comments", "notes", "hunks"].forEach(function (kind) {
-        zoneRuns[kind].forEach(function (run) {
-          for (var line = Math.max(1, run[0]); line <= Math.min(last, run[1]); line++) {
-            mod.setPosition({ lineNumber: line, column: 1 });
-          }
+        zoneAnchors[kind].forEach(function (line) {
+          mod.setPosition({ lineNumber: Math.min(last, Math.max(1, line)), column: 1 });
         });
       });
       if (saved) { mod.setSelections(saved); }
     }
     editor.getModifiedEditor().onDidChangeCursorSelection(function (e) {
-      // 3 = CursorChangeReason.Explicit: the owner's click or keys.
-      if (e.reason === 3) { cursorIsOurs = false; }
+      // The owner's click or keys.
+      if (e.reason === monaco.editor.CursorChangeReason.Explicit) { cursorIsOurs = false; }
     });
     // A focus(line) sent before the shown diff is computed waits for it:
     // the fold computed then would hide the line again.
@@ -115,8 +114,8 @@
 
     function renderComments(list) {
       var mod = editor.getModifiedEditor();
-      // The commented lines and the line under them, where the zone sits.
-      zoneRuns.comments = (list || []).map(function (c) { return [c.startLine, c.endLine + 1]; });
+      // The zone sits after the comment's last line.
+      zoneAnchors.comments = (list || []).map(function (c) { return c.endLine; });
       mod.changeViewZones(function (acc) {
         zones.forEach(function (z) { acc.removeZone(z); });
         zones = [];
@@ -143,7 +142,7 @@
     function renderNotes(list) {
       var mod = editor.getModifiedEditor();
       // The zone sits after startLine - 1, above the noted lines.
-      zoneRuns.notes = (list || []).map(function (n) { return [n.startLine - 1, n.endLine]; });
+      zoneAnchors.notes = (list || []).map(function (n) { return n.startLine - 1; });
       mod.changeViewZones(function (acc) {
         noteZones.forEach(function (z) { acc.removeZone(z); });
         noteZones = [];
@@ -169,7 +168,7 @@
     function renderHunks(list) {
       var mod = editor.getModifiedEditor();
       // A hunk's first line is a context line; its zone sits on the one above.
-      zoneRuns.hunks = (list || []).map(function (h) { return [h.newStart - 1, h.newStart]; });
+      zoneAnchors.hunks = (list || []).map(function (h) { return h.newStart - 1; });
       mod.changeViewZones(function (acc) {
         hunkZones.forEach(function (z) { acc.removeZone(z); });
         hunkZones = [];
