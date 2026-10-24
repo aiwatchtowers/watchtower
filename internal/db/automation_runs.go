@@ -1158,10 +1158,22 @@ func requireOpenStep(db *DB, res sql.Result, id int64) error {
 
 // ListAutomationRunSteps returns the run's steps in seq order (never nil).
 func (db *DB) ListAutomationRunSteps(runID int64) ([]AutomationRunStep, error) {
-	rows, err := db.Query(`SELECT id, run_id, seq, kind, name, args_json, result_summary, status, auto, permission,
+	return db.ListAutomationRunStepsLimit(runID, 0)
+}
+
+// ListAutomationRunStepsLimit is ListAutomationRunSteps cut in SQL to the
+// first limit steps; limit ≤ 0 returns all of them.
+func (db *DB) ListAutomationRunStepsLimit(runID int64, limit int) ([]AutomationRunStep, error) {
+	q := `SELECT id, run_id, seq, kind, name, args_json, result_summary, status, auto, permission,
 		action_id, ask_id, session_id, input_tokens, output_tokens, tokens_estimated, reported_cost_usd,
 		duration_ms, error, started_at, finished_at
-		FROM automation_run_steps WHERE run_id = ? ORDER BY seq`, runID)
+		FROM automation_run_steps WHERE run_id = ? ORDER BY seq`
+	args := []any{runID}
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing steps of automation run %d: %w", runID, err)
 	}
@@ -1286,11 +1298,17 @@ func (db *DB) ListAutomationOutputs(kind string, limit int) ([]AutomationOutput,
 	return out, nil
 }
 
-// ListAutomationOutputsForRun returns the outputs a run wrote, oldest first
-// (never nil).
-func (db *DB) ListAutomationOutputsForRun(runID int64) ([]AutomationOutput, error) {
-	rows, err := db.Query(`SELECT `+automationOutputCols+`
-		FROM automation_outputs WHERE run_id = ? ORDER BY id`, runID)
+// ListAutomationOutputsForRun returns the first limit outputs a run wrote,
+// oldest first (never nil); limit ≤ 0 returns all of them.
+func (db *DB) ListAutomationOutputsForRun(runID int64, limit int) ([]AutomationOutput, error) {
+	q := `SELECT ` + automationOutputCols + `
+		FROM automation_outputs WHERE run_id = ? ORDER BY id`
+	args := []any{runID}
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := db.Query(q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("listing outputs of automation run %d: %w", runID, err)
 	}

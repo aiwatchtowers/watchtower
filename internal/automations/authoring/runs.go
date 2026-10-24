@@ -19,7 +19,7 @@ const (
 	runsDefaultLimit = 10
 	runsMaxLimit     = 50
 	runTextCap       = 4000 // runes of a step result or an output body
-	runStepsCap      = 100
+	runStepsCap      = 100  // steps and outputs each
 )
 
 type listAutomationRunsArgs struct {
@@ -213,11 +213,12 @@ func getAutomationRun(database *db.DB, call tools.Call) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	steps, err := database.ListAutomationRunSteps(run.ID)
+	steps, err := database.ListAutomationRunStepsLimit(run.ID, runStepsCap+1)
 	if err != nil {
 		return nil, err
 	}
-	if len(steps) > runStepsCap {
+	stepsTruncated := len(steps) > runStepsCap
+	if stepsTruncated {
 		steps = steps[:runStepsCap]
 	}
 	stepOut := make([]map[string]any, len(steps))
@@ -229,9 +230,13 @@ func getAutomationRun(database *db.DB, call tools.Call) (any, error) {
 		}
 		stepOut[i] = m
 	}
-	outputs, err := database.ListAutomationOutputsForRun(run.ID)
+	outputs, err := database.ListAutomationOutputsForRun(run.ID, runStepsCap+1)
 	if err != nil {
 		return nil, err
+	}
+	outputsTruncated := len(outputs) > runStepsCap
+	if outputsTruncated {
+		outputs = outputs[:runStepsCap]
 	}
 	outOut := make([]map[string]any, len(outputs))
 	for i, o := range outputs {
@@ -242,5 +247,12 @@ func getAutomationRun(database *db.DB, call tools.Call) (any, error) {
 		}
 		outOut[i] = m
 	}
-	return map[string]any{"run": toRunJSON(*run), "steps": stepOut, "outputs": outOut}, nil
+	res := map[string]any{"run": toRunJSON(*run), "steps": stepOut, "outputs": outOut}
+	if stepsTruncated {
+		res["steps_truncated"] = true
+	}
+	if outputsTruncated {
+		res["outputs_truncated"] = true
+	}
+	return res, nil
 }

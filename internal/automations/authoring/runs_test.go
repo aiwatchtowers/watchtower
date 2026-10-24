@@ -137,3 +137,33 @@ func TestGetAutomationRun_UnknownRun(t *testing.T) {
 	_, err = callRunTool(t, NewGetAutomationRun(Deps{DB: d}), `{"run_id":`+strconv.FormatInt(run, 10)+`}`)
 	require.True(t, errors.As(err, &ve))
 }
+
+func TestGetAutomationRun_CapsStepsAndOutputs(t *testing.T) {
+	d := openRunsTestDB(t)
+	a := seedRunsAutomation(t, d, "personal", 0, "digest")
+	run := seedRun(t, d, a, "succeeded")
+	for i := 1; i <= 101; i++ {
+		_, err := d.Exec(`INSERT INTO automation_run_steps (run_id, seq, kind, name, result_summary, status, started_at)
+			VALUES (?, ?, 'tool', 't', 'r', 'ok', '2026-10-24T10:00:00Z')`, run, i)
+		require.NoError(t, err)
+		_, err = d.Exec(`INSERT INTO automation_outputs (automation_id, run_id, kind, title, body) VALUES (?, ?, 'inbox', 'T', 'b')`, a, run)
+		require.NoError(t, err)
+	}
+	out, err := callRunTool(t, NewGetAutomationRun(Deps{DB: d}), `{"run_id":`+strconv.FormatInt(run, 10)+`}`)
+	require.NoError(t, err)
+	assert.Len(t, out["steps"], 100)
+	assert.Len(t, out["outputs"], 100)
+	assert.Equal(t, true, out["steps_truncated"])
+	assert.Equal(t, true, out["outputs_truncated"])
+	assert.EqualValues(t, 1, out["steps"].([]any)[0].(map[string]any)["seq"])
+
+	// Exactly 100 is not truncated.
+	_, err = d.Exec(`DELETE FROM automation_run_steps WHERE seq = 101`)
+	require.NoError(t, err)
+	_, err = d.Exec(`DELETE FROM automation_outputs WHERE id = (SELECT MAX(id) FROM automation_outputs)`)
+	require.NoError(t, err)
+	out, err = callRunTool(t, NewGetAutomationRun(Deps{DB: d}), `{"run_id":`+strconv.FormatInt(run, 10)+`}`)
+	require.NoError(t, err)
+	assert.Nil(t, out["steps_truncated"])
+	assert.Nil(t, out["outputs_truncated"])
+}
