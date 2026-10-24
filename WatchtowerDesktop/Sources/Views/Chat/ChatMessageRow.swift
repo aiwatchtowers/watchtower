@@ -40,6 +40,8 @@ struct ChatMessageRow: View, Equatable {
     let isEditing: Bool
     let actions: ChatRowActions
     var artifactVersions: [String: Int] = [:]
+    /// Artifact keys of this chat pinned as knowledge (card badge).
+    var keptArtifactKeys: Set<String> = []
     /// The owner message that followed this reply — answers a question card.
     var questionAnswer: String?
     /// The owner bubble looks up its remember and knowledge marks: a persisted
@@ -50,7 +52,7 @@ struct ChatMessageRow: View, Equatable {
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.item == rhs.item && lhs.isLast == rhs.isLast && lhs.isEditing == rhs.isEditing
-            && lhs.artifactVersions == rhs.artifactVersions
+            && lhs.artifactVersions == rhs.artifactVersions && lhs.keptArtifactKeys == rhs.keptArtifactKeys
             // Retry comes and goes on an embedded chat's failed reply (it
             // hides while a turn runs or waits): its presence is data.
             && (lhs.actions.retry == nil) == (rhs.actions.retry == nil)
@@ -79,7 +81,7 @@ struct ChatMessageRow: View, Equatable {
             }
         } else if item.message.isAssistant {
             AssistantMessageBody(text: item.message.text, steps: item.stepDisplays, isRunning: false,
-                                 versions: artifactVersions, onOpenArtifact: actions.openArtifact,
+                                 versions: artifactVersions, keptKeys: keptArtifactKeys, onOpenArtifact: actions.openArtifact,
                                  onOpenSources: { actions.openSources(item.id, item.sources) },
                                  questionAnswer: questionAnswer, onAnswerQuestion: actions.answerQuestion)
             statusCard
@@ -227,6 +229,7 @@ struct AssistantMessageBody: View {
     let steps: [ChatStepDisplay]
     let isRunning: Bool
     var versions: [String: Int] = [:]
+    var keptKeys: Set<String> = []
     var onOpenArtifact: (String) -> Void = { _ in }
     var onOpenSources: () -> Void = {}
     /// A question card's answer (the next owner message) and its sender.
@@ -253,7 +256,7 @@ struct AssistantMessageBody: View {
                             MarkdownView(text: markdown)
                         case .artifact(let draft):
                             ArtifactCardView(draft: draft, isWriting: isRunning && !draft.isComplete,
-                                             version: versions[draft.key]) { onOpenArtifact(draft.key) }
+                                             version: versions[draft.key], inKnowledge: keptKeys.contains(draft.key)) { onOpenArtifact(draft.key) }
                         }
                     }
                 }

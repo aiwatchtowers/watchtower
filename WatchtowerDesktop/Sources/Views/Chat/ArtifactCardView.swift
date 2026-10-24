@@ -5,6 +5,8 @@ struct ArtifactCardView: View {
     let draft: ArtifactDraft
     let isWriting: Bool
     var version: Int?
+    /// This key is pinned as knowledge.
+    var inKnowledge = false
     var onOpen: () -> Void
 
     var body: some View {
@@ -22,6 +24,11 @@ struct ArtifactCardView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)
+                if inKnowledge && !isWriting {
+                    Label("In Knowledge", systemImage: "books.vertical")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 if isWriting {
                     ProgressView().controlSize(.small)
                 } else {
