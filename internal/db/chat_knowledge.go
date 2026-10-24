@@ -20,6 +20,20 @@ func KnowledgeVisibleIdeaCond(alias string) string {
 	return "NOT (" + p + "chat_born = 1 AND " + p + "status IN ('proposed','not_now','rejected','dropped'))"
 }
 
+// AgentVisibleMentionCond is the WHERE condition every agent-facing reader of
+// idea_mentions adds: a chat mention the assistant authored is never shown to
+// an agent or indexed — its quote is a model's words, and a model conclusion
+// must not read as knowledge (ask #516). The owner's own chat turns stay.
+// alias qualifies the columns like KnowledgeVisibleIdeaCond's; it is a
+// constant at every call site, never input.
+func AgentVisibleMentionCond(alias string) string {
+	p := ""
+	if alias != "" {
+		p = alias + "."
+	}
+	return "NOT (" + p + "source = 'chat' AND " + p + "author = 'assistant')"
+}
+
 // ChatTurnForIdeas is one chat message the ideas consolidator may mine.
 // CreatedAt is RFC 3339 UTC (chat_messages.created_at is REAL unix seconds).
 type ChatTurnForIdeas struct {

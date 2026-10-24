@@ -80,9 +80,9 @@ type consolidateInput struct {
 	memFloors *workspaceFloors
 }
 
-// chatTurnMeta is the author ("owner"/"assistant") and created_at of one
-// rendered chat turn.
-type chatTurnMeta struct{ author, saidAt string }
+// chatTurnMeta is the author ("owner"/"assistant"), created_at and rendered
+// text of one rendered chat turn.
+type chatTurnMeta struct{ author, saidAt, text string }
 
 // workspaceFloors is the four workspace floors (ideas_digest_floor,
 // ideas_stream_digest_floor, ideas_transcript_floor, ideas_chat_floor) as
@@ -427,14 +427,16 @@ func (in *consolidateInput) mentionSources(m mentionInput) []string {
 }
 
 // mentionRow is the idea_mentions row for one validated sighting. For a chat
-// ref the author and said_at come from the rendered turn itself ("owner" or
-// "assistant", its created_at) — the model's values are never trusted there,
-// since a chat line shows neither.
+// ref the author, said_at and quote come from the rendered turn itself
+// ("owner" or "assistant", its created_at, the turn text as rendered) — the
+// model's values are never trusted there: a chat line shows neither author
+// nor time, and a model-written quote must never become stored text that
+// reads as someone's words (ask #516).
 func (in *consolidateInput) mentionRow(src string, m mentionInput) db.IdeaMention {
 	row := db.IdeaMention{Source: src, Ref: m.Ref, Quote: m.Quote, Author: m.Author, SaidAt: m.SaidAt}
 	if src == "chat" {
 		turn := in.chatTurns[m.Ref]
-		row.Author, row.SaidAt = turn.author, turn.saidAt
+		row.Author, row.SaidAt, row.Quote = turn.author, turn.saidAt, turn.text
 	}
 	return row
 }
@@ -518,7 +520,7 @@ func (m *materialAssembler) addChatTurns(turns []db.ChatTurnForIdeas) {
 			if m.in.chatTurns == nil {
 				m.in.chatTurns = map[string]chatTurnMeta{}
 			}
-			m.in.chatTurns[ref] = chatTurnMeta{author: chatRole(t.Role), saidAt: t.CreatedAt}
+			m.in.chatTurns[ref] = chatTurnMeta{author: chatRole(t.Role), saidAt: t.CreatedAt, text: chatTurnText(t)}
 		}
 		m.in.maxChatID = t.ID
 	}
@@ -546,10 +548,6 @@ func skipChatTurn(t db.ChatTurnForIdeas) bool {
 // the role's rune cap — preceded, when header is set, by its conversation's
 // `[chat "<title>"]` line.
 func renderChatUnit(t db.ChatTurnForIdeas, header bool) string {
-	role, limit := chatRole(t.Role), chatOwnerRuneCap
-	if role == "assistant" {
-		limit = chatAssistantRuneCap
-	}
 	var b strings.Builder
 	if header {
 		title := t.ConversationTitle
@@ -558,9 +556,19 @@ func renderChatUnit(t db.ChatTurnForIdeas, header bool) string {
 		}
 		fmt.Fprintf(&b, "[chat %q]\n", title)
 	}
-	text := textutil.Truncate(strings.Join(strings.Fields(t.Text), " "), limit, "…")
-	fmt.Fprintf(&b, "%s: %s ref=chat:%d:%d\n", role, text, t.ConversationID, t.ID)
+	fmt.Fprintf(&b, "%s: %s ref=chat:%d:%d\n", chatRole(t.Role), chatTurnText(t), t.ConversationID, t.ID)
 	return b.String()
+}
+
+// chatTurnText is a chat turn's text as the material renders it: whitespace
+// collapsed and capped per speaker. It is also the stored quote of a chat
+// mention (mentionRow).
+func chatTurnText(t db.ChatTurnForIdeas) string {
+	limit := chatOwnerRuneCap
+	if chatRole(t.Role) == "assistant" {
+		limit = chatAssistantRuneCap
+	}
+	return textutil.Truncate(strings.Join(strings.Fields(t.Text), " "), limit, "…")
 }
 
 // chatRole names a chat turn's speaker as the material shows it.

@@ -439,7 +439,7 @@ type ideaMention struct {
 }
 
 func loadIdeaMentions(ctx context.Context, q Queryer, ideaID string) ([]ideaMention, error) {
-	rows, err := q.QueryContext(ctx, `SELECT id, author, quote FROM idea_mentions WHERE idea_id = ? ORDER BY said_at, id`, ideaID)
+	rows, err := q.QueryContext(ctx, `SELECT id, author, quote FROM idea_mentions WHERE idea_id = ? AND `+db.AgentVisibleMentionCond("")+` ORDER BY said_at, id`, ideaID)
 	if err != nil {
 		return nil, err
 	}

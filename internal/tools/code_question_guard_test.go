@@ -21,11 +21,15 @@ import (
 // an entry in chatTableReaders naming that test.
 func TestCodeQuestionGuard_NoGoToolReadsChatHistory(t *testing.T) {
 	seen := map[string]bool{}
+	scans := [][]string{guardedSingleFiles}
 	for _, dir := range []string{".", "../mcp", "../kb"} {
 		files := guardedGoFiles(t, dir)
 		if len(files) == 0 {
 			t.Fatalf("no Go files in %s: the guard would pass vacuously", dir)
 		}
+		scans = append(scans, files)
+	}
+	for _, files := range scans {
 		for _, file := range files {
 			src, err := os.ReadFile(file)
 			if err != nil {
@@ -51,6 +55,16 @@ func TestCodeQuestionGuard_NoGoToolReadsChatHistory(t *testing.T) {
 	}
 }
 
+// guardedSingleFiles are files scanned one by one outside the guarded
+// directories: model-facing readers that live in a package with many other,
+// non-model-facing chat-table readers (internal/db), which is not scanned
+// whole. A missing file fails the guard (os.ReadFile).
+var guardedSingleFiles = []string{
+	// The consolidator's chat material (db.ListChatTurnsForIdeas): what it
+	// returns becomes registry items an agent can see once approved.
+	filepath.Join("..", "db", "chat_knowledge.go"),
+}
+
 // chatTableReader is a reviewed Go reader of the chat tables: its source
 // filters `code_question` conversations out, and test (a func in
 // testFile) proves it behaviourally.
@@ -65,6 +79,11 @@ var chatTableReaders = map[string]chatTableReader{
 	filepath.Join("..", "kb", "source_chat_artifact.go"): {
 		testFile: filepath.Join("..", "kb", "source_chat_artifact_test.go"),
 		test:     "TestChatArtifactSource_SkipsCodeQuestionChats",
+	},
+	// The ideas consolidator's chat turns (chat knowledge, 2026-10-24).
+	filepath.Join("..", "db", "chat_knowledge.go"): {
+		testFile: filepath.Join("..", "db", "chat_knowledge_test.go"),
+		test:     "TestListChatTurnsForIdeas",
 	},
 }
 

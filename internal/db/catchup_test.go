@@ -359,3 +359,25 @@ func TestCatchupDecisions_SkipUnapprovedChatBorn(t *testing.T) {
 	require.Len(t, items, 1)
 	assert.Equal(t, "Approved chat", items[0].Title)
 }
+
+// TestCatchupDecisions_SkipAssistantChatMentions (ask #516): a chat mention
+// the assistant authored never supplies Catch-Up's quote; the owner's own
+// chat turn and other sources still do. A decision whose only in-window
+// mention is the assistant's leaves Catch-Up.
+func TestCatchupDecisions_SkipAssistantChatMentions(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.Exec(`INSERT INTO ideas (id, kind, title, essence, status) VALUES
+		(1, 'decision', 'Mixed', '', 'active'), (2, 'decision', 'Assistant only', '', 'active')`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO idea_mentions (idea_id, source, ref, quote, author, said_at) VALUES
+		(1, 'chat', 'chat:1:1', 'owner words', 'owner', '1970-01-01T00:20:00Z'),
+		(1, 'chat', 'chat:1:2', 'model conclusion', 'assistant', '1970-01-01T00:30:00Z'),
+		(2, 'chat', 'chat:1:3', 'model conclusion', 'assistant', '1970-01-01T00:25:00Z')`)
+	require.NoError(t, err)
+	items, err := d.ListCatchupDecisions(1000, 2000, 10)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "Mixed", items[0].Title)
+	assert.Contains(t, items[0].Meta, "owner words")
+	assert.NotContains(t, items[0].Meta, "model conclusion")
+}

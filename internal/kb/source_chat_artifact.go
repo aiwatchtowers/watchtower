@@ -104,6 +104,12 @@ func htmlToText(doc string) string {
 		}
 		name, _ := z.TagName()
 		switch string(name) {
+		case "body":
+			// Whatever hid text before <body> (a never-closed <head>) ends
+			// here, as it does in a browser.
+			if tt == html.StartTagToken {
+				skip = 0
+			}
 		case "script", "style", "head", "template":
 			if tt == html.StartTagToken {
 				skip++

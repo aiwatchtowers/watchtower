@@ -1,6 +1,6 @@
 # Ideas & Decisions
 
-Ideas collects proposals that were floated in Slack threads, meetings, AI chats, Jira and Linear comments and mail but never written down, so they don't get lost. You only triage what it finds, in the [Inbox](inbox.md) under its **Ideas** filter. Decisions are mined by the same pipeline but born settled: they are listed there too, never wait for a verdict, and also live in Digests → Decisions.
+Ideas collects proposals that were floated in Slack threads, meetings, AI chats, Jira and Linear comments and mail but never written down, so they don't get lost. You only triage what it finds, in the [Inbox](inbox.md) under its **Ideas** filter. Decisions are mined by the same pipeline but born settled: they are listed there too, never wait for a verdict (except those found only in your AI chats), and also live in Digests → Decisions.
 
 ## Why use it
 
@@ -46,7 +46,7 @@ On the **Ideas** filter, press **+** (**New Idea**), choose **Idea** or **Note**
 
 ### Save one from the chat
 
-Start a message to the assistant with **решили:** or **decided:** and it is saved as a decision. Start it with **факт:** or **fact:** and it is saved as a fact, a note in the registry. The rest of the message is the text. It is active at once, with no review, and the message shows **Saved as a decision** (or **Saved as a fact**) with **Undo** and **Open in Inbox**. **Undo** only works while the item is unchanged. It does not work in a code question chat.
+Start a message to the assistant with **решили:** or **decided:** and it is saved as a decision. Start it with **факт:** or **fact:** and it is saved as a fact, a note in the registry. The rest of the message is the text. It is active at once, with no review, and the message shows **Saved as a decision** (or **Saved as a fact**) with **Undo** and **Open in Inbox**. **Undo** only works while the item is unchanged. The prefixes do nothing in a code question chat (no mark appears).
 
 ### Mine an older period
 

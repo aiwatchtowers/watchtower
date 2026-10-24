@@ -14,5 +14,6 @@
   {"text": "facts: x", "ok": false, "kind": "", "body": ""},
   {"text": "", "ok": false, "kind": "", "body": ""},
   {"text": "DEC\u0130DED: x", "ok": true, "kind": "decision", "body": "x"},
-  {"text": "fact:\u0301x", "ok": true, "kind": "note", "body": "\u0301x"}
+  {"text": "fact:\u0301x", "ok": true, "kind": "note", "body": "\u0301x"},
+  {"text": "fact:\u00a0x", "ok": true, "kind": "note", "body": "x"}
 ]

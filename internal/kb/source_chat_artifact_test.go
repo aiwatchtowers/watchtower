@@ -129,3 +129,38 @@ func seedKeptChatArtifact(t *testing.T, d *db.DB) {
 	seedChatArtifact(t, d, 1, "document", "Rollout plan", "Чертёж выкладки на три этапа")
 	exec(t, d, `INSERT INTO chat_knowledge_artifacts (conversation_id, artifact_key, version, kept_at) VALUES (5, 'plan', 1, '2026-09-11T10:00:00Z')`)
 }
+
+// TestHTMLToText_MalformedPages: a page the browser would still show keeps its
+// visible text even when it is malformed; hidden parts (head, script, style,
+// comments) never become indexed text.
+func TestHTMLToText_MalformedPages(t *testing.T) {
+	cases := []struct {
+		name, page string
+		want       []string
+		notWant    []string
+	}{
+		{"unclosed head", `<html><head><title>T</title><style>.x{}</style><body><p>visible body</p>`,
+			[]string{"visible body"}, []string{".x{}"}},
+		{"unclosed head with nested close", `<head><script>var a</script><body>after head`,
+			[]string{"after head"}, []string{"var a"}},
+		{"unclosed script", `<p>before</p><script>var secret = 1`,
+			[]string{"before"}, []string{"secret"}},
+		{"comments", `<p>one<!-- hidden note -->two</p>`,
+			[]string{"onetwo"}, []string{"hidden note"}},
+		{"entities", `<p>Tom &amp; Jerry &lt;3 &eacute;t&eacute;</p>`,
+			[]string{"Tom & Jerry <3 été"}, nil},
+		{"self-closing script", `<script src="x.js"/><p>still shown</p>`,
+			[]string{"still shown"}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := htmlToText(c.page)
+			for _, w := range c.want {
+				assert.Contains(t, got, w)
+			}
+			for _, w := range c.notWant {
+				assert.NotContains(t, got, w)
+			}
+		})
+	}
+}

@@ -236,7 +236,7 @@ func (db *DB) ListIdeas(f IdeaFilter) ([]Idea, error) {
 	if f.Query != "" {
 		like := "%" + escapeLike(f.Query) + "%"
 		where = append(where, `(title LIKE ? ESCAPE '\' OR essence LIKE ? ESCAPE '\' OR EXISTS (
-			SELECT 1 FROM idea_mentions m WHERE m.idea_id = ideas.id AND m.quote LIKE ? ESCAPE '\'))`)
+			SELECT 1 FROM idea_mentions m WHERE m.idea_id = ideas.id AND m.quote LIKE ? ESCAPE '\' AND `+AgentVisibleMentionCond("m")+`))`)
 		args = append(args, like, like, like)
 	}
 
@@ -296,8 +296,18 @@ func (db *DB) GetKnowledgeVisibleIdea(id int64) (*Idea, error) {
 
 // ListIdeaMentions returns every mention of an idea, oldest first.
 func (db *DB) ListIdeaMentions(ideaID int64) ([]IdeaMention, error) {
+	return db.listIdeaMentions(ideaID, "")
+}
+
+// ListAgentVisibleIdeaMentions is ListIdeaMentions without the chat mentions
+// the assistant authored (AgentVisibleMentionCond) — what get_idea returns.
+func (db *DB) ListAgentVisibleIdeaMentions(ideaID int64) ([]IdeaMention, error) {
+	return db.listIdeaMentions(ideaID, " AND "+AgentVisibleMentionCond(""))
+}
+
+func (db *DB) listIdeaMentions(ideaID int64, cond string) ([]IdeaMention, error) {
 	rows, err := db.Query(`SELECT id, idea_id, source, ref, quote, author, said_at, created_at
-		FROM idea_mentions WHERE idea_id = ? ORDER BY said_at, id`, ideaID)
+		FROM idea_mentions WHERE idea_id = ?`+cond+` ORDER BY said_at, id`, ideaID)
 	if err != nil {
 		return nil, fmt.Errorf("listing idea mentions: %w", err)
 	}

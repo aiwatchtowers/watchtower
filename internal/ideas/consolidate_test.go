@@ -16,6 +16,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/kb"
 	"watchtower/internal/prompts"
 )
 
@@ -1332,9 +1333,9 @@ func TestConsolidate_IdeaContextConversationsNotMined(t *testing.T) {
 	assert.Equal(t, shown, floor)
 }
 
-// TestConsolidate_ChatMentionAuthorAndTimeFromTurn: a chat mention's author
-// and said_at are the rendered turn's own (role, created_at), never the
-// model's — on a new item and on an attach alike.
+// TestConsolidate_ChatMentionAuthorAndTimeFromTurn: a chat mention's author,
+// said_at and quote are the rendered turn's own (role, created_at, text),
+// never the model's — on a new item and on an attach alike.
 func TestConsolidate_ChatMentionAuthorAndTimeFromTurn(t *testing.T) {
 	d := newTestDB(t)
 	seedWorkspace(t, d)
@@ -1347,8 +1348,8 @@ func TestConsolidate_ChatMentionAuthorAndTimeFromTurn(t *testing.T) {
 
 	gen := &fakeGen{reply: func(string) (string, error) {
 		return fmt.Sprintf(`{"ops":[
-			{"op":"new_note","title":"N","essence":"e","mentions":[{"ref":%q,"author":"Bob","said_at":"1999-01-01T00:00:00Z"}]},
-			{"op":"attach_mention","idea_id":%d,"mention":{"ref":%q,"author":"Bob","said_at":"1999-01-01T00:00:00Z"}}
+			{"op":"new_note","title":"N","essence":"e","mentions":[{"ref":%q,"quote":"model words A","author":"Bob","said_at":"1999-01-01T00:00:00Z"}]},
+			{"op":"attach_mention","idea_id":%d,"mention":{"ref":%q,"quote":"model words B","author":"Bob","said_at":"1999-01-01T00:00:00Z"}}
 		]}`, chatRef(conv, owner), existing, chatRef(conv, reply)), nil
 	}}
 	p := New(d, testCfg(), gen, testLogger())
@@ -1362,10 +1363,53 @@ func TestConsolidate_ChatMentionAuthorAndTimeFromTurn(t *testing.T) {
 	require.Len(t, noteMentions, 1)
 	assert.Equal(t, "owner", noteMentions[0].Author)
 	assert.Equal(t, ownerAt.UTC().Format(time.RFC3339), noteMentions[0].SaidAt)
+	assert.Equal(t, "let's ship on Monday", noteMentions[0].Quote, "the quote is the turn's text, not the model's")
 
 	attached, err := d.ListIdeaMentions(existing)
 	require.NoError(t, err)
 	require.Len(t, attached, 1)
 	assert.Equal(t, "assistant", attached[0].Author)
 	assert.Equal(t, replyAt.UTC().Format(time.RFC3339), attached[0].SaidAt)
+	assert.Equal(t, "Monday it is.", attached[0].Quote, "the quote is the turn's text, not the model's")
+}
+
+// TestConsolidate_ChatAttachOnActiveItem_AssistantQuoteNotIndexed (ask #516):
+// a chat attach_mention onto an already active item lands without the owner's
+// press, so neither the model's quote nor the assistant turn's text may reach
+// the knowledge index. The owner's own turn attached the same way is his
+// verbatim words and is searchable.
+func TestConsolidate_ChatAttachOnActiveItem_AssistantQuoteNotIndexed(t *testing.T) {
+	ctx := context.Background()
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	existing := seedIdeaRow(t, d, db.Idea{Kind: "decision", Title: "Ship Monday", Status: "active"})
+	conv := seedChatConversation(t, d, "Rollout", "")
+	owner := seedChatTurn(t, d, conv, "user", "quasar launch window is fixed", quietAgo().Add(-time.Minute))
+	reply := seedChatTurn(t, d, conv, "assistant", "zeppelin conclusion from the model", quietAgo())
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return fmt.Sprintf(`{"ops":[
+			{"op":"attach_mention","idea_id":%d,"mention":{"ref":%q,"quote":"walrus invented quote"}},
+			{"op":"attach_mention","idea_id":%d,"mention":{"ref":%q,"quote":"walrus invented quote"}}
+		]}`, existing, chatRef(conv, reply), existing, chatRef(conv, owner)), nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	_, _, err := p.runConsolidate(ctx)
+	require.NoError(t, err)
+	mentions, err := d.ListIdeaMentions(existing)
+	require.NoError(t, err)
+	require.Len(t, mentions, 2, "both attaches are stored for the owner's card")
+
+	_, err = kb.Run(ctx, d, kb.Options{Sources: []string{"idea"}})
+	require.NoError(t, err)
+	doc, err := kb.GetDocument(ctx, d, fmt.Sprintf("idea:%d", existing), kb.DocOptions{})
+	require.NoError(t, err)
+	assert.NotContains(t, doc.Text, "zeppelin", "an assistant chat turn is never indexed")
+	assert.NotContains(t, doc.Text, "walrus", "a model-written quote is never stored")
+	assert.Contains(t, doc.Text, "owner: quasar launch window is fixed")
+	for _, q := range []string{"zeppelin", "walrus"} {
+		res, err := kb.Search(ctx, d, kb.Request{Queries: []string{q}})
+		require.NoError(t, err)
+		assert.Empty(t, res.Hits, q)
+	}
 }

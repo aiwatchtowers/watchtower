@@ -207,6 +207,27 @@ func TestIdea_BuildOrdersMentionsBySaidAt(t *testing.T) {
 	assert.Equal(t, "2026-09-11T11:00:00Z", next)
 }
 
+// KB inventory guard (ask #516): an idea document never carries a chat
+// mention the assistant authored; the owner's chat turn and other sources do.
+func TestKB_IdeaDocSkipsAssistantChatMentions(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	exec(t, d, `INSERT INTO ideas (id, kind, title, essence, status, last_mention_at, updated_at)
+		VALUES (9, 'decision', 'Ship Monday', 'ship on Monday', 'active', '2026-10-01T10:00:00Z', '2026-10-01T10:00:00Z')`)
+	exec(t, d, `INSERT INTO idea_mentions (id, idea_id, source, ref, quote, author, said_at) VALUES
+		(1, 9, 'chat', 'chat:1:1', 'owner words', 'owner', '2026-10-01T09:00:00Z'),
+		(2, 9, 'chat', 'chat:1:2', 'model conclusion', 'assistant', '2026-10-01T09:01:00Z'),
+		(3, 9, 'slack', 'C1|1', 'slack words', 'assistant', '2026-10-01T09:02:00Z')`)
+	doc, err := ideaSource{}.Build(ctx, d, "idea:9")
+	require.NoError(t, err)
+	require.NotNil(t, doc)
+	var texts []string
+	for _, s := range doc.Sections {
+		texts = append(texts, s.Text)
+	}
+	assert.Equal(t, []string{"ship on Monday", "owner: owner words", "assistant: slack words"}, texts)
+}
+
 // A transcript with empty text and no segments stays indexed by its title
 // (only a nil Build means "gone").
 func TestTranscript_EmptyTextStaysIndexedByTitle(t *testing.T) {
