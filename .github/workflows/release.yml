@@ -11,7 +11,7 @@ on:
 jobs:
   go-release-gate:
     name: Go Release Gate
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A hang must fail the gate, not run to GitHub's 6 h default. The step
     # budgets (code index 20 + coverage 25 = 45) plus ~10 for setup and
     # build, so the job cap never cuts a step short of its own timeout.
@@ -52,7 +52,7 @@ jobs:
   # -race), in parallel: the unsharded pass outgrew one 40-minute step.
   go-release-race:
     name: Go Release Race (${{ matrix.shard }}/3)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
