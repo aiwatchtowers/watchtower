@@ -132,6 +132,36 @@ final class ChatKnowledgeCenterTests: XCTestCase {
         XCTAssertEqual(try ideas().count, 1)
     }
 
+    private func engineSpec(contextType: String, conversationID: Int64) -> ChatSurfaceSpec {
+        ChatSurfaceSpec(
+            key: EmbeddedChatKey(contextType: contextType, contextID: "4", conversationID: conversationID),
+            persistence: .database(conversationID: conversationID), toolAccess: .draftOnly,
+            ownerInstructions: true, systemPrompt: { "" }, emptyHint: "")
+    }
+
+    /// A workbench code question never leaves its Questions tab (spec
+    /// 2026-10-02 §9.4): a knowledge prefix typed there saves nothing, while
+    /// another embedded chat (a target chat) still saves it.
+    func testCodeQuestionEngineSavesNoKnowledge() async throws {
+        let factory = EmbeddedChatEngineFactory()
+        factory.dbPool = pool
+        let center = try XCTUnwrap(factory.knowledgeCenter)
+
+        let question = factory.center.engine(for: engineSpec(contextType: CodeQuestionList.contextType, conversationID: 3))
+        question.onOwnerMessageStored?("decided: inline this helper", 3, 11)
+        question.onOwnerMessageStored?("decided:", 3, 12)
+        await center.waitForIdle()
+        XCTAssertNil(center.mark(for: 11))
+        XCTAssertNil(center.mark(for: 12), "not even the empty-body mark")
+        XCTAssertEqual(try ideas(), [])
+
+        let target = factory.center.engine(for: engineSpec(contextType: "target", conversationID: 5))
+        target.onOwnerMessageStored?("decided: ship on Thursdays", 5, 21)
+        await center.waitForIdle()
+        guard case .saved? = center.mark(for: 21) else { return XCTFail("the target chat saved nothing") }
+        XCTAssertEqual(try ideas().count, 1)
+    }
+
     // MARK: - The mark's line
 
     private func line(_ mark: ChatKnowledgeMark, kind: String = "decision") -> ChatKnowledgeMarkLine {
