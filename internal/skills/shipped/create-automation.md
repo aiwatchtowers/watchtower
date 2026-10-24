@@ -203,7 +203,7 @@ error ("the script API is synchronous"). Use `log(...)` for notes.
 | `llm(prompt, {input?, schema?, tier?})` | `llm:light` (default) or `llm:strong` | One model call; `input` is JSON-serialised after the prompt (prompt plus input at most 200 KiB). With `schema` (a JSON Schema object) it returns the parsed object, else a string |
 | `tool(name, args, {wait?})` | the permission for that tool | Read tools return data. A write returns `{status: "proposed", id}` (the owner approves) or `{status: "applied", ...}` when the owner turned auto on; with `{wait: true}` the run pauses until the owner answers |
 | `state.get(key)`, `state.set(key, value)`, `state.all()` | none | Per-automation JSON (at most 64 KiB). Sets are committed only when the run succeeds, so a failed run re-reads the same window |
-| `output.inbox({title, body, priority?, link?, actions?})` | `outputs: [inbox]` (a Reply action also needs `inbox:reply`) | An Inbox item; `link` is its source, `actions` are its buttons (see "Buttons on an Inbox card") |
+| `output.inbox({title, body, priority?, link?, actions?})` | `outputs: [inbox]` (a Reply action also needs `inbox:reply`) | An Inbox item; `priority` is `"high"`, `"medium"` or `"low"` (anything else fails the run); `link` is its source, `actions` are its buttons (see "Buttons on an Inbox card") |
 | `output.report({title, body})` | `outputs: [report]` | A report on the card |
 | `output.briefing({title, body})` | `outputs: [briefing]` | A section for the next daily briefing |
 | `output.target({...create_target args})` | `outputs: [target]` | Proposes a target |
