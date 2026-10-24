@@ -64,6 +64,24 @@ package final class BuiltinAutomationCardModel {
         self.cli = cli
     }
 
+    /// The recipe description under the header: the last `show`'s, else the row's.
+    package var lede: String {
+        if let text = shown?.description.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty { return text }
+        let recipe = [shown?.recipeText, automation.recipeText, detail?.shippedText]
+            .compactMap { $0 }.first { !$0.isEmpty } ?? ""
+        return Self.description(inRecipe: recipe)
+    }
+
+    /// The text between the frontmatter and the ```js fence.
+    package static func description(inRecipe text: String) -> String {
+        var body = Substring(text)
+        if body.hasPrefix("---"), let close = body.range(of: "\n---", range: body.index(body.startIndex, offsetBy: 3)..<body.endIndex) {
+            body = body[close.upperBound...].drop { $0 != "\n" }
+        }
+        if let fence = body.range(of: "```") { body = body[..<fence.lowerBound] }
+        return body.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     package var cardState: CardState {
         if let copyError = detail?.copyError, !copyError.isEmpty { return .copyError(copyError) }
         guard detail?.overridden ?? automation.overridden else { return .shipped }

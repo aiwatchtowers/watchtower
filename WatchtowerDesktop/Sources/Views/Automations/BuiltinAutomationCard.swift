@@ -12,6 +12,8 @@ struct BuiltinCardActions {
     var setEnabled: (_ featureIDs: [String], _ on: Bool) async -> String? = { _, _ in nil }
     /// The When fields' **Save**: config keys → text, then one daemon restart.
     var saveParameters: (_ values: [String: String]) async -> String? = { _ in nil }
+    /// The Result box's **Show in Inbox**: the Inbox on that filter. Nil hides the link.
+    var openInbox: ((InboxFilter) -> Void)?
 }
 
 /// A built-in automation's card (spec §5, C2 Task 10): the name with
@@ -20,7 +22,7 @@ struct BuiltinCardActions {
 /// row); the "Built-in version updated" banner with **Show changes** and
 /// **Reset to built-in**; the unconfirmed-copy line; then **When** (its
 /// fields edited in place, saved outside the recipe and its hash),
-/// **Reads**, **Sends** and **Costs**. No Delete: a built-in is turned off.
+/// **Reads** / **Does** / **Result** (with **Show in Inbox**) and **Costs**. No Delete: a built-in is turned off.
 struct BuiltinAutomationCard: View {
     let model: BuiltinAutomationCardModel
     /// The feature manager is applying a change (here or in Settings).
@@ -56,6 +58,7 @@ struct BuiltinAutomationCard: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Spacing.page) {
                 header
+                lede
                 notes
                 if model.resetConfirming { resetConfirmRow }
                 if model.updateBanner { updateBanner }
@@ -83,6 +86,16 @@ struct BuiltinAutomationCard: View {
             }
             Spacer(minLength: Spacing.medium)
             buttonRow
+        }
+    }
+
+    @ViewBuilder private var lede: some View {
+        if !model.lede.isEmpty {
+            Text(model.lede)
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
         }
     }
 
@@ -209,6 +222,23 @@ struct BuiltinAutomationCard: View {
 
     private func sections(_ detail: BuiltinAutomationDetail) -> some View {
         VStack(alignment: .leading, spacing: Spacing.medium) {
+            HStack(alignment: .top, spacing: Spacing.medium) {
+                box(title: "Reads", systemImage: "doc.text.magnifyingglass") {
+                    lines(detail.reads)
+                }
+                box(title: "Does", systemImage: "gearshape") {
+                    lines(detail.does)
+                }
+                box(title: "Result", systemImage: "tray.and.arrow.down") {
+                    lines(detail.sends)
+                    if let filter = detail.resultFilter, let openInbox = actions.openInbox {
+                        Button("Show in Inbox") { openInbox(filter) }
+                            .buttonStyle(.kitQuiet)
+                            .controlSize(.small)
+                    }
+                }
+            }
+            .fixedSize(horizontal: false, vertical: true)
             box(title: "When", systemImage: "clock") {
                 Text(detail.when).fontWeight(.semibold)
                 parameterFields(detail.parameters.filter { $0.kind != .dictionary })
@@ -222,15 +252,6 @@ struct BuiltinAutomationCard: View {
                     .help("An automation of your own that runs when you react with an emoji")
                 }
             }
-            HStack(alignment: .top, spacing: Spacing.medium) {
-                box(title: "Reads", systemImage: "doc.text.magnifyingglass") {
-                    lines(detail.reads)
-                }
-                box(title: "Sends", systemImage: "paperplane") {
-                    lines(detail.sends)
-                }
-            }
-            .fixedSize(horizontal: false, vertical: true)
             box(title: "Costs", systemImage: "dollarsign.circle") {
                 Text(model.costsLine)
             }
