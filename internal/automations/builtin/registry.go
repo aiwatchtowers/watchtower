@@ -177,7 +177,7 @@ var registry = []Entry{
 		Does: []string{
 			"Finds the emoji you placed in your reactions list",
 			"Reads the message and its thread",
-			"Does what that emoji stands for, for example a reminder, an idea or a ticket",
+			"Prepares what that emoji stands for, for example a reminder, an idea or a ticket",
 		},
 		Sends:        []string{"A proposal in your Inbox, under Automations; ideas, reminders and brief notes are saved at once"},
 		ResultFilter: "automations",
