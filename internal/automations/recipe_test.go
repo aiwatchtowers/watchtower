@@ -798,15 +798,24 @@ func TestApprovalHash_IgnoresSummary(t *testing.T) {
 }
 
 func TestFallbackSummary(t *testing.T) {
-	if got := FallbackSummary("Every morning, writes your brief. Then plans."); got != "Every morning, writes your brief." {
-		t.Errorf("got %q", got)
-	}
 	long := strings.TrimSpace(strings.Repeat("abcdefghi ", 10))
-	got := FallbackSummary(long + ". Next.")
-	if n := len([]rune(got)); n > 61 || !strings.HasSuffix(got, "…") || strings.Contains(got, " …") {
-		t.Errorf("got %q (%d runes)", got, n)
+	word60 := strings.Repeat("abcdefghi ", 5) + "abcdefghij" // 60 runes, then a space
+	cyr := strings.TrimSpace(strings.Repeat("привет мир ", 6))
+	cases := []struct{ name, in, want string }{
+		{"two sentences", "Every morning, writes your brief. Then plans.", "Every morning, writes your brief."},
+		{"empty", "", ""},
+		{"newline wrapped", "Writes the brief.\nThen plans.", "Writes the brief."},
+		{"wrapped no period", "Writes the\nbrief\n\n and plans", "Writes the brief and plans"},
+		{"short no separator", "Writes the brief.", "Writes the brief."},
+		{"short no period", "Writes the brief", "Writes the brief"},
+		{"long cut at space", long + ". Next.", strings.Repeat("abcdefghi ", 5) + "abcdefghi…"},
+		{"60 ends on a word", word60 + " tail words here", word60 + "…"},
+		{"cyrillic", cyr, "привет мир привет мир привет мир привет мир привет мир…"},
+		{"no space in 60", strings.Repeat("x", 100), strings.Repeat("x", 60) + "…"},
 	}
-	if got := FallbackSummary(""); got != "" {
-		t.Errorf("got %q", got)
+	for _, c := range cases {
+		if got := FallbackSummary(c.in); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
 	}
 }
