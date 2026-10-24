@@ -189,6 +189,23 @@ Measurement in §5 showed the remaining scroll cost lives inside SwiftUI and App
 - **Height.** The text view reports its height for the width it is given (`sizeThatFits`), so `LazyVStack` rows measure correctly and do not jump when they scroll back in.
 - **Acceptance.** On the 100-message benchmark (`ChatScrollBenchmarkTests`, `WT_BENCH=1`), the selectable-text share of a scroll step drops clearly below today's 11–20 %. The p90 scroll step is recorded before and after in the PR. Then the owner checks by scrolling a long editor chat.
 
+### 5c. Tables as one native view (owner, ask #541)
+
+After §5b, most of the remaining scroll cost is selectable table cells. Each cell is its own selectable SwiftUI `Text`, and the benchmark answer has 28 of them. The owner chose to draw a finished answer's table as **one** native, selectable, non-editable text view. A streaming answer keeps today's table.
+
+- **Look:** the same as today: header row weight, column alignment, cell padding, grid lines or row separators, light and dark. The builder compares before and after screenshots.
+- **Selection:**
+  - selection works inside a cell and across cells and rows;
+  - ⌘C copies plain text, with tab-separated cells and one line per row;
+  - "Ask about this" works on a table selection as it does on a run.
+- **Links in cells:** they go through the same gate as runs (`AllowedURLSchemes`, `openNavLink`, gated Open Link in the menu).
+- **Width:**
+  - a table that fits the column has no scroll view;
+  - a wider table keeps one horizontal scroll view around the single text view;
+  - the height comes from `sizeThatFits` without probe-width side effects, the same rule as runs.
+- **VoiceOver:** reads the table, rows and cells in order.
+- **Acceptance:** on the benchmark, with the per-step run-loop pass timed, the ChatFeedView p90 approaches the non-selectable-cells experiment (about 20 ms). The streamed-delta guard still passes. The before/after numbers are recorded.
+
 ### 6. Editor draft column toggle (G8)
 
 A toolbar-style icon button sits at the right end of the editor header:

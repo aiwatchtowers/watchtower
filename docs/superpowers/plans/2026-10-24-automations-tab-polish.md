@@ -372,6 +372,28 @@ T12 (docs) runs last. Lanes run in their own worktrees and the controller merges
 - [ ] **Step 5: Run** the tests, plus `make test-swift FILTER='ChatFeed|ChatMessageRow|Markdown|ChatQuestion|AllowedURLSchemes|EmbeddedChat|ChatThread|ChatSelection'`, `make lint-swift`, the benchmark and the after screenshots. Expected: PASS. The selectable-text share drops clearly, and the before/after numbers and screenshots go in the report.
 - [ ] **Step 6: Commit** `perf(chat): finished answers draw prose with one native text view per run`.
 
+### Task 14: Finished tables as one native text view (owner, ask #541)
+
+**Depends on:** Task 13 (merged: `MarkdownTextRun`, `NativeMarkdownView`, `MarkdownSegmentsView`, the gated link Coordinator, the run sizing rules, `ChatScrollBenchmarkTests` with the timed run-loop pass).
+
+**Files:**
+- Create: `WatchtowerDesktop/Sources/Views/Chat/MarkdownTableText.swift`, which draws a table block as one read-only, selectable `NSTextView`. It uses `NSTextTable`/`NSTextTableBlock` (TextKit 1 is allowed for this view if TextKit 2 cannot draw table blocks; say which and why). It reuses the run view's link Coordinator, sizing and menu rules.
+- Modify: `MarkdownSegmentsView` (a finished answer's `.block(.table)` uses the new view) and `ChatSelectionQuote.swift` (a table selection quotes).
+- Test: `MarkdownTableTextTests`. It covers:
+  - copy as TSV;
+  - selection across cells;
+  - the link gate in a cell;
+  - a fitting table has no scroll view and a wide one has one;
+  - the probe-width rule;
+  - height parity with today's table at 760 and 320 pt.
+
+- [ ] **Step 1:** Capture the before benchmark (timed run-loop pass) and light/dark screenshots of a table answer.
+- [ ] **Step 2: Write the failing tests** listed above.
+- [ ] **Step 3: Run** `make test-swift FILTER='MarkdownTableTextTests'`. Expected: FAIL.
+- [ ] **Step 4: Implement.**
+- [ ] **Step 5: Run** the tests, plus `make test-swift FILTER='TextRenderingBenchmarkTests|MarkdownTextRunTests|MarkdownRunBuilderTests|Markdown|ChatSelection|ChatFeed|ChatMessageRow'` (the streamed-delta guard 3×), `make lint-swift`, the benchmark and the after screenshots. Expected: PASS, with the numbers in the report.
+- [ ] **Step 6: Commit** `perf(chat): a finished answer's table is one native text view`.
+
 ### Task 12: Docs, inventory note, guide
 
 **Files:**
