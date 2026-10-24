@@ -76,6 +76,9 @@ enum DesignShotCatalog {
             DesignShot(name: "automation-list", size: NSSize(width: 1280, height: 760)) {
                 AutomationShotFixtures.list()
             },
+            DesignShot(name: "automation-list-collapsed", size: NSSize(width: 1280, height: 760)) {
+                AutomationShotFixtures.list(collapsed: true)
+            },
             DesignShot(name: "automation-card", size: NSSize(width: 900, height: 720)) {
                 AnyView(AutomationShotFixtures.card().detailBackground())
             },
