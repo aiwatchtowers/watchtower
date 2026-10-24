@@ -156,4 +156,23 @@ final class AllowedURLSchemesTests: XCTestCase {
                                                 children: [.text("Calendar")])]
         XCTAssertNil(MarkdownView.inlineText(calendar).runs.first { $0.link != nil })
     }
+
+    /// `inlineText` is memoised; the strip still applies on every hit, and
+    /// the link context (screens, code links) is part of the memo key.
+    func testDisallowedLinksStillStrippedFromMemo() throws {
+        let unique = UUID().uuidString
+        let inlines: [MarkdownInline] = [
+            .link(destination: "smb://example.com/\(unique)", children: [.text("share")]),
+            .link(destination: "https://example.com/\(unique)", children: [.text("web")]),
+            .link(destination: NavLink.url("calendar").absoluteString, children: [.text("Calendar")]),
+            .link(destination: CodeLineLinks.url(path: "\(unique).swift", line: 1, col: nil), children: [.text("code")])
+        ]
+        func links(_ text: AttributedString) -> [String] { text.runs.compactMap { $0.link?.scheme } }
+        for _ in 0..<2 {
+            XCTAssertEqual(links(MarkdownView.inlineText(inlines)), ["https"])
+            XCTAssertEqual(links(MarkdownView.inlineText(inlines, navScreens: ["calendar"])), ["https", NavLink.scheme])
+            XCTAssertEqual(links(MarkdownView.inlineText(inlines, codeLinks: true)), ["https", CodeLineLinks.scheme])
+        }
+        XCTAssertEqual(String(MarkdownView.inlineText(inlines).characters), "sharewebCalendarcode")
+    }
 }

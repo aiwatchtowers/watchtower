@@ -33,12 +33,23 @@ struct MarkdownView: View {
     /// links, which only the code question popover opens (render-only:
     /// `AllowedURLSchemes.permits` never allows them); `navScreens` keeps
     /// the screen links (`watchtower-nav`) to those screens only.
+    /// Memoised per inline run and link context (`MarkdownInlineRenderer
+    /// .memoized`): the stripped text is what the memo holds, so a hit is
+    /// as gated as a fresh build.
     static func inlineText(
         _ inlines: [MarkdownInline], codeLinks: Bool = false, navScreens: Set<String> = []
     ) -> AttributedString {
-        AllowedURLSchemes.strippingDisallowedLinks(MarkdownInlineRenderer.attributed(inlines),
-                                                   renderOnly: codeLinks ? [CodeLineLinks.scheme] : [],
-                                                   navScreens: navScreens)
+        MarkdownInlineRenderer.memoized(inlines, context: InlineLinkContext(codeLinks: codeLinks, navScreens: navScreens)) {
+            AllowedURLSchemes.strippingDisallowedLinks(MarkdownInlineRenderer.attributed($0),
+                                                       renderOnly: codeLinks ? [CodeLineLinks.scheme] : [],
+                                                       navScreens: navScreens)
+        }
+    }
+
+    /// Everything besides the inlines that `inlineText`'s result depends on.
+    private struct InlineLinkContext: Hashable, Sendable {
+        let codeLinks: Bool
+        let navScreens: Set<String>
     }
 
     /// One line of markdown as a label (a button's, an ask's focus place):

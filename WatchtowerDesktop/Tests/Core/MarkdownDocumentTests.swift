@@ -124,4 +124,28 @@ final class MarkdownDocumentTests: XCTestCase {
         XCTAssertEqual(MarkdownDocument.parse("a\nb"), [.paragraph([.text("a"), .softBreak, .text("b")])],
                        "the agent's text keeps markdown's soft break")
     }
+
+    /// A finished row's inline text is built once: a repeat (a body pass,
+    /// a LazyVStack row scrolling back in) is a memo hit with the same
+    /// output as an unmemoised build; another context or text builds again.
+    func testInlineAttributedMemoHitsAndMatches() {
+        let inlines: [MarkdownInline] = [.text("memo \(UUID().uuidString) "), .strong([.text("b")]),
+                                         .link(destination: "https://example.com", children: [.code("c")])]
+        var builds = 0
+        func render(_ context: String, _ value: [MarkdownInline]) -> AttributedString {
+            MarkdownInlineRenderer.memoized(value, context: context) {
+                builds += 1
+                return MarkdownInlineRenderer.attributed($0)
+            }
+        }
+        let first = render("a", inlines)
+        let second = render("a", inlines)
+        XCTAssertEqual(builds, 1, "the repeat is a memo hit")
+        XCTAssertEqual(first, MarkdownInlineRenderer.attributed(inlines))
+        XCTAssertEqual(second, first)
+        _ = render("b", inlines)
+        XCTAssertEqual(builds, 2, "the context is part of the key")
+        _ = render("a", inlines + [.text("!")])
+        XCTAssertEqual(builds, 3, "the whole inline run is part of the key")
+    }
 }

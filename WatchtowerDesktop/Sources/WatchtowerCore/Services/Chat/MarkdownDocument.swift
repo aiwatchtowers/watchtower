@@ -49,7 +49,7 @@ package indirect enum MarkdownBlock: Equatable, Sendable {
     case rule
 }
 
-package indirect enum MarkdownInline: Equatable, Sendable {
+package indirect enum MarkdownInline: Hashable, Sendable {
     case text(String)
     case emphasis([Self])
     case strong([Self])
@@ -187,6 +187,61 @@ package enum MarkdownDocument {
 package enum MarkdownInlineRenderer {
     package static func attributed(_ inlines: [MarkdownInline]) -> AttributedString {
         inlines.reduce(into: AttributedString()) { $0 += render($1, intent: [], link: nil) }
+    }
+
+    private final class Key: NSObject {
+        let inlines: [MarkdownInline]
+        let context: AnyHashable
+        let hashCode: Int
+
+        init(_ inlines: [MarkdownInline], _ context: AnyHashable) {
+            self.inlines = inlines
+            self.context = context
+            var hasher = Hasher()
+            hasher.combine(inlines)
+            hasher.combine(context)
+            hashCode = hasher.finalize()
+        }
+
+        override var hash: Int { hashCode }
+
+        override func isEqual(_ object: Any?) -> Bool {
+            guard let other = object as? Key else { return false }
+            return hashCode == other.hashCode && context == other.context && inlines == other.inlines
+        }
+    }
+
+    private final class Box {
+        let value: AttributedString
+        init(_ value: AttributedString) { self.value = value }
+    }
+
+    /// Cost = the text's length, as `MarkdownDocument`'s parse memo; a
+    /// streamed row's growing last paragraph adds an entry per delta, so
+    /// the limit bounds memory, not the count of rows.
+    private static let cache: NSCache<Key, Box> = {
+        let cache = NSCache<Key, Box>()
+        cache.totalCostLimit = 4 << 20
+        return cache
+    }()
+
+    /// `build(inlines)` memoised by the inline run and `context` (whatever
+    /// else the result depends on — the link rules of the surface), beside
+    /// `MarkdownDocument.parse`'s memo. Building an `AttributedString` per
+    /// paragraph and table cell is the cost of a chat row's body pass; a
+    /// LazyVStack row that scrolls back in, or an unchanged row re-rendered,
+    /// hits the memo instead (spec 2026-10-24 §5, measured in
+    /// `ChatScrollBenchmarkTests`). `build` must be pure.
+    package static func memoized(
+        _ inlines: [MarkdownInline],
+        context: some Hashable & Sendable,
+        _ build: ([MarkdownInline]) -> AttributedString
+    ) -> AttributedString {
+        let key = Key(inlines, AnyHashable(context))
+        if let hit = cache.object(forKey: key) { return hit.value }
+        let value = build(inlines)
+        cache.setObject(Box(value), forKey: key, cost: value.characters.count)
+        return value
     }
 
     private static func render(_ inline: MarkdownInline, intent: InlinePresentationIntent, link: URL?) -> AttributedString {
