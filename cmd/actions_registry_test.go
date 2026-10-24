@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -116,7 +117,7 @@ func TestBuildToolRegistry_PinsWriteToolsReadToolsAndSurfaces(t *testing.T) {
 	project := pinProjectSurface(t, reg, main, target, reaction)
 	pinAutomationSurface(t, reg, main, target, reaction, project)
 	pinAuthoringTools(t, reg, main, target, reaction, project)
-	assert.Equal(t, []string{"main", "target"}, get.Surfaces, "get_confluence_page's surfaces are unchanged")
+	assert.Equal(t, []string{"main", "target", tools.AutomationEditorSurface}, get.Surfaces, "get_confluence_page gains the editor chat (spec 2026-10-24 §7)")
 
 	// The Inbox's track-action press (spec 2026-10-22 §6.2, gap 17): the
 	// inbox surface only, AlwaysAsk, never on a model's surface.
@@ -177,12 +178,46 @@ func TestAutomationEditorSurface_MountsOnlyDraftSaveAndReads(t *testing.T) {
 		}
 		assert.Equal(t, tools.AccessRead, tool.Access, "%s is a write tool on automation_editor", tool.Name)
 	}
-	for _, name := range []string{"save_automation", "draft_automation", "workbench_skills", "load_skill"} {
+	for _, name := range []string{"save_automation", "draft_automation", "workbench_skills", "load_skill",
+		"list_automation_runs", "get_automation_run", "list_automations", "get_automation",
+		"list_slack_channels", "get_confluence_page", "list_emails", "get_email",
+		"list_inbox", "list_calendar_events", "list_meeting_recaps", "get_meeting_recap", "list_meeting_notes",
+		"list_day_plans", "get_day_plan", "list_reminders", "list_jira_sprints", "list_jira_releases",
+		"list_linear_cycles"} {
 		assert.True(t, listed[name], "%s missing on automation_editor", name)
 	}
+	for _, name := range surfaceNamesOf(reg, tools.AutomationEditorSurface, tools.AccessWrite) {
+		assert.Equal(t, "save_automation", name, "save_automation is the only write on automation_editor")
+	}
+	for _, tool := range reg.List(tools.AutomationEditorSurface) {
+		assert.False(t, strings.HasPrefix(tool.Name, "mcp__"), "no Quick Connection on automation_editor: %s", tool.Name)
+	}
+	// Run history is for the two authoring chats only (spec 2026-10-24 §7).
+	mainTools := surfaceToolNames(reg, "main")
+	for _, name := range []string{"list_automation_runs", "get_automation_run", "list_automations", "get_automation"} {
+		assert.True(t, mainTools[name], "%s missing on main", name)
+		for _, surface := range []string{"automation", "target", "inbox", "project"} {
+			assert.False(t, surfaceToolNames(reg, surface)[name], "%s leaked onto %s", name, surface)
+		}
+	}
+	// The automation-only reads do not reach main (list_inbox is one of them);
+	// the Slack channel list is main + editor only.
+	assert.False(t, mainTools["list_inbox"], "list_inbox leaked onto main")
+	assert.True(t, mainTools["list_slack_channels"])
+	assert.False(t, surfaceToolNames(reg, tools.AutomationSurface)["list_slack_channels"])
 	for _, rt := range tools.ReadTools() {
 		assert.True(t, listed[rt.Name], "read tool %s missing on automation_editor", rt.Name)
 	}
+}
+
+func surfaceNamesOf(reg *tools.Registry, surface string, access tools.Access) []string {
+	var out []string
+	for _, tool := range reg.List(surface) {
+		if tool.Access == access {
+			out = append(out, tool.Name)
+		}
+	}
+	return out
 }
 
 func surfaceToolNames(reg *tools.Registry, surface string) map[string]bool {
@@ -252,9 +287,10 @@ func pinAutomationSurface(t *testing.T, reg *tools.Registry, main, target, react
 		tool, ok := reg.Get(e)
 		require.True(t, ok, "%s missing", e)
 		assert.Equal(t, tools.AccessRead, tool.Access, e)
-		assert.Equal(t, []string{tools.AutomationSurface}, tool.Surfaces, e)
+		assert.Equal(t, []string{tools.AutomationSurface, tools.AutomationEditorSurface}, tool.Surfaces, e)
 		assert.True(t, automation[e], "%s missing on the automation surface", e)
-		assert.False(t, main[e] || target[e] || reaction[e] || project[e], "%s is automation-surface only", e)
+		assert.True(t, surfaceToolNames(reg, tools.AutomationEditorSurface)[e], "%s missing on automation_editor", e)
+		assert.False(t, main[e] || target[e] || reaction[e] || project[e], "%s is automation + editor only", e)
 		for _, rt := range tools.ReadTools() {
 			assert.NotEqual(t, e, rt.Name, "dev-mode MCP never mounts %s (DEV-01)", e)
 		}
