@@ -19,7 +19,7 @@ struct ReviewFileListView: View {
                     .foregroundStyle(.secondary)
                     .reviewListRow()
             }
-            ForEach(shown) { file in row(file) }
+            ReviewFileTreeView(model: model, files: shown)
             if !folded.isEmpty {
                 header("Folded", systemImage: "rectangle.compress.vertical", detail: "\(folded.count)")
                 ForEach(folded) { file in row(file) }
@@ -74,9 +74,11 @@ struct ReviewFileListView: View {
     private func row(_ file: ReviewDiffFile) -> some View { Self.row(file, model: model) }
 
     /// A file's row with the model's Viewed mark and comment count (Chapters reuses it).
-    static func row(_ file: ReviewDiffFile, model: ReviewChangesModel) -> some View {
+    static func row(_ file: ReviewDiffFile, model: ReviewChangesModel, title: String? = nil, depth: Int = 0) -> some View {
         ReviewFileRow(
             file: file,
+            title: title,
+            depth: depth,
             selected: model.selectedPath == file.path,
             viewed: model.isViewed(file.path),
             comments: model.comments.filter { $0.path == file.path && $0.status != .resolved }.count,
@@ -99,6 +101,10 @@ private extension View {
 
 struct ReviewFileRow: View {
     let file: ReviewDiffFile
+    /// Shown instead of the full path (the tree shows the file name under its folder).
+    var title: String?
+    /// Tree nesting level: the row indents by it.
+    var depth = 0
     let selected: Bool
     let viewed: Bool
     let comments: Int
@@ -114,7 +120,7 @@ struct ReviewFileRow: View {
                 .frame(width: 14)
                 .help(file.status)
             VStack(alignment: .leading, spacing: 1) {
-                Text(file.path)
+                Text(title ?? file.path)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .help(file.oldPath.map { "\($0) → \(file.path)" } ?? file.path)
@@ -140,6 +146,7 @@ struct ReviewFileRow: View {
                 .help(viewed ? "Viewed" : "Mark as viewed")
         }
         .opacity(viewed ? 0.6 : 1)
+        .padding(.leading, CGFloat(depth) * Spacing.regular)
         .kitRow(isSelected: selected)
         .onTapGesture(perform: select)
         .reviewListRow()
