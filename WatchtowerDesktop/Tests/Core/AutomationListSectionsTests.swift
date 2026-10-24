@@ -169,6 +169,24 @@ final class AutomationListSectionsTests: XCTestCase {
         XCTAssertEqual(rows.map(\.name), ["New automation"])
     }
 
+    /// A draft row's line 2: the drafted recipe's summary, else its
+    /// description's first sentence; none without a drafted recipe.
+    func testDraftRowSummaryFromTheDraftedRecipe() throws {
+        let own = try insertDraftConversation("d7")
+        let derived = try insertDraftConversation("d8")
+        let failed = try insertDraftConversation("d9")
+        try writeCache(own, #"{"recipe_text":"---\nname: A\nsummary: Sorts the mail\n---\nLong text.","result":null}"#
+            + "\n", modified: now)
+        try writeCache(derived, #"{"recipe_text":"---\nname: B\n---\nPosts a digest. Then more.","result":null}"#
+            + "\n", modified: now.addingTimeInterval(-1))
+        try writeCache(failed, #"{"recipe_text":"","result":null,"error":"boom"}"# + "\n",
+                       modified: now.addingTimeInterval(-2))
+        let rows = try pool.read { db in
+            try AutomationDraftRows.load(db, databasePath: path, liveWorkbenchIDs: [])
+        }
+        XCTAssertEqual(rows.map(\.summary), ["Sorts the mail", "Posts a digest.", nil])
+    }
+
     func testWorkbenchIDFromContextID() {
         XCTAssertNil(AutomationDraftRows.workbenchID(fromContextID: "6F9619FF-8B86-D011-B42D-00C04FC964FF"))
         XCTAssertEqual(AutomationDraftRows.workbenchID(fromContextID: "6F9619FF-8B86-D011-B42D-00C04FC964FF-wb12"), 12)

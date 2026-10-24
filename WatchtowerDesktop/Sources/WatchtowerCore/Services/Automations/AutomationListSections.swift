@@ -13,15 +13,26 @@ package struct AutomationDraftRow: Identifiable, Equatable, Sendable {
     package let name: String
     /// The cache file's modification date.
     package let updatedAt: Date
+    /// The drafted recipe's one-line summary (`AutomationRowSummary`); nil
+    /// without a drafted recipe.
+    package let summary: String?
 
     package var id: Int64 { conversationID }
 
-    package init(conversationID: Int64, contextID: String, workbenchID: Int64?, name: String, updatedAt: Date) {
+    package init(
+        conversationID: Int64,
+        contextID: String,
+        workbenchID: Int64?,
+        name: String,
+        updatedAt: Date,
+        summary: String? = nil
+    ) {
         self.conversationID = conversationID
         self.contextID = contextID
         self.workbenchID = workbenchID
         self.name = name
         self.updatedAt = updatedAt
+        self.summary = summary
     }
 }
 
@@ -76,11 +87,13 @@ package enum AutomationDraftRows {
             let url = AutomationDraftEntry.cacheURL(databasePath: databasePath, conversationID: conversation.id)
             let name: String
             let updatedAt: Date
+            var summary: String?
             if let text = try? String(contentsOf: url, encoding: .utf8),
                case let .entry(entry) = AutomationDraftEntry.newest(inCache: text),
                let modified = try? FileManager.default.attributesOfItem(atPath: url.path)[.modificationDate] as? Date {
                 name = entry.result?.manifest.name ?? ""
                 updatedAt = modified
+                summary = AutomationRowSummary.summary(recipeText: entry.recipeText)
             } else if let open = openDrafts[conversation.id] {
                 name = open
                 updatedAt = conversation.updatedAt
@@ -89,7 +102,7 @@ package enum AutomationDraftRows {
             }
             drafts.append(AutomationDraftRow(conversationID: conversation.id, contextID: conversation.contextID,
                                              workbenchID: workbenchID, name: name.isEmpty ? untitled : name,
-                                             updatedAt: updatedAt))
+                                             updatedAt: updatedAt, summary: summary))
         }
         return drafts.sorted { ($0.updatedAt, $0.conversationID) > ($1.updatedAt, $1.conversationID) }
     }
@@ -141,6 +154,20 @@ package struct AutomationListSection: Identifiable, Equatable, Sendable {
 package enum AutomationListSections {
     package static let personalTitle = "Personal"
     package static let builtinTitle = "Built in"
+    package static let builtinID = "builtin"
+    package static let personalID = "personal"
+
+    package static func workbenchID(_ id: Int64) -> String { "workbench-\(id)" }
+
+    /// The section an automation is listed in; nil for a workbench recipe
+    /// without a workbench.
+    package static func sectionID(of automation: Automation) -> String? {
+        if automation.isBuiltin { return builtinID }
+        switch automation.scope {
+        case .personal: return personalID
+        case .workbench: return automation.projectID.map(workbenchID)
+        }
+    }
 
     /// Built in first (every `isBuiltin` item, never in Personal; a built-in
     /// has no drafts), then Personal, then each workbench by name, drafts at the top of
@@ -162,11 +189,11 @@ package enum AutomationListSections {
 
         var sections: [AutomationListSection] = []
         let builtin = AutomationListSection(
-            id: "builtin", title: builtinTitle, drafts: [], items: shownItems.filter(\.automation.isBuiltin)
+            id: builtinID, title: builtinTitle, drafts: [], items: shownItems.filter(\.automation.isBuiltin)
         )
         if !builtin.isEmpty { sections.append(builtin) }
         let personal = AutomationListSection(
-            id: "personal", title: personalTitle,
+            id: personalID, title: personalTitle,
             drafts: shownDrafts.filter { $0.workbenchID == nil },
             items: shownItems.filter { $0.automation.scope == .personal && !$0.automation.isBuiltin }
         )
@@ -178,7 +205,7 @@ package enum AutomationListSections {
         }
         for workbench in ordered {
             let section = AutomationListSection(
-                id: "workbench-\(workbench.id)", title: workbench.name,
+                id: workbenchID(workbench.id), title: workbench.name,
                 drafts: shownDrafts.filter { $0.workbenchID == workbench.id },
                 items: shownItems.filter { $0.automation.scope == .workbench && $0.automation.projectID == workbench.id }
             )

@@ -126,16 +126,22 @@ final class AutomationsViewModelTests: XCTestCase {
     private var pool: DatabasePool!
     private var path = ""
     private var runner: ScriptedRunner!
+    private var suiteName = ""
+    private var defaults: UserDefaults!
     private let now = Date(timeIntervalSince1970: 1_792_152_000) // 2026-10-16T12:00:00Z
 
     override func setUp() async throws {
         try await super.setUp()
         (pool, path) = try TestDatabase.createPool()
         runner = ScriptedRunner()
+        suiteName = "AutomationsViewModelTests-\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)
     }
 
     override func tearDown() async throws {
         runner.release()
+        defaults.removePersistentDomain(forName: suiteName)
+        defaults = nil
         pool = nil
         TestDatabase.cleanup(path: path)
         try await super.tearDown()
@@ -144,7 +150,8 @@ final class AutomationsViewModelTests: XCTestCase {
     /// Tests that never call `start()` never sleep.
     private func makeViewModel(sleep: @escaping (Duration) async -> Void = { _ in }) -> AutomationsViewModel {
         let now = self.now
-        return AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: runner), now: { now }, sleep: sleep)
+        return AutomationsViewModel(dbPool: pool, cli: AutomationsCLI(runner: runner), defaults: defaults,
+                                    now: { now }, sleep: sleep)
     }
 
     private func waitUntil(timeout: TimeInterval = 5, _ condition: @MainActor () -> Bool) async {
@@ -348,6 +355,72 @@ final class AutomationsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.panel, .template(name: "jira-state-report", scope: .personal))
         XCTAssertNil(vm.selectedID)
         XCTAssertNil(vm.composerPrefill)
+    }
+
+    // MARK: - Group collapse
+
+    /// A row opened in a folded group (the Inbox, a notification,
+    /// auto-select) opens that group, and the opened state is stored.
+    func testSelectingInCollapsedSectionRevealsIt() throws {
+        let (personalID, workbenchID) = try pool.write { db -> (Int64, Int64) in
+            let workbench = try TestDatabase.insertWorkbench(db)
+            let personal = try TestDatabase.insertAutomation(db, slug: "mail", name: "Mail")
+            let inWorkbench = try TestDatabase.insertAutomation(db, slug: "ci", name: "CI", workbenchID: workbench)
+            return (personal, inWorkbench)
+        }
+        let vm = makeViewModel()
+        vm.refresh()
+        let workbench = try XCTUnwrap(vm.sectionID(forAutomation: workbenchID))
+        XCTAssertEqual(vm.sectionID(forAutomation: personalID), "personal")
+        XCTAssertTrue(workbench.hasPrefix("workbench-"))
+        XCTAssertNil(vm.sectionID(forAutomation: 999))
+
+        vm.toggleSection("personal")
+        vm.toggleSection(workbench)
+        vm.toggleSection("builtin")
+        XCTAssertEqual(vm.collapse.collapsed, ["personal", workbench, "builtin"])
+
+        vm.select(personalID)
+        XCTAssertEqual(vm.collapse.collapsed, [workbench, "builtin"])
+        vm.open(automationID: workbenchID, runID: nil)
+        XCTAssertEqual(vm.collapse.collapsed, ["builtin"])
+        XCTAssertEqual(defaults.stringArray(forKey: AutomationsViewModel.collapsedSectionsKey), ["builtin"])
+
+        // A new draft opens its scope's group.
+        vm.toggleSection("personal")
+        vm.showEditor(.newDraft(contextID: "d1", scope: .personal, startText: nil))
+        XCTAssertEqual(vm.collapse.collapsed, ["builtin"])
+        // Opening a row in an open group stores nothing new.
+        vm.select(personalID)
+        XCTAssertEqual(vm.collapse.collapsed, ["builtin"])
+    }
+
+    func testCollapsePersistsAcrossInit() {
+        let first = makeViewModel()
+        XCTAssertEqual(first.collapse.collapsed, [], "every group starts open")
+        first.toggleSection("builtin")
+        first.toggleSection("workbench-3")
+        first.toggleSection("workbench-3")
+        XCTAssertEqual(defaults.stringArray(forKey: AutomationsViewModel.collapsedSectionsKey), ["builtin"])
+
+        let second = makeViewModel()
+        XCTAssertEqual(second.collapse.collapsed, ["builtin"])
+    }
+
+    /// A search opens every group with a match on screen only: the stored
+    /// set stays, so clearing the search restores it.
+    func testSearchDoesNotWriteCollapse() throws {
+        try pool.write { db in _ = try TestDatabase.insertAutomation(db, slug: "mail", name: "Mail") }
+        let vm = makeViewModel()
+        vm.refresh()
+        vm.toggleSection("personal")
+        let section = try XCTUnwrap(
+            AutomationListSections.make(items: vm.items, drafts: [], workbenches: [], query: "mai").first
+        )
+        XCTAssertTrue(vm.isExpanded(section, query: "mai"))
+        XCTAssertFalse(vm.isExpanded(section, query: "  "))
+        XCTAssertEqual(vm.collapse.collapsed, ["personal"])
+        XCTAssertEqual(defaults.stringArray(forKey: AutomationsViewModel.collapsedSectionsKey), ["personal"])
     }
 
     /// Draft rows come with the list read: workbench drafts only for
