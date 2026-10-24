@@ -2269,3 +2269,12 @@ Entry format:
 - weak-dimension: 7. A supporting PROJ-14 test was made vacuous (`update_target` links the target before `finish_session` does), and the changelog called its assertion "unchanged".
 - rule-gap (candidate, dim 7): *a test that gains a setup call through another write tool must check that the setup does not produce the effect the test asserts; seed state through SQL instead.*
 - outcome: TBD
+
+## 2026-10-24 — fix/terminal-title-reply — verdict: approve
+
+- contested: whether the 8-word guard "fails" because short replies ("I cannot see the image", 4-5 words) pass — settled as a known limit of a backstop heuristic, not a defect; the prompt v3 rule is the primary fix and word count can never tell an answer from a name [6]
+- false-positive: "the live first line had exactly 8 tokens up to 'тол…'" — the guard counts the untruncated first reply line, not the `chatTitleMaxRunes`-truncated title, so the live reply was longer and is rejected [6]
+- miss: none unique to codex; both lanes converged on the short-reply limit (raised by 2 lanes)
+- weak-dimension: 7 — the guard shipped without a boundary (8 accepted / 9 refused) test
+- rule-gap: a guard helper whose comment says it reads "the same line" another parser picks must share that parser's line selection (here `cleanChatTitle` skips `---`/`#`/quote-only lines and strips `Title:`; `firstReplyLine` does not) — an invariant comment checked against both code paths
+- outcome: TBD
