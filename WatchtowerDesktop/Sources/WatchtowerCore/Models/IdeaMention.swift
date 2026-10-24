@@ -42,6 +42,14 @@ package struct IdeaMention: FetchableRecord, Identifiable, Equatable {
         Source(rawValue: source) ?? .owner
     }
 
+    /// False for a chat mention the assistant authored: its quote is a
+    /// model's words, so it is never handed to an agent or a chat model —
+    /// only the owner's card shows it. Dual path with Go
+    /// `db.AgentVisibleMentionCond` (ask #516).
+    package var isAgentVisible: Bool {
+        !(sourceKind == .chat && author == "assistant")
+    }
+
     /// The conversation and message a `chat` mention points at; nil for any
     /// other source or a malformed ref.
     package var chatTarget: (conversationID: Int64, messageID: Int64)? {

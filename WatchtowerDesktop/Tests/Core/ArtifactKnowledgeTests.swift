@@ -11,8 +11,9 @@ final class ArtifactKnowledgeTests: XCTestCase {
         XCTAssertEqual(State.for(kind: "table", shownVersion: 2, keptVersion: 2), .remove)
         XCTAssertEqual(State.for(kind: "code", shownVersion: 3, keptVersion: 1), .update)
         XCTAssertEqual(State.for(kind: "html", shownVersion: 1, keptVersion: nil), .add)
-        // An older version shown while a newer one is kept: nothing to update to.
-        XCTAssertEqual(State.for(kind: "document", shownVersion: 1, keptVersion: 2), .remove)
+        // An older version shown while a newer one is kept: it is not the kept
+        // version, so no control (neither Update nor Remove) is offered.
+        XCTAssertNil(State.for(kind: "document", shownVersion: 1, keptVersion: 2))
     }
 
     func testDraftKindsGetNoControl() {

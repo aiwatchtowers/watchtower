@@ -11,10 +11,13 @@ package enum ArtifactKnowledgeState: Equatable {
     package static let kinds: Set<String> = ["document", "table", "code", "html"]
 
     /// `nil` = no control. `keptVersion` is the pinned version of the key, if any.
+    /// An older version shown while a newer one is kept gets no control: it is
+    /// not what Knowledge holds, so neither Update nor Remove would be about it.
     package static func `for`(kind: String, shownVersion: Int, keptVersion: Int?) -> Self? {
         guard kinds.contains(kind) else { return nil }
         guard let keptVersion else { return .add }
-        return keptVersion < shownVersion ? .update : .remove
+        if shownVersion > keptVersion { return .update }
+        return shownVersion == keptVersion ? .remove : nil
     }
 
     package var title: String {

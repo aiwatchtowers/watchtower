@@ -32,6 +32,9 @@ final class ChatKnowledgeCenter {
     /// The item's `updated_at` as it was right after creation, per message:
     /// Undo deletes the item only while it still matches.
     @ObservationIgnored private var stamps: [Int64: String] = [:]
+    /// Messages whose Undo is running: a second press while it runs does
+    /// nothing (it would find the row gone and read it as changed).
+    @ObservationIgnored private var undoing: Set<Int64> = []
     /// Writes still running, by a token; each removes itself when done.
     @ObservationIgnored private var tasks: [UUID: Task<Void, Never>] = [:]
 
@@ -71,7 +74,9 @@ final class ChatKnowledgeCenter {
     /// Deletes the item this message wrote while it is untouched; otherwise
     /// the mark says it changed (the view then opens it in the Inbox).
     func undo(messageID: Int64) async {
-        guard case .saved(_, let ideaID)? = marks[messageID], let stamp = stamps[messageID] else { return }
+        guard case .saved(_, let ideaID)? = marks[messageID], let stamp = stamps[messageID],
+              undoing.insert(messageID).inserted else { return }
+        defer { undoing.remove(messageID) }
         do {
             let deleted = try await dbPool.write { db in
                 try IdeaQueries.undoChatIdea(db, id: ideaID, createdUpdatedAt: stamp)

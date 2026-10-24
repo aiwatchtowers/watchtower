@@ -81,6 +81,18 @@ final class ChatKnowledgeCenterTests: XCTestCase {
         XCTAssertEqual(mentions, 0)
     }
 
+    /// A double press of Undo runs one delete: the second press must not find
+    /// the row gone, read it as "changed" and open a deleted id.
+    func testDoubleUndoRunsOnce() async throws {
+        let center = ChatKnowledgeCenter(dbPool: pool)
+        await send(center, "decided: ship on Thursdays")
+        async let first: Void = center.undo(messageID: 11)
+        async let second: Void = center.undo(messageID: 11)
+        _ = await (first, second)
+        XCTAssertEqual(center.mark(for: 11), .undone)
+        XCTAssertEqual(try ideas(), [])
+    }
+
     func testUndoAfterAnEditKeepsTheItem() async throws {
         let center = ChatKnowledgeCenter(dbPool: pool)
         await send(center, "decided: ship on Thursdays")

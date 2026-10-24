@@ -223,6 +223,18 @@ final class IdeaChatSurfaceTests: XCTestCase {
         XCTAssertTrue(block.contains("we should really automate this"))
     }
 
+    /// The Discuss chat's context never carries an assistant chat mention:
+    /// its quote is a model's words (ask #516).
+    func testIdeaContextBlockLeavesOutAssistantChatMentions() async throws {
+        let idea = try makeIdea(essence: "Ship on Monday")
+        let assistant = IdeaMention(row: Row(["id": 1, "idea_id": idea.id, "source": "chat", "ref": "chat:1:2",
+                                              "quote": "model conclusion", "author": "assistant"]
+            as [String: (any DatabaseValueConvertible)?]))
+        let block = IdeaChatSurface.ideaContextBlock(idea, mentions: [assistant])
+        XCTAssertFalse(block.contains("model conclusion"), block)
+        XCTAssertTrue(block.contains("(none recorded)"), block)
+    }
+
     // MARK: - Helpers
 
     private func makeMention(ideaID: Int64, quote: String) throws -> IdeaMention {
