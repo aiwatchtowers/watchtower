@@ -29,8 +29,14 @@ type ReviewRound struct {
 	CreatedAt     string
 	SentAt        sql.NullString
 	DeliveredAt   sql.NullString
-	Outcome       string // "", "changes" or "approved" (00154)
+	Outcome       string // "", ReviewOutcomeChanges or ReviewOutcomeApproved (00154)
 }
+
+// A sent round's outcome (review_rounds.outcome, 00154); an open round's is "".
+const (
+	ReviewOutcomeChanges  = "changes"  // sent with comments: changes requested
+	ReviewOutcomeApproved = "approved" // approved, no changes requested
+)
 
 type ReviewComment struct {
 	ID, RoundID        int64
@@ -127,8 +133,8 @@ func (db *DB) SendReviewRound(projectID, id int64) (sent int, ok bool, err error
 		return 0, false, err
 	}
 	defer tx.Rollback() // a committed tx makes this a no-op
-	res, err := tx.Exec(`UPDATE review_rounds SET status = 'sent', outcome = 'changes', sent_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-		WHERE id = ? AND project_id = ? AND status = 'open'`, id, projectID)
+	res, err := tx.Exec(`UPDATE review_rounds SET status = 'sent', outcome = ?, sent_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+		WHERE id = ? AND project_id = ? AND status = 'open'`, ReviewOutcomeChanges, id, projectID)
 	if err != nil {
 		return 0, false, fmt.Errorf("sending review round %d: %w", id, err)
 	}
@@ -153,7 +159,7 @@ func (db *DB) SendReviewRound(projectID, id int64) (sent int, ok bool, err error
 func (db *DB) ApproveReviewRound(projectID, id int64, resolveOpen bool) (ok bool, err error) {
 	tx, err := db.Begin()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("approving review round %d: %w", id, err)
 	}
 	defer tx.Rollback() // a committed tx makes this a no-op
 	var drafts, open int
@@ -166,9 +172,9 @@ func (db *DB) ApproveReviewRound(projectID, id int64, resolveOpen bool) (ok bool
 		return false, nil
 	}
 	// The round goes first so a refused round writes no comment.
-	res, err := tx.Exec(`UPDATE review_rounds SET status = 'sent', outcome = 'approved',
+	res, err := tx.Exec(`UPDATE review_rounds SET status = 'sent', outcome = ?,
 		sent_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-		WHERE id = ? AND project_id = ? AND status = 'open' AND session_id IS NOT NULL`, id, projectID)
+		WHERE id = ? AND project_id = ? AND status = 'open' AND session_id IS NOT NULL`, ReviewOutcomeApproved, id, projectID)
 	if err != nil {
 		return false, fmt.Errorf("approving review round %d: %w", id, err)
 	}

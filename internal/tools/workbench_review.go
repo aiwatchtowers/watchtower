@@ -107,7 +107,7 @@ func NewGetReview() *Tool {
 
 func reviewText(v reviewView) string {
 	var b strings.Builder
-	if v.Outcome == "approved" {
+	if v.Outcome == db.ReviewOutcomeApproved {
 		b.WriteString("Outcome: approved — no changes requested\n")
 	}
 	fmt.Fprintf(&b, "Review round #%d — %d comment(s), folder %s\n", v.RoundID, len(v.Comments), v.Folder)
