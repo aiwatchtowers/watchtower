@@ -284,7 +284,10 @@ final class AutomationEditorChat {
 
     @ObservationIgnored private let databasePath: String
     @ObservationIgnored private let center: EmbeddedChatCenter
-    @ObservationIgnored private let onSaved: () -> Void
+    /// A `save_automation` of this chat landed: the new automation's id
+    /// when the save wrote a new recipe (a new draft then leaves the list),
+    /// else nil.
+    @ObservationIgnored private let onSaved: (Int64?) -> Void
     @ObservationIgnored private var closed = false
     @ObservationIgnored private let panelDraftBox: PanelDraftBox
 
@@ -296,7 +299,7 @@ final class AutomationEditorChat {
         center: EmbeddedChatCenter,
         cliRunner: CLIRunnerProtocol? = nil,
         panelDraftBox: PanelDraftBox = PanelDraftBox(),
-        onSaved: @escaping () -> Void,
+        onSaved: @escaping (Int64?) -> Void,
         makeSpec: (_ outcomes: @escaping @MainActor (Date?) -> String?) -> ChatSurfaceSpec
     ) {
         let feed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner)
@@ -352,7 +355,8 @@ final class AutomationEditorChat {
 
     private func decided(_ row: AgentAction?) {
         guard let row, row.tool == SaveAutomationCardModel.tool, row.status == "applied" else { return }
-        savedNote = SaveAutomationCardModel(action: row).appliedNote
-        onSaved()
+        let card = SaveAutomationCardModel(action: row)
+        savedNote = card.appliedNote
+        onSaved(card.isNew ? (row.result["automation_id"] as? NSNumber)?.int64Value : nil)
     }
 }

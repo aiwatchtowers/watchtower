@@ -65,6 +65,15 @@ package final class AutomationsViewModel {
     /// The new drafts the editor holds, by conversation id → name
     /// (`AutomationEditorCenter.openNewDraftNames`), read with the list.
     @ObservationIgnored package var openNewDrafts: @MainActor () -> [Int64: String] = { [:] }
+    /// The embedded chats' engines: a saved draft's engine is let go of
+    /// before its conversation moves to the automation (`draftSaved`).
+    @ObservationIgnored package weak var embeddedChats: EmbeddedChatCenter?
+    /// Drops the editor's draft by key (`AutomationEditorCenter.discard`):
+    /// a saved draft's buffer is never listed or saved again.
+    @ObservationIgnored package var discardEditorDraft: @MainActor (Int64) -> Void = { _ in }
+    /// Saved drafts whose conversation is not re-keyed yet (`draftSaved`
+    /// waits for the chat to go idle): never a row meanwhile.
+    @ObservationIgnored private var savedDraftConversations: Set<Int64> = []
     /// Run ids whose steps are shown in the history.
     package private(set) var expandedRuns: Set<Int64> = []
     /// Keyed by automation id.
@@ -224,6 +233,7 @@ package final class AutomationsViewModel {
                 let rows = AutomationDraftRows.rows(conversations, databasePath: databasePath,
                                                     liveWorkbenchIDs: snapshot.workbenchIDs,
                                                     openDrafts: openNewDrafts())
+                    .filter { !savedDraftConversations.contains($0.conversationID) }
                 if draftRows != rows { draftRows = rows }
             }
             if lastErrorIsRead {
@@ -462,6 +472,44 @@ package final class AutomationsViewModel {
             draftRows.removeAll { $0.contextID == contextID }
         }
         if case let .editor(.newDraft(current, _, _)) = panel, current == contextID { select(nil) }
+    }
+
+    /// A new draft's save landed as automation `automationID` (spec
+    /// 2026-10-24 §4): its row leaves the list and its cache file goes at
+    /// once, with the editor's draft; once the draft's chat engine is idle
+    /// and let go of, its conversation becomes the automation's editor chat
+    /// (ask #528). The selection is the caller's: this never empties the panel.
+    package func draftSaved(contextID: String, conversationID: Int64, automationID: Int64) async {
+        savedDraftConversations.insert(conversationID)
+        defer { savedDraftConversations.remove(conversationID) }
+        discardEditorDraft(AutomationEditorCenter.newDraftKey(conversationID: conversationID))
+        removeDraftCache(conversationID)
+        draftRows.removeAll { $0.conversationID == conversationID }
+        let key = EmbeddedChatKey(contextType: AutomationDraftRows.contextType, contextID: contextID,
+                                  conversationID: conversationID)
+        await embeddedChats?.releaseWhenIdle(key)
+        do {
+            _ = try await DatabaseEmbeddedChatStore.rekeyConversation(
+                dbPool: dbPool, conversationID: conversationID, toContextType: "automation",
+                contextID: String(automationID))
+        } catch {
+            lastError = "Saved, but the draft's chat could not move to the automation: \(error.localizedDescription)"
+            lastErrorIsRead = false
+        }
+        // The turn waited for may have drafted again.
+        removeDraftCache(conversationID)
+    }
+
+    private func removeDraftCache(_ conversationID: Int64) {
+        let url = AutomationDraftEntry.cacheURL(databasePath: dbPool.path, conversationID: conversationID)
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch CocoaError.fileNoSuchFile {
+            // Never drafted, or already gone.
+        } catch {
+            lastError = "Could not remove the saved draft: \(error.localizedDescription)"
+            lastErrorIsRead = false
+        }
     }
 
     /// Shows or hides a run's steps in the history.

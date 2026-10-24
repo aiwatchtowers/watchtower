@@ -57,7 +57,7 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
     private func controller(
         _ center: EmbeddedChatCenter,
         spec: ChatSurfaceSpec,
-        onSaved: @escaping () -> Void = {}
+        onSaved: @escaping (Int64?) -> Void = { _ in }
     ) -> AutomationEditorChat {
         AutomationEditorChat(conversationID: spec.key.conversationID ?? 0, dbPool: pool, toolsAvailable: true,
                              center: center, cliRunner: FakeCLIRunner(), onSaved: onSaved) { _ in spec }
@@ -394,17 +394,17 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
 
     func testAppliedSaveRefreshesTheList() async throws {
         let spec = try await newSpec()
-        var saves = 0
-        let chat = controller(center(MockClaudeService()), spec: spec) { saves += 1 }
+        var saves: [Int64?] = []
+        let chat = controller(center(MockClaudeService()), spec: spec) { saves.append($0) }
         let conversationID = chat.conversationID
         let id = try await pool.write { db in
             try TestDatabase.insertAgentAction(db, tool: "save_automation", argsJSON: #"{"is_new":true}"#,
                                                surface: "automation_editor", conversationID: conversationID,
-                                               status: "applied")
+                                               status: "applied", resultJSON: #"{"automation_id":12}"#)
         }
         XCTAssertNil(chat.savedNote)
         await chat.actionFeed.retry(id)
-        XCTAssertEqual(saves, 1)
+        XCTAssertEqual(saves, [12], "a new recipe's save names the automation it wrote")
         XCTAssertEqual(chat.savedNote, SaveAutomationCardModel.appliedNewNote)
         chat.close()
     }
