@@ -11,7 +11,7 @@
   },
   "when": "Every 6 hours",
   "reads": [
-    "Slack digest topics, mail and tracker digests, meeting recaps"
+    "Slack digest topics, mail and tracker digests, meeting recaps, AI chats"
   ],
   "sends": [
     "Idea cards in your Inbox; decisions to your brief"

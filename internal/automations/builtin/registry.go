@@ -137,7 +137,7 @@ var registry = []Entry{
 		Prompts:    []PromptRef{{Name: "consolidate", PromptID: prompts.IdeasConsolidate}},
 		Parameters: []Parameter{{Key: "ideas.mine_interval_hours", Kind: ParamInterval, Label: "Every"}},
 		Pipelines:  []string{"ideas"},
-		Reads:      []string{"Slack digest topics, mail and tracker digests, meeting recaps"},
+		Reads:      []string{"Slack digest topics, mail and tracker digests, meeting recaps, AI chats"},
 		Sends:      []string{"Idea cards in your Inbox; decisions to your brief"},
 		When: func(cfg *config.Config) string {
 			return fmt.Sprintf("Every %d hours", ideasIntervalHours(cfg))
