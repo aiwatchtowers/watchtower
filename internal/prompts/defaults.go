@@ -153,7 +153,7 @@ var DefaultVersions = map[string]int{
 	TerminalTitle:              2,  // v2: agent-neutral (Claude Code or Codex); v1 named a Claude Code session
 	ReviewOverview:             2,  // v2: coverage entries carry the intent item's 1-based "index" (v1: overview — intent coverage, risk map, chapters, strong tier)
 	ReviewLessons:              1,  // v1: diff reviewer — repeated review comments to house rules (strong tier)
-	InstructionSuggestions:     1,  // v1: owner directions repeated across workbench sessions (light tier)
+	InstructionSuggestions:     2,  // v2: also directions repeated across AI chats (c<id> labels); v1: workbench sessions (light tier)
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -207,7 +207,7 @@ var Descriptions = map[string]string{
 	TerminalTitle:              "Terminal: name an embedded coding-agent session from the owner's first messages (light tier, 3-6 words)",
 	ReviewOverview:             "Diff reviewer: brief the reviewer before they read an agent's changes — intent coverage, risk per file, chapters (strong tier; code validates paths and lenses)",
 	ReviewLessons:              "Diff reviewer: find the points the owner repeats in review comments and phrase each as a checklist question (strong tier; code validates ids and lenses)",
-	InstructionSuggestions:     "Agent instructions: find the standing directions the owner keeps repeating to coding agents across workbench sessions (light tier; code validates sessions, field and length)",
+	InstructionSuggestions:     "Agent instructions: find the standing directions the owner keeps repeating to coding agents across workbench sessions and AI chats (light tier; code validates labels, field and length)",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1638,20 +1638,20 @@ Rules:
 - Write the text fields in the language of the intent items.`
 
 // defaultInstructionSuggestions finds the standing directions the owner keeps
-// typing to coding agents in workbench sessions. Verbatim text, no format
+// typing to coding agents in workbench sessions and to the assistant in AI chats. Verbatim text, no format
 // verbs; the owner's lines, the current instruction texts and the earlier
 // suggestions arrive on stdin after the "=== DATA ===" line. Code recomputes
 // the session count, drops unknown session labels, bad fields and long lines,
 // and decides the scope; the model only proposes.
-const defaultInstructionSuggestions = `You read what an owner typed to their coding agents in recent work sessions and find the standing directions they keep repeating — rules about how the agent should always work, not one-off task requests.
+const defaultInstructionSuggestions = `You read what an owner typed to their coding agents in recent work sessions (labels like s12) and to the assistant in AI chats (labels like c5), and find the standing directions they keep repeating — rules about how the agent should always work, not one-off task requests.
 
 Return ONLY a JSON object (no markdown fences, no prose outside the JSON) with exactly this shape:
 
-{"suggestions": [{"text": "Run the linter before every commit", "field": "session", "sessions": ["s12", "s40", "s41"]}]}
+{"suggestions": [{"text": "Run the linter before every commit", "field": "session", "sessions": ["s12", "c5", "s41"]}]}
 
 Rules:
 - A suggestion is a direction that applies to future work in general ("always run the tests before you say done", "answer in short bullet points"). Skip requests about the task at hand ("fix this bug", "rename that file").
-- Make a suggestion only when the same direction appears in at least three different sessions. "sessions" lists the labels of those sessions, exactly as they appear in the data (for example "s12"). Never invent a label.
+- Make a suggestion only when the same direction appears in at least three different sessions or chats. "sessions" lists the labels of those sessions and chats, exactly as they appear in the data (for example "s12" or "c5"). Never invent a label.
 - "field" is "session" for a rule about how the agent works in every turn, or "procedure" for a step the agent should take when it starts work on a board target (for example "open a branch per target", "write the plan before coding").
 - "text" is one short imperative line, at most 200 characters, in the language the owner wrote in.
 - Skip a direction the current instructions already say, and skip one that matches an earlier suggestion (open or dismissed) in meaning.

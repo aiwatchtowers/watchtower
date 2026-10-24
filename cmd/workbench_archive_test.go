@@ -41,9 +41,11 @@ func TestProj15_DriftStillSeesArchivedUnmergedWork(t *testing.T) {
 	assert.Equal(t, workbenchcheck.KindDoneUnmerged, rep.Findings[0].Kind)
 	assert.Equal(t, int(tid), rep.Findings[0].TargetID)
 
+	// The brief checks open targets only (ask #540): an archived target still
+	// counts, but its done_but_unmerged finding is left to the check above.
 	brief := loadWorkbenchBrief(pid, io.Discard)
-	assert.Contains(t, brief, "Board drift")
-	assert.Contains(t, brief, "#"+strconv.FormatInt(tid, 10)+` "Feature" [done]`)
+	assert.NotContains(t, brief, "Board drift")
+	assert.NotContains(t, brief, "#"+strconv.FormatInt(tid, 10)+` "Feature" [done]`)
 	assert.Contains(t, brief, "0 done, 1 archived.")
 
 	// Archived by the Archive Now stamp alone (N = 14, closed an hour ago):

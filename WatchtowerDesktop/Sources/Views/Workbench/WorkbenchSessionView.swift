@@ -52,7 +52,10 @@ struct WorkbenchSessionView: View {
         let obscured = vm?.isObscured(sessionID: sessionID, projectID: projectID) ?? false
         return TerminalSessionPane(session: session, error: nil, obscured: obscured) {
             VStack(spacing: 8) {
-                if let session {
+                if let session, vm?.preparingSessions.contains(session.id) == true {
+                    ProgressView().controlSize(.small)
+                    Text("Starting…").foregroundStyle(.secondary)
+                } else if let session {
                     Text("\(session.title) is not running.")
                         .foregroundStyle(.secondary)
                     Button(TerminalSessionPolicy.reopenLabel(session)) {

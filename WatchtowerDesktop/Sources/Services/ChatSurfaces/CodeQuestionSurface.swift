@@ -139,6 +139,7 @@ enum CodeQuestionSurface {
                                  conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: .draftOnly,
+            ownerInstructions: true,
             systemPrompt: {
                 buildSystemPrompt(workbench: workbench, origin: origin, context: context(),
                                   provider: currentChoice().provider)

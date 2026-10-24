@@ -806,6 +806,23 @@ final class ChatViewModelTests: XCTestCase {
         XCTAssertEqual(try lastFake().turns.last?.text, expected)
     }
 
+    /// A remember message hands the owner's typed words to the remember hook:
+    /// never the skill line or the REFERENCED line the stored text carries.
+    func testRememberHookGetsTheOwnersWordsOnly() async throws {
+        let vm = try makeViewModel()
+        let created = await vm.newConversation()
+        let convID = try XCTUnwrap(created)
+        var stored: [(String, Int64, Int64)] = []
+        vm.onOwnerMessageStored = { stored.append(($0, $1, $2)) }
+        let pay = MentionCandidate(kind: .jira, ref: "PAY-1", label: "PAY-1", detail: "")
+        let sent = await vm.send(text: "remember: cite @PAY-1 by key", mentions: [pay], skill: "status-update")
+        XCTAssertTrue(sent)
+        XCTAssertEqual(stored.count, 1)
+        XCTAssertEqual(stored.first?.0, "remember: cite @PAY-1 by key")
+        XCTAssertEqual(stored.first?.1, convID)
+        XCTAssertEqual(stored.first?.2, activePath(convID).first?.id)
+    }
+
     /// @-mentions and REFERENCED tokens (spec §6.2): `send` filters the picked
     /// mentions down to those still present in the text, composes them into
     /// the stored/sent owner text, and clears the draft's pending mentions.

@@ -37,7 +37,7 @@ A list of services (Slack, Google, Email, Calendar, Jira, Linear, Quick Connecti
 ## System
 
 - **AI** — provider (Claude, Codex, Ollama / Local), **Light Model** and **Strong Model** (empty = the provider's default), CLI paths (empty = auto-detected), **Test Connection**. See [AI providers and cost](../concepts/ai-providers-and-cost.md).
-- **Workbench** — **Default Agent** (Claude Code or Codex) for new sessions and the **Work on It** button (the menu offers **Work on It with …** the other agent), plus **Session instructions** and **Target procedure**, your standing directions for the agents (each has its own **Save**). See [Your instructions](../features/workbench/instructions.md).
+- **Workbench** — **Default Agent** (Claude Code or Codex) for new sessions and the **Work on It** button (the menu offers **Work on It with …** the other agent). Your standing directions moved to **Profile → Instructions**; this tab keeps a pointer. See [Your instructions](../features/workbench/instructions.md).
 - **Sync** — **Poll Interval** (default `15m`), **Workers**, **Initial History Days** (bounds the first Slack sync to a few days; the month of history comes from [history backfill](../concepts/history-backfill.md)), **Sync Threads**.
 - **Daemon** — read-only status; the app starts and stops it. **Open Logs** opens the live log window.
 - **Data** — storage, **Reset AI-Generated Data** (deletes what the AI made, then rebuilds it), and **Reset All Data** under Danger Zone.
@@ -51,6 +51,7 @@ A list of services (Slack, Google, Email, Calendar, Jira, Linear, Quick Connecti
 
 ## Profile
 
+- **Instructions** — **For chats and agents**, **Only in chats** and **Target procedure**, each with its own **Save**, and **Preview what the agent gets…**. See [Your instructions](../features/workbench/instructions.md).
 - Your role, team, manager, reports, peers and starred channels and people. **Run Setup Again** repeats [setup](../start/setup.md).
 - **Skills** — turn skills on or off, edit them, or add **New Skill**. Built-in skills can be disabled but not deleted.
 - **Assistant tools** — per write tool, **Run without approval in:** checkboxes for **Chat**, **Target chat**, **Slack reactions** and **Automations**. Tools that write outside this Mac (tagged *external*) always need approval, everywhere. See [AI chat](../features/ai-chat.md).

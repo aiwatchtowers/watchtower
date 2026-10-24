@@ -42,6 +42,9 @@ struct ChatMessageRow: View, Equatable {
     var artifactVersions: [String: Int] = [:]
     /// The owner message that followed this reply — answers a question card.
     var questionAnswer: String?
+    /// The owner bubble looks up its remember mark: a persisted chat with the
+    /// owner's instructions only (`ChatSurfaceSpec.showsRememberMarks`).
+    var showsRememberMark = false
     @State private var hovering = false
     @State private var editText = ""
 
@@ -52,6 +55,7 @@ struct ChatMessageRow: View, Equatable {
             // hides while a turn runs or waits): its presence is data.
             && (lhs.actions.retry == nil) == (rhs.actions.retry == nil)
             && lhs.questionAnswer == rhs.questionAnswer
+            && lhs.showsRememberMark == rhs.showsRememberMark
             && (lhs.actions.answerQuestion == nil) == (rhs.actions.answerQuestion == nil)
     }
 
@@ -67,7 +71,12 @@ struct ChatMessageRow: View, Equatable {
 
     @ViewBuilder private var content: some View {
         if item.message.isUser {
-            if isEditing { editor } else { UserMessageBubble(text: item.message.text, attachments: item.attachments) }
+            if isEditing {
+                editor
+            } else {
+                UserMessageBubble(text: item.message.text, attachments: item.attachments,
+                                  messageID: showsRememberMark ? item.id : nil)
+            }
         } else if item.message.isAssistant {
             AssistantMessageBody(text: item.message.text, steps: item.stepDisplays, isRunning: false,
                                  versions: artifactVersions, onOpenArtifact: actions.openArtifact,
@@ -274,6 +283,8 @@ struct AssistantMessageBody: View {
 struct UserMessageBubble: View {
     let text: String
     var attachments: [ChatAttachment] = []
+    /// Set for a stored message: a remember command shows its outcome here.
+    var messageID: Int64?
 
     private var parts: ChatTurnDisplayParts { ChatTurnComposer.displayParts(text) }
 
@@ -301,6 +312,7 @@ struct UserMessageBubble: View {
                     .foregroundStyle(.white)
                     .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16))
             }
+            if let messageID { RememberMarkView(messageID: messageID, text: parts.body) }
         }
     }
 }

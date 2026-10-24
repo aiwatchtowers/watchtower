@@ -53,7 +53,7 @@ struct ChatThreadView: View {
             ChatMessageRow(item: item, isLast: item.id == chatVM.thread.last?.id,
                            isEditing: chatVM.editingMessageID == item.id, actions: actions(for: item),
                            artifactVersions: chatVM.artifactVersionsByMessage[item.id] ?? [:],
-                           questionAnswer: ownerReply(after: item))
+                           questionAnswer: ownerReply(after: item), showsRememberMark: true)
                 .equatable()
         }
     }
