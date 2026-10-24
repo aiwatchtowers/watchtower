@@ -3063,7 +3063,8 @@ CREATE TABLE IF NOT EXISTS review_rounds (
   active_seconds INTEGER NOT NULL DEFAULT 0 CHECK (active_seconds >= 0),
   created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   sent_at        TEXT,
-  delivered_at   TEXT
+  delivered_at   TEXT,
+  outcome        TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')) -- how the owner closed a sent round (00154)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS review_rounds_one_open ON review_rounds(session_id) WHERE status = 'open' AND session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS review_rounds_project ON review_rounds(project_id, id);
