@@ -4,7 +4,7 @@ import WatchtowerCore
 extension SystemSettings {
     /// Workbench → Default agent (board #399, D1): what a new session, Work
     /// on It and a phone start run; the menus can still pick the other one.
-    /// Below it, the owner's instructions for agents. Kept in its own file so
+    /// Below it, a pointer to the owner's instructions (Settings → Profile). Kept in its own file so
     /// SystemSettings.swift stays under the fan-out gate.
     var workbenchSection: some View {
         Section("Workbench") {
@@ -19,7 +19,13 @@ extension SystemSettings {
             if config.workbenchDefaultAgent == .codex, selectedProviderID != "codex" {
                 codexCLIPathRow
             }
-            InstructionsSettingsSection()
+            HStack {
+                Text("Instructions for your agents live in Profile.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Open Profile") { appState.openInstructionsSettings() }
+                    .buttonStyle(.link).font(.caption)
+            }
         }
     }
 }

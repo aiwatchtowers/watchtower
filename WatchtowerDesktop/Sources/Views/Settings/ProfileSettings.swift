@@ -22,6 +22,7 @@ struct ProfileSettings: View {
     @State private var starredPeople: [String] = []
 
     var body: some View {
+        ScrollViewReader { proxy in
         Form {
             if isLoading {
                 HStack {
@@ -43,12 +44,24 @@ struct ProfileSettings: View {
                 // covers the profile fields only, which the card's footer
                 // states explicitly.
                 SkillsSettingsSection()
+                Section("Instructions") { InstructionsSettingsSection() }
+                    .id(SettingsAnchor.instructions)
                 AssistantToolsSettingsSection()
                 ClaudeAIConnectorsSection(model: appState.claudeAIConnectors)
                 onboardingSection
             }
         }
         .formStyle(.grouped)
+        .onChange(of: appState.settingsAnchor, initial: true) {
+            guard let anchor = appState.settingsAnchor else { return }
+            Task {
+                // The sections appear after the profile loads.
+                try? await Task.sleep(for: .milliseconds(250))
+                withAnimation { proxy.scrollTo(anchor, anchor: .top) }
+                appState.settingsAnchor = nil
+            }
+        }
+        }
         .padding(.horizontal)
         .padding(.top, 4)
         .safeAreaInset(edge: .bottom) {

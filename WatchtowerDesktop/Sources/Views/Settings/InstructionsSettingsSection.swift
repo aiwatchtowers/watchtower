@@ -1,18 +1,14 @@
 import SwiftUI
 import WatchtowerCore
 
-/// Settings → System → Workbench: the owner's two texts (Session instructions,
-/// Target procedure) with their "You keep saying this" suggestions. Everything
-/// goes through `watchtower instructions … --json`; the texts are not part of
-/// config.yaml, so each field has its own Save button.
+/// Settings → Profile → Instructions: the owner's texts. "For chats and
+/// agents" (the global session text), "Only in chats" (the chat text and the
+/// lines added from chats), "Target procedure". Per-workbench texts stay in
+/// Agent Settings….
 struct InstructionsSettingsSection: View {
     @Environment(AppState.self) private var appState
 
-    @State private var state: OwnerInstructionsState?
-    @State private var drafts: [InstructionField: String] = [:]
-    @State private var errors: [InstructionField: String] = [:]
-    @State private var loadError: String?
-    @State private var busy = false
+    @State private var model = InstructionsSettingsModel(cli: nil)
     @State private var showPreview = false
 
     /// Workbench id → name, for the "only <workbench>" suggestion label.
@@ -20,22 +16,32 @@ struct InstructionsSettingsSection: View {
         Dictionary(uniqueKeysWithValues: (appState.workbenchesViewModel?.summaries ?? []).map { ($0.project.id, $0.project.name) })
     }
 
-    private var cli: WorkbenchCLI? { ProcessCLIRunner.makeDefault().map { WorkbenchCLI(runner: $0) } }
-
     var body: some View {
         Group {
-            if let state {
-                fieldBlock(.session, title: "Session instructions",
-                           caption: "Every new session in any workbench starts with these. Workbenches can add their own.", state: state)
+            if let state = model.state {
+                fieldBlock(.session, title: "For chats and agents",
+                           caption: "Every chat and every new workbench session starts with this. Workbenches can add their own.", state: state)
+                fieldBlock(.chat, title: "Only in chats",
+                           caption: "Added to every chat, never to a workbench session. \"remember: …\" in a chat adds a line here.", state: state)
+                addedFromChats(state.chatLines)
                 fieldBlock(.procedure, title: "Target procedure",
                            caption: "How to work any target. The agent gets it each time it moves a target to In progress.", state: state)
                 Button("Preview what the agent gets…") { showPreview = true }
                     .buttonStyle(.link)
-            } else if let loadError {
+            } else if let loadError = model.loadError {
                 Text(loadError).font(.caption).foregroundStyle(.red)
             }
+            if let notice = model.notice {
+                Text(notice).font(.caption).foregroundStyle(.orange)
+            }
         }
-        .task { await load() }
+        .task {
+            model.replaceCLI(ProcessCLIRunner.makeDefault().map { WorkbenchCLI(runner: $0) })
+            await model.load()
+        }
+        .onChange(of: appState.embeddedChats.rememberCenter?.revision) {
+            Task { await model.rememberRevisionChanged() }
+        }
         .sheet(isPresented: $showPreview) { InstructionsPreviewSheet(workbenchID: nil) }
     }
 
@@ -43,11 +49,30 @@ struct InstructionsSettingsSection: View {
         InstructionFieldBlock(
             title: title, caption: caption, stored: state.global.text(field), limit: state.limit,
             suggestions: state.suggestions.filter { $0.field == field },
-            detail: detail, error: errors[field], busy: busy,
-            draft: Binding(get: { drafts[field] }, set: { drafts[field] = $0 }),
-            onSave: { body in Task { await save(field, body: body) } },
-            onDecide: { row, add in Task { await decide(row, add: add, field: field) } }
+            detail: detail, error: model.errors[field], busy: model.busy,
+            draft: Binding(get: { model.drafts[field] }, set: { model.drafts[field] = $0 }),
+            onSave: { body in Task { await model.save(field, body: body) } },
+            onDecide: { row, add in Task { await model.decide(row, add: add) } }
         )
+    }
+
+    @ViewBuilder
+    private func addedFromChats(_ lines: [OwnerInstructionChatLine]) -> some View {
+        if !lines.isEmpty {
+            VStack(alignment: .leading, spacing: Spacing.compact) {
+                Text("Added from chats").font(.caption.weight(.semibold))
+                ForEach(lines) { line in
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(line.line).font(.caption)
+                        Spacer()
+                        if let id = InstructionsSettingsModel.openChatTarget(line) {
+                            Button("Open chat") { appState.openChatConversation(id) }
+                                .buttonStyle(.link).font(.caption)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private func detail(_ row: InstructionSuggestion) -> String {
@@ -56,41 +81,5 @@ struct InstructionsSettingsSection: View {
             text = "\(row.sessionCount) sessions · only \(workbenchNames[id] ?? "workbench \(id)") → adds to that workbench"
         }
         return text
-    }
-
-    private func load() async {
-        guard let cli else { loadError = "watchtower binary not found."; return }
-        do {
-            state = try await cli.instructions(workbenchID: nil)
-            loadError = nil
-        } catch {
-            loadError = "Could not load instructions: \(error.localizedDescription)"
-        }
-    }
-
-    private func save(_ field: InstructionField, body: String) async {
-        guard let cli else { return }
-        busy = true
-        defer { busy = false }
-        do {
-            state = try await cli.setInstruction(field: field, workbenchID: nil, body: body)
-            drafts[field] = nil
-            errors[field] = nil
-        } catch {
-            errors[field] = error.localizedDescription
-        }
-    }
-
-    private func decide(_ row: InstructionSuggestion, add: Bool, field: InstructionField) async {
-        guard let cli else { return }
-        busy = true
-        defer { busy = false }
-        do {
-            state = try await cli.decideSuggestion(id: row.id, add: add)
-            // An unsaved draft stays: only a field with no draft follows the new stored text.
-            errors[field] = nil
-        } catch {
-            errors[field] = error.localizedDescription
-        }
     }
 }

@@ -6,11 +6,18 @@ extension AppState {
         }
     }
 
-    /// Settings → Profile, where the owner's Instructions live (the "Open in
-    /// Settings" of a remembered line). The Instructions section itself is
-    /// not scrolled to yet.
+    /// Settings → Profile scrolled to Instructions (the "Open in Settings" of
+    /// a remembered line, and the pointer in System → Workbench).
     func openInstructionsSettings() {
         settingsTab = .profile
+        settingsAnchor = .instructions
         openSettingsWindow?()
+    }
+
+    /// A conversation in AI Chat (the "Open chat" of a line added from a chat).
+    func openChatConversation(_ id: Int64) {
+        ensureChatViewModels()
+        chatViewModel?.select(conversationID: id)
+        selectedDestination = .chat
     }
 }

@@ -810,10 +810,10 @@ struct WorkbenchCLI {
     }
 
     /// The exact brief slot and target procedure the agent receives.
-    func instructionsPreview(workbenchID: Int64?) async throws -> (briefSlot: String, procedure: String) {
+    func instructionsPreview(workbenchID: Int64?) async throws -> (briefSlot: String, procedure: String, chatSlot: String) {
         let data = try await instructionsRun(["preview"], workbenchID: workbenchID, stdin: nil)
         let p = try OwnerInstructionsPreview.decode(data)
-        return (p.briefSlot, p.procedure)
+        return (p.briefSlot, p.procedure, p.chatSlot)
     }
 
     /// `instructions remember`: the whole owner message goes over stdin (the
