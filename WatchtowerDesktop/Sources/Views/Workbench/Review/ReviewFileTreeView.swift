@@ -3,8 +3,8 @@ import WatchtowerCore
 
 /// The changed files as a folder tree (#960), rendered as rows of the
 /// enclosing `List`. Folders start expanded; the collapsed set lives here and
-/// resets with the round. A folder row shows how many of its files are not
-/// yet viewed and the open comments under it.
+/// resets with the round, and the selected file's folders open. A folder row
+/// shows how many of its files are not yet viewed and the open comments under it.
 struct ReviewFileTreeView: View {
     let model: ReviewChangesModel
     let files: [ReviewDiffFile]
@@ -12,6 +12,7 @@ struct ReviewFileTreeView: View {
     @State private var collapsed: Set<String> = []
 
     var body: some View {
+        let byPath = files.reduce(into: [String: ReviewDiffFile]()) { $0[$1.path] = $1 }
         ForEach(rows) { row in
             switch row.node {
             case let .folder(name, path, children):
@@ -23,6 +24,9 @@ struct ReviewFileTreeView: View {
             }
         }
         .onChange(of: model.round?.id) { collapsed = [] }
+        .onChange(of: model.selectedPath) { _, path in
+            if let path { collapsed = ReviewFileTree.revealing(path, in: collapsed) }
+        }
     }
 
     private struct Row: Identifiable {
@@ -34,10 +38,6 @@ struct ReviewFileTreeView: View {
             case let .file(path): "f:" + path
             }
         }
-    }
-
-    private var byPath: [String: ReviewDiffFile] {
-        files.reduce(into: [:]) { $0[$1.path] = $1 }
     }
 
     /// The visible rows, depth first; a collapsed folder hides its children.
@@ -59,21 +59,11 @@ struct ReviewFileTreeView: View {
         path.split(separator: "/").last.map(String.init) ?? path
     }
 
-    private func filePaths(_ nodes: [ReviewFileTree.Node]) -> [String] {
-        nodes.flatMap { node -> [String] in
-            switch node {
-            case let .folder(_, _, children): filePaths(children)
-            case let .file(path): [path]
-            }
-        }
-    }
-
     private func folderRow(name: String, path: String, children: [ReviewFileTree.Node], depth: Int) -> some View {
         let isOpen = !collapsed.contains(path)
-        let paths = filePaths(children)
-        let unviewed = paths.filter { !model.isViewed($0) }.count
-        let pathSet = Set(paths)
-        let comments = model.comments.filter { $0.path.map(pathSet.contains) == true && $0.status != .resolved }.count
+        let counts = ReviewFileTree.counts(of: children, isViewed: model.isViewed, comments: model.comments)
+        let unviewed = counts.unviewed
+        let comments = counts.openComments
         return Button {
             if isOpen { collapsed.insert(path) } else { collapsed.remove(path) }
         } label: {

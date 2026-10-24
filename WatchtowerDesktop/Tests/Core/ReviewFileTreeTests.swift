@@ -41,4 +41,36 @@ final class ReviewFileTreeTests: XCTestCase {
     func testEmpty() {
         XCTAssertEqual(ReviewFileTree.build([]), [])
     }
+
+    private func comment(_ id: Int64, path: String?, status: ReviewComment.Status) -> ReviewComment {
+        ReviewComment(
+            id: id, roundID: 1, path: path, side: "new", startLine: 1, endLine: 1, quote: "", quotePrefix: "",
+            quoteSuffix: "", treeSHA: "", lens: "", body: "c\(id)", status: status, carriedFrom: nil, agentReply: ""
+        )
+    }
+
+    /// A folder row counts the files under it at any depth that are not
+    /// viewed, and their comments that are not resolved.
+    func testFolderCounts() {
+        let tree = ReviewFileTree.build(["src/a.swift", "src/deep/b.swift", "src/deep/c.swift", "other.txt"])
+        guard case let .folder(_, _, children) = tree[0] else { return XCTFail("src is not a folder") }
+        let comments = [
+            comment(1, path: "src/a.swift", status: .draft),
+            comment(2, path: "src/deep/b.swift", status: .carried),
+            comment(3, path: "src/deep/b.swift", status: .resolved),
+            comment(4, path: "other.txt", status: .draft),
+            comment(5, path: nil, status: .draft)
+        ]
+        let counts = ReviewFileTree.counts(of: children, isViewed: { $0 == "src/deep/c.swift" }, comments: comments)
+        XCTAssertEqual(counts, ReviewFileTree.FolderCounts(unviewed: 2, openComments: 2))
+        let none = ReviewFileTree.counts(of: children, isViewed: { _ in true }, comments: [])
+        XCTAssertEqual(none, ReviewFileTree.FolderCounts(unviewed: 0, openComments: 0))
+    }
+
+    /// Selecting a file opens every folder that holds it, and only those.
+    func testRevealingOpensTheFoldersOfTheFile() {
+        let collapsed: Set<String> = ["src", "src/deep", "src/deeper", "docs"]
+        XCTAssertEqual(ReviewFileTree.revealing("src/deep/b.swift", in: collapsed), ["src/deeper", "docs"])
+        XCTAssertEqual(ReviewFileTree.revealing("top.txt", in: collapsed), collapsed)
+    }
 }

@@ -20,6 +20,39 @@ package struct ReviewFileTree: Sendable {
         return nodes(of: root, prefix: "")
     }
 
+    /// A folder row's counts: its files not yet viewed and the comments on
+    /// them that are not resolved.
+    package struct FolderCounts: Equatable, Sendable {
+        package let unviewed: Int
+        package let openComments: Int
+    }
+
+    package static func counts(
+        of children: [Node], isViewed: (String) -> Bool, comments: [ReviewComment]
+    ) -> FolderCounts {
+        let paths = filePaths(children)
+        let pathSet = Set(paths)
+        return FolderCounts(
+            unviewed: paths.filter { !isViewed($0) }.count,
+            openComments: comments.filter { $0.path.map(pathSet.contains) == true && $0.status != .resolved }.count
+        )
+    }
+
+    /// Every file path under `nodes`, depth first.
+    package static func filePaths(_ nodes: [Node]) -> [String] {
+        nodes.flatMap { node -> [String] in
+            switch node {
+            case let .folder(_, _, children): filePaths(children)
+            case let .file(path): [path]
+            }
+        }
+    }
+
+    /// `collapsed` without the folders that hold `path`, so the file's row shows.
+    package static func revealing(_ path: String, in collapsed: Set<String>) -> Set<String> {
+        collapsed.filter { !path.hasPrefix($0 + "/") }
+    }
+
     private struct Directory {
         var folders: [String: Self] = [:]
         var files: [String: String] = [:] // name -> full path
