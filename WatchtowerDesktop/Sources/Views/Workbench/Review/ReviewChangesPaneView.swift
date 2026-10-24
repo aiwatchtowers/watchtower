@@ -15,6 +15,11 @@ struct ReviewChangesPaneView: View {
     var agentStateKind: SessionSwitcherPresentation.State.Kind?
     /// Find Repeats' model (the workbench's lessons); nil = not available.
     var lessons: ReviewLessonsModel?
+    /// Code navigation (board #960): the session's code root, where jumps
+    /// land while this pane is key, and the view model they go through;
+    /// nil = no navigation into the review.
+    var codeRoot: CodeRoot?
+    var workbenches: WorkbenchesViewModel?
 
     @State private var inline = false
     @State private var compose: ComposeRequest?
@@ -24,6 +29,7 @@ struct ReviewChangesPaneView: View {
     /// The pane's height; 0 until the first layout (no cap then).
     @State private var paneHeight: CGFloat = 0
     @State private var pace = ReviewPaceWiring()
+    @State private var destination = ReviewNavigationDestination()
 
     /// What the shared comment sheet asks for and does with the answer: a line
     /// comment, a design comment, a checklist question, a Wrap-up note.
@@ -40,16 +46,21 @@ struct ReviewChangesPaneView: View {
     var body: some View {
         content
             .background(WindowKeyObserver(action: { autoRefresh() }, windowChanged: { pace.window = $0 }))
+            .background(ReviewDestinationAnchor(destination: destination))
             .onAppear {
                 onScreen = true
                 pace.start(model: model)
+                registerDestination(previous: nil)
                 if model.load == .idle { Task { await openRound() } }
             }
             .onDisappear {
                 onScreen = false
                 pace.stop()
+                if let workbenchID = codeRoot?.workbenchID { workbenches?.unregisterDestination(destination, workbenchID: workbenchID) }
                 Task { await model.flushState() }
             }
+            .onChange(of: codeRoot) { old, _ in registerDestination(previous: old) }
+            .task(id: codeRoot?.folder) { await readPathMap() }
             .onChange(of: agentStateKind) { old, new in
                 // Into a turn-over kind only: .finished → .stopped is the same turn's end.
                 if let new, Self.turnOver.contains(new), !(old.map(Self.turnOver.contains) ?? false) { autoRefresh() }
@@ -165,7 +176,15 @@ struct ReviewChangesPaneView: View {
     }
 
     @ViewBuilder private func detail(checklist: Bool) -> some View {
-        if let path = model.selectedPath {
+        if let preview = model.preview, let codeRoot {
+            VStack(spacing: 0) {
+                ReviewCodePreview(
+                    model: model, location: preview, root: codeRoot,
+                    navigation: workbenches?.codeFiles.navigation, usages: workbenches?.codeFiles.usages
+                )
+                if checklist { chaptersFoot }
+            }
+        } else if let path = model.selectedPath {
             VStack(spacing: 0) {
                 if let file = model.files.first(where: { $0.path == path }) {
                     ReviewFileHeader(model: model, file: file)
@@ -225,7 +244,7 @@ struct ReviewChangesPaneView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                MonacoDiffView(payload: payload(path: path, sides: sides)) { start, end, side in
+                MonacoDiffView(payload: payload(path: path, sides: sides), focus: model.focusRequest) { start, end, side in
                     compose = lineComposeRequest(path: path, side: side, start: start, end: end)
                 } onUndo: { id in
                     Task { await model.undo(hunkID: id) }
@@ -265,6 +284,29 @@ struct ReviewChangesPaneView: View {
                 canUndo: model.canUndo, busy: model.sending || model.undoing
             )
         )
+    }
+
+    /// Jumps in the session's code root land here while the pane is key; a
+    /// changed root moves the registration with it.
+    private func registerDestination(previous: CodeRoot?) {
+        if let previous, previous.workbenchID != codeRoot?.workbenchID {
+            workbenches?.unregisterDestination(destination, workbenchID: previous.workbenchID)
+        }
+        destination.model = model
+        destination.root = codeRoot
+        if let codeRoot { workbenches?.registerDestination(destination, workbenchID: codeRoot.workbenchID) }
+    }
+
+    /// The folder's place in the repository maps the round's paths to the
+    /// code root's; until it is read (or when it cannot be), no jump lands here.
+    private func readPathMap() async {
+        guard let folder = codeRoot?.folder else {
+            model.pathMap = nil
+            return
+        }
+        let prefix = await GitStatusSnapshot.repoPrefix(folder: folder)
+        guard !Task.isCancelled else { return }
+        model.pathMap = prefix.map(ReviewPathMap.init(repoPrefix:))
     }
 
     /// Opens the round, then puts its first file on screen.

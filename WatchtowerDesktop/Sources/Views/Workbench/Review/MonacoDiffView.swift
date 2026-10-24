@@ -52,6 +52,9 @@ struct MonacoDiffView: NSViewRepresentable {
     }
 
     var payload: Payload?
+    /// A line to put on screen once its file is shown (board #960); sent
+    /// once per serial.
+    var focus: ReviewChangesModel.FocusRequest?
     /// The owner chose Comment on a selection: its lines and side ("old"/"new").
     var onComment: (_ startLine: Int, _ endLine: Int, _ side: String) -> Void
     /// The owner pressed Undo on a hunk of the shown file (its id was checked).
@@ -80,7 +83,7 @@ struct MonacoDiffView: NSViewRepresentable {
         context.coordinator.onComment = onComment
         context.coordinator.onUndo = onUndo
         context.coordinator.onError = onError
-        context.coordinator.show(payload)
+        context.coordinator.show(payload, focus: focus)
     }
 
     @MainActor
@@ -93,6 +96,8 @@ struct MonacoDiffView: NSViewRepresentable {
         /// What the page should show, and what it was last told.
         private var wanted: Payload?
         private var told: Payload?
+        private var wantedFocus: ReviewChangesModel.FocusRequest?
+        private var sentFocusSerial: Int?
 
         init(
             onComment: @escaping (Int, Int, String) -> Void,
@@ -104,9 +109,19 @@ struct MonacoDiffView: NSViewRepresentable {
             self.onError = onError
         }
 
-        func show(_ payload: Payload?) {
+        func show(_ payload: Payload?, focus: ReviewChangesModel.FocusRequest?) {
             wanted = payload
+            wantedFocus = focus
             push()
+            pushFocus()
+        }
+
+        /// `wt.focus(line)` once the page shows the request's file; the page
+        /// holds it until the diff is computed (diff.js).
+        private func pushFocus() {
+            guard ready, let focus = wantedFocus, focus.serial != sentFocusSerial, told?.path == focus.path else { return }
+            sentFocusSerial = focus.serial
+            call("wt.focus", focus.line)
         }
 
         /// Sends `wanted` once the page is ready and when it changed; only
@@ -154,6 +169,7 @@ struct MonacoDiffView: NSViewRepresentable {
                 ready = true
                 told = nil
                 push()
+                pushFocus()
             case "comment":
                 guard let start = body["startLine"] as? Int, let end = body["endLine"] as? Int,
                       let side = body["side"] as? String else {

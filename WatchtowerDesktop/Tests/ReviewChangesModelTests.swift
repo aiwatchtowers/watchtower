@@ -1837,3 +1837,87 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(h.cli.calls("revert-hunk"), [])
     }
 }
+
+/// Code navigation lands in the review (board #960, spec §2): a file of the
+/// diff is selected with its line asked for; any other file is previewed.
+extension ReviewChangesModelTests {
+    private func navigationHarness() async throws -> Harness {
+        let h = try harness()
+        h.baseScript(paths: ["apps/web/a.go", "apps/web/b.go"])
+        h.cli.script("file", [fileJSON(old: "a\n", new: "a2\n"), fileJSON(old: "b\n", new: "b2\n")])
+        await h.model.open()
+        await h.model.select("apps/web/a.go")
+        h.model.pathMap = ReviewPathMap(repoPrefix: "apps/web")
+        return h
+    }
+
+    func testShowLocationOnADiffFileSelectsItAndAsksForTheLine() async throws {
+        let h = try await navigationHarness()
+        let shown = h.model.showLocation(CodeNavLocation(path: "b.go", line: 5, col: 2))
+        XCTAssertTrue(shown)
+        XCTAssertEqual(h.model.selectedPath, "apps/web/b.go")
+        XCTAssertNil(h.model.preview)
+        XCTAssertEqual(h.model.focusRequest?.path, "apps/web/b.go")
+        XCTAssertEqual(h.model.focusRequest?.line, 5)
+        XCTAssertEqual(h.model.currentLocation, CodeNavLocation(path: "b.go", line: 5, col: 1))
+        await h.model.navigationLoad?.value
+        XCTAssertEqual(h.model.currentSides?.new.text, "b2\n")
+
+        let first = try XCTUnwrap(h.model.focusRequest)
+        XCTAssertTrue(h.model.showLocation(CodeNavLocation(path: "b.go", line: 5, col: 2)))
+        XCTAssertNotEqual(h.model.focusRequest, first, "the same line asked again fires again")
+        XCTAssertEqual(h.cli.calls("file").count, 2, "the file on screen is not read again")
+    }
+
+    func testShowLocationWithoutALineSelectsTheFileOnly() async throws {
+        let h = try await navigationHarness()
+        XCTAssertTrue(h.model.showLocation(CodeNavLocation(path: "b.go", line: 0, col: 1)))
+        XCTAssertEqual(h.model.selectedPath, "apps/web/b.go")
+        XCTAssertNil(h.model.focusRequest)
+    }
+
+    func testShowLocationOutsideTheDiffOpensThePreview() async throws {
+        let h = try await navigationHarness()
+        let place = CodeNavLocation(path: "lib/c.go", line: 12, col: 3)
+        XCTAssertTrue(h.model.showLocation(place))
+        XCTAssertEqual(h.model.preview, place)
+        XCTAssertEqual(h.model.selectedPath, "apps/web/a.go", "the diff's file stays for Back to diff")
+        XCTAssertEqual(h.model.currentLocation, place)
+        h.model.previewCursorMoved(CodeNavLocation(path: "lib/c.go", line: 14, col: 1))
+        XCTAssertEqual(h.model.currentLocation, CodeNavLocation(path: "lib/c.go", line: 14, col: 1))
+        h.model.previewCursorMoved(CodeNavLocation(path: "other.go", line: 1, col: 1))
+        XCTAssertEqual(h.model.currentLocation, CodeNavLocation(path: "lib/c.go", line: 14, col: 1),
+                       "a cursor of another file is a stale message")
+
+        let serial = h.model.previewSerial
+        XCTAssertTrue(h.model.showLocation(place))
+        XCTAssertNotEqual(h.model.previewSerial, serial, "the same place asked again is revealed again")
+        XCTAssertEqual(h.model.currentLocation, place)
+
+        h.model.closePreview()
+        XCTAssertNil(h.model.preview)
+        XCTAssertEqual(h.model.currentLocation?.path, "a.go")
+
+        XCTAssertTrue(h.model.showLocation(place))
+        await h.model.select("apps/web/b.go")
+        XCTAssertNil(h.model.preview, "picking a file goes back to the diff")
+    }
+
+    func testShowLocationDeclinesBeforeThePathMapIsKnown() async throws {
+        let h = try await navigationHarness()
+        h.model.pathMap = nil
+        XCTAssertFalse(h.model.showLocation(CodeNavLocation(path: "b.go", line: 5, col: 2)))
+        XCTAssertNil(h.model.preview)
+        XCTAssertEqual(h.model.selectedPath, "apps/web/a.go")
+        XCTAssertNil(h.model.currentLocation)
+    }
+
+    /// A comment picked in the list: its line is asked for in the diff.
+    func testFocusLineAsksForALineOfTheSelectedFile() async throws {
+        let h = try await navigationHarness()
+        h.model.focusLine(3)
+        XCTAssertEqual(h.model.focusRequest?.path, "apps/web/a.go")
+        XCTAssertEqual(h.model.focusRequest?.line, 3)
+        XCTAssertEqual(h.model.currentLocation, CodeNavLocation(path: "a.go", line: 3, col: 1))
+    }
+}

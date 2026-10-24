@@ -306,8 +306,10 @@ final class CodeNavigationCenter {
     }
 
     /// The cursor of the file on screen, as the page last reported it; nil
-    /// when the page has not reported one for that file.
+    /// when the page has not reported one for that file. A key Branch
+    /// review pane reports its own place instead (board #960).
     private func currentLocation(_ root: CodeRoot) -> CodeNavLocation? {
+        if let destination = workbenches?.keyDestination(for: root) { return destination.currentLocation }
         guard let files = workbenches?.codeFiles, let active = files.tabs(for: root).active,
               let cursor = files.cursors[root], cursor.path == active else { return nil }
         return cursor
