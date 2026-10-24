@@ -1673,17 +1673,23 @@ Since 2026-10-24 (board #947) `finish_session` finishes only the whole
 ticket, with the workbench's finish check on (the default; a methodology read
 failure counts as on). The ticket is the session's launch target
 (`terminal_sessions.target_id`), else the call's `target_id`, else none. It
-is refused — a `ValidationError` in `Scope`, before any row or audit row —
+is refused — a `ValidationError` in `Scope`; refused at propose time it writes
+no row or audit row (`Scope` runs again at apply, where a refusal caused by a
+change in between lands as a `failed` audit row, as for any tool) —
 while (1) the ticket has an open leaf (`todo`/`in_progress`/`in_review`;
 `blocked`, `done` and `dismissed` leaves do not count), listed in the
 refusal, or (2) the session's folder (`ReviewSessionFolder`) differs from its
 base and the AI overview cache (`review_overviews`) holds no overview for that
-exact tree, base and intent hash, or that overview's coverage has an item that
-is not `done`. A folder outside git, or no git, and an empty diff skip (2); a
-git failure refuses. `handover_ask_id` passes both: an ask of this workbench
+exact tree, base and intent hash, or that overview lacks a `done` coverage
+entry for any intent item (a missing entry counts as not done). A folder
+outside git, or no git, an empty diff, and the workbench folder of a session
+that worked in a worktree of its own (launch folder or a recorded
+`terminal_session_worktrees` root elsewhere) and has left it skip (2); any
+other git failure refuses. `handover_ask_id` passes both: an ask of this workbench
 filed by this session (`owner_asks.session_id`), not withdrawn, about the
 ticket or a target under it (any target when there is no ticket); a refusal
-names what is wrong with it. The gates read only; the overview is made by the
+names what is wrong with it. The gates never call the model or write the
+database (the snapshot writes git objects only); the overview is made by the
 agent through `workbench review overview --session <id>`, which caches it
 under the key the Desktop round on the same tree reads and opens no round.
 
@@ -1700,7 +1706,7 @@ owner's and the agent's backs.
 - `internal/sessionreport/refresh_test.go::TestSessionReport_ReportsAWorktreeBranch` (a placed session's `wt/` branch, board #229)
 - Codex (2026-10-12, board #399): `internal/sessionreport/summary_test.go::TestSessionReport_IncludesCodexSessions`; supporting: `internal/tools/workbench_docs_test.go::TestAgentLabel_CodexRowIsCodexCLI`, `internal/devpack/codex_hooks_test.go::TestCodexMCPOverrides_IncludeApproveAndAgentFlag` (the `env_vars` entry); every existing PROJ-14 guard unchanged
 - supporting: `internal/tools/workbench_finish_test.go` (`TestSessionLinks_EachWriteToolLinksItsTargets`, `TestSessionLinks_ReadToolsLinkNothing`, `TestSessionLinks_AFailedLinkKeepsTheWriteAndWarns`)
-- Finish gates (2026-10-24, board #947): `internal/tools/workbench_finish_gate_test.go::TestProj14_FinishRefusesOpenLeaves`, `::TestProj14_FinishTicketFromTargetIDWhenNotLaunched`, `::TestProj14_HandoverAskPassesBothGates`, `::TestProj14_HandoverAskRefusals`, `::TestProj14_FinishCheckOffSkipsGates`, `::TestProj14_FinishRefusesWithoutOverview`, `::TestProj14_ANoteAfterTheOverviewAsksForItAgain`, `::TestProj14_FinishRefusesUncoveredItems`, `::TestProj14_EmptyDiffSkipsTheOverview`; supporting: `internal/reviewdiff/snapshot_test.go::TestSameTree`, `cmd/workbench_review_overview_test.go::TestReviewOverview_SessionForm*`
+- Finish gates (2026-10-24, board #947): `internal/tools/workbench_finish_gate_test.go::TestProj14_FinishRefusesOpenLeaves`, `::TestProj14_FinishTicketFromTargetIDWhenNotLaunched`, `::TestProj14_HandoverAskPassesBothGates`, `::TestProj14_HandoverAskRefusals`, `::TestProj14_FinishCheckOffSkipsGates`, `::TestProj14_FinishRefusesWithoutOverview`, `::TestProj14_ANoteAfterTheOverviewAsksForItAgain`, `::TestProj14_FinishRefusesUncoveredItems`, `::TestProj14_AllItemsDonePasses`, `::TestProj14_LeftItsWorktreeSkipsTheOverview`, `::TestProj14_GitFailureRefuses`, `::TestProj14_OpenLeavesRefusalListsAtMostTwenty`, `::TestProj14_EmptyDiffSkipsTheOverview`; supporting: `internal/reviewdiff/snapshot_test.go::TestSameTree`, `cmd/workbench_review_overview_test.go::TestReviewOverview_SessionForm*`
 
 **Locked since:** 2026-10-03
 
@@ -2500,7 +2506,7 @@ owner never saw.
 
 ## Changelog
 
-- 2026-10-24 (board #947, spec `docs/superpowers/specs/2026-10-24-finish-whole-ticket-design.md`, **owner approved in ask #550**): strengthening, no guard relaxed. **PROJ-14 amended** — `finish_session` is refused while the session's ticket has open leaves or its changes have no AI overview that sees all of the work, unless `handover_ask_id` names an ask of this session about the ticket; only with the finish check on. `TestSessionLinks_EachWriteToolLinksItsTargets`' `finish_session` case marks its ticket done first (a supporting test, not a guard; its link assertion is unchanged). **PROJ-04:** core skill pack v14 ("Finishing a session": the whole ticket, the overview before `finish_session`); the v13 text joins the adopt-by-digest list and the DEV-04 fixtures. New guards listed under PROJ-14.
+- 2026-10-24 (board #947, spec `docs/superpowers/specs/2026-10-24-finish-whole-ticket-design.md`, **owner approved in ask #550**): strengthening, no guard relaxed. **PROJ-14 amended** — `finish_session` is refused while the session's ticket has open leaves or its changes have no AI overview that sees all of the work, unless `handover_ask_id` names an ask of this session about the ticket; only with the finish check on. `TestSessionLinks_EachWriteToolLinksItsTargets`' `finish_session` case marks its ticket done first with direct SQL, not a tool, so the linked target it asserts is still `finish_session`'s own (a supporting test, not a guard). **PROJ-04:** core skill pack v14 ("Finishing a session": the whole ticket, the overview before `finish_session`); the v13 text joins the adopt-by-digest list and the DEV-04 fixtures. New guards listed under PROJ-14.
 - 2026-10-20 (board #713, Linear AI-14): note only — **no contract, guard test or status changed**. Desktop only: board columns are edited on the Kanban's header row instead of the **Board Columns…** sheet (the same whole-definition `workbench columns --set -` write, PROJ-19 unchanged); New Task becomes a panel whose column chip writes the column right after `workbench target add`; the drift popover's **Fix** starts an ordinary agent session with a fix prompt (PROJ-07 unchanged: the check stays read-only, the agent writes the board through its tools).
 - 2026-10-20 (board #788, workbench header redesign): controls moved (header → title row / session strip, header buttons → ⚡ menu); no contract, guard test or status changed.
 - 2026-10-19 (board #711, Workchat final review; **owner approved in ask #400**): **PROJ-21 amended — no guard changed.** The Status line and one Observable paragraph record the Mac's Workchat card as a second writer of `permission_requests`: `SessionControl.answerPermission` with `decided_by = "Mac"`, through the same guarded compare-and-set, with no device grant, and the Deny-only blocks (`PermissionAllowBlock`) on the card too. The Go hook prints a second deny constant, `Denied by the owner at the Mac.`, when `decided_by` is `"Mac"`; the phone's pinned `Denied from the owner's phone.` is unchanged (`TestProj21_PermissionWaitPhoneDenyPrintsDeny` untouched; `TestProj21_PermissionWaitMacWorkchatDenySaysMac` added; the Workchat card's tests in `WorkchatModelTests` are listed under the guards). Note only: the PROJ-16/21 file lists gained `WatchtowerDesktop/Sources/Services/SessionControl.swift` — the line, interrupt and answer gates moved out of the phone handlers into it — and no contract changed.

@@ -66,8 +66,15 @@ already merged — see v1 limits).
 3. **Missing** → refused: "run `<bin> workbench review overview --session
    <id> --json`, read its coverage, then call finish_session again". `<bin>`
    is the hooks' absolute binary, as in the brief's `Cleanup:` line.
-4. **Present** → every coverage item with status `partial` or `not_found` is
-   listed. Any → refused unless `handover_ask_id` is given.
+4. **Present** → every intent item without a `done` coverage entry is listed
+   (`partial`, `not_found`, or `missing` when the overview left it out — a
+   pass needs an affirmative `done` per item). Any → refused unless
+   `handover_ask_id` is given.
+5. **The session left its own worktree** — the snapshot folder is the
+   workbench folder, but the session was launched in another folder or
+   recorded a worktree root elsewhere (`terminal_session_worktrees`) → gate 2
+   is skipped: the workbench folder's diff is not this session's work and may
+   be another live session's (review F4).
 
 ### `workbench review overview --session <id>`
 
@@ -169,6 +176,13 @@ New guards (`internal/tools/workbench_finish_gate_test.go`):
   is unchanged); gate 1 covers the rest of the subtree mechanically.
 - A session with no ticket and no diff is not checked.
 - The gate reads the session's current folder: the skill runs the check
-  before leaving the worktree for the cleanup step.
+  before leaving the worktree for the cleanup step; once the session is back
+  in the workbench folder, gate 2 is skipped (step 5 above).
+- `finish_session` links its `target_id` after it passes; when that target
+  was not linked before, the intent hash changes, so a repeat call on the same
+  tree asks for the overview again (one more model call). The ticket is
+  normally linked from the start (`update_target` → `in_progress`).
+- An open leaf includes one still `in_review` (its PR not merged) or worked by
+  another session; both need the handover ask.
 - No allow rule for the overview command (unlike `workbench cleanup`): in
   auto mode it runs through the usual permission classifier.

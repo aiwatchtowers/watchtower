@@ -56,7 +56,7 @@ func (db *DB) OpenTicketLeaves(projectID, targetID int64) ([]OpenTicketLeaf, err
 	for rows.Next() {
 		var l OpenTicketLeaf
 		if err := rows.Scan(&l.ID, &l.Status, &l.Text); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("reading the open leaves of target %d: %w", targetID, err)
 		}
 		out = append(out, l)
 	}

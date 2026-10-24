@@ -93,8 +93,9 @@ func TestSessionLinks_EachWriteToolLinksItsTargets(t *testing.T) {
 			return nil
 		},
 		"finish_session": func(t *testing.T, fx workbenchFixture, reg *Registry) []int64 {
-			// A done ticket passes the finish check's open-leaves gate.
-			mustApply(t, reg, fx.a, "update_target", fmt.Sprintf(`{"target_id":%d,"status":"done","reason":"r"}`, fx.aTarget))
+			// A done ticket passes the finish check's open-leaves gate; set
+			// without a tool, so the link below is finish_session's own.
+			setTargetStatus(t, fx.d, fx.aTarget, "done")
 			mustApply(t, reg, fx.a, "finish_session", fmt.Sprintf(`{"summary":"Done.","target_id":%d,"reason":"r"}`, fx.aTarget))
 			return []int64{fx.aTarget}
 		},

@@ -9,7 +9,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -88,12 +90,33 @@ func TestProj14_FinishTicketFromTargetIDWhenNotLaunched(t *testing.T) {
 	session := seedTerminalSession(t, fx.d, fx.a)
 	reg := askRegistry(t, fx.d, strconv.FormatInt(session, 10))
 	_, err := proposeIn(t, reg, fx.a, "finish_session", fmt.Sprintf(`{"summary":"Done.","target_id":%d,"reason":"r"}`, fx.aTarget))
-	assert.Contains(t, refusal(t, err), fmt.Sprintf("ticket #%d still has 1 open leaves", fx.aTarget))
+	assert.Contains(t, refusal(t, err), fmt.Sprintf("ticket #%d still has 1 open leaf ", fx.aTarget))
 	mustApply(t, reg, fx.a, "finish_session", `{"summary":"Done.","reason":"r"}`)
 }
 
+// repoSession is reviewRepoWorkbench with the session launched in the
+// workbench folder, as a session the Desktop starts there is.
+func repoSession(t *testing.T) (fx workbenchFixture, wb int64, session int64, reg *Registry) {
+	t.Helper()
+	fx, wb, session, reg = reviewRepoWorkbench(t)
+	_, err := fx.d.Exec(`UPDATE terminal_sessions SET folder_path = ? WHERE id = ?`, reviewFolder(t, fx.d, wb), session)
+	require.NoError(t, err)
+	return fx, wb, session, reg
+}
+
+// linkIntent links n new targets of wb to session: the overview's intent
+// items, in order.
+func linkIntent(t *testing.T, d *db.DB, wb, session int64, n int) {
+	t.Helper()
+	for i := 1; i <= n; i++ {
+		id := db.SeedTestWorkbenchTarget(t, d, wb, sql.NullInt64{}, fmt.Sprintf("goal %d", i))
+		setTargetStatus(t, d, id, "done")
+		require.NoError(t, d.LinkSessionTarget(session, id))
+	}
+}
+
 func TestProj14_HandoverAskPassesBothGates(t *testing.T) {
-	fx, wb, session, reg := reviewRepoWorkbench(t)
+	fx, wb, session, reg := repoSession(t)
 	group, todo, _ := ticketTree(t, fx.d, wb)
 	launchedFor(t, fx.d, session, group)
 	id := askID(t, mustApply(t, reg, wb, "ask_owner", fmt.Sprintf(`{"kind":"question","title":"Images later?",`+
@@ -139,7 +162,7 @@ func TestProj14_HandoverAskRefusals(t *testing.T) {
 }
 
 func TestProj14_FinishCheckOffSkipsGates(t *testing.T) {
-	fx, wb, session, reg := reviewRepoWorkbench(t)
+	fx, wb, session, reg := repoSession(t)
 	group, _, _ := ticketTree(t, fx.d, wb)
 	launchedFor(t, fx.d, session, group)
 	require.NoError(t, fx.d.SetWorkbenchMethodology(wb, db.WorkbenchMethodology{FinishCheck: workbenchmethod.FinishOff}))
@@ -167,7 +190,7 @@ func cacheOverview(t *testing.T, d *db.DB, wb, session int64, statuses ...string
 }
 
 func TestProj14_FinishRefusesWithoutOverview(t *testing.T) {
-	fx, wb, session, reg := reviewRepoWorkbench(t)
+	fx, wb, session, reg := repoSession(t)
 	finishGateExecutable = func() (string, error) { return "/opt/watch tower/watchtower", nil }
 	t.Cleanup(func() { finishGateExecutable = os.Executable })
 
@@ -186,7 +209,7 @@ func TestProj14_FinishRefusesWithoutOverview(t *testing.T) {
 
 // A new note changes the intent the overview was made for: it is asked again.
 func TestProj14_ANoteAfterTheOverviewAsksForItAgain(t *testing.T) {
-	fx, wb, session, reg := reviewRepoWorkbench(t)
+	fx, wb, session, reg := repoSession(t)
 	cacheOverview(t, fx.d, wb, session, "done")
 	mustApply(t, reg, wb, "annotate_changes", `{"notes":[{"path":"b.go","start_line":1,"end_line":1,"note":"why"}],"reason":"r"}`)
 	_, err := proposeIn(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
@@ -194,12 +217,15 @@ func TestProj14_ANoteAfterTheOverviewAsksForItAgain(t *testing.T) {
 }
 
 func TestProj14_FinishRefusesUncoveredItems(t *testing.T) {
-	fx, wb, session, reg := reviewRepoWorkbench(t)
+	fx, wb, session, reg := repoSession(t)
+	linkIntent(t, fx.d, wb, session, 4)
+	// Item 4 has no coverage entry at all: a pass needs a done for each item.
 	cacheOverview(t, fx.d, wb, session, "done", "partial", "not_found")
 	_, err := proposeIn(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
 	msg := refusal(t, err)
 	assert.Contains(t, msg, "2. [partial] item 2")
 	assert.Contains(t, msg, "3. [not_found] item 3")
+	assert.Contains(t, msg, "4. [missing] goal 4")
 	assert.NotContains(t, msg, "item 1")
 	assertNotFinished(t, fx.d, session, 0)
 
@@ -207,9 +233,71 @@ func TestProj14_FinishRefusesUncoveredItems(t *testing.T) {
 	mustApply(t, reg, wb, "finish_session", fmt.Sprintf(`{"summary":"Done.","handover_ask_id":%d,"reason":"r"}`, id))
 }
 
+func TestProj14_AllItemsDonePasses(t *testing.T) {
+	fx, wb, session, reg := repoSession(t)
+	linkIntent(t, fx.d, wb, session, 2)
+	cacheOverview(t, fx.d, wb, session, "done", "done")
+	mustApply(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+}
+
+// A session launched in, or recorded working in, a worktree of its own and
+// now back in the workbench folder: that folder's diff is not its work.
+func TestProj14_LeftItsWorktreeSkipsTheOverview(t *testing.T) {
+	t.Run("launched in a worktree", func(t *testing.T) {
+		fx, wb, session, reg := repoSession(t)
+		_, err := fx.d.Exec(`UPDATE terminal_sessions SET folder_path = ? WHERE id = ?`, t.TempDir(), session)
+		require.NoError(t, err)
+		mustApply(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+	})
+	t.Run("recorded a worktree", func(t *testing.T) {
+		fx, wb, session, reg := repoSession(t)
+		_, err := fx.d.Exec(`INSERT INTO terminal_session_worktrees (session_id, root, branch, first_at)
+			VALUES (?, ?, 'wt/x', '2026-10-24T00:00:00.000Z')`, session, t.TempDir())
+		require.NoError(t, err)
+		mustApply(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+	})
+	t.Run("recorded only the workbench folder", func(t *testing.T) {
+		fx, wb, session, reg := repoSession(t)
+		_, err := fx.d.Exec(`INSERT INTO terminal_session_worktrees (session_id, root, branch, first_at)
+			VALUES (?, ?, 'main', '2026-10-24T00:00:00.000Z')`, session, reviewFolder(t, fx.d, wb))
+		require.NoError(t, err)
+		_, err = proposeIn(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+		assert.Contains(t, refusal(t, err), "your changes have no AI overview yet")
+	})
+}
+
+// A git failure other than "not a repository" refuses; it never passes.
+func TestProj14_GitFailureRefuses(t *testing.T) {
+	fx, wb, session, reg := repoSession(t)
+	budget := finishGateBudget
+	finishGateBudget = time.Nanosecond
+	t.Cleanup(func() { finishGateBudget = budget })
+	_, err := proposeIn(t, reg, wb, "finish_session", `{"summary":"Done.","reason":"r"}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "finish check: reading the session's changes")
+	assertNotFinished(t, fx.d, session, 0)
+}
+
+func TestProj14_OpenLeavesRefusalListsAtMostTwenty(t *testing.T) {
+	fx := newWorkbenchFixture(t)
+	session := seedTerminalSession(t, fx.d, fx.a)
+	for i := 0; i < 24; i++ {
+		db.SeedTestWorkbenchTarget(t, fx.d, fx.a, sql.NullInt64{Int64: fx.aTarget, Valid: true}, fmt.Sprintf("leaf %d", i))
+	}
+	// A target of another workbench under the same id range never counts.
+	db.SeedTestWorkbenchTarget(t, fx.d, fx.b, sql.NullInt64{Int64: fx.bTarget, Valid: true}, "beta leaf")
+	launchedFor(t, fx.d, session, fx.aTarget)
+	_, err := proposeIn(t, askRegistry(t, fx.d, strconv.FormatInt(session, 10)), fx.a, "finish_session", `{"summary":"Done.","reason":"r"}`)
+	msg := refusal(t, err)
+	assert.Contains(t, msg, "still has 24 open leaves")
+	assert.Equal(t, 20, strings.Count(msg, "] leaf "))
+	assert.Contains(t, msg, "\n… 4 more")
+	assert.NotContains(t, msg, "beta leaf")
+}
+
 // An empty diff — everything committed and merged — has nothing to review.
 func TestProj14_EmptyDiffSkipsTheOverview(t *testing.T) {
-	fx, wb, _, reg := reviewRepoWorkbench(t)
+	fx, wb, _, reg := repoSession(t)
 	dir := reviewFolder(t, fx.d, wb)
 	bin, _ := gitbin.Locate()
 	for _, args := range [][]string{{"add", "."}, {"commit", "-q", "-m", "b"}} {

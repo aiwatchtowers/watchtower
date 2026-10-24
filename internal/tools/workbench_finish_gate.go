@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,12 +20,14 @@ import (
 
 // The finish_session gates (spec 2026-10-24-finish-whole-ticket, PROJ-14): a
 // session finishes the whole ticket it was started for, checked against the
-// reviewer's AI overview of its changes. Both read only — no model call — and
-// run with the workbench's finish check on; a handover ask of this session
-// passes both.
+// reviewer's AI overview of its changes. Neither calls the model or writes the
+// database (the snapshot writes only git objects, as annotate_changes does);
+// both run with the workbench's finish check on, and a handover ask of this
+// session passes both.
 
-// finishGateBudget bounds the gate's git work (snapshot, base, tree compare).
-const finishGateBudget = 30 * time.Second
+// finishGateBudget bounds the gate's git work (snapshot, base, tree compare);
+// a var for tests.
+var finishGateBudget = 30 * time.Second
 
 // maxListedLeaves caps the open leaves a refusal lists.
 const maxListedLeaves = 20
@@ -35,7 +38,9 @@ var finishGateExecutable = os.Executable
 
 // ReviewSnapshot is a session folder as it stands, for the AI overview.
 type ReviewSnapshot struct {
-	Repo       *reviewdiff.Repo
+	Repo *reviewdiff.Repo
+	// Folder is the snapshot folder's root (ReviewSessionFolder).
+	Folder     string
 	Tree, Base string
 	// Empty: the tree is the base's — nothing to review.
 	Empty bool
@@ -44,7 +49,15 @@ type ReviewSnapshot struct {
 // SnapshotReviewSession snapshots session sessionID's review folder and finds
 // its base (the merge-base with the default branch).
 func SnapshotReviewSession(ctx context.Context, d *db.DB, p *db.Workbench, sessionID int64) (ReviewSnapshot, error) {
-	repo, tree, err := snapshotSessionFolder(ctx, d, p, sessionID)
+	folder, err := ReviewSessionFolder(ctx, d, p, sessionID)
+	if err != nil {
+		return ReviewSnapshot{}, err
+	}
+	repo, err := reviewdiff.Open(folder, nil)
+	if err != nil {
+		return ReviewSnapshot{}, err
+	}
+	tree, err := repo.Snapshot(ctx)
 	if err != nil {
 		return ReviewSnapshot{}, err
 	}
@@ -56,7 +69,7 @@ func SnapshotReviewSession(ctx context.Context, d *db.DB, p *db.Workbench, sessi
 	if err != nil {
 		return ReviewSnapshot{}, err
 	}
-	return ReviewSnapshot{Repo: repo, Tree: tree, Base: base.SHA, Empty: same}, nil
+	return ReviewSnapshot{Repo: repo, Folder: folder, Tree: tree, Base: base.SHA, Empty: same}, nil
 }
 
 // checkFinishGates runs both gates for session on workbench p; a refusal is
@@ -135,7 +148,12 @@ func checkHandoverAsk(d *db.DB, workbenchID, session, ticket, askID int64) (bool
 
 func openLeavesRefusal(ticket int64, leaves []db.OpenTicketLeaf) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "this session's ticket #%d still has %d open leaves — the work is the whole ticket, an order of parts is not a scope cut:", ticket, len(leaves))
+	noun := "leaves"
+	if len(leaves) == 1 {
+		noun = "leaf"
+	}
+	fmt.Fprintf(&b, "this session's ticket #%d still has %d open %s — the work is the whole ticket, an order of parts is not a scope cut:",
+		ticket, len(leaves), noun)
 	for i, l := range leaves {
 		if i == maxListedLeaves {
 			fmt.Fprintf(&b, "\n… %d more", len(leaves)-maxListedLeaves)
@@ -149,8 +167,10 @@ func openLeavesRefusal(ticket int64, leaves []db.OpenTicketLeaf) string {
 }
 
 // checkOverviewGate is gate 2: with a diff, the cached overview of the
-// session's folder as it stands, every coverage item done. A folder outside
-// git has no diff to check; any other git failure refuses.
+// session's folder as it stands, with a done coverage entry for every intent
+// item. A folder outside git has no diff to check, nor has the workbench
+// folder once the session left a worktree of its own (leftItsWorktree); any
+// other git failure refuses.
 func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session int64) error {
 	gitCtx, cancel := context.WithTimeout(ctx, finishGateBudget)
 	defer cancel()
@@ -164,13 +184,16 @@ func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session i
 	if snap.Empty {
 		return nil
 	}
+	if left, err := leftItsWorktree(gitCtx, d, p, session, snap.Folder); err != nil || left {
+		return err
+	}
 	in, err := ReviewOverviewInput(gitCtx, d, p, session)
 	if err != nil {
-		return err
+		return fmt.Errorf("finish check: reading the session's intent: %w", err)
 	}
 	js, ok, err := d.ReviewOverviewJSON(p.ID, snap.Tree, snap.Base, reviewai.IntentHash(in.Intent, in.Notes))
 	if err != nil {
-		return err
+		return fmt.Errorf("finish check: %w", err)
 	}
 	if !ok {
 		return &ValidationError{Msg: missingOverviewRefusal(p.ID, session)}
@@ -179,12 +202,7 @@ func checkOverviewGate(ctx context.Context, d *db.DB, p *db.Workbench, session i
 	if err := json.Unmarshal([]byte(js), &ov); err != nil {
 		return fmt.Errorf("finish check: reading the cached overview: %w", err)
 	}
-	var open []string
-	for _, c := range ov.Coverage {
-		if c.Status != "done" {
-			open = append(open, fmt.Sprintf("%d. [%s] %s", c.Index, c.Status, c.Item))
-		}
-	}
+	open := uncoveredItems(in.Intent, ov.Coverage)
 	if len(open) > 0 {
 		return &ValidationError{Msg: "the reviewer's AI overview of your changes does not see all of the work done:\n" +
 			strings.Join(open, "\n") + "\nFinish what is partial or not found, or file one ask_owner that says why it is " +
@@ -201,4 +219,64 @@ func missingOverviewRefusal(workbenchID, session int64) string {
 	return "your changes have no AI overview yet: annotate_changes first if you have notes, then run `" + cmd +
 		"`, compare its coverage with your work, and call finish_session again. If the overview cannot be made, " +
 		"file one ask_owner that says so and pass it as handover_ask_id"
+}
+
+// uncoveredItems lists every intent item without a done coverage entry: a
+// partial or not_found one with its status, an item the overview left out as
+// missing. A pass needs an affirmative done for each item, never only the
+// absence of a bad one.
+func uncoveredItems(intent []reviewai.IntentItem, coverage []reviewai.Coverage) []string {
+	byIndex := map[int]reviewai.Coverage{}
+	for _, c := range coverage {
+		byIndex[c.Index] = c
+	}
+	var open []string
+	for i, it := range intent {
+		c, ok := byIndex[i+1]
+		switch {
+		case !ok:
+			open = append(open, fmt.Sprintf("%d. [missing] %s", i+1, it.Text))
+		case c.Status != "done":
+			open = append(open, fmt.Sprintf("%d. [%s] %s", i+1, c.Status, c.Item))
+		}
+	}
+	return open
+}
+
+// leftItsWorktree: the snapshot folder is the workbench folder, but the
+// session worked in a worktree of its own — it was launched in one, or its
+// agent recorded one — and has left it (the cleanup step). The workbench
+// folder's diff is then not this session's work, possibly another live
+// session's, so gate 2 does not judge it (v1 limit: the skill runs the check
+// before leaving the worktree).
+func leftItsWorktree(ctx context.Context, d *db.DB, p *db.Workbench, session int64, folder string) (bool, error) {
+	main := realFolder(p.FolderPath)
+	if realFolder(folder) != main {
+		return false, nil
+	}
+	row, err := d.GetTerminalSession(session)
+	if err != nil {
+		return false, fmt.Errorf("finish check: %w", err)
+	}
+	if row.FolderPath != "" && realFolder(row.FolderPath) != main {
+		return true, nil
+	}
+	worktrees, err := d.SessionWorktrees(ctx, session)
+	if err != nil {
+		return false, fmt.Errorf("finish check: %w", err)
+	}
+	for _, w := range worktrees {
+		if realFolder(w.Root) != main {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// realFolder is path with symlinks resolved, or cleaned when it cannot be.
+func realFolder(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return filepath.Clean(path)
 }
