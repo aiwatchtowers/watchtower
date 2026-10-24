@@ -59,9 +59,9 @@ func TestInstructionsShow_PinnedKeys(t *testing.T) {
 	out, err := runInstructions(t, "", "show", "--json", "--workbench", strconv.FormatInt(pid, 10))
 	require.NoError(t, err)
 	m := decodeInstructions(t, out)
-	assert.ElementsMatch(t, []string{"ok", "limit", "global", "workbench", "suggestions"}, instrKeys(m))
+	assert.ElementsMatch(t, []string{"ok", "limit", "global", "workbench", "suggestions", "chat_lines"}, instrKeys(m))
 	assert.EqualValues(t, instructions.MaxRunes, m["limit"])
-	assert.ElementsMatch(t, []string{"session", "procedure"}, instrKeys(m["global"].(map[string]any)))
+	assert.ElementsMatch(t, []string{"session", "procedure", "chat"}, instrKeys(m["global"].(map[string]any)))
 	assert.ElementsMatch(t, []string{"id", "session", "procedure"}, instrKeys(m["workbench"].(map[string]any)))
 	sugg := m["suggestions"].([]any)
 	require.Len(t, sugg, 1)
@@ -176,4 +176,136 @@ func TestInstructionsPreview_MatchesBriefSlot(t *testing.T) {
 	assert.Equal(t, instructions.ProcedureFor(texts, "N"), m["procedure"])
 	assert.Contains(t, m["procedure"], "follow it for #N:")
 	assert.Contains(t, m["procedure"], "Never touch issue #0.", "owner text is not rewritten")
+}
+
+func rememberArgs(conv, msg string) []string {
+	return []string{"remember", "--conversation", conv, "--message", msg, "--stdin", "--json"}
+}
+
+func TestInstructionsRemember_AddsVerbatim(t *testing.T) {
+	d, _, _ := methodologyWorkbench(t)
+	out, err := runInstructions(t, "запомни: Отвечай коротко", rememberArgs("3", "7")...)
+	require.NoError(t, err)
+	m := decodeInstructions(t, out)
+	assert.Equal(t, "added", m["outcome"])
+	assert.NotNil(t, m["line_id"])
+	g, err := d.GetOwnerInstructions()
+	require.NoError(t, err)
+	assert.Equal(t, "Отвечай коротко", g.Chat)
+}
+
+func TestInstructionsRemember_AlreadyPresent_NoLedgerRow(t *testing.T) {
+	d, _, _ := methodologyWorkbench(t)
+	_, err := runInstructions(t, "remember: Be brief", rememberArgs("3", "7")...)
+	require.NoError(t, err)
+	out, err := runInstructions(t, "Remember:  Be   brief", rememberArgs("3", "8")...)
+	require.NoError(t, err)
+	m := decodeInstructions(t, out)
+	assert.Equal(t, "already_present", m["outcome"])
+	assert.Len(t, m["chat_lines"], 1)
+	rows, err := d.ChatLinesForMessages([]int64{8})
+	require.NoError(t, err)
+	assert.Empty(t, rows)
+}
+
+func TestInstructionsRemember_TooLong(t *testing.T) {
+	d, _, _ := methodologyWorkbench(t)
+	out, err := runInstructions(t, "remember: "+strings.Repeat("ж", instructions.MaxRunes+1), rememberArgs("3", "7")...)
+	require.Error(t, err)
+	m := decodeInstructions(t, out)
+	assert.Equal(t, false, m["ok"])
+	assert.Equal(t, "too_long", m["code"])
+	g, _ := d.GetOwnerInstructions()
+	assert.Empty(t, g.Chat)
+}
+
+func TestInstructionsRemember_Empty(t *testing.T) {
+	methodologyWorkbench(t)
+	out, err := runInstructions(t, "remember:   ", rememberArgs("3", "7")...)
+	require.Error(t, err)
+	assert.Equal(t, "empty", decodeInstructions(t, out)["code"])
+}
+
+func TestInstructionsRemember_NotACommand(t *testing.T) {
+	d, _, _ := methodologyWorkbench(t)
+	out, err := runInstructions(t, "please remember: x", rememberArgs("3", "7")...)
+	require.Error(t, err)
+	assert.Equal(t, "not_a_command", decodeInstructions(t, out)["code"])
+	g, _ := d.GetOwnerInstructions()
+	assert.Empty(t, g.Chat)
+}
+
+func TestInstructionsRemember_NeedsIDs(t *testing.T) {
+	methodologyWorkbench(t)
+	_, err := runInstructions(t, "remember: x", "remember", "--stdin", "--json")
+	require.Error(t, err)
+}
+
+func TestInstructionsForget_Removed(t *testing.T) {
+	d, _, _ := methodologyWorkbench(t)
+	out, err := runInstructions(t, "remember: Be brief", rememberArgs("3", "7")...)
+	require.NoError(t, err)
+	id := strconv.FormatInt(int64(decodeInstructions(t, out)["line_id"].(float64)), 10)
+	out, err = runInstructions(t, "", "forget", id, "--json")
+	require.NoError(t, err)
+	m := decodeInstructions(t, out)
+	assert.Equal(t, true, m["removed"])
+	assert.Empty(t, m["chat_lines"])
+	g, _ := d.GetOwnerInstructions()
+	assert.Empty(t, g.Chat)
+}
+
+func TestInstructionsForget_EditedAway(t *testing.T) {
+	d, _, _ := methodologyWorkbench(t)
+	out, err := runInstructions(t, "remember: Be brief", rememberArgs("3", "7")...)
+	require.NoError(t, err)
+	id := strconv.FormatInt(int64(decodeInstructions(t, out)["line_id"].(float64)), 10)
+	require.NoError(t, d.SetOwnerInstruction(db.InstructionChat, "Something else"))
+	out, err = runInstructions(t, "", "forget", id, "--json")
+	require.NoError(t, err)
+	assert.Equal(t, false, decodeInstructions(t, out)["removed"])
+	g, _ := d.GetOwnerInstructions()
+	assert.Equal(t, "Something else", g.Chat)
+
+	out, err = runInstructions(t, "", "forget", "9999", "--json")
+	require.Error(t, err)
+	assert.Equal(t, "not_found", decodeInstructions(t, out)["code"])
+}
+
+func TestInstructionsShow_ChatKeys(t *testing.T) {
+	d, _, _ := methodologyWorkbench(t)
+	_, err := runInstructions(t, "remember: One", rememberArgs("3", "7")...)
+	require.NoError(t, err)
+	_, err = runInstructions(t, "remember: Two", rememberArgs("3", "8")...)
+	require.NoError(t, err)
+	require.NoError(t, d.SetOwnerInstruction(db.InstructionChat, "Two"))
+	out, err := runInstructions(t, "", "show", "--json")
+	require.NoError(t, err)
+	m := decodeInstructions(t, out)
+	assert.Equal(t, "Two", m["global"].(map[string]any)["chat"])
+	lines := m["chat_lines"].([]any)
+	require.Len(t, lines, 1, "only present lines")
+	l := lines[0].(map[string]any)
+	assert.ElementsMatch(t, []string{"id", "line", "conversation_id", "message_id", "added_at"}, instrKeys(l))
+	assert.Equal(t, "Two", l["line"])
+}
+
+func TestInstructionsPreview_ChatSlot(t *testing.T) {
+	d, _, _ := methodologyWorkbench(t)
+	require.NoError(t, d.SetOwnerInstruction(db.InstructionChat, "Be brief"))
+	out, err := runInstructions(t, "", "preview", "--json")
+	require.NoError(t, err)
+	g, _ := d.GetOwnerInstructions()
+	assert.Equal(t, instructions.ChatSlot(g), decodeInstructions(t, out)["chat_slot"])
+	assert.Contains(t, decodeInstructions(t, out)["chat_slot"], "Be brief")
+}
+
+func TestInstructionsSet_ChatWithWorkbenchRefused(t *testing.T) {
+	d, pid, _ := methodologyWorkbench(t)
+	_, err := runInstructions(t, "Be brief", "set", "--field", "chat", "--stdin", "--workbench", strconv.FormatInt(pid, 10))
+	require.Error(t, err)
+	_, err = runInstructions(t, "Be brief", "set", "--field", "chat", "--stdin")
+	require.NoError(t, err)
+	g, _ := d.GetOwnerInstructions()
+	assert.Equal(t, "Be brief", g.Chat)
 }
