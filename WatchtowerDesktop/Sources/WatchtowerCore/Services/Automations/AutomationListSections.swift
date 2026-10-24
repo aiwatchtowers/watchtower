@@ -119,6 +119,17 @@ package struct AutomationListSection: Identifiable, Equatable, Sendable {
     package var count: Int { drafts.count + items.count }
     package var isEmpty: Bool { drafts.isEmpty && items.isEmpty }
 
+    /// What a folded header still says: "1 failed", "1 draft",
+    /// "1 needs confirmation", joined by " · "; nil when nothing needs the owner.
+    package var attention: String? {
+        let failed = items.filter { AutomationRowPresentation.isFailed($0) }.count
+        let confirm = items.filter { $0.automation.needsConfirmation }.count
+        let parts = [failed > 0 ? "\(failed) failed" : nil,
+                     !drafts.isEmpty ? "\(drafts.count) draft" : nil,
+                     confirm > 0 ? "\(confirm) needs confirmation" : nil].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
     package init(id: String, title: String, drafts: [AutomationDraftRow], items: [AutomationListItem]) {
         self.id = id
         self.title = title
@@ -223,4 +234,37 @@ package enum AutomationRowPresentation {
     package static func isOn(_ item: AutomationListItem) -> Bool {
         item.automation.enabled
     }
+
+    /// The recipe's one-line summary: the `summary:` key, else the first
+    /// sentence of the description.
+    package static func summary(_ item: AutomationListItem) -> String? {
+        item.automation.parseError.isEmpty ? AutomationRowSummary.summary(recipeText: item.automation.recipeText) : nil
+    }
+
+    /// The last run failed (red or orange badge).
+    static func isFailed(_ item: AutomationListItem) -> Bool {
+        guard let last = item.lastRun else { return false }
+        return [.red, .orange].contains(last.status.badge)
+    }
+
+    /// The compact right-hand state: chip > failed > off > last run > next run > none.
+    package static func state(_ item: AutomationListItem, now: Date) -> AutomationRowState {
+        if let chip = chips(item).first { return .chip(chip) }
+        if isFailed(item) { return .failed }
+        if !isOn(item) { return .off }
+        if let last = item.lastRun, let at = last.finishedAt ?? last.startedAt {
+            let ago = AutomationCardPresentation.relative(now.timeIntervalSince(at)) + " ago"
+            return .lastRun(ok: last.status.badge != .red && last.status.badge != .orange, ago: ago)
+        }
+        if let next = item.automation.nextRunAt {
+            let seconds = next.timeIntervalSince(now)
+            return .next(seconds > 0 ? "in " + AutomationCardPresentation.relative(seconds) : "now")
+        }
+        return .none
+    }
+}
+
+/// What a compact row shows at its right edge.
+package enum AutomationRowState: Equatable, Sendable {
+    case chip(AutomationRowChip), failed, off, lastRun(ok: Bool, ago: String), next(String), none
 }
