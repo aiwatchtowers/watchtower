@@ -32,6 +32,12 @@ package struct AutomationDraftFooter: Equatable, Sendable {
     /// The draft does not validate: its errors are listed above.
     nonisolated package static let hasErrorsHint = "The recipe has errors, so it can't be saved"
 
+    /// The header's compact "Save…" shows while the draft column is hidden and
+    /// there is something to save; it opens the column, where the press is made.
+    package static func showsCompactSave(hidden: Bool, canSave: Bool) -> Bool {
+        hidden && canSave
+    }
+
     package let primary: Action
     package let primaryEnabled: Bool
     package let secondary: Action?
