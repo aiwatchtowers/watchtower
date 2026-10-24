@@ -66,10 +66,13 @@ package enum IdeaQueries {
     private static let reviewKindCond = "(kind != 'decision' OR chat_born = 1)"
 
     /// The condition every knowledge reader of the registry adds: a chat-born
-    /// item is seen only once the owner has approved it (status 'active').
-    /// Twin of Go `db.KnowledgeVisibleIdeaCond("")`
+    /// item is hidden while it was never approved (proposed, not now,
+    /// rejected, dropped). Once approved it stays knowledge through its later
+    /// life (superseded, reversed, converted, merged), as any other item does
+    /// (spec §4). Twin of Go `db.KnowledgeVisibleIdeaCond("")`
     /// (`internal/db/chat_knowledge.go`); unqualified columns.
-    package static let knowledgeVisibleSQL = "NOT (chat_born = 1 AND status != 'active')"
+    package static let knowledgeVisibleSQL =
+        "NOT (chat_born = 1 AND status IN ('proposed','not_now','rejected','dropped'))"
 
     /// The Inbox's Ideas filter: ideas, notes and decisions except the merged
     /// ones (F15 — decisions are informational there), newest update first.

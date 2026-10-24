@@ -17,12 +17,22 @@ final class EmbeddedChatEngineFactory {
             remember.center = newValue.flatMap { pool in
                 ProcessCLIRunner.makeDefault().map { RememberCenter(cli: WorkbenchCLI(runner: $0), dbPool: pool) }
             }
+            remember.knowledge = newValue.map { ChatKnowledgeCenter(dbPool: $0) }
         }
     }
     /// Remember in place for every chat that carries the owner's
     /// instructions (the main chat is wired in `AppState+Remember`); nil
     /// until the database opens.
     var rememberCenter: RememberCenter? { remember.center }
+    /// Decisions and facts saved in place, for the same chats; nil until the
+    /// database opens.
+    var knowledgeCenter: ChatKnowledgeCenter? { remember.knowledge }
+
+    /// A stored owner message of a chat with the owner's instructions: each
+    /// center acts on its own prefix only (remember, or a knowledge prefix).
+    func ownerMessageStored(text: String, conversationID: Int64, messageID: Int64) {
+        remember.ownerMessageStored(text: text, conversationID: conversationID, messageID: messageID)
+    }
     private let remember: RememberBox
     let center: EmbeddedChatCenter
     private let pool: PoolBox
@@ -62,7 +72,7 @@ final class EmbeddedChatEngineFactory {
                                         draftMirror: spec.persistence == .memory ? nil : draftMirror,
                                         provider: Constants.aiProviderID())
         engine.onOwnerMessageStored = { [weak remember] text, conversationID, messageID in
-            remember?.center?.ownerMessageSent(text: text, conversationID: conversationID, messageID: messageID)
+            remember?.ownerMessageStored(text: text, conversationID: conversationID, messageID: messageID)
         }
         return engine
     }
@@ -70,6 +80,12 @@ final class EmbeddedChatEngineFactory {
     @MainActor
     private final class RememberBox {
         var center: RememberCenter?
+        var knowledge: ChatKnowledgeCenter?
+
+        func ownerMessageStored(text: String, conversationID: Int64, messageID: Int64) {
+            center?.ownerMessageSent(text: text, conversationID: conversationID, messageID: messageID)
+            knowledge?.ownerMessageSent(text: text, conversationID: conversationID, messageID: messageID)
+        }
     }
 
     @MainActor

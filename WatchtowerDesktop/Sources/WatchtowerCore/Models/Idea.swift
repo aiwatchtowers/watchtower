@@ -30,7 +30,8 @@ package struct Idea: FetchableRecord, Identifiable, Equatable {
     package let seenAt: String?       // column: seen_at
     /// column: chat_born — first proposed from chat material (or an owner
     /// prefix in a chat); such an item waits for a verdict whatever its kind
-    /// and stays out of knowledge readers until `active` (see 00154).
+    /// and stays out of knowledge readers while never approved
+    /// (`IdeaQueries.knowledgeVisibleSQL`, see 00154).
     package let chatBorn: Bool
 
     package enum Kind: String {

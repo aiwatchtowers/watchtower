@@ -131,28 +131,49 @@ final class IdeaQueriesChatKnowledgeTests: XCTestCase {
 
     func testDecisionLedgerSkipsUnapprovedChatBorn() throws {
         let queue = try TestDatabase.create()
-        let (mined, proposed) = try queue.write { db -> (Int64, Int64) in
+        let (superseded, mined, proposed) = try queue.write { db -> (Int64, Int64, Int64) in
+            // Approved once, later superseded: still knowledge (spec §4).
+            let superseded = try TestDatabase.insertIdea(
+                db, kind: "decision", title: "Chat superseded", status: "superseded",
+                seenAt: "2026-10-24T08:00:00Z", chatBorn: true)
             let mined = try TestDatabase.insertIdea(db, kind: "decision", title: "Mined", status: "active")
             let proposed = try TestDatabase.insertIdea(
                 db, kind: "decision", title: "Chat proposed", status: "proposed", chatBorn: true)
             try TestDatabase.insertIdea(db, kind: "decision", title: "Chat rejected", status: "rejected", chatBorn: true)
-            return (mined, proposed)
+            try TestDatabase.insertIdea(db, kind: "decision", title: "Chat not now", status: "not_now", chatBorn: true)
+            try TestDatabase.insertIdea(db, kind: "decision", title: "Chat dropped", status: "dropped", chatBorn: true)
+            return (superseded, mined, proposed)
         }
-        XCTAssertEqual(try queue.read { try IdeaQueries.fetchDecisionLedger($0) }.map(\.id), [Int(mined)])
+        XCTAssertEqual(Set(try queue.read { try IdeaQueries.fetchDecisionLedger($0) }.map(\.id)),
+                       [Int(superseded), Int(mined)])
         XCTAssertEqual(try queue.read { try IdeaQueries.unreadDecisionCount($0) }, 1)
-        XCTAssertEqual(try queue.read { try IdeaQueries.fetchNewDecisionsSince($0, afterID: 0) }.map(\.id), [Int(mined)])
+        XCTAssertEqual(Set(try queue.read { try IdeaQueries.fetchNewDecisionsSince($0, afterID: 0) }.map(\.id)),
+                       [Int(superseded), Int(mined)])
         XCTAssertEqual(try queue.read { try IdeaQueries.maxDecisionID($0) }, Int(mined))
 
         try queue.write { try IdeaQueries.markAllDecisionsSeen($0) }
         let seen = try queue.read {
             try Int.fetchAll($0, sql: "SELECT id FROM ideas WHERE seen_at IS NOT NULL ORDER BY id")
         }
-        XCTAssertEqual(seen, [Int(mined)], "a hidden chat-born row stays unseen for when it is approved")
+        XCTAssertEqual(seen, [Int(superseded), Int(mined)], "a hidden chat-born row stays unseen for when it is approved")
 
         // Approval makes it a ledger decision, unread until seen.
         try queue.write { try IdeaQueries.setStatus($0, id: Int(proposed), status: "active") }
         XCTAssertEqual(Set(try queue.read { try IdeaQueries.fetchDecisionLedger($0) }.map(\.id)),
-                       [Int(mined), Int(proposed)])
+                       [Int(superseded), Int(mined), Int(proposed)])
         XCTAssertEqual(try queue.read { try IdeaQueries.unreadDecisionCount($0) }, 1)
+    }
+
+    /// The "Chat deleted" check of a chat mention on the card.
+    func testExistingConversationIDs() throws {
+        let queue = try TestDatabase.create()
+        let (kept, gone) = try queue.write { db -> (Int64, Int64) in
+            let kept = try TestDatabase.insertChatConversation(db)
+            let gone = try TestDatabase.insertChatConversation(db)
+            try ChatConversationQueries.delete(db, id: gone)
+            return (kept, gone)
+        }
+        XCTAssertEqual(try queue.read { try ChatConversationQueries.existingIDs($0, ids: [kept, gone, kept]) }, [kept])
+        XCTAssertEqual(try queue.read { try ChatConversationQueries.existingIDs($0, ids: []) }, [])
     }
 }
