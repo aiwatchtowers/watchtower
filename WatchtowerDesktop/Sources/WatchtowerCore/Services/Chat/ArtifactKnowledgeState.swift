@@ -11,7 +11,7 @@ package enum ArtifactKnowledgeState: Equatable {
     package static let kinds: Set<String> = ["document", "table", "code", "html"]
 
     /// `nil` = no control. `keptVersion` is the pinned version of the key, if any.
-    package static func `for`(kind: String, shownVersion: Int, keptVersion: Int?) -> ArtifactKnowledgeState? {
+    package static func `for`(kind: String, shownVersion: Int, keptVersion: Int?) -> Self? {
         guard kinds.contains(kind) else { return nil }
         guard let keptVersion else { return .add }
         return keptVersion < shownVersion ? .update : .remove

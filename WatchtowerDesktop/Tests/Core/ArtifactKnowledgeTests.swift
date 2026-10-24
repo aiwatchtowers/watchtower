@@ -6,13 +6,13 @@ import WatchtowerTestSupport
 @MainActor
 final class ArtifactKnowledgeTests: XCTestCase {
     func testStateForKeptAndShownVersions() {
-        typealias S = ArtifactKnowledgeState
-        XCTAssertEqual(S.for(kind: "document", shownVersion: 2, keptVersion: nil), .add)
-        XCTAssertEqual(S.for(kind: "table", shownVersion: 2, keptVersion: 2), .remove)
-        XCTAssertEqual(S.for(kind: "code", shownVersion: 3, keptVersion: 1), .update)
-        XCTAssertEqual(S.for(kind: "html", shownVersion: 1, keptVersion: nil), .add)
+        typealias State = ArtifactKnowledgeState
+        XCTAssertEqual(State.for(kind: "document", shownVersion: 2, keptVersion: nil), .add)
+        XCTAssertEqual(State.for(kind: "table", shownVersion: 2, keptVersion: 2), .remove)
+        XCTAssertEqual(State.for(kind: "code", shownVersion: 3, keptVersion: 1), .update)
+        XCTAssertEqual(State.for(kind: "html", shownVersion: 1, keptVersion: nil), .add)
         // An older version shown while a newer one is kept: nothing to update to.
-        XCTAssertEqual(S.for(kind: "document", shownVersion: 1, keptVersion: 2), .remove)
+        XCTAssertEqual(State.for(kind: "document", shownVersion: 1, keptVersion: 2), .remove)
     }
 
     func testDraftKindsGetNoControl() {
