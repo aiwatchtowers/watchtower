@@ -250,7 +250,8 @@ struct MainNavigationView: View {
         var actions = AutomationsTabActions()
         actions.builtin = BuiltinCardActions(
             setEnabled: { await appState.setBuiltinEnabled($0, on: $1) },
-            saveParameters: { await appState.saveBuiltinParameters($0) }
+            saveParameters: { await appState.saveBuiltinParameters($0) },
+            openInbox: { appState.openInbox(InboxRoute(filter: $0, selection: nil)) }
         )
         actions.onOpenInbox = { _ in appState.selectedDestination = .inbox }
         actions.onOpenSession = { projectID, sessionID in

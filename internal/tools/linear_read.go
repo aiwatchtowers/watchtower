@@ -566,7 +566,7 @@ func NewListLinearCycles() *Tool {
 			"(active, upcoming or past) and progress.",
 		InputSchema: mustSchema[listLinearCyclesArgs]("list_linear_cycles"),
 		Access:      AccessRead,
-		Surfaces:    automationSurfaceOnly(),
+		Surfaces:    editorAndAutomation(),
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listLinearCyclesArgs](call)
 			if err != nil {

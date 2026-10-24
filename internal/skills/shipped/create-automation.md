@@ -65,9 +65,12 @@ make deploy"), the recipe hands it over as is.
 
 ## The recipe format
 
+Always write `summary:` — a few words on what it does, not when, at most 60 characters.
+
 ````markdown
 ---
 name: Short human name
+summary: What it does in a few words
 trigger:
   schedule: "0 9 * * 1-5"
 missed: run_once

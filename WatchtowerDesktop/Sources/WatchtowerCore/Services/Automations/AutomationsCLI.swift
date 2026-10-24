@@ -770,6 +770,10 @@ package struct BuiltinAutomationDetail: Decodable, Equatable, Sendable {
     package let when: String
     package let reads: [String]
     package let sends: [String]
+    /// What the run does, one line each (the card's Does box).
+    package let does: [String]
+    /// The Inbox filter the result lands in; nil for an unknown string (the link is hidden).
+    package let resultFilter: InboxFilter?
     package let parameters: [Parameter]
     package let featureIDs: [String]
     package let enabled: Bool
@@ -780,7 +784,8 @@ package struct BuiltinAutomationDetail: Decodable, Equatable, Sendable {
     package let costs: Costs
 
     enum CodingKeys: String, CodingKey {
-        case id, slot, overridden, when, reads, sends, parameters, enabled, costs
+        case id, slot, overridden, when, reads, sends, does, parameters, enabled, costs
+        case resultFilter = "result_filter"
         case shippedHash = "shipped_hash", baseHash = "base_hash", updateAvailable = "update_available"
         case shippedText = "shipped_text", defaultPrompts = "default_prompts", featureIDs = "feature_ids"
         case runNow = "run_now", copyError = "copy_error"
@@ -799,6 +804,8 @@ package struct BuiltinAutomationDetail: Decodable, Equatable, Sendable {
         when = try c.decodeIfPresent(String.self, forKey: .when) ?? ""
         reads = try c.decodeIfPresent([String].self, forKey: .reads) ?? []
         sends = try c.decodeIfPresent([String].self, forKey: .sends) ?? []
+        does = try c.decodeIfPresent([String].self, forKey: .does) ?? []
+        resultFilter = (try c.decodeIfPresent(String.self, forKey: .resultFilter)).flatMap(InboxFilter.init(rawValue:))
         parameters = try c.decodeIfPresent([Parameter].self, forKey: .parameters) ?? []
         featureIDs = try c.decodeIfPresent([String].self, forKey: .featureIDs) ?? []
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
