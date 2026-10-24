@@ -243,7 +243,11 @@ struct AssistantMessageBody: View {
                         case .markdown(let markdown):
                             // A finished answer's prose is native text
                             // (§5b); the streaming one stays SwiftUI.
-                            MarkdownView(text: markdown, nativeText: !isRunning)
+                            if isRunning {
+                                MarkdownView(text: markdown)
+                            } else {
+                                NativeMarkdownView(text: markdown)
+                            }
                         case .artifact(let draft):
                             ArtifactCardView(draft: draft, isWriting: isRunning && !draft.isComplete,
                                              version: versions[draft.key]) { onOpenArtifact(draft.key) }

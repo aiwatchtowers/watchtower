@@ -19,24 +19,14 @@ struct MarkdownView: View {
     /// (`MarkdownDocument.withLineBreaks`); the agent's text keeps markdown's
     /// soft breaks.
     var lineBreaks = false
-    /// A finished chat answer: its prose is drawn by one native text view
-    /// per run (`MarkdownSegmentsView`, spec 2026-10-24 §5b) instead of a
-    /// selectable SwiftUI `Text` per block. A streaming answer keeps the
-    /// SwiftUI path and switches when it completes.
-    var nativeText = false
     /// A code answer's `path:line` citations as links (`CodeLineLinks`);
     /// set by the code question popover, whose own `openURL` opens them.
     @Environment(\.markdownCodeLinks) private var codeLinks
 
     var body: some View {
-        let parsed = MarkdownDocument.parse(codeLinks ? CodeLineLinks.linkified(text) : text)
-        let blocks = lineBreaks ? MarkdownDocument.withLineBreaks(parsed) : parsed
-        if nativeText {
-            MarkdownSegmentsView(blocks: blocks)
-        } else {
-            MarkdownBlocksView(blocks: blocks)
-                .textSelection(.enabled)
-        }
+        let blocks = MarkdownDocument.parse(codeLinks ? CodeLineLinks.linkified(text) : text)
+        MarkdownBlocksView(blocks: lineBreaks ? MarkdownDocument.withLineBreaks(blocks) : blocks)
+            .textSelection(.enabled)
     }
 
     /// Inline render with disallowed-scheme links stripped (the gate every

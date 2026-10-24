@@ -259,9 +259,10 @@ final class MarkdownTextRunTests: XCTestCase {
     func testFinishedAnswerKeepsTheStreamingHeight() {
         for width: CGFloat in [760, 320] {
             func height(native: Bool) -> CGFloat {
-                NSHostingView(rootView: MarkdownView(text: ChatMarkdownShotFixtures.answer, nativeText: native)
-                    .environment(\.markdownNavScreens, ["inbox"])
-                    .frame(width: width)).fittingSize.height
+                let text = ChatMarkdownShotFixtures.answer
+                let view = native ? AnyView(NativeMarkdownView(text: text)) : AnyView(MarkdownView(text: text))
+                return NSHostingView(rootView: view.environment(\.markdownNavScreens, ["inbox"]).frame(width: width))
+                    .fittingSize.height
             }
             let swiftUI = height(native: false)
             XCTAssertGreaterThan(swiftUI, 200)
