@@ -363,7 +363,7 @@ Spec `docs/superpowers/specs/2026-10-24-automations-tab-polish-design.md`, plan 
 - **Draft column toggle.** The editor's chat-and-draft split can hide the draft column (`automations.draftColumnHidden`, the header button **Hide Draft** / **Show Draft**, ⌥⌘0, Automations tab only); with it hidden the save button reads a compact **Save…** that shows the column again.
 - **Editor reads (AGENT-04 note in `docs/inventory/agent-actions.md`).** `automation_editor` gains only `AccessRead` tools: `list_automation_runs`, `get_automation_run`, `list_automations`, `get_automation` and `list_slack_channels` (all five on `main` + `automation_editor`, not on `automation`; the automation and run tools show any of the owner's automations or runs that are not removed, no scope filter), the 13 automation-only reads from "Automation read tools" and `get_confluence_page`. `save_automation` is still the only write; no Quick Connections.
 - **Untrusted text.** The editor now reads email bodies and meeting recaps, which are untrusted. Nothing it reads can write: saves stay `AlwaysAsk`, and the owner approves the diff.
-- **Chat performance.** Markdown inline rendering is memoised and `ChatThreadIndex` keeps the feed's per-message lookups off the render path.
+- **Chat performance.** Markdown inline rendering is memoised and `ChatThreadIndex` keeps the feed's per-message lookups off the render path. A finished answer's prose is drawn by one read-only TextKit 2 text view per run (`MarkdownTextRun` in `Views/Chat/`, runs built by WatchtowerCore `MarkdownRunBuilder`); streaming replies stay SwiftUI, and a table that fits the column has no horizontal scroll view. Details in [chat-redesign.md](chat-redesign.md).
 
 ## Phase status (P1–P6 shipped)
 

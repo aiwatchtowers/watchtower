@@ -15,6 +15,19 @@ final class ChatToolCatalogTests: XCTestCase {
         XCTAssertEqual(ChatToolCatalog.label(name: "get_automation", args: #"{"automation":"digest"}"#), "Opened a recipe")
     }
 
+    func testEditorReadsHaveLabels() {
+        let expected = [
+            "list_inbox": "Listed Inbox cards", "list_emails": "Listed emails", "get_email": "Opened an email",
+            "list_calendar_events": "Listed calendar events", "list_meeting_recaps": "Listed meeting recaps",
+            "get_meeting_recap": "Opened a meeting recap", "list_meeting_notes": "Listed meeting notes",
+            "list_day_plans": "Listed day plans", "get_day_plan": "Opened a day plan",
+            "list_reminders": "Listed reminders", "list_jira_sprints": "Listed Jira sprints",
+            "list_jira_releases": "Listed Jira releases", "get_confluence_page": "Opened a Confluence page"
+        ]
+        for (name, label) in expected { XCTAssertEqual(ChatToolCatalog.label(name: name, args: "{}"), label, name) }
+        XCTAssertEqual(ChatToolCatalog.label(name: "list_emails", args: #"{"query":"invoice"}"#), "Searched email: invoice")
+    }
+
     func testWebSearchStep() {
         XCTAssertEqual(ChatToolCatalog.label(name: "WebSearch", args: #"{"query":"swift 6 concurrency"}"#),
                        "Searched the web: swift 6 concurrency")

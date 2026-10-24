@@ -138,7 +138,11 @@ func findAutomation(database *db.DB, ref string) (*db.Automation, error) {
 	}
 	ids := make([]string, len(hits))
 	for i, a := range hits {
-		ids[i] = fmt.Sprintf("%d (%s)", a.ID, a.Scope)
+		if a.Scope == "workbench" {
+			ids[i] = fmt.Sprintf("%d (%s %d)", a.ID, a.Scope, a.ProjectID)
+		} else {
+			ids[i] = fmt.Sprintf("%d (%s)", a.ID, a.Scope)
+		}
 	}
 	return nil, &tools.ValidationError{Msg: fmt.Sprintf("slug %q matches several automations: %s; use the id", ref, strings.Join(ids, ", "))}
 }

@@ -136,9 +136,11 @@ enum AutomationEditorChatSurface {
             "",
             "=== AUTOMATION ===",
             "Name: \(automation.name)",
+            "ID: \(automation.id)",
             "Slug: \(automation.slug)",
             "Scope: \(scope)",
             "",
+            "Pass `automation: \"\(automation.id)\"` to `list_automation_runs` and `get_automation`.",
             "Always pass `slug: \"\(automation.slug)\"` to `draft_automation` and `save_automation`."
         ]
         if automation.scope == .workbench, let workbench = automation.projectID {

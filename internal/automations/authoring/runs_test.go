@@ -94,6 +94,8 @@ func TestListAutomationRuns_BySlugAmbiguous(t *testing.T) {
 	require.True(t, errors.As(err, &ve))
 	assert.Contains(t, ve.Msg, strconv.FormatInt(p, 10))
 	assert.Contains(t, ve.Msg, strconv.FormatInt(w, 10))
+	assert.Contains(t, ve.Msg, strconv.FormatInt(p, 10)+" (personal)")
+	assert.Contains(t, ve.Msg, strconv.FormatInt(w, 10)+" (workbench "+strconv.FormatInt(wb, 10)+")")
 
 	_, err = callRunTool(t, NewListAutomationRuns(Deps{DB: d}), `{"automation":"nope"}`)
 	require.True(t, errors.As(err, &ve))

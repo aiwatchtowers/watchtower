@@ -49,6 +49,8 @@ package final class AutomationsViewModel {
     @ObservationIgnored package var onInboxOutputCountChanged: (() -> Void)?
     /// The list groups the owner folded, stored under `collapsedSectionsKey`.
     package private(set) var collapse: AutomationListCollapse
+    /// A selection made before its row was loaded; the next refresh reveals its group.
+    private var pendingRevealID: Int64?
     nonisolated package static let collapsedSectionsKey = "automations.collapsedSections"
     /// The automation whose card is open. Set it through `select(_:)` to load the card.
     package var selectedID: Int64?
@@ -307,6 +309,10 @@ package final class AutomationsViewModel {
 
     private func apply(_ snapshot: Snapshot) {
         items = snapshot.items
+        if let pending = pendingRevealID {
+            pendingRevealID = nil
+            if pending == selectedID { revealSection(ofAutomation: pending) }
+        }
         attentionCount = snapshot.attentionCount
         headerButtonsByProject = snapshot.headerButtons
         if snapshot.inboxOutputCount != inboxOutputCount {
@@ -421,7 +427,14 @@ package final class AutomationsViewModel {
     /// A row opened in a folded group (the Inbox, a notification,
     /// auto-select) opens that group, remembered.
     private func revealSection(ofAutomation id: Int64?) {
-        if let section = id.flatMap(sectionID(forAutomation:)) { reveal(section) }
+        guard let id else { return }
+        if let section = sectionID(forAutomation: id) {
+            pendingRevealID = nil
+            reveal(section)
+        } else {
+            // A cold tab: the list has not loaded yet; the first refresh finishes this.
+            pendingRevealID = id
+        }
     }
 
     private func reveal(_ section: String) {

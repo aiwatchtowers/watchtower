@@ -82,7 +82,9 @@ final class AutomationRowSummaryTests: XCTestCase {
         XCTAssertEqual(AutomationRowPresentation.state(item(lastRun: .failed), now: now), .failed)
         XCTAssertEqual(AutomationRowPresentation.state(item(enabled: false, lastRun: .succeeded), now: now), .off)
         XCTAssertEqual(AutomationRowPresentation.state(item(lastRun: .succeeded, next: now.addingTimeInterval(60)),
-                                                       now: now), .lastRun(ok: true, ago: "5 min ago"))
+                                                       now: now), .lastRun(word: "ok", ago: "5 min ago"))
+        XCTAssertEqual(AutomationRowPresentation.state(item(lastRun: .cancelled), now: now),
+                       .lastRun(word: "cancelled", ago: "5 min ago"))
         XCTAssertEqual(AutomationRowPresentation.state(item(next: now.addingTimeInterval(120)), now: now),
                        .next("in 2 min"))
         XCTAssertEqual(AutomationRowPresentation.state(item(), now: now), .none)
@@ -100,6 +102,11 @@ final class AutomationRowSummaryTests: XCTestCase {
             AutomationAttentionPart(text: "1 draft", isWarning: false),
             AutomationAttentionPart(text: "1 needs confirmation", isWarning: true)
         ])
+        let many = AutomationListSection(
+            id: "p", title: "P", drafts: [draft, draft],
+            items: [item(lastRun: .failed), item(lastRun: .failed), item(confirmed: false), item(confirmed: false)]
+        )
+        XCTAssertEqual(many.attention.map(\.text), ["2 failed", "2 drafts", "2 need confirmation"])
         XCTAssertEqual(AutomationListSection(id: "p", title: "P", drafts: [], items: [item()]).attention, [])
     }
 }

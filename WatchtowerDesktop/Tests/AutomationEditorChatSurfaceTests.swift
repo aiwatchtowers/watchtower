@@ -125,6 +125,14 @@ final class AutomationEditorChatSurfaceTests: XCTestCase {
         XCTAssertTrue(args.contains("--conversation"))
     }
 
+    /// Spec §7: the prompt names the automation's id for the run reads.
+    func testContextBlockNamesIDForRunReads() {
+        let block = AutomationEditorChatSurface.contextBlock(automation: Automation(id: 42, slug: "digest", name: "Digest"))
+        XCTAssertTrue(block.contains("ID: 42"))
+        XCTAssertTrue(block.contains("`automation: \"42\"`"))
+        XCTAssertTrue(block.contains("list_automation_runs"))
+    }
+
     // MARK: - Workbench scope at creation (spec §4)
 
     /// A built-in's chat lists its shipped prompts as data with the one rule

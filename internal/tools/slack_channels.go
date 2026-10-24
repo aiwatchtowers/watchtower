@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"watchtower/internal/db"
+	"watchtower/internal/slack"
 )
 
 // maxSlackChannels caps list_slack_channels (spec 2026-10-24 §7).
@@ -78,7 +80,9 @@ FROM channels c WHERE 1=1`
 					return nil, fmt.Errorf("scanning slack channel: %w", err)
 				}
 				r.IsMember, r.IsArchived = member != 0, archived != 0
-				r.Account, _, _ = strings.Cut(r.ID, ":")
+				if acct, _, ok := slack.SplitAccountID(r.ID); ok {
+					r.Account = strconv.FormatInt(acct, 10)
+				}
 				out = append(out, r)
 			}
 			if err := rows.Err(); err != nil {

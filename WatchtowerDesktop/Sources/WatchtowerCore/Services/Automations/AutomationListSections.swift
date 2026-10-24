@@ -133,14 +133,14 @@ package struct AutomationListSection: Identifiable, Equatable, Sendable {
     package var isEmpty: Bool { drafts.isEmpty && items.isEmpty }
 
     /// What a folded header still says, in order: "1 failed", "1 draft",
-    /// "1 needs confirmation"; empty when nothing needs the owner. Failed and
+    /// "1 needs confirmation" (plural: "2 drafts", "2 need confirmation"); empty when nothing needs the owner. Failed and
     /// needs-confirmation parts are warnings, a draft is not.
     package var attention: [AutomationAttentionPart] {
         let failed = items.filter { AutomationRowPresentation.isFailed($0) }.count
         let confirm = items.filter { $0.automation.needsConfirmation }.count
         return [failed > 0 ? AutomationAttentionPart(text: "\(failed) failed", isWarning: true) : nil,
-                !drafts.isEmpty ? AutomationAttentionPart(text: "\(drafts.count) draft", isWarning: false) : nil,
-                confirm > 0 ? AutomationAttentionPart(text: "\(confirm) needs confirmation", isWarning: true) : nil]
+                !drafts.isEmpty ? AutomationAttentionPart(text: "\(drafts.count) \(drafts.count == 1 ? "draft" : "drafts")", isWarning: false) : nil,
+                confirm > 0 ? AutomationAttentionPart(text: "\(confirm) \(confirm == 1 ? "needs" : "need") confirmation", isWarning: true) : nil]
             .compactMap { $0 }
     }
 
@@ -303,7 +303,7 @@ package enum AutomationRowPresentation {
         if !isOn(item) { return .off }
         if let last = item.lastRun, let at = last.finishedAt ?? last.startedAt {
             let ago = AutomationCardPresentation.relative(now.timeIntervalSince(at)) + " ago"
-            return .lastRun(ok: last.status.badge != .red && last.status.badge != .orange, ago: ago)
+            return .lastRun(word: last.status == .succeeded ? "ok" : last.status.rawValue, ago: ago)
         }
         if let next = item.automation.nextRunAt {
             let seconds = next.timeIntervalSince(now)
@@ -315,5 +315,5 @@ package enum AutomationRowPresentation {
 
 /// What a compact row shows at its right edge.
 package enum AutomationRowState: Equatable, Sendable {
-    case chip(AutomationRowChip), failed, off, lastRun(ok: Bool, ago: String), next(String), none
+    case chip(AutomationRowChip), failed, off, lastRun(word: String, ago: String), next(String), none
 }

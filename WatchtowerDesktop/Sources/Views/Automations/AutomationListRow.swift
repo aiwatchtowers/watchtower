@@ -168,8 +168,8 @@ private struct AutomationRowContent: View {
             stateText("failed").foregroundStyle(Tone.warning)
         case .off:
             stateText("off").foregroundStyle(.secondary)
-        case let .lastRun(ok, ago):
-            stateText((ok ? "ok · " : "failed · ") + ago).foregroundStyle(.secondary)
+        case let .lastRun(word, ago):
+            stateText(word + " · " + ago).foregroundStyle(.secondary)
         case let .next(text):
             stateText(text).foregroundStyle(.secondary)
         case .none:

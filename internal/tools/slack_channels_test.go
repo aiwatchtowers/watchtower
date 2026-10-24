@@ -66,3 +66,24 @@ func TestListSlackChannels_NotOnAutomationSurface(t *testing.T) {
 	assert.ElementsMatch(t, []string{"main", AutomationEditorSurface}, tool.Surfaces)
 	assert.NotContains(t, tool.Surfaces, AutomationSurface)
 }
+
+func TestListSlackChannels_UnnamespacedIDHasNoAccount(t *testing.T) {
+	d := openDB(t)
+	_, err := d.Exec(`INSERT INTO channels (id, name, type, is_member, num_members, is_archived) VALUES
+		('C9', 'legacy', 'public', 1, 3, 0), ('1:C1', 'general', 'public', 1, 4, 0)`)
+	require.NoError(t, err)
+	res, err := NewListSlackChannels().Execute(context.Background(), d, Call{Args: json.RawMessage(`{}`)})
+	require.NoError(t, err)
+	raw, err := json.Marshal(res)
+	require.NoError(t, err)
+	var out struct {
+		Channels []slackChannelRow `json:"channels"`
+	}
+	require.NoError(t, json.Unmarshal(raw, &out))
+	byID := map[string]string{}
+	for _, c := range out.Channels {
+		byID[c.ID] = c.Account
+	}
+	assert.Equal(t, "", byID["C9"], "no namespace, no account")
+	assert.Equal(t, "1", byID["1:C1"])
+}

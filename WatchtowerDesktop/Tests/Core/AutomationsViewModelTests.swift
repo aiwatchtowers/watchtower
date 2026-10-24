@@ -395,6 +395,23 @@ final class AutomationsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.collapse.collapsed, ["builtin"])
     }
 
+    /// Selecting on a cold tab (the list not loaded yet) still opens the
+    /// row's folded group once the first refresh brings it in.
+    func testSelectOnColdTabRevealsAfterFirstRefresh() throws {
+        let id = try pool.write { db in try TestDatabase.insertAutomation(db, slug: "mail", name: "Mail") }
+        defaults.set(["personal"], forKey: AutomationsViewModel.collapsedSectionsKey)
+        let vm = makeViewModel()
+        XCTAssertEqual(vm.collapse.collapsed, ["personal"])
+        vm.select(id)
+        vm.refresh()
+        XCTAssertEqual(vm.collapse.collapsed, [])
+        XCTAssertEqual(defaults.stringArray(forKey: AutomationsViewModel.collapsedSectionsKey), [])
+        // The owner folds it again: later polls do not reopen it.
+        vm.toggleSection("personal")
+        vm.refresh()
+        XCTAssertEqual(vm.collapse.collapsed, ["personal"])
+    }
+
     func testCollapsePersistsAcrossInit() {
         let first = makeViewModel()
         XCTAssertEqual(first.collapse.collapsed, [], "every group starts open")
