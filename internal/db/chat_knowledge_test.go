@@ -159,8 +159,8 @@ func TestListChatTurnsForIdeas(t *testing.T) {
 }
 
 func TestKnowledgeVisibleIdeaCond(t *testing.T) {
-	assert.Equal(t, "NOT (chat_born = 1 AND status != 'active')", KnowledgeVisibleIdeaCond(""))
-	assert.Equal(t, "NOT (i.chat_born = 1 AND i.status != 'active')", KnowledgeVisibleIdeaCond("i"))
+	assert.Equal(t, "NOT (chat_born = 1 AND status IN ('proposed','not_now','rejected','dropped'))", KnowledgeVisibleIdeaCond(""))
+	assert.Equal(t, "NOT (i.chat_born = 1 AND i.status IN ('proposed','not_now','rejected','dropped'))", KnowledgeVisibleIdeaCond("i"))
 
 	d := openTestDB(t)
 	for _, row := range []struct {
@@ -172,6 +172,8 @@ func TestKnowledgeVisibleIdeaCond(t *testing.T) {
 		{"chat proposal", 1, "proposed"},
 		{"chat approved", 1, "active"},
 		{"chat rejected", 1, "rejected"},
+		{"chat superseded", 1, "superseded"},
+		{"chat reversed", 1, "reversed"},
 	} {
 		_, err := d.Exec(`INSERT INTO ideas (kind, title, chat_born, status) VALUES ('decision', ?, ?, ?)`, row.title, row.chatBorn, row.status)
 		require.NoError(t, err)
@@ -186,5 +188,5 @@ func TestKnowledgeVisibleIdeaCond(t *testing.T) {
 		titles = append(titles, s)
 	}
 	require.NoError(t, rows.Err())
-	assert.Equal(t, []string{"mined proposal", "chat approved"}, titles)
+	assert.Equal(t, []string{"mined proposal", "chat approved", "chat superseded", "chat reversed"}, titles)
 }

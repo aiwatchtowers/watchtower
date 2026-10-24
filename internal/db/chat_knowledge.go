@@ -7,7 +7,9 @@ import (
 
 // KnowledgeVisibleIdeaCond is the WHERE condition every knowledge reader of
 // the ideas registry adds: a chat-born idea is seen only once the owner has
-// approved it (status 'active'). alias qualifies the columns ("i" →
+// approved it: only the never-approved statuses ('proposed', 'not_now',
+// 'rejected', 'dropped') are hidden, so an approved item that later became
+// superseded, reversed or converted stays visible. alias qualifies the columns ("i" →
 // i.chat_born); "" leaves them unqualified. alias is a constant at every call
 // site, never input.
 func KnowledgeVisibleIdeaCond(alias string) string {
@@ -15,7 +17,7 @@ func KnowledgeVisibleIdeaCond(alias string) string {
 	if alias != "" {
 		p = alias + "."
 	}
-	return "NOT (" + p + "chat_born = 1 AND " + p + "status != 'active')"
+	return "NOT (" + p + "chat_born = 1 AND " + p + "status IN ('proposed','not_now','rejected','dropped'))"
 }
 
 // ChatTurnForIdeas is one chat message the ideas consolidator may mine.
