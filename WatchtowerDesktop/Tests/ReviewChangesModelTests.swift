@@ -1,4 +1,6 @@
 import GRDB
+import SwiftUI
+import ViewInspector
 import WatchtowerCore
 import WatchtowerTestSupport
 import XCTest
@@ -6,8 +8,9 @@ import XCTest
 
 /// Answers `workbench review <sub> …` from a script keyed by the subcommand
 /// (`args[2]`): one answer per call, the last repeating. A served `start`
-/// makes the round row exist, and a served `send` that sent closes the round
-/// and its drafts, as Go's do.
+/// makes the round row exist, a served `send` that sent closes the round
+/// and its drafts, and a served `approve` that sent closes the round as
+/// approved (resolving carried/outdated rows with `--resolve-open`), as Go's do.
 private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var script: [String: [String]] = [:]
@@ -77,6 +80,9 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
         if sub == "send", answer.contains(#""sent":true"#), let i = args.firstIndex(of: "--round"), let id = Int64(args[i + 1]) {
             try markSent(id)
         }
+        if sub == "approve", answer.contains(#""sent":true"#), let i = args.firstIndex(of: "--round"), let id = Int64(args[i + 1]) {
+            try markApproved(id, resolveOpen: args.contains("--resolve-open"))
+        }
         return Data(answer.utf8)
     }
 
@@ -85,6 +91,16 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
             try db.execute(sql: "UPDATE review_rounds SET status = 'sent' WHERE id = ?", arguments: [id])
             try db.execute(sql: "UPDATE review_comments SET status = 'sent' WHERE round_id = ? AND status IN ('draft','carried')",
                            arguments: [id])
+        }
+    }
+
+    private func markApproved(_ id: Int64, resolveOpen: Bool) throws {
+        try db.write { db in
+            try db.execute(sql: "UPDATE review_rounds SET status = 'sent', outcome = 'approved' WHERE id = ?", arguments: [id])
+            if resolveOpen {
+                try db.execute(sql: "UPDATE review_comments SET status = 'resolved' WHERE round_id = ? AND status IN ('carried','outdated')",
+                               arguments: [id])
+            }
         }
     }
 
@@ -367,6 +383,170 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.send()
         XCTAssertTrue(h.sink.lines.isEmpty)
         XCTAssertEqual(h.model.lastError, "nothing to send")
+    }
+
+    // MARK: - Approve (#964)
+
+    private static let approvedJSON = #"{"ok":true,"sent":true,"line":"Review round #7 approved — approved line"}"#
+
+    /// REVIEW-04 for Approve: Go closes the round first, then exactly one
+    /// line goes through `LineKey.review`; a second call types nothing.
+    func testReview04_ApproveTypesOnce() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["approve": Self.approvedJSON])
+        await h.model.open()
+        async let a: Void = h.model.approve(resolveOpen: false)
+        async let b: Void = h.model.approve(resolveOpen: false)
+        _ = await (a, b)
+        await h.model.approve(resolveOpen: false)
+        XCTAssertEqual(h.sink.lines, [.init(text: "Review round #7 approved — approved line", key: .review(7), sessionID: h.sessionID)])
+        XCTAssertEqual(h.cli.calls("approve").count, 1)
+        XCTAssertEqual(h.cli.calls("approve").first, ["workbench", "review", "approve", "--workbench", String(h.projectID),
+                                                      "--round", "7", "--json"])
+        XCTAssertEqual(h.model.round?.status, "sent")
+        XCTAssertEqual(h.model.round?.outcome, "approved")
+        XCTAssertNotNil(h.model.approvedAt)
+        XCTAssertEqual(h.model.lastSend, .submitted)
+        XCTAssertNil(h.model.lastError)
+        XCTAssertFalse(h.model.sending)
+        let stored = try await h.db.read { try String.fetchOne($0, sql: "SELECT outcome FROM review_rounds WHERE id = 7") }
+        XCTAssertEqual(stored, "approved")
+    }
+
+    func testApproveRefusedTypesNothing() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["approve": #"{"ok":true,"sent":false}"#])
+        await h.model.open()
+        await h.model.approve(resolveOpen: false)
+        XCTAssertTrue(h.sink.lines.isEmpty)
+        XCTAssertNil(h.model.lastSend)
+        XCTAssertNil(h.model.approvedAt)
+        XCTAssertEqual(h.model.lastError, ReviewChangesModel.alreadySentMessage)
+        XCTAssertEqual(h.model.round?.status, "sent", "a refused round is not open here either")
+        XCTAssertEqual(h.model.round?.outcome, "", "a refusal says nothing about the outcome")
+    }
+
+    func testApproveDuringARefreshTypesNothing() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["approve": Self.approvedJSON])
+        await h.model.open()
+        h.cli.hold("start")
+        let refresh = Task { await h.model.refresh() }
+        await h.cli.waitPending("start")
+        XCTAssertFalse(ReviewToolbar.canApprove(h.model), "off while refreshing")
+        await h.model.approve(resolveOpen: false)
+        XCTAssertEqual(h.cli.calls("approve"), [])
+        XCTAssertEqual(h.sink.lines, [])
+        h.cli.release("start")
+        await refresh.value
+    }
+
+    func testApproveIsOffWhileItRuns() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["approve": Self.approvedJSON])
+        await h.model.open()
+        XCTAssertTrue(ReviewToolbar.canApprove(h.model))
+        h.cli.hold("approve")
+        let approving = Task { await h.model.approve(resolveOpen: false) }
+        await h.cli.waitPending("approve")
+        XCTAssertTrue(h.model.sending)
+        XCTAssertFalse(ReviewToolbar.canApprove(h.model))
+        h.cli.release("approve")
+        await approving.value
+        XCTAssertFalse(ReviewToolbar.canApprove(h.model), "off on the closed round")
+    }
+
+    func testSendSetsTheChangesOutcome() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["send": #"{"ok":true,"sent":true,"comments":1,"line":"review 7"}"#])
+        await h.model.open()
+        try await addDraft(h)
+        await h.model.send()
+        XCTAssertEqual(h.model.round?.outcome, "changes")
+    }
+
+    func testApprovalBlockerWithDrafts() async throws {
+        let h = try harness()
+        h.baseScript()
+        await h.model.open()
+        XCTAssertNil(h.model.approvalBlocker)
+        try await addDraft(h)
+        await h.model.refresh()
+        XCTAssertEqual(h.model.approvalBlocker, "Send or delete the draft first")
+        try await addDraft(h)
+        await h.model.refresh()
+        XCTAssertEqual(h.model.approvalBlocker, "Send or delete the 2 drafts first")
+        XCTAssertFalse(ReviewToolbar.canApprove(h.model))
+    }
+
+    func testApprovalBlockerNoSession() async throws {
+        let h = try harness()
+        h.baseScript()
+        await h.model.open()
+        XCTAssertFalse(h.model.sessionGone)
+        try await h.db.write { try $0.execute(sql: "UPDATE review_rounds SET session_id = NULL WHERE id = 7") }
+        await h.model.refresh()
+        XCTAssertTrue(h.model.sessionGone)
+        XCTAssertEqual(h.model.approvalBlocker, "The session is gone")
+        XCTAssertFalse(ReviewToolbar.canApprove(h.model))
+    }
+
+    func testOpenEarlierCommentsListsCarriedAndOutdated() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["approve": Self.approvedJSON])
+        await h.model.open()
+        let (carried, outdated) = try await h.db.write { db -> (Int64, Int64) in
+            let anchor = CommentAnchor(quote: "q", prefix: "", suffix: "", heading: "")
+            let ids = try (1...3).map { n in
+                try ReviewQueries.addDraft(db, roundID: 7, path: "a.go", side: "new", startLine: n, endLine: n,
+                                           anchor: anchor, treeSHA: "t7", body: "c\(n)")
+            }
+            try db.execute(sql: "UPDATE review_comments SET status = 'carried' WHERE id = ?", arguments: [ids[0]])
+            try ReviewQueries.markOutdated(db, id: ids[1])
+            try db.execute(sql: "UPDATE review_comments SET status = 'sent' WHERE id = ?", arguments: [ids[2]])
+            return (ids[0], ids[1])
+        }
+        await h.model.refresh()
+        XCTAssertEqual(h.model.openEarlierComments.map(\.id), [carried, outdated])
+        XCTAssertNil(h.model.approvalBlocker, "earlier comments do not block; the popover resolves them")
+        await h.model.approve(resolveOpen: true)
+        XCTAssertEqual(h.cli.calls("approve").first?.contains("--resolve-open"), true)
+        XCTAssertEqual(h.model.openEarlierComments, [], "resolved with the approval, not dropped")
+        let statuses = try await h.comments().filter { [carried, outdated].contains($0.id) }.map(\.status)
+        XCTAssertEqual(statuses, [.resolved, .resolved])
+    }
+
+    func testToolbarShowsTheVerdictThenTheOutcome() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["approve": Self.approvedJSON])
+        await h.model.open()
+        try await addDraft(h)
+        await h.model.refresh()
+        let open = ReviewToolbar(model: h.model, inline: .constant(false)) {}
+        XCTAssertNoThrow(try open.inspect().find(button: "Request changes (1)"))
+        XCTAssertNoThrow(try open.inspect().find(button: "Approve"))
+        try await h.db.write { try $0.execute(sql: "DELETE FROM review_comments WHERE round_id = 7") }
+        await h.model.refresh()
+        await h.model.approve(resolveOpen: false)
+        let closed = ReviewToolbar(model: h.model, inline: .constant(false)) {}
+        XCTAssertNoThrow(try closed.inspect().find(text: "Approved"))
+        XCTAssertNoThrow(try closed.inspect().find(button: "Start next round"))
+        XCTAssertThrowsError(try closed.inspect().find(button: "Approve"))
+        XCTAssertThrowsError(try closed.inspect().find(button: "Request changes (0)"))
+    }
+
+    private func addDraft(_ h: Harness) async throws {
+        try await h.db.write { db in
+            _ = try ReviewQueries.addDraft(db, roundID: 7, path: "a.go", side: "new", startLine: 1, endLine: 1,
+                                           anchor: CommentAnchor(quote: "x", prefix: "", suffix: "", heading: ""), treeSHA: "t7", body: "x")
+        }
     }
 
     func testNewRoundCarriesPreviousComments() async throws {

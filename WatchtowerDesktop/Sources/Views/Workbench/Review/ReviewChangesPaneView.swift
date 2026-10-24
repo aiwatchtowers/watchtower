@@ -79,13 +79,17 @@ struct ReviewChangesPaneView: View {
                     refresh: { Task { await refreshOrNextRound() } },
                     findRepeats: lessons == nil ? nil : { findingRepeats = true },
                     // The session gone (no row): nothing to open.
-                    openTerminal: identity.row == nil ? nil : identity.openTerminal
+                    openTerminal: identity.row == nil ? nil : identity.openTerminal,
+                    branch: identity.branchLine(model).branch
                 )
                 Divider()
             }
             ReviewBanners(model: model)
             if let pageError {
                 ReviewBanner(text: pageError, isError: true) { self.pageError = nil }
+            }
+            if model.round?.outcome == "approved" {
+                ReviewApprovedBanner(model: model, openWorkchat: identity.row == nil ? nil : identity.openWorkchat)
             }
             state
         }

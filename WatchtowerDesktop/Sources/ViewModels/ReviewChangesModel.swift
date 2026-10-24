@@ -81,6 +81,10 @@ final class ReviewChangesModel {
     /// Whether a refresh asked for while one ran wants a new overview.
     private var refreshAgainRegenerates = false
     private(set) var lastSend: SessionLineDelivery.Delivery?
+    /// When this model approved the round (#964): the banner's time.
+    private(set) var approvedAt: Date?
+    /// The round's session was deleted: Approve is off (Go refuses it too).
+    private(set) var sessionGone = false
     /// The last failure of an action after the open (refresh, a file, a comment, Send).
     private(set) var lastError: String?
 
@@ -220,6 +224,23 @@ final class ReviewChangesModel {
 
     var draftCount: Int { comments.filter { $0.status == .draft }.count }
 
+    /// The open comments of earlier rounds still on this round (carried and
+    /// outdated): Approve lists them and resolves them only on the owner's
+    /// press (REVIEW-03, #964).
+    var openEarlierComments: [ReviewComment] {
+        comments.filter { $0.status == .carried || $0.status == .outdated }
+    }
+
+    /// Why Approve is off, nil when it is on (#964): drafts must be sent or
+    /// deleted first, and a round without a session has nobody to finish it.
+    var approvalBlocker: String? {
+        let drafts = draftCount
+        if drafts > 0 {
+            return drafts == 1 ? "Send or delete the draft first" : "Send or delete the \(drafts) drafts first"
+        }
+        return sessionGone ? "The session is gone" : nil
+    }
+
     /// The message when Go answers that the round was already sent.
     static let alreadySentMessage = "This round was already sent"
 
@@ -299,6 +320,8 @@ final class ReviewChangesModel {
             try reloadNotes()
             try await loadDiff(info)
             let roundID = info.id
+            sessionGone = try await db.read { try ReviewQueries.sessionGone($0, roundID: roundID) }
+            approvedAt = nil
             let rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
             var marks = try await db.read { try ReviewQueries.viewed($0, roundID: roundID) }
             if rows.isEmpty, marks.isEmpty, info.prevRoundId > 0 {
@@ -371,6 +394,7 @@ final class ReviewChangesModel {
             // An empty diff drops whatever overview is shown, Undo or not.
             if !hasChanges || (regenerateOverview ? overviewTreeSHA != info.treeSha : treeChanged && !overviewShown) { startOverview() }
             let roundID = info.id
+            sessionGone = try await db.read { try ReviewQueries.sessionGone($0, roundID: roundID) }
             let rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
             let stale = rows.filter { ($0.status == .draft || $0.status == .carried) && $0.path != nil && $0.treeSHA != info.treeSha }
             if !stale.isEmpty {
@@ -498,6 +522,37 @@ final class ReviewChangesModel {
             // Either way the round is closed now: sent by this call, or already before it.
             round?.status = "sent"
             if env.sent == true {
+                round?.outcome = "changes"
+                if let line = env.line, !line.isEmpty {
+                    lastSend = await lineDelivery.deliverLine(line, key: .review(info.id), sessionID: sessionID)
+                }
+            } else {
+                lastError = Self.alreadySentMessage
+            }
+            try reloadComments()
+        } catch {
+            lastError = Self.message(error)
+        }
+    }
+
+    /// Approves the round once (#964), as `send()` sends it: Go closes the
+    /// round as approved first (with `resolveOpen` its carried and outdated
+    /// comments resolved in the same transaction), and only the call that did
+    /// it types the approved line, through the same `LineKey.review` gate
+    /// (REVIEW-04). A refusal types nothing and shows the round closed.
+    func approve(resolveOpen: Bool) async {
+        guard !sending, !refreshing, !undoing, let info = round, info.status == "open" else { return }
+        sending = true
+        defer { sending = false }
+        lastError = nil
+        await flushState()
+        do {
+            let env = try Self.checked(await cli.reviewApprove(projectID: projectID, roundID: info.id, resolveOpen: resolveOpen))
+            round?.status = "sent"
+            if env.sent == true {
+                round?.outcome = "approved"
+                approvedAt = Date()
+                lastSend = nil
                 if let line = env.line, !line.isEmpty {
                     lastSend = await lineDelivery.deliverLine(line, key: .review(info.id), sessionID: sessionID)
                 }

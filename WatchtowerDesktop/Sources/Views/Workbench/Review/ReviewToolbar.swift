@@ -4,8 +4,8 @@ import WatchtowerCore
 
 /// The Branch review toolbar (board #712, spec §4.3): All changes / Since
 /// round N−1 from round 2, Quick / Deep, Deep's phase strip; then Inline,
-/// Refresh, ⋯ and the one prominent action — Send review (N), or Start
-/// next round once the round was sent.
+/// Refresh, ⋯ and the verdict — Request changes (N) and Approve (#964), or
+/// the round's outcome and Start next round once the round was closed.
 struct ReviewToolbar: View {
     let model: ReviewChangesModel
     @Binding var inline: Bool
@@ -16,6 +16,8 @@ struct ReviewToolbar: View {
     var findRepeats: (() -> Void)?
     /// Open in Terminal: the session's terminal beside the pane; nil = the item is off.
     var openTerminal: (() -> Void)?
+    /// The reviewed branch, for Approve's confirmation ("" = this branch).
+    var branch = ""
 
     private var roundOpen: Bool { model.round?.status == "open" }
     /// Quick and Deep's Chapters show a diff, so Inline applies.
@@ -59,11 +61,15 @@ struct ReviewToolbar: View {
                 .accessibilityLabel("Refresh")
             moreMenu
             if roundOpen {
-                Button("Send review (\(model.draftCount))") { Task { await model.send() } }
+                Button("Request changes (\(model.draftCount))") { Task { await model.send() } }
                     .buttonStyle(.kitPrimary)
                     .disabled(!Self.canSend(model))
                     .help("Send the drafts (and the comments carried from the last round) to the agent")
+                ReviewApproveButton(model: model, branch: branch)
             } else {
+                if let outcome = ReviewApprovePresentation.outcomeText(model.round?.outcome) {
+                    Text(outcome).foregroundStyle(.secondary)
+                }
                 Button("Start next round", action: refresh)
                     .buttonStyle(.kitPrimary)
                     .disabled(model.load != .ready || model.sending || model.refreshing)
@@ -109,6 +115,13 @@ struct ReviewToolbar: View {
         return model.load == .ready && !model.sending && !model.refreshing && (model.draftCount > 0 || carried)
     }
 
+    /// Approve is on in an open, idle round without drafts whose session
+    /// still exists (`approvalBlocker`); Go refuses the rest anyway.
+    static func canApprove(_ model: ReviewChangesModel) -> Bool {
+        model.load == .ready && model.round?.status == "open" && !model.sending && !model.refreshing && !model.undoing
+            && model.approvalBlocker == nil
+    }
+
     /// `<viewed>/<total> lines · <done>/<count> chapters · <h:mm> active`.
     static func progressLine(_ model: ReviewChangesModel) -> String {
         let p = model.progress
@@ -145,7 +158,8 @@ struct ReviewBanners: View {
         if model.truncated {
             ReviewBanner(text: "The diff is too large; later files show without hunks")
         }
-        if let text = ReviewToolbar.deliveryText(model.lastSend) {
+        // An approved round says how its line went in its own banner.
+        if model.round?.outcome != "approved", let text = ReviewToolbar.deliveryText(model.lastSend) {
             ReviewBanner(text: text)
         }
         if let error = model.lastError {

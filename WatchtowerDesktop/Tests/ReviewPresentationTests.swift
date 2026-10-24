@@ -20,9 +20,10 @@ final class ReviewPresentationTests: XCTestCase {
     private func fixture(
         _ files: [ReviewFixture.File],
         since: [ReviewFixture.File]? = nil,
-        status: String = "open"
+        status: String = "open",
+        drafts: Int = 0
     ) async throws -> ReviewFixture {
-        let fixture = try ReviewFixture(files: files, sinceFiles: since, status: status)
+        let fixture = try ReviewFixture(files: files, sinceFiles: since, status: status, drafts: drafts)
         fixtures.append(fixture)
         await fixture.open()
         return fixture
@@ -153,7 +154,7 @@ final class ReviewPresentationTests: XCTestCase {
         let all = try texts(pane)
         XCTAssertEqual(all.filter { $0 == "Nothing to review" }.count, 1, "\(all)")
         XCTAssertTrue(all.contains("No uncommitted edits in the main folder."), "\(all)")
-        XCTAssertFalse(all.contains { $0.hasPrefix("Send review") }, "no toolbar on an empty round: \(all)")
+        XCTAssertFalse(all.contains { $0.hasPrefix("Request changes") }, "no toolbar on an empty round: \(all)")
         XCTAssertFalse(all.contains("Files"), "no file column on an empty round: \(all)")
     }
 
@@ -191,7 +192,63 @@ final class ReviewPresentationTests: XCTestCase {
         let toolbar = ReviewToolbar(model: f.model, inline: .constant(false)) { refreshed = true }
         try toolbar.inspect().find(button: "Start next round").tap()
         XCTAssertTrue(refreshed)
-        XCTAssertThrowsError(try toolbar.inspect().find(text: "Send review (0)"))
+        XCTAssertThrowsError(try toolbar.inspect().find(text: "Request changes (0)"))
+        XCTAssertThrowsError(try toolbar.inspect().find(button: "Approve"))
+        XCTAssertFalse(ReviewToolbar.canApprove(f.model), "a closed round takes no verdict")
+    }
+
+    // MARK: - Approve (#964)
+
+    func testOpenRoundWithDraftsOffersRequestChangesAndBlocksApprove() async throws {
+        let f = try await fixture([.init(path: "a.go")], drafts: 2)
+        let toolbar = ReviewToolbar(model: f.model, inline: .constant(false)) {}
+        XCTAssertNoThrow(try toolbar.inspect().find(button: "Request changes (2)"))
+        XCTAssertTrue(try toolbar.inspect().find(button: "Approve").isDisabled())
+        XCTAssertFalse(ReviewToolbar.canApprove(f.model))
+        XCTAssertEqual(f.model.approvalBlocker, "Send or delete the 2 drafts first")
+    }
+
+    func testOpenRoundWithoutDraftsCanApprove() async throws {
+        let f = try await fixture([.init(path: "a.go")])
+        XCTAssertTrue(ReviewToolbar.canApprove(f.model))
+        let toolbar = ReviewToolbar(model: f.model, inline: .constant(false)) {}
+        XCTAssertFalse(try toolbar.inspect().find(button: "Approve").isDisabled())
+    }
+
+    func testApprovePopoverTextAndButton() async throws {
+        let f = try await fixture([.init(path: "a.go"), .init(path: "b.go")])
+        let popover = ReviewApprovePopover(model: f.model, branch: "feature/x") {}
+        let all = try texts(popover)
+        XCTAssertTrue(all.contains("Approve feature/x?"), "\(all)")
+        XCTAssertTrue(all.contains { $0.contains("finish_session") }, "\(all)")
+        XCTAssertNoThrow(try popover.inspect().find(button: "Approve"))
+        XCTAssertNoThrow(try popover.inspect().find(button: "Cancel"))
+    }
+
+    func testApprovePresentation() {
+        XCTAssertEqual(ReviewApprovePresentation.title(branch: ""), "Approve this branch?")
+        XCTAssertEqual(ReviewApprovePresentation.buttonTitle(openEarlier: 0), "Approve")
+        XCTAssertEqual(ReviewApprovePresentation.buttonTitle(openEarlier: 3), "Resolve 3 and approve")
+        XCTAssertEqual(ReviewApprovePresentation.outcomeText("approved"), "Approved")
+        XCTAssertEqual(ReviewApprovePresentation.outcomeText("changes"), "Changes requested")
+        XCTAssertNil(ReviewApprovePresentation.outcomeText(""))
+        XCTAssertTrue(ReviewApprovePresentation.delivery(.submitted).reached)
+        XCTAssertTrue(ReviewApprovePresentation.delivery(.typed).reached)
+        for undelivered: SessionLineDelivery.Delivery? in [.held, .noSession, nil] {
+            XCTAssertEqual(ReviewApprovePresentation.delivery(undelivered).text, "the agent will see it in its next brief")
+            XCTAssertFalse(ReviewApprovePresentation.delivery(undelivered).reached)
+        }
+    }
+
+    func testApproveWarningsCountUnviewedLines() async throws {
+        let f = try await fixture([.init(path: "a.go", additions: 10, deletions: 2), .init(path: "b.go", additions: 3, deletions: 0)])
+        let warnings = ReviewApprovePresentation.warnings(f.model)
+        XCTAssertEqual(warnings.count, 1, "\(warnings)")
+        XCTAssertTrue(warnings.first?.hasPrefix("Not viewed:") == true, "\(warnings)")
+        XCTAssertTrue(warnings.first?.contains("15 lines") == true, "\(warnings)")
+        try await f.model.toggleViewed("a.go")
+        try await f.model.toggleViewed("b.go")
+        XCTAssertEqual(ReviewApprovePresentation.warnings(f.model), [])
     }
 
     func testFileHeaderViewedTogglesTheMark() async throws {

@@ -19,10 +19,13 @@ package struct ReviewRoundInfo: Decodable, Equatable, Sendable {
     package let phase: String
     package let chapterKey: String
     package let activeSeconds: Int
+    /// '' | changes | approved (00154). `review start` answers only open
+    /// rounds ('' there); the model sets its copy after a Send or Approve.
+    package var outcome: String
 
     private enum CodingKeys: String, CodingKey {
         case id, status, mode, folderRoot, baseSha, baseLabel, treeSha, prevRoundId, prevTreeSha, prevTreeLost
-        case phase, chapterKey, activeSeconds
+        case phase, chapterKey, activeSeconds, outcome
     }
 
     package init(from decoder: Decoder) throws {
@@ -40,6 +43,7 @@ package struct ReviewRoundInfo: Decodable, Equatable, Sendable {
         phase = try c.decodeIfPresent(String.self, forKey: .phase) ?? ""
         chapterKey = try c.decodeIfPresent(String.self, forKey: .chapterKey) ?? ""
         activeSeconds = try c.decodeIfPresent(Int.self, forKey: .activeSeconds) ?? 0
+        outcome = try c.decodeIfPresent(String.self, forKey: .outcome) ?? ""
     }
 }
 

@@ -192,7 +192,8 @@ extension WorkspacePaneView {
             mainStatus: vm.gitStatus[projectID],
             agentName: session?.kind.agent?.displayName ?? "Agent",
             openSession: { [vm] in Task { await vm.showSession(id: id) } },
-            openTerminal: { [vm] in Task { await vm.showTerminal(sessionID: id, projectID: projectID) } }
+            openTerminal: { [vm] in Task { await vm.showTerminal(sessionID: id, projectID: projectID) } },
+            openWorkchat: { [vm] in Task { await vm.showWorkchat(sessionID: id, projectID: projectID) } }
         )
     }
 }

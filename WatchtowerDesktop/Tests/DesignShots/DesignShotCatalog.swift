@@ -205,6 +205,13 @@ enum DesignShotCatalog {
             DesignShot(name: "branch-review-deep-meaning", size: NSSize(width: 1180, height: 760)) {
                 ReviewShotFixtures.deepMeaning()
             },
+            // Approve / Request changes (#964, mockup 3).
+            DesignShot(name: "branch-review-approve-popover", size: NSSize(width: 400, height: 260)) {
+                ReviewShotFixtures.approvePopover()
+            },
+            DesignShot(name: "branch-review-approved", size: NSSize(width: 1180, height: 560)) {
+                ReviewShotFixtures.approved()
+            },
             // Search while the messages index is rebuilt (#892).
             DesignShot(name: "search-index-rebuilding", size: NSSize(width: 720, height: 200)) {
                 AnyView(SearchShotFixtures.rebuildPending().shotFrame().detailBackground())

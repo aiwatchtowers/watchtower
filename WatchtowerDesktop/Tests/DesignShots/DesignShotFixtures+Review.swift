@@ -98,7 +98,8 @@ struct ReviewFixture {
             "diff": Self.diffJSON(files),
             "diff-since": Self.diffJSON(sinceFiles ?? files),
             "file": #"{"ok":true,"old":\#(Self.side("a")),"new":\#(Self.side("b"))}"#,
-            "overview": overview.map { #"{"ok":true,"overview":\#($0)}"# } ?? #"{"ok":true}"#
+            "overview": overview.map { #"{"ok":true,"overview":\#($0)}"# } ?? #"{"ok":true}"#,
+            "approve": #"{"ok":true,"sent":true,"line":"\#(ReviewDeliveryLine.approved(roundID: 2))"}"#
         ])
         model = ReviewChangesModel(projectID: projectID, sessionID: session.id, cli: WorkbenchCLI(runner: runner), db: pool,
                                    lineDelivery: ReviewNoSink()) { false }
@@ -246,6 +247,41 @@ enum ReviewShotFixtures {
             let fixture = try ReviewFixture(files: files, context: context, drafts: 3, overview: overview)
             fixture.openNow()
             fixture.markViewedNow(Array(files[3...5].map(\.path)))
+            return (fixture, fixture.identity(place: worktree()))
+        }
+    }
+
+    /// Approve's confirmation (#964, mockup 3): unviewed chapters and the
+    /// toolbar's popover, on its own (a popover does not render in a shot).
+    static func approvePopover() -> AnyView {
+        do {
+            if built["approve-popover"] == nil {
+                let fixture = try ReviewFixture(files: files, context: context, overview: overview)
+                fixture.openNow()
+                fixture.markViewedNow(Array(files[3...5].map(\.path)))
+                built["approve-popover"] = (fixture, fixture.identity(place: worktree()))
+            }
+            guard let entry = built["approve-popover"] else { return AnyView(EmptyView()) }
+            return AnyView(ReviewApprovePopover(model: entry.fixture.model, branch: "feature/capsule-corners") {}
+                .background(Surface.window))
+        } catch {
+            XCTFail("review shot fixture failed: \(error)")
+            return AnyView(Text("fixture failed: \(String(describing: error))").foregroundStyle(.red))
+        }
+    }
+
+    /// After Approve (#964): the green banner, the outcome in the toolbar.
+    static func approved() -> AnyView {
+        pane("approved") {
+            let fixture = try ReviewFixture(files: files, context: context, overview: overview)
+            fixture.openNow()
+            var done = false
+            Task { @MainActor in
+                await fixture.model.approve(resolveOpen: false)
+                done = true
+            }
+            let deadline = Date().addingTimeInterval(10)
+            while !done, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
             return (fixture, fixture.identity(place: worktree()))
         }
     }
