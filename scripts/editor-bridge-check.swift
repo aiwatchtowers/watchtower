@@ -1302,6 +1302,7 @@ func diffPageChecks(root: URL) async {
           posted && first?["startLine"] as? Int == 1 && first?["endLine"] as? Int == 3 && first?["side"] as? String == "new",
           "\(page.comments)")
     await diffNotesAndHunksChecks(page)
+    await diffFoldChecks(page)
     check("diff page: no error posted during the run", page.errors.isEmpty, page.errors.joined(separator: "; "))
 }
 
@@ -1359,6 +1360,53 @@ func diffNotesAndHunksChecks(_ page: Page) async {
     await pause(0.2)
     let cleared = await page.evalInt("document.querySelectorAll('.wt-note, .wt-undo').length")
     check("showDiff: clears the notes and hunk zones", cleared == 0, "\(String(describing: cleared))")
+}
+
+/// Changes | Full file (board #959): unchanged runs fold, the lines a
+/// comment, note or Undo zone sits on are unfolded, `wt.setFullFile` shows
+/// and folds again, `wt.focus(line)` unfolds its line. Hidden lines are read
+/// from the modified editor's view model (harness only).
+@MainActor
+func diffFoldChecks(_ page: Page) async {
+    let original = (1...100).map { "line \($0)" }.joined(separator: "\n") + "\n"
+    let modified = original.replacingOccurrences(of: "line 50\n", with: "line fifty\n")
+    await page.call("wt.showDiff", [
+        "path": "long.txt", "original": original, "modified": modified, "inline": false, "fullFile": false,
+        "comments": [["id": 9, "startLine": 5, "endLine": 5, "body": "far up", "status": "draft", "reply": ""] as [String: Any]],
+        "notes": [["startLine": 90, "endLine": 90, "text": "far down"] as [String: Any]],
+        "hunks": [["id": "0123456789abcdef", "newStart": 47, "canUndo": true, "reason": ""] as [String: Any]],
+    ] as [String: Any])
+    let hiddenJS = "(function (n) { var a = monaco.editor.getDiffEditors()[0].getModifiedEditor()._getViewModel().getHiddenAreas();"
+        + " return a.some(function (r) { return r.startLineNumber <= n && n <= r.endLineNumber; }); })"
+    func hidden(_ line: Int) async -> Bool? { await page.eval("\(hiddenJS)(\(line))") as? Bool }
+    // The diff is computed off the call: poll the view model until `line` is (un)folded.
+    func settles(_ line: Int, hidden want: Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(5)
+        while await hidden(line) != want {
+            if Date() > deadline { return false }
+            await pause(0.02)
+        }
+        return true
+    }
+    let folded = await settles(25, hidden: true)
+    check("Changes: an unchanged run far from the change is folded", folded)
+    let shown = [await hidden(5), await hidden(6), await hidden(46), await hidden(89), await hidden(90)]
+    check("Changes: the lines of the comment, note and Undo zones are unfolded",
+          shown.allSatisfy { $0 == false }, "\(shown)")
+    await page.call("wt.setComments", [["id": 9, "startLine": 30, "endLine": 30, "body": "mid", "status": "draft", "reply": ""] as [String: Any]])
+    let comment30 = await hidden(30)
+    check("setComments: a new comment's folded line is unfolded", comment30 == false, "\(String(describing: comment30))")
+    await page.call("wt.setFullFile", true)
+    let full = await settles(25, hidden: false)
+    check("setFullFile(true): nothing is folded", full)
+    await page.call("wt.setFullFile", false)
+    let refolded = await settles(25, hidden: true)
+    let kept = await hidden(30)
+    check("setFullFile(false): folds again, the comment's line stays unfolded", refolded && kept == false,
+          "\(String(describing: kept))")
+    await page.call("wt.focus", 20)
+    let focused = await hidden(20)
+    check("focus(line): a folded line is unfolded", focused == false, "\(String(describing: focused))")
 }
 
 /// Without textmate/ (a build where scripts/fetch-monaco.sh did not run),
