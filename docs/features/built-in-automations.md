@@ -207,6 +207,5 @@ A watch is a Personal recipe, file `<workspace>/automations/watch-<track id>-<sl
 - A recipe an agent binds in the same second as the move's first attempt counts as the move's (it is confirmed only while still the untouched template).
 - The gate probes only the pipeline's own activity: a hand-written watch that gathers `extra` through read tools does not run in a cycle without digests, auto tracks or inbox activity.
 - A Retry while the daemon runs can double-scan one cycle (the daemon changes path at restart, as in C2).
-- `tracks watch <target-id>` requires `--text` but has no such flag (pre-existing; follow-up).
 - Turning off Track my threads also stops the watches (FEAT-01).
 - A failed owner copy of Track my threads waits for a digest newer than the failed attempt; that mark lives in memory, so a daemon restart allows one more attempt.

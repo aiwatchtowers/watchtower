@@ -501,6 +501,21 @@ func TestTracksCreate_WritesConfirmedWatch(t *testing.T) {
 	assert.Equal(t, "watch the refund decision", got)
 }
 
+func TestTracksWatch_TakesTextAndLinksTarget(t *testing.T) {
+	c := newC3CLI(t, `{"title":"Refund decision","instruction":"watch the refund decision"}`)
+	t.Cleanup(func() { tracksCreateFlagTarget, tracksCreateFlagText = 0, "" })
+	targetID, err := c.d.CreateTarget(db.Target{Text: "Ship the refund", Status: "todo",
+		Level: "week", PeriodStart: "2026-10-19", PeriodEnd: "2026-10-25", Priority: "medium", Ownership: "mine", SourceType: "manual"})
+	require.NoError(t, err)
+	code, stdout, stderr := runCLI(t, "tracks", "watch", strconv.Itoa(int(targetID)), "--text", "the refund for acme")
+	require.Equal(t, 0, code, stderr)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal([]byte(stdout), &m), stdout)
+	tr := c.track(t, int(m["id"].(float64)))
+	assert.Equal(t, int(targetID), tr.LinkedTargetID, "the track watches the target it was made for")
+	assert.NotZero(t, tr.AutomationID)
+}
+
 func TestTracksCreate_UnderAgentLeavesUnconfirmed(t *testing.T) {
 	c := newC3CLI(t, `{"title":"Refund decision","instruction":"watch the refund decision"}`)
 	t.Setenv("CLAUDECODE", "1")
