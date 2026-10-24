@@ -206,6 +206,12 @@ final class ReviewPresentationTests: XCTestCase {
         XCTAssertTrue(try toolbar.inspect().find(button: "Approve").isDisabled())
         XCTAssertFalse(ReviewToolbar.canApprove(f.model))
         XCTAssertEqual(f.model.approvalBlocker, "Send or delete the 2 drafts first")
+        XCTAssertEqual(ReviewToolbar.prominentVerdict(f.model), .requestChanges)
+    }
+
+    func testWithoutDraftsApproveIsTheProminentVerdict() async throws {
+        let f = try await fixture([.init(path: "a.go")])
+        XCTAssertEqual(ReviewToolbar.prominentVerdict(f.model), .approve)
     }
 
     func testOpenRoundWithoutDraftsCanApprove() async throws {

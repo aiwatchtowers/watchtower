@@ -243,6 +243,9 @@ final class ReviewChangesModel {
 
     /// The message when Go answers that the round was already sent.
     static let alreadySentMessage = "This round was already sent"
+    /// Go refused Approve on a round that is still open, with no blocker the
+    /// model knows of (the open comments changed under the popover).
+    static let approveRefusedMessage = "The round was not approved — check its open comments and approve again"
 
     /// Whether the round has anything to review — its whole base..tree diff,
     /// whatever view is shown (an empty Since view of a branch with changes
@@ -539,7 +542,9 @@ final class ReviewChangesModel {
     /// round as approved first (with `resolveOpen` its carried and outdated
     /// comments resolved in the same transaction), and only the call that did
     /// it types the approved line, through the same `LineKey.review` gate
-    /// (REVIEW-04). A refusal types nothing and shows the round closed.
+    /// (REVIEW-04). A refusal types nothing; the round's stored state says
+    /// whether it was already closed or is still open (drafts, open comments,
+    /// no session), and the message says which.
     func approve(resolveOpen: Bool) async {
         guard !sending, !refreshing, !undoing, let info = round, info.status == "open" else { return }
         sending = true
@@ -548,21 +553,40 @@ final class ReviewChangesModel {
         await flushState()
         do {
             let env = try Self.checked(await cli.reviewApprove(projectID: projectID, roundID: info.id, resolveOpen: resolveOpen))
-            round?.status = "sent"
             if env.sent == true {
+                round?.status = "sent"
                 round?.outcome = "approved"
                 approvedAt = Date()
                 lastSend = nil
                 if let line = env.line, !line.isEmpty {
                     lastSend = await lineDelivery.deliverLine(line, key: .review(info.id), sessionID: sessionID)
                 }
+                try reloadComments()
             } else {
-                lastError = Self.alreadySentMessage
+                try await approveRefused(info.id)
             }
-            try reloadComments()
         } catch {
             lastError = Self.message(error)
         }
+    }
+
+    /// Go wrote nothing. A round no longer open (or gone) shows closed with
+    /// its stored outcome; an open one stays open, its comments and session
+    /// re-read, and the blocker that refused it is shown.
+    private func approveRefused(_ roundID: Int64) async throws {
+        let (state, gone) = try await db.read {
+            (try ReviewQueries.roundState($0, roundID: roundID), try ReviewQueries.sessionGone($0, roundID: roundID))
+        }
+        guard let state, state.status == "open" else {
+            round?.status = state?.status ?? "sent"
+            round?.outcome = state?.outcome ?? ""
+            lastError = Self.alreadySentMessage
+            try reloadComments()
+            return
+        }
+        sessionGone = gone
+        try reloadComments()
+        lastError = approvalBlocker ?? Self.approveRefusedMessage
     }
 
     /// Wrap-up marks live under this chapter key and the `intent` lens.

@@ -90,16 +90,25 @@ enum ReviewApprovePresentation {
 struct ReviewApproveButton: View {
     let model: ReviewChangesModel
     let branch: String
+    /// The toolbar's one prominent verdict (`ReviewToolbar.prominentVerdict`).
+    var prominent = true
     @State private var confirming = false
 
     var body: some View {
         Button("Approve") { confirming = true }
-            .buttonStyle(.kitPrimary)
+            .verdictStyle(prominent: prominent)
             .disabled(!ReviewToolbar.canApprove(model))
             .help(model.approvalBlocker ?? "Close the review as approved; the agent finishes the branch")
             .popover(isPresented: $confirming, arrowEdge: .bottom) {
                 ReviewApprovePopover(model: model, branch: branch) { confirming = false }
             }
+    }
+}
+
+extension View {
+    /// A verdict button: the prominent one is `.kitPrimary`, the other `.kitSecondary`.
+    @ViewBuilder func verdictStyle(prominent: Bool) -> some View {
+        if prominent { buttonStyle(.kitPrimary) } else { buttonStyle(.kitSecondary) }
     }
 }
 

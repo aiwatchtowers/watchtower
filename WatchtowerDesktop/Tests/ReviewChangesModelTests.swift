@@ -414,18 +414,52 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(stored, "approved")
     }
 
+    /// Go refuses and the round is already closed (behind the model): it
+    /// shows closed with its stored outcome; nothing is typed.
     func testApproveRefusedTypesNothing() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["approve": #"{"ok":true,"sent":false}"#])
+        await h.model.open()
+        try await h.db.write { try $0.execute(sql: "UPDATE review_rounds SET status = 'sent', outcome = 'changes' WHERE id = 7") }
+        await h.model.approve(resolveOpen: false)
+        XCTAssertTrue(h.sink.lines.isEmpty)
+        XCTAssertNil(h.model.lastSend)
+        XCTAssertNil(h.model.approvedAt)
+        XCTAssertEqual(h.model.lastError, ReviewChangesModel.alreadySentMessage)
+        XCTAssertEqual(h.model.round?.status, "sent", "a round Go closed is not open here either")
+        XCTAssertEqual(h.model.round?.outcome, "changes", "the stored outcome, not an assumed one")
+    }
+
+    /// Go refuses a round that is still open (open comments without
+    /// --resolve-open): it stays open and the message is not "already sent".
+    func testApproveRefusedOnAnOpenRoundKeepsItOpen() async throws {
         let h = try harness()
         h.baseScript()
         h.cli.script(["approve": #"{"ok":true,"sent":false}"#])
         await h.model.open()
         await h.model.approve(resolveOpen: false)
         XCTAssertTrue(h.sink.lines.isEmpty)
-        XCTAssertNil(h.model.lastSend)
         XCTAssertNil(h.model.approvedAt)
-        XCTAssertEqual(h.model.lastError, ReviewChangesModel.alreadySentMessage)
-        XCTAssertEqual(h.model.round?.status, "sent", "a refused round is not open here either")
-        XCTAssertEqual(h.model.round?.outcome, "", "a refusal says nothing about the outcome")
+        XCTAssertEqual(h.model.round?.status, "open")
+        XCTAssertEqual(h.model.round?.outcome, "")
+        XCTAssertEqual(h.model.lastError, ReviewChangesModel.approveRefusedMessage)
+        XCTAssertTrue(ReviewToolbar.canApprove(h.model), "the owner can try again")
+    }
+
+    /// Go refuses because the session went away under the model: the round
+    /// stays open and the blocker says why.
+    func testApproveRefusedWhenTheSessionIsGoneSaysSo() async throws {
+        let h = try harness()
+        h.baseScript()
+        h.cli.script(["approve": #"{"ok":true,"sent":false}"#])
+        await h.model.open()
+        try await h.db.write { try $0.execute(sql: "UPDATE review_rounds SET session_id = NULL WHERE id = 7") }
+        await h.model.approve(resolveOpen: false)
+        XCTAssertTrue(h.sink.lines.isEmpty)
+        XCTAssertEqual(h.model.round?.status, "open")
+        XCTAssertEqual(h.model.lastError, "The session is gone")
+        XCTAssertFalse(ReviewToolbar.canApprove(h.model))
     }
 
     func testApproveDuringARefreshTypesNothing() async throws {

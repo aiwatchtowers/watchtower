@@ -61,11 +61,12 @@ struct ReviewToolbar: View {
                 .accessibilityLabel("Refresh")
             moreMenu
             if roundOpen {
+                let verdict = Self.prominentVerdict(model)
                 Button("Request changes (\(model.draftCount))") { Task { await model.send() } }
-                    .buttonStyle(.kitPrimary)
+                    .verdictStyle(prominent: verdict == .requestChanges)
                     .disabled(!Self.canSend(model))
                     .help("Send the drafts (and the comments carried from the last round) to the agent")
-                ReviewApproveButton(model: model, branch: branch)
+                ReviewApproveButton(model: model, branch: branch, prominent: verdict == .approve)
             } else {
                 if let outcome = ReviewApprovePresentation.outcomeText(model.round?.outcome) {
                     Text(outcome).foregroundStyle(.secondary)
@@ -113,6 +114,14 @@ struct ReviewToolbar: View {
     static func canSend(_ model: ReviewChangesModel) -> Bool {
         let carried = model.comments.contains { $0.status == .carried }
         return model.load == .ready && !model.sending && !model.refreshing && (model.draftCount > 0 || carried)
+    }
+
+    enum Verdict { case requestChanges, approve }
+
+    /// One prominent verdict at a time: Request changes while there are
+    /// drafts (Approve is off then), Approve otherwise.
+    static func prominentVerdict(_ model: ReviewChangesModel) -> Verdict {
+        model.draftCount > 0 ? .requestChanges : .approve
     }
 
     /// Approve is on in an open, idle round without drafts whose session

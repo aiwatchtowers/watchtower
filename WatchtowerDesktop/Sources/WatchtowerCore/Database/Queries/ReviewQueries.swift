@@ -99,6 +99,12 @@ package enum ReviewQueries {
                           arguments: [roundID]) ?? false
     }
 
+    /// The round's stored status and outcome; nil when the row is gone.
+    package static func roundState(_ db: Database, roundID: Int64) throws -> (status: String, outcome: String)? {
+        try Row.fetchOne(db, sql: "SELECT status, outcome FROM review_rounds WHERE id = ?", arguments: [roundID])
+            .map { (status: $0["status"], outcome: $0["outcome"]) }
+    }
+
     package static func viewed(_ db: Database, roundID: Int64) throws -> [String: String] {
         let rows = try Row.fetchAll(db, sql: "SELECT path, content_sha FROM review_viewed WHERE round_id = ?", arguments: [roundID])
         return Dictionary(uniqueKeysWithValues: rows.map { ($0["path"] as String, $0["content_sha"] as String) })
