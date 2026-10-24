@@ -68,9 +68,21 @@ A failure with `--json` prints `{"ok":false,"error":…}` and exits non-zero.
 - Workbench **…** -> **Agent Settings…**: the section **Your instructions — this workbench**, global text collapsed with **Edit in Settings**, then the workbench's own field. The `workflow.md` row stays and is the team's folder rules.
 - Home: the last row of the Workbench zone offers the newest open suggestion first seen in the last 7 days — **Add**, **Dismiss** (the field itself lives in Settings → System → Workbench). A successful Add/Dismiss re-reads Home at once (`HomeCenter.rereadNow`: the CLI writes from another process, which the observation misses). It leaves once acted on or at 7 days; older open suggestions stay in Settings only. A failed read is not an all-clear: the Workbench zone says so.
 
+## Instructions in every AI chat (2026-10-24, owner decisions asks #514–#518, #522)
+
+Spec: `docs/superpowers/specs/2026-10-23-chat-owner-instructions-design.md`. PROJ-22 amended.
+
+- **Texts.** Shared = the global `session` text (still in workbench briefs, now also in every chat). New global chat-only text: `owner_instructions` scope `chat` (migration 00153 recreates the scope and `instruction_suggestions.field` CHECKs). `instructions.ChatSlot` renders both (`For the chat:` header only when the chat text is non-empty); workbench additions and procedures never reach a chat.
+- **Delivery.** Main chat: `chat.BuildSystemPrompt` after the app rules, before the project block. Embedded chats: `ai query --owner-instructions` (bare flag, text read in Go, the prompt stays on stdin). Setup assistants (`SetupAssistantChat`, `.memory` persistence) get nothing. A warm session keeps its prompt; an edit applies from the next conversation.
+- **Remember.** A message starting with `remember:`, `remember this:` or `запомни:` (shared Swift/Go fixture `internal/instructions/testdata/remember_cases.json`) is stored verbatim by `watchtower instructions remember --conversation --message --stdin` into the chat text, ledger `instruction_chat_lines` (line text, conversation/message ids nullable, time). The chat shows "Remembered for all chats" with **Undo** (`forget <id>`, refuses when Settings already changed the line) and **Open in Settings**; over `MaxRunes` nothing is written. No model is involved.
+- **CLI.** `set --field chat`; pinned keys added: `show` `global.chat`, `chat_lines`; `preview` `chat_slot`; `remember` `outcome`, `line_id`; `forget` `removed`; failures carry `code`.
+- **Suggestions.** The daily pass also reads owner turns of persisted chats (14 days, a conversation counts as a session, `c<id>` labels, prompt `instructions.suggest` v2). Chats-only evidence suggests field `chat`; mixed goes to the global session text; Add of a mixed one that does not fit is refused.
+- **Desktop.** Settings -> Profile -> Instructions (`InstructionsSettingsSection`: "For chats and agents", "Only in chats" with "Added from chats" lines and **Open chat**, "Target procedure", Preview of both slots); System -> Workbench keeps a pointer; `RememberCenter` and `RememberMarkView` in the chat composers.
+- **Guards.** `TestProj22_RememberWritesOwnerWordsVerbatim`, `TestProj22_WorkbenchTextsNeverInChatSlot`.
+
 ## Limits
 
-- No per-target texts, variables, structured rule list, "remember this" capture or phone sync.
+- No per-target texts, variables, structured rule list or phone sync. Remember applies to chats only; facts and decisions about the world are a separate design.
 - Edits reach running sessions only through `procedure`; their brief keeps the text they started with.
 - Suggestions need at least 3 sessions in 14 days; a quiet owner sees none.
 
