@@ -60,7 +60,7 @@ The file belongs to the repository, so it can arrive with a `git pull` or be cha
 `jira-state-report` picks its projects when you install it: every synced Jira project with an open issue assigned to you or reported by you. The form says which ("Covers: PAY, OPS"). Each project gets its own `jira:read@…` permission and an entry in the script's `projects` list; to add or drop one later, change both.
 
 ### Finding your way around
-- The list's groups (**Built in**, **Personal**, one per workbench) fold with their arrows, and Watchtower remembers which. A failed recipe shows its error first.
+- The list's groups (**Built in**, **Personal**, one per workbench) fold, and Watchtower remembers it. A failed recipe shows its error first.
 - In the editor's **Chat**, the assistant can read your recipes and their runs, Slack channels, Confluence pages, mail and meeting recaps to write a better recipe. It can only propose a save, which you approve.
 - **Hide Draft** (**⌥⌘0**) hides the draft column to give the chat the room; **Save…** brings it back.
 
