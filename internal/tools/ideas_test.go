@@ -117,3 +117,24 @@ func TestCreateIdea_Registration(t *testing.T) {
 	assert.ElementsMatch(t, []string{"reaction", "main", AutomationSurface}, tool.Surfaces, "reaction path + main chat + automations; never the target chat (TGT-BRIEF-01 axis 3)")
 	require.NotNil(t, tool.InputSchema)
 }
+
+func TestListIdeas_HidesUnapprovedChatBorn(t *testing.T) {
+	d := openDB(t)
+	seedIdea(t, d, db.Idea{Kind: "decision", Title: "Pending chat decision", Status: "proposed", Source: "mined", ChatBorn: true}, "")
+	seedIdea(t, d, db.Idea{Kind: "decision", Title: "Approved chat decision", Status: "active", Source: "mined", ChatBorn: true}, "")
+	seedIdea(t, d, db.Idea{Kind: "idea", Title: "Mined proposal", Status: "proposed", Source: "mined"}, "")
+
+	got := callReadString(t, ideasRegistry(t, d), "list_ideas", `{}`)
+	assert.NotContains(t, got, "Pending chat decision")
+	assert.Contains(t, got, "Approved chat decision")
+	assert.Contains(t, got, "Mined proposal")
+}
+
+func TestGetIdea_UnapprovedChatBornNotFound(t *testing.T) {
+	d := openDB(t)
+	id := seedIdea(t, d, db.Idea{Kind: "decision", Title: "Pending chat decision", Status: "proposed", Source: "mined", ChatBorn: true}, "secret quote")
+
+	_, err := ideasRegistry(t, d).CallRead(context.Background(), "get_idea", json.RawMessage(`{"id":`+strconv.FormatInt(id, 10)+`}`), Binding{})
+	require.Error(t, err)
+	assert.Equal(t, "idea not found", err.Error())
+}

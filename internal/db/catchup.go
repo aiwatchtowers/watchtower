@@ -281,7 +281,7 @@ func (db *DB) ListCatchupDecisions(from, to float64, limit int) ([]CatchupItem, 
 		       MAX(CASE WHEN m.said_at <> '' THEN m.said_at ELSE m.created_at END) AS last_at
 		FROM ideas i
 		JOIN idea_mentions m ON m.idea_id = i.id
-		WHERE i.kind = 'decision'
+		WHERE i.kind = 'decision' AND ` + KnowledgeVisibleIdeaCond("i") + `
 		  AND CASE WHEN m.said_at <> '' THEN m.said_at ELSE m.created_at END > ?
 		  AND CASE WHEN m.said_at <> '' THEN m.said_at ELSE m.created_at END <= ?
 		GROUP BY i.id

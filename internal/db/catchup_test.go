@@ -344,3 +344,18 @@ func TestFetchItemScopeHints_Areas(t *testing.T) {
 	_, _, err = d.FetchItemScopeHints("briefings", 1)
 	assert.Error(t, err, "briefings is no longer an area")
 }
+
+func TestCatchupDecisions_SkipUnapprovedChatBorn(t *testing.T) {
+	d := openTestDB(t)
+	_, err := d.Exec(`INSERT INTO ideas (id, kind, title, essence, status, chat_born) VALUES
+		(1, 'decision', 'Pending chat', '', 'proposed', 1), (2, 'decision', 'Approved chat', '', 'active', 1)`)
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO idea_mentions (idea_id, source, ref, quote, author, said_at) VALUES
+		(1, 'chat', 'c1|1', 'q', 'Ann', '1970-01-01T00:20:00Z'),
+		(2, 'chat', 'c1|2', 'q', 'Ann', '1970-01-01T00:20:00Z')`)
+	require.NoError(t, err)
+	items, err := d.ListCatchupDecisions(1000, 2000, 10)
+	require.NoError(t, err)
+	require.Len(t, items, 1)
+	assert.Equal(t, "Approved chat", items[0].Title)
+}

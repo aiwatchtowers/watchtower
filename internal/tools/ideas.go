@@ -77,7 +77,7 @@ func NewGetIdea() *Tool {
 			if err := json.Unmarshal(call.Args, &a); err != nil {
 				return nil, &ValidationError{Msg: "invalid arguments"}
 			}
-			idea, err := d.GetIdea(a.ID)
+			idea, err := d.GetKnowledgeVisibleIdea(a.ID)
 			if err != nil {
 				return nil, fmt.Errorf("getting idea: %w", err)
 			}

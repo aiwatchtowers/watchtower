@@ -240,6 +240,9 @@ func (db *DB) ListIdeas(f IdeaFilter) ([]Idea, error) {
 		args = append(args, like, like, like)
 	}
 
+	// An unapproved chat-born item is not shown to agents (list_ideas, CLI).
+	where = append(where, KnowledgeVisibleIdeaCond(""))
+
 	query := `SELECT ` + ideaSelectCols + ` FROM ideas`
 	if len(where) > 0 {
 		query += ` WHERE ` + strings.Join(where, " AND ")
@@ -267,6 +270,20 @@ func (db *DB) ListIdeas(f IdeaFilter) ([]Idea, error) {
 // GetIdea returns a single idea by ID, or (nil, nil) if no row exists.
 func (db *DB) GetIdea(id int64) (*Idea, error) {
 	row := db.QueryRow(`SELECT `+ideaSelectCols+` FROM ideas WHERE id = ?`, id)
+	idea, err := scanIdea(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("getting idea %d: %w", id, err)
+	}
+	return idea, nil
+}
+
+// GetKnowledgeVisibleIdea is GetIdea for agent-visible readers: an unapproved
+// chat-born item answers (nil, nil), exactly as a missing id does.
+func (db *DB) GetKnowledgeVisibleIdea(id int64) (*Idea, error) {
+	row := db.QueryRow(`SELECT `+ideaSelectCols+` FROM ideas WHERE id = ? AND `+KnowledgeVisibleIdeaCond(""), id)
 	idea, err := scanIdea(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -957,10 +974,11 @@ func (db *DB) ListTranscriptsForIdeasAfter(floor int64, toISO string) ([]Transcr
 }
 
 // CountIdeasForReview returns the number of ideas awaiting owner attention:
-// freshly proposed, or explicitly flagged needs_review, excluding decisions.
+// freshly proposed, or explicitly flagged needs_review, excluding mined
+// decisions (a chat-born decision awaits the owner's approval and counts).
 func (db *DB) CountIdeasForReview() (int, error) {
 	var count int
-	err := db.QueryRow(`SELECT COUNT(*) FROM ideas WHERE (status = 'proposed' OR needs_review = 1) AND kind != 'decision'`).Scan(&count)
+	err := db.QueryRow(`SELECT COUNT(*) FROM ideas WHERE (status = 'proposed' OR needs_review = 1) AND (kind != 'decision' OR chat_born = 1)`).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("counting ideas for review: %w", err)
 	}
