@@ -57,6 +57,18 @@ func TestRegistry_ShippedRecipesParse(t *testing.T) {
 	}
 }
 
+func TestBuiltinRecipes_HaveSummary(t *testing.T) {
+	for _, e := range All() {
+		r, err := ParseShipped(e)
+		if err != nil {
+			t.Fatalf("%s: %v", e.ID, err)
+		}
+		if n := len([]rune(r.Summary)); n == 0 || n > automations.MaxSummaryRunes {
+			t.Errorf("%s: summary %q has %d runes", e.ID, r.Summary, n)
+		}
+	}
+}
+
 // TestRegistry_PromptsCoverDefaultPromptCalls runs each shipped recipe and
 // checks that builtin.defaultPrompt is asked for exactly the entry's prompt
 // names (the shipped loop names them through a variable, so the script text

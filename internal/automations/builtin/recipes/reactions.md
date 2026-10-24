@@ -1,5 +1,6 @@
 ---
 name: Reactions
+summary: A Slack emoji turns into an action
 trigger:
   sync: reactions
 permissions:

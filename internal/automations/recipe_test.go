@@ -765,3 +765,48 @@ func TestApprovalHash_TrackScanIsHashed(t *testing.T) {
 		t.Errorf("fields permissions=%q trigger=%q", fields["permissions"], fields["trigger"])
 	}
 }
+
+func TestParseRecipe_Summary(t *testing.T) {
+	r := mustParse(t, recipeWith(baseFrontmatter+"summary: Your brief and day plan\n", "log(1);\n"), Scope{Kind: ScopePersonal})
+	if r.Summary != "Your brief and day plan" {
+		t.Fatalf("Summary = %q", r.Summary)
+	}
+}
+
+func TestParseRecipe_SummaryTooLong(t *testing.T) {
+	_, err := ParseRecipe("t", recipeWith(baseFrontmatter+"summary: "+strings.Repeat("x", 61)+"\n", "log(1);\n"), Scope{Kind: ScopePersonal})
+	var pe *ParseError
+	if !errors.As(err, &pe) || pe.Line == 0 || !strings.Contains(pe.Msg, "summary") || !strings.Contains(pe.Msg, "60") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestParseRecipe_SummaryMultiline(t *testing.T) {
+	_, err := ParseRecipe("t", recipeWith(baseFrontmatter+"summary: |\n  one\n  two\n", "log(1);\n"), Scope{Kind: ScopePersonal})
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestApprovalHash_IgnoresSummary(t *testing.T) {
+	a := mustParse(t, recipeWith(baseFrontmatter+"summary: One\n", "log(1);\n"), Scope{Kind: ScopePersonal})
+	b := mustParse(t, recipeWith(baseFrontmatter+"summary: Two\n", "log(1);\n"), Scope{Kind: ScopePersonal})
+	if ApprovalHash(a) != ApprovalHash(b) {
+		t.Fatal("summary changed the approval hash")
+	}
+}
+
+func TestFallbackSummary(t *testing.T) {
+	if got := FallbackSummary("Every morning, writes your brief. Then plans."); got != "Every morning, writes your brief." {
+		t.Errorf("got %q", got)
+	}
+	long := strings.TrimSpace(strings.Repeat("abcdefghi ", 10))
+	got := FallbackSummary(long + ". Next.")
+	if n := len([]rune(got)); n > 61 || !strings.HasSuffix(got, "…") || strings.Contains(got, " …") {
+		t.Errorf("got %q (%d runes)", got, n)
+	}
+	if got := FallbackSummary(""); got != "" {
+		t.Errorf("got %q", got)
+	}
+}

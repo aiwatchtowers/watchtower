@@ -1,5 +1,6 @@
 ---
 name: Track my threads
+summary: Slack threads waiting on you
 trigger:
   sync: tracks
 permissions:

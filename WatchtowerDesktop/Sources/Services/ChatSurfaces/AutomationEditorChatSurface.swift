@@ -187,6 +187,7 @@ enum AutomationEditorChatSurface {
         }
         return context + "\n\n"
             + "Load the `create-automation` skill with `load_skill` before drafting.\n"
+            + "Always write `summary:` — a few words on what it does, not when, at most 60 characters.\n"
             + "Draft with `draft_automation` and go through its dry run with the owner. "
             + "Do not call `save_automation` here: the owner saves from the panel with **Save and Turn On** "
             + "or **Save Turned Off** under the draft. When the draft is ready, tell them to press it.\n\n"

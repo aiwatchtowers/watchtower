@@ -1,5 +1,6 @@
 ---
 name: Idea finder
+summary: Ideas and decisions from your talk
 trigger:
   sync: ideas
 permissions:

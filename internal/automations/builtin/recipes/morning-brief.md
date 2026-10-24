@@ -1,5 +1,6 @@
 ---
 name: Morning brief
+summary: Your brief and day plan
 trigger:
   sync: morning_brief
 permissions:
