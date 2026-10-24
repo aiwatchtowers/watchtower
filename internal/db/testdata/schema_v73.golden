@@ -206,6 +206,9 @@ CREATE INDEX idx_inbox_items_updated ON inbox_items(updated_at DESC)
 index	idx_inbox_learned_rules_scope
 CREATE INDEX idx_inbox_learned_rules_scope ON inbox_learned_rules(rule_type, scope_key)
 
+index	idx_instruction_chat_lines_message
+CREATE INDEX idx_instruction_chat_lines_message ON instruction_chat_lines(message_id)
+
 index	idx_instruction_suggestions_status
 CREATE INDEX idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at)
 
@@ -1536,11 +1539,20 @@ last_updated TEXT NOT NULL, pipeline TEXT NOT NULL DEFAULT 'inbox',
 UNIQUE(rule_type, scope_key)
 )
 
+table	instruction_chat_lines
+CREATE TABLE instruction_chat_lines (
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+line TEXT NOT NULL,
+conversation_id INTEGER NULL,
+message_id INTEGER NULL,
+added_at TEXT NOT NULL
+)
+
 table	instruction_suggestions
-CREATE TABLE instruction_suggestions (
+CREATE TABLE "instruction_suggestions" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 text TEXT NOT NULL,
-field TEXT NOT NULL CHECK (field IN ('session','procedure')),
+field TEXT NOT NULL CHECK (field IN ('session','procedure','chat')),
 workbench_id INTEGER NULL REFERENCES projects(id) ON DELETE CASCADE,
 session_count INTEGER NOT NULL DEFAULT 0,
 workbench_count INTEGER NOT NULL DEFAULT 0,
@@ -2241,8 +2253,8 @@ CHECK ((status IN ('answered','delivered')) = (answer != ''))
 )
 
 table	owner_instructions
-CREATE TABLE owner_instructions (
-scope TEXT PRIMARY KEY CHECK (scope IN ('session','procedure')),
+CREATE TABLE "owner_instructions" (
+scope TEXT PRIMARY KEY CHECK (scope IN ('session','procedure','chat')),
 body TEXT NOT NULL,
 updated_at TEXT NOT NULL
 )
@@ -4519,6 +4531,13 @@ GROUP BY up.ancestor
 5	evidence_count	INTEGER	notnull=1	dflt=0	pk=0
 6	last_updated	TEXT	notnull=1	dflt=NULL	pk=0
 7	pipeline	TEXT	notnull=1	dflt='inbox'	pk=0
+
+## instruction_chat_lines
+0	id	INTEGER	notnull=0	dflt=NULL	pk=1
+1	line	TEXT	notnull=1	dflt=NULL	pk=0
+2	conversation_id	INTEGER	notnull=0	dflt=NULL	pk=0
+3	message_id	INTEGER	notnull=0	dflt=NULL	pk=0
+4	added_at	TEXT	notnull=1	dflt=NULL	pk=0
 
 ## instruction_suggestions
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

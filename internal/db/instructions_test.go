@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -203,4 +204,117 @@ func TestAddInstructionSuggestion_WritesTextAndMarksAtomically(t *testing.T) {
 	wi, err = d.GetWorkbenchInstructions(wb)
 	require.NoError(t, err)
 	assert.Equal(t, "wb body", wi.Session)
+}
+
+func TestRememberChatLine_AppendsAndRecords(t *testing.T) {
+	d := openTestDB(t)
+	now := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
+	row, out, err := d.RememberChatLine("Answer in bullets", 7, 70, now, 1000)
+	require.NoError(t, err)
+	assert.Equal(t, RememberAdded, out)
+	assert.Equal(t, "Answer in bullets", row.Line)
+	got, err := d.GetOwnerInstructions()
+	require.NoError(t, err)
+	assert.Equal(t, "Answer in bullets", got.Chat)
+	rows, err := d.ChatLinesForMessages([]int64{70})
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "Answer in bullets", rows[0].Line)
+	assert.Equal(t, int64(7), rows[0].ConversationID.Int64)
+	assert.Equal(t, "2026-10-24T09:00:00Z", rows[0].AddedAt)
+
+	_, out, err = d.RememberChatLine("Second", 7, 71, now, 1000)
+	require.NoError(t, err)
+	assert.Equal(t, RememberAdded, out)
+	got, _ = d.GetOwnerInstructions()
+	assert.Equal(t, "Answer in bullets\nSecond", got.Chat)
+}
+
+func TestRememberChatLine_AlreadyPresent(t *testing.T) {
+	d := openTestDB(t)
+	require.NoError(t, d.SetOwnerInstruction(InstructionChat, "a\nAnswer in bullets"))
+	_, out, err := d.RememberChatLine("  Answer in bullets ", 7, 70, time.Now(), 1000)
+	require.NoError(t, err)
+	assert.Equal(t, RememberAlreadyPresent, out)
+	got, _ := d.GetOwnerInstructions()
+	assert.Equal(t, "a\nAnswer in bullets", got.Chat)
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM instruction_chat_lines`).Scan(&n))
+	assert.Zero(t, n)
+}
+
+func TestRememberChatLine_TooLong(t *testing.T) {
+	d := openTestDB(t)
+	text := strings.Repeat("x", 995)
+	require.NoError(t, d.SetOwnerInstruction(InstructionChat, text))
+	_, out, err := d.RememberChatLine("0123456789", 7, 70, time.Now(), 1000)
+	require.NoError(t, err)
+	assert.Equal(t, RememberTooLong, out)
+	got, _ := d.GetOwnerInstructions()
+	assert.Equal(t, text, got.Chat)
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM instruction_chat_lines`).Scan(&n))
+	assert.Zero(t, n)
+}
+
+func rememberRow(t *testing.T, d *DB, line string, msg int64) InstructionChatLine {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO instruction_chat_lines (line, conversation_id, message_id, added_at)
+		VALUES (?, 1, ?, '2026-10-24T09:00:00Z')`, line, msg)
+	require.NoError(t, err)
+	id, _ := res.LastInsertId()
+	return InstructionChatLine{ID: id, Line: line}
+}
+
+func TestForgetChatLine_RemovesOnlyThatLine(t *testing.T) {
+	d := openTestDB(t)
+	require.NoError(t, d.SetOwnerInstruction(InstructionChat, "x\ny\nz"))
+	row := rememberRow(t, d, "y", 1)
+	removed, err := d.ForgetChatLine(row.ID, time.Now())
+	require.NoError(t, err)
+	assert.True(t, removed)
+	got, _ := d.GetOwnerInstructions()
+	assert.Equal(t, "x\nz", got.Chat)
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM instruction_chat_lines`).Scan(&n))
+	assert.Zero(t, n)
+	_, err = d.ForgetChatLine(row.ID, time.Now())
+	assert.ErrorIs(t, err, sql.ErrNoRows)
+}
+
+func TestForgetChatLine_EditedAway(t *testing.T) {
+	d := openTestDB(t)
+	row := rememberRow(t, d, "y", 1)
+	require.NoError(t, d.SetOwnerInstruction(InstructionChat, "x"))
+	removed, err := d.ForgetChatLine(row.ID, time.Now())
+	require.NoError(t, err)
+	assert.False(t, removed)
+	got, _ := d.GetOwnerInstructions()
+	assert.Equal(t, "x", got.Chat)
+	var n int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM instruction_chat_lines`).Scan(&n))
+	assert.Zero(t, n)
+}
+
+func TestListPresentChatLines_DropsEditedLines(t *testing.T) {
+	d := openTestDB(t)
+	rememberRow(t, d, "keep", 1)
+	rememberRow(t, d, "gone", 2)
+	require.NoError(t, d.SetOwnerInstruction(InstructionChat, "keep"))
+	rows, err := d.ListPresentChatLines()
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "keep", rows[0].Line)
+}
+
+func TestSetWorkbenchInstruction_RefusesChat(t *testing.T) {
+	d := openTestDB(t)
+	err := d.SetWorkbenchInstruction(1, InstructionChat, "x")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "chat")
+}
+
+func TestInstructionSuggestion_AcceptsChatField(t *testing.T) {
+	d := openTestDB(t)
+	require.NoError(t, d.UpsertInstructionSuggestion(InstructionSuggestion{Text: "t", Field: InstructionChat, Fingerprint: "fp-chat"}, time.Now()))
 }

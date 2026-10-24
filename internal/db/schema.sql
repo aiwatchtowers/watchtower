@@ -3178,14 +3178,14 @@ CREATE INDEX IF NOT EXISTS idx_permission_requests_session ON permission_request
 -- Agent instructions (00137): the owner's global session instructions / target procedure
 -- (one row per scope; an empty body deletes the row) and mined repeat suggestions.
 CREATE TABLE IF NOT EXISTS owner_instructions (
-    scope      TEXT PRIMARY KEY CHECK (scope IN ('session','procedure')),
+    scope      TEXT PRIMARY KEY CHECK (scope IN ('session','procedure','chat')),
     body       TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS instruction_suggestions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     text            TEXT NOT NULL,
-    field           TEXT NOT NULL CHECK (field IN ('session','procedure')),
+    field           TEXT NOT NULL CHECK (field IN ('session','procedure','chat')),
     workbench_id    INTEGER NULL REFERENCES projects(id) ON DELETE CASCADE, -- NULL = global
     session_count   INTEGER NOT NULL DEFAULT 0,
     workbench_count INTEGER NOT NULL DEFAULT 0,
@@ -3196,6 +3196,17 @@ CREATE TABLE IF NOT EXISTS instruction_suggestions (
     decided_at      TEXT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at);
+
+-- Chat owner instructions (00153): the 'chat' scope above is the text every AI chat reads; each
+-- line a "remember:" message appended is recorded here for Undo and the Settings link.
+CREATE TABLE IF NOT EXISTS instruction_chat_lines (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    line            TEXT NOT NULL,
+    conversation_id INTEGER NULL,   -- no foreign key: chat rows may be deleted
+    message_id      INTEGER NULL,
+    added_at        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_instruction_chat_lines_message ON instruction_chat_lines(message_id);
 
 -- Database maintenance (00145, #850): compaction state for `watchtower db compact`.
 -- Keys: last_compacted_version, compacted_at (RFC 3339 UTC), compact_failures,
