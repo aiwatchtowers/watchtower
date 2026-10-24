@@ -2,8 +2,13 @@
 
 Part of board group #595 (corporate data on the Mac). Siblings: #603 encrypts
 the database, #601 purges revoked accounts, #608 adds an MDM policy (managed
-preferences) that may set the limits defined here. Status: draft, waiting for
-the owner's answers to the questions below.
+preferences) that may set the limits defined here. Status: approved by the
+owner 2026-10-25 (ask #567) with the recommended answer to every question:
+Q1 300 calls / 5 000 rows per session, 200 rows / 256 KB per response; Q2
+refuse, a new session starts a fresh budget; Q3 the same limits on every
+surface, the owner's chat included; Q4 limits and the log on for every
+install. The AUTO-08 amendment and the new READ-01..02 inventory entries in
+"Contracts that change" are approved with it.
 
 ## Goal
 
