@@ -36,6 +36,8 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
         /// The `worktree ensure` answer; nil = a created worktree at `worktree`.
         func setEnsureReply(_ json: String) { lock.withLock { ensureReply = json } }
         private var ensureReply: String?
+        /// Runs when `worktree create` is called.
+        var onCreate: (@Sendable () async -> Void)?
         /// Runs when `worktree ensure` is called (the CLI re-adds the directory).
         var onEnsure: (@Sendable () -> Void)?
 
@@ -64,6 +66,7 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
                     """#).utf8)
             }
             if args.starts(with: ["workbench", "worktree", "create"]) {
+                await onCreate?()
                 let name = args.firstIndex(of: "--name").map { args[$0 + 1] } ?? "x"
                 return Data((custom ?? #"""
                     {"workbench_id":\#(workbenchID),"created":true,"path":"\#(worktree)","cwd":"\#(worktree)",
@@ -511,7 +514,7 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
         )
     }
 
-    func testAFailedInsertNamesTheKeptWorktreeAndSetsNoNotice() async throws {
+    func testAFailedMoveNamesTheKeptWorktreeAndSetsNoNotice() async throws {
         let p = try await workbench()
         let runner = PlacementRunner(workbenchID: p, worktree: worktree)
         runner.setCreateReply(#"""
@@ -522,18 +525,72 @@ final class WorkbenchesViewModelPlacementTests: XCTestCase {
         try await liveRow(p, folder: acme)
         try await pool.write { db in
             try db.execute(sql: """
-                CREATE TRIGGER fail_placed BEFORE INSERT ON terminal_sessions WHEN NEW.worktree_branch IS NOT NULL
-                BEGIN SELECT RAISE(ABORT, 'boom'); END
+                CREATE TRIGGER fail_placed BEFORE UPDATE OF worktree_branch ON terminal_sessions
+                WHEN NEW.worktree_branch IS NOT NULL BEGIN SELECT RAISE(ABORT, 'boom'); END
                 """)
         }
 
         await vm.newSession(projectID: p)
 
         let rows = try await started(p)
-        XCTAssertTrue(rows.isEmpty)
+        XCTAssertTrue(rows.isEmpty, "the folder row that could not move is deleted")
+        XCTAssertTrue(launches.isEmpty == false && launches.allSatisfy { $0.currentDirectory == acme },
+                      "only the live row launched")
         let error = try XCTUnwrap(vm.sessionActionErrors[p])
-        XCTAssertTrue(error.hasPrefix("Could not create a terminal session: "), error)
+        XCTAssertTrue(error.hasPrefix("Could not move the session into its worktree: "), error)
         XCTAssertTrue(error.hasSuffix(" — the worktree \(worktree) on wt/session-2 was kept."), error)
         XCTAssertNil(vm.startNotice[p], "the base_dirty line is for a row that exists")
     }
+
+    /// The new row is on screen before its worktree exists (a create takes
+    /// seconds): in the folder, "Starting…", placed in the layout.
+    func testAPlacedSessionIsOnScreenBeforeItsWorktreeIsMade() async throws {
+        let p = try await workbench()
+        let runner = PlacementRunner(workbenchID: p, worktree: worktree)
+        let vm = await makeVM(runner)
+        try await liveRow(p, folder: acme)
+        vm.selectedWorkbenchID = p
+        let seen = SeenDuringCreate()
+        let pool = try XCTUnwrap(pool)
+        runner.onCreate = {
+            let rows = (try? await pool.read { try TerminalSessionQueries.fetchForWorkbench($0, projectID: p) }) ?? []
+            let row = rows.first { $0.title != "live" }
+            if let id = row?.id {
+                _ = try? await pool.write {
+                    try $0.execute(sql: "UPDATE terminal_sessions SET created_at = '2000-01-01T00:00:00Z' WHERE id = ?",
+                                   arguments: [id])
+                }
+            }
+            await MainActor.run {
+                seen.row = row
+                seen.preparing = row.map { vm.preparingSessions.contains($0.id) } ?? false
+                seen.onScreen = row.map { vm.layout(projectID: p).visiblePanes.contains(.session($0.id)) } ?? false
+            }
+        }
+
+        await vm.newSession(projectID: p)
+
+        let during = try XCTUnwrap(seen.row, "the row exists while the worktree is made")
+        XCTAssertEqual(during.folderPath, acme)
+        XCTAssertNil(during.worktreeBranch)
+        XCTAssertTrue(seen.preparing)
+        XCTAssertTrue(seen.onScreen)
+        let row = try await firstStarted(p)
+        XCTAssertEqual(row.id, during.id)
+        XCTAssertEqual(row.folderPath, worktree)
+        XCTAssertEqual(launches.last?.currentDirectory, worktree)
+        XCTAssertFalse(vm.preparingSessions.contains(row.id))
+        let created = try await pool.read {
+            try String.fetchOne($0, sql: "SELECT created_at FROM terminal_sessions WHERE id = ?", arguments: [row.id])
+        }
+        XCTAssertNotEqual(created, "2000-01-01T00:00:00Z",
+                          "the move dates the row after its worktree, so it owns it by record (PROJ-18)")
+    }
+}
+
+@MainActor
+private final class SeenDuringCreate: @unchecked Sendable {
+    var row: TerminalSession?
+    var preparing = false
+    var onScreen = false
 }

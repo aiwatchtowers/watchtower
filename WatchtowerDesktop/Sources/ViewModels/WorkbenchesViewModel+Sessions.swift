@@ -801,9 +801,11 @@ extension WorkbenchesViewModel {
     /// `createAndStart` that throws `TargetStartError.failed` once the
     /// failure is reported, and with `checkLaunch` also when the launch did
     /// not run (`launchCheck`). `ticket` is nil only for `.background`.
-    /// `placing` (a workbench agent row): the row goes where
-    /// `placementForNewSession` decides, in the workbench's placement turn,
-    /// and a row placed in a new worktree runs the workbench's setup
+    /// `placing` (a workbench agent row): the row is inserted in the
+    /// workbench folder and put on screen at once ("Starting…"), then moved
+    /// where `placementForNewSession` decides, in the workbench's placement
+    /// turn — making a worktree takes seconds, the owner sees the session
+    /// meanwhile. A row placed in a new worktree runs the workbench's setup
     /// command before its agent's first start — when that launch does not
     /// run, `startNotice` gives the command to run by hand.
     private func createAndActivate(
@@ -815,36 +817,24 @@ extension WorkbenchesViewModel {
         placing: SessionPlacing? = nil
     ) async throws -> TerminalSession {
         if let ticket { clearSwitchError(projectID: new.projectID, ticket: ticket) }
-        let row: TerminalSession
+        var row = try await insertSession(new, ticket: ticket)
+        let id = row.id
+        defer {
+            startingRows[id] = nil
+            preparingSessions.remove(id)
+        }
         var setup: String?
         if let placing {
-            let projectID = placing.project.id
-            row = try await inPlacementTurn(projectID) {
-                let place = await placementForNewSession(
-                    project: placing.project, choice: placing.choice, targetID: new.targetID, targetText: placing.targetText,
-                    agent: new.kind.agent
-                )
-                var placed = new
-                placed.folderPath = place.folderPath
-                placed.worktreeBranch = place.worktreeBranch
-                placed.worktreeBase = place.worktreeBase
-                let row: TerminalSession
-                do {
-                    row = try await insertSession(placed, ticket: ticket)
-                } catch {
-                    startNotice[projectID] = nil
-                    throw error
-                }
-                startNotice[projectID] = place.notice
-                startingRows[row.id] = row
-                return row
-            }
+            startingRows[id] = row
+            preparingSessions.insert(id)
+            placeInLayout(row, fresh: true, placement: placement, ticket: ticket)
+            await loadSessions(projectID: row.projectID)
+            row = try await place(row, placing: placing, ticket: ticket)
             let command = placing.project.worktreeSetup.trimmingCharacters(in: .whitespacesAndNewlines)
             if row.worktreeBranch != nil, !command.isEmpty { setup = placing.project.worktreeSetup }
-        } else {
-            row = try await insertSession(new, ticket: ticket)
+            // Deleted while its place was decided: it never launches.
+            if pendingDeletes.ids.contains(id) { throw TargetStartError.failed("Session #\(id) was deleted.") }
         }
-        defer { startingRows[row.id] = nil }
         await activate(row, fresh: true, prompt: prompt, placement: placement, ticket: ticket, setup: setup)
         if let setup, let projectID = row.projectID, launchFailure(row) != nil {
             // The setup runs only on a placed row's first launch; a resume never runs it.
@@ -856,16 +846,51 @@ extension WorkbenchesViewModel {
         return row
     }
 
-    /// Writes the new row; a failure is reported and thrown. A row placed in
-    /// a worktree just made names it: the worktree stays on disk.
+    /// The new folder row moved where `placementForNewSession` decides, in
+    /// the workbench's placement turn; the row as it is when the folder is
+    /// the place. A row that could not be moved into its new worktree is
+    /// deleted (it never ran) and the failure reported and thrown; the
+    /// worktree stays on disk.
+    private func place(_ row: TerminalSession, placing: SessionPlacing, ticket: Int?) async throws -> TerminalSession {
+        let projectID = placing.project.id
+        return try await inPlacementTurn(projectID) {
+            let place = await placementForNewSession(
+                project: placing.project, choice: placing.choice, targetID: row.targetID, targetText: placing.targetText,
+                agent: row.kind.agent, rowID: row.id
+            )
+            guard let branch = place.worktreeBranch else {
+                startNotice[projectID] = place.notice
+                return row
+            }
+            let placed: TerminalSession
+            do {
+                placed = try await dbPool.write {
+                    try TerminalSessionQueries.place(
+                        $0, id: row.id, folderPath: place.folderPath, worktreeBranch: branch, worktreeBase: place.worktreeBase
+                    )
+                }
+            } catch {
+                startNotice[projectID] = nil
+                _ = try? await dbPool.write { try TerminalSessionQueries.delete($0, id: row.id) }
+                forgetInLayout(row.id, projectID: projectID)
+                let message = "Could not move the session into its worktree: \(error.localizedDescription)"
+                    + " — the worktree \(place.folderPath) on \(branch) was kept."
+                reportStartError(message, projectID: projectID, ticket: ticket)
+                await loadSessions(projectID: projectID)
+                throw TargetStartError.failed(message)
+            }
+            startNotice[projectID] = place.notice
+            startingRows[placed.id] = placed
+            return placed
+        }
+    }
+
+    /// Writes the new row; a failure is reported and thrown.
     private func insertSession(_ new: TerminalSessionQueries.NewSession, ticket: Int?) async throws -> TerminalSession {
         do {
             return try await dbPool.write { try TerminalSessionQueries.create($0, new) }
         } catch {
-            var message = "Could not create a terminal session: \(error.localizedDescription)"
-            if let branch = new.worktreeBranch {
-                message += " — the worktree \(new.folderPath) on \(branch) was kept."
-            }
+            let message = "Could not create a terminal session: \(error.localizedDescription)"
             reportStartError(message, projectID: new.projectID, ticket: ticket)
             throw TargetStartError.failed(message)
         }
@@ -944,16 +969,23 @@ extension WorkbenchesViewModel {
             }
             if isLatest { center.focus(row.id) }
         }
-        if let projectID = row.projectID {
-            var updated = layout(projectID: projectID)
-            // A new session opens in its terminal (#711): a fresh agent may
-            // stop at a trust or login prompt the Workchat cannot show.
-            if fresh { updated.setMode(false, sessionID: row.id) }
-            if isLatest { updated = placing(row.id, placement, in: updated) }
-            if isLatest || updated != layout(projectID: projectID) { setLayout(updated, projectID: projectID) }
-        }
+        placeInLayout(row, fresh: fresh, placement: placement, ticket: ticket)
         await loadSessions(projectID: row.projectID)
         if isLatest, let previous, previous != row.id { await refreshTitle(sessionID: previous) }
+    }
+
+    /// Places `row` in its own project's layout when its switch is still
+    /// the latest; a fresh row opens in its terminal either way. Safe to
+    /// repeat: a start places its row at once and again after the launch.
+    private func placeInLayout(_ row: TerminalSession, fresh: Bool, placement: Placement, ticket: Int?) {
+        guard let projectID = row.projectID else { return }
+        let isLatest = ticket.map { isLatestSwitch($0, projectID: projectID) } ?? false
+        var updated = layout(projectID: projectID)
+        // A new session opens in its terminal (#711): a fresh agent may
+        // stop at a trust or login prompt the Workchat cannot show.
+        if fresh { updated.setMode(false, sessionID: row.id) }
+        if isLatest { updated = placing(row.id, placement, in: updated) }
+        if isLatest || updated != layout(projectID: projectID) { setLayout(updated, projectID: projectID) }
     }
 
     /// A resume of a placed row whose worktree directory is gone (cleaned

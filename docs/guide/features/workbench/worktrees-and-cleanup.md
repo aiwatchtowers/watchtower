@@ -12,7 +12,7 @@ The price is disk: one worktree with a warm build can take several GB, and each 
 
 ### Where a new session starts
 
-A plain new session, or **Work on It** on a card, starts in the folder. If a live agent already works in the folder, it starts in a new worktree instead. A worktree is a branch named `wt/<name>`, created under `.claude/worktrees/` in the repository from the folder's current commit. Uncommitted changes of the folder are not carried over.
+A plain new session, or **Work on It** on a card, starts in the folder. If a live agent already works in the folder, it starts in a new worktree instead. A worktree is a branch named `wt/<name>`, created under `.claude/worktrees/` in the repository from the folder's current commit. Uncommitted changes of the folder are not carried over. The session appears at once and reads **Starting…** while its worktree is made.
 
 Two overrides sit in the new-session menus and the card's **Work on It** menu: **In This Folder** and **In Its Own Worktree**. If git cannot make a worktree (no repository, no commits yet), the session starts in the folder and says why in **Started in the folder: …**.
 

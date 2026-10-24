@@ -1922,6 +1922,8 @@ only on items eligible at that moment and, when items are named, only on those.
 
 *2026-10-14 amendment (board #229, owner approved in asks #122/#124, spec `docs/superpowers/specs/2026-10-14-session-worktrees-design.md` §9):* a session row Watchtower placed in a worktree it created (`terminal_sessions.worktree_branch` set) owns, by record, the linked worktree that is the longest listed root containing its `folder_path`, and its `worktree_branch`, when each was born no later than the row (placement creates them first; `created_at` + 1 s) — although both were born before the row. A later-born item of the same name (a reused `wt/<slug>` of a later session), one whose birth is unknown, or a row whose `folder_path` is not absolute owns nothing by record. Nothing else is owned by record, and every safety catch (W1, W3–W9, B1, B2, B4) still applies. Placement code (`workbench worktree create|ensure|forget`) never removes a worktree or deletes a branch and runs no `--force`, `reset`, `clean`, `checkout` or `stash`.
 
+*2026-10-24 note (board #942, ask #531):* the Desktop now inserts a new agent row in the workbench folder first, so the session is on screen at once, and moves it into its worktree once `worktree create` returned (`TerminalSessionQueries.place`). That move also sets `created_at` to its own moment, so the row is still born after its worktree and branch, and ownership by record is unchanged. A row that cannot be moved is deleted before it ever ran, and the worktree is kept, as before.
+
 As shipped (each stricter than, never weaker than, the wording above):
 - **Fail closed.** A catch git could not answer keeps the item `check_failed`
   with git's error in `detail`; an unknown default branch (no `origin/HEAD`,

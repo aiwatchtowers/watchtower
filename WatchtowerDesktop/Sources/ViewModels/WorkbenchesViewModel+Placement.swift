@@ -15,11 +15,18 @@ extension WorkbenchesViewModel {
     /// could not be made starts the session in the folder with a notice
     /// saying why. The folder's git status is read only when a worktree is
     /// wanted. `agent`: the session's, so a worktree gets only its install.
+    /// `rowID`: the new row itself, already inserted in the folder — never
+    /// a session that occupies it.
     func placementForNewSession(
-        project: Workbench, choice: WorktreeChoice, targetID: Int64?, targetText: String?, agent: AgentKind?
+        project: Workbench,
+        choice: WorktreeChoice,
+        targetID: Int64?,
+        targetText: String?,
+        agent: AgentKind?,
+        rowID: Int64
     ) async -> NewSessionPlacement {
         let folder = project.folderPath
-        let working = workingAgentRows(projectID: project.id)
+        let working = workingAgentRows(projectID: project.id).filter { $0.id != rowID }
         let occupied = working.contains { row in
             SessionStartPlacement.occupies(
                 row: row, place: sessionPlaces.currentPlace(sessionID: row.id), workbenchFolder: folder
