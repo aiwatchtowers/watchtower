@@ -88,6 +88,18 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertEqual(ai.calls.last?.ownerInstructions, false)
     }
 
+    /// Only a database chat with the owner's instructions looks up remember
+    /// marks: a setup assistant's in-memory ids can collide with another
+    /// chat's ledger row, and its Undo would forget a real line.
+    func testOnlyADatabaseChatWithInstructionsShowsRememberMarks() {
+        XCTAssertTrue(spec(ownerInstructions: true).showsRememberMarks)
+        XCTAssertFalse(spec(ownerInstructions: false).showsRememberMarks)
+        let memory = ChatSurfaceSpec(key: EmbeddedChatKey(contextType: "setup", contextID: "", conversationID: nil),
+                                     persistence: .memory, toolAccess: .draftOnly, ownerInstructions: true,
+                                     systemPrompt: { "S" }, emptyHint: "")
+        XCTAssertFalse(memory.showsRememberMarks)
+    }
+
     func testFullTurnStreamsIntoTheLiveRowAndCommitsTheReply() async throws {
         let engine = makeEngine()
         XCTAssertTrue(engine.send("What is this idea about?"))

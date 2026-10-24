@@ -62,9 +62,9 @@ struct RememberMarkView: View {
 
         private func tint(_ mark: RememberMark) -> Color {
             switch mark {
-            case .remembered: .green
+            case .remembered: Tone.success
             case .alreadyPresent, .undone: .secondary
-            case .full, .empty, .notFound, .failed: .orange
+            case .full, .empty, .notFound, .failed: Tone.warning
             }
         }
 

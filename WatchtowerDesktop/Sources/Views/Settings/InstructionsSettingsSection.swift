@@ -1,3 +1,4 @@
+import DesignKit
 import SwiftUI
 import WatchtowerCore
 
@@ -29,10 +30,10 @@ struct InstructionsSettingsSection: View {
                 Button("Preview what the agent gets…") { showPreview = true }
                     .buttonStyle(.link)
             } else if let loadError = model.loadError {
-                Text(loadError).font(.caption).foregroundStyle(.red)
+                Text(loadError).font(.caption).foregroundStyle(Tone.error)
             }
             if let notice = model.notice {
-                Text(notice).font(.caption).foregroundStyle(.orange)
+                Text(notice).font(.caption).foregroundStyle(Tone.warning)
             }
         }
         .task {

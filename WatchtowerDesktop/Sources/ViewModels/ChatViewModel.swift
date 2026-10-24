@@ -91,7 +91,8 @@ final class ChatViewModel {
     /// strip re-reads then: a connector call it shows was claimed and run
     /// inside that turn, and its live "session holds it" just turned false.
     @ObservationIgnored var onTurnFinished: ((Int64) -> Void)?
-    /// A new owner message is on disk: (text, conversation id, message id).
+    /// A new owner message is on disk: (the owner's typed words — no skill or
+    /// REFERENCED line —, conversation id, message id).
     /// Remember-in-place hangs here (the call never delays the turn).
     @ObservationIgnored var onOwnerMessageStored: ((String, Int64, Int64) -> Void)?
     /// A turn of that conversation waits on an approval card (`tool_wait`).
@@ -1050,7 +1051,10 @@ final class ChatViewModel {
             attachments: plan.attachments.map { ChatCommandAttachment(path: $0.path, mime: $0.mime, name: $0.name) },
             replay: replay)
         client.startTurn(ChatTurnRequest(command: command, assistantMessageID: persisted.assistant.id))
-        if persisted.wroteUser { onOwnerMessageStored?(plan.userText, plan.conversationID, persisted.userID) }
+        // Remember gets the owner's typed words, never the skill/REFERENCED lines.
+        if persisted.wroteUser {
+            onOwnerMessageStored?(ChatTurnComposer.displayParts(plan.userText).body, plan.conversationID, persisted.userID)
+        }
         reloadConversations()
         return true
     }

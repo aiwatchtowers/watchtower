@@ -430,7 +430,7 @@ package final class EmbeddedChatEngine {
         }
         isStarting = false
         if request.ownerText != nil { draftMirror?.clear(for: spec.key) }
-        if let text = request.ownerText, let ownerID = ids.ownerID, spec.ownerInstructions,
+        if let text = request.ownerText, let ownerID = ids.ownerID, spec.showsRememberMarks,
            case .database(let conversationID) = spec.persistence {
             onOwnerMessageStored?(text, conversationID, ownerID)
         }

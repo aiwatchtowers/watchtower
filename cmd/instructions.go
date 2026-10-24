@@ -438,8 +438,10 @@ func addInstructionSuggestion(d *db.DB, s db.InstructionSuggestion, now time.Tim
 	if err != nil {
 		return err
 	}
-	existing := cur.Session
+	var existing string
 	switch s.Field {
+	case db.InstructionSession:
+		existing = cur.Session
 	case db.InstructionProcedure:
 		existing = cur.Procedure
 	case db.InstructionChat:

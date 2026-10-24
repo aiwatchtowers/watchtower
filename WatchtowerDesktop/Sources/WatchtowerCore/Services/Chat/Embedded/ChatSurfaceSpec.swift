@@ -199,6 +199,13 @@ package struct ChatSurfaceSpec {
     /// instructions join the system prompt and a "remember:" message is
     /// stored. Explicit on every surface; false for setup assistants.
     package let ownerInstructions: Bool
+    /// A remember message is stored and its bubble shows the mark: a database
+    /// chat with the owner's instructions only. An in-memory chat's ids are
+    /// not `chat_messages` ids, so they could match another chat's ledger row.
+    package var showsRememberMarks: Bool {
+        guard ownerInstructions, case .database = persistence else { return false }
+        return true
+    }
     /// Sent only while the conversation has no provider session yet.
     package let systemPrompt: @MainActor () -> String
     package let turnPrompt: @MainActor (ChatTurnInput) -> String
