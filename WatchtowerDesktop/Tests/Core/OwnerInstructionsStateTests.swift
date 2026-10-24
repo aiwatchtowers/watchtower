@@ -58,6 +58,44 @@ final class OwnerInstructionsStateTests: XCTestCase {
         }
     }
 
+    func testDecodesChatTextAndLines() throws {
+        let json = """
+        {"ok":true,"limit":1000,"global":{"session":"","procedure":"","chat":"Answer short"},\
+        "workbench":{"id":1,"session":"Use make","procedure":""},"suggestions":[],\
+        "chat_lines":[{"id":2,"line":"Use bullets","conversation_id":7,"message_id":31,\
+        "added_at":"2026-10-24T08:00:00Z"},{"id":3,"line":"Typed","conversation_id":null,\
+        "message_id":null,"added_at":"2026-10-24T08:01:00Z"}]}
+        """
+        let state = try OwnerInstructionsState.decode(Data(json.utf8))
+        XCTAssertEqual(state.global.text(.chat), "Answer short")
+        XCTAssertEqual(state.workbench?.text(.chat), "", "a workbench has no chat text")
+        XCTAssertEqual(state.chatLines.map(\.line), ["Use bullets", "Typed"])
+        XCTAssertEqual(state.chatLines[0].conversationID, 7)
+        XCTAssertEqual(state.chatLines[0].messageID, 31)
+        XCTAssertNil(state.chatLines[1].messageID)
+        XCTAssertEqual(InstructionField(rawValue: "chat"), .chat)
+    }
+
+    func testOlderReplyWithoutChatKeysStillDecodes() throws {
+        let state = try OwnerInstructionsState.decode(Data(Self.pinned.utf8))
+        XCTAssertEqual(state.global.chat, "")
+        XCTAssertTrue(state.chatLines.isEmpty)
+    }
+
+    func testFailureCarriesTheCode() {
+        let json = #"{"ok":false,"error":"nothing to remember after the prefix","code":"empty"}"#
+        XCTAssertThrowsError(try OwnerInstructionsState.decode(Data(json.utf8))) { error in
+            let e = error as? OwnerInstructionsError
+            XCTAssertEqual(e?.code, "empty")
+            XCTAssertEqual(e?.message, "nothing to remember after the prefix")
+        }
+    }
+
+    func testPreviewDecodesChatSlot() throws {
+        let json = #"{"ok":true,"brief_slot":"","procedure":"","chat_slot":"Answer short"}"#
+        XCTAssertEqual(try OwnerInstructionsPreview.decode(Data(json.utf8)).chatSlot, "Answer short")
+    }
+
     func testPreviewDecodes() throws {
         let json = #"{"ok":true,"brief_slot":"Owner's instructions","procedure":"Run tests"}"#
         let p = try OwnerInstructionsPreview.decode(Data(json.utf8))

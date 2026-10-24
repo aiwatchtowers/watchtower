@@ -32,7 +32,7 @@ final class EmbeddedChatCenterTests: XCTestCase {
         let conv = try pool.write { db in try TestDatabase.insertChatConversation(db, contextType: "track") }
         return ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: "track", contextID: String(trackID), conversationID: conv),
-            persistence: .database(conversationID: conv), toolAccess: .draftOnly,
+            persistence: .database(conversationID: conv), toolAccess: .draftOnly, ownerInstructions: false,
             systemPrompt: { "S" }, emptyHint: "")
     }
 
@@ -124,7 +124,7 @@ final class EmbeddedChatCenterTests: XCTestCase {
 
     func testReleaseDropsAMemoryChat() {
         let key = EmbeddedChatKey(contextType: "setup", contextID: "calendar", conversationID: nil)
-        let spec = ChatSurfaceSpec(key: key, persistence: .memory, toolAccess: .draftOnly,
+        let spec = ChatSurfaceSpec(key: key, persistence: .memory, toolAccess: .draftOnly, ownerInstructions: false,
                                    systemPrompt: { "S" }, emptyHint: "")
         _ = center.engine(for: spec)
         center.release(key)
@@ -155,7 +155,7 @@ private func expectTrue(_ verdict: Bool, _ message: String = "", file: StaticStr
 final class EmbeddedChatCenterSpecTests: XCTestCase {
     private func spec(_ id: String, hint: String) -> ChatSurfaceSpec {
         ChatSurfaceSpec(key: EmbeddedChatKey(contextType: "track", contextID: id, conversationID: nil),
-                        persistence: .memory, toolAccess: .draftOnly, systemPrompt: { "S" },
+                        persistence: .memory, toolAccess: .draftOnly, ownerInstructions: false, systemPrompt: { "S" },
                         turnPrompt: { "\(hint): \($0.text)" }, emptyHint: hint)
     }
 

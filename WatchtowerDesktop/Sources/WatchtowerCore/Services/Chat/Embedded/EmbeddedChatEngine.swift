@@ -460,7 +460,8 @@ package final class EmbeddedChatEngine {
             model: options.model,  // nil = the provider's resolved strong-tier model
             provider: options.provider,
             toolMode: spec.toolAccess.toolMode(key: spec.key, turnID: turn.turnID),
-            readFolder: options.readFolder
+            readFolder: options.readFolder,
+            ownerInstructions: spec.ownerInstructions
         )
         streamTask = Task { [weak self] in
             await self?.consume(stream, turn: turn)

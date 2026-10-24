@@ -41,6 +41,7 @@ enum IdeaChatSurface {
             key: EmbeddedChatKey(contextType: contextType, contextID: String(idea.id), conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: .draftOnly,
+            ownerInstructions: true,
             systemPrompt: { buildSystemPrompt(idea: idea, mentions: mentions, dbPool: dbPool) },
             // Resumed sessions drop the system prompt (CLI --resume); carry the
             // idea context with the message so an expired session never loses

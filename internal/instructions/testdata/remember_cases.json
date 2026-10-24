@@ -8,5 +8,9 @@
   {"text": "remember that x", "ok": false, "line": ""},
   {"text": "Remember:x", "ok": true, "line": "x"},
   {"text": "remember this:\tone\r\n two", "ok": true, "line": "one two"},
-  {"text": "", "ok": false, "line": ""}
+  {"text": "", "ok": false, "line": ""},
+  {"text": "remember:\u00a0use\u00a0bullets", "ok": true, "line": "use bullets"},
+  {"text": "\u0085remember: x\u0085y", "ok": true, "line": "x y"},
+  {"text": "remember:\u0301x", "ok": true, "line": "\u0301x"},
+  {"text": "remember th\u0130s: x", "ok": true, "line": "x"}
 ]
