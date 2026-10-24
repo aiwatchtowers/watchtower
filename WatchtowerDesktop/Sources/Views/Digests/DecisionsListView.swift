@@ -236,6 +236,7 @@ struct DecisionsListView: View {
         case .gmail, .imap: "envelope"
         case .jira, .linear: "ticket"
         case .owner: "person.fill"
+        case .chat: "bubble.left.and.bubble.right"
         }
     }
 

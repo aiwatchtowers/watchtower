@@ -133,7 +133,8 @@ package extension InboxCardSubject {
     }
 
     init(idea: Idea, mentions: [IdeaMention]) {
-        let quotes = mentions.map { mention in
+        // An assistant chat mention is a model's words: never handed on.
+        let quotes = mentions.filter(\.isAgentVisible).map { mention in
             let who = mention.author.isEmpty ? mention.sourceKind.label : "\(Self.line(mention.author)) (\(mention.sourceKind.label))"
             return "\(who): \(Self.line(mention.quote))"
         }
