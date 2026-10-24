@@ -188,6 +188,7 @@ struct ReviewChangesPaneView: View {
     /// Chapters' foot: the checklist, then Next: Wrap-up.
     private var chaptersFoot: some View {
         VStack(spacing: 0) {
+            ReviewChapterFooter(model: model)
             ReviewChecklistView(model: model) { compose = $0 }
             ReviewNextStepButton(model: model)
                 .padding(.horizontal, Spacing.medium)

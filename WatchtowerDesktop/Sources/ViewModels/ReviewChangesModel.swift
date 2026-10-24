@@ -479,6 +479,63 @@ final class ReviewChangesModel {
         }
     }
 
+    /// Marks (or clears) every path in one write batch; a path the diff does
+    /// not know throws before anything is written.
+    func setViewed(_ paths: [String], on: Bool) async throws {
+        try await run {
+            guard let info = round else { throw ModelError.noRound }
+            var contents: [String: String] = [:]
+            for path in paths {
+                guard let file = allFiles.first(where: { $0.path == path }) else { throw ModelError.unknownFile(path) }
+                contents[path] = Self.contentKey(file)
+            }
+            let marks = try await pendingViewed.runThrowing(paths.joined(separator: "\n")) {
+                try await self.write { db in
+                    for (path, content) in contents {
+                        try ReviewQueries.setViewed(db, roundID: info.id, path: path, contentSHA: on ? content : nil)
+                    }
+                    return try ReviewQueries.viewed(db, roundID: info.id)
+                }
+            }
+            if let marks { viewed = marks }
+        }
+    }
+
+    /// Marks every file of the chapter Viewed, then moves to the next chapter
+    /// that is not done, or to Wrap-up when none is left.
+    func markChapterViewed(_ key: String) async throws {
+        guard let chapter = chapters.first(where: { $0.key == key }) else { return }
+        try await setViewed(chapter.paths.filter { !isViewed($0) }, on: true)
+        if let next = nextUndoneChapter(after: key) {
+            try await selectChapter(next)
+        } else {
+            try await setPhase(.wrapup)
+        }
+    }
+
+    /// A done chapter is un-viewed in full and stays; any other is marked
+    /// viewed and the review moves on.
+    func toggleChapterViewed(_ key: String) async throws {
+        guard let chapter = chapters.first(where: { $0.key == key }) else { return }
+        if ReviewChapters.done(chapter, isViewed: { isViewed($0) }) {
+            try await setViewed(chapter.paths, on: false)
+        } else {
+            try await markChapterViewed(key)
+        }
+    }
+
+    /// The next chapter after `key` that is not done, wrapping past the end;
+    /// nil when every other chapter is done.
+    func nextUndoneChapter(after key: String) -> String? {
+        guard let index = chapters.firstIndex(where: { $0.key == key }) else { return nil }
+        let count = chapters.count
+        for offset in 1..<max(count, 1) {
+            let chapter = chapters[(index + offset) % count]
+            if !ReviewChapters.done(chapter, isViewed: { isViewed($0) }) { return chapter.key }
+        }
+        return nil
+    }
+
     // MARK: - Send
 
     /// Sends the round once: Go marks the drafts sent, and only the call that
