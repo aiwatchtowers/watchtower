@@ -92,7 +92,7 @@ var tracksCreateCmd = &cobra.Command{
 }
 
 var tracksWatchCmd = &cobra.Command{
-	Use:   "watch <target-id>",
+	Use:   "watch <target-id> --text <what to watch>",
 	Short: "Create a custom track linked to a target",
 	Args:  cobra.ExactArgs(1),
 	RunE:  runTracksWatch,
@@ -163,6 +163,9 @@ func init() {
 	tracksCreateCmd.Flags().StringVar(&tracksCreateFlagTextFile, "text-file", "", "read the description from this file instead of --text")
 	tracksCreateCmd.MarkFlagsMutuallyExclusive("text", "text-file")
 	tracksCreateCmd.Flags().IntVar(&tracksCreateFlagTarget, "target", 0, "optional linked target id")
+	tracksWatchCmd.Flags().StringVar(&tracksCreateFlagText, "text", "", "description of what to watch")
+	tracksWatchCmd.Flags().StringVar(&tracksCreateFlagTextFile, "text-file", "", "read the description from this file instead of --text")
+	tracksWatchCmd.MarkFlagsMutuallyExclusive("text", "text-file")
 	tracksScanCmd.Flags().StringVar(&tracksScanFlagSince, "since", "", "scan history from this ISO8601 instant")
 	tracksCmd.Flags().StringVar(&tracksFlagPriority, "priority", "", "filter by priority (high, medium, low)")
 	tracksCmd.Flags().StringVar(&tracksFlagOwnership, "ownership", "", "filter by ownership (mine, delegated, watching)")
