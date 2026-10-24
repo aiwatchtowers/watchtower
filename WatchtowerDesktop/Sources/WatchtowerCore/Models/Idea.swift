@@ -28,6 +28,10 @@ package struct Idea: FetchableRecord, Identifiable, Equatable {
     package let createdAt: String     // column: created_at
     package let updatedAt: String     // column: updated_at
     package let seenAt: String?       // column: seen_at
+    /// column: chat_born — first proposed from chat material (or an owner
+    /// prefix in a chat); such an item waits for a verdict whatever its kind
+    /// and stays out of knowledge readers until `active` (see 00154).
+    package let chatBorn: Bool
 
     package enum Kind: String {
         case idea
@@ -83,5 +87,6 @@ package struct Idea: FetchableRecord, Identifiable, Equatable {
         createdAt = row["created_at"] ?? ""
         updatedAt = row["updated_at"] ?? ""
         seenAt = row["seen_at"] as String?
+        chatBorn = row["chat_born"] ?? false
     }
 }

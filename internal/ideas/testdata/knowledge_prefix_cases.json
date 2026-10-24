@@ -12,5 +12,7 @@
   {"text": "  Факт: a\n\nb  ", "ok": true, "kind": "note", "body": "a\n\nb"},
   {"text": "remember: x", "ok": false, "kind": "", "body": ""},
   {"text": "facts: x", "ok": false, "kind": "", "body": ""},
-  {"text": "", "ok": false, "kind": "", "body": ""}
+  {"text": "", "ok": false, "kind": "", "body": ""},
+  {"text": "DEC\u0130DED: x", "ok": true, "kind": "decision", "body": "x"},
+  {"text": "fact:\u0301x", "ok": true, "kind": "note", "body": "\u0301x"}
 ]
