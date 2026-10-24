@@ -1,7 +1,16 @@
 # Corporate policy through managed preferences — design (board #608)
 
 Part of board group #595 (corporate data on the Mac: no exfiltration, company
-control). Status: draft for the owner, 2026-10-25. Builds on #601 (the purge
+control). Status: approved by the owner 2026-10-25 (ask #569) with the
+recommended answer to every question: Q1 (a) the corp build behaves like any
+build, policy only from the MDM; Q2 (a) a now-forbidden connected source stops
+syncing, its data is kept; Q3 (a) we restrict the provider only, the account
+is forced through the CLIs' own managed settings and the guide says how (§7);
+Q4 (a) "workbench only" on the phone = boards, sessions, asks, session chat,
+permission requests. The contract amendments (PURGE-01, QC-02, CHAT-02/03,
+automations shell/mcp, mobile POC, provider registry) and the new POLICY-01..03
+are approved with it. Plan: `docs/superpowers/plans/2026-10-25-mdm-policy.md`.
+Builds on #601 (the purge
 switch's `policy` seam), #603 (database encryption), and reserves keys for
 #606 (bulk-read limits) and #611 (retention).
 
@@ -195,6 +204,45 @@ are (purge `BuildDefault=on`); it does not bake a policy, so the only way a
 company forces something is its MDM — one source of truth, visible in the
 admin console.
 
+### 7. Pinning the LLM account (Q3) — verified 2026-10-25
+
+Watchtower restricts only the provider (`AllowedAIProviders`). The account the
+provider CLI signs in with is forced by that CLI's own managed settings, which
+the admin deploys next to ours. Both claims were checked against the official
+docs; both hold, with the precise keys below (the guide uses these words).
+
+- **Claude Code — true.** Managed settings `forceLoginMethod: "claudeai"`
+  plus `forceLoginOrgUUID` (the organization id, or a list) require claude.ai
+  logins to belong to that organization; Claude Code reports an error for any
+  other organization and exits at startup when the credential in use belongs
+  to one that is not listed. `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and
+  `apiKeyHelper` credentials are blocked at startup under these keys. Caveat
+  for the guide: for a Claude **Console** login `forceLoginOrgUUID` only
+  pre-selects the organization and is not verified, so the guide recommends
+  `forceLoginMethod: "claudeai"`. The keys must come from device management
+  (server-managed settings cannot redirect a first login). Delivery on macOS:
+  the `com.anthropic.claudecode` managed preferences domain (a configuration
+  profile) or `/Library/Application Support/ClaudeCode/managed-settings.json`.
+  `allowedProviders` (Anthropic API, Bedrock, …) is a further managed key.
+  Sources: [Authentication — Restrict login to your organization](https://code.claude.com/docs/en/authentication#restrict-login-to-your-organization),
+  [Settings reference — forceLoginOrgUUID](https://code.claude.com/docs/en/settings-reference#forceloginorguuid),
+  [Deploy managed settings](https://code.claude.com/docs/en/managed-settings).
+- **Codex — true, with different key names for the admin.**
+  `forced_login_method` (`chatgpt` | `api`) and `forced_chatgpt_workspace_id`
+  exist, but they are the user's `config.toml` keys. The admin enforces the
+  account with the requirements keys `allowed_login_methods` and
+  `allowed_chatgpt_workspaces` in the system `requirements.toml` or through
+  macOS MDM (preference domain `com.openai.codex`, key
+  `requirements_toml_base64` = the base64-encoded TOML); the user's `forced_*`
+  values must satisfy them, and Codex refuses to start when no login method is
+  left. Sources: [Config reference](https://developers.openai.com/codex/config-reference)
+  (now served at learn.chatgpt.com/docs/config-file/config-reference),
+  [Managed configuration — Manage authentication locally](https://developers.openai.com/codex/enterprise/managed-configuration).
+
+Adjustment: the guide names `allowed_login_methods` /
+`allowed_chatgpt_workspaces` (requirements) for Codex, not `forced_*`; the
+decision (Q3 a) is unchanged.
+
 ## Contracts that change
 
 - **PURGE-01** — the `policy` origin becomes real; unchanged otherwise.
@@ -225,8 +273,8 @@ admin console.
   policy allows it again.
 - **Q3. The LLM account** — (a) our key restricts the provider only; the
   account is forced through the provider's own managed settings (Claude Code
-  managed settings can pin the login organization, Codex its workspace), and
-  the guide says so (recommended); (b) an extra key with the allowed
+  managed settings can pin the login organization, Codex its workspace —
+  verified, §7), and the guide says so (recommended); (b) an extra key with the allowed
   organization/workspace id that Watchtower checks before each run;
   (c) provider only, no account guidance.
 - **Q4. What "workbench only" on the phone keeps** — (a) workbench kinds only:
