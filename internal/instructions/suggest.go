@@ -324,7 +324,7 @@ func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 // (session -> workbench) and the chats that had lines: unknown labels (s<id>,
 // c<id>) are dropped, at least three distinct sessions and chats must remain,
 // the text is one line of 1-200 runes, the field is session or procedure.
-// Chats only: field chat, global. Chats mixed with sessions: the model's field,
+// Chats only: field chat, global. Chats mixed with sessions: field session,
 // global. Sessions only: the one shared workbench, else global. A repeated
 // fingerprint keeps its first entry. Malformed JSON or a missing
 // "suggestions" list is an error.
@@ -383,8 +383,11 @@ func parseSuggestions(raw string, sessions map[int64]int64, chats map[int64]bool
 		}
 		s := db.InstructionSuggestion{Text: text, Field: field, SessionCount: total,
 			WorkbenchCount: len(workbenches), Fingerprint: fp}
-		if len(distinct) == 0 {
+		switch {
+		case len(distinct) == 0:
 			s.Field = db.InstructionChat
+		case len(distinctChats) > 0: // chats and sessions: the shared text, global
+			s.Field = db.InstructionSession
 		}
 		if len(distinctChats) == 0 && len(workbenches) == 1 {
 			for wb := range workbenches {

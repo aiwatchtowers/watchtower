@@ -435,7 +435,7 @@ func TestParseSuggestions_MixedIsGlobal(t *testing.T) {
 	if err != nil || len(out) != 1 {
 		t.Fatalf("out=%+v err=%v", out, err)
 	}
-	if out[0].Field != db.InstructionProcedure || out[0].WorkbenchID.Valid || out[0].SessionCount != 3 || out[0].WorkbenchCount != 1 {
+	if out[0].Field != db.InstructionSession || out[0].WorkbenchID.Valid || out[0].SessionCount != 3 || out[0].WorkbenchCount != 1 {
 		t.Fatalf("%+v", out[0])
 	}
 }

@@ -4,8 +4,8 @@ import Foundation
 package enum InstructionField: String, Decodable, CaseIterable, Sendable {
     case session
     case procedure
-    /// The chat's own text (remembered lines and the Settings edit); it never
-    /// has a workbench scope or a suggestion.
+    /// The chat's own text (remembered lines, the Settings edit and added
+    /// chats-only suggestions); it is global only, never a workbench scope.
     case chat
 }
 

@@ -116,6 +116,28 @@ func TestInstructionsSuggestionAdd_AppendsAndMarks(t *testing.T) {
 	assert.Equal(t, "added", got.Status)
 }
 
+func TestInstructionsSuggestionAdd_ChatFieldAppendsToChat(t *testing.T) {
+	d, _, _ := methodologyWorkbench(t)
+	require.NoError(t, d.SetOwnerInstruction(db.InstructionSession, "SHARED"))
+	require.NoError(t, d.SetOwnerInstruction(db.InstructionChat, "Typed in Settings"))
+	line, outcome, err := d.RememberChatLine("Answer in Russian", 1, 2, time.Now(), instructions.MaxRunes)
+	require.NoError(t, err)
+	require.Equal(t, db.RememberAdded, outcome)
+	addSuggestion(t, d, "Answer briefly", db.InstructionChat, sql.NullInt64{}, "fp1", time.Now())
+	s := mustOpenSuggestion(t, d)
+
+	_, err = runInstructions(t, "", "suggestion", "add", strconv.FormatInt(s.ID, 10), "--json")
+	require.NoError(t, err)
+	g, err := d.GetOwnerInstructions()
+	require.NoError(t, err)
+	assert.Equal(t, "SHARED", g.Session)
+	assert.Equal(t, "Typed in Settings\nAnswer in Russian\nAnswer briefly", g.Chat)
+	present, err := d.ListPresentChatLines()
+	require.NoError(t, err)
+	require.Len(t, present, 1)
+	assert.Equal(t, line.ID, present[0].ID)
+}
+
 func mustOpenSuggestion(t *testing.T, d *db.DB) db.InstructionSuggestion {
 	t.Helper()
 	list, err := d.ListOpenInstructionSuggestions()

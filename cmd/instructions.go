@@ -439,8 +439,14 @@ func addInstructionSuggestion(d *db.DB, s db.InstructionSuggestion, now time.Tim
 		return err
 	}
 	existing := cur.Session
-	if s.Field == db.InstructionProcedure {
+	switch s.Field {
+	case db.InstructionProcedure:
 		existing = cur.Procedure
+	case db.InstructionChat:
+		if s.WorkbenchID.Valid { // chat text is global only; never write a workbench text
+			return fmt.Errorf("instruction suggestion %d: a chat suggestion cannot belong to a workbench", s.ID)
+		}
+		existing = cur.Chat
 	}
 	body, err := instructions.AppendLine(strings.TrimSpace(existing), strings.TrimSpace(s.Text))
 	if err != nil { // AppendLine fails only over the limit
