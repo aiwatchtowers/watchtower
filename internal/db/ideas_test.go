@@ -1488,3 +1488,22 @@ func TestCountIdeasForReview_CountsChatBornDecisions(t *testing.T) {
 		t.Errorf("CountIdeasForReview = %d, want 1 (chat-born decision only)", count)
 	}
 }
+
+func TestListIdeasByMentionRef_HidesUnapprovedChatBorn(t *testing.T) {
+	d := openTestDB(t)
+	for _, c := range []struct {
+		title, status string
+	}{{"Pending chat", "proposed"}, {"Approved chat", "active"}} {
+		id := mustCreateIdea(t, d, Idea{Kind: "decision", Title: c.title, Essence: "e", Status: c.status, ChatBorn: true})
+		if _, err := d.Exec(`INSERT INTO idea_mentions (idea_id, source, ref, quote) VALUES (?, 'jira', 'PROJ-1', 'q')`, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := d.ListIdeasByMentionRef("jira", "PROJ-1", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Title != "Approved chat" {
+		t.Errorf("got %+v, want only the approved chat item", got)
+	}
+}

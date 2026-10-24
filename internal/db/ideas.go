@@ -329,7 +329,7 @@ func (db *DB) ListIdeasByMentionRef(source, ref string, limit int) ([]Idea, erro
 			i.converted_target_id, i.owner_rating, i.rating_comment, i.last_mention_at, i.created_at, i.updated_at, i.chat_born
 		FROM ideas i
 		JOIN idea_mentions m ON m.idea_id = i.id
-		WHERE m.source = ? AND m.ref = ?
+		WHERE m.source = ? AND m.ref = ? AND ` + KnowledgeVisibleIdeaCond("i") + `
 		ORDER BY i.updated_at DESC LIMIT ?`
 	rows, err := db.Query(query, source, ref, limit)
 	if err != nil {
