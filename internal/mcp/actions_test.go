@@ -208,6 +208,12 @@ func TestAgent06_ChatModeReadToolsDoNotWrite(t *testing.T) {
 	if err := reg.Register(authoring.NewGetAutomationRun(authoring.Deps{DB: database})); err != nil {
 		t.Fatal(err)
 	}
+	if err := reg.Register(authoring.NewListAutomations(authoring.Deps{DB: database})); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register(authoring.NewGetAutomation(authoring.Deps{DB: database})); err != nil {
+		t.Fatal(err)
+	}
 	before := countRows(t, database, tables)
 	gen := &automationstest.FakeGenerator{Replies: []string{"done"}}
 	if err := reg.Register(authoring.NewDraftAutomation(authoring.Deps{
@@ -273,6 +279,8 @@ func chatOnlyReadGuardCalls() []mcpsdk.CallToolParams {
 		// Run history reads (the guard fixture seeds the automation and its run).
 		{Name: "list_automation_runs", Arguments: map[string]any{"automation": "guard-auto"}},
 		{Name: "get_automation_run", Arguments: map[string]any{"run_id": 1}},
+		{Name: "list_automations", Arguments: map[string]any{}},
+		{Name: "get_automation", Arguments: map[string]any{"automation": "guard-auto"}},
 	}
 }
 

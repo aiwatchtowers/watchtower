@@ -50,6 +50,8 @@ package enum ChatToolCatalog {
         "load_skill": Entry(template: "Loaded skill {}", fallback: "Loaded a skill", keys: ["name"]),
         "list_automation_runs": Entry(template: nil, fallback: "Listed automation runs", keys: []),
         "get_automation_run": Entry(template: nil, fallback: "Opened a run", keys: []),
+        "list_automations": Entry(template: nil, fallback: "Listed automations", keys: []),
+        "get_automation": Entry(template: nil, fallback: "Opened a recipe", keys: []),
         "get_action": Entry(template: nil, fallback: "Checked a proposal", keys: [])
     ]
 
