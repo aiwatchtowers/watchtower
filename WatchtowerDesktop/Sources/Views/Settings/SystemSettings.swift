@@ -4,7 +4,7 @@ import WatchtowerCore
 /// System tab — workspace identity, AI provider, sync cadence, daemon
 /// status, storage/data management, log viewer, and app updates.
 struct SystemSettings: View {
-    @Environment(AppState.self) private var appState
+    @Environment(AppState.self) var appState
     @Environment(\.openWindow) private var openWindow
     @Bindable var config: ConfigService
     @State private var connectionTestRunning = false

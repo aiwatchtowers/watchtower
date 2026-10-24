@@ -195,6 +195,17 @@ package struct ChatSurfaceSpec {
     package let key: EmbeddedChatKey
     package let persistence: Persistence
     package let toolAccess: ToolAccess
+    /// The turn runs with `ai query --owner-instructions`: the owner's chat
+    /// instructions join the system prompt and a "remember:" message is
+    /// stored. Explicit on every surface; false for setup assistants.
+    package let ownerInstructions: Bool
+    /// A remember message is stored and its bubble shows the mark: a database
+    /// chat with the owner's instructions only. An in-memory chat's ids are
+    /// not `chat_messages` ids, so they could match another chat's ledger row.
+    package var showsRememberMarks: Bool {
+        guard ownerInstructions, case .database = persistence else { return false }
+        return true
+    }
     /// Sent only while the conversation has no provider session yet.
     package let systemPrompt: @MainActor () -> String
     package let turnPrompt: @MainActor (ChatTurnInput) -> String
@@ -222,6 +233,7 @@ package struct ChatSurfaceSpec {
         key: EmbeddedChatKey,
         persistence: Persistence,
         toolAccess: ToolAccess,
+        ownerInstructions: Bool,
         systemPrompt: @escaping @MainActor () -> String,
         turnPrompt: @escaping @MainActor (ChatTurnInput) -> String = { $0.text },
         postTurn: @escaping @MainActor (ChatPostTurnInput) async -> ChatPostTurnResult = ChatPostTurnResult.identity,
@@ -234,6 +246,7 @@ package struct ChatSurfaceSpec {
         self.key = key
         self.persistence = persistence
         self.toolAccess = toolAccess
+        self.ownerInstructions = ownerInstructions
         self.systemPrompt = systemPrompt
         self.turnPrompt = turnPrompt
         self.postTurn = postTurn

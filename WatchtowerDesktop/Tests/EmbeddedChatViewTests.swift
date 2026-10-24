@@ -18,7 +18,7 @@ final class EmbeddedChatViewTests: XCTestCase {
     private func engine(prompts: [ChatStarterPrompt] = []) -> EmbeddedChatEngine {
         let spec = ChatSurfaceSpec(
             key: EmbeddedChatKey(contextType: "test", contextID: UUID().uuidString, conversationID: nil),
-            persistence: .memory, toolAccess: .draftOnly, systemPrompt: { "S" },
+            persistence: .memory, toolAccess: .draftOnly, ownerInstructions: false, systemPrompt: { "S" },
             emptyHint: "Ask about this meeting", starterPrompts: prompts)
         return EmbeddedChatEngine(spec: spec, store: MemoryEmbeddedChatStore(), aiService: ai, gate: gate)
     }
@@ -111,7 +111,7 @@ final class EmbeddedChatViewTests: XCTestCase {
         let store = MemoryEmbeddedChatStore()
         let engine = EmbeddedChatEngine(
             spec: ChatSurfaceSpec(key: EmbeddedChatKey(contextType: "t", contextID: "1", conversationID: nil),
-                                  persistence: .memory, toolAccess: .draftOnly, systemPrompt: { "S" },
+                                  persistence: .memory, toolAccess: .draftOnly, ownerInstructions: false, systemPrompt: { "S" },
                                   postTurn: { _ in ChatPostTurnResult(displayText: "x", failure: "Couldn't read the action") },
                                   emptyHint: ""),
             store: store, aiService: ai, gate: gate)

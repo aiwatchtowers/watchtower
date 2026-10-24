@@ -46,7 +46,7 @@ final class SetupAssistantChat<Snapshot, Patch> {
         let systemPrompt = systemPrompt + "\n\n" + ChatQuestionsContract.promptBlock
         let key = EmbeddedChatKey(contextType: "setup", contextID: contextID, conversationID: nil)
         engine = EmbeddedChatEngine(
-            spec: ChatSurfaceSpec(key: key, persistence: .memory, toolAccess: .draftOnly,
+            spec: ChatSurfaceSpec(key: key, persistence: .memory, toolAccess: .draftOnly, ownerInstructions: false,
                                   systemPrompt: { systemPrompt }, emptyHint: ""),
             store: MemoryEmbeddedChatStore(),
             aiService: aiService ?? WatchtowerAIService(),
@@ -59,6 +59,7 @@ final class SetupAssistantChat<Snapshot, Patch> {
             // The panel changes local state only through the settings block →
             // form patch the owner sees, never through a tool, so no tool mode.
             toolAccess: .draftOnly,
+            ownerInstructions: false,
             systemPrompt: { systemPrompt },
             // The form changes between turns (the owner types, patches land),
             // so EVERY turn carries a fresh snapshot — which also keeps a

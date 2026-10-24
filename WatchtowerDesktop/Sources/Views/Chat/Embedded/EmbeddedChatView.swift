@@ -103,7 +103,8 @@ struct EmbeddedChatRows<Accessory: View>: View {
             ChatMessageRow(item: item, isLast: item.id == engine.messages.last?.id, isEditing: false,
                            actions: .embedded(copy: Self.copy, retry: retry(for: item, thread),
                                               answerQuestion: answerQuestion(for: item, thread)),
-                           questionAnswer: thread.ownerReply(after: item.id))
+                           questionAnswer: thread.ownerReply(after: item.id),
+                           showsRememberMark: engine.spec.showsRememberMarks)
                 .equatable()
         }
     }

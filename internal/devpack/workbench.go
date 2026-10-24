@@ -85,6 +85,12 @@ type WorkbenchInstallOptions struct {
 	// 2026-10-15 §4.3), so the watchtower-flow preset is removed when ours
 	// instead of installed. The zero value installs it.
 	PresetNone bool
+	// NewFolder: the folder was just made (a new session worktree), so no
+	// registration is expected there. The registration tries `claude mcp
+	// add` alone first and takes the full get/remove path only when that
+	// fails (a leftover registration at a reused path): each claude run
+	// costs about a second of the session start.
+	NewFolder bool
 }
 
 // WorkbenchInstallReport is what InstallWorkbench did; Excluded holds the
@@ -567,6 +573,13 @@ func (o WorkbenchInstallOptions) mcpAddArgs() []string {
 // claude-not-found error, since the claude CLI cannot be asked whether it is
 // there.
 func registerWorkbenchMCP(ctx context.Context, o WorkbenchInstallOptions, legacyFolder bool) (registered, legacyRemoved bool, err error) {
+	// A session worktree's path postdates the Workbench rename, so no
+	// pre-rename registration can be there to remove.
+	if o.NewFolder && !legacyFolder {
+		if _, addErr := o.Run(ctx, o.Folder, "claude", o.mcpAddArgs()...); addErr == nil {
+			return true, false, nil
+		}
+	}
 	registered, err = registerCurrentMCP(ctx, o)
 	switch {
 	case errors.Is(err, ErrClaudeNotFound):

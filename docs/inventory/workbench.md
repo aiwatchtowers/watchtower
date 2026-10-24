@@ -700,8 +700,11 @@ it, else one `--merged` listing per base; a failed read falls back to
 per-branch reads), reads each base's first-parent line once, keeps the
 default branch's patch ids across branches, and reads each branch once
 (2026-10-20, owner approved in ask #434; findings unchanged).
-`workbench brief` shows every finding (offline, 4 s budget), and so does the
-Desktop board: `WorkbenchesViewModel.refreshDrift` runs `workbench check --json
+`workbench brief` shows the open targets' findings (offline, 4 s budget,
+`OpenOnly` like the Stop hook — since 2026-10-24, owner approved in ask #531:
+the closed walk tripled a hook that blocks the session start, so
+`done_but_unmerged` is left to the board and `workbench check`), and the
+Desktop board shows every finding: `WorkbenchesViewModel.refreshDrift` runs `workbench check --json
 --no-network` when the Board pane appears, on the owner's Refresh, and every
 30 s while the pane polls, and `WorkbenchDriftBanner` lists the findings (a
 failed or partial check is shown as such, never as "in step") — the Desktop decodes, never
@@ -740,6 +743,7 @@ timeout would be worse than none.
 - supporting: `cmd/workbench_test.go::TestWorkbench_NoPreRenameCommandOrFlag` (the pre-rename Stop hook argv: no error, empty stdout, the Repair line on stderr, never an `exitCodeError`)
 - `WatchtowerDesktop/Tests/WorkbenchesViewModelDriftTests.swift`, `WatchtowerDesktop/Tests/Core/WorkbenchDriftReportTests.swift`, `WatchtowerDesktop/Tests/WorkbenchCLITests.swift::testMissingStopHookNeedsRepair`
 - `cmd/workbench_brief_test.go::TestProj07_BriefSaysWhenTheDriftCheckWasPartial`
+- `cmd/workbench_check_test.go::TestProjectBrief_DriftChecksOpenTargetsOnly` (supporting: the brief leaves a done target's unmerged branch to `workbench check`)
 - `internal/workbenchcheck/check_test.go` — `TestProj07_UnresolvableDefaultBranchIsANote`, `TestProj07_GitRules`, `TestProj07_SharedBranchAndParents`, `TestProj07_GitErrorsAreNeverFindings`, `TestProj07_NoGitCallOutsideARepository`, `TestProj07_ReadsNothingButGit`, `TestProj07_DeadlineReportsIncompleteNeverFalseFindings`, `TestProj07_MidWalkDeadlineKeepsEarlierFindingsOnly`, `TestProj07_GitUnavailableIsANote`
 
 **Locked since:** 2026-10-01
@@ -1687,7 +1691,7 @@ owner's and the agent's backs.
 
 ## PROJ-15 — an archived workbench target is hidden, never lost
 
-**Status:** Enforced (Go and Desktop; owner approved 2026-10-04, ask #33, spec `docs/superpowers/specs/2026-10-04-workbench-board-archive-design.md` §3; amended 2026-10-07 (board #415), approved by the owner in ask #106, spec `docs/superpowers/specs/2026-10-07-workbench-archive-now-design.md` §3)
+**Status:** Enforced (Go and Desktop; owner approved 2026-10-04, ask #33, spec `docs/superpowers/specs/2026-10-04-workbench-board-archive-design.md` §3; amended 2026-10-07 (board #415), approved by the owner in ask #106, spec `docs/superpowers/specs/2026-10-07-workbench-archive-now-design.md` §3; amended 2026-10-24 (board #942), approved by the owner in ask #540: the brief no longer shows archived drift)
 
 **Observable:** A workbench target is archived iff it and every descendant
 on the same board are `done` or `dismissed`, every close time among them
@@ -1714,10 +1718,11 @@ alone until the next Archive Now. A group
 is archived only whole: a target with an open descendant, or whose subtree
 closed last less than `archive_after_days` days ago, is never archived, and an
 archived target's whole subtree is archived. The drift check never skips an
-archived target: `workbench check`, the brief's drift section and the Desktop
-banner read the full board, so a `done_but_unmerged` finding on an archived
-target is reported exactly as on a visible one (PROJ-07 unchanged in
-wording).
+archived target: `workbench check` and the Desktop banner read the full
+board, so a `done_but_unmerged` finding on an archived target is reported
+exactly as on a visible one. The brief's drift section checks open targets
+only (PROJ-07, since 2026-10-24), so it shows no finding on a closed target,
+archived or not.
 
 **Why locked:** Owner request (board target #301, ask #33). A long board
 must get short without losing anything: work that vanished, could not be
@@ -1728,7 +1733,7 @@ other direction.
 **Test guards:**
 - `internal/db/proj15_board_archive_test.go` — `TestProj15_ClosedLeafArchivedAfterNDays`, `TestProj15_OpenStatusesAreNeverArchived`, `TestProj15_UmbrellaArchivedOnlyWhole`, `TestProj15_GroupWaitsForItsLastClose`, `TestProj15_HandSetDoneParentWithOpenChildIsNotArchived`, `TestProj15_ReopenRestores`, `TestProj15_ReparentOpenWorkUnderArchivedGroupRestoresIt`, `TestProj15_OpenSubTargetUnderArchivedGroupRestoresIt`, `TestProj15_ArchiveWritesNothing`, `TestProj15_PerWorkbenchSettingAndNever`, `TestProj15_ArchiveDaysOutOfRangeAreRefused`, `TestProj15_CloseTimeFallsBackToUpdatedAt`, `TestProj15_UnparseableCloseTimeKeepsTheChain`, `TestProj15_ReopenAndRecloseStartsThePeriodOver`, `TestProj15_LargeBoardReadIsFast`
 - `internal/db/proj15_archive_now_test.go` — `TestProj15_ArchiveNowArchivesEveryClosedSubtree`, `TestProj15_ArchiveNowGroupsGoWhole`, `TestProj15_ArchiveNowCloseAfterTheStampStays`, `TestProj15_ArchiveNowLaterCloseInAGroupKeepsTheGroup`, `TestProj15_ArchiveNowReopenRestores`, `TestProj15_ArchiveNowSameSecondIsArchived`, `TestProj15_ArchiveNowUnderNever`, `TestProj15_ArchiveNowUnparseableCloseTimeKeepsTheChain`, `TestProj15_ArchivedThroughMustParse`, `TestProj15_UndoArchiveNowRestoresOnlyWhatTheAgeRuleWouldNot`, `TestProj15_ArchiveNowWritesNothingPerTarget`, `TestProj15_ArchiveNowIsPerWorkbench`, `TestProj15_LargeBoardReadIsFastWithAStamp`
-- `cmd/workbench_archive_test.go::TestProj15_DriftStillSeesArchivedUnmergedWork` (age rule and stamp-only cases)
+- `cmd/workbench_archive_test.go::TestProj15_DriftStillSeesArchivedUnmergedWork` (age rule and stamp-only cases; since 2026-10-24, ask #540, it asserts the brief leaves the archived finding out)
 - `internal/tools/workbench_board_archive_test.go` — `TestGetTarget_FindsAnArchivedTargetAndSaysSo`, `TestUpdateTarget_ReopeningRestoresAnArchivedTarget`, `TestCreateTargets_UnderAnArchivedParentBringsItBack`, `TestListTargets_ArchivedOnlyWithIncludeArchived`, `TestListTargets_IncludeArchivedWithoutStatusListsArchivedTargets`, `TestWorkbenchBoard_ArchivedSubtreesOnlyOnRequest`
 - `WatchtowerDesktop/Tests/Core/WorkbenchQueriesTests.swift::testBoardMarksArchivedTargetsFromTheViewAndKeepsThemInTheTree`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardOutlineTests.swift::testSearchAlwaysMatchesArchivedTargets`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardKanbanTests.swift::testSearchShowsArchivedLeaves`, `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift::testArchivedTargetsShowOnlyWithTheToggleAndReopeningRestoresOne`
 - supporting: `internal/db/proj15_board_archive_test.go` (`TestWithoutArchived_CountsArchivedChildren`, `TestWithoutArchived_EmptyAndAllArchived`, `TestGetTargets_WorkbenchLeavesArchivedOut`, `TestMigration00103_DefaultsToFourteen`), `internal/db/proj15_archive_now_test.go` (`TestMigration00105_ArchivedThroughStartsNull`, `TestArchiveNowWriters_UnknownWorkbench`), `internal/tools/workbench_board_archive_test.go` (`TestBuildBoardView_*`, `TestWorkbenchInfo_CountsTheWholeBoardAndTheArchived`, `TestWorkbenchBoard_LongMostlyClosedBoardStaysSmall`, `TestWorkbenchBoard_ArchiveNowLeavesTheBoardSmall`), `cmd/workbench_archive_test.go` (`TestRenderProjectBrief_ArchivedLeaveTheCountsAndAreCounted`, `TestWorkbenchBoardCmd_ArchivedOnlyWithTheFlag`, `TestWorkbenchBoardCmd_AllArchivedRootsAreCounted`, `TestWorkbenchShowCmd_PrintsTheArchiveSetting`, `TestWorkbenchShowCmd_PrintsArchivedThrough`), `internal/sessionreport/report_test.go::TestBuild_KeepsArchivedTargetsTheSessionClosed`, `WatchtowerDesktop/Tests/Core/WorkbenchBoardKanbanTests.swift` (`testArchivedCardCountIsTheArchivedLeavesUnderTheFilter`), `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift` (`testTheArchiveCountFollowsTheMode`), Archive Now: `WatchtowerDesktop/Tests/Core/WorkbenchQueriesTests.swift` (`testArchiveClosedTargetsNowStampsTheWorkbenchAndUndoForgetsIt`, `testArchiveNowWritersThrowForAnUnknownWorkbench`), `WatchtowerDesktop/Tests/WorkbenchBoardViewModelTests.swift::testTheArchiveNowStampIsInTheFingerprint`, `WatchtowerDesktop/Tests/WorkbenchesViewModelTests.swift::testArchiveNowAndUndoWriteTheStampReloadAndReportAFailure`, `WatchtowerDesktop/Tests/WorkbenchHeaderControlsTests.swift::testArchiveNowAndUndoArchiveNow`
@@ -1917,6 +1922,8 @@ session's worktrees, not Watchtower's or Claude Code's) and only with SIGTERM. A
 only on items eligible at that moment and, when items are named, only on those.
 
 *2026-10-14 amendment (board #229, owner approved in asks #122/#124, spec `docs/superpowers/specs/2026-10-14-session-worktrees-design.md` §9):* a session row Watchtower placed in a worktree it created (`terminal_sessions.worktree_branch` set) owns, by record, the linked worktree that is the longest listed root containing its `folder_path`, and its `worktree_branch`, when each was born no later than the row (placement creates them first; `created_at` + 1 s) — although both were born before the row. A later-born item of the same name (a reused `wt/<slug>` of a later session), one whose birth is unknown, or a row whose `folder_path` is not absolute owns nothing by record. Nothing else is owned by record, and every safety catch (W1, W3–W9, B1, B2, B4) still applies. Placement code (`workbench worktree create|ensure|forget`) never removes a worktree or deletes a branch and runs no `--force`, `reset`, `clean`, `checkout` or `stash`.
+
+*2026-10-24 note (board #942, ask #531):* the Desktop now inserts a new agent row in the workbench folder first, so the session is on screen at once, and moves it into its worktree once `worktree create` returned (`TerminalSessionQueries.place`). That move also sets `created_at` to its own moment, so the row is still born after its worktree and branch, and ownership by record is unchanged. A row that cannot be moved is deleted before it ever ran, and the worktree is kept, as before.
 
 As shipped (each stricter than, never weaker than, the wording above):
 - **Fail closed.** A catch git could not answer keeps the item `check_failed`
@@ -2186,6 +2193,14 @@ owner never saw.
 - supporting: `internal/instructions/instructions_test.go`, `internal/instructions/suggest_test.go`; the existing `TestProj12_AnsweredAskSurvivesAFullBoard` and brief budget tests stay unchanged
 
 **Limits (accepted):** an edit reaches a running or resumed session only through `procedure` (its brief keeps the text it started with); a status change made on the Desktop or phone delivers no procedure by itself; suggestions need three sessions in 14 days; the texts are not synced to the phone.
+
+**Amended 2026-10-24 (chat owner instructions, owner approved in ask #522; spec `docs/superpowers/specs/2026-10-23-chat-owner-instructions-design.md`; no existing guard relaxed):**
+(a) The global session text (`owner_instructions` scope `session`) now also reaches every AI chat, together with a new global chat-only text (scope `chat`, migration 00153): `instructions.ChatSlot` renders `Owner's instructions (follow in every turn):` + the shared text + `For the chat:` + the chat text (that header only when the chat text is non-empty), empty when both are empty. The main chat reads it in `chat.BuildSystemPrompt`; the embedded chats get it through `ai query --owner-instructions` (a bare flag that carries no content; the text is read in Go, never on argv); the setup assistants (`SetupAssistantChat`, persistence `.memory`) get no slot and no remember. Workbench additions (`projects.session_instructions`, both procedures) never reach a chat, even one bound to a workbench. (b) A second owner write path exists: an owner message that starts with `remember:`, `remember this:` or `запомни:` (case-insensitive, at the first non-space character) is appended verbatim to the chat text by `watchtower instructions remember --conversation --message --stdin` (text on stdin; ledger `instruction_chat_lines`; refused over `MaxRunes`, never redirected to another text), shown in the chat as a mark with **Undo** (`forget <id>`) and **Open in Settings**. The model never writes instruction text: only these owner words and the owner's Add/Settings write. (c) `set --field chat` and the suggestion field `chat` exist; the daily `phaseInstructionSuggestions` (prompt `instructions.suggest` v2) also reads the owner's persisted chat turns (`c<id>` labels; remember-prefixed turns dropped): evidence from chats only goes to field `chat`, mixed evidence to the global session text, workbench-only as before, and a mixed suggestion that does not fit is refused on Add, never redirected. (d) New pinned `--json` keys, additive only: `show` `global.chat`, `chat_lines`; `preview` `chat_slot`; `remember` `outcome`, `line_id`; `forget` `removed`; failure `code`. (e) Settings → Profile → Instructions holds the texts (System → Workbench keeps a pointer); Preview shows both slots.
+
+**Added guards (2026-10-24):**
+- `cmd/workbench_brief_instructions_test.go::TestProj22_RememberWritesOwnerWordsVerbatim`
+- `cmd/workbench_brief_instructions_test.go::TestProj22_WorkbenchTextsNeverInChatSlot`
+- supporting: `internal/instructions/remember_test.go` (shared prefix fixture `testdata/remember_cases.json`, also read by `RememberCommandFixtureTests`), `internal/instructions/suggest_test.go`, `internal/db/instructions_test.go`, `cmd/instructions_test.go`, `internal/chat/prompt_test.go`
 
 **Locked since:** 2026-10-17
 
@@ -2483,6 +2498,7 @@ owner never saw.
 
 - 2026-10-20 (board #713, Linear AI-14): note only — **no contract, guard test or status changed**. Desktop only: board columns are edited on the Kanban's header row instead of the **Board Columns…** sheet (the same whole-definition `workbench columns --set -` write, PROJ-19 unchanged); New Task becomes a panel whose column chip writes the column right after `workbench target add`; the drift popover's **Fix** starts an ordinary agent session with a fix prompt (PROJ-07 unchanged: the check stays read-only, the agent writes the board through its tools).
 - 2026-10-20 (board #788, workbench header redesign): controls moved (header → title row / session strip, header buttons → ⚡ menu); no contract, guard test or status changed.
+- 2026-10-24 (chat owner instructions, owner approved in ask #522): **PROJ-22 amended** — the shared session text and a new chat-only text reach every AI chat, `remember:` is a second owner write path, field/scope `chat`, chat turns in the daily suggestions; two guards added, none relaxed. See the amendment in PROJ-22.
 - 2026-10-19 (board #711, Workchat final review; **owner approved in ask #400**): **PROJ-21 amended — no guard changed.** The Status line and one Observable paragraph record the Mac's Workchat card as a second writer of `permission_requests`: `SessionControl.answerPermission` with `decided_by = "Mac"`, through the same guarded compare-and-set, with no device grant, and the Deny-only blocks (`PermissionAllowBlock`) on the card too. The Go hook prints a second deny constant, `Denied by the owner at the Mac.`, when `decided_by` is `"Mac"`; the phone's pinned `Denied from the owner's phone.` is unchanged (`TestProj21_PermissionWaitPhoneDenyPrintsDeny` untouched; `TestProj21_PermissionWaitMacWorkchatDenySaysMac` added; the Workchat card's tests in `WorkchatModelTests` are listed under the guards). Note only: the PROJ-16/21 file lists gained `WatchtowerDesktop/Sources/Services/SessionControl.swift` — the line, interrupt and answer gates moved out of the phone handlers into it — and no contract changed.
 - 2026-10-19 (board #711/#758, **owner approved in ask #421**): **PROJ-12 amended** for Workchat lines only — a Workchat message keeps its line breaks and is pasted as one multi-line bracketed paste (as the code-question hand-off does); the ask answer, the phone's input and the review round lines are still one line. Heading, other wording and every guard unchanged; `WorkchatModelTests.testMultilineDraftKeepsLineBreaks` and `SessionLineDeliveryTests.testOtherLineKeysStillOneLine` pin it.
 - 2026-10-18 (board #704, Linear AI-8; no contract change): the sweep plan measures up to 4 worktrees at a time (each keeps its 20 s budget); the hint keeps its ready plan for the sheet its **Clean Up…** opens and forgets it on ✕; the sheet reuses a ready plan or waits for a sheet plan still running, and closing it mid-plan leaves that plan running; a ready plan is reused only within 10 minutes, and a sheet's plan is stopped and fails after 5 minutes. Supporting `testSweepHintShownOnceAboveOneGigabyte` now asserts the hint's plan is kept (it asserted the opposite); new supporting tests `testSheetOpenedFromTheHintReusesItsPlan`, `testClosingTheSheetMidPlanKeepsThePlanForTheNextOpen`, `testStalledSheetPlanFailsAtItsTimeLimit`, `testOldReadyPlanIsPlannedAgain`, `TestPlan_SweepMeasuresWorktreesConcurrently`, `TestPlan_SweepMeasuresAtMostSizeWorkersAtOnce`. No guard changed.

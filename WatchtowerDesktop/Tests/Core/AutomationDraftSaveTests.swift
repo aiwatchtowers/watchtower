@@ -181,7 +181,7 @@ final class AutomationDraftSaveTests: XCTestCase {
         let draft = try insertDraft()
         let key = EmbeddedChatKey(contextType: "automation_draft", contextID: "d1", conversationID: draft)
         let engine = center.engine(for: ChatSurfaceSpec(
-            key: key, persistence: .database(conversationID: draft), toolAccess: .draftOnly,
+            key: key, persistence: .database(conversationID: draft), toolAccess: .draftOnly, ownerInstructions: false,
             systemPrompt: { "S" }, emptyHint: ""))
         XCTAssertTrue(engine.send("Draft it"))
         await engine.started()
@@ -249,7 +249,7 @@ final class AutomationDraftSaveTests: XCTestCase {
         let draft = try insertDraft()
         let key = EmbeddedChatKey(contextType: "automation_draft", contextID: "d1", conversationID: draft)
         let engine = center.engine(for: ChatSurfaceSpec(
-            key: key, persistence: .database(conversationID: draft), toolAccess: .draftOnly,
+            key: key, persistence: .database(conversationID: draft), toolAccess: .draftOnly, ownerInstructions: false,
             systemPrompt: { "S" }, emptyHint: ""))
         XCTAssertTrue(engine.send("Draft it"))
         await engine.started()

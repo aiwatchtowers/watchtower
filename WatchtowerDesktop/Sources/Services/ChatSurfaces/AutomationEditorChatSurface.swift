@@ -75,6 +75,7 @@ enum AutomationEditorChatSurface {
                                  conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: tools ? .actions(surface: surface) : .draftOnly,
+            ownerInstructions: true,
             systemPrompt: { systemPrompt(context: context, tools: tools, skillsDir: skillsDir) },
             turnPrompt: { input in
                 let recipe = currentRecipeBlock(automationID: automation.id, dbPool: dbPool)
@@ -111,6 +112,7 @@ enum AutomationEditorChatSurface {
             key: EmbeddedChatKey(contextType: draftContextType, contextID: contextID, conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: tools ? .actionsWithoutContext(surface: surface) : .draftOnly,
+            ownerInstructions: true,
             systemPrompt: { systemPrompt(context: context, tools: tools, skillsDir: skillsDir) },
             turnPrompt: { input in
                 let resumed = input.isResumed ? rulesBlock(context: context, tools: tools) : ""

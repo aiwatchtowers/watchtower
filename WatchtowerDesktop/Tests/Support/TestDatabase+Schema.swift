@@ -1866,24 +1866,6 @@ CREATE TABLE IF NOT EXISTS permission_requests (
   decided_at          TEXT,
   decided_by          TEXT
 );
-CREATE TABLE IF NOT EXISTS owner_instructions (
-    scope      TEXT PRIMARY KEY CHECK (scope IN ('session','procedure')),
-    body       TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS instruction_suggestions (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    text            TEXT NOT NULL,
-    field           TEXT NOT NULL CHECK (field IN ('session','procedure')),
-    workbench_id    INTEGER NULL REFERENCES projects(id) ON DELETE CASCADE,
-    session_count   INTEGER NOT NULL DEFAULT 0,
-    workbench_count INTEGER NOT NULL DEFAULT 0,
-    first_seen_at   TEXT NOT NULL,
-    last_seen_at    TEXT NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','added','dismissed')),
-    fingerprint     TEXT NOT NULL UNIQUE,
-    decided_at      TEXT NULL
-);
 CREATE TABLE IF NOT EXISTS reaction_events (
     account_id INTEGER NOT NULL,
     channel_id TEXT    NOT NULL,
@@ -2168,6 +2150,31 @@ CREATE TABLE IF NOT EXISTS builtin_migrations (
     attempts   INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
 , first_attempted_at TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS "owner_instructions" (
+    scope      TEXT PRIMARY KEY CHECK (scope IN ('session','procedure','chat')),
+    body       TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS "instruction_suggestions" (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    text            TEXT NOT NULL,
+    field           TEXT NOT NULL CHECK (field IN ('session','procedure','chat')),
+    workbench_id    INTEGER NULL REFERENCES projects(id) ON DELETE CASCADE,
+    session_count   INTEGER NOT NULL DEFAULT 0,
+    workbench_count INTEGER NOT NULL DEFAULT 0,
+    first_seen_at   TEXT NOT NULL,
+    last_seen_at    TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','added','dismissed')),
+    fingerprint     TEXT NOT NULL UNIQUE,
+    decided_at      TEXT NULL
+);
+CREATE TABLE IF NOT EXISTS instruction_chat_lines (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    line            TEXT NOT NULL,
+    conversation_id INTEGER NULL,
+    message_id      INTEGER NULL,
+    added_at        TEXT NOT NULL
+);
 CREATE VIEW IF NOT EXISTS tracker_issues AS
 SELECT 'jira' AS tracker, ji.account_id, ji.id AS issue_id, ji.key, ji.project_key,
        ji.summary AS title, ji.description_text, ji.status, ji.status_category,
@@ -2450,7 +2457,6 @@ CREATE INDEX IF NOT EXISTS review_comments_round ON review_comments(round_id, id
 CREATE INDEX IF NOT EXISTS idx_workbench_board_columns_project ON workbench_board_columns(project_id, status, position);
 CREATE INDEX IF NOT EXISTS review_notes_session ON review_notes(project_id, session_id, kind, ord);
 CREATE INDEX IF NOT EXISTS idx_permission_requests_session ON permission_requests(terminal_session_id, status);
-CREATE INDEX IF NOT EXISTS idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at);
 CREATE INDEX IF NOT EXISTS idx_linear_states_team ON linear_workflow_states(account_id, team_id, position);
 CREATE INDEX IF NOT EXISTS idx_linear_labels_team ON linear_labels(account_id, team_id);
 CREATE INDEX IF NOT EXISTS idx_targets_due         ON targets(due_date);
@@ -2500,6 +2506,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_automation_runs_queued_trigger ON automati
 CREATE INDEX IF NOT EXISTS idx_automation_runs_rerun_of ON automation_runs(rerun_of);
 CREATE INDEX IF NOT EXISTS idx_automation_runs_started_at ON automation_runs(started_at);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_automation_id ON tracks(automation_id) WHERE automation_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_instruction_suggestions_status ON instruction_suggestions(status, first_seen_at);
+CREATE INDEX IF NOT EXISTS idx_instruction_chat_lines_message ON instruction_chat_lines(message_id);
 CREATE TRIGGER IF NOT EXISTS kb_chunks_ai AFTER INSERT ON kb_chunks BEGIN
     INSERT INTO kb_fts(rowid, title, body, meta) VALUES (NEW.id, NEW.title, NEW.body, NEW.meta);
 END;
