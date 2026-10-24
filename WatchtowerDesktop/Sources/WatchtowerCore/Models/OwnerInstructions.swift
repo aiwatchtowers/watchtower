@@ -181,14 +181,14 @@ package struct OwnerInstructionsPreview: Decodable, Equatable, Sendable {
     }
 }
 
-enum OwnerInstructionsJSON {
+package enum OwnerInstructionsJSON {
     private struct Failure: Decodable {
         let ok: Bool
         let error: String?
         let code: String?
     }
 
-    static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+    package static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         if let f = try? JSONDecoder().decode(Failure.self, from: data), !f.ok {
             throw OwnerInstructionsError(message: f.error ?? "The instructions command failed.", code: f.code)
         }

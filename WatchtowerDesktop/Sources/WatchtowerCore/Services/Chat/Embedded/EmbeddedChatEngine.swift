@@ -73,6 +73,10 @@ package final class EmbeddedChatEngine {
     package private(set) var canRetry = false
 
     @ObservationIgnored package var onTurnFinished: ((TurnOutcome) -> Void)?
+    /// A new owner message is on disk (text, conversation id, message id), for
+    /// a database chat whose spec carries the owner's instructions; remember
+    /// in place hangs here. Never awaited: it cannot delay the turn.
+    @ObservationIgnored package var onOwnerMessageStored: ((String, Int64, Int64) -> Void)?
 
     package var isStreaming: Bool { liveTurn != nil }
     /// The turn ended and its final state is being written — for a reply
@@ -426,6 +430,10 @@ package final class EmbeddedChatEngine {
         }
         isStarting = false
         if request.ownerText != nil { draftMirror?.clear(for: spec.key) }
+        if let text = request.ownerText, let ownerID = ids.ownerID, spec.ownerInstructions,
+           case .database(let conversationID) = spec.persistence {
+            onOwnerMessageStored?(text, conversationID, ownerID)
+        }
         canRetry = false
         lastRequest = request
         // Still applied if this turn fails before its postTurn runs.

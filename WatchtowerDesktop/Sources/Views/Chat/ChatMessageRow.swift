@@ -67,7 +67,7 @@ struct ChatMessageRow: View, Equatable {
 
     @ViewBuilder private var content: some View {
         if item.message.isUser {
-            if isEditing { editor } else { UserMessageBubble(text: item.message.text, attachments: item.attachments) }
+            if isEditing { editor } else { UserMessageBubble(text: item.message.text, attachments: item.attachments, messageID: item.id) }
         } else if item.message.isAssistant {
             AssistantMessageBody(text: item.message.text, steps: item.stepDisplays, isRunning: false,
                                  versions: artifactVersions, onOpenArtifact: actions.openArtifact,
@@ -274,6 +274,8 @@ struct AssistantMessageBody: View {
 struct UserMessageBubble: View {
     let text: String
     var attachments: [ChatAttachment] = []
+    /// Set for a stored message: a remember command shows its outcome here.
+    var messageID: Int64?
 
     private var parts: ChatTurnDisplayParts { ChatTurnComposer.displayParts(text) }
 
@@ -301,6 +303,7 @@ struct UserMessageBubble: View {
                     .foregroundStyle(.white)
                     .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 16))
             }
+            if let messageID { RememberMarkView(messageID: messageID, text: text) }
         }
     }
 }
