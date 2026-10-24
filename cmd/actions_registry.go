@@ -208,6 +208,8 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 	// Run history reads (spec 2026-10-24 §7): why a recipe failed, what it did last.
 	regTools = append(regTools, authoring.NewListAutomationRuns(authoringDeps), authoring.NewGetAutomationRun(authoringDeps),
 		authoring.NewListAutomations(authoringDeps), authoring.NewGetAutomation(authoringDeps))
+	// Slack channel list (spec 2026-10-24 §7): main chat and editor chat only.
+	regTools = append(regTools, tools.NewListSlackChannels())
 	// A claude.ai connector write held by the main chat's permission gate
 	// (#737): recorded and run only by that chat session, never listed on any
 	// surface (Tool.AppliedBySession).

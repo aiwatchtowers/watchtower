@@ -31,8 +31,9 @@ const (
 	planDateLayout  = "2006-01-02"
 )
 
-// automationSurfaceOnly is the Surfaces list of every D23 tool.
-func automationSurfaceOnly() []string { return []string{AutomationSurface} }
+// editorAndAutomation is the Surfaces list of every D23 tool: the recipe run
+// surface and the editor chat that drafts recipes against the same reads.
+func editorAndAutomation() []string { return []string{AutomationSurface, AutomationEditorSurface} }
 
 func decodeAutomationArgs[T any](call Call) (T, error) {
 	var a T
@@ -134,7 +135,7 @@ func NewListInbox() *Tool {
 			"Defaults to pending items; filter with status, priority, trigger_type and since. Archived items are never listed.",
 		InputSchema: mustSchema[listInboxArgs]("list_inbox"),
 		Access:      AccessRead,
-		Surfaces:    automationSurfaceOnly(),
+		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listInboxArgs](call)
 			if err != nil {
@@ -215,7 +216,7 @@ func NewListCalendarEvents() *Tool {
 			"Cancelled events are listed with their status. Optionally only one calendar account. Descriptions are clipped at 4 KiB.",
 		InputSchema: mustSchema[listCalendarEventsArgs]("list_calendar_events"),
 		Access:      AccessRead,
-		Surfaces:    automationSurfaceOnly(),
+		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listCalendarEventsArgs](call)
 			if err != nil {
@@ -358,7 +359,7 @@ func NewListMeetingRecaps() *Tool {
 			"Read one recap with get_meeting_recap.",
 		InputSchema: mustSchema[listMeetingRecapsArgs]("list_meeting_recaps"),
 		Access:      AccessRead,
-		Surfaces:    automationSurfaceOnly(),
+		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listMeetingRecapsArgs](call)
 			if err != nil {
@@ -394,7 +395,7 @@ func NewGetMeetingRecap() *Tool {
 			"(each clipped at 32 KiB; a recap above that comes back as clipped text with recap_truncated).",
 		InputSchema: mustSchema[getMeetingRecapArgs]("get_meeting_recap"),
 		Access:      AccessRead,
-		Surfaces:    automationSurfaceOnly(),
+		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[getMeetingRecapArgs](call)
 			if err != nil {
@@ -476,7 +477,7 @@ func NewListMeetingNotes() *Tool {
 			"Each note's text is returned whole.",
 		InputSchema: mustSchema[listMeetingNotesArgs]("list_meeting_notes"),
 		Access:      AccessRead,
-		Surfaces:    automationSurfaceOnly(),
+		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listMeetingNotesArgs](call)
 			if err != nil {
@@ -571,7 +572,7 @@ func NewListDayPlans() *Tool {
 		Description: "List the owner's day plans, newest date first, with how many items each has and how many are done. Read one with get_day_plan.",
 		InputSchema: mustSchema[listDayPlansArgs]("list_day_plans"),
 		Access:      AccessRead,
-		Surfaces:    automationSurfaceOnly(),
+		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listDayPlansArgs](call)
 			if err != nil {
@@ -607,7 +608,7 @@ func NewGetDayPlan() *Tool {
 			"A date with no plan returns plan: null.",
 		InputSchema: mustSchema[getDayPlanArgs]("get_day_plan"),
 		Access:      AccessRead,
-		Surfaces:    automationSurfaceOnly(),
+		Surfaces:    editorAndAutomation(),
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[getDayPlanArgs](call)
 			if err != nil {
@@ -725,7 +726,7 @@ func NewListReminders() *Tool {
 		Description: "List the owner's reminders (set with remind_me), soonest first. Defaults to pending; filter with status and due_before.",
 		InputSchema: mustSchema[listRemindersArgs]("list_reminders"),
 		Access:      AccessRead,
-		Surfaces:    automationSurfaceOnly(),
+		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listRemindersArgs](call)
 			if err != nil {
@@ -783,7 +784,7 @@ func NewListJiraSprints() *Tool {
 		Description: "List locally synced Jira sprints with their board and project, newest first. Filter by project, board_id and state.",
 		InputSchema: mustSchema[listJiraSprintsArgs]("list_jira_sprints"),
 		Access:      AccessRead,
-		Surfaces:    automationSurfaceOnly(),
+		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listJiraSprintsArgs](call)
 			if err != nil {
@@ -835,7 +836,7 @@ func NewListJiraReleases() *Tool {
 			"archived versions only with include_archived. Descriptions are clipped at 4 KiB.",
 		InputSchema: mustSchema[listJiraReleasesArgs]("list_jira_releases"),
 		Access:      AccessRead,
-		Surfaces:    automationSurfaceOnly(),
+		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listJiraReleasesArgs](call)
 			if err != nil {

@@ -11,6 +11,7 @@ final class ChatToolCatalogTests: XCTestCase {
         XCTAssertEqual(ChatToolCatalog.label(name: "list_automation_runs", args: #"{"automation":"digest"}"#), "Listed automation runs")
         XCTAssertEqual(ChatToolCatalog.label(name: "get_automation_run", args: #"{"run_id":7}"#), "Opened a run")
         XCTAssertEqual(ChatToolCatalog.label(name: "list_automations", args: #"{"query":"digest"}"#), "Listed automations")
+        XCTAssertEqual(ChatToolCatalog.label(name: "list_slack_channels", args: #"{"query":"acme"}"#), "Listed Slack channels")
         XCTAssertEqual(ChatToolCatalog.label(name: "get_automation", args: #"{"automation":"digest"}"#), "Opened a recipe")
     }
 
