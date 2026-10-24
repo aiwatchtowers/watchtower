@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/ai"
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
+	"watchtower/internal/db"
 	"watchtower/internal/tools"
 )
 
@@ -332,8 +333,8 @@ func TestAIQueryCmd_PromptStdinRefusesSystemPromptFlags(t *testing.T) {
 // mutual-exclusion check reads "changed" left over from an earlier test.
 func resetSystemPromptFlags(t *testing.T) {
 	t.Helper()
-	aiFlagSystemPrompt, aiFlagSystemPromptStdin, aiFlagPromptStdin = "", false, false
-	for _, name := range []string{"system-prompt", "system-prompt-stdin", "prompt-stdin"} {
+	aiFlagSystemPrompt, aiFlagSystemPromptStdin, aiFlagPromptStdin, aiFlagOwnerInstructions = "", false, false, false
+	for _, name := range []string{"system-prompt", "system-prompt-stdin", "prompt-stdin", "owner-instructions"} {
 		aiQueryCmd.Flags().Lookup(name).Changed = false
 	}
 }
@@ -387,4 +388,61 @@ func TestAiQuery_AutomationEditorWithoutContextForNewDraft(t *testing.T) {
 	assert.NotContains(t, args, "--context-type")
 	assert.NotContains(t, args, "--context-id")
 	assert.Equal(t, withContext, editorChatToolNames(t, args))
+}
+
+// TestAIQueryCmd_OwnerInstructionsFlagParses: the bare flag reaches RunE and
+// takes no value, so no instruction text can ride on argv (CHAT-04).
+func TestAIQueryCmd_OwnerInstructionsFlagParses(t *testing.T) {
+	resetSystemPromptFlags(t)
+	t.Cleanup(func() { resetSystemPromptFlags(t) })
+	origRunE := aiQueryCmd.RunE
+	t.Cleanup(func() {
+		aiQueryCmd.RunE = origRunE
+		rootCmd.SetArgs(nil)
+	})
+	var got bool
+	aiQueryCmd.RunE = func(_ *cobra.Command, _ []string) error {
+		got = aiFlagOwnerInstructions
+		return nil
+	}
+	rootCmd.SetArgs([]string{"ai", "query", "--prompt-stdin", "--owner-instructions"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !got {
+		t.Fatal("--owner-instructions did not reach RunE")
+	}
+}
+
+func TestWithOwnerInstructions_AppendsSlot(t *testing.T) {
+	d := db.OpenTestDB(t)
+	if err := d.SetOwnerInstruction(db.InstructionChat, "Answer in bullets."); err != nil {
+		t.Fatal(err)
+	}
+	got, err := withOwnerInstructions(d, "You are a helper.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, "You are a helper.\n\n") || !strings.Contains(got, "Answer in bullets.") {
+		t.Fatalf("slot not appended: %q", got)
+	}
+}
+
+func TestWithOwnerInstructions_EmptySystemUnchanged(t *testing.T) {
+	d := db.OpenTestDB(t)
+	if err := d.SetOwnerInstruction(db.InstructionChat, "Answer in bullets."); err != nil {
+		t.Fatal(err)
+	}
+	got, err := withOwnerInstructions(d, "")
+	if err != nil || got != "" {
+		t.Fatalf("got %q, %v; want an unchanged empty prompt", got, err)
+	}
+}
+
+func TestWithOwnerInstructions_NoTextsUnchanged(t *testing.T) {
+	d := db.OpenTestDB(t)
+	got, err := withOwnerInstructions(d, "You are a helper.")
+	if err != nil || got != "You are a helper." {
+		t.Fatalf("got %q, %v; want the prompt unchanged", got, err)
+	}
 }
