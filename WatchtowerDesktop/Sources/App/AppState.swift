@@ -570,6 +570,7 @@ final class AppState {
         AutomationEditorChatSurface.draftContextID(draftID: UUID().uuidString, workbenchID: scope.workbenchID)
     }
 
+    /// Internal, not private: `newAutomationEditorChat` lives in AppState+Automations.swift.
     func makeAutomationEditorChat(
         conversationID: Int64,
         pool: DatabasePool,
@@ -1315,6 +1316,7 @@ final class AppState {
         // A new draft the editor holds is a list row, cache file or not.
         vm.openNewDrafts = { [weak editorCenter] in editorCenter?.openNewDraftNames ?? [:] }
         vm.embeddedChats = embeddedChatCenter
+        vm.discardEditorDraft = { [weak editorCenter] in editorCenter?.discard($0) }
         automationEditorCenter = editorCenter
         automationTemplatePanels = AutomationTemplatePanels { [weak vm] template, scope in
             AutomationTemplatePanelModel(template: template, scope: scope, cli: cli) { id in

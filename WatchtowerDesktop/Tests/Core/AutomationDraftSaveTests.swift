@@ -189,7 +189,7 @@ final class AutomationDraftSaveTests: XCTestCase {
 
         var released = false
         let release = Task {
-            await center.release(key: key)
+            await center.releaseWhenIdle(key)
             released = true
         }
         for _ in 0..<20 { await Task.yield() }
@@ -206,6 +206,80 @@ final class AutomationDraftSaveTests: XCTestCase {
         }
         XCTAssertEqual(reply?.text, "Drafted.")
         XCTAssertEqual(reply?.status, "complete", "the turn ended by itself, never cut short")
+    }
+
+    /// The chat path: the editor still holds the draft (`openNewDrafts`) and
+    /// the automation already has a chat with messages, so nothing moves.
+    /// The editor's draft is dropped too, so a re-read never lists it again.
+    func testNonMovingRekeyDropsTheEditorDraftAndTheRow() async throws {
+        let draft = try insertDraft(messages: ["draft line"])
+        try await pool.write { db in
+            let id = try ChatConversationQueries.create(db, title: "Automation: Digest", contextType: "automation",
+                                                        contextID: "7").id
+            try TestDatabase.insertChatMessage(db, conversationID: id, role: "user", text: "older line")
+        }
+        let editor = try makeEditor()
+        let key = AutomationEditorCenter.newDraftKey(conversationID: draft)
+        editor.beginNew(key: key, scope: .personal, recipeDir: "/acme/automations",
+                        startText: AutomationEditFixtures.recipe)
+        let vm = makeViewModel()
+        vm.openNewDrafts = { editor.openNewDraftNames }
+        vm.discardEditorDraft = { editor.discard($0) }
+        vm.refresh()
+        XCTAssertEqual(vm.draftRows.map(\.conversationID), [draft])
+
+        await vm.draftSaved(contextID: "d1", conversationID: draft, automationID: 7)
+
+        XCTAssertNil(editor.drafts[key], "the saved draft's buffer is gone")
+        XCTAssertEqual(try contextOf(draft).0, "automation_draft")
+        vm.refresh()
+        XCTAssertEqual(vm.draftRows, [], "a re-read does not bring it back")
+    }
+
+    /// Spec §4: the row leaves at once, even while the draft's reply still
+    /// streams; only the re-key waits for that turn to end.
+    func testRowLeavesAtOnceWhileATurnStreams() async throws {
+        let ai = ScriptedAIService()
+        let pool = try XCTUnwrap(self.pool)
+        let center = EmbeddedChatCenter { spec, gate in
+            EmbeddedChatEngine(spec: spec, store: DatabaseEmbeddedChatStore(dbPool: pool,
+                                                                            conversationID: spec.key.conversationID ?? 0),
+                               aiService: ai, gate: gate)
+        }
+        let draft = try insertDraft()
+        let key = EmbeddedChatKey(contextType: "automation_draft", contextID: "d1", conversationID: draft)
+        let engine = center.engine(for: ChatSurfaceSpec(
+            key: key, persistence: .database(conversationID: draft), toolAccess: .draftOnly,
+            systemPrompt: { "S" }, emptyHint: ""))
+        XCTAssertTrue(engine.send("Draft it"))
+        await engine.started()
+        let vm = makeViewModel()
+        vm.embeddedChats = center
+        vm.refresh()
+        XCTAssertEqual(vm.draftRows.map(\.conversationID), [draft])
+
+        let saved = Task { await vm.draftSaved(contextID: "d1", conversationID: draft, automationID: 7) }
+        let left = await waitForCondition { vm.draftRows.isEmpty }
+        XCTAssertTrue(left)
+        XCTAssertTrue(engine.isStreaming, "the row left before the turn ended")
+        let url = AutomationDraftEntry.cacheURL(databasePath: path, conversationID: draft)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertEqual(try contextOf(draft).0, "automation_draft", "the re-key waits for the turn")
+        // The streaming turn drafts again: a re-read meanwhile still lists nothing.
+        try (#"{"recipe_text":"y","result":null,"error":"boom"}"# + "\n").write(to: url, atomically: true,
+                                                                                encoding: .utf8)
+        vm.refresh()
+        XCTAssertEqual(vm.draftRows, [])
+
+        ai.emit(.text("Drafted."))
+        ai.finish()
+        await saved.value
+        XCTAssertEqual(try contextOf(draft).0, "automation")
+        XCTAssertEqual(try contextOf(draft).1, "7")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "the turn's late draft is removed too")
+        XCTAssertNil(center.loaded(key))
+        vm.refresh()
+        XCTAssertEqual(vm.draftRows, [])
     }
 
     /// A refused save leaves nothing to unlist: the editor names no saved

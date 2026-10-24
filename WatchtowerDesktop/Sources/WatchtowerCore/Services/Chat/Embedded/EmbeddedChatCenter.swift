@@ -102,7 +102,7 @@ package final class EmbeddedChatCenter {
     /// engine is dropped. A saved draft's chat moves to the automation's key
     /// only after this, so one conversation never has two engines (spec
     /// 2026-10-24 §4).
-    package func release(key: EmbeddedChatKey) async {
+    package func releaseWhenIdle(_ key: EmbeddedChatKey) async {
         while let engine = engines[key], engine.isBusy || engine.isFinishing {
             await Self.nextChange(of: engine)
         }
@@ -110,7 +110,7 @@ package final class EmbeddedChatCenter {
         await engine.finished()
         // Another turn may have started while the writes landed.
         if engine.isBusy || engine.isFinishing {
-            await release(key: key)
+            await releaseWhenIdle(key)
             return
         }
         if engines[key] === engine { remove(key, quietly: false) }
