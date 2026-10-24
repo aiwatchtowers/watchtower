@@ -5,11 +5,13 @@
   (or the previous round's tree) on the left, the session's tree on the right.
 
   Swift → page (window.wt):
-    showDiff({path, language, original, modified, inline, comments, notes, hunks})
+    showDiff({path, language, original, modified, inline, fullFile, comments, notes, hunks})
         put a file's two sides on screen; the language follows `path` (the
         page's file associations) unless `language` names one; `inline`
-        = one column instead of side by side; `comments`, `notes` and `hunks`
-        as in setComments / setNotes / setHunks (the previous ones are cleared)
+        = one column instead of side by side; `fullFile` as in setFullFile;
+        `comments`, `notes` and `hunks` as in setComments / setNotes /
+        setHunks (the previous ones are cleared). The lines a comment, note
+        or Undo zone sits on are never left folded.
     setComments([{id, startLine, endLine, body, status, reply}])
         the new side's comments, each shown under its last line; text is
         set as text only, never as HTML
@@ -19,13 +21,22 @@
     setHunks([{id, newStart, canUndo, reason}])
         a one-line zone above each hunk (`newStart`) with an Undo button; a
         disabled one (canUndo false) shows `reason` as its title
-    focus()                                    the keyboard into the new side
+    setFullFile(bool)
+        true = the whole file; false = Changes: unchanged runs of 6+ lines
+        fold into a "N hidden lines" bar, 3 context lines kept (board #959)
+    focus(line?)                               the keyboard into the new side;
+                                               a line > 0 is unfolded, gets
+                                               the cursor and is centred
   page → Swift (webkit.messageHandlers.wt):
     ready
     comment {startLine, endLine, side}         the owner chose Comment
                                                (context menu or Cmd+Alt+M)
                                                on a selection; side = "old"
                                                or "new"
+    ask     {startLine, endLine, side}         the owner chose Ask agent
+                                               (context menu or Shift+Cmd+A)
+                                               on a selection; side as in
+                                               comment
     undo    {hunkId}                           the owner pressed Undo on a
                                                hunk (Swift checks the id)
     error   {message}

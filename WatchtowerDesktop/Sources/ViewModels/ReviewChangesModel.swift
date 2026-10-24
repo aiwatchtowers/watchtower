@@ -67,7 +67,12 @@ final class ReviewChangesModel {
     private(set) var comments: [ReviewComment] = []
     /// path → the content key it was marked Viewed at.
     private(set) var viewed: [String: String] = [:]
-    var selectedPath: String?
+    var selectedPath: String? {
+        didSet { if selectedPath != oldValue { fullFile = false } }
+    }
+    /// The diff shows the whole file instead of the changes with unchanged
+    /// runs folded (board #959); per file view, never persisted.
+    var fullFile = false
     var view: View = .all
     /// The last sides loaded, with the file, tree and view they belong to;
     /// read `currentSides` to show or anchor on them.
@@ -506,6 +511,63 @@ final class ReviewChangesModel {
         }
     }
 
+    /// Marks (or clears) every path in one write batch; a path the diff does
+    /// not know throws before anything is written.
+    func setViewed(_ paths: [String], on: Bool) async throws {
+        try await run {
+            guard let info = round else { throw ModelError.noRound }
+            var contents: [String: String] = [:]
+            for path in paths {
+                guard let file = allFiles.first(where: { $0.path == path }) else { throw ModelError.unknownFile(path) }
+                contents[path] = Self.contentKey(file)
+            }
+            let marks = try await pendingViewed.runThrowing(paths.joined(separator: "\n")) {
+                try await self.write { db in
+                    for (path, content) in contents {
+                        try ReviewQueries.setViewed(db, roundID: info.id, path: path, contentSHA: on ? content : nil)
+                    }
+                    return try ReviewQueries.viewed(db, roundID: info.id)
+                }
+            }
+            if let marks { viewed = marks }
+        }
+    }
+
+    /// Marks every file of the chapter Viewed, then moves to the next chapter
+    /// that is not done, or to Wrap-up when none is left.
+    func markChapterViewed(_ key: String) async throws {
+        guard let chapter = chapters.first(where: { $0.key == key }) else { return }
+        try await setViewed(chapter.paths.filter { !isViewed($0) }, on: true)
+        if let next = nextUndoneChapter(after: key) {
+            try await selectChapter(next)
+        } else {
+            try await setPhase(.wrapup)
+        }
+    }
+
+    /// A done chapter is un-viewed in full and stays; any other is marked
+    /// viewed and the review moves on.
+    func toggleChapterViewed(_ key: String) async throws {
+        guard let chapter = chapters.first(where: { $0.key == key }) else { return }
+        if ReviewChapters.done(chapter, isViewed: { isViewed($0) }) {
+            try await setViewed(chapter.paths, on: false)
+        } else {
+            try await markChapterViewed(key)
+        }
+    }
+
+    /// The next chapter after `key` that is not done, wrapping past the end;
+    /// nil when every other chapter is done.
+    func nextUndoneChapter(after key: String) -> String? {
+        guard let index = chapters.firstIndex(where: { $0.key == key }) else { return nil }
+        let count = chapters.count
+        for offset in 1..<max(count, 1) {
+            let chapter = chapters[(index + offset) % count]
+            if !ReviewChapters.done(chapter, isViewed: { isViewed($0) }) { return chapter.key }
+        }
+        return nil
+    }
+
     // MARK: - Send
 
     /// Sends the round once: Go marks the drafts sent, and only the call that
@@ -686,7 +748,7 @@ final class ReviewChangesModel {
         }
     }
 
-    func addDesignComment(body: String, lens: String) async throws {
+    func addDesignComment(body: String, lens: String = "") async throws {
         try await run {
             let info = try openRound()
             try await write { _ = try Self.addDesign($0, info: info, body: body, lens: lens) }
@@ -807,8 +869,33 @@ final class ReviewChangesModel {
         return false
     }
 
-    func risk(for path: String) -> ReviewOverview.Risk? {
-        lastReadyOverview?.risk.first { $0.path == path }
+    /// Every risk the AI overview names for a file.
+    func risks(for path: String) -> [ReviewOverview.Risk] {
+        lastReadyOverview?.risk.filter { $0.path == path } ?? []
+    }
+
+    /// The most serious risk of a file (the first of equal levels).
+    func highestRisk(for path: String) -> ReviewOverview.Risk? {
+        risks(for: path).reduce(nil) { best, next in
+            guard let best else { return next }
+            return Self.severity(next.level) > Self.severity(best.level) ? next : best
+        }
+    }
+
+    /// The risks of a chapter's files, most serious first (overview order within a level).
+    func chapterRisks(_ key: String) -> [ReviewOverview.Risk] {
+        guard let chapter = chapters.first(where: { $0.key == key }) else { return [] }
+        let paths = Set(chapter.paths)
+        let mine = (lastReadyOverview?.risk ?? []).filter { paths.contains($0.path) }
+        return [ReviewOverview.Risk.Level.high, .medium, .low].flatMap { level in mine.filter { $0.level == level } }
+    }
+
+    private static func severity(_ level: ReviewOverview.Risk.Level) -> Int {
+        switch level {
+        case .high: 2
+        case .medium: 1
+        case .low: 0
+        }
     }
 
     /// Reading time of the shown diff's changed lines (generated and lock files excluded).
@@ -1048,14 +1135,16 @@ final class ReviewChangesModel {
     }
 
     /// Switches to the overview's chapters, unless they would replace
-    /// chapters the owner already checked in the Chapters phase. AI chapters
-    /// the round already used (a saved `ai:` position or checks) come back.
+    /// chapters the owner already started on in the Chapters phase (a file
+    /// Viewed or a comment on it). AI chapters the round already used (a
+    /// saved `ai:` position or shown `ai:` chapters) come back.
     private func offerAIChapters(_ ready: ReviewOverview) {
         let specs = Self.specs(ready)
-        let shown = Set(chapters.map(\.key))
+        let shownPaths = Set(chapters.flatMap(\.paths))
         let candidate = ReviewChapters.resolve(files, agent: agentChapterSpecs, ai: specs)
-        let usedAI = awaitedAIChapterKey != nil || checks.contains { $0.chapterKey.hasPrefix("ai:") }
-        if !usedAI, candidate != chapters, phase == .chapters, checks.contains(where: { shown.contains($0.chapterKey) }) {
+        let usedAI = awaitedAIChapterKey != nil || chapters.contains { $0.key.hasPrefix("ai:") }
+        let started = shownPaths.contains { isViewed($0) } || comments.contains { $0.path.map(shownPaths.contains) ?? false }
+        if !usedAI, candidate != chapters, phase == .chapters, started {
             aiChaptersPending = true
             return
         }

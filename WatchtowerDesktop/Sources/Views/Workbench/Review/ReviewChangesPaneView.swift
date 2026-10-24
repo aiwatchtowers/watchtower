@@ -6,8 +6,10 @@ import WatchtowerCore
 /// (the identity bar), the toolbar, then a session's review round — the
 /// file list on the left, the selected file's header, Monaco diff and its
 /// comments on the right — or one "Nothing to review" state on an empty
-/// branch. The round is re-read when the window becomes key and when the
-/// session's turn ends, while the round is open and the pane on screen.
+/// branch; the session agent's Workchat sits in a panel on the right
+/// (board #962), where Ask agent quotes lines and risks. The round is
+/// re-read when the window becomes key and when the session's turn ends,
+/// while the round is open and the pane on screen.
 struct ReviewChangesPaneView: View {
     let model: ReviewChangesModel
     let identity: ReviewSessionIdentity
@@ -15,7 +17,15 @@ struct ReviewChangesPaneView: View {
     var agentStateKind: SessionSwitcherPresentation.State.Kind?
     /// Find Repeats' model (the workbench's lessons); nil = not available.
     var lessons: ReviewLessonsModel?
+    /// The session agent's chat panel; nil = no panel and no Ask agent.
+    var chat: ReviewAgentChat?
 
+    /// The chat panel is open (per workbench, open at first).
+    @AppStorage private var chatOpen: Bool
+    /// Each new value puts the keyboard in the panel's composer.
+    @State private var chatFocus: UUID?
+    /// Ask agent opened the closed panel: its composer focuses as it is made.
+    @State private var chatFocusOnOpen = false
     @State private var inline = false
     @State private var compose: ComposeRequest?
     @State private var findingRepeats = false
@@ -26,15 +36,28 @@ struct ReviewChangesPaneView: View {
     @State private var pace = ReviewPaceWiring()
 
     /// What the shared comment sheet asks for and does with the answer: a line
-    /// comment, a design comment, a checklist question, a Wrap-up note.
+    /// comment, a design comment, a risk, a Wrap-up note.
     struct ComposeRequest: Identifiable {
         let id = UUID()
         let title: String
         var prefill = ""
-        /// Show the lens picker (None + the round's lenses).
-        var lensChoice = false
         var allowsEmpty = false
-        let submit: (_ body: String, _ lens: String) async throws -> Void
+        let submit: (_ body: String) async throws -> Void
+    }
+
+    init(
+        model: ReviewChangesModel,
+        identity: ReviewSessionIdentity,
+        agentStateKind: SessionSwitcherPresentation.State.Kind? = nil,
+        lessons: ReviewLessonsModel? = nil,
+        chat: ReviewAgentChat? = nil
+    ) {
+        self.model = model
+        self.identity = identity
+        self.agentStateKind = agentStateKind
+        self.lessons = lessons
+        self.chat = chat
+        _chatOpen = AppStorage(wrappedValue: true, chat?.openKey ?? "review.chatPanel.none")
     }
 
     var body: some View {
@@ -55,7 +78,7 @@ struct ReviewChangesPaneView: View {
                 if let new, Self.turnOver.contains(new), !(old.map(Self.turnOver.contains) ?? false) { autoRefresh() }
             }
             .sheet(item: $compose) { request in
-                ReviewNewCommentSheet(request: request, lenses: model.lenses)
+                ReviewNewCommentSheet(request: request)
             }
             .sheet(isPresented: $findingRepeats) {
                 if let lessons { ReviewLessonsSheet(model: lessons, lenses: model.lenses) }
@@ -80,10 +103,36 @@ struct ReviewChangesPaneView: View {
                     findRepeats: lessons == nil ? nil : { findingRepeats = true },
                     // The session gone (no row): nothing to open.
                     openTerminal: identity.row == nil ? nil : identity.openTerminal,
-                    branch: identity.branchLine(model).branch
+                    branch: identity.branchLine(model).branch,
+                    chatPanel: chat == nil ? nil : $chatOpen
                 )
                 Divider()
             }
+            if let chat {
+                // The session's ask drawer opens here when neither its
+                // terminal nor its Workchat is on screen to host it.
+                OwnerAskDrawerHost(vm: chat.vm, ask: chat.drawerAsk) {
+                    PanelSplit(
+                        isPanelShown: chatOpen,
+                        width: PanelSplitWidth(key: chat.widthKey, range: 280...640, ideal: 360)
+                    ) {
+                        review
+                    } panel: {
+                        ReviewAgentChatPanel(chat: chat, composerFocus: chatFocus, focusOnOpen: chatFocusOnOpen) {
+                            chatFocusOnOpen = false
+                        }
+                    }
+                }
+            } else {
+                review
+            }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { paneHeight = $0 }
+    }
+
+    /// The banners and the round's state, beside the chat panel.
+    private var review: some View {
+        VStack(spacing: 0) {
             ReviewBanners(model: model)
             if let pageError {
                 ReviewBanner(text: pageError, isError: true) { self.pageError = nil }
@@ -93,7 +142,6 @@ struct ReviewChangesPaneView: View {
             }
             state
         }
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { paneHeight = $0 }
     }
 
     /// An open round with nothing to review shows no toolbar; a sent one
@@ -189,10 +237,13 @@ struct ReviewChangesPaneView: View {
         }
     }
 
-    /// Chapters' foot: the checklist, then Next: Wrap-up.
+    /// Chapters' foot: the footer, the chapter's risks, then Next: Wrap-up.
     private var chaptersFoot: some View {
         VStack(spacing: 0) {
-            ReviewChecklistView(model: model) { compose = $0 }
+            ReviewChapterFooter(model: model)
+            ReviewChapterRisksView(model: model, onComment: { compose = $0 }, onAsk: { risk in
+                ask(ReviewAskQuote.risk(path: risk.path, level: risk.level.rawValue, why: risk.why))
+            }, canAsk: chat != nil)
             ReviewNextStepButton(model: model)
                 .padding(.horizontal, Spacing.medium)
                 .padding(.vertical, Spacing.regular)
@@ -231,6 +282,10 @@ struct ReviewChangesPaneView: View {
             } else {
                 MonacoDiffView(payload: payload(path: path, sides: sides)) { start, end, side in
                     compose = lineComposeRequest(path: path, side: side, start: start, end: end)
+                } onAsk: { start, end, side in
+                    let text = side == "old" ? sides.old.text : sides.new.text
+                    let lines = ReviewAskQuote.lines(of: text, startLine: start, endLine: end)
+                    ask(ReviewAskQuote.code(path: path, side: side, startLine: start, endLine: end, lines: lines))
                 } onUndo: { id in
                     Task { await model.undo(hunkID: id) }
                 } onError: { pageError = $0 }
@@ -240,11 +295,23 @@ struct ReviewChangesPaneView: View {
         }
     }
 
+    /// Ask agent: the quote goes on top of the Workchat draft, the panel
+    /// opens and the keyboard goes to its composer.
+    private func ask(_ quote: String) {
+        guard let chat else { return }
+        chat.ask(quote)
+        // A panel made now would take the new request as its starting
+        // value and not act on it: it focuses as it is made instead.
+        if !chatOpen { chatFocusOnOpen = true }
+        chatOpen = true
+        chatFocus = UUID()
+    }
+
     private func lineComposeRequest(path: String, side: String, start: Int, end: Int) -> ComposeRequest {
         let lines = start == end ? "line \(start)" : "lines \(start)–\(end)"
         let title = "Comment on \(side == "old" ? "removed " : "")\(lines) of \((path as NSString).lastPathComponent)"
-        return ComposeRequest(title: title, lensChoice: model.mode == .deep) { body, lens in
-            try await model.addComment(path: path, side: side, startLine: start, endLine: end, body: body, lens: lens)
+        return ComposeRequest(title: title) { body in
+            try await model.addComment(path: path, side: side, startLine: start, endLine: end, body: body)
         }
     }
 
@@ -258,7 +325,7 @@ struct ReviewChangesPaneView: View {
             $0.path == path && $0.side == "new" && [.draft, .sent, .carried].contains($0.status)
         }
         return MonacoDiffView.Payload(
-            path: path, original: sides.old.text, modified: sides.new.text, inline: inline,
+            path: path, original: sides.old.text, modified: sides.new.text, inline: inline, fullFile: model.fullFile,
             comments: shown.map {
                 .init(id: $0.id, startLine: $0.startLine, endLine: $0.endLine, body: $0.body,
                       status: $0.status.rawValue, reply: model.agentReply(for: $0))
@@ -296,14 +363,12 @@ struct ReviewChangesPaneView: View {
     }
 }
 
-/// The shared comment sheet: line comments, design comments, checklist
-/// questions and Wrap-up notes differ only in the request they carry.
+/// The shared comment sheet: line comments, design comments, risk
+/// comments and Wrap-up notes differ only in the request they carry.
 private struct ReviewNewCommentSheet: View {
     let request: ReviewChangesPaneView.ComposeRequest
-    let lenses: [ReviewLens]
     @Environment(\.dismiss) private var dismiss
     @State private var text = ""
-    @State private var lens = ""
     @State private var error: String?
     /// The comment is being written (board #670): Add, Cancel and Esc wait.
     @State private var isSaving = false
@@ -315,13 +380,6 @@ private struct ReviewNewCommentSheet: View {
                 .font(.callout)
                 .frame(width: 380, height: 120)
                 .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Color(nsColor: .separatorColor)))
-            if request.lensChoice {
-                Picker("Lens", selection: $lens) {
-                    Text("None").tag("")
-                    ForEach(lenses) { Text($0.name).tag($0.id) }
-                }
-                .controlSize(.small)
-            }
             if let error {
                 Text(error).font(.caption).foregroundStyle(.orange)
             }
@@ -348,7 +406,7 @@ private struct ReviewNewCommentSheet: View {
         Task {
             defer { isSaving = false }
             do {
-                try await request.submit(text, lens)
+                try await request.submit(text)
                 dismiss()
             } catch {
                 self.error = error.localizedDescription

@@ -30,12 +30,20 @@
     var editor = monaco.editor.createDiffEditor(document.getElementById("diff"), {
       automaticLayout: true, readOnly: true, originalEditable: false, renderSideBySide: true,
       renderOverviewRuler: true, minimap: { enabled: false }, scrollBeyondLastLine: false,
-      fontFamily: "SF Mono, Menlo, monospace", fontSize: 12
+      fontFamily: "SF Mono, Menlo, monospace", fontSize: 12,
+      // Changes view (board #959): unchanged runs fold into "N hidden lines"
+      // bars; wt.setFullFile(true) shows the whole file.
+      hideUnchangedRegions: { enabled: true, contextLineCount: 3, minimumLineCount: 6, revealLineCount: 20 }
     });
     var zones = [];
     var noteZones = [];
     var hunkZones = [];
     var models = { original: null, modified: null };
+    // The new-side lines each zone needs on screen, by kind ([[from, to]]).
+    var zoneRuns = { comments: [], notes: [], hunks: [] };
+    // The cursor is the page's own (set by showDiff or by revealZones), not
+    // one the owner placed: revealZones need not put it back.
+    var cursorIsOurs = true;
     // Each showDiff gets fresh model URIs: the language follows the path,
     // and a disposed model's URI is never reused.
     var serial = 0;
@@ -62,8 +70,39 @@
       return Math.max(minLines, Math.ceil(height / lineHeight));
     }
 
+    // A zone on a folded line would vanish with its line (Review Focus 1).
+    // Monaco 0.57 has no API call to unfold one hidden region, but its diff
+    // editor unfolds the region holding a line the modified editor's cursor
+    // is set to (any reason other than a model swap): that is the public
+    // way taken here, so the Full-file fallback of the plan is not needed.
+    // Each line of a zone's run is revealed; the owner's own selection, if
+    // there is one, is put back afterwards.
+    function revealZones() {
+      var mod = editor.getModifiedEditor();
+      var model = mod.getModel();
+      if (!model) { return; }
+      var last = model.getLineCount();
+      var saved = cursorIsOurs ? null : mod.getSelections();
+      ["comments", "notes", "hunks"].forEach(function (kind) {
+        zoneRuns[kind].forEach(function (run) {
+          for (var line = Math.max(1, run[0]); line <= Math.min(last, run[1]); line++) {
+            mod.setPosition({ lineNumber: line, column: 1 });
+          }
+        });
+      });
+      if (saved) { mod.setSelections(saved); }
+    }
+    editor.getModifiedEditor().onDidChangeCursorSelection(function (e) {
+      // 3 = CursorChangeReason.Explicit: the owner's click or keys.
+      if (e.reason === 3) { cursorIsOurs = false; }
+    });
+    // A new or recomputed diff folds afresh.
+    editor.onDidUpdateDiff(revealZones);
+
     function renderComments(list) {
       var mod = editor.getModifiedEditor();
+      // The commented lines and the line under them, where the zone sits.
+      zoneRuns.comments = (list || []).map(function (c) { return [c.startLine, c.endLine + 1]; });
       mod.changeViewZones(function (acc) {
         zones.forEach(function (z) { acc.removeZone(z); });
         zones = [];
@@ -89,6 +128,8 @@
     // The agent's notes: a read-only zone above each note's first line.
     function renderNotes(list) {
       var mod = editor.getModifiedEditor();
+      // The zone sits after startLine - 1, above the noted lines.
+      zoneRuns.notes = (list || []).map(function (n) { return [n.startLine - 1, n.endLine]; });
       mod.changeViewZones(function (acc) {
         noteZones.forEach(function (z) { acc.removeZone(z); });
         noteZones = [];
@@ -113,6 +154,8 @@
     // the reason as its title. The button posts the hunk id only.
     function renderHunks(list) {
       var mod = editor.getModifiedEditor();
+      // A hunk's first line is a context line; its zone sits on the one above.
+      zoneRuns.hunks = (list || []).map(function (h) { return [h.newStart - 1, h.newStart]; });
       mod.changeViewZones(function (acc) {
         hunkZones.forEach(function (z) { acc.removeZone(z); });
         hunkZones = [];
@@ -151,6 +194,24 @@
     addCommentAction(editor.getModifiedEditor(), "new");
     addCommentAction(editor.getOriginalEditor(), "old");
 
+    // Ask agent (board #962): the selection's lines go to Swift, which
+    // quotes them into the session's Workchat draft.
+    function addAskAction(ed, side) {
+      ed.addAction({
+        id: "wt.ask", label: "Ask agent", contextMenuGroupId: "navigation",
+        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyA],
+        run: function (target) {
+          var s = target.getSelection();
+          if (!s) { return; }
+          // A selection ending at column 1 of a line does not take that line.
+          var end = s.endLineNumber > s.startLineNumber && s.endColumn === 1 ? s.endLineNumber - 1 : s.endLineNumber;
+          post({ type: "ask", side: side, startLine: s.startLineNumber, endLine: end });
+        }
+      });
+    }
+    addAskAction(editor.getModifiedEditor(), "new");
+    addAskAction(editor.getOriginalEditor(), "old");
+
     window.wt = {
       showDiff: function (a) {
         var previous = models;
@@ -162,18 +223,35 @@
           modified: monaco.editor.createModel(a.modified || "", language, monaco.Uri.file("/new/" + serial + "/" + path))
         };
         editor.setModel({ original: models.original, modified: models.modified });
-        editor.updateOptions({ renderSideBySide: !a.inline });
+        editor.updateOptions({ renderSideBySide: !a.inline, hideUnchangedRegions: { enabled: !a.fullFile } });
+        cursorIsOurs = true;
         // Disposed only once the editor holds the new pair.
         if (previous.original) { previous.original.dispose(); }
         if (previous.modified) { previous.modified.dispose(); }
         renderComments(a.comments);
         renderNotes(a.notes);
         renderHunks(a.hunks);
+        // The zones' lines are revealed once the new diff is computed.
       },
-      setComments: renderComments,
-      setNotes: renderNotes,
-      setHunks: renderHunks,
-      focus: function () { editor.getModifiedEditor().focus(); }
+      setComments: function (list) { renderComments(list); revealZones(); },
+      setNotes: function (list) { renderNotes(list); revealZones(); },
+      setHunks: function (list) { renderHunks(list); revealZones(); },
+      // Folding back folds every region again: the zones' lines come back.
+      setFullFile: function (on) {
+        editor.updateOptions({ hideUnchangedRegions: { enabled: !on } });
+        if (!on) { revealZones(); }
+      },
+      // A line in a folded run is unfolded (the cursor goes to it), then
+      // centred.
+      focus: function (line) {
+        var mod = editor.getModifiedEditor();
+        if (line > 0) {
+          mod.setPosition({ lineNumber: line, column: 1 });
+          cursorIsOurs = false;
+          mod.revealLineInCenter(line);
+        }
+        mod.focus();
+      }
     };
     post({ type: "ready" });
   }, function (err) {

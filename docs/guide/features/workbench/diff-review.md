@@ -29,7 +29,7 @@ If it fails, the reason shows with **Retry**, and the review works without it.
 **Deep** walks three phases: **1 Meaning**, **2 Chapters**, **3 Wrap-up**. **Next: Chapters** sits at the foot of Meaning and **Next: Wrap-up** at the foot of Chapters. Wrap-up has no Send of its own; use **Send review** in the toolbar.
 
 - **Meaning** shows what the linked targets ask for and your **Design comments**: remarks on the whole change, not on a line, added with **Add design comment…**.
-- **Chapters** groups the files by folder, at most 400 changed lines each. When the AI overview has chapters, **Use them** switches to those. Each chapter has a checklist per lens; **Comment…** on a question turns it into a comment.
+- **Chapters** groups the files by folder, at most 400 changed lines each. When the AI overview has chapters, **Use them** switches to those. Under the diff, each chapter lists the risks the AI overview names for its files; **Comment…** on one turns it into a design comment. **Chapter viewed →** marks the chapter's files Viewed and moves on.
 - **Wrap-up** asks **Was the intent met?** per linked target. **Partly** and **Not done** add a comment for the agent.
 
 ### Lenses and house rules

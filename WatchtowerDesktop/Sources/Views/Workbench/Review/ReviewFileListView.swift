@@ -80,7 +80,7 @@ struct ReviewFileListView: View {
             selected: model.selectedPath == file.path,
             viewed: model.isViewed(file.path),
             comments: model.comments.filter { $0.path == file.path && $0.status != .resolved }.count,
-            risk: model.risk(for: file.path),
+            risk: model.highestRisk(for: file.path),
             select: { Task { await model.select(file.path) } },
             toggleViewed: { Task { try? await model.toggleViewed(file.path) } } // a failure lands in lastError
         )

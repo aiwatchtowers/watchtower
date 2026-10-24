@@ -11,7 +11,7 @@ import XCTest
 /// makes the round row exist, a served `send` that sent closes the round
 /// and its drafts, and a served `approve` that sent closes the round as
 /// approved (resolving carried/outdated rows with `--resolve-open`), as Go's do.
-private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
+final class ReviewScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
     private let lock = NSLock()
     private var script: [String: [String]] = [:]
     private var served: [String: Int] = [:]
@@ -124,7 +124,7 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
 }
 
 @MainActor
-private final class RecordingSink: ReviewLineSink {
+final class ReviewRecordingSink: ReviewLineSink {
     struct Line: Equatable {
         let text: String
         let key: SessionLineDelivery.LineKey
@@ -142,19 +142,19 @@ private final class RecordingSink: ReviewLineSink {
 
 /// Whether the session's agent works, as the pane's state center reports it.
 @MainActor
-private final class AgentFlag {
+final class ReviewAgentFlag {
     var working = false
 }
 
 @MainActor
-private struct Harness {
+struct ReviewModelHarness {
     let db: DatabasePool
     let path: String
     let projectID: Int64
     let sessionID: Int64
-    let cli: ScriptedRunner
-    let sink = RecordingSink()
-    let agent = AgentFlag()
+    let cli: ReviewScriptedRunner
+    let sink = ReviewRecordingSink()
+    let agent = ReviewAgentFlag()
     let model: ReviewChangesModel
 
     init() throws {
@@ -169,7 +169,7 @@ private struct Harness {
         self.path = path
         projectID = ids.0
         sessionID = ids.1
-        cli = ScriptedRunner(db: pool, projectID: ids.0, sessionID: ids.1)
+        cli = ReviewScriptedRunner(db: pool, projectID: ids.0, sessionID: ids.1)
         let agent = agent
         model = ReviewChangesModel(projectID: ids.0, sessionID: ids.1, cli: WorkbenchCLI(runner: cli), db: pool,
                                    lineDelivery: sink) { agent.working }
@@ -184,7 +184,7 @@ private struct Harness {
     }
 }
 
-private func startJSON(id: Int64, prev: Int64, tree: String = "t") -> String {
+func startJSON(id: Int64, prev: Int64, tree: String = "t") -> String {
     """
     {"ok":true,"round":{"id":\(id),"status":"open","mode":"quick","folder_root":"/r","base_sha":"b","base_label":"main",
      "tree_sha":"\(tree)\(id)","prev_round_id":\(prev),"prev_tree_sha":"","prev_tree_lost":false}}
@@ -193,7 +193,7 @@ private func startJSON(id: Int64, prev: Int64, tree: String = "t") -> String {
 
 /// One modified file per path; its new blob follows the hunk name, so a
 /// changed `hunk` is changed content.
-private func diffJSON(_ paths: [String], hunk: String = "h") -> String {
+func diffJSON(_ paths: [String], hunk: String = "h") -> String {
     let hunkFields = #""header":"@@ -1 +1 @@","old_start":1,"old_lines":1,"new_start":1,"new_lines":1,"lines":["-a","+b"]"#
     let entries: [String] = paths.map { path in
         """
@@ -205,9 +205,9 @@ private func diffJSON(_ paths: [String], hunk: String = "h") -> String {
     return #"{"ok":true,"diff":{"files":[\#(files)],"truncated":false},"from":"b","to":"t"}"#
 }
 
-private func diffJSON(path: String) -> String { diffJSON([path]) }
+func diffJSON(path: String) -> String { diffJSON([path]) }
 
-private func fileJSON(old: String, new: String) -> String {
+func fileJSON(old: String, new: String) -> String {
     func side(_ text: String) -> String {
         let escaped = text.replacingOccurrences(of: "\n", with: "\\n")
         return #"{"exists":true,"text":"\#(escaped)","binary":false,"too_large":false}"#
@@ -229,8 +229,8 @@ final class ReviewChangesModelTests: XCTestCase {
         super.tearDown()
     }
 
-    private func harness() throws -> Harness {
-        let h = try Harness()
+    func harness() throws -> ReviewModelHarness {
+        let h = try ReviewModelHarness()
         paths.append(h.path)
         return h
     }
@@ -306,6 +306,8 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.open()
         await h.model.select("a.go")
         try await h.model.addComment(path: "a.go", side: "new", startLine: 2, endLine: 2, body: "why two?")
+        let stored = try await h.comments()
+        XCTAssertEqual(stored.map(\.lens), [""], "a comment without a lens stores an empty lens")
         try await h.model.toggleViewed("a.go")
         await h.model.send()
         XCTAssertEqual(h.model.round?.status, "sent")
@@ -576,7 +578,7 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertThrowsError(try closed.inspect().find(button: "Request changes (0)"))
     }
 
-    private func addDraft(_ h: Harness) async throws {
+    private func addDraft(_ h: ReviewModelHarness) async throws {
         try await h.db.write { db in
             _ = try ReviewQueries.addDraft(db, roundID: 7, path: "a.go", side: "new", startLine: 1, endLine: 1,
                                            anchor: CommentAnchor(quote: "x", prefix: "", suffix: "", heading: ""), treeSHA: "t7", body: "x")
@@ -872,7 +874,7 @@ final class ReviewChangesModelTests: XCTestCase {
 
     // MARK: - Deep mode
 
-    private func deepStartJSON(status: String = "open", chapterKey: String = "dir:cmd", tree: String = "t7") -> String {
+    func deepStartJSON(status: String = "open", chapterKey: String = "dir:cmd", tree: String = "t7") -> String {
         """
         {"ok":true,"round":{"id":7,"status":"\(status)","mode":"deep","phase":"chapters","chapter_key":"\(chapterKey)",
          "active_seconds":90,"folder_root":"/r","base_sha":"b","base_label":"main","tree_sha":"\(tree)","prev_round_id":0,
@@ -880,12 +882,12 @@ final class ReviewChangesModelTests: XCTestCase {
         """
     }
 
-    private func deepContextJSON() -> String {
+    func deepContextJSON() -> String {
         let lens = #"{"id":"correctness","name":"Correctness","builtin":true,"items":[{"key":"k1","text":"Edge cases?"}]}"#
         return #"{"ok":true,"items":[{"target_id":5,"text":"Ship it","intent":""}],"lenses":[\#(lens)],"lens_notes":["note"]}"#
     }
 
-    private func openDeep(_ h: Harness, paths: [String] = ["cmd/x.go", "pkg/y.go"]) async {
+    func openDeep(_ h: ReviewModelHarness, paths: [String] = ["cmd/x.go", "pkg/y.go"]) async {
         h.cli.script(["start": deepStartJSON(), "context": deepContextJSON(), "diff": diffJSON(paths)])
         await h.model.open()
     }
@@ -1149,7 +1151,7 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(row?["phase"] as String?, "wrapup", "the newer pick lands last")
     }
 
-    private func activeSeconds(_ h: Harness) async throws -> Int? {
+    private func activeSeconds(_ h: ReviewModelHarness) async throws -> Int? {
         try await h.db.read { try Int.fetchOne($0, sql: "SELECT active_seconds FROM review_rounds WHERE id = 7") }
     }
 
@@ -1200,15 +1202,16 @@ final class ReviewChangesModelTests: XCTestCase {
     // MARK: - Overview, agent notes, undo, the agent's answers (Plan 3)
 
     private func overviewJSON(chapters: String = #"[{"title":"Core","paths":["pkg/y.go"],"core":true,"lenses":["correctness"]}]"#,
-                              coverage: String = "[]") -> String {
+                              coverage: String = "[]",
+                              risk: String = #"[{"path":"pkg/y.go","level":"high","why":"locks"}]"#) -> String {
         """
         {"ok":true,"overview":{"summary":"Adds y.","coverage":\(coverage),"out_of_scope":["cmd/x.go"],
-         "risk":[{"path":"pkg/y.go","level":"high","why":"locks"}],"chapters":\(chapters)},"overview_cached":false}
+         "risk":\(risk),"chapters":\(chapters)},"overview_cached":false}
         """
     }
 
     /// Awaits the overview's load and any follow-up it started.
-    private func awaitOverview(_ h: Harness) async {
+    private func awaitOverview(_ h: ReviewModelHarness) async {
         var last: Task<Void, Never>?
         while let task = h.model.overviewTask, task != last {
             last = task
@@ -1217,13 +1220,13 @@ final class ReviewChangesModelTests: XCTestCase {
     }
 
     /// Deep mode on `a.go`, with these trees answered by `start` in turn.
-    private func scriptDeepUndo(_ h: Harness, trees: [String]) {
+    private func scriptDeepUndo(_ h: ReviewModelHarness, trees: [String]) {
         h.cli.script(["context": deepContextJSON(), "diff": diffJSON(["a.go"])])
         h.cli.script("start", trees.map { deepStartJSON(tree: $0) })
     }
 
     private func insertNote(
-        _ h: Harness,
+        _ h: ReviewModelHarness,
         kind: String,
         ord: Int = 1,
         path: String = "",
@@ -1245,7 +1248,7 @@ final class ReviewChangesModelTests: XCTestCase {
 
     // MARK: - Empty diff, busy retry, quiet state writes, next unviewed (#712)
 
-    private func overviewCalls(_ h: Harness) -> Int { h.cli.calls("overview").count }
+    private func overviewCalls(_ h: ReviewModelHarness) -> Int { h.cli.calls("overview").count }
 
     func testEmptyDiffStartsNoOverview() async throws {
         let quick = try harness()
@@ -1408,8 +1411,8 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
         XCTAssertEqual(h.model.chapters.first?.source, .ai)
         XCTAssertFalse(h.model.aiChaptersPending)
-        XCTAssertEqual(h.model.risk(for: "pkg/y.go")?.level, .high)
-        XCTAssertNil(h.model.risk(for: "cmd/x.go"))
+        XCTAssertEqual(h.model.highestRisk(for: "pkg/y.go")?.level, .high)
+        XCTAssertNil(h.model.highestRisk(for: "cmd/x.go"))
         XCTAssertEqual(h.model.estimateMinutes, ReviewChapters.estimateMinutes(changedLines: 4))
         let args = try XCTUnwrap(h.cli.calls("overview").first)
         XCTAssertEqual(args, ["workbench", "review", "overview", "--workbench", String(h.projectID), "--round", "7", "--json"])
@@ -1440,17 +1443,17 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertFalse(h.model.aiChaptersPending)
     }
 
-    func testAIChaptersDoNotReplaceChaptersWithChecks() async throws {
+    func testAIChaptersHeldBackOnceAChapterFileIsViewed() async throws {
         let h = try harness()
         h.cli.script(["overview": overviewJSON()])
         h.cli.hold("overview")
         await openDeep(h)
         XCTAssertEqual(h.model.phase, .chapters)
-        try await h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true)
+        try await h.model.setViewed(["cmd/x.go"], on: true)
         await h.cli.waitPending("overview")
         h.cli.release("overview")
         await awaitOverview(h)
-        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"], "not swapped under the owner's checks")
+        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"], "not swapped under the owner's progress")
         XCTAssertTrue(h.model.aiChaptersPending)
         h.model.useAIChapters()
         XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
@@ -1458,12 +1461,59 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(h.model.currentChapterKey, "dir:cmd")
     }
 
+    func testAIChaptersHeldBackOnceAChapterHasAComment() async throws {
+        let h = try harness()
+        h.cli.script(["overview": overviewJSON(), "file": fileJSON(old: "x\n", new: "one\ntwo\n")])
+        h.cli.hold("overview")
+        await openDeep(h)
+        await h.model.select("cmd/x.go")
+        try await h.model.addComment(path: "cmd/x.go", side: "new", startLine: 1, endLine: 1, body: "why?")
+        await h.cli.waitPending("overview")
+        h.cli.release("overview")
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
+        XCTAssertTrue(h.model.aiChaptersPending)
+    }
+
+    func testAIChaptersAppliedWhenNothingStarted() async throws {
+        let h = try harness()
+        h.cli.script(["overview": overviewJSON()])
+        await openDeep(h)
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
+        XCTAssertFalse(h.model.aiChaptersPending)
+    }
+
+    func testChapterRisksListsEveryRiskOfItsFiles() async throws {
+        let h = try harness()
+        let risks = #"[{"path":"pkg/y.go","level":"low","why":"naming"},{"path":"pkg/y.go","level":"high","why":"locks"},"#
+            + #"{"path":"cmd/x.go","level":"medium","why":"flags"}]"#
+        h.cli.script(["overview": overviewJSON(risk: risks)])
+        await openDeep(h)
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.chapterRisks("ai:1").map(\.why), ["locks", "naming"], "most serious first, only its files")
+        XCTAssertEqual(h.model.chapterRisks("dir:cmd").map(\.why), ["flags"])
+        XCTAssertEqual(h.model.risks(for: "pkg/y.go").count, 2)
+        XCTAssertEqual(h.model.chapterRisks("nope"), [])
+    }
+
+    func testHighestRiskPicksHighLevel() async throws {
+        let h = try harness()
+        let risks = #"[{"path":"pkg/y.go","level":"low","why":"naming"},{"path":"pkg/y.go","level":"high","why":"locks"},"#
+            + #"{"path":"pkg/y.go","level":"medium","why":"flags"}]"#
+        h.cli.script(["overview": overviewJSON(risk: risks)])
+        await openDeep(h)
+        await awaitOverview(h)
+        XCTAssertEqual(h.model.highestRisk(for: "pkg/y.go")?.why, "locks")
+        XCTAssertNil(h.model.highestRisk(for: "cmd/x.go"))
+    }
+
     func testAIChaptersSwitchOutsideTheChaptersPhase() async throws {
         let h = try harness()
         h.cli.script(["overview": overviewJSON()])
         h.cli.hold("overview")
         await openDeep(h)
-        try await h.model.setCheck(chapterKey: "dir:cmd", lens: "correctness", itemKey: "k1", checked: true)
+        try await h.model.setViewed(["cmd/x.go"], on: true)
         try await h.model.setPhase(.meaning)
         await h.cli.waitPending("overview")
         h.cli.release("overview")
@@ -1606,11 +1656,11 @@ final class ReviewChangesModelTests: XCTestCase {
         await h.model.open()
         await awaitOverview(h)
         XCTAssertEqual(h.model.chapters.map(\.key), ["ai:1", "dir:cmd"])
-        XCTAssertEqual(h.model.risk(for: "pkg/y.go")?.level, .high)
+        XCTAssertEqual(h.model.highestRisk(for: "pkg/y.go")?.level, .high)
         await h.model.refresh()
         await awaitOverview(h)
         XCTAssertEqual(h.model.overview, .onRequest)
-        XCTAssertNil(h.model.risk(for: "pkg/y.go"))
+        XCTAssertNil(h.model.highestRisk(for: "pkg/y.go"))
         XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
         XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true, true])
     }
@@ -1635,7 +1685,7 @@ final class ReviewChangesModelTests: XCTestCase {
         await awaitOverview(h)
         guard case .outdated(let earlier) = h.model.overview else { return XCTFail("overview \(h.model.overview)") }
         XCTAssertEqual(earlier.summary, "Adds y.")
-        XCTAssertNil(h.model.risk(for: "pkg/y.go"))
+        XCTAssertNil(h.model.highestRisk(for: "pkg/y.go"))
         XCTAssertEqual(h.model.chapters.map(\.key), ["dir:cmd", "dir:pkg"])
         XCTAssertEqual(h.cli.calls("overview").map { $0.contains("--cached-only") }, [true, false, true])
     }
@@ -1839,7 +1889,7 @@ final class ReviewChangesModelTests: XCTestCase {
     }
 
     /// Round 6 sent with one comment; opening round 7 carries it.
-    private func carriedFixture(_ h: Harness) async throws -> (source: Int64, copy: Int64) {
+    private func carriedFixture(_ h: ReviewModelHarness) async throws -> (source: Int64, copy: Int64) {
         let r6 = try await h.db.write { db -> Int64 in
             try db.execute(sql: Self.sentRoundSQL, arguments: [h.projectID, h.sessionID])
             return db.lastInsertedRowID
@@ -2004,7 +2054,7 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(h.model.round?.treeSha, "u7")
         XCTAssertEqual(h.model.overview, .loading)
         XCTAssertEqual(h.model.intentItems, items, "the Wrap-up marks keep their items")
-        XCTAssertEqual(h.model.risk(for: "pkg/y.go")?.level, .high)
+        XCTAssertEqual(h.model.highestRisk(for: "pkg/y.go")?.level, .high)
         h.cli.release("overview")
         await awaitOverview(h)
     }

@@ -16,6 +16,32 @@ final class CodeEditorPageProtocolTests: XCTestCase {
         XCTAssertTrue(script.contains("window.wt = {"), "editor.js no longer defines window.wt")
     }
 
+    /// The diff page's Changes | Full file switch (board #959).
+    func testDiffSetFullFileIsDocumentedAndHandled() throws {
+        let header = try Self.headerComment(page: "diff.html")
+        XCTAssertTrue(header.contains("setFullFile(bool)"), "diff.html's header does not document setFullFile")
+        let script = try String(contentsOf: Self.web.appendingPathComponent("diff.js"), encoding: .utf8)
+        XCTAssertNotNil(
+            script.range(of: #"setFullFile:\s*function"#, options: .regularExpression),
+            "diff.js's window.wt does not define setFullFile"
+        )
+    }
+
+    /// The diff page's Ask agent post (board #962): documented, registered
+    /// as a Monaco action and decoded by MonacoDiffView.
+    func testDiffAskIsDocumentedAndPosted() throws {
+        let header = try Self.headerComment(page: "diff.html")
+        XCTAssertTrue(header.contains("ask     {startLine, endLine, side}"), "diff.html's header does not document ask")
+        let script = try String(contentsOf: Self.web.appendingPathComponent("diff.js"), encoding: .utf8)
+        XCTAssertTrue(script.contains(#"id: "wt.ask""#), "diff.js does not register wt.ask")
+        XCTAssertTrue(script.contains(#"type: "ask""#), "diff.js does not post ask")
+        let swift = try String(
+            contentsOf: Self.web.deletingLastPathComponent().appendingPathComponent("Views/Workbench/Review/MonacoDiffView.swift"),
+            encoding: .utf8
+        )
+        XCTAssertTrue(swift.contains(#"case "ask":"#), "MonacoDiffView does not handle ask")
+    }
+
     /// textmate.js loads only grammars scripts/fetch-textmate.sh vendors,
     /// and every vendored grammar is one textmate.js names (board #738).
     func testTextMateGrammarsMatchTheFetchScript() throws {
@@ -59,10 +85,10 @@ final class CodeEditorPageProtocolTests: XCTestCase {
         .deletingLastPathComponent() // WatchtowerDesktop
         .appendingPathComponent("Sources/CodeEditorWeb")
 
-    /// The page's leading `<!-- … -->` comment, where the protocol lives.
-    private static func headerComment() throws -> String {
-        let html = try String(contentsOf: web.appendingPathComponent("index.html"), encoding: .utf8)
-        let start = try XCTUnwrap(html.range(of: "<!--"), "index.html has no header comment")
+    /// A page's leading `<!-- … -->` comment, where the protocol lives.
+    private static func headerComment(page: String = "index.html") throws -> String {
+        let html = try String(contentsOf: web.appendingPathComponent(page), encoding: .utf8)
+        let start = try XCTUnwrap(html.range(of: "<!--"), "\(page) has no header comment")
         let end = try XCTUnwrap(html.range(of: "-->", range: start.upperBound..<html.endIndex))
         return String(html[start.upperBound..<end.lowerBound])
     }

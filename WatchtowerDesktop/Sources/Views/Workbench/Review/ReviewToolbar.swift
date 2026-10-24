@@ -4,8 +4,9 @@ import WatchtowerCore
 
 /// The Branch review toolbar (board #712, spec §4.3): All changes / Since
 /// round N−1 from round 2, Quick / Deep, Deep's phase strip; then Inline,
-/// Refresh, ⋯ and the verdict — Request changes (N) and Approve (#964), or
-/// the round's outcome and Start next round once the round was closed.
+/// Refresh, Agent chat (#962), ⋯ and the verdict — Request changes (N) and
+/// Approve (#964), or the round's outcome and Start next round once the round
+/// was closed.
 struct ReviewToolbar: View {
     let model: ReviewChangesModel
     @Binding var inline: Bool
@@ -18,6 +19,8 @@ struct ReviewToolbar: View {
     var openTerminal: (() -> Void)?
     /// The reviewed branch, for Approve's confirmation ("" = this branch).
     var branch = ""
+    /// The session agent's chat panel is open; nil = no panel, no button.
+    var chatPanel: Binding<Bool>?
 
     private var roundOpen: Bool { model.round?.status == "open" }
     /// Quick and Deep's Chapters show a diff, so Inline applies.
@@ -59,6 +62,13 @@ struct ReviewToolbar: View {
                 .disabled(!roundOpen || model.load != .ready || model.sending || model.refreshing)
                 .help("Refresh")
                 .accessibilityLabel("Refresh")
+            if let chatPanel {
+                Button { chatPanel.wrappedValue.toggle() } label: { Image(systemName: "bubble.left.and.bubble.right") }
+                    .buttonStyle(.kitIcon(isOn: chatPanel.wrappedValue))
+                    .keyboardShortcut("c", modifiers: [.option, .command])
+                    .help("Agent chat: the session's Workchat beside the review (⌥⌘C)")
+                    .accessibilityLabel("Agent chat")
+            }
             moreMenu
             if roundOpen {
                 let verdict = Self.prominentVerdict(model)
