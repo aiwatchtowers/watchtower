@@ -215,6 +215,13 @@ enum DesignShotCatalog {
             DesignShot(name: "branch-review-approved", size: NSSize(width: 1180, height: 560)) {
                 ReviewShotFixtures.approved()
             },
+            // Branch review polish (#958–#962): the preview and the chapter's risks.
+            DesignShot(name: "branch-review-preview", size: NSSize(width: 1180, height: 560)) {
+                ReviewShotFixtures.preview()
+            },
+            DesignShot(name: "branch-review-chapter-risks", size: NSSize(width: 1180, height: 760)) {
+                ReviewShotFixtures.chapterRisks()
+            },
             // Search while the messages index is rebuilt (#892).
             DesignShot(name: "search-index-rebuilding", size: NSSize(width: 720, height: 200)) {
                 AnyView(SearchShotFixtures.rebuildPending().shotFrame().detailBackground())
