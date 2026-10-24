@@ -354,7 +354,16 @@ func runWorkbenchReviewSend(cmd *cobra.Command, _ []string) error {
 
 // runWorkbenchReviewApprove closes the round as approved; like send it stores
 // first and prints the line only once the round is stored (REVIEW-04).
+// Approval is the owner's verdict on the agent's work (AGENT-07): refused
+// under an agent before anything is read, then confirmed in the Desktop —
+// the Desktop's own Approve is granted without a window.
 func runWorkbenchReviewApprove(cmd *cobra.Command, _ []string) error {
+	if err := refuseUnderAgent("approve a review round"); err != nil {
+		return err
+	}
+	if err := confirmWithOwner("approve a review round", approveConfirmDetail(reviewFlagRound, reviewFlagResolve)); err != nil {
+		return failReview(cmd, err)
+	}
 	database, p, err := reviewTarget()
 	if err != nil {
 		return err
@@ -368,4 +377,14 @@ func runWorkbenchReviewApprove(cmd *cobra.Command, _ []string) error {
 		env.Line = reviewdiff.ApprovedLine(reviewFlagRound)
 	}
 	return writeReview(cmd, env)
+}
+
+// approveConfirmDetail is the window's text for an Approve: the round and
+// whether its open comments are resolved with it.
+func approveConfirmDetail(round int64, resolveOpen bool) string {
+	detail := fmt.Sprintf("Approve review round %d.", round)
+	if resolveOpen {
+		detail += "\nIts open comments are resolved with it."
+	}
+	return detail
 }
