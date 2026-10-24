@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -94,4 +95,34 @@ func TestProj22_CodexBriefCarriesSlot(t *testing.T) {
 	out := runCodexBriefHook(t, string(codexHookFixture(t, "session_start_startup")))
 
 	assert.Contains(t, out, slotHeader+"\nAnswer briefly.")
+}
+
+func TestProj22_RememberWritesOwnerWordsVerbatim(t *testing.T) {
+	d, _, _ := methodologyWorkbench(t)
+	_, err := runInstructions(t, "  Запомни:   Отвечай\n коротко,\tбез воды  ", "remember", "--conversation", "1", "--message", "2", "--stdin", "--json")
+	require.NoError(t, err)
+	g, err := d.GetOwnerInstructions()
+	require.NoError(t, err)
+	assert.Equal(t, "Отвечай коротко, без воды", g.Chat, "the owner's words after the prefix, whitespace collapsed")
+	assert.Empty(t, g.Session)
+	assert.Empty(t, g.Procedure)
+	lines, err := d.ListPresentChatLines()
+	require.NoError(t, err)
+	require.Len(t, lines, 1)
+	assert.Equal(t, g.Chat, lines[0].Line)
+}
+
+func TestProj22_WorkbenchTextsNeverInChatSlot(t *testing.T) {
+	d, pid, _ := methodologyWorkbench(t)
+	require.NoError(t, d.SetWorkbenchInstruction(pid, db.InstructionSession, "WB-ONLY-SESSION"))
+	require.NoError(t, d.SetWorkbenchInstruction(pid, db.InstructionProcedure, "WB-ONLY-PROCEDURE"))
+	require.NoError(t, d.SetOwnerInstruction(db.InstructionProcedure, "GLOBAL-PROCEDURE"))
+	require.NoError(t, d.SetOwnerInstruction(db.InstructionChat, "Be brief"))
+	out, err := runInstructions(t, "", "preview", "--json", "--workbench", strconv.FormatInt(pid, 10))
+	require.NoError(t, err)
+	slot, _ := decodeInstructions(t, out)["chat_slot"].(string)
+	assert.Contains(t, slot, "Be brief")
+	for _, banned := range []string{"WB-ONLY-SESSION", "WB-ONLY-PROCEDURE", "GLOBAL-PROCEDURE"} {
+		assert.NotContains(t, slot, banned)
+	}
 }
