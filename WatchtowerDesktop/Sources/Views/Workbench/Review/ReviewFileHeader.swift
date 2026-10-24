@@ -3,7 +3,7 @@ import WatchtowerCore
 
 /// The row above a file's diff (board #712, spec §4.5): status glyph, path
 /// (directory quiet, name semibold, truncated in the middle), `+a −d`, the
-/// risk badge, Viewed, and ‹ › to the previous / next unviewed file
+/// risk badge, Changes | Full file (board #959), Viewed, and ‹ › to the previous / next unviewed file
 /// (⌥⌘↑ / ⌥⌘↓) — reading a file and marking it never leaves the diff.
 struct ReviewFileHeader: View {
     let model: ReviewChangesModel
@@ -25,6 +25,14 @@ struct ReviewFileHeader: View {
                 .font(.caption.monospacedDigit())
             ReviewRiskBadge(level: risk?.level, why: risk?.why ?? "")
             Spacer(minLength: Spacing.small)
+            KitSegmentedPicker(
+                title: "Diff extent",
+                selection: Binding(get: { model.fullFile }, set: { model.fullFile = $0 }),
+                segments: [
+                    KitSegment(value: false, title: "Changes", help: "The changes, with unchanged lines folded"),
+                    KitSegment(value: true, title: "Full file", help: "The whole file")
+                ]
+            )
             // A failure lands in lastError.
             Toggle("Viewed", isOn: Binding(
                 get: { model.isViewed(file.path) },

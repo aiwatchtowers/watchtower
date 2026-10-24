@@ -253,7 +253,7 @@ struct ReviewChangesPaneView: View {
             $0.path == path && $0.side == "new" && [.draft, .sent, .carried].contains($0.status)
         }
         return MonacoDiffView.Payload(
-            path: path, original: sides.old.text, modified: sides.new.text, inline: inline,
+            path: path, original: sides.old.text, modified: sides.new.text, inline: inline, fullFile: model.fullFile,
             comments: shown.map {
                 .init(id: $0.id, startLine: $0.startLine, endLine: $0.endLine, body: $0.body,
                       status: $0.status.rawValue, reply: model.agentReply(for: $0))

@@ -11,6 +11,8 @@ struct MonacoDiffView: NSViewRepresentable {
         var original: String
         var modified: String
         var inline: Bool
+        /// The whole file, not the changes with unchanged runs folded.
+        var fullFile = false
         var comments: [Comment]
         /// The agent's placed notes on the new side.
         var notes: [Note] = []
@@ -43,7 +45,7 @@ struct MonacoDiffView: NSViewRepresentable {
         /// The `wt.showDiff` argument, for JSONSerialization.
         var argument: [String: Any] {
             [
-                "path": path, "original": original, "modified": modified, "inline": inline,
+                "path": path, "original": original, "modified": modified, "inline": inline, "fullFile": fullFile,
                 "comments": comments.map(\.argument), "notes": notes.map(\.argument), "hunks": hunks.map(\.argument)
             ]
         }
@@ -108,8 +110,8 @@ struct MonacoDiffView: NSViewRepresentable {
         }
 
         /// Sends `wanted` once the page is ready and when it changed; only
-        /// the comments, notes or hunks changed → their setters, the view
-        /// keeps its scroll.
+        /// the comments, notes, hunks or Full file changed → their setters,
+        /// the view keeps its scroll.
         private func push() {
             guard ready, wanted != told else { return }
             defer { told = wanted }
@@ -122,7 +124,9 @@ struct MonacoDiffView: NSViewRepresentable {
                 same.comments = wanted.comments
                 same.notes = wanted.notes
                 same.hunks = wanted.hunks
+                same.fullFile = wanted.fullFile
                 if same == wanted {
+                    if previous.fullFile != wanted.fullFile { call("wt.setFullFile", wanted.fullFile) }
                     if previous.comments != wanted.comments { call("wt.setComments", wanted.comments.map(\.argument)) }
                     if previous.notes != wanted.notes { call("wt.setNotes", wanted.notes.map(\.argument)) }
                     if previous.hunks != wanted.hunks { call("wt.setHunks", wanted.hunks.map(\.argument)) }

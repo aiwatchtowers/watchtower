@@ -67,7 +67,12 @@ final class ReviewChangesModel {
     private(set) var comments: [ReviewComment] = []
     /// path → the content key it was marked Viewed at.
     private(set) var viewed: [String: String] = [:]
-    var selectedPath: String?
+    var selectedPath: String? {
+        didSet { if selectedPath != oldValue { fullFile = false } }
+    }
+    /// The diff shows the whole file instead of the changes with unchanged
+    /// runs folded (board #959); per file view, never persisted.
+    var fullFile = false
     var view: View = .all
     /// The last sides loaded, with the file, tree and view they belong to;
     /// read `currentSides` to show or anchor on them.

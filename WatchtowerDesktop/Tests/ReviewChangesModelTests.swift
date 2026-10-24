@@ -537,6 +537,20 @@ final class ReviewChangesModelTests: XCTestCase {
         XCTAssertEqual(h.model.currentSides?.new.text, "b2\n")
     }
 
+    /// Full file is per file view (board #959): another file opens on Changes.
+    func testSelectingAnotherFileResetsFullFile() async throws {
+        let h = try harness()
+        h.baseScript(paths: ["a.go", "b.go"])
+        h.cli.script("file", [fileJSON(old: "a\n", new: "a2\n"), fileJSON(old: "b\n", new: "b2\n")])
+        await h.model.open()
+        await h.model.select("a.go")
+        h.model.fullFile = true
+        await h.model.select("a.go")
+        XCTAssertTrue(h.model.fullFile, "re-selecting the same file keeps Full file")
+        await h.model.select("b.go")
+        XCTAssertFalse(h.model.fullFile)
+    }
+
     func testSidesOfTheOldTreeAreNotCurrentDuringARefresh() async throws {
         let h = try harness()
         h.baseScript()
