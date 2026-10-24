@@ -73,10 +73,16 @@ type consolidateInput struct {
 	validRefs                                                   map[string][]string // ref -> every source it was rendered under
 	block                                                       string
 	included                                                    int
+	// chatTurns is who said each rendered chat ref and when (mentionRow).
+	chatTurns map[string]chatTurnMeta
 	// memFloors, when set (Backfill), holds the floors this run started from
 	// and is advanced in their place: the run then writes no stored floor.
 	memFloors *workspaceFloors
 }
+
+// chatTurnMeta is the author ("owner"/"assistant") and created_at of one
+// rendered chat turn.
+type chatTurnMeta struct{ author, saidAt string }
 
 // workspaceFloors is the four workspace floors (ideas_digest_floor,
 // ideas_stream_digest_floor, ideas_transcript_floor, ideas_chat_floor) as
@@ -241,7 +247,7 @@ func (p *Pipeline) consolidate(ctx context.Context, from, to time.Time, mem *wor
 	in.commitMemFloors()
 	if refsRejected > 0 {
 		p.refsRejected += refsRejected
-		p.logf("ideas: consolidate dropped %d invented ref(s)", refsRejected)
+		p.logf("ideas: consolidate rejected %d ref(s)", refsRejected)
 	}
 	if mentionsDeduped > 0 {
 		p.logf("ideas: consolidate deduped %d already-mined mention(s)", mentionsDeduped)
@@ -420,6 +426,19 @@ func (in *consolidateInput) mentionSources(m mentionInput) []string {
 	return srcs
 }
 
+// mentionRow is the idea_mentions row for one validated sighting. For a chat
+// ref the author and said_at come from the rendered turn itself ("owner" or
+// "assistant", its created_at) — the model's values are never trusted there,
+// since a chat line shows neither.
+func (in *consolidateInput) mentionRow(src string, m mentionInput) db.IdeaMention {
+	row := db.IdeaMention{Source: src, Ref: m.Ref, Quote: m.Quote, Author: m.Author, SaidAt: m.SaidAt}
+	if src == "chat" {
+		turn := in.chatTurns[m.Ref]
+		row.Author, row.SaidAt = turn.author, turn.saidAt
+	}
+	return row
+}
+
 // addTopics is materialAssembler's Slack-digest-topics pass. It is the only
 // pass that can fail: rendering a topic reads the messages table to verify
 // each candidate's ts (IDEA-02), and that read failing is an infrastructure
@@ -496,6 +515,10 @@ func (m *materialAssembler) addChatTurns(turns []db.ChatTurnForIdeas) {
 		}
 		if m.in.included > before {
 			conv = t.ConversationID // the header is in the block only once a unit carrying it was written
+			if m.in.chatTurns == nil {
+				m.in.chatTurns = map[string]chatTurnMeta{}
+			}
+			m.in.chatTurns[ref] = chatTurnMeta{author: chatRole(t.Role), saidAt: t.CreatedAt}
 		}
 		m.in.maxChatID = t.ID
 	}
@@ -523,9 +546,9 @@ func skipChatTurn(t db.ChatTurnForIdeas) bool {
 // the role's rune cap — preceded, when header is set, by its conversation's
 // `[chat "<title>"]` line.
 func renderChatUnit(t db.ChatTurnForIdeas, header bool) string {
-	role, limit := "owner", chatOwnerRuneCap
-	if t.Role == "assistant" {
-		role, limit = "assistant", chatAssistantRuneCap
+	role, limit := chatRole(t.Role), chatOwnerRuneCap
+	if role == "assistant" {
+		limit = chatAssistantRuneCap
 	}
 	var b strings.Builder
 	if header {
@@ -538,6 +561,14 @@ func renderChatUnit(t db.ChatTurnForIdeas, header bool) string {
 	text := textutil.Truncate(strings.Join(strings.Fields(t.Text), " "), limit, "…")
 	fmt.Fprintf(&b, "%s: %s ref=chat:%d:%d\n", role, text, t.ConversationID, t.ID)
 	return b.String()
+}
+
+// chatRole names a chat turn's speaker as the material shows it.
+func chatRole(role string) string {
+	if role == "assistant" {
+		return "assistant"
+	}
+	return "owner"
 }
 
 // persistFloorsOnly commits the floors a run advanced when it produced no
@@ -898,9 +929,7 @@ func applyNewIdeaOp(tx *sql.Tx, database *db.DB, op consolidateOp, registryByID 
 			mentionsDeduped++
 			continue
 		}
-		valid = append(valid, db.IdeaMention{
-			Source: c.src, Ref: c.m.Ref, Quote: c.m.Quote, Author: c.m.Author, SaidAt: c.m.SaidAt,
-		})
+		valid = append(valid, in.mentionRow(c.src, c.m))
 	}
 	if len(valid) == 0 {
 		return false, refsRejected, mentionsDeduped, nil // invented (IDEA-02) or already mined (IDEA-05)
@@ -980,7 +1009,7 @@ func applyAttachMentionOp(tx *sql.Tx, database *db.DB, op consolidateOp, registr
 		return 0, 1, nil
 	}
 	for _, src := range srcs {
-		deduped, aerr := attachMentionSource(tx, database, target, src, op.Mention)
+		deduped, aerr := attachMentionSource(tx, database, target, in.mentionRow(src, *op.Mention))
 		if aerr != nil {
 			return 0, 0, aerr
 		}
@@ -993,7 +1022,8 @@ func applyAttachMentionOp(tx *sql.Tx, database *db.DB, op consolidateOp, registr
 // target already records it (IDEA-05, target-scoped), flagging a
 // not_now/dropped/rejected target for review (IDEA-04). Returns 1 when it was
 // already recorded.
-func attachMentionSource(tx *sql.Tx, database *db.DB, target db.Idea, src string, mention *mentionInput) (int, error) {
+func attachMentionSource(tx *sql.Tx, database *db.DB, target db.Idea, mention db.IdeaMention) (int, error) {
+	src := mention.Source
 	dup, derr := database.IdeaHasMentionRefTx(tx, target.ID, src, mention.Ref)
 	if derr != nil {
 		return 0, fmt.Errorf("checking known mention ref for idea %d: %w", target.ID, derr)
@@ -1004,10 +1034,8 @@ func attachMentionSource(tx *sql.Tx, database *db.DB, target db.Idea, src string
 		// IDEA-04, mirroring PR #78's IDEA-02x04 finding).
 		return 1, nil
 	}
-	if merr := database.InsertIdeaMentionTx(tx, db.IdeaMention{
-		IdeaID: target.ID, Source: src, Ref: mention.Ref,
-		Quote: mention.Quote, Author: mention.Author, SaidAt: mention.SaidAt,
-	}); merr != nil {
+	mention.IdeaID = target.ID
+	if merr := database.InsertIdeaMentionTx(tx, mention); merr != nil {
 		return 0, fmt.Errorf("attaching mention to idea %d: %w", target.ID, merr)
 	}
 	if target.Status == "not_now" || target.Status == "dropped" || target.Status == "rejected" {

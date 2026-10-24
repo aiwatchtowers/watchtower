@@ -323,7 +323,7 @@ func TestIdeas02_SlackRefMissingFromMessages_NotRenderedNotCitable(t *testing.T)
 	assert.Empty(t, ideas, "an op whose only ref was never rendered must write nothing")
 
 	assert.Contains(t, logBuf.String(), "dropped 1 unverifiable slack ref")
-	assert.Contains(t, logBuf.String(), "dropped 1 invented ref", "the op's citation of the dropped ref counts as refs_rejected")
+	assert.Contains(t, logBuf.String(), "consolidate rejected 1 ref(s)", "the op's citation of the dropped ref counts as refs_rejected")
 
 	dFloor, _, _, err := d.GetIdeasFloors()
 	require.NoError(t, err)
@@ -1330,4 +1330,42 @@ func TestConsolidate_IdeaContextConversationsNotMined(t *testing.T) {
 	floor, err := d.GetIdeasChatFloor()
 	require.NoError(t, err)
 	assert.Equal(t, shown, floor)
+}
+
+// TestConsolidate_ChatMentionAuthorAndTimeFromTurn: a chat mention's author
+// and said_at are the rendered turn's own (role, created_at), never the
+// model's — on a new item and on an attach alike.
+func TestConsolidate_ChatMentionAuthorAndTimeFromTurn(t *testing.T) {
+	d := newTestDB(t)
+	seedWorkspace(t, d)
+	existing := seedIdeaRow(t, d, db.Idea{Kind: "decision", Title: "Ship Monday", Status: "active"})
+	conv := seedChatConversation(t, d, "Rollout", "")
+	ownerAt := quietAgo().Add(-time.Minute)
+	owner := seedChatTurn(t, d, conv, "user", "let's ship on Monday", ownerAt)
+	replyAt := quietAgo()
+	reply := seedChatTurn(t, d, conv, "assistant", "Monday it is.", replyAt)
+
+	gen := &fakeGen{reply: func(string) (string, error) {
+		return fmt.Sprintf(`{"ops":[
+			{"op":"new_note","title":"N","essence":"e","mentions":[{"ref":%q,"author":"Bob","said_at":"1999-01-01T00:00:00Z"}]},
+			{"op":"attach_mention","idea_id":%d,"mention":{"ref":%q,"author":"Bob","said_at":"1999-01-01T00:00:00Z"}}
+		]}`, chatRef(conv, owner), existing, chatRef(conv, reply)), nil
+	}}
+	p := New(d, testCfg(), gen, testLogger())
+	_, _, err := p.runConsolidate(context.Background())
+	require.NoError(t, err)
+
+	rows := allRegistryRows(t, d)
+	require.Len(t, rows, 2)
+	noteMentions, err := d.ListIdeaMentions(rows[1].ID)
+	require.NoError(t, err)
+	require.Len(t, noteMentions, 1)
+	assert.Equal(t, "owner", noteMentions[0].Author)
+	assert.Equal(t, ownerAt.UTC().Format(time.RFC3339), noteMentions[0].SaidAt)
+
+	attached, err := d.ListIdeaMentions(existing)
+	require.NoError(t, err)
+	require.Len(t, attached, 1)
+	assert.Equal(t, "assistant", attached[0].Author)
+	assert.Equal(t, replyAt.UTC().Format(time.RFC3339), attached[0].SaidAt)
 }
