@@ -77,7 +77,11 @@ func Execute() int {
 	role := roleFor(os.Args[1:])
 	lockmetrics.SetProcessRole(role)
 	auditlog.SetProcess(role)
-	if err := rootCmd.Execute(); err != nil {
+	err := rootCmd.Execute()
+	if e, ok := cliAuditEvent(cliCommandPath(os.Args[1:]), os.Getenv, err); ok {
+		auditlog.Read(e)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		var ec *exitCodeError
 		if errors.As(err, &ec) {
