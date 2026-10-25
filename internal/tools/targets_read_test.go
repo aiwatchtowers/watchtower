@@ -87,3 +87,35 @@ func TestListTargets_RejectsInvalidEnums(t *testing.T) {
 		assert.Contains(t, verr.Msg, c.wantAllowed)
 	}
 }
+
+func TestGetTarget_ImageDescription(t *testing.T) {
+	d := openDB(t)
+	wb := seedWorkbench(t, d, "acme")
+	res, err := d.Exec(`INSERT INTO targets (text, level, custom_label, period_start, period_end, source_type, project_id)
+		VALUES ('Fix login', 'custom', 'project', '2026-09-29', '2026-09-29', 'chat', ?)`, wb)
+	require.NoError(t, err)
+	tid, err := res.LastInsertId()
+	require.NoError(t, err)
+	_, err = d.Exec(`INSERT INTO project_target_images (project_id, target_id, file_name, mime, size, sha256, path)
+		VALUES (?, ?, 'shot.png', 'image/png', 3, 'aa', '/ws/project_files/1/aa.png')`, wb, tid)
+	require.NoError(t, err)
+
+	imageOf := func() map[string]any {
+		res, err := targetsRegistry(t, d).CallRead(context.Background(), "get_target",
+			json.RawMessage(`{"id":`+strconv.FormatInt(tid, 10)+`}`), Binding{Surface: "project", WorkbenchID: wb})
+		require.NoError(t, err)
+		raw, err := json.Marshal(res)
+		require.NoError(t, err)
+		var out struct {
+			Images []map[string]any `json:"images"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(raw), &out))
+		require.Len(t, out.Images, 1)
+		return out.Images[0]
+	}
+	assert.NotContains(t, imageOf(), "description", "absent while the image is pending")
+
+	_, err = d.Exec(`UPDATE media_items SET status = 'ok', title = 'Login screen', body = 'two fields' WHERE target_image_id IS NOT NULL`)
+	require.NoError(t, err)
+	assert.Equal(t, "Login screen — two fields", imageOf()["description"])
+}

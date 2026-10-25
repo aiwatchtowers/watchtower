@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -69,9 +70,12 @@ func (db *DB) ListChatTurnsForIdeas(afterID int64, cutoffISO string, limit int) 
 		JOIN chat_conversations c ON c.id = m.conversation_id
 		WHERE m.id > ? AND m.role IN ('user', 'assistant') AND m.status != 'error'
 		  AND m.id < COALESCE((SELECT MIN(f.id) FROM chat_messages f WHERE f.id > ? AND f.created_at > ?), 9223372036854775807)
+		  AND m.id < COALESCE((SELECT MIN(a.message_id) FROM chat_attachments a
+		        JOIN media_items mi ON mi.chat_attachment_id = a.id
+		        WHERE a.message_id > ? AND mi.status = 'pending'), 9223372036854775807)
 		  AND COALESCE(c.context_type, '') NOT IN ('idea', 'code_question') AND `+onActiveBranch+`
 		ORDER BY m.id
-		LIMIT ?`, afterID, afterID, at, limit)
+		LIMIT ?`, afterID, afterID, at, afterID, limit)
 	if err != nil {
 		return nil, fmt.Errorf("listing chat turns for ideas: %w", err)
 	}
@@ -86,5 +90,47 @@ func (db *DB) ListChatTurnsForIdeas(afterID int64, cutoffISO string, limit int) 
 		t.CreatedAt = time.Unix(int64(at), 0).UTC().Format(time.RFC3339)
 		out = append(out, t)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("listing chat turns for ideas: %w", err)
+	}
+	return out, db.appendChatImageLines(out)
+}
+
+// appendChatImageLines adds, to each turn with described ('ok') image
+// attachments, one line per image in attachment id order. A pending image
+// never reaches here: ListChatTurnsForIdeas stops below its message.
+func (db *DB) appendChatImageLines(turns []ChatTurnForIdeas) error {
+	if len(turns) == 0 {
+		return nil
+	}
+	idx := make(map[int64]int, len(turns))
+	args := make([]any, 0, len(turns))
+	marks := make([]string, 0, len(turns))
+	for i, t := range turns {
+		idx[t.ID] = i
+		args = append(args, t.ID)
+		marks = append(marks, "?")
+	}
+	rows, err := db.Query(`SELECT a.message_id, a.name, mi.title, mi.body
+		FROM chat_attachments a JOIN media_items mi ON mi.chat_attachment_id = a.id
+		WHERE a.message_id IN (`+strings.Join(marks, ",")+`) AND mi.status = 'ok'
+		ORDER BY a.id`, args...)
+	if err != nil {
+		return fmt.Errorf("listing chat image descriptions: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var msg int64
+		var name, title, body string
+		if err := rows.Scan(&msg, &name, &title, &body); err != nil {
+			return fmt.Errorf("scanning chat image description: %w", err)
+		}
+		if i, ok := idx[msg]; ok && turns[i].Role == "user" {
+			turns[i].Text += fmt.Sprintf("\n[image %q: %s]", name, MediaDescription(title, body))
+		}
+	}
+	return rows.Err()
 }

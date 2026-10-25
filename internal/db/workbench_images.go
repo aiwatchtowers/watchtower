@@ -26,9 +26,22 @@ type WorkbenchTargetImage struct {
 	SHA256      string `json:"sha256"`
 	Path        string `json:"path"`
 	CreatedAt   string `json:"created_at"`
+	// Description is "title — body" of the image's described media item;
+	// empty until the describe pass has it. Board-only (PROJ-01): it reaches
+	// an agent through get_target, never the knowledge index.
+	Description string `json:"description,omitempty"`
 }
 
-const workbenchTargetImageCols = `id, project_id, target_id, file_name, mime, size, sha256, path, created_at`
+// MediaDescription renders a described item as "title — body".
+func MediaDescription(title, body string) string {
+	switch {
+	case title == "":
+		return body
+	case body == "":
+		return title
+	}
+	return title + " — " + body
+}
 
 // AddWorkbenchTargetImageTx attaches img to its target. The target must be on
 // img.WorkbenchID's board (ErrNotInWorkbench otherwise). Attaching content the
@@ -82,8 +95,11 @@ func RemoveWorkbenchTargetImageTx(tx *sql.Tx, workbenchID, targetID, id int64) (
 
 // ListWorkbenchTargetImages returns the target's images, oldest first.
 func (db *DB) ListWorkbenchTargetImages(targetID int64) ([]WorkbenchTargetImage, error) {
-	rows, err := db.Query(`SELECT `+workbenchTargetImageCols+` FROM project_target_images
-		WHERE target_id = ? ORDER BY id`, targetID)
+	rows, err := db.Query(`SELECT i.id, i.project_id, i.target_id, i.file_name, i.mime, i.size, i.sha256, i.path, i.created_at,
+		COALESCE(mi.title, ''), COALESCE(mi.body, '')
+		FROM project_target_images i
+		LEFT JOIN media_items mi ON mi.target_image_id = i.id AND mi.status = 'ok'
+		WHERE i.target_id = ? ORDER BY i.id`, targetID)
 	if err != nil {
 		return nil, fmt.Errorf("listing images of target %d: %w", targetID, err)
 	}
@@ -91,10 +107,12 @@ func (db *DB) ListWorkbenchTargetImages(targetID int64) ([]WorkbenchTargetImage,
 	out := []WorkbenchTargetImage{}
 	for rows.Next() {
 		var m WorkbenchTargetImage
+		var title, body string
 		if err := rows.Scan(&m.ID, &m.WorkbenchID, &m.TargetID, &m.FileName, &m.MIME, &m.Size,
-			&m.SHA256, &m.Path, &m.CreatedAt); err != nil {
+			&m.SHA256, &m.Path, &m.CreatedAt, &title, &body); err != nil {
 			return nil, fmt.Errorf("scanning image: %w", err)
 		}
+		m.Description = MediaDescription(title, body)
 		out = append(out, m)
 	}
 	return out, rows.Err()

@@ -210,3 +210,80 @@ func TestKnowledgeVisibleIdeaCond(t *testing.T) {
 	require.NoError(t, rows.Err())
 	assert.Equal(t, []string{"mined proposal", "chat approved", "chat superseded", "chat reversed"}, titles)
 }
+
+// attachChatImage stores an image attachment on a message; migration 00156's
+// trigger opens its pending media item.
+func attachChatImage(t *testing.T, d *DB, conv, msg int64, name string) int64 {
+	t.Helper()
+	res, err := d.Exec(`INSERT INTO chat_attachments (conversation_id, message_id, name, mime, size, path, sha256, created_at)
+		VALUES (?, ?, ?, 'image/png', 3, ?, ?, 1)`, conv, msg, name, "/ws/chat_files/"+name, name)
+	require.NoError(t, err)
+	id, err := res.LastInsertId()
+	require.NoError(t, err)
+	return id
+}
+
+func setChatImageStatus(t *testing.T, d *DB, attachment int64, status, title, body string) {
+	t.Helper()
+	_, err := d.Exec(`UPDATE media_items SET status = ?, title = ?, body = ? WHERE chat_attachment_id = ?`,
+		status, title, body, attachment)
+	require.NoError(t, err)
+}
+
+func TestListChatTurnsForIdeas_AppendsImageDescriptions(t *testing.T) {
+	d := openTestDB(t)
+	cutoff := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	old := float64(cutoff.Add(-time.Hour).Unix())
+	conv := insertChatConversation(t, d, "", "")
+	msg := insertChatMessage(t, d, conv, "user", "see these", old)
+	other := insertChatMessage(t, d, conv, "user", "no images", old)
+	b := attachChatImage(t, d, conv, msg, "b.png")
+	a := attachChatImage(t, d, conv, msg, "a.png")
+	skipped := attachChatImage(t, d, conv, msg, "junk.png")
+	// Attachment id order, not name order: b was stored first.
+	setChatImageStatus(t, d, b, "ok", "Chart", "revenue by month")
+	setChatImageStatus(t, d, a, "ok", "Error dialog", "disk full")
+	setChatImageStatus(t, d, skipped, "unavailable", "", "")
+
+	got, err := d.ListChatTurnsForIdeas(0, cutoff.Format(time.RFC3339), 10)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, "see these\n[image \"b.png\": Chart — revenue by month]\n[image \"a.png\": Error dialog — disk full]", got[0].Text)
+	assert.Equal(t, other, got[1].ID)
+	assert.Equal(t, "no images", got[1].Text)
+}
+
+// IDEA-01: the floor never passes material that is not complete.
+func TestIdea01_PendingChatImageHoldsTheFloor(t *testing.T) {
+	d := openTestDB(t)
+	cutoff := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
+	old := float64(cutoff.Add(-time.Hour).Unix())
+	conv := insertChatConversation(t, d, "", "")
+	before := insertChatMessage(t, d, conv, "user", "before", old)
+	held := insertChatMessage(t, d, conv, "user", "with a screenshot", old)
+	after := insertChatMessage(t, d, conv, "user", "after", old)
+	att := attachChatImage(t, d, conv, held, "shot.png")
+
+	ids := func() []int64 {
+		got, err := d.ListChatTurnsForIdeas(0, cutoff.Format(time.RFC3339), 10)
+		require.NoError(t, err)
+		var out []int64
+		for _, g := range got {
+			out = append(out, g.ID)
+		}
+		return out
+	}
+	assert.Equal(t, []int64{before}, ids(), "the turn and every later id wait while the image is pending")
+
+	setChatImageStatus(t, d, att, "ok", "Chart", "numbers")
+	assert.Equal(t, []int64{before, held, after}, ids())
+	got, err := d.ListChatTurnsForIdeas(held-1, cutoff.Format(time.RFC3339), 10)
+	require.NoError(t, err)
+	assert.Contains(t, got[0].Text, "[image \"shot.png\": Chart — numbers]")
+
+	setChatImageStatus(t, d, att, "failed", "", "")
+	got, err = d.ListChatTurnsForIdeas(held-1, cutoff.Format(time.RFC3339), 10)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, "with a screenshot", got[0].Text, "a failed image holds nothing and adds no line")
+}
