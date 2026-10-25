@@ -4,7 +4,7 @@ import XCTest
 import WatchtowerTestSupport
 
 /// A CLI double answering by subcommand (`args[1]`), recording each call and
-/// what its `--file` held when it ran, optionally held at a gate.
+/// the recipe text it was sent on stdin, optionally held at a gate.
 private final class EditorRunner: CLIRunnerProtocol, @unchecked Sendable {
     typealias Handler = @Sendable ([String]) throws -> Data
 
@@ -17,7 +17,7 @@ private final class EditorRunner: CLIRunnerProtocol, @unchecked Sendable {
     private var gateOpened = false
 
     var invocations: [[String]] { lock.withLock { recorded } }
-    /// Subcommand → the `--file` (validate: the positional file) text at call time.
+    /// Subcommand → the recipe text it was sent on stdin.
     var fileTexts: [String: String] { lock.withLock { files } }
     var isHolding: Bool { lock.withLock { gate != nil } }
 
@@ -39,11 +39,16 @@ private final class EditorRunner: CLIRunnerProtocol, @unchecked Sendable {
     }
 
     func run(args: [String]) async throws -> Data {
+        try await run(args: args, text: nil)
+    }
+
+    /// validate and save send the recipe on stdin (`validate -`, `--file -`).
+    func run(args: [String], stdin: Data) async throws -> Data {
+        try await run(args: args, text: String(bytes: stdin, encoding: .utf8))
+    }
+
+    private func run(args: [String], text: String?) async throws -> Data {
         let sub = args.count > 1 ? args[1] : ""
-        var path: String?
-        if sub == "validate", args.count > 2 { path = args[2] }
-        if let flag = args.firstIndex(of: "--file"), args.indices.contains(flag + 1) { path = args[flag + 1] }
-        let text = path.flatMap { try? String(contentsOfFile: $0, encoding: .utf8) }
         let (handler, held) = lock.withLock {
             recorded.append(args)
             if let text { files[sub] = text }
@@ -118,7 +123,6 @@ final class AutomationEditorCenterTests: XCTestCase {
             grants: { [weak self] _ in self?.grants ?? [] },
             refresh: { [weak self] id in self?.refreshed.append(id) },
             draftCache: draftCache,
-            tempDirectory: tempDir,
             sleep: sleep
         )
     }

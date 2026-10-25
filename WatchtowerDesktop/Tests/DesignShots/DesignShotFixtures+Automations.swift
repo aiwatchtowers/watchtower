@@ -473,6 +473,12 @@ private final class RoutedCLIRunner: CLIRunnerProtocol, Sendable {
         self.routes = routes
     }
 
+    /// The texts that ride stdin (`--text-file -`, `validate -`, #604 S6)
+    /// change nothing here.
+    func run(args: [String], stdin _: Data) async throws -> Data {
+        try await run(args: args)
+    }
+
     func run(args: [String]) async throws -> Data {
         guard args.count > 1, let data = routes[args[1]] else {
             throw CLIRunnerError.nonZeroExit(code: 1, stderr: "no fixture for \(args)")

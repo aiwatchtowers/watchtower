@@ -103,7 +103,6 @@ package final class AutomationEditorCenter {
     @ObservationIgnored private let cli: AutomationsCLI
     @ObservationIgnored private let grants: @MainActor (Int64) async throws -> [AutomationToolGrant]
     @ObservationIgnored private let refresh: @MainActor (Int64) async -> Void
-    @ObservationIgnored private let tempDirectory: URL
     @ObservationIgnored private let draftCache: (any DatabaseWriter)?
     @ObservationIgnored private let checkDelay: Duration
     @ObservationIgnored private let sleep: (Duration) async -> Void
@@ -137,7 +136,6 @@ package final class AutomationEditorCenter {
         grants: @escaping @MainActor (Int64) async throws -> [AutomationToolGrant],
         refresh: @escaping @MainActor (Int64) async -> Void,
         draftCache: (any DatabaseWriter)? = nil,
-        tempDirectory: URL = FileManager.default.temporaryDirectory,
         checkDelay: Duration = .milliseconds(500),
         sleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) {
@@ -145,7 +143,6 @@ package final class AutomationEditorCenter {
         self.grants = grants
         self.refresh = refresh
         self.draftCache = draftCache
-        self.tempDirectory = tempDirectory
         self.checkDelay = checkDelay
         self.sleep = sleep
     }
@@ -316,10 +313,8 @@ package final class AutomationEditorCenter {
         -> (AutomationsCLI.ValidateResult, AutomationSavePlan?) {
         let detail = draft.detail
         let isNew = Self.isNewDraft(key)
-        let validated = try await withTempRecipe(text, slug: detail.slug) { file in
-            try await cli.validate(file: file, against: isNew ? nil : key,
-                                   workbench: isNew && detail.scope == "workbench" ? detail.projectID : nil)
-        }
+        let validated = try await cli.validate(text: text, slug: detail.slug, against: isNew ? nil : key,
+                                               workbench: isNew && detail.scope == "workbench" ? detail.projectID : nil)
         guard validated.ok else { return (validated, nil) }
         let plan = AutomationSavePlan.make(validated: validated, current: detail,
                                            grants: isNew ? [] : try await grants(key))
@@ -543,11 +538,9 @@ package final class AutomationEditorCenter {
                          : draft.detail.path
         let saved: AutomationsCLI.SaveResult
         do {
-            saved = try await withTempRecipe(text, slug: slug) { file in
-                try await cli.save(file: file, path: path,
-                                   confirmHash: plan.validated.approvalHash,
-                                   expectContentHash: isNew ? "" : draft.buffer.baseContentHash)
-            }
+            saved = try await cli.save(text: text, path: path,
+                                       confirmHash: plan.validated.approvalHash,
+                                       expectContentHash: isNew ? "" : draft.buffer.baseContentHash)
         } catch {
             let message = Self.saveMessage(for: error)
             // A new recipe was never opened: a file at its slug is a name clash.
@@ -666,21 +659,6 @@ package final class AutomationEditorCenter {
         }
         let trimmed = String(out.prefix(64)).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         return trimmed.isEmpty ? "automation" : trimmed
-    }
-
-    /// Runs `body` on `text` written to `<private dir>/<slug>.md` (dir 0700,
-    /// file 0600); the directory is removed on every path.
-    private func withTempRecipe<T>(_ text: String, slug: String, _ body: (URL) async throws -> T) async throws -> T {
-        let fm = FileManager.default
-        let dir = tempDirectory.appendingPathComponent("watchtower-automation-\(UUID().uuidString)", isDirectory: true)
-        try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        defer { try? fm.removeItem(at: dir) }
-        let file = dir.appendingPathComponent("\(slug).md")
-        guard fm.createFile(atPath: file.path, contents: Data(text.utf8), attributes: [.posixPermissions: 0o600])
-        else {
-            throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: file.path])
-        }
-        return try await body(file)
     }
 
     private static func recipeErrors(_ validated: AutomationsCLI.ValidateResult) -> String {

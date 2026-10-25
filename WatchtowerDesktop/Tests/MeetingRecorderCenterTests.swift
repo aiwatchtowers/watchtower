@@ -986,13 +986,8 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         // the generation fence itself (a live-ON successor would mask it).
         XCTAssertTrue(center.liveChunks.isEmpty,
                       "the orphan's stale chunk must be fenced out of the live-disabled recording's list")
-        let savedText = runner.invocations.first.flatMap { inv in
-            inv.firstIndex(of: "--transcript-file").flatMap { idx in
-                inv.indices.contains(idx + 1) ? try? String(contentsOfFile: inv[idx + 1], encoding: .utf8) : nil
-            }
-        }
-        // nil = the temp file was already cleaned up post-save; only an actual
-        // read-back containing the orphan's text is a failure.
+        // The transcript travels on stdin (`save --stdin`): what the save sent.
+        let savedText = runner.stdinInputs.first.flatMap { TranscriptStdinPayload.decode($0)?.transcript }
         XCTAssertNotEqual(savedText?.contains("stale-first-recording"), true,
                           "the orphan's live text must never reach the second recording's save")
     }

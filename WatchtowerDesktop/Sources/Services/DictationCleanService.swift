@@ -58,9 +58,8 @@ enum DictationCleanError: LocalizedError, Equatable {
 // MARK: - DictationCleanService
 
 /// Bridges the Desktop app to `watchtower dictate clean --mode <mode>
-/// --transcript-file <path>`. The transcript travels via a temp file (the
-/// `TranscriptSaveService.save` precedent), removed whether the run succeeds
-/// or throws. The CLI's stdout envelope shape is mode-dependent
+/// --transcript-file -`. The transcript travels on stdin (#604 S6), never in
+/// a temp file. The CLI's stdout envelope shape is mode-dependent
 /// (idea → title/body, note → markdown); this service decodes all fields as
 /// optional and maps the mode's own key into one result shape.
 struct DictationCleanService {
@@ -73,13 +72,8 @@ struct DictationCleanService {
     }
 
     func clean(transcript: String, mode: DictationCleanMode) async throws -> DictationCleanResult {
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("dictation-\(UUID().uuidString).txt")
-        try transcript.write(to: url, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(at: url) }
-
-        let args = ["dictate", "clean", "--mode", mode.rawValue, "--transcript-file", url.path]
-        let data = try await runner.run(args: args)
+        let args = ["dictate", "clean", "--mode", mode.rawValue, "--transcript-file", "-"]
+        let data = try await runner.run(args: args, stdin: Data(transcript.utf8))
         let envelope = try JSONDecoder().decode(Envelope.self, from: data)
 
         switch mode {

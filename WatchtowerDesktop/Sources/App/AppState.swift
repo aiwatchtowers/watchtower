@@ -754,6 +754,10 @@ final class AppState {
         isInitializing = true
         isLoading = true
         Constants.prewarmResolvedEnvironment()
+        // Text older versions handed the CLI through temp files (now stdin).
+        Task.detached(priority: .utility) {
+            StaleTempSweep.run(in: FileManager.default.temporaryDirectory)
+        }
         // Surface a recording captured before a crash/relaunch so the global
         // indicator can offer to (re-)transcribe it. No DB needed.
         meetingRecorderCenter.restorePendingOnLaunch()

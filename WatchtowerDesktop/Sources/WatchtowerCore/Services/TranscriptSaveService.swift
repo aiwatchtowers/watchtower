@@ -120,16 +120,14 @@ package struct TranscriptSaveService {
         self.runner = runner
     }
 
-    /// Writes `transcriptText` to a temp file, invokes
-    /// `meeting-prep transcript save --transcript-file <tmp> [--segments-file <tmp>]
-    /// [--speakers-file <tmp>] --audio <p> --duration <n> [--event-id <id>]
-    /// [--title <s>] --lang-stats <json>`,
-    /// and decodes the stdout envelope. The temp files are removed in defers,
-    /// whether the run succeeds or throws. Non-nil `utterances` travel as a
-    /// second temp file next to the transcript; the CLI persists them to
-    /// `segments_json` (nil → the column stays NULL, legacy behavior).
-    /// Non-nil `speakers` (per-cluster voice embeddings) travel the same way
-    /// into `speakers_json`.
+    /// Invokes `meeting-prep transcript save --stdin --audio <p> --duration <n>
+    /// [--event-id <id>] [--title <s>] --lang-stats <json>` with one JSON
+    /// object on stdin — `{"transcript", "segments", "speakers"}` — and decodes
+    /// the stdout envelope (#604 S7: no temp file holds the transcript).
+    /// Non-nil `utterances` travel as `segments`, which the CLI persists to
+    /// `segments_json` (null → the column stays NULL, legacy behavior);
+    /// non-nil `speakers` (per-cluster voice embeddings) as `speakers`, into
+    /// `speakers_json`.
     package func save(transcriptText: String,
                       utterances: [TranscriptUtterance]? = nil,
                       speakers: [SpeakerEmbedding]? = nil,
@@ -138,51 +136,21 @@ package struct TranscriptSaveService {
                       eventID: String?,
                       title: String?,
                       langStatsJSON: String) async throws -> TranscriptSaveResult {
-        let tmpURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("watchtower-transcript-\(UUID().uuidString).txt")
-        try transcriptText.write(to: tmpURL, atomically: true, encoding: .utf8)
-        defer { try? FileManager.default.removeItem(at: tmpURL) }
-
-        var segmentsURL: URL?
+        var segmentsJSON: String?
         if let utterances, !utterances.isEmpty {
-            if let segmentsJSON = TranscriptSegments.encode(utterances) {
-                let url = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("watchtower-segments-\(UUID().uuidString).json")
-                try segmentsJSON.write(to: url, atomically: true, encoding: .utf8)
-                segmentsURL = url
-            } else {
+            segmentsJSON = TranscriptSegments.encode(utterances)
+            if segmentsJSON == nil {
                 // Should be unreachable for in-memory utterances, but a silent
                 // drop here would be invisible — the save then degrades to a
                 // legacy segment-less row.
                 print("[TranscriptSave] segments encode failed — saving without segments")
             }
         }
-        defer { if let segmentsURL { try? FileManager.default.removeItem(at: segmentsURL) } }
+        var speakersJSON: String?
+        if let speakers, !speakers.isEmpty { speakersJSON = SpeakerEmbeddings.encode(speakers) }
 
-        var speakersURL: URL?
-        if let speakers, !speakers.isEmpty,
-           let speakersJSON = SpeakerEmbeddings.encode(speakers) {
-            let url = FileManager.default.temporaryDirectory
-                .appendingPathComponent("watchtower-speakers-\(UUID().uuidString).json")
-            try speakersJSON.write(to: url, atomically: true, encoding: .utf8)
-            speakersURL = url
-        }
-        defer { if let speakersURL { try? FileManager.default.removeItem(at: speakersURL) } }
-
-        var args = [
-            "meeting-prep", "transcript", "save",
-            "--transcript-file", tmpURL.path
-        ]
-        if let segmentsURL {
-            args += ["--segments-file", segmentsURL.path]
-        }
-        if let speakersURL {
-            args += ["--speakers-file", speakersURL.path]
-        }
-        args += [
-            "--audio", audioPath,
-            "--duration", String(durationSec)
-        ]
+        var args = ["meeting-prep", "transcript", "save", "--stdin", "--audio", audioPath,
+                    "--duration", String(durationSec)]
         if let eventID {
             args += ["--event-id", eventID]
         }
@@ -191,8 +159,17 @@ package struct TranscriptSaveService {
         }
         args += ["--lang-stats", langStatsJSON]
 
-        let data = try await runner.run(args: args)
+        let payload = try Self.stdinPayload(transcript: transcriptText, segmentsJSON: segmentsJSON,
+                                            speakersJSON: speakersJSON)
+        let data = try await runner.run(args: args, stdin: payload)
         return try JSONDecoder().decode(TranscriptSaveResult.self, from: data)
+    }
+
+    /// `save --stdin`'s object. The segments and speakers JSON are embedded as
+    /// they were encoded (the bytes the CLI stores), not re-serialized.
+    package static func stdinPayload(transcript: String, segmentsJSON: String?, speakersJSON: String?) throws -> Data {
+        let text = String(bytes: try JSONEncoder().encode(transcript), encoding: .utf8) ?? "\"\""
+        return Data(#"{"transcript":\#(text),"segments":\#(segmentsJSON ?? "null"),"speakers":\#(speakersJSON ?? "null")}"#.utf8)
     }
 
     /// `meeting-prep transcript recap <id>` — retry a failed recap for an

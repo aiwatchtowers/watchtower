@@ -21,13 +21,11 @@ package struct TrackComposeService {
     /// Composes a custom-track draft. When `targetID` > 0 the track is linked
     /// to that target for context.
     package func compose(text: String, targetID: Int? = nil) async throws -> TrackDraft {
-        let data = try await CLITextFile.with(text) { path in
-            var args = ["tracks", "create", "--text-file", path]
-            if let targetID, targetID > 0 {
-                args.append(contentsOf: ["--target", "\(targetID)"])
-            }
-            return try await runner.run(args: args)
+        var args = ["tracks", "create", "--text-file", "-"]
+        if let targetID, targetID > 0 {
+            args.append(contentsOf: ["--target", "\(targetID)"])
         }
+        let data = try await runner.run(args: args, stdin: Data(text.utf8))
         return try JSONDecoder().decode(TrackDraft.self, from: data)
     }
 }

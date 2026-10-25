@@ -196,10 +196,9 @@ final class FakeDiarizer: SpeakerDiarizing, @unchecked Sendable {
     }
 }
 
-/// Reads the files passed via --transcript-file / --segments-file /
-/// --speakers-file DURING the CLI invocation (the save service deletes them
-/// right after), capturing the exact saved text, segments JSON and speakers
-/// JSON (nil when the corresponding file was not passed).
+/// Decodes `transcript save --stdin`'s JSON object (or a `dictate clean
+/// --transcript-file -` text), capturing the exact saved text, segments JSON
+/// and speakers JSON (nil when not sent).
 /// `shouldThrow` (cleared by the test for a retry) fails the save AFTER
 /// capturing, mirroring FakeCLIRunner's failure knob.
 final class TranscriptCapturingRunner: CLIRunnerProtocol, @unchecked Sendable {
@@ -214,24 +213,43 @@ final class TranscriptCapturingRunner: CLIRunnerProtocol, @unchecked Sendable {
 
     func run(args: [String]) async throws -> Data {
         invocations.append(args)
-        if let idx = args.firstIndex(of: "--transcript-file"), idx + 1 < args.count,
-           let text = try? String(contentsOfFile: args[idx + 1], encoding: .utf8) {
-            savedTranscripts.append(text)
-        }
-        if let idx = args.firstIndex(of: "--segments-file"), idx + 1 < args.count,
-           let json = try? String(contentsOfFile: args[idx + 1], encoding: .utf8) {
-            savedSegments.append(json)
-        } else {
-            savedSegments.append(nil)
-        }
-        if let idx = args.firstIndex(of: "--speakers-file"), idx + 1 < args.count,
-           let json = try? String(contentsOfFile: args[idx + 1], encoding: .utf8) {
-            savedSpeakers.append(json)
-        } else {
-            savedSpeakers.append(nil)
+        if let shouldThrow { throw shouldThrow }
+        return stdoutData
+    }
+
+    func run(args: [String], stdin: Data) async throws -> Data {
+        invocations.append(args)
+        if !args.contains("--stdin") {
+            // `dictate clean --transcript-file -`: the raw transcript.
+            savedTranscripts.append(String(bytes: stdin, encoding: .utf8) ?? "")
+        } else if let payload = TranscriptStdinPayload.decode(stdin) {
+            savedTranscripts.append(payload.transcript)
+            savedSegments.append(payload.segments)
+            savedSpeakers.append(payload.speakers)
         }
         if let shouldThrow { throw shouldThrow }
         return stdoutData
+    }
+}
+
+/// `transcript save --stdin`'s object as the test reads it back: the
+/// segments and speakers as their JSON text (nil for null or absent).
+struct TranscriptStdinPayload {
+    let transcript: String
+    let segments: String?
+    let speakers: String?
+
+    static func decode(_ data: Data) -> Self? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let transcript = object["transcript"] as? String else { return nil }
+        func json(_ key: String) -> String? {
+            guard let value = object[key], !(value is NSNull),
+                  let bytes = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]) else {
+                return nil
+            }
+            return String(bytes: bytes, encoding: .utf8)
+        }
+        return Self(transcript: transcript, segments: json("segments"), speakers: json("speakers"))
     }
 }
 

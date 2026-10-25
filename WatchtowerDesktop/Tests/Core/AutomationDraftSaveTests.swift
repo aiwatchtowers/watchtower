@@ -19,6 +19,10 @@ private final class DraftSaveRunner: CLIRunnerProtocol, @unchecked Sendable {
         let handler = lock.withLock { handlers[sub] }
         return try handler?(args) ?? Data()
     }
+
+    func run(args: [String], stdin _: Data) async throws -> Data {
+        try await run(args: args)
+    }
 }
 
 /// Spec 2026-10-24 §4 (ask #528): a new draft's landed save takes its row
@@ -47,13 +51,9 @@ final class AutomationDraftSaveTests: XCTestCase {
 
     /// An editor whose debounced checks never fire: the tests check by hand.
     private func makeEditor() throws -> AutomationEditorCenter {
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("draft-save-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
-        addTeardownBlock { try? FileManager.default.removeItem(at: tempDir) }
         let sleep: (Duration) async -> Void = { _ in try? await Task.sleep(for: .seconds(3600)) }
         return AutomationEditorCenter(cli: AutomationsCLI(runner: runner), grants: { _ in [] },
-                                      refresh: { _ in }, tempDirectory: tempDir, sleep: sleep)
+                                      refresh: { _ in }, sleep: sleep)
     }
 
     /// One `automation_draft` conversation keyed `contextID`, with a cached

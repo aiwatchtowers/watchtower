@@ -41,6 +41,12 @@ private final class ScriptedRunner: CLIRunnerProtocol, @unchecked Sendable {
         waiting?.resume()
     }
 
+    /// The texts that ride stdin (`--text-file -`, `validate -`, #604 S6)
+    /// change nothing here.
+    func run(args: [String], stdin _: Data) async throws -> Data {
+        try await run(args: args)
+    }
+
     func run(args: [String]) async throws -> Data {
         let sub = args.count > 1 ? args[1] : ""
         let (handler, held) = lock.withLock {
