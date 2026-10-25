@@ -71,16 +71,17 @@ type SlackKeyDetector interface {
 }
 
 // SlackAfterDescribed is the pass's after-described hook for Slack: the
-// title, description and text read off a Slack image are run through the
-// key detector as that message's text, so a screenshot naming an issue
-// links it. A link summary never feeds the detector (a page someone else
-// wrote is no mention by the message).
+// text read off a Slack image verbatim (image_text) and its keys
+// (keys_json, kept only when verbatim in that text) are run through the key
+// detector as that message's text, so a screenshot naming an issue links
+// it. The model-written title and description never feed it (an invented
+// key links nothing), and neither does a link summary.
 func SlackAfterDescribed(d SlackKeyDetector) func(context.Context, db.MediaItem) error {
 	return func(_ context.Context, it db.MediaItem) error {
 		if it.ParentKind != "slack" || it.Kind != "image" || it.Status != "ok" {
 			return nil
 		}
-		_, err := d.ProcessMessage(it.SlackChannelID, it.SlackTS, strings.Join([]string{it.Title, it.Body, it.ImageText}, "\n"))
+		_, err := d.ProcessMessage(it.SlackChannelID, it.SlackTS, strings.Join(append([]string{it.ImageText}, it.Keys...), "\n"))
 		return err
 	}
 }

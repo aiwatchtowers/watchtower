@@ -107,6 +107,12 @@ func TestSlackAfterDescribed_LinksJiraKeyOnScreenshot(t *testing.T) {
 		Title: "Error dialog", Body: "A dialog shows an error.", ImageText: "Failed: ABC-17 is blocked"}
 
 	require.NoError(t, hook(context.Background(), it))
+	keyed := it
+	keyed.SlackTS, keyed.ImageText, keyed.Keys = "1.0", "", []string{"ABC-23"}
+	require.NoError(t, hook(context.Background(), keyed))
+	keyLinks, err := d.GetJiraSlackLinksByIssue("ABC-23")
+	require.NoError(t, err)
+	assert.Len(t, keyLinks, 1, "a stored key links too")
 	links, err := d.GetJiraSlackLinksByIssue("ABC-17")
 	require.NoError(t, err)
 	require.Len(t, links, 1)
@@ -115,10 +121,24 @@ func TestSlackAfterDescribed_LinksJiraKeyOnScreenshot(t *testing.T) {
 	assert.Equal(t, "mention", links[0].LinkType)
 }
 
+// Only the image's verbatim text feeds the detector: a key the model wrote
+// into the title or description (possibly invented) links nothing.
+func TestSlackAfterDescribed_IgnoresModelWrittenKeys(t *testing.T) {
+	d, hook := keyEnv(t)
+	it := db.MediaItem{Kind: "image", ParentKind: "slack", SlackChannelID: "1:C1", SlackTS: "1.0", Status: "ok",
+		Title: "Ticket ABC-31", Body: "The screenshot likely shows ABC-32.", ImageText: "Build failed"}
+	require.NoError(t, hook(context.Background(), it))
+	for _, k := range []string{"ABC-31", "ABC-32"} {
+		links, err := d.GetJiraSlackLinksByIssue(k)
+		require.NoError(t, err)
+		assert.Empty(t, links, k)
+	}
+}
+
 func TestSlackAfterDescribed_SkipsLinkRows(t *testing.T) {
 	d, hook := keyEnv(t)
 	link := db.MediaItem{Kind: "link", ParentKind: "slack", SlackChannelID: "1:C1", SlackTS: "1.0", Status: "ok",
-		Locator: "url:https://example.com/a", Title: "ABC-1 page", Body: "The page says ABC-1 is done."}
+		Locator: "url:https://example.com/a", Title: "ABC-1 page", Body: "The page says ABC-1 is done.", ImageText: "ABC-1"}
 	require.NoError(t, hook(context.Background(), link))
 	other := db.MediaItem{Kind: "image", ParentKind: "confluence", ExtSourceID: 1, ExtID: "p1", Status: "ok", ImageText: "ABC-1"}
 	require.NoError(t, hook(context.Background(), other))
