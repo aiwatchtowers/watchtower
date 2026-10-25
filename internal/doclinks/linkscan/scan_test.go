@@ -359,7 +359,7 @@ func TestScanSources_CancelledContextStops(t *testing.T) {
 
 // seedDescribedMedia records one item of kind on the Slack thread reply
 // 1758000100.000200 and stores an ok result with its knowledge key.
-func seedDescribedMedia(t *testing.T, d *db.DB, kind, locator, title, body, imageText string) {
+func seedDescribedMedia(t *testing.T, d *db.DB, kind, locator, title, body, imageText string, keys ...string) {
 	t.Helper()
 	ctx := context.Background()
 	require.NoError(t, d.SetMediaStartAt(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)))
@@ -375,7 +375,7 @@ func seedDescribedMedia(t *testing.T, d *db.DB, kind, locator, title, body, imag
 		Scan(&it.ID, &it.ParentKind, &it.SlackChannelID, &it.SlackTS))
 	src, ref, err := kb.MediaParentRef(ctx, d, it)
 	require.NoError(t, err)
-	require.NoError(t, d.FinishMedia(ctx, it.ID, db.MediaResult{Status: "ok", Title: title, Body: body, ImageText: imageText,
+	require.NoError(t, d.FinishMedia(ctx, it.ID, db.MediaResult{Status: "ok", Title: title, Body: body, ImageText: imageText, Keys: keys,
 		KBSource: src, KBRef: ref}))
 }
 
@@ -396,6 +396,37 @@ func TestScanSources_MediaLinksConfluenceURLOnImage(t *testing.T) {
 	assert.Equal(t, "slack", links[0].FromKind)
 	assert.Equal(t, "slack:thread:1:C1:1758000000.000100", links[0].FromRef)
 	assert.NotEmpty(t, cursors(t, d)["media"])
+}
+
+// Ruling 12: the model's own words (title, description) never link; only
+// the text read off the image and its kept keys do.
+func TestScanSources_MediaIgnoresModelWrittenText(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	seedSite(t, d)
+	seedDescribedMedia(t, d, "image", "F1", "Wiki "+pageURL+"1001",
+		"A browser showing "+pageURL+"1001/Payments", "no address visible")
+
+	st, err := scan(ctx, d, scanOptions{batch: 1000, now: time.Now().Add(2 * time.Second)})
+	require.NoError(t, err)
+	assert.Zero(t, st.Linked)
+	assert.Zero(t, linkCount(t, d))
+	assert.NotEmpty(t, cursors(t, d)["media"], "the cursor moved past the row")
+}
+
+// A page URL among the image's kept keys links like one in its text.
+func TestScanSources_MediaLinksConfluenceURLInKeys(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	seedSite(t, d)
+	seedDescribedMedia(t, d, "image", "F1", "Browser tab", "A wiki page.", "", pageURL+"1001/Payments?a=1&b=2")
+
+	st, err := scan(ctx, d, scanOptions{batch: 1000, now: time.Now().Add(2 * time.Second)})
+	require.NoError(t, err)
+	assert.Equal(t, 1, st.Linked)
+	links, err := d.DocLinksTo(doclinks.ToConfluencePage, "c1:1001", 10)
+	require.NoError(t, err)
+	require.Len(t, links, 1)
 }
 
 // A link summary is a page's own words: it never creates a link, and the

@@ -78,17 +78,22 @@ func syncedScanQuery(table, refExpr, textExpr string) string {
 
 // mediaScanQuery is the syncedScanQuery shape over described media items
 // (described_at is their marker, empty until described). Only an ok image
-// with a knowledge key yields text — its title, description and the text
-// read off it; a link summary is the page's own words and never links
-// anything, but every row moves the cursor. The ref is the row's kb_ref and
-// the kind its kb_source (the parent document's source).
+// with a knowledge key yields text — the text read off it and its kept keys
+// (keys_json), never the model's own title or description (Ruling 12); a
+// link summary is the page's own words and never links anything, but every
+// row moves the cursor. The ref is the row's kb_ref and the kind its
+// kb_source (the parent document's source).
 const mediaScanQuery = `SELECT rowid, described_at, kb_ref, kb_source,
 	CASE WHEN kind = 'image' AND status = 'ok' AND kb_ref != ''
-	      AND (title || ' ' || body || ' ' || image_text) LIKE ` + likeConfluence + `
-	     THEN title || ' ' || body || ' ' || image_text ELSE '' END
+	      AND (image_text || ' ' || ` + mediaKeysText + `) LIKE ` + likeConfluence + `
+	     THEN image_text || ' ' || ` + mediaKeysText + ` ELSE '' END
 	FROM media_items
 	WHERE described_at != '' AND described_at >= ? AND described_at < ? AND (described_at > ? OR rowid > ?)
 	ORDER BY described_at, rowid LIMIT ?`
+
+// mediaKeysText is a media row's keys_json array as space-separated words
+// (decoded, so a key's "&" reads as written).
+const mediaKeysText = `COALESCE((SELECT group_concat(value, ' ') FROM json_each(CASE WHEN json_valid(keys_json) THEN keys_json ELSE '[]' END)), '')`
 
 // The ref expressions mirror internal/kb's keys (gmailKeyExpr, imapKeyExpr,
 // jiraSource); TestScanSources_LinksEveryKindToItsKnowledgeRef pins that
