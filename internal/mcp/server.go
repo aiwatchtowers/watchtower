@@ -60,6 +60,7 @@ type Server struct {
 	toolFilter  func(t *tools.Tool) bool
 	callGate    func(ctx context.Context, t *tools.Tool, args json.RawMessage) (json.RawMessage, error)
 	resultCheck func(result []byte) error
+	readSession string
 }
 
 // ServerOption customizes NewServer additively, so existing call sites keep
@@ -109,6 +110,13 @@ func WithResultCheck(check func(result []byte) error) ServerOption {
 	return func(srv *Server) { srv.resultCheck = check }
 }
 
+// WithReadSession sets the read-budget session key of calls bound to neither
+// an automation run nor a conversation (tools.Registry.SetProcessSession) on
+// whichever registry the server mounts, the dev-mode one included.
+func WithReadSession(key string) ServerOption {
+	return func(srv *Server) { srv.readSession = key }
+}
+
 // NewServer builds an MCP server over the given database and registers every
 // domain tool.
 func NewServer(database *db.DB, opts ...ServerOption) *Server {
@@ -126,6 +134,9 @@ func NewServer(database *db.DB, opts ...ServerOption) *Server {
 	// through the registry, not a per-domain handler.
 	if srv.registry == nil {
 		srv.registry = tools.NewReadRegistry(database)
+	}
+	if srv.readSession != "" {
+		srv.registry.SetProcessSession(srv.readSession)
 	}
 	// The dependency-carrying read tools (memory_*, load_skill) cannot sit in the
 	// zero-arg ReadTools() list — they close over the vault path, skills dir and

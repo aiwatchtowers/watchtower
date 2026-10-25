@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"watchtower/internal/auditlog"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/db/lockmetrics"
@@ -73,7 +74,9 @@ func ensureSchemaFormat(_ *cobra.Command, _ []string) error {
 
 // Execute runs the root command and returns the exit code.
 func Execute() int {
-	lockmetrics.SetProcessRole(roleFor(os.Args[1:]))
+	role := roleFor(os.Args[1:])
+	lockmetrics.SetProcessRole(role)
+	auditlog.SetProcess(role)
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		var ec *exitCodeError
