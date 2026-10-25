@@ -14,4 +14,16 @@ Mockups for board target #1072, spec `docs/superpowers/specs/2026-10-25-mobile-w
 7. **Calendar** — the Desktop's calendar rows: time block, current meeting green, next blue, now line.
 8. **Mac asleep** — state "as of" last contact, a banner, a sent line waits for the Mac.
 
-Not drawn yet (follow the same parts once these are approved): board target detail, the three ask views full-screen, report and timeline, recorder and recordings, Settings and Macs, linking.
+Screens 1–8 approved (ask #618). Remaining screens, same parts:
+
+9. **Target detail** — status, chips, progress, intent, sub-targets, its session, comments; one action: start a session.
+10. **Review ask** — the document full-width, select text to comment, Approve / Request changes.
+11. **Check ask** — steps with Done / Failed and a note; Send.
+12. **Start a session** — workbench, target, brief, options; Start.
+13. **Report and timeline** — reached from the session menu.
+14. **Recorder** — name, timer, level, stop.
+15. **Recap** — summary, decisions, action items, transcript link.
+16. **Settings** — grouped cards, small switches, the new “When work stops” toggle.
+17. **Linking** — scan the code on the Mac; help and the demo as quiet links.
+
+Live page: the claude.ai artifact linked from target #1072.

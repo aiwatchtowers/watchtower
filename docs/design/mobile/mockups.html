@@ -1,24 +1,31 @@
-<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>Watchtower iPhone mockups</title>
+<title>Watchtower iPhone Redesign</title>
+<meta name="claude:viewport-fit-sides" content="cover">
 <style>
 :root{
   --bg:#ffffff; --bg2:#f5f5f7; --text:#1d1d1f; --text2:rgba(60,60,67,.62); --text3:rgba(60,60,67,.32);
   --fill-card:rgba(0,0,0,.045); --fill-rest:rgba(0,0,0,.03); --hair:rgba(0,0,0,.10);
   --blue:#007aff; --green:#34c759; --orange:#ff9500; --red:#ff3b30; --purple:#af52de; --gray:#8e8e93; --teal:#30b0c7;
   --accent-sel:rgba(0,122,255,.12); --bar:rgba(249,249,249,.94); --sheet:#fff;
-}
-body.dark{
+--seg-on:#fff;}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
   --bg:#1c1c1e; --bg2:#000; --text:#f5f5f7; --text2:rgba(235,235,245,.6); --text3:rgba(235,235,245,.3);
   --fill-card:rgba(255,255,255,.06); --fill-rest:rgba(255,255,255,.04); --hair:rgba(255,255,255,.12);
   --blue:#0a84ff; --green:#30d158; --orange:#ff9f0a; --red:#ff453a; --purple:#bf5af2; --gray:#98989d; --teal:#40c8e0;
   --accent-sel:rgba(10,132,255,.22); --bar:rgba(28,28,30,.94); --sheet:#2c2c2e;
-}
+--seg-on:#3a3a3c;color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#1c1c1e; --bg2:#000; --text:#f5f5f7; --text2:rgba(235,235,245,.6); --text3:rgba(235,235,245,.3);
+  --fill-card:rgba(255,255,255,.06); --fill-rest:rgba(255,255,255,.04); --hair:rgba(255,255,255,.12);
+  --blue:#0a84ff; --green:#30d158; --orange:#ff9f0a; --red:#ff453a; --purple:#bf5af2; --gray:#98989d; --teal:#40c8e0;
+  --accent-sel:rgba(10,132,255,.22); --bar:rgba(28,28,30,.94); --sheet:#2c2c2e;
+--seg-on:#3a3a3c;color-scheme:dark}
+
+
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,"SF Pro Text",system-ui,sans-serif;background:var(--bg2);color:var(--text);padding:40px;-webkit-font-smoothing:antialiased}
-.sheet{display:flex;gap:40px;flex-wrap:wrap;width:1780px}
+body{font-family:-apple-system,"SF Pro Text",system-ui,sans-serif;background:var(--bg2);color:var(--text);-webkit-font-smoothing:antialiased}
+.wrap{padding-block:28px 48px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));max-width:1800px;margin:0 auto}
+.sheet{display:flex;gap:44px 40px;flex-wrap:wrap;justify-content:center}
+.sheet>div{scroll-margin-top:20px}
 .cap{width:390px;font-size:13px;color:var(--text2);margin-top:10px;line-height:1.35}
 .cap b{color:var(--text)}
 .phone{width:390px;height:844px;border-radius:48px;background:var(--bg);overflow:hidden;position:relative;box-shadow:0 0 0 10px #111,0 20px 50px rgba(0,0,0,.25);display:flex;flex-direction:column}
@@ -56,8 +63,8 @@ body{font-family:-apple-system,"SF Pro Text",system-ui,sans-serif;background:var
 .macchip i{width:7px;height:7px;border-radius:50%;display:inline-block}
 .seg{display:flex;background:var(--fill-card);border-radius:9px;padding:2px;margin:4px 0 6px}
 .seg div{flex:1;text-align:center;font-size:13px;font-weight:500;padding:5px 0;border-radius:7px;color:var(--text2)}
-.seg .on{background:var(--bg);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.12)}
-body.dark .seg .on{background:#3a3a3c}
+.seg .on{color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.seg .on{background:var(--seg-on)}
 .fold{font-size:13px;color:var(--text2);padding:8px 4px}
 /* workchat */
 .wchead{padding:2px 16px 10px;border-bottom:.5px solid var(--hair)}
@@ -112,13 +119,61 @@ body.dark .seg .on{background:#3a3a3c}
 .bar i{display:block;height:100%;background:var(--gray);border-radius:2px}
 .lane{font-size:13px;font-weight:600;margin:14px 4px 8px;display:flex;justify-content:space-between}
 .lane span{color:var(--text2);font-weight:500}
+
+header.top{max-width:860px;margin:0 auto 32px;display:flex;flex-direction:column;gap:10px}
+header.top h1{font-size:26px;font-weight:700;letter-spacing:-.3px;text-wrap:balance}
+header.top p{font-size:15px;line-height:1.5;color:var(--text2);max-width:68ch}
+.toggle{align-self:flex-start;display:inline-flex;background:var(--fill-card);border:.5px solid var(--hair);border-radius:9px;padding:2px}
+.toggle button{font:inherit;font-size:13px;border:0;background:transparent;color:var(--text2);padding:5px 12px;border-radius:7px;cursor:pointer}
+.toggle button[aria-pressed="true"]{background:var(--seg-on);color:var(--text);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.toggle button:focus-visible{outline:2px solid var(--blue);outline-offset:1px}
+@media (max-width:460px){.phone,.cap{zoom:.86}}
+@media (max-width:400px){.phone,.cap{zoom:.8}}
+
+h2.part{max-width:860px;margin:56px auto 24px;font-size:20px;font-weight:700}
+.sw{width:42px;height:25px;border-radius:13px;background:var(--fill-card);border:.5px solid var(--hair);position:relative;flex:none}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:21px;height:21px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.25)}
+.sw.on{background:var(--green);border-color:transparent}.sw.on::after{left:19px}
+.srow{display:flex;align-items:center;gap:10px;padding:10px 0}
+.srow+.srow{border-top:.5px solid var(--hair)}
+.val{font-size:14px;color:var(--text2);margin-left:auto}
+.doc{font-size:14px;line-height:21px}
+.doc h4{font-size:15px;margin:10px 0 4px}
+.hl{background:color-mix(in srgb,var(--orange) 22%,transparent);border-bottom:2px solid var(--orange)}
+.cmt{font-size:13px;border-left:2px solid var(--orange);padding:4px 8px;margin:8px 0;color:var(--text)}
+.step{display:flex;gap:10px;padding:9px 0;align-items:flex-start}
+.step+.step{border-top:.5px solid var(--hair)}
+.mark{display:flex;gap:4px;margin-left:auto}
+.mark span{font-size:11px;font-weight:600;padding:3px 8px;border-radius:7px;border:.5px solid var(--hair);color:var(--text2)}
+.mark .ok{background:color-mix(in srgb,var(--green) 16%,transparent);color:var(--green);border-color:color-mix(in srgb,var(--green) 40%,transparent)}
+.mark .no{background:color-mix(in srgb,var(--red) 16%,transparent);color:var(--red);border-color:color-mix(in srgb,var(--red) 40%,transparent)}
+.field{background:var(--fill-card);border:.5px solid var(--hair);border-radius:8px;padding:9px 11px;font-size:14px;line-height:20px}
+.lbl{font-size:12px;color:var(--text2);margin:14px 2px 6px}
+.tl{display:flex;gap:10px;padding:6px 0;font-size:14px}
+.tl .tm{width:44px;color:var(--text2);font-size:12px;font-variant-numeric:tabular-nums;padding-top:2px}
+.tl i{width:8px;height:8px;border-radius:50%;margin-top:6px;flex:none}
+.seg3{display:flex;height:6px;border-radius:3px;overflow:hidden;margin:8px 0 4px}
+.wave{display:flex;align-items:center;gap:3px;height:70px;justify-content:center;margin:24px 0}
+.wave i{width:4px;border-radius:2px;background:var(--red)}
+.recbtn{width:72px;height:72px;border-radius:50%;border:4px solid var(--hair);display:flex;align-items:center;justify-content:center;margin:0 auto}
+.recbtn i{width:28px;height:28px;border-radius:6px;background:var(--red)}
+.qr{width:180px;height:180px;margin:20px auto;border-radius:16px;border:2px solid var(--blue);display:flex;align-items:center;justify-content:center;color:var(--text3);font-size:13px;background:var(--fill-rest)}
+.big{font-size:28px;font-weight:700;margin:2px 4px 8px}
+.primarybar{padding:10px 16px 30px;border-top:.5px solid var(--hair);background:var(--bar)}
+.primarybar .btn{width:100%;height:46px;border-radius:12px;font-size:16px}
 </style>
-</head>
-<body>
+<div class="wrap">
+<header class="top">
+<h1>Watchtower for iPhone — new design</h1>
+<p>Seventeen screens in the Desktop's language: the same spacing, radii, soft card fills, status colours and section headers as the Mac app's sessions panel, Workchat, board and calendar. Demo data. Comment on any screen to leave feedback.</p>
+<div class="toggle" role="group" aria-label="Theme"><button id="t-auto" aria-pressed="true">System</button><button id="t-light" aria-pressed="false">Light</button><button id="t-dark" aria-pressed="false">Dark</button></div>
+</header>
+<h2 class="part" style="margin-top:0">Key screens (approved, ask #618)</h2>
+
 <div class="sheet">
 
 <!-- 1. NOW -->
-<div>
+<div id="now">
 <div class="phone">
   <div class="status"><span>9:41</span><span>●●● 100%</span></div>
   <div class="nav"><span class="macchip"><i style="background:var(--green)"></i>MacBook Pro · online</span><span class="icon">⚙︎</span></div>
@@ -158,7 +213,7 @@ body.dark .seg .on{background:#3a3a3c}
 </div>
 
 <!-- 2. SESSIONS -->
-<div>
+<div id="sessions">
 <div class="phone">
   <div class="status"><span>9:41</span><span>●●● 100%</span></div>
   <div class="nav"><span class="back">‹ Workbench</span><span class="title">watchtower</span><span class="icon">＋</span></div>
@@ -186,7 +241,7 @@ body.dark .seg .on{background:#3a3a3c}
 </div>
 
 <!-- 3. WORKCHAT WORKING -->
-<div>
+<div id="workchat">
 <div class="phone">
   <div class="status"><span>9:41</span><span>●●● 100%</span></div>
   <div class="nav"><span class="back">‹ watchtower</span><span></span><span class="icon">⋯</span></div>
@@ -207,7 +262,7 @@ body.dark .seg .on{background:#3a3a3c}
 </div>
 
 <!-- 4. WORKCHAT WAITING -->
-<div>
+<div id="waiting">
 <div class="phone">
   <div class="status"><span>9:41</span><span>●●● 100%</span></div>
   <div class="nav"><span class="back">‹ watchtower</span><span></span><span class="icon">⋯</span></div>
@@ -233,7 +288,7 @@ body.dark .seg .on{background:#3a3a3c}
 </div>
 
 <!-- 5. BOARD -->
-<div>
+<div id="board">
 <div class="phone">
   <div class="status"><span>9:41</span><span>●●● 100%</span></div>
   <div class="nav"><span class="back">‹ Workbench</span><span class="title">watchtower</span><span class="icon">＋</span></div>
@@ -259,7 +314,7 @@ body.dark .seg .on{background:#3a3a3c}
 </div>
 
 <!-- 6. LOCK SCREEN -->
-<div>
+<div id="pushes">
 <div class="phone lock">
   <div class="status" style="color:#fff"><span></span><span>●●● 100%</span></div>
   <div class="clock">14:05</div>
@@ -274,7 +329,7 @@ body.dark .seg .on{background:#3a3a3c}
 </div>
 
 <!-- 7. CALENDAR -->
-<div>
+<div id="calendar">
 <div class="phone">
   <div class="status"><span>9:41</span><span>●●● 100%</span></div>
   <div class="nav"><span class="macchip"><i style="background:var(--green)"></i>MacBook Pro · online</span><span class="icon">🎙</span></div>
@@ -293,7 +348,7 @@ body.dark .seg .on{background:#3a3a3c}
 </div>
 
 <!-- 8. MAC ASLEEP -->
-<div>
+<div id="asleep">
 <div class="phone">
   <div class="status"><span>9:41</span><span>●●● 100%</span></div>
   <div class="nav"><span class="back">‹ watchtower</span><span></span><span class="icon">⋯</span></div>
@@ -311,5 +366,151 @@ body.dark .seg .on{background:#3a3a3c}
 </div>
 
 </div>
-</body>
-</html>
+
+<h2 class="part">Remaining screens</h2>
+<div class="sheet">
+<div id="target">
+<div class="phone"><div class="status"><span>9:41</span><span>●●● 100%</span></div><div class="nav"><span class="back">‹ Board</span><span></span><span class="icon">⋯</span></div>
+<div class="content">
+<div class="row" style="margin:2px 0 6px"><span style="color:var(--blue);font-size:18px">◌</span><div class="grow"><div style="font-size:20px;font-weight:600;line-height:25px">Billing export for acme</div>
+<div class="m" style="margin-top:6px">#1 <span class="chip" style="color:var(--red);border-color:color-mix(in srgb,var(--red) 30%,transparent);background:color-mix(in srgb,var(--red) 14%,transparent)">● High</span><span class="chip" style="color:var(--blue);border-color:color-mix(in srgb,var(--blue) 30%,transparent);background:color-mix(in srgb,var(--blue) 14%,transparent)">In Progress</span> 1/2</div></div></div>
+<div class="bar" style="margin:4px 0 12px"><i style="width:55%"></i></div>
+<div class="doc" style="color:var(--text)">Finance wants a nightly CSV of paid invoices. Done when the export runs on schedule and the columns match the spec.</div>
+<div class="sec">Sub-targets <span class="n">2</span></div>
+<div class="card" style="padding:4px 12px"><div class="srow"><span style="color:var(--green)">✓</span><span class="t2">Add invoice_id and paid_at</span></div><div class="srow"><span style="color:var(--blue)">◌</span><span class="t2">Run nightly at 02:00</span></div></div>
+<div class="sec">Session <span class="n">1</span></div>
+<div class="card"><div class="row"><div class="dot" style="background:var(--orange)">?</div><div class="grow"><div class="t2">Billing export</div><div class="m">Waiting for you · ask #109</div></div><div class="age">4m</div></div></div>
+<div class="sec">Comments <span class="n">2</span></div>
+<div class="m" style="font-size:13px;color:var(--text);line-height:19px"><b>You</b> · 1h<br>Keep the old column order for now.</div>
+<div class="m" style="font-size:13px;color:var(--text);line-height:19px;margin-top:8px"><b>Agent</b> · 40m<br>Kept. The new columns go at the end.</div>
+</div>
+<div class="primarybar"><span class="btn pri">Start a session</span></div></div>
+<div class="cap"><b>9 · Target detail.</b> Status, chips and progress as on the board card; intent, sub-targets, its session, comments. One prominent action: start a session on it.</div>
+</div>
+<div id="review">
+<div class="phone"><div class="status"><span>9:41</span><span>●●● 100%</span></div><div class="nav"><span class="back">‹ Back</span><span class="title">Review</span><span class="icon"></span></div>
+<div class="content">
+<div class="m" style="margin:0 0 2px">Ask #111 · review · watchtower</div>
+<div class="t" style="font-size:17px">Spec: mobile workbench remote</div>
+<div class="card" style="margin-top:12px;padding:12px 14px"><div class="doc">
+<h4>5.1 Away from the Mac</h4>
+Away when the screen is locked or <span class="hl">the Mac has had no input for 3 minutes</span>. Back at once on unlock or input.
+<div class="cmt">Make it 5 minutes, 3 is too short when I read.</div>
+<h4>5.2 What pushes</h4>
+One alert per stop of work: a new ask, a permission request, a finished or failed session…</div></div>
+<div class="m" style="text-align:center;margin-top:4px">Select text to comment on it</div>
+</div>
+<div class="primarybar" style="display:flex;gap:8px"><span class="btn sec2" style="flex:1;height:46px;border-radius:12px">Request changes</span><span class="btn pri" style="flex:1;height:46px;border-radius:12px;width:auto">Approve</span></div></div>
+<div class="cap"><b>10 · Review ask.</b> The document reads full-width; select text to comment, the quote is highlighted in place. Two answers at the bottom.</div>
+</div>
+<div id="check">
+<div class="phone"><div class="status"><span>9:41</span><span>●●● 100%</span></div><div class="nav"><span class="back">‹ Back</span><span class="title">Check</span><span class="icon"></span></div>
+<div class="content">
+<div class="m" style="margin:0 0 2px">Ask #112 · check · watchtower</div>
+<div class="t" style="font-size:17px">Try the new push on your phone</div>
+<div class="card" style="margin-top:12px;padding:2px 12px">
+<div class="step"><span class="m" style="margin:0;width:16px">1.</span><div class="grow t2">Lock the Mac and wait for the ask push</div><div class="mark"><span class="ok">Done</span><span>Failed</span></div></div>
+<div class="step"><span class="m" style="margin:0;width:16px">2.</span><div class="grow t2">Tap it: the ask opens</div><div class="mark"><span class="ok">Done</span><span>Failed</span></div></div>
+<div class="step"><span class="m" style="margin:0;width:16px">3.</span><div class="grow t2">Answer it from the lock screen</div><div class="mark"><span>Done</span><span class="no">Failed</span></div></div>
+<div class="field" style="margin:0 0 10px 26px;font-size:13px">No buttons on the lock screen, only after opening.</div>
+<div class="step"><span class="m" style="margin:0;width:16px">4.</span><div class="grow t2">Unlock the Mac: no more pushes</div><div class="mark"><span>Done</span><span>Failed</span></div></div>
+</div>
+<div class="m">A step you leave unmarked goes as skipped.</div>
+</div>
+<div class="primarybar"><span class="btn pri">Send</span></div></div>
+<div class="cap"><b>11 · Check ask.</b> Steps with Done / Failed marks and a note under a failed one; one Send.</div>
+</div>
+<div id="start">
+<div class="phone"><div class="status"><span>9:41</span><span>●●● 100%</span></div><div class="nav"><span class="back">Cancel</span><span class="title">New session</span><span class="icon"></span></div>
+<div class="content">
+<div class="lbl">Workbench</div><div class="field" style="display:flex">watchtower<span class="val">›</span></div>
+<div class="lbl">Target</div><div class="field" style="display:flex">#4 Fix the login redirect<span class="val">›</span></div>
+<div class="lbl">Brief the session gets</div><div class="field" style="min-height:110px;color:var(--text)">Fix the redirect loop after login. Keep the old /login path working. Run the auth tests before you finish.</div>
+<div class="card" style="padding:2px 12px;margin-top:14px">
+<div class="srow"><span class="t2">Agent</span><span class="val">Claude Code ›</span></div>
+<div class="srow"><span class="t2">Plan first, then ask me</span><span class="sw on" style="margin-left:auto"></span></div>
+<div class="srow"><span class="t2">In its own worktree</span><span class="sw" style="margin-left:auto"></span></div>
+</div>
+</div>
+<div class="primarybar"><span class="btn pri">Start session</span></div></div>
+<div class="cap"><b>12 · Start a session.</b> Workbench, target, the brief, three options in one card; one prominent Start.</div>
+</div>
+<div id="report">
+<div class="phone"><div class="status"><span>9:41</span><span>●●● 100%</span></div><div class="nav"><span class="back">‹ Session report</span><span class="title">Report</span><span class="icon"></span></div>
+<div class="content">
+<div class="card"><div class="t">Added PR links to the session report.</div><div class="m">Finished 14:02 · 48 min · feature/session-report · PR #212</div>
+<div class="seg3"><i style="width:62%;background:var(--green)"></i><i style="width:23%;background:var(--orange)"></i><i style="width:15%;background:var(--gray)"></i></div>
+<div class="m">Working 30m · Waiting for you 11m · Idle 7m</div></div>
+<div class="sec">Targets</div>
+<div class="card" style="padding:4px 12px"><div class="srow"><span style="color:var(--green)">✓</span><span class="t2">#343 Session report</span><span class="val">done</span></div></div>
+<div class="sec">Timeline</div>
+<div class="tl"><span class="tm">13:14</span><i style="background:var(--green)"></i><span>Started on #343</span></div>
+<div class="tl"><span class="tm">13:31</span><i style="background:var(--orange)"></i><span>Asked: keep the old header? (#109)</span></div>
+<div class="tl"><span class="tm">13:42</span><i style="background:var(--green)"></i><span>You answered · Both</span></div>
+<div class="tl"><span class="tm">13:58</span><i style="background:var(--blue)"></i><span>Opened PR #212</span></div>
+<div class="tl"><span class="tm">14:02</span><i style="background:var(--blue)"></i><span>Finished</span></div>
+</div><div class="tabbar"><div class="tab"><span class="ti">◉</span>Now</div><div class="tab on"><span class="ti">▦</span>Workbench<span class="badge">3</span></div><div class="tab"><span class="ti">▤</span>Calendar</div></div></div>
+<div class="cap"><b>13 · Report and timeline.</b> Moved off the chat into the session menu: the summary, time split, targets and the timeline.</div>
+</div>
+<div id="recorder">
+<div class="phone"><div class="status"><span>9:41</span><span>●●● 100%</span></div><div class="nav"><span class="back">‹ Calendar</span><span></span><span class="icon"></span></div>
+<div class="content" style="text-align:center">
+<div class="m" style="margin-top:30px">Recording</div>
+<div style="font-size:20px;font-weight:600;margin-top:4px">Design critique</div>
+<div style="font-size:44px;font-weight:300;font-variant-numeric:tabular-nums;margin-top:30px">12:48</div>
+<div class="wave"><i style="height:12px"></i><i style="height:26px"></i><i style="height:40px"></i><i style="height:22px"></i><i style="height:58px"></i><i style="height:34px"></i><i style="height:18px"></i><i style="height:46px"></i><i style="height:64px"></i><i style="height:30px"></i><i style="height:20px"></i><i style="height:52px"></i><i style="height:38px"></i><i style="height:16px"></i><i style="height:28px"></i><i style="height:48px"></i><i style="height:60px"></i><i style="height:24px"></i><i style="height:14px"></i><i style="height:36px"></i><i style="height:50px"></i><i style="height:22px"></i><i style="height:30px"></i><i style="height:44px"></i></div>
+<div class="m">Goes to your Mac for the transcript when it ends.</div>
+<div style="margin-top:60px"><div class="recbtn"><i></i></div><div class="m" style="margin-top:8px">Stop</div></div>
+</div></div>
+<div class="cap"><b>14 · Recorder.</b> Calm and big: meeting name, timer, level, one stop button.</div>
+</div>
+<div id="recap">
+<div class="phone"><div class="status"><span>9:41</span><span>●●● 100%</span></div><div class="nav"><span class="back">‹ Recordings</span><span></span><span class="icon">⋯</span></div>
+<div class="content">
+<div style="font-size:20px;font-weight:600">acme weekly sync</div>
+<div class="m">Today 10:00 · 58 min · 6 people</div>
+<div class="sec">Summary</div>
+<div class="doc">Billing export ships Thursday. The PDF layout waits for sign-off from finance. Next sync moves to Tuesday.</div>
+<div class="sec">Decisions <span class="n">2</span></div>
+<div class="card" style="padding:4px 12px"><div class="srow"><span style="color:var(--green)">✓</span><span class="t2">Keep CSV and add XLSX later</span></div><div class="srow"><span style="color:var(--green)">✓</span><span class="t2">Move the sync to Tuesday</span></div></div>
+<div class="sec">Action items <span class="n">2</span></div>
+<div class="card" style="padding:4px 12px"><div class="srow"><span style="color:var(--gray)">○</span><div class="grow"><div class="t2">Send the export spec to finance</div><div class="m">You · Thursday</div></div></div><div class="srow"><span style="color:var(--gray)">○</span><div class="grow"><div class="t2">Mock the PDF footer</div><div class="m">colleague A</div></div></div></div>
+<div class="m" style="margin-top:10px;color:var(--blue)">Read the transcript ›</div>
+</div><div class="tabbar"><div class="tab"><span class="ti">◉</span>Now</div><div class="tab"><span class="ti">▦</span>Workbench<span class="badge">3</span></div><div class="tab on"><span class="ti">▤</span>Calendar</div></div></div>
+<div class="cap"><b>15 · Recap.</b> Summary, decisions and action items as cards; the transcript one tap away.</div>
+</div>
+<div id="settings">
+<div class="phone"><div class="status"><span>9:41</span><span>●●● 100%</span></div><div class="nav"><span class="back">‹ Now</span><span class="title">Settings</span><span class="icon"></span></div>
+<div class="content">
+<div class="sec">This Mac</div>
+<div class="card" style="padding:2px 12px"><div class="srow"><span class="dot sm" style="background:var(--green);margin:0"></span><span class="t2">MacBook Pro</span><span class="val">Online</span></div><div class="srow"><span class="t2">Last sync</span><span class="val">just now</span></div><div class="srow"><span class="t2">Macs</span><span class="val">2 ›</span></div></div>
+<div class="sec">Workbench</div>
+<div class="card" style="padding:2px 12px"><div class="srow"><span class="t2">Type into sessions</span><span class="sw on" style="margin-left:auto"></span></div><div class="srow"><span class="t2">Answer permission prompts</span><span class="sw on" style="margin-left:auto"></span></div><div class="srow"><span class="t2">Start sessions</span><span class="sw on" style="margin-left:auto"></span></div></div>
+<div class="sec">Notifications</div>
+<div class="card" style="padding:2px 12px"><div class="srow"><span class="t2">When work stops</span><span class="sw on" style="margin-left:auto"></span></div></div>
+<div class="m" style="margin:6px 4px 0">Asks, approvals and finished or failed sessions, only while you’re away from your Mac.</div>
+<div class="sec">Accounts</div>
+<div class="m" style="margin:0 4px">Accounts are managed on your Mac.</div>
+</div></div>
+<div class="cap"><b>16 · Settings.</b> Grouped cards on the soft fill, small switches; the new “When work stops” toggle with what it does.</div>
+</div>
+<div id="link">
+<div class="phone"><div class="status"><span>9:41</span><span>●●● 100%</span></div><div class="content" style="text-align:center;padding-top:40px">
+<div style="width:64px;height:64px;border-radius:15px;margin:0 auto;background:linear-gradient(135deg,var(--blue),#5e5ce6)"></div>
+<div class="big" style="margin-top:16px">Watchtower</div>
+<div class="m" style="font-size:15px;line-height:21px;max-width:300px;margin:0 auto">Your sessions, asks and meetings from your Mac, on your phone.</div>
+<div class="qr">Camera</div>
+<div class="t2" style="font-weight:600">Scan the code on your Mac</div>
+<div class="m" style="max-width:290px;margin:6px auto 0">On your Mac: Settings → Mobile → Use Watchtower on iPhone.</div>
+<div style="margin-top:40px"><span class="btn q">The Mac doesn’t show up</span></div>
+<div><span class="btn q">Try the Demo</span></div>
+</div></div>
+<div class="cap"><b>17 · Linking.</b> One step on screen: scan the code on the Mac; help and the demo as quiet links.</div>
+</div>
+</div>
+</div>
+<script>
+(function(){var r=document.documentElement,b={auto:document.getElementById('t-auto'),light:document.getElementById('t-light'),dark:document.getElementById('t-dark')};
+function set(m){if(m==='auto')r.removeAttribute('data-theme');else r.setAttribute('data-theme',m);for(var k in b)b[k].setAttribute('aria-pressed',String(k===m));}
+for(var k in b)(function(k){b[k].addEventListener('click',function(){set(k)})})(k);})();
+</script>
