@@ -11,6 +11,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -117,8 +118,9 @@ func (p *Pipeline) Run(ctx context.Context, budget time.Duration) (Stats, error)
 	}
 	check := func(u string) bool { _, ok := linkrule.Fetchable(u, refused); return ok }
 	r := &run{p: p, dir: dir, st: &st, ext: &extract.Extractor{}}
-	// Built per run, so the own addresses are read afresh: pages under the
-	// 15 s link timeout, images under the 60 s download timeout.
+	// Built per run, so the own addresses are read afresh. One fetcher under
+	// the 60 s image download timeout; a link that answers with a page is cut
+	// at the 15 s link timeout (see run.link).
 	newWeb := p.newWeb
 	if newWeb == nil {
 		newWeb = func(check func(string) bool, timeout time.Duration) webGetter {
@@ -127,7 +129,7 @@ func (p *Pipeline) Run(ctx context.Context, budget time.Duration) (Stats, error)
 			return f
 		}
 	}
-	r.web, r.imageWeb = newWeb(check, linkFetchTimeout), newWeb(check, imageDownloadTimeout)
+	r.web = newWeb(check, imageDownloadTimeout)
 	r.ig, r.vision = digest.ImageCapable(p.Gen)
 
 	var cursor db.MediaCursor
@@ -175,15 +177,14 @@ func (p *Pipeline) refusedHosts(ctx context.Context) (map[string]bool, error) {
 
 // run is one pass's state.
 type run struct {
-	p        *Pipeline
-	dir      string
-	st       *Stats
-	web      webGetter // pages (linkFetchTimeout)
-	imageWeb webGetter // images (imageDownloadTimeout)
-	ext      *extract.Extractor
-	ig       digest.ImageGenerator
-	vision   bool
-	files    []string // the current item's temp files
+	p      *Pipeline
+	dir    string
+	st     *Stats
+	web    webGetter // whole fetch ≤ imageDownloadTimeout; pages ≤ linkFetchTimeout
+	ext    *extract.Extractor
+	ig     digest.ImageGenerator
+	vision bool
+	files  []string // the current item's temp files
 }
 
 // outcome is what working one item produced: a result to store, a failed
@@ -327,7 +328,9 @@ func fetchOutcome(err error) outcome {
 }
 
 // link summarizes one link: a copy of the same URL's summary in scope, else
-// a fetch; an image answer is described as an image.
+// a fetch; an image answer is described as an image. The URL is requested
+// once: under the image download timeout, with a page (anything not an
+// image) cut at linkFetchTimeout from the request.
 func (r *run) link(ctx context.Context, it db.MediaItem) outcome {
 	if it.ContentKey != "" {
 		if o, ok := r.copyFrom(ctx, it, it.ContentKey); ok {
@@ -335,19 +338,29 @@ func (r *run) link(ctx context.Context, it db.MediaItem) outcome {
 		}
 	}
 	u := linkURL(it)
-	resp, err := r.web.Get(ctx, u, maxMediaDownload)
+	fctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var pageExpired atomic.Bool
+	pageTimer := time.AfterFunc(linkFetchTimeout, func() { pageExpired.Store(true); cancel() })
+	defer pageTimer.Stop()
+	pageErr := func(err error) error {
+		if pageExpired.Load() && ctx.Err() == nil {
+			return fmt.Errorf("%w: page fetch over %s", context.DeadlineExceeded, linkFetchTimeout)
+		}
+		return err
+	}
+	resp, err := r.web.Get(fctx, u, maxMediaDownload)
 	if err != nil {
-		return fetchOutcome(err)
+		return fetchOutcome(pageErr(err))
 	}
 	defer resp.Body.Close()
 	if strings.HasPrefix(resp.MediaType, "image/") {
-		// An image: fetched again under the image download timeout.
-		_ = resp.Body.Close()
-		var o outcome
+		if !pageTimer.Stop() {
+			return fetchOutcome(pageErr(context.Canceled)) // the timer fired as the headers came
+		}
+		o := terminal("unavailable", "")
 		if r.vision {
-			o = r.webImage(ctx, it, u)
-		} else {
-			o = terminal("unavailable", "")
+			o = r.describeBody(ctx, it, resp.Body)
 		}
 		if o.res != nil {
 			o.res.Kind = "image"
@@ -356,7 +369,7 @@ func (r *run) link(ctx context.Context, it db.MediaItem) outcome {
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxPageBytes+1))
 	if err != nil {
-		return fetchOutcome(err)
+		return fetchOutcome(pageErr(err))
 	}
 	if len(body) > maxPageBytes {
 		return terminal("too_large", "too_large")
@@ -480,10 +493,10 @@ func (r *run) image(ctx context.Context, it db.MediaItem) outcome {
 	return r.describeBody(ctx, it, body)
 }
 
-// webImage fetches an image URL through the image fetcher (its whole-fetch
+// webImage fetches an image URL through the run's fetcher (its whole-fetch
 // deadline is the download timeout) and describes it.
 func (r *run) webImage(ctx context.Context, it db.MediaItem, u string) outcome {
-	resp, err := r.imageWeb.Get(ctx, u, maxMediaDownload)
+	resp, err := r.web.Get(ctx, u, maxMediaDownload)
 	if err != nil {
 		return fetchOutcome(err)
 	}

@@ -443,9 +443,8 @@ func TestPipeline_LinkToImageDescribedAsImage(t *testing.T) {
 	e.run()
 
 	assert.Equal(t, []string{
-		"15s http://public.example/chart.png", "1m0s http://public.example/chart.png",
-		"1m0s http://public.example/inline.png",
-	}, gets(), "images are fetched under the 60 s download timeout")
+		"1m0s http://public.example/chart.png", "1m0s http://public.example/inline.png",
+	}, gets(), "each URL is requested once, under the 60 s download timeout")
 	assert.Equal(t, "ok", e.row(urlImg).Status)
 
 	r := e.row(id)
@@ -455,6 +454,54 @@ func TestPipeline_LinkToImageDescribedAsImage(t *testing.T) {
 	img1, text := e.gen.calls()
 	assert.Equal(t, 1, img1, "the same bytes are described once")
 	assert.Zero(t, text)
+}
+
+// A link is requested once: an image answer is read under the download
+// timeout (past the link timeout), while a page is still cut at the link
+// timeout.
+func TestPipeline_LinkRequestedOnceImageOutlivesPageTimeout(t *testing.T) {
+	prev := linkFetchTimeout
+	linkFetchTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { linkFetchTimeout = prev })
+	e := newEnv(t)
+	img := noisePNG(t, 64, 64, 3)
+	var imageHits, pageHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/slow.png" {
+			imageHits.Add(1)
+			w.Header().Set("Content-Type", "image/png")
+		} else {
+			pageHits.Add(1)
+			w.Header().Set("Content-Type", "text/html")
+		}
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		select { // the body comes after the link timeout
+		case <-time.After(300 * time.Millisecond):
+		case <-r.Context().Done():
+			return
+		}
+		if r.URL.Path == "/slow.png" {
+			_, _ = w.Write(img)
+			return
+		}
+		_, _ = w.Write([]byte(page(longText)))
+	}))
+	t.Cleanup(srv.Close)
+	e.web(map[string]*httptest.Server{"public.example": srv})
+	imgID := e.link("1:C1", "1758000000.000100", "http://public.example/slow.png")
+	pageID := e.link("1:C1", "1758000000.000200", "http://public.example/slow-page")
+
+	e.run()
+
+	assert.EqualValues(t, 1, imageHits.Load(), "the image URL is requested exactly once")
+	r := e.row(imgID)
+	assert.Equal(t, "ok", r.Status)
+	assert.Equal(t, "image", r.Kind)
+	assert.EqualValues(t, 1, pageHits.Load())
+	p := e.row(pageID)
+	assert.Equal(t, "pending", p.Status, "a timed-out page waits for its next attempt")
+	assert.Equal(t, "timeout", p.Error)
 }
 
 func TestPipeline_NoVisionMarksUnavailableWithoutOpening(t *testing.T) {
