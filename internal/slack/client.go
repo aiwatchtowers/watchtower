@@ -625,17 +625,24 @@ func (c *Client) DownloadFile(ctx context.Context, fileURL string, limit int64) 
 	return &limitedBody{rc: resp.Body, limit: limit}, resp.Header.Get("Content-Type"), nil
 }
 
-// limitedBody fails with ErrTooLarge once more than limit bytes are read.
+// limitedBody fails with ErrTooLarge once more than limit bytes are read:
+// that Read returns the bytes up to the limit, and every later Read 0 and
+// ErrTooLarge (the error is latched).
 type limitedBody struct {
 	rc          io.ReadCloser
 	limit, read int64
+	err         error
 }
 
 func (b *limitedBody) Read(p []byte) (int, error) {
+	if b.err != nil {
+		return 0, b.err
+	}
 	n, err := b.rc.Read(p)
 	b.read += int64(n)
 	if b.read > b.limit {
-		return n - int(b.read-b.limit), ErrTooLarge
+		b.err = ErrTooLarge
+		return n - int(b.read-b.limit), b.err
 	}
 	return n, err
 }

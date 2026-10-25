@@ -1116,6 +1116,9 @@ func TestDownloadFile_HostAllowlist(t *testing.T) {
 		case "/port":
 			http.Redirect(w, r, "https://files.slack.com:8443/x.png", http.StatusFound)
 			return
+		case "/loopback":
+			http.Redirect(w, r, "http://127.0.0.1/x.png", http.StatusFound)
+			return
 		}
 		w.Header().Set("Content-Type", "image/png")
 		_, _ = w.Write(body)
@@ -1144,6 +1147,7 @@ func TestDownloadFile_HostAllowlist(t *testing.T) {
 	for _, u := range []string{
 		"https://other.slack.com/files/a.png", "https://evil.example/a.png", "http://files.slack.com/files-pri/a.png",
 		"https://files.slack.com:8443/a.png", "https://user@files.slack.com/a.png", "ftp://files.slack.com/a.png", "::bad", // leak-check:allow
+		"https://files.slack.com./a.png", "https://files.slack.com.evil.example/a.png", "https://xn--files-slack.com/a.png",
 	} {
 		_, _, err := c.DownloadFile(context.Background(), u, 1<<20)
 		require.ErrorIs(t, err, ErrFileURLRefused, u)
@@ -1158,6 +1162,9 @@ func TestDownloadFile_HostAllowlist(t *testing.T) {
 	_, _, err = c.DownloadFile(context.Background(), "https://files.slack.com/port", 1<<20)
 	require.ErrorIs(t, err, ErrFileURLRefused, "a redirect to another port is off the allowlist")
 	assert.Len(t, slackFiles.requests(), served+1, "only the first request was made")
+	_, _, err = c.DownloadFile(context.Background(), "https://files.slack.com/loopback", 1<<20)
+	require.ErrorIs(t, err, ErrFileURLRefused, "a redirect to a plain-http loopback address is refused")
+	assert.Len(t, slackFiles.requests(), served+2, "the loopback target is never contacted")
 
 	// An account without a team domain downloads from files.slack.com only.
 	bare := NewClientWithAPIURLUnlimited("xoxp-secret", "http://127.0.0.1:0/")
@@ -1222,4 +1229,32 @@ func TestDownloadFile_TooLargeAndGone(t *testing.T) {
 	_ = rc.Close()
 	_, _, err = c.DownloadFile(context.Background(), "https://files.slack.com/gone", 4000)
 	require.ErrorIs(t, err, ErrFileGone)
+}
+
+// chunkReader returns n bytes per Read, forever.
+type chunkReader struct{ n int }
+
+func (r chunkReader) Read(p []byte) (int, error) { return min(r.n, len(p)), nil }
+
+// limitedBody never reports a negative count: past the cap it returns the
+// bytes up to the limit with ErrTooLarge, then 0 and ErrTooLarge on every
+// later Read.
+func TestLimitedBody_LatchesTooLarge(t *testing.T) {
+	b := &limitedBody{rc: io.NopCloser(chunkReader{n: 100}), limit: 250}
+	buf := make([]byte, 100)
+	var total int
+	for i := 0; i < 6; i++ {
+		n, err := b.Read(buf)
+		require.GreaterOrEqual(t, n, 0, "read %d", i)
+		total += n
+		if i < 2 {
+			require.NoError(t, err)
+			continue
+		}
+		require.ErrorIs(t, err, ErrTooLarge, "read %d", i)
+		if i > 2 {
+			assert.Zero(t, n, "read %d after the cap", i)
+		}
+	}
+	assert.Equal(t, 250, total, "exactly the limit is delivered")
 }
