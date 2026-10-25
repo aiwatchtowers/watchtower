@@ -193,7 +193,7 @@ func TestAllTablesExist(t *testing.T) {
 		"doc_links", "ext_link_state",
 		"chat_conversations", "chat_messages", "chat_turn_steps", "chat_attachments",
 		"chat_artifacts", "chat_projects", "chat_project_sources", "chat_fts", "chat_title_fts",
-		"chat_artifact_comments",
+		"chat_artifact_comments", "chat_knowledge_artifacts",
 		"automation_draft_cache", "pending_transcripts", "chat_queued_drafts",
 		"projects", "project_sources", "project_comments", "project_target_images",
 		"terminal_sessions", "target_status_history", "owner_asks", "workbench_board_columns",

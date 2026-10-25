@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS workspace (
     ideas_digest_floor INTEGER NOT NULL DEFAULT 0,  -- ideas registry floor: highest digest_topics.id already consolidated (see 00050)
     ideas_stream_digest_floor INTEGER NOT NULL DEFAULT 0,  -- ideas registry floor: highest stream_digests.id already consolidated (see 00050)
     ideas_transcript_floor INTEGER NOT NULL DEFAULT 0,  -- ideas registry floor: highest meeting_transcripts.id already consolidated (see 00050)
-    digest_fastforward_ts REAL NOT NULL DEFAULT 0  -- Slack-digest fast-forward floor: lastDigestTime returns max(MAX(digests.period_to), this); stamped to now on a slack-digests re-enable (FEAT-03, see 00057)
+    digest_fastforward_ts REAL NOT NULL DEFAULT 0,  -- Slack-digest fast-forward floor: lastDigestTime returns max(MAX(digests.period_to), this); stamped to now on a slack-digests re-enable (FEAT-03, see 00057)
+    ideas_chat_floor INTEGER NOT NULL DEFAULT 0  -- ideas registry floor: highest chat_messages.id already consumed by the consolidator (see 00154)
 );
 
 -- Users
@@ -1970,7 +1971,8 @@ CREATE TABLE IF NOT EXISTS ideas (
     last_mention_at TEXT NOT NULL DEFAULT '',
     created_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    seen_at         TEXT
+    seen_at         TEXT,
+    chat_born       INTEGER NOT NULL DEFAULT 0  -- 1 = first proposed from chat material; hidden from knowledge readers until status 'active' (see 00154)
 );
 CREATE INDEX IF NOT EXISTS idx_ideas_status ON ideas(status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind, status);
@@ -1980,7 +1982,7 @@ CREATE INDEX IF NOT EXISTS idx_ideas_kind ON ideas(kind, status);
 CREATE TABLE IF NOT EXISTS idea_mentions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     idea_id     INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
-    source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap','linear')),
+    source      TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap','linear','chat')),  -- 'chat' ref = chat:<conversation>:<message> (see 00154)
     ref         TEXT NOT NULL DEFAULT '',
     quote       TEXT NOT NULL DEFAULT '',
     author      TEXT NOT NULL DEFAULT '',
@@ -2491,6 +2493,16 @@ CREATE TABLE IF NOT EXISTS chat_artifact_comments (
     CHECK (status != 'sent' OR sent_at IS NOT NULL)
 );
 CREATE INDEX IF NOT EXISTS idx_chat_artifact_comments_key ON chat_artifact_comments(conversation_id, artifact_key);
+
+-- Artifacts the owner kept in the knowledge base (00154): one row per
+-- conversation artifact, the kept version and when; gone with the chat.
+CREATE TABLE IF NOT EXISTS chat_knowledge_artifacts (
+    conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+    artifact_key    TEXT NOT NULL,
+    version         INTEGER NOT NULL,
+    kept_at         TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, artifact_key)
+);
 
 CREATE TABLE IF NOT EXISTS chat_project_sources (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3063,7 +3075,8 @@ CREATE TABLE IF NOT EXISTS review_rounds (
   active_seconds INTEGER NOT NULL DEFAULT 0 CHECK (active_seconds >= 0),
   created_at     TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
   sent_at        TEXT,
-  delivered_at   TEXT
+  delivered_at   TEXT,
+  outcome        TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')) -- how the owner closed a sent round (00155)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS review_rounds_one_open ON review_rounds(session_id) WHERE status = 'open' AND session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS review_rounds_project ON review_rounds(project_id, id);

@@ -19,6 +19,10 @@ package final class ArtifactPanelModel {
     package private(set) var errorMessage: String?
     /// The comments on this key, anchored on its latest stored version.
     package let comments: ArtifactCommentsModel
+    /// The version of this key pinned as knowledge, `nil` when it is not kept.
+    package private(set) var keptVersion: Int?
+    /// Called after a keep / unkeep landed, so the card badges follow.
+    @ObservationIgnored package var onKnowledgeChanged: (() -> Void)?
     @ObservationIgnored private let db: any DatabaseWriter
 
     package init(db: any DatabaseWriter, conversationID: Int64, key: String) {
@@ -34,6 +38,9 @@ package final class ArtifactPanelModel {
             versions = try db.read { try ChatArtifactQueries.versions($0, conversationID: conversationID, key: key) }
             if let selected = selectedVersion, !versions.contains(where: { $0.version == selected }) {
                 selectedVersion = nil
+            }
+            keptVersion = try db.read {
+                try ChatArtifactQueries.keptVersion($0, conversationID: conversationID, artifactKey: key)
             }
             comments.sync(latest: versions.last)
             errorMessage = nil
@@ -108,6 +115,45 @@ package final class ArtifactPanelModel {
             reload()
         } catch {
             errorMessage = "Could not save the edit: \(error.localizedDescription)"
+        }
+    }
+
+    /// The control for the shown version; `nil` for a draft still streaming,
+    /// an edit in progress or a kind that is not knowledge.
+    package var knowledgeState: ArtifactKnowledgeState? {
+        guard liveDraft == nil || selectedVersion != nil, !isEditing,
+              let shown = selectedArtifact else { return nil }
+        return ArtifactKnowledgeState.for(kind: shown.kind, shownVersion: shown.version, keptVersion: keptVersion)
+    }
+
+    /// Runs the press of the knowledge control: Add / Update pin the shown
+    /// version, Remove drops the pin. A failure is shown, nothing changes.
+    package func toggleKnowledge() async {
+        guard let state = knowledgeState else { return }
+        await writeKnowledge(remove: state == .remove)
+    }
+
+    /// Drops the pin from the Update menu (kept version older than the shown one).
+    package func removeKnowledge() async {
+        guard knowledgeState != nil, keptVersion != nil else { return }
+        await writeKnowledge(remove: true)
+    }
+
+    private func writeKnowledge(remove: Bool) async {
+        guard let shown = selectedArtifact else { return }
+        let (db, conversationID, key, version) = (db, conversationID, key, shown.version)
+        do {
+            try await db.write {
+                if remove {
+                    try ChatArtifactQueries.unkeep($0, conversationID: conversationID, artifactKey: key)
+                } else {
+                    try ChatArtifactQueries.keep($0, conversationID: conversationID, artifactKey: key, version: version)
+                }
+            }
+            reload()
+            onKnowledgeChanged?()
+        } catch {
+            errorMessage = "Could not update Knowledge: \(error.localizedDescription)"
         }
     }
 

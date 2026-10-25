@@ -9,6 +9,11 @@ const (
 	MaxListLimit     = 200
 )
 
+// MaxReadResultBytes caps one read result's serialised size: a larger result
+// is refused as too large, never truncated. The one copy; internal/automations
+// refers here (MaxSDKResultBytes).
+const MaxReadResultBytes = 256 * 1024
+
 // listLimit applies DefaultListLimit when the caller passed 0 (or a negative)
 // and clamps anything above MaxListLimit. Mirrors the internal/mcp helper the
 // read tools migrated from.

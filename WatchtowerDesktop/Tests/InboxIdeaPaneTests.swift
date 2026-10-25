@@ -37,11 +37,13 @@ final class InboxIdeaPaneTests: XCTestCase {
         title: String = "Ship a weekly digest email",
         status: String = "proposed",
         needsReview: Bool = false,
-        similarToID: Int? = nil
+        similarToID: Int? = nil,
+        chatBorn: Bool = false
     ) throws -> Idea {
         try dbManager.dbPool.write { db in
             let id = try TestDatabase.insertIdea(db, kind: kind, title: title, status: status,
-                                                 needsReview: needsReview, similarToID: similarToID)
+                                                 needsReview: needsReview, similarToID: similarToID,
+                                                 chatBorn: chatBorn)
             return try XCTUnwrap(IdeaQueries.fetchOne(db, id: Int(id)))
         }
     }
@@ -153,6 +155,37 @@ final class InboxIdeaPaneTests: XCTestCase {
         await pane(other).actions.reverse()
         XCTAssertEqual(try stored(other.id)?.status, .reversed)
         XCTAssertEqual(changes, 1)
+    }
+
+    /// A decision born in a chat waits for the owner's verdict (chat-knowledge
+    /// spec §1): Approve, Not now, Reject and Merge, no Make a Task; Approve
+    /// makes it active (and knowledge). Once decided it is an ordinary decision.
+    func testAChatBornDecisionWaitsForAVerdict() async throws {
+        let proposed = try insert(kind: "decision", title: "Move standups to 10:00", chatBorn: true)
+        let labels = try buttons(bar(proposed))
+        for label in ["Approve", "Reject", "Merge…"] {
+            XCTAssertTrue(labels.contains(label), "\(label) in \(labels)")
+        }
+        for absent in ["Make a Task", "Supersede", "Reverse", "Activate"] {
+            XCTAssertFalse(labels.contains(absent), absent)
+        }
+        XCTAssertEqual(try bar(proposed).inspect().find(ViewType.Menu.self).labelView().text().string(), "Not now")
+        XCTAssertTrue(try bar(proposed).inspect().find(button: "Approve").buttonStyle() is KitPrimaryButtonStyle)
+
+        var changes = 0
+        let card = pane(proposed, onChange: { changes += 1 }, onMadeTask: { _ in }, onDeleted: { _ in })
+        await card.actions.approve()
+        let approved = try XCTUnwrap(try stored(proposed.id))
+        XCTAssertEqual(approved.status, .active)
+        XCTAssertEqual(changes, 1)
+        let decided = try buttons(bar(approved))
+        XCTAssertTrue(decided.contains("Supersede") && decided.contains("Reverse"), "\(decided)")
+        XCTAssertFalse(decided.contains("Approve"))
+
+        // The list row names the chat as its source.
+        XCTAssertEqual(InboxListRow.ideaSource(proposed), "Decision · proposed · Chat")
+        let mined = try insert(kind: "decision", title: "Ship on Thursdays", status: "active")
+        XCTAssertEqual(InboxListRow.ideaSource(mined), "Decision · active")
     }
 
     /// G4: the decision card keeps what the Ideas screen's pane gave a

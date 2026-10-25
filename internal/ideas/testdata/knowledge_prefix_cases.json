@@ -1,0 +1,19 @@
+[
+  {"text": "решили: переезжаем на X", "ok": true, "kind": "decision", "body": "переезжаем на X"},
+  {"text": "ФАКТ:  сервис в Y", "ok": true, "kind": "note", "body": "сервис в Y"},
+  {"text": "Decided:x", "ok": true, "kind": "decision", "body": "x"},
+  {"text": "fact:\nline 1\nline 2", "ok": true, "kind": "note", "body": "line 1\nline 2"},
+  {"text": "fact:   ", "ok": true, "kind": "note", "body": ""},
+  {"text": "решили:   ", "ok": true, "kind": "decision", "body": ""},
+  {"text": "мы решили: x", "ok": false, "kind": "", "body": ""},
+  {"text": "решили x", "ok": false, "kind": "", "body": ""},
+  {"text": "fact: service in Z ", "ok": true, "kind": "note", "body": "service in Z"},
+  {"text": "\u0085  DECIDED: ship it", "ok": true, "kind": "decision", "body": "ship it"},
+  {"text": "  Факт: a\n\nb  ", "ok": true, "kind": "note", "body": "a\n\nb"},
+  {"text": "remember: x", "ok": false, "kind": "", "body": ""},
+  {"text": "facts: x", "ok": false, "kind": "", "body": ""},
+  {"text": "", "ok": false, "kind": "", "body": ""},
+  {"text": "DEC\u0130DED: x", "ok": true, "kind": "decision", "body": "x"},
+  {"text": "fact:\u0301x", "ok": true, "kind": "note", "body": "\u0301x"},
+  {"text": "fact:\u00a0x", "ok": true, "kind": "note", "body": "x"}
+]

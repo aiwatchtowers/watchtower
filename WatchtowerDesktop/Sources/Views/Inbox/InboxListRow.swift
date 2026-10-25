@@ -134,9 +134,11 @@ struct InboxListRow: View {
         card.plan == nil ? "" : "Plan: \(card.planDone) of \(card.planTotal) done"
     }
 
-    /// "Idea · proposed", "Decision · not now".
+    /// "Idea · proposed", "Decision · not now"; one born in a chat says so:
+    /// "Decision · proposed · Chat".
     static func ideaSource(_ idea: Idea) -> String {
-        "\(idea.kind.rawValue.capitalized) · \(idea.statusRaw.replacingOccurrences(of: "_", with: " "))"
+        let line = "\(idea.kind.rawValue.capitalized) · \(idea.statusRaw.replacingOccurrences(of: "_", with: " "))"
+        return idea.chatBorn ? "\(line) · \(IdeaMention.Source.chat.label)" : line
     }
 
     /// A channel item that folded several messages says how many; any other

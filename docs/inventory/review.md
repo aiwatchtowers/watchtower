@@ -209,6 +209,26 @@ nothing (the latter shows "This round was already sent"). If the line is not del
 stays `sent` and the brief carries `Review round #N waiting (<n> comment[s]) →
 get_review N`, rendered with the rules block and never cut.
 
+Approve (#964) takes the same order. `workbench review approve --round R
+[--resolve-open]` (`db.ApproveReviewRound`) is one guarded transaction first:
+the open round becomes `status='sent', outcome='approved'` (Send sets
+`outcome='changes'`), and with `--resolve-open` its `carried` and `outdated`
+comments become `resolved` in the same transaction; it writes nothing (`sent`
+false) when the round is not open, belongs to another workbench, has draft
+comments, has open `carried`/`outdated` rows without `--resolve-open`, or has no
+session. Only after that call returned does the Desktop type anything: the fixed
+line `Review round #<id> approved — the owner approved this branch; finish it the
+way your methodology says (read get_review <id> using the watchtower-workbench
+skill).` (Swift `ReviewDeliveryLine.approved`, Go `reviewdiff.ApprovedLine`,
+pinned by the `kind: "approved"` fixture) goes through `SessionLineDelivery`
+with `LineKey.review`, under the same PROJ-12 gates. It holds only an id. A
+second Approve, or one Go refuses, types nothing (the refusal shows "This round
+was already sent"). The Desktop turns Approve off while the round has drafts
+("Send or delete the N drafts first") or its session is gone ("The session is
+gone"), and resolves the earlier rounds' open comments only when the owner
+presses **Resolve N and approve** (REVIEW-03). An undelivered approved round
+reads `Review round #N approved → get_review N` in the brief.
+
 **Scope exception (AGENT-06):** `get_review` is a read tool whose one write —
 `sent → delivered` (`MarkReviewRoundDelivered`) — is not audited, exactly like
 `get_ask`. It is bound to the session's workbench and writes nothing for a
@@ -222,7 +242,9 @@ this entry reuses rather than restates.
 **Test guards:**
 - `internal/db/review_rounds_test.go::TestReview04_SendIsGuardedAndStoredBeforeTheLine`
 - `WatchtowerDesktop/Tests/ReviewChangesModelTests.swift::testReview04_SendTypesOnce`
-- supporting: `TestReviewRounds_RefusedSendFromAnotherWorkbenchWritesNothing`, `TestReviewRounds_SendIncludesCarried` (`internal/db`); `internal/reviewdiff/line_test.go::TestDeliveryLine_Fixtures`; `WatchtowerDesktop/Tests/Core/ReviewDeliveryLineTests.swift::testMatchesGoFixtures`; `WatchtowerDesktop/Tests/SessionLineDeliveryReviewTests.swift`; `ReviewChangesModelTests` (`testAlreadySentTypesNothing`, `testRefusedSendSetsLastError`); `internal/tools/workbench_review_test.go` (`TestGetReview_ReadsCommentsAndMarksDelivered`, `TestGetReview_OtherWorkbenchRefused`, `TestGetReview_OpenRoundAndDraftsStayHidden`)
+- `internal/db/review_rounds_test.go::TestReview04_ApproveIsGuardedAndStoredBeforeTheLine`
+- `WatchtowerDesktop/Tests/ReviewChangesModelTests.swift::testReview04_ApproveTypesOnce`
+- supporting: `TestReviewRounds_RefusedSendFromAnotherWorkbenchWritesNothing`, `TestReviewRounds_SendIncludesCarried` (`internal/db`); `internal/reviewdiff/line_test.go::TestDeliveryLine_Fixtures`; `WatchtowerDesktop/Tests/Core/ReviewDeliveryLineTests.swift::testMatchesGoFixtures`; `WatchtowerDesktop/Tests/SessionLineDeliveryReviewTests.swift`; `ReviewChangesModelTests` (`testAlreadySentTypesNothing`, `testRefusedSendSetsLastError`, `testApproveRefusedTypesNothing`, `testApproveDuringARefreshTypesNothing`, `testApprovalBlockerWithDrafts`, `testApprovalBlockerNoSession`, `testOpenEarlierCommentsListsCarriedAndOutdated`); `internal/tools/workbench_review_test.go` (`TestGetReview_ReadsCommentsAndMarksDelivered`, `TestGetReview_OtherWorkbenchRefused`, `TestGetReview_OpenRoundAndDraftsStayHidden`)
 
 **Locked since:** 2026-10-16
 
@@ -265,3 +287,5 @@ agent (or a cloned repository) planted, with no owner action.
 - 2026-10-16 (board #328, diff reviewer Plan 3, **owner approved in ask #214**): REVIEW-01 amended — Undo (one hunk's work-tree file, `apply -R` from the repository top, never `--index`/`--cached`, symlinked parents refused) and Accept (`.watchtower/review.md` in the workbench folder, `AppendLessonRule` only) are the two owner-pressed writes; both CLI commands refuse under the AGENT-07 agent markers (`refuseUnderAgent`). REVIEW-02 added (Undo's preconditions: open round, agent not working — Go `agent_state`, Desktop working/Agents working —, not undone yet, blob unchanged, `apply --check -R`). REVIEW-03 amended — the agent may resolve a comment with `reply_review_comment`; it is not carried but stays listed under Resolved by the agent with Reopen. REVIEW-05 strengthened — `apply` and `hash-object` join `contentReads`. Module list gains migration 00128 (`review_agent_ai`, renumbered from 00125 at the merges with main, which took 00125–00127; 00124 is Plan 2's `review_checks`), `internal/reviewai/`, `internal/db/review_agent.go`, the new cmd and tools files. No guard relaxed or renamed. `agent-actions.md` needs no change: `annotate_changes` and `reply_review_comment` are ordinary audited workbench writes under DEV-06's DirectApply, and the two refusals reuse the AGENT-07 marker set without widening AGENT-07's list (their guards live here).
 - 2026-10-18 (board #568, AGENT-07 amended, owner approved in ask #357): strengthening, no guard changed. Undo and the lessons commands keep the marker refusal; without a marker they also need the owner's Confirm in the running Desktop (`confirmWithOwner`), whose window shows the hunk or the lesson text.
 - 2026-10-20 (board #712, Branch review UI): note only — **no contract, guard test or status changed**. Desktop only: the Changes pane is renamed **Branch review** (row menu **Review Branch**, a contextual **Review** button on the session strip), an identity bar, ⌥⌘↑ / ⌥⌘↓ to the previous / next unviewed file, and no `review overview` call for an empty diff. The snapshot, round, carry-over and Undo rules above are unchanged.
+- 2026-10-24 (board #964, Branch review polish, **approved by the owner, ask #559**): REVIEW-04 amended — the Approve path joins Send under the same order (the round stored as approved first, then the approved line through `LineKey.review` under PROJ-12's gates); migration 00155 `review_rounds.outcome`; new guards `TestReview04_ApproveIsGuardedAndStoredBeforeTheLine` and `testReview04_ApproveTypesOnce`. No assertion relaxed, no guard renamed.
+- 2026-10-25 (board #964, final review fix): strengthening, no guard relaxed. `workbench review approve` refuses under the AGENT-07 agent markers (`refuseUnderAgent`) before anything is read and otherwise needs the owner's Confirm in the Desktop (`confirmWithOwner`, the Desktop's own Approve granted without a window), like Undo and the lessons commands; by the owner's decision in ask #575 `send` gets the same guard (REVIEW-04's order and guards unchanged). Guards: `TestWorkbenchReviewApprove_RefusedUnderAgentMarkers`, `TestWorkbenchReviewApprove_OwnerDeniedLeavesRoundOpen`, `TestWorkbenchReviewSend_RefusedUnderAgentMarkers`, `TestWorkbenchReviewSend_OwnerDeniedLeavesRoundOpen`; AGENT-07's list in `agent-actions.md` names it.

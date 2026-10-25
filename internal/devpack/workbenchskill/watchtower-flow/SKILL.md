@@ -48,3 +48,5 @@ Questions and decisions are asks, not comments. No progress chatter, no "startin
 ## What `in_review` means
 
 `in_review` means agents are reviewing the work — a code review, a document review by reviewer agents. It never means waiting for the owner: work that waits for the owner has an open ask, and is `blocked` only when nothing on it can proceed.
+
+The owner's own review is the diff reviewer's round: when one arrives `approved` (`Review round #N approved …`), the branch is accepted — finish it (PR and merge, targets `done`, cleanup, `finish_session`) without asking for another review.

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"watchtower/internal/auditlog"
 	"watchtower/internal/config"
 	"watchtower/internal/daemon"
 	"watchtower/internal/db"
@@ -77,9 +78,15 @@ func ensureSchemaFormat(_ *cobra.Command, _ []string) error {
 
 // Execute runs the root command and returns the exit code.
 func Execute() int {
-	lockmetrics.SetProcessRole(roleFor(os.Args[1:]))
+	role := roleFor(os.Args[1:])
+	lockmetrics.SetProcessRole(role)
+	auditlog.SetProcess(auditPath(role))
 	go sweepStaleTemp()
-	if err := rootCmd.Execute(); err != nil {
+	wrapContentCommands()
+	contentRan.Store(nil)
+	err := rootCmd.Execute()
+	auditCLIRun(os.Getenv, err)
+	if err != nil {
 		// The final error is for the owner (a terminal, or the Desktop that
 		// shows a failed command's stderr), so CLI stderr and HTTP bodies
 		// show in full (logredact.Full) — except in the detached daemon,

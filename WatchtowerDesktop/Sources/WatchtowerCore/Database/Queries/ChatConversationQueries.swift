@@ -231,6 +231,16 @@ package enum ChatConversationQueries {
         return db.changesCount > 0
     }
 
+    /// Which of `ids` are still conversations (a chat mention's "Chat
+    /// deleted" check).
+    package static func existingIDs(_ db: Database, ids: [Int64]) throws -> Set<Int64> {
+        let unique = Array(Set(ids))
+        guard !unique.isEmpty else { return [] }
+        let marks = Array(repeating: "?", count: unique.count).joined(separator: ",")
+        return Set(try Int64.fetchAll(db, sql: "SELECT id FROM chat_conversations WHERE id IN (\(marks))",
+                                      arguments: StatementArguments(unique)))
+    }
+
     package static func fetchByID(_ db: Database, id: Int64) throws -> ChatConversation? {
         try ChatConversation.fetchOne(db, sql: "SELECT * FROM chat_conversations WHERE id = ?", arguments: [id])
     }

@@ -292,6 +292,7 @@ func NewListLinearIssues() *Tool {
 			"get_linear_issue returns one issue in full with its comments.",
 		InputSchema: mustSchema[listLinearIssuesArgs]("list_linear_issues"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a listLinearIssuesArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
@@ -402,6 +403,7 @@ func NewGetLinearIssue() *Tool {
 		Description: "Get a single Linear issue by key with its full description and its comments, oldest first.",
 		InputSchema: mustSchema[getLinearIssueArgs]("get_linear_issue"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a getLinearIssueArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
@@ -477,6 +479,7 @@ func NewGetLinearStatusHistory() *Tool {
 			"Keys that are not synced come back in not_found.",
 		InputSchema: mustSchema[getLinearStatusHistoryArgs]("get_linear_status_history"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a getLinearStatusHistoryArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
@@ -566,6 +569,7 @@ func NewListLinearCycles() *Tool {
 			"(active, upcoming or past) and progress.",
 		InputSchema: mustSchema[listLinearCyclesArgs]("list_linear_cycles"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Surfaces:    editorAndAutomation(),
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listLinearCyclesArgs](call)

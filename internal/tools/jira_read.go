@@ -91,6 +91,7 @@ func NewListJiraIssues() *Tool {
 			"get_jira_issue returns one issue in full.",
 		InputSchema: mustSchema[listJiraIssuesArgs]("list_jira_issues"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a listJiraIssuesArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
@@ -249,6 +250,7 @@ func NewGetJiraIssue() *Tool {
 		Description: "Get a single Jira issue by key, including full fields.",
 		InputSchema: mustSchema[getJiraIssueArgs]("get_jira_issue"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a getJiraIssueArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {

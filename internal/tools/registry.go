@@ -137,6 +137,13 @@ type Tool struct {
 	// External marks writes that leave this machine (Jira). Such a tool can
 	// never be granted execute trust (AGENT-03).
 	External bool
+	// CompanyData marks a read tool that returns synced source content —
+	// messages, email, calendar, Jira, Linear, Confluence/knowledge,
+	// transcripts and recaps, digests, tracks, people cards, memory, ideas,
+	// briefings, day plans, inbox, task context, experts. CallRead gates such
+	// a call by the session's read budget and writes one audit line for it
+	// (READ-01..02). The owner's own board, asks and skills stay unmarked.
+	CompanyData bool
 	// AlwaysAsk marks a local write too broad to ever run without the
 	// owner's per-call Approve (dismiss_tracks: hundreds of rows at once).
 	// Like External it can never be granted execute trust and is never
@@ -279,11 +286,13 @@ type Registry struct {
 	db    *db.DB
 	tools map[string]*Tool
 	order []string
+	// reads is the per-session company-data read budget (READ-01).
+	reads *readBudget
 }
 
 // New creates a registry backed by d.
 func New(d *db.DB) *Registry {
-	return &Registry{db: d, tools: map[string]*Tool{}}
+	return &Registry{db: d, tools: map[string]*Tool{}, reads: newReadBudget()}
 }
 
 // Register adds a tool; names are unique and write tools need a schema.
@@ -936,6 +945,8 @@ func (r *Registry) applyTrusted(ctx context.Context, id int64, live Binding) (Re
 // tool is refused with ErrNotReadable, so the proposal flow can never be
 // bypassed by calling a write through the read path. b reaches Execute as
 // Call.Binding, so a read can scope itself (list_targets in a workbench session).
+// A CompanyData tool also passes the session's read budget and writes one
+// audit line (callCompanyRead, READ-01..02).
 func (r *Registry) CallRead(ctx context.Context, name string, args json.RawMessage, b Binding) (any, error) {
 	t, ok := r.Get(name)
 	if !ok {
@@ -956,6 +967,9 @@ func (r *Registry) CallRead(ctx context.Context, name string, args json.RawMessa
 	}
 	if !json.Valid(args) {
 		return nil, &ValidationError{Msg: "arguments are not valid JSON"}
+	}
+	if t.CompanyData {
+		return r.callCompanyRead(ctx, t, args, b)
 	}
 	if err := t.validateSchema(args); err != nil {
 		return nil, err

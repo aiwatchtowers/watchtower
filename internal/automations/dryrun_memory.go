@@ -23,6 +23,9 @@ type DryRunOptions struct {
 	// StopAtModelCalls stops the dry run at its first llm, agent, mcp,
 	// shell, session or ask call: status DryRunStopped, error ModelCallStop.
 	StopAtModelCalls bool
+	// ConversationID is the chat conversation the dry run serves; its reads
+	// spend that conversation's read budget (Env.ConversationID).
+	ConversationID int64
 }
 
 // ModelCallStop is why a StopAtModelCalls dry run stopped: the recipe makes
@@ -90,11 +93,12 @@ func DryRunInMemory(ctx context.Context, b Backends, r *Recipe, opts DryRunOptio
 	}
 	env := &Env{
 		Ctx: ctx, Run: &db.AutomationRun{ID: 0, Trigger: db.TriggerDryRun}, Recipe: r, Manifest: m, DryRun: true,
-		Journal:       NewMemoryJournal().UseClock(clock),
-		Meter:         NewMeter(dryRunBudget(opts.Budget, r.Budget), clock),
-		Buffer:        NewCommitBuffer(nil),
-		Trigger:       TriggerInfo{Kind: db.TriggerDryRun, DryRun: true},
-		capturePrompt: opts.CapturePrompts, stopAtModelCalls: opts.StopAtModelCalls,
+		Journal:        NewMemoryJournal().UseClock(clock),
+		Meter:          NewMeter(dryRunBudget(opts.Budget, r.Budget), clock),
+		Buffer:         NewCommitBuffer(nil),
+		Trigger:        TriggerInfo{Kind: db.TriggerDryRun, DryRun: true},
+		ConversationID: opts.ConversationID,
+		capturePrompt:  opts.CapturePrompts, stopAtModelCalls: opts.StopAtModelCalls,
 	}
 	sb, runErr := NewSandbox(env, modules(b))
 	if runErr == nil {

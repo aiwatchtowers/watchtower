@@ -131,14 +131,18 @@ final class CodeUsagesCenter {
 
     /// ⇧⌘U: the page posts `usages` for the word at its cursor; a beep when
     /// there is no editor or no word.
+    /// A key Branch review pane asks its own page (board #960).
     func showUsagesAtCursor(root: CodeRoot) async {
-        guard let page = pages[root.workbenchID]?.page, await page.requestUsagesAtCursor() else {
+        let review = workbenches?.keyDestination(for: root) as? CodeUsagesPage
+        guard let page = review ?? pages[root.workbenchID]?.page, await page.requestUsagesAtCursor() else {
             beep()
             return
         }
     }
 
-    /// The usages of `word` in the root's folder, in the inspector's Usages tab.
+    /// The usages of `word` in the root's folder, in the inspector's Usages
+    /// tab — or in a key Branch review pane that shows the list itself
+    /// (board #960).
     func showUsages(of word: String, root: CodeRoot) {
         guard !word.isEmpty else {
             beep()
@@ -152,8 +156,10 @@ final class CodeUsagesCenter {
         generations[workbenchID] = generation
         results[root] = UsagesModel(word: word)
         runRoots[workbenchID] = root
-        setInspectorShown(true, workbenchID: workbenchID)
-        selectInspectorTab(.usages, workbenchID: workbenchID)
+        if workbenches?.keyDestination(for: root)?.showUsagesList() != true {
+            setInspectorShown(true, workbenchID: workbenchID)
+            selectInspectorTab(.usages, workbenchID: workbenchID)
+        }
         let options = CodeSearchOptions(query: word, word: true, caseSensitive: true, context: 0)
         runs[workbenchID] = startSearch(root.folder, options, { [weak self] match in
             guard let self, generations[workbenchID] == generation else { return }

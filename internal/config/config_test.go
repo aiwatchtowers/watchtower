@@ -753,6 +753,17 @@ func TestConfigRecordingsDir(t *testing.T) {
 	})
 }
 
+// TestAppSupportDir: the Desktop's Application Support folder, the parent of
+// the default recordings folder (BACKUP-01 excludes it from Time Machine).
+func TestAppSupportDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	got, err := AppSupportDir()
+	require.NoError(t, err)
+	assert.Equal(t, filepath.Join(home, "Library", "Application Support", "Watchtower"), got)
+	assert.Equal(t, filepath.Join(got, "recordings"), (&Config{}).RecordingsDir())
+}
+
 func TestFeatureGateDefaults(t *testing.T) {
 	cfg, err := Load(filepath.Join(t.TempDir(), "absent.yaml"))
 	if err != nil {

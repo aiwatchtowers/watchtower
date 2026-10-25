@@ -129,6 +129,8 @@ final class ChatViewModel {
     /// Non-edited version numbers per message, for the card badges — reloaded
     /// with the thread (`reload()`).
     private(set) var artifactVersionsByMessage: [Int64: [String: Int]] = [:]
+    /// Artifact keys of the open chat pinned as knowledge (card badges).
+    private(set) var keptArtifactKeys: Set<String> = []
     private(set) var gmailConnected = false
     private(set) var slackLinks: SlackLinkResolver?
     /// The project page open in the detail area, or nil when a conversation
@@ -529,22 +531,25 @@ final class ChatViewModel {
             thread = []
             currentConversation = nil
             artifactVersionsByMessage = [:]
+            keptArtifactKeys = []
             return
         }
         do {
-            let (conv, items, versions, gmail, slack) = try dbManager.dbPool.read { db in
+            let (conv, items, versions, kept, gmail, slack) = try dbManager.dbPool.read { db in
                 let conv = try ChatConversationQueries.fetchByID(db, id: id)
                 let items = try ChatTreeQueries.thread(db, conversationID: id)
                 let versions = try ChatArtifactQueries.versionsByMessage(db, messageIDs: items.map(\.id))
+                let kept = try ChatArtifactQueries.keptKeys(db, conversationID: id)
                 let gmail = try GoogleAccountQueries.hasConnectedGmailAccount(db)
                 let slack = try SlackLinkResolver.load(db)
-                return (conv, items, versions, gmail, slack)
+                return (conv, items, versions, kept, gmail, slack)
             }
             currentConversation = conv
             if items != thread { thread = items }
             let refreshedSources = sourcesPanel?.refreshed(in: items)
             if refreshedSources != sourcesPanel { sourcesPanel = refreshedSources }
             artifactVersionsByMessage = versions
+            keptArtifactKeys = kept
             gmailConnected = gmail
             slackLinks = slack
         } catch {
@@ -572,7 +577,9 @@ final class ChatViewModel {
         guard let conversationID else { return }
         preferredInspectorMode = .artifacts
         guard artifactPanel?.key != key else { return }
-        artifactPanel = ArtifactPanelModel(db: dbManager.dbPool, conversationID: conversationID, key: key)
+        let panel = ArtifactPanelModel(db: dbManager.dbPool, conversationID: conversationID, key: key)
+        panel.onKnowledgeChanged = { [weak self] in self?.reload() }
+        artifactPanel = panel
     }
 
     /// The owner closed the panel: remember the key so a still-streaming turn

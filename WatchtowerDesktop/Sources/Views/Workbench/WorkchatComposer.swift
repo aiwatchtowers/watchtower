@@ -9,6 +9,10 @@ struct WorkchatComposer: View {
     @Bindable var model: WorkchatModel
     /// `SessionControl.isWorking` for the session's status.
     let working: Bool
+    /// The field takes the keyboard as it is made.
+    var autoFocus = false
+    /// Each new value puts the keyboard in the field, caret at the end.
+    var focusRequest: UUID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -31,7 +35,9 @@ struct WorkchatComposer: View {
                 onAttachFiles: { model.attach(files: $0) },
                 onPasteData: { await model.attach(data: $0, name: $1) },
                 onRemoveAttachment: { model.removeAttachment($0) },
-                hasPendingContent: !model.attachments.isEmpty
+                hasPendingContent: !model.attachments.isEmpty,
+                autoFocus: autoFocus,
+                focusRequest: focusRequest
             )
         }
     }

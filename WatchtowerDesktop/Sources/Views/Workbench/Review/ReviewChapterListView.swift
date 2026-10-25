@@ -39,9 +39,14 @@ struct ReviewChapterListView: View {
         let done = ReviewChapters.done(chapter) { model.isViewed($0) }
         let current = chapter.key == model.currentChapterKey
         return HStack(spacing: 6) {
-            Image(systemName: done ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(done ? Color.green : Color.secondary)
-                .accessibilityLabel(done ? "Done" : "Not done")
+            // A failure lands in lastError.
+            Button { Task { try? await model.toggleChapterViewed(chapter.key) } } label: {
+                Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(done ? Color.green : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .help(done ? "Done. Mark the chapter's files not viewed" : "Mark every file of this chapter Viewed")
+            .accessibilityLabel(done ? "Done" : "Not done")
             VStack(alignment: .leading, spacing: 1) {
                 Text(chapter.title).fontWeight(current ? .semibold : .regular).lineLimit(1).truncationMode(.middle)
                 if let caption = ReviewPresentation.sourceCaption(chapter.source) {

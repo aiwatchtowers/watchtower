@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"watchtower/internal/auditlog"
 	"watchtower/internal/db"
 )
 
@@ -14,6 +15,8 @@ import (
 // the full goose migration suite — ~12–25 s per test under -race, which
 // pushed this package past main's 25-minute race timeout (#684).
 func TestMain(m *testing.M) {
+	// Read tests' audit lines stay out of the machine's unified log.
+	auditlog.SetSinkForTest(func(string) {})
 	if err := db.InitTestFileTemplate(); err != nil {
 		fmt.Fprintf(os.Stderr, "testmain: %v\n", err)
 		os.Exit(1)
