@@ -7,11 +7,13 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"time"
 
 	"watchtower/internal/config"
 	"watchtower/internal/daemon"
 	"watchtower/internal/db"
 	"watchtower/internal/db/lockmetrics"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/logredact"
 	"watchtower/internal/repl"
 
@@ -76,6 +78,7 @@ func ensureSchemaFormat(_ *cobra.Command, _ []string) error {
 // Execute runs the root command and returns the exit code.
 func Execute() int {
 	lockmetrics.SetProcessRole(roleFor(os.Args[1:]))
+	go sweepStaleTemp()
 	if err := rootCmd.Execute(); err != nil {
 		// The final error is for the owner (a terminal, or the Desktop that
 		// shows a failed command's stderr), so CLI stderr and HTTP bodies
@@ -93,6 +96,19 @@ func Execute() int {
 		return 1
 	}
 	return 0
+}
+
+// staleTempAge matches the daemon's sweep: a live call never keeps a prompt
+// temp file this long.
+const staleTempAge = 10 * time.Minute
+
+// sweepStaleTemp removes the prompt and MCP-config temp files a killed
+// process left (fsutil.StaleTempPrefixes). Every process start runs it in
+// the background: best effort, it never delays a command or a hook, and a
+// short-lived process may exit before it finishes; errors are dropped (the
+// daemon's own startup sweep logs them).
+func sweepStaleTemp() {
+	_, _ = fsutil.SweepStaleTemp(staleTempAge, time.Now())
 }
 
 func init() {
