@@ -210,6 +210,7 @@ var ErrBackfillIncomplete = errors.New("slack backfill search incomplete (rate l
 // progress heartbeat or the account's auth/error state. An incomplete search
 // returns an error wrapping ErrBackfillIncomplete.
 func (o *Orchestrator) BackfillSearch(ctx context.Context, from, to time.Time) (int, error) {
+	o.resetMediaPlan()
 	after, before := slackSearchRange(from, to)
 	completed, saved, _, err := o.searchAndSave(ctx, fmt.Sprintf("after:%s before:%s", after, before), false, nil)
 	if err != nil {
@@ -311,7 +312,7 @@ func (o *Orchestrator) searchAndSave(ctx context.Context, query string, live boo
 		// seenUsers dedupe on the raw id, but everything written to the DB
 		// (EnsureChannel/EnsureUser/db.Message/discoveredChannelIDs) is namespaced.
 		dbMsgs := make([]db.Message, 0, len(result.Messages))
-		plan := o.mediaPlan(ctx) // read before the page's write transaction
+		plan := o.mediaPlan(ctx) // read once per run, before the page's write transaction
 		var writes []slackMediaWrite
 		var lookups []slackFileLookup
 		for _, msg := range result.Messages {

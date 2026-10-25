@@ -1,9 +1,11 @@
 package sync
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -373,4 +375,40 @@ func TestSearchPage_FileShareReplyLookedUpInThread(t *testing.T) {
 		assert.Equal(t, "F"+mts, rows[0].Locator)
 	}
 	assert.Empty(t, slackMediaRows(t, ts.db, ch, parentTS), "only the matched reply is saved")
+}
+
+// The media plan is read once per Run: a later page or thread of the same
+// run reuses it, and the next Run reads it afresh.
+func TestMediaPlan_ReadOncePerRun(t *testing.T) {
+	var calls atomic.Int32
+	var matches atomic.Value
+	matches.Store([]map[string]any{{"ts": mediaTS, "user": "U001", "text": "hi",
+		"channel": map[string]any{"id": "C001", "name": "general"}}})
+	ts := newMediaSetup(t, searchMediaMux(&matches, &calls, nil))
+	ctx := context.Background()
+
+	first := ts.orch.mediaPlan(ctx)
+	require.NotNil(t, first)
+	assert.Equal(t, time.Unix(mediaStartS, 0).UTC(), first.start.UTC())
+	require.NoError(t, ts.db.SetMediaStartAt(time.Unix(mediaStartS+50, 0)))
+	assert.Same(t, first, ts.orch.mediaPlan(ctx), "the same run reuses its plan")
+
+	require.NoError(t, ts.orch.Run(ctx, SyncOptions{}))
+	next := ts.orch.mediaPlan(ctx)
+	require.NotNil(t, next)
+	assert.Equal(t, time.Unix(mediaStartS+50, 0).UTC(), next.start.UTC(), "a new Run reads the plan afresh")
+}
+
+// A message whose ts does not parse records no media and says so.
+func TestRecordSlackMedia_LogsUnparseableTS(t *testing.T) {
+	ts := newMediaSetup(t, http.NewServeMux())
+	var buf bytes.Buffer
+	ts.orch.logger = log.New(&buf, "", 0)
+	tx, err := ts.db.Begin()
+	require.NoError(t, err)
+	defer func() { _ = tx.Rollback() }()
+	ts.orch.recordSlackMedia(context.Background(), tx, slackMediaWrite{channelID: ts.ns("C001"), ts: "not-a-ts",
+		found: []db.MediaFound{{Kind: "link", Locator: "url:https://example.com/", ContentKey: "url:https://example.com/"}}})
+	assert.Contains(t, buf.String(), "not-a-ts")
+	assert.Equal(t, 1, bytes.Count(buf.Bytes(), []byte("\n")), "one line")
 }

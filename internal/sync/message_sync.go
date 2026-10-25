@@ -392,7 +392,7 @@ func (o *Orchestrator) computeOldest(state *db.SyncState, full bool) string {
 // transaction, with each new message's images and links: a re-upsert (an
 // edit, a Slack tombstone) replaces both kinds.
 func (o *Orchestrator) upsertMessagePage(ctx context.Context, channelID string, messages []goslack.Message) (int, error) {
-	plan := o.mediaPlan(ctx) // read before the write transaction
+	plan := o.mediaPlan(ctx) // read once per run, before the write transaction
 	tx, err := o.db.Begin()
 	if err != nil {
 		return 0, fmt.Errorf("beginning transaction: %w", err)

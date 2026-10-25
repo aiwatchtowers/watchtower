@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	gosync "sync"
 	"time"
 
 	"watchtower/internal/config"
@@ -87,6 +88,13 @@ type Orchestrator struct {
 	// search matches that shared a file without listing it
 	// (maxSlackFileLookups). Run resets it.
 	fileLookups int
+
+	// plan is the current Run's media plan, read once (planRead) by
+	// mediaPlan; resetMediaPlan clears both. planMu guards them: channel
+	// workers call mediaPlan concurrently.
+	planMu   gosync.Mutex
+	plan     *slackMediaPlan
+	planRead bool
 
 	// jiraKeyDetector, if set, links Jira issue keys found in synced messages
 	// (the digest/tracks pipelines' SetJiraKeyDetector shape).
@@ -192,6 +200,7 @@ func (o *Orchestrator) Run(ctx context.Context, opts SyncOptions) error {
 	o.searchIncomplete = false
 	o.firstSyncFrom = time.Time{}
 	o.fileLookups = 0
+	o.resetMediaPlan()
 	err := o.run(ctx, opts)
 	if ctx.Err() != nil {
 		o.slackClient.ResetAPIStats()

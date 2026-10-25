@@ -25,27 +25,43 @@ var (
 	slackReplaceLinks = []string{"link"}
 )
 
-// slackMediaPlan is what discovery reads once per page: the refused-host set
-// links are checked against and media_state.start_at.
+// slackMediaPlan is what discovery reads once per Run (or backfill chunk):
+// the refused-host set links are checked against and media_state.start_at.
 type slackMediaPlan struct {
 	refused map[string]bool
 	start   time.Time
 }
 
-// mediaPlan reads the page's plan; nil (logged) when it cannot be read, and
-// the page then records no media at all.
+// resetMediaPlan makes the next mediaPlan call read the plan afresh; Run and
+// BackfillSearch call it first.
+func (o *Orchestrator) resetMediaPlan() {
+	o.planMu.Lock()
+	defer o.planMu.Unlock()
+	o.plan, o.planRead = nil, false
+}
+
+// mediaPlan returns the plan, read on the first call after resetMediaPlan
+// and reused by every later page and thread of the run; nil (logged once)
+// when it cannot be read, and the run then records no media at all.
 func (o *Orchestrator) mediaPlan(ctx context.Context) *slackMediaPlan {
+	o.planMu.Lock()
+	defer o.planMu.Unlock()
+	if o.planRead {
+		return o.plan
+	}
+	o.planRead = true
 	start, err := o.db.MediaStartAt()
 	if err != nil {
-		o.logger.Printf("warning: media discovery skipped for this page: %v", err)
+		o.logger.Printf("warning: media discovery skipped for this sync: %v", err)
 		return nil
 	}
 	refused, err := media.RefusedHosts(ctx, o.db, media.DenyHosts(o.config))
 	if err != nil {
-		o.logger.Printf("warning: media discovery skipped for this page: %v", err)
+		o.logger.Printf("warning: media discovery skipped for this sync: %v", err)
 		return nil
 	}
-	return &slackMediaPlan{refused: refused, start: start}
+	o.plan = &slackMediaPlan{refused: refused, start: start}
+	return o.plan
 }
 
 // isNew reports a message at ts recent enough to record media for; false for
@@ -103,6 +119,7 @@ type slackMediaWrite struct {
 func (o *Orchestrator) recordSlackMedia(ctx context.Context, tx *sql.Tx, w slackMediaWrite) {
 	at, err := parseSlackTS(w.ts)
 	if err != nil {
+		o.logger.Printf("warning: media of %s not recorded: %v", w.channelID, err)
 		return
 	}
 	p := db.MediaParent{
