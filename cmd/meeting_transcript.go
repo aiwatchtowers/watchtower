@@ -454,7 +454,7 @@ func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *
 	}
 	storeErrMsg := ""
 	if err != nil {
-		storeErrMsg = err.Error()
+		storeErrMsg = logredact.Full(err)
 	}
 	completeRun(1, in, out, api, storeErrMsg)
 	return err

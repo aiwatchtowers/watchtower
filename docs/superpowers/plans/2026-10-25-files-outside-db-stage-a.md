@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- The log rule (spec §2 G3): log lines carry ids, counts, durations, phase and error class. They never carry names or text. Names become ids (`channel=<acct>:<id>`, `user=<acct>:<id>`, `event=<id>`). A parse error logs `claude.DescribeOutput` (byte count + shape + sha256). CLI stderr and HTTP bodies stay on the error **stored in the database**; the log gets at most the first 120 chars after quoted strings are scrubbed.
+- The log rule (spec §2 G3): log lines carry ids, counts, durations, phase and error class. They never carry names or text. Names become ids (`channel=<acct>:<id>`, `user=<acct>:<id>`, `event=<id>`). A parse error logs `claude.DescribeOutput` (byte count + shape + sha256). CLI stderr and HTTP bodies stay whole only in `logredact.Full(err)` where the owner reads an error; `Error()`, and so every log line, shows them as a fingerprint (bytes, shape, sha256) — see the spec §2 G3 row (amended in the tasks 1–5 review).
 - Nothing new on argv (CHAT-04 stands): prompts go over an inherited pipe or stdin. A 0600 file is the fallback only, and only where Step 0 of Task 6 shows that a CLI refuses a pipe.
 - Every `claude -p` Watchtower spawns passes `--no-session-persistence` and never `--resume`. Codex keeps `--ephemeral`.
 - A chat whose provider process is new replays its history from the database (`chat.ReplayFromDB` in Go, `EmbeddedChatReplay` in Swift). The first respawned turn costs one replay; that cost is accepted (spec §2 G11).
