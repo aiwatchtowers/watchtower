@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 import Observation
 import os
 
@@ -103,7 +104,7 @@ package final class AutomationEditorCenter {
     @ObservationIgnored private let grants: @MainActor (Int64) async throws -> [AutomationToolGrant]
     @ObservationIgnored private let refresh: @MainActor (Int64) async -> Void
     @ObservationIgnored private let tempDirectory: URL
-    @ObservationIgnored private let draftCacheDir: URL?
+    @ObservationIgnored private let draftCache: (any DatabaseWriter)?
     @ObservationIgnored private let checkDelay: Duration
     @ObservationIgnored private let sleep: (Duration) async -> Void
     /// The text the last check validated, which `commit` writes.
@@ -127,14 +128,15 @@ package final class AutomationEditorCenter {
     private static let log = Logger(subsystem: "com.watchtower.desktop", category: "automation-editor")
 
     /// `grants` reads an automation's auto grants; `refresh` re-reads the list
-    /// and the card's detail after a write. `draftCacheDir` is
-    /// `<workspace>/automation-drafts`, whose `<conversation id>.jsonl` a new
-    /// draft's save removes. `sleep` is the debounce's wait (a test seam).
+    /// and the card's detail after a write. `draftCache` is the database
+    /// whose `automation_draft_cache` rows a new draft's save removes (the
+    /// view model removes them in the app). `sleep` is the debounce's wait
+    /// (a test seam).
     package init(
         cli: AutomationsCLI,
         grants: @escaping @MainActor (Int64) async throws -> [AutomationToolGrant],
         refresh: @escaping @MainActor (Int64) async -> Void,
-        draftCacheDir: URL? = nil,
+        draftCache: (any DatabaseWriter)? = nil,
         tempDirectory: URL = FileManager.default.temporaryDirectory,
         checkDelay: Duration = .milliseconds(500),
         sleep: @escaping (Duration) async -> Void = { try? await Task.sleep(for: $0) }
@@ -142,7 +144,7 @@ package final class AutomationEditorCenter {
         self.cli = cli
         self.grants = grants
         self.refresh = refresh
-        self.draftCacheDir = draftCacheDir
+        self.draftCache = draftCache
         self.tempDirectory = tempDirectory
         self.checkDelay = checkDelay
         self.sleep = sleep
@@ -515,14 +517,12 @@ package final class AutomationEditorCenter {
     }
 
     private func removeDraftCache(_ key: Int64) {
-        guard let draftCacheDir else { return }
-        let file = draftCacheDir.appendingPathComponent("\(-key).jsonl")
-        guard FileManager.default.fileExists(atPath: file.path) else { return }
+        guard let draftCache else { return }
         do {
-            try FileManager.default.removeItem(at: file)
+            try draftCache.write { try AutomationDraftCacheQueries.delete($0, conversationID: -key) }
         } catch {
             let reason = error.localizedDescription
-            Self.log.error("could not remove the draft cache \(file.lastPathComponent, privacy: .public): \(reason, privacy: .public)")
+            Self.log.error("could not remove the draft cache of conversation \(-key, privacy: .public): \(reason, privacy: .public)")
         }
     }
 

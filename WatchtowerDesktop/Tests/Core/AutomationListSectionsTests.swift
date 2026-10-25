@@ -182,14 +182,18 @@ final class AutomationListSectionsTests: XCTestCase {
             + #""outputs":[],"budget_tokens":40000,"budget_minutes":5},"dry_run":null},"at":"2026-10-21T09:00:00Z"}"#
     }
 
+    /// Seeds the conversation's cache rows, one per non-blank line, the
+    /// newest cached at `modified`.
     private func writeCache(_ conversationID: Int64, _ text: String, modified: Date) throws {
-        let url = AutomationDraftEntry.cacheURL(databasePath: path, conversationID: conversationID)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try text.write(to: url, atomically: true, encoding: .utf8)
-        try FileManager.default.setAttributes([.modificationDate: modified], ofItemAtPath: url.path)
+        let lines = text.split(whereSeparator: \.isNewline).map(String.init)
+        try pool.write { db in
+            for line in lines {
+                try AutomationDraftCacheQueries.append(db, conversationID: conversationID, entryJSON: line, at: modified)
+            }
+        }
     }
 
-    func testDraftRowsFromCacheFiles() throws {
+    func testDraftRowsFromCacheRows() throws {
         let personal = try insertDraftConversation("d1")
         let workbench = try insertDraftConversation("d2-wb3")
         _ = try insertDraftConversation("d4")
@@ -205,7 +209,7 @@ final class AutomationListSectionsTests: XCTestCase {
         try writeCache(broken, line(name: "Fine") + "\n{not json\n", modified: now)
 
         let rows = try pool.read { db in
-            try AutomationDraftRows.load(db, databasePath: path, liveWorkbenchIDs: [3])
+            try AutomationDraftRows.load(db, liveWorkbenchIDs: [3])
         }
         XCTAssertEqual(rows.map(\.conversationID), [workbench, personal])
         XCTAssertEqual(rows.map(\.workbenchID), [3, nil])
@@ -219,7 +223,7 @@ final class AutomationListSectionsTests: XCTestCase {
         let gone = try insertDraftConversation("d3-wb9")
         try writeCache(gone, line(name: "Gone") + "\n", modified: now)
         let rows = try pool.read { db in
-            try AutomationDraftRows.load(db, databasePath: path, liveWorkbenchIDs: [3])
+            try AutomationDraftRows.load(db, liveWorkbenchIDs: [3])
         }
         XCTAssertEqual(rows, [])
     }
@@ -228,7 +232,7 @@ final class AutomationListSectionsTests: XCTestCase {
         let id = try insertDraftConversation("d6")
         try writeCache(id, #"{"recipe_text":"x","result":null,"error":"boom"}"# + "\n", modified: now)
         let rows = try pool.read { db in
-            try AutomationDraftRows.load(db, databasePath: path, liveWorkbenchIDs: [])
+            try AutomationDraftRows.load(db, liveWorkbenchIDs: [])
         }
         XCTAssertEqual(rows.map(\.name), ["New automation"])
     }
@@ -246,7 +250,7 @@ final class AutomationListSectionsTests: XCTestCase {
         try writeCache(failed, #"{"recipe_text":"","result":null,"error":"boom"}"# + "\n",
                        modified: now.addingTimeInterval(-2))
         let rows = try pool.read { db in
-            try AutomationDraftRows.load(db, databasePath: path, liveWorkbenchIDs: [])
+            try AutomationDraftRows.load(db, liveWorkbenchIDs: [])
         }
         XCTAssertEqual(rows.map(\.summary), ["Sorts the mail", "Posts a digest.", nil])
     }

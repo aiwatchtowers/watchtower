@@ -56,8 +56,8 @@ final class AutomationDraftSaveTests: XCTestCase {
                                       refresh: { _ in }, tempDirectory: tempDir, sleep: sleep)
     }
 
-    /// One `automation_draft` conversation keyed `contextID`, with a cache
-    /// file (so it is a list row) and `messages` owner lines.
+    /// One `automation_draft` conversation keyed `contextID`, with a cached
+    /// draft (so it is a list row) and `messages` owner lines.
     private func insertDraft(_ contextID: String = "d1", messages: [String] = []) throws -> Int64 {
         let id = try pool.write { db -> Int64 in
             try db.execute(sql: """
@@ -68,13 +68,16 @@ final class AutomationDraftSaveTests: XCTestCase {
             for text in messages {
                 try TestDatabase.insertChatMessage(db, conversationID: id, role: "user", text: text)
             }
+            try AutomationDraftCacheQueries.append(db, conversationID: id,
+                                                   entryJSON: #"{"recipe_text":"x","result":null,"error":"boom"}"#,
+                                                   at: Date())
             return id
         }
-        let url = AutomationDraftEntry.cacheURL(databasePath: path, conversationID: id)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try (#"{"recipe_text":"x","result":null,"error":"boom"}"# + "\n").write(to: url, atomically: true,
-                                                                                encoding: .utf8)
         return id
+    }
+
+    private func cachedDrafts(_ conversationID: Int64) throws -> [String] {
+        try pool.read { try AutomationDraftCacheQueries.entries($0, conversationID: conversationID) }
     }
 
     private func contextOf(_ conversationID: Int64) throws -> (String?, String?) {
@@ -98,8 +101,7 @@ final class AutomationDraftSaveTests: XCTestCase {
         await vm.draftSaved(contextID: "d1", conversationID: draft, automationID: 7)
 
         XCTAssertEqual(vm.draftRows, [])
-        let url = AutomationDraftEntry.cacheURL(databasePath: path, conversationID: draft)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "the draft cache is removed")
+        XCTAssertEqual(try cachedDrafts(draft), [], "the draft cache is removed")
         XCTAssertEqual(vm.panel, .editor(target), "the panel is the caller's to move, never emptied here")
         vm.refresh()
         XCTAssertEqual(vm.draftRows, [], "a re-read does not bring it back")
@@ -262,12 +264,14 @@ final class AutomationDraftSaveTests: XCTestCase {
         let left = await waitForCondition { vm.draftRows.isEmpty }
         XCTAssertTrue(left)
         XCTAssertTrue(engine.isStreaming, "the row left before the turn ended")
-        let url = AutomationDraftEntry.cacheURL(databasePath: path, conversationID: draft)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertEqual(try cachedDrafts(draft), [])
         XCTAssertEqual(try contextOf(draft).0, "automation_draft", "the re-key waits for the turn")
         // The streaming turn drafts again: a re-read meanwhile still lists nothing.
-        try (#"{"recipe_text":"y","result":null,"error":"boom"}"# + "\n").write(to: url, atomically: true,
-                                                                                encoding: .utf8)
+        try await pool.write { db in
+            try AutomationDraftCacheQueries.append(db, conversationID: draft,
+                                                   entryJSON: #"{"recipe_text":"y","result":null,"error":"boom"}"#,
+                                                   at: Date())
+        }
         vm.refresh()
         XCTAssertEqual(vm.draftRows, [])
 
@@ -276,7 +280,7 @@ final class AutomationDraftSaveTests: XCTestCase {
         await saved.value
         XCTAssertEqual(try contextOf(draft).0, "automation")
         XCTAssertEqual(try contextOf(draft).1, "7")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path), "the turn's late draft is removed too")
+        XCTAssertEqual(try cachedDrafts(draft), [], "the turn's late draft is removed too")
         XCTAssertNil(center.loaded(key))
         vm.refresh()
         XCTAssertEqual(vm.draftRows, [])

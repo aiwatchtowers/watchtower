@@ -132,7 +132,7 @@ enum AutomationShotFixtures {
                 "id": 1, "tool": "save_automation", "args_json": json, "reason": "a Release button",
                 "status": "pending", "turn_id": "t1"
             ]))
-            let sessions = AutomationDraftPanelModel.dryRunSessions(inCache: try cacheLine())
+            let sessions = AutomationDraftPanelModel.dryRunSessions(in: [try cacheLine()])
             return AnyView(AgentActionCardView(action: action, inFlight: false, onApprove: {}, onReject: {},
                                                onRetry: {}, latestDraftText: recipe, draftSessions: sessions))
         } catch {
@@ -296,14 +296,13 @@ enum AutomationShotFixtures {
     }
 
     /// A New automation chat for workbench `acme` with a draft on disk.
-    private static func insertDraft(_ db: Database, databasePath: String, acme: Int64) throws {
+    private static func insertDraft(_ db: Database, acme: Int64) throws {
         try db.execute(sql: """
             INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
             VALUES ('New automation', 'automation_draft', ?, 0, 0)
             """, arguments: ["shot-wb\(acme)"])
-        let url = AutomationDraftEntry.cacheURL(databasePath: databasePath, conversationID: db.lastInsertedRowID)
-        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try (cacheLine() + "\n").write(to: url, atomically: true, encoding: .utf8)
+        try AutomationDraftCacheQueries.append(db, conversationID: db.lastInsertedRowID, entryJSON: cacheLine(),
+                                               at: Date(timeIntervalSince1970: 1_792_920_000))
     }
 
     /// The tab (spec 2026-10-24 §1, mockup boards 1 and 3): Personal with an
@@ -314,7 +313,6 @@ enum AutomationShotFixtures {
     static func list(collapsed: Bool = false) -> AnyView {
         do {
             let pool = try makePool()
-            let path = pool.path
             let (acmeID, docsID, firstID) = try pool.write { db -> (Int64, Int64, Int64) in
                 let acme = try TestDatabase.insertWorkbench(db, name: "acme", folder: "/work/acme")
                 let docs = try TestDatabase.insertWorkbench(db, name: "acme-docs", folder: "/work/acme-docs")
@@ -347,7 +345,7 @@ enum AutomationShotFixtures {
                     error: "fetch: example.com timed out after 30 s",
                     queuedAt: "2026-10-20T07:00:00Z", startedAt: "2026-10-20T07:00:01Z",
                     finishedAt: "2026-10-20T07:00:31Z")
-                try insertDraft(db, databasePath: path, acme: acme)
+                try insertDraft(db, acme: acme)
                 return (acme, docs, first)
             }
             let suite = "automation-shots-\(collapsed)"

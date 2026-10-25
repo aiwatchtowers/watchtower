@@ -454,11 +454,10 @@ final class AutomationsViewModelTests: XCTestCase {
             return (db.lastInsertedRowID - 1, db.lastInsertedRowID)
         }
         let line = #"{"recipe_text":"x","result":null,"error":"boom"}"# + "\n"
-        for id in [personal, gone] {
-            let url = AutomationDraftEntry.cacheURL(databasePath: path, conversationID: id)
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
-                                                    withIntermediateDirectories: true)
-            try line.write(to: url, atomically: true, encoding: .utf8)
+        try pool.write { db in
+            for id in [personal, gone] {
+                try AutomationDraftCacheQueries.append(db, conversationID: id, entryJSON: line, at: Date())
+            }
         }
         let vm = makeViewModel()
         vm.refresh()
@@ -468,8 +467,7 @@ final class AutomationsViewModelTests: XCTestCase {
         vm.discardDraft(contextID: "d1")
         XCTAssertEqual(vm.draftRows, [])
         XCTAssertEqual(vm.panel, .empty)
-        let url = AutomationDraftEntry.cacheURL(databasePath: path, conversationID: personal)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertEqual(try pool.read { try AutomationDraftCacheQueries.entries($0, conversationID: personal) }, [])
         vm.refresh()
         XCTAssertEqual(vm.draftRows, [])
     }
