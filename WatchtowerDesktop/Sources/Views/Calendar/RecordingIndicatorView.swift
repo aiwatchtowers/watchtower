@@ -161,6 +161,7 @@ struct RecordingIndicatorView: View {
             RecordingJobPill(
                 title: job.title ?? "Recording",
                 phase: job.phase,
+                waitingForCapture: center.jobsWaitingForCapture.contains(job.id),
                 canRetry: job.id == retriable,
                 canDismiss: job.id == dismissable,
                 retry: { retry(center) },
@@ -429,9 +430,14 @@ struct RecordingIndicatorView: View {
         return (visible, jobs.count - visible.count)
     }
 
-    static func jobPhaseLabel(_ phase: MeetingRecorderCenter.ProcessingJob.Phase) -> String {
+    /// `waitingForCapture`: a queued job that has to transcribe and waits only
+    /// for the running recording to release the engine
+    /// (`MeetingRecorderCenter.jobsWaitingForCapture`) — said so, because a
+    /// bare "Queued" for the length of a meeting reads as stuck.
+    static func jobPhaseLabel(_ phase: MeetingRecorderCenter.ProcessingJob.Phase,
+                              waitingForCapture: Bool = false) -> String {
         switch phase {
-        case .queued: return "Queued"
+        case .queued: return waitingForCapture ? "Waiting for the recording to stop" : "Queued"
         case let .transcribing(done, total):
             return total > 0 ? "Transcribing \(done)/\(total)" : "Transcribing…"
         case .diarizing: return "Identifying speakers…"
@@ -455,6 +461,8 @@ struct RecordingIndicatorView: View {
 struct RecordingJobPill: View {
     let title: String
     let phase: MeetingRecorderCenter.ProcessingJob.Phase
+    /// A queued job held back by the running recording (see `jobPhaseLabel`).
+    var waitingForCapture = false
     /// Whether the Center's single-slot retry/dismiss would act on *this* job;
     /// the buttons render disabled otherwise rather than silently no-opping.
     let canRetry: Bool
@@ -492,7 +500,8 @@ struct RecordingJobPill: View {
             case .queued:
                 Image(systemName: "clock").foregroundStyle(.secondary)
                 titleText
-                Text("Queued").font(.callout).foregroundStyle(.secondary)
+                Text(RecordingIndicatorView.jobPhaseLabel(phase, waitingForCapture: waitingForCapture))
+                    .font(.callout).foregroundStyle(.secondary)
             case .transcribing, .diarizing, .summarizing:
                 ProgressView().controlSize(.small)
                 Text(RecordingIndicatorView.jobPhaseLabel(phase)).font(.callout)

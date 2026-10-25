@@ -27,18 +27,23 @@ extension NotificationService: MeetingTranscriptNotifying {}
 /// App-wide registry for meeting capture and the post-processing that follows.
 ///
 /// Capture and post-processing are **decoupled**: `captureState` covers the one
-/// recording the machine can physically make, while `jobs` is a FIFO queue of
-/// finished recordings waiting to be transcribed → diarized → saved. Starting a
+/// recording the machine can physically make, while `jobs` is a serial queue of
+/// finished recordings (stop order; see `startJobTask` for which one goes next)
+/// waiting to be transcribed → diarized → saved. Starting a
 /// recording is gated on capture alone (`isCapturing`), so back-to-back meetings
 /// no longer wait for the previous transcription to finish.
 ///
-/// Exactly one transcription engine is ever resident. A queued job never starts
-/// while a recording is capturing — the recording's live pass owns that slot —
-/// and conversely a recording that starts while a job is running parks its live
-/// pass in `.waiting` until the job releases the slot. Nothing is lost meanwhile:
-/// the recorder's sample stream buffers from second zero, so the live pass drains
-/// the backlog when it finally loads (the same mechanism that already covers the
-/// mid-recording engine load).
+/// Exactly one transcription engine is ever resident. A queued job that has to
+/// transcribe (the batch path) never starts while a recording is capturing —
+/// the recording's live pass owns that slot — and conversely a recording that
+/// starts while such a job is running parks its live pass in `.waiting` until
+/// the job releases the slot. Nothing is lost meanwhile: the recorder's sample
+/// stream buffers from second zero, so the live pass drains the backlog when it
+/// finally loads (the same mechanism that already covers the mid-recording
+/// engine load). A job that already has its text — the live pass's output, or
+/// a transcript kept from an earlier run — needs no engine: it renders roles
+/// and saves while the next meeting captures, and never parks that meeting's
+/// live pass (`engineJobID` vs `activeJobID`).
 ///
 /// The **warm slot** is the fourth state of that single-engine invariant: an
 /// engine can be held by the capture's live pass, a draining live tail, a job —
@@ -201,8 +206,10 @@ final class MeetingRecorderCenter {
     /// transcript id the save returned. Same keying as `onJobPhase`.
     var onJobFinished: ((_ audioURL: URL, _ transcriptID: Int64) -> Void)?
 
-    /// `.waiting` = a recording is capturing but a job still owns the engine
-    /// slot, so the live engine is deliberately not loaded yet.
+    /// `.waiting` = a recording is capturing but something else still owns
+    /// the engine slot (a batch job, the previous recording's draining tail,
+    /// a resident dictation engine), so the live engine is deliberately not
+    /// loaded yet.
     enum LiveEngineState: Equatable { case off, waiting, loading, running, unavailable }
     struct LiveChunk: Equatable, Identifiable { let id: Int; let text: String; let language: String }
 
@@ -380,18 +387,38 @@ final class MeetingRecorderCenter {
     /// started with, not on a live Settings read a mid-recording toggle flips.
     private(set) var captureLiveEnabled = true
 
-    /// The job the queue is currently working; nil when the queue is parked.
-    /// Readable so the indicator stack can promote the pill of the job that is
-    /// genuinely being worked, rather than guessing from a phase (with
-    /// diarization off a job can be active while its phase still reads
-    /// `.queued`).
+    /// The job the queue is currently working, whether or not it needs the
+    /// engine; nil when the queue is parked. Readable so the indicator stack
+    /// can promote the pill of the job that is genuinely being worked, rather
+    /// than guessing from a phase (with diarization off a job can be active
+    /// while its phase still reads `.queued`). Never an engine claim on its
+    /// own — that is `engineJobID`.
     private(set) var activeJobID: ProcessingJob.ID?
-    /// Task of the most recently enqueued job. A new job's task awaits it first,
-    /// which is what makes the queue FIFO and strictly serial.
-    private var lastJobTask: Task<Void, Never>?
-    /// Jobs parked waiting for the engine slot, resumed when capture (and its
-    /// live pass) let go of it.
-    private var engineSlotWaiters: [CheckedContinuation<Void, Never>] = []
+    /// The active job when it holds the engine slot — the batch path, the only
+    /// one that transcribes. Nil while the active job works from text it
+    /// already has (the live pass's output, or a transcript kept from an
+    /// earlier run): that job renders roles and saves without Whisper, so it
+    /// must not park a new recording's live pass. Every engine-residency gate
+    /// (`startRecording`, `dictationEngineDidRelease`, `isEngineBusy`) reads
+    /// this, never `activeJobID`.
+    private(set) var engineJobID: ProcessingJob.ID?
+    /// Jobs handed to the queue that have not started yet, in enqueue order
+    /// (stop order). The queue starts the first one that can start (see
+    /// `nextStartableJob`), one job at a time.
+    private var queuedJobIDs: [ProcessingJob.ID] = []
+    /// Queued jobs whose own recording's live tail is still draining in
+    /// `stopAndProcess`: their input (live text or batch) is not known yet,
+    /// so they cannot start, whatever the slot says.
+    private var jobsAwaitingLiveTail: Set<ProcessingJob.ID> = []
+    /// Job tasks parked in `awaitTurn`, resumed whenever something that
+    /// decides which job may start changes: the queue's active job finished,
+    /// a capture started or ended, a live pass let go of the engine.
+    private var queueWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Queued batch jobs that wait only because a recording is capturing (the
+    /// live pass owns the engine slot), as of the last time the queue looked.
+    /// The indicator labels them "Waiting for the recording to stop" rather
+    /// than a bare "Queued" that reads as stuck.
+    private(set) var jobsWaitingForCapture: Set<ProcessingJob.ID> = []
 
     // MARK: - Warm engine slot
 
@@ -434,10 +461,10 @@ final class MeetingRecorderCenter {
     @ObservationIgnored var onLiveEngineHandedToJobForTesting: (() -> Void)?
 
     /// Test seam into the queue: fires in the same main-actor step in which a
-    /// job claims the engine slot (`acquireEngineSlot`), before it runs. Lets a
-    /// test prove a job did NOT start before some event — which no amount of
-    /// waiting can — by recording what had happened at claim time. Nil in
-    /// production.
+    /// job is started by the queue (`awaitTurn` — claiming the engine slot too
+    /// when its path needs one), before it runs. Lets a test prove a job did
+    /// NOT start before some event — which no amount of waiting can — by
+    /// recording what had happened at claim time. Nil in production.
     @ObservationIgnored var onEngineSlotClaimedForTesting: (() -> Void)?
 
     /// Latched synchronously at the top of `startRecording`, before its first
@@ -577,28 +604,35 @@ final class MeetingRecorderCenter {
     }
 
     /// Whether anything but the warm slot holds (or is about to hold) the
-    /// engine: a capture, a live pass still draining, a job the queue is
-    /// working, or a job that has been handed an engine but has not claimed
-    /// the slot yet. The policy never prewarms — and never unloads — while
-    /// this is true.
+    /// engine: a capture, a live pass still draining, a job transcribing on
+    /// the batch path (`engineJobID` — a job saving live text holds none), or
+    /// a job that has been handed an engine and not parked or used it yet.
+    /// The policy never prewarms — and never unloads — while this is true.
     ///
     /// That last term is not redundant: `stopAndProcess` hands the engine to
     /// the job and releases the live slot in one main-actor step, while the
-    /// job's own task claims `activeJobID` in a later one. Without it a tick
-    /// landing in between would see a free engine and prewarm a second model
-    /// alongside the one the job is holding.
+    /// job's own task starts in a later one — and may wait longer still behind
+    /// the job the queue is working. Without it a tick landing in between
+    /// would see a free engine and prewarm a second model alongside the one
+    /// the job is holding.
     private var isEngineBusy: Bool {
-        isCapturing || liveTask != nil || activeJobID != nil || jobs.contains { $0.engine != nil }
+        isCapturing || liveTask != nil || engineJobID != nil || jobs.contains { $0.engine != nil }
     }
 
     /// The single engine-acquisition point for both load sites
     /// (`startLivePass` and the batch fallback in `transcribeAndSave`):
     /// (1) an in-flight prewarm is awaited first, so a recording started
     /// mid-prewarm reuses that load rather than starting a second one;
-    /// (2) a parked engine whose key still matches Settings is taken (the
+    /// (2) with the slot empty, an engine a stopped recording handed to its
+    /// still-queued job (`ProcessingJob.engine`) is taken over instead — that
+    /// job is not using it yet (it parks it, or loads again when its turn
+    /// comes), and loading here would put a second model beside it. A live
+    /// pass starting while the previous recording's job waits for the queue
+    /// is the case this exists for;
+    /// (3) a parked engine whose key still matches Settings is taken (the
     /// slot is emptied — the engine now belongs to the caller); a key
     /// mismatch drops the stale engine instead of serving it;
-    /// (3) otherwise the factory loads fresh, under the key read BEFORE the
+    /// (4) otherwise the factory loads fresh, under the key read BEFORE the
     /// load — the caller carries that key onward, so the engine is parked as
     /// what it is rather than as whatever Settings say when it finishes.
     ///
@@ -610,6 +644,12 @@ final class MeetingRecorderCenter {
     private func takeWarmOrLoad(_ config: TranscriptionConfig) async throws -> LoadedEngine {
         if let prewarmTask {
             await prewarmTask.value
+        }
+        if warmTranscriber == nil, let holder = jobs.first(where: { $0.engine != nil }),
+           let handed = holder.engine {
+            updateJob(holder.id) { $0.engine = nil }
+            warmTranscriber = handed.transcriber
+            warmKey = handed.key
         }
         if let warm = warmTranscriber {
             let parkedKey = warmKey
@@ -922,10 +962,11 @@ final class MeetingRecorderCenter {
         isStarting = true
         defer {
             isStarting = false
-            // A job parked on the engine slot must be woken once the start
-            // resolves; a successful start keeps the slot and releases it in
-            // `stopAndProcess` instead.
-            if !isCapturing { wakeEngineSlotWaiters() }
+            // The queue re-looks once the start resolves: a failed start has
+            // to hand the engine slot back to a parked batch job, and a
+            // successful one turns a queued batch job into one waiting for
+            // this recording (its label).
+            wakeQueueWaiters()
         }
 
         currentEventID = eventID
@@ -952,12 +993,13 @@ final class MeetingRecorderCenter {
                 liveGeneration += 1
                 liveChunks = []
                 liveEngineState = .off
-            } else if activeJobID == nil, liveTask == nil, dictationEngineResident?() != true {
+            } else if engineJobID == nil, liveTask == nil, dictationEngineResident?() != true {
                 startLivePass(recorder: recorder, config: config)
             } else {
-                // A job, the previous recording's still-draining live tail, or
-                // a dictation engine not yet dropped by the captureWillStart
-                // handshake owns the engine slot. The recorder's live stream
+                // A batch job, the previous recording's still-draining live
+                // tail, or a dictation engine not yet dropped by the
+                // captureWillStart handshake owns the engine slot (a job saving
+                // live text holds none — it never parks this pass). The recorder's live stream
                 // buffers unboundedly from second zero, so the live pass loads
                 // its engine when the slot frees and catches up on the backlog.
                 liveChunks = []
@@ -1126,9 +1168,9 @@ final class MeetingRecorderCenter {
                 // `transcribeWindow`, so the engine the orphan is still
                 // decoding through is not free yet. `liveTask` therefore stays
                 // set until it has actually exited — it IS the engine-slot
-                // claim both residency gates read (`acquireEngineSlot` and
+                // claim both residency gates read (`nextStartableJob` and
                 // `startRecording`'s live-pass branch), so keeping it means a
-                // parked job and a NEW recording alike wait rather than loading
+                // parked batch job and a NEW recording alike wait rather than loading
                 // a second engine alongside the orphan. Clearing it (and the
                 // transcriber it loaded, which belongs to nobody now) plus the
                 // handoff all happen once the await returns. The failure itself
@@ -1139,10 +1181,10 @@ final class MeetingRecorderCenter {
                     self.liveTask = nil
                     self.loadedEngine = nil
                     self.startPendingLivePass()
-                    self.wakeEngineSlotWaiters()
+                    self.wakeQueueWaiters()
                 }
             } else {
-                wakeEngineSlotWaiters()
+                wakeQueueWaiters()
             }
             // The audio captured so far stays on disk with its sidecar: surface
             // it as a failed job so Retry re-runs the batch path from the file.
@@ -1161,12 +1203,14 @@ final class MeetingRecorderCenter {
         let ownsLivePass = consumeLivePassOwnership()
         liveEngineState = .off
 
-        // Enqueued — and given its place in the chain — before the live tail is
+        // Enqueued — and given its place in the queue — before the live tail is
         // drained, so the queue order is stop order and the legacy `phase` never
-        // dips through `.idle` mid-run. The task cannot start before the engine
-        // slot frees below, which is what guarantees it sees a fully built job.
+        // dips through `.idle` mid-run. Marked as awaiting its tail until the
+        // handover below, which is what guarantees the job starts only once it
+        // is fully built — with the live text it may not need the engine for.
         let job = ProcessingJob(audioURL: result.audioURL, eventID: eventID, title: title)
         jobs.append(job)
+        if ownsLivePass { jobsAwaitingLiveTail.insert(job.id) }
         let task = startJobTask(jobID: job.id, config: config)
 
         if ownsLivePass {
@@ -1181,14 +1225,18 @@ final class MeetingRecorderCenter {
             }
             // The engine the live pass loaded moves to the job (with the key
             // it was loaded for), so a batch fallback reuses it instead of
-            // loading a second one.
+            // loading a second one. A job with live text parks it once it
+            // starts — unless a recording's live pass takes it over first
+            // (`takeWarmOrLoad`), e.g. the one parked on this tail, started
+            // just below.
             updateJob(job.id) { $0.engine = loadedEngine }
+            jobsAwaitingLiveTail.remove(job.id)
             releaseLiveEngineSlot()
             onLiveEngineHandedToJobForTesting?()
         } else {
             // Capture ended, but the previous recording's tail still holds the
             // engine; wake the queue anyway so it re-checks.
-            wakeEngineSlotWaiters()
+            wakeQueueWaiters()
         }
 
         await task.value
@@ -1216,7 +1264,7 @@ final class MeetingRecorderCenter {
         loadedEngine = nil
         liveGeneration += 1
         startPendingLivePass()
-        wakeEngineSlotWaiters()
+        wakeQueueWaiters()
     }
 
     // MARK: - Retry / recovery
@@ -1354,47 +1402,121 @@ final class MeetingRecorderCenter {
 
     // MARK: - Queue
 
-    /// Spawns the job's task behind the previously enqueued one. FIFO and
-    /// strictly serial: the task waits for its predecessor, then for the engine
-    /// slot, and only then runs.
+    /// What a started job works from, decided by the queue in the step that
+    /// starts it — so the path `runJob` takes is exactly the one the
+    /// engine-slot check allowed, never re-derived from a second read.
+    private enum JobInput {
+        /// A transcript kept by a run whose save failed: re-save only.
+        case persisted(PersistedTranscript)
+        /// The recording's live pass produced the text: roles + save.
+        case live(TranscriptionOutput, durationSec: Int)
+        /// Decode the file and transcribe it — the one path that needs the
+        /// engine slot.
+        case batch
+
+        var needsEngine: Bool {
+            if case .batch = self { return true }
+            return false
+        }
+    }
+
+    /// Enqueues the job (`queuedJobIDs`, enqueue order) and spawns its task,
+    /// which waits for its turn (`awaitTurn`) and then runs it.
+    ///
+    /// The queue is strictly serial — one job at a time, so saves, role
+    /// rendering and voice-registry writes of two recordings never interleave
+    /// (a second job's registry read could otherwise miss the samples the
+    /// first one is about to write) — but not strictly FIFO: the next job to
+    /// start is the OLDEST one that can start now. A job with its text in hand
+    /// can always start; a batch job only when no capture or live pass owns
+    /// the engine slot. So a batch job parked behind a running meeting never
+    /// holds up the live-text jobs queued after it, and it still goes ahead of
+    /// every later batch job once the meeting stops.
     private func startJobTask(jobID: ProcessingJob.ID, config: TranscriptionConfig) -> Task<Void, Never> {
-        let predecessor = lastJobTask
-        let task = Task { @MainActor [weak self] in
-            await predecessor?.value
+        queuedJobIDs.append(jobID)
+        refreshJobsWaitingForCapture()
+        return Task { @MainActor [weak self] in
             guard let self else { return }
-            await self.acquireEngineSlot(for: jobID)
-            await self.runJob(jobID: jobID, config: config)
+            let input = await self.awaitTurn(for: jobID)
+            await self.runJob(jobID: jobID, input: input, config: config)
         }
-        lastJobTask = task
-        return task
     }
 
-    /// Parks until no capture (and no draining live pass) owns the engine slot,
-    /// then claims it. Claiming happens in the same main-actor step as the final
-    /// check, so a `startRecording` racing this cannot also load a live engine.
-    private func acquireEngineSlot(for jobID: ProcessingJob.ID) async {
-        while isCapturing || liveTask != nil {
-            await withCheckedContinuation { engineSlotWaiters.append($0) }
+    /// Parks until this job is the one `nextStartableJob` picks while no job is
+    /// active, then claims the turn — and the engine slot when its input needs
+    /// it. Claiming happens in the same main-actor step as the final check, so
+    /// a `startRecording` racing this cannot also load a live engine. Returns
+    /// nil for a job dismissed while queued (it then ends at once).
+    private func awaitTurn(for jobID: ProcessingJob.ID) async -> JobInput? {
+        while true {
+            if activeJobID == nil, let next = nextStartableJob(), next.id == jobID {
+                queuedJobIDs.removeAll { $0 == jobID }
+                activeJobID = jobID
+                if next.input?.needsEngine == true { engineJobID = jobID }
+                refreshJobsWaitingForCapture()
+                onEngineSlotClaimedForTesting?()
+                return next.input
+            }
+            await withCheckedContinuation { queueWaiters.append($0) }
         }
-        activeJobID = jobID
-        onEngineSlotClaimedForTesting?()
     }
 
-    /// Resumes every job parked in `acquireEngineSlot` so it re-checks the slot.
-    /// It releases nothing itself — the slot is owned by `isCapturing`/`liveTask`,
-    /// and a woken job that still finds one of them set parks again.
-    private func wakeEngineSlotWaiters() {
-        let waiters = engineSlotWaiters
-        engineSlotWaiters = []
+    /// The oldest queued job that can start now, with the input it would run
+    /// on: past the ones still awaiting their own live tail, and past batch
+    /// jobs while a capture or a draining live pass owns the engine slot. Nil
+    /// when nothing can start.
+    private func nextStartableJob() -> (id: ProcessingJob.ID, input: JobInput?)? {
+        let engineSlotFree = !isCapturing && liveTask == nil
+        for id in queuedJobIDs where !jobsAwaitingLiveTail.contains(id) {
+            guard let job = job(id) else { return (id, nil) }
+            let input = plannedInput(for: job)
+            if engineSlotFree || !input.needsEngine { return (id, input) }
+        }
+        return nil
+    }
+
+    /// The input a job would run on if it started now. A kept transcript wins
+    /// over live text, as it always has: it carries the roles of a run that
+    /// already diarized.
+    private func plannedInput(for job: ProcessingJob) -> JobInput {
+        if let persisted = loadPersistedTranscript(audioURL: job.audioURL) {
+            return .persisted(persisted)
+        }
+        if let liveOutput = job.liveOutput {
+            return .live(liveOutput, durationSec: job.liveDurationSec)
+        }
+        return .batch
+    }
+
+    /// Recomputes `jobsWaitingForCapture`: queued batch jobs while a recording
+    /// is capturing. Written only on change — it drives the indicator.
+    private func refreshJobsWaitingForCapture() {
+        var waiting: Set<ProcessingJob.ID> = []
+        if isCapturing {
+            for id in queuedJobIDs where !jobsAwaitingLiveTail.contains(id) {
+                if let job = job(id), plannedInput(for: job).needsEngine { waiting.insert(id) }
+            }
+        }
+        if waiting != jobsWaitingForCapture { jobsWaitingForCapture = waiting }
+    }
+
+    /// Resumes every job parked in `awaitTurn` so it re-checks whether it may
+    /// start. It releases nothing itself — the turn is owned by `activeJobID`
+    /// and the engine slot by `isCapturing`/`liveTask`, and a woken job that
+    /// still may not start parks again.
+    private func wakeQueueWaiters() {
+        refreshJobsWaitingForCapture()
+        let waiters = queueWaiters
+        queueWaiters = []
         for waiter in waiters { waiter.resume() }
     }
 
     /// The dictation center dropped its resident engine (the other direction
     /// of the shared-slot handshake): start the live pass parked on it, unless
-    /// a job or a draining live tail holds the slot — their own release paths
-    /// already call `startPendingLivePass`.
+    /// a batch job or a draining live tail holds the slot — their own release
+    /// paths already call `startPendingLivePass`.
     func dictationEngineDidRelease() {
-        guard activeJobID == nil, liveTask == nil else { return }
+        guard engineJobID == nil, liveTask == nil else { return }
         startPendingLivePass()
     }
 
@@ -1406,31 +1528,37 @@ final class MeetingRecorderCenter {
         startLivePass(recorder: pending.recorder, config: pending.config)
     }
 
-    private func runJob(jobID: ProcessingJob.ID, config: TranscriptionConfig) async {
+    private func runJob(jobID: ProcessingJob.ID, input: JobInput?, config: TranscriptionConfig) async {
         defer {
+            // Only a job that held the engine slot can have parked a live
+            // pass; one that worked from text must not start a pass parked on
+            // something else (a dictation engine still resident).
+            let heldEngine = engineJobID == jobID
             activeJobID = nil
-            startPendingLivePass()
+            engineJobID = nil
+            if heldEngine { startPendingLivePass() }
+            wakeQueueWaiters()
         }
-        guard let job = self.job(jobID) else { return } // dismissed while queued
+        guard let input, self.job(jobID) != nil else { return } // dismissed while queued
 
-        // A transcript persisted by a run whose save failed re-saves directly:
-        // no decode, no transcription, no re-diarization (spec §7). Its roles
-        // flag describes exactly that text, so it is NOT reset here.
-        if let persisted = loadPersistedTranscript(audioURL: job.audioURL) {
+        switch input {
+        case let .persisted(persisted):
+            // A transcript persisted by a run whose save failed re-saves
+            // directly: no decode, no transcription, no re-diarization (spec
+            // §7). Its roles flag describes exactly that text, so it is NOT
+            // reset here.
             await save(jobID: jobID,
                        text: persisted.text,
                        utterances: persisted.utterances,
                        speakers: persisted.speakers,
                        durationSec: persisted.durationSec,
                        langStats: persisted.langStats)
-            return
-        }
-
-        updateJob(jobID) { $0.rolesError = nil } // per-run state, reset at the run boundary
-        if let liveOutput = job.liveOutput {
-            await renderAndSave(jobID: jobID, output: liveOutput, samples: nil,
-                                durationSec: job.liveDurationSec, config: config)
-        } else {
+        case let .live(output, durationSec):
+            updateJob(jobID) { $0.rolesError = nil } // per-run state, reset at the run boundary
+            await renderAndSave(jobID: jobID, output: output, samples: nil,
+                                durationSec: durationSec, config: config)
+        case .batch:
+            updateJob(jobID) { $0.rolesError = nil } // per-run state, reset at the run boundary
             await transcribeAndSave(jobID: jobID, config: config)
         }
     }
@@ -1913,121 +2041,6 @@ final class MeetingRecorderCenter {
     }
 
     // MARK: - Phone recording ingest (mobile hub)
-
-    /// Reserves a unique `rec_<ts>[-N].m4a` name in `directory` by inserting
-    /// its `pending_transcripts` row EXCLUSIVELY (`PendingTranscriptStore.reserve`):
-    /// when a concurrent reserver took the name first, the insert does
-    /// nothing and the next `-N` is tried, so no other recording's row is ever
-    /// overwritten. The row is what recovery keys on, so a quit before the job
-    /// runs leaves the recording recoverable, event-linked. Unlike a live
-    /// capture's best-effort row, a failure here throws. Returns the reserved
-    /// audio URL; nothing exists there yet.
-    ///
-    /// Call it on the main actor (as `ingestPhoneRecording` does); the
-    /// exclusive insert makes it safe against other reservers on any thread.
-    /// Internal (and `nonisolated`) only so the reservers' race is testable
-    /// off the main actor.
-    nonisolated static func reservePhoneRecording(
-        eventID: String?,
-        title: String?,
-        in directory: URL,
-        store: PendingTranscriptStore,
-        date: Date = Date()
-    ) async throws -> URL {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        var lost: Set<String> = []
-        while true {
-            let audioURL = uniqueRecordingURL(in: directory, date: date, fileExtension: "m4a") {
-                lost.contains($0) || isReserved($0, in: store)
-            }
-            if try await store.reserve(recording: audioURL.lastPathComponent, eventID: eventID, title: title, at: date) {
-                return audioURL
-            }
-            // Lost the race for this name; the next `uniqueRecordingURL` moves past it.
-            lost.insert(audioURL.deletingPathExtension().lastPathComponent)
-        }
-    }
-
-    /// Copies the phone's audio into a name `reservePhoneRecording` reserved.
-    /// On failure only what this call created is removed — the partial audio
-    /// (never a file that already sat there) and the reserved row — and the
-    /// error is thrown, so a disk-full ingest leaves nothing half-written.
-    /// Copies rather than moves: the source belongs to the transport, which
-    /// deletes it only once the ingest succeeded. `nonisolated`: the copy of a
-    /// long recording runs off the main actor.
-    nonisolated static func copyPhoneRecording(
-        from sourceURL: URL,
-        to audioURL: URL,
-        store: PendingTranscriptStore
-    ) async throws {
-        do {
-            try FileManager.default.copyItem(at: sourceURL, to: audioURL)
-        } catch {
-            if (error as? CocoaError)?.code != .fileWriteFileExists {
-                try? FileManager.default.removeItem(at: audioURL)
-            }
-            do {
-                try await store.remove(recording: audioURL.lastPathComponent)
-            } catch let removal {
-                print("[MeetingRecorder] could not release the reserved row of \(audioURL.lastPathComponent): "
-                      + removal.localizedDescription)
-            }
-            throw error
-        }
-    }
-
-    /// Why a phone recording was refused before anything was written.
-    enum PhoneIngestError: LocalizedError {
-        /// Readable, but no audio recording.
-        case notAudio
-        /// The file could not be read (an I/O error), so whether it is audio
-        /// is unknown.
-        case unreadable(String)
-        /// The database is not open yet: the recording could not be recorded
-        /// as pending, so it was not taken (the phone keeps it and retries).
-        case databaseUnavailable
-
-        var errorDescription: String? {
-            switch self {
-            case .databaseUnavailable: "Watchtower's database is not open yet."
-            case .notAudio: "The file is not an audio recording."
-            case let .unreadable(detail): "The file could not be read: \(detail)"
-            }
-        }
-    }
-
-    /// A phone recording: an ISO base media file (its first box is `ftyp`,
-    /// whose type sits at offset 4) that AVFoundation reads with at least one
-    /// audio track — so a video, a HEIF image or a bare header is refused, and
-    /// whatever else a linked phone sends never reaches the recordings
-    /// directory or the decoder. False means readable but not audio; an I/O
-    /// error throws `PhoneIngestError.unreadable` instead.
-    nonisolated static func isAudioRecording(_ url: URL) async throws -> Bool {
-        guard try isISOMediaFile(url) else { return false }
-        do {
-            return try await !AVURLAsset(url: url).loadTracks(withMediaType: .audio).isEmpty
-        } catch let error as NSError where error.domain == AVFoundationErrorDomain {
-            return false // AVFoundation read the bytes and found no media it can open
-        } catch {
-            throw PhoneIngestError.unreadable(error.localizedDescription)
-        }
-    }
-
-    /// The cheap first gate of `isAudioRecording`: the `ftyp` box head. A
-    /// file shorter than the head is no media file; one that cannot be opened
-    /// or read throws `PhoneIngestError.unreadable`.
-    nonisolated static func isISOMediaFile(_ url: URL) throws -> Bool {
-        let head: Data
-        do {
-            let handle = try FileHandle(forReadingFrom: url)
-            defer { try? handle.close() }
-            head = try handle.read(upToCount: 8) ?? Data()
-        } catch {
-            throw PhoneIngestError.unreadable(error.localizedDescription)
-        }
-        guard head.count == 8 else { return false }
-        return head.suffix(4) == Data("ftyp".utf8)
-    }
 
     /// Ingests a recording made on the phone (AAC `.m4a`, mic only) and
     /// enqueues it for transcription straight away — a phone recording is

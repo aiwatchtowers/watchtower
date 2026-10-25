@@ -29,6 +29,8 @@ After **Stop**, the recording joins a queue, and each queued recording gets its 
 
 You can start a new recording while an old one is processing. Only one transcription runs at a time, so the new one keeps capturing and its live panel reads "Waiting for previous transcription… live transcript will catch up."
 
+A recording whose live transcript is ready is saved right after **Stop**, even while the next meeting records. A recording that still has to be transcribed from its audio waits until the recording in progress stops, and its pill reads "Waiting for the recording to stop".
+
 If the call goes quiet, you get a warning. When nothing has come from the call for over 2 minutes after it was heard, the pill shows **No call audio** in orange and a notification fires. It usually means the output device changed.
 
 The recording's detail later notes the gap, such as "No call audio from 15:29 to the end".
