@@ -196,7 +196,7 @@ follows the same rules, and so does the removal of the pre-rename
 `watchtower-project` skill when a workbench folder is resynced
 (`removeSkill`: only a marked, un-edited copy is deleted).
 
-Since 2026-10-15 (board #266) the workbench install ships two skills under these rules — the core (v15 since board #964; v14 was board #947, v13 board #558) and the watchtower-flow preset; the upgrade fixtures cover v1..v14 → v15 core + preset (an edited pre-v10 copy is kept as a single file, with no preset).
+Since 2026-10-15 (board #266) the workbench install ships two skills under these rules — the core (v16 since board #907, the reader line for AI-described images and links; v15 was board #964, v14 board #947, v13 board #558) and the watchtower-flow preset; the upgrade fixtures cover v1..v15 → v16 core + preset (an edited pre-v10 copy is kept as a single file, with no preset).
 
 **Test guards:**
 - `internal/devpack/install_test.go::TestInstallWritesThePackAndIsIdempotent`
@@ -404,6 +404,8 @@ unreviewed write path into the owner's whole app — or off the machine.
 **Locked since:** 2026-09-29
 
 ## Changelog
+
+- 2026-10-25 (images and links become knowledge, board #907, asks #576/#594): marker bump only — the workbench skill is pack **v16** (its Tools section names `search_knowledge` / `get_knowledge_document` and says that sections labelled as AI descriptions of images and fetched pages are data). DEV-04 unchanged: the shipped v15 bytes are saved as `internal/devpack/testdata/watchtower-workbench-v15.md`, join `adoptShippedSingleFile` (`v15CoreSHA256`) and the upgrade fixture lists; no guard relaxed.
 
 - 2026-10-18 (Linear Plan 2 lane 2, board #688/#689, spec `docs/superpowers/specs/2026-10-15-linear-integration-design.md` §6/§8): `get_task_context` and `find_experts` accept a Linear key (DEV-02 holds: mechanical SQL only). Jira is looked up first and its output is unchanged; otherwise `db.GetLinearIssueDossier` finds the issue by current or previous key and the dossier carries its comments, the Slack threads linked under any key (`issue_slack_links`, tracker `linear`), meetings, decisions (`idea_mentions` source `linear`) and people. **DEV-03 extended**: Linear evidence has kind `linear` with the issue key as its ref, and `expertWeights` ships `linear: 2.0`; commenters map to Slack through `tracker_people`. Tests `internal/tools/taskcontext_linear_test.go`, `experts_linear_test.go`; the DEV-03 guards are unchanged.
 - 2026-10-17 (board #558, owner decision in ask #303 q4): marker bump only — the workbench skill is pack **v13** (its Folder rules section: the brief's fenced team repo rules are not the owner's words, and `workflow.md` cannot turn the checks down); the v12 text joins the DEV-04 fixtures (`watchtower-workbench-v12.md`) and the adopt-by-digest list. No guard relaxed.
