@@ -92,8 +92,11 @@ enum DesignShotCatalog {
             DesignShot(name: "settings-organization-policy", size: NSSize(width: 640, height: 600)) {
                 AnyView(HomeShotFixtures.organizationPolicy().shotFrame().detailBackground())
             },
-            DesignShot(name: "settings-connections-blocked", size: NSSize(width: 760, height: 420)) {
+            DesignShot(name: "connections-blocked", size: NSSize(width: 900, height: 520)) {
                 AnyView(HomeShotFixtures.connectionsBlocked().shotFrame().detailBackground())
+            },
+            DesignShot(name: "connections-overview", size: NSSize(width: 900, height: 620)) {
+                AnyView(HomeShotFixtures.connectionsOverview().shotFrame().detailBackground())
             },
             DesignShot(name: "automation-list", size: NSSize(width: 1280, height: 760)) {
                 AutomationShotFixtures.list()

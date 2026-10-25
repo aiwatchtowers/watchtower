@@ -106,6 +106,9 @@ struct SidebarView: View {
         .onDisappear { Self.lastSeenSelection = selection }
         .onChange(of: selection) { _, new in
             googleAuth.checkStatus()
+            // The Connections badge reads the accounts: a token may have
+            // expired in the daemon since the last read.
+            appState.refreshConnectionAccounts()
             expandSectionContainingSelection()
             Self.lastSeenSelection = new
         }
@@ -144,20 +147,6 @@ struct SidebarView: View {
             // Next calendar event
             if let calVM = appState.calendarViewModel, let nextEvt = calVM.nextEvent {
                 SidebarNextMeetingCard(event: nextEvt, center: appState.meetingRecorderCenter)
-            }
-
-            // Jira connection indicator
-            if JiraQueries.isConnected() {
-                HStack(spacing: 4) {
-                    Image(systemName: "bolt.horizontal.circle.fill")
-                        .foregroundStyle(.blue)
-                        .frame(width: 16)
-                    Text("Jira connected")
-                        .font(.caption)
-                        .lineLimit(1)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 4)
             }
 
             // Update available indicator
@@ -274,6 +263,8 @@ struct SidebarView: View {
         case .digests: digestsBadgeCount
         case .memory: memoryDisputedCount
         case .statistics: recommendationCount
+        // Services that need the owner (an expired token, a sync error).
+        case .connections: appState.connectionsAttentionCount
         default: 0
         }
     }
@@ -636,11 +627,6 @@ struct SidebarView: View {
                     .padding(.vertical, 8)
                     .popoverSurface()
             }
-        }
-
-        if JiraQueries.isConnected() {
-            railIcon("bolt.horizontal.circle.fill", isSelected: false, tint: .blue, dot: nil)
-                .help("Jira connected")
         }
 
         if appState.updateService.isUpdateAvailable {

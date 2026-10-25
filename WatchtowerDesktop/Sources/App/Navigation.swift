@@ -386,6 +386,8 @@ struct MainNavigationView: View {
             ReleaseDashboardView()
         case .statistics:
             StatisticsView()
+        case .connections:
+            ConnectionsTabView()
         case .boards:
             BoardsView()
         case .usage:

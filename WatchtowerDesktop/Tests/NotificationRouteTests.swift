@@ -205,12 +205,12 @@ final class NotificationRouteTests: XCTestCase {
         }
     }
 
-    /// An account purge notice (board #601) opens Settings → Connections on
+    /// An account purge notice (board #601) opens the Connections tab on
     /// the account's source, self-received or forwarded alike.
     func testAccountPurgePushOpensTheConnection() async {
         for forwarded in [false, true] {
             let appState = AppState.isolated()
-            appState.settingsTab = .system
+            appState.selectedDestination = .home
             var opened = 0
             appState.openSettingsWindow = { opened += 1 }
             await NotificationDelegate.route(
@@ -219,9 +219,9 @@ final class NotificationRouteTests: XCTestCase {
                 appState: appState,
                 forwarded: forwarded
             )
-            XCTAssertEqual(appState.settingsTab, .connections, "forwarded: \(forwarded)")
-            XCTAssertEqual(appState.settingsConnection, .jira, "forwarded: \(forwarded)")
-            XCTAssertEqual(opened, 1, "forwarded: \(forwarded)")
+            XCTAssertEqual(appState.selectedDestination, .connections, "forwarded: \(forwarded)")
+            XCTAssertEqual(appState.selectedConnection, .jira, "forwarded: \(forwarded)")
+            XCTAssertEqual(opened, 0, "the Settings window stays shut, forwarded: \(forwarded)")
         }
     }
 

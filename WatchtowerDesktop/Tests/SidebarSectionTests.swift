@@ -255,7 +255,7 @@ final class SidebarSectionTests: XCTestCase {
         }
         // Automations' feature is unmanaged by onboarding, so a dev-only
         // install keeps whatever state it has (here: on).
-        XCTAssertEqual(Set(visible), [.home, .inbox, .workbench, .automations, .chat, .targets, .usage, .mcpServer])
+        XCTAssertEqual(Set(visible), [.home, .inbox, .workbench, .automations, .chat, .targets, .connections, .usage, .mcpServer])
     }
 
     func testDevOnlyFallbackIsHome() {

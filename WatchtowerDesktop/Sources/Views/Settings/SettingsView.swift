@@ -14,15 +14,15 @@ enum SettingsAnchor: Hashable {
 
 struct SettingsView: View {
     @Environment(AppState.self) private var appState
-    @State private var config = ConfigService()
 
     var body: some View {
         @Bindable var appState = appState
+        let config = appState.sharedConfig
         TabView(selection: $appState.settingsTab) {
             GeneralSettings(config: config)
                 .tabItem { Label("General", systemImage: "gearshape") }
                 .tag(SettingsTab.general)
-            ConnectionsSettings(config: config)
+            ConnectionsSettings()
                 .environment(appState)
                 .tabItem { Label("Connections", systemImage: "link") }
                 .tag(SettingsTab.connections)

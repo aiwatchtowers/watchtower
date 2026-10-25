@@ -85,9 +85,12 @@ final class AppState {
     var settingsTab: SettingsTab = .connections
     /// A section the tab scrolls to once it shows (the tab clears it).
     var settingsAnchor: SettingsAnchor?
-    /// The Connections tab's selected service, held for the same reason
-    /// (the Inbox cheat sheet → Slack's reaction dictionary).
-    var settingsConnection: ConnectionService = .slack
+    /// The Connections tab's open service (nil: the overview), so a link opens a service.
+    var selectedConnection: ConnectionService?
+    /// A Slack connect in flight survives leaving the Connections tab (`SlackAuthFlowState`).
+    @ObservationIgnored private(set) lazy var slackAuthFlow = SlackAuthFlowState()
+    /// The one config.yaml copy Settings and the Connections tab edit (no stale overwrite); a test may set it.
+    @ObservationIgnored lazy var sharedConfig = ConfigService()
 
     /// True while initialize() is running (before DB and onboarding check complete).
     var isLoading: Bool = true
@@ -1669,22 +1672,6 @@ final class AppState {
         guard peopleRoster.state == .idle,
               let account = slackAccountsViewModel?.accounts.first(where: { !$0.isGone }) else { return }
         peopleRoster.start(accountID: account.id)
-    }
-
-    /// Re-consents one Slack account from a failed send's card ("sign in
-    /// again to grant send"): the same `slack login --account <id>` flow as
-    /// Settings → Slack → Reconnect. Returns why it failed (nil on success or
-    /// a cancelled sign-in) so the card can say so.
-    func reconnectSlack(accountID: Int64) async -> String? {
-        guard let vm = slackAccountsViewModel else {
-            return "Slack accounts are not loaded yet — open Settings → Slack."
-        }
-        if vm.accounts.isEmpty { await vm.refreshAsync() }
-        guard let account = vm.accounts.first(where: { $0.id == accountID }) else {
-            return "Slack account #\(accountID) is no longer connected."
-        }
-        await vm.relogin(account)
-        return vm.error
     }
 
     func initJiraAccounts(dbPool: DatabasePool) {
