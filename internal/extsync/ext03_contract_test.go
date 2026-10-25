@@ -3,8 +3,13 @@ package extsync_test
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"errors"
+	"image"
+	"image/png"
 	"io"
 	"io/fs"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,9 +21,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/digest"
 	"watchtower/internal/extract"
 	"watchtower/internal/extsync"
 	"watchtower/internal/kb"
+	"watchtower/internal/media"
 )
 
 // ext03Fetcher serves one page with a PDF and a PNG attachment. It lives in
@@ -118,10 +125,12 @@ func TestEXT03_BinariesNeverPersisted(t *testing.T) {
 	acct := db.SeedTestJiraAccount(t, d)
 	_, err := d.CreateExtSource("confluence", acct, "ENG", "1", "Engineering")
 	require.NoError(t, err)
+	require.NoError(t, d.SetMediaStartAt(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)))
 
 	tmp := filepath.Join(t.TempDir(), "tmp", "extract")
 	ocr := &pathOCR{}
-	e := extsync.New(d, extsync.Options{Extractor: &extract.Extractor{TempDir: tmp, OCR: ocr}})
+	e := extsync.New(d, extsync.Options{Extractor: &extract.Extractor{TempDir: tmp, OCR: ocr},
+		Media: media.ConfluenceRecorder(nil)})
 	e.SetFetcher(acct, newExt03Fetcher(t))
 	_, err = e.Run(context.Background())
 	require.NoError(t, err)
@@ -148,12 +157,113 @@ func TestEXT03_BinariesNeverPersisted(t *testing.T) {
 	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM kb_chunks WHERE body LIKE '%recognized text%'`).Scan(&indexed))
 	require.Positive(t, indexed, "the attachments' text reached the index")
 
+	// The PNG attachment was recorded as media of its own document.
+	var images int
+	require.NoError(t, d.QueryRow(`SELECT COUNT(*) FROM media_items WHERE ext_id = 'a-png' AND locator = 'attachment'`).Scan(&images))
+	require.Equal(t, 1, images)
+
 	// (b) + (c) no raw bytes (nor their base64 forms) and no BLOB anywhere in
-	// ext_* or the knowledge index.
+	// ext_*, media_* or the knowledge index.
 	for _, magic := range [][]byte{[]byte("%PDF-"), {0x89, 'P', 'N', 'G'}, []byte("JVBERi0"), []byte("iVBORw0K")} {
 		assertNoBytesInTables(t, d, `ext\_%`, magic)
+		assertNoBytesInTables(t, d, `media\_%`, magic)
 		assertNoBytesInTables(t, d, `kb\_chunks`, magic)
 		assertNoBytesInTables(t, d, `kb\_documents`, magic)
+	}
+}
+
+// visionGen describes every image with fixed text (the media pass's model).
+type visionGen struct{}
+
+func (visionGen) Generate(context.Context, string, string, string) (string, *digest.Usage, string, error) {
+	return `{"title":"Page","summary":"The page describes it."}`, &digest.Usage{}, "", nil
+}
+
+func (visionGen) GenerateWithImage(context.Context, string, string, string, string) (string, *digest.Usage, error) {
+	return `{"title":"Chart","description":"The image shows a chart.","text":"Q3","keys":[]}`, &digest.Usage{}, nil
+}
+
+// noisePNG is a synthetic PNG large enough to pass the junk filter.
+func noisePNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	rng := rand.New(rand.NewSource(3))
+	for i := range img.Pix {
+		img.Pix[i] = byte(rng.Intn(256))
+	}
+	var b bytes.Buffer
+	require.NoError(t, png.Encode(&b, img))
+	return b.Bytes()
+}
+
+// failingDownload is an ext03Fetcher whose downloads fail with a URL-bearing
+// error (query, header and body text in it).
+type failingDownload struct{ *ext03Fetcher }
+
+func (failingDownload) Download(context.Context, *extsync.Item, int64) (io.ReadCloser, error) {
+	return nil, errors.New(`GET https://wiki.example.net/download/a?token=s3cr3t: 500 Server-Header: x <html>body</html>`)
+}
+
+// TestEXT03_MediaItemsHoldNoBytes extends EXT-03 to the media pass: after a
+// sync that records an image attachment and a page's inline image of it,
+// and a media pass that downloads and describes the image, no media_items
+// (nor media_state) column holds the image's bytes, their base64 form or a
+// BLOB, and the media temp dir is empty. After a pass whose download fails
+// with a URL-bearing error, every stored error is a media.ErrorClasses
+// value — no URL, query, header or body text.
+func TestEXT03_MediaItemsHoldNoBytes(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		d := db.OpenTestDB(t)
+		acct := db.SeedTestJiraAccount(t, d)
+		_, err := d.CreateExtSource("confluence", acct, "ENG", "1", "Engineering")
+		require.NoError(t, err)
+		require.NoError(t, d.SetMediaStartAt(time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)))
+
+		f := newExt03Fetcher(t)
+		pngBytes := noisePNG(t)
+		f.blobs["a-png"] = pngBytes
+		f.items["a-png"].Size = int64(len(pngBytes))
+		f.items["p1"].Media = []extsync.MediaRef{{Kind: "image", Locator: "att:sample.png", Name: "sample.png"}}
+		var fetcher extsync.Fetcher = f
+		if fail {
+			fetcher = failingDownload{f}
+		}
+		e := extsync.New(d, extsync.Options{Media: media.ConfluenceRecorder(nil)})
+		e.SetFetcher(acct, fetcher)
+		_, err = e.Run(context.Background())
+		require.NoError(t, err)
+
+		ws := t.TempDir()
+		p := &media.Pipeline{DB: d, Gen: visionGen{}, WorkspaceDir: ws,
+			Openers:   map[string]media.Opener{"confluence": media.ConfluenceOpener{DB: d, Fetchers: map[int64]extsync.Fetcher{acct: fetcher}}},
+			Resolvers: map[string]media.Resolver{"confluence": media.ConfluenceResolver{DB: d}}}
+		for range 3 {
+			_, err = p.Run(context.Background(), time.Minute)
+			require.NoError(t, err)
+		}
+
+		statuses := queryStrings(t, d, `SELECT locator || '=' || status FROM media_items ORDER BY locator`)
+		if fail {
+			assert.Equal(t, []string{"att:sample.png=pending", "attachment=failed"}, statuses)
+			errs := queryStrings(t, d, `SELECT error FROM media_items`)
+			require.NotEmpty(t, errs)
+			for _, v := range errs {
+				if v == "" {
+					continue
+				}
+				assert.Contains(t, media.ErrorClasses, v)
+				for _, bad := range []string{"?", "://", "token", "Header", "<html"} {
+					assert.NotContains(t, v, bad)
+				}
+			}
+		} else {
+			assert.Equal(t, []string{"att:sample.png=ok", "attachment=ok"}, statuses, "described, so the guard is not vacuous")
+		}
+		assertNoFiles(t, filepath.Join(ws, "tmp", "media"))
+		for _, magic := range [][]byte{pngBytes[:16], {0x89, 'P', 'N', 'G'}, []byte("iVBORw0K"),
+			[]byte(base64.StdEncoding.EncodeToString(pngBytes[:48]))} {
+			assertNoBytesInTables(t, d, `media\_%`, magic)
+		}
 	}
 }
 

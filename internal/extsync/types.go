@@ -63,7 +63,25 @@ type Item struct {
 	MediaType        string
 	Size             int64
 	MentionedUserIDs []string // author ids referenced in the body (for the users cache)
+	// Media lists the images and links a page or blog post body names
+	// (pages only; an attachment's own image is the engine's to record).
+	Media []MediaRef
 }
+
+// MediaRef is one image or link an item names, handed to the
+// MediaRecorder. Kind is "image" or "link"; Locator identifies it on the
+// item; URL is what a web fetch would GET (external images and links).
+type MediaRef struct {
+	Kind, Locator, URL, Name, Anchor string
+}
+
+// MediaRecorder records the media of one stored document, replacing
+// whatever it recorded for that document before (the RelinkFunc
+// precedent): refs are the page's images and links, or an image
+// attachment's one image; contentAt is when that content was made. It runs
+// inside the item's write transaction, so its failure rolls the item back.
+// cmd wires the media package's recorder; the engine stays free of it.
+type MediaRecorder func(ctx context.Context, q Queryer, sourceID int64, extID string, refs []MediaRef, contentAt time.Time) error
 
 // User is one resolved external user.
 type User struct{ ID, DisplayName, Email string }
@@ -139,6 +157,10 @@ type Options struct {
 	// writes or deletes, inside the batch transaction (see RelinkFunc).
 	// nil = no links.
 	Relink RelinkFunc
+	// Media records the images and links of every page and image
+	// attachment the engine writes, inside the item's write transaction
+	// (see MediaRecorder). nil = no media.
+	Media MediaRecorder
 }
 
 // Stats summarizes one Run or RunSource.

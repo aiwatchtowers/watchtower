@@ -462,10 +462,11 @@ func (f *Fetcher) pageItem(c extsync.Container, ref extsync.ItemRef, p *v2Page) 
 	if err != nil {
 		return nil, err
 	}
-	sections, users, keys, parseErr := StorageToSections(p.Body.Storage.Value, maxBodyRunes)
-	if parseErr != nil {
-		f.logf("confluence: %s %s: storage body fell back to a flat text strip: %v", ref.Kind, p.ID, parseErr)
+	body := convertStorage(p.Body.Storage.Value, maxBodyRunes)
+	if body.err != nil {
+		f.logf("confluence: %s %s: storage body fell back to a flat text strip: %v", ref.Kind, p.ID, body.err)
 	}
+	sections, users, keys := body.sections, body.userIDs, body.jiraKeys
 	meta := map[string]string{"space": c.Key, "status": p.Status}
 	labels := make([]string, 0, len(p.Labels.Results))
 	for _, l := range p.Labels.Results {
@@ -483,6 +484,7 @@ func (f *Fetcher) pageItem(c extsync.Container, ref extsync.ItemRef, p *v2Page) 
 		Sections:         sections,
 		Meta:             meta,
 		MentionedUserIDs: users,
+		Media:            body.media,
 	}, nil
 }
 

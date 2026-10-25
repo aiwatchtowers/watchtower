@@ -424,6 +424,12 @@ func (d *Daemon) SetMediaPipeline(p *media.Pipeline) {
 	d.mediaPipe = p
 }
 
+// MediaPipeline returns the media describe pass (nil when unset), so a
+// source's wiring can add its openers, resolvers and hooks.
+func (d *Daemon) MediaPipeline() *media.Pipeline {
+	return d.mediaPipe
+}
+
 // SetPeoplePipeline sets the people card pipeline (REDUCE phase).
 func (d *Daemon) SetPeoplePipeline(p *guide.Pipeline) {
 	d.peoplePipe = p

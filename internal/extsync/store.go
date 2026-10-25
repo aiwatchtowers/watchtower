@@ -130,6 +130,36 @@ func upsertDocument(ctx context.Context, q Queryer, sourceID int64, it *Item, no
 	return nil
 }
 
+// recordMedia hands one written item's media to Options.Media: a page's or
+// blog post's own Media, or an image attachment's one image (an
+// {image, "attachment"} item of its own document) at the attachment's
+// created time; any other attachment records none, which also drops what
+// an earlier version recorded. A comment is never written here. Without a
+// content time nothing is recorded (only new content is, and an unknown
+// time is not new).
+func (e *Engine) recordMedia(ctx context.Context, q Queryer, sourceID int64, it *Item) error {
+	if e.opts.Media == nil {
+		return nil
+	}
+	refs, at := it.Media, it.Ref.Modified
+	if it.Ref.Kind == KindAttachment {
+		refs = nil
+		if !it.Created.IsZero() {
+			at = it.Created
+		}
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(it.MediaType)), "image/") {
+			refs = []MediaRef{{Kind: "image", Locator: "attachment", Name: it.Title}}
+		}
+	}
+	if at.IsZero() {
+		return nil
+	}
+	if err := e.opts.Media(ctx, q, sourceID, it.Ref.ExtID, refs, at); err != nil {
+		return fmt.Errorf("extsync: recording media of %s: %w", it.Ref.ExtID, err)
+	}
+	return nil
+}
+
 // deleteDocument removes one document and its comments (a no-op when
 // absent). ext_comments has no FK to ext_documents, so the comments go
 // explicitly. Its links go with the caller's relinkDocs over the deleted id.

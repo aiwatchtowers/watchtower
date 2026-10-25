@@ -1191,6 +1191,7 @@ func wireExternalSync(d *daemon.Daemon, cfg *config.Config, database *db.DB, acc
 		return
 	}
 	engine := extsync.New(database, extSyncOptions(cfg, subLogger(logger, "[ext-sync] "), extSyncCycleBudget))
+	fetchers := map[int64]extsync.Fetcher{}
 	for _, acct := range accounts {
 		if client := clients[acct.ID]; client != nil {
 			fetcher := newConfluenceFetcher(client, acct.SiteURL)
@@ -1198,9 +1199,11 @@ func wireExternalSync(d *daemon.Daemon, cfg *config.Config, database *db.DB, acc
 				lg.SetLogger(subLogger(logger, "[confluence] "))
 			}
 			engine.SetFetcher(acct.ID, fetcher)
+			fetchers[acct.ID] = fetcher
 		}
 	}
 	d.SetExternalSync(engine)
+	registerConfluenceMedia(d.MediaPipeline(), database, fetchers)
 }
 
 // newIssueKeyDetector is issuekey.NewKeyDetectorIfEnabled with the detector's

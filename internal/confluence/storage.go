@@ -17,6 +17,7 @@ import (
 
 	"watchtower/internal/extsync"
 	"watchtower/internal/jira"
+	"watchtower/internal/media"
 )
 
 // MentionPrefix is the fixed prefix of a user-mention token. The full token
@@ -52,17 +53,46 @@ var wsRun = regexp.MustCompile(`\s+`)
 // Callers should log a non-nil parseErr — there is no useful recovery action,
 // since re-parsing the same input gives the same result.
 func StorageToSections(xhtml string, maxRunes int) (sections []extsync.Section, userIDs []string, jiraKeys []string, parseErr error) {
+	r := convertStorage(xhtml, maxRunes)
+	return r.sections, r.userIDs, r.jiraKeys, r.err
+}
+
+// StorageMedia lists the images and links a storage body names, in
+// document order, each once (its first place), anchored at the
+// HeadingAnchor of its enclosing section: an ac:image of a page attachment
+// (ri:attachment ri:filename) is {image, "att:<filename>"}; one of an
+// external URL (ri:url ri:value) is {image, "url:<normalized>", URL} and an
+// <a href> is {link, "url:<normalized>", URL}, both only when
+// media.Fetchable accepts the URL. An attachment of another page (an
+// ri:page or ri:blog-post inside ri:attachment) is not recorded: it cannot
+// be resolved under this page. The fallback path of StorageToSections
+// parses no element, so it names no media.
+func StorageMedia(xhtml string) []extsync.MediaRef {
+	return convertStorage(xhtml, 0).media
+}
+
+// storageResult is one walk of a storage body: its text and what it names.
+type storageResult struct {
+	sections          []extsync.Section
+	userIDs, jiraKeys []string
+	media             []extsync.MediaRef
+	err               error
+}
+
+// convertStorage is the one converter walk behind StorageToSections and
+// StorageMedia (the fetcher reads both from one walk).
+func convertStorage(xhtml string, maxRunes int) storageResult {
 	nodes, err := parseFragment(xhtml)
 	if err != nil {
 		text := fallbackText(xhtml)
 		c := &converter{}
 		c.scanJiraKeys(text)
-		return capSections(oneSection(text), maxRunes), nil, c.jiraKeys, err
+		return storageResult{sections: capSections(oneSection(text), maxRunes), jiraKeys: c.jiraKeys, err: err}
 	}
 	c := &converter{}
 	nodes = flattenTransparent(nodes)
-	sections = capSections(c.splitSections(nodes), maxRunes)
-	return sections, c.userIDs, c.jiraKeys, nil
+	sections := capSections(c.splitSections(nodes), maxRunes)
+	return storageResult{sections: sections, userIDs: c.userIDs, jiraKeys: c.jiraKeys, media: c.media}
 }
 
 // oneSection wraps text as the one-section shape the rest of the pipeline
@@ -292,12 +322,56 @@ func flattenTransparent(nodes []*html.Node) []*html.Node {
 }
 
 // converter accumulates the side outputs (mentioned user ids, Jira issue
-// keys) discovered while rendering one document.
+// keys, images and links) discovered while rendering one document.
 type converter struct {
-	userIDs  []string
-	userSeen map[string]bool
-	jiraKeys []string
-	jiraSeen map[string]bool
+	userIDs   []string
+	userSeen  map[string]bool
+	jiraKeys  []string
+	jiraSeen  map[string]bool
+	media     []extsync.MediaRef
+	mediaSeen map[string]bool
+	anchor    string // the current section's anchor
+}
+
+// addMedia records ref once (kind + locator), at the current section.
+func (c *converter) addMedia(ref extsync.MediaRef) {
+	key := ref.Kind + "\x00" + ref.Locator
+	if c.mediaSeen == nil {
+		c.mediaSeen = make(map[string]bool)
+	}
+	if c.mediaSeen[key] {
+		return
+	}
+	c.mediaSeen[key] = true
+	ref.Anchor = c.anchor
+	c.media = append(c.media, ref)
+}
+
+// addImage records an ac:image: a page attachment by file name, an
+// external image by URL when it is fetchable.
+func (c *converter) addImage(n *html.Node) {
+	if att := firstChildByTag(n, "ri:attachment"); att != nil {
+		name := attrValue(att, "ri:filename")
+		if name == "" || firstChildByTag(att, "ri:page") != nil || firstChildByTag(att, "ri:blog-post") != nil {
+			return
+		}
+		c.addMedia(extsync.MediaRef{Kind: "image", Locator: "att:" + name, Name: name})
+		return
+	}
+	if u := firstChildByTag(n, "ri:url"); u != nil {
+		raw := strings.TrimSpace(attrValue(u, "ri:value"))
+		if norm, ok := media.Fetchable(raw, nil); ok {
+			c.addMedia(extsync.MediaRef{Kind: "image", Locator: "url:" + norm, URL: raw})
+		}
+	}
+}
+
+// addLink records an <a href> when its URL is fetchable.
+func (c *converter) addLink(n *html.Node) {
+	raw := strings.TrimSpace(attrValue(n, "href"))
+	if norm, ok := media.Fetchable(raw, nil); ok {
+		c.addMedia(extsync.MediaRef{Kind: "link", Locator: "url:" + norm, URL: raw})
+	}
 }
 
 func (c *converter) addUser(id string) {
@@ -365,9 +439,15 @@ func (c *converter) splitSections(nodes []*html.Node) []extsync.Section {
 		}
 		if isHeading(n.Data) {
 			flush()
+			mark := len(c.media)
 			heading := c.inlineText(n)
 			cur = extsync.Section{Heading: heading, Anchor: HeadingAnchor(heading)}
 			body = nil
+			// media named inside the heading belong to its section too
+			c.anchor = cur.Anchor
+			for i := mark; i < len(c.media); i++ {
+				c.media[i].Anchor = c.anchor
+			}
 			continue
 		}
 		if text := c.renderBlock(n); text != "" {
@@ -404,7 +484,11 @@ func (c *converter) renderBlock(n *html.Node) string {
 	case "time":
 		return c.renderTime(n)
 	case "ac:image":
-		return "" // images are dropped (spec §7)
+		c.addImage(n)
+		return "" // images render no text (spec §7); they are recorded as media
+	case "a":
+		c.addLink(n)
+		return c.renderChildren(n)
 	case "script", "style":
 		return "" // never page content; not worth indexing even if present
 	default:
@@ -531,7 +615,11 @@ func (c *converter) inlineElement(n *html.Node) string {
 	case "time":
 		return c.renderTime(n)
 	case "ac:image":
+		c.addImage(n)
 		return ""
+	case "a":
+		c.addLink(n)
+		return c.inlineChildren(n)
 	case "script", "style":
 		return "" // never page content; not worth indexing even if present
 	default:

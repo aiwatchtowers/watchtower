@@ -953,3 +953,17 @@ func TestEXT01_FetcherCannotReachPut(t *testing.T) {
 			"internal/extsync must not depend on internal/jira (which is where PutJSON lives)")
 	}
 }
+
+// A fetched page carries the media its body names (Item.Media), from the
+// same walk that renders its sections.
+func TestPageItemFillsMedia(t *testing.T) {
+	f := NewFetcher(newFakeAPI(t), "https://acme.atlassian.net")
+	p := &v2Page{ID: "9", Title: "T", Version: v2Version{Number: 1, CreatedAt: "2026-10-25T10:00:00Z"}}
+	p.Body.Storage.Value = `<h2>Shots</h2><p><ac:image><ri:attachment ri:filename="s.png" /></ac:image> <a href="https://example.com/x">x</a></p>`
+	it, err := f.pageItem(extsync.Container{Key: "ENG"}, extsync.ItemRef{Kind: extsync.KindPage, ExtID: "9"}, p)
+	require.NoError(t, err)
+	assert.Equal(t, []extsync.MediaRef{
+		{Kind: "image", Locator: "att:s.png", Name: "s.png", Anchor: "Shots"},
+		{Kind: "link", Locator: "url:https://example.com/x", URL: "https://example.com/x", Anchor: "Shots"},
+	}, it.Media)
+}

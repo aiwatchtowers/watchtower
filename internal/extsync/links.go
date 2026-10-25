@@ -36,29 +36,44 @@ func docRef(provider string, sourceID int64, extID string) string {
 }
 
 // relinkDocs re-records the links of each document in ids from what is
-// stored for it now — title, sections and, for a page, its comments (a
-// comment belongs to its page's knowledge document) — so a page edit, a
-// comment-only change, a deletion and a degraded attachment all end with
-// links that match the stored text. A no-op without Options.Relink.
+// stored for it now — title, sections, its described images and, for a
+// page, its comments (a comment belongs to its page's knowledge document) —
+// so a page edit, a comment-only change, a deletion and a degraded
+// attachment all end with links that match the stored text. A no-op
+// without Options.Relink.
 func (e *Engine) relinkDocs(ctx context.Context, q Queryer, provider string, sourceID int64, ids []string) error {
-	if e.opts.Relink == nil {
-		return nil
-	}
 	for _, id := range ids {
-		texts, err := storedTexts(ctx, q, sourceID, id)
-		if err != nil {
+		if err := RelinkDocument(ctx, q, e.opts.Relink, provider, sourceID, id); err != nil {
 			return err
-		}
-		if err := e.opts.Relink(ctx, q, docRef(provider, sourceID, id), texts...); err != nil {
-			return fmt.Errorf("extsync: linking %s: %w", id, err)
 		}
 	}
 	return nil
 }
 
+// RelinkDocument re-records one stored document's links through relink
+// from its stored text (storedTexts), in the caller's transaction; a
+// document no longer stored drops them. A nil relink is a no-op. The media
+// pass calls it once an image of the document is described, so the keys on
+// the image join the document's links.
+func RelinkDocument(ctx context.Context, q Queryer, relink RelinkFunc, provider string, sourceID int64, extID string) error {
+	if relink == nil {
+		return nil
+	}
+	texts, err := storedTexts(ctx, q, sourceID, extID)
+	if err != nil {
+		return err
+	}
+	if err := relink(ctx, q, docRef(provider, sourceID, extID), texts...); err != nil {
+		return fmt.Errorf("extsync: linking %s: %w", extID, err)
+	}
+	return nil
+}
+
 // storedTexts returns the stored searchable text of one document: its
-// title, section headings and texts, and comment bodies/anchors (nil when
-// the document is not stored).
+// title, section headings and texts, the title, description and text of
+// its described ('ok') images — never a link's summary, which is a page
+// Watchtower fetched, not this document's content — and comment
+// bodies/anchors (nil when the document is not stored).
 func storedTexts(ctx context.Context, q Queryer, sourceID int64, extID string) ([]string, error) {
 	var title, sectionsJSON string
 	err := q.QueryRowContext(ctx, `SELECT title, sections_json FROM ext_documents WHERE source_id = ? AND ext_id = ?`,
@@ -78,7 +93,32 @@ func storedTexts(ctx context.Context, q Queryer, sourceID int64, extID string) (
 	for _, s := range sections {
 		texts = append(texts, s.Heading, s.Text)
 	}
+	if texts, err = appendImageTexts(ctx, q, sourceID, extID, texts); err != nil {
+		return nil, err
+	}
 	return appendCommentTexts(ctx, q, sourceID, extID, texts)
+}
+
+// appendImageTexts appends the stored descriptions of the document's 'ok'
+// image media rows (media_items, image rows only).
+func appendImageTexts(ctx context.Context, q Queryer, sourceID int64, extID string, texts []string) ([]string, error) {
+	rows, err := q.QueryContext(ctx, `SELECT title, body, image_text FROM media_items
+		WHERE ext_source_id = ? AND ext_id = ? AND kind = 'image' AND status = 'ok' ORDER BY id`, sourceID, extID)
+	if err != nil {
+		return nil, fmt.Errorf("extsync: reading images of %s for links: %w", extID, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var title, body, text string
+		if err := rows.Scan(&title, &body, &text); err != nil {
+			return nil, fmt.Errorf("extsync: scanning image of %s for links: %w", extID, err)
+		}
+		texts = append(texts, title, body, text)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("extsync: reading images of %s for links: %w", extID, err)
+	}
+	return texts, nil
 }
 
 func appendCommentTexts(ctx context.Context, q Queryer, sourceID int64, pageID string, texts []string) ([]string, error) {
