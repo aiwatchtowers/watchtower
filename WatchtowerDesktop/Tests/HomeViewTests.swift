@@ -39,7 +39,7 @@ final class HomeViewTests: XCTestCase {
     ) -> HomeSnapshot {
         HomeSnapshot(
             gettingReady: zone, firstSync: firstSync,
-            feed: HomeFeedBuilder.feed(HomeFeedData(), now: Date(), calendar: .current, expanded: false, hidden: []),
+            feed: HomeFeedBuilder.feed(HomeFeedData(), now: Date(), calendar: .current, hidden: []),
             workbench: workbench, suggestion: suggestion, workbenchFailed: workbenchFailed,
             links: links, linksFailed: linksFailed, numbers: numbers)
     }
@@ -74,13 +74,53 @@ final class HomeViewTests: XCTestCase {
         XCTAssertEqual(layout.columnWidths(HomeContent.twoColumnWidth), [535, 345])
     }
 
-    /// The two columns never report narrower than 900 pt, so `ViewThatFits`
-    /// takes the one-column stack below it.
-    func testColumnsNeverNarrowerThanTheBreakpoint() {
-        XCTAssertEqual(HomeColumnsLayout.resolvedWidth(780), 900)
-        XCTAssertEqual(HomeColumnsLayout.resolvedWidth(1_040), 1_040)
-        XCTAssertEqual(HomeColumnsLayout.resolvedWidth(nil), 900)
-        XCTAssertEqual(HomeColumnsLayout.resolvedWidth(.infinity), 900)
+    /// The layout takes the width it is offered; nil or an infinite one is
+    /// the breakpoint (two columns), and two columns start at 900 pt.
+    func testColumnsBreakpoint() {
+        XCTAssertEqual(HomeColumnsLayout.layoutWidth(780), 780)
+        XCTAssertEqual(HomeColumnsLayout.layoutWidth(1_040), 1_040)
+        XCTAssertEqual(HomeColumnsLayout.layoutWidth(nil), 900)
+        XCTAssertEqual(HomeColumnsLayout.layoutWidth(.infinity), 900)
+        XCTAssertFalse(HomeColumnsLayout.isTwoColumn(899))
+        XCTAssertTrue(HomeColumnsLayout.isTwoColumn(900))
+        XCTAssertTrue(HomeColumnsLayout.isTwoColumn(1_040))
+    }
+
+    /// From the breakpoint up: side by side, each as tall as its content.
+    func testColumnsFramesSideBySide() {
+        let layout = HomeColumnsLayout(spacing: 20)
+        var offered: [CGFloat] = []
+        let frames = layout.frames(width: 1_040, count: 2) { index, width in
+            offered.append(width)
+            return index == 0 ? 600 : 250
+        }
+        XCTAssertEqual(offered, [620, 400])
+        XCTAssertEqual(frames, [CGRect(x: 0, y: 0, width: 620, height: 600), CGRect(x: 640, y: 0, width: 400, height: 250)])
+    }
+
+    /// The size the layout reports: two columns as tall as the taller one
+    /// from the breakpoint up (nil is the breakpoint), else the stacked
+    /// height of both plus the spacing.
+    func testColumnsSize() {
+        let layout = HomeColumnsLayout(spacing: 20)
+        let heights: (Int, CGFloat) -> CGFloat = { index, _ in index == 0 ? 600 : 250 }
+        XCTAssertEqual(layout.size(proposedWidth: 780, count: 2, height: heights), CGSize(width: 780, height: 870))
+        XCTAssertEqual(layout.size(proposedWidth: 1_040, count: 2, height: heights), CGSize(width: 1_040, height: 600))
+        XCTAssertEqual(layout.size(proposedWidth: nil, count: 2, height: heights), CGSize(width: 900, height: 600))
+        XCTAssertEqual(layout.size(proposedWidth: 780, count: 0, height: heights), CGSize(width: 780, height: 0))
+    }
+
+    /// Below it: one column, feed first, the side column `spacing` under it,
+    /// both offered the whole width.
+    func testColumnsFramesStackBelowTheBreakpoint() {
+        let layout = HomeColumnsLayout(spacing: 20)
+        var offered: [CGFloat] = []
+        let frames = layout.frames(width: 780, count: 2) { index, width in
+            offered.append(width)
+            return index == 0 ? 600 : 250
+        }
+        XCTAssertEqual(offered, [780, 780])
+        XCTAssertEqual(frames, [CGRect(x: 0, y: 0, width: 780, height: 600), CGRect(x: 0, y: 620, width: 780, height: 250)])
     }
 
     // MARK: - Getting ready
@@ -282,7 +322,6 @@ final class HomeViewTests: XCTestCase {
         let all = try texts(view)
         let order = ["Workbench", "acme", "2 sessions", "Export to CSV", "Needs approval", "Fix login redirect",
                      "Working", "acme-api", "Question", "Which date format?"]
-        // ViewThatFits holds both layouts; the first one is the two-column.
         XCTAssertEqual(Array(all.filter(order.contains).prefix(order.count)), order)
 
         try view.inspect().find(button: "Export to CSV").tap()
@@ -312,8 +351,8 @@ final class HomeViewTests: XCTestCase {
         let rate = try XCTUnwrap(all.firstIndex(of: "Rate limiter"))
         let suggestionIndex = try XCTUnwrap(all.firstIndex(of: line))
         XCTAssertLessThan(rate, suggestionIndex)
-        // Only its buttons follow it, up to the next layout's copy.
-        XCTAssertEqual(Array(all[(suggestionIndex + 1)...].prefix(3)), ["Add", "Dismiss", "Waiting on you"])
+        // Only its buttons follow it, then the page's help line.
+        XCTAssertEqual(Array(all[(suggestionIndex + 1)...].prefix(3)), ["Add", "Dismiss", "Stuck? Press "])
         try view.inspect().find(button: "Add").tap()
         await fulfillment(of: [decided], timeout: 2)
         XCTAssertEqual(calls.map(\.0), [5])
@@ -453,7 +492,8 @@ final class HomeViewTests: XCTestCase {
         failed: Set<FeedSource> = []
     ) -> HomeFeed {
         HomeFeed(
-            waiting: waiting, hiddenWaiting: hidden, nowLabel: "10:40", ongoing: nil, laterToday: later,
+            waiting: waiting, hiddenWaiting: hidden, nowLabel: "10:40", ongoing: nil,
+            laterToday: later,
             nextDay: nextDay, failed: failed)
     }
 
@@ -462,11 +502,11 @@ final class HomeViewTests: XCTestCase {
         errors: [FeedRef: String] = [:],
         onLink: @escaping (HomeLink) -> Void = { _ in },
         onAct: @escaping (FeedAction, FeedRef) async -> Void = { _, _ in },
-        onExpand: @escaping (Bool) -> Void = { _ in },
+        onPage: @escaping (Bool) -> Void = { _ in },
         calendar: Calendar = .current
     ) -> FeedZoneView {
         FeedZoneView(
-            feed: feed, errors: errors, onLink: onLink, onAct: onAct, onExpand: onExpand, now: Self.feedNow,
+            feed: feed, errors: errors, onLink: onLink, onAct: onAct, onPage: onPage, now: Self.feedNow,
             calendar: calendar)
     }
 
@@ -513,15 +553,13 @@ final class HomeViewTests: XCTestCase {
     /// numbers.
     func testLayoutTwoColumnsThenOneColumn() throws {
         let snapshot = viewSnapshot(suggestion: Self.suggestion, links: Self.links, numbers: HomeNumbers())
-        let layout = try makeContent(snapshot).inspect().find(ViewType.ViewThatFits.self)
-        // Both branches hold the feed and the side column (the breakpoint
-        // itself: `testColumnsNeverNarrowerThanTheBreakpoint`).
-        XCTAssertEqual(layout.findAll(FeedZoneView.self).count, 2)
-        XCTAssertEqual(layout.findAll(HomeSideColumn.self).count, 2)
-        let narrow = try layout.vStack(1)
-        XCTAssertNoThrow(try narrow.view(FeedZoneView.self, 0))
-        XCTAssertNoThrow(try narrow.view(HomeSideColumn.self, 1))
-        let side = try narrow.view(HomeSideColumn.self, 1)
+        let page = try makeContent(snapshot).inspect()
+        // One layout switches by width (`testColumnsFrames…`), so the feed
+        // and the side column are each built once.
+        XCTAssertThrowsError(try page.find(ViewType.ViewThatFits.self))
+        XCTAssertEqual(page.findAll(FeedZoneView.self).count, 1)
+        XCTAssertEqual(page.findAll(HomeSideColumn.self).count, 1)
+        let side = try page.find(HomeSideColumn.self)
         XCTAssertNoThrow(try side.find(WorkbenchZoneView.self))
         XCTAssertNoThrow(try side.find(LinksZoneView.self))
         XCTAssertNoThrow(try side.find(NumbersZoneView.self))
@@ -540,23 +578,66 @@ final class HomeViewTests: XCTestCase {
     }
 
     func testNMoreExpands() throws {
-        var expanded: [Bool] = []
+        var paged: [Bool] = []
         let rows = (1...7).map { Self.row(.inbox($0), who: "Ann", text: "row \($0)") }
-        try feedZone(Self.feed(waiting: rows, hidden: 2)) { _ in } onExpand: { expanded.append($0) }
+        try feedZone(Self.feed(waiting: rows, hidden: 2)) { _ in } onPage: { paged.append($0) }
             .inspect().find(button: "2 more").tap()
-        XCTAssertEqual(expanded, [true])
+        XCTAssertEqual(paged, [true])
         let folded = try texts(feedZone(Self.feed(waiting: rows, hidden: 2)))
         let title = try XCTUnwrap(folded.firstIndex(of: "Waiting on you"))
         XCTAssertEqual(folded[title + 1], "· 9", "the header counts the folded rows too")
 
-        // Expanded: every row, and Show less collapses.
+        // Expanded with nothing left: Show less only, and it collapses.
         let all = (1...9).map { Self.row(.inbox($0), who: "Ann", text: "row \($0)") }
-        let open = feedZone(Self.feed(waiting: all)) { _ in } onExpand: { expanded.append($0) }
-        XCTAssertThrowsError(try open.inspect().find(button: "0 more"))
+        let open = feedZone(Self.feed(waiting: all)) { _ in } onPage: { paged.append($0) }
+        XCTAssertThrowsError(try open.inspect().find(button: "Show 0 more"))
         try open.inspect().find(button: "Show less").tap()
-        XCTAssertEqual(expanded, [true, false])
+        XCTAssertEqual(paged, [true, false])
         // Seven or fewer rows: neither line.
         XCTAssertThrowsError(try feedZone(Self.feed(waiting: rows)).inspect().find(button: "Show less"))
+    }
+
+    /// Collapsed over a long backlog, "N more" says what the first page
+    /// adds (up to 50 rows in all), never every row left.
+    func testNMoreNeverOverpromises() throws {
+        let rows = (1...7).map { Self.row(.inbox($0), who: "Ann", text: "row \($0)") }
+        let view = feedZone(Self.feed(waiting: rows, hidden: 193))
+        XCTAssertNoThrow(try view.inspect().find(button: "43 more"))
+        XCTAssertThrowsError(try view.inspect().find(button: "193 more"))
+        XCTAssertThrowsError(try view.inspect().find(button: "Show less"))
+        let all = try texts(view)
+        let title = try XCTUnwrap(all.firstIndex(of: "Waiting on you"))
+        XCTAssertEqual(all[title + 1], "· 200", "the header counts every row read")
+    }
+
+    /// Expanded with rows left: "Show 50 more" (fewer on the last page)
+    /// beside Show less.
+    func testShowMorePagesBesideShowLess() throws {
+        var paged: [Bool] = []
+        let rows = (1...HomeFeedBuilder.expandedLimit).map { Self.row(.inbox($0), who: "Ann", text: "row \($0)") }
+        let view = feedZone(Self.feed(waiting: rows, hidden: 150)) { _ in } onPage: { paged.append($0) }
+        try view.inspect().find(button: "Show 50 more").tap()
+        try view.inspect().find(button: "Show less").tap()
+        XCTAssertEqual(paged, [true, false])
+        let lastPage = feedZone(Self.feed(waiting: rows, hidden: 12))
+        XCTAssertNoThrow(try lastPage.inspect().find(button: "Show 12 more"))
+        XCTAssertNoThrow(try lastPage.inspect().find(button: "Show less"))
+        XCTAssertThrowsError(try lastPage.inspect().find(button: "12 more"))
+    }
+
+    /// Row stamps reuse one formatter per pattern and calendar; another zone
+    /// gets its own.
+    func testFeedTimeReusesFormatters() throws {
+        var tokyo = Calendar(identifier: .gregorian)
+        tokyo.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 9 * 3600))
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = try XCTUnwrap(TimeZone(secondsFromGMT: 0))
+        let first = FeedTime.formatter("HH:mm", tokyo)
+        let again = FeedTime.formatter("HH:mm", tokyo)
+        XCTAssertTrue(first === again)
+        XCTAssertFalse(first === FeedTime.formatter("HH:mm", utc))
+        XCTAssertFalse(first === FeedTime.formatter("EEE", tokyo))
+        XCTAssertEqual(FeedTime.string(Self.feedNow, "HH:mm", utc), "08:00")
     }
 
     func testProposalRowHasNoDoneButton() async throws {

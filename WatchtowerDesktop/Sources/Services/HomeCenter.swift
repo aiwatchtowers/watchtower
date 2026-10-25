@@ -84,8 +84,9 @@ final class HomeCenter {
     /// The last failed Done / Hide per row, cleared by the next press on it
     /// or once a read no longer returns the row.
     private(set) var feedErrors: [FeedRef: String] = [:]
-    /// "N more" pressed: every row above NOW shows.
-    private(set) var feedExpanded = false
+    /// How many rows above NOW show: `HomeFeedBuilder.waitingLimit`
+    /// collapsed, raised a page at a time by "N more".
+    private(set) var feedLimit = HomeFeedBuilder.waitingLimit
 
     @ObservationIgnored private let readiness: ReadinessCenter
     @ObservationIgnored private let environment: any HomeEnvironment
@@ -310,10 +311,12 @@ final class HomeCenter {
         await rereadNow()
     }
 
-    /// "N more" / back: every row above NOW, or the first seven.
-    func setFeedExpanded(_ on: Bool) {
-        guard on != feedExpanded else { return }
-        feedExpanded = on
+    /// "N more" shows the next page of rows above NOW; "Show less" goes back
+    /// to the first seven.
+    func pageFeed(more: Bool) {
+        let limit = more ? HomeFeedBuilder.nextLimit(after: feedLimit) : HomeFeedBuilder.waitingLimit
+        guard limit != feedLimit else { return }
+        feedLimit = limit
         rebuildSnapshot()
     }
 
@@ -431,7 +434,19 @@ final class HomeCenter {
             data.prepEventIDs = []
         }
         data.failed.formIntersection(sources)
-        return HomeFeedBuilder.feed(data, now: now, calendar: calendar, expanded: feedExpanded, hidden: hiddenRefs)
+        let feed = HomeFeedBuilder.feed(data, now: now, calendar: calendar, limit: feedLimit, hidden: hiddenRefs)
+        // Down to the collapsed seven (Done / Hide, a read): the list is
+        // collapsed again, so a later backlog starts folded and "Show less"
+        // never vanishes while the page state sticks. The feed itself is the
+        // same either way. Not while a Done / Hide is still running: a
+        // failed one brings its row back with the error, and that row must
+        // not land behind "N more"; the rebuild after the write decides.
+        if acting.isEmpty,
+           feed.waiting.count + feed.hiddenWaiting <= HomeFeedBuilder.waitingLimit,
+           feedLimit != HomeFeedBuilder.waitingLimit {
+            feedLimit = HomeFeedBuilder.waitingLimit
+        }
+        return feed
     }
 }
 
