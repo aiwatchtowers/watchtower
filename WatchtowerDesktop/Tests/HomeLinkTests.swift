@@ -41,7 +41,7 @@ final class HomeLinkTests: XCTestCase {
             (.catchUp, Landing(destination: .catchUp)),
             (.feature(.tracks), Landing(destination: .inbox)),
             (.feature(.dayPlan), Landing(destination: .inbox)),
-            (.feature(.jira), Landing(destination: .boards)),
+            (.feature(.jira), Landing(destination: .connections)),
             (.turnOn(featureID: "slack-digests"), Landing(destination: .home))
         ]
         for (link, expected) in cases {
@@ -103,35 +103,43 @@ final class HomeLinkTests: XCTestCase {
         XCTAssertEqual(appState.selectedDestination, .home)
     }
 
+    /// Connect opens the Connections tab on the source; a source naming
+    /// several opens the overview. Settings stays shut.
     func testConnectOpensConnections() {
-        let appState = AppState.isolated()
-        appState.selectedDestination = .home
-        appState.settingsTab = .system
-        var opened = 0
-        appState.openSettingsWindow = { opened += 1 }
-        appState.openHomeLink(.connect(.calendar))
-        XCTAssertEqual(appState.settingsTab, .connections)
-        XCTAssertEqual(opened, 1)
-        XCTAssertEqual(appState.selectedDestination, .home, "Connect opens Settings, not a tab")
+        let cases: [(ReadinessSource, ConnectionService?)] = [
+            (.calendar, .calendar), (.slack, .slack), (.linear, .linear), (.jira, .jira), (.jiraOrMail, nil), (.anySource, nil)
+        ]
+        for (source, service) in cases {
+            let appState = AppState.isolated()
+            appState.selectedDestination = .home
+            appState.selectedConnection = .quickConnections
+            var opened = 0
+            appState.openSettingsWindow = { opened += 1 }
+            appState.openHomeLink(.connect(source))
+            XCTAssertEqual(appState.selectedDestination, .connections, "\(source)")
+            XCTAssertEqual(appState.selectedConnection, service, "\(source)")
+            XCTAssertEqual(opened, 0, "\(source)")
+        }
     }
 
-    /// Jira connected with no board picked (#572): the action opens the Boards
-    /// tab, where the board switches are, not Settings.
-    func testChooseJiraBoardsOpensBoards() {
-        let appState = AppState.isolated()
-        appState.selectedDestination = .home
-        var opened = 0
-        appState.openSettingsWindow = { opened += 1 }
-        appState.openHomeLink(.connect(.jiraBoards))
-        XCTAssertEqual(appState.selectedDestination, .boards)
-        XCTAssertEqual(opened, 0)
+    /// Jira connected with no board picked (#572), and the Jira card's Open:
+    /// Connections → Jira, where the board switches are.
+    func testJiraOpensConnectionsOnJira() {
+        for link in [HomeLink.connect(.jiraBoards), .feature(.jira)] {
+            let appState = AppState.isolated()
+            appState.selectedDestination = .home
+            appState.openHomeLink(link)
+            XCTAssertEqual(appState.selectedDestination, .connections, "\(link)")
+            XCTAssertEqual(appState.selectedConnection, .jira, "\(link)")
+        }
     }
 
     /// Each feature opens a tab — or an Inbox filter — whose empty state is
     /// about that feature (or its sibling: stream digests on Digests, Linear
-    /// on Blockers, whose row speaks for both trackers, Jira on its views,
+    /// on Blockers, whose row speaks for both trackers,
     /// the day plan on the Day filter, which speaks for the brief); Knowledge
-    /// search opens AI Chat, which keeps its own empty state.
+    /// search opens AI Chat, which keeps its own empty state, and Jira
+    /// Connections → Jira, which has none.
     func testEveryFeatureHasADestination() throws {
         let siblings: [ReadinessFeature: ReadinessFeature] = [.streamDigests: .digests, .linear: .jira, .dayPlan: .briefing]
         for feature in ReadinessFeature.allCases {
@@ -143,8 +151,9 @@ final class HomeLinkTests: XCTestCase {
             }
             guard let copy = EmptyStateCopyTable.copy(for: key, briefingHour: 8),
                   let copyFeature = copy.feature else {
-                XCTAssertEqual(feature, .knowledgeIndex, "\(feature) → \(key) has no empty state")
-                XCTAssertEqual(key, SidebarDestination.chat.rawValue)
+                // The two whose screen has no feature empty state.
+                let exempt: [ReadinessFeature: SidebarDestination] = [.knowledgeIndex: .chat, .jira: .connections]
+                XCTAssertEqual(exempt[feature]?.rawValue, key, "\(feature) → \(key) has no empty state")
                 continue
             }
             XCTAssertEqual(copyFeature, siblings[feature] ?? feature, "\(feature) → \(key)")

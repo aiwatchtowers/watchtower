@@ -149,7 +149,6 @@ package enum EmptyStateCopyTable {
         "blockers": jira("exclamationmark.triangle", "No blockers yet", "Jira and Linear views: what is blocked and by what."),
         "projectMap": jira("map", "No project map yet", "Jira views: how the projects and their epics fit together."),
         "releases": jira("shippingbox", "No releases yet", "Jira views: upcoming releases and what is in them."),
-        "boards": jira("rectangle.on.rectangle.angled", "No boards yet", "Jira views: your Jira boards and their columns."),
         "statistics": EmptyStateCopy(
             icon: "chart.bar.xaxis", title: "No activity yet",
             landsHere: "Activity across channels.",

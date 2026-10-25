@@ -142,6 +142,30 @@ final class ConnectionsTabTests: XCTestCase {
         XCTAssertTrue(appState.slackAuthFlow.reconnecting)
     }
 
+    // MARK: - Jira detail
+
+    /// The Boards tab's sections live in the Jira detail once a site is
+    /// connected (#899); with no site there is nothing to choose.
+    func testJiraDetailHoldsTheBoardsOnceASiteIsConnected() async throws {
+        let (pool, path) = try TestDatabase.createPool()
+        defer { TestDatabase.cleanup(path: path) }
+        let appState = AppState.isolated()
+        appState.initJiraAccounts(dbPool: pool)
+        await appState.jiraAccountsViewModel?.refreshAsync()
+        let empty = JiraConnectionDetail().environment(appState)
+        XCTAssertThrowsError(try empty.inspect().find(JiraBoardsSettingsView.self))
+
+        try await pool.write { db in
+            try db.execute(sql: "INSERT INTO jira_accounts (id, site_url, status) VALUES (1, 'https://acme.atlassian.net', 'ok')")
+        }
+        await appState.jiraAccountsViewModel?.refreshAsync()
+        let connected = JiraConnectionDetail().environment(appState)
+        XCTAssertNoThrow(try connected.inspect().find(JiraBoardsSettingsView.self))
+        XCTAssertNoThrow(try connected.inspect().find(JiraFeaturesSettingsView.self))
+        XCTAssertNoThrow(try connected.inspect().find(JiraUserMappingSettingsView.self))
+        XCTAssertNoThrow(try connected.inspect().find(JiraSyncInfoView.self))
+    }
+
     // MARK: - Overview
 
     func testOverviewShowsABannerOnlyForServicesThatNeedTheOwner() throws {

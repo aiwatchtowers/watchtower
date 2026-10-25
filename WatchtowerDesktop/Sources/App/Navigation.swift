@@ -388,8 +388,6 @@ struct MainNavigationView: View {
             StatisticsView()
         case .connections:
             ConnectionsTabView()
-        case .boards:
-            BoardsView()
         case .usage:
             UsageView()
         case .mcpServer:

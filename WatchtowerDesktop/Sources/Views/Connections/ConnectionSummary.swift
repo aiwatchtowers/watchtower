@@ -1,4 +1,5 @@
 import Foundation
+import WatchtowerCore
 
 /// One account of a connected service, as the Connections tab reads it.
 /// `enabled` is true on services without a per-account switch (Google,
@@ -88,6 +89,18 @@ extension ConnectionService {
     /// The overview's two groups: sources Watchtower reads, tools the assistant uses.
     static var sources: [Self] { [.slack, .google, .email, .calendar, .jira, .linear] }
     static var aiTools: [Self] { [.quickConnections] }
+
+    /// The service a "Connect …" button names (Choose Jira boards: Jira);
+    /// nil, the overview, for one that names several or none.
+    init?(readinessSource source: ReadinessSource) {
+        switch source {
+        case .slack: self = .slack
+        case .calendar: self = .calendar
+        case .jira, .jiraBoards: self = .jira
+        case .linear: self = .linear
+        case .none, .anySource, .jiraOrMail, .ownerIdentity, .ownerIdentityPending: return nil
+        }
+    }
 
     var accountNoun: String {
         switch self {

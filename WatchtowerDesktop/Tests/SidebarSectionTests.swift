@@ -269,7 +269,7 @@ final class SidebarSectionTests: XCTestCase {
 
     func testFallbackIsHomeEvenWhenInboxShows() {
         XCTAssertEqual(
-            SidebarDestination.fallbackDestination(current: .boards, disabled: [], connected: ConnectedSources(slack: true)),
+            SidebarDestination.fallbackDestination(current: .workload, disabled: [], connected: ConnectedSources(slack: true)),
             .home
         )
     }
@@ -329,7 +329,7 @@ final class SidebarSectionTests: XCTestCase {
         for (tab, connected, expected) in cases {
             XCTAssertEqual(tab.isVisible(disabledFeatures: [], connected: connected), expected, "\(tab) with \(connected)")
         }
-        for tab in [SidebarDestination.boards, .workload, .blockers, .projectMap, .releases] {
+        for tab in [SidebarDestination.workload, .blockers, .projectMap, .releases] {
             XCTAssertTrue(tab.isVisible(disabledFeatures: [], connected: ConnectedSources(jira: true)), "\(tab)")
             XCTAssertFalse(tab.isVisible(disabledFeatures: [], connected: ConnectedSources(slack: true, mail: true, calendar: true)), "\(tab)")
         }

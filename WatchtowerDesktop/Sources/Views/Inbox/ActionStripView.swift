@@ -149,7 +149,7 @@ struct ActionStripView: View {
         case .idea(let id): appState.navigateToIdea(id)
         case .target(let id): appState.navigateToTarget(id)
         case .track(let id): appState.navigateToTrack(id)
-        case .boards: appState.selectedDestination = .boards
+        case .boards: appState.openConnections(.jira)
         case .url(let url): NSWorkspace.shared.open(url)
         }
     }
