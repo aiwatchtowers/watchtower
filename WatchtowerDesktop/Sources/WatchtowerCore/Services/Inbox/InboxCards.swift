@@ -125,6 +125,7 @@ package struct InboxFeedSnapshot: Equatable, Sendable {
 
 package extension Idea {
     /// Waits on the owner's verdict: the predicate of `IdeaQueries.fetchForReview`.
-    /// A decision is informational and never waits.
-    var awaitsVerdict: Bool { isForReview && kind != .decision }
+    /// A decision is informational and never waits — except a chat-born one,
+    /// which is born proposed and needs the owner's approval.
+    var awaitsVerdict: Bool { isForReview && (kind != .decision || chatBorn) }
 }

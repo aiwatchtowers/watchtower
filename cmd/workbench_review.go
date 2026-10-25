@@ -29,6 +29,7 @@ var (
 	workbenchReviewDiffCmd    = &cobra.Command{Use: "diff", Short: "The round's diff", RunE: runWorkbenchReviewDiff}
 	workbenchReviewFileCmd    = &cobra.Command{Use: "file", Short: "Both sides of one file of the round", RunE: runWorkbenchReviewFile}
 	workbenchReviewSendCmd    = &cobra.Command{Use: "send", Short: "Close the round and print its delivery line", RunE: runWorkbenchReviewSend}
+	workbenchReviewApproveCmd = &cobra.Command{Use: "approve", Short: "Close the round as approved and print its approved line", RunE: runWorkbenchReviewApprove}
 	workbenchReviewContextCmd = &cobra.Command{Use: "context", Short: "The session's intent card", RunE: runWorkbenchReviewContext}
 
 	reviewFlagWorkbench int64
@@ -39,11 +40,12 @@ var (
 	reviewFlagOldPath   string
 	reviewFlagSince     bool
 	reviewFlagRefresh   bool
+	reviewFlagResolve   bool
 )
 
 func init() {
 	for _, c := range []*cobra.Command{workbenchReviewStartCmd, workbenchReviewDiffCmd, workbenchReviewFileCmd,
-		workbenchReviewSendCmd, workbenchReviewContextCmd} {
+		workbenchReviewSendCmd, workbenchReviewApproveCmd, workbenchReviewContextCmd} {
 		c.Flags().Int64Var(&reviewFlagWorkbench, workbenchFlag, 0, "workbench id")
 		c.Flags().BoolVar(&reviewFlagJSON, "json", false, "output JSON")
 		workbenchReviewCmd.AddCommand(c)
@@ -51,9 +53,10 @@ func init() {
 	for _, c := range []*cobra.Command{workbenchReviewStartCmd, workbenchReviewContextCmd} {
 		c.Flags().Int64Var(&reviewFlagSession, "session", 0, "terminal session id")
 	}
-	for _, c := range []*cobra.Command{workbenchReviewDiffCmd, workbenchReviewFileCmd, workbenchReviewSendCmd} {
+	for _, c := range []*cobra.Command{workbenchReviewDiffCmd, workbenchReviewFileCmd, workbenchReviewSendCmd, workbenchReviewApproveCmd} {
 		c.Flags().Int64Var(&reviewFlagRound, "round", 0, "review round id")
 	}
+	workbenchReviewApproveCmd.Flags().BoolVar(&reviewFlagResolve, "resolve-open", false, "also resolve carried and outdated comments")
 	workbenchReviewDiffCmd.Flags().BoolVar(&reviewFlagSince, "since", false, "diff since the previous round")
 	workbenchReviewFileCmd.Flags().BoolVar(&reviewFlagSince, "since", false, "old side = the previous round")
 	workbenchReviewFileCmd.Flags().StringVar(&reviewFlagPath, "path", "", "file path in the round")
@@ -79,26 +82,26 @@ type reviewRoundJSON struct {
 }
 
 type reviewEnvelope struct {
-	OK               bool                `json:"ok"`
-	Error            string              `json:"error,omitempty"`
-	Round            *reviewRoundJSON    `json:"round,omitempty"`
-	Diff             *reviewdiff.Diff    `json:"diff,omitempty"`
-	From             string              `json:"from,omitempty"`
-	To               string              `json:"to,omitempty"`
-	PreviousTreeLost bool                `json:"previous_tree_lost,omitempty"`
-	Old              *reviewdiff.Side    `json:"old,omitempty"`
-	New              *reviewdiff.Side    `json:"new,omitempty"`
-	Sent             *bool               `json:"sent,omitempty"`
-	Comments         int                 `json:"comments,omitempty"`
-	Line             string              `json:"line,omitempty"`
-	Items            []reviewContextItem `json:"items,omitempty"`
-	Lenses           []reviewdiff.Lens   `json:"lenses,omitempty"`
-	LensNotes        []string            `json:"lens_notes,omitempty"`
-	Revert           *reviewRevertJSON   `json:"revert,omitempty"`
-	Overview         json.RawMessage     `json:"overview,omitempty"`
-	OverviewCached   bool                `json:"overview_cached,omitempty"`
-	Lessons          *[]reviewLessonJSON `json:"lessons,omitempty"`
-	Written          string              `json:"written,omitempty"`
+	OK               bool                      `json:"ok"`
+	Error            string                    `json:"error,omitempty"`
+	Round            *reviewRoundJSON          `json:"round,omitempty"`
+	Diff             *reviewdiff.Diff          `json:"diff,omitempty"`
+	From             string                    `json:"from,omitempty"`
+	To               string                    `json:"to,omitempty"`
+	PreviousTreeLost bool                      `json:"previous_tree_lost,omitempty"`
+	Old              *reviewdiff.Side          `json:"old,omitempty"`
+	New              *reviewdiff.Side          `json:"new,omitempty"`
+	Sent             *bool                     `json:"sent,omitempty"`
+	Comments         int                       `json:"comments,omitempty"`
+	Line             string                    `json:"line,omitempty"`
+	Items            []tools.ReviewContextItem `json:"items,omitempty"`
+	Lenses           []reviewdiff.Lens         `json:"lenses,omitempty"`
+	LensNotes        []string                  `json:"lens_notes,omitempty"`
+	Revert           *reviewRevertJSON         `json:"revert,omitempty"`
+	Overview         json.RawMessage           `json:"overview,omitempty"`
+	OverviewCached   bool                      `json:"overview_cached,omitempty"`
+	Lessons          *[]reviewLessonJSON       `json:"lessons,omitempty"`
+	Written          string                    `json:"written,omitempty"`
 }
 
 type reviewRevertJSON struct {
@@ -333,7 +336,17 @@ func runWorkbenchReviewFile(cmd *cobra.Command, _ []string) error {
 	return writeReview(cmd, reviewEnvelope{OK: true, Old: &oldSide, New: &newSide})
 }
 
+// runWorkbenchReviewSend sends the round's comments as the owner's request
+// for changes (AGENT-07, ask #575): refused under an agent before anything is
+// read, then confirmed in the Desktop — the Desktop's own Send is granted
+// without a window.
 func runWorkbenchReviewSend(cmd *cobra.Command, _ []string) error {
+	if err := refuseUnderAgent("send a review round"); err != nil {
+		return err
+	}
+	if err := confirmWithOwner("send a review round", fmt.Sprintf("Send review round %d to the agent.", reviewFlagRound)); err != nil {
+		return failReview(cmd, err)
+	}
 	database, p, err := reviewTarget()
 	if err != nil {
 		return err
@@ -347,4 +360,41 @@ func runWorkbenchReviewSend(cmd *cobra.Command, _ []string) error {
 		env.Line = reviewdiff.DeliveryLine(reviewFlagRound, n)
 	}
 	return writeReview(cmd, env)
+}
+
+// runWorkbenchReviewApprove closes the round as approved; like send it stores
+// first and prints the line only once the round is stored (REVIEW-04).
+// Approval is the owner's verdict on the agent's work (AGENT-07): refused
+// under an agent before anything is read, then confirmed in the Desktop —
+// the Desktop's own Approve is granted without a window.
+func runWorkbenchReviewApprove(cmd *cobra.Command, _ []string) error {
+	if err := refuseUnderAgent("approve a review round"); err != nil {
+		return err
+	}
+	if err := confirmWithOwner("approve a review round", approveConfirmDetail(reviewFlagRound, reviewFlagResolve)); err != nil {
+		return failReview(cmd, err)
+	}
+	database, p, err := reviewTarget()
+	if err != nil {
+		return err
+	}
+	ok, err := database.ApproveReviewRound(p.ID, reviewFlagRound, reviewFlagResolve)
+	if err != nil {
+		return failReview(cmd, err)
+	}
+	env := reviewEnvelope{OK: true, Sent: &ok}
+	if ok {
+		env.Line = reviewdiff.ApprovedLine(reviewFlagRound)
+	}
+	return writeReview(cmd, env)
+}
+
+// approveConfirmDetail is the window's text for an Approve: the round and
+// whether its open comments are resolved with it.
+func approveConfirmDetail(round int64, resolveOpen bool) string {
+	detail := fmt.Sprintf("Approve review round %d.", round)
+	if resolveOpen {
+		detail += "\nIts open comments are resolved with it."
+	}
+	return detail
 }

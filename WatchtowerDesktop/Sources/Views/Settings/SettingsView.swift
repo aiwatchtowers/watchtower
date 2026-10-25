@@ -7,6 +7,11 @@ enum SettingsTab: Hashable {
     case general, connections, features, meetings, system, mobile, profile
 }
 
+/// A section inside a Settings tab that an in-app link can scroll to.
+enum SettingsAnchor: Hashable {
+    case instructions
+}
+
 struct SettingsView: View {
     @Environment(AppState.self) private var appState
     @State private var config = ConfigService()

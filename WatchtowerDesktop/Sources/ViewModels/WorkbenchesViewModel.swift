@@ -189,6 +189,9 @@ final class WorkbenchesViewModel {
     /// it was worked out from (`codeRoot(sessionID:project:)`): view bodies
     /// read it without touching the disk again.
     @ObservationIgnored var codeRootMemo: [CodeRootMemoKey: CodeRootMemo] = [:]
+    /// Per workbench: the panes besides Files a code jump can land in
+    /// (Branch review, board #960), asked while one is key.
+    @ObservationIgnored var codeDestinations: [Int64: [WeakCodeLocationDestination]] = [:]
     /// The ask link clicked last per workbench, while it runs
     /// (`clickAskLink`): a newer click cancels it, and so does its view
     /// (`owner`) going away.
@@ -294,6 +297,10 @@ final class WorkbenchesViewModel {
     /// Rows a start inserted whose launch has not returned yet, by id: they
     /// count as live for the next start's decision.
     @ObservationIgnored var startingRows: [Int64: TerminalSession] = [:]
+    /// New agent rows on screen while their start decides the place and
+    /// makes the worktree: the pane shows "Starting…" instead of a Resume
+    /// button until the launch.
+    var preparingSessions: Set<Int64> = []
     /// Per workbench, the ticket of the session switch the owner asked for
     /// last (`beginSwitch`); only that switch may still move the layout.
     @ObservationIgnored var latestSwitch: [Int64: Int] = [:]

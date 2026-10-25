@@ -29,6 +29,9 @@ public struct PanelSplitWidth {
 public struct PanelSplit<Main: View, Panel: View>: View {
     let isPanelShown: Bool
     let width: PanelSplitWidth
+    /// The leading hairline; off when the main content is a `panelSurface()`
+    /// list, whose own edge line a selected tab covers.
+    let showsEdgeLine: Bool
     @ViewBuilder let main: Main
     @ViewBuilder let panel: Panel
 
@@ -38,11 +41,13 @@ public struct PanelSplit<Main: View, Panel: View>: View {
     public init(
         isPanelShown: Bool,
         width: PanelSplitWidth,
+        showsEdgeLine: Bool = true,
         @ViewBuilder main: () -> Main,
         @ViewBuilder panel: () -> Panel
     ) {
         self.isPanelShown = isPanelShown
         self.width = width
+        self.showsEdgeLine = showsEdgeLine
         self.main = main()
         self.panel = panel()
         _storedWidth = AppStorage(wrappedValue: width.ideal, width.key)
@@ -55,7 +60,9 @@ public struct PanelSplit<Main: View, Panel: View>: View {
                 panel
                     .frame(width: liveWidth ?? width.clamped(storedWidth))
                     .frame(maxHeight: .infinity)
-                    .overlay(alignment: .leading) { Divider() }
+                    .overlay(alignment: .leading) {
+                        if showsEdgeLine { Divider() }
+                    }
                     .overlay(alignment: .leading) {
                         PanelResizeHandle(width: $storedWidth, liveWidth: $liveWidth,
                                           range: width.range, growsLeftward: true)

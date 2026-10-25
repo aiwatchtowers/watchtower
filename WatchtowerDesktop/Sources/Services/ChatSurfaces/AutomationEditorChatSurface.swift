@@ -75,6 +75,7 @@ enum AutomationEditorChatSurface {
                                  conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: tools ? .actions(surface: surface) : .draftOnly,
+            ownerInstructions: true,
             systemPrompt: { systemPrompt(context: context, tools: tools, skillsDir: skillsDir) },
             turnPrompt: { input in
                 let recipe = currentRecipeBlock(automationID: automation.id, dbPool: dbPool)
@@ -111,6 +112,7 @@ enum AutomationEditorChatSurface {
             key: EmbeddedChatKey(contextType: draftContextType, contextID: contextID, conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: tools ? .actionsWithoutContext(surface: surface) : .draftOnly,
+            ownerInstructions: true,
             systemPrompt: { systemPrompt(context: context, tools: tools, skillsDir: skillsDir) },
             turnPrompt: { input in
                 let resumed = input.isResumed ? rulesBlock(context: context, tools: tools) : ""
@@ -136,9 +138,11 @@ enum AutomationEditorChatSurface {
             "",
             "=== AUTOMATION ===",
             "Name: \(automation.name)",
+            "ID: \(automation.id)",
             "Slug: \(automation.slug)",
             "Scope: \(scope)",
             "",
+            "Pass `automation: \"\(automation.id)\"` to `list_automation_runs` and `get_automation`.",
             "Always pass `slug: \"\(automation.slug)\"` to `draft_automation` and `save_automation`."
         ]
         if automation.scope == .workbench, let workbench = automation.projectID {
@@ -187,6 +191,7 @@ enum AutomationEditorChatSurface {
         }
         return context + "\n\n"
             + "Load the `create-automation` skill with `load_skill` before drafting.\n"
+            + "Always write `summary:` — a few words on what it does, not when, at most 60 characters.\n"
             + "Draft with `draft_automation` and go through its dry run with the owner. "
             + "Do not call `save_automation` here: the owner saves from the panel with **Save and Turn On** "
             + "or **Save Turned Off** under the draft. When the draft is ready, tell them to press it.\n\n"
@@ -283,7 +288,10 @@ final class AutomationEditorChat {
 
     @ObservationIgnored private let databasePath: String
     @ObservationIgnored private let center: EmbeddedChatCenter
-    @ObservationIgnored private let onSaved: () -> Void
+    /// A `save_automation` of this chat landed: the new automation's id
+    /// when the save wrote a new recipe (a new draft then leaves the list),
+    /// else nil.
+    @ObservationIgnored private let onSaved: (Int64?) -> Void
     @ObservationIgnored private var closed = false
     @ObservationIgnored private let panelDraftBox: PanelDraftBox
 
@@ -295,7 +303,7 @@ final class AutomationEditorChat {
         center: EmbeddedChatCenter,
         cliRunner: CLIRunnerProtocol? = nil,
         panelDraftBox: PanelDraftBox = PanelDraftBox(),
-        onSaved: @escaping () -> Void,
+        onSaved: @escaping (Int64?) -> Void,
         makeSpec: (_ outcomes: @escaping @MainActor (Date?) -> String?) -> ChatSurfaceSpec
     ) {
         let feed = AgentActionFeed(dbPool: dbPool, cliRunner: cliRunner)
@@ -351,7 +359,8 @@ final class AutomationEditorChat {
 
     private func decided(_ row: AgentAction?) {
         guard let row, row.tool == SaveAutomationCardModel.tool, row.status == "applied" else { return }
-        savedNote = SaveAutomationCardModel(action: row).appliedNote
-        onSaved()
+        let card = SaveAutomationCardModel(action: row)
+        savedNote = card.appliedNote
+        onSaved(card.isNew ? (row.result["automation_id"] as? NSNumber)?.int64Value : nil)
     }
 }

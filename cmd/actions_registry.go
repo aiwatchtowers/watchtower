@@ -202,9 +202,14 @@ func buildToolRegistry(cfg *config.Config, database *db.DB) *tools.Registry {
 	// Automation authoring (Automations P3, spec 2026-10-14 §11): main chat
 	// and the editor chat (automation_editor) only; draft is a read that
 	// writes nothing, save an AlwaysAsk write — Save is the owner's Approve.
-	authoringDeps := automationAuthoringDeps(cfg, database)
+	authoringDeps := automationAuthoringDeps(cfg, database, reg)
 	regTools = append(regTools, authoring.NewDraftAutomation(authoringDeps), authoring.NewSaveAutomation(authoringDeps))
 	regTools = append(regTools, authoring.NewWorkbenchSkills(authoringDeps))
+	// Run history reads (spec 2026-10-24 §7): why a recipe failed, what it did last.
+	regTools = append(regTools, authoring.NewListAutomationRuns(authoringDeps), authoring.NewGetAutomationRun(authoringDeps),
+		authoring.NewListAutomations(authoringDeps), authoring.NewGetAutomation(authoringDeps))
+	// Slack channel list (spec 2026-10-24 §7): main chat and editor chat only.
+	regTools = append(regTools, tools.NewListSlackChannels())
 	// A claude.ai connector write held by the main chat's permission gate
 	// (#737): recorded and run only by that chat session, never listed on any
 	// surface (Tool.AppliedBySession).

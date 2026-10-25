@@ -408,7 +408,8 @@ func NewGetConfluencePage(factory ConfluencePageClientFactory) *Tool {
 			"picks the Jira account when several Atlassian sites are connected.",
 		InputSchema: mustSchema[getConfluencePageArgs]("get_confluence_page"),
 		Access:      AccessRead,
-		Surfaces:    []string{"main", "target"},
+		CompanyData: true,
+		Surfaces:    []string{"main", "target", AutomationEditorSurface},
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a getConfluencePageArgs
 			if err := decodeStrict(call.Args, &a); err != nil {

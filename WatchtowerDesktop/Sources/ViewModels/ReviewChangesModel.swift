@@ -67,8 +67,42 @@ final class ReviewChangesModel {
     private(set) var comments: [ReviewComment] = []
     /// path → the content key it was marked Viewed at.
     private(set) var viewed: [String: String] = [:]
-    var selectedPath: String?
+    var selectedPath: String? {
+        didSet {
+            guard selectedPath != oldValue else { return }
+            fullFile = false
+            // A line asked for in another file is not this one's.
+            if focusRequest?.path != selectedPath { focusRequest = nil }
+        }
+    }
+    /// The diff shows the whole file instead of the changes with unchanged
+    /// runs folded (board #959); per file view, never persisted.
+    var fullFile = false
     var view: View = .all
+    /// Code navigation in the review (board #960): the folder's place in the
+    /// repository, nil until the pane read it (no jump lands here till then).
+    var pathMap: ReviewPathMap?
+    /// A file outside the diff, read-only in the centre area; its path is
+    /// relative to the session's code root.
+    private(set) var preview: CodeNavLocation?
+    /// Bumped per `showLocation` into the preview: the same place asked again
+    /// is revealed again.
+    private(set) var previewSerial = 0
+    /// The preview's cursor, as its page last reported it.
+    private var previewCursor: CodeNavLocation?
+    /// A line the diff puts on screen once its file is shown (`wt.focus`).
+    /// One-shot: cleared once the diff sent it (`focusDelivered`), so a
+    /// rebuilt diff view never jumps there again.
+    private(set) var focusRequest: FocusRequest?
+    private var focusSerial = 0
+    /// The line last asked for, per file, for `currentLocation`.
+    private var focusedLine: (path: String, line: Int)?
+    /// The session's Usages list (`CodeUsagesCenter`) is shown under the
+    /// file area: asked from the diff, the preview or the menu while the
+    /// pane was key.
+    private(set) var showsUsages = false
+    /// The file load a `showLocation` started (tests await it).
+    @ObservationIgnored private(set) var navigationLoad: Task<Void, Never>?
     /// The last sides loaded, with the file, tree and view they belong to;
     /// read `currentSides` to show or anchor on them.
     private(set) var sides: LoadedSides?
@@ -81,6 +115,10 @@ final class ReviewChangesModel {
     /// Whether a refresh asked for while one ran wants a new overview.
     private var refreshAgainRegenerates = false
     private(set) var lastSend: SessionLineDelivery.Delivery?
+    /// When this model approved the round (#964): the banner's time.
+    private(set) var approvedAt: Date?
+    /// The round's session was deleted: Approve is off (Go refuses it too).
+    private(set) var sessionGone = false
     /// The last failure of an action after the open (refresh, a file, a comment, Send).
     private(set) var lastError: String?
 
@@ -220,8 +258,28 @@ final class ReviewChangesModel {
 
     var draftCount: Int { comments.filter { $0.status == .draft }.count }
 
+    /// The open comments of earlier rounds still on this round (carried and
+    /// outdated): Approve lists them and resolves them only on the owner's
+    /// press (REVIEW-03, #964).
+    var openEarlierComments: [ReviewComment] {
+        comments.filter { $0.status == .carried || $0.status == .outdated }
+    }
+
+    /// Why Approve is off, nil when it is on (#964): drafts must be sent or
+    /// deleted first, and a round without a session has nobody to finish it.
+    var approvalBlocker: String? {
+        let drafts = draftCount
+        if drafts > 0 {
+            return drafts == 1 ? "Send or delete the draft first" : "Send or delete the \(drafts) drafts first"
+        }
+        return sessionGone ? "The session is gone" : nil
+    }
+
     /// The message when Go answers that the round was already sent.
     static let alreadySentMessage = "This round was already sent"
+    /// Go refused Approve on a round that is still open, with no blocker the
+    /// model knows of (the open comments changed under the popover).
+    static let approveRefusedMessage = "The round was not approved — check its open comments and approve again"
 
     /// Whether the round has anything to review — its whole base..tree diff,
     /// whatever view is shown (an empty Since view of a branch with changes
@@ -299,6 +357,8 @@ final class ReviewChangesModel {
             try reloadNotes()
             try await loadDiff(info)
             let roundID = info.id
+            sessionGone = try await db.read { try ReviewQueries.sessionGone($0, roundID: roundID) }
+            approvedAt = nil
             let rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
             var marks = try await db.read { try ReviewQueries.viewed($0, roundID: roundID) }
             if rows.isEmpty, marks.isEmpty, info.prevRoundId > 0 {
@@ -371,6 +431,7 @@ final class ReviewChangesModel {
             // An empty diff drops whatever overview is shown, Undo or not.
             if !hasChanges || (regenerateOverview ? overviewTreeSHA != info.treeSha : treeChanged && !overviewShown) { startOverview() }
             let roundID = info.id
+            sessionGone = try await db.read { try ReviewQueries.sessionGone($0, roundID: roundID) }
             let rows = try await db.read { try ReviewQueries.comments($0, roundID: roundID) }
             let stale = rows.filter { ($0.status == .draft || $0.status == .carried) && $0.path != nil && $0.treeSHA != info.treeSha }
             if !stale.isEmpty {
@@ -400,7 +461,93 @@ final class ReviewChangesModel {
 
     func select(_ path: String) async {
         selectedPath = path
+        preview = nil
         await reloadSides()
+    }
+
+    // MARK: - Code navigation (board #960)
+
+    /// One ask for a line of a diff file; `serial` makes a repeat fire again.
+    struct FocusRequest: Equatable {
+        let path: String
+        let line: Int
+        let serial: Int
+    }
+
+    /// A jump's target, relative to the code root: a file of the diff is
+    /// selected (read only when it is not the one on screen) and its line
+    /// asked for; any other file opens in the read-only preview. false =
+    /// the folder's place in the repository is not known yet.
+    func showLocation(_ location: CodeNavLocation) -> Bool {
+        guard let pathMap else { return false }
+        let repoPath = pathMap.toRepo(location.path)
+        guard files.contains(where: { $0.path == repoPath }) else {
+            preview = location
+            previewCursor = nil
+            previewSerial += 1
+            return true
+        }
+        preview = nil
+        if selectedPath != repoPath {
+            selectedPath = repoPath
+            navigationLoad = Task { await reloadSides() }
+        }
+        if location.line > 0 { focusLine(location.line) }
+        return true
+    }
+
+    /// A line of the selected file into view in the diff (a comment picked
+    /// in the list, a jump).
+    func focusLine(_ line: Int) {
+        guard let path = selectedPath, line > 0 else { return }
+        focusSerial += 1
+        focusRequest = FocusRequest(path: path, line: line, serial: focusSerial)
+        focusedLine = (path, line)
+    }
+
+    /// The diff sent request `serial` to its page: it is not sent again.
+    func focusDelivered(_ serial: Int) {
+        if focusRequest?.serial == serial { focusRequest = nil }
+    }
+
+    /// "← Back to diff".
+    func closePreview() {
+        preview = nil
+        previewCursor = nil
+    }
+
+    /// The preview page's cursor; a message about another file is stale.
+    func previewCursorMoved(_ location: CodeNavLocation) {
+        guard location.path == preview?.path else { return }
+        previewCursor = location
+    }
+
+    /// The root-relative place a diff page message names (`definition`,
+    /// `usages`): the page posts from the new side of the file it shows,
+    /// by its round path. nil for another file than the selected one (a
+    /// stale message) or one outside the workbench folder (no navigation).
+    func diffNavigationOrigin(path: String, line: Int, col: Int) -> CodeNavLocation? {
+        guard path == selectedPath, let rootPath = pathMap?.toRoot(path) else { return nil }
+        return CodeNavLocation(path: rootPath, line: line, col: col)
+    }
+
+    func showUsages() {
+        showsUsages = true
+    }
+
+    func closeUsages() {
+        showsUsages = false
+    }
+
+    /// Where the review is, root-relative, for Back/Forward: the preview's
+    /// cursor, or the selected diff file at the line last asked for (1 when
+    /// none). nil without a path map or for a file outside the folder.
+    var currentLocation: CodeNavLocation? {
+        guard let pathMap else { return nil }
+        if let preview { return previewCursor ?? preview }
+        guard let selectedPath, let path = pathMap.toRoot(selectedPath) else { return nil }
+        let line = focusedLine.flatMap { $0.path == selectedPath ? $0.line : nil } ?? 1
+        return CodeNavLocation(path: path, line: line, col: 1)
     }
 
     func setView(_ v: View) async {
@@ -479,6 +626,63 @@ final class ReviewChangesModel {
         }
     }
 
+    /// Marks (or clears) every path in one write batch; a path the diff does
+    /// not know throws before anything is written.
+    func setViewed(_ paths: [String], on: Bool) async throws {
+        try await run {
+            guard let info = round else { throw ModelError.noRound }
+            var contents: [String: String] = [:]
+            for path in paths {
+                guard let file = allFiles.first(where: { $0.path == path }) else { throw ModelError.unknownFile(path) }
+                contents[path] = Self.contentKey(file)
+            }
+            let marks = try await pendingViewed.runThrowing(paths.joined(separator: "\n")) {
+                try await self.write { db in
+                    for (path, content) in contents {
+                        try ReviewQueries.setViewed(db, roundID: info.id, path: path, contentSHA: on ? content : nil)
+                    }
+                    return try ReviewQueries.viewed(db, roundID: info.id)
+                }
+            }
+            if let marks { viewed = marks }
+        }
+    }
+
+    /// Marks every file of the chapter Viewed, then moves to the next chapter
+    /// that is not done, or to Wrap-up when none is left.
+    func markChapterViewed(_ key: String) async throws {
+        guard let chapter = chapters.first(where: { $0.key == key }) else { return }
+        try await setViewed(chapter.paths.filter { !isViewed($0) }, on: true)
+        if let next = nextUndoneChapter(after: key) {
+            try await selectChapter(next)
+        } else {
+            try await setPhase(.wrapup)
+        }
+    }
+
+    /// A done chapter is un-viewed in full and stays; any other is marked
+    /// viewed and the review moves on.
+    func toggleChapterViewed(_ key: String) async throws {
+        guard let chapter = chapters.first(where: { $0.key == key }) else { return }
+        if ReviewChapters.done(chapter, isViewed: { isViewed($0) }) {
+            try await setViewed(chapter.paths, on: false)
+        } else {
+            try await markChapterViewed(key)
+        }
+    }
+
+    /// The next chapter after `key` that is not done, wrapping past the end;
+    /// nil when every other chapter is done.
+    func nextUndoneChapter(after key: String) -> String? {
+        guard let index = chapters.firstIndex(where: { $0.key == key }) else { return nil }
+        let count = chapters.count
+        for offset in 1..<max(count, 1) {
+            let chapter = chapters[(index + offset) % count]
+            if !ReviewChapters.done(chapter, isViewed: { isViewed($0) }) { return chapter.key }
+        }
+        return nil
+    }
+
     // MARK: - Send
 
     /// Sends the round once: Go marks the drafts sent, and only the call that
@@ -498,6 +702,7 @@ final class ReviewChangesModel {
             // Either way the round is closed now: sent by this call, or already before it.
             round?.status = "sent"
             if env.sent == true {
+                round?.outcome = ReviewOutcome.changes
                 if let line = env.line, !line.isEmpty {
                     lastSend = await lineDelivery.deliverLine(line, key: .review(info.id), sessionID: sessionID)
                 }
@@ -508,6 +713,57 @@ final class ReviewChangesModel {
         } catch {
             lastError = Self.message(error)
         }
+    }
+
+    /// Approves the round once (#964), as `send()` sends it: Go closes the
+    /// round as approved first (with `resolveOpen` its carried and outdated
+    /// comments resolved in the same transaction), and only the call that did
+    /// it types the approved line, through the same `LineKey.review` gate
+    /// (REVIEW-04). A refusal types nothing; the round's stored state says
+    /// whether it was already closed or is still open (drafts, open comments,
+    /// no session), and the message says which.
+    func approve(resolveOpen: Bool) async {
+        guard !sending, !refreshing, !undoing, let info = round, info.status == "open" else { return }
+        sending = true
+        defer { sending = false }
+        lastError = nil
+        await flushState()
+        do {
+            let env = try Self.checked(await cli.reviewApprove(projectID: projectID, roundID: info.id, resolveOpen: resolveOpen))
+            if env.sent == true {
+                round?.status = "sent"
+                round?.outcome = ReviewOutcome.approved
+                approvedAt = Date()
+                lastSend = nil
+                if let line = env.line, !line.isEmpty {
+                    lastSend = await lineDelivery.deliverLine(line, key: .review(info.id), sessionID: sessionID)
+                }
+                try reloadComments()
+            } else {
+                try await approveRefused(info.id)
+            }
+        } catch {
+            lastError = Self.message(error)
+        }
+    }
+
+    /// Go wrote nothing. A round no longer open (or gone) shows closed with
+    /// its stored outcome; an open one stays open, its comments and session
+    /// re-read, and the blocker that refused it is shown.
+    private func approveRefused(_ roundID: Int64) async throws {
+        let (state, gone) = try await db.read {
+            (try ReviewQueries.roundState($0, roundID: roundID), try ReviewQueries.sessionGone($0, roundID: roundID))
+        }
+        guard let state, state.status == "open" else {
+            round?.status = state?.status ?? "sent"
+            round?.outcome = state?.outcome ?? ""
+            lastError = Self.alreadySentMessage
+            try reloadComments()
+            return
+        }
+        sessionGone = gone
+        try reloadComments()
+        lastError = approvalBlocker ?? Self.approveRefusedMessage
     }
 
     /// Wrap-up marks live under this chapter key and the `intent` lens.
@@ -607,7 +863,7 @@ final class ReviewChangesModel {
         }
     }
 
-    func addDesignComment(body: String, lens: String) async throws {
+    func addDesignComment(body: String, lens: String = "") async throws {
         try await run {
             let info = try openRound()
             try await write { _ = try Self.addDesign($0, info: info, body: body, lens: lens) }
@@ -728,8 +984,50 @@ final class ReviewChangesModel {
         return false
     }
 
-    func risk(for path: String) -> ReviewOverview.Risk? {
-        lastReadyOverview?.risk.first { $0.path == path }
+    /// Every risk the AI overview names for a file.
+    func risks(for path: String) -> [ReviewOverview.Risk] {
+        lastReadyOverview?.risk.filter { $0.path == path } ?? []
+    }
+
+    /// The most serious risk of a file (the first of equal levels).
+    func highestRisk(for path: String) -> ReviewOverview.Risk? {
+        risks(for: path).reduce(nil) { best, next in
+            guard let best else { return next }
+            return Self.severity(next.level) > Self.severity(best.level) ? next : best
+        }
+    }
+
+    /// The risks of a chapter's files, most serious first (overview order within a level).
+    func chapterRisks(_ key: String) -> [ReviewOverview.Risk] {
+        chapterRisks(key, in: lastReadyOverview)
+    }
+
+    /// What the chapter's risk section shows (#961): the ready overview's
+    /// risks; on a failed refresh the last ready overview's and on an
+    /// overview of an earlier version that one's, both out of date. nil = no
+    /// overview to show (the section offers to run one).
+    func chapterRiskList(_ key: String) -> (risks: [ReviewOverview.Risk], outOfDate: Bool)? {
+        switch overview {
+        case .ready: (chapterRisks(key), false)
+        case let .outdated(earlier): (chapterRisks(key, in: earlier), true)
+        case .failed: lastReadyOverview.map { (chapterRisks(key, in: $0), true) }
+        case .idle, .loading, .onRequest: nil
+        }
+    }
+
+    private func chapterRisks(_ key: String, in overview: ReviewOverview?) -> [ReviewOverview.Risk] {
+        guard let chapter = chapters.first(where: { $0.key == key }) else { return [] }
+        let paths = Set(chapter.paths)
+        let mine = (overview?.risk ?? []).filter { paths.contains($0.path) }
+        return [ReviewOverview.Risk.Level.high, .medium, .low].flatMap { level in mine.filter { $0.level == level } }
+    }
+
+    private static func severity(_ level: ReviewOverview.Risk.Level) -> Int {
+        switch level {
+        case .high: 2
+        case .medium: 1
+        case .low: 0
+        }
     }
 
     /// Reading time of the shown diff's changed lines (generated and lock files excluded).
@@ -969,14 +1267,16 @@ final class ReviewChangesModel {
     }
 
     /// Switches to the overview's chapters, unless they would replace
-    /// chapters the owner already checked in the Chapters phase. AI chapters
-    /// the round already used (a saved `ai:` position or checks) come back.
+    /// chapters the owner already started on in the Chapters phase (a file
+    /// Viewed or a comment on it). AI chapters the round already used (a
+    /// saved `ai:` position or shown `ai:` chapters) come back.
     private func offerAIChapters(_ ready: ReviewOverview) {
         let specs = Self.specs(ready)
-        let shown = Set(chapters.map(\.key))
+        let shownPaths = Set(chapters.flatMap(\.paths))
         let candidate = ReviewChapters.resolve(files, agent: agentChapterSpecs, ai: specs)
-        let usedAI = awaitedAIChapterKey != nil || checks.contains { $0.chapterKey.hasPrefix("ai:") }
-        if !usedAI, candidate != chapters, phase == .chapters, checks.contains(where: { shown.contains($0.chapterKey) }) {
+        let usedAI = awaitedAIChapterKey != nil || chapters.contains { $0.key.hasPrefix("ai:") }
+        let started = shownPaths.contains { isViewed($0) } || comments.contains { $0.path.map(shownPaths.contains) ?? false }
+        if !usedAI, candidate != chapters, phase == .chapters, started {
             aiChaptersPending = true
             return
         }

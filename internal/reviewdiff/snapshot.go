@@ -110,3 +110,13 @@ func (r *Repo) TreeExists(ctx context.Context, sha string) (bool, error) {
 	}
 	return err == nil, nil
 }
+
+// SameTree reports whether commit-or-tree base and tree name the same tree:
+// no diff between them, read without reading any content.
+func (r *Repo) SameTree(ctx context.Context, base, tree string) (bool, error) {
+	out, err := r.git(ctx, nil, "rev-parse", "--verify", "--quiet", base+"^{tree}")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(out)) == tree, nil
+}

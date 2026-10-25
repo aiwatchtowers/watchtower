@@ -16,6 +16,19 @@ In **Settings → System**, **Reset & Regenerate…** deletes the AI-generated d
 
 Reset All Data leaves your meeting recordings in `~/Library/Application Support/Watchtower/recordings`, the iPhone-sync folder next to them (`MobileHub`), the sync keys in your Keychain and anything already in iCloud. Delete the recordings by hand. To clear iPhone data, turn off **Sync with iPhone** and remove the phone before you reset.
 
+## Watchtower stays out of Time Machine
+
+Time Machine skips two folders: `~/.local/share/watchtower` (the database, Memory, logs, sign-ins) and `~/Library/Application Support/Watchtower` (recordings, iPhone sync). The app marks them again at every launch and daemon start. `~/.config/watchtower` is still backed up: mostly settings, though an old config may still hold a Slack token.
+
+Backups made earlier still hold the two folders. To delete those copies:
+
+1. In Finder, press **⌘⇧G** and go to the folder's parent (or press **⌘⇧.** to show hidden folders).
+2. Open Time Machine, Control-click the folder and choose **Delete All Backups of "…"**.
+
+An APFS backup disk (the default since macOS 11) has no such item and deletes only whole backups. Find them with `tmutil destinationinfo` and `tmutil listbackups`, then run `sudo tmutil delete -d <disk> -t <timestamp>` (Terminal needs Full Disk Access), or erase the disk and back up again.
+
+Other backup tools may ignore Time Machine's flag: exclude the two folders there by hand.
+
 ## What goes to your AI provider
 
 Every AI feature sends the relevant text to the provider you chose in [AI providers, models and cost](ai-providers-and-cost.md), and it arrives under the terms of your own Claude, Codex or other account. Watchtower does not control that provider's retention.
@@ -48,6 +61,12 @@ It is end-to-end encrypted.
 Records are sealed with keys held only by your Mac and your paired phones, so iCloud holds ciphertext. A few payload-free alert signals are the exception.
 
 A phone pairs only after you confirm it on the Mac with a four-digit code. An iPhone on another Apple ID joins through shares your Mac creates. **Unlink** or **Forget** on the phone (Settings → Macs) deletes that Mac's data from the phone. Removing the phone on the Mac freezes it there: what it already synced stays readable until you tap **Forget**.
+
+## How much an assistant can read in one session
+
+An assistant can read your synced data at most 300 times, or 5,000 rows, in one session. One read returns at most 256 KB, and a list at most 200 rows. The limit holds for AI Chat, workbench agents, automation runs and any app connected to `watchtower mcp`. Past it the read is refused with **this session's read limit is reached (300 calls / 5000 rows); the owner can start a new session**; a new chat, session or run starts a fresh count. A chat built into a screen counts per message, and each `watchtower tools call` on its own. Your own board, asks and skills do not count.
+
+Every such read leaves one line in the Mac's system log: the tool, the session and the row count, never the text. Your company's security tools can collect it; to look yourself, run `log show --last 1h --predicate 'subsystem == "com.watchtower.audit"'`. The system keeps it a few days, and Watchtower sends it nowhere.
 
 ## When something is deleted at the source
 

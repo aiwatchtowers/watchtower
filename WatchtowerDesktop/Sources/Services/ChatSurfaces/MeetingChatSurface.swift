@@ -49,6 +49,7 @@ enum MeetingChatSurface {
             key: EmbeddedChatKey(contextType: contextType, contextID: String(transcriptID), conversationID: conversationID),
             persistence: .database(conversationID: conversationID),
             toolAccess: .draftOnly,
+            ownerInstructions: true,
             systemPrompt: { buildSystemPrompt(transcript: transcript, recapContent: recapContent, dbPool: dbPool) },
             // Resumed sessions drop the system prompt (CLI --resume); carry the
             // meeting context with the message so an expired session never

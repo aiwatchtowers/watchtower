@@ -15,7 +15,7 @@ import (
 
 type searchKnowledgeArgs struct {
 	Queries []string `json:"queries" jsonschema:"1-5 search queries: the key terms, synonyms, both Russian and English variants, and word stems ending in * for Russian word forms (e.g. договор*)"`
-	Sources []string `json:"sources,omitempty" jsonschema:"optional filter: slack, gmail, imap, jira, linear, confluence, calendar, transcript, recap, digest, stream_digest, idea, guide (the Watchtower user guide — use it for questions about the app itself), project_doc (this workbench folder's .md/.markdown/.txt files; workbench sessions only)"`
+	Sources []string `json:"sources,omitempty" jsonschema:"optional filter: slack, gmail, imap, jira, linear, confluence, calendar, transcript, recap, digest, stream_digest, idea, chat_artifact (chat documents, tables, code and pages the owner added to knowledge), guide (the Watchtower user guide — use it for questions about the app itself), project_doc (this workbench folder's .md/.markdown/.txt files; workbench sessions only)"`
 	From    string   `json:"from,omitempty" jsonschema:"only documents active on/after this date (YYYY-MM-DD)"`
 	To      string   `json:"to,omitempty" jsonschema:"only documents active on/before this date (YYYY-MM-DD)"`
 	Limit   int      `json:"limit,omitempty" jsonschema:"max documents, 0 = default (10), capped at 25"`
@@ -45,6 +45,7 @@ func NewSearchKnowledge() *Tool {
 			"that); a workbench folder's text files (source project_doc) are searchable too.",
 		InputSchema: mustSchema[searchKnowledgeArgs]("search_knowledge"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a searchKnowledgeArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
@@ -167,6 +168,7 @@ func NewGetKnowledgeDocument() *Tool {
 		Description: "Open one search_knowledge hit by its ref: the document text (capped; from_chunk starts it at a hit's chunk), title, time, link and source anchor.",
 		InputSchema: mustSchema[getKnowledgeDocumentArgs]("get_knowledge_document"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a getKnowledgeDocumentArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil || strings.TrimSpace(a.Ref) == "" {

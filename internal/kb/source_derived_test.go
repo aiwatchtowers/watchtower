@@ -207,6 +207,27 @@ func TestIdea_BuildOrdersMentionsBySaidAt(t *testing.T) {
 	assert.Equal(t, "2026-09-11T11:00:00Z", next)
 }
 
+// KB inventory guard (ask #516): an idea document never carries a chat
+// mention the assistant authored; the owner's chat turn and other sources do.
+func TestKB_IdeaDocSkipsAssistantChatMentions(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	exec(t, d, `INSERT INTO ideas (id, kind, title, essence, status, last_mention_at, updated_at)
+		VALUES (9, 'decision', 'Ship Monday', 'ship on Monday', 'active', '2026-10-01T10:00:00Z', '2026-10-01T10:00:00Z')`)
+	exec(t, d, `INSERT INTO idea_mentions (id, idea_id, source, ref, quote, author, said_at) VALUES
+		(1, 9, 'chat', 'chat:1:1', 'owner words', 'owner', '2026-10-01T09:00:00Z'),
+		(2, 9, 'chat', 'chat:1:2', 'model conclusion', 'assistant', '2026-10-01T09:01:00Z'),
+		(3, 9, 'slack', 'C1|1', 'slack words', 'assistant', '2026-10-01T09:02:00Z')`)
+	doc, err := ideaSource{}.Build(ctx, d, "idea:9")
+	require.NoError(t, err)
+	require.NotNil(t, doc)
+	var texts []string
+	for _, s := range doc.Sections {
+		texts = append(texts, s.Text)
+	}
+	assert.Equal(t, []string{"ship on Monday", "owner: owner words", "assistant: slack words"}, texts)
+}
+
 // A transcript with empty text and no segments stays indexed by its title
 // (only a nil Build means "gone").
 func TestTranscript_EmptyTextStaysIndexedByTitle(t *testing.T) {
@@ -225,4 +246,43 @@ func TestTranscript_EmptyTextStaysIndexedByTitle(t *testing.T) {
 	doc, err := GetDocument(ctx, d, "transcript:9", DocOptions{})
 	require.NoError(t, err)
 	assert.Equal(t, "Silent standup · 2026-09-12", doc.Text)
+}
+
+// KB inventory guard (docs/inventory/knowledge-search.md, KB-03 anchored
+// hits must open): an unapproved chat-born registry item is not searchable.
+func TestKB_IdeaSourceSkipsUnapprovedChatBorn(t *testing.T) {
+	ctx := context.Background()
+	d := db.OpenTestDB(t)
+	exec(t, d, `INSERT INTO ideas (id, kind, title, essence, status, chat_born, last_mention_at, updated_at) VALUES
+		(1, 'decision', 'Chat decision', 'from a chat', 'proposed', 1, '2026-10-01T10:00:00Z', '2026-10-01T10:00:00Z'),
+		(2, 'idea', 'Mined idea', 'mined', 'proposed', 0, '2026-10-01T10:00:00Z', '2026-10-01T10:00:00Z')`)
+
+	keys, err := ideaSource{}.Keys(ctx, d)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"idea:2"}, keys)
+	doc, err := ideaSource{}.Build(ctx, d, "idea:1")
+	require.NoError(t, err)
+	assert.Nil(t, doc)
+	doc, err = ideaSource{}.Build(ctx, d, "idea:2")
+	require.NoError(t, err)
+	assert.NotNil(t, doc)
+
+	exec(t, d, `UPDATE ideas SET status = 'active', updated_at = '2026-10-02T10:00:00Z' WHERE id = 1`)
+	changed, _, _, err := ideaSource{}.Changed(ctx, d, "2026-10-02T00:00:00Z", testNow())
+	require.NoError(t, err)
+	assert.Equal(t, []string{"idea:1"}, changed, "approval re-indexes the item")
+	keys, err = ideaSource{}.Keys(ctx, d)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"idea:1", "idea:2"}, keys)
+	doc, err = ideaSource{}.Build(ctx, d, "idea:1")
+	require.NoError(t, err)
+	assert.NotNil(t, doc)
+
+	exec(t, d, `UPDATE ideas SET status = 'rejected', updated_at = '2026-10-03T10:00:00Z' WHERE id = 1`)
+	keys, err = ideaSource{}.Keys(ctx, d)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"idea:2"}, keys, "a rejected chat item leaves on the next reconcile")
+	doc, err = ideaSource{}.Build(ctx, d, "idea:1")
+	require.NoError(t, err)
+	assert.Nil(t, doc)
 }

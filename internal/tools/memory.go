@@ -98,6 +98,7 @@ func NewMemoryMap(vaultPath string) *Tool {
 		Description: "Read the hot memory world map (map.md — a compact at-a-glance summary; use memory_recall or memory_open for anything not shown) plus node counts by type and tier.",
 		InputSchema: mustSchema[memoryMapArgs]("memory_map"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, _ Call) (any, error) {
 			if err := memoryUnavailable(vaultPath); err != nil {
 				return nil, err
@@ -147,6 +148,7 @@ func NewMemoryOpen(vaultPath string) *Tool {
 		Description: "Open one memory node by id, alias, or a stale (tombstoned) id; returns the canonical node with body, aliases, and outgoing links.",
 		InputSchema: mustSchema[memoryOpenArgs]("memory_open"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			if err := memoryUnavailable(vaultPath); err != nil {
 				return nil, err
@@ -209,6 +211,7 @@ func NewMemoryRecall(vaultPath string, shadowDB *db.DB) *Tool {
 		Description: "Full-text search over memory nodes; an exact alias match ranks first. Returns id, title, type, snippet per hit.",
 		InputSchema: mustSchema[memoryRecallArgs]("memory_recall"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			if err := memoryUnavailable(vaultPath); err != nil {
 				return nil, err

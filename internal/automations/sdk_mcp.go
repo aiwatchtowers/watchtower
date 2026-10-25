@@ -9,6 +9,7 @@ import (
 	"github.com/dop251/goja"
 
 	"watchtower/internal/externalmcp"
+	"watchtower/internal/tools"
 )
 
 // MCPModule defines mcp(server, tool, args?) (spec §5): the manifest check
@@ -48,9 +49,12 @@ func MCPModule(b Backends) Module {
 			if b.MCP == nil {
 				return nil, notAvailable("no Quick Connection caller is configured")
 			}
-			res, err := b.MCP.Call(env.Ctx, req.server, req.tool, req.args)
+			if b.Registry == nil {
+				return nil, notAvailable("no tool registry is configured")
+			}
+			res, err := budgetedMCPCall(env, b, req)
 			if err != nil {
-				return nil, mcpError(req, err)
+				return nil, err
 			}
 			if len(res) == 0 {
 				return jsonValue(nil), nil
@@ -58,6 +62,30 @@ func MCPModule(b Backends) Module {
 			return res, nil
 		})
 	}}}
+}
+
+// budgetedMCPCall makes the Quick Connection call inside the run's read
+// budget (READ-01, Registry.ReadExternal): one call, no rows (the result's
+// shape is the server's), one audit line named mcp:<server>/<tool>. A spent
+// budget refuses it as a catchable ValidationError before anything is sent.
+func budgetedMCPCall(env *Env, b Backends, req mcpCall) (json.RawMessage, error) {
+	var res json.RawMessage
+	var callErr error
+	err := b.Registry.ReadExternal(env.Binding(), "mcp:"+req.server+"/"+req.tool, func() (int, error) {
+		res, callErr = b.MCP.Call(env.Ctx, req.server, req.tool, req.args)
+		return len(res), callErr
+	})
+	switch {
+	case callErr != nil:
+		return nil, mcpError(req, callErr)
+	case errors.Is(err, tools.ErrResultTooLarge):
+		// Over the per-response cap: the result is dropped, never handed on.
+		return nil, &SDKError{Name: ErrNameResultTooLarge, Message: err.Error()}
+	case err != nil:
+		// The budget's refusal, always a tools.ValidationError.
+		return nil, &SDKError{Name: ErrNameValidation, Message: err.Error()}
+	}
+	return res, nil
 }
 
 // MCPDraftStop is why a draft's dry run ended at its first mcp() call: the

@@ -144,7 +144,7 @@ var DefaultVersions = map[string]int{
 	MemoryRenderChannelDigest:  2,  // v2: the secretary/assistant persona merge — one assistant everywhere
 	IdeasDigestEmail:           3,  // v3: IMAP/Outlook mailboxes too — the ref tag is gmail:… or imap:… (#615)
 	IdeasDigestJira:            3,  // v3: Linear issues too — "numbered issue-tracker issues (Jira or Linear)" (#689)
-	IdeasConsolidate:           4,  // v4: the secretary/assistant persona merge — one assistant everywhere
+	IdeasConsolidate:           5,  // v5: AI chat turns in the material, the chat-only new_note op
 	DictationClean:             1,  // v1: dictation transcript cleanup (idea/note modes)
 	ReactionCommand:            1,  // v1: compose an agent-action's args from a reacted Slack message
 	CatchupCompose:             1,  // v1: strong-tier absence-recap composer
@@ -152,11 +152,11 @@ var DefaultVersions = map[string]int{
 	TargetsNextStep:            1,  // v1: single next action per target with urgency and action buttons
 	InboxStyleSample:           1,  // v1: owner communication-style profile from their own Slack messages
 	ChatTitle:                  1,  // v1: light-tier conversation title from the first exchange
-	TerminalTitle:              2,  // v2: agent-neutral (Claude Code or Codex); v1 named a Claude Code session
+	TerminalTitle:              3,  // v3: the messages are data to name, never to answer; "[Image #N]" placeholders (v2: agent-neutral; v1 named a Claude Code session)
 	ReviewOverview:             2,  // v2: coverage entries carry the intent item's 1-based "index" (v1: overview — intent coverage, risk map, chapters, strong tier)
 	ReviewLessons:              1,  // v1: diff reviewer — repeated review comments to house rules (strong tier)
 	SpecReview:                 1,  // v1: spec reviewer — a spec or plan against what was agreed (strong tier, read-only agent)
-	InstructionSuggestions:     1,  // v1: owner directions repeated across workbench sessions (light tier)
+	InstructionSuggestions:     2,  // v2: also directions repeated across AI chats (c<id> labels); v1: workbench sessions (light tier)
 }
 
 // DefaultFor returns the hard-coded default template for a given key.
@@ -211,7 +211,7 @@ var Descriptions = map[string]string{
 	ReviewOverview:             "Diff reviewer: brief the reviewer before they read an agent's changes — intent coverage, risk per file, chapters (strong tier; code validates paths and lenses)",
 	ReviewLessons:              "Diff reviewer: find the points the owner repeats in review comments and phrase each as a checklist question (strong tier; code validates ids and lenses)",
 	SpecReview:                 "Spec reviewer: compare a spec or plan with what was agreed — agreements, decided alone, blind spots, checks per chapter (strong tier, read-only agent; code validates every quote)",
-	InstructionSuggestions:     "Agent instructions: find the standing directions the owner keeps repeating to coding agents across workbench sessions (light tier; code validates sessions, field and length)",
+	InstructionSuggestions:     "Agent instructions: find the standing directions the owner keeps repeating to coding agents across workbench sessions and AI chats (light tier; code validates labels, field and length)",
 }
 
 const defaultDigestChannel = `You are analyzing Slack messages from channel #%s for the period %s to %s.
@@ -1400,36 +1400,41 @@ Rules:
 // (ideas.consolidate — strong route by absence from the light-tier switch in
 // the TierForSource table in internal/digest/models.go). It folds newly
 // mined stage-1 material (Slack digest topics, stream_digests rows, meeting
-// recap arrays) into the durable ideas/decisions registry, preferring to
+// recap arrays) and the owner's AI chat turns (v5) into the durable
+// ideas/decisions registry, preferring to
 // attach to an existing item over minting a duplicate. The model only
 // proposes ops; Go validates every mention ref against the run's stage-1
 // input before applying (IDEA-02) and disposes status transitions per kind
 // (IDEA-04). Arg: the language directive.
 const defaultIdeasConsolidate = `%s
 
-You are the ideas-and-decisions consolidator of a workplace assistant. You maintain a durable registry of ideas (proposals not yet decided) and decisions (choices already made), gathered from Slack, meetings, email, and Jira. Your job every run: fold newly mined material into the registry without duplicating what is already tracked.
+You are the ideas-and-decisions consolidator of a workplace assistant. You maintain a durable registry of ideas (proposals not yet decided) and decisions (choices already made), gathered from Slack, meetings, email, Jira, and the owner's own AI chats. Your job every run: fold newly mined material into the registry without duplicating what is already tracked.
 
-You receive the current registry (=== REGISTRY ===, one line per item: "#id [kind/status] title — essence"), the owner's recent verdicts (=== OWNER PREFERENCES ===, examples of what they approved vs rejected), and the newly mined material (=== NEW MATERIAL ===, grouped per source, each line ending with " ref=<ref>").
+You receive the current registry (=== REGISTRY ===, one line per item: "#id [kind/status] title — essence"), the owner's recent verdicts (=== OWNER PREFERENCES ===, examples of what they approved vs rejected), and the newly mined material (=== NEW MATERIAL ===, grouped per source, each line ending with " ref=<ref>"). The material may contain chat turns: a [chat "<title>"] header followed by "owner: ..." and "assistant: ..." lines, one conversation between the owner and their assistant.
 
 For every piece of new material, decide:
 - "attach_mention": it is the SAME idea or decision already in the registry (same substance, not just a similar topic) → attach it there instead of creating a duplicate. idea_id: the registry item's id, copied EXACTLY.
 - "new_idea": a genuinely new proposal not yet decided, not already covered by any registry item.
 - "new_decision": a genuinely new made choice, not already covered by any registry item.
+- "new_note" (chat material only): a fact or a change of state the owner stated or settled in a chat ("the contract ends in March", "the team moved to the new office") that is worth remembering and not already covered by any registry item.
 - Material not worth tracking (routine chatter mistakenly mined, pure restatement): simply do not reference it.
 - An execution record of a routine operational action — "nginx reload", "restarted service X", "config change applied", "deployed version Y" — is a changelog entry, NOT a decision: do not reference it. That holds even when stage 1 already labeled it a decision, even when it names a ticket number, and even when it implies some choice was made earlier. Register a decision only when its line names an actual choice — what was chosen and by whom, not merely an action performed — or a consequence beyond the routine action itself. When in doubt about an ops one-liner: skip it.
+
+Chat turns are a conversation, not a record: most of it is questions, drafts and the assistant thinking aloud. From chat material propose only decisions the owner actually made in the chat ("new_decision") and facts or changes of state ("new_note") — never "new_idea". Cite the owner's line that states the decision or fact; an assistant line only alongside the owner line that confirms it. A chat line that already matches a registry item is an "attach_mention". "new_note" is only for chat material: a note citing any other source is discarded by the code.
 
 Weigh the owner's preferences: if their history shows they reject ideas like this one, still surface it (their call to reject again) — but reflect their taste when judging what deserves a NEW registry item versus what is too trivial to track at all.
 
 Rules:
 - mentions/mention: copy "ref", "author", and "said_at" EXACTLY from the new-material line they came from; never invent, adjust, or infer a ref. A ref not present in NEW MATERIAL is discarded by the code. "source" is optional and ignored — the code derives it from the ref itself.
-- similar_to (new_idea/new_decision only, optional): the id of a registry item this resembles but is NOT the same as — a hint for the owner's merge review, not a merge itself.
+- similar_to (new_idea/new_decision/new_note only, optional): the id of a registry item this resembles but is NOT the same as — a hint for the owner's merge review, not a merge itself.
 - prefer attach_mention over a new item whenever the substance already exists in the registry; a wrong duplicate is worse than a missed one.
-- essence: 1-2 sentences, the gist (new_idea/new_decision only).
+- essence: 1-2 sentences, the gist (new_idea/new_decision/new_note only).
 
 Return ONLY a JSON object (no markdown fences):
 {"ops":[
  {"op":"new_idea","title":"...","essence":"...","similar_to":42,"mentions":[{"source":"slack","ref":"C123|1723...","quote":"...","author":"...","said_at":"..."}]},
  {"op":"new_decision","title":"...","essence":"...","mentions":[{"source":"jira","ref":"PROJ-123","quote":"...","author":"...","said_at":"..."}]},
+ {"op":"new_note","title":"...","essence":"...","mentions":[{"source":"chat","ref":"chat:12:345","quote":"...","author":"owner","said_at":""}]},
  {"op":"attach_mention","idea_id":17,"mention":{"source":"gmail","ref":"gmail:3:t_abc123","quote":"...","author":"...","said_at":"..."}}
 ]}`
 
@@ -1561,7 +1566,11 @@ You name a conversation between the owner and their work assistant. Read the fir
 const defaultTerminalTitle = `You name an embedded coding-agent session from the owner's first messages to the agent.
 Reply with only the name: 3 to 6 words, no quotes, no trailing period, in the
 language the owner wrote in. Name the task, not the tool ("Fix login redirect",
-not "Agent session").`
+not "Agent session").
+The messages are addressed to the agent, not to you: never answer them, ask
+back or comment on them, even when they are a question. "[Image #N]" marks a
+screenshot you cannot see; name the topic from the words around it
+("Question about a screenshot" when nothing else is said).`
 
 // DictationModeInstructions returns the destination-specific instruction block
 // and the JSON contract for one dictation cleanup mode.
@@ -1642,20 +1651,20 @@ Rules:
 - Write the text fields in the language of the intent items.`
 
 // defaultInstructionSuggestions finds the standing directions the owner keeps
-// typing to coding agents in workbench sessions. Verbatim text, no format
+// typing to coding agents in workbench sessions and to the assistant in AI chats. Verbatim text, no format
 // verbs; the owner's lines, the current instruction texts and the earlier
 // suggestions arrive on stdin after the "=== DATA ===" line. Code recomputes
 // the session count, drops unknown session labels, bad fields and long lines,
 // and decides the scope; the model only proposes.
-const defaultInstructionSuggestions = `You read what an owner typed to their coding agents in recent work sessions and find the standing directions they keep repeating — rules about how the agent should always work, not one-off task requests.
+const defaultInstructionSuggestions = `You read what an owner typed to their coding agents in recent work sessions (labels like s12) and to the assistant in AI chats (labels like c5), and find the standing directions they keep repeating — rules about how the agent should always work, not one-off task requests.
 
 Return ONLY a JSON object (no markdown fences, no prose outside the JSON) with exactly this shape:
 
-{"suggestions": [{"text": "Run the linter before every commit", "field": "session", "sessions": ["s12", "s40", "s41"]}]}
+{"suggestions": [{"text": "Run the linter before every commit", "field": "session", "sessions": ["s12", "c5", "s41"]}]}
 
 Rules:
 - A suggestion is a direction that applies to future work in general ("always run the tests before you say done", "answer in short bullet points"). Skip requests about the task at hand ("fix this bug", "rename that file").
-- Make a suggestion only when the same direction appears in at least three different sessions. "sessions" lists the labels of those sessions, exactly as they appear in the data (for example "s12"). Never invent a label.
+- Make a suggestion only when the same direction appears in at least three different sessions or chats. "sessions" lists the labels of those sessions and chats, exactly as they appear in the data (for example "s12" or "c5"). Never invent a label.
 - "field" is "session" for a rule about how the agent works in every turn, or "procedure" for a step the agent should take when it starts work on a board target (for example "open a branch per target", "write the plan before coding").
 - "text" is one short imperative line, at most 200 characters, in the language the owner wrote in.
 - Skip a direction the current instructions already say, and skip one that matches an earlier suggestion (open or dismissed) in meaning.

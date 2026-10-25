@@ -69,6 +69,34 @@ package final class DatabaseEmbeddedChatStore: EmbeddedChatStore {
         }
     }
 
+    /// A new automation's draft chat becomes the saved automation's chat
+    /// (spec 2026-10-24 §4, ask #528): one write moves the `automation_draft`
+    /// conversation to `toContextType`/`contextID`. A conversation the target
+    /// context already has wins when it holds messages (false: nothing moves,
+    /// nothing is merged or deleted); an empty one is deleted first, in the
+    /// same transaction. True when the row moved.
+    package nonisolated static func rekeyConversation(
+        dbPool: DatabasePool, conversationID: Int64, toContextType: String, contextID: String
+    ) async throws -> Bool {
+        let now = Date().timeIntervalSince1970
+        return try await dbPool.write { db in
+            guard try ChatConversationQueries.fetchByID(db, id: conversationID)?.contextType
+                == AutomationDraftRows.contextType else { return false }
+            if let existing = try ChatConversationQueries.fetchByContext(db, type: toContextType, id: contextID) {
+                let hasMessages = try Bool.fetchOne(db, sql: """
+                    SELECT EXISTS (SELECT 1 FROM chat_messages WHERE conversation_id = ?)
+                    """, arguments: [existing.id]) ?? false
+                if hasMessages { return false }
+                try ChatConversationQueries.delete(db, id: existing.id)
+            }
+            try db.execute(sql: """
+                UPDATE chat_conversations SET context_type = ?, context_id = ?, updated_at = ?
+                WHERE id = ? AND context_type = 'automation_draft'
+                """, arguments: [toContextType, contextID, now, conversationID])
+            return db.changesCount > 0
+        }
+    }
+
     package func loadMessages() throws -> [ChatMessageRecord] {
         let id = conversationID
         return try dbPool.read { db in try ChatMessageQueries.fetchByConversation(db, conversationID: id) }

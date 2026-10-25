@@ -203,6 +203,32 @@ package enum ChatQuestionThread {
     }
 }
 
+/// `ChatQuestionThread` for every row of one render pass: the thread's rows
+/// and their positions built once, so a row's look-ups are not a map and a
+/// scan of the whole thread each (`EmbeddedChatRows`, `ChatThreadView`).
+package struct ChatThreadIndex {
+    private let rows: [ChatMessageRecord]
+    private let positions: [Int64: Int]
+    private let lastAssistant: Int?
+
+    package init(_ rows: [ChatMessageRecord]) {
+        self.rows = rows
+        positions = Dictionary(rows.enumerated().map { ($1.id, $0) }) { first, _ in first }
+        lastAssistant = rows.lastIndex { $0.isAssistant }
+    }
+
+    package var lastAssistantID: Int64? { lastAssistant.map { rows[$0].id } }
+
+    package func isAnswerable(_ id: Int64, busy: Bool) -> Bool {
+        guard let index = positions[id], index == lastAssistant else { return false }
+        return ChatQuestionThread.isAnswerable(at: index, in: rows, busy: busy)
+    }
+
+    package func ownerReply(after id: Int64) -> String? {
+        positions[id].flatMap { ChatQuestionThread.ownerReply(after: $0, in: rows) }
+    }
+}
+
 /// The owner's answer to a card, as their next message — and back: an
 /// answered card reads its selections from that message (nothing else is
 /// stored, so it survives restart and replay).

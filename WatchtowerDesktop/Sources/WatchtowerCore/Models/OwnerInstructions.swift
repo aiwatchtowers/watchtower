@@ -1,18 +1,53 @@
 import Foundation
 
-/// Which of the owner's two texts a value, a save or a suggestion belongs to.
+/// Which of the owner's texts a value, a save or a suggestion belongs to.
 package enum InstructionField: String, Decodable, CaseIterable, Sendable {
     case session
     case procedure
+    /// The chat's own text (remembered lines, the Settings edit and added
+    /// chats-only suggestions); it is global only, never a workbench scope.
+    case chat
 }
 
 /// A refusal from `watchtower instructions …` — Go's message (it names the
 /// field when the text is over the limit), shown inline next to the field.
+/// `code` is Go's machine-readable reason when it sent one: `too_long`,
+/// `empty`, `not_found` or `not_a_command`.
 package struct OwnerInstructionsError: LocalizedError, Equatable {
     package let message: String
+    package let code: String?
     package var errorDescription: String? { message }
 
-    package init(message: String) { self.message = message }
+    package init(message: String, code: String? = nil) {
+        self.message = message
+        self.code = code
+    }
+}
+
+/// One line the owner told the chat to remember (`instruction_chat_lines`):
+/// the message that said it, when known, anchors the "Remembered" note under
+/// that message.
+package struct OwnerInstructionChatLine: Decodable, Equatable, Identifiable, Sendable {
+    package let id: Int64
+    package let line: String
+    package let conversationID: Int64?
+    package let messageID: Int64?
+    package let addedAt: String
+
+    package init(id: Int64, line: String, conversationID: Int64?, messageID: Int64?, addedAt: String) {
+        self.id = id
+        self.line = line
+        self.conversationID = conversationID
+        self.messageID = messageID
+        self.addedAt = addedAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, line
+        case conversationID = "conversation_id"
+        case messageID = "message_id"
+        case addedAt = "added_at"
+    }
 }
 
 /// One "You keep saying this" row: a direction the owner repeated across
@@ -42,9 +77,23 @@ package struct OwnerInstructionsState: Decodable, Equatable, Sendable {
     package struct Texts: Decodable, Equatable, Sendable {
         package let session: String
         package let procedure: String
+        package let chat: String
+
+        package init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            session = try c.decode(String.self, forKey: .session)
+            procedure = try c.decode(String.self, forKey: .procedure)
+            chat = try c.decodeIfPresent(String.self, forKey: .chat) ?? ""
+        }
+
+        enum CodingKeys: String, CodingKey { case session, procedure, chat }
 
         package func text(_ field: InstructionField) -> String {
-            field == .session ? session : procedure
+            switch field {
+            case .session: session
+            case .procedure: procedure
+            case .chat: chat
+            }
         }
     }
 
@@ -53,8 +102,13 @@ package struct OwnerInstructionsState: Decodable, Equatable, Sendable {
         package let session: String
         package let procedure: String
 
+        /// A workbench has no chat text: workbench additions never reach a chat.
         package func text(_ field: InstructionField) -> String {
-            field == .session ? session : procedure
+            switch field {
+            case .session: session
+            case .procedure: procedure
+            case .chat: ""
+            }
         }
     }
 
@@ -62,6 +116,21 @@ package struct OwnerInstructionsState: Decodable, Equatable, Sendable {
     package let global: Texts
     package let workbench: WorkbenchTexts?
     package let suggestions: [InstructionSuggestion]
+    package let chatLines: [OwnerInstructionChatLine]
+
+    enum CodingKeys: String, CodingKey {
+        case limit, global, workbench, suggestions
+        case chatLines = "chat_lines"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        limit = try c.decode(Int.self, forKey: .limit)
+        global = try c.decode(Texts.self, forKey: .global)
+        workbench = try c.decodeIfPresent(WorkbenchTexts.self, forKey: .workbench)
+        suggestions = try c.decodeIfPresent([InstructionSuggestion].self, forKey: .suggestions) ?? []
+        chatLines = try c.decodeIfPresent([OwnerInstructionChatLine].self, forKey: .chatLines) ?? []
+    }
 
     /// Decodes a CLI reply; an `{"ok":false,"error":…}` body becomes a thrown
     /// `OwnerInstructionsError` carrying that message.
@@ -92,10 +161,19 @@ package struct OwnerInstructionsState: Decodable, Equatable, Sendable {
 package struct OwnerInstructionsPreview: Decodable, Equatable, Sendable {
     package let briefSlot: String
     package let procedure: String
+    package let chatSlot: String
 
     enum CodingKeys: String, CodingKey {
         case briefSlot = "brief_slot"
         case procedure
+        case chatSlot = "chat_slot"
+    }
+
+    package init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        briefSlot = try c.decode(String.self, forKey: .briefSlot)
+        procedure = try c.decode(String.self, forKey: .procedure)
+        chatSlot = try c.decodeIfPresent(String.self, forKey: .chatSlot) ?? ""
     }
 
     package static func decode(_ data: Data) throws -> Self {
@@ -103,15 +181,16 @@ package struct OwnerInstructionsPreview: Decodable, Equatable, Sendable {
     }
 }
 
-enum OwnerInstructionsJSON {
+package enum OwnerInstructionsJSON {
     private struct Failure: Decodable {
         let ok: Bool
         let error: String?
+        let code: String?
     }
 
-    static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+    package static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         if let f = try? JSONDecoder().decode(Failure.self, from: data), !f.ok {
-            throw OwnerInstructionsError(message: f.error ?? "The instructions command failed.")
+            throw OwnerInstructionsError(message: f.error ?? "The instructions command failed.", code: f.code)
         }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .custom { d in

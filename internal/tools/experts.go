@@ -89,6 +89,7 @@ func NewFindExperts() *Tool {
 			"communication guide where known. Evidence, not verdicts: judge it yourself.",
 		InputSchema: mustSchema[findExpertsArgs]("find_experts"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var args findExpertsArgs
 			if err := json.Unmarshal(call.Args, &args); err != nil {

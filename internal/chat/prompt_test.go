@@ -535,3 +535,27 @@ func TestPrompt_ClaudeAIWiringErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildSystemPrompt_CarriesChatSlotBeforeProject(t *testing.T) {
+	d, cfg, o := promptFixture(t)
+	res, err := d.Exec(`INSERT INTO chat_projects (name, instructions, created_at, updated_at)
+		VALUES ('Payments', 'Always answer in bullets.', 1, 1)`)
+	require.NoError(t, err)
+	pid, err := res.LastInsertId()
+	require.NoError(t, err)
+	o.ProjectID = pid
+
+	none, err := BuildSystemPrompt(context.Background(), d, cfg, o)
+	require.NoError(t, err)
+	assert.NotContains(t, none, "Never use tables in answers.")
+
+	require.NoError(t, d.SetOwnerInstruction(db.InstructionSession, "Be brief."))
+	require.NoError(t, d.SetOwnerInstruction(db.InstructionChat, "Never use tables in answers."))
+	got, err := BuildSystemPrompt(context.Background(), d, cfg, o)
+	require.NoError(t, err)
+	slot := strings.Index(got, "Never use tables in answers.")
+	require.GreaterOrEqual(t, slot, 0)
+	assert.Contains(t, got, "Be brief.")
+	assert.Less(t, slot, strings.Index(got, "=== PROJECT: Payments ==="))
+	assert.Greater(t, slot, strings.Index(got, "=== MEMORY"))
+}

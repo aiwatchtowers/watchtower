@@ -12,17 +12,39 @@ final class EmbeddedChatEngineFactory {
     /// by then.
     var dbPool: DatabasePool? {
         get { pool.value }
-        set { pool.value = newValue }
+        set {
+            pool.value = newValue
+            remember.center = newValue.flatMap { pool in
+                ProcessCLIRunner.makeDefault().map { RememberCenter(cli: WorkbenchCLI(runner: $0), dbPool: pool) }
+            }
+            remember.knowledge = newValue.map { ChatKnowledgeCenter(dbPool: $0) }
+        }
     }
+    /// Remember in place for every chat that carries the owner's
+    /// instructions (the main chat is wired in `AppState+Remember`); nil
+    /// until the database opens.
+    var rememberCenter: RememberCenter? { remember.center }
+    /// Decisions and facts saved in place, for the same chats; nil until the
+    /// database opens.
+    var knowledgeCenter: ChatKnowledgeCenter? { remember.knowledge }
+
+    /// A stored owner message of a chat with the owner's instructions: each
+    /// center acts on its own prefix only (remember, or a knowledge prefix).
+    func ownerMessageStored(text: String, conversationID: Int64, messageID: Int64) {
+        remember.ownerMessageStored(text: text, conversationID: conversationID, messageID: messageID, savesKnowledge: true)
+    }
+    private let remember: RememberBox
     let center: EmbeddedChatCenter
     private let pool: PoolBox
 
     init() {
         let pool = PoolBox()
         let mirror = UserDefaultsDraftMirror()
+        let remember = RememberBox()
         self.pool = pool
+        self.remember = remember
         center = EmbeddedChatCenter { spec, gate in
-            Self.makeEngine(spec: spec, gate: gate, pool: pool, draftMirror: mirror)
+            Self.makeEngine(spec: spec, gate: gate, pool: pool, draftMirror: mirror, remember: remember)
         }
     }
 
@@ -30,7 +52,8 @@ final class EmbeddedChatEngineFactory {
         spec: ChatSurfaceSpec,
         gate: EmbeddedStreamGate,
         pool: PoolBox,
-        draftMirror: UserDefaultsDraftMirror
+        draftMirror: UserDefaultsDraftMirror,
+        remember: RememberBox
     ) -> EmbeddedChatEngine {
         let store: EmbeddedChatStore
         switch spec.persistence {
@@ -45,9 +68,31 @@ final class EmbeddedChatEngineFactory {
                 store = UnavailableEmbeddedChatStore()
             }
         }
-        return EmbeddedChatEngine(spec: spec, store: store, aiService: WatchtowerAIService(), gate: gate,
-                                  draftMirror: spec.persistence == .memory ? nil : draftMirror,
-                                  provider: Constants.aiProviderID())
+        let engine = EmbeddedChatEngine(spec: spec, store: store, aiService: WatchtowerAIService(), gate: gate,
+                                        draftMirror: spec.persistence == .memory ? nil : draftMirror,
+                                        provider: Constants.aiProviderID())
+        // A workbench code question never leaves its Questions tab (spec
+        // 2026-10-02 §9.4): a knowledge prefix typed there saves nothing.
+        // Remember still applies, as in every chat with the owner's instructions.
+        let savesKnowledge = spec.key.contextType != CodeQuestionList.contextType
+        engine.onOwnerMessageStored = { [weak remember] text, conversationID, messageID in
+            remember?.ownerMessageStored(text: text, conversationID: conversationID, messageID: messageID,
+                                         savesKnowledge: savesKnowledge)
+        }
+        return engine
+    }
+
+    @MainActor
+    private final class RememberBox {
+        var center: RememberCenter?
+        var knowledge: ChatKnowledgeCenter?
+
+        func ownerMessageStored(text: String, conversationID: Int64, messageID: Int64, savesKnowledge: Bool) {
+            center?.ownerMessageSent(text: text, conversationID: conversationID, messageID: messageID)
+            if savesKnowledge {
+                knowledge?.ownerMessageSent(text: text, conversationID: conversationID, messageID: messageID)
+            }
+        }
     }
 
     @MainActor

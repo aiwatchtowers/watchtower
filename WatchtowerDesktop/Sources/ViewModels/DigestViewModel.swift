@@ -175,7 +175,9 @@ final class DigestViewModel {
         }
         decisionsObservationTask = Task { [weak self] in
             let observation = ValueObservation.tracking { db in
-                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM ideas WHERE kind = 'decision'") ?? 0
+                try Int.fetchOne(db, sql: """
+                    SELECT COUNT(*) FROM ideas WHERE kind = 'decision' AND \(IdeaQueries.knowledgeVisibleSQL)
+                    """) ?? 0
             }
             do {
                 for try await _ in observation.values(in: dbPool).dropFirst() {

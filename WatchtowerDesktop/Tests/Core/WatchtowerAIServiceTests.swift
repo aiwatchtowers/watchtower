@@ -19,6 +19,17 @@ final class WatchtowerAIServiceTests: XCTestCase {
         XCTAssertEqual(args, ["ai", "query", "--prompt-stdin", "--provider", "codex"])
     }
 
+    func testBuildArgsAddsTheBareOwnerInstructionsFlagOnlyWhenAsked() {
+        let on = WatchtowerAIService.buildArgs(
+            sessionID: nil, dbPath: nil, model: nil, provider: nil, toolMode: nil, ownerInstructions: true
+        )
+        XCTAssertEqual(on, ["ai", "query", "--prompt-stdin", "--owner-instructions"])
+        let off = WatchtowerAIService.buildArgs(
+            sessionID: nil, dbPath: nil, model: nil, provider: nil, toolMode: nil, ownerInstructions: false
+        )
+        XCTAssertFalse(off.contains("--owner-instructions"))
+    }
+
     func testBuildArgsOmitsProviderFlagWhenNil() {
         let args = WatchtowerAIService.buildArgs(
             sessionID: nil,

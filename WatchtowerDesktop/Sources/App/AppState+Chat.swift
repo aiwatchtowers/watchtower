@@ -17,6 +17,7 @@ extension AppState {
     func wireActionStripRefresh(_ cvm: ChatViewModel) {
         cvm.onTurnFinished = { [weak self] _ in Task { await self?.actionStripViewModel?.refresh() } }
         cvm.onActionAwaited = { [weak self] _ in Task { await self?.actionStripViewModel?.refresh() } }
+        wireRemember(cvm)
     }
 
     /// The claude.ai list is beside the database (Go: the db path's

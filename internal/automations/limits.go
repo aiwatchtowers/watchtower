@@ -8,9 +8,10 @@ import (
 	"watchtower/internal/tools"
 )
 
-// Every exact value of the spec's limits lives here — except the list limits
-// and the get_email body clip (tools.MaxEmailBodyBytes), which the tools
-// package owns; do not change one without the spec changing first.
+// Every exact value of the spec's limits lives here — except the list limits,
+// the SDK result cap (tools.MaxReadResultBytes) and the get_email body clip
+// (tools.MaxEmailBodyBytes), which the tools package owns; do not change one
+// without the spec changing first.
 
 // Recipe file.
 const (
@@ -21,8 +22,9 @@ const (
 // Sandbox limits (spec §4, §5).
 const (
 	// MaxSDKResultBytes caps one SDK call's serialised result; a larger result
-	// is a ResultTooLarge error, never truncated.
-	MaxSDKResultBytes = 256 * 1024
+	// is a ResultTooLarge error, never truncated. The value is the tools
+	// package's read result cap, so the registry and the sandbox agree.
+	MaxSDKResultBytes = tools.MaxReadResultBytes
 	// DefaultListLimit is injected into a list tool call without a limit; the
 	// value is the tools package's, so the registry and the sandbox agree.
 	DefaultListLimit = tools.DefaultListLimit

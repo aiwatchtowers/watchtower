@@ -78,6 +78,9 @@
                                                click (1-based, UTF-16); x, y
                                                the bottom left of the word in
                                                page points, for the menu
+                                               (definition and usages: the
+                                               shared codenav.js, which the
+                                               diff page uses too)
     cursor {id, line, col}                     the cursor moved; at most 10 a
                                                second, the last move always
                                                sent
@@ -131,6 +134,7 @@
 <script src="languages.js"></script>
 <script src="textmate.js"></script>
 <script src="vs/loader.js"></script>
+<script src="codenav.js"></script>
 <script src="editor.js"></script>
 </body>
 </html>

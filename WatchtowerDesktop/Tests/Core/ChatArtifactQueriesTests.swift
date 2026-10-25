@@ -99,4 +99,31 @@ final class ChatArtifactQueriesTests: XCTestCase {
         try dbQueue.write { try $0.execute(sql: "DELETE FROM chat_messages WHERE id = ?", arguments: [m1]) }
         XCTAssertNil(try dbQueue.read { try ChatArtifactQueries.latest($0, conversationID: conversationID, key: "q3") })
     }
+
+    // MARK: - Kept artifacts (chat knowledge)
+
+    private func kept(_ key: String = "q3") throws -> Int? {
+        try dbQueue.read { try ChatArtifactQueries.keptVersion($0, conversationID: conversationID, artifactKey: key) }
+    }
+
+    func testKeepPinsAVersionAndUnkeepRemovesIt() throws {
+        XCTAssertNil(try kept())
+        try dbQueue.write { try ChatArtifactQueries.keep($0, conversationID: conversationID, artifactKey: "q3", version: 1) }
+        XCTAssertEqual(try kept(), 1)
+        XCTAssertNil(try kept("other"))
+
+        // Update in Knowledge: the newer version replaces the kept one.
+        try dbQueue.write { try ChatArtifactQueries.keep($0, conversationID: conversationID, artifactKey: "q3", version: 3) }
+        XCTAssertEqual(try kept(), 3)
+        let rows = try dbQueue.read {
+            try Row.fetchAll($0, sql: "SELECT kept_at FROM chat_knowledge_artifacts")
+        }
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertFalse((rows.first?["kept_at"] as String?)?.isEmpty ?? true)
+
+        try dbQueue.write { try ChatArtifactQueries.unkeep($0, conversationID: conversationID, artifactKey: "q3") }
+        XCTAssertNil(try kept())
+        // Removing what is not kept is a clean no-op.
+        try dbQueue.write { try ChatArtifactQueries.unkeep($0, conversationID: conversationID, artifactKey: "q3") }
+    }
 }

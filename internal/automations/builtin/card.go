@@ -27,7 +27,9 @@ type CardInfo struct {
 	DefaultPrompts  map[string]string `json:"default_prompts"`
 	When            string            `json:"when"`
 	Reads           []string          `json:"reads"`
+	Does            []string          `json:"does"`
 	Sends           []string          `json:"sends"`
+	ResultFilter    string            `json:"result_filter"`
 	Parameters      []ParameterValue  `json:"parameters"`
 	FeatureIDs      []string          `json:"feature_ids"`
 	Enabled         bool              `json:"enabled"`
@@ -64,7 +66,7 @@ type Costs struct {
 func Card(d *db.DB, cfg *config.Config, workspaceDir string, e Entry, a *db.Automation, now time.Time) (CardInfo, error) {
 	c := CardInfo{
 		ID: e.ID, Slot: e.Slot, ShippedHash: e.ShippedContentHash(), ShippedText: string(e.Recipe),
-		DefaultPrompts: map[string]string{}, Reads: nonNil(e.Reads), Sends: nonNil(e.Sends),
+		DefaultPrompts: map[string]string{}, Reads: nonNil(e.Reads), Does: nonNil(e.Does), Sends: nonNil(e.Sends), ResultFilter: e.ResultFilter,
 		Parameters: []ParameterValue{}, FeatureIDs: nonNil(e.FeatureIDs),
 		Enabled: e.Enabled(cfg), RunNow: e.RunNow, Costs: Costs{Days: CostDays},
 	}
