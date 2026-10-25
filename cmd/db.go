@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 
+	"watchtower/internal/db"
 	"watchtower/internal/prompts"
 
 	"github.com/spf13/cobra"
@@ -17,9 +18,15 @@ var dbMigrateCmd = &cobra.Command{
 	Use:   "migrate",
 	Short: "Apply pending database migrations",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		database, err := openDBFromConfig()
+		cfg, err := workspaceConfigFromFlags()
 		if err != nil {
 			return err
+		}
+		// The Desktop runs db migrate at every launch (BACKUP-01).
+		applyBackupExclusion(cfg)
+		database, err := db.Open(cfg.DBPath())
+		if err != nil {
+			return fmt.Errorf("opening database: %w", err)
 		}
 		defer database.Close()
 

@@ -853,9 +853,20 @@ func (c *Config) RecordingsDir() string {
 	if c.Transcripts.RecordingsDir != "" {
 		return c.Transcripts.RecordingsDir
 	}
-	home, err := os.UserHomeDir()
+	as, err := AppSupportDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, "Library", "Application Support", "Watchtower", "recordings")
+	return filepath.Join(as, "recordings")
+}
+
+// AppSupportDir returns the Desktop's Application Support folder
+// (~/Library/Application Support/Watchtower): recordings, MobileHub, the CLI
+// copy and the session host's log.
+func AppSupportDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("could not determine home directory: %w", err)
+	}
+	return filepath.Join(home, "Library", "Application Support", "Watchtower"), nil
 }
