@@ -6,7 +6,7 @@ A source is an account Watchtower reads from. You connect them in **Connections*
 
 **Connections** opens on a card per source: its status dot, how many accounts it has and one line, such as the account that needs you or what connecting it brings. **Quick Connections** sits apart under **TOOLS FOR AI**. Click a card to open that service, with the list of services beside it and **All Connections** to go back; **Connect…** at the top opens the service you pick.
 
-A service that needs you gets a banner on top with **Reconnect**, which opens the service, and the **Connections** row in the sidebar shows how many services need you. An account you switched off does not count, nor a source your company blocks. **Settings → Connections** only has an **Open Connections** button now.
+A service that needs you gets a banner on top with **Reconnect**, which opens the service, and the **Connections** row in the sidebar shows how many services need you. An account you switched off does not count, nor a source your company blocks. **Settings → Connections** only has an **Open Connections** button that brings you here.
 
 ## What each source gives
 
