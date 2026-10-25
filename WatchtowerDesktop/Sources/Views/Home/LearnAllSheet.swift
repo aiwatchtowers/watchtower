@@ -3,7 +3,8 @@ import WatchtowerCore
 
 /// Learn → See all (design §9.4): New in X.Y on top, then one section per
 /// area with its own "n of m", filters for level and kind; seen cards stay
-/// listed, dimmed, with Show again.
+/// listed, dimmed, with Show again (or "In use" for a card whose feature
+/// is in use).
 struct LearnAllSheet: View {
     let selection: LearnSelection
     let actions: LearnZoneActions
@@ -131,7 +132,8 @@ struct LearnAllSheet: View {
 }
 
 /// One See all row: icon, title and text, the level, then the card's button
-/// or, once seen, Show again.
+/// or, once seen, Show again; an in-use card says so instead (Show again
+/// would be undone by the next read).
 struct LearnAllRow: View {
     let pick: LearnPick
     let actions: LearnZoneActions
@@ -140,15 +142,15 @@ struct LearnAllRow: View {
         HStack(spacing: Spacing.cozy) {
             Image(systemName: LearnText.symbol(pick.card.area))
                 .foregroundStyle(.tint)
-                .frame(width: 22)
+                .frame(width: IconSize.composerLarge)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: Spacing.tight) {
                 HStack(spacing: Spacing.compact) {
-                    Text(pick.card.title)
+                    Text(LearnText.styled(pick.card.title))
                         .fontWeight(.semibold)
                     LearnBadge(variant: pick.variant)
                 }
-                Text(LearnText.text(pick))
+                Text(LearnText.styled(LearnText.text(pick)))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
@@ -158,9 +160,13 @@ struct LearnAllRow: View {
             Text(pick.card.level.rawValue)
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
-            if pick.seen {
+            if pick.canShowAgain {
                 Button("Show again") { actions.showAgain(pick.id) }
                     .buttonStyle(.kitQuiet)
+            } else if pick.seen {
+                Text("In use")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             } else {
                 Button(LearnText.primaryTitle(LearnPrimary(pick))) { actions.primary(pick) }
                     .buttonStyle(.kitSecondary)

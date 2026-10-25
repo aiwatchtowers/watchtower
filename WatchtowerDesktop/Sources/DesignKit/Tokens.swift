@@ -67,12 +67,14 @@ public enum PaneWidth {
     public static let narrowPage: CGFloat = 420
 }
 
-/// Glyph sizes for chevrons, headers and composer buttons.
+/// Glyph sizes for chevrons, headers, composer buttons and icon tiles.
 public enum IconSize {
     public static let chevron: CGFloat = 8
     public static let header: CGFloat = 14
     public static let composer: CGFloat = 16
     public static let composerLarge: CGFloat = 24
+    /// An icon on a soft square tile (Home's Learn cards).
+    public static let tile: CGFloat = 26
 }
 
 /// Letter spacing, in points.

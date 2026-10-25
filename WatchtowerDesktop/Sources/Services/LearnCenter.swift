@@ -45,8 +45,9 @@ final class LearnCenter {
     @ObservationIgnored private let loadCatalog: CatalogLoader
     @ObservationIgnored private let tickInterval: Duration
     @ObservationIgnored private var catalog: LearnCatalog?
-    /// The one load of this launch ran (it may have failed).
-    @ObservationIgnored private var catalogLoaded = false
+    /// The one load of this launch (it may fail). Not tied to a `start`: a
+    /// restart while it runs waits for it instead of cancelling it.
+    @ObservationIgnored private var catalogLoad: Task<Void, Never>?
     @ObservationIgnored private var pool: DatabasePool?
     @ObservationIgnored private var newAfter: LearnVersion?
     @ObservationIgnored private var rows: Rows?
@@ -120,9 +121,12 @@ final class LearnCenter {
         await record([id], how: .action)
     }
 
-    /// Show again (See all): the card is unseen until the next Got it, button or use.
+    /// Show again (See all): the card is unseen until the next Got it, button
+    /// or use. A no-op for a card the selection does not offer it on (in use:
+    /// the next read would record it again).
     func showAgain(_ id: String) async {
-        guard let pool else { return }
+        guard let pool, selection?.sections.contains(where: { $0.cards.contains { $0.id == id && $0.canShowAgain } }) == true
+        else { return }
         do {
             try await pool.write { try LearnQueries.showAgain($0, id: id) }
         } catch {
@@ -134,14 +138,19 @@ final class LearnCenter {
     }
 
     private func loadCatalogOnce() async {
-        guard !catalogLoaded else { return }
-        catalogLoaded = true
-        do {
-            catalog = try await loadCatalog()
-        } catch {
-            // The zone stays hidden until the next launch.
-            NSLog("LearnCenter: reading the Learn cards: %@", error.localizedDescription)
+        if catalogLoad == nil {
+            let load = loadCatalog
+            catalogLoad = Task { [weak self] in
+                do {
+                    let loaded = try await load()
+                    self?.catalog = loaded
+                } catch {
+                    // The zone stays hidden until the next launch.
+                    NSLog("LearnCenter: reading the Learn cards: %@", error.localizedDescription)
+                }
+            }
         }
+        await catalogLoad?.value
     }
 
     private func observe(_ pool: DatabasePool, generation current: Int) async {

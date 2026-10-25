@@ -167,6 +167,37 @@ final class LearnCenterTests: XCTestCase {
         XCTAssertTrue(center.selection?.home.contains { $0.id == "inbox" } ?? false)
     }
 
+    /// A restart while the catalog loads waits for that load instead of
+    /// cancelling it: the zone still shows, and the CLI ran once.
+    func testRestartDuringLoadKeepsTheCatalog() async throws {
+        let pool = try makePool()
+        let calls = LoadCounter()
+        let center = start(pool) {
+            await calls.increment()
+            try await Task.sleep(for: .milliseconds(100))
+            return Self.catalog
+        }
+        center.start(pool: pool, newAfter: nil)
+        await waitUntil(center) { $0 != nil }
+        XCTAssertEqual(center.zone?.total, 5)
+        let count = await calls.count
+        XCTAssertEqual(count, 1)
+    }
+
+    /// An in-use card offers no Show again, and the center ignores one.
+    func testShowAgainIgnoredForInUseCard() async throws {
+        let pool = try makePool()
+        let center = start(pool)
+        await waitUntil(center) { $0?.seenCount == 1 }
+        await waitForWrites(center, 1)
+        let memory = center.selection?.sections.flatMap(\.cards).first { $0.id == "memory" }
+        XCTAssertEqual(memory?.seenHow, .inUse)
+        XCTAssertEqual(memory?.canShowAgain, false)
+        await center.showAgain("memory")
+        XCTAssertEqual(try seen(pool), ["memory": .inUse])
+        XCTAssertEqual(center.writes, 1)
+    }
+
     /// The catalog failing to load hides the zone; it is not retried this launch.
     func testCatalogFailureHidesTheZone() async throws {
         let pool = try makePool()
@@ -190,4 +221,9 @@ final class LearnCenterTests: XCTestCase {
         await waitUntil(center) { $0 != nil }
         XCTAssertNil(center.zone)
     }
+}
+
+private actor LoadCounter {
+    private(set) var count = 0
+    func increment() { count += 1 }
 }

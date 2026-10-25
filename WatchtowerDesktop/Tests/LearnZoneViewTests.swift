@@ -126,6 +126,25 @@ final class LearnZoneViewTests: XCTestCase {
         XCTAssertEqual(box.value.ask, ["How do I use Title ideas?"])
     }
 
+    /// Card strings carry inline markdown from the guide: rendered, never as
+    /// literal asterisks or backticks.
+    func testInlineMarkdownRendered() throws {
+        let bold = LearnCard(id: "bold", title: "Try `remember this:`", text: "Press **Got it** to hide it.",
+                             area: .setup, level: .basics, kind: .tip, since: "0.24.0")
+        let selection = LearnSelector.select(LearnSelectorInput(catalog: LearnCatalog(cards: [bold])))
+        for strings in [try texts(LearnZoneView(selection: selection, actions: .none)),
+                        try texts(LearnAllSheet(selection: selection, actions: .none) {})] {
+            XCTAssertTrue(strings.contains("Press Got it to hide it."), "\(strings)")
+            XCTAssertTrue(strings.contains("Try remember this:"), "\(strings)")
+            XCTAssertFalse(strings.contains { $0.contains("**") || $0.contains("`") }, "\(strings)")
+        }
+        let styled = LearnText.styled("Press **Got it**")
+        let boldRun = styled.runs.first { $0.inlinePresentationIntent == .stronglyEmphasized }
+        XCTAssertEqual(boldRun.map { String(styled[$0.range].characters) }, "Got it")
+        // A lone backtick (a key label) stays as written.
+        XCTAssertEqual(String(LearnText.styled("Flip with ⌃`").characters), "Flip with ⌃`")
+    }
+
     func testScreenTitles() {
         XCTAssertEqual(LearnText.primaryTitle(.nav(screen: "projects")), "Open Workbench")
         XCTAssertEqual(LearnText.primaryTitle(.nav(screen: "day-plan")), "Open Day Plan")
@@ -164,6 +183,16 @@ final class LearnZoneViewTests: XCTestCase {
         XCTAssertEqual(try sheet.inspect().findAll(ViewType.Button.self) { try $0.labelView().text().string() == "Show again" }.count, 1)
         try sheet.inspect().find(button: "Done").tap()
         XCTAssertTrue(done)
+    }
+
+    /// An in-use card stays listed without Show again (the next read would
+    /// record it again).
+    func testSheetInUseRowHasNoShowAgain() throws {
+        let sheet = LearnAllSheet(selection: selection(seen: ["inbox": .inUse, "guide": .gotIt]), actions: .none) {}
+        XCTAssertEqual(try sheet.inspect().findAll(ViewType.Button.self) { try $0.labelView().text().string() == "Show again" }.count, 1)
+        let inbox = try sheet.inspect().find(LearnAllRow.self) { try $0.actualView().pick.id == "inbox" }
+        XCTAssertNoThrow(try inbox.find(text: "In use"))
+        XCTAssertThrowsError(try inbox.find(button: "Show again"))
     }
 
     func testSheetLevelFilterHidesRows() throws {

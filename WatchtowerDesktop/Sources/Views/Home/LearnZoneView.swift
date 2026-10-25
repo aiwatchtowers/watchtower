@@ -66,11 +66,11 @@ struct LearnCardView: View {
             LearnAreaIcon(area: pick.card.area)
             VStack(alignment: .leading, spacing: Spacing.small) {
                 HStack(alignment: .firstTextBaseline, spacing: Spacing.compact) {
-                    Text(pick.card.title)
+                    Text(LearnText.styled(pick.card.title))
                         .fontWeight(.semibold)
                     LearnBadge(variant: pick.variant)
                 }
-                Text(LearnText.text(pick))
+                Text(LearnText.styled(LearnText.text(pick)))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -108,7 +108,7 @@ struct LearnAreaIcon: View {
         Image(systemName: LearnText.symbol(area))
             .font(.callout)
             .foregroundStyle(.tint)
-            .frame(width: 26, height: 26)
+            .frame(width: IconSize.tile, height: IconSize.tile)
             .background(Fill.selected, in: RoundedRectangle(cornerRadius: Radius.control))
             .accessibilityHidden(true)
     }
@@ -145,6 +145,13 @@ enum LearnText {
         case "ideas": return "Ideas"
         default: return nil
         }
+    }
+
+    /// A card's string with its inline markdown (`**bold**`, `` `code` ``)
+    /// applied; the plain string when it does not parse.
+    static func styled(_ string: String) -> AttributedString {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        return (try? AttributedString(markdown: string, options: options)) ?? AttributedString(string)
     }
 
     /// An updated card shows what changed.
