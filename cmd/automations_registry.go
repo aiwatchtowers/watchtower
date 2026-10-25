@@ -40,12 +40,20 @@ func buildAutomationRegistry(cfg *config.Config, database *db.DB) *tools.Registr
 // around the authoring generator. The agent runner's children get an
 // allowlisted env (automationAgentEnv), so no agent marker reaches them.
 // agent() itself is not previewed in a draft (no run row to bind to).
-func automationAuthoringDeps(cfg *config.Config, database *db.DB) authoring.Deps {
+// budget is the registry whose read budget the dry run spends (READ-01);
+// nil gives each dry run a fresh one (tests).
+func automationAuthoringDeps(cfg *config.Config, database *db.DB, budget *tools.Registry) authoring.Deps {
 	return authoring.Deps{
 		DB:           database,
 		WorkspaceDir: cfg.WorkspaceDir(),
 		Backends: func() automations.Backends {
-			return automationBackends(cfg, database, automationsAuthoringGenerator(cfg))
+			b := automationBackends(cfg, database, automationsAuthoringGenerator(cfg))
+			// The dry run's reads spend the calling process's read budget
+			// (READ-01), not a fresh one per draft.
+			if reg, ok := b.Registry.(*tools.Registry); ok && budget != nil {
+				reg.ShareReadBudget(budget)
+			}
+			return b
 		},
 		Clock:     automations.RealClock{},
 		Workbench: automationWorkbenchResolver(cfg, database),

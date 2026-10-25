@@ -135,6 +135,7 @@ func NewListInbox() *Tool {
 			"Defaults to pending items; filter with status, priority, trigger_type and since. Archived items are never listed.",
 		InputSchema: mustSchema[listInboxArgs]("list_inbox"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listInboxArgs](call)
@@ -216,6 +217,7 @@ func NewListCalendarEvents() *Tool {
 			"Cancelled events are listed with their status. Optionally only one calendar account. Descriptions are clipped at 4 KiB.",
 		InputSchema: mustSchema[listCalendarEventsArgs]("list_calendar_events"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listCalendarEventsArgs](call)
@@ -359,6 +361,7 @@ func NewListMeetingRecaps() *Tool {
 			"Read one recap with get_meeting_recap.",
 		InputSchema: mustSchema[listMeetingRecapsArgs]("list_meeting_recaps"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listMeetingRecapsArgs](call)
@@ -395,6 +398,7 @@ func NewGetMeetingRecap() *Tool {
 			"(each clipped at 32 KiB; a recap above that comes back as clipped text with recap_truncated).",
 		InputSchema: mustSchema[getMeetingRecapArgs]("get_meeting_recap"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[getMeetingRecapArgs](call)
@@ -477,6 +481,7 @@ func NewListMeetingNotes() *Tool {
 			"Each note's text is returned whole.",
 		InputSchema: mustSchema[listMeetingNotesArgs]("list_meeting_notes"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listMeetingNotesArgs](call)
@@ -572,6 +577,7 @@ func NewListDayPlans() *Tool {
 		Description: "List the owner's day plans, newest date first, with how many items each has and how many are done. Read one with get_day_plan.",
 		InputSchema: mustSchema[listDayPlansArgs]("list_day_plans"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listDayPlansArgs](call)
@@ -608,6 +614,7 @@ func NewGetDayPlan() *Tool {
 			"A date with no plan returns plan: null.",
 		InputSchema: mustSchema[getDayPlanArgs]("get_day_plan"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Surfaces:    editorAndAutomation(),
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[getDayPlanArgs](call)
@@ -726,6 +733,7 @@ func NewListReminders() *Tool {
 		Description: "List the owner's reminders (set with remind_me), soonest first. Defaults to pending; filter with status and due_before.",
 		InputSchema: mustSchema[listRemindersArgs]("list_reminders"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listRemindersArgs](call)
@@ -784,6 +792,7 @@ func NewListJiraSprints() *Tool {
 		Description: "List locally synced Jira sprints with their board and project, newest first. Filter by project, board_id and state.",
 		InputSchema: mustSchema[listJiraSprintsArgs]("list_jira_sprints"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listJiraSprintsArgs](call)
@@ -836,6 +845,7 @@ func NewListJiraReleases() *Tool {
 			"archived versions only with include_archived. Descriptions are clipped at 4 KiB.",
 		InputSchema: mustSchema[listJiraReleasesArgs]("list_jira_releases"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Surfaces:    editorAndAutomation(),
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			a, err := decodeAutomationArgs[listJiraReleasesArgs](call)

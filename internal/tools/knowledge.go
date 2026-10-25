@@ -45,6 +45,7 @@ func NewSearchKnowledge() *Tool {
 			"that); a workbench folder's text files (source project_doc) are searchable too. " + kb.MediaReaderLine,
 		InputSchema: mustSchema[searchKnowledgeArgs]("search_knowledge"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a searchKnowledgeArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
@@ -167,6 +168,7 @@ func NewGetKnowledgeDocument() *Tool {
 		Description: "Open one search_knowledge hit by its ref: the document text (capped; from_chunk starts it at a hit's chunk), title, time, link and source anchor.",
 		InputSchema: mustSchema[getKnowledgeDocumentArgs]("get_knowledge_document"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(ctx context.Context, d *db.DB, call Call) (any, error) {
 			var a getKnowledgeDocumentArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil || strings.TrimSpace(a.Ref) == "" {

@@ -43,6 +43,10 @@ type Env struct {
 	Buffer     *CommitBuffer
 	Wait       Waiter
 	Trigger    TriggerInfo
+	// ConversationID is the chat conversation an in-memory draft dry run
+	// serves (draft_automation): its run has no id, so its reads spend that
+	// conversation's read budget instead (READ-01). Zero elsewhere.
+	ConversationID int64
 	// Replay records a live run's replay log and plays a resumed run's back
 	// (nil = neither: a dry run, a test env). The sandbox's clock reads
 	// through it.
@@ -62,6 +66,7 @@ func (e *Env) Binding() tools.Binding {
 		b.ContextID = strconv.FormatInt(e.Run.ID, 10)
 		b.AutomationRunID = e.Run.ID
 	}
+	b.ConversationID = e.ConversationID
 	switch {
 	case e.Automation != nil:
 		b.WorkbenchID = e.Automation.ProjectID

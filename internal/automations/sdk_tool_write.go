@@ -275,6 +275,12 @@ func registryError(t *tools.Tool, err error) error {
 	}
 	var ve *tools.ValidationError
 	if errors.As(err, &ve) {
+		if errors.Is(err, tools.ErrResultTooLarge) {
+			// The registry's per-response cap is the SDK's (MaxSDKResultBytes).
+			return &SDKError{Name: ErrNameResultTooLarge, Message: ve.Msg}
+		}
+		// tools.ErrReadLimit stays a ValidationError: catchable, the run
+		// goes on (AUTO-08, READ-01).
 		return &SDKError{Name: ErrNameValidation, Message: ve.Msg}
 	}
 	return &SDKError{Name: ErrNameTool, Message: fmt.Sprintf("%s: %v", t.Name, err)}
