@@ -66,6 +66,7 @@ func NewGetAutomationRun(d Deps) *tools.Tool {
 			"Results and bodies are cut at 4000 characters (truncated: true). " + runDataNote,
 		InputSchema: schema,
 		Access:      tools.AccessRead,
+		CompanyData: true,
 		Surfaces:    []string{"main", tools.AutomationEditorSurface},
 		Execute: func(_ context.Context, database *db.DB, call tools.Call) (any, error) {
 			return getAutomationRun(runsDB(d, database), call)

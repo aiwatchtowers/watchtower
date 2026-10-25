@@ -78,3 +78,38 @@ func TestRead_UsesProcessWhenProcEmpty(t *testing.T) {
 		t.Fatalf("a set Proc wins: %s", got[1])
 	}
 }
+
+func TestLine_StaysUnderTheOSLogLimit(t *testing.T) {
+	long := strings.Repeat("\u2028\"<x>", 400)
+	names := make([]string, 50)
+	for i := range names {
+		names[i] = long
+	}
+	line := Line(Event{
+		Proc: long, Surface: long, Session: long, Workbench: 1<<63 - 1, Agent: long,
+		Tool: long, Filters: names, Rows: 1<<63 - 1, Bytes: 1<<63 - 1, Calls: 1<<63 - 1,
+		RowsTotal: 1<<63 - 1, Result: long,
+	})
+	if len(line) > 760 {
+		t.Fatalf("line is %d bytes; it must stay well under 1 KB: %s", len(line), line)
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(line), &m); err != nil {
+		t.Fatalf("not JSON: %v", err)
+	}
+	if strings.ContainsAny(line, "<>\\") || strings.Contains(line, "\u2028") {
+		t.Fatalf("unsafe characters survive: %s", line)
+	}
+	if got := len(m["filters"].([]any)); got != maxFilters {
+		t.Fatalf("filters = %d, want %d", got, maxFilters)
+	}
+}
+
+func TestLine_KeepsOrdinaryNames(t *testing.T) {
+	line := Line(Event{Tool: "mcp:acme-docs/search.v2", Session: "terminal:42", Filters: []string{"person_id"}})
+	for _, want := range []string{`"tool":"mcp:acme-docs/search.v2"`, `"session":"terminal:42"`, `"filters":["person_id"]`} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("missing %s in %s", want, line)
+		}
+	}
+}

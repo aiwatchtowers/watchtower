@@ -352,3 +352,17 @@ func pinAutomationWriteTools(t *testing.T, reg *tools.Registry, automation map[s
 		assert.False(t, automation[name], "%s is never offered to automations", name)
 	}
 }
+
+// READ-01's guard over the registries the processes really mount: every read
+// tool of buildToolRegistry (plus the dependency-carrying reads the MCP
+// server adds) and of buildAutomationRegistry is CompanyData or listed as
+// unmarked with a reason, so a read tool added here cannot skip the budget.
+func TestRead01_BuildRegistryReadToolsDecided(t *testing.T) {
+	cfg, database := newAutomationRegistryEnv(t)
+	reg := buildToolRegistry(cfg, database)
+	for _, dt := range tools.DependentReadTools(tools.ReadDeps{}) {
+		require.NoError(t, reg.Register(dt))
+	}
+	all := append(reg.All(), buildAutomationRegistry(cfg, database).All()...)
+	assert.Empty(t, tools.UndecidedReadTools(all))
+}

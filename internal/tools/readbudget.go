@@ -16,7 +16,9 @@ import (
 
 // ReadLimits bound the company-data reads of one session (READ-01, spec
 // docs/superpowers/specs/2026-10-25-bulk-read-limits-design.md §2): Calls and
-// Rows per session, ResponseRows and ResponseBytes per response.
+// Rows per session, ResponseRows and ResponseBytes per response. Calls is
+// exact; Rows is soft — rows are debited after each read, so reads admitted
+// in parallel may together pass it (RecordRead).
 type ReadLimits struct{ Calls, Rows, ResponseRows, ResponseBytes int }
 
 // DefaultReadLimits are the built-in limits (approved 2026-10-25, ask #567).
@@ -89,11 +91,10 @@ func (r *Registry) ReadSessionKey(b Binding) string {
 // refusal. A caller that reads outside CallRead (automations' mcp()) pairs it
 // with RecordRead.
 func (r *Registry) AdmitRead(b Binding, tool string) error {
-	return r.admitRead(b, tool, nil)
+	return r.admitRead(b, r.ReadSessionKey(b), tool, nil)
 }
 
-func (r *Registry) admitRead(b Binding, tool string, filters []string) error {
-	key := r.ReadSessionKey(b)
+func (r *Registry) admitRead(b Binding, key, tool string, filters []string) error {
 	r.reads.mu.Lock()
 	l := r.reads.limits
 	u := r.reads.usage(key)
@@ -113,8 +114,15 @@ func (r *Registry) admitRead(b Binding, tool string, filters []string) error {
 
 // RecordRead adds an admitted call's rows to b's session and writes its
 // audit line. result is one of the auditlog.Result* values.
+//
+// The row cap is soft: rows are debited here, after the read, so calls
+// admitted in parallel while the session was under the cap may together pass
+// it. The call cap is exact — AdmitRead reserves the slot before the read.
 func (r *Registry) RecordRead(b Binding, tool string, filters []string, rows, size int, result string) {
-	key := r.ReadSessionKey(b)
+	r.recordRead(b, r.ReadSessionKey(b), tool, filters, rows, size, result)
+}
+
+func (r *Registry) recordRead(b Binding, key, tool string, filters []string, rows, size int, result string) {
 	r.reads.mu.Lock()
 	u := r.reads.usage(key)
 	u.rows += rows
@@ -146,45 +154,67 @@ func readEvent(b Binding, key, tool string, filters []string, rows, size, calls,
 // per-response cap, debit the rows and write the one audit line. args are
 // already normalized to valid JSON.
 func (r *Registry) callCompanyRead(ctx context.Context, t *Tool, args json.RawMessage, b Binding) (any, error) {
+	key := r.ReadSessionKey(b)
 	filters := argNames(args)
-	if err := r.admitRead(b, t.Name, filters); err != nil {
+	record := func(rows, size int, result string) {
+		r.recordRead(b, key, t.Name, filters, rows, size, result)
+	}
+	if err := r.admitRead(b, key, t.Name, filters); err != nil {
 		return nil, err
 	}
+	// A call refused by its schema still counts: failed calls spend the
+	// budget too, so a loop of bad calls also reaches the cap.
 	if err := t.validateSchema(args); err != nil {
-		r.RecordRead(b, t.Name, filters, 0, 0, auditlog.ResultError)
+		record(0, 0, auditlog.ResultError)
 		return nil, err
 	}
-	res, err := t.Execute(ctx, r.db, Call{Args: args, Binding: b})
+	res, err := r.executeRecorded(ctx, t, args, b, func() { record(0, 0, auditlog.ResultError) })
 	if err != nil {
-		r.RecordRead(b, t.Name, filters, 0, 0, auditlog.ResultError)
+		record(0, 0, auditlog.ResultError)
 		return nil, err
 	}
 	raw, err := json.Marshal(res)
 	if err != nil {
-		r.RecordRead(b, t.Name, filters, 0, 0, auditlog.ResultError)
+		record(0, 0, auditlog.ResultError)
 		return nil, fmt.Errorf("%s: encoding the result: %w", t.Name, err)
 	}
 	r.reads.mu.Lock()
 	l := r.reads.limits
 	r.reads.mu.Unlock()
-	rows := countRows(raw)
+	rows, largest := countRows(raw)
 	switch {
 	case len(raw) > l.ResponseBytes:
-		r.RecordRead(b, t.Name, filters, 0, len(raw), auditlog.ResultTooLarge)
+		// The rows were read, so they are debited even though refused.
+		record(rows, len(raw), auditlog.ResultTooLarge)
 		return nil, &ValidationError{
 			Msg: fmt.Sprintf("the result is %d bytes; the limit is %d — narrow the request", len(raw), l.ResponseBytes),
 			Err: ErrResultTooLarge,
 		}
-	case hasLimitArg(t) && rows > l.ResponseRows:
-		// The backstop behind the tool's own listLimit clamp.
-		r.RecordRead(b, t.Name, filters, 0, len(raw), auditlog.ResultTooLarge)
+	case hasLimitArg(t) && largest > l.ResponseRows:
+		// The backstop behind the tool's own listLimit clamp, on the
+		// primary (largest) list only.
+		record(rows, len(raw), auditlog.ResultTooLarge)
 		return nil, &ValidationError{
-			Msg: fmt.Sprintf("the result has %d rows; the limit is %d — narrow the request", rows, l.ResponseRows),
+			Msg: fmt.Sprintf("the result has %d rows; the limit is %d — narrow the request", largest, l.ResponseRows),
 			Err: ErrResultTooLarge,
 		}
 	}
-	r.RecordRead(b, t.Name, filters, rows, len(raw), auditlog.ResultOK)
+	record(rows, len(raw), auditlog.ResultOK)
 	return res, nil
+}
+
+// executeRecorded runs t's Execute; a panic inside it is recorded through
+// onPanic (the admitted call keeps its line) and then re-raised.
+func (r *Registry) executeRecorded(ctx context.Context, t *Tool, args json.RawMessage, b Binding, onPanic func()) (res any, err error) {
+	finished := false
+	defer func() {
+		if !finished {
+			onPanic()
+		}
+	}()
+	res, err = t.Execute(ctx, r.db, Call{Args: args, Binding: b})
+	finished = true
+	return res, err
 }
 
 // hasLimitArg reports whether t's schema takes a `limit` (a list tool).
@@ -196,27 +226,28 @@ func hasLimitArg(t *Tool) bool {
 	return ok
 }
 
-// countRows is a marshalled result's row count: a top-level array's length;
-// for an object, the sum of its top-level arrays' lengths, or 1 when it has
-// none; 0 for null; 1 for any other value.
-func countRows(raw []byte) int {
+// countRows measures a marshalled result: rows is a top-level array's
+// length; for an object, the sum of its top-level arrays' lengths, or 1 when
+// it has none; 0 for null; 1 for any other value. largest is the longest
+// single array (the primary list), 0 when there is none.
+func countRows(raw []byte) (rows, largest int) {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
-		return 0
+		return 0, 0
 	}
 	switch raw[0] {
 	case '[':
 		var items []json.RawMessage
 		if json.Unmarshal(raw, &items) != nil {
-			return 1
+			return 1, 0
 		}
-		return len(items)
+		return len(items), len(items)
 	case '{':
 		var fields map[string]json.RawMessage
 		if json.Unmarshal(raw, &fields) != nil {
-			return 1
+			return 1, 0
 		}
-		sum, arrays := 0, 0
+		arrays := 0
 		for _, v := range fields {
 			v = bytes.TrimSpace(v)
 			if len(v) == 0 || v[0] != '[' {
@@ -224,16 +255,17 @@ func countRows(raw []byte) int {
 			}
 			var items []json.RawMessage
 			if json.Unmarshal(v, &items) == nil {
-				sum += len(items)
+				rows += len(items)
+				largest = max(largest, len(items))
 				arrays++
 			}
 		}
 		if arrays == 0 {
-			return 1
+			return 1, 0
 		}
-		return sum
+		return rows, largest
 	}
-	return 1
+	return 1, 0
 }
 
 // argNames is the sorted names of the arguments that are set (not JSON

@@ -58,16 +58,51 @@ var (
 	sink   = osLog
 )
 
+// Field caps keep a line well under the ~1 KB os_log keeps of a %{public}s
+// argument (TestLine_StaysUnderTheOSLogLimit): each string is clipped, and
+// at most maxFilters argument names are kept.
+const (
+	maxProc, maxSurface, maxSession, maxAgent, maxTool, maxResult = 48, 32, 48, 32, 80, 16
+	maxFilters, maxFilter                                         = 8, 24
+)
+
 // Line is e as one-line JSON in the pinned key order, starting `{"v":1,`,
-// without a trailing newline. A nil Filters is written as [].
+// without a trailing newline. A nil Filters is written as []. Strings are
+// clipped to their caps and keep only [A-Za-z0-9_.:/-] (anything else
+// becomes _), so no value can grow the line by escaping or split it.
 func Line(e Event) string {
-	if e.Filters == nil {
-		e.Filters = []string{}
+	e.Proc = clip(e.Proc, maxProc)
+	e.Surface = clip(e.Surface, maxSurface)
+	e.Session = clip(e.Session, maxSession)
+	e.Agent = clip(e.Agent, maxAgent)
+	e.Tool = clip(e.Tool, maxTool)
+	e.Result = clip(e.Result, maxResult)
+	filters := make([]string, 0, min(len(e.Filters), maxFilters))
+	for _, f := range e.Filters[:min(len(e.Filters), maxFilters)] {
+		filters = append(filters, clip(f, maxFilter))
 	}
+	e.Filters = filters
 	b, err := json.Marshal(wire{V: 1, Event: e})
 	if err != nil {
 		// Only strings and ints: Marshal cannot fail. Keep the line valid.
 		return `{"v":1,"result":"error"}`
+	}
+	return string(b)
+}
+
+// clip keeps the first n bytes of s, each outside [A-Za-z0-9_.:/-] replaced
+// by _.
+func clip(s string, n int) string {
+	b := make([]byte, 0, min(len(s), n))
+	for i := 0; i < len(s) && len(b) < n; i++ {
+		c := s[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			c == '_', c == '.', c == ':', c == '/', c == '-':
+			b = append(b, c)
+		default:
+			b = append(b, '_')
+		}
 	}
 	return string(b)
 }

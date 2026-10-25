@@ -188,8 +188,8 @@ func TestRead01_TooLargeRefused(t *testing.T) {
 	require.Len(t, got, 1)
 	assert.Equal(t, "too_large", got[0]["result"])
 	assert.EqualValues(t, 1, got[0]["calls"], "the call is debited")
-	assert.EqualValues(t, 0, got[0]["rows"])
-	assert.EqualValues(t, 0, got[0]["rows_total"])
+	assert.EqualValues(t, 1, got[0]["rows"], "the rows read are debited though refused")
+	assert.EqualValues(t, 1, got[0]["rows_total"])
 }
 
 func TestRead01_ListRowsBackstop(t *testing.T) {
@@ -206,19 +206,53 @@ func TestRead01_ListRowsBackstop(t *testing.T) {
 
 func TestRead01_RowCounting(t *testing.T) {
 	cases := []struct {
-		raw  string
-		want int
+		raw           string
+		rows, largest int
 	}{
-		{`[1,2,3]`, 3},
-		{`{"a":[1,2],"b":[3],"c":"x"}`, 3},
-		{`{"x":1}`, 1},
-		{`{"items":[]}`, 0},
-		{`null`, 0},
-		{`"text"`, 1},
+		{`[1,2,3]`, 3, 3},
+		{`{"a":[1,2],"b":[3],"c":"x"}`, 3, 2},
+		{`{"x":1}`, 1, 0},
+		{`{"items":[]}`, 0, 0},
+		{`null`, 0, 0},
+		{`"text"`, 1, 0},
 	}
 	for _, c := range cases {
-		assert.Equal(t, c.want, countRows([]byte(c.raw)), c.raw)
+		rows, largest := countRows([]byte(c.raw))
+		assert.Equal(t, c.rows, rows, c.raw)
+		assert.Equal(t, c.largest, largest, c.raw)
 	}
+}
+
+// A result with two lists each under the per-response row cap is served even
+// when together they pass it (find_experts: experts and evidence); the sum
+// is still debited.
+func TestRead01_ListRowsBackstopUsesThePrimaryList(t *testing.T) {
+	lines := captureAudit(t)
+	var n atomic.Int64
+	tool := newCompanyTool(t, "find_co", true, &n, func() (any, error) {
+		return map[string]any{"experts": rowsOf(150), "evidence": rowsOf(150)}, nil
+	})
+	reg := newBudgetRegistry(t, testLimits(10, 10000), tool)
+	_, err := reg.CallRead(context.Background(), "find_co", nil, Binding{ConversationID: 1})
+	require.NoError(t, err)
+	got := lines()
+	require.Len(t, got, 1)
+	assert.EqualValues(t, 300, got[0]["rows"])
+}
+
+func TestReadGate_PanicIsRecorded(t *testing.T) {
+	lines := captureAudit(t)
+	var n atomic.Int64
+	tool := newCompanyTool(t, "co", false, &n, func() (any, error) { panic("boom") })
+	reg := newBudgetRegistry(t, testLimits(1, 1000), tool)
+	assert.PanicsWithValue(t, "boom", func() {
+		_, _ = reg.CallRead(context.Background(), "co", nil, Binding{ConversationID: 1})
+	}, "the panic is re-raised")
+	got := lines()
+	require.Len(t, got, 1)
+	assert.Equal(t, "error", got[0]["result"])
+	_, err := reg.CallRead(context.Background(), "co", nil, Binding{ConversationID: 1})
+	require.ErrorIs(t, err, ErrReadLimit, "the panicked call stays counted")
 }
 
 func TestReadGate_ErrorCountsAsCall(t *testing.T) {
