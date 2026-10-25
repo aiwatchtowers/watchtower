@@ -38,6 +38,8 @@ func FastForward(id string, database *db.DB, now time.Time, deps Deps) error {
 		return fastForwardMemory(database, now)
 	case "reaction-commands":
 		return fastForwardReactionCommands(database, deps)
+	case "knowledge-search":
+		return fastForwardKnowledgeSearch(database, now)
 	default:
 		return nil
 	}
@@ -69,6 +71,17 @@ func fastForwardReactionCommands(database *db.DB, deps Deps) error {
 	}
 	if err := deps.SeedReactions(database); err != nil {
 		return fmt.Errorf("seeding the reaction ledger: %w", err)
+	}
+	return nil
+}
+
+// fastForwardKnowledgeSearch moves media_state.start_at to now: images and
+// links that arrived while Knowledge search was off are never described
+// (no backfill, docs/features/media-knowledge.md). The text index itself
+// needs no hook — its cursors resume where they stopped.
+func fastForwardKnowledgeSearch(database *db.DB, now time.Time) error {
+	if err := database.SetMediaStartAt(now); err != nil {
+		return fmt.Errorf("fast-forwarding the media start mark: %w", err)
 	}
 	return nil
 }
