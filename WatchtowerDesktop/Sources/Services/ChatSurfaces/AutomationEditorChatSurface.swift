@@ -79,9 +79,8 @@ enum AutomationEditorChatSurface {
             systemPrompt: { systemPrompt(context: context, tools: tools, skillsDir: skillsDir) },
             turnPrompt: { input in
                 let recipe = currentRecipeBlock(automationID: automation.id, dbPool: dbPool)
-                let resumed = input.isResumed ? rulesBlock(context: context, tools: tools) + "\n\n" : ""
                 let panel = panelDraftBlock(panelDraft(), conversationID: conversationID, dbPool: dbPool)
-                return compose(outcomes(input.previousOwnerMessageAt), resumed + recipe, panel, input.text)
+                return compose(outcomes(input.previousOwnerMessageAt), recipe, panel, input.text)
             },
             emptyHint: "Say what to change — the assistant drafts it and dry-runs it; you save it with the "
                 + "Save buttons in the draft column.",
@@ -115,9 +114,8 @@ enum AutomationEditorChatSurface {
             ownerInstructions: true,
             systemPrompt: { systemPrompt(context: context, tools: tools, skillsDir: skillsDir) },
             turnPrompt: { input in
-                let resumed = input.isResumed ? rulesBlock(context: context, tools: tools) : ""
                 let panel = panelDraftBlock(panelDraft(), conversationID: conversationID, dbPool: dbPool)
-                return compose(outcomes(input.previousOwnerMessageAt), resumed, panel, input.text)
+                return compose(outcomes(input.previousOwnerMessageAt), panel, input.text)
             },
             emptyHint: "Describe the recurring work in your own words — when it runs, what it reads and where "
                 + "the result goes. The assistant drafts it and dry-runs it without writing anything."

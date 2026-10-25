@@ -39,10 +39,17 @@ final class EmbeddedChatEngineTests: XCTestCase {
             toolAccess: toolAccess,
             ownerInstructions: ownerInstructions,
             systemPrompt: { "SYSTEM" },
-            turnPrompt: { $0.isResumed ? "CONTEXT\n\n\($0.text)" : $0.text },
+            turnPrompt: { $0.text },
             postTurn: postTurn,
             emptyHint: "Ask about this idea"
         )
+    }
+
+    /// A turn's own prompt, without the replayed history every turn after
+    /// the first carries (#604 G11).
+    private func ownTurn(_ prompt: String) -> String {
+        guard let end = prompt.range(of: EmbeddedChatReplay.footer + "\n\n") else { return prompt }
+        return String(prompt[end.upperBound...])
     }
 
     /// A spec whose provider the test switches between turns.
@@ -126,18 +133,27 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertEqual(engine.messages.map(\.message.text), ["What is this idea about?", "It is about X."])
         let conv = conversationID
         let sessionID = try await pool.read { db in try ChatConversationQueries.fetchByID(db, id: conv)?.sessionID }
-        XCTAssertEqual(sessionID, "s1")
+        XCTAssertNil(sessionID, "no session is resumed, so its id is not kept (#604 G11)")
     }
 
-    func testResumedTurnSendsNoSystemPromptAndCarriesTheContext() async throws {
+    /// A stored session id is never resumed (#604 G11): a Claude turn of a
+    /// chat with history sends the system prompt and replays the history.
+    func testAStoredSessionIsNeverResumedAndTheHistoryIsReplayed() async throws {
         let conv = conversationID
-        try await pool.write { db in try ChatConversationQueries.updateSessionID(db, id: conv, sessionID: "old") }
+        try await pool.write { db in
+            try ChatConversationQueries.updateSessionID(db, id: conv, sessionID: "old")
+            try ChatMessageQueries.insert(db, conversationID: conv, role: "user", text: "first question")
+            try ChatMessageQueries.insert(db, conversationID: conv, role: "assistant", text: "first answer")
+        }
         let engine = makeEngine()
         engine.send("again")
         await engine.finished()
-        XCTAssertNil(ai.calls.first?.systemPrompt)
-        XCTAssertEqual(ai.calls.first?.sessionID, "old")
-        XCTAssertEqual(ai.calls.first?.prompt, "CONTEXT\n\nagain")
+        let call = try XCTUnwrap(ai.calls.first)
+        XCTAssertEqual(call.systemPrompt, "SYSTEM")
+        XCTAssertNil(call.sessionID)
+        XCTAssertTrue(call.prompt.hasPrefix(EmbeddedChatReplay.header), call.prompt)
+        XCTAssertTrue(call.prompt.contains("Owner: first question\nAssistant: first answer\n"), call.prompt)
+        XCTAssertTrue(call.prompt.hasSuffix(EmbeddedChatReplay.footer + "\n\nagain"), call.prompt)
     }
 
     func testTextIsFlushedAtMostOncePerInterval() async throws {
@@ -229,7 +245,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         engine.retry()
         await engine.finished()
         XCTAssertEqual(ai.calls.count, 2)
-        XCTAssertEqual(ai.calls[1].prompt, "the question")
+        XCTAssertEqual(ownTurn(ai.calls[1].prompt), "the question")
         ai.emit(.text("answer"), call: 1)
         ai.finish(call: 1)
         expectTrue(await waitIdle(engine))
@@ -529,69 +545,37 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertEqual(engine.bannerError, message)
     }
 
-    func testASessionIDThatCannotBeSavedFailsTheTurn() async throws {
-        let store = FlakyStore()
-        store.failSession = true
-        let engine = makeEngine(store: store)
-        engine.send("q")
-        await engine.finished()
-        ai.emit(.sessionID("s1"))
-        expectTrue(await waitIdle(engine))
-        XCTAssertEqual(engine.messages.last?.message.status, "error")
-    }
-
-    /// A provider that cannot resume the Claude session (code questions'
-    /// picker) makes the engine forget it, and its own session id is never
-    /// kept: the next Claude turn starts fresh.
-    func testANonResumingProviderForgetsTheSession() async throws {
+    /// Every provider's turn is a fresh run (#604 G11): each gets the system
+    /// prompt and, after the first, the replayed history; no session id is
+    /// sent or kept, whoever answered before.
+    func testEveryProviderGetsTheSystemPromptAndTheReplay() async throws {
         var provider: String? = "claude"
         let switching = switchingSpec { ChatRunOptions(provider: provider) }
-        let store = MemoryEmbeddedChatStore()
-        let engine = makeEngine(spec: switching, store: store)
+        let engine = makeEngine(spec: switching, store: MemoryEmbeddedChatStore())
         engine.send("one")
         await engine.finished()
         ai.emit(.sessionID("s1"), .text("a"), .turnComplete("a"), .done)
         ai.finish()
         expectTrue(await waitIdle(engine))
-        XCTAssertEqual(try store.loadSessionID(), "s1")
 
         provider = "ollama"
         engine.send("two")
         await engine.finished()
-        ai.emit(.sessionID("foreign"), .text("b"), .turnComplete("b"), .done)
-        ai.finish()
+        ai.emit(.text("b"), .turnComplete("b"), .done)
+        ai.finish(call: 1)
         expectTrue(await waitIdle(engine))
-        XCTAssertNil(try store.loadSessionID(), "forgotten, and the other provider's id not kept")
 
         provider = "claude"
         engine.send("three")
         await engine.finished()
         XCTAssertEqual(ai.calls.count, 3)
-        XCTAssertNil(ai.calls[2].sessionID)
-        XCTAssertEqual(ai.calls[2].systemPrompt, "SYSTEM", "a fresh session gets the system prompt")
+        XCTAssertEqual(ai.calls.map(\.systemPrompt), ["SYSTEM", "SYSTEM", "SYSTEM"])
+        XCTAssertEqual(ai.calls.map(\.sessionID), [nil, nil, nil])
+        XCTAssertEqual(ai.calls[0].prompt, "one")
+        XCTAssertTrue(ai.calls[2].prompt.contains("Owner: one\nAssistant: a\nOwner: two\nAssistant: b\n"),
+                      ai.calls[2].prompt)
         ai.emit(.text("c"), .turnComplete("c"), .done)
-        ai.finish()
-    }
-
-    /// Forgetting the session cannot be saved: nothing is sent and the
-    /// text goes back to the composer.
-    func testAFailedForgetSendsNothing() async throws {
-        var provider: String? = "claude"
-        let switching = switchingSpec { ChatRunOptions(provider: provider) }
-        let store = FlakyStore()
-        let engine = makeEngine(spec: switching, store: store)
-        engine.send("one")
-        await engine.finished()
-        ai.emit(.sessionID("s1"), .text("a"), .turnComplete("a"), .done)
-        ai.finish()
-        expectTrue(await waitIdle(engine))
-
-        provider = "codex"
-        store.failSession = true
-        engine.send("two")
-        await engine.finished()
-        XCTAssertEqual(ai.calls.count, 1, "nothing sent")
-        XCTAssertEqual(engine.draft, "two")
+        ai.finish(call: 2)
     }
 
     func testAFailedHistoryLoadBlocksSendingUntilItLoads() async throws {
@@ -728,7 +712,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         expectTrue(await waitForCondition { !fillers[0].isStreaming })
         engine.send("next")
         await engine.finished()
-        XCTAssertEqual(ai.calls.last?.prompt, "Action applied: x.\n\nnext")
+        XCTAssertEqual(ai.calls.last.map { ownTurn($0.prompt) }, "Action applied: x.\n\nnext")
     }
 
     func testQuitNeverStartsAQueuedTurn() async throws {
@@ -767,7 +751,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         ai.emit(.sessionID("s1"), .text("ok"))
         ai.finish()
         expectTrue(await waitForCondition { self.ai.calls.count == 2 })
-        XCTAssertEqual(ai.calls[1].prompt, "CONTEXT\n\nAction applied: x.")
+        XCTAssertEqual(ownTurn(ai.calls[1].prompt), "Action applied: x.")
         XCTAssertEqual(try rows().filter(\.isUser).count, 1, "a follow-up writes no owner row")
         XCTAssertTrue(try rows().contains { $0.role == "system" && $0.text == "Action applied: x" })
     }
@@ -785,7 +769,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertTrue(engine.hasPendingWork)
         engine.retry()
         await engine.finished()
-        XCTAssertEqual(ai.calls[1].prompt, "Action applied: x.\n\nq", "Retry carries what waited")
+        XCTAssertEqual(ownTurn(ai.calls[1].prompt), "Action applied: x.\n\nq", "Retry carries what waited")
         ai.emit(.text("ok"), call: 1)
         ai.finish(call: 1)
         expectTrue(await waitIdle(engine))
@@ -804,7 +788,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertEqual(ai.calls.count, 1, "a stop never starts the queued follow-up")
         engine.send("next")
         await engine.finished()
-        XCTAssertEqual(ai.calls[1].prompt, "User rejected the action.\n\nnext")
+        XCTAssertEqual(ownTurn(ai.calls[1].prompt), "User rejected the action.\n\nnext")
     }
 
     func testHiddenPromptWritesNoOwnerRow() async throws {
@@ -850,7 +834,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         store.failBegin = false
         engine.send("next")
         await engine.finished()
-        XCTAssertEqual(ai.calls.last?.prompt, "Action applied: x.\n\nnext")
+        XCTAssertEqual(ai.calls.last.map { ownTurn($0.prompt) }, "Action applied: x.\n\nnext")
     }
 
     func testFollowUpsOfAFailedTurnRideItsRetry() async throws {
@@ -864,28 +848,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         XCTAssertEqual(ai.calls.count, 1, "nothing runs on the session that just failed")
         engine.retry()
         await engine.finished()
-        XCTAssertEqual(ai.calls.last?.prompt, "Action applied: x.\nAction applied: y.")
-    }
-
-    func testAFailedSessionSaveIsRetriedOnTheNextEvent() async throws {
-        let store = FlakyStore()
-        store.failSession = true
-        let engine = makeEngine(store: store)
-        engine.send("q")
-        await engine.finished()
-        ai.emit(.sessionID("s1"))
-        expectTrue(await waitIdle(engine))
-        store.failSession = false
-        XCTAssertFalse(engine.canRetry, "a storage fault is not retried")
-        engine.send("again")
-        await engine.finished()
-        XCTAssertEqual(ai.calls.count, 2)
-        XCTAssertNil(ai.calls.last?.sessionID, "the unsaved session is not resumed")
-        ai.emit(.sessionID("s1"), call: 1)
-        ai.emit(.text("ok"), call: 1)
-        ai.finish(call: 1)
-        expectTrue(await waitIdle(engine))
-        XCTAssertEqual(try store.loadSessionID(), "s1")
+        XCTAssertEqual(ai.calls.last.map { ownTurn($0.prompt) }, "Action applied: x.\nAction applied: y.")
     }
 
     func testANoticeThatCannotBeSavedKeepsItsBanner() async throws {
@@ -925,7 +888,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         await engine.finished()
         engine.send("next")
         await engine.finished()
-        XCTAssertEqual(ai.calls.last?.prompt, "next", "the provider already has it")
+        XCTAssertEqual(ai.calls.last.map { ownTurn($0.prompt) }, "next", "the provider already has it")
     }
 
     func testAStopAfterAFailureLetsFollowUpsRunAgain() async throws {
@@ -940,7 +903,7 @@ final class EmbeddedChatEngineTests: XCTestCase {
         await engine.finished()
         engine.sendFollowUp(prompt: "Action applied: y.")
         await engine.finished()
-        XCTAssertEqual(ai.calls.last?.prompt, "Action applied: y.")
+        XCTAssertEqual(ai.calls.last.map { ownTurn($0.prompt) }, "Action applied: y.")
     }
 
     // MARK: - Lifecycle
@@ -1011,7 +974,6 @@ private final class FlakyStore: EmbeddedChatStore {
     var failFinalize = false
     /// Fails the next finalize only (a transient lock).
     var failFinalizeOnce = false
-    var failSession = false
     var failAppend = false
 
     var dbPath: String? { nil }
@@ -1019,11 +981,6 @@ private final class FlakyStore: EmbeddedChatStore {
     func loadMessages() throws -> [ChatMessageRecord] {
         if failLoad { throw Failure() }
         return try base.loadMessages()
-    }
-
-    func loadSessionID() throws -> String? {
-        if failLoad { throw Failure() }
-        return try base.loadSessionID()
     }
 
     func beginTurn(ownerText: String?, turnID: String, provider: String?) async throws -> (ownerID: Int64?, assistantID: Int64) {
@@ -1048,11 +1005,6 @@ private final class FlakyStore: EmbeddedChatStore {
     func append(role: String, text: String) async throws -> Int64 {
         if failAppend { throw Failure() }
         return try await base.append(role: role, text: text)
-    }
-
-    func saveSessionID(_ sessionID: String?) async throws {
-        if failSession { throw Failure() }
-        try await base.saveSessionID(sessionID)
     }
 }
 

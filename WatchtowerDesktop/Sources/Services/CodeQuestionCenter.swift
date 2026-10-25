@@ -85,10 +85,6 @@ final class CodeQuestionCenter {
     /// Per conversation: the context every turn's system prompt carries
     /// (ruling R41); absent while a reopened question's file is read.
     @ObservationIgnored private var questionContexts: [Int64: CodeQuestionContext] = [:]
-    /// Conversations whose attached usages no completed turn has carried
-    /// yet: a turn resuming a provider session adds them to its prompt, a
-    /// Retry included (ruling R45).
-    @ObservationIgnored private var pendingUsageTurns: Set<Int64> = []
     /// Per conversation: the engine whose `onTurnFinished` this center set.
     @ObservationIgnored private var ownedEngines: [Int64: WeakChatEngine] = [:]
     @ObservationIgnored private var selections: [Int64: CodeEditorSelection] = [:]
@@ -324,35 +320,25 @@ final class CodeQuestionCenter {
         usageSearches.start(name: name, folder: session.root.folder, workbenchID: workbenchID) { [weak self] usages in
             guard let self else { return }
             sessions[workbenchID]?.isSearchingUsages = false
-            let before = attachedUsages(workbenchID: workbenchID)
-            if let usages { attachUsages(usages, pending: true, workbenchID: workbenchID) }
+            let before = sessions[workbenchID]?.context.usages
+            if let usages { attachUsages(usages, workbenchID: workbenchID) }
             // Not sent (a follow-up from the composer is running, say): the
             // usages go with it, so no unrelated turn carries them.
             Task {
                 if await !self.ask(prompt, workbenchID: workbenchID) {
-                    self.attachUsages(before.usages, pending: before.pending, workbenchID: workbenchID)
+                    self.attachUsages(before, workbenchID: workbenchID)
                 }
             }
         }
     }
 
-    private func attachedUsages(workbenchID: Int64) -> (usages: CodeQuestionUsages?, pending: Bool) {
-        let session = sessions[workbenchID]
-        let pending = session?.conversationID.map { pendingUsageTurns.contains($0) } ?? false
-        return (session?.context.usages, pending)
-    }
-
     /// The popover's question and, once it exists, its conversation's
-    /// context the turns read.
-    private func attachUsages(_ usages: CodeQuestionUsages?, pending: Bool, workbenchID: Int64) {
+    /// context the turns read: every turn's system prompt carries them
+    /// (no turn resumes a provider session, #604 G11).
+    private func attachUsages(_ usages: CodeQuestionUsages?, workbenchID: Int64) {
         sessions[workbenchID]?.context.usages = usages
         guard let conversationID = sessions[workbenchID]?.conversationID else { return }
         questionContexts[conversationID]?.usages = usages
-        if pending {
-            pendingUsageTurns.insert(conversationID)
-        } else {
-            pendingUsageTurns.remove(conversationID)
-        }
     }
 
     private func cancelUsageSearch(_ workbenchID: Int64) {
@@ -365,13 +351,6 @@ final class CodeQuestionCenter {
     func stopQuestionSearches() {
         usageSearches.cancelAll()
         for workbenchID in Array(sessions.keys) { sessions[workbenchID]?.isSearchingUsages = false }
-    }
-
-    /// The usages a resumed turn adds to its prompt, until a turn carrying
-    /// them completes (a failed one's Retry carries them again).
-    private func usageAttachment(conversationID: Int64) -> String? {
-        guard pendingUsageTurns.contains(conversationID) else { return nil }
-        return questionContexts[conversationID]?.usagesBlock
     }
 
     // MARK: Engines
@@ -391,11 +370,10 @@ final class CodeQuestionCenter {
         guard let embeddedChats, let dbPool else { return nil }
         let conversationID = question.conversationID
         questionRefs[conversationID] = question
-        let engine = embeddedChats.engine(for: CodeQuestionSurface.spec(
-            workbench: question.project, origin: question.origin, conversationID: conversationID, dbPool: dbPool,
-            context: { [weak self] in self?.questionContexts[conversationID] },
-            turnAttachment: { [weak self] in self?.usageAttachment(conversationID: conversationID) }
-        ))
+        let spec = CodeQuestionSurface.spec(
+            workbench: question.project, origin: question.origin, conversationID: conversationID, dbPool: dbPool
+        ) { [weak self] in self?.questionContexts[conversationID] }
+        let engine = embeddedChats.engine(for: spec)
         if ownedEngines[conversationID]?.engine !== engine {
             ownedEngines[conversationID] = WeakChatEngine(engine: engine)
             engine.onTurnFinished = { [weak self] outcome in
@@ -490,7 +468,6 @@ final class CodeQuestionCenter {
     private func turnFinished(_ outcome: EmbeddedChatEngine.TurnOutcome, conversationID: Int64) {
         guard let workbenchID = questionRefs[conversationID]?.project.id else { return }
         guard case let .completed(_, result) = outcome else { return }
-        pendingUsageTurns.remove(conversationID)
         guard let session = sessions[workbenchID], session.conversationID == conversationID,
               let replacement = WtEditBlock.replacement(in: result.displayText) else { return }
         // A selection the page cut, or one whose lines the context cut,
@@ -844,7 +821,6 @@ final class CodeQuestionCenter {
             contextID: question.origin.contextID(workbenchID: question.project.id), conversationID: conversationID))
         questionRefs[conversationID] = nil
         questionContexts[conversationID] = nil
-        pendingUsageTurns.remove(conversationID)
         ownedEngines[conversationID] = nil
         modelChoices[conversationID] = nil
     }

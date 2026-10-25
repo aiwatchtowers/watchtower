@@ -135,8 +135,8 @@ final class CodeQuestionSurfaceTests: XCTestCase {
         await turn(engine, ai, "Explain this.", sessionID: "s1")
         await turn(engine, ai, "And the caller?")
         XCTAssertEqual(ai.calls.map(\.model), ["claude-sonnet-4-6", "claude-sonnet-4-6"])
-        XCTAssertEqual(ai.calls[1].sessionID, "s1")
-        XCTAssertNil(ai.calls[1].systemPrompt, "a resumed Claude session already holds the context")
+        XCTAssertNil(ai.calls[1].sessionID, "no session is resumed (#604 G11)")
+        XCTAssertNotNil(ai.calls[1].systemPrompt, "every turn carries the context")
 
         try await CodeQuestionSurface.setModelChoice(.init(provider: .codex, model: "gpt-5.4"), conversationID: conv,
                                                      dbPool: dbManager.dbPool)
@@ -144,7 +144,7 @@ final class CodeQuestionSurfaceTests: XCTestCase {
         XCTAssertEqual(ai.calls[2].provider, "codex")
         XCTAssertEqual(ai.calls[2].model, "gpt-5.4")
         XCTAssertEqual(ai.calls[2].readFolder, "/work/acme", "codex reads the folder too (ruling R55)")
-        XCTAssertNil(ai.calls[2].sessionID, "codex cannot resume a Claude session")
+        XCTAssertNil(ai.calls[2].sessionID)
         let codexPrompt = try XCTUnwrap(ai.calls[2].systemPrompt, "so it gets the context again")
         // Codex reads only through its shell: the prompt allows read-only
         // commands and never says it cannot run any.
@@ -175,9 +175,9 @@ final class CodeQuestionSurfaceTests: XCTestCase {
         XCTAssertEqual(notices, [CodeQuestionSurface.cannotReadFilesNotice])
     }
 
-    /// Board #361: a turn that resumes no provider session carries the
-    /// earlier turns; a resumed Claude turn does not (its session has them).
-    func testAFollowUpWithoutASessionReplaysTheEarlierTurns() async throws {
+    /// Board #361, #604 G11: every follow-up carries the earlier turns, on
+    /// any provider; no turn resumes a session.
+    func testEveryFollowUpReplaysTheEarlierTurns() async throws {
         let conv = try await conversation(.init(provider: .ollama, model: "llama3"))
         let ai = ScriptedAIService()
         let engine = makeSurfaceEngine(spec(conv), dbPool: dbManager.dbPool, ai: ai)
@@ -194,11 +194,11 @@ final class CodeQuestionSurfaceTests: XCTestCase {
         try await CodeQuestionSurface.setModelChoice(.init(provider: .claude, model: ""), conversationID: conv,
                                                      dbPool: dbManager.dbPool)
         await turn(engine, ai, "Any problems?", sessionID: "s1")
-        XCTAssertTrue(ai.calls[2].prompt.contains("Assistant: main.swift calls it."),
-                      "a Claude turn with no session yet replays too")
+        XCTAssertTrue(ai.calls[2].prompt.contains("Assistant: main.swift calls it."), "a Claude turn replays too")
         await turn(engine, ai, "Thanks?")
-        XCTAssertEqual(ai.calls[3].sessionID, "s1")
-        XCTAssertEqual(ai.calls[3].prompt, "Thanks?", "a resumed session already holds the turns")
+        XCTAssertNil(ai.calls[3].sessionID, "the reported id is never resumed")
+        XCTAssertTrue(ai.calls[3].prompt.contains("Owner: Any problems?\n"), ai.calls[3].prompt)
+        XCTAssertTrue(ai.calls[3].prompt.hasSuffix("Thanks?"))
     }
 
     /// Claude → Ollama → Claude: the Claude session never saw the Ollama
@@ -215,12 +215,12 @@ final class CodeQuestionSurfaceTests: XCTestCase {
                                                      dbPool: dbManager.dbPool)
         await turn(engine, ai, "And the caller?", reply: "main.swift calls it.", sessionID: "ollama-id")
         let stored = try await dbManager.dbPool.read { try ChatConversationQueries.fetchByID($0, id: conv) }
-        XCTAssertNil(try XCTUnwrap(stored).sessionID, "the Claude session is forgotten, the other id never kept")
+        XCTAssertNil(try XCTUnwrap(stored).sessionID, "no reported id is kept")
 
         try await CodeQuestionSurface.setModelChoice(.init(provider: .claude, model: ""), conversationID: conv,
                                                      dbPool: dbManager.dbPool)
         await turn(engine, ai, "Any problems?")
-        XCTAssertNil(ai.calls[2].sessionID, "not resumed: the session never saw the Ollama turn")
+        XCTAssertNil(ai.calls[2].sessionID, "not resumed")
         XCTAssertNotNil(ai.calls[2].systemPrompt)
         XCTAssertTrue(ai.calls[2].prompt.contains("Owner: And the caller?\nAssistant: main.swift calls it.\n"),
                       ai.calls[2].prompt)

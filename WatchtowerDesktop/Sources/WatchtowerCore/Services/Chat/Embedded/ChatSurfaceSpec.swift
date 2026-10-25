@@ -57,9 +57,6 @@ package struct ChatAppliedChange: Equatable, Sendable {
 /// What a turn's prompt is built from.
 package struct ChatTurnInput: Sendable {
     package let text: String
-    /// The conversation already has a provider session: the CLI `--resume`s
-    /// it and drops the system prompt, so surfaces re-inject their context.
-    package let isResumed: Bool
     /// The owner message before this turn's (nil on the first one and on
     /// follow-up turns) — the target chat's outcomes floor.
     package let previousOwnerMessageAt: Date?
@@ -70,13 +67,11 @@ package struct ChatTurnInput: Sendable {
 
     package init(
         text: String,
-        isResumed: Bool,
         previousOwnerMessageAt: Date?,
         turnID: String,
         alreadyApplied: [ChatAppliedChange] = []
     ) {
         self.text = text
-        self.isResumed = isResumed
         self.previousOwnerMessageAt = previousOwnerMessageAt
         self.turnID = turnID
         self.alreadyApplied = alreadyApplied
@@ -150,11 +145,6 @@ package struct ChatRunOptions: Equatable, Sendable {
         self.model = model
         self.readFolder = readFolder
     }
-
-    /// Only Claude resumes a session (`--session-id`); a conversation whose
-    /// owner switched to another provider sends that provider the system
-    /// prompt again rather than an id it cannot use.
-    package var resumesSession: Bool { provider == nil || provider == "claude" }
 }
 
 /// One embedded chat, as a value: how its prompts are built, what it may do
