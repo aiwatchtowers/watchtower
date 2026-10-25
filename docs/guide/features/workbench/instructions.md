@@ -1,6 +1,6 @@
 # Your instructions
 
-Your instructions are standing directions you write once ("answer me in English", "test only what you touched") and every agent in a workbench follows. They work the same for Claude Code and Codex.
+Your instructions are standing directions you write once ("answer me in English", "test only what you touched") and every agent in a workbench, and the AI chat, follows. They work the same for Claude Code and Codex.
 
 ## Why use it
 
@@ -8,9 +8,9 @@ You type the same directions into every new session. A workbench can hold them f
 
 ## How it works
 
-There are two fields, each with a global text and an addition per workbench:
+There are two fields, each with a global text and an addition per workbench, plus a third text for chats only (**Only in chats**, see [In your chats](#in-your-chats)):
 
-- **Session instructions** are placed in the brief of every new session. The agent sees the global text, then the workbench's own text.
+- **Session instructions** (**For chats and agents** in Settings) are placed in the brief of every new session, and reach every chat too. The agent sees the global text, then the workbench's own text.
 - **Target procedure** reaches the agent each time it sets a target to In progress, in the answer to that update. It also arrives when it takes a target that is already In progress again.
 
 Each text holds up to 1,000 characters. A change reaches new sessions only: a running or resumed session keeps the instructions it started with. The target procedure is read at the moment of use, so it applies from the next target even in a running session.
@@ -21,7 +21,7 @@ The texts are stored in Watchtower, never in your folder, and are not part of th
 
 The same standing directions work in the AI chat. The **session instructions** text reaches every chat as well as every workbench session, and a separate **Only in chats** text reaches chats only. Texts you wrote for one workbench, and the target procedure, never go into a chat. The setup assistants don't use them.
 
-To keep a direction while you chat, start a message with `remember:`, `remember this:` or `запомни:`. The rest of the message is added to **Only in chats** word for word, and the chat shows **Remembered for all chats** with **Undo** and **Open in Settings**. If the text is full, nothing is added and the chat says so. A change reaches the next conversation; the current one already has your message.
+To keep a direction while you chat, start a message with `remember:`, `remember this:` or `запомни:`. The rest of the message is added to **Only in chats** word for word, and the chat shows **Remembered for all chats** with **Undo** and **Open in Settings**. If the text is full, nothing is added and the chat says so. In a target's or track's chat with Memory's **Chats source** on, the same message is also saved as a [Memory](../memory.md) fact. A change reaches the next conversation; the current one already has your message.
 
 ### Suggestions
 

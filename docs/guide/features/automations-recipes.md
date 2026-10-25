@@ -7,13 +7,13 @@ A template is a working recipe to adapt; the parts show what you confirm.
 ## How it works
 ### The settings block
 The top of the file holds the settings:
-- **Trigger**, exactly one of: a `schedule` (five-field cron, local time), an `event` (see [Event triggers](#event-triggers)), a `button` (with a label of 1 to 24 characters, and optionally `confirm`), or `manual: true` (only when you run it). **Form** calls the button option **When I press a button**. It makes the recipe appear under its name in **Run Automation…** (**⌃⌘R**) and in the tray's **Run automation** submenu, and a workbench recipe is also an item in its workbench's ⚡ menu; with `confirm` it asks before running.
+- **Trigger**, exactly one of: a `schedule` (five-field cron, local time), an `event` (see [Event triggers](#event-triggers)), a `button` (with a label of 1 to 24 characters, and optionally `confirm`), or `manual: true` (only when you run it). **Form** calls the button option **When I press a button**. It lists the recipe by name in **Run Automation…** (**⌃⌘R**) and in the tray's **Run automation** submenu, and a workbench recipe is also an item in its workbench's ⚡ menu; with `confirm` it asks before running.
 - **Permissions**, such as `gmail:read@work`, `jira:read@PAY`, `llm:light`, `llm:strong`, `tool:create_jira_issue`. Reading all Slack messages or all calendar events needs `slack:read@*` or `calendar:read@*`. Linear uses team keys: `linear:read@ENG`, `linear:write@ENG`.
 - **Outputs**, any of `inbox`, `briefing`, `report`, `target`, `slack`. Posting to Slack also needs `slack:write@<account>`; Reply buttons on Inbox cards need `inbox:reply` ([buttons](automations-inbox-buttons.md)).
 - **Budget**: tokens (1,000 to 2,000,000) and minutes (1 to 60).
 - Optionally, how many runs may overlap (1 to 4) and what to do about a missed slot.
 
-Text outside the settings and the script is the description. An optional `summary:` line (up to 60 characters) is the short line under the name in the list; without it, the description's first sentence is used. Changing it never asks you to confirm again. The script is one block of plain, synchronous JavaScript. It can only use what Watchtower gives it: ask the assistant, read tools, a small saved state and the outputs. BigInt numbers (`10n`) are not available: such a recipe shows "BigInt is not available in automations".
+Text outside the settings and the script is the description. An optional `summary:` line (up to 60 characters) is the short line under the name in the list; without it, the description's first sentence is used. Changing it never asks you to confirm again. The script is one block of plain, synchronous JavaScript. It can only use what Watchtower gives it: ask the assistant, read tools, a small saved state and the outputs. BigInt (`10n`) is not available: such a recipe shows "BigInt is not available in automations".
 
 ### Event triggers
 An event trigger runs the recipe after a sync brings something new. For example, `trigger: {event: {type: slack.new_messages, where: {channel: releases}}}` runs after new messages land in #releases. The script finds what happened in `trigger.events`: ids, names and counts, never the text.
@@ -27,19 +27,19 @@ An event trigger runs the recipe after a sync brings something new. For example,
 | `confluence.page_changed` | a page is new or has a new version | `space`, `page_id` |
 | `slack.reaction_added` | you put an emoji on a Slack message | `account`, `channel_id`, `emoji` |
 
-Every `where` key must match. A value matches regardless of case, either exactly or as a wildcard such as `PAY-*` (a `*` stops at `/`). Leave `where` out to match every event of the type. `where` only filters; the recipe still needs permissions for what it reads.
+Every `where` key must match; a value matches, ignoring case, exactly or as a wildcard such as `PAY-*` (a `*` stops at `/`). Leave `where` out to match every event of the type. `where` only filters; the recipe still needs permissions for what it reads.
 
 The reaction event carries the account, channel id, message timestamp (`message_ts`) and emoji name without colons (`alarm_clock`), never the message; reading it needs `slack:read@*` or `tool:list_messages`. It fires once per message and emoji, only for messages posted after the recipe first sees your account; removing and re-adding a reaction does nothing. It needs **Reaction commands** on (Settings, Features). A reaction noticed just before Watchtower stops is lost, not replayed.
 
-A recipe runs at most once per sync cycle, however many events it matched; it gets up to 100 events, and `trigger.truncated` is true when there were more. A source's first sync, its history backfill and your own Slack messages never fire one. In **Form**, **On an event** picks the type; write a `where` filter in the recipe text, or ask the assistant in **Chat**.
+A recipe runs at most once per sync cycle, however many events matched; it gets up to 100, and `trigger.truncated` is true when there were more. A source's first sync, its backfill and your own Slack messages never fire one. In **Form**, **On an event** picks the type; write a `where` filter in the recipe text, or ask the assistant in **Chat**.
 
 ### Where recipes live
-Personal recipes sit in the `automations` folder inside Watchtower's workspace folder. The file name is the recipe's id: lower-case letters, digits and dashes. Symlinks are never read.
+Personal recipes sit in the workspace folder's `automations` folder. The file name is the recipe's id: lower-case letters, digits and dashes. Symlinks are never read.
 
 ### Workbench recipes
-A recipe can also live in a Workbench folder, in `.watchtower/automations/`, so it travels with the repository. There it can do what a personal one can't: run an exact command listed in its settings in the folder, open an agent session there, or ask you something. **Edit** and confirming work the same, and the new version is saved in the workbench folder.
+A recipe can also live in a Workbench folder, in `.watchtower/automations/`, so it travels with the repository. There it can do what a personal one can't: run an exact command listed in its settings in the folder, open an agent session there, or ask you something. **Edit** and confirming work the same; the new version is saved in the folder.
 
-The file belongs to the repository, so it can arrive with a `git pull` or be changed by someone else. Watchtower notices when you open the workbench and as the file changes. Such a recipe shows **Needs your confirmation** on its card and in the ⚡ menu, and does not run until you confirm it.
+The file belongs to the repository, so a `git pull` can bring or change it. Watchtower notices on opening the workbench and as the file changes. Such a recipe shows **Needs your confirmation** on its card and in the ⚡ menu, and does not run until you confirm it.
 
 ## Using it
 1. In **Automations**, click **+**, pick the scope, then a template under **How do you want to start?** and **Continue**.
@@ -61,13 +61,13 @@ The file belongs to the repository, so it can arrive with a `git pull` or be cha
 
 ### Finding your way around
 - The list's groups (**Built in**, **Personal**, one per workbench) fold, and Watchtower remembers it. A failed recipe shows its error first.
-- In the editor's **Chat**, the assistant can read your recipes and their runs, Slack channels, Confluence pages, mail and meeting recaps to write a better recipe. It can only propose a save, which you approve.
-- **Hide Draft** (**⌥⌘0**) hides the draft column to give the chat the room; **Save…** brings it back.
+- In the editor's **Chat**, the assistant can read your recipes and their runs, Slack channels, Confluence pages, and the same reads a recipe has, such as mail, calendar, meeting recaps and Jira sprints, to write a better recipe. It can only propose a save, which you approve.
+- The sidebar button (**⌥⌘0**) hides the draft column for the chat; press it again, or **Save…** (shown while the hidden draft can be saved), to bring it back.
 
 ## When it's empty or wrong
 - **"No templates yet."** The command-line tool is older than the app; update.
 - **Install refused.** A recipe with that name already exists (a removed one counts), or a symlink is in the way. Nothing is half-installed.
-- **The Jira state report won't install.** It needs a synced Jira project with an open issue assigned to you or reported by you. Connect Jira, let it sync, and try again.
+- **The Jira state report won't install.** It needs a synced Jira project with an open issue assigned to or reported by you. Connect Jira, let it sync, try again.
 - **A workbench template's button is off.** Add a workbench first.
 
 ## Related

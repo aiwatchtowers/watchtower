@@ -1,10 +1,10 @@
 # Board and targets
 
-The board is the workbench's plan: a tree of targets that you and the agent both edit. It is for anyone who wants a long piece of agent work to stay organised across sessions.
+The board is the workbench's plan: a tree of targets that you and the agent both edit. It keeps long agent work organised across sessions.
 
 ## Why use it
 
-A plan kept in a chat disappears with the session. On the board it stays, with status, comments and history, and every new session starts from it. You also get one place to see what is in progress, blocked or waiting for review.
+A plan kept in a chat disappears with the session. On the board it stays, with status, comments and history, and every new session starts from it. It also shows in one place what is in progress, blocked or waiting for review.
 
 ## How it works
 
@@ -12,15 +12,15 @@ A **target** is one unit of work with a number such as `#163`, the number the ag
 
 With the default methodology (the `watchtower-flow` preset), a written plan becomes one sub-target per task.
 
-Statuses are To Do, In Progress, In Review, Blocked, Done and Dismissed. The agent files targets itself. With the default methodology it first looks for targets on the same topic and files the new one in their group, creating the group if there is none.
+Statuses are To Do, In Progress, In Review, Blocked, Done and Dismissed. The agent files targets itself. With the default methodology it files a new one in the group of targets on the same topic, creating the group if needed.
 
-You can also talk to the agent on a target: write in its comment thread. Agents use comments for a blocker or a short summary when a task is done, and what they need from you arrives as an [ask](asks.md).
+You can also talk to the agent in a target's comment thread. Agents use comments for a blocker or a short summary when a task is done, and what they need from you arrives as an [ask](asks.md).
 
 **Archive.** A done or dismissed target leaves the board once it has been closed longer than the workbench's setting, 14 days by default. A feature leaves only when everything under it is closed and the last of it closed that long ago. Nothing is deleted, and a feature's task counter keeps counting archived tasks.
 
-**Board drift.** The check compares each target with the folder's git branches and pull requests. It reads local git state only and never fetches, so a merge made on GitHub appears once the folder has fetched it.
+**Board drift.** The check compares each target with the folder's git branches and pull requests. It reads local git only and never fetches, so a merge made on GitHub shows once the folder has fetched it.
 
-It reports, for example, a target still in progress whose branch is merged, a done target whose branch is not merged, a branch that no longer exists, and in-progress work that has not moved for three days. The agent sees the same list at the end of each turn and is asked to bring the board in step with git.
+It reports, for example, a target still in progress whose branch is merged, a done target whose branch is not merged, a branch that no longer exists, and in-progress work that has not moved for three days. The agent sees the findings about open targets when its session starts and at the end of each turn, and is asked to bring the board in step with git. A done target with an unmerged branch shows only on the Board and in `watchtower workbench check`.
 
 ## Using it
 
@@ -39,7 +39,7 @@ The search field in the Board header matches title or intent. `#163` finds targe
 3. Set the priority and column chips. The column chip offers the To Do and In Progress columns.
 4. Press **Create Task** or ⌘↩. Esc closes the panel without creating anything.
 
-**Create more** keeps the panel open with the same parent and chips for the next task.
+**Create more** keeps the panel open, same parent and chips, for the next task.
 
 ### Switch to Kanban
 
@@ -63,7 +63,7 @@ The **+** at the end of the row adds a column to any status, and brings back a h
 
 ### Open a target
 
-Click a card to open it in the panel on the right. The board stays live behind it.
+Click a card to open it in the panel on the right; the board stays live behind it.
 
 You can rename the title, change status and priority from the chips, edit the description, and read **Comments | History**. Its **Asks** section lists every ask about this target.
 
@@ -77,7 +77,7 @@ On a feature, the agent works its sub-tasks one after another. With the default 
 
 ### Group and move targets
 
-Drag a target onto another to put it under that target, or right-click a card for **Move to** and **Move to Top Level**. A target can never go under itself or its own sub-tasks.
+Drag a target onto another to nest it, or right-click a card for **Move to** and **Move to Top Level**. A target can never go under itself or its own sub-tasks.
 
 To look at one feature alone, click **Open group** in its panel, double-click its Kanban lane header, or right-click it in the list for **Open Group**. A path bar reads **Board › #249 Title › #252 Title**; **Leave group** goes up one level.
 
@@ -93,7 +93,7 @@ In the **…** menu of the workbench's title row:
 
 ### Read the drift line
 
-When something disagrees, a line under the Board header reads **Board drift: N out of step with git**, with findings that are only worth a look listed as "to review". Click it for the list and click an entry to open that target. The refresh button checks again; while the Board is open it re-checks by itself, at most every 30 seconds.
+When something disagrees, a line under the Board header reads **Board drift: N out of step with git**, with findings that are only worth a look listed as "to review". Click it for the list; an entry opens its target. The refresh button checks again; while the Board is open it re-checks by itself, at most every 30 seconds.
 
 Press **Fix** in the list to start an agent session that runs the check and puts the board right for every finding; hover an entry and press its **Fix** to fix just that one. While that agent works the button reads **Fixing…** and opens that session instead of starting another.
 

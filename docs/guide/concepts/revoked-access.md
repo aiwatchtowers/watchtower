@@ -11,7 +11,7 @@ Synced data stays in the database on your Mac for good. When you leave a company
 Nothing is deleted without a notice of at least 72 hours, and reconnecting stops it.
 
 - **Revoked access:** when a source rejects an account's sign-in, its data is scheduled for deletion 72 hours after Watchtower first sees the revocation. A sync that fails for another reason, such as no network, is not a revocation, and a sync that works again afterwards cancels it.
-- **Not reached for 30 days:** when no account of a source (Slack, Google, Jira or Linear) has synced for 30 days, the data of each is scheduled, due 72 hours later (on a Mac that stays on, at the 30-day mark). Days offline count, but a Mac back after a long time away first tries to sync. A disabled account still counts, and one account syncing keeps all of them safe; for Jira, a Confluence sync counts too.
+- **Not reached for 30 days:** when no account of a source (Slack, Google, Jira or Linear) has synced for 30 days, the data of each is scheduled, due 72 hours later (on a Mac that stays on, at the 30-day mark). Days offline count, but a Mac back after a long time away first tries to sync. A disabled account still counts, and one account syncing keeps all of them safe; for Jira, a Confluence sync counts too. A source your company's profile does not allow is never scheduled this way while the rule holds.
 - **Removed accounts:** **Remove** keeps a Slack, Jira or Linear account's data. Once that account has not been reached for 30 days, its data is scheduled the same way, 72 hours out. Adding it back stops it. (Removing a Google account already deletes its mail and events.)
 
 From the moment it is scheduled you see a red line under the account in **Settings → Connections**, a banner on [Home](../features/home.md) with **Reconnect** until the deletion starts, and a macOS notification. A second notification says when the data is gone.
@@ -25,6 +25,8 @@ If the account is in error rather than revoked when the time comes, the deletion
 3. Press **Save**. The background sync restarts once to pick it up.
 
 Turning it off cancels every scheduled deletion; one already running finishes. In `config.yaml` the key is `privacy.purge_revoked_data`.
+
+If your company's configuration profile sets it, the switch shows **Managed by your organization** and cannot be changed; see [Managed by your organization](managed-by-your-organization.md).
 
 To see every scheduled and finished deletion, run `watchtower accounts purges`. There is no command to delete sooner, and no button to keep the data: the way to keep it is to restore access.
 

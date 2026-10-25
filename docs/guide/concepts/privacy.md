@@ -27,6 +27,8 @@ Backups made earlier still hold the two folders. To delete those copies:
 
 An APFS backup disk (the default since macOS 11) has no such item and deletes only whole backups. Find them with `tmutil destinationinfo` and `tmutil listbackups`, then run `sudo tmutil delete -d <disk> -t <timestamp>` (Terminal needs Full Disk Access), or erase the disk and back up again.
 
+If a folder sits on a disk that cannot hold the flag (exFAT, a network share), Time Machine still backs it up; `watchtower logs` shows a `backup exclusion:` line.
+
 Other backup tools may ignore Time Machine's flag: exclude the two folders there by hand.
 
 ## What Watchtower keeps outside its database
@@ -34,7 +36,7 @@ Other backup tools may ignore Time Machine's flag: exclude the two folders there
 Most of what Watchtower knows lives in the database; a few things are files beside it.
 
 - **Logs** name channels, people and meetings by id and record counts and errors, never message text, titles or AI answers. Log files from an earlier version may hold text until they rotate out.
-- **AI calls leave no session files.** Watchtower's own Claude calls write nothing to Claude Code's history folder; a chat picks up again from its saved messages.
+- **AI calls leave no session files.** Watchtower's own Claude and Codex calls write nothing to the agent's history folder; a chat picks up again from its saved messages. Workbench sessions are the agent's own and keep their history.
 - **Still files:** meeting recordings, chat attachments, target images, Memory's notes and sign-in files, readable only by your user. FileVault protects them at rest.
 - **What you paste into a session's Workchat** is deleted when that session ends.
 
@@ -76,7 +78,7 @@ A phone pairs only after you confirm it on the Mac with a four-digit code. An iP
 
 An assistant can read your synced data at most 300 times, or 5,000 rows, in one session. One read returns at most 256 KB, and a list at most 200 rows. The limit holds for AI Chat, workbench agents, automation runs and any app connected to `watchtower mcp`. Past it the read is refused with **this session's read limit is reached (300 calls / 5000 rows); the owner can start a new session**; a new chat, session or run starts a fresh count. A chat built into a screen counts per message, and each `watchtower tools call` on its own. Your own board, asks and skills do not count.
 
-Every such read leaves one line in the Mac's system log: the tool, the session and the row count, never the text. Your company's security tools can collect it; to look yourself, run `log show --last 1h --predicate 'subsystem == "com.watchtower.audit"'`. The system keeps it a few days, and Watchtower sends it nowhere.
+Every such read leaves one line in the Mac's system log: the tool, the session and the row count, never the text. Your company's security tools can collect it; to look yourself, run `log show --last 1h --predicate 'subsystem == "com.watchtower.audit"'`. The system keeps it a few days, and Watchtower sends it nowhere. A `watchtower` command an agent runs in a workbench terminal or an automation that prints your data (`digest`, `inbox`, `kb search`, …) leaves a line too, without a limit.
 
 ## When something is deleted at the source
 

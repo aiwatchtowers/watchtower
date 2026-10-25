@@ -35,7 +35,7 @@ A workbench automation can ask you something too: a yes/no check or a question. 
 
 ### The ask guard
 
-By default (ask guard **strict**, finish check **on**), Claude Code's own question dialog is turned off in a workbench session. A check at the end of every agent turn sends any question written as plain text back to the agent to file as an ask. The finish check reminds an agent that says its work is done to mark the session **Finished** with a short summary.
+By default (ask guard **strict**, finish check **on**), Claude Code's own question dialog is turned off in a workbench session. A check at the end of every agent turn sends any question written as plain text back to the agent to file as an ask. The finish check sends back a turn that reports the work done without marking the session **Finished**, and lets the agent finish only the whole target it was started for, its changes checked against the reviewer's AI overview; what it leaves comes to you as one ask.
 
 The methodology can change this; see [Methodology](methodology.md) and **Agent Settings…**. With **soft**, Claude Code's question dialog works while you are in the session, and plain-text questions are recorded instead of bounced back. With **off**, nothing is checked. The finish check can be switched off on its own.
 

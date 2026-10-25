@@ -8,7 +8,7 @@ A recipe that watches your Jira board leaves a card, "PAY-12 has been blocked fo
 
 ## How it works
 
-A card is written by `output.inbox({title, body, link?, actions?})`. `actions` holds up to four buttons, each with a `label` of at most 40 characters and exactly one kind:
+A card is written by `output.inbox({title, body, priority?, link?, actions?})`; `priority` is `"high"`, `"medium"` or `"low"`, and any other value fails the run. `actions` holds up to four buttons, each with a `label` of at most 40 characters and exactly one kind:
 
 | Kind | Key | A press does |
 |---|---|---|
@@ -54,7 +54,7 @@ output.inbox({
 
 Its permissions include `inbox:reply` and its outputs include `inbox`. In the script, check `trigger.kind === "reply"` first and branch on `trigger.reply.value`.
 
-1. Open the card in **Inbox**, **Actions**.
+1. Open the card in the Inbox's **Automations** filter.
 2. Press **Nudge the owner**. The button changes to **Sent — run #N**.
 3. Follow the run from the card's source line or from the automation's **History**.
 
