@@ -38,6 +38,7 @@ import (
 	"watchtower/internal/linear"
 	"watchtower/internal/memory"
 
+	"watchtower/internal/automations/authoring"
 	"watchtower/internal/customtracks"
 	"watchtower/internal/logredact"
 	"watchtower/internal/reactioncmd"
@@ -481,6 +482,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	d.loadPeopleAttempts()
 	d.reapStalePipelineRuns()
 	d.sweepStaleTemp()
+	d.importLegacyDraftCache()
 
 	d.logger.Printf("daemon started, polling every %s", pollInterval)
 
@@ -768,6 +770,22 @@ func (d *Daemon) sweepStaleTemp() {
 	}
 	if err != nil {
 		d.logger.Printf("sweeping the extract spool: %v", err)
+	}
+}
+
+// importLegacyDraftCache moves an older version's automation editor draft
+// cache files into the database once (#604 G2). Best-effort: a failure is
+// logged and the files stay for the next start.
+func (d *Daemon) importLegacyDraftCache() {
+	if d.db == nil {
+		return
+	}
+	n, err := authoring.ImportLegacyDraftCache(d.db, d.config.WorkspaceDir())
+	if n > 0 {
+		d.logger.Printf("imported %d automation draft cache file(s) into the database", n)
+	}
+	if err != nil {
+		d.logger.Printf("importing automation draft cache files: %v", err)
 	}
 }
 

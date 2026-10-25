@@ -1,7 +1,6 @@
 package authoring
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"os"
@@ -11,6 +10,7 @@ import (
 
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/automationstest"
+	"watchtower/internal/db"
 	"watchtower/internal/tools"
 )
 
@@ -41,20 +41,17 @@ func (f *draftFixture) callBound(t *testing.T, workspaceDir, text string, b tool
 	return string(js)
 }
 
-func readDraftCache(t *testing.T, path string) []DraftCacheEntry {
+func readDraftCache(t *testing.T, d *db.DB, conversationID int64) []DraftCacheEntry {
 	t.Helper()
-	fh, err := os.Open(path)
+	rows, err := d.DraftCache(conversationID)
 	if err != nil {
-		t.Fatalf("open cache: %v", err)
+		t.Fatalf("read cache: %v", err)
 	}
-	defer fh.Close()
 	var out []DraftCacheEntry
-	sc := bufio.NewScanner(fh)
-	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for sc.Scan() {
+	for _, r := range rows {
 		var e DraftCacheEntry
-		if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
-			t.Fatalf("cache line: %v", err)
+		if err := json.Unmarshal([]byte(r), &e); err != nil {
+			t.Fatalf("cache entry: %v", err)
 		}
 		out = append(out, e)
 	}
@@ -65,14 +62,15 @@ func editorBinding(conversationID int64) tools.Binding {
 	return tools.Binding{Surface: tools.AutomationEditorSurface, ConversationID: conversationID}
 }
 
-func TestDraftCache_WrittenOnEditorSurfaceWithConversation(t *testing.T) {
+// TestCacheDraft_WritesRows (#604 G2): the editor's draft lands in
+// automation_draft_cache, and no automation-drafts directory is created.
+func TestCacheDraft_WritesRows(t *testing.T) {
 	f := newDraftFixture(t)
 	dir := t.TempDir()
 	text := recipeText([]string{"llm:light"}, "", `return llm("x")`)
 	resJSON := f.callBound(t, dir, text, editorBinding(42))
 
-	path := DraftCachePath(dir, 42)
-	entries := readDraftCache(t, path)
+	entries := readDraftCache(t, f.d, 42)
 	if len(entries) != 1 {
 		t.Fatalf("entries = %d; want 1", len(entries))
 	}
@@ -86,11 +84,8 @@ func TestDraftCache_WrittenOnEditorSurfaceWithConversation(t *testing.T) {
 	if string(cached) != resJSON {
 		t.Fatalf("cached result %s; want the tool's result %s", cached, resJSON)
 	}
-	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
-		t.Fatalf("file mode = %v (%v); want 0600", info.Mode().Perm(), err)
-	}
-	if info, err := os.Stat(filepath.Dir(path)); err != nil || info.Mode().Perm() != 0o700 {
-		t.Fatalf("dir mode = %v (%v); want 0700", info.Mode().Perm(), err)
+	if _, err := os.Stat(filepath.Join(dir, DraftCacheDir)); !os.IsNotExist(err) {
+		t.Fatalf("%s exists (%v); want no file", DraftCacheDir, err)
 	}
 }
 
@@ -100,8 +95,8 @@ func TestDraftCache_NotWrittenOnMainOrWithoutConversation(t *testing.T) {
 	text := recipeText([]string{"llm:light"}, "", `return llm("x")`)
 	f.callBound(t, dir, text, tools.Binding{Surface: "main", ConversationID: 42})
 	f.callBound(t, dir, text, editorBinding(0))
-	if _, err := os.Stat(filepath.Join(dir, DraftCacheDir)); !os.IsNotExist(err) {
-		t.Fatalf("cache dir exists (%v); want nothing written on main or without a conversation", err)
+	if got := readDraftCache(t, f.d, 42); len(got) != 0 {
+		t.Fatalf("cache = %d entries; want nothing written on main or without a conversation", len(got))
 	}
 }
 
@@ -115,7 +110,7 @@ func TestDraftCache_KeepsTheLastFive(t *testing.T) {
 		texts = append(texts, text)
 		f.callBound(t, dir, text, editorBinding(7))
 	}
-	entries := readDraftCache(t, DraftCachePath(dir, 7))
+	entries := readDraftCache(t, f.d, 7)
 	if len(entries) != 5 {
 		t.Fatalf("entries = %d; want 5", len(entries))
 	}
@@ -132,12 +127,11 @@ func TestDraftCache_WriteFailureLeavesTheResultUnchanged(t *testing.T) {
 	want := f.callBound(t, t.TempDir(), text, tools.Binding{Surface: "main"})
 
 	f.gen.Replies = []string{"done"}
-	broken := t.TempDir()
-	// The cache directory's place is taken by a file: MkdirAll fails.
-	if err := os.WriteFile(filepath.Join(broken, DraftCacheDir), []byte("x"), 0o600); err != nil {
+	// The cache table is gone: the write fails.
+	if _, err := f.d.Exec(`DROP TABLE automation_draft_cache`); err != nil {
 		t.Fatal(err)
 	}
-	got := f.callBound(t, broken, text, editorBinding(3))
+	got := f.callBound(t, t.TempDir(), text, editorBinding(3))
 	var w, g map[string]any
 	if err := json.Unmarshal([]byte(want), &w); err != nil {
 		t.Fatal(err)
@@ -165,7 +159,7 @@ func TestDraftCache_EvaluationErrorIsCachedNewest(t *testing.T) {
 	if _, err := f.cacheTool(dir).Execute(context.Background(), f.d, tools.Call{Args: raw, Binding: editorBinding(9)}); err == nil {
 		t.Fatal("draft_automation with workbench_id -1 succeeded; want an error")
 	}
-	entries := readDraftCache(t, DraftCachePath(dir, 9))
+	entries := readDraftCache(t, f.d, 9)
 	if len(entries) != 2 {
 		t.Fatalf("entries = %d; want 2", len(entries))
 	}

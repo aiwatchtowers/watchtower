@@ -7,6 +7,9 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/automations/authoring"
+	"watchtower/internal/db"
 )
 
 // TestDaemonStart_SweepsExtractSpool: the startup sweep removes the prompt
@@ -36,4 +39,27 @@ func TestDaemonStart_SweepsExtractSpool(t *testing.T) {
 	require.NoFileExists(t, oldSpool)
 	require.NoFileExists(t, oldPrompt)
 	require.FileExists(t, freshSpool)
+}
+
+// TestDaemonStart_ImportsLegacyDraftCache: an older version's draft cache
+// file is in the database after startup, and gone from the workspace.
+func TestDaemonStart_ImportsLegacyDraftCache(t *testing.T) {
+	d := newQuietDaemon(t)
+	d.config.ActiveWorkspace = "test"
+	t.Setenv("HOME", t.TempDir())
+	database, err := db.Open(":memory:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = database.Close() })
+	d.db = database
+	dir := filepath.Join(d.config.WorkspaceDir(), authoring.DraftCacheDir)
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "5.jsonl"),
+		[]byte(`{"recipe_text":"r","result":null,"at":"2026-10-20T10:00:00Z"}`+"\n"), 0o600))
+
+	d.importLegacyDraftCache()
+
+	got, err := database.DraftCache(5)
+	require.NoError(t, err)
+	require.Len(t, got, 1)
+	require.NoDirExists(t, dir)
 }
