@@ -110,4 +110,9 @@ func TestFlowSkill_SpecReviewRules(t *testing.T) {
 	for _, want := range []string{"doc_type", "## Decisions", "docs/design/mockups/", "**Spec:**"} {
 		assert.Contains(t, features, want)
 	}
+	_, body := WorkbenchSkill()
+	ask := skillSection(t, string(body), "Asking the owner")
+	for _, want := range []string{"doc_type: spec | plan | other", "refused", "independent reviewer", "reviewer's findings"} {
+		assert.Contains(t, ask, want)
+	}
 }
