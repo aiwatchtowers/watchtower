@@ -109,7 +109,7 @@ func TestGetTarget_ImageDescription(t *testing.T) {
 		var out struct {
 			Images []map[string]any `json:"images"`
 		}
-		require.NoError(t, json.Unmarshal([]byte(raw), &out))
+		require.NoError(t, json.Unmarshal(raw, &out))
 		require.Len(t, out.Images, 1)
 		return out.Images[0]
 	}
