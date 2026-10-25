@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -105,7 +106,6 @@ func TestDescribeImage_BadJSONIsError(t *testing.T) {
 		"prose":          "I cannot see an image.",
 		"broken":         `{"title": "x", "description": `,
 		"no description": `{"title": "x", "description": "", "text": "", "keys": []}`,
-		"unknown field":  `{"title": "x", "description": "d", "text": "", "keys": [], "action": "send"}`,
 		"trailing":       `{"title": "x", "description": "d", "text": "", "keys": []} {"more": 1}`,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -162,10 +162,61 @@ func TestSummarizeLink_Shape(t *testing.T) {
 		t.Errorf("summary = %+v, %v; want the page title as fallback", s, err)
 	}
 
-	for _, out := range []string{"no json", `{"title":"t","summary":""}`, `{"title":"t","summary":"s","x":1}`} {
+	for _, out := range []string{"no json", `{"title":"t","summary":""}`, `{"title":"t","summary":"s"} trailing}`} {
 		g.out = out
 		if _, _, err := SummarizeLink(context.Background(), g, nil, "https://example.com/", "", "body"); !errors.Is(err, ErrBadOutput) {
 			t.Errorf("reply %q: err = %v, want ErrBadOutput", out, err)
 		}
+	}
+}
+
+// An extra field the prompt did not ask for does not fail the attempt.
+func TestDescribeImage_ExtraFieldIgnored(t *testing.T) {
+	g := &fakeImageGen{out: `{"title":"t","description":"d","text":"","keys":[],"confidence":0.9}`}
+	d, _, err := DescribeImage(context.Background(), g, nil, "p", "image/png")
+	if err != nil || d.Body != "d" {
+		t.Fatalf("DescribeImage = %+v, %v; want the extra field ignored", d, err)
+	}
+	g2 := &fakeGen{out: `{"title":"t","summary":"s","lang":"en"}`}
+	if _, _, err := SummarizeLink(context.Background(), g2, nil, "https://example.com/", "", "body"); err != nil {
+		t.Fatalf("SummarizeLink with an extra field: %v", err)
+	}
+}
+
+// Keys must look like an issue key or an http(s) URL, at most 200 runes,
+// at most 50 of them — on top of occurring verbatim in the text.
+func TestDescribeImage_KeysShapeAndCaps(t *testing.T) {
+	longURL := "https://example.com/" + strings.Repeat("a", 200)
+	var many []string
+	var text strings.Builder
+	text.WriteString("PROJ-7 https://example.com/ok word lower-1 " + longURL + " ")
+	for i := 0; i < 60; i++ {
+		k := fmt.Sprintf("K%d-%d", i, i)
+		many = append(many, k)
+		text.WriteString(k + " ")
+	}
+	keys := append([]string{"PROJ-7", "https://example.com/ok", "word", "lower-1", longURL, "ftp://x"}, many...)
+	g := &fakeImageGen{out: reply(t, map[string]any{"title": "t", "description": "d", "text": text.String(), "keys": keys})}
+	d, _, err := DescribeImage(context.Background(), g, nil, "p", "image/png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.Keys) != 50 {
+		t.Fatalf("kept %d keys, want 50", len(d.Keys))
+	}
+	if d.Keys[0] != "PROJ-7" || d.Keys[1] != "https://example.com/ok" || d.Keys[2] != "K0-0" {
+		t.Errorf("keys start %q, want PROJ-7, the URL, then K0-0 (word, lower-1, the long URL and ftp dropped)", d.Keys[:3])
+	}
+	for _, k := range d.Keys {
+		if k == "word" || k == "lower-1" || k == longURL {
+			t.Errorf("kept %q", k)
+		}
+	}
+}
+
+func TestCleanText_ZeroWidth(t *testing.T) {
+	in := "a\u200bb\u200cc\u200dd\u2060e\ufefff"
+	if got := cleanText(in); got != "abcdef" {
+		t.Errorf("cleanText = %q, want the zero-width characters gone", got)
 	}
 }

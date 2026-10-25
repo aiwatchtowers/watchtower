@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -31,7 +32,13 @@ const (
 	maxImageTextRunes   = 4000
 	maxSummaryRunes     = 1200
 	maxPageTextRunes    = 20000
+	maxKeys             = 50
+	maxKeyRunes         = 200
 )
+
+// keyShape is what a kept key looks like: a Jira-style issue key or an
+// http(s) URL.
+var keyShape = regexp.MustCompile(`^(?:[A-Z][A-Z0-9]+-\d+|https?://\S+)$`)
 
 // describeUserMessage is the whole text sent with an image: no channel,
 // page or sender name, so nothing ties the bytes to another context.
@@ -76,8 +83,12 @@ func DescribeImage(ctx context.Context, g digest.ImageGenerator, store *prompts.
 		return Description{}, usage, fmt.Errorf("%w: empty description", ErrBadOutput)
 	}
 	for _, k := range reply.Keys {
+		if len(d.Keys) == maxKeys {
+			break
+		}
 		k = cleanLine(k)
-		if k != "" && strings.Contains(d.Text, k) && !slices.Contains(d.Keys, k) {
+		if keyShape.MatchString(k) && utf8.RuneCountInString(k) <= maxKeyRunes &&
+			strings.Contains(d.Text, k) && !slices.Contains(d.Keys, k) {
 			d.Keys = append(d.Keys, k)
 		}
 	}
@@ -124,15 +135,14 @@ func resolvePrompt(store *prompts.Store, id string) string {
 	return tmpl
 }
 
-// decodeStrict decodes the reply's JSON object into v: unknown fields and
-// anything after the object are errors (ErrBadOutput).
+// decodeStrict decodes the reply's JSON object into v: anything after the
+// object is an error (ErrBadOutput); extra fields are ignored.
 func decodeStrict(raw string, v any) error {
 	js, err := prompts.ExtractJSONObject(raw)
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrBadOutput, err)
 	}
 	dec := json.NewDecoder(bytes.NewReader([]byte(js)))
-	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
 		return fmt.Errorf("%w: %v", ErrBadOutput, err)
 	}
@@ -142,14 +152,15 @@ func decodeStrict(raw string, v any) error {
 	return nil
 }
 
-// cleanText drops control characters (newlines and tabs kept) and the
-// bidirectional-override marks that can disguise text, and trims.
+// cleanText drops control characters (newlines and tabs kept), the
+// bidirectional-override marks and the zero-width characters that can
+// disguise text, and trims.
 func cleanText(s string) string {
 	return strings.TrimSpace(strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\t' {
 			return r
 		}
-		if unicode.IsControl(r) || isBidiControl(r) || r == utf8.RuneError {
+		if unicode.IsControl(r) || isBidiControl(r) || isZeroWidth(r) || r == utf8.RuneError {
 			return -1
 		}
 		return r
@@ -160,6 +171,10 @@ func cleanText(s string) string {
 // runs of spaces collapse.
 func cleanLine(s string) string {
 	return strings.Join(strings.Fields(cleanText(s)), " ")
+}
+
+func isZeroWidth(r rune) bool {
+	return (r >= 0x200b && r <= 0x200d) || r == 0x2060 || r == 0xfeff
 }
 
 func isBidiControl(r rune) bool {
