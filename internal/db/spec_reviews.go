@@ -38,6 +38,10 @@ type SpecReviewMark struct {
 
 func specReviewTime(t time.Time) string { return t.UTC().Format(automationTimeLayout) }
 
+// ParseSpecReviewTime reads a spec_reviews timestamp (queued_at, started_at,
+// finished_at: the form specReviewTime writes).
+func ParseSpecReviewTime(s string) (time.Time, error) { return time.Parse(automationTimeLayout, s) }
+
 const specReviewCols = `ask_id, status, reason, result, provider, model, doc_sha, dropped, pid, attempt,
 	queued_at, started_at, finished_at`
 
@@ -45,7 +49,7 @@ func scanSpecReview(row interface{ Scan(...any) error }) (*SpecReview, error) {
 	var r SpecReview
 	if err := row.Scan(&r.AskID, &r.Status, &r.Reason, &r.Result, &r.Provider, &r.Model, &r.DocSHA,
 		&r.Dropped, &r.PID, &r.Attempt, &r.QueuedAt, &r.StartedAt, &r.FinishedAt); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("scanning spec review: %w", err)
 	}
 	return &r, nil
 }
@@ -88,7 +92,7 @@ func (db *DB) RequeueSpecReview(askID int64, force bool, now time.Time) error {
 		}
 		if status != "queued" {
 			if err := db.QueueSpecReview(tx, askID, now); err != nil {
-				return err
+				return fmt.Errorf("re-queueing spec review: %w", err)
 			}
 		}
 		if _, err := tx.Exec(`UPDATE spec_reviews SET attempt = 1 WHERE ask_id = ?`, askID); err != nil {
@@ -111,7 +115,7 @@ func (db *DB) RelaunchQueuedSpecReview(askID int64, maxAttempts int, now time.Ti
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("re-queueing spec review: %w", err)
 	}
 	return n == 1, nil
 }
@@ -140,7 +144,7 @@ func (db *DB) ClaimSpecReview(askID int64, pid int, now time.Time) (bool, error)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("claiming spec review: %w", err)
 	}
 	return n == 1, nil
 }
@@ -193,12 +197,12 @@ func (db *DB) SpecReviewsToSweep(now time.Time) (queued []int64, running []SpecR
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("scanning queued spec review: %w", err)
 		}
 		queued = append(queued, id)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("listing queued spec reviews: %w", err)
 	}
 	rrows, err := db.Query(`SELECT ` + specReviewCols + ` FROM spec_reviews WHERE status = 'running' ORDER BY ask_id`)
 	if err != nil {
@@ -208,11 +212,14 @@ func (db *DB) SpecReviewsToSweep(now time.Time) (queued []int64, running []SpecR
 	for rrows.Next() {
 		r, err := scanSpecReview(rrows)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("listing running spec reviews: %w", err)
 		}
 		running = append(running, *r)
 	}
-	return queued, running, rrows.Err()
+	if err := rrows.Err(); err != nil {
+		return nil, nil, fmt.Errorf("listing running spec reviews: %w", err)
+	}
+	return queued, running, nil
 }
 
 // ListSpecReviewMarks returns the owner's marks of the ask by item key.
@@ -227,9 +234,12 @@ func (db *DB) ListSpecReviewMarks(askID int64) (map[string]SpecReviewMark, error
 		var key string
 		var m SpecReviewMark
 		if err := rows.Scan(&key, &m.State, &m.Body, &m.About, &m.UpdatedAt); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scanning spec review mark: %w", err)
 		}
 		marks[key] = m
 	}
-	return marks, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing spec review marks: %w", err)
+	}
+	return marks, nil
 }

@@ -62,6 +62,27 @@ type inputs struct {
 	blocks []string
 	src    Sources
 	notes  []string
+	// answered is the workbench's answered asks, snapshots left out, read
+	// once (answeredAsks) for the conversation's ask answers and the asks
+	// block.
+	answered     []db.OwnerAsk
+	answeredRead bool
+}
+
+// answeredAsks is the workbench's answered and delivered asks (no
+// automation's), without their document snapshots, read on first use.
+func (in *inputs) answeredAsks(d *db.DB, workbenchID int64) ([]db.OwnerAsk, error) {
+	if in.answeredRead {
+		return in.answered, nil
+	}
+	list, err := d.ListOwnerAsks(workbenchID, db.OwnerAskFilter{
+		Statuses: []string{"answered", "delivered"}, ExcludeAutomation: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("listing answered asks: %w", err)
+	}
+	in.answered, in.answeredRead = list, true
+	return list, nil
 }
 
 func (in *inputs) note(format string, args ...any) {
@@ -165,15 +186,20 @@ func reviewHeader(ask *db.OwnerAsk, t DocType, design bool) string {
 	decisions := "absent"
 	for _, c := range Chapters(ask.DocSnapshot, t) {
 		fmt.Fprintf(&b, "  %s %s\n", c.Key, c.Heading)
-		if normHeading(c.Heading) == "decisions" {
+		if isDecisionsHeading(c.Heading) {
 			decisions = "present"
 		}
+	}
+	// A plan keeps no Decisions section (its agreements come from its
+	// spec), so it is never told whether it has one.
+	if t != Plan {
+		fmt.Fprintf(&b, "decisions_section: %s\n", decisions)
 	}
 	lens := "inactive"
 	if design {
 		lens = "active"
 	}
-	fmt.Fprintf(&b, "decisions_section: %s\ndesign_lens: %s\n", decisions, lens)
+	fmt.Fprintf(&b, "design_lens: %s\n", lens)
 	return b.String()
 }
 
@@ -234,6 +260,16 @@ func (in *inputs) conversation(ctx context.Context, d Deps, ask *db.OwnerAsk) {
 	if first > 0 {
 		in.note("conversation trimmed to the last %d of %d entries", len(items)-first, len(items))
 	}
+	answered := map[int64]db.OwnerAsk{}
+	if slices.ContainsFunc(refs[first:], func(r string) bool { return byRef[r].Kind == sessionfeed.KindAskAnswer }) {
+		list, err := in.answeredAsks(d.DB, ask.WorkbenchID)
+		if err != nil {
+			in.note("ask answers' owner words not read: %v", err)
+		}
+		for _, a := range list {
+			answered[a.ID] = a
+		}
+	}
 	for i := first; i < len(items); i++ {
 		in.src.Conversation[refs[i]] = texts[i]
 		if e := byRef[refs[i]]; e.Kind == sessionfeed.KindOwner {
@@ -241,7 +277,7 @@ func (in *inputs) conversation(ctx context.Context, d Deps, ask *db.OwnerAsk) {
 		} else if e.Kind == sessionfeed.KindAskAnswer {
 			// The entry carries the rendered ask, the agent's questions
 			// included: only the stored answer's own texts are the owner's.
-			in.src.OwnerWords[refs[i]] = askOwnerWords(d.DB, ask.WorkbenchID, e.AskID)
+			in.src.OwnerWords[refs[i]] = askOwnerWords(answered, e.AskID)
 		}
 	}
 	// Items are already indented: fence them as they are.
@@ -270,9 +306,7 @@ func cutToFit(head, text string, budget int) (string, string) {
 // asks renders the answered asks of the session and of the target (not the
 // ask under review, no automation's), newest maxSourceAsks kept.
 func (in *inputs) asks(d *db.DB, ask *db.OwnerAsk) error {
-	list, err := d.ListOwnerAsks(ask.WorkbenchID, db.OwnerAskFilter{
-		Statuses: []string{"answered", "delivered"}, ExcludeAutomation: true,
-	})
+	list, err := in.answeredAsks(d, ask.WorkbenchID)
 	if err != nil {
 		return err
 	}
@@ -334,11 +368,12 @@ func ownerAnswerWords(a asks.Answer) []string {
 	return out
 }
 
-// askOwnerWords is ownerAnswerWords of an answered ask of the workbench; an
-// ask that is gone, open or unreadable has no owner words.
-func askOwnerWords(d *db.DB, workbenchID, askID int64) []string {
-	a, err := d.GetOwnerAsk(workbenchID, askID)
-	if err != nil || (a.Status != "answered" && a.Status != "delivered") {
+// askOwnerWords is ownerAnswerWords of an answered ask of the workbench
+// (answered, from answeredAsks); an ask that is gone, open or unreadable has
+// no owner words.
+func askOwnerWords(answered map[int64]db.OwnerAsk, askID int64) []string {
+	a, ok := answered[askID]
+	if !ok {
 		return nil
 	}
 	_, answer, err := asks.RenderStored(a.Kind, a.Payload, a.Answer)

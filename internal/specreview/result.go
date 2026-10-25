@@ -137,10 +137,11 @@ type Idea struct {
 }
 
 // Result is the validated reviewer reply: what Plan 2 reads and the Desktop
-// decodes. JSON keys are pinned by testdata/result_keys.golden.
+// decodes. JSON keys are pinned by testdata/result_keys.golden. Idea is nil
+// (and the key left out) when the reviewer gave none or it was dropped.
 type Result struct {
 	Summary      string         `json:"summary"`
-	Idea         Idea           `json:"idea"`
+	Idea         *Idea          `json:"idea,omitempty"`
 	Agreements   []Agreement    `json:"agreements"`
 	DecidedAlone []DecidedAlone `json:"decided_alone"`
 	BlindSpots   []BlindSpot    `json:"blind_spots"`

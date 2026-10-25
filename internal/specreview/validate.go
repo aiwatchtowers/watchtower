@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"watchtower/internal/prompts"
@@ -142,10 +143,23 @@ func authorSide(kind string) bool {
 	return kind == "decisions" || kind == "spec" || kind == "target"
 }
 
-// decisionsText is the text of the chapter headed "Decisions" (the first one).
+// isDecisionsHeading reports whether a chapter heading (a "## " heading of a
+// spec) is the Decisions section: its text starts with the word "Decisions",
+// any case, as in "Decisions (owner-approved)". The Desktop's
+// SpecReviewDecisions applies the same rule.
+func isDecisionsHeading(h string) bool {
+	rest, ok := strings.CutPrefix(normHeading(h), "decisions")
+	if !ok {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(rest)
+	return rest == "" || !(unicode.IsLetter(r) || unicode.IsDigit(r))
+}
+
+// decisionsText is the text of the Decisions chapter (the first one).
 func (v *validator) decisionsText() (string, bool) {
 	for i, c := range v.chapters {
-		if normHeading(c.Heading) == "decisions" {
+		if isDecisionsHeading(c.Heading) {
 			return v.norm[i], true
 		}
 	}
@@ -372,12 +386,13 @@ func (v *validator) resolved(in []Resolved) []Resolved {
 }
 
 // idea keeps the verdict only when its quotes are real and owner_source is the
-// owner's own words; otherwise it is empty (and counted), unless the model gave
+// owner's own words; otherwise it is nil (and counted), unless the model gave
 // none at all.
-func (v *validator) idea(i Idea) Idea {
-	if i == (Idea{}) {
-		return Idea{}
+func (v *validator) idea(in *Idea) *Idea {
+	if in == nil || *in == (Idea{}) {
+		return nil
 	}
+	i := *in
 	i.Note = field(i.Note)
 	if i.OwnerSource.Quote == "" {
 		i.OwnerSource.Quote = i.OwnerQuote
@@ -388,8 +403,8 @@ func (v *validator) idea(i Idea) Idea {
 		srcOK && speaker == SpeakerOwner
 	if !ok {
 		v.drop()
-		return Idea{}
+		return nil
 	}
 	i.OwnerSource.Speaker = speaker
-	return i
+	return &i
 }

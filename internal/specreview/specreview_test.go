@@ -268,7 +268,7 @@ func TestParse_ChecksDecidedResolvedIdea(t *testing.T) {
 	            {"comment_quote":"a comment nobody wrote","status":"open"}],
 	"notes":["trimmed"]}`
 	r := parseOne(t, raw, src)
-	if r.Summary != "s" || !r.CodeRead || r.Idea.Verdict != "matches" || len(r.DecidedAlone) != 1 || r.DecidedAlone[0].Chapter != "ch:2" {
+	if r.Summary != "s" || !r.CodeRead || r.Idea == nil || r.Idea.Verdict != "matches" || len(r.DecidedAlone) != 1 || r.DecidedAlone[0].Chapter != "ch:2" {
 		t.Errorf("result = %+v", r)
 	}
 	if len(r.Checks) != 2 || r.Checks[1].Chapter != "ch:2" || !strings.HasPrefix(r.Checks[0].Key, "ck:") {
@@ -279,7 +279,7 @@ func TestParse_ChecksDecidedResolvedIdea(t *testing.T) {
 	}
 
 	bad := strings.Replace(raw, `"goal_quote":"the owner can mute a channel"`, `"goal_quote":"something the doc never says"`, 1)
-	if r := parseOne(t, bad, src); r.Idea != (Idea{}) || r.Dropped != 5 {
+	if r := parseOne(t, bad, src); r.Idea != nil || r.Dropped != 5 {
 		t.Errorf("invented goal quote kept: %+v dropped %d", r.Idea, r.Dropped)
 	}
 }
@@ -320,7 +320,7 @@ func TestParse_Caps(t *testing.T) {
 func TestResult_JSONKeysPinned(t *testing.T) {
 	r := Result{
 		Summary: "The spec matches the idea; one promise has no task.",
-		Idea: Idea{
+		Idea: &Idea{
 			OwnerQuote: "mute a channel for a day", GoalQuote: "the owner can mute a channel for a day",
 			Verdict: "matches", Note: "Same scope.",
 			OwnerSource: Source{Kind: "conversation", Ref: "entry:1", Quote: "mute a channel for a day", Speaker: SpeakerOwner},
@@ -377,6 +377,55 @@ func TestResult_JSONKeysPinned(t *testing.T) {
 	}
 }
 
+// F2: a result with no idea (none given, or dropped) has no "idea" key, so
+// the Desktop never reads an empty idea as one. The Desktop decodes this
+// exact shape (Tests/Core/Fixtures/spec_review_result_empty.json, the
+// golden's copy).
+func TestResult_EmptyIdeaIsLeftOut(t *testing.T) {
+	got, err := json.Marshal(Result{Summary: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), `"idea"`) {
+		t.Fatalf("an empty idea is written: %s", got)
+	}
+	got = append(got, '\n')
+	golden := filepath.Join("testdata", "result_empty.golden")
+	if *update {
+		if err := os.WriteFile(golden, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(golden)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("empty result shape changed; got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// The Desktop's fixtures are byte copies of the goldens: a key change here
+// must reach the Swift decoder tests too.
+func TestResult_DesktopFixturesAreTheGoldens(t *testing.T) {
+	dir := filepath.Join("..", "..", "WatchtowerDesktop", "Tests", "Core", "Fixtures")
+	for golden, fixture := range map[string]string{
+		"result_keys.golden": "spec_review_result.json", "result_empty.golden": "spec_review_result_empty.json",
+	} {
+		want, err := os.ReadFile(filepath.Join("testdata", golden))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(dir, fixture))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(want) {
+			t.Errorf("%s differs from testdata/%s: copy the golden over", fixture, golden)
+		}
+	}
+}
+
 func FuzzParse(f *testing.F) {
 	f.Add(`{"summary":"s","agreements":[{"text":"a","status":"as_agreed","source":{"kind":"ask","ref":"ask:1","quote":"keep the state local"},"where":{"heading":"x","quote":"y"}}]}`)
 	f.Add("```json\n{}\n```")
@@ -404,6 +453,28 @@ func TestParse_DecisionsSourceNeedsDecisionsSection(t *testing.T) {
 	}
 }
 
+// F4: a spec's Decisions section is a "## " heading whose text starts with
+// "Decisions", any case ("## Decisions (owner's)"); "## Decisionsless" or a
+// deeper heading is not.
+func TestParse_DecisionsHeadingMayGoOn(t *testing.T) {
+	mk := `{"summary":"s","agreements":[{"text":"a","status":"as_agreed","source":{"kind":"decisions","ref":"","quote":"Mute state lives in the local database"}}]}`
+	src := testSources()
+	for heading, want := range map[string]int{
+		"## Decisions (owner's)": 1, "## DECISIONS": 1, "## decisions — owner-approved": 1,
+		"## Decisionsless": 0, "### Decisions": 0, "## Open decisions": 0,
+	} {
+		src.Doc = "## Behaviour\n\nMuting lasts twenty-four hours.\n\n" + heading + "\n\n- Mute state lives in the local database (ask #1)\n"
+		if r := parseOne(t, mk, src); len(r.Agreements) != want {
+			t.Errorf("%q: %d agreements, want %d", heading, len(r.Agreements), want)
+		}
+	}
+	for h, want := range map[string]bool{"Decisions (owner's)": true, "decisions": true, "Decisions2": false, "Decision": false} {
+		if got := isDecisionsHeading(h); got != want {
+			t.Errorf("isDecisionsHeading(%q) = %v", h, got)
+		}
+	}
+}
+
 func agreementFrom(kind, ref, quote string) string {
 	b, _ := json.Marshal(map[string]any{
 		"text": "agreed: " + quote, "status": "as_agreed", "note": "n",
@@ -420,11 +491,11 @@ func TestSpecReview03_IdeaNeedsOwnerWords(t *testing.T) {
 			`"verdict":"matches","owner_source":{"kind":"conversation","ref":"` + ref + `","quote":"` + quote + `"}}}`
 	}
 	r := parseOne(t, mk("entry:2", "the mute also covers every thread"), testSources())
-	if r.Idea != (Idea{}) || r.Dropped != 1 {
+	if r.Idea != nil || r.Dropped != 1 {
 		t.Fatalf("an idea quoting the agent was kept: %+v", r.Idea)
 	}
 	r = parseOne(t, mk("entry:1", "mute a channel for a day"), testSources())
-	if r.Idea.Verdict != "matches" || r.Idea.OwnerSource.Speaker != SpeakerOwner {
+	if r.Idea == nil || r.Idea.Verdict != "matches" || r.Idea.OwnerSource.Speaker != SpeakerOwner {
 		t.Fatalf("an owner idea: %+v", r.Idea)
 	}
 	// the target is the author's side: never the owner's idea
@@ -432,7 +503,7 @@ func TestSpecReview03_IdeaNeedsOwnerWords(t *testing.T) {
 	src.Target = "Mute a channel for a day from its header\n"
 	tr := `{"summary":"s","idea":{"owner_quote":"Mute a channel for a day","goal_quote":"the owner can mute a channel for a day",` +
 		`"verdict":"matches","owner_source":{"kind":"target","ref":"target","quote":"Mute a channel for a day"}}}`
-	if r := parseOne(t, tr, src); r.Idea != (Idea{}) {
+	if r := parseOne(t, tr, src); r.Idea != nil {
 		t.Fatalf("an idea from the target was kept: %+v", r.Idea)
 	}
 }

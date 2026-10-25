@@ -6,6 +6,7 @@ import (
 	"syscall"
 	"time"
 
+	"watchtower/internal/db"
 	"watchtower/internal/specreview"
 )
 
@@ -54,7 +55,7 @@ func (d *Daemon) phaseSpecReviewSweep(ctx context.Context) {
 	}
 	for _, r := range running {
 		alive := specReviewPIDAlive(r.PID)
-		started, perr := time.Parse("2006-01-02T15:04:05Z", r.StartedAt)
+		started, perr := db.ParseSpecReviewTime(r.StartedAt)
 		overdue := alive && perr == nil && now.Sub(started) > specReviewOverdueAfter
 		if alive && !overdue {
 			continue

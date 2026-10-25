@@ -94,7 +94,7 @@ func (a *specReviewCLIAgent) Review(ctx context.Context, folder, system, user st
 	ctx = digest.WithSource(ctx, specreview.ModelSource)
 	if a.cfg.AI.Provider == "ollama" {
 		out, _, _, err := cliBoundedGenerator(a.cfg).Generate(ctx, system, user, "")
-		return out, false, err
+		return out, false, wrapSpecReviewErr("ollama reviewer", err)
 	}
 	if folder == "" {
 		// Never a claude or codex run outside read-folder mode.
@@ -104,10 +104,10 @@ func (a *specReviewCLIAgent) Review(ctx context.Context, folder, system, user st
 	var err error
 	if a.cfg.AI.Provider == "codex" {
 		out, _, err = specReviewCodexClient(a.cfg, a.model, folder).QuerySync(ctx, system, user, "")
-	} else {
-		out, _, err = specReviewClaudeClient(a.cfg, a.model, folder).QuerySync(ctx, system, user, "")
+		return out, true, wrapSpecReviewErr("codex reviewer", err)
 	}
-	return out, true, err
+	out, _, err = specReviewClaudeClient(a.cfg, a.model, folder).QuerySync(ctx, system, user, "")
+	return out, true, wrapSpecReviewErr("claude reviewer", err)
 }
 
 // specReviewClaudeClient: no database path, so no --mcp-config; with
@@ -130,6 +130,14 @@ func specReviewCodexClient(cfg *config.Config, model, folder string) *codex.Clie
 	return c
 }
 
+// wrapSpecReviewErr names the reviewer a failure came from; nil stays nil.
+func wrapSpecReviewErr(what string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", what, err)
+}
+
 func runSpecReviewRun(cmd *cobra.Command, _ []string) error {
 	cfg, err := loadWorkbenchCLIConfig()
 	if err != nil {
@@ -138,7 +146,7 @@ func runSpecReviewRun(cmd *cobra.Command, _ []string) error {
 	applyProviderOverride(cfg)
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
-		return err
+		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
 
@@ -184,18 +192,18 @@ func specReviewFeed(database *db.DB) func(context.Context, int64) ([]sessionfeed
 	return func(ctx context.Context, id int64) ([]sessionfeed.Entry, error) {
 		sess, err := database.GetTerminalSession(id)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("session %d: %w", id, err)
 		}
 		if err := requireAgentSession(sess); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("session %d: %w", id, err)
 		}
 		convs, err := sessionFeedConversations(ctx, database, sess)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("session %d conversations: %w", id, err)
 		}
 		feed, err := sessionfeed.Build(convs, nil, sessionFeedAskLookup(database, sess.WorkbenchID))
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("session %d feed: %w", id, err)
 		}
 		return feed.Entries, nil
 	}
@@ -208,14 +216,14 @@ func runSpecReviewStart(cmd *cobra.Command, _ []string) error {
 	}
 	database, err := db.Open(cfg.DBPath())
 	if err != nil {
-		return err
+		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
 
 	id := specReviewFlagAsk
 	ask, err := database.GetOwnerAskByID(id)
 	if err != nil {
-		return err
+		return fmt.Errorf("loading ask %d: %w", id, err)
 	}
 	if t := specreview.DocType(ask.DocType); ask.Kind != "review" || (t != specreview.Spec && t != specreview.Plan) {
 		return usageError("ask %d is not a spec or plan review", id)
@@ -226,7 +234,7 @@ func runSpecReviewStart(cmd *cobra.Command, _ []string) error {
 		if errors.Is(err, db.ErrSpecReviewBusy) {
 			return &exitCodeError{code: 3, err: fmt.Errorf("spec review of ask %d: %w", id, err)}
 		}
-		return err
+		return fmt.Errorf("re-queueing spec review of ask %d: %w", id, err)
 	}
 	exe, err := specReviewExe()
 	if err != nil {
@@ -234,7 +242,7 @@ func runSpecReviewStart(cmd *cobra.Command, _ []string) error {
 	}
 	// A failed launch leaves the row queued: the daemon sweep starts it.
 	if err := LaunchSpecReview(exe, id, filepath.Join(cfg.WorkspaceDir(), "logs")); err != nil {
-		return err
+		return fmt.Errorf("launching spec review of ask %d: %w", id, err)
 	}
 	fmt.Fprintf(cmd.OutOrStdout(), "spec review of ask %d started\n", id)
 	return nil
@@ -270,7 +278,7 @@ func runSpecReviewShow(cmd *cobra.Command, _ []string) error {
 	}
 	database, err := db.OpenExisting(cfg.DBPath(), sessionFeedBusyTimeout)
 	if err != nil {
-		return err
+		return fmt.Errorf("opening database: %w", err)
 	}
 	defer database.Close()
 
@@ -280,11 +288,11 @@ func runSpecReviewShow(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("ask %d has no spec review", id)
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("reading spec review of ask %d: %w", id, err)
 	}
 	marks, err := database.ListSpecReviewMarks(id)
 	if err != nil {
-		return err
+		return fmt.Errorf("reading spec review marks of ask %d: %w", id, err)
 	}
 	out := specReviewShowJSON{
 		AskID: row.AskID, Status: row.Status, Reason: row.Reason, Provider: row.Provider, Model: row.Model,
