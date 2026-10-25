@@ -63,8 +63,9 @@ func gmailMediaOpener(cfg *config.Config, database *db.DB) media.GmailOpener {
 }
 
 // imapMediaOpener opens IMAP image parts for the media pass: each open
-// dials the account afresh with its stored settings and credentials (a
-// failed login records the account's auth state, as the syncer's does). A
+// dials the account afresh with its stored settings and credentials. A
+// failed login is a failed attempt of the item and records nothing on the
+// account (imap.Dial writes no auth state; the syncer's own login does). A
 // removed account is media.ErrGone; unusable credentials media.ErrSourceOff.
 func imapMediaOpener(cfg *config.Config, database *db.DB, logger *log.Logger) media.IMAPOpener {
 	return media.IMAPOpener{Dial: func(_ context.Context, accountID int64) (media.IMAPMessageSource, uint32, error) {

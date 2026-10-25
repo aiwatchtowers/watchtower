@@ -21,7 +21,10 @@ type SlackFileDownloader interface {
 // SlackOpener opens Slack image files through the client of the account
 // the item's namespaced channel belongs to. An item without a URL (an
 // external file), a file Slack no longer has and a URL off Slack's file
-// hosts are ErrGone; an account without a client is a failed attempt.
+// hosts are ErrGone, and so is a channel id without an account; an account
+// without a client (its token unreadable when the daemon started) is
+// ErrSourceOff: the row waits, no attempt spent, like a mail account that
+// cannot sign in.
 type SlackOpener struct {
 	Clients map[int64]SlackFileDownloader
 }
@@ -31,9 +34,12 @@ func (o SlackOpener) Open(ctx context.Context, it db.MediaItem, limit int64) (io
 		return nil, "", ErrGone
 	}
 	acct, _, ok := slack.SplitAccountID(it.SlackChannelID)
+	if !ok {
+		return nil, "", ErrGone
+	}
 	c := o.Clients[acct]
-	if !ok || c == nil {
-		return nil, "", fmt.Errorf("media: no Slack client for account %d", acct)
+	if c == nil {
+		return nil, "", fmt.Errorf("media: no Slack client for account %d: %w", acct, ErrSourceOff)
 	}
 	body, typ, err := c.DownloadFile(ctx, it.FetchURL, limit)
 	if err != nil {

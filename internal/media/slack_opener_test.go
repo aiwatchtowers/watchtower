@@ -77,14 +77,18 @@ func TestSlackOpener_DownloadsWithAccountClient(t *testing.T) {
 	_, err = io.ReadAll(rc)
 	require.ErrorIs(t, err, ErrTooLarge)
 
-	// Another error is a failed attempt, and so is an account without a client.
+	// Another error is a failed attempt.
 	one.readErr, one.err = nil, errors.New("connection reset")
 	_, _, err = op.Open(context.Background(), slackItem("1:C1", "https://files.slack.com/f"), 100)
 	require.Error(t, err)
 	require.NotErrorIs(t, err, ErrGone)
+	require.NotErrorIs(t, err, ErrSourceOff)
+	// An account without a client (its token unreadable at start) waits.
 	_, _, err = op.Open(context.Background(), slackItem("3:C1", "https://files.slack.com/f"), 100)
-	require.Error(t, err)
-	require.NotErrorIs(t, err, ErrGone)
+	require.ErrorIs(t, err, ErrSourceOff)
+	// A channel id without an account prefix is gone.
+	_, _, err = op.Open(context.Background(), slackItem("C1", "https://files.slack.com/f"), 100)
+	require.ErrorIs(t, err, ErrGone)
 }
 
 // keyEnv is a database with one known Jira project and a Slack message.

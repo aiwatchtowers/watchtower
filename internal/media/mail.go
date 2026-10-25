@@ -92,10 +92,12 @@ type IMAPMessageSource interface {
 
 // IMAPOpener opens IMAP image parts (locator img:<index>): it dials the
 // account afresh for every image (one connection and login per item — the
-// pass is sequential and mail images are few; a failed login there updates
-// the account's auth state as the syncer's does), refuses a folder whose UIDVALIDITY changed since the row
-// was recorded (ErrGone: its UIDs mean other messages now), fetches the raw
-// message into memory and walks to the index-th image part.
+// pass is sequential and mail images are few; a failed login there is a
+// failed attempt of the item and records nothing on the account — the
+// syncer's own login records its auth state), refuses a folder whose
+// UIDVALIDITY changed since the row was recorded (ErrGone: its UIDs mean
+// other messages now), fetches the raw message into memory and walks to the
+// index-th image part.
 type IMAPOpener struct {
 	Dial func(ctx context.Context, accountID int64) (src IMAPMessageSource, uidValidity uint32, err error)
 }
