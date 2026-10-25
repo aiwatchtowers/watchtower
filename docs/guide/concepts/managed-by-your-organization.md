@@ -20,6 +20,15 @@ Your company's configuration profile sets the value, and the app follows it unti
 Nothing is deleted because of a rule. A source your company does not allow shows **Blocked by your organization**: it stops syncing, and what was already synced stays. An automation that needs something not allowed shows **Blocked by your organization's policy** and does not run that step. If the iPhone is turned off by the rule, the phone's copy is removed and you pair it again once sync is allowed.
 
 ## Where to see the rules
+<!-- learn
+id: managed-see-rules
+title: See your company's rules
+text: A locked control follows your company's profile; **Settings → System → Privacy** lists every rule in plain words.
+area: setup
+level: power
+kind: feature
+since: next
+-->
 
 Open **Settings → System → Privacy**. The **Organization policy** section lists every rule in plain words, and any problem with the profile. The command `watchtower policy show` prints the same list.
 
