@@ -296,3 +296,22 @@ func TestInstructionSuggestionsPromptRegistered(t *testing.T) {
 		assert.NotContains(t, Defaults[id], agent)
 	}
 }
+
+// TestIdeasConsolidateChatMaterial pins ideas.consolidate v5 (AI chats feed
+// the registry): the template describes the chat material, the chat-only
+// new_note op, and that chat material never yields a new idea. A reworded but
+// unbumped template fails the version floor.
+func TestIdeasConsolidateChatMaterial(t *testing.T) {
+	assert.GreaterOrEqual(t, DefaultVersions[IdeasConsolidate], 5)
+	tmpl := Defaults[IdeasConsolidate]
+	for _, want := range []string{
+		`[chat "<title>"]`,
+		`"new_note" (chat material only)`,
+		`never "new_idea"`,
+		`{"op":"new_note"`,
+		`"attach_mention"`,
+	} {
+		assert.Contains(t, tmpl, want)
+	}
+	assert.Equal(t, 1, strings.Count(tmpl, "%s"), "one verb: the language directive")
+}

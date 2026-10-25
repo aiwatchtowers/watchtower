@@ -70,6 +70,40 @@ package enum ChatArtifactQueries {
         return out
     }
 
+    // MARK: - Kept artifacts (chat knowledge)
+
+    /// Pins `version` of an artifact as knowledge (**Keep in Knowledge**, and
+    /// **Update in Knowledge** for a newer version: one kept version per key).
+    package static func keep(_ db: Database, conversationID: Int64, artifactKey: String, version: Int) throws {
+        try db.execute(sql: """
+            INSERT INTO chat_knowledge_artifacts (conversation_id, artifact_key, version, kept_at)
+            VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+            ON CONFLICT (conversation_id, artifact_key) DO UPDATE SET
+                version = excluded.version, kept_at = excluded.kept_at
+            """, arguments: [conversationID, artifactKey, version])
+    }
+
+    /// **Remove from Knowledge**; a key that is not kept is a no-op.
+    package static func unkeep(_ db: Database, conversationID: Int64, artifactKey: String) throws {
+        try db.execute(sql: """
+            DELETE FROM chat_knowledge_artifacts WHERE conversation_id = ? AND artifact_key = ?
+            """, arguments: [conversationID, artifactKey])
+    }
+
+    /// The kept version of an artifact key, `nil` when it is not kept.
+    package static func keptVersion(_ db: Database, conversationID: Int64, artifactKey: String) throws -> Int? {
+        try Int.fetchOne(db, sql: """
+            SELECT version FROM chat_knowledge_artifacts WHERE conversation_id = ? AND artifact_key = ?
+            """, arguments: [conversationID, artifactKey])
+    }
+
+    /// The artifact keys of a conversation that are pinned as knowledge.
+    package static func keptKeys(_ db: Database, conversationID: Int64) throws -> Set<String> {
+        Set(try String.fetchAll(db, sql: """
+            SELECT artifact_key FROM chat_knowledge_artifacts WHERE conversation_id = ?
+            """, arguments: [conversationID]))
+    }
+
     private static func fetch(_ db: Database, id: Int64) throws -> ChatArtifact {
         guard let artifact = try ChatArtifact.fetchOne(db, sql: "SELECT * FROM chat_artifacts WHERE id = ?", arguments: [id]) else {
             throw DatabaseError(message: "chat artifact \(id) missing right after write")

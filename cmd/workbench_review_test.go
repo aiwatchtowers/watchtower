@@ -14,6 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/db"
+	"watchtower/internal/ownerconfirm"
+	"watchtower/internal/reviewdiff"
 )
 
 // reviewFixture: a workbench bound to a git repo (main + README.md, branch
@@ -281,4 +283,108 @@ func TestWorkbenchReviewStart_ReportsDeepState(t *testing.T) {
 	assert.Equal(t, "chapters", got["phase"])
 	assert.Equal(t, "dir:cmd", got["chapter_key"])
 	assert.Equal(t, float64(90), got["active_seconds"])
+}
+
+func TestWorkbenchReview_Approve(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644))
+	rid := int64(reviewJSON(t, wb, "start", "--session", itoa(s))["round"].(map[string]any)["id"].(float64))
+	_, err := database.Exec(`INSERT INTO review_comments (round_id, path, body, status) VALUES (?, 'README.md', 'old', 'carried')`, rid)
+	require.NoError(t, err)
+
+	refused := reviewJSON(t, wb, "approve", "--round", itoa(rid))
+	assert.Equal(t, false, refused["sent"], "an open carried comment refuses without --resolve-open")
+	assert.Empty(t, refused["line"])
+
+	done := reviewJSON(t, wb, "approve", "--round", itoa(rid), "--resolve-open")
+	assert.Equal(t, true, done["ok"])
+	assert.Equal(t, true, done["sent"])
+	assert.Equal(t, reviewdiff.ApprovedLine(rid), done["line"])
+	assert.Nil(t, done["comments"])
+
+	twice := reviewJSON(t, wb, "approve", "--round", itoa(rid))
+	assert.Equal(t, false, twice["sent"])
+	assert.Empty(t, twice["line"])
+}
+
+func roundStatus(t *testing.T, database *db.DB, rid int64) string {
+	t.Helper()
+	var status string
+	require.NoError(t, database.QueryRow(`SELECT status FROM review_rounds WHERE id = ?`, rid).Scan(&status))
+	return status
+}
+
+// Approve is the owner's verdict (AGENT-07): under any agent marker it is
+// refused before it reads or writes anything, and the round stays open.
+func TestWorkbenchReviewApprove_RefusedUnderAgentMarkers(t *testing.T) {
+	for _, marker := range agentEnvMarkers {
+		t.Run(marker, func(t *testing.T) {
+			database, wb, s, repo := reviewFixture(t)
+			require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644))
+			rid := int64(reviewJSON(t, wb, "start", "--session", itoa(s))["round"].(map[string]any)["id"].(float64))
+			asked := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+			t.Setenv(marker, "1")
+			_, _, err := runWorkbench(t, "review", "approve", "--workbench", itoa(wb), "--json",
+				"--round", itoa(rid), "--resolve-open")
+			resetSetFlags(workbenchReviewCmd.Commands()...)
+			require.ErrorContains(t, err, marker)
+			assert.Empty(t, *asked, "the refusal comes before the owner is asked")
+			assert.Equal(t, "open", roundStatus(t, database, rid))
+		})
+	}
+}
+
+// Without a marker the owner still confirms in the Desktop; a denial writes
+// nothing.
+func TestWorkbenchReviewApprove_OwnerDeniedLeavesRoundOpen(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644))
+	rid := int64(reviewJSON(t, wb, "start", "--session", itoa(s))["round"].(map[string]any)["id"].(float64))
+	asked := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Denied}, nil)
+	out := reviewJSON(t, wb, "approve", "--round", itoa(rid), "--resolve-open")
+	assert.Equal(t, false, out["ok"])
+	assert.Contains(t, out["error"], "refusing to approve a review round")
+	require.Len(t, *asked, 1)
+	assert.Equal(t, "approve a review round", (*asked)[0].Verb)
+	assert.Equal(t, approveConfirmDetail(rid, true), (*asked)[0].Detail)
+	assert.Equal(t, "open", roundStatus(t, database, rid))
+}
+
+// Send is the owner's request for changes (AGENT-07, ask #575): under any
+// agent marker it is refused before it reads or writes anything; the round
+// stays open and its draft stays a draft.
+func TestWorkbenchReviewSend_RefusedUnderAgentMarkers(t *testing.T) {
+	for _, marker := range agentEnvMarkers {
+		t.Run(marker, func(t *testing.T) {
+			database, wb, s, repo := reviewFixture(t)
+			require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644))
+			rid := int64(reviewJSON(t, wb, "start", "--session", itoa(s))["round"].(map[string]any)["id"].(float64))
+			_, err := database.Exec(`INSERT INTO review_comments (round_id, path, body) VALUES (?, 'README.md', 'why?')`, rid)
+			require.NoError(t, err)
+			asked := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Confirmed}, nil)
+			t.Setenv(marker, "1")
+			_, _, err = runWorkbench(t, "review", "send", "--workbench", itoa(wb), "--json", "--round", itoa(rid))
+			resetSetFlags(workbenchReviewCmd.Commands()...)
+			require.ErrorContains(t, err, marker)
+			assert.Empty(t, *asked, "the refusal comes before the owner is asked")
+			assert.Equal(t, "open", roundStatus(t, database, rid))
+			var status string
+			require.NoError(t, database.QueryRow(`SELECT status FROM review_comments WHERE round_id = ?`, rid).Scan(&status))
+			assert.Equal(t, "draft", status)
+		})
+	}
+}
+
+// Without a marker the owner still confirms in the Desktop; a denial sends nothing.
+func TestWorkbenchReviewSend_OwnerDeniedLeavesRoundOpen(t *testing.T) {
+	database, wb, s, repo := reviewFixture(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "README.md"), []byte("changed\n"), 0o644))
+	rid := int64(reviewJSON(t, wb, "start", "--session", itoa(s))["round"].(map[string]any)["id"].(float64))
+	asked := withOwnerDesktop(t, ownerconfirm.Reply{Decision: ownerconfirm.Denied}, nil)
+	out := reviewJSON(t, wb, "send", "--round", itoa(rid))
+	assert.Equal(t, false, out["ok"])
+	assert.Contains(t, out["error"], "refusing to send a review round")
+	require.Len(t, *asked, 1)
+	assert.Equal(t, "send a review round", (*asked)[0].Verb)
+	assert.Equal(t, "open", roundStatus(t, database, rid))
 }

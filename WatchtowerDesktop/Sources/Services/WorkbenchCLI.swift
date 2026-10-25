@@ -921,6 +921,13 @@ struct WorkbenchCLI {
         try await review(["send", "--workbench", String(projectID), "--round", String(roundID)])
     }
 
+    /// Closes the round as approved (#964); `resolveOpen` resolves its carried
+    /// and outdated comments in the same transaction. Same envelope as send.
+    func reviewApprove(projectID: Int64, roundID: Int64, resolveOpen: Bool) async throws -> ReviewEnvelope {
+        try await review(["approve", "--workbench", String(projectID), "--round", String(roundID)]
+            + (resolveOpen ? ["--resolve-open"] : []))
+    }
+
     func reviewContext(projectID: Int64, sessionID: Int64) async throws -> ReviewEnvelope {
         try await review(["context", "--workbench", String(projectID), "--session", String(sessionID)])
     }

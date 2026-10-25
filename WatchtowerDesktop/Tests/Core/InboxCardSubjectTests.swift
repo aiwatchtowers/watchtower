@@ -159,6 +159,22 @@ final class InboxCardSubjectTests: XCTestCase {
         XCTAssertTrue(subject.body.contains("Weekly cadence\n\nMentions\n- Bo (Slack): let's go weekly"), subject.body)
     }
 
+    /// An assistant chat mention is a model's words: Discuss in Chat and Hand
+    /// to Agent never carry it; the owner's own chat turn stays (ask #516).
+    func testIdeaSubjectLeavesOutAssistantChatMentions() {
+        let idea = Idea(row: Row(["id": 4, "kind": "decision", "title": "Ship Monday", "essence": "Monday"]
+            as [String: (any DatabaseValueConvertible)?]))
+        let mentions = [("owner", "owner words"), ("assistant", "model conclusion")].enumerated().map { index, pair in
+            IdeaMention(row: Row(["id": index + 1, "idea_id": 4, "source": "chat", "ref": "chat:1:\(index + 1)",
+                                  "quote": pair.1, "author": pair.0] as [String: (any DatabaseValueConvertible)?]))
+        }
+        let subject = InboxCardSubject(idea: idea, mentions: mentions)
+        XCTAssertTrue(subject.body.contains("owner words"), subject.body)
+        XCTAssertFalse(subject.body.contains("model conclusion"), subject.body)
+        XCTAssertFalse(mentions[1].isAgentVisible)
+        XCTAssertTrue(mentions[0].isAgentVisible)
+    }
+
     func testAttachmentNamesAreDistinctPerKind() {
         let names = [
             InboxCardSubject(automationCard()).attachmentName,

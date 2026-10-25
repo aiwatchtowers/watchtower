@@ -1037,6 +1037,15 @@ CREATE TABLE 'chat_fts_docsize'(id INTEGER PRIMARY KEY, sz BLOB)
 table	chat_fts_idx
 CREATE TABLE 'chat_fts_idx'(segid, term, pgno, PRIMARY KEY(segid, term)) WITHOUT ROWID
 
+table	chat_knowledge_artifacts
+CREATE TABLE chat_knowledge_artifacts (
+conversation_id INTEGER NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+artifact_key TEXT NOT NULL,
+version INTEGER NOT NULL,
+kept_at TEXT NOT NULL,
+PRIMARY KEY (conversation_id, artifact_key)
+)
+
 table	chat_messages
 CREATE TABLE chat_messages (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1432,7 +1441,7 @@ table	idea_mentions
 CREATE TABLE "idea_mentions" (
 id INTEGER PRIMARY KEY AUTOINCREMENT,
 idea_id INTEGER NOT NULL REFERENCES ideas(id) ON DELETE CASCADE,
-source TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap','linear')),
+source TEXT NOT NULL CHECK(source IN ('slack','meeting','gmail','jira','owner','imap','linear','chat')),
 ref TEXT NOT NULL DEFAULT '',
 quote TEXT NOT NULL DEFAULT '',
 author TEXT NOT NULL DEFAULT '',
@@ -1462,7 +1471,7 @@ rating_comment TEXT NOT NULL DEFAULT '',
 last_mention_at TEXT NOT NULL DEFAULT '',
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-, seen_at TEXT)
+, seen_at TEXT, chat_born INTEGER NOT NULL DEFAULT 0)
 
 table	imap_messages
 CREATE TABLE imap_messages (
@@ -2651,7 +2660,7 @@ active_seconds INTEGER NOT NULL DEFAULT 0 CHECK (active_seconds >= 0),
 created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 sent_at TEXT,
 delivered_at TEXT
-)
+, outcome TEXT NOT NULL DEFAULT '' CHECK (outcome IN ('', 'changes', 'approved')))
 
 table	review_viewed
 CREATE TABLE review_viewed (
@@ -3173,7 +3182,7 @@ name TEXT NOT NULL,
 domain TEXT NOT NULL DEFAULT '',
 synced_at TEXT, -- ISO8601 timestamp of last sync
 inbox_last_processed_ts REAL NOT NULL DEFAULT 0 -- Unix timestamp of last inbox pipeline run
-, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0, memory_focus_fingerprint TEXT NOT NULL DEFAULT '', memory_last_interaction_id INTEGER NOT NULL DEFAULT 0, ideas_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_stream_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_transcript_floor INTEGER NOT NULL DEFAULT 0, digest_fastforward_ts REAL NOT NULL DEFAULT 0)
+, secretary_profile TEXT NOT NULL DEFAULT '', compose_last_run_ts REAL NOT NULL DEFAULT 0, style_profile TEXT NOT NULL DEFAULT '', style_profile_updated_at TEXT NOT NULL DEFAULT '', memory_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_ingested_situation_id INTEGER NOT NULL DEFAULT 0, memory_chat_turn_floor INTEGER NOT NULL DEFAULT 0, memory_calendar_last_extracted_ts REAL NOT NULL DEFAULT 0, memory_last_situation_feedback_id INTEGER NOT NULL DEFAULT 0, memory_focus_fingerprint TEXT NOT NULL DEFAULT '', memory_last_interaction_id INTEGER NOT NULL DEFAULT 0, ideas_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_stream_digest_floor INTEGER NOT NULL DEFAULT 0, ideas_transcript_floor INTEGER NOT NULL DEFAULT 0, digest_fastforward_ts REAL NOT NULL DEFAULT 0, ideas_chat_floor INTEGER NOT NULL DEFAULT 0)
 
 trigger	automation_runs_replay_cleanup
 CREATE TRIGGER automation_runs_replay_cleanup AFTER UPDATE OF status ON automation_runs
@@ -4105,6 +4114,12 @@ GROUP BY up.ancestor
 1	term		notnull=1	dflt=NULL	pk=2
 2	pgno		notnull=0	dflt=NULL	pk=0
 
+## chat_knowledge_artifacts
+0	conversation_id	INTEGER	notnull=1	dflt=NULL	pk=1
+1	artifact_key	TEXT	notnull=1	dflt=NULL	pk=2
+2	version	INTEGER	notnull=1	dflt=NULL	pk=0
+3	kept_at	TEXT	notnull=1	dflt=NULL	pk=0
+
 ## chat_messages
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1
 1	conversation_id	INTEGER	notnull=1	dflt=NULL	pk=0
@@ -4470,6 +4485,7 @@ GROUP BY up.ancestor
 16	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 17	updated_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 18	seen_at	TEXT	notnull=0	dflt=NULL	pk=0
+19	chat_born	INTEGER	notnull=1	dflt=0	pk=0
 
 ## imap_messages
 0	account_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -5518,6 +5534,7 @@ GROUP BY up.ancestor
 14	created_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 15	sent_at	TEXT	notnull=0	dflt=NULL	pk=0
 16	delivered_at	TEXT	notnull=0	dflt=NULL	pk=0
+17	outcome	TEXT	notnull=1	dflt=''	pk=0
 
 ## review_viewed
 0	round_id	INTEGER	notnull=1	dflt=NULL	pk=1
@@ -5993,4 +6010,5 @@ GROUP BY up.ancestor
 17	ideas_stream_digest_floor	INTEGER	notnull=1	dflt=0	pk=0
 18	ideas_transcript_floor	INTEGER	notnull=1	dflt=0	pk=0
 19	digest_fastforward_ts	REAL	notnull=1	dflt=0	pk=0
+20	ideas_chat_floor	INTEGER	notnull=1	dflt=0	pk=0
 

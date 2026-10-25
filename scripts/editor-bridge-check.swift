@@ -111,6 +111,8 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     var askAIs: [String] = []
     /// The diff page's `comment {startLine, endLine, side}` posts.
     var comments: [[String: Any]] = []
+    /// The diff page's `ask {startLine, endLine, side}` posts.
+    var asks: [[String: Any]] = []
     /// The diff page's `undo {hunkId}` posts.
     var undos: [String] = []
     var errors: [String] = []
@@ -194,6 +196,13 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
                 return
             }
             comments.append(body)
+        case "ask":
+            // Decoded as MonacoDiffView.Coordinator does.
+            guard body["startLine"] is Int, body["endLine"] is Int, body["side"] is String else {
+                errors.append("malformed ask message: \(body)")
+                return
+            }
+            asks.append(body)
         case "undo":
             // Decoded as MonacoDiffView.Coordinator does: a string hunk id.
             guard let id = body["hunkId"] as? String else {
@@ -276,6 +285,10 @@ final class Page: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
 
 let helpers = #"""
 window.__h = {
+  // The editor mouse and decorations act on: the page's first editor, or
+  // `__h.target` (the diff page sets its modified editor).
+  target: null,
+  editor: function () { return __h.target || monaco.editor.getEditors()[0]; },
   model: function (id) {
     return monaco.editor.getModels().filter(function (m) { return m.uri.path.indexOf("/" + id + "/") === 0; })[0] || null;
   },
@@ -303,7 +316,7 @@ window.__h = {
   // A mouse event at line:col of the editor, the way a real one reaches
   // Monaco's view (pointerdown records the pointer, mousedown hit-tests).
   mouse: function (types, line, col, meta) {
-    var e = monaco.editor.getEditors()[0];
+    var e = __h.editor();
     e.layout();
     var p = e.getScrolledVisiblePosition({ lineNumber: line, column: col });
     if (!p) { return false; }
@@ -323,7 +336,7 @@ window.__h = {
   hover: function (line, col, meta) { return __h.mouse(["mousemove"], line, col, meta); },
   // Decorations of the model on screen carrying `cls` as their inline class.
   decorations: function (cls) {
-    var m = monaco.editor.getEditors()[0].getModel();
+    var m = __h.editor().getModel();
     if (!m) { return -1; }
     return m.getAllDecorations().filter(function (d) { return d.options.inlineClassName === cls; })
       .map(function (d) { return d.range.startLineNumber + ":" + d.range.startColumn + "-" + d.range.endColumn; });
@@ -1301,8 +1314,87 @@ func diffPageChecks(root: URL) async {
     check("Comment: posts the selection's lines and side",
           posted && first?["startLine"] as? Int == 1 && first?["endLine"] as? Int == 3 && first?["side"] as? String == "new",
           "\(page.comments)")
+    _ = await page.eval(
+        "(function () { var d = monaco.editor.getDiffEditors()[0];"
+            + " var e = d.getOriginalEditor(); e.setSelection(new monaco.Range(1, 1, 2, 1)); e.getAction('wt.ask').run();"
+            + " return true; })()"
+    )
+    let asked = await wait(3) { !page.asks.isEmpty }
+    let ask = page.asks.first
+    check("Ask agent: posts the selection's lines and side (a selection ending at column 1 leaves that line out)",
+          asked && ask?["startLine"] as? Int == 1 && ask?["endLine"] as? Int == 1 && ask?["side"] as? String == "old",
+          "\(page.asks)")
     await diffNotesAndHunksChecks(page)
+    await diffFoldChecks(page)
+    await diffNavigationChecks(page)
     check("diff page: no error posted during the run", page.errors.isEmpty, page.errors.joined(separator: "; "))
+}
+
+/// Go to definition and Usages on the diff's new side (board #960): ⌘-click
+/// and `definitionAtCursor` post `definition` with the shown path as id,
+/// `definitionDone` clears the busy underline of the latest req only, the
+/// context menu's Show All Usages and `usagesAtCursor` post `usages`; the
+/// old side posts nothing.
+@MainActor
+func diffNavigationChecks(_ page: Page) async {
+    _ = await page.eval(helpers)
+    await page.call("wt.showDiff", [
+        "path": "apps/web/nav.go", "original": "func target() {}\nvar y = 1\n", "modified": "func target() {}\nvar x = target()\n\n",
+        "inline": false, "fullFile": true, "comments": [Any](),
+    ] as [String: Any])
+    await pause(0.3)
+    page.definitions.removeAll()
+    page.usages.removeAll()
+    // Side by side at the harness's 800 px (Monaco goes inline below 900 px).
+    _ = await page.eval("monaco.editor.getDiffEditors()[0].updateOptions({ useInlineViewWhenSpaceIsLimited: false }); true")
+    await pause(0.2)
+    // Hovered before any click: after the harness's synthetic click, its
+    // mousemove no longer reaches the editor's onMouseMove.
+    _ = await page.eval("__h.target = monaco.editor.getDiffEditors()[0].getModifiedEditor(); true")
+    _ = await page.eval("__h.hover(2, 11, true)")
+    let hovered = await page.eval("__h.decorations('wt-def-link')") as? [String]
+    check("diff: ⌘-hover underlines the word", hovered == ["2:9-15"], "\(String(describing: hovered))")
+    _ = await page.eval("__h.hover(2, 11, false)")
+    check("diff: hover without ⌘ leaves no underline", await page.eval("__h.decorations('wt-def-link')") as? [String] == [])
+    _ = await page.eval("__h.target = monaco.editor.getDiffEditors()[0].getOriginalEditor(); true")
+    _ = await page.eval("__h.click(1, 7, true)")
+    await pause(0.2)
+    check("diff: ⌘-click on the old side posts nothing", page.definitions.isEmpty, "\(page.definitions)")
+    _ = await page.eval("__h.target = monaco.editor.getDiffEditors()[0].getModifiedEditor(); true")
+    _ = await page.eval("__h.click(2, 11, true)")
+    let clicked = await wait(2) { !page.definitions.isEmpty }
+    let first = page.definitions.first
+    check("diff: ⌘-click on the new side posts definition {req, id = path, word, line, col}",
+          clicked && first?.id == "apps/web/nav.go" && first?.word == "target" && first?.line == 2 && first?.col == 11,
+          "\(page.definitions)")
+    check("diff: the word gets the busy underline",
+          await page.eval("__h.decorations('wt-def-busy')") as? [String] == ["2:9-15"])
+
+    _ = await page.eval("monaco.editor.getDiffEditors()[0].getModifiedEditor().setPosition({ lineNumber: 1, column: 7 }); true")
+    let asked = await page.eval("wt.definitionAtCursor()") as? Bool
+    let second = page.definitions.last
+    check("diff: definitionAtCursor posts the word at the new side's cursor with the next req",
+          asked == true && page.definitions.count == 2 && second?.line == 1 && second.map { $0.req > first?.req ?? .max } == true,
+          "\(page.definitions)")
+    await page.call("wt.definitionDone", first?.req ?? -1)
+    check("diff: definitionDone of an older req leaves the underline",
+          await page.eval("__h.decorations('wt-def-busy')") as? [String] == ["1:6-12"])
+    await page.call("wt.definitionDone", second?.req ?? -1)
+    check("diff: definitionDone of the latest req clears it",
+          await page.eval("__h.decorations('wt-def-busy')") as? [String] == [])
+
+    let viaMenu = await page.eval("wt.usagesAtCursor()") as? Bool
+    _ = await page.eval("monaco.editor.getDiffEditors()[0].getModifiedEditor().getAction('wt.showUsages').run(); true")
+    let posted = await wait(2) { page.usages.count == 2 }
+    check("diff: usagesAtCursor and the Show All Usages action post usages {id, word, line, col}",
+          viaMenu == true && posted && page.usages.allSatisfy { $0.id == "apps/web/nav.go" && $0.word == "target" && $0.line == 1 },
+          "\(page.usages)")
+    let oldAction = await page.eval("monaco.editor.getDiffEditors()[0].getOriginalEditor().getAction('wt.showUsages') === null") as? Bool
+    check("diff: the old side has no Show All Usages", oldAction == true)
+    _ = await page.eval("monaco.editor.getDiffEditors()[0].getModifiedEditor().setPosition({ lineNumber: 3, column: 1 }); true")
+    let noWord = await page.eval("wt.definitionAtCursor()") as? Bool
+    check("diff: no word at the cursor posts nothing and says so", noWord == false && page.definitions.count == 2)
+    _ = await page.eval("__h.target = null; true")
 }
 
 /// `wt.setNotes` / `wt.setHunks` and the `undo` post on the loaded diff page:
@@ -1359,6 +1451,55 @@ func diffNotesAndHunksChecks(_ page: Page) async {
     await pause(0.2)
     let cleared = await page.evalInt("document.querySelectorAll('.wt-note, .wt-undo').length")
     check("showDiff: clears the notes and hunk zones", cleared == 0, "\(String(describing: cleared))")
+}
+
+/// Changes | Full file (board #959): unchanged runs fold, the lines a
+/// comment, note or Undo zone sits on are unfolded, `wt.setFullFile` shows
+/// and folds again, `wt.focus(line)` unfolds its line. Hidden lines are read
+/// from the modified editor's view model (harness only).
+@MainActor
+func diffFoldChecks(_ page: Page) async {
+    let original = (1...100).map { "line \($0)" }.joined(separator: "\n") + "\n"
+    let modified = original.replacingOccurrences(of: "line 50\n", with: "line fifty\n")
+    await page.call("wt.showDiff", [
+        "path": "long.txt", "original": original, "modified": modified, "inline": false, "fullFile": false,
+        "comments": [["id": 9, "startLine": 5, "endLine": 5, "body": "far up", "status": "draft", "reply": ""] as [String: Any]],
+        "notes": [["startLine": 90, "endLine": 90, "text": "far down"] as [String: Any]],
+        "hunks": [["id": "0123456789abcdef", "newStart": 47, "canUndo": true, "reason": ""] as [String: Any]],
+    ] as [String: Any])
+    let hiddenJS = "(function (n) { var a = monaco.editor.getDiffEditors()[0].getModifiedEditor()._getViewModel().getHiddenAreas();"
+        + " return a.some(function (r) { return r.startLineNumber <= n && n <= r.endLineNumber; }); })"
+    func hidden(_ line: Int) async -> Bool? { await page.eval("\(hiddenJS)(\(line))") as? Bool }
+    // The diff is computed off the call: poll the view model until `line` is (un)folded.
+    func settles(_ line: Int, hidden want: Bool) async -> Bool {
+        let deadline = Date().addingTimeInterval(5)
+        while await hidden(line) != want {
+            if Date() > deadline { return false }
+            await pause(0.02)
+        }
+        return true
+    }
+    let folded = await settles(25, hidden: true)
+    check("Changes: an unchanged run far from the change is folded", folded)
+    // Each zone's anchor line (the line it sits after) is unfolded: the
+    // comment's last line 5, the Undo zone's 46, the note's 89.
+    let shown = [await hidden(5), await hidden(46), await hidden(89)]
+    check("Changes: the anchor lines of the comment, note and Undo zones are unfolded",
+          shown.allSatisfy { $0 == false }, "\(shown)")
+    await page.call("wt.setComments", [["id": 9, "startLine": 30, "endLine": 30, "body": "mid", "status": "draft", "reply": ""] as [String: Any]])
+    let comment30 = await hidden(30)
+    check("setComments: a new comment's folded line is unfolded", comment30 == false, "\(String(describing: comment30))")
+    await page.call("wt.setFullFile", true)
+    let full = await settles(25, hidden: false)
+    check("setFullFile(true): nothing is folded", full)
+    await page.call("wt.setFullFile", false)
+    let refolded = await settles(25, hidden: true)
+    let kept = await hidden(30)
+    check("setFullFile(false): folds again, the comment's line stays unfolded", refolded && kept == false,
+          "\(String(describing: kept))")
+    await page.call("wt.focus", 20)
+    let focused = await hidden(20)
+    check("focus(line): a folded line is unfolded", focused == false, "\(String(describing: focused))")
 }
 
 /// Without textmate/ (a build where scripts/fetch-monaco.sh did not run),

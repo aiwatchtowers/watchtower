@@ -83,10 +83,11 @@ func fastForwardSecretaryInbox(database *db.DB, now time.Time) error {
 	return nil
 }
 
-// fastForwardIdeas stamps the three workspace-level consolidator floors to
-// the current top of the source tables they track — exactly migration
-// 00050's install-time seeding semantics (digest_topics/stream_digests/
-// meeting_transcripts). Those three are the whole of it: they are what
+// fastForwardIdeas stamps the four workspace-level consolidator floors to
+// the current top of the source tables they track — exactly migrations
+// 00050's and 00154's install-time seeding semantics (digest_topics/
+// stream_digests/meeting_transcripts/chat_messages). Those four are the whole
+// of it: they are what
 // ideas.enabled actually gates (stage 2, the consolidator), and stamping
 // them is what stops the accumulated backlog from being mined on the next
 // cycle.
@@ -104,6 +105,13 @@ func fastForwardIdeas(database *db.DB) error {
 	}
 	if err := database.SetIdeasFloors(digestTop, streamTop, transcriptTop); err != nil {
 		return fmt.Errorf("fast-forwarding ideas floors: %w", err)
+	}
+	chatTop, err := database.IdeasChatFloorTop()
+	if err != nil {
+		return fmt.Errorf("fast-forwarding ideas chat floor: reading table top: %w", err)
+	}
+	if err := database.SetIdeasChatFloor(chatTop); err != nil {
+		return fmt.Errorf("fast-forwarding ideas chat floor: %w", err)
 	}
 	return nil
 }
