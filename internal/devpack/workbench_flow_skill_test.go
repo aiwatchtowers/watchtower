@@ -34,7 +34,7 @@ func TestFlowSkillShipsWithMarkerAndName(t *testing.T) {
 	content := string(body)
 	assert.Equal(t, "watchtower-flow", name)
 	assert.True(t, HasMarker(content), "the preset carries %s (DEV-04)", MarkerKey)
-	assert.Contains(t, content, "\n"+MarkerKey+": v10\n")
+	assert.Contains(t, content, "\n"+MarkerKey+": v11\n")
 	assert.Contains(t, content, "\nname: watchtower-flow\n")
 	assert.Contains(t, content, "\ndescription: Use in a folder bound to a Watchtower workbench")
 	s := flowSkill()
@@ -58,7 +58,13 @@ func TestFlowSkill_SectionsMovedVerbatimFromV8(t *testing.T) {
 	features = strings.Replace(features, "Priorities are the owner's ordering of the work: work on the highest-priority open target first, "+
 		"and change a priority only when the owner asks or agrees (`update_target` with `priority`).\n\n", "", 1)
 	features = strings.Replace(features, `as "Asking the owner" below says`, "as the `watchtower-workbench` skill's \"Asking the owner\" says", 1)
-	assert.Equal(t, features, skillSection(t, flow, "Features, specs and plans"))
+	// v11 (spec review) adds the Decisions/mockups/Spec bullet after the review bullet.
+	got := skillSection(t, flow, "Features, specs and plans")
+	start := strings.Index(got, "- **Every spec carries")
+	require.GreaterOrEqual(t, start, 0)
+	end := start + strings.Index(got[start:], "\n") + 1
+	got = got[:start] + got[end:]
+	assert.Equal(t, features, got)
 	assert.Contains(t, skillSection(t, flow, "What `in_review` means"),
 		"`in_review` means agents are reviewing the work — a code review, a document review by reviewer agents. It never means waiting for the owner")
 }
@@ -96,3 +102,12 @@ func TestWorkbenchSkill_FolderRulesAndConditionalChecks(t *testing.T) {
 
 func mustCore() []byte { _, b := WorkbenchSkill(); return b }
 func mustFlow() []byte { _, b := FlowSkill(); return b }
+
+// Spec review: the rules a spec and a plan follow so the independent reviewer
+// has something to compare them with.
+func TestFlowSkill_SpecReviewRules(t *testing.T) {
+	features := skillSection(t, string(mustFlow()), "Features, specs and plans")
+	for _, want := range []string{"doc_type", "## Decisions", "docs/design/mockups/", "**Spec:**"} {
+		assert.Contains(t, features, want)
+	}
+}
