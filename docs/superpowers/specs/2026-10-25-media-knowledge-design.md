@@ -110,3 +110,13 @@ Success: a thread whose only content is a screenshot of an error, a Confluence p
 5. Strong model for images (diagrams), light model for link summaries.
 6. Workchat images are out (Claude Code already sees them).
 7. (Owner decision, ask #573) No new switch: describing images and links is part of Knowledge search — it runs whenever Knowledge search is on, and the feature's copy changes from "no AI, nothing leaves your Mac" to say it uses AI for images and fetches public links.
+
+## Security review (Fable, 2026-10-25) and owner decisions (ask #590)
+
+A security review of this spec and its plan found gaps that the plan now closes: redirects re-run every never-fetch rule and only ports 80/443 are fetched; descriptions are labelled as AI descriptions of third-party content wherever agents read them; Slack files hosted outside Slack are not downloaded and the token goes only to the account's own Slack hosts; text from fetched pages never creates issue or page links; extra reserved/embedded-IPv4 address ranges are refused; `sips` runs bounded; dedupe never copies a description across accounts; the image call cannot load MCP servers; capability paths (`/reset`, `/invite`, …) are not fetched; error text never stores a URL or body; owner uploads are opened without following links.
+
+Owner decisions:
+- (A) The corp build works as everywhere, plus a deny list of hosts (`knowledge.link_fetch_deny_hosts`, seeded for the corp build) that is never fetched; corp images are described.
+- (B) Links are fetched from every channel and DM; opening a link can tell its author it was opened — the guide says so.
+- (C) No caps on how many images or links are processed; bots' images are described.
+- (D) Text read off screenshots is stored and searchable as is (no secret scrubbing).
