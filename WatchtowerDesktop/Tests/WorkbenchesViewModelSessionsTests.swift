@@ -46,7 +46,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
     private var pool: DatabasePool!
     private var path: String!
     private var defaults: UserDefaults!
-    private var folder: URL!
+    var folder: URL!
     private var processes: [FakeTerminalSession] = []
     private var center: TerminalCenter!
     private var transcripts = true
@@ -78,7 +78,7 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeVM(runner: any CLIRunnerProtocol = FakeCLIRunner()) -> WorkbenchesViewModel {
+    func makeVM(runner: any CLIRunnerProtocol = FakeCLIRunner()) -> WorkbenchesViewModel {
         let vm = WorkbenchesViewModel(dbPool: pool, cli: WorkbenchCLI(runner: runner), defaults: defaults,
                                       terminalCenter: center)
         vm.titleService = { [weak self] id in
@@ -2090,22 +2090,5 @@ final class WorkbenchesViewModelSessionsTests: XCTestCase {
                       "a run adopted by the reattach keeps its files")
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("9999").path),
                        "a session not running loses its old files")
-    }
-
-    /// A session's exit removes what the owner pasted into its Workchat
-    /// (#604 S9); another session's files stay.
-    func testASessionExitRemovesItsWorkchatFiles() async throws {
-        let root = folder.appendingPathComponent("workchat-attachments", isDirectory: true)
-        let store = WorkchatAttachmentStore(root: root)
-        let gone = try store.save(Data("png".utf8), name: "a.png", sessionID: 41)
-        let kept = try store.save(Data("png".utf8), name: "b.png", sessionID: 42)
-        let vm = makeVM()
-        vm.attachmentStore = store
-
-        vm.sessionExited(41, code: 0)
-
-        let removed = await waitForCondition { !FileManager.default.fileExists(atPath: gone.deletingLastPathComponent().path) }
-        XCTAssertTrue(removed)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path))
     }
 }
