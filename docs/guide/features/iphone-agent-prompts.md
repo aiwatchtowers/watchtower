@@ -13,6 +13,15 @@ Both need a grant on the Mac. **Answer permission prompts from this phone** is i
 ## Using it
 
 ### Answer a permission prompt
+<!-- learn
+id: iphone-allow-once
+title: Approve a permission prompt
+text: When a Claude Code session asks permission, tap **Allow once** or **Deny** on its card on the phone.
+area: iphone
+level: next
+kind: feature
+since: 0.24.0
+-->
 
 A Claude Code session at a permission prompt shows a card with the tool and what it will run, plus **Allow once** and **Deny**. **Allow once** approves that one call, never a rule (a shell command asks first). Nothing is typed into the session.
 
@@ -28,6 +37,15 @@ If you allowed a long-running command on the Mac, the phone keeps showing the pr
 Prompts show in **Now** under **Waiting for you** and in the Workbench badge, with no push alert. Codex sessions keep **Needs approval on the Mac**.
 
 ### Interrupt a working agent
+<!-- learn
+id: iphone-interrupt
+title: Interrupt an agent from the phone
+text: Choose **Interrupt** next to **Stop** in a session's menu to send the working agent an Esc.
+area: iphone
+level: power
+kind: feature
+since: 0.24.0
+-->
 
 **Interrupt**, next to **Stop** in a session's menu, sends the agent an Esc. It needs **Type into sessions from this phone** and shows only while a Claude Code session is **Working** with no prompt open. One that reaches the Mac over two minutes late is dropped.
 
