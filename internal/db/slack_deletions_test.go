@@ -80,6 +80,28 @@ func TestTombstoneSlackMessages_BlanksRowAndChildren(t *testing.T) {
 	assert.Equal(t, 0, n)
 }
 
+// The tombstone deletes the message's media rows (an UPDATE fires no
+// cascade) and marks both their stored kb_ref and the message's current
+// document; a sibling message's items stay.
+func TestTombstoneSlackMessages_DeletesMediaRows(t *testing.T) {
+	d := openTestDB(t)
+	mediaFixtures(t, d)
+	mustExecAll(t, d, `INSERT INTO messages (channel_id, ts, user_id, text) VALUES ('1:C1', '2.0', '1:U1', 'keep')`)
+	gone := insertMediaRow(t, d, "slack", "slack:1:C1:1.0", "slack_channel_id, slack_ts, status, body, kb_source, kb_ref",
+		"'1:C1', '1.0', 'ok', 'b', 'slack', 'slack:day:1:C1:stale'")
+	kept := insertMediaRow(t, d, "slack", "slack:1:C1:2.0", "slack_channel_id, slack_ts", "'1:C1', '2.0'")
+	mustExecAll(t, d, `DELETE FROM kb_dirty`)
+
+	n, err := d.TombstoneSlackMessages([]SlackMessageKey{{ChannelID: "1:C1", TS: "1.0"}})
+	require.NoError(t, err)
+	require.Equal(t, 1, n)
+	assert.Equal(t, 0, count(t, d, `SELECT COUNT(*) FROM media_items WHERE id = ?`, gone))
+	assert.Equal(t, 1, count(t, d, `SELECT COUNT(*) FROM media_items WHERE id = ?`, kept))
+	marks := kbDirtyKeys(t, d)
+	assert.Contains(t, marks, "slack|slack:day:1:C1:stale", "the stored ref")
+	assert.Contains(t, marks, "slack|slack:day:1:C1:1970-01-01", "the current document")
+}
+
 func TestLiveSlackMessageKeys_Scope(t *testing.T) {
 	d := openTestDB(t)
 	_, err := d.Exec(`INSERT INTO users (id, name, is_bot, is_bot_override) VALUES
