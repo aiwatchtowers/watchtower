@@ -50,7 +50,8 @@ extension AppState {
         // with the pool open the recorder records them there, and recovers
         // what an earlier run left (the launch call ran before the pool).
         meetingRecorderCenter.pendingStore = DatabasePendingTranscriptStore(writer: dbPool)
-        meetingRecorderCenter.restorePendingOnLaunch()
+        let recorder = meetingRecorderCenter
+        Task { await recorder.restorePendingOnLaunch() }
 
         voiceRegistryCenter.attach(dbPool: dbPool)
         // Launch catch-up: the one full retro pass (spec §4.1), skipped with

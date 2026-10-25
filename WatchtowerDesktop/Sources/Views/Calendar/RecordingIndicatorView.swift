@@ -376,7 +376,7 @@ struct RecordingIndicatorView: View {
                 .help(center.isBusy
                       ? "Available once the current recording and queue settle"
                       : "Transcribe the oldest recovered recording")
-            Button("Dismiss") { center.dismissRecovered() }
+            Button("Dismiss") { Task { await center.dismissRecovered() } }
                 .controlSize(.small)
                 .disabled(center.isCapturing)
                 .help(center.isCapturing

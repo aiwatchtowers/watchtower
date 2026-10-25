@@ -372,7 +372,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
 
-        center.restorePendingOnLaunch()
+        await center.restorePendingOnLaunch()
 
         XCTAssertEqual(center.recoverable.map(\.audioURL), [older, newer],
                        "every unsaved recording is recovered, oldest first; a saved one is not")
@@ -386,7 +386,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
     /// collision suffix, and `-` sorts before `.` — so plain lexicographic order
     /// hands the pill the NEWEST of them, and `-10` before `-2`. The pill acts on
     /// `recoverable.first`, so the order is the behavior.
-    func testRecoveryScanOrdersSameSecondRecordingsOldestFirst() throws {
+    func testRecoveryScanOrdersSameSecondRecordingsOldestFirst() async throws {
         let first = recordingsDir.appendingPathComponent("rec_20260803_100000.caf")
         let second = recordingsDir.appendingPathComponent("rec_20260803_100000-2.caf")
         let tenth = recordingsDir.appendingPathComponent("rec_20260803_100000-10.caf")
@@ -407,7 +407,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
 
-        center.restorePendingOnLaunch()
+        await center.restorePendingOnLaunch()
 
         XCTAssertEqual(center.recoverable.map(\.audioURL), [first, second, tenth, nextSecond],
                        "the suffix orders numerically, after the timestamp")
@@ -441,7 +441,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
 
-        center.restorePendingOnLaunch()
+        await center.restorePendingOnLaunch()
 
         XCTAssertEqual(center.recoverable.map(\.audioURL), [audio])
         XCTAssertEqual(center.recoverable.first?.eventID, "evt-legacy")
@@ -455,7 +455,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
                       "the migration must leave a durable sidecar — the keys it cleared were the only other pointer")
 
         // A second scan on the same Center must not re-add or duplicate it.
-        center.restorePendingOnLaunch()
+        await center.restorePendingOnLaunch()
         XCTAssertEqual(center.recoverable.map(\.audioURL), [audio])
 
         // A genuine relaunch: a FRESH Center over the same (now key-less)
@@ -470,7 +470,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
             defaults: defaults,
             recordingsDirectory: recordingsDir
         )
-        relaunched.restorePendingOnLaunch()
+        await relaunched.restorePendingOnLaunch()
         XCTAssertEqual(relaunched.recoverable.map(\.audioURL), [audio],
                        "quitting before acting on the pill must not lose the recording")
         XCTAssertEqual(relaunched.recoverable.first?.eventID, "evt-legacy")
@@ -497,7 +497,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
 
-        center.restorePendingOnLaunch()
+        await center.restorePendingOnLaunch()
 
         XCTAssertEqual(center.recoverable.map(\.audioURL), [audio],
                        "an unreadable sidecar must not lose the recording")
@@ -538,12 +538,12 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
             defaults: try isolatedDefaults(),
             recordingsDirectory: recordingsDir
         )
-        relaunched.restorePendingOnLaunch()
+        await relaunched.restorePendingOnLaunch()
         XCTAssertEqual(relaunched.recoverable.map(\.audioURL), [audio], "recovered from the audio file alone")
         XCTAssertNil(relaunched.recoverable.first?.eventID)
 
         // Dismissing it is remembered: the next launch does not offer it again.
-        relaunched.dismissRecovered()
+        await relaunched.dismissRecovered()
         let again = MeetingRecorderCenter(
             pendingStore: pendingStore,
             recorderFactory: { FakeRecorder() },
@@ -554,7 +554,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
             defaults: try isolatedDefaults(),
             recordingsDirectory: recordingsDir
         )
-        again.restorePendingOnLaunch()
+        await again.restorePendingOnLaunch()
         XCTAssertTrue(again.recoverable.isEmpty)
         XCTAssertTrue(FileManager.default.fileExists(atPath: audio.path), "the audio is never dropped")
     }
@@ -812,7 +812,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
 
         // An explicit re-transcribe of the same file, this time saving fine.
         activeRunner = goodRunner
-        center.prepareRetry(audioURL: started, eventID: "evt-1", title: "Dup")
+        await center.prepareRetry(audioURL: started, eventID: "evt-1", title: "Dup")
         await center.retryTranscription(config: config)
 
         XCTAssertEqual(goodRunner.invocations.count, 1)
@@ -851,7 +851,7 @@ final class MeetingRecorderQueueTests: MeetingRecorderTestCase {
         let recovered = recordingsDir.appendingPathComponent("rec_19700101_000000.caf")
         try Data([0x00]).write(to: recovered)
 
-        center.prepareRetry(audioURL: recovered, eventID: nil, title: "Recovered")
+        await center.prepareRetry(audioURL: recovered, eventID: nil, title: "Recovered")
 
         XCTAssertNil(center.retriableFailureID, "the recovered recording is what retry would act on")
         XCTAssertEqual(center.dismissableFailureID, center.jobs.first?.id,

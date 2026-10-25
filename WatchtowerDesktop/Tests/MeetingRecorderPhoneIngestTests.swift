@@ -16,14 +16,14 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
 
     /// An app quit before the job ran leaves the `.m4a` with its `.meta`; the
     /// launch scan must offer it like a crashed Desktop recording.
-    func testRecoveryScanFindsAnM4AWithItsSidecar() throws {
+    func testRecoveryScanFindsAnM4AWithItsSidecar() async throws {
         let phone = recordingsDir.appendingPathComponent("rec_20260803_100000.m4a")
         try Data([0x00]).write(to: phone)
         try #"{"eventID":"evt-phone","title":"Phone"}"#
             .write(to: metaSidecar(phone), atomically: true, encoding: .utf8)
         let center = try makeCenter(runner: nil)
 
-        center.restorePendingOnLaunch()
+        await center.restorePendingOnLaunch()
 
         XCTAssertEqual(center.recoverable.map(\.audioURL), [phone])
         XCTAssertEqual(center.recoverable.first?.eventID, "evt-phone")
@@ -32,7 +32,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
 
     /// The sort key strips whichever extension the file has, so phone and
     /// Desktop recordings of the same second interleave chronologically.
-    func testRecoveryScanOrdersMixedExtensionsChronologically() throws {
+    func testRecoveryScanOrdersMixedExtensionsChronologically() async throws {
         let first = recordingsDir.appendingPathComponent("rec_20260803_100000.m4a")
         let second = recordingsDir.appendingPathComponent("rec_20260803_100000-2.m4a")
         let third = recordingsDir.appendingPathComponent("rec_20260803_100000-3.caf")
@@ -44,7 +44,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         }
         let center = try makeCenter(runner: nil)
 
-        center.restorePendingOnLaunch()
+        await center.restorePendingOnLaunch()
 
         XCTAssertEqual(center.recoverable.map(\.audioURL), [first, second, third, tenth, nextSecond])
     }
@@ -260,7 +260,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         let urls = try await withThrowingTaskGroup(of: URL.self) { group in
             for index in 0..<8 {
                 group.addTask {
-                    try MeetingRecorderCenter.reservePhoneRecording(
+                    try await MeetingRecorderCenter.reservePhoneRecording(
                         eventID: nil, title: "title \(index)", in: directory, store: store, date: date)
                 }
             }
@@ -303,7 +303,7 @@ final class MeetingRecorderPhoneIngestTests: MeetingRecorderTestCase {
         defer { try? FileManager.default.removeItem(at: source) }
         let fixed = Date()
         let desktop = MeetingRecorderCenter.uniqueRecordingURL(in: recordingsDir, date: fixed)
-        try pendingStore.begin(recording: desktop.lastPathComponent, eventID: "evt-desk", title: "Desk", at: fixed)
+        try await pendingStore.begin(recording: desktop.lastPathComponent, eventID: "evt-desk", title: "Desk", at: fixed)
         let center = try makeCenter(runner: nil) { fixed }
 
         let ingested = try await center.ingestPhoneRecording(audioURL: source, eventID: nil, title: "Phone",

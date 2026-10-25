@@ -20,14 +20,15 @@ final class LegacyRecordingSidecarImportTests: XCTestCase {
         try Data(text.utf8).write(to: dir.appendingPathComponent(name))
     }
 
-    func testMetaTxtAndJSONBecomeOneRowAndAreDeleted() throws {
+    func testMetaTxtAndJSONBecomeOneRowAndAreDeleted() async throws {
         let store = DatabasePendingTranscriptStore(writer: try TestDatabase.create())
         try write("rec_20260801_090000.caf", "audio")
         try write("rec_20260801_090000.meta", #"{"eventID":"evt-1","title":"Standup"}"#)
         try write("rec_20260801_090000.txt", "[Я] привет")
         try write("rec_20260801_090000.json", #"{"durationSec":42,"langStats":{"ru":42}}"#)
 
-        XCTAssertEqual(LegacyRecordingSidecarImport.importAll(in: dir, into: store), 1)
+        let imported = await LegacyRecordingSidecarImport.importAll(in: dir, into: store)
+        XCTAssertEqual(imported, 1)
 
         let row = try XCTUnwrap(try store.transcript(recording: "rec_20260801_090000.caf"))
         XCTAssertEqual(row.eventID, "evt-1")
@@ -38,14 +39,15 @@ final class LegacyRecordingSidecarImportTests: XCTestCase {
         XCTAssertEqual(left, ["rec_20260801_090000.caf"], "the sidecars are gone, the audio stays")
     }
 
-    func testACorruptJSONKeepsItsFiles() throws {
+    func testACorruptJSONKeepsItsFiles() async throws {
         let store = DatabasePendingTranscriptStore(writer: try TestDatabase.create())
         try write("rec_20260801_100000.m4a", "audio")
         try write("rec_20260801_100000.meta", #"{"title":"Phone"}"#)
         try write("rec_20260801_100000.txt", "text")
         try write("rec_20260801_100000.json", "not json{")
 
-        XCTAssertEqual(LegacyRecordingSidecarImport.importAll(in: dir, into: store), 0)
+        let imported = await LegacyRecordingSidecarImport.importAll(in: dir, into: store)
+        XCTAssertEqual(imported, 0)
 
         XCTAssertEqual(try store.pending(), [])
         let left = Set(try FileManager.default.contentsOfDirectory(atPath: dir.path))

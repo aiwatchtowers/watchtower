@@ -591,7 +591,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
 
-        center.restorePendingOnLaunch()
+        await center.restorePendingOnLaunch()
         XCTAssertEqual(center.pendingAudioURL, audio)
 
         // Missing file → the stale key is cleared.
@@ -607,7 +607,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             defaults: missingDefaults,
             recordingsDirectory: recordingsDir
         )
-        center2.restorePendingOnLaunch()
+        await center2.restorePendingOnLaunch()
         XCTAssertNil(center2.pendingAudioURL)
         XCTAssertNil(missingDefaults.string(forKey: MeetingRecorderCenter.pendingAudioPathKey))
     }
@@ -635,10 +635,10 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
 
-        center.restorePendingOnLaunch()
+        await center.restorePendingOnLaunch()
         XCTAssertEqual(center.pendingAudioURL, audio)
 
-        center.dismissRecovered()
+        await center.dismissRecovered()
 
         XCTAssertEqual(center.phase, .idle)
         XCTAssertNil(center.pendingAudioURL, "dismiss must clear the pending pointer so the pill goes away")
@@ -668,7 +668,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
         await center.startRecording(eventID: "evt-1", title: "Weekly")
         let pendingBefore = try XCTUnwrap(center.pendingAudioURL)
 
-        center.dismissRecovered()
+        await center.dismissRecovered()
 
         guard case .recording = center.phase else {
             return XCTFail("dismiss must not disturb an active recording, got \(center.phase)")
@@ -702,7 +702,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
 
-        center.restorePendingOnLaunch()
+        await center.restorePendingOnLaunch()
         XCTAssertEqual(center.pendingAudioURL, audio)
         XCTAssertEqual(center.recoverable.first?.eventID, "evt-42", "the event link must survive relaunch")
         XCTAssertEqual(center.recoverable.first?.title, "Weekly sync", "the title must survive relaunch")
@@ -725,8 +725,8 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             try? FileManager.default.removeItem(at: audio)
             removeSidecars(audio)
         }
-        try pendingStore.saveTranscript(recording: audio.lastPathComponent, text: "STALE cached text",
-                                        metaJSON: #"{"durationSec":5,"langStats":{}}"#, at: Date())
+        try await pendingStore.saveTranscript(recording: audio.lastPathComponent, text: "STALE cached text",
+                                              metaJSON: #"{"durationSec":5,"langStats":{}}"#, at: Date())
 
         let runner = FakeCLIRunner(stdout: recapOKEnvelope)
         var engineLoads = 0
@@ -744,7 +744,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
 
-        center.prepareRetry(audioURL: audio, eventID: "evt-9", title: "Redo")
+        await center.prepareRetry(audioURL: audio, eventID: "evt-9", title: "Redo")
         XCTAssertNil(pendingRow(audio)?.transcript, "prepareRetry must drop the stale kept transcript")
         XCTAssertNil(pendingRow(audio)?.metaJSON, "prepareRetry must drop the stale metadata")
 
@@ -774,7 +774,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             try? FileManager.default.removeItem(at: audio)
             removeSidecars(audio)
         }
-        try pendingStore.saveTranscript(recording: audio.lastPathComponent, text: txt, metaJSON: json, at: Date())
+        try await pendingStore.saveTranscript(recording: audio.lastPathComponent, text: txt, metaJSON: json, at: Date())
 
         let defaults = try isolatedDefaults()
         defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)
@@ -794,7 +794,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
 
-        center.restorePendingOnLaunch()
+        await center.restorePendingOnLaunch()
         XCTAssertEqual(center.pendingAudioURL, audio)
 
         await center.retryTranscription(config: singleWindowConfig())
@@ -824,7 +824,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
 
-        center.prepareRetry(audioURL: audio, eventID: nil, title: "Ad hoc")
+        await center.prepareRetry(audioURL: audio, eventID: nil, title: "Ad hoc")
         let runTask = Task {
             await center.retryTranscription(config: threeWindowConfig())
         }
@@ -1665,8 +1665,8 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             removeSidecars(audio)
         }
         // Exact old-format payload: durationSec + langStats only.
-        try pendingStore.saveTranscript(recording: audio.lastPathComponent, text: "[Я] привет",
-                                        metaJSON: #"{"durationSec":42,"langStats":{"ru":42}}"#, at: Date())
+        try await pendingStore.saveTranscript(recording: audio.lastPathComponent, text: "[Я] привет",
+                                              metaJSON: #"{"durationSec":42,"langStats":{"ru":42}}"#, at: Date())
 
         let defaults = try isolatedDefaults()
         defaults.set(audio.path, forKey: MeetingRecorderCenter.pendingAudioPathKey)
@@ -1684,7 +1684,7 @@ final class MeetingRecorderCenterTests: MeetingRecorderTestCase {
             recordingsDirectory: recordingsDir
         )
 
-        center.restorePendingOnLaunch()
+        await center.restorePendingOnLaunch()
         XCTAssertEqual(center.pendingAudioURL, audio)
         await center.retryTranscription(config: threeWindowConfig())
 

@@ -448,8 +448,8 @@ final class AutomationsViewModelTests: XCTestCase {
 
     /// Draft rows come with the list read: workbench drafts only for
     /// workbenches that exist; Discard removes the cache file and its row.
-    func testRefreshReadsDraftRowsAndDiscardRemovesOne() throws {
-        let (personal, gone) = try pool.write { db -> (Int64, Int64) in
+    func testRefreshReadsDraftRowsAndDiscardRemovesOne() async throws {
+        let (personal, gone) = try await pool.write { db -> (Int64, Int64) in
             _ = try TestDatabase.insertWorkbench(db)
             for context in ["d1", "d2-wb9"] {
                 try db.execute(sql: """
@@ -460,7 +460,7 @@ final class AutomationsViewModelTests: XCTestCase {
             return (db.lastInsertedRowID - 1, db.lastInsertedRowID)
         }
         let line = #"{"recipe_text":"x","result":null,"error":"boom"}"# + "\n"
-        try pool.write { db in
+        try await pool.write { db in
             for id in [personal, gone] {
                 try AutomationDraftCacheQueries.append(db, conversationID: id, entryJSON: line, at: Date())
             }
@@ -470,10 +470,11 @@ final class AutomationsViewModelTests: XCTestCase {
         XCTAssertEqual(vm.draftRows.map(\.conversationID), [personal])
 
         vm.showEditor(.newDraft(contextID: "d1", scope: .personal, startText: nil))
-        vm.discardDraft(contextID: "d1")
+        await vm.discardDraft(contextID: "d1")
         XCTAssertEqual(vm.draftRows, [])
         XCTAssertEqual(vm.panel, .empty)
-        XCTAssertEqual(try pool.read { try AutomationDraftCacheQueries.entries($0, conversationID: personal) }, [])
+        let left = try await pool.read { try AutomationDraftCacheQueries.entries($0, conversationID: personal) }
+        XCTAssertEqual(left, [])
         vm.refresh()
         XCTAssertEqual(vm.draftRows, [])
     }
@@ -481,8 +482,8 @@ final class AutomationsViewModelTests: XCTestCase {
     /// A new draft open in the editor whose chat never drafted (Adjust in
     /// Chat, an Inbox proposal's Open Draft) has no cache file: it is a row
     /// while the editor holds it, so leaving the panel never loses it.
-    func testOpenNewDraftWithoutACacheIsARow() throws {
-        let (open, closed) = try pool.write { db -> (Int64, Int64) in
+    func testOpenNewDraftWithoutACacheIsARow() async throws {
+        let (open, closed) = try await pool.write { db -> (Int64, Int64) in
             for context in ["d1", "d2"] {
                 try db.execute(sql: """
                     INSERT INTO chat_conversations (title, context_type, context_id, created_at, updated_at)
@@ -506,7 +507,7 @@ final class AutomationsViewModelTests: XCTestCase {
         vm.refresh()
         XCTAssertEqual(vm.draftRows.first?.name, AutomationDraftRows.untitled)
 
-        vm.discardDraft(contextID: "d1")
+        await vm.discardDraft(contextID: "d1")
         XCTAssertEqual(vm.draftRows, [])
         XCTAssertNil(vm.lastError, "a draft with no file discards quietly")
     }

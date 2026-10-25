@@ -470,17 +470,16 @@ package final class AutomationsViewModel {
     /// **Discard Draft** of a new draft: its cached drafts go (so it is no
     /// longer a row) and the panel empties. A draft never drafted by the
     /// assistant has no cached draft; its in-memory draft is the editor center's.
-    package func discardDraft(contextID: String) {
-        if let row = draftRows.first(where: { $0.contextID == contextID }) {
-            do {
-                try dbPool.write { try AutomationDraftCacheQueries.delete($0, conversationID: row.conversationID) }
-            } catch {
-                lastError = "Could not remove the draft: \(error.localizedDescription)"
-                lastErrorIsRead = false
-            }
-            draftRows.removeAll { $0.contextID == contextID }
-        }
+    package func discardDraft(contextID: String) async {
         if case let .editor(.newDraft(current, _, _)) = panel, current == contextID { select(nil) }
+        guard let row = draftRows.first(where: { $0.contextID == contextID }) else { return }
+        draftRows.removeAll { $0.contextID == contextID }
+        do {
+            try await dbPool.write { try AutomationDraftCacheQueries.delete($0, conversationID: row.conversationID) }
+        } catch {
+            lastError = "Could not remove the draft: \(error.localizedDescription)"
+            lastErrorIsRead = false
+        }
     }
 
     /// A new draft's save landed as automation `automationID` (spec
@@ -492,7 +491,7 @@ package final class AutomationsViewModel {
         savedDraftConversations.insert(conversationID)
         defer { savedDraftConversations.remove(conversationID) }
         discardEditorDraft(AutomationEditorCenter.newDraftKey(conversationID: conversationID))
-        removeDraftCache(conversationID)
+        await removeDraftCache(conversationID)
         draftRows.removeAll { $0.conversationID == conversationID }
         let key = EmbeddedChatKey(contextType: AutomationDraftRows.contextType, contextID: contextID,
                                   conversationID: conversationID)
@@ -506,12 +505,12 @@ package final class AutomationsViewModel {
             lastErrorIsRead = false
         }
         // The turn waited for may have drafted again.
-        removeDraftCache(conversationID)
+        await removeDraftCache(conversationID)
     }
 
-    private func removeDraftCache(_ conversationID: Int64) {
+    private func removeDraftCache(_ conversationID: Int64) async {
         do {
-            try dbPool.write { try AutomationDraftCacheQueries.delete($0, conversationID: conversationID) }
+            try await dbPool.write { try AutomationDraftCacheQueries.delete($0, conversationID: conversationID) }
         } catch {
             lastError = "Could not remove the saved draft: \(error.localizedDescription)"
             lastErrorIsRead = false

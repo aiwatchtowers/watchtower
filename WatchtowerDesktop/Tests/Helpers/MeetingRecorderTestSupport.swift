@@ -353,7 +353,7 @@ class MeetingRecorderTestCase: XCTestCase {
         for ext in ["txt", "json", "activity", "meta"] {
             try? FileManager.default.removeItem(at: audio.deletingPathExtension().appendingPathExtension(ext))
         }
-        try? pendingStore.remove(recording: audio.lastPathComponent)
+        _ = try? pendingDB.write { try PendingTranscriptQueries.remove($0, recording: audio.lastPathComponent) }
     }
 
     /// A legacy crash-recovery sidecar (older versions wrote it at record

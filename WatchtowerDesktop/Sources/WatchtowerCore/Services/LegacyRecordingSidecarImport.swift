@@ -14,7 +14,7 @@ package enum LegacyRecordingSidecarImport {
     /// Imports every `rec_*` sidecar stem in `dir`. Returns how many stems
     /// became rows.
     @discardableResult
-    package static func importAll(in dir: URL, into store: PendingTranscriptStore) -> Int {
+    package static func importAll(in dir: URL, into store: PendingTranscriptStore) async -> Int {
         let fm = FileManager.default
         guard let names = try? fm.contentsOfDirectory(atPath: dir.path) else { return 0 }
         let sidecarExtensions: Set<String> = ["meta", "txt", "json"]
@@ -25,7 +25,7 @@ package enum LegacyRecordingSidecarImport {
             stems[(name as NSString).deletingPathExtension, default: []].insert(ext)
         }
         var imported = 0
-        for (stem, exts) in stems.sorted(by: { $0.key < $1.key }) where importStem(stem, exts, in: dir, into: store) {
+        for (stem, exts) in stems.sorted(by: { $0.key < $1.key }) where await importStem(stem, exts, in: dir, into: store) {
             imported += 1
         }
         return imported
@@ -36,7 +36,7 @@ package enum LegacyRecordingSidecarImport {
         _ exts: Set<String>,
         in dir: URL,
         into store: PendingTranscriptStore
-    ) -> Bool {
+    ) async -> Bool {
         let fm = FileManager.default
         let file = { (ext: String) in dir.appendingPathComponent("\(stem).\(ext)") }
         let audioName = ["caf", "m4a"].map { "\(stem).\($0)" }
@@ -62,11 +62,11 @@ package enum LegacyRecordingSidecarImport {
             as? Date ?? Date()
         do {
             if meta != nil || transcript == nil {
-                try store.begin(recording: audioName, eventID: meta?.eventID, title: meta?.title, at: started)
+                try await store.begin(recording: audioName, eventID: meta?.eventID, title: meta?.title, at: started)
             }
             if let transcript {
-                try store.saveTranscript(recording: audioName, text: transcript.text, metaJSON: transcript.metaJSON,
-                                         at: started)
+                try await store.saveTranscript(recording: audioName, text: transcript.text, metaJSON: transcript.metaJSON,
+                                               at: started)
             }
         } catch {
             print("[LegacyRecordingSidecarImport] keeping the sidecars of \(stem): \(error.localizedDescription)")

@@ -438,7 +438,7 @@ package final class AutomationEditorCenter {
             return
         }
         savedIDs[key] = saved.automationID
-        if Self.isNewDraft(key) { removeDraftCache(key) }
+        if Self.isNewDraft(key) { await removeDraftCache(key) }
         if turnOn, setsEnabled {
             do {
                 try await cli.setEnabled(saved.automationID, true)
@@ -511,10 +511,10 @@ package final class AutomationEditorCenter {
         await confirmForeign(id, shownHash: plan.validated.approvalHash, enable: turnOn)
     }
 
-    private func removeDraftCache(_ key: Int64) {
+    private func removeDraftCache(_ key: Int64) async {
         guard let draftCache else { return }
         do {
-            try draftCache.write { try AutomationDraftCacheQueries.delete($0, conversationID: -key) }
+            try await draftCache.write { try AutomationDraftCacheQueries.delete($0, conversationID: -key) }
         } catch {
             let reason = error.localizedDescription
             Self.log.error("could not remove the draft cache of conversation \(-key, privacy: .public): \(reason, privacy: .public)")
