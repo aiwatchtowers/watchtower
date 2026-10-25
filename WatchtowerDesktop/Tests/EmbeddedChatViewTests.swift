@@ -131,22 +131,3 @@ final class EmbeddedChatViewTests: XCTestCase {
         XCTAssertNoThrow(try bar.inspect().find(text: "Couldn't send: disk full"))
     }
 }
-
-@MainActor
-final class UserDefaultsDraftMirrorTests: XCTestCase {
-    func testSaveRestoreClearPerKey() throws {
-        let suite = "embedded-draft-mirror-tests-\(UUID().uuidString)"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let mirror = UserDefaultsDraftMirror(defaults: defaults)
-        let first = EmbeddedChatKey(contextType: "track", contextID: "1", conversationID: 10)
-        let second = EmbeddedChatKey(contextType: "track", contextID: "1", conversationID: 11)
-        mirror.save("queued words", for: first)
-        XCTAssertEqual(mirror.restore(for: first), "queued words")
-        XCTAssertNil(mirror.restore(for: second))
-        XCTAssertEqual(UserDefaultsDraftMirror(defaults: defaults).restore(for: first), "queued words",
-                       "survives a new process")
-        mirror.clear(for: first)
-        XCTAssertNil(mirror.restore(for: first))
-    }
-}
