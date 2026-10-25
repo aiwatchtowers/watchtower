@@ -34,6 +34,14 @@
 # Appends argv (one arg per line, runs separated by "--") to $FAKE_ARGV and
 # every stdin line to $FAKE_STDIN (and its physical cwd to $FAKE_CWD). "Once" modes key on the $FAKE_MARK file.
 { for a in "$@"; do printf '%s\n' "$a"; done; echo "--"; } >> "$FAKE_ARGV"
+# With $FAKE_PROMPT / $FAKE_MCP set, copies what it reads from the paths after
+# --system-prompt-file / --mcp-config there (one run per line pair, "--" after).
+prev=""
+for a in "$@"; do
+  [ "$prev" = "--system-prompt-file" ] && [ -n "$FAKE_PROMPT" ] && { cat "$a"; echo; echo "--"; } >> "$FAKE_PROMPT"
+  [ "$prev" = "--mcp-config" ] && [ -n "$FAKE_MCP" ] && { cat "$a"; echo; echo "--"; } >> "$FAKE_MCP"
+  prev=$a
+done
 [ -n "$FAKE_CWD" ] && pwd -P >> "$FAKE_CWD"
 
 resumed=no

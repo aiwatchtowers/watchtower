@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/exec"
 	"regexp"
@@ -148,11 +147,6 @@ type Client struct {
 	// merged into the mcp-config JSON and the --allowedTools allowlist
 	// alongside the built-in watchtower server. Empty = today's behavior.
 	externalServers []ExternalMCPServer
-	// mcpConfigTempPath is set by buildArgs when hasSecret() is true — the
-	// mcp-config JSON (which then contains a secret Env/Header value) is
-	// written to this 0600 temp file instead of argv, and the caller (Query/
-	// QuerySync) removes it once the subprocess has been reaped.
-	mcpConfigTempPath string
 	// readFolder, when set (SetReadFolder), runs the CLI in that folder
 	// with its file-read tools allowed and unhidden and no settings files
 	// loaded. Empty = today's run in os.TempDir().
@@ -298,11 +292,17 @@ func NewClient(model, dbPath, claudePath string) *Client {
 // prompt from there), never on argv, where every local process could read
 // it through `ps` and a large one would hit ARG_MAX. When sessionID is
 // non-empty, --resume is used instead of the system prompt (the system
-// prompt is already baked into the existing session). promptFile is the
-// 0600 system-prompt file this call wrote ("" when none), which the caller
-// removes once the subprocess has been reaped — returned rather than kept on
-// the Client, so concurrent calls never share or race on it.
-func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) (args []string, stdin, promptFile string, err error) {
+// prompt is already baked into the existing session). payloads are the
+// contents the argv names as /dev/fd/3, /dev/fd/4, … (fsutil.PayloadPath):
+// the system prompt and a secret-bearing mcp-config, which the caller hands
+// over inherited pipes (fsutil.AttachPayloads on a cmd with no other
+// ExtraFiles) — nothing written to disk, nothing on argv. Returned rather
+// than kept on the Client, so concurrent calls never share them.
+func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID string) (args []string, stdin string, payloads []string) {
+	viaFD := func(content string) string {
+		payloads = append(payloads, content)
+		return fsutil.PayloadPath(len(payloads) - 1)
+	}
 	stdin = userMessage
 	args = slices.Concat([]string{
 		"-p",
@@ -362,21 +362,9 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		mcpConfig := c.buildMCPConfig()
 		if c.hasSecret() {
 			// A secret (Env/Headers) must never sit in argv — it's visible to
-			// every other process on the box via `ps`. Write the config to a
-			// 0600 temp file instead and pass its path; the caller removes the
-			// file once the subprocess no longer needs it (after cmd.Wait()).
-			if path, err := writeMCPConfigTempFile(mcpConfig); err == nil {
-				c.mcpConfigTempPath = path
-				args = append(args, "--mcp-config", path)
-			} else {
-				// On a temp-file write failure, --mcp-config is omitted rather
-				// than falling back to inline JSON: the whole point of this path
-				// is that the secret must never reach argv, so a degraded chat
-				// (no external MCP servers, and no built-in watchtower read
-				// tools either, this call) beats a leaked secret. Logged so the
-				// degradation isn't silent.
-				log.Printf("warning: failed to write mcp-config temp file, omitting --mcp-config (built-in tools unavailable this call): %v", err)
-			}
+			// every other process on the box via `ps` — nor in a temp file:
+			// the config reaches the child over an inherited pipe.
+			args = append(args, "--mcp-config", viaFD(mcpConfig))
 		} else {
 			args = append(args, "--mcp-config", mcpConfig)
 		}
@@ -398,16 +386,12 @@ func (c *Client) buildArgs(systemPrompt, userMessage, outputFormat, sessionID st
 		} else {
 			// The prompt carries the owner's data (a pipeline's whole
 			// payload, a chat's context): on argv it would be readable in
-			// `ps` for the process lifetime and could hit ARG_MAX. A failed
-			// write fails the call rather than falling back to argv.
-			promptFile, err = fsutil.WritePrivateTemp(fsutil.SystemPromptTempPrefix+"*.txt", systemPrompt)
-			if err != nil {
-				return nil, "", "", fmt.Errorf("writing system prompt file: %w", err)
-			}
-			args = append(args, "--system-prompt-file", promptFile)
+			// `ps` for the process lifetime and could hit ARG_MAX, and in a
+			// temp file it would outlive a crash. It goes over a pipe.
+			args = append(args, "--system-prompt-file", viaFD(systemPrompt))
 		}
 	}
-	return args, stdin, promptFile, nil
+	return args, stdin, payloads
 }
 
 // builtinTools is the --tools allowlist: ReadFolderBuiltinTools for a
@@ -458,12 +442,6 @@ func (c *Client) hasSecret() bool {
 		}
 	}
 	return false
-}
-
-// writeMCPConfigTempFile writes the mcp-config JSON to a 0600 temp file and
-// returns its path. Called only when hasSecret() is true.
-func writeMCPConfigTempFile(config string) (string, error) {
-	return fsutil.WritePrivateTemp("wt-mcp-*.json", config)
 }
 
 // ChatBuiltinTools is the --tools value of every chat run on the one-shot
@@ -700,24 +678,14 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		defer close(errCh)
 		defer close(sidCh)
 
-		args, promptStdin, promptFile, buildErr := c.buildArgs(systemPrompt, userMessage, "stream-json", sessionID)
-		// buildArgs may have written the mcp-config to a 0600 temp file
-		// (secret present) and recorded its path — clean it up once this
-		// goroutine returns. Every path below reaches its return only after
-		// the subprocess has been started and reaped via cmd.Wait(), or never
-		// started at all, so the file is never removed while the subprocess
-		// could still be reading it.
-		if c.mcpConfigTempPath != "" {
-			defer os.Remove(c.mcpConfigTempPath)
-		}
-		if promptFile != "" {
-			defer os.Remove(promptFile)
-		}
-		if buildErr != nil {
-			errCh <- buildErr
+		args, promptStdin, payloads := c.buildArgs(systemPrompt, userMessage, "stream-json", sessionID)
+		cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
+		_, closePayloads, err := fsutil.AttachPayloads(cmd, payloads...)
+		if err != nil {
+			errCh <- err
 			return
 		}
-		cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
+		defer closePayloads()
 		if promptStdin != "" {
 			cmd.Stdin = strings.NewReader(promptStdin)
 		}
@@ -741,6 +709,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 			errCh <- classifyError(err, "")
 			return
 		}
+		closePayloads()
 
 		scanner := bufio.NewScanner(stdout)
 		// Allow up to 1MB lines for large context responses
@@ -831,21 +800,15 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 // the full response text and token usage. Pass a non-empty sessionID to resume
 // an existing session.
 func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, error) {
-	args, promptStdin, promptFile, buildErr := c.buildArgs(systemPrompt, userMessage, "json", sessionID)
-	// buildArgs may have written the mcp-config to a 0600 temp file (secret
-	// present) and recorded its path — clean it up on every return path.
-	// cmd.Output() below blocks until the subprocess exits, so by the time
-	// this defer runs the subprocess can no longer be reading the file.
-	if c.mcpConfigTempPath != "" {
-		defer os.Remove(c.mcpConfigTempPath)
-	}
-	if promptFile != "" {
-		defer os.Remove(promptFile)
-	}
-	if buildErr != nil {
-		return "", nil, buildErr
-	}
+	args, promptStdin, payloads := c.buildArgs(systemPrompt, userMessage, "json", sessionID)
 	cmd := exec.CommandContext(ctx, c.claudeCmd, args...)
+	// cmd.Output starts the child before it blocks; the parent's read ends
+	// close once it returns (the child holds its own).
+	_, closePayloads, err := fsutil.AttachPayloads(cmd, payloads...)
+	if err != nil {
+		return "", nil, err
+	}
+	defer closePayloads()
 	if promptStdin != "" {
 		cmd.Stdin = strings.NewReader(promptStdin)
 	}

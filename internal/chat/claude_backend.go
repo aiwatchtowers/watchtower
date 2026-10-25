@@ -155,15 +155,13 @@ func (p *claudeProc) closeStdin() {
 }
 
 type claudeBackend struct {
-	opts       ClaudeOptions
-	tr         *ClaudeTranslator
-	gate       *gate // nil without ClaudeOptions.Gate
-	gateErr    error // invalid ClaudeOptions.Gate: Start refuses
-	promptFile string
-	mcpFile    string
-	curTurn    atomic.Value // string: the running turn id (read by the translator)
-	active     atomic.Bool  // a Turn is in flight
-	closeOnce  sync.Once
+	opts      ClaudeOptions
+	tr        *ClaudeTranslator
+	gate      *gate        // nil without ClaudeOptions.Gate
+	gateErr   error        // invalid ClaudeOptions.Gate: Start refuses
+	curTurn   atomic.Value // string: the running turn id (read by the translator)
+	active    atomic.Bool  // a Turn is in flight
+	closeOnce sync.Once
 
 	// catalog is the claude.ai-mode connector catalog (the gate's own when
 	// there is a gate); nil when the mode is off.
@@ -253,7 +251,8 @@ func NewClaudeBackend(opts ClaudeOptions) Backend {
 }
 
 // claudeArgs builds the child's argv. It never carries content (CHAT-04): the
-// system prompt and MCP config are file paths, the owner's text goes to stdin.
+// system prompt and MCP config are /dev/fd paths of inherited pipes, the
+// owner's text goes to stdin.
 func claudeArgs(o ClaudeOptions, promptFile, mcpFile, resume string) []string {
 	args := []string{"-p", "--input-format", "stream-json", "--output-format", "stream-json",
 		"--include-partial-messages", "--verbose",
@@ -311,7 +310,7 @@ func claudeEnv(o ClaudeOptions) []string {
 	return append(env, o.Env...)
 }
 
-// Start writes the prompt/MCP files and spawns the warm process.
+// Start spawns the warm process.
 func (b *claudeBackend) Start(ctx context.Context) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -323,15 +322,6 @@ func (b *claudeBackend) Start(ctx context.Context) (string, error) {
 	// left open may ever be claimed or shown as waiting (AGENT-05).
 	if err := b.gate.expireOrphans(ctx); err != nil {
 		return "", fmt.Errorf("closing the connector calls a previous session left open: %w", err)
-	}
-	var err error
-	if b.promptFile, err = fsutil.WritePrivateTemp("wt-chat-prompt-*.txt", b.opts.SystemPrompt); err != nil {
-		return "", fmt.Errorf("writing system prompt file: %w", err)
-	}
-	if b.opts.MCPConfig != "" {
-		if b.mcpFile, err = fsutil.WritePrivateTemp("wt-chat-mcp-*.json", b.opts.MCPConfig); err != nil {
-			return "", fmt.Errorf("writing mcp config file: %w", err)
-		}
 	}
 	b.projectPending = initialProjectPending(b.opts)
 	b.mu.Lock()
@@ -542,7 +532,22 @@ func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 	if err != nil {
 		return nil, err
 	}
-	name, args := b.opts.Binary, claudeArgs(b.opts, b.promptFile, b.mcpFile, resume)
+	// The MCP config (it can hold connection secrets) and the system prompt
+	// reach the child over inherited pipes, fresh for every spawn (#604
+	// G7/G8): never argv (CHAT-04), never a temp file.
+	var payloads []string
+	viaFD := func(content string) string {
+		payloads = append(payloads, content)
+		return fsutil.PayloadPath(len(payloads) - 1)
+	}
+	var mcpPath, promptPath string
+	if b.opts.MCPConfig != "" {
+		mcpPath = viaFD(b.opts.MCPConfig)
+	}
+	if resume == "" {
+		promptPath = viaFD(b.opts.SystemPrompt)
+	}
+	name, args := b.opts.Binary, claudeArgs(b.opts, promptPath, mcpPath, resume)
 	if b.opts.ClaudeAI.On {
 		// claude.ai mode exposes Write and Artifact, whose paths the CLI
 		// touches before the gate decides: never without the sandbox.
@@ -558,6 +563,12 @@ func (b *claudeBackend) spawnLocked() (*claudeProc, error) {
 		name, args = b.opts.ClaudeAI.Sandbox.command(bin, args)
 	}
 	cmd := exec.Command(name, args...)
+	_, closePayloads, err := fsutil.AttachPayloads(cmd, payloads...)
+	if err != nil {
+		return nil, fmt.Errorf("claude prompt pipes: %w", err)
+	}
+	// After Start below (or a failed one) the child holds its own ends.
+	defer closePayloads()
 	// A TCC-neutral, empty cwd: never inherit one inside ~/Documents or
 	// ~/Desktop, and never one holding a project CLAUDE.md (see WorkDir).
 	cmd.Dir = dir
@@ -1236,11 +1247,6 @@ func (b *claudeBackend) Close() error {
 			fmt.Fprintf(b.warn(), "chat: a claude.ai connector watch did not stop within %v\n", gateStopWait)
 		}
 		b.gate.shutdown()
-		for _, f := range []string{b.promptFile, b.mcpFile} {
-			if f != "" {
-				_ = os.Remove(f)
-			}
-		}
 	})
 	return nil
 }

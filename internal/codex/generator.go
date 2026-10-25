@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"watchtower/internal/digest"
+	"watchtower/internal/fsutil"
 	"watchtower/internal/logredact"
 )
 
@@ -55,9 +56,8 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 	if err != nil {
 		return "", nil, "", err
 	}
-	if promptFile != "" {
-		defer os.Remove(promptFile)
-	}
+	removePrompt := fsutil.RemoveOnce(promptFile) // codex refuses a pipe: see Client.Query
+	defer removePrompt()
 
 	cmd := exec.CommandContext(ctx, codexBin, args...)
 	cmd.Stdin = strings.NewReader(stdin)
@@ -83,7 +83,7 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 	var stderrBuf strings.Builder
 	cmd.Stderr = &limitedWriter{w: &stderrBuf, limit: 64 * 1024}
 
-	output, err := cmd.Output()
+	output, err := outputRemovingPrompt(cmd, removePrompt)
 	if err != nil {
 		return "", nil, "", runError(model, output, err, stderrBuf.String(), codexBin)
 	}

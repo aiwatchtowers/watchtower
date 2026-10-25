@@ -307,6 +307,30 @@ func TestClaudeBackend_CrashThenNextTurnRespawnsWithResume(t *testing.T) {
 	assert.Equal(t, "sess-0", runs[1][idx+1])
 }
 
+// Every spawn gets fresh pipes: the child that replaces a crashed one reads
+// the system prompt and the MCP config again (#604 G7).
+func TestClaudeBackend_RespawnReadsPromptPipesAgain(t *testing.T) {
+	opts, f := fakeClaude(t, "crash_once")
+	read := filepath.Join(t.TempDir(), "read")
+	opts.Env = append(opts.Env, "FAKE_PROMPT="+read+".prompt", "FAKE_MCP="+read+".mcp")
+	h := startSession(t, NewClaudeBackend(opts), nil)
+	h.next(EventSessionReady)
+
+	h.send(Command{Type: CommandTurn, TurnID: "t1", Text: "x"})
+	h.next(EventError)
+	h.send(Command{Type: CommandTurn, TurnID: "t2", Text: "retry"})
+	assert.Equal(t, StatusComplete, h.next(EventTurnDone).Status)
+	require.NoError(t, h.finish())
+
+	require.Len(t, argvRuns(t, f.argv), 2)
+	prompt, err := os.ReadFile(read + ".prompt")
+	require.NoError(t, err)
+	assert.Equal(t, strings.Repeat("SYSTEM-PROMPT-SECRET\n--\n", 2), string(prompt))
+	mcp, err := os.ReadFile(read + ".mcp")
+	require.NoError(t, err)
+	assert.Equal(t, strings.Repeat(opts.MCPConfig+"\n--\n", 2), string(mcp))
+}
+
 func indexOf(list []string, s string) int {
 	for i, x := range list {
 		if x == s {
@@ -369,11 +393,17 @@ func TestClaudeBackend_ReplayCommandStartsFreshSession(t *testing.T) {
 // BEHAVIOR CHAT-04 — see docs/inventory/chat.md
 // TestChat04_ClaudeArgvCarriesNoContent: CHAT-04 — the system prompt, the
 // owner's text and attachment paths never appear on any process's argv; the
-// prompt travels in a 0600 file, the text on stdin — in claude.ai mode too.
+// prompt and the MCP config travel over inherited pipes (/dev/fd/N; #604 G7/G8
+// — no temp file holds them, not even while the child runs), the text on
+// stdin — in claude.ai mode too.
 func TestChat04_ClaudeArgvCarriesNoContent(t *testing.T) {
 	forEachClaudeAIMode(t, func(t *testing.T, mode ClaudeAIMode) {
 		opts, f := fakeClaude(t, "normal")
 		opts.ClaudeAI = mode
+		tmp := t.TempDir()
+		t.Setenv("TMPDIR", tmp)
+		read := filepath.Join(t.TempDir(), "read")
+		opts.Env = append(opts.Env, "FAKE_PROMPT="+read+".prompt", "FAKE_MCP="+read+".mcp")
 		h := startSession(t, NewClaudeBackend(opts), nil)
 		h.next(EventSessionReady)
 
@@ -392,31 +422,37 @@ func TestChat04_ClaudeArgvCarriesNoContent(t *testing.T) {
 		}
 		i := indexOf(runs[0], "--system-prompt-file")
 		require.GreaterOrEqual(t, i, 0)
-		promptFile := runs[0][i+1]
-		data, err := os.ReadFile(promptFile)
+		assert.Regexp(t, `^/dev/fd/\d+$`, runs[0][i+1], "the prompt rides an inherited pipe")
+		data, err := os.ReadFile(read + ".prompt")
 		require.NoError(t, err)
-		assert.Equal(t, "SYSTEM-PROMPT-SECRET", string(data))
-		info, err := os.Stat(promptFile)
-		require.NoError(t, err)
-		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+		assert.Equal(t, "SYSTEM-PROMPT-SECRET\n--\n", string(data), "the child read the prompt from it")
 
 		j := indexOf(runs[0], "--mcp-config")
 		require.GreaterOrEqual(t, j, 0)
-		mcpFile := runs[0][j+1]
-		info, err = os.Stat(mcpFile)
+		assert.Regexp(t, `^/dev/fd/\d+$`, runs[0][j+1], "the mcp config (connection secrets) rides an inherited pipe")
+		data, err = os.ReadFile(read + ".mcp")
 		require.NoError(t, err)
-		assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "the mcp config can hold connection secrets")
+		assert.Equal(t, opts.MCPConfig+"\n--\n", string(data))
+
+		// While the child runs, no temp file holds the prompt or the config.
+		assertNoWTTemp(t, tmp)
 
 		stdin, err := os.ReadFile(f.stdin)
 		require.NoError(t, err)
 		assert.Contains(t, string(stdin), "USER-TEXT-SECRET", "the owner's text travels on stdin")
 		require.NoError(t, h.finish())
-
-		_, err = os.Stat(promptFile)
-		assert.True(t, os.IsNotExist(err), "the prompt file is deleted when the session exits")
-		_, err = os.Stat(mcpFile)
-		assert.True(t, os.IsNotExist(err), "the mcp config file (secrets) is deleted when the session exits")
+		assertNoWTTemp(t, tmp)
 	})
+}
+
+// assertNoWTTemp fails when dir holds a wt-* file (a prompt or config temp).
+func assertNoWTTemp(t *testing.T, dir string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	for _, e := range entries {
+		assert.False(t, strings.HasPrefix(e.Name(), "wt-"), "temp file %s exists", e.Name())
+	}
 }
 
 // BEHAVIOR CHAT-04 — see docs/inventory/chat.md

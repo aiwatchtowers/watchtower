@@ -232,23 +232,27 @@ func parseCLIOutput(output []byte) (*cliResponse, error) {
 func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *Usage, string, error) {
 	model := g.modelForContext(ctx)
 
-	// The system prompt goes to a 0600 file and the user message to stdin
-	// (generateArgs): both carry the owner's data, which on argv would sit
-	// readable in `ps` for the run (and a large payload would overflow
-	// ARG_MAX).
+	// The system prompt goes over an inherited pipe (/dev/fd/3) and the user
+	// message to stdin (generateArgs): both carry the owner's data, which on
+	// argv would sit readable in `ps` for the run (and a large payload would
+	// overflow ARG_MAX), and in a temp file would outlive a crash (#604 G7).
+	var payloads []string
 	var systemPromptFile string
 	if systemPrompt != "" {
-		path, err := fsutil.WritePrivateTemp(fsutil.SystemPromptTempPrefix+"*.txt", systemPrompt)
-		if err != nil {
-			return "", nil, "", fmt.Errorf("writing system prompt file: %w", err)
-		}
-		defer os.Remove(path)
-		systemPromptFile = path
+		payloads = append(payloads, systemPrompt)
+		systemPromptFile = fsutil.PayloadPath(0)
 	}
 	args, stdin := generateArgs(model, systemPromptFile, userMessage)
 
 	claudeBin := claude.FindBinary(g.claudePath)
 	cmd := exec.CommandContext(ctx, claudeBin, args...)
+	_, closePayloads, err := fsutil.AttachPayloads(cmd, payloads...)
+	if err != nil {
+		return "", nil, "", err
+	}
+	// cmd.Output starts the child before it blocks; the child holds its own
+	// read end, so the parent's close once Output returns.
+	defer closePayloads()
 	cmd.Stdin = strings.NewReader(stdin)
 	// Send SIGINT first for graceful shutdown; SIGKILL after 5s.
 	cmd.Cancel = func() error {
