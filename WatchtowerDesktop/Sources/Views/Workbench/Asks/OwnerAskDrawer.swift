@@ -130,23 +130,38 @@ struct OwnerAskDrawer: View {
     /// reviewer's row existed: the classic view stays put, a finished
     /// review only offers a banner.
     @State private var showClassic = false
+    /// The ask whose spec review has had its first load: until then an
+    /// open review ask shows nothing, so the classic view never flashes
+    /// before the screen replaces it.
+    @State private var specReviewLoadedFor: Int64?
 
     private var asks: OwnerAsksViewModel { vm.asks }
 
-    private var specReviewMode: SpecReviewPresentation.DrawerMode {
-        SpecReviewPresentation.drawerMode(row: specReview?.row, showClassic: showClassic)
+    /// An open review ask of a spec or a plan, with the CLI: it may have a spec review.
+    private var specReviewApplies: Bool {
+        SpecReviewPresentation.applies(kind: ask.kind, docType: ask.docType, isOpen: ask.isOpen, hasCLI: vm.cli != nil)
     }
 
-    /// The spec review screen is up: its own Send and Approve answer the
-    /// ask, so the footer's verdict buttons and their keys stand aside.
-    private var showsSpecReview: Bool { specReview != nil && ask.isOpen && specReviewMode == .review }
+    private var specReviewMode: SpecReviewPresentation.DrawerMode {
+        guard specReviewApplies else { return .classic(nil) }
+        let loaded = specReviewLoadedFor == ask.id
+        return SpecReviewPresentation.drawerMode(row: loaded ? specReview?.row : nil, showClassic: showClassic, loaded: loaded)
+    }
+
+    /// The spec review screen is up (or about to be): its own Send and
+    /// Approve answer the ask, so the footer's verdict buttons and the keys
+    /// that write the classic draft stand aside.
+    private var showsSpecReview: Bool { specReviewMode == .review || specReviewMode == .loading }
 
     /// Input goes to the draft only while the ask is open and no answer is
     /// being written (`OwnerAsksViewModel.editDraft`).
     private var editable: Bool { ask.isOpen && !asks.isAnswering(ask.id) }
 
     private var keys: OwnerAskDrawerKeys {
-        OwnerAskDrawerKeys(vm: vm, ask: ask, editable: editable, cursor: $cursor, fieldFocus: $fieldFocus, commentStep: $commentStep)
+        OwnerAskDrawerKeys(
+            vm: vm, ask: ask, editable: editable, cursor: $cursor, fieldFocus: $fieldFocus, commentStep: $commentStep,
+            draftKeys: !showsSpecReview
+        )
     }
 
     var body: some View {
@@ -154,7 +169,7 @@ struct OwnerAskDrawer: View {
         ScrollViewReader { proxy in
             content
                 .background(OwnerAskKeyCatcher(
-                    onPress: { showsSpecReview ? false : keys.press($0) },
+                    onPress: { keys.press($0) },
                     onMouseDown: { [asks, projectID = ask.projectID] inside in asks.setDrawerKeysActive(inside, projectID: projectID) },
                     resizeEdge: asks.drawerExpanded ? 0 : PanelResizeHandle.thickness,
                     canHandBack: { [asks, projectID = ask.projectID] in asks.drawerAskIDs[projectID] == nil },
@@ -243,10 +258,13 @@ struct OwnerAskDrawer: View {
     /// at most 40% of the height, the note sits below it.
     @ViewBuilder
     private var reviewLayout: some View {
-        if let specReview, showsSpecReview {
+        let mode = specReviewMode
+        if mode == .loading {
+            Color.clear
+        } else if let specReview, mode == .review {
             SpecReviewView(model: specReview) { showClassic = true }
         } else {
-            if let specReview, ask.isOpen, case let .classic(strip?) = specReviewMode {
+            if let specReview, case let .classic(strip?) = mode {
                 SpecReviewStatusView(
                     model: specReview,
                     style: .strip,
@@ -268,12 +286,14 @@ struct OwnerAskDrawer: View {
         specReview?.stopPolling()
         specReview = nil
         showClassic = false
-        guard ask.kind == .review, ask.isOpen, let cli = vm.cli else { return }
+        specReviewLoadedFor = nil
+        guard specReviewApplies, let cli = vm.cli else { return }
         let model = SpecReviewModel(ask: ask, db: DatabaseManager(pool: vm.dbPool), cli: cli, asks: asks)
         await model.load()
         guard !Task.isCancelled else { return }
         specReview = model
         showClassic = model.row == nil
+        specReviewLoadedFor = ask.id
         for _ in 0..<Self.missingRowChecks where model.row == nil {
             try? await Task.sleep(for: .seconds(3))
             guard !Task.isCancelled else { return }

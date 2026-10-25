@@ -27,7 +27,8 @@ struct SpecReviewView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 Divider()
-                SpecReviewStatusView(model: model, style: .page, onReadSpec: onReadSpec)
+                // The header carries Read the spec.
+                SpecReviewStatusView(model: model, style: .page)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
@@ -112,6 +113,9 @@ enum SpecReviewPresentation {
     /// the classic view with a strip above it (the reviewer's state, or the
     /// banner offering its findings).
     enum DrawerMode: Equatable {
+        /// The first load has not returned: nothing yet, so the classic
+        /// view does not flash before the screen.
+        case loading
         case review
         case classic(Strip?)
     }
@@ -124,11 +128,19 @@ enum SpecReviewPresentation {
     /// opened before the reviewer's row existed. A review that finishes
     /// while the classic view is open offers a banner and never replaces
     /// it; a failed or skipped one leaves the classic view below its reason.
-    static func drawerMode(row: SpecReviewRow?, showClassic: Bool) -> DrawerMode {
+    static func drawerMode(row: SpecReviewRow?, showClassic: Bool, loaded: Bool = true) -> DrawerMode {
+        guard loaded else { return .loading }
         guard let row else { return .classic(nil) }
         if reviewedResult(row) != nil { return showClassic ? .classic(.banner) : .review }
         if row.status == .queued || row.status == .running { return showClassic ? .classic(.status) : .review }
         return .classic(.status)
+    }
+
+    /// Whether the drawer looks for a spec review: an open review ask of a
+    /// spec or a plan (the only documents Go queues a reviewer for), with
+    /// the CLI to run it. Any other ask opens straight into its own layout.
+    static func applies(kind: OwnerAskKind, docType: String, isOpen: Bool, hasCLI: Bool) -> Bool {
+        kind == .review && (docType == "spec" || docType == "plan") && isOpen && hasCLI
     }
 
     /// The result to review: only a done row's, decoded.

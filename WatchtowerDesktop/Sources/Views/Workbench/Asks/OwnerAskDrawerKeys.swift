@@ -38,6 +38,18 @@ struct OwnerAskDrawerKeys {
     let cursor: Binding<Int?>
     let fieldFocus: Binding<OwnerAskFieldFocus?>
     let commentStep: Binding<OwnerAskCommentStep?>
+    /// Off under the spec review screen: the keys that write the classic
+    /// draft (a digit's choice, Return into a field) stand aside; moving
+    /// between asks and stops still works.
+    var draftKeys = true
+
+    /// Whether `action` writes into the classic answer's draft.
+    static func writesDraft(_ action: OwnerAskKeyMap.Action) -> Bool {
+        switch action {
+        case .choose, .edit: true
+        default: false
+        }
+    }
 
     private var asks: OwnerAsksViewModel { vm.asks }
     private var stops: [OwnerAskKeyStop] { OwnerAskKeyStop.stops(for: ask, editable: editable) }
@@ -60,6 +72,7 @@ struct OwnerAskDrawerKeys {
         guard asks.drawerKeysActive.contains(ask.projectID) else { return false }
         let place = OwnerAskKeyMap.Place.drawer(choices: current?.stop.choices(in: ask) ?? 0, isReview: ask.kind == .review)
         guard let action = OwnerAskKeyMap.mappedAction(for: press, at: place) else { return false }
+        if !draftKeys, Self.writesDraft(action) { return false }
         switch action {
         case .nextAsk, .previousAsk: return switchAsk(forward: action == .nextAsk)
         case .nextStop, .previousStop: return moveCursor(forward: action == .nextStop)

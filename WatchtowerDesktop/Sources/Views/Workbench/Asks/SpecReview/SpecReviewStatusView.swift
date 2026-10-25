@@ -12,7 +12,6 @@ struct SpecReviewStatusView: View {
 
     let model: SpecReviewModel
     let style: Style
-    var onReadSpec: (() -> Void)?
     var onOpenFindings: (() -> Void)?
 
     private var finished: SpecReviewResult? { SpecReviewPresentation.reviewedResult(model.row) }
@@ -42,12 +41,7 @@ struct SpecReviewStatusView: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
             }
-            HStack(spacing: Spacing.regular) {
-                if canRun { runButton }
-                if let onReadSpec {
-                    Button("Read the spec", action: onReadSpec).buttonStyle(.kitSecondary).controlSize(.small)
-                }
-            }
+            if canRun { runButton }
         }
         .frame(maxWidth: Self.pageWidth)
         .padding(Spacing.page)

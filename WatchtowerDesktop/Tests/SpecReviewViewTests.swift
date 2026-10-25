@@ -80,6 +80,9 @@ final class SpecReviewViewTests: XCTestCase {
         typealias Pres = SpecReviewPresentation
         let done = row(status: "done", result: "{}")
         XCTAssertEqual(Pres.drawerMode(row: nil, showClassic: false), .classic(nil))
+        // Before the first load returns nothing shows, so the classic view never flashes first.
+        XCTAssertEqual(Pres.drawerMode(row: nil, showClassic: false, loaded: false), .loading)
+        XCTAssertEqual(Pres.drawerMode(row: done, showClassic: false, loaded: false), .loading)
         XCTAssertEqual(Pres.drawerMode(row: done, showClassic: false), .review)
         XCTAssertEqual(Pres.drawerMode(row: done, showClassic: true), .classic(.banner))
         XCTAssertEqual(Pres.drawerMode(row: row(status: "running"), showClassic: false), .review)
@@ -177,7 +180,8 @@ final class SpecReviewViewTests: XCTestCase {
 
     /// Review focus: Send is off until a finding carries a comment, and
     /// Approve with unmarked findings asks first.
-    func testWrapUpSendNeedsACommentAndApproveAsksOnce() async throws {
+    /// A review ask on a test database with a spec review row, and its loaded model.
+    private func makeModel(status: String, result: String) async throws -> SpecReviewModel {
         let (pool, path) = try TestDatabase.createPool()
         paths.append(path)
         let (projectID, askID) = try await pool.write { d -> (Int64, Int64) in
@@ -185,8 +189,8 @@ final class SpecReviewViewTests: XCTestCase {
             let id = try TestDatabase.insertOwnerAsk(d, projectID: p, kind: "review", docPath: "spec.md")
             try d.execute(sql: "UPDATE owner_asks SET doc_snapshot = '# T\nx\n' WHERE id = ?", arguments: [id])
             try d.execute(sql: """
-                INSERT INTO spec_reviews (ask_id, status, result, queued_at) VALUES (?, 'done', ?, '2026-10-25T10:00:00Z')
-                """, arguments: [id, #"{"agreements":[{"key":"ag:1","text":"t","status":"differs"},{"key":"ag:2","text":"u","status":"missing"}]}"#])
+                INSERT INTO spec_reviews (ask_id, status, result, queued_at) VALUES (?, ?, ?, '2026-10-25T10:00:00Z')
+                """, arguments: [id, status, result])
             return (p, id)
         }
         let defaults = try XCTUnwrap(UserDefaults(suiteName: "SpecReviewViewTests-\(UUID().uuidString)"))
@@ -196,6 +200,44 @@ final class SpecReviewViewTests: XCTestCase {
         let ask = try XCTUnwrap(asks.openAsks[projectID]?.first { $0.id == askID })
         let model = SpecReviewModel(ask: ask, db: DatabaseManager(pool: pool), cli: WorkbenchCLI(runner: FakeCLIRunner()), asks: asks)
         await model.load()
+        return model
+    }
+
+    func testAppliesOnlyToOpenSpecAndPlanReviews() {
+        typealias Pres = SpecReviewPresentation
+        XCTAssertTrue(Pres.applies(kind: .review, docType: "spec", isOpen: true, hasCLI: true))
+        XCTAssertTrue(Pres.applies(kind: .review, docType: "plan", isOpen: true, hasCLI: true))
+        XCTAssertFalse(Pres.applies(kind: .review, docType: "other", isOpen: true, hasCLI: true), "never waits for a review that cannot come")
+        XCTAssertFalse(Pres.applies(kind: .review, docType: "", isOpen: true, hasCLI: true))
+        XCTAssertFalse(Pres.applies(kind: .review, docType: "spec", isOpen: false, hasCLI: true))
+        XCTAssertFalse(Pres.applies(kind: .review, docType: "spec", isOpen: true, hasCLI: false))
+        XCTAssertFalse(Pres.applies(kind: .check, docType: "spec", isOpen: true, hasCLI: true))
+    }
+
+    /// The running page offers Read the spec once: the header's.
+    func testRunningPageHasOneReadTheSpec() async throws {
+        let model = try await makeModel(status: "running", result: "")
+        let buttons = try SpecReviewView(model: model) {}.inspect().findAll(ViewType.Button.self)
+        let titles = try buttons.map { try $0.labelView().text().string() }
+        XCTAssertEqual(titles.filter { $0 == "Read the spec" }.count, 1)
+        XCTAssertFalse(titles.contains("Re-run reviewer"), "no Re-run while the reviewer runs")
+    }
+
+    /// Under the spec review screen only the keys that write the classic
+    /// draft stand aside; J / K and the cursor keys still move.
+    func testDraftKeysOnlyAreOffUnderTheScreen() {
+        XCTAssertTrue(OwnerAskDrawerKeys.writesDraft(.choose(0)))
+        XCTAssertTrue(OwnerAskDrawerKeys.writesDraft(.edit))
+        for action: OwnerAskKeyMap.Action in [.nextAsk, .previousAsk, .nextStop, .previousStop, .nextComment, .previousComment] {
+            XCTAssertFalse(OwnerAskDrawerKeys.writesDraft(action), "\(action) is navigation")
+        }
+    }
+
+    func testWrapUpSendNeedsACommentAndApproveAsksOnce() async throws {
+        let model = try await makeModel(
+            status: "done",
+            result: #"{"agreements":[{"key":"ag:1","text":"t","status":"differs"},{"key":"ag:2","text":"u","status":"missing"}]}"#
+        )
         let result = try XCTUnwrap(model.row?.result)
 
         func send() throws -> InspectableView<ViewType.Button> {
