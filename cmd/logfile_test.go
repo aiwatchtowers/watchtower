@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/config"
+	"watchtower/internal/logredact"
 )
 
 // TestRotatingFile_RotatesWhileOpen pins the half of the log fix that bounds
@@ -125,6 +126,27 @@ func TestRotatingFile_RotationFailureIsNotedOncePerCap(t *testing.T) {
 // TestLogWriterFor pins the one-stream half: a detached child's stdout and
 // stderr ARE daemon.log, so adding os.Stderr to the logger wrote every line
 // to both files. Only --verbose adds stderr now.
+// TestRotatingFile_CutsMarkedDetailToExcerpt pins FILES-01 at the daemon's
+// log writer: a CLI stderr or HTTP body marked by logredact.Detail stays whole
+// on its error but lands in watchtower.log as its scrubbed excerpt, and the
+// writer still reports the caller's byte count.
+func TestRotatingFile_CutsMarkedDetailToExcerpt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "watchtower.log")
+	rf, err := newRotatingFile(path, 1<<20)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = rf.Close() })
+
+	body := `{"errorMessages":["zqcanary-jira.body-7f3a"]}`
+	line := []byte("sync: status 500: " + logredact.Detail(body) + "\n")
+	n, err := rf.Write(line)
+	require.NoError(t, err)
+	assert.Equal(t, len(line), n)
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "sync: status 500: "+logredact.Excerpt(body)+"\n", string(got))
+}
+
 func TestLogWriterFor(t *testing.T) {
 	t.Run("detached alone does not add stderr", func(t *testing.T) {
 		buf := &bytes.Buffer{}

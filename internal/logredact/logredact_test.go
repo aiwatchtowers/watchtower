@@ -1,9 +1,13 @@
 package logredact
 
 import (
+	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestExcerpt_ScrubsQuotedText(t *testing.T) {
@@ -48,4 +52,34 @@ func TestBody_IsFingerprint(t *testing.T) {
 	if strings.Contains(got, "private") || !strings.Contains(got, "sha256:") {
 		t.Errorf("Body = %q", got)
 	}
+}
+
+func TestDetail_RedactCutsKeptTextToExcerpt(t *testing.T) {
+	body := `{"errorMessages":["the plan for project zeta"]}`
+	err := fmt.Errorf("GET /x: status 500: %s", Detail(body))
+	require.Contains(t, err.Error(), "project zeta", "the error keeps the full text")
+
+	line := []byte("warning: " + err.Error() + "\n")
+	got := string(Redact(line))
+	require.NotContains(t, got, "project zeta")
+	require.Equal(t, "warning: GET /x: status 500: "+Excerpt(body)+"\n", got)
+
+	var buf bytes.Buffer
+	_, werr := Writer(&buf).Write(line)
+	require.NoError(t, werr)
+	require.Equal(t, got, buf.String())
+}
+
+func TestDetail_PlainShortTextIsNotKept(t *testing.T) {
+	Detail("HTTP 429")
+	require.Equal(t, "status HTTP 429", string(Redact([]byte("status HTTP 429"))))
+}
+
+func TestDetail_KeepsABoundedSet(t *testing.T) {
+	first := `"first ` + strings.Repeat("x", 200) + `"`
+	Detail(first)
+	for i := range maxKept + 1 {
+		Detail(fmt.Sprintf(`"filler %d %s"`, i, strings.Repeat("y", 200)))
+	}
+	require.Equal(t, first, string(Redact([]byte(first))), "the oldest kept text was evicted")
 }

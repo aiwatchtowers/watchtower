@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"watchtower/internal/logredact"
 )
 
 // modelsResponse is the OpenAI-compatible `GET /v1/models` response.
@@ -44,7 +46,7 @@ func ListModels(ctx context.Context, baseURL string) ([]string, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, string(b))
+		return nil, fmt.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, logredact.Detail(string(b)))
 	}
 
 	var result modelsResponse

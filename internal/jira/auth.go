@@ -17,6 +17,7 @@ import (
 
 	"watchtower/internal/auth"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/logredact"
 	"watchtower/internal/oauthpage"
 )
 
@@ -338,7 +339,7 @@ func FetchAccessibleResources(ctx context.Context, accessToken string) ([]CloudR
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("accessible resources failed (%d): %s", resp.StatusCode, body)
+		return nil, fmt.Errorf("accessible resources failed (%d): %s", resp.StatusCode, logredact.Detail(string(body)))
 	}
 
 	var resources []CloudResource

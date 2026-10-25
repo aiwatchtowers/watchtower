@@ -16,6 +16,7 @@ import (
 
 	"watchtower/internal/claude"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/logredact"
 )
 
 // limitedWriter wraps a writer and stops writing after limit bytes.
@@ -141,7 +142,7 @@ func (g *ClaudeGenerator) ValidateModel() error {
 		return fmt.Errorf("model validation: unexpected response for %q: %w", g.modelStrong, err)
 	}
 	if resp.IsError {
-		return fmt.Errorf("model %q is not available: %s", g.modelStrong, resp.Result)
+		return fmt.Errorf("model %q is not available: %s", g.modelStrong, logredact.Detail(resp.Result))
 	}
 	return nil
 }
@@ -181,7 +182,7 @@ func errorEnvelopeMessage(resp *cliResponse) string {
 	// log the way the sibling stderr path is bounded by limitedWriter.
 	const maxEnvelopeMessage = 4096
 	if len(msg) <= maxEnvelopeMessage {
-		return msg
+		return logredact.Detail(msg)
 	}
 	// Back off to a rune boundary: this text is model output and routinely
 	// Cyrillic, so a byte cut lands mid-rune and writes a broken one into logs.
@@ -189,7 +190,7 @@ func errorEnvelopeMessage(resp *cliResponse) string {
 	for cut > 0 && !utf8.RuneStart(msg[cut]) {
 		cut--
 	}
-	return msg[:cut] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut)
+	return logredact.Detail(msg[:cut]) + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut)
 }
 
 // parseCLIOutput handles both output formats from the Claude CLI:
@@ -317,7 +318,7 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 				stderrMsg = "unparseable stdout: " + claude.DescribeOutput(output)
 			}
 			if stderrMsg != "" {
-				return "", nil, "", WithCause(fmt.Errorf("claude CLI failed (exit %d): %s", exitErr.ExitCode(), stderrMsg), exitErr)
+				return "", nil, "", WithCause(fmt.Errorf("claude CLI failed (exit %d): %s", exitErr.ExitCode(), logredact.Detail(stderrMsg)), exitErr)
 			}
 			return "", nil, "", WithCause(fmt.Errorf("claude CLI failed with exit code %d", exitErr.ExitCode()), exitErr)
 		}

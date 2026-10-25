@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"watchtower/internal/ai"
+	"watchtower/internal/logredact"
 )
 
 // DefaultBaseURL is the default Ollama API endpoint. Kept in sync with
@@ -182,7 +183,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 
 		if resp.StatusCode != http.StatusOK {
 			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-			errCh <- fmt.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, string(b))
+			errCh <- fmt.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, logredact.Detail(string(b)))
 			return
 		}
 
@@ -282,7 +283,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return "", nil, fmt.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, string(b))
+		return "", nil, fmt.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, logredact.Detail(string(b)))
 	}
 
 	var result chatResponse

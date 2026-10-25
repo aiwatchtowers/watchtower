@@ -5,7 +5,10 @@
 package logredact
 
 import (
+	"bytes"
+	"io"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -81,4 +84,82 @@ func closing(runes []rune, i int) int {
 		}
 	}
 	return -1
+}
+
+// maxKept and maxKeptBytes bound the texts Detail remembers; the oldest go
+// first. An error is logged soon after it is built, so a few hundred recent
+// texts cover the window between the two.
+const (
+	maxKept      = 256
+	maxKeptBytes = 4 << 20
+)
+
+var kept struct {
+	mu    sync.Mutex
+	texts []string
+	bytes int
+}
+
+// Detail marks s, text from outside the process that an error carries in
+// full (CLI stderr, an HTTP body, a CLI result envelope), and returns it
+// unchanged. The error keeps the whole text for the database; a log writer
+// wrapped by Writer cuts every marked text it sees to its Excerpt, so a
+// caller that logs the error with %v writes at most the excerpt. Text that
+// is its own excerpt (short, unquoted) is not remembered.
+func Detail(s string) string {
+	if Excerpt(s) == s {
+		return s
+	}
+	kept.mu.Lock()
+	defer kept.mu.Unlock()
+	kept.texts = append(kept.texts, s)
+	kept.bytes += len(s)
+	for len(kept.texts) > maxKept || (kept.bytes > maxKeptBytes && len(kept.texts) > 1) {
+		kept.bytes -= len(kept.texts[0])
+		kept.texts = kept.texts[1:]
+	}
+	return s
+}
+
+// Redact returns p with every text marked by Detail replaced by its
+// Excerpt. It returns p itself when nothing matched.
+func Redact(p []byte) []byte {
+	kept.mu.Lock()
+	texts := kept.texts
+	kept.mu.Unlock()
+	// Longest first, so a marked text that contains another is cut whole.
+	var hits []string
+	for _, t := range texts {
+		if len(t) <= len(p) && bytes.Contains(p, []byte(t)) {
+			hits = append(hits, t)
+		}
+	}
+	if len(hits) == 0 {
+		return p
+	}
+	out := string(p)
+	for len(hits) > 0 {
+		longest := 0
+		for i, h := range hits {
+			if len(h) > len(hits[longest]) {
+				longest = i
+			}
+		}
+		out = strings.ReplaceAll(out, hits[longest], Excerpt(hits[longest]))
+		hits = append(hits[:longest], hits[longest+1:]...)
+	}
+	return []byte(out)
+}
+
+// Writer wraps w so that every write passes through Redact. It reports the
+// caller's byte count, not the shorter redacted one.
+func Writer(w io.Writer) io.Writer { return redactingWriter{w} }
+
+type redactingWriter struct{ w io.Writer }
+
+func (r redactingWriter) Write(p []byte) (int, error) {
+	if _, err := r.w.Write(Redact(p)); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }

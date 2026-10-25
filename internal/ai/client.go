@@ -22,6 +22,7 @@ import (
 
 	"watchtower/internal/claude"
 	"watchtower/internal/fsutil"
+	"watchtower/internal/logredact"
 )
 
 // Usage holds token metrics from an AI call.
@@ -101,7 +102,7 @@ func envelopeMessage(result string) string {
 	}
 	const maxEnvelopeMessage = 4096
 	if len(msg) <= maxEnvelopeMessage {
-		return msg
+		return logredact.Detail(msg)
 	}
 	// Back off to a rune boundary: this text is model output and routinely
 	// Cyrillic, so a byte cut lands mid-rune and writes a broken one into logs.
@@ -109,7 +110,7 @@ func envelopeMessage(result string) string {
 	for cut > 0 && !utf8.RuneStart(msg[cut]) {
 		cut--
 	}
-	return msg[:cut] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut)
+	return logredact.Detail(msg[:cut]) + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut)
 }
 
 // ExternalMCPServer is a plain DTO describing an owner-added external MCP
@@ -989,7 +990,7 @@ func classifyError(err error, stderr string) error {
 		}
 
 		if stderrMsg != "" {
-			return fmt.Errorf("claude CLI failed (exit %d): %s", code, stderrMsg)
+			return fmt.Errorf("claude CLI failed (exit %d): %s", code, logredact.Detail(stderrMsg))
 		}
 		return fmt.Errorf("claude CLI failed with exit code %d", code)
 	}

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"watchtower/internal/logredact"
 )
 
 // Marker starts every canary string.
@@ -17,7 +19,8 @@ const Marker = "zqcanary-"
 // Text returns the canary for one synced field, e.g. Text("channel.name").
 func Text(field string) string { return Marker + field + "-7f3a" }
 
-// Sink collects log output for a test. Safe for concurrent writers.
+// Sink collects log output for a test, through logredact.Redact as the
+// daemon's watchtower.log writer does. Safe for concurrent writers.
 type Sink struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -27,7 +30,10 @@ type Sink struct {
 func (s *Sink) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.buf.Write(p)
+	if _, err := s.buf.Write(logredact.Redact(p)); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 // String returns everything written so far.
