@@ -16,6 +16,11 @@ type SessionEvent struct {
 	DurationMS int64  `json:"duration_ms"` // how long the session was held
 }
 
+// MaxLogSize is the size past which the session log is renamed to
+// "<path>.1" (replacing the previous copy) before the next append, the cap
+// the other workspace logs have. A var so tests can shrink it.
+var MaxLogSize int64 = 20 << 20
+
 // SessionLog appends structured events to a JSON-lines file.
 type SessionLog struct {
 	path string
@@ -35,6 +40,11 @@ func (sl *SessionLog) Log(event SessionEvent) {
 	data, err := json.Marshal(event)
 	if err != nil {
 		return
+	}
+
+	// Best effort, like the append itself: a failed rename keeps appending.
+	if info, err := os.Stat(sl.path); err == nil && info.Size() > MaxLogSize {
+		_ = os.Rename(sl.path, sl.path+".1")
 	}
 
 	f, err := os.OpenFile(sl.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)

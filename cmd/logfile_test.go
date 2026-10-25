@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/config"
+	"watchtower/internal/daemon"
 	"watchtower/internal/logredact"
 )
 
@@ -123,9 +124,6 @@ func TestRotatingFile_RotationFailureIsNotedOncePerCap(t *testing.T) {
 		"the lines themselves must still reach the log")
 }
 
-// TestLogWriterFor pins the one-stream half: a detached child's stdout and
-// stderr ARE daemon.log, so adding os.Stderr to the logger wrote every line
-// to both files. Only --verbose adds stderr now.
 // TestRotatingFile_CutsMarkedDetailToExcerpt pins FILES-01 at the daemon's
 // log writer: a CLI stderr or HTTP body marked by logredact.Detail stays whole
 // on its error but lands in watchtower.log as its scrubbed excerpt, and the
@@ -147,11 +145,40 @@ func TestRotatingFile_CutsMarkedDetailToExcerpt(t *testing.T) {
 	assert.Equal(t, "sync: status 500: "+logredact.Excerpt(body)+"\n", string(got))
 }
 
+// TestRotatingFile_OnOpenFollowsRotation pins how the detached daemon's
+// stderr keeps following watchtower.log: the hook sees the live file at open
+// and after every rotation, never the renamed ".1".
+func TestRotatingFile_OnOpenFollowsRotation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "watchtower.log")
+	var opened []string
+	w, err := newRotatingFileWithHook(path, 64, func(f *os.File) { opened = append(opened, f.Name()) })
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = w.Close() })
+
+	for range 8 { // a 64-byte cap rotates after every 4th 20-byte line: two rotations
+		_, err := w.Write([]byte(strings.Repeat("x", 19) + "\n"))
+		require.NoError(t, err)
+	}
+	assert.Equal(t, []string{path, path, path}, opened)
+}
+
+// TestDetachedChildEnv pins that the detached daemon never inherits a
+// GOTRACEBACK setting: the default ("single") prints the panicking stack
+// without the other goroutines' frames and values.
+func TestDetachedChildEnv(t *testing.T) {
+	env := detachedChildEnv([]string{"HOME=/h", "GOTRACEBACK=all", "PATH=/bin"})
+	assert.Equal(t, []string{"HOME=/h", "PATH=/bin", daemon.DetachEnvKey + "=1"}, env)
+}
+
+// TestLogWriterFor pins the one-stream half: a detached child's stderr is
+// pointed at watchtower.log itself (redirectStderr, following each rotation),
+// so adding os.Stderr to the logger would write every line to it twice.
+// Only --verbose adds stderr.
 func TestLogWriterFor(t *testing.T) {
 	t.Run("detached alone does not add stderr", func(t *testing.T) {
 		buf := &bytes.Buffer{}
 		assert.Same(t, buf, logWriterFor(buf, false, true),
-			"a detached child must get the bare log file: its stderr already is daemon.log")
+			"a detached child must get the bare log file: its stderr already is watchtower.log")
 	})
 
 	t.Run("plain foreground run does not add stderr", func(t *testing.T) {

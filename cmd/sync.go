@@ -444,7 +444,7 @@ func runSyncDetach(cfg *config.Config) error {
 
 	// Re-exec ourselves with the detach env var set.
 	child := exec.Command(exe, os.Args[1:]...)
-	child.Env = append(os.Environ(), daemon.DetachEnvKey+"=1")
+	child.Env = detachedChildEnv(os.Environ())
 	child.Stdout = logFile
 	child.Stderr = logFile
 	child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -456,6 +456,19 @@ func runSyncDetach(cfg *config.Config) error {
 	fmt.Printf("Daemon started (PID %d)\n", child.Process.Pid)
 	fmt.Printf("Log: %s\n", logPath)
 	return nil
+}
+
+// detachedChildEnv is the detached daemon's environment: the parent's,
+// without GOTRACEBACK (the default, single, prints the panicking stack but
+// not the other goroutines' frames), plus the detach marker.
+func detachedChildEnv(environ []string) []string {
+	env := make([]string, 0, len(environ)+1)
+	for _, kv := range environ {
+		if !strings.HasPrefix(kv, "GOTRACEBACK=") {
+			env = append(env, kv)
+		}
+	}
+	return append(env, daemon.DetachEnvKey+"=1")
 }
 
 // validateSyncConfig checks what a sync needs from config.yaml: a usable
