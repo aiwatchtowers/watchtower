@@ -137,6 +137,13 @@ type Tool struct {
 	// External marks writes that leave this machine (Jira). Such a tool can
 	// never be granted execute trust (AGENT-03).
 	External bool
+	// CompanyData marks a read tool that returns synced source content —
+	// messages, email, calendar, Jira, Linear, Confluence/knowledge,
+	// transcripts and recaps, digests, tracks, people cards, memory, ideas,
+	// briefings, day plans, inbox, task context, experts. CallRead gates such
+	// a call by the session's read budget and writes one audit line for it
+	// (READ-01..02). The owner's own board, asks and skills stay unmarked.
+	CompanyData bool
 	// AlwaysAsk marks a local write too broad to ever run without the
 	// owner's per-call Approve (dismiss_tracks: hundreds of rows at once).
 	// Like External it can never be granted execute trust and is never

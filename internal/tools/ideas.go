@@ -42,6 +42,7 @@ func NewListIdeas() *Tool {
 		Description: "List ideas, decisions, and notes from the ideas registry, optionally filtered by kind, status, or a text query.",
 		InputSchema: mustSchema[listIdeasArgs]("list_ideas"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a listIdeasArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
@@ -72,6 +73,7 @@ func NewGetIdea() *Tool {
 		Description: "Get a single idea by id, including every recorded mention.",
 		InputSchema: mustSchema[getIdeaArgs]("get_idea"),
 		Access:      AccessRead,
+		CompanyData: true,
 		Execute: func(_ context.Context, d *db.DB, call Call) (any, error) {
 			var a getIdeaArgs
 			if err := json.Unmarshal(call.Args, &a); err != nil {
