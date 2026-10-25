@@ -388,6 +388,7 @@ var cliNoContentCommands = map[string]bool{
 	"workbench methodology":            true,
 	"workbench permission-wait":        true,
 	"workbench resync":                 true,
+	"workbench review approve":         true,
 	"workbench review context":         true,
 	"workbench review diff":            true,
 	"workbench review file":            true,
