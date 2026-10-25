@@ -1356,3 +1356,20 @@ func TestPipeline_HasPending(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, has, "it is pending work once vision is configured")
 }
+
+// A result write that fails is a failed attempt: the row cannot stay
+// pending and be worked again forever.
+func TestPipeline_FinishFailureCountsAnAttempt(t *testing.T) {
+	e := newEnv(t)
+	id := e.image("1:C1", "1758000000.000100", "F1", noisePNG(t, 64, 64, 1))
+	e.exec(`CREATE TRIGGER refuse_ok BEFORE UPDATE OF status ON media_items WHEN NEW.status = 'ok'
+		BEGIN SELECT RAISE(ABORT, 'refused'); END`)
+
+	st := e.run()
+
+	r := e.row(id)
+	assert.Equal(t, 1, r.Attempts)
+	assert.Equal(t, "other", r.Error)
+	assert.Equal(t, "pending", r.Status)
+	assert.Equal(t, 1, st.Failed)
+}

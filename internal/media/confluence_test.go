@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"sync"
 	"testing"
@@ -419,4 +421,35 @@ func TestConfluenceResolver_UnreadableDiscoveredAtWaits(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, target)
 	assert.Equal(t, "pending", target.Status)
+}
+
+// A page holding the same URL as an ac:image and as an <a href> describes
+// it once (the image row); the link row, answered with an image, ends
+// skipped_type instead of failing its kind change on every cycle.
+func TestConfluence_ImageAndLinkToSameURLDescribedOnce(t *testing.T) {
+	c := newConfEnv(t)
+	img := noisePNG(t, 64, 64, 11)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/png")
+		_, _ = w.Write(img)
+	}))
+	t.Cleanup(srv.Close)
+	gets := c.web(map[string]*httptest.Server{"public.example": srv})
+	const u = "http://public.example/chart.png"
+	c.f.page("p1", 1, confMod, "page body",
+		extsync.MediaRef{Kind: "image", Locator: "url:" + u, URL: u},
+		extsync.MediaRef{Kind: "link", Locator: "url:" + u, URL: u})
+	c.sync()
+	image, link := c.itemID("p1", "image", "url:"+u), c.itemID("p1", "link", "url:"+u)
+
+	c.run()
+	assert.Equal(t, "ok", c.row(image).Status)
+	l := c.row(link)
+	assert.Equal(t, "skipped_type", l.Status)
+	assert.Equal(t, "link", l.Kind)
+	fetched := len(gets())
+	c.run()
+	assert.Len(t, gets(), fetched, "nothing is fetched again")
+	imgCalls, _ := c.gen.calls()
+	assert.Equal(t, 1, imgCalls, "one description")
 }

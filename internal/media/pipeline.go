@@ -232,7 +232,9 @@ func (r *run) item(ctx context.Context, it db.MediaItem) {
 		o.res.KBSource, o.res.KBRef = src, ref
 	}
 	if err := r.p.DB.FinishMedia(ctx, it.ID, *o.res); err != nil {
-		r.p.logf("media: item %d: %v", it.ID, err)
+		// A write that fails is a failed attempt, so no write failure can
+		// keep a row pending (and re-fetched) forever.
+		r.fail(ctx, it, err)
 		return
 	}
 	switch o.res.Status {
@@ -357,6 +359,16 @@ func (r *run) link(ctx context.Context, it db.MediaItem) outcome {
 	if strings.HasPrefix(resp.MediaType, "image/") {
 		if !pageTimer.Stop() {
 			return fetchOutcome(pageErr(context.Canceled)) // the timer fired as the headers came
+		}
+		// The parent already holds this URL as an image (a Confluence
+		// ac:image and an <a href> to the same URL): that row describes it,
+		// and this one could not take kind image beside it (UNIQUE).
+		img, err := r.p.DB.MediaItemAt(ctx, it.ParentKey, "image", it.Locator)
+		if err != nil {
+			return failed(err)
+		}
+		if img != nil {
+			return terminal("skipped_type", "")
 		}
 		o := terminal("unavailable", "")
 		if r.vision {
