@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/logredact"
 )
 
 // validProjectKeyRe validates Jira project keys to prevent JQL injection.
@@ -382,7 +383,7 @@ func buildStatusNotIn(statuses []string) string {
 // in the log line.
 func (s *Syncer) recordProjectError(what, projectKey string, err error) {
 	s.logger.Printf("%s error for project %s: %v", what, projectKey, err)
-	if rerr := s.db.RecordJiraSyncError(s.accountID, projectKey, err.Error(), time.Now().UTC().Format(time.RFC3339)); rerr != nil {
+	if rerr := s.db.RecordJiraSyncError(s.accountID, projectKey, logredact.Full(err), time.Now().UTC().Format(time.RFC3339)); rerr != nil {
 		s.logger.Printf("recording %s error for project %s: %v", what, projectKey, rerr)
 	}
 }

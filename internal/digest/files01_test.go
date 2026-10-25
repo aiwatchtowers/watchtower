@@ -15,7 +15,7 @@ import (
 // TestFILES01_DigestNeverLogsContent runs the channel digests and the
 // rollups over channels, users and messages made of canaries, once with a
 // valid answer that quotes canaries and once with unparseable output, with
-// progress and returned errors routed into the log the way the daemon does.
+// returned errors logged the way a caller would.
 func TestFILES01_DigestNeverLogsContent(t *testing.T) {
 	c := logcanary.Text
 	valid := `{"summary":"` + c("llm.summary") + `","running_summary":"` + c("llm.running") + `",` +
@@ -46,7 +46,6 @@ func TestFILES01_DigestNeverLogsContent(t *testing.T) {
 		seedUser(t, database, "U1", c("user.name"), c("user.display_name"))
 
 		p := New(database, testConfig(), &mockGenerator{response: out}, sink.Logger())
-		p.OnProgress = func(done, total int, status string) { log.Printf("progress %d/%d %s", done, total, status) }
 		_, _, err := p.RunChannelDigests(context.Background())
 		log.Printf("channel digests: %v", err)
 		_, _, err = p.Run(context.Background())

@@ -348,7 +348,7 @@ func (c *Client) get(ctx context.Context, path string, result any) error {
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("GET %s: status %d: %s", path, resp.StatusCode, logredact.Detail(string(body)))
+		return logredact.Errorf("GET %s: status %d: %s", path, resp.StatusCode, logredact.Text(body))
 	}
 
 	if err := json.Unmarshal(body, result); err != nil {
@@ -452,7 +452,7 @@ func (c *Client) issueCurrentKey(ctx context.Context, key string) (string, error
 		return "", nil
 	case http.StatusOK:
 	default:
-		return "", fmt.Errorf("looking up issue %s: status %d: %s", key, resp.StatusCode, logredact.Detail(string(body)))
+		return "", logredact.Errorf("looking up issue %s: status %d: %s", key, resp.StatusCode, logredact.Text(body))
 	}
 	var out struct {
 		Key string `json:"key"`

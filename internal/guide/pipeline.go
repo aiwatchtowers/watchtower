@@ -344,7 +344,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 						p.logger.Printf("people: fallback card error for %s: %v", entry.stats.UserID, ferr)
 					}
 					newVal := int(completed.Add(1))
-					p.progress(newVal, totalUsers, fmt.Sprintf("%s done (insufficient)", entry.stats.UserID))
+					p.progress(newVal, totalUsers, fmt.Sprintf("@%s done (insufficient)", p.userName(entry.stats.UserID)))
 				}
 				continue
 			}
@@ -382,7 +382,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				p.LastStepOutputTokens = outTokPer
 
 				newVal := int(completed.Add(1))
-				p.progress(newVal, totalUsers, fmt.Sprintf("%s done (batch)", entry.stats.UserID))
+				p.progress(newVal, totalUsers, fmt.Sprintf("@%s done (batch)", p.userName(entry.stats.UserID)))
 			}
 		}
 	}
@@ -426,7 +426,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 						aiCards++
 					}
 					newVal := int(completed.Add(1))
-					p.progress(newVal, totalUsers, fmt.Sprintf("%s done (fallback)", entry.stats.UserID))
+					p.progress(newVal, totalUsers, fmt.Sprintf("@%s done (fallback)", p.userName(entry.stats.UserID)))
 				}
 				continue
 			}
@@ -464,7 +464,7 @@ func (p *Pipeline) RunForWindow(ctx context.Context, from, to float64) (int, err
 				p.LastStepOutputTokens = outTokPer
 
 				newVal := int(completed.Add(1))
-				p.progress(newVal, totalUsers, fmt.Sprintf("%s done (batch)", entry.stats.UserID))
+				p.progress(newVal, totalUsers, fmt.Sprintf("@%s done (batch)", p.userName(entry.stats.UserID)))
 			}
 		}
 	}

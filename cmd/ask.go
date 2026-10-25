@@ -9,6 +9,7 @@ import (
 	"watchtower/internal/ai"
 	"watchtower/internal/config"
 	"watchtower/internal/db"
+	"watchtower/internal/logredact"
 	"watchtower/internal/providers"
 
 	"github.com/spf13/cobra"
@@ -126,7 +127,7 @@ func runAsk(cmd *cobra.Command, args []string) error {
 	{
 		errMsg := ""
 		if err != nil {
-			errMsg = err.Error()
+			errMsg = logredact.Full(err)
 		}
 		inTok, outTok, cost, totalAPI := 0, 0, 0.0, 0
 		if usage != nil {

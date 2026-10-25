@@ -39,6 +39,7 @@ import (
 	"watchtower/internal/memory"
 
 	"watchtower/internal/customtracks"
+	"watchtower/internal/logredact"
 	"watchtower/internal/reactioncmd"
 	"watchtower/internal/sync"
 	"watchtower/internal/targets"
@@ -694,7 +695,7 @@ func (d *Daemon) trackedPipelineRun(name string, fn func() pipelineRunStats) {
 	}
 	errMsg := ""
 	if stats.err != nil {
-		errMsg = stats.err.Error()
+		errMsg = logredact.Full(stats.err)
 	}
 	if err := d.db.CompletePipelineRun(runID, stats.items, stats.inTok, stats.outTok, stats.cost, stats.totalAPI, stats.pFrom, stats.pTo, errMsg); err != nil {
 		d.logger.Printf("pipeline_runs: %s run %d not completed: %v", name, runID, err)
@@ -1104,7 +1105,7 @@ func (d *Daemon) phaseJiraSync(ctx context.Context) {
 				d.logger.Printf("jira: account %d: sync cancelled, leaving auth state untouched", s.AccountID())
 			case errors.Is(err, jira.ErrAuthRevoked):
 				if d.db != nil {
-					if dbErr := d.db.SetJiraAccountAuthState(s.AccountID(), "revoked", err.Error()); dbErr != nil {
+					if dbErr := d.db.SetJiraAccountAuthState(s.AccountID(), "revoked", logredact.Full(err)); dbErr != nil {
 						d.logger.Printf("jira: account %d: record auth state: %v", s.AccountID(), dbErr)
 					}
 				}

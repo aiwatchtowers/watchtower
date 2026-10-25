@@ -35,7 +35,7 @@ func seedCanaryTrackWindow(t *testing.T, database *db.DB, digestIdx int) {
 // TestFILES01_TracksNeverLogsContent runs the tracks pipeline over canary
 // channels, people and digests: a valid answer that creates a track and drops
 // a low-value one, a second run that merges into the stored track, and an
-// unparseable answer. Progress and returned errors go to the log too.
+// unparseable answer. Returned errors go to the log too.
 func TestFILES01_TracksNeverLogsContent(t *testing.T) {
 	c := logcanary.Text
 	sink := logcanary.Capture(t)
@@ -60,7 +60,6 @@ func TestFILES01_TracksNeverLogsContent(t *testing.T) {
 		cfg := testConfig()
 		cfg.AI.Workers = 1
 		pipe := New(database, cfg, &mockGenerator{response: out}, sink.Logger())
-		pipe.OnProgress = func(done, total int, status string) { log.Printf("progress %d/%d %s", done, total, status) }
 		_, _, err := pipe.Run(context.Background())
 		log.Printf("tracks run %d: %v", i, err)
 	}

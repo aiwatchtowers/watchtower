@@ -16,6 +16,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/logredact"
 	"watchtower/internal/meeting"
 	"watchtower/internal/prompts"
 
@@ -436,13 +437,13 @@ func generateAndStoreTranscriptRecap(ctx context.Context, database *db.DB, cfg *
 	}
 	res, usage, err := pipe.GenerateTranscriptRecap(ctx, eventID, tr.TranscriptText)
 	if err != nil {
-		completeRun(0, 0, 0, 0, err.Error())
+		completeRun(0, 0, 0, 0, logredact.Full(err))
 		return err
 	}
 
 	recapJSON, err := json.Marshal(res)
 	if err != nil {
-		completeRun(0, 0, 0, 0, err.Error())
+		completeRun(0, 0, 0, 0, logredact.Full(err))
 		return fmt.Errorf("marshalling recap: %w", err)
 	}
 	err = storeTranscriptRecap(database, tr, eventID, string(recapJSON), errOut)
@@ -710,11 +711,11 @@ func runTranscriptNotes(cmd *cobra.Command, args []string) error {
 	}
 	notes, usage, err := pipe.GenerateTranscriptNotes(ctx, eventID, tr.TranscriptText)
 	if err != nil {
-		completeRun(0, 0, 0, 0, err.Error())
+		completeRun(0, 0, 0, 0, logredact.Full(err))
 		return err
 	}
 	if err := database.SetMeetingTranscriptNotes(id, notes); err != nil {
-		completeRun(0, 0, 0, 0, err.Error())
+		completeRun(0, 0, 0, 0, logredact.Full(err))
 		return err
 	}
 
@@ -769,7 +770,7 @@ func generateAndStoreTranscriptChapters(ctx context.Context, database *db.DB, cf
 	}
 	res, usage, err := pipe.GenerateTranscriptChapters(ctx, eventID, utterances, tr.DurationSec)
 	if err != nil {
-		completeRun(0, 0, 0, 0, err.Error())
+		completeRun(0, 0, 0, 0, logredact.Full(err))
 		return "", err
 	}
 	// Regeneration must not silently wipe Action-item→Target links: stamps
@@ -782,11 +783,11 @@ func generateAndStoreTranscriptChapters(ctx context.Context, database *db.DB, cf
 	}
 	chaptersJSON, err := json.Marshal(res)
 	if err != nil {
-		completeRun(0, 0, 0, 0, err.Error())
+		completeRun(0, 0, 0, 0, logredact.Full(err))
 		return "", fmt.Errorf("marshalling chapters: %w", err)
 	}
 	if err := database.SetMeetingTranscriptChapters(id, string(chaptersJSON)); err != nil {
-		completeRun(0, 0, 0, 0, err.Error())
+		completeRun(0, 0, 0, 0, logredact.Full(err))
 		return "", err
 	}
 
@@ -878,7 +879,7 @@ func runTranscriptFollowup(cmd *cobra.Command, args []string) error {
 	}
 	draft, usage, err := pipe.GenerateFollowupDraft(ctx, input)
 	if err != nil {
-		completeRun(0, 0, 0, 0, err.Error())
+		completeRun(0, 0, 0, 0, logredact.Full(err))
 		return err
 	}
 	in, out, api := 0, 0, 0

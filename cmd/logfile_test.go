@@ -12,7 +12,6 @@ import (
 
 	"watchtower/internal/config"
 	"watchtower/internal/daemon"
-	"watchtower/internal/logredact"
 )
 
 // TestRotatingFile_RotatesWhileOpen pins the half of the log fix that bounds
@@ -122,27 +121,6 @@ func TestRotatingFile_RotationFailureIsNotedOncePerCap(t *testing.T) {
 		"8 writes x 20 bytes over a 64-byte cap = one note per cap crossed, not one per line")
 	assert.Contains(t, string(b), strings.Repeat("x", 19),
 		"the lines themselves must still reach the log")
-}
-
-// TestRotatingFile_CutsMarkedDetailToExcerpt pins FILES-01 at the daemon's
-// log writer: a CLI stderr or HTTP body marked by logredact.Detail stays whole
-// on its error but lands in watchtower.log as its scrubbed excerpt, and the
-// writer still reports the caller's byte count.
-func TestRotatingFile_CutsMarkedDetailToExcerpt(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "watchtower.log")
-	rf, err := newRotatingFile(path, 1<<20)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = rf.Close() })
-
-	body := `{"errorMessages":["zqcanary-jira.body-7f3a"]}`
-	line := []byte("sync: status 500: " + logredact.Detail(body) + "\n")
-	n, err := rf.Write(line)
-	require.NoError(t, err)
-	assert.Equal(t, len(line), n)
-
-	got, err := os.ReadFile(path)
-	require.NoError(t, err)
-	assert.Equal(t, "sync: status 500: "+logredact.Excerpt(body)+"\n", string(got))
 }
 
 // TestRotatingFile_OnOpenFollowsRotation pins how the detached daemon's

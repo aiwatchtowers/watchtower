@@ -9,8 +9,10 @@ import (
 	"path/filepath"
 
 	"watchtower/internal/config"
+	"watchtower/internal/daemon"
 	"watchtower/internal/db"
 	"watchtower/internal/db/lockmetrics"
+	"watchtower/internal/logredact"
 	"watchtower/internal/repl"
 
 	"github.com/spf13/cobra"
@@ -75,7 +77,15 @@ func ensureSchemaFormat(_ *cobra.Command, _ []string) error {
 func Execute() int {
 	lockmetrics.SetProcessRole(roleFor(os.Args[1:]))
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		// The final error is for the owner (a terminal, or the Desktop that
+		// shows a failed command's stderr), so CLI stderr and HTTP bodies
+		// show in full (logredact.Full) — except in the detached daemon,
+		// whose stderr is watchtower.log.
+		if os.Getenv(daemon.DetachEnvKey) == "1" {
+			fmt.Fprintln(os.Stderr, err)
+		} else {
+			fmt.Fprintln(os.Stderr, logredact.Full(err))
+		}
 		var ec *exitCodeError
 		if errors.As(err, &ec) {
 			return ec.code

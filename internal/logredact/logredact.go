@@ -1,14 +1,13 @@
 // Package logredact turns text that may carry company content (CLI stderr,
 // HTTP bodies, model output) into something a log line can hold: a scrubbed
-// excerpt or a content-free fingerprint (FILES-01). The full text stays on
-// the error the caller stores in the database.
+// excerpt or a content-free fingerprint (FILES-01). An error built by Errorf
+// carries both views: Error() is the log-safe one, Full the whole text for
+// the places that store an error for the owner.
 package logredact
 
 import (
-	"bytes"
-	"io"
+	"fmt"
 	"strings"
-	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -86,80 +85,83 @@ func closing(runes []rune, i int) int {
 	return -1
 }
 
-// maxKept and maxKeptBytes bound the texts Detail remembers; the oldest go
-// first. An error is logged soon after it is built, so a few hundred recent
-// texts cover the window between the two.
-const (
-	maxKept      = 256
-	maxKeptBytes = 4 << 20
-)
+// Text marks an Errorf argument as text from outside the process (CLI
+// stderr, an HTTP body, a CLI result envelope) that may carry company
+// content.
+type Text string
 
-var kept struct {
-	mu    sync.Mutex
-	texts []string
-	bytes int
+// DetailError is an error with two views. Error() replaces every Text
+// argument with its fingerprint (Body), so it is safe wherever an error
+// travels: %v, %w, %q, a log line, a progress line, another process. Full
+// recovers the whole text.
+type DetailError struct {
+	safe error  // the message with Text as fingerprints; carries the %w operands
+	full string // the message with Text verbatim
 }
 
-// Detail marks s, text from outside the process that an error carries in
-// full (CLI stderr, an HTTP body, a CLI result envelope), and returns it
-// unchanged. The error keeps the whole text for the database; a log writer
-// wrapped by Writer cuts every marked text it sees to its Excerpt, so a
-// caller that logs the error with %v writes at most the excerpt. Text that
-// is its own excerpt (short, unquoted) is not remembered.
-func Detail(s string) string {
-	if Excerpt(s) == s {
-		return s
-	}
-	kept.mu.Lock()
-	defer kept.mu.Unlock()
-	kept.texts = append(kept.texts, s)
-	kept.bytes += len(s)
-	for len(kept.texts) > maxKept || (kept.bytes > maxKeptBytes && len(kept.texts) > 1) {
-		kept.bytes -= len(kept.texts[0])
-		kept.texts = kept.texts[1:]
-	}
-	return s
-}
-
-// Redact returns p with every text marked by Detail replaced by its
-// Excerpt. It returns p itself when nothing matched.
-func Redact(p []byte) []byte {
-	kept.mu.Lock()
-	texts := kept.texts
-	kept.mu.Unlock()
-	// Longest first, so a marked text that contains another is cut whole.
-	var hits []string
-	for _, t := range texts {
-		if len(t) <= len(p) && bytes.Contains(p, []byte(t)) {
-			hits = append(hits, t)
+// Errorf is fmt.Errorf, except that each Text argument appears verbatim only
+// in Full(err); Error() shows its fingerprint. %w operands are wrapped as
+// fmt.Errorf wraps them, so errors.Is/As see through the result.
+func Errorf(format string, args ...any) error {
+	safeArgs := make([]any, len(args))
+	fullArgs := make([]any, len(args))
+	for i, a := range args {
+		if t, ok := a.(Text); ok {
+			safeArgs[i] = "[" + Body([]byte(t)) + "]"
+			fullArgs[i] = string(t)
+			continue
 		}
+		safeArgs[i], fullArgs[i] = a, a
 	}
-	if len(hits) == 0 {
-		return p
+	return &DetailError{
+		safe: fmt.Errorf(format, safeArgs...),
+		full: fmt.Errorf(format, fullArgs...).Error(),
 	}
-	out := string(p)
-	for len(hits) > 0 {
-		longest := 0
-		for i, h := range hits {
-			if len(h) > len(hits[longest]) {
-				longest = i
+}
+
+func (e *DetailError) Error() string { return e.safe.Error() }
+
+// Unwrap exposes the %w operands of the Errorf call.
+func (e *DetailError) Unwrap() []error {
+	switch u := e.safe.(type) { //nolint:errorlint // reads this error's own Unwrap, not the chain
+	case interface{ Unwrap() []error }:
+		return u.Unwrap()
+	case interface{ Unwrap() error }:
+		return []error{u.Unwrap()}
+	}
+	return nil
+}
+
+// Full returns err's message with every DetailError in its chain shown in
+// full: the text for pipeline_runs, account status and the other places the
+// owner reads an error, and for classifiers that match on the provider's own
+// words. It returns "" for a nil err.
+func Full(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	var walk func(error)
+	walk = func(e error) {
+		if e == nil {
+			return
+		}
+		var next []error
+		if d, ok := e.(*DetailError); ok { //nolint:errorlint // walk visits every link itself
+			s = strings.ReplaceAll(s, d.safe.Error(), d.full)
+			next = d.Unwrap()
+		} else {
+			switch u := e.(type) { //nolint:errorlint // walk visits every link itself
+			case interface{ Unwrap() []error }:
+				next = u.Unwrap()
+			case interface{ Unwrap() error }:
+				next = []error{u.Unwrap()}
 			}
 		}
-		out = strings.ReplaceAll(out, hits[longest], Excerpt(hits[longest]))
-		hits = append(hits[:longest], hits[longest+1:]...)
+		for _, n := range next {
+			walk(n)
+		}
 	}
-	return []byte(out)
-}
-
-// Writer wraps w so that every write passes through Redact. It reports the
-// caller's byte count, not the shorter redacted one.
-func Writer(w io.Writer) io.Writer { return redactingWriter{w} }
-
-type redactingWriter struct{ w io.Writer }
-
-func (r redactingWriter) Write(p []byte) (int, error) {
-	if _, err := r.w.Write(Redact(p)); err != nil {
-		return 0, err
-	}
-	return len(p), nil
+	walk(err)
+	return s
 }

@@ -265,7 +265,6 @@ func (p *Pipeline) prepareForEvent(ctx context.Context, event db.CalendarEvent, 
 	var result MeetingPrepResult
 	cleaned := cleanJSON(aiResponse)
 	if err := json.Unmarshal([]byte(cleaned), &result); err != nil {
-		p.logger.Printf("meeting: error parsing AI response for event=%s: %v (%s)", event.ID, err, logredact.Body([]byte(aiResponse)))
 		return nil, fmt.Errorf("parsing AI response: %w (%s)", err, logredact.Body([]byte(aiResponse)))
 	}
 

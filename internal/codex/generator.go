@@ -236,7 +236,7 @@ func classifyError(err error, stderr, codexBin string) error {
 			stderrMsg = strings.TrimSpace(string(exitErr.Stderr))
 		}
 		if stderrMsg != "" {
-			return digest.WithCause(fmt.Errorf("codex CLI failed (exit %d): %s", exitErr.ExitCode(), logredact.Detail(stderrMsg)), exitErr)
+			return digest.WithCause(logredact.Errorf("codex CLI failed (exit %d): %s", exitErr.ExitCode(), logredact.Text(stderrMsg)), exitErr)
 		}
 		return digest.WithCause(fmt.Errorf("codex CLI failed with exit code %d", exitErr.ExitCode()), exitErr)
 	}

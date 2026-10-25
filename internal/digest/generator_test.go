@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"watchtower/internal/config"
+	"watchtower/internal/logredact"
 )
 
 // containsPair reports whether args contains flag immediately followed by value.
@@ -146,15 +147,15 @@ func TestClaudeGeneratorSurfacesEnvelopeErrorOnNonZeroExit(t *testing.T) {
 	if err == nil {
 		t.Fatal("Generate returned nil error for an is_error envelope")
 	}
-	if !strings.Contains(err.Error(), "API Error: request was interrupted") {
+	if !strings.Contains(logredact.Full(err), "API Error: request was interrupted") {
 		t.Errorf("error = %q, want the CLI's own result message", err)
 	}
 	for _, diag := range []string{"stop_sequence", "error_during_execution"} {
-		if !strings.Contains(err.Error(), diag) {
+		if !strings.Contains(logredact.Full(err), diag) {
 			t.Errorf("error = %q, want it to carry %q", err, diag)
 		}
 	}
-	if strings.Contains(err.Error(), "cache_read_input_tokens") {
+	if strings.Contains(logredact.Full(err), "cache_read_input_tokens") {
 		t.Errorf("error = %q, want the raw envelope JSON kept out of it", err)
 	}
 }
@@ -172,7 +173,7 @@ func TestClaudeGeneratorEnvelopeErrorWithoutMessage(t *testing.T) {
 	if err == nil {
 		t.Fatal("Generate returned nil error for an is_error envelope")
 	}
-	if !strings.Contains(err.Error(), "error_max_turns") {
+	if !strings.Contains(logredact.Full(err), "error_max_turns") {
 		t.Errorf("error = %q, want the subtype to stand in for the missing message", err)
 	}
 }
@@ -191,10 +192,10 @@ func TestClaudeGeneratorEnvelopeErrorOnZeroExit(t *testing.T) {
 	if err == nil {
 		t.Fatal("Generate returned nil error for an is_error envelope on exit 0")
 	}
-	if !strings.Contains(err.Error(), "error_during_execution") {
+	if !strings.Contains(logredact.Full(err), "error_during_execution") {
 		t.Errorf("error = %q, want the subtype to stand in for the missing message", err)
 	}
-	if strings.HasSuffix(err.Error(), ": ") {
+	if strings.HasSuffix(logredact.Full(err), ": ") {
 		t.Errorf("error = %q, want a message rather than an empty tail", err)
 	}
 }
@@ -213,10 +214,10 @@ func TestClaudeGeneratorEnvelopeMessageIsBounded(t *testing.T) {
 	if err == nil {
 		t.Fatal("Generate returned nil error for an is_error envelope")
 	}
-	if len(err.Error()) > 8192 {
-		t.Errorf("error length = %d, want the envelope message bounded", len(err.Error()))
+	if len(logredact.Full(err)) > 8192 {
+		t.Errorf("error length = %d, want the envelope message bounded", len(logredact.Full(err)))
 	}
-	if !strings.Contains(err.Error(), "truncated") {
+	if !strings.Contains(logredact.Full(err), "truncated") {
 		t.Errorf("error = %q, want the truncation stated rather than silent", err)
 	}
 }
@@ -238,7 +239,7 @@ func TestClaudeGeneratorEnvelopeTruncationKeepsValidUTF8(t *testing.T) {
 	if err == nil {
 		t.Fatal("Generate returned nil error for an is_error envelope")
 	}
-	if !utf8.ValidString(err.Error()) {
+	if !utf8.ValidString(logredact.Full(err)) {
 		t.Errorf("error = %q, want the truncation to land on a rune boundary", err)
 	}
 }
@@ -256,10 +257,10 @@ func TestClaudeGeneratorUnparseableStdoutIsDescribedNotEchoed(t *testing.T) {
 	if err == nil {
 		t.Fatal("Generate returned nil error for a failing CLI")
 	}
-	if strings.Contains(err.Error(), secret) {
+	if strings.Contains(logredact.Full(err), secret) {
 		t.Errorf("error = %q, want the stdout content described, not echoed", err)
 	}
-	if !strings.Contains(err.Error(), "sha256:") {
+	if !strings.Contains(logredact.Full(err), "sha256:") {
 		t.Errorf("error = %q, want a DescribeOutput fingerprint", err)
 	}
 }

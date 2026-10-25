@@ -1,7 +1,7 @@
 package logredact
 
 import (
-	"bytes"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -54,32 +54,42 @@ func TestBody_IsFingerprint(t *testing.T) {
 	}
 }
 
-func TestDetail_RedactCutsKeptTextToExcerpt(t *testing.T) {
+func TestErrorf_ErrorShowsFingerprintFullShowsText(t *testing.T) {
 	body := `{"errorMessages":["the plan for project zeta"]}`
-	err := fmt.Errorf("GET /x: status 500: %s", Detail(body))
-	require.Contains(t, err.Error(), "project zeta", "the error keeps the full text")
-
-	line := []byte("warning: " + err.Error() + "\n")
-	got := string(Redact(line))
-	require.NotContains(t, got, "project zeta")
-	require.Equal(t, "warning: GET /x: status 500: "+Excerpt(body)+"\n", got)
-
-	var buf bytes.Buffer
-	_, werr := Writer(&buf).Write(line)
-	require.NoError(t, werr)
-	require.Equal(t, got, buf.String())
+	err := Errorf("GET /x: status %d: %s", 500, Text(body))
+	require.NotContains(t, err.Error(), "project zeta")
+	require.Contains(t, err.Error(), "GET /x: status 500: [")
+	require.Equal(t, "GET /x: status 500: "+body, Full(err))
 }
 
-func TestDetail_PlainShortTextIsNotKept(t *testing.T) {
-	Detail("HTTP 429")
-	require.Equal(t, "status HTTP 429", string(Redact([]byte("status HTTP 429"))))
+func TestErrorf_ShortUnquotedBodyIsNotShownInFull(t *testing.T) {
+	err := Errorf("status 404: %s", Text("Issue PROJ-1 payroll fix not found"))
+	require.NotContains(t, err.Error(), "payroll")
+	require.Contains(t, Full(err), "Issue PROJ-1 payroll fix not found")
 }
 
-func TestDetail_KeepsABoundedSet(t *testing.T) {
-	first := `"first ` + strings.Repeat("x", 200) + `"`
-	Detail(first)
-	for i := range maxKept + 1 {
-		Detail(fmt.Sprintf(`"filler %d %s"`, i, strings.Repeat("y", 200)))
+func TestErrorf_EveryFormatStaysSafe(t *testing.T) {
+	err := Errorf("failed: %s", Text(`secret words`))
+	for _, s := range []string{
+		fmt.Sprintf("%v", err), fmt.Sprintf("%q", err), fmt.Sprintf("%s", err), fmt.Sprintf("%+v", err),
+		fmt.Errorf("outer: %w", err).Error(),
+	} {
+		require.NotContains(t, s, "secret words", s)
 	}
-	require.Equal(t, first, string(Redact([]byte(first))), "the oldest kept text was evicted")
+}
+
+func TestErrorf_WrapsAndFullSeesThroughWrappers(t *testing.T) {
+	sentinel := errors.New("sentinel")
+	inner := Errorf("codex error: %s", Text("inner secret"))
+	mid := Errorf("%w (stderr: %s): %w", inner, Text("stderr secret"), sentinel)
+	outer := fmt.Errorf("digest: %w", mid)
+
+	require.ErrorIs(t, outer, sentinel)
+	require.ErrorIs(t, outer, inner)
+	var d *DetailError
+	require.ErrorAs(t, outer, &d)
+	require.NotContains(t, outer.Error(), "secret")
+	require.Equal(t, "digest: codex error: inner secret (stderr: stderr secret): sentinel", Full(outer))
+	require.Equal(t, "plain", Full(errors.New("plain")))
+	require.Empty(t, Full(nil))
 }

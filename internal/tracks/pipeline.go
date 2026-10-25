@@ -493,13 +493,13 @@ func (p *Pipeline) extractFromDigests(ctx context.Context, owner db.Owner, fresh
 
 	p.logger.Printf("tracks: found %d topics across %d channels → %d batch(es), budget %d tokens",
 		totalTopicCount, len(allEntries), len(batches), p.contextBudget())
-	p.progress(0, len(batches), fmt.Sprintf("Scanning %d channels (%d topics) for %s in %d batch(es)...",
-		len(allEntries), totalTopicCount, userID, len(batches)))
+	p.progress(0, len(batches), fmt.Sprintf("Scanning %d channels (%d topics) for @%s in %d batch(es)...",
+		len(allEntries), totalTopicCount, userName, len(batches)))
 
 	res = p.runTrackBatches(ctx, batches, userID, userName, from, to)
 
 	p.LastStepDurationSeconds = 0 // reset to avoid duplicate step recording on final progress
-	p.progress(len(batches), len(batches), fmt.Sprintf("Found %d tracks for %s across %d channels", res.stored, userID, len(allEntries)))
+	p.progress(len(batches), len(batches), fmt.Sprintf("Found %d tracks for @%s across %d channels", res.stored, userName, len(allEntries)))
 	p.logger.Printf("tracks: %d tracks for %s from %d channels", res.stored, userID, len(allEntries))
 
 	// A window that produced nothing must not be stamped as a completed run:

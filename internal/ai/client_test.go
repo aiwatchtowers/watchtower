@@ -14,6 +14,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"watchtower/internal/logredact"
 )
 
 // writeMockClaude creates a shell script that mimics the claude CLI for testing.
@@ -322,8 +324,8 @@ func TestQuerySync_ExitError(t *testing.T) {
 
 	_, _, err := c.QuerySync(context.Background(), "system", "hello", "")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "claude CLI failed")
-	assert.Contains(t, err.Error(), "something went wrong")
+	assert.Contains(t, logredact.Full(err), "claude CLI failed")
+	assert.Contains(t, logredact.Full(err), "something went wrong")
 }
 
 // TestQuerySync_ExitErrorSurfacesEnvelopeMessage pins that a failed run whose
@@ -339,9 +341,9 @@ func TestQuerySync_ExitErrorSurfacesEnvelopeMessage(t *testing.T) {
 
 	_, _, err := c.QuerySync(context.Background(), "system", "hello", "")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Invalid API key")
-	assert.Contains(t, err.Error(), "Please run /login")
-	assert.Contains(t, err.Error(), "error_during_execution")
+	assert.Contains(t, logredact.Full(err), "Invalid API key")
+	assert.Contains(t, logredact.Full(err), "Please run /login")
+	assert.Contains(t, logredact.Full(err), "error_during_execution")
 }
 
 // TestQuerySync_ExitErrorFallsBackWhenOutputUnparsable is the degenerate
@@ -356,8 +358,8 @@ func TestQuerySync_ExitErrorFallsBackWhenOutputUnparsable(t *testing.T) {
 
 	_, _, err := c.QuerySync(context.Background(), "system", "hello", "")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "claude CLI failed")
-	assert.Contains(t, err.Error(), "network unreachable")
+	assert.Contains(t, logredact.Full(err), "claude CLI failed")
+	assert.Contains(t, logredact.Full(err), "network unreachable")
 }
 
 // TestQuerySync_CleanExitIsErrorSurfacesEnvelopeMessage pins the exit-0 case:
@@ -371,8 +373,8 @@ func TestQuerySync_CleanExitIsErrorSurfacesEnvelopeMessage(t *testing.T) {
 
 	_, _, err := c.QuerySync(context.Background(), "system", "hello", "")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "ran out of turns")
-	assert.Contains(t, err.Error(), "error_max_turns")
+	assert.Contains(t, logredact.Full(err), "ran out of turns")
+	assert.Contains(t, logredact.Full(err), "error_max_turns")
 }
 
 func TestQuerySync_ContextCancellation(t *testing.T) {
@@ -493,7 +495,7 @@ func TestQuery_StreamingError(t *testing.T) {
 
 	err := <-errCh
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "claude CLI failed")
+	assert.Contains(t, logredact.Full(err), "claude CLI failed")
 }
 
 // TestQuery_StreamingExitErrorSurfacesEnvelopeMessage is Query's streaming
@@ -517,9 +519,9 @@ exit 1
 
 	err := <-errCh
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Invalid API key")
-	assert.Contains(t, err.Error(), "Please run /login")
-	assert.Contains(t, err.Error(), "error_during_execution")
+	assert.Contains(t, logredact.Full(err), "Invalid API key")
+	assert.Contains(t, logredact.Full(err), "Please run /login")
+	assert.Contains(t, logredact.Full(err), "error_during_execution")
 }
 
 // TestQuery_StreamingCleanExitIsErrorSurfacesEnvelopeMessage pins the exit-0
@@ -541,8 +543,8 @@ printf '{"type":"result","subtype":"error_max_turns","is_error":true,"result":"r
 
 	err := <-errCh
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "ran out of turns")
-	assert.Contains(t, err.Error(), "error_max_turns")
+	assert.Contains(t, logredact.Full(err), "ran out of turns")
+	assert.Contains(t, logredact.Full(err), "error_max_turns")
 }
 
 // TestQuery_StreamingExitErrorFallsBackWhenNoResultEvent is the degenerate
@@ -561,8 +563,8 @@ func TestQuery_StreamingExitErrorFallsBackWhenNoResultEvent(t *testing.T) {
 
 	err := <-errCh
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "claude CLI failed")
-	assert.Contains(t, err.Error(), "error occurred")
+	assert.Contains(t, logredact.Full(err), "claude CLI failed")
+	assert.Contains(t, logredact.Full(err), "error occurred")
 }
 
 func TestQuery_ContextCancellation(t *testing.T) {
@@ -582,7 +584,7 @@ func TestQuery_ContextCancellation(t *testing.T) {
 	err := <-errCh
 	if err != nil {
 		// Either context error, kill error, or pipe read error is acceptable
-		msg := err.Error()
+		msg := logredact.Full(err)
 		assert.True(t, strings.Contains(msg, "context") ||
 			strings.Contains(msg, "signal") ||
 			strings.Contains(msg, "killed") ||
@@ -636,13 +638,13 @@ printf '{"type":"result","subtype":"success","result":"hi"}\n'
 
 func TestClassifyError_NotFound(t *testing.T) {
 	err := classifyError(&exec.Error{Name: "claude", Err: exec.ErrNotFound}, "")
-	assert.Contains(t, err.Error(), "claude CLI not found")
+	assert.Contains(t, logredact.Full(err), "claude CLI not found")
 }
 
 func TestClassifyError_ExitError(t *testing.T) {
 	err := classifyError(&exec.ExitError{}, "auth failed")
-	assert.Contains(t, err.Error(), "claude CLI failed")
-	assert.Contains(t, err.Error(), "auth failed")
+	assert.Contains(t, logredact.Full(err), "claude CLI failed")
+	assert.Contains(t, logredact.Full(err), "auth failed")
 }
 
 func TestStreamEvent_ExtractText(t *testing.T) {
@@ -721,20 +723,20 @@ func TestParseCLIOutput_UnparsableOutputIsNotEchoed(t *testing.T) {
 	_, err := parseCLIOutput([]byte(secret))
 	require.Error(t, err)
 
-	assert.NotContains(t, err.Error(), secret)
-	assert.NotContains(t, err.Error(), "Northwind")
+	assert.NotContains(t, logredact.Full(err), secret)
+	assert.NotContains(t, logredact.Full(err), "Northwind")
 	// Still diagnostic: shape, size, and a correlatable fingerprint.
-	assert.Contains(t, err.Error(), "unexpected claude CLI output format")
-	assert.Contains(t, err.Error(), "looks like plain text")
-	assert.Contains(t, err.Error(), "sha256:")
+	assert.Contains(t, logredact.Full(err), "unexpected claude CLI output format")
+	assert.Contains(t, logredact.Full(err), "looks like plain text")
+	assert.Contains(t, logredact.Full(err), "sha256:")
 }
 
 func TestEnvelopeMessage_EmptyResultGetsPlaceholder(t *testing.T) {
-	assert.Equal(t, "no message in the CLI result envelope", envelopeMessage("   "))
+	assert.Equal(t, "no message in the CLI result envelope", string(envelopeMessage("   ")))
 }
 
 func TestEnvelopeMessage_ShortResultPassesThrough(t *testing.T) {
-	assert.Equal(t, "Invalid API key", envelopeMessage("  Invalid API key  "))
+	assert.Equal(t, "Invalid API key", string(envelopeMessage("  Invalid API key  ")))
 }
 
 // TestEnvelopeMessage_TruncatesAtRuneBoundary pins that an oversized envelope
@@ -743,7 +745,7 @@ func TestEnvelopeMessage_ShortResultPassesThrough(t *testing.T) {
 // full, and that the cut never lands mid-rune.
 func TestEnvelopeMessage_TruncatesAtRuneBoundary(t *testing.T) {
 	long := strings.Repeat("привет ", 1000) // well past the 4096-byte cap, all multi-byte runes
-	got := envelopeMessage(long)
+	got := string(envelopeMessage(long))
 	assert.Less(t, len(got), len(long))
 	assert.Contains(t, got, "truncated")
 	assert.True(t, utf8.ValidString(got), "truncated message must not cut a rune in half")
@@ -1088,7 +1090,7 @@ printf '{"type":"result","result":"ok"}'`)
 
 	_, _, err := c.QuerySync(context.Background(), strings.Repeat("x", 64*1024), "hello", "")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "writing system prompt file")
+	assert.Contains(t, logredact.Full(err), "writing system prompt file")
 	_, statErr := os.Stat(ran)
 	assert.True(t, os.IsNotExist(statErr), "the CLI must not run without its system prompt")
 }

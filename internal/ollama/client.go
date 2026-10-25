@@ -183,7 +183,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, _ string)
 
 		if resp.StatusCode != http.StatusOK {
 			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-			errCh <- fmt.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, logredact.Detail(string(b)))
+			errCh <- logredact.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, logredact.Text(b))
 			return
 		}
 
@@ -283,7 +283,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, _ str
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return "", nil, fmt.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, logredact.Detail(string(b)))
+		return "", nil, logredact.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, logredact.Text(b))
 	}
 
 	var result chatResponse

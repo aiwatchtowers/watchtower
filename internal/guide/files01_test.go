@@ -15,8 +15,8 @@ import (
 
 // TestFILES01_PeopleNeverLogsContent generates people cards over users,
 // channels, messages and situations made of canaries, once with a valid
-// answer quoting canaries and once with unparseable output; progress and
-// returned errors go to the log too.
+// answer quoting canaries and once with unparseable output; returned errors
+// are logged the way a caller would.
 func TestFILES01_PeopleNeverLogsContent(t *testing.T) {
 	c := logcanary.Text
 	valid := `{"summary":"` + c("llm.summary") + `","communication_style":"driver","highlights":["` + c("llm.highlight") + `"],` +
@@ -42,7 +42,6 @@ func TestFILES01_PeopleNeverLogsContent(t *testing.T) {
 		cfg.AI.Workers = 1
 		pipe := New(database, cfg, &mockGenerator{response: out}, sink.Logger())
 		pipe.ForceRegenerate = true
-		pipe.OnProgress = func(done, total int, status string) { log.Printf("progress %d/%d %s", done, total, status) }
 		_, err := pipe.RunForWindow(context.Background(), from, to)
 		log.Printf("run: %v", err)
 

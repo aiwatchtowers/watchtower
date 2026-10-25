@@ -95,14 +95,14 @@ func parseCLIOutput(output []byte) (*cliResponse, error) {
 // envelope (whose "result" carries the model's own partial output rather than
 // a short diagnostic) from writing an unbounded amount of that content into
 // logs or the UI.
-func envelopeMessage(result string) string {
+func envelopeMessage(result string) logredact.Text {
 	msg := strings.TrimSpace(result)
 	if msg == "" {
-		return "no message in the CLI result envelope"
+		return logredact.Text("no message in the CLI result envelope")
 	}
 	const maxEnvelopeMessage = 4096
 	if len(msg) <= maxEnvelopeMessage {
-		return logredact.Detail(msg)
+		return logredact.Text(msg)
 	}
 	// Back off to a rune boundary: this text is model output and routinely
 	// Cyrillic, so a byte cut lands mid-rune and writes a broken one into logs.
@@ -110,7 +110,7 @@ func envelopeMessage(result string) string {
 	for cut > 0 && !utf8.RuneStart(msg[cut]) {
 		cut--
 	}
-	return logredact.Detail(msg[:cut]) + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut)
+	return logredact.Text(msg[:cut] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut))
 }
 
 // ExternalMCPServer is a plain DTO describing an owner-added external MCP
@@ -815,7 +815,7 @@ func (c *Client) Query(ctx context.Context, systemPrompt, userMessage, sessionID
 		// its own message is always more actionable than a bare exit code or
 		// empty stderr, so it takes priority over classifyError below.
 		if lastResult != nil && lastResult.IsError {
-			errCh <- fmt.Errorf("claude returned error (subtype=%s): %s", lastResult.Subtype, envelopeMessage(lastResult.Result))
+			errCh <- logredact.Errorf("claude returned error (subtype=%s): %s", lastResult.Subtype, envelopeMessage(lastResult.Result))
 			return
 		}
 
@@ -868,7 +868,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			if resp, perr := parseCLIOutput(output); perr == nil && resp.IsError {
-				return "", nil, fmt.Errorf("claude CLI failed (exit %d, subtype=%s): %s",
+				return "", nil, logredact.Errorf("claude CLI failed (exit %d, subtype=%s): %s",
 					exitErr.ExitCode(), resp.Subtype, envelopeMessage(resp.Result))
 			}
 		}
@@ -882,7 +882,7 @@ func (c *Client) QuerySync(ctx context.Context, systemPrompt, userMessage, sessi
 	}
 
 	if resp.IsError {
-		return "", nil, fmt.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, envelopeMessage(resp.Result))
+		return "", nil, logredact.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, envelopeMessage(resp.Result))
 	}
 
 	totalAPI := resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens
@@ -990,7 +990,7 @@ func classifyError(err error, stderr string) error {
 		}
 
 		if stderrMsg != "" {
-			return fmt.Errorf("claude CLI failed (exit %d): %s", code, logredact.Detail(stderrMsg))
+			return logredact.Errorf("claude CLI failed (exit %d): %s", code, logredact.Text(stderrMsg))
 		}
 		return fmt.Errorf("claude CLI failed with exit code %d", code)
 	}

@@ -142,7 +142,7 @@ func (g *ClaudeGenerator) ValidateModel() error {
 		return fmt.Errorf("model validation: unexpected response for %q: %w", g.modelStrong, err)
 	}
 	if resp.IsError {
-		return fmt.Errorf("model %q is not available: %s", g.modelStrong, logredact.Detail(resp.Result))
+		return logredact.Errorf("model %q is not available: %s", g.modelStrong, logredact.Text(resp.Result))
 	}
 	return nil
 }
@@ -172,17 +172,17 @@ type cliResponse struct {
 // errorEnvelopeMessage returns the CLI's own message for a failed run, falling
 // back to a fixed string when the envelope carries none — an error whose tail
 // is empty tells a reader nothing.
-func errorEnvelopeMessage(resp *cliResponse) string {
+func errorEnvelopeMessage(resp *cliResponse) logredact.Text {
 	msg := strings.TrimSpace(resp.Result)
 	if msg == "" {
-		return "no message in the CLI result envelope"
+		return logredact.Text("no message in the CLI result envelope")
 	}
 	// On subtype=error_max_turns the envelope's result carries the model's own
 	// partial output rather than a short diagnostic, so bound what reaches the
 	// log the way the sibling stderr path is bounded by limitedWriter.
 	const maxEnvelopeMessage = 4096
 	if len(msg) <= maxEnvelopeMessage {
-		return logredact.Detail(msg)
+		return logredact.Text(msg)
 	}
 	// Back off to a rune boundary: this text is model output and routinely
 	// Cyrillic, so a byte cut lands mid-rune and writes a broken one into logs.
@@ -190,7 +190,7 @@ func errorEnvelopeMessage(resp *cliResponse) string {
 	for cut > 0 && !utf8.RuneStart(msg[cut]) {
 		cut--
 	}
-	return logredact.Detail(msg[:cut]) + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut)
+	return logredact.Text(msg[:cut] + fmt.Sprintf("… (%d bytes truncated)", len(msg)-cut))
 }
 
 // parseCLIOutput handles both output formats from the Claude CLI:
@@ -305,7 +305,7 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 			// behind kilobytes of usage telemetry. Parse it so the error
 			// carries that message instead of the whole blob.
 			if resp, perr := parseCLIOutput(output); perr == nil && resp.IsError {
-				return "", nil, "", WithCause(fmt.Errorf("claude CLI failed (exit %d, subtype=%s, stop_reason=%s): %s",
+				return "", nil, "", WithCause(logredact.Errorf("claude CLI failed (exit %d, subtype=%s, stop_reason=%s): %s",
 					exitErr.ExitCode(), resp.Subtype, resp.StopReason, errorEnvelopeMessage(resp)), exitErr)
 			}
 			stderrMsg := strings.TrimSpace(stderrBuf.String())
@@ -318,7 +318,7 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 				stderrMsg = "unparseable stdout: " + claude.DescribeOutput(output)
 			}
 			if stderrMsg != "" {
-				return "", nil, "", WithCause(fmt.Errorf("claude CLI failed (exit %d): %s", exitErr.ExitCode(), logredact.Detail(stderrMsg)), exitErr)
+				return "", nil, "", WithCause(logredact.Errorf("claude CLI failed (exit %d): %s", exitErr.ExitCode(), logredact.Text(stderrMsg)), exitErr)
 			}
 			return "", nil, "", WithCause(fmt.Errorf("claude CLI failed with exit code %d", exitErr.ExitCode()), exitErr)
 		}
@@ -333,7 +333,7 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 	if resp.IsError {
 		// Same envelope, same empty-result trap as the non-zero-exit branch
 		// above — the CLI can flag is_error and still exit 0.
-		return "", nil, "", fmt.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, errorEnvelopeMessage(resp))
+		return "", nil, "", logredact.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, errorEnvelopeMessage(resp))
 	}
 
 	if strings.TrimSpace(resp.Result) == "" {

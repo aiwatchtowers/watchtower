@@ -18,6 +18,7 @@ import (
 	"watchtower/internal/customtracks"
 	"watchtower/internal/db"
 	"watchtower/internal/jira"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 	"watchtower/internal/tracks"
 	"watchtower/internal/ui"
@@ -755,7 +756,7 @@ func runTracksGenerate(cmd *cobra.Command, _ []string) error {
 			inTok, outTok, cost, totalAPI := pipe.AccumulatedUsage()
 			errMsg := ""
 			if runErr != nil {
-				errMsg = runErr.Error()
+				errMsg = logredact.Full(runErr)
 			}
 			var pFrom, pTo *float64
 			if pipe.LastFrom > 0 {
@@ -783,7 +784,7 @@ func runTracksGenerate(cmd *cobra.Command, _ []string) error {
 		inTok, outTok, _, totalAPI := pipe.AccumulatedUsage()
 		p := tracksProgressJSON{Pipeline: "tracks", Finished: true, InputTokens: inTok, OutputTokens: outTok, TotalAPITokens: totalAPI}
 		if err != nil {
-			p.Error = err.Error()
+			p.Error = logredact.Full(err)
 		} else {
 			p.ItemsFound = created + updated
 		}

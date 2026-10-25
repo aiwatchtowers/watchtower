@@ -12,7 +12,6 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/daemon"
 	"watchtower/internal/fsutil"
-	"watchtower/internal/logredact"
 )
 
 // rotatingFile is the daemon logger's sink: an appending file that rotates
@@ -106,14 +105,11 @@ func (r *rotatingFile) Write(p []byte) (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// CLI stderr and HTTP bodies stay whole on the errors that carry them;
-	// the log gets their scrubbed excerpt (FILES-01, logredact.Detail).
-	written, err := r.f.Write(logredact.Redact(p))
-	r.n += int64(written)
+	n, err := r.f.Write(p)
+	r.n += int64(n)
 	if err != nil {
-		return 0, err
+		return n, err
 	}
-	n := len(p)
 	if r.n <= r.maxSize {
 		return n, nil
 	}

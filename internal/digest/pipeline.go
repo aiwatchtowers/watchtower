@@ -1122,7 +1122,7 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 	p.LastStepInputTokens = 0
 	p.LastStepOutputTokens = 0
 	if p.OnProgress != nil {
-		p.OnProgress(int(agg.completed.Load()), total, fmt.Sprintf("channel %s (%d msgs)", e.channelID, len(e.msgs)))
+		p.OnProgress(int(agg.completed.Load()), total, fmt.Sprintf("#%s (%d msgs)", e.channelName, len(e.msgs)))
 	}
 	p.lastStepMu.Unlock()
 
@@ -1134,7 +1134,7 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 		p.markBackfillFailed(err, e.channelID)
 		done := int(agg.completed.Add(1))
 		if p.OnProgress != nil {
-			p.OnProgress(done, total, fmt.Sprintf("channel %s error: %v", e.channelID, err))
+			p.OnProgress(done, total, fmt.Sprintf("#%s error: %v", e.channelName, err))
 		}
 		return
 	}
@@ -1152,7 +1152,7 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 		p.markBackfillFailed(err, e.channelID)
 		done := int(agg.completed.Add(1))
 		if p.OnProgress != nil {
-			p.OnProgress(done, total, fmt.Sprintf("channel %s store error: %v", e.channelID, err))
+			p.OnProgress(done, total, fmt.Sprintf("#%s store error: %v", e.channelName, err))
 		}
 		return
 	}
@@ -1180,7 +1180,7 @@ func (p *Pipeline) processSingleEntry(ctx context.Context, e batchEntry, total i
 	}
 	done := int(agg.completed.Add(1))
 	if p.OnProgress != nil {
-		p.OnProgress(done, total, fmt.Sprintf("channel %s done", e.channelID))
+		p.OnProgress(done, total, fmt.Sprintf("#%s done", e.channelName))
 	}
 	p.lastStepMu.Unlock()
 	if usage != nil {

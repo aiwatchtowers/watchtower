@@ -295,7 +295,7 @@ func decodeResponse(line []byte, id int, method string, result any) (done bool, 
 
 func (s *appServer) unavailable(what string, err error) error {
 	if tail := s.stderr.String(); tail != "" {
-		return fmt.Errorf("%w: %s: %v (stderr: %s)", ErrCodexTrustUnavailable, what, err, logredact.Detail(tail))
+		return logredact.Errorf("%w: %s: %v (stderr: %s)", ErrCodexTrustUnavailable, what, err, logredact.Text(tail))
 	}
 	return fmt.Errorf("%w: %s: %v", ErrCodexTrustUnavailable, what, err)
 }

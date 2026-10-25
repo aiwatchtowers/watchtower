@@ -43,6 +43,8 @@ func (sl *SessionLog) Log(event SessionEvent) {
 	}
 
 	// Best effort, like the append itself: a failed rename keeps appending.
+	// Not coordinated across processes: two writers past the cap may both
+	// rename, and the second rename then replaces sessions.log.1.
 	if info, err := os.Stat(sl.path); err == nil && info.Size() > MaxLogSize {
 		_ = os.Rename(sl.path, sl.path+".1")
 	}

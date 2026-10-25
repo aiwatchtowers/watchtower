@@ -8,11 +8,12 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"watchtower/internal/logcanary"
+	"watchtower/internal/logredact"
 )
 
 // TestFILES01_CodexStderrStaysOnTheError: codex's stderr and its turn
-// message are kept whole on the returned error and reach the log only as a
-// scrubbed excerpt.
+// message are kept whole in logredact.Full of the returned error and reach the log only as a
+// fingerprint.
 func TestFILES01_CodexStderrStaysOnTheError(t *testing.T) {
 	canary := logcanary.Text("stderr")
 	sink := logcanary.Capture(t)
@@ -24,7 +25,7 @@ func TestFILES01_CodexStderrStaysOnTheError(t *testing.T) {
 		fakeCodexRun(t, `{"type":"turn.failed","error":{"message":"bad prompt \"`+canary+`\""}}`+"\n", "", 1),
 	} {
 		_, _, _, err := NewCodexGenerator("gpt-5.6-sol", "gpt-5.6-sol", bin).Generate(ctx, "sys", "msg", "")
-		require.ErrorContains(t, err, canary)
+		require.Contains(t, logredact.Full(err), canary)
 		log.Printf("codex: %v", err)
 	}
 

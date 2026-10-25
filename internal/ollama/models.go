@@ -46,7 +46,7 @@ func ListModels(ctx context.Context, baseURL string) ([]string, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return nil, fmt.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, logredact.Detail(string(b)))
+		return nil, logredact.Errorf("ollama returned HTTP %d: %s", resp.StatusCode, logredact.Text(b))
 	}
 
 	var result modelsResponse

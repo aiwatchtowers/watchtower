@@ -17,6 +17,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/instructions"
+	"watchtower/internal/logredact"
 	"watchtower/internal/ollama"
 	"watchtower/internal/providers"
 
@@ -309,7 +310,7 @@ func streamQueryV1(enc *json.Encoder, textCh <-chan ai.StreamChunk, errCh <-chan
 	// Check for errors
 	for err := range errCh {
 		if err != nil {
-			_ = enc.Encode(aiStreamEvent{Type: "error", Error: err.Error()})
+			_ = enc.Encode(aiStreamEvent{Type: "error", Error: logredact.Full(err)})
 		}
 	}
 
@@ -397,7 +398,7 @@ func runAIModels(cmd *cobra.Command, _ []string) error {
 			// error string, never a failing command.
 			models, err := ollama.ListModels(ctx, cfg.AI.OllamaURL)
 			if err != nil {
-				entry.Error = err.Error()
+				entry.Error = logredact.Full(err)
 			} else {
 				entry.Models = models
 			}
@@ -480,8 +481,8 @@ func streamQueryV2(w io.Writer, turnID string, textCh <-chan ai.StreamChunk, err
 	}
 	for err := range errCh {
 		if err != nil {
-			code, retry := chat.ClassifyClaudeError(err.Error())
-			_ = out.Emit(chat.Event{Type: chat.EventError, TurnID: turnID, Code: code, Message: err.Error(), Retryable: retry})
+			code, retry := chat.ClassifyClaudeError(logredact.Full(err))
+			_ = out.Emit(chat.Event{Type: chat.EventError, TurnID: turnID, Code: code, Message: logredact.Full(err), Retryable: retry})
 			return
 		}
 	}

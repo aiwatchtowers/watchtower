@@ -11,6 +11,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/digest"
+	"watchtower/internal/logredact"
 	"watchtower/internal/prompts"
 )
 
@@ -532,7 +533,7 @@ func (p *Pipeline) completeRun(runID int64, acc *usageAccumulator, items int, pF
 	}
 	errMsg := ""
 	if runErr != nil {
-		errMsg = runErr.Error()
+		errMsg = logredact.Full(runErr)
 	}
 	if err := p.db.CompletePipelineRun(runID, items, acc.input, acc.output, 0, acc.totalAPI, &pFrom, &pTo, errMsg); err != nil {
 		p.logf("memory: complete pipeline run: %v", err)

@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"syscall"
 	"time"
+
+	"watchtower/internal/logredact"
 )
 
 // DaemonAICallTimeout bounds a single AI subprocess call made from the
@@ -100,7 +102,7 @@ func aiTransportFailure(err error) bool {
 		errors.As(err, &execErr) || errors.As(err, &pathErr) ||
 		(errors.As(err, &exitErr) && !exitErr.Exited()) || // killed by a signal
 		NetworkFailure(err) ||
-		aiUnavailable.MatchString(err.Error())
+		aiUnavailable.MatchString(logredact.Full(err))
 }
 
 // NetworkFailure reports a connection-level failure: a timeout, a dial/

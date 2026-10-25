@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"watchtower/internal/db"
+	"watchtower/internal/logredact"
 	"watchtower/internal/planusage"
 )
 
@@ -245,12 +246,12 @@ func (r *Runner) fail(ctx, bctx context.Context, row *db.HistoryBackfill, fromTS
 		r.logf("history backfill: %s account %d held since %s, over %s: counting a strike",
 			row.SourceKind, row.AccountID, row.HeldSince.Format(time.RFC3339), MaxHold)
 	}
-	n, recErr := r.Store.RecordHistoryBackfillFailure(row.ID, err.Error(), r.Now())
+	n, recErr := r.Store.RecordHistoryBackfillFailure(row.ID, logredact.Full(err), r.Now())
 	if recErr != nil {
 		return false, recErr
 	}
 	row.ChunkFailures = n
-	row.LastError = err.Error()
+	row.LastError = logredact.Full(err)
 	if n < MaxChunkFailures {
 		r.logf("history backfill: %s account %d chunk [%s, %s) failed (%d of %d): %v",
 			row.SourceKind, row.AccountID, from.Format(time.RFC3339), to.Format(time.RFC3339), n, MaxChunkFailures, err)
@@ -263,7 +264,7 @@ func (r *Runner) fail(ctx, bctx context.Context, row *db.HistoryBackfill, fromTS
 	}
 	// The advance cleared last_error; keep a trace of the skip until the
 	// next successful chunk clears it (R23).
-	trace := fmt.Sprintf("skipped %s..%s: %v", from.Format(time.RFC3339), to.Format(time.RFC3339), err)
+	trace := fmt.Sprintf("skipped %s..%s: %s", from.Format(time.RFC3339), to.Format(time.RFC3339), logredact.Full(err))
 	if setErr := r.Store.SetHistoryBackfillLastError(row.ID, trace, r.Now()); setErr != nil {
 		return false, setErr
 	}
@@ -275,7 +276,7 @@ func (r *Runner) fail(ctx, bctx context.Context, row *db.HistoryBackfill, fromTS
 // an older strike's), one log line.
 func (r *Runner) hold(row *db.HistoryBackfill, from, to time.Time, err error) error {
 	now := r.Now()
-	msg := "held: " + err.Error()
+	msg := "held: " + logredact.Full(err)
 	if hErr := r.Store.HoldHistoryBackfill(row.ID, msg, now); hErr != nil {
 		return hErr
 	}
