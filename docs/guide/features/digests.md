@@ -8,6 +8,29 @@ Catching up on a channel you were away from, or checking "did we decide that?", 
 
 ## How it works
 
+<!-- learn
+id: digests-channel
+title: Read a channel in a minute
+text: Open **Digests** for a short summary of each busy Slack channel: topics, decisions and action items.
+area: communication
+level: basics
+kind: feature
+since: 0.24.0
+action: nav:digests
+requires: feature:slack-digests
+-->
+
+<!-- learn
+id: digests-streams
+title: Get digests of mail and Jira
+text: Turn on **Stream Digests** and new mail and changed Jira issues are summarised per account.
+area: communication
+level: next
+kind: feature
+since: 0.24.0
+action: turnOn:stream-digests
+-->
+
 **A channel gets a digest when it has new human messages.** After each sync cycle the daemon summarises every channel with messages its last digest has not covered. Each channel keeps its own position, so a failed or skipped channel is offered again next cycle.
 
 Left out: muted channels, one-to-one DMs (group DMs are kept), and channels with only bot traffic. A mostly-bot channel is digested around the human replies.
@@ -23,6 +46,28 @@ Meeting recaps appear in the same feed once a recording has one.
 **Decisions are mined, not typed.** While summarising Slack, mail, Jira and meetings, the AI also extracts decisions. The Ideas pipeline (every 6 hours by default) merges repeats into one entry and keeps its source mentions. Decisions are born settled: **active**, with no review step.
 
 ## Using it
+
+<!-- learn
+id: digests-decisions
+title: Look up what your team decided
+text: Open the **Decisions** segment in **Digests** for every settled decision, with links back to each source.
+area: communication
+level: next
+kind: feature
+since: 0.24.0
+action: nav:digests
+-->
+
+<!-- learn
+id: digests-create-task
+title: Make a task from a digest
+text: Press **Create task** on a topic or decision inside a digest to make a target from it.
+area: communication
+level: power
+kind: tip
+since: 0.24.0
+action: nav:digests
+-->
 
 1. Open **Digests**. The **Digests** segment is one feed grouped by day, with each row labelled by source. The **Decisions** segment is the journal. The tab badge counts unread digests plus unread decisions.
 2. Use **Unread / All** and the search field. Meeting recaps have no unread state, so they appear only under **All**.

@@ -22,6 +22,40 @@ Scrolling channels to find "what was I asked to do?" is the cost this removes. A
 
 ## Using it
 
+<!-- learn
+id: tracks-follow
+title: Follow what needs your eye
+text: Pick the Inbox's **Tracks** filter: requests, decisions and follow-ups pulled from your Slack, one entry each.
+area: communication
+level: next
+kind: feature
+since: 0.24.0
+action: nav:tracks
+requires: feature:slack-digests
+-->
+
+<!-- learn
+id: tracks-make-task
+title: Turn a track into a task
+text: Open **⋯** on a track and press **Make a Task** to create a target from it.
+area: communication
+level: next
+kind: tip
+since: 0.24.0
+action: nav:tracks
+-->
+
+<!-- learn
+id: tracks-chat-cleanup
+title: Clean up old tracks from the chat
+text: Ask the AI Chat to dismiss a set of tracks; it proposes the exact set and waits for your **Approve**.
+area: communication
+level: power
+kind: tip
+since: 0.24.0
+action: chat:Dismiss every auto track older than a month
+-->
+
 1. Open the Inbox and pick the **Tracks** filter: every track you follow, updated ones first, with a dot on the unread ones. **All** shows only the unread ones.
 2. Click a track for its context, blocking, sub-items, participants, **Key Messages** (open in Slack), **Related Digests**, linked targets and Jira issues. **Open chat** at the bottom unfolds a chat about this track. The priority badge changes its priority.
 3. Press **Done** when you have read it. **Open in Slack**, **Discuss in Chat** and **Hand to Agent…** sit beside it.
@@ -30,6 +64,28 @@ Scrolling channels to find "what was I asked to do?" is the cost this removes. A
 6. To clean up many at once, ask the [AI Chat](ai-chat.md), for example "dismiss every auto track older than a month". It proposes the exact set and waits for your **Approve**.
 
 ### Custom tracks on the card
+
+<!-- learn
+id: tracks-custom-watch
+title: Watch a topic you describe
+text: In Automations click **+** → **Watch for something**, say what to watch for, and press **Save and Turn On**.
+area: communication
+level: next
+kind: feature
+since: 0.24.0
+action: nav:automations
+-->
+
+<!-- learn
+id: tracks-scan
+title: Scan history for a watch
+text: Press **Scan** on a custom track and pick a range to fill it from what Watchtower already holds.
+area: communication
+level: power
+kind: tip
+since: 0.24.0
+action: nav:tracks
+-->
 
 A custom track's card has a **Collecting / Paused** switch, which turns the watch on or off in Automations, and its **Watch instruction** with **Edit**; **Save** rewrites the instruction and confirms it. A watch changed in the chat shows its instruction read-only with **Edit in Chat**. Its activity shows **New since you looked** first and **Earlier · N** folded until **Show all**.
 
