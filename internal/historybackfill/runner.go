@@ -13,6 +13,7 @@ import (
 
 	"watchtower/internal/db"
 	"watchtower/internal/planusage"
+	"watchtower/internal/policy"
 )
 
 // ErrHold is what a Source returns (wrapped) for a transient condition such
@@ -107,6 +108,9 @@ func (r *Runner) runRows(ctx, bctx context.Context, rows []db.HistoryBackfill) e
 		row := &rows[(first+k)%len(rows)]
 		if row.Status == "done" || row.Status == "off" {
 			continue
+		}
+		if !policy.SourceAllowed(policySource(row.SourceKind)) {
+			continue // forbidden by the organization's policy: the row keeps its state (POLICY-03)
 		}
 		if err := ctx.Err(); err != nil {
 			return err
@@ -384,6 +388,15 @@ func (r *Runner) slackDone(ctx context.Context, rows []db.HistoryBackfill) {
 	if err := r.OnSlackDone(ctx, unixTime(floor)); err != nil {
 		r.logf("history backfill: slack-done follow-up: %v", err)
 	}
+}
+
+// policySource maps a backfill source kind to its AllowedSources name (#608):
+// Gmail belongs to google; the other kinds share their name.
+func policySource(kind string) string {
+	if kind == "gmail" {
+		return "google"
+	}
+	return kind
 }
 
 func (r *Runner) logf(format string, args ...any) {

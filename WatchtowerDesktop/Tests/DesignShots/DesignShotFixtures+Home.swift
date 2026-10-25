@@ -192,3 +192,36 @@ extension HomeShotFixtures {
         .formStyle(.grouped))
     }
 }
+
+extension HomeShotFixtures {
+    /// Settings → System → Privacy under a sample configuration profile.
+    static func organizationPolicy() -> AnyView {
+        let policy = ManagedPolicy.normalize([
+            "AllowedSources": ["slack", "jira"],
+            "MobileSync": "workbench_only",
+            "AllowedQuickConnections": ["https://mcp.example.com/"],
+            "AllowAutomationShell": false,
+            "AllowedAIProviders": ["claude"],
+            "PurgeRevokedData": true,
+            "RetentionDays": 90
+        ])
+        return AnyView(Form {
+            PrivacySettingsContent(
+                isOn: .constant(true), status: AccountPurgeStatus(enabled: true, enabledBy: "policy"), statusError: nil)
+            OrganizationPolicySection(policy: policy)
+        }
+        .formStyle(.grouped))
+    }
+}
+
+extension HomeShotFixtures {
+    /// Settings → Connections with Jira forbidden by a sample profile: the
+    /// row's lock, the notice and the locked Add button.
+    @MainActor static func connectionsBlocked() -> AnyView {
+        let appState = AppState { ["AllowedSources": ["slack", "google"]] }
+        appState.managedPolicy.refresh()
+        appState.settingsConnection = .jira
+        let config = ConfigService(configPath: NSTemporaryDirectory() + "watchtower-shots-config.yaml")
+        return AnyView(ConnectionsSettings(config: config).environment(appState))
+    }
+}

@@ -6,6 +6,9 @@ import WatchtowerCore
 /// `AppState.claudeAIConnectors`; this view only shows it.
 struct ClaudeAIConnectorsSection: View {
     let model: ClaudeAIConnectorsModel
+    /// The organization's policy turns claude.ai tools off (#608): the
+    /// switches show off and are locked; the owner's stored choice is kept.
+    var lockedOff = false
 
     /// Where a connector the chat lists as not connected gets connected.
     private static let connectURL = URL(string: "https://claude.ai/customize/connectors")
@@ -20,10 +23,11 @@ struct ClaudeAIConnectorsSection: View {
                     .foregroundStyle(.secondary)
             }
             Toggle("Connectors", isOn: Binding(
-                get: { model.switches.connectors },
+                get: { !lockedOff && model.switches.connectors },
                 set: { on in Task { await model.setAllEnabled(on) } }
             ))
             .disabled(model.isWriting)
+            .managedByOrganization(lockedOff)
             if model.file == nil, model.readError == nil {
                 Text("No connectors listed yet. They appear once a main chat on the Claude provider has started.")
                     .font(.caption)
@@ -67,7 +71,7 @@ struct ClaudeAIConnectorsSection: View {
                     set: { on in Task { await model.setEnabled(name: server.name, on) } }
                 ))
                 .labelsHidden()
-                .disabled(model.isWriting || !model.switches.connectors)
+                .disabled(lockedOff || model.isWriting || !model.switches.connectors)
             }
             let tools = ClaudeAIConnectorsModel.toolsText(server.tools)
             if !tools.isEmpty {

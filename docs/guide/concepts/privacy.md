@@ -80,6 +80,10 @@ A message, mail, comment or Jira issue you delete at its source disappears from 
 
 Inbox items made from a deleted message or mail stay, with their text removed. If you leave a Slack channel or lose access to it, its messages stay in Watchtower: only a deletion counts. Summaries, memory notes, ideas and briefings already written from the text are kept as they are. A safety check skips a deletion when the source returns an empty or suspiciously short list, so nothing vanishes because of a bad response.
 
+## When your company manages the Mac
+
+A company's configuration profile can restrict sources, iPhone sync, Quick Connections, AI providers and claude.ai tools. Such controls show **Managed by your organization**; nothing is deleted because of a rule. See [Managed by your organization](managed-by-your-organization.md).
+
 ## Related
 
 - [Sources and accounts](sources-and-accounts.md)

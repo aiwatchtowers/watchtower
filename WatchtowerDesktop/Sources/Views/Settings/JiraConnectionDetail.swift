@@ -10,6 +10,9 @@ import WatchtowerCore
 /// already-synced issues, boards, and releases in place.
 struct JiraConnectionDetail: View {
     @Environment(AppState.self) private var appState
+    /// The organization's policy forbids this source (#608): nothing new
+    /// connects; existing accounts keep their data.
+    private var sourceBlocked: Bool { !appState.managedPolicy.policy.sourceAllowed("jira") }
     @State private var showAddJiraAccountSheet = false
     @State private var jiraAccountPendingRemoval: JiraAccount?
     @State private var accountBeingRenamed: AccountRenameTarget?
@@ -67,6 +70,7 @@ struct JiraConnectionDetail: View {
                                 Button("Re-login") {
                                     Task { await vm.relogin(account) }
                                 }
+                                .managedByOrganization(sourceBlocked)
                                 .help(reloginBlocked(account.id) ?? "")
                                 .disabled(vm.isConnecting || reloginBlocked(account.id) != nil)
                             }
@@ -94,6 +98,7 @@ struct JiraConnectionDetail: View {
                 Button("Add Jira Site") {
                     showAddJiraAccountSheet = true
                 }
+                .managedByOrganization(sourceBlocked)
                 .disabled(vm.isConnecting)
             } else {
                 Text("Loading...")

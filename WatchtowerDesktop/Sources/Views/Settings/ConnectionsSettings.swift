@@ -1,4 +1,5 @@
 import SwiftUI
+import WatchtowerCore
 
 /// Connections tab — master list of external services on the left, the
 /// selected service's accounts and settings on the right. Each detail view
@@ -23,8 +24,13 @@ struct ConnectionsSettings: View {
             .scrollContentBackground(.hidden)
             .frame(width: 190)
             Divider()
-            detail
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(alignment: .leading, spacing: 0) {
+                if isBlocked(appState.settingsConnection) {
+                    SourceBlockedNotice()
+                }
+                detail
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .safeAreaInset(edge: .bottom) { ConfigSaveBar(config: config) }
         .onAppear {
@@ -49,9 +55,16 @@ struct ConnectionsSettings: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-            Circle()
-                .fill(status(service).color)
-                .frame(width: 8, height: 8)
+            if isBlocked(service) {
+                Image(systemName: "lock.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help(SourceBlockedNotice.title)
+            } else {
+                Circle()
+                    .fill(status(service).color)
+                    .frame(width: 8, height: 8)
+            }
         }
     }
 
@@ -66,6 +79,11 @@ struct ConnectionsSettings: View {
         case .linear: LinearConnectionDetail()
         case .quickConnections: QuickConnectionsDetail()
         }
+    }
+
+    /// The organization's policy forbids the service's source (#608).
+    private func isBlocked(_ service: ConnectionService) -> Bool {
+        !PolicySourceMap.allowed(service.rawValue, policy: appState.managedPolicy.policy)
     }
 
     // MARK: - Row status
@@ -106,5 +124,28 @@ struct ConnectionsSettings: View {
             guard let vm = appState.externalConnectionsViewModel else { return .notConfigured }
             return ConnectionStatusLogic.enabledFilteredStatus(vm.connections.map { ($0.isOK, $0.enabled) })
         }
+    }
+}
+
+/// The line over a connection the organization's policy forbids (#608): its
+/// accounts stay but no longer sync, and their data is kept.
+struct SourceBlockedNotice: View {
+    static let title = "Blocked by your organization"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.tight) {
+            Label(Self.title, systemImage: "lock.fill")
+                .font(.callout.weight(.medium))
+            Text("Your organization's policy does not allow this source. Existing accounts stop syncing and keep their data; "
+                + "nothing new can be connected.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(Spacing.medium)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card()
+        .padding(.horizontal, Spacing.page)
+        .padding(.top, Spacing.medium)
     }
 }

@@ -12,10 +12,12 @@ struct AutomationListRow: View {
     let changes: [AutomationChange]?
     let isSelected: Bool
     let now: Date
+    /// The organization's policy blocks it (#608, `AutomationPolicyBlock`).
+    var policyBlocked = false
     let onSelect: () -> Void
 
     var body: some View {
-        let state = AutomationRowPresentation.state(item, now: now)
+        let state = policyBlocked ? .chip(.blockedByPolicy) : AutomationRowPresentation.state(item, now: now)
         AutomationRowContent(
             isOn: AutomationRowPresentation.isOn(item),
             isDraft: false,
@@ -187,6 +189,7 @@ private struct AutomationRowContent: View {
         case .paused: Color.secondary
         case .cantRead: Tone.error
         case .draft: Color.accentColor
+        case .blockedByPolicy: Color.secondary
         }
     }
 }

@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Example Watchtower organization policy (board #608). Every value is a
+  placeholder: replace the UUIDs, URLs, paths and ids before deploying.
+  Only keys you set are enforced; leave a key out for "no restriction".
+  Check on a Mac with: watchtower policy show --json
+-->
+<plist version="1.0">
+<dict>
+    <key>PayloadDisplayName</key>
+    <string>Watchtower policy (example)</string>
+    <key>PayloadIdentifier</key>
+    <string>com.example.watchtower.policy</string>
+    <key>PayloadType</key>
+    <string>Configuration</string>
+    <key>PayloadUUID</key>
+    <string>00000000-0000-0000-0000-000000000000</string>
+    <key>PayloadVersion</key>
+    <integer>1</integer>
+    <key>PayloadScope</key>
+    <string>User</string>
+    <key>PayloadContent</key>
+    <array>
+        <!-- Watchtower itself: the preference domain com.watchtower.desktop. -->
+        <dict>
+            <key>PayloadType</key>
+            <string>com.apple.ManagedClient.preferences</string>
+            <key>PayloadIdentifier</key>
+            <string>com.example.watchtower.policy.watchtower</string>
+            <key>PayloadUUID</key>
+            <string>00000000-0000-0000-0000-000000000001</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+            <key>PayloadContent</key>
+            <dict>
+                <key>com.watchtower.desktop</key>
+                <dict>
+                    <key>Forced</key>
+                    <array>
+                        <dict>
+                            <key>mcx_preference_settings</key>
+                            <dict>
+                                <!-- Sources that may be connected and synced: slack, google, imap, caldav, jira, linear. -->
+                                <key>AllowedSources</key>
+                                <array>
+                                    <string>slack</string>
+                                    <string>google</string>
+                                    <string>jira</string>
+                                </array>
+                                <!-- iPhone sync: allowed, workbench_only or off. -->
+                                <key>MobileSync</key>
+                                <string>workbench_only</string>
+                                <!-- Quick Connections: https:// URL prefixes or absolute command paths; an empty array allows none. -->
+                                <key>AllowedQuickConnections</key>
+                                <array>
+                                    <string>https://mcp.example.com/</string>
+                                    <string>/usr/local/bin/acme-mcp</string>
+                                </array>
+                                <!-- shell() in workbench automations. -->
+                                <key>AllowAutomationShell</key>
+                                <false/>
+                                <!-- LLM providers any path may use: claude, codex, ollama. -->
+                                <key>AllowedAIProviders</key>
+                                <array>
+                                    <string>claude</string>
+                                </array>
+                                <!-- claude.ai publish and connectors in the main chat. -->
+                                <key>AllowClaudeAITools</key>
+                                <false/>
+                                <!-- Delete a revoked or long-unreached account's data after the 72-hour notice. -->
+                                <key>PurgeRevokedData</key>
+                                <true/>
+                            </dict>
+                        </dict>
+                    </array>
+                </dict>
+            </dict>
+        </dict>
+        <!-- Claude Code: claude.ai logins of your organization only (domain com.anthropic.claudecode). -->
+        <dict>
+            <key>PayloadType</key>
+            <string>com.anthropic.claudecode</string>
+            <key>PayloadIdentifier</key>
+            <string>com.example.watchtower.policy.claudecode</string>
+            <key>PayloadUUID</key>
+            <string>00000000-0000-0000-0000-000000000002</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+            <key>forceLoginMethod</key>
+            <string>claudeai</string>
+            <key>forceLoginOrgUUID</key>
+            <string>00000000-0000-0000-0000-000000000000</string>
+        </dict>
+        <!-- Codex: ChatGPT logins of your workspace only (domain com.openai.codex).
+             requirements_toml_base64 is the base64 of:
+               allowed_login_methods = ["chatgpt"]
+               allowed_chatgpt_workspaces = ["<workspace-id>"] -->
+        <dict>
+            <key>PayloadType</key>
+            <string>com.openai.codex</string>
+            <key>PayloadIdentifier</key>
+            <string>com.example.watchtower.policy.codex</string>
+            <key>PayloadUUID</key>
+            <string>00000000-0000-0000-0000-000000000003</string>
+            <key>PayloadVersion</key>
+            <integer>1</integer>
+            <key>requirements_toml_base64</key>
+            <string>YWxsb3dlZF9sb2dpbl9tZXRob2RzID0gWyJjaGF0Z3B0Il0KYWxsb3dlZF9jaGF0Z3B0X3dvcmtzcGFjZXMgPSBbIjx3b3Jrc3BhY2UtaWQ+Il0K</string>
+        </dict>
+    </array>
+</dict>
+</plist>

@@ -7,6 +7,9 @@ import WatchtowerCore
 /// connected account.
 struct CalendarConnectionDetail: View {
     @Environment(AppState.self) private var appState
+    /// The organization's policy forbids this source (#608): nothing new
+    /// connects; existing accounts keep their data.
+    private var sourceBlocked: Bool { !appState.managedPolicy.policy.sourceAllowed("caldav") }
     @State private var showAddCalendarAccountSheet = false
     @State private var calendarAccountPendingRemoval: CalendarAccount?
     @State private var accountBeingRenamed: AccountRenameTarget?
@@ -76,6 +79,7 @@ struct CalendarConnectionDetail: View {
                 Button("Add Calendar") {
                     showAddCalendarAccountSheet = true
                 }
+                .managedByOrganization(sourceBlocked)
             } else {
                 Text("Loading...")
                     .font(.caption)

@@ -52,7 +52,7 @@ struct OnboardingConnectStepView: View {
     }
 
     private var sources: [OnboardingConnectSource] {
-        OnboardingConnectPlan.sources(for: appState.onboardingGoals.savedGoals)
+        OnboardingConnectPlan.sources(for: appState.onboardingGoals.savedGoals, policy: appState.managedPolicy.policy)
     }
 
     private var activeSlackAccounts: [SlackAccount] {
