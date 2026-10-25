@@ -66,7 +66,7 @@ struct AskView: View {
                     QuestionAskView(page: page, model: model, isEditable: form.isEditable)
                 }
                 if let review = form.review {
-                    ReviewAskView(review: review, model: model, isEditable: form.isEditable)
+                    ReviewAskView(review: review, specReview: ask.specReview, model: model, isEditable: form.isEditable)
                 }
                 if !form.checks.isEmpty {
                     CheckAskView(rows: form.checks, model: model, isEditable: form.isEditable)

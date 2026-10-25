@@ -73,7 +73,7 @@ final class OwnerAskSliceTests: XCTestCase {
     private let optionalKeys: Set<String> = [
         "session_id", "target_id", "withdrawn_reason", "previous_ask_id", "answered_at", "delivered_at",
         "title_clipped", "summary_clipped", "changes_clipped", "payload", "payload_clipped", "doc_path_clipped",
-        "doc_snapshot", "doc_clipped", "doc_bytes", "answer", "quick"
+        "doc_snapshot", "doc_clipped", "doc_bytes", "answer", "quick", "spec_review"
     ]
     /// Inside `payload` (passed through verbatim): the Kit mirror decodes a
     /// question's `multi` and an option's `description` as optional.
@@ -105,6 +105,32 @@ final class OwnerAskSliceTests: XCTestCase {
         XCTAssertNil(payload["answer"], "an open ask carries no answer")
         XCTAssertNil(payload["answered_at"])
         XCTAssertTrue(SliceJSON.allKeys(payload).isDisjoint(with: neverPublishedKeys))
+    }
+
+    func testSliceCarriesSpecReviewLine() throws {
+        let result = #"{"agreements":[{"key":"a","status":"as_agreed"},{"key":"b","status":"differs"}],"blind_spots":[{"key":"c"}]}"#
+        let cases: [(status: String, result: String, reason: String, line: String?)] = [
+            ("done", result, "", "1 as agreed · 1 differs · 1 blind spot"),
+            ("queued", "", "", "Reviewer is reading…"),
+            ("running", "", "", "Reviewer is reading…"),
+            ("failed", "", "timed out", "Reviewer failed: timed out"),
+            ("skipped", "", "", "Reviewer skipped")
+        ]
+        let project = try dbPool.write { try TestDatabase.insertWorkbench($0) }
+        for item in cases {
+            let id = try insertAsk(kind: "review", project: project)
+            try dbPool.write { db in
+                try db.execute(sql: """
+                    INSERT INTO spec_reviews (ask_id, status, result, reason, queued_at)
+                    VALUES (?, ?, ?, ?, '2026-10-25T10:00:00Z')
+                    """, arguments: [id, item.status, item.result, item.reason])
+            }
+            let review = try XCTUnwrap(try payload(id)["spec_review"] as? [String: Any], item.status)
+            XCTAssertEqual(review["status"] as? String, item.status)
+            XCTAssertEqual(review["line"] as? String, item.line)
+        }
+        let plain = try insertAsk(kind: "review", project: project)
+        XCTAssertNil(try payload(plain)["spec_review"], "no reviewer row: today's view")
     }
 
     func testAnOpenReviewMatchesTheKitFixture() throws {

@@ -46,6 +46,12 @@ struct OwnerAskSlice: SliceSource {
         }
     }
 
+    /// The spec reviewer's state on a review ask; older phones ignore it.
+    struct SpecReviewLine: Encodable, Equatable {
+        let status: String
+        let line: String
+    }
+
     struct Payload: Encodable, Equatable {
         let id: Int64
         let workbenchID: Int64
@@ -74,6 +80,7 @@ struct OwnerAskSlice: SliceSource {
         let docBytes: Int?
         let answer: JSONValue?
         let quick: Quick?
+        let specReview: SpecReviewLine?
 
         enum CodingKeys: String, CodingKey {
             case id
@@ -85,6 +92,7 @@ struct OwnerAskSlice: SliceSource {
             case previousAskID = "previous_ask_id"
             case createdAt, answeredAt, deliveredAt, title, titleClipped, summary, summaryClipped, changes, changesClipped
             case payload, payloadClipped, docPath, docPathClipped, docSnapshot, docClipped, docBytes, answer, quick
+            case specReview = "spec_review"
         }
     }
 
@@ -109,12 +117,12 @@ struct OwnerAskSlice: SliceSource {
         return try rows.compactMap { row in
             let project: Int64 = row["project_id"]
             guard let name = names[project] else { return nil }
-            let payload = makePayload(row, workbenchName: name)
+            let payload = try makePayload(db, row, workbenchName: name)
             return SliceRecord(kind: kind, id: String(payload.id), modifiedAt: stamp, payload: try encoder.encode(payload))
         }
     }
 
-    private func makePayload(_ row: Row, workbenchName: String) -> Payload {
+    private func makePayload(_ db: Database, _ row: Row, workbenchName: String) throws -> Payload {
         let id: Int64 = row["id"]
         let record = kind.recordName(id: String(id))
         let status: String = row["status"] ?? ""
@@ -129,6 +137,11 @@ struct OwnerAskSlice: SliceSource {
             isOpen && askKind == "review" ? Self.clipSnapshot(row["doc_snapshot"] ?? "") : nil
         let answer = isOpen ? .absent : Self.json(row["answer"] ?? "", record: record, field: "answer")
         let withdrawnReason: String = row["withdrawn_reason"] ?? ""
+        var specReview: SpecReviewLine?
+        if askKind == "review", let reviewRow = try SpecReviewQueries.row(db, askID: id),
+           let summary = SpecReviewSummary.phoneLine(reviewRow) {
+            specReview = SpecReviewLine(status: summary.status, line: summary.line)
+        }
         return Payload(
             id: id,
             workbenchID: row["project_id"],
@@ -151,7 +164,8 @@ struct OwnerAskSlice: SliceSource {
             docSnapshot: snapshot?.text, docClipped: snapshot?.clipped, docBytes: snapshot?.bytes,
             answer: answer.value,
             // The phone offers only "Open the ask on the Mac" without the payload.
-            quick: payload.value.flatMap { askKind == "question" ? Self.quick($0) : nil }
+            quick: payload.value.flatMap { askKind == "question" ? Self.quick($0) : nil },
+            specReview: specReview
         )
     }
 

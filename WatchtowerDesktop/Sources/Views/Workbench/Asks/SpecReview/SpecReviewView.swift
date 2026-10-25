@@ -171,17 +171,7 @@ enum SpecReviewPresentation {
     /// "9 as agreed · 1 differs · 1 missing · 4 decided alone · 2 blind
     /// spots"; zero counts are left out.
     static func countsLine(_ result: SpecReviewResult) -> String {
-        let agreed = result.agreements.filter { $0.status == "as_agreed" }.count
-        let differs = result.agreements.filter { $0.status == "differs" }.count
-        let missing = result.agreements.filter { $0.status == "missing" }.count
-        let other = result.agreements.count - agreed - differs - missing
-        let parts: [(Int, String)] = [
-            (agreed, "as agreed"), (differs, "differs"), (missing, "missing"), (other, "other"),
-            (result.decidedAlone.count, "decided alone"),
-            (result.blindSpots.count, result.blindSpots.count == 1 ? "blind spot" : "blind spots")
-        ]
-        let line = parts.filter { $0.0 > 0 }.map { "\($0.0) \($0.1)" }.joined(separator: " · ")
-        return line.isEmpty ? "No findings" : line
+        SpecReviewSummary.countsLine(result)
     }
 
     static func agreementBadge(status: String) -> Badge {
