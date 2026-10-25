@@ -11,31 +11,64 @@ import (
 )
 
 // refusedProvider stands in for a provider the organization's policy
-// (AllowedAIProviders, #608) forbids: every call fails with the policy error
-// and no provider process ever starts. There is no fallback to an allowed
-// provider.
-type refusedProvider struct{ err error }
+// (AllowedAIProviders, #608) forbids, as a digest.Generator and an
+// ai.Provider: every call fails with the policy error and no provider process
+// ever starts. There is no fallback to an allowed provider.
+type refusedProvider struct{ digest.RefusedGenerator }
 
 var (
 	_ digest.Generator = refusedProvider{}
 	_ ai.Provider      = refusedProvider{}
 )
 
-func (r refusedProvider) Generate(context.Context, string, string, string) (string, *digest.Usage, string, error) {
-	return "", nil, "", r.err
+func newRefusedProvider(err error) refusedProvider {
+	return refusedProvider{digest.RefusedGenerator{Err: err}}
 }
 
+// Query delivers the error before the stream ends: errs is buffered and
+// holds it when the channels close, so a caller that drains text, then the
+// session id, then errs (streamQueryV1) reports it.
 func (r refusedProvider) Query(context.Context, string, string, string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
 	chunks, errs, ids := make(chan ai.StreamChunk), make(chan error, 1), make(chan string)
-	errs <- r.err
-	close(chunks)
+	errs <- r.Err
 	close(errs)
+	close(chunks)
 	close(ids)
 	return chunks, errs, ids
 }
 
 func (r refusedProvider) QuerySync(context.Context, string, string, string) (string, *ai.Usage, error) {
-	return "", nil, r.err
+	return "", nil, r.Err
+}
+
+// policyCheckedProvider asks the policy before every call: a long-lived
+// client (the daemon's Jira board analyzer, the tool registry's) follows a
+// profile installed, changed or removed while it runs. Interactive paths keep
+// newAIClient's construction-time check, which leaves the client's own
+// type (its MCP setters) intact.
+type policyCheckedProvider struct {
+	inner    ai.Provider
+	provider string
+}
+
+func (p policyCheckedProvider) Query(ctx context.Context, systemPrompt, userMessage, sessionID string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
+	if err := providers.Allowed(p.provider); err != nil {
+		return newRefusedProvider(err).Query(ctx, systemPrompt, userMessage, sessionID)
+	}
+	return p.inner.Query(ctx, systemPrompt, userMessage, sessionID)
+}
+
+func (p policyCheckedProvider) QuerySync(ctx context.Context, systemPrompt, userMessage, sessionID string) (string, *ai.Usage, error) {
+	if err := providers.Allowed(p.provider); err != nil {
+		return "", nil, err
+	}
+	return p.inner.QuerySync(ctx, systemPrompt, userMessage, sessionID)
+}
+
+// checkedAIClient is the configured provider's client behind a per-call
+// policy check, for the long-lived holders.
+func checkedAIClient(cfg *config.Config, dbPath string) ai.Provider {
+	return policyCheckedProvider{inner: buildAIClient(cfg, dbPath, ""), provider: cfg.AI.Provider}
 }
 
 // policyCheckedGenerator asks the policy before every call: a long-lived

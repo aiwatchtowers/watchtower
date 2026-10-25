@@ -269,6 +269,11 @@ func executeSave(ctx context.Context, d Deps, raw json.RawMessage) (*SaveResult,
 	if err != nil || p.ApprovalHash == "" || automations.ApprovalHash(r) != p.ApprovalHash {
 		return nil, errors.New(msgRecipeTextDrifted)
 	}
+	// The organization's policy may have tightened since the proposal (#608):
+	// checked again against the live policy before anything is written.
+	if err := automations.CheckRecipePolicy(d.DB, r); err != nil {
+		return nil, fmt.Errorf("save_automation: %w", err)
+	}
 	// The workbench folder's symlink check (recipeTarget) is not atomic with
 	// the write either: the same accepted window as `automations save`.
 	dir, path, err := recipeTarget(ctx, d, scope, p.Slug)

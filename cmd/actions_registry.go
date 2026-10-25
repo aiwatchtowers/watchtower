@@ -102,7 +102,7 @@ func jiraConnectFactory(cfg *config.Config, database *db.DB) tools.JiraConnectFa
 		if err != nil {
 			return tools.JiraConnect{}, err
 		}
-		analyzer := jira.NewBoardAnalyzer(client, database, newAIClient(cfg, cfg.DBPath()), account.ID)
+		analyzer := jira.NewBoardAnalyzer(client, database, checkedAIClient(cfg, cfg.DBPath()), account.ID)
 		analyzer.SetLanguage(cfg.Digest.Language)
 		return tools.JiraConnect{Client: client, Profiler: analyzer}, nil
 	}

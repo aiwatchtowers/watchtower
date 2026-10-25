@@ -129,6 +129,9 @@ func TestMain(m *testing.M) {
 	}
 	// No test runs the owner's login shell (connections import).
 	loginShellEnv = func() map[string]string { return nil }
+	// Tests calling a command's RunE directly see it guarded, as every
+	// Execute does through cobra's initializers (#608).
+	applySourceGuards()
 	code := m.Run()
 	_ = os.RemoveAll(home)
 	os.Exit(code)

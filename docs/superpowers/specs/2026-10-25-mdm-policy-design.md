@@ -286,6 +286,7 @@ decision (Q3 a) is unchanged.
 
 - Account-level allowlists (corp Slack workspace, Google domain, Atlassian
   site), which also let #601 put a lease on corp IMAP accounts.
+- Slack write paths of a forbidden `slack` source (reactions, `send_slack_message`, automations' `output.slack`) are not refused in v1; only connecting, syncing and on-demand fetches are.
 - `AllowedOllamaURLs` (an allowed Ollama provider may still point at a remote
   server).
 - Enforcing the reserved keys with #603, #606 and #611.

@@ -81,6 +81,14 @@ func TestPolicyConnections_AddEnableRefused(t *testing.T) {
 	_, err = runConnections(t, "", "tools", strconv.FormatInt(id, 10), "--refresh")
 	require.ErrorIs(t, err, policy.ErrNotAllowed, "a listing would start the server")
 
+	calls := stubToolsList(t, []db.ExternalTool{{Name: "get"}}, nil)
+	_, err = runConnections(t, "", "oauth", strconv.FormatInt(id, 10), "--no-open")
+	require.ErrorIs(t, err, policy.ErrNotAllowed, "signing in would contact the server")
+	conn, err := database.GetExternalConnection(id)
+	require.NoError(t, err)
+	require.ErrorIs(t, listConnectionTools(cfg, database, &conn), policy.ErrNotAllowed, "every listing path refuses")
+	assert.Empty(t, *calls, "no listing reached the server")
+
 	_, err = runConnections(t, "", "disable", strconv.FormatInt(id, 10))
 	require.NoError(t, err, "disabling is always allowed")
 

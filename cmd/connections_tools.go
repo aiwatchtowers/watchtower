@@ -13,6 +13,7 @@ import (
 	"watchtower/internal/config"
 	"watchtower/internal/db"
 	"watchtower/internal/externalmcp"
+	"watchtower/internal/policy"
 )
 
 var connectionsToolsCmd = &cobra.Command{
@@ -90,10 +91,6 @@ func runConnectionsTools(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if connectionsToolsFlagRefresh {
-		// Listing starts the server: never for a connection the policy forbids (#608).
-		if err := connectionPolicyError(conn.Name, conn.Kind, conn.URL, conn.Command); err != nil {
-			return err
-		}
 		if err := listConnectionTools(cfg, database, &conn); err != nil {
 			return fmt.Errorf("listing tools: %w", err)
 		}
@@ -157,6 +154,11 @@ func reconcileToolsStatus(database *db.DB, conn db.ExternalConnection) {
 // listConnectionTools refreshes conn's cached tools/list from its server,
 // with the same credentials a chat launch would use.
 func listConnectionTools(cfg *config.Config, database *db.DB, conn *db.ExternalConnection) error {
+	// Listing starts the server: never for a connection the organization's
+	// policy forbids (#608), on every listing path.
+	if err := connectionPolicyError(conn.Name, conn.Kind, conn.URL, conn.Command); err != nil {
+		return err
+	}
 	if externalmcp.ReservedName(conn.Name) {
 		// Its server is never started, not even to list it.
 		recordReservedName(database, *conn)
@@ -187,7 +189,8 @@ func refreshToolsAfterEnable(out, errOut io.Writer, cfg *config.Config, database
 	if err == nil {
 		err = listConnectionTools(cfg, database, &conn)
 	}
-	if errors.Is(err, errNoCredentials) || errors.Is(err, errInsecureTransport) || errors.Is(err, errReservedName) {
+	if errors.Is(err, errNoCredentials) || errors.Is(err, errInsecureTransport) || errors.Is(err, errReservedName) ||
+		errors.Is(err, policy.ErrNotAllowed) {
 		fmt.Fprintf(errOut, "warning: connection %d: %v; none of its tools is available to the chat\n", id, err)
 		return
 	}

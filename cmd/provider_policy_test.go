@@ -3,15 +3,18 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"watchtower/internal/ai"
 	"watchtower/internal/automations"
 	"watchtower/internal/chat"
 	"watchtower/internal/config"
@@ -199,4 +202,63 @@ func TestAutomationAgent_PolicyRefused(t *testing.T) {
 	assert.Zero(t, metered, "nothing metered")
 	_, statErr := os.Stat(marker)
 	assert.True(t, errors.Is(statErr, os.ErrNotExist), "no agent process started")
+}
+
+type countingProvider struct{ calls int }
+
+func (p *countingProvider) Query(context.Context, string, string, string) (<-chan ai.StreamChunk, <-chan error, <-chan string) {
+	p.calls++
+	chunks, errs, ids := make(chan ai.StreamChunk), make(chan error), make(chan string)
+	close(chunks)
+	close(errs)
+	close(ids)
+	return chunks, errs, ids
+}
+
+func (p *countingProvider) QuerySync(context.Context, string, string, string) (string, *ai.Usage, error) {
+	p.calls++
+	return "ok", nil, nil
+}
+
+// A long-lived ai.Provider (the daemon's Jira board analyzer) follows the
+// policy per call, both ways, without a restart.
+func TestProviderPolicy_LongLivedProviderChecksPerCall(t *testing.T) {
+	inner := &countingProvider{}
+	p := policyCheckedProvider{inner: inner, provider: "codex"}
+	ctx := context.Background()
+
+	policytest.Set(t, nil)
+	_, _, err := p.QuerySync(ctx, "", "", "")
+	require.NoError(t, err)
+
+	claudeOnly(t)
+	_, _, err = p.QuerySync(ctx, "", "", "")
+	require.ErrorIs(t, err, policy.ErrNotAllowed, "tightened")
+	_, errs, _ := p.Query(ctx, "", "", "")
+	require.ErrorIs(t, <-errs, policy.ErrNotAllowed)
+	assert.Equal(t, 1, inner.calls, "the provider never sees a refused call")
+
+	policytest.Set(t, map[string]any{"AllowedAIProviders": []any{"claude", "codex"}})
+	_, _, err = p.QuerySync(ctx, "", "", "")
+	require.NoError(t, err, "loosened")
+	assert.Equal(t, 2, inner.calls)
+
+	_, ok := checkedAIClient(&config.Config{}, "").(policyCheckedProvider)
+	assert.True(t, ok)
+}
+
+// The refused stream reports its error before it reads as done, drained the
+// way `ai query` drains it (text, session id, then errors).
+func TestProviderPolicy_RefusedQueryDeliversTheError(t *testing.T) {
+	claudeOnly(t)
+	cfg := &config.Config{}
+	cfg.AI.Provider = "codex"
+	chunks, errs, ids := newAIClient(cfg, "").Query(context.Background(), "", "", "")
+	var out bytes.Buffer
+	streamQueryV1(json.NewEncoder(&out), chunks, errs, ids)
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	require.Len(t, lines, 2, out.String())
+	assert.Contains(t, lines[0], `"type":"error"`)
+	assert.Contains(t, lines[0], "AI provider codex is not allowed by your organization")
+	assert.Contains(t, lines[1], `"type":"done"`)
 }

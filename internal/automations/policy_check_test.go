@@ -8,6 +8,7 @@ import (
 
 	"watchtower/internal/automations"
 	"watchtower/internal/automations/automationstest"
+	"watchtower/internal/db"
 	"watchtower/internal/policy"
 	"watchtower/internal/policy/policytest"
 )
@@ -82,14 +83,51 @@ func TestCheckManifestPolicy(t *testing.T) {
 }
 
 // TestAutomation_PolicyErrorNeverAutoDisables: runs that fail on the policy
-// end failed with its message and never disable the automation.
+// — an mcp(), an agent() or a shell() refusal — end failed with its message
+// and never disable the automation.
 func TestAutomation_PolicyErrorNeverAutoDisables(t *testing.T) {
 	refusal := fmt.Errorf("policy: Quick Connection acme is %w (allowed: none)", policy.ErrNotAllowed)
-	f := newExFixture(t, exOpts{backends: func(_ *exFixture, b *automations.Backends) {
-		b.MCP = &automationstest.FakeMCP{Err: refusal}
-	}})
-	text := strings.Replace(exRecipeText(`mcp("acme", "get_item", {})`, ""), "  - tool:list_targets\n", "  - tool:list_targets\n  - mcp:acme/*\n", 1)
-	a := f.seedText(t, "policy-mcp", text, false)
+	addPerm := func(perm, script string) string {
+		return strings.Replace(exRecipeText(script, ""), "  - tool:list_targets\n", "  - tool:list_targets\n  - "+perm+"\n", 1)
+	}
+	t.Run("mcp", func(t *testing.T) {
+		f := newExFixture(t, exOpts{backends: func(_ *exFixture, b *automations.Backends) {
+			b.MCP = &automationstest.FakeMCP{Err: refusal}
+		}})
+		assertPolicyFailsThrice(t, f, f.seedText(t, "policy-mcp", addPerm("mcp:acme/*", `mcp("acme", "get_item", {})`), false))
+	})
+	t.Run("agent", func(t *testing.T) {
+		agentRefusal := fmt.Errorf("policy: AI provider codex is %w (allowed: claude)", policy.ErrNotAllowed)
+		f := newExFixture(t, exOpts{backends: func(_ *exFixture, b *automations.Backends) {
+			b.Agent = &automationstest.FakeAgent{Err: automations.PolicyError(agentRefusal)}
+		}})
+		assertPolicyFailsThrice(t, f, f.seedText(t, "policy-agent", addPerm("agent:run", `agent("summarize")`), false))
+	})
+	t.Run("shell", func(t *testing.T) {
+		policytest.Set(t, map[string]any{"AllowAutomationShell": false})
+		w := newWbE2E(t, automations.ShellResult{})
+		text := "---\nname: Shell policy\ntrigger:\n  manual: true\npermissions:\n  - 'shell:\"pwd\"'\noutputs: [report]\n---\nRuns pwd.\n\n```js\nshell(\"pwd\")\n```\n"
+		writeWorkbenchRecipe(t, w.folder, "policy-shell", text)
+		rescanWorkbench(t, w.ix, w.wb, w.folder)
+		a := workbenchRow(t, w.d, w.wb, "policy-shell")
+		if a.ParseError != "" {
+			t.Fatalf("does not parse: %s", a.ParseError)
+		}
+		if err := w.d.ConfirmAutomation(a.ID, a.ApprovalHash, exStart); err != nil {
+			t.Fatal(err)
+		}
+		if err := w.d.SetAutomationEnabled(a.ID, true, exStart); err != nil {
+			t.Fatal(err)
+		}
+		assertPolicyFailsThrice(t, w.exFixture, workbenchRow(t, w.d, w.wb, "policy-shell"))
+		if n := len(w.shell.Calls()); n != 0 {
+			t.Fatalf("shell ran %d commands", n)
+		}
+	})
+}
+
+func assertPolicyFailsThrice(t *testing.T, f *exFixture, a db.Automation) {
+	t.Helper()
 	for range 3 {
 		id := f.enqueue(t, a, "manual")
 		f.step(t, 1)

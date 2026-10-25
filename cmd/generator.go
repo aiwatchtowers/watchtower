@@ -46,7 +46,7 @@ func validateModel(_ *config.Config) error {
 // (#608): every call fails with the policy error, no fallback.
 func cliGenerator(cfg *config.Config) digest.Generator {
 	if err := providers.Allowed(cfg.AI.Provider); err != nil {
-		return refusedProvider{err: err}
+		return newRefusedProvider(err)
 	}
 	return buildGenerator(cfg)
 }
@@ -116,8 +116,13 @@ func newAIClient(cfg *config.Config, dbPath string) ai.Provider {
 // resolved strong-tier model.
 func newAIClientWithModel(cfg *config.Config, dbPath, modelOverride string) ai.Provider {
 	if err := providers.Allowed(cfg.AI.Provider); err != nil {
-		return refusedProvider{err: err} // #608: no fallback to an allowed provider
+		return newRefusedProvider(err) // #608: no fallback to an allowed provider
 	}
+	return buildAIClient(cfg, dbPath, modelOverride)
+}
+
+// buildAIClient is the configured provider's client, unchecked.
+func buildAIClient(cfg *config.Config, dbPath, modelOverride string) ai.Provider {
 	model := modelOverride
 	if model == "" {
 		_, model = providers.ResolveModelsFor(cfg, cfg.AI.Provider)

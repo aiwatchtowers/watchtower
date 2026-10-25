@@ -512,6 +512,10 @@ func runConnectionsOAuth(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("getting connection: %w", err)
 	}
+	// Signing in contacts the server: never for one the policy forbids (#608).
+	if err := connectionPolicyError(conn.Name, conn.Kind, conn.URL, conn.Command); err != nil {
+		return err
+	}
 	if conn.Kind != "http" {
 		return fmt.Errorf("connection %d is %q; OAuth sign-in applies to http servers only", id, conn.Kind)
 	}

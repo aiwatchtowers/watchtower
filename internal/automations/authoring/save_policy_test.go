@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"watchtower/internal/db"
 	"watchtower/internal/policy/policytest"
 	"watchtower/internal/tools"
 )
@@ -30,5 +31,23 @@ func TestSaveAutomation_PolicyRefusesShellRecipe(t *testing.T) {
 	var ve *tools.ValidationError
 	if !errors.As(err, &ve) || !strings.Contains(ve.Msg, "shell() in automations is not allowed by your organization") {
 		t.Fatalf("shell off: Validate = %v; want the policy refusal", err)
+	}
+}
+
+// TestSaveAutomation_PolicyTightenedBeforeApplyRefuses: the save is checked
+// again against the live policy at apply; a policy tightened between propose
+// and approve refuses it and writes nothing.
+func TestSaveAutomation_PolicyTightenedBeforeApplyRefuses(t *testing.T) {
+	f := newSaveFixture(t)
+	if _, err := f.d.InsertExternalConnection(db.ExternalConnection{Name: "acme", Kind: "http", URL: "https://other.example.com/mcp"}); err != nil {
+		t.Fatal(err)
+	}
+	policytest.Set(t, nil)
+	id := f.propose(t, "acme-calls", recipeText([]string{"mcp:acme/*"}, "", `return 1`))
+
+	policytest.Set(t, map[string]any{"AllowedQuickConnections": []any{"https://mcp.example.com"}})
+	assertFailedWith(t, f.approveApply(t, id), "Quick Connection acme is not allowed by your organization")
+	if _, ok := f.readFile(t, "acme-calls"); ok {
+		t.Fatal("the recipe file was written")
 	}
 }
