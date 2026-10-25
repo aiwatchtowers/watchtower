@@ -133,6 +133,7 @@ type MediaItem struct {
 	Keys                                       []string
 	KBSource, KBRef                            string
 	DiscoveredAt, DescribedAt                  string
+	NextTryAt                                  string // '' or mediaTimeLayout: not listed before it
 }
 
 // MediaCursor is a position in ListPendingMedia's order (from_owner DESC,
@@ -258,7 +259,7 @@ const mediaItemColumns = `id, kind, parent_kind, parent_key,
 	COALESCE(imap_account_id, 0), COALESCE(imap_uidvalidity, 0), COALESCE(imap_uid, 0),
 	COALESCE(chat_attachment_id, 0), COALESCE(target_image_id, 0),
 	anchor, locator, fetch_url, name, media_type, size_bytes, content_key, scope, from_owner, content_at,
-	status, attempts, error, title, body, image_text, keys_json, kb_source, kb_ref, discovered_at, described_at`
+	status, attempts, error, title, body, image_text, keys_json, kb_source, kb_ref, discovered_at, described_at, next_try_at`
 
 func scanMediaItem(row interface{ Scan(dest ...any) error }) (MediaItem, error) {
 	var it MediaItem
@@ -271,7 +272,7 @@ func scanMediaItem(row interface{ Scan(dest ...any) error }) (MediaItem, error) 
 		&it.Anchor, &it.Locator, &it.FetchURL, &it.Name, &it.MediaType, &it.SizeBytes, &it.ContentKey,
 		&it.Scope, &it.FromOwner, &it.ContentAt,
 		&it.Status, &it.Attempts, &it.Error, &it.Title, &it.Body, &it.ImageText, &keys,
-		&it.KBSource, &it.KBRef, &it.DiscoveredAt, &it.DescribedAt)
+		&it.KBSource, &it.KBRef, &it.DiscoveredAt, &it.DescribedAt, &it.NextTryAt)
 	if err != nil {
 		return it, err
 	}
@@ -283,16 +284,18 @@ func scanMediaItem(row interface{ Scan(dest ...any) error }) (MediaItem, error) 
 
 // ListPendingMedia returns up to limit rows the describe pass works:
 // status 'pending' (plus 'unavailable' when visionOK, an image waiting for
-// a vision-capable provider) with content_at >= start_at, after the
-// cursor in (from_owner DESC, id) order — the owner's own items first.
-func (db *DB) ListPendingMedia(ctx context.Context, visionOK bool, after MediaCursor, limit int) ([]MediaItem, error) {
+// a vision-capable provider) with content_at >= start_at and no
+// next_try_at after now (DeferMedia), after the cursor in
+// (from_owner DESC, id) order — the owner's own items first.
+func (db *DB) ListPendingMedia(ctx context.Context, visionOK bool, now time.Time, after MediaCursor, limit int) ([]MediaItem, error) {
 	if limit <= 0 {
 		return nil, fmt.Errorf("listing pending media: limit %d is not positive", limit)
 	}
 	q := `SELECT ` + mediaItemColumns + ` FROM media_items
 		WHERE (status = 'pending' OR (? AND status = 'unavailable'))
-		  AND content_at >= (SELECT start_at FROM media_state WHERE id = 1)`
-	args := []any{visionOK}
+		  AND content_at >= (SELECT start_at FROM media_state WHERE id = 1)
+		  AND next_try_at <= ?`
+	args := []any{visionOK, mediaTime(now)}
 	if after.ID > 0 {
 		q += ` AND (from_owner < ? OR (from_owner = ? AND id > ?))`
 		args = append(args, after.FromOwner, after.FromOwner, after.ID)
@@ -413,6 +416,22 @@ func (db *DB) FinishMedia(ctx context.Context, id int64, r MediaResult) error {
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return fmt.Errorf("finishing media item %d: %w", id, sql.ErrNoRows)
+	}
+	return nil
+}
+
+// MediaListable reports whether ListPendingMedia lists it at now (vision
+// as visionOK): pending, or unavailable with vision, and not deferred
+// past now. The start mark is not checked.
+func MediaListable(it MediaItem, visionOK bool, now time.Time) bool {
+	return (it.Status == "pending" || (visionOK && it.Status == "unavailable")) && it.NextTryAt <= mediaTime(now)
+}
+
+// DeferMedia keeps item id out of ListPendingMedia until until: the pass
+// worked it and it could only wait (no attempt is spent). One autocommit.
+func (db *DB) DeferMedia(ctx context.Context, id int64, until time.Time) error {
+	if _, err := db.ExecContext(ctx, `UPDATE media_items SET next_try_at = ? WHERE id = ?`, mediaTime(until), id); err != nil {
+		return fmt.Errorf("deferring media item %d: %w", id, err)
 	}
 	return nil
 }

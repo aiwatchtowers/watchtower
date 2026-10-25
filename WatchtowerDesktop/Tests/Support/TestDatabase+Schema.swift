@@ -2224,6 +2224,9 @@ CREATE TABLE IF NOT EXISTS media_items (
     kb_ref             TEXT NOT NULL DEFAULT '',
     discovered_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     described_at       TEXT NOT NULL DEFAULT '',
+    -- a row that could only wait (a source off, a reference not synced yet)
+    -- is not listed again before this time ('' = now)
+    next_try_at        TEXT NOT NULL DEFAULT '',
     UNIQUE (parent_key, kind, locator),
     FOREIGN KEY (slack_channel_id, slack_ts) REFERENCES messages(channel_id, ts) ON DELETE CASCADE,
     FOREIGN KEY (ext_source_id, ext_id) REFERENCES ext_documents(source_id, ext_id) ON DELETE CASCADE,

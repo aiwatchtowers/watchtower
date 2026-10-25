@@ -148,7 +148,7 @@ func TestSlackMedia_ExternalFileSkipped(t *testing.T) {
 		assert.Equal(t, "skipped_type", r.Status, r.Locator)
 		assert.Empty(t, r.FetchURL, "%s: an external file carries no URL to download", r.Locator)
 	}
-	pending, err := ts.db.ListPendingMedia(context.Background(), true, db.MediaCursor{}, 10)
+	pending, err := ts.db.ListPendingMedia(context.Background(), true, time.Now(), db.MediaCursor{}, 10)
 	require.NoError(t, err)
 	assert.Empty(t, pending, "an external file is never listed for the pass")
 }

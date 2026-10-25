@@ -185,3 +185,31 @@ func TestPhaseMediaDescribe_RefusedLinkNeverFetched(t *testing.T) {
 	assert.Equal(t, "unreachable", status)
 	assert.Equal(t, "refused", class)
 }
+
+// offOpener answers every item with its source off: the row only waits.
+type offOpener struct{ opens atomic.Int32 }
+
+func (o *offOpener) Open(context.Context, db.MediaItem, int64) (io.ReadCloser, string, error) {
+	o.opens.Add(1)
+	return nil, "", media.ErrSourceOff
+}
+
+func TestPhaseMediaDescribe_OnlyWaitingRowsIsIdle(t *testing.T) {
+	d, database := newKnowledgeTestDaemon(t)
+	d.config.Knowledge.Enabled = true
+	img, _ := seedPendingMedia(t, database)
+	op := &offOpener{}
+	newMediaTestPipeline(d, database, &mediaTestGen{}, op)
+
+	d.phaseMediaDescribe(context.Background())
+	require.Equal(t, 1, countPipelineRuns(t, database, "media-describe"), "the first cycle works the rows")
+	d.phaseMediaDescribe(context.Background())
+
+	assert.Equal(t, 1, countPipelineRuns(t, database, "media-describe"), "a cycle with only waiting rows writes no run row")
+	assert.Equal(t, int32(1), op.opens.Load(), "the waiting row is not opened again")
+	var status string
+	var attempts int
+	require.NoError(t, database.QueryRow(`SELECT status, attempts FROM media_items WHERE id = ?`, img).Scan(&status, &attempts))
+	assert.Equal(t, "pending", status)
+	assert.Zero(t, attempts)
+}

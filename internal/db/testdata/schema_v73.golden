@@ -2080,6 +2080,9 @@ kb_source TEXT NOT NULL DEFAULT '',
 kb_ref TEXT NOT NULL DEFAULT '',
 discovered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
 described_at TEXT NOT NULL DEFAULT '',
+-- a row that could only wait (a source off, a reference not synced yet)
+-- is not listed again before this time ('' = now)
+next_try_at TEXT NOT NULL DEFAULT '',
 UNIQUE (parent_key, kind, locator),
 FOREIGN KEY (slack_channel_id, slack_ts) REFERENCES messages(channel_id, ts) ON DELETE CASCADE,
 FOREIGN KEY (ext_source_id, ext_id) REFERENCES ext_documents(source_id, ext_id) ON DELETE CASCADE,
@@ -5137,6 +5140,7 @@ GROUP BY up.ancestor
 33	kb_ref	TEXT	notnull=1	dflt=''	pk=0
 34	discovered_at	TEXT	notnull=1	dflt=strftime('%Y-%m-%dT%H:%M:%SZ','now')	pk=0
 35	described_at	TEXT	notnull=1	dflt=''	pk=0
+36	next_try_at	TEXT	notnull=1	dflt=''	pk=0
 
 ## media_state
 0	id	INTEGER	notnull=0	dflt=NULL	pk=1

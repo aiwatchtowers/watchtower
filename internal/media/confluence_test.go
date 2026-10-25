@@ -217,6 +217,9 @@ func TestConfluenceResolver_WaitsWhilePending(t *testing.T) {
 	r := c.row(inline)
 	assert.Equal(t, "pending", r.Status)
 	assert.Zero(t, r.Attempts, "waiting spends no attempt")
+	has, err := c.p.HasPending(context.Background())
+	require.NoError(t, err)
+	assert.False(t, has, "rows that only wait keep no cycle busy")
 
 	// An attachment not synced yet: the image waits, then ends unreachable.
 	c.f.page("p2", 1, confMod, "page body", extsync.MediaRef{Kind: "image", Locator: "att:later.png", Name: "later.png"})
@@ -224,7 +227,9 @@ func TestConfluenceResolver_WaitsWhilePending(t *testing.T) {
 	later := c.itemID("p2", "image", "att:later.png")
 	c.run()
 	assert.Equal(t, "pending", c.row(later).Status)
-	c.p.Resolvers["confluence"] = ConfluenceResolver{DB: c.d, Now: func() time.Time { return time.Now().Add(25 * time.Hour) }}
+	later25h := func() time.Time { return time.Now().Add(25 * time.Hour) }
+	c.p.Resolvers["confluence"] = ConfluenceResolver{DB: c.d, Now: later25h}
+	c.p.Now = later25h // past the row's wait too
 	c.run()
 	assert.Equal(t, "unreachable", c.row(later).Status)
 	assert.Equal(t, "not_found", c.row(later).Error)

@@ -124,7 +124,7 @@ func resetInlineImage(ctx context.Context, q extsync.Queryer, sourceID int64, at
 	pageKey := db.MediaParent{Kind: "confluence", ExtSourceID: sourceID, ExtID: page}.Key()
 	if _, err := q.ExecContext(ctx, `UPDATE media_items SET status = 'pending', attempts = 0, error = '',
 			content_key = '', title = '', body = '', image_text = '', keys_json = '[]',
-			kb_source = '', kb_ref = '', described_at = ''
+			kb_source = '', kb_ref = '', described_at = '', next_try_at = ''
 		WHERE parent_key = ? AND kind = 'image' AND locator = ?`, pageKey, "att:"+title); err != nil {
 		return fmt.Errorf("media: resetting the inline image of %s: %w", attID, err)
 	}

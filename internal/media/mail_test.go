@@ -137,8 +137,12 @@ func TestPipeline_SourceOffWaitsWithoutAttempt(t *testing.T) {
 	assert.Equal(t, 0, st.Failed)
 	pending, err := e.p.HasPending(context.Background())
 	require.NoError(t, err)
-	assert.True(t, pending, "listed again next cycle")
+	assert.False(t, pending, "a waiting row keeps no cycle busy")
 
+	e.p.Now = func() time.Time { return time.Now().Add(mediaWaitRetry + time.Minute) }
+	pending, err = e.p.HasPending(context.Background())
+	require.NoError(t, err)
+	assert.True(t, pending, "listed again once the wait is over")
 	delete(e.op.errs, "F1")
 	e.run()
 	assert.Equal(t, "ok", e.row(id).Status, "described once the source is back")

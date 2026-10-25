@@ -33,6 +33,10 @@ var (
 	linkFetchTimeout     = 15 * time.Second
 	describeTimeout      = 120 * time.Second
 	summaryTimeout       = 60 * time.Second
+	// mediaWaitRetry: a row that could only wait (its source off, no opener,
+	// its reference not ready) is not listed again for this long, so an idle
+	// cycle holding only such rows is idle (HasPending false).
+	mediaWaitRetry = 30 * time.Minute
 )
 
 const (
@@ -137,7 +141,7 @@ func (p *Pipeline) Run(ctx context.Context, budget time.Duration) (Stats, error)
 		if err := ctx.Err(); err != nil {
 			return st, err
 		}
-		items, err := p.DB.ListPendingMedia(ctx, r.vision, cursor, mediaBatch)
+		items, err := p.DB.ListPendingMedia(ctx, r.vision, p.now(), cursor, mediaBatch)
 		if err != nil {
 			return st, err
 		}
@@ -159,10 +163,11 @@ func (p *Pipeline) Run(ctx context.Context, budget time.Duration) (Stats, error)
 }
 
 // HasPending reports whether Run has any row to work now (a pending row;
-// an unavailable image too once a vision-capable provider is configured).
+// an unavailable image too once a vision-capable provider is configured;
+// never a row deferred while it waits).
 func (p *Pipeline) HasPending(ctx context.Context) (bool, error) {
 	_, vision := digest.ImageCapable(p.Gen)
-	items, err := p.DB.ListPendingMedia(ctx, vision, db.MediaCursor{}, 1)
+	items, err := p.DB.ListPendingMedia(ctx, vision, p.now(), db.MediaCursor{}, 1)
 	if err != nil {
 		return false, err
 	}
@@ -194,6 +199,9 @@ type outcome struct {
 	fail   error
 	usage  *digest.Usage
 	copied bool
+	// soon: the row waits for a row the pass lists now (a reference's
+	// target), so it is not deferred; it is worked again next cycle.
+	soon bool
 }
 
 func failed(err error) outcome { return outcome{fail: err} }
@@ -218,6 +226,14 @@ func (r *run) item(ctx context.Context, it db.MediaItem) {
 		return
 	}
 	if o.res == nil {
+		if o.soon {
+			return
+		}
+		// The row waits as it is, no attempt spent; it is not listed again
+		// for mediaWaitRetry.
+		if err := r.p.DB.DeferMedia(ctx, it.ID, r.p.now().Add(mediaWaitRetry)); err != nil {
+			r.p.logf("media: item %d: %v", it.ID, err)
+		}
 		return
 	}
 	// An ok row's document is computed now, never reused: a Slack message
@@ -476,7 +492,10 @@ func (r *run) image(ctx context.Context, it db.MediaItem) outcome {
 				return outcome{copied: true, res: &db.MediaResult{Status: "ok", ContentKey: target.ContentKey,
 					Title: target.Title, Body: target.Body, ImageText: target.ImageText, Keys: target.Keys}}
 			case "pending", "unavailable":
-				return outcome{}
+				// A real target this pass still works: wait for it without
+				// deferring. A target that only waits too (or the
+				// resolver's own wait, a target with no row) defers.
+				return outcome{soon: target.ID != 0 && db.MediaListable(*target, r.vision, r.p.now())}
 			}
 			return terminal("unreachable", "not_found")
 		}

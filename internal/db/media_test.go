@@ -249,7 +249,7 @@ func TestRecordMedia(t *testing.T) {
 	}
 
 	// pending listing never shows the skipped_type row
-	items, err := d.ListPendingMedia(ctx, true, MediaCursor{}, 100)
+	items, err := d.ListPendingMedia(ctx, true, time.Now(), MediaCursor{}, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestListPendingMedia(t *testing.T) {
 		var out []string
 		cur := MediaCursor{}
 		for {
-			items, err := d.ListPendingMedia(ctx, visionOK, cur, 2)
+			items, err := d.ListPendingMedia(ctx, visionOK, time.Now(), cur, 2)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -340,7 +340,7 @@ func TestListPendingMedia(t *testing.T) {
 	if got := locs(true); len(got) != 0 {
 		t.Fatalf("rows below start_at listed: %v", got)
 	}
-	if _, err := d.ListPendingMedia(ctx, true, MediaCursor{}, 0); err == nil {
+	if _, err := d.ListPendingMedia(ctx, true, time.Now(), MediaCursor{}, 0); err == nil {
 		t.Fatal("a zero limit was accepted")
 	}
 }
@@ -519,5 +519,49 @@ func TestRecordMedia_RefusesZeroContentAt(t *testing.T) {
 	p := MediaParent{Kind: "slack", SlackChannelID: "1:C1", SlackTS: "1.0"}
 	if _, err := RecordMedia(context.Background(), d, p, []MediaFound{{Kind: "link", Locator: "https://example.com/z"}}); err == nil {
 		t.Fatal("a zero ContentAt was accepted")
+	}
+}
+
+func TestDeferMedia_HidesRowUntilItsTime(t *testing.T) {
+	ctx := context.Background()
+	d := openTestDB(t)
+	mediaFixtures(t, d)
+	mustExecAll(t, d, `DELETE FROM media_items`) // only the row under test
+	start, err := d.MediaStartAt()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecordMedia(ctx, d, slackParent(start.Add(time.Minute)), []MediaFound{{Kind: "image", Locator: "F1"}}); err != nil {
+		t.Fatal(err)
+	}
+	var id int64
+	if err := d.QueryRow(`SELECT id FROM media_items WHERE locator = 'F1'`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if err := d.DeferMedia(ctx, id, now.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		at   time.Time
+		want int
+	}{{now, 0}, {now.Add(59 * time.Minute), 0}, {now.Add(time.Hour), 1}} {
+		items, err := d.ListPendingMedia(ctx, true, c.at, MediaCursor{}, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != c.want {
+			t.Fatalf("at %v: %d rows listed, want %d", c.at, len(items), c.want)
+		}
+		if c.want == 1 && !MediaListable(items[0], true, c.at) {
+			t.Fatal("a listed row is not MediaListable")
+		}
+	}
+	it, err := d.getMediaItem(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if MediaListable(*it, true, now) {
+		t.Fatal("a deferred row is MediaListable before its time")
 	}
 }
