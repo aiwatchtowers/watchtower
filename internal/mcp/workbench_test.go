@@ -20,7 +20,7 @@ import (
 func newWorkbenchSession(t *testing.T, database *db.DB, workbenchID int64) *mcpsdk.ClientSession {
 	t.Helper()
 	reg := tools.New(database)
-	for _, tool := range append(tools.WorkbenchTools(workbenchfiles.New(t.TempDir())), tools.ReadTools()...) {
+	for _, tool := range append(tools.WorkbenchTools(workbenchfiles.New(t.TempDir()), nil), tools.ReadTools()...) {
 		if err := reg.Register(tool); err != nil {
 			t.Fatal(err)
 		}
@@ -139,7 +139,7 @@ func workbenchToolsListed(t *testing.T, cs *mcpsdk.ClientSession) map[string]str
 		t.Fatal(err)
 	}
 	workbench := map[string]bool{}
-	for _, tool := range tools.WorkbenchTools(workbenchfiles.Store{}) {
+	for _, tool := range tools.WorkbenchTools(workbenchfiles.Store{}, nil) {
 		workbench[tool.Name] = true
 	}
 	out := map[string]string{}

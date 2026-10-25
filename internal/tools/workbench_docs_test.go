@@ -75,7 +75,7 @@ func TestDev06_DocumentPathStaysInsideTheFolder(t *testing.T) {
 func TestDocumentsWereReplacedByAsks(t *testing.T) {
 	fx := newWorkbenchFixture(t)
 	reg := workbenchRegistry(t, fx.d)
-	for _, tool := range WorkbenchTools(workbenchfiles.Store{}) {
+	for _, tool := range WorkbenchTools(workbenchfiles.Store{}, nil) {
 		assert.NotEqual(t, "attach_document", tool.Name)
 	}
 	_, ok := reg.Get("attach_document")

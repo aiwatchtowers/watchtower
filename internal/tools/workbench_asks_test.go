@@ -27,8 +27,14 @@ import (
 // from env instead of the process environment.
 func askRegistry(t *testing.T, d *db.DB, env string) *Registry {
 	t.Helper()
+	return askRegistryWith(t, d, env, nil)
+}
+
+// askRegistryWith is askRegistry with a spec-review launcher installed.
+func askRegistryWith(t *testing.T, d *db.DB, env string, launch SpecReviewLauncher) *Registry {
+	t.Helper()
 	reg := New(d)
-	for _, tool := range append(workbenchTools(workbenchfiles.New(t.TempDir()), func() string { return env }),
+	for _, tool := range append(workbenchTools(workbenchfiles.New(t.TempDir()), func() string { return env }, launch),
 		NewListTargets(), NewGetTarget()) {
 		require.NoError(t, reg.Register(tool))
 	}
@@ -265,7 +271,8 @@ func folderState(t *testing.T, root string) map[string]string {
 func TestProj03_AskOwnerNeverWritesTheFolder(t *testing.T) {
 	fx := newWorkbenchFixture(t)
 	mine := seedTerminalSession(t, fx.d, fx.a)
-	reg := askRegistry(t, fx.d, strconv.FormatInt(mine, 10))
+	// A launcher is installed: queueing a spec review writes nothing here.
+	reg := askRegistryWith(t, fx.d, strconv.FormatInt(mine, 10), func(int64) error { return nil })
 	p, err := fx.d.GetWorkbench(fx.a)
 	require.NoError(t, err)
 	writeWorkbenchFile(t, fx.d, fx.a, "docs/spec.md", "# Spec\n\nBody.\n")
@@ -430,7 +437,7 @@ func TestWithdrawAsk(t *testing.T) {
 // withdraw_ask write (direct apply, audited), get_ask and list_asks read.
 func TestAskTools_AreWorkbenchTools(t *testing.T) {
 	access := map[string]Access{}
-	for _, tool := range WorkbenchTools(workbenchfiles.Store{}) {
+	for _, tool := range WorkbenchTools(workbenchfiles.Store{}, nil) {
 		access[tool.Name] = tool.Access
 		assert.Equal(t, workbenchSurfaces, tool.Surfaces, tool.Name)
 	}
