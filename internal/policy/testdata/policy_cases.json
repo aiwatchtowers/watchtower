@@ -1,0 +1,826 @@
+{
+  "cases": [
+    {
+      "name": "empty",
+      "raw": {},
+      "want": {
+        "managed": false,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "all_keys_valid",
+      "raw": {
+        "AllowedSources": [
+          "slack",
+          "jira"
+        ],
+        "MobileSync": "allowed",
+        "AllowedQuickConnections": [
+          "https://mcp.example.com/",
+          "/usr/local/bin/acme-mcp"
+        ],
+        "AllowAutomationShell": true,
+        "AllowedAIProviders": [
+          "claude",
+          "ollama"
+        ],
+        "AllowClaudeAITools": false,
+        "PurgeRevokedData": true
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": [
+            "slack",
+            "jira"
+          ],
+          "MobileSync": "allowed",
+          "AllowedQuickConnections": [
+            "https://mcp.example.com/",
+            "/usr/local/bin/acme-mcp"
+          ],
+          "AllowAutomationShell": true,
+          "AllowedAIProviders": [
+            "claude",
+            "ollama"
+          ],
+          "AllowClaudeAITools": false,
+          "PurgeRevokedData": true
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "allowed_sources_empty_array",
+      "raw": {
+        "AllowedSources": []
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": [],
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "allowed_sources_unknown_entry",
+      "raw": {
+        "AllowedSources": [
+          "slack",
+          "teams"
+        ]
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": [
+            "slack"
+          ],
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "AllowedSources",
+            "problem": "unknown_value"
+          }
+        ]
+      }
+    },
+    {
+      "name": "allowed_sources_only_unknown",
+      "raw": {
+        "AllowedSources": [
+          "teams",
+          "Slack"
+        ]
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": [],
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "AllowedSources",
+            "problem": "unknown_value"
+          }
+        ]
+      }
+    },
+    {
+      "name": "allowed_sources_wrong_type",
+      "raw": {
+        "AllowedSources": "slack"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": [],
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "AllowedSources",
+            "problem": "wrong_type"
+          }
+        ]
+      }
+    },
+    {
+      "name": "allowed_sources_non_string_entry",
+      "raw": {
+        "AllowedSources": [
+          "google",
+          7
+        ]
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": [
+            "google"
+          ],
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "AllowedSources",
+            "problem": "invalid_entry"
+          }
+        ]
+      }
+    },
+    {
+      "name": "mobile_sync_workbench_only",
+      "raw": {
+        "MobileSync": "workbench_only"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": "workbench_only",
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "mobile_sync_unknown",
+      "raw": {
+        "MobileSync": "phone_only"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": "off",
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "MobileSync",
+            "problem": "unknown_value"
+          }
+        ]
+      }
+    },
+    {
+      "name": "mobile_sync_wrong_type",
+      "raw": {
+        "MobileSync": true
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": "off",
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "MobileSync",
+            "problem": "wrong_type"
+          }
+        ]
+      }
+    },
+    {
+      "name": "bool_as_integer",
+      "raw": {
+        "AllowAutomationShell": 1
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": false,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "AllowAutomationShell",
+            "problem": "wrong_type"
+          }
+        ]
+      }
+    },
+    {
+      "name": "claude_ai_tools_as_string",
+      "raw": {
+        "AllowClaudeAITools": "true"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": false,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "AllowClaudeAITools",
+            "problem": "wrong_type"
+          }
+        ]
+      }
+    },
+    {
+      "name": "purge_wrong_type",
+      "raw": {
+        "PurgeRevokedData": "yes"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": true
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "PurgeRevokedData",
+            "problem": "wrong_type"
+          }
+        ]
+      }
+    },
+    {
+      "name": "purge_false",
+      "raw": {
+        "PurgeRevokedData": false
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": false
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "providers_mixed",
+      "raw": {
+        "AllowedAIProviders": [
+          "claude",
+          "gpt"
+        ]
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": [
+            "claude"
+          ],
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "AllowedAIProviders",
+            "problem": "unknown_value"
+          }
+        ]
+      }
+    },
+    {
+      "name": "providers_wrong_type",
+      "raw": {
+        "AllowedAIProviders": {
+          "claude": true
+        }
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": [],
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "AllowedAIProviders",
+            "problem": "wrong_type"
+          }
+        ]
+      }
+    },
+    {
+      "name": "quick_connections_invalid_entry",
+      "raw": {
+        "AllowedQuickConnections": [
+          "http://a.example.com",
+          "https://mcp.example.com/",
+          "relative/bin"
+        ]
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": [
+            "https://mcp.example.com/"
+          ],
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "AllowedQuickConnections",
+            "problem": "invalid_entry"
+          }
+        ]
+      }
+    },
+    {
+      "name": "quick_connections_empty",
+      "raw": {
+        "AllowedQuickConnections": []
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": [],
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "reserved_present",
+      "raw": {
+        "RetentionDays": 30
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [
+          "RetentionDays"
+        ],
+        "errors": []
+      }
+    },
+    {
+      "name": "reserved_wrong_type",
+      "raw": {
+        "RetentionDays": 30.5,
+        "RequireDatabaseEncryption": 1,
+        "BulkReadLimits": {
+          "messages": 1000
+        }
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [
+          "RequireDatabaseEncryption",
+          "RetentionDays",
+          "BulkReadLimits"
+        ],
+        "errors": [
+          {
+            "key": "RequireDatabaseEncryption",
+            "problem": "wrong_type"
+          },
+          {
+            "key": "RetentionDays",
+            "problem": "wrong_type"
+          }
+        ]
+      }
+    },
+    {
+      "name": "unknown_key_ignored",
+      "raw": {
+        "Foo": 1
+      },
+      "want": {
+        "managed": false,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": null,
+          "MobileSync": null,
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": null
+        },
+        "reserved_not_enforced": [],
+        "errors": []
+      }
+    },
+    {
+      "name": "errors_in_key_order",
+      "raw": {
+        "PurgeRevokedData": 0,
+        "AllowedSources": "all",
+        "MobileSync": "never"
+      },
+      "want": {
+        "managed": true,
+        "domain": "com.watchtower.desktop",
+        "keys": {
+          "AllowedSources": [],
+          "MobileSync": "off",
+          "AllowedQuickConnections": null,
+          "AllowAutomationShell": null,
+          "AllowedAIProviders": null,
+          "AllowClaudeAITools": null,
+          "PurgeRevokedData": true
+        },
+        "reserved_not_enforced": [],
+        "errors": [
+          {
+            "key": "AllowedSources",
+            "problem": "wrong_type"
+          },
+          {
+            "key": "MobileSync",
+            "problem": "unknown_value"
+          },
+          {
+            "key": "PurgeRevokedData",
+            "problem": "wrong_type"
+          }
+        ]
+      }
+    }
+  ],
+  "connection_cases": [
+    {
+      "name": "exact_host",
+      "allowed": [
+        "https://mcp.example.com"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/mcp",
+      "command": "",
+      "want": true
+    },
+    {
+      "name": "host_only_no_path",
+      "allowed": [
+        "https://mcp.example.com"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com",
+      "command": "",
+      "want": true
+    },
+    {
+      "name": "suffix_host_refused",
+      "allowed": [
+        "https://mcp.example.com"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com.evil.example/x",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "longer_host_refused",
+      "allowed": [
+        "https://mcp.example.com"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.comx/",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "userinfo_host_refused",
+      "allowed": [
+        "https://mcp.example.com"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com@evil.example/",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "plain_http_refused",
+      "allowed": [
+        "https://mcp.example.com"
+      ],
+      "kind": "http",
+      "url": "http://mcp.example.com/",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "case_insensitive_scheme_host",
+      "allowed": [
+        "https://mcp.example.com"
+      ],
+      "kind": "http",
+      "url": "HTTPS://MCP.Example.com/a",
+      "command": "",
+      "want": true
+    },
+    {
+      "name": "port_must_match",
+      "allowed": [
+        "https://mcp.example.com"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com:8443/a",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "port_entry_matches",
+      "allowed": [
+        "https://mcp.example.com:8443"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com:8443/a",
+      "command": "",
+      "want": true
+    },
+    {
+      "name": "path_boundary_refused",
+      "allowed": [
+        "https://mcp.example.com/api"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/apix",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "path_boundary_exact",
+      "allowed": [
+        "https://mcp.example.com/api"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/api",
+      "command": "",
+      "want": true
+    },
+    {
+      "name": "path_boundary_child",
+      "allowed": [
+        "https://mcp.example.com/api"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/api/v1",
+      "command": "",
+      "want": true
+    },
+    {
+      "name": "path_trailing_slash_prefix",
+      "allowed": [
+        "https://mcp.example.com/api/"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/api/v1",
+      "command": "",
+      "want": true
+    },
+    {
+      "name": "path_case_sensitive",
+      "allowed": [
+        "https://mcp.example.com/api"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/API",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "dot_segment_refused",
+      "allowed": [
+        "https://mcp.example.com/api"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/api/../admin",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "stdio_exact_path",
+      "allowed": [
+        "/usr/local/bin/acme-mcp"
+      ],
+      "kind": "stdio",
+      "url": "",
+      "command": "/usr/local/bin/acme-mcp",
+      "want": true
+    },
+    {
+      "name": "stdio_other_path",
+      "allowed": [
+        "/usr/local/bin/acme-mcp"
+      ],
+      "kind": "stdio",
+      "url": "",
+      "command": "/usr/local/bin/other-mcp",
+      "want": false
+    },
+    {
+      "name": "stdio_url_entry_refused",
+      "allowed": [
+        "https://mcp.example.com"
+      ],
+      "kind": "stdio",
+      "url": "",
+      "command": "/usr/local/bin/acme-mcp",
+      "want": false
+    },
+    {
+      "name": "http_against_path_entry_refused",
+      "allowed": [
+        "/usr/local/bin/acme-mcp"
+      ],
+      "kind": "http",
+      "url": "https://mcp.example.com/",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "unknown_kind_refused",
+      "allowed": [
+        "https://mcp.example.com"
+      ],
+      "kind": "sse",
+      "url": "https://mcp.example.com/",
+      "command": "",
+      "want": false
+    },
+    {
+      "name": "absent_list",
+      "allowed": null,
+      "kind": "http",
+      "url": "http://anything.example.com/",
+      "command": "",
+      "want": true
+    },
+    {
+      "name": "empty_list",
+      "allowed": [],
+      "kind": "stdio",
+      "url": "",
+      "command": "/usr/local/bin/acme-mcp",
+      "want": false
+    }
+  ]
+}
