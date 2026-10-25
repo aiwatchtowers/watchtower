@@ -65,6 +65,7 @@ var cliContentCommands = map[string]bool{
 	"tracks show":                      true,
 	"trends":                           true,
 	"users":                            true,
+	"workbench spec-review show":       true,
 }
 
 // contentRan is the path of the content command whose Run started in this

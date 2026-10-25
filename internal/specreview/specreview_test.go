@@ -471,3 +471,13 @@ func TestSpecReview03_AgreementSpeakers(t *testing.T) {
 		}
 	}
 }
+
+func TestParse_WhitespaceOnlyFindingTextDropped(t *testing.T) {
+	raw := `{"summary":"s","agreements":[` +
+		agreementJSON("  \n\t ", "Muting lasts twenty-four hours") + "," +
+		agreementJSON("  padded  ", "Muting lasts twenty-four hours") + `]}`
+	r := parseOne(t, raw, testSources())
+	if len(r.Agreements) != 1 || r.Dropped != 1 || r.Agreements[0].Text != "padded" {
+		t.Fatalf("got %+v dropped %d", r.Agreements, r.Dropped)
+	}
+}

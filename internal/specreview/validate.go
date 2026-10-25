@@ -40,7 +40,7 @@ func clip(s string, n int) string {
 	return string([]rune(s)[:n])
 }
 
-func field(s string) string { return clip(s, maxFieldRunes) }
+func field(s string) string { return strings.TrimSpace(clip(s, maxFieldRunes)) }
 
 // itemKey is the kind prefix + the first 12 hex digits of
 // sha256(normalised text, NUL, normalised anchor quote).
