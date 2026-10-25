@@ -33,7 +33,7 @@ func allReadCandidates() []*tools.Tool {
 		authoring.NewGetAutomation(deps),
 	}
 	all = append(all, tools.AutomationReadTools()...)
-	all = append(all, tools.WorkbenchTools(workbenchfiles.Store{})...)
+	all = append(all, tools.WorkbenchTools(workbenchfiles.Store{}, nil)...)
 	all = append(all, tools.ReadTools()...)
 	all = append(all, tools.DependentReadTools(tools.ReadDeps{})...)
 	return all
