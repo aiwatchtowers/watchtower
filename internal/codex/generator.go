@@ -56,16 +56,55 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 	if err != nil {
 		return "", nil, "", err
 	}
-	removePrompt := fsutil.RemoveOnce(promptFile) // codex refuses a pipe: see Client.Query
-	defer removePrompt()
+	result, usage, err := g.run(ctx, codexBin, model, args, stdin, os.TempDir(), promptFile)
+	return result, usage, "", err
+}
 
+// GenerateWithImage is Generate with one image on the call (`--image`): the
+// same tool-less, read-only argv (features.view_image=false stays: that flag
+// is the model's disk-reading tool, not image input), the prompts on stdin
+// or in a 0600 file, and the child started in a fresh empty 0700 directory
+// under the digest.WithWorkDir root, removed when the call returns. The
+// image is passed by path; mediaType is not needed (codex sniffs the file).
+func (g *CodexGenerator) GenerateWithImage(ctx context.Context, systemPrompt, userMessage, imagePath, _ string) (string, *digest.Usage, error) {
+	root, ok := digest.WorkDirFromContext(ctx)
+	if !ok {
+		return "", nil, errors.New("image call without a work directory (digest.WithWorkDir)")
+	}
+	if err := digest.CheckImageFile(imagePath); err != nil {
+		return "", nil, err
+	}
+	if err := fsutil.MakePrivateDir(root); err != nil {
+		return "", nil, fmt.Errorf("creating the media work root: %w", err)
+	}
+	dir, err := os.MkdirTemp(root, "media-call-")
+	if err != nil {
+		return "", nil, fmt.Errorf("creating the call's work directory: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+
+	codexBin := FindBinary(g.codexPath)
+	args, stdin, promptFile, err := buildImageArgs(codexBin, g.modelStrong, systemPrompt, userMessage, imagePath, dir)
+	if err != nil {
+		return "", nil, err
+	}
+	result, usage, err := g.run(ctx, codexBin, g.modelStrong, args, stdin, dir, promptFile)
+	return result, usage, err
+}
+
+// run starts codex with args in dir and parses its JSONL reply. promptFile
+// (the 0600 model_instructions_file, "" for none) is removed at codex's first
+// output, or when run returns: codex refuses a pipe there (see Client.Query).
+func (g *CodexGenerator) run(ctx context.Context, codexBin, model string, args []string, stdin, dir, promptFile string) (string, *digest.Usage, error) {
+	removePrompt := fsutil.RemoveOnce(promptFile)
+	defer removePrompt()
 	cmd := exec.CommandContext(ctx, codexBin, args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(os.Interrupt)
 	}
 	cmd.WaitDelay = 5 * time.Second
-	cmd.Dir = os.TempDir()
+	cmd.Dir = dir
 
 	// Build clean environment with enriched PATH.
 	var env []string
@@ -85,17 +124,17 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 
 	output, err := outputRemovingPrompt(cmd, removePrompt)
 	if err != nil {
-		return "", nil, "", runError(model, output, err, stderrBuf.String(), codexBin)
+		return "", nil, runError(model, output, err, stderrBuf.String(), codexBin)
 	}
 
 	// Parse JSONL output — find last item.completed with agent_message
 	result, usage, parseErr := parseJSONLOutput(output)
 	if parseErr != nil {
-		return "", nil, "", parseErr
+		return "", nil, parseErr
 	}
 
 	if strings.TrimSpace(result) == "" {
-		return "", nil, "", fmt.Errorf("codex returned empty result")
+		return "", nil, fmt.Errorf("codex returned empty result")
 	}
 
 	digestUsage := &digest.Usage{
@@ -104,7 +143,7 @@ func (g *CodexGenerator) Generate(ctx context.Context, systemPrompt, userMessage
 		OutputTokens: usage.OutputTokens,
 	}
 
-	return result, digestUsage, "", nil
+	return result, digestUsage, nil
 }
 
 // execArgs is the common `codex exec` prefix every Watchtower call starts
@@ -156,6 +195,41 @@ func buildArgs(bin, model, systemPrompt, userMessage string) (args []string, std
 		return nil, "", "", err
 	}
 	return append(append(execArgs(model), instr...), "-"), stdin, promptFile, nil
+}
+
+// buildImageArgs is buildArgs for an image call. Beyond execArgs it turns
+// off web search, every MCP server of the owner's codex config (fail closed
+// when the config cannot be read) and the default-on features that reach
+// outside the call (multi_agent, image_generation, skill_search, hooks), and
+// adds `--image=<path>` (one value: --image splits on commas, so a comma in
+// the path is refused) ahead of the instructions override and the "-".
+// Residual risk: a codex feature that becomes default-on later is not on
+// this list.
+func buildImageArgs(bin, model, systemPrompt, userMessage, imagePath, workDir string) (args []string, stdin, promptFile string, err error) {
+	if strings.Contains(imagePath, ",") {
+		return nil, "", "", errors.New("the image path contains a comma")
+	}
+	owner, err := ownerServerNames(OwnerHome(), workDir)
+	if err != nil {
+		return nil, "", "", fmt.Errorf("reading the codex MCP config: %w", err)
+	}
+	instr, stdin, promptFile, err := promptArgs(bin, systemPrompt, userMessage)
+	if err != nil {
+		return nil, "", "", err
+	}
+	override, _, _ := mcpOverride("", nil, nil, nil, owner, nil)
+	args = append(execArgs(model),
+		"-c", `web_search="disabled"`,
+		"-c", override,
+		"-c", "features.multi_agent=false",
+		"-c", "features.image_generation=false",
+		"-c", "features.skill_search=false",
+		"-c", "features.hooks=false",
+		"-c", "features.in_app_browser=false",
+		"-c", "features.skill_mcp_dependency_install=false",
+		"-c", "features.tool_suggest=false",
+		"--image="+imagePath)
+	return append(append(args, instr...), "-"), stdin, promptFile, nil
 }
 
 // parseJSONLOutput parses Codex JSONL output and extracts the final agent_message

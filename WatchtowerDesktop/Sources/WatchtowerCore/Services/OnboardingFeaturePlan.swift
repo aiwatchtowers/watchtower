@@ -12,8 +12,9 @@ package enum OnboardingGoal: String, CaseIterable, Sendable {
 /// table. Feature ids are the `internal/features/registry.go` ids verbatim.
 package enum OnboardingFeaturePlan {
     /// Toggleable features onboarding switches on whatever the goals are:
-    /// Knowledge search and Attention detection are mechanical (no AI);
-    /// the chat leans on the first, Inbox and Catch-Up on the second
+    /// Attention detection is mechanical (no AI) and Knowledge search spends AI
+    /// only on images and links; the chat leans on Knowledge search, Inbox and
+    /// Catch-Up on Attention detection
     /// (owner decision 2026-10-03, #283). Settings → Features still toggles
     /// both. The registry's core entries (targets, chat) need no entry
     /// here — they have no switch at all.

@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-/// `automation_draft_cache` (migration 00156, #604 G2): the newest
+/// `automation_draft_cache` (migration 00157, #604 G2): the newest
 /// `draft_automation` results of an automation editor chat, one
 /// `DraftCacheEntry` JSON per row, oldest first by `seq`. Go writes it
 /// (`internal/automations/authoring/draftcache.go`, newest five kept); the

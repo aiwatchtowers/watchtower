@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	goslack "github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -122,8 +121,7 @@ func newTestOrchestratorWithClient(t *testing.T, syncCount *atomic.Int32) (*sync
 	srv := httptest.NewServer(countingMux)
 	t.Cleanup(srv.Close)
 
-	api := goslack.New("xoxp-test-token", goslack.OptionAPIURL(srv.URL+"/"))
-	slackClient := watchtowerslack.NewClientWithAPIUnlimited(api)
+	slackClient := watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token", srv.URL+"/")
 
 	cfg := &config.Config{
 		ActiveWorkspace: "test-workspace",
@@ -482,8 +480,7 @@ func TestPhaseSlackSyncRevokedTokenClassification(t *testing.T) {
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	api := goslack.New("xoxp-test-token", goslack.OptionAPIURL(srv.URL+"/"))
-	orch := sync.NewOrchestrator(database, watchtowerslack.NewClientWithAPIUnlimited(api),
+	orch := sync.NewOrchestrator(database, watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token", srv.URL+"/"),
 		&config.Config{Sync: config.SyncConfig{Workers: 1, InitialHistoryDays: 1}}, 1)
 	orch.SetLogger(log.New(os.Stderr, "[test-revoked] ", 0))
 
@@ -521,8 +518,7 @@ func newStatusTrackingOrchestrator(t *testing.T, mux *http.ServeMux, syncCount *
 	srv := httptest.NewServer(countingMux)
 	t.Cleanup(srv.Close)
 
-	api := goslack.New("xoxp-test-token", goslack.OptionAPIURL(srv.URL+"/"))
-	slackClient := watchtowerslack.NewClientWithAPIUnlimited(api)
+	slackClient := watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token", srv.URL+"/")
 
 	orch := sync.NewOrchestrator(database, slackClient, &config.Config{
 		Sync: config.SyncConfig{Workers: 1, InitialHistoryDays: 1, SyncThreads: false},
@@ -1389,8 +1385,7 @@ func TestInbox09_RevokedAccountSyncErrorDoesNotFreeze(t *testing.T) {
 	require.NoError(t, err)
 	srv := httptest.NewServer(revokedMux)
 	t.Cleanup(srv.Close)
-	api := goslack.New("xoxp-test-token", goslack.OptionAPIURL(srv.URL+"/"))
-	revokedOrch := sync.NewOrchestrator(revokedDB, watchtowerslack.NewClientWithAPIUnlimited(api),
+	revokedOrch := sync.NewOrchestrator(revokedDB, watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token", srv.URL+"/"),
 		&config.Config{Sync: config.SyncConfig{Workers: 1, InitialHistoryDays: 1}}, 1)
 	revokedOrch.SetLogger(log.New(os.Stderr, "[test-revoked] ", 0))
 

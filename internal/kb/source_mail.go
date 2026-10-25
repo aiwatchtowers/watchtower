@@ -153,15 +153,24 @@ func (gmailSource) Build(ctx context.Context, q Queryer, key string) (*Doc, erro
 		return nil, nil
 	}
 
+	parentKeys := make([]string, len(msgs))
+	for i, m := range msgs {
+		parentKeys[i] = "gmail:" + accountID + ":" + m.id
+	}
+	media, err := mediaSections(ctx, q, "gmail", parentKeys)
+	if err != nil {
+		return nil, fmt.Errorf("kb gmail %s: %w", key, err)
+	}
 	doc := &Doc{ID: key, Source: "gmail", Anchor: map[string]string{"account_id": accountID, "thread_id": tid}}
 	var metaNames []string
 	seen := map[string]bool{}
 	var latest time.Time
-	for _, m := range msgs {
+	for i, m := range msgs {
 		doc.Sections = append(doc.Sections, Section{
 			Text:   mailHeader(m.fromName, m.fromEmail, m.internalDate, m.subject, m.bodyText, m.snippet),
 			Anchor: m.id,
 		})
+		doc.Sections = withMedia(doc.Sections, media, parentKeys[i], m.id)
 		if doc.Title == "" && m.subject != "" {
 			doc.Title = m.subject
 		}
@@ -231,6 +240,10 @@ func (imapSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error
 		return nil, fmt.Errorf("kb imap %s: %w", key, err)
 	}
 
+	media, err := mediaSections(ctx, q, "imap", []string{key})
+	if err != nil {
+		return nil, fmt.Errorf("kb imap %s: %w", key, err)
+	}
 	title := subject
 	if title == "" {
 		title = "(no subject)"
@@ -251,9 +264,9 @@ func (imapSource) Build(ctx context.Context, q Queryer, key string) (*Doc, error
 		Link:   permalink,
 		Time:   t,
 		Anchor: map[string]string{"account_id": accountID, "uidvalidity": uidvalidity, "uid": uid},
-		Sections: []Section{{
+		Sections: withMedia([]Section{{
 			Text:   mailHeader(fromName, fromEmail, internalDate, subject, bodyText, snippet),
 			Anchor: uid,
-		}},
+		}}, media, key, uid),
 	}, nil
 }

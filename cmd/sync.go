@@ -37,6 +37,7 @@ import (
 	"watchtower/internal/jira"
 	"watchtower/internal/linear"
 	"watchtower/internal/logredact"
+	"watchtower/internal/media"
 	"watchtower/internal/prompts"
 	watchtowerslack "watchtower/internal/slack"
 	"watchtower/internal/sync"
@@ -955,6 +956,9 @@ func runSyncDaemon(ctx context.Context, cfg *config.Config, database *db.DB, log
 	dayPlanPipe := dayplan.New(database, cfg, gen, logger)
 	dayPlanPipe.SetPromptStore(prompts.New(database, nil))
 	d.SetDayPlanPipeline(dayPlanPipe)
+	mediaPipe := newMediaPipeline(cfg, database, gen, logger)
+	wireSlackMedia(mediaPipe, orchestrators, newIssueKeyDetector(cfg, database, logger), logger)
+	d.SetMediaPipeline(mediaPipe)
 	// Seed jira_accounts from a pre-multi-account legacy token file
 	// before wiring, so a single-account install keeps syncing without
 	// a re-login.
@@ -1213,6 +1217,7 @@ func wireExternalSync(d *daemon.Daemon, cfg *config.Config, database *db.DB, acc
 		return
 	}
 	engine := extsync.New(database, extSyncOptions(cfg, subLogger(logger, "[ext-sync] "), extSyncCycleBudget))
+	fetchers := map[int64]extsync.Fetcher{}
 	for _, acct := range accounts {
 		if client := clients[acct.ID]; client != nil {
 			fetcher := newConfluenceFetcher(client, acct.SiteURL)
@@ -1220,9 +1225,13 @@ func wireExternalSync(d *daemon.Daemon, cfg *config.Config, database *db.DB, acc
 				lg.SetLogger(subLogger(logger, "[confluence] "))
 			}
 			engine.SetFetcher(acct.ID, fetcher)
+			fetchers[acct.ID] = fetcher
 		}
 	}
 	d.SetExternalSync(engine)
+	// Needs the media pass set first (SetMediaPipeline runs before
+	// wireJiraSyncers in the daemon setup); a nil pass is logged.
+	registerConfluenceMedia(d.MediaPipeline(), database, fetchers, logger)
 }
 
 // newIssueKeyDetector is issuekey.NewKeyDetectorIfEnabled with the detector's
@@ -1334,37 +1343,44 @@ func wireImapSyncers(cfg *config.Config, database *db.DB, logger *log.Logger) []
 	}
 	var syncers []*imap.Syncer
 	for _, acct := range accounts {
-		accountCfg := imap.AccountConfig{
-			Host: acct.Host, Port: acct.Port,
-			Security: imap.Security(acct.Security), Folder: acct.Folder,
-		}
-
-		var auth imap.Authenticator
-		switch acct.Provider {
-		case "imap":
-			store := imap.NewCredentialStore(cfg.WorkspaceDir(), acct.ID)
-			creds, err := store.Load()
-			if err != nil {
-				logger.Printf("imap: account %d: failed to load credentials: %v", acct.ID, err)
-				if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", logredact.Full(err)); dbErr != nil {
-					logger.Printf("imap: account %d: record auth state: %v", acct.ID, dbErr)
-				}
-				continue
-			}
-			auth = imap.PasswordAuth{Username: acct.EmailAddress, Password: creds.Password}
-		case "outlook":
-			auth = outlookAuthenticator(cfg, database, acct, logger)
-			if auth == nil {
-				continue
-			}
-		default:
-			logger.Printf("imap: account %d: unknown provider %q, skipping", acct.ID, acct.Provider)
+		accountCfg, auth := imapAccountAuth(cfg, database, acct, logger)
+		if auth == nil {
 			continue
 		}
-
 		syncers = append(syncers, imap.NewSyncer(acct, accountCfg, auth, database, cfg, logger))
 	}
 	return syncers
+}
+
+// imapAccountAuth is one email_accounts row's connection settings and
+// authenticator; a nil authenticator (credentials unreadable, recorded as
+// the account's auth error, or an unknown provider) means the account is
+// skipped.
+func imapAccountAuth(cfg *config.Config, database *db.DB, acct db.EmailAccount, logger *log.Logger) (imap.AccountConfig, imap.Authenticator) {
+	accountCfg := imap.AccountConfig{
+		Host: acct.Host, Port: acct.Port,
+		Security: imap.Security(acct.Security), Folder: acct.Folder,
+	}
+	switch acct.Provider {
+	case "imap":
+		store := imap.NewCredentialStore(cfg.WorkspaceDir(), acct.ID)
+		creds, err := store.Load()
+		if err != nil {
+			logger.Printf("imap: account %d: failed to load credentials: %v", acct.ID, err)
+			if dbErr := database.SetEmailAccountAuthState(acct.ID, "error", logredact.Full(err)); dbErr != nil {
+				logger.Printf("imap: account %d: record auth state: %v", acct.ID, dbErr)
+			}
+			return accountCfg, nil
+		}
+		return accountCfg, imap.PasswordAuth{Username: acct.EmailAddress, Password: creds.Password}
+	case "outlook":
+		if auth := outlookAuthenticator(cfg, database, acct, logger); auth != nil {
+			return accountCfg, auth
+		}
+		return accountCfg, nil
+	}
+	logger.Printf("imap: account %d: unknown provider %q, skipping", acct.ID, acct.Provider)
+	return accountCfg, nil
 }
 
 // wireCalDAVSyncers builds one caldav.Syncer per connected calendar_accounts
@@ -1598,4 +1614,22 @@ func buildLinearSyncers(cfg *config.Config, database *db.DB, logger *log.Logger)
 		syncers = append(syncers, s)
 	}
 	return syncers
+}
+
+// newMediaPipeline builds the media describe pass: the owner's uploads open
+// through the local opener (chat_files, project_files only); the run builds
+// its own web fetcher over the synced and denied hosts. Source openers are
+// added as each source records media.
+func newMediaPipeline(cfg *config.Config, database *db.DB, gen digest.Generator, logger *log.Logger) *media.Pipeline {
+	wd := cfg.WorkspaceDir()
+	local := media.LocalOpener{Roots: []string{filepath.Join(wd, "chat_files"), filepath.Join(wd, "project_files")}}
+	return &media.Pipeline{
+		DB:           database,
+		Gen:          gen,
+		Prompts:      prompts.New(database, nil),
+		DenyHosts:    media.DenyHosts(cfg),
+		Openers:      map[string]media.Opener{"chat": local, "target": local, "gmail": gmailMediaOpener(cfg, database), "imap": imapMediaOpener(cfg, database, logger)},
+		WorkspaceDir: wd,
+		Logger:       logger,
+	}
 }

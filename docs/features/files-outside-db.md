@@ -28,7 +28,7 @@
 - **Embedded chats** (`EmbeddedChatEngine`) neither save nor load a session id: every turn sends the system prompt and `EmbeddedChatReplay.block` over the stored rows, on every provider. The surfaces' resumed-turn context blocks and the code question's usage attachment are gone (the usages are part of the context every system prompt carries). `WatchtowerAIService.buildArgs` no longer passes `--session-id`.
 - **Cost.** A respawned chat re-sends its history once (capped by the replay budget).
 
-## Small state into the database (migration 00156)
+## Small state into the database (migration 00157)
 
 | Table | Was | Writer | Reader |
 |---|---|---|---|

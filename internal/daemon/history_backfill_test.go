@@ -19,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	goslack "github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -396,8 +395,7 @@ func newBackfillOrchestrator(t *testing.T, database *db.DB, cfg *config.Config) 
 	require.NoError(t, err)
 	srv := httptest.NewServer(testMux())
 	t.Cleanup(srv.Close)
-	api := goslack.New("xoxp-test-token", goslack.OptionAPIURL(srv.URL+"/"))
-	o := sync.NewOrchestrator(database, watchtowerslack.NewClientWithAPIUnlimited(api), cfg, 1)
+	o := sync.NewOrchestrator(database, watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token", srv.URL+"/"), cfg, 1)
 	o.SetLogger(log.New(io.Discard, "", 0))
 	return o
 }

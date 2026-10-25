@@ -236,40 +236,76 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 	// message to stdin (generateArgs): both carry the owner's data, which on
 	// argv would sit readable in `ps` for the run (and a large payload would
 	// overflow ARG_MAX), and in a temp file would outlive a crash (#604 G7).
-	var payloads []string
-	var systemPromptFile string
-	if systemPrompt != "" {
-		payloads = append(payloads, systemPrompt)
-		systemPromptFile = fsutil.PayloadPath(0)
-	}
+	systemPromptFile, payloads := systemPromptPayload(systemPrompt)
 	args, stdin := generateArgs(model, systemPromptFile, userMessage)
 
+	resp, err := g.runClaude(ctx, args, strings.NewReader(stdin), generateDir(), parseCLIOutput, payloads...)
+	if err != nil {
+		return "", nil, "", err
+	}
+	return resp.Result, cliUsageOf(model, resp), resp.SessionID, nil
+}
+
+// systemPromptPayload returns --system-prompt-file's path for a non-empty
+// system prompt — the first inherited pipe runClaude attaches, /dev/fd/3 —
+// and the payloads to hand runClaude; "" and none for an empty prompt.
+func systemPromptPayload(systemPrompt string) (string, []string) {
+	if systemPrompt == "" {
+		return "", nil
+	}
+	return fsutil.PayloadPath(0), []string{systemPrompt}
+}
+
+// generateDir is Generate's working directory: ~/.config/watchtower, a
+// stable private directory, or the system temp dir when it cannot be made.
+func generateDir() string {
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		return os.TempDir()
+	}
+	configDir := filepath.Join(home, ".config", "watchtower")
+	if err := fsutil.MakePrivateDir(configDir); err != nil {
+		return os.TempDir()
+	}
+	return configDir
+}
+
+// cliUsageOf turns a result envelope's usage into a Usage for model.
+func cliUsageOf(model string, resp *cliResponse) *Usage {
+	// Total API tokens = everything the API processed (including cache reads/writes).
+	totalAPI := resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens
+	return &Usage{
+		Model:          model,
+		InputTokens:    resp.Usage.InputTokens,
+		OutputTokens:   resp.Usage.OutputTokens,
+		CostUSD:        0,
+		TotalAPITokens: totalAPI,
+	}
+}
+
+// runClaude runs one claude child the way every generator call does — args
+// and stdin as given, from dir, with a clean environment, SIGINT then SIGKILL
+// on cancel (or the isolated child's group kill), bounded stderr — and
+// returns the result envelope parse finds in its stdout. A failed run, an
+// error envelope and an empty result are errors.
+func (g *ClaudeGenerator) runClaude(ctx context.Context, args []string, stdin io.Reader, dir string,
+	parse func([]byte) (*cliResponse, error), payloads ...string) (*cliResponse, error) {
 	claudeBin := claude.FindBinary(g.claudePath)
 	cmd := exec.CommandContext(ctx, claudeBin, args...)
 	_, closePayloads, err := fsutil.AttachPayloads(cmd, payloads...)
 	if err != nil {
-		return "", nil, "", err
+		return nil, err
 	}
 	// cmd.Output starts the child before it blocks; the child holds its own
-	// read end, so the parent's close once Output returns.
+	// read end, so the parent's copies close once Output returns.
 	defer closePayloads()
-	cmd.Stdin = strings.NewReader(stdin)
+	cmd.Stdin = stdin
 	// Send SIGINT first for graceful shutdown; SIGKILL after 5s.
 	cmd.Cancel = func() error {
 		return cmd.Process.Signal(os.Interrupt)
 	}
 	cmd.WaitDelay = 5 * time.Second
-	// Run from ~/.config/watchtower as a stable working directory.
-	configDir, _ := os.UserHomeDir()
-	if configDir != "" {
-		configDir = filepath.Join(configDir, ".config", "watchtower")
-		if err := fsutil.MakePrivateDir(configDir); err != nil {
-			configDir = os.TempDir()
-		}
-		cmd.Dir = configDir
-	} else {
-		cmd.Dir = os.TempDir()
-	}
+	cmd.Dir = dir
 	// Build a clean environment:
 	// - Enrich PATH so `#!/usr/bin/env node` resolves from macOS .app bundles.
 	// - Remove CLAUDECODE to avoid "nested session" detection when launched
@@ -300,7 +336,7 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 	output, err := cmd.Output()
 	if err != nil {
 		if errors.Is(err, exec.ErrNotFound) {
-			return "", nil, "", WithCause(fmt.Errorf("claude CLI not found at %q (PATH=%s) — install Claude Code first", claudeBin, os.Getenv("PATH")), err)
+			return nil, WithCause(fmt.Errorf("claude CLI not found at %q (PATH=%s) — install Claude Code first", claudeBin, os.Getenv("PATH")), err)
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
@@ -308,8 +344,8 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 			// envelope on stdout and exits 1, with the human-readable message
 			// behind kilobytes of usage telemetry. Parse it so the error
 			// carries that message instead of the whole blob.
-			if resp, perr := parseCLIOutput(output); perr == nil && resp.IsError {
-				return "", nil, "", WithCause(logredact.Errorf("claude CLI failed (exit %d, subtype=%s, stop_reason=%s): %s",
+			if resp, perr := parse(output); perr == nil && resp.IsError {
+				return nil, WithCause(logredact.Errorf("claude CLI failed (exit %d, subtype=%s, stop_reason=%s): %s",
 					exitErr.ExitCode(), resp.Subtype, resp.StopReason, errorEnvelopeMessage(resp)), exitErr)
 			}
 			stderrMsg := strings.TrimSpace(stderrBuf.String())
@@ -322,37 +358,26 @@ func (g *ClaudeGenerator) Generate(ctx context.Context, systemPrompt, userMessag
 				stderrMsg = "unparseable stdout: " + claude.DescribeOutput(output)
 			}
 			if stderrMsg != "" {
-				return "", nil, "", WithCause(logredact.Errorf("claude CLI failed (exit %d): %s", exitErr.ExitCode(), logredact.Text(stderrMsg)), exitErr)
+				return nil, WithCause(logredact.Errorf("claude CLI failed (exit %d): %s", exitErr.ExitCode(), logredact.Text(stderrMsg)), exitErr)
 			}
-			return "", nil, "", WithCause(fmt.Errorf("claude CLI failed with exit code %d", exitErr.ExitCode()), exitErr)
+			return nil, WithCause(fmt.Errorf("claude CLI failed with exit code %d", exitErr.ExitCode()), exitErr)
 		}
-		return "", nil, "", fmt.Errorf("claude CLI error: %w", err)
+		return nil, fmt.Errorf("claude CLI error: %w", err)
 	}
 
-	resp, err := parseCLIOutput(output)
+	resp, err := parse(output)
 	if err != nil {
-		return "", nil, "", err
+		return nil, err
 	}
 
 	if resp.IsError {
 		// Same envelope, same empty-result trap as the non-zero-exit branch
 		// above — the CLI can flag is_error and still exit 0.
-		return "", nil, "", logredact.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, errorEnvelopeMessage(resp))
+		return nil, logredact.Errorf("claude returned error (subtype=%s): %s", resp.Subtype, errorEnvelopeMessage(resp))
 	}
 
 	if strings.TrimSpace(resp.Result) == "" {
-		return "", nil, "", fmt.Errorf("claude returned empty result (turns=%d, tokens=%d+%d)", resp.NumTurns, resp.Usage.InputTokens, resp.Usage.OutputTokens)
+		return nil, fmt.Errorf("claude returned empty result (turns=%d, tokens=%d+%d)", resp.NumTurns, resp.Usage.InputTokens, resp.Usage.OutputTokens)
 	}
-
-	// Total API tokens = everything the API processed (including cache reads/writes).
-	totalAPI := resp.Usage.InputTokens + resp.Usage.CacheReadInputTokens + resp.Usage.CacheCreationInputTokens
-	usage := &Usage{
-		Model:          model,
-		InputTokens:    resp.Usage.InputTokens,
-		OutputTokens:   resp.Usage.OutputTokens,
-		CostUSD:        0,
-		TotalAPITokens: totalAPI,
-	}
-
-	return resp.Result, usage, resp.SessionID, nil
+	return resp, nil
 }

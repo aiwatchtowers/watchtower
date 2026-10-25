@@ -137,6 +137,10 @@ const chatTurnsPerRun = 1000
 const (
 	chatAssistantRuneCap = 1500
 	chatOwnerRuneCap     = 4000
+	chatImageLineRuneCap = 700
+	// chatImageLinesPerTurn caps the image lines one owner turn renders: a
+	// turn pasting a whole album must not take the prompt budget.
+	chatImageLinesPerTurn = 5
 )
 
 // transcriptRecapWaitWindow is how long a just-finished transcript is given
@@ -556,13 +560,24 @@ func renderChatUnit(t db.ChatTurnForIdeas, header bool) string {
 		}
 		fmt.Fprintf(&b, "[chat %q]\n", title)
 	}
-	fmt.Fprintf(&b, "%s: %s ref=chat:%d:%d\n", chatRole(t.Role), chatTurnText(t), t.ConversationID, t.ID)
+	text := chatTurnText(t)
+	if chatRole(t.Role) == "owner" {
+		for i, line := range t.ImageLines {
+			if i == chatImageLinesPerTurn {
+				text += fmt.Sprintf(" [+%d more images]", len(t.ImageLines)-i)
+				break
+			}
+			text += " " + textutil.Truncate(strings.Join(strings.Fields(line), " "), chatImageLineRuneCap, "…]")
+		}
+	}
+	fmt.Fprintf(&b, "%s: %s ref=chat:%d:%d\n", chatRole(t.Role), text, t.ConversationID, t.ID)
 	return b.String()
 }
 
-// chatTurnText is a chat turn's text as the material renders it: whitespace
-// collapsed and capped per speaker. It is also the stored quote of a chat
-// mention (mentionRow).
+// chatTurnText is a chat turn's typed text as the material renders it:
+// whitespace collapsed and capped per speaker. It is also the stored quote of
+// a chat mention (mentionRow); image descriptions (ImageLines) are rendered
+// after it but never stored as the owner's words.
 func chatTurnText(t db.ChatTurnForIdeas) string {
 	limit := chatOwnerRuneCap
 	if chatRole(t.Role) == "assistant" {

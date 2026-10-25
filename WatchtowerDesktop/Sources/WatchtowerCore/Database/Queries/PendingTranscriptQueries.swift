@@ -2,7 +2,7 @@ import Foundation
 import GRDB
 
 /// A recording not yet saved as a transcript: one `pending_transcripts` row
-/// (migration 00156, #604 S3/S4; it replaced the `rec_*.meta`/`.txt`/`.json`
+/// (migration 00157, #604 S3/S4; it replaced the `rec_*.meta`/`.txt`/`.json`
 /// sidecars). `transcript` and `metaJSON` are nil until transcription
 /// succeeded (then a failed save retries from them); `metaJSON` is
 /// `PersistedTranscriptMeta`'s encoding.

@@ -332,3 +332,114 @@ func TestCodexArgs_DashLeadingMessageViaStdin(t *testing.T) {
 		}
 	}
 }
+
+func TestCodexImageArgs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CODEX_HOME", home)
+	SetSystemConfigDir(t.TempDir())
+	cfg := "[mcp_servers.alpha]\ncommand = \"a\"\n[mcp_servers.beta]\ncommand = \"b\"\n"
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	img := filepath.Join(t.TempDir(), "x.png")
+	args, stdin, promptFile, err := buildImageArgs("codex", "strong", "sys", "describe it", img, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if promptFile != "" {
+		defer os.Remove(promptFile)
+	}
+	n := len(args)
+	if args[n-1] != "-" {
+		t.Fatalf("args tail = %v", args)
+	}
+	imgAt, instrAt := -1, -1
+	for i, a := range args {
+		if a == "--image="+img {
+			imgAt = i
+		}
+		if strings.HasPrefix(a, "model_instructions_file=") {
+			instrAt = i
+		}
+	}
+	if imgAt < 0 || (instrAt >= 0 && imgAt > instrAt) {
+		t.Errorf("--image= missing or after the instructions override: %v", args)
+	}
+	if stdin != "describe it" {
+		t.Errorf("stdin = %q", stdin)
+	}
+	joined := strings.Join(args, "\x00")
+	if strings.Contains(joined, "describe it") {
+		t.Error("prompt text on argv")
+	}
+	for _, want := range []string{
+		"features.view_image=false", "sandbox_mode=read-only", `web_search="disabled"`,
+		`"alpha"={enabled=false}`, `"beta"={enabled=false}`,
+		"features.multi_agent=false", "features.image_generation=false",
+		"features.skill_search=false", "features.hooks=false",
+		"features.in_app_browser=false", "features.skill_mcp_dependency_install=false", "features.tool_suggest=false",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("args missing %q: %v", want, args)
+		}
+	}
+	if _, _, _, err := buildImageArgs("codex", "strong", "", "u", "/a,b.png", t.TempDir()); err == nil {
+		t.Error("a comma in the path must be refused")
+	}
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte("[[[bad"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := buildImageArgs("codex", "strong", "", "u", img, t.TempDir()); err == nil {
+		t.Error("an unreadable codex config must fail closed")
+	}
+}
+
+func TestImageCapable_Codex(t *testing.T) {
+	if _, ok := digest.ImageCapable(NewCodexGenerator("l", "s", "")); !ok {
+		t.Fatal("codex generator should take images")
+	}
+}
+
+// The child runs in a fresh work dir under the WithWorkDir root, removed
+// afterwards; a call without the root fails before starting anything.
+func TestCodexGenerateWithImage_WorkDir(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "media")
+	script := filepath.Join(dir, "fake-codex")
+	body := "#!/bin/sh\npwd -P > '" + dir + "/cwd'\necho \"$@\" > '" + dir + "/argv'\ncat > /dev/null\n" +
+		"echo '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"Red\"}}'\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gen := NewCodexGenerator("light", "strong", script)
+	if _, _, err := gen.GenerateWithImage(context.Background(), "s", "u", "/x.png", "image/png"); err == nil {
+		t.Fatal("want an error without a work directory")
+	}
+	img := filepath.Join(dir, "x.png")
+	if err := os.WriteFile(img, []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx := digest.WithWorkDir(context.Background(), root)
+	if _, _, err := gen.GenerateWithImage(ctx, "s", "u", filepath.Join(dir, "missing.png"), "image/png"); err == nil {
+		t.Fatal("a missing image must fail")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cwd")); err == nil {
+		t.Fatal("codex started for a missing image")
+	}
+	reply, _, err := gen.GenerateWithImage(ctx, "s", "u", img, "image/png")
+	if err != nil || reply != "Red" {
+		t.Fatalf("reply %q, err %v", reply, err)
+	}
+	cwd, _ := os.ReadFile(filepath.Join(dir, "cwd"))
+	rootReal, _ := filepath.EvalSymlinks(root)
+	if !strings.HasPrefix(strings.TrimSpace(string(cwd)), rootReal+"/media-call-") {
+		t.Errorf("cwd = %q, want a media-call dir under %q", cwd, rootReal)
+	}
+	if left, _ := os.ReadDir(root); len(left) != 0 {
+		t.Errorf("work dir left behind: %v", left)
+	}
+	argv, _ := os.ReadFile(filepath.Join(dir, "argv"))
+	if !strings.Contains(string(argv), "--image="+img) {
+		t.Errorf("argv = %s", argv)
+	}
+}

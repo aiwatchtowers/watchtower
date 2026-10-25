@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	goslack "github.com/slack-go/slack"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -20,7 +19,7 @@ func stubSlackAPI(t *testing.T, mux *http.ServeMux) slackSender {
 	t.Helper()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return slackSender{watchtowerslack.NewClientWithAPIUnlimited(goslack.New("xoxp-test", goslack.OptionAPIURL(srv.URL+"/")))}
+	return slackSender{watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test", srv.URL+"/")}
 }
 
 func writeSlackJSON(w http.ResponseWriter, v any) {

@@ -47,8 +47,7 @@ func newTestSetup(t *testing.T, mux *http.ServeMux) *testSetup {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	api := goslack.New("xoxp-test-token", goslack.OptionAPIURL(srv.URL+"/"))
-	slackClient := watchtowerslack.NewClientWithAPIUnlimited(api)
+	slackClient := watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token", srv.URL+"/")
 
 	cfg := &config.Config{
 		ActiveWorkspace: "test-workspace",
@@ -555,8 +554,7 @@ func TestRunRecordsAuthStateRecoversOnSuccess(t *testing.T) {
 	// account row) and re-run — status must clear.
 	healthySrv := httptest.NewServer(defaultMux())
 	t.Cleanup(healthySrv.Close)
-	healthyAPI := goslack.New("xoxp-test-token", goslack.OptionAPIURL(healthySrv.URL+"/"))
-	ts.orch.slackClient = watchtowerslack.NewClientWithAPIUnlimited(healthyAPI)
+	ts.orch.slackClient = watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token", healthySrv.URL+"/")
 	ts.orch.slackClient.SetLogger(ts.orch.logger)
 
 	require.NoError(t, ts.orch.Run(context.Background(), SyncOptions{}))
@@ -951,12 +949,10 @@ func TestSyncTwoAccountsNoCollision(t *testing.T) {
 
 	cfg := &config.Config{Sync: config.SyncConfig{Workers: 2, InitialHistoryDays: 30}}
 
-	api1 := goslack.New("xoxp-test-token-1", goslack.OptionAPIURL(srv1.URL+"/"))
-	orch1 := NewOrchestrator(database, watchtowerslack.NewClientWithAPIUnlimited(api1), cfg, account1ID)
+	orch1 := NewOrchestrator(database, watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token-1", srv1.URL+"/"), cfg, account1ID)
 	orch1.SetLogger(log.New(os.Stderr, "[test-1] ", 0))
 
-	api2 := goslack.New("xoxp-test-token-2", goslack.OptionAPIURL(srv2.URL+"/"))
-	orch2 := NewOrchestrator(database, watchtowerslack.NewClientWithAPIUnlimited(api2), cfg, account2ID)
+	orch2 := NewOrchestrator(database, watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token-2", srv2.URL+"/"), cfg, account2ID)
 	orch2.SetLogger(log.New(os.Stderr, "[test-2] ", 0))
 
 	require.NoError(t, orch1.Run(context.Background(), SyncOptions{Full: true}))
@@ -1097,8 +1093,7 @@ func TestSyncInboxReactionsUsesOneOwnerListing(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	api := goslack.New("xoxp-test-token-1", goslack.OptionAPIURL(srv.URL+"/"))
-	orch := NewOrchestrator(database, watchtowerslack.NewClientWithAPIUnlimited(api), &config.Config{}, accountID)
+	orch := NewOrchestrator(database, watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token-1", srv.URL+"/"), &config.Config{}, accountID)
 	orch.SetLogger(log.New(os.Stderr, "[test] ", 0))
 	require.NoError(t, orch.ensureWorkspace(context.Background()))
 
@@ -1156,8 +1151,7 @@ func TestSyncInboxReactionsWriteFailureFailsTheRun(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	api := goslack.New("xoxp-test-token-1", goslack.OptionAPIURL(srv.URL+"/"))
-	orch := NewOrchestrator(database, watchtowerslack.NewClientWithAPIUnlimited(api), &config.Config{}, accountID)
+	orch := NewOrchestrator(database, watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token-1", srv.URL+"/"), &config.Config{}, accountID)
 	orch.SetLogger(log.New(io.Discard, "", 0))
 	require.NoError(t, orch.ensureWorkspace(context.Background()))
 
@@ -1280,8 +1274,7 @@ func TestSyncInboxReactionsScopedToOwnAccount(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	api := goslack.New("xoxp-test-token-1", goslack.OptionAPIURL(srv.URL+"/"))
-	orch1 := NewOrchestrator(database, watchtowerslack.NewClientWithAPIUnlimited(api), &config.Config{}, account1ID)
+	orch1 := NewOrchestrator(database, watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token-1", srv.URL+"/"), &config.Config{}, account1ID)
 	orch1.SetLogger(log.New(os.Stderr, "[test-1] ", 0))
 	require.NoError(t, orch1.ensureWorkspace(context.Background()))
 
@@ -1527,8 +1520,7 @@ func TestSyncInboxReactionsDegenerateInputs(t *testing.T) {
 			})
 			srv := httptest.NewServer(mux)
 			t.Cleanup(srv.Close)
-			api := goslack.New("xoxp-test-token-1", goslack.OptionAPIURL(srv.URL+"/"))
-			orch := NewOrchestrator(database, watchtowerslack.NewClientWithAPIUnlimited(api), &config.Config{}, accountID)
+			orch := NewOrchestrator(database, watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token-1", srv.URL+"/"), &config.Config{}, accountID)
 			orch.SetLogger(log.New(os.Stderr, "[test] ", 0))
 			require.NoError(t, orch.ensureWorkspace(context.Background()))
 
@@ -1573,8 +1565,7 @@ func TestSyncChannelReadStateScopedToOwnAccount(t *testing.T) {
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	api := goslack.New("xoxp-test-token-1", goslack.OptionAPIURL(srv.URL+"/"))
-	orch1 := NewOrchestrator(database, watchtowerslack.NewClientWithAPIUnlimited(api), &config.Config{}, account1ID)
+	orch1 := NewOrchestrator(database, watchtowerslack.NewClientWithAPIURLUnlimited("xoxp-test-token-1", srv.URL+"/"), &config.Config{}, account1ID)
 	orch1.SetLogger(log.New(os.Stderr, "[test-1] ", 0))
 
 	require.NoError(t, orch1.syncChannelReadState(context.Background()))

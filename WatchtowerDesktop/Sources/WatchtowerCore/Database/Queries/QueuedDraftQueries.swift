@@ -1,7 +1,7 @@
 import Foundation
 import GRDB
 
-/// `chat_queued_drafts` (migration 00156, #604 S15): an embedded chat's queued
+/// `chat_queued_drafts` (migration 00157, #604 S15): an embedded chat's queued
 /// owner message, kept so an app quit before its turn starts brings it back
 /// as an unsent draft (CHAT-01). The Desktop is the only reader and writer.
 package enum QueuedDraftQueries {

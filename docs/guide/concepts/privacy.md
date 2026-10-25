@@ -1,13 +1,13 @@
 # Privacy
 
-Watchtower has no account, no cloud service and no analytics of its own. Three things leave your Mac: requests to the sources you connect, the text sent to your AI provider, and, only if you turn it on, encrypted data for your iPhone through your own iCloud. This page answers each in turn.
+Watchtower has no account, no cloud service and no analytics of its own. Three things leave your Mac: requests to the sources you connect (and to the public pages their links point to), the text sent to your AI provider, and, only if you turn it on, encrypted data for your iPhone through your own iCloud. This page answers each in turn.
 
 ## What stays on your Mac
 
 - **All synced data and AI results.** The database lives in `~/.local/share/watchtower/<workspace>/watchtower.db`, next to Memory's notes and the search index. Meeting recordings are in `~/Library/Application Support/Watchtower/recordings`.
 - **Sign-ins.** OAuth tokens for Slack, Google, Jira and Linear are stored as separate files in that folder, readable only by your user. Quick Connection secrets are the same.
 - **Meeting transcription.** Audio is captured and transcribed on the Mac. The speech models are downloaded once, on first use, then run locally. Recording audio is deleted after 30 days (**Settings → Meetings → Delete audio after N days**); transcript text is kept.
-- **Search.** Knowledge search is a local index and uses no AI.
+- **Search.** The Knowledge search index is local; only its image descriptions and link summaries use AI (below).
 - **Mechanical features.** Attention detection and Claude plan limits make no AI calls.
 
 Removing an account deletes its sign-in file. With **Delete an account's data when its access is revoked** on, a revoked account's synced data is deleted after a 72-hour notice, and so is a source's that Watchtower has not reached for 30 days: see [Revoked access deletes an account's data](revoked-access.md).
@@ -49,6 +49,7 @@ Every AI feature sends the relevant text to the provider you chose in [AI provid
 - **AI Chat:** your question plus whatever the assistant reads to answer it, such as messages, mail, tickets or memory notes. It reads them through Watchtower's local tools, and what a tool returns is sent to the provider.
 - **Asking with ⌘/:** the same as AI Chat, plus a short note on the tab you are on, its empty-state status line and the selected item's title. The note is sent with that message only and is not stored.
 - **Automations:** a confirmed automation sends data to the provider on its own schedule whenever its recipe calls `llm()` or `agent()`.
+- **Knowledge search:** new images (strong model) and the text of public pages that synced Slack or Confluence links point to (light model). See [Images and links](../features/search-and-knowledge.md#images-and-links).
 - **Workbench sessions:** run by Claude Code or Codex in your folder, so they go to that agent's provider. Anything that agent reads or writes is its provider's concern.
 
 With **Ollama / Local** on a server on your own machine, the text never leaves it. Point it at a remote server and it goes there.
@@ -57,7 +58,7 @@ With **Ollama / Local** on a server on your own machine, the text never leaves i
 
 Slack is read-only. The assistant sends or edits something only after you approve it, unless you gave a confirmed automation an automatic grant for that action. A Quick Connection (an outside tool server you add) receives what the assistant sends it when you use it in chat, and what a confirmed automation sends it through `mcp()` on its schedule.
 
-Other network traffic: calls to each source's own service, a version check against GitHub every 6 hours, and a read of your Claude plan limits from Anthropic using Claude Code's sign-in.
+Other network traffic: calls to each source's own service, Knowledge search opening public links like a browser visit (the site sees your Mac's address; a tracking link can tell its author), a version check against GitHub every 6 hours, and a read of your Claude plan limits from Anthropic using Claude Code's sign-in.
 
 ## What goes to iCloud
 

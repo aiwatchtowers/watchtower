@@ -14,11 +14,11 @@ import (
 // processes under load, and the helpers run under fixed timeouts.
 const helperNice = 10
 
-// runHelper runs a helper subprocess (the PDF parser, the OCR helper) like
+// RunHelper runs a helper subprocess (the PDF parser, the OCR helper) like
 // cmd.Run, but lowers its CPU priority to helperNice right after it starts.
 // Failing to lower it is logged and the helper runs at its default
 // priority; a helper that already exited (ESRCH) has nothing to lower.
-func runHelper(cmd *exec.Cmd, logf logFunc) error {
+func RunHelper(cmd *exec.Cmd, logf logFunc) error {
 	if err := cmd.Start(); err != nil {
 		return err
 	}
